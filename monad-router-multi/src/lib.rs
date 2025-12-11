@@ -27,7 +27,9 @@ use futures::{Stream, StreamExt};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_dataplane::DataplaneBuilder;
+use monad_dataplane::{
+    DataplaneBuilder, DataplaneControl, TcpSocketReader, TcpSocketWriter, UdpSocketHandle,
+};
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{Message, RouterCommand};
 use monad_node_config::{FullNodeConfig, FullNodeIdentityConfig};
@@ -41,6 +43,7 @@ use monad_raptorcast::{
         RaptorCastConfigSecondaryClient, RaptorCastConfigSecondaryPublisher,
         SecondaryRaptorCastMode,
     },
+    networking::DataplaneType,
     raptorcast_secondary::{
         group_message::FullNodesGroupMessage, RaptorCastSecondary, SecondaryOutboundMessage,
         SecondaryRaptorCastModeConfig,
@@ -53,15 +56,16 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 pub use tracing::{debug, error, info, warn, Level};
 
 //==============================================================================
-pub struct MultiRouter<ST, M, OM, SE, PD, AP>
+pub struct MultiRouter<ST, M, OM, SE, PD, AP, DP>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Decodable,
     OM: Encodable + Into<M> + Clone,
     PD: PeerDiscoveryAlgo<SignatureType = ST>,
     AP: AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
+    DP: DataplaneType,
 {
-    rc_primary: RaptorCast<ST, M, OM, SE, PD, AP>,
+    rc_primary: RaptorCast<ST, M, OM, SE, PD, AP, DP>,
     rc_secondary: Option<RaptorCastSecondary<ST, M, OM, SE, PD>>,
 
     // raptorcast config is stored for future role change
@@ -75,13 +79,22 @@ where
     phantom: PhantomData<(OM, SE)>,
 }
 
-impl<ST, M, OM, SE, PD, AP> MultiRouter<ST, M, OM, SE, PD, AP>
+impl<ST, M, OM, SE, PD, AP, DP> MultiRouter<ST, M, OM, SE, PD, AP, DP>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Decodable,
     OM: Encodable + Into<M> + Clone,
     PD: PeerDiscoveryAlgo<SignatureType = ST>,
     AP: AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
+    DP: DataplaneType<
+        // DataplaneBuilder produces a concrete dataplane
+        // implementation, so we have to specify the concrete
+        // associated types.
+        TcpMessageSource = TcpSocketReader,
+        TcpMessageSink = TcpSocketWriter,
+        Control = DataplaneControl,
+        UdpMessageEndpoint = UdpSocketHandle,
+    >,
 {
     pub fn new<B>(
         self_node_id: NodeId<CertificateSignaturePubKey<ST>>,
@@ -280,14 +293,20 @@ where
 }
 
 //==============================================================================
-impl<ST, M, OM, SE, PD, AP> Executor for MultiRouter<ST, M, OM, SE, PD, AP>
+impl<ST, M, OM, SE, PD, AP, DP> Executor for MultiRouter<ST, M, OM, SE, PD, AP, DP>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Decodable,
     OM: Encodable + Into<M> + Clone,
     PD: PeerDiscoveryAlgo<SignatureType = ST>,
     AP: AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
-    RaptorCast<ST, M, OM, SE, PD, AP>: Unpin,
+    DP: DataplaneType<
+        TcpMessageSource = TcpSocketReader,
+        TcpMessageSink = TcpSocketWriter,
+        Control = DataplaneControl,
+        UdpMessageEndpoint = UdpSocketHandle,
+    >,
+    RaptorCast<ST, M, OM, SE, PD, AP, DP>: Unpin,
 {
     type Command = RouterCommand<ST, OM>;
 
@@ -442,7 +461,7 @@ where
 }
 
 //==============================================================================
-impl<ST, M, OM, E, PD, AP> Stream for MultiRouter<ST, M, OM, E, PD, AP>
+impl<ST, M, OM, E, PD, AP, DP> Stream for MultiRouter<ST, M, OM, E, PD, AP, DP>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Decodable,
@@ -450,7 +469,13 @@ where
     E: From<RaptorCastEvent<M::Event, ST>>,
     Self: Unpin,
     AP: AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
-    RaptorCast<ST, M, OM, E, PD, AP>: Unpin,
+    DP: DataplaneType<
+        TcpMessageSource = TcpSocketReader,
+        TcpMessageSink = TcpSocketWriter,
+        Control = DataplaneControl,
+        UdpMessageEndpoint = UdpSocketHandle,
+    >,
+    RaptorCast<ST, M, OM, E, PD, AP, DP>: Unpin,
     RaptorCastSecondary<ST, M, OM, E, PD>: Unpin,
     PD: PeerDiscoveryAlgo<SignatureType = ST>,
     PeerDiscoveryDriver<PD>: Unpin,

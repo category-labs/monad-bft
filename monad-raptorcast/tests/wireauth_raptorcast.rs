@@ -33,8 +33,10 @@ use monad_crypto::certificate_signature::{
 };
 use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand};
-use monad_peer_discovery::{MonadNameRecord, NameRecord};
-use monad_raptorcast::RaptorCastEvent;
+use monad_peer_discovery::{mock::NopDiscovery, MonadNameRecord, NameRecord};
+use monad_raptorcast::{
+    networking::Dataplane, raptorcast_secondary::SecondaryRaptorCastModeConfig, RaptorCastEvent,
+};
 use monad_secp::{KeyPair, SecpSignature};
 use monad_types::{Deserializable, Epoch, NodeId, Serializable, Stake};
 use rstest::rstest;
@@ -246,9 +248,7 @@ fn create_peer_discovery(
     >,
 ) -> Arc<
     std::sync::Mutex<
-        monad_peer_discovery::driver::PeerDiscoveryDriver<
-            monad_peer_discovery::mock::NopDiscovery<SecpSignature>,
-        >,
+        monad_peer_discovery::driver::PeerDiscoveryDriver<NopDiscovery<SecpSignature>>,
     >,
 > {
     let builder = monad_peer_discovery::mock::NopDiscoveryBuilder {
@@ -288,11 +288,12 @@ fn spawn_noop_validator(
             MockMessage,
             MockMessage,
             MockEvent<CertificateSignaturePubKey<SecpSignature>>,
-            monad_peer_discovery::mock::NopDiscovery<SecpSignature>,
+            NopDiscovery<SecpSignature>,
             _,
+            Dataplane,
         >::new(
             config,
-            monad_raptorcast::raptorcast_secondary::SecondaryRaptorCastModeConfig::None,
+            SecondaryRaptorCastModeConfig::None,
             tcp_reader,
             tcp_writer,
             None,
@@ -359,11 +360,12 @@ fn spawn_wireauth_validator(
             MockMessage,
             MockMessage,
             MockEvent<CertificateSignaturePubKey<SecpSignature>>,
-            monad_peer_discovery::mock::NopDiscovery<SecpSignature>,
+            NopDiscovery<SecpSignature>,
             _,
+            Dataplane,
         >::new(
             config,
-            monad_raptorcast::raptorcast_secondary::SecondaryRaptorCastModeConfig::None,
+            SecondaryRaptorCastModeConfig::None,
             tcp_reader,
             tcp_writer,
             Some(authenticated_socket),

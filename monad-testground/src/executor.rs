@@ -39,7 +39,7 @@ use monad_peer_discovery::{
     mock::{NopDiscovery, NopDiscoveryBuilder},
 };
 use monad_raptorcast::{
-    auth::NoopAuthProtocol, config::RaptorCastConfig,
+    auth::NoopAuthProtocol, config::RaptorCastConfig, networking::Dataplane,
     raptorcast_secondary::SecondaryRaptorCastModeConfig, RaptorCast,
     AUTHENTICATED_RAPTORCAST_SOCKET, RAPTORCAST_SOCKET,
 };
@@ -191,6 +191,7 @@ where
                     MonadEvent<ST, SCT, MockExecutionProtocol>,
                     NopDiscovery<ST>,
                     NoopAuthProtocol<CertificateSignaturePubKey<ST>>,
+                    Dataplane,
                 >::new(
                     cfg,
                     SecondaryRaptorCastModeConfig::None,
