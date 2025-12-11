@@ -10,6 +10,7 @@
 
 test-keys
 .claude
+CLAUDE.md
 AGENTS.md
 .vscode
 *.swp
