@@ -1133,10 +1133,33 @@ where
         &mut self,
         qc: &QuorumCertificate<SCT>,
     ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
+        //TODO(keep), Qc has priority than same round TC
         if qc.info.round < self.consensus.pacemaker.get_current_round() {
             self.metrics.consensus_events.process_old_qc += 1;
             return Vec::new();
         }
+
+        // match self.consensus.pacemaker.high_certificate() {
+        //     RoundCertificate::Qc(_) => {
+        //         if qc.info.round < self.consensus.pacemaker.get_current_round() {
+        //             self.metrics.consensus_events.process_old_qc += 1;
+        //             return Vec::new();
+        //         }
+        //     }
+        //     RoundCertificate::Tc(tc) => {
+        //         if qc.info.round < tc.round {
+        //             self.metrics.consensus_events.process_old_qc += 1;
+        //             return Vec::new();
+        //         }else if qc.info.round == tc.round {
+        //             debug!(
+        //                 round =? qc.info.round,
+        //                 "QC has priority over TC in same round"
+        //             );
+        //         }
+        //     }
+        // }
+
+
         self.metrics.consensus_events.process_qc += 1;
 
         let mut cmds = Vec::new();
@@ -1882,6 +1905,8 @@ mod test {
         tip::ConsensusTip,
         voting::Vote,
         RoundCertificate,
+        timeout::{Timeout,HighExtendVote},
+        no_endorsement::FreshProposalCertificate,
     };
     use monad_crypto::{
         certificate_signature::{
@@ -1915,6 +1940,10 @@ mod test {
     };
     use test_case::test_case;
 
+    use monad_consensus::messages::message::{AdvanceRoundMessage, NoEndorsementMessage, RoundRecoveryMessage};
+    use monad_consensus_types::no_endorsement::FreshProposalCertificate::NoTip;
+    use monad_consensus_types::RoundCertificate::{Tc, Qc};
+    use monad_consensus_types::timeout::{HighExtend, TimeoutCertificate};
     use crate::{
         timestamp::BlockTimestamp, ConsensusCommand, ConsensusConfig, ConsensusState,
         ConsensusStateWrapper, OutgoingVoteStatus, NUM_LEADERS_FORWARD_TXS,
@@ -2499,6 +2528,83 @@ mod test {
             })
             .unwrap_or_else(|| panic!("couldn't extract proposal: {:?}", cmds))
     }
+    
+     fn find_create_proposal_cmd<ST, SCT, BPT, SBT>(
+        cmds: Vec<
+            ConsensusCommand<
+                ST,
+                SCT,
+                EthExecutionProtocol,
+                BPT,
+                SBT,
+                MockChainConfig,
+                MockChainRevision
+            >
+        >,
+    ) -> (
+         NodeId<CertificateSignaturePubKey<ST>>,
+         Epoch,
+         Round,
+         SeqNum,
+         QuorumCertificate<SCT>,
+         RoundSignature<SCT::SignatureType>,
+         Option<TimeoutCertificate<ST, SCT, EthExecutionProtocol>>,
+         Option<FreshProposalCertificate<SCT>>,
+         usize,
+         u64,
+         u64,
+         [u8; 20],
+         u128,
+         Vec<BPT::ValidatedBlock>,
+         Vec<<EthExecutionProtocol as ExecutionProtocol>::FinalizedHeader>,
+    )
+    where
+        ST: CertificateSignatureRecoverable,
+        SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+        BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT, MockChainConfig, MockChainRevision>
+            + std::fmt::Debug,
+        SBT: StateBackend<ST, SCT> + std::fmt::Debug,
+    {
+        cmds.into_iter()
+            .find_map(|c| match c {
+                ConsensusCommand::CreateProposal {
+                    node_id,
+                    epoch,
+                    round,
+                    seq_num,
+                    high_qc,
+                    round_signature,
+                    last_round_tc,
+                    fresh_proposal_certificate,
+                    tx_limit,
+                    proposal_gas_limit,
+                    proposal_byte_limit,
+                    beneficiary,
+                    timestamp_ns,
+                    extending_blocks,
+                    delayed_execution_results,
+                } => Some((
+                    node_id,
+                    epoch,
+                    round,
+                    seq_num,
+                    high_qc,
+                    round_signature,
+                    last_round_tc,
+                    fresh_proposal_certificate,
+                    tx_limit,
+                    proposal_gas_limit,
+                    proposal_byte_limit,
+                    beneficiary,
+                    timestamp_ns,
+                    extending_blocks,
+                    delayed_execution_results,
+                )),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("couldn't extract proposal"))
+    }
+    
 
     fn extract_blocksync_requests<ST, SCT, BPT, SBT>(
         cmds: Vec<
@@ -2602,6 +2708,22 @@ mod test {
             .find(|c| matches!(c, ConsensusCommand::RequestSync { .. }))
     }
 
+    fn extract_block_range<ST, SCT, EPT, BPT, SBT>(
+        cmds: &[ConsensusCommand<ST, SCT, EPT, BPT, SBT,MockChainConfig, MockChainRevision>],
+    ) -> Option<BlockRange>
+    where
+        ST: CertificateSignatureRecoverable,
+        SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+        EPT: ExecutionProtocol,
+        BPT: BlockPolicy<ST, SCT, EPT, SBT,MockChainConfig, MockChainRevision>,
+        SBT: StateBackend<ST, SCT>,
+    {
+        cmds.iter()
+            .find_map(|c| match c {
+             ConsensusCommand::RequestSync(m)  =>Some(m.clone()),
+             _ => None
+            })
+    }
     fn find_commit_cmds<ST, SCT, EPT, BPT, SBT>(
         cmds: &[ConsensusCommand<ST, SCT, EPT, BPT, SBT, MockChainConfig, MockChainRevision>],
     ) -> Vec<BPT::ValidatedBlock>
@@ -2636,6 +2758,237 @@ mod test {
             .find(|c| matches!(c, ConsensusCommand::TimestampUpdate(_)))
     }
 
+    fn find_advance_round_cmd<ST, SCT, EPT, BPT, SBT>(
+        cmds: &[ConsensusCommand<ST, SCT, EPT, BPT, SBT,MockChainConfig, MockChainRevision>],
+    ) -> Option<AdvanceRoundMessage<ST, SCT, EPT>>
+    where
+        ST: CertificateSignatureRecoverable,
+        SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+        EPT: ExecutionProtocol,
+        BPT: BlockPolicy<ST, SCT, EPT, SBT,MockChainConfig, MockChainRevision>,
+        SBT: StateBackend<ST, SCT>,
+    {
+        cmds.iter().find_map(|c| match c {
+                ConsensusCommand::PublishToFullNodes { message, .. } => {
+                    if let ProtocolMessage::AdvanceRound(m) = &message.deref().deref().message {
+                        Some(m.to_owned()) // clone message
+                    } else {
+                        None
+                    }
+            },
+            _ => None,
+        })
+    }
+    fn find_timeout_cmd<ST, SCT, EPT, BPT, SBT>(
+        cmds: &[ConsensusCommand<ST, SCT, EPT, BPT, SBT,MockChainConfig, MockChainRevision>],
+    ) -> Option<TimeoutMessage<ST, SCT, EPT>>
+    where
+        ST: CertificateSignatureRecoverable,
+        SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+        EPT: ExecutionProtocol,
+        BPT: BlockPolicy<ST, SCT, EPT, SBT,MockChainConfig, MockChainRevision>,
+        SBT: StateBackend<ST, SCT>,
+    {
+        cmds.iter().find_map(|c| match c {
+            ConsensusCommand::Publish { target: _, message } => {
+                match &message.deref().message {
+                    ProtocolMessage::Timeout(tmo) => Some(tmo.clone()), //
+                    _ => None,
+                }
+            }
+            _ => None,
+        })
+    }
+    fn find_round_recovery_cmd<ST, SCT, EPT, BPT, SBT>(
+        cmds: &[ConsensusCommand<ST, SCT, EPT, BPT, SBT,MockChainConfig, MockChainRevision>],
+    ) -> Option<RoundRecoveryMessage<ST, SCT, EPT>>
+    where
+        ST: CertificateSignatureRecoverable,
+        SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+        EPT: ExecutionProtocol,
+        BPT: BlockPolicy<ST, SCT, EPT, SBT,MockChainConfig, MockChainRevision>,
+        SBT: StateBackend<ST, SCT>,
+    {
+        cmds.iter().find_map(|c| match c {
+            ConsensusCommand::Publish { target: _, message } => {
+                match &message.deref().message {
+                    ProtocolMessage::RoundRecovery(m) => Some(m.clone()), //
+                    _ => None,
+                }
+            }
+            _ => None,
+        })
+    }
+    fn find_no_endorsement_cmd <ST, SCT, EPT, BPT, SBT>(
+        cmds: &[ConsensusCommand<ST, SCT, EPT, BPT, SBT, MockChainConfig, MockChainRevision>],
+    ) -> Option<NoEndorsementMessage<SCT>>
+    where
+        ST: CertificateSignatureRecoverable,
+        SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+        EPT: ExecutionProtocol,
+        BPT: BlockPolicy<ST, SCT, EPT, SBT, MockChainConfig, MockChainRevision>,
+        SBT: StateBackend<ST, SCT>,
+    {
+        cmds.iter().find_map(|c| match c {
+            ConsensusCommand::Publish { target: _, message } => {
+                match &message.deref().message {
+                    ProtocolMessage::NoEndorsement(m) => Some(m.clone()), //
+                    _ => None,
+                }
+            }
+            _ => None,
+        })
+    }
+
+    struct Round4TimeoutScenario<
+        ST: CertificateSignatureRecoverable,
+        SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+        BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT, MockChainConfig, MockChainRevision>,
+        SBT: StateBackend<ST, SCT> + StateBackendTest<ST, SCT>,
+        BVT: BlockValidator<ST, SCT, EthExecutionProtocol, BPT, SBT, MockChainConfig, MockChainRevision>,
+        VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Clone,
+        LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Clone,
+        EPT: ExecutionProtocol,
+    > {
+        env: EnvContext<ST, SCT, VTF, LT>,
+        nodes: Vec<NodeContext<ST, SCT, BPT, SBT, BVT, VTF, LT>>,
+        blocks: Vec<ProposalMessage<ST, SCT, EthExecutionProtocol>>,
+        tmo: Vec<TimeoutMessage<ST, SCT, EPT>>,
+        round4_advance_round_cmds: Vec<AdvanceRoundMessage<ST, SCT, EPT>>,
+    }
+
+    fn setup_round4_tmo_scenario() ->  Round4TimeoutScenario<
+        SignatureType,
+        SignatureCollectionType,
+        BlockPolicyType,
+        StateBackendType,
+        BlockValidatorType,
+        ValidatorSetFactory<CertificateSignaturePubKey<SignatureType>>,
+        SimpleRoundRobin<CertificateSignaturePubKey<SignatureType>>,
+        EthExecutionProtocol,
+    > {
+        let num_state = 4;
+        let execution_delay = SeqNum::MAX;
+        let (mut env, mut ctx) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            BlockPolicyType,
+            StateBackendType,
+            BlockValidatorType,
+            _,
+            _,
+        >(
+            num_state,
+            ValidatorSetFactory::default(),
+            SimpleRoundRobin::default(),
+            ||EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0),
+            ||InMemoryStateInner::genesis(Balance::MAX, execution_delay),
+            EthBlockValidator::default,
+            execution_delay,
+        );
+
+        let mut blocks = vec![];
+        let mut round4_advance_round_cmds = vec![];
+        for i in 1..=4 {
+            let cp = env.next_proposal(Vec::new());
+
+            let (author, _, verified_message) = cp.destructure();
+            for (j, node )in ctx.iter_mut().enumerate() {
+                if i == 4 && j == 0{
+                    //simulate node1 does not receiver block4
+                }else {
+                    let cmds = node.handle_proposal_message(author, verified_message.clone());
+
+                    // observing a qc that link to root should not trigger anything
+                    assert!(find_blocksync_request(&cmds).is_none());
+                    assert!(
+                        matches!(node.consensus_state.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.round == Round(i))
+                    );
+                    assert_eq!(
+                        node.consensus_state.pacemaker.get_current_round(),
+                        Round(i)
+                    );
+                    assert_eq!(node.consensus_state.safety.maybe_high_tip().unwrap().block_header.block_round, Round(i));
+
+                    //extract round4 advance message
+                    if i == 4{
+                        let cmd = find_advance_round_cmd(&cmds).unwrap();
+                        round4_advance_round_cmds.push(cmd.clone());
+                    }
+                }
+            }
+            blocks.push(verified_message);
+        }
+
+        assert_eq!(round4_advance_round_cmds.len(), 3);
+        assert_eq!(round4_advance_round_cmds[0], round4_advance_round_cmds[1]);
+        assert_eq!(round4_advance_round_cmds[0], round4_advance_round_cmds[2]);
+
+        let (node1, xs) = ctx.split_first_mut().unwrap();
+        let (node2, xs) = xs.split_first_mut().unwrap();
+        let (node3, xs) = xs.split_first_mut().unwrap();
+        let node4 = &mut xs[0];
+
+        let node1_round = node1.consensus_state.get_current_round();
+        assert_eq!(node1_round, Round(3));
+        let node2_round = node2.consensus_state.get_current_round();
+        assert_eq!(node2_round, Round(4));
+        let node3_round = node3.consensus_state.get_current_round();
+        assert_eq!(node3_round, Round(4));
+        let node4_round = node4.consensus_state.get_current_round();
+        assert_eq!(node4_round, Round(4));
+
+        let node1_id = node1.nodeid;
+        let node2_id = node2.nodeid;
+        let node3_id = node3.nodeid;
+        let node4_id = node4.nodeid;
+
+        //bring node1 to round(4) by advance message
+        let cmds1 = node1.wrapped_state().handle_advance_round_message(node2_id, round4_advance_round_cmds[0].clone());
+        assert!(find_advance_round_cmd(&cmds1).is_some());
+        assert!(matches!(
+            find_advance_round_cmd(&cmds1).unwrap().last_round_certificate, Qc(_)  //last_round_certificate is tc
+        ));
+        let node1_round = node1.consensus_state.get_current_round();
+        assert_eq!(node1_round, Round(4));
+
+        //ignore duplicated advance message
+        let cmds1 = node1.wrapped_state().handle_advance_round_message(node2_id, round4_advance_round_cmds[1].clone());
+        assert_eq!(cmds1.len(), 0);
+
+        let cmds1 = node1.wrapped_state().handle_timeout_expiry(node1_round);
+        let cmds2 = node2.wrapped_state().handle_timeout_expiry(node2_round);
+        let cmds3 = node3.wrapped_state().handle_timeout_expiry(node3_round);
+        let cmds4 = node4.wrapped_state().handle_timeout_expiry(node4_round);
+
+        let mut tmo = vec![];
+        tmo.push(find_timeout_cmd(&cmds1).unwrap());
+        tmo.push(find_timeout_cmd(&cmds2).unwrap());
+        tmo.push(find_timeout_cmd(&cmds3).unwrap());
+        tmo.push(find_timeout_cmd(&cmds4).unwrap());
+
+        assert_eq!(tmo.len(), 4);
+        assert_eq!(tmo[0].tminfo.round, tmo[1].tminfo.round);
+        assert_eq!(tmo[0].tminfo.high_qc_round, tmo[1].tminfo.high_qc_round);
+        assert_eq!(tmo[0].tminfo.high_tip_round, Round(0));   //node1's timeout.high_tip_round = 0, since it has not receive block(4)
+        assert_eq!(tmo[1].tminfo.high_tip_round, Round(4));
+        assert_eq!(tmo[1].tminfo, tmo[2].tminfo);
+        assert_eq!(tmo[1].tminfo, tmo[3].tminfo);
+
+        let mut nodes = vec![];
+        nodes.push(ctx.remove(0));
+        nodes.push(ctx.remove(0));
+        nodes.push(ctx.remove(0));
+        nodes.push(ctx.remove(0));
+
+        Round4TimeoutScenario {
+            env,
+            nodes,
+            blocks,
+            tmo,
+            round4_advance_round_cmds,
+        }
+    }
     // genesis_qc start with "0" sequence number and Round(0)
     // hence round == seqnum if no round times out
     fn seqnum_to_round_no_tc(seq_num: SeqNum) -> Round {
@@ -3419,6 +3772,9 @@ mod test {
         ));
         assert!(matches!(cmds[3], ConsensusCommand::RequestSync { .. }));
     }
+
+
+
 
     /// Test consensus behavior with mismatching eth header
     #[test]
@@ -5358,6 +5714,172 @@ mod test {
                 .collect_vec();
 
             assert_eq!(future_other_leaders, expected_future_other_leaders);
+        }
+    }
+
+    #[test]
+    fn test_timeout_leader_create_qc_other_create_tc_leader_create_propose_after_receive_receive_blocksync () {
+        /*
+          Scenario and expected result:
+           1. node2/3/4 receives Block 1/2/3/4 and advance to round 4
+           2. node1 receives Block 1/2/3 and advance to round 3
+           3. node1 receives AdvanceRound(4) and advance to round 4
+           4. node1/2/3/4 timeout at round 4
+           5. node1 receives node2/3/4's timeout and create QC(4), advance to round 5, and send out blockrange(4)
+           6. node2/3/4 receives node1/2/3's timeout and create TC(4), and advance to round 5
+           7. node1 create proposal(5) after receive blocksync(4)
+           8. all nodes vote for proposal(5) normally
+           9. round6_leader create proposal(6)
+         */
+
+        let mut scenario = setup_round4_tmo_scenario();
+        let mut node1 = &mut scenario.nodes.remove(0);
+        let mut node2 =  &mut scenario.nodes.remove(0);
+        let mut node3 =  &mut scenario.nodes.remove(0);
+        let mut node4 =  &mut scenario.nodes.remove(0);
+
+        let [node1_id, node2_id, node3_id, node4_id] =
+            [node1.nodeid, node2.nodeid, node3.nodeid, node4.nodeid];
+
+        let [tmo1, tmo2, tmo3, tmo4] = [
+            scenario.tmo[0].clone(),
+            scenario.tmo[1].clone(),
+            scenario.tmo[2].clone(),
+            scenario.tmo[3].clone(),
+        ];
+
+        let blocks = scenario.blocks;
+
+        //node1 process tmo2/3/4 will created qc
+        let cmds = node1.wrapped_state().handle_timeout_message(node2_id, tmo2.clone());
+        assert_eq!(cmds.len(), 0);
+        let cmds = node1.wrapped_state().handle_timeout_message(node3_id, tmo3.clone());
+        assert_eq!(cmds.len(), 0);
+        let cmds = node1.wrapped_state().handle_timeout_message(node4_id, tmo4.clone());
+        assert!(matches!(
+            find_advance_round_cmd(&cmds).unwrap().last_round_certificate,
+            Qc(qc) if qc.info.round == Round(4)  //last_round_certificate is qc
+        ));
+        let block_sync = extract_block_range(&cmds).unwrap();
+        assert_eq!(block_sync.last_block_id, blocks.last().unwrap().tip.block_header.get_id());  //request block(4)
+        assert_eq!(block_sync.num_blocks, SeqNum(1));
+        assert!(find_round_recovery_cmd(&cmds).is_none());
+
+        assert!(matches!(
+            node1.wrapped_state().consensus.pacemaker.high_certificate(),
+            RoundCertificate::Qc(qc) if qc.info.round == Round(4)
+            )
+        );
+
+
+        //since tmo2/3/4 processing will create a qc, which will advance peacemaker, and tmo1 will be ignored because it is old
+        let cmds = node1.wrapped_state().handle_timeout_message(node1_id, tmo1.clone());
+        assert_eq!(cmds.len(), 0);
+
+        //node2/3/4 handle tmo1/2/3, create tc(4) and advance to round 5
+        {
+            for node in [&mut node2, &mut node3, &mut node4] {
+                for (node_id, tmo) in [(node1_id, &tmo1), (node2_id, &tmo2), (node3_id, &tmo3)]{
+                    let cmds = node.wrapped_state().handle_timeout_message(node_id, tmo.clone());
+                    if node_id == node3_id {
+                        let advance_round = find_advance_round_cmd(&cmds).unwrap();
+                        assert!(matches!(advance_round.last_round_certificate, Tc(tc) if tc.round == Round(4) && tc.high_extend.qc().info.round == Round(3) ));
+
+                        assert!(matches!(
+                            node.wrapped_state().consensus.pacemaker.high_certificate(),
+                            RoundCertificate::Tc(tc) if tc.round == Round(4)
+                            )
+                        );
+                    }
+                }
+            }
+        }
+
+        //check all nodes round is 5
+        for (i, node) in [&node1, &node2, &node3, &node4].into_iter().enumerate() {
+            assert_eq!(node.consensus_state.get_current_round(), Round(5), "node{} not in round 5", i+1);
+        }
+
+        //node1 receives block4
+        let proposal_message_4 = blocks.last().unwrap();
+        let block_4 = proposal_message_4.tip.block_header.clone();
+        let payload_4 = proposal_message_4.block_body.clone();
+
+        let full_block_4 = ConsensusFullBlock::new(block_4.clone(), payload_4).unwrap();
+        let cmds =node1.wrapped_state().handle_block_sync(block_sync.clone(), vec![full_block_4]);
+        let create_proposal_cmd = find_create_proposal_cmd(cmds);
+        assert_eq!(create_proposal_cmd.2, Round(5));
+        assert_eq!(create_proposal_cmd.3, SeqNum(5));
+        assert_eq!(create_proposal_cmd.4.info.round, Round(4));
+        assert_eq!(create_proposal_cmd.4.info.id,  block_4.get_id());
+
+        //use env to create proposal(5)
+        let mut env = scenario.env;
+        let cp = env.next_proposal(Vec::new());
+        let (author, _, verified_message) = cp.destructure();
+
+        for (i, node) in [&mut node1, &mut node2, &mut node3, &mut node4].into_iter().enumerate() {
+            let cmds = node.handle_proposal_message(author, verified_message.clone());
+            assert!(
+                matches!(node.consensus_state.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.round == Round(5))
+            );
+
+            assert!(matches!(
+                node.consensus_state.pacemaker.high_certificate(),
+                RoundCertificate::Qc(qc) if qc.info.round == Round(4)
+            ))
+        }
+
+        let epoch = Epoch(1);
+        let validator_set = node1
+            .val_epoch_map
+            .get_val_set(&epoch)
+            .expect("proposal message was verified")
+            .get_members();
+
+        let round6_leader_id = node1
+            .election.get_leader(Round(6), epoch, validator_set);
+
+        let mut round5_votes = vec![];
+        //all nodes send vote(5)
+        for (i, node) in [&mut node1, &mut node2, &mut node3, &mut node4].into_iter().enumerate() {
+            let cmds = node.wrapped_state().handle_vote_timer(Round(5));
+            let votes = extract_vote_msgs(cmds);
+            assert!(votes.len() == 2);
+            assert_eq!(votes[0].vote, votes[1].vote);
+            assert_eq!(votes[0].vote.round, Round(5));
+            round5_votes.push((node.nodeid, votes[0]));
+        }
+
+        //round6_leader collect votes(5) and create proposal(6)
+        let round6_leader = [&mut node1, &mut node2, &mut node3, &mut node4]
+            .into_iter()
+            .find(|node| node.nodeid == round6_leader_id)
+            .expect("round6_leader not found");
+
+        for (node_id,vote) in round5_votes {
+            let cmds = round6_leader.wrapped_state().handle_vote_message(node_id, vote);
+            if cmds.len() > 0 {
+               let create_proposal_cmd = find_create_proposal_cmd(cmds);
+                assert_eq!(create_proposal_cmd.2, Round(6));
+                assert_eq!(create_proposal_cmd.3, SeqNum(6));
+                assert_eq!(create_proposal_cmd.4.info.round, Round(5));
+            }
+        }
+
+        //use env to create proposal(6)
+        let cp = env.next_proposal(Vec::new());
+        let (author, _, verified_message) = cp.destructure();
+        for (i, node) in [&mut node1, &mut node2, &mut node3, &mut node4].into_iter().enumerate() {
+            let cmds = node.handle_proposal_message(author, verified_message.clone());
+            assert!(
+                matches!(node.consensus_state.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.round == Round(6))
+            );
+
+            assert!(matches!(
+                node.consensus_state.pacemaker.high_certificate(),
+                RoundCertificate::Qc(qc) if qc.info.round == Round(5)
+            ))
         }
     }
 }
