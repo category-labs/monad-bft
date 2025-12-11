@@ -182,7 +182,7 @@ where
 
         // Remove all groups that have ended.
         self.group_schedule
-            .retain(|_, group| group.end_round >= new_round);
+            .retain(|_, group| group.end_round > new_round);
 
         let Some(next_group) = self.group_schedule.first_entry() else {
             // We didn't manage to form a group in time for the new round.
