@@ -77,6 +77,16 @@ struct QueueItem {
     prefix: DirPrefix,
 }
 
+trait DirArchiveMiddleware {
+    async fn middleware(&self, path: &Path, data: &[u8]) -> Result<()>;
+}
+
+impl<F: Fn(&Path, &[u8]) -> Result<()>> DirArchiveMiddleware for &F {
+    async fn middleware(&self, path: &Path, data: &[u8]) -> Result<()> {
+        (*self)(path, data)
+    }
+}
+
 pub async fn recursive_dir_archiver(
     store: KVStoreErased,
     folder_path: PathBuf,
@@ -85,6 +95,7 @@ pub async fn recursive_dir_archiver(
     metrics: Metrics,
     min_age: Option<Duration>,
     hot_dir_ttl: Duration,
+    middleware: Option<impl DirArchiveMiddleware>,
 ) -> Result<()> {
     let mut interval = tokio::time::interval(poll_frequency);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -102,6 +113,7 @@ pub async fn recursive_dir_archiver(
             min_age,
             exclude_prefix.as_str(),
             &mut dir_states,
+            middleware.as_ref(),
         )
         .await;
 
@@ -121,6 +133,7 @@ async fn archive_recursive_tick(
     min_age: Option<Duration>,
     exclude_prefix: &str,
     dir_states: &mut HashMap<PathBuf, DirCacheEntry>,
+    middleware: Option<&impl DirArchiveMiddleware>,
 ) -> Result<()> {
     let root_prefix = DirPrefix::root(&root_folder)?;
     let mut queue = VecDeque::new();
@@ -163,6 +176,7 @@ async fn archive_recursive_tick(
                 metrics,
                 min_age,
                 exclude_prefix,
+                middleware,
             )
             .await?;
             entry.mark_processed(dir_modified);
@@ -221,6 +235,7 @@ async fn archive_dir(
     metrics: &Metrics,
     min_age: Option<Duration>,
     exclude_prefix: &str,
+    middleware: Option<&impl DirArchiveMiddleware>,
 ) -> Result<()> {
     let prefix_str = prefix.as_str();
     if prefix_str.is_empty() {
@@ -282,7 +297,7 @@ async fn archive_dir(
             let store = store.clone();
             let metrics = metrics.clone();
             async move {
-                match process_single_file(store, &key, &path, &metrics).await {
+                match process_single_file(store, &key, &path, middleware, &metrics).await {
                     Ok(x) => x,
                     Err(e) => {
                         error!(?e, ?key, ?path, "Failed to process file for archive");
@@ -308,6 +323,7 @@ async fn process_single_file(
     store: KVStoreErased,
     key: &str,
     path: &PathBuf,
+    middleware: Option<&impl DirArchiveMiddleware>,
     metrics: &Metrics,
 ) -> Result<Option<String>> {
     if s3_exists_key(&store, key).await? {
@@ -318,6 +334,11 @@ async fn process_single_file(
     let bytes = tokio::fs::read(&path)
         .await
         .wrap_err("Failed to read local file")?;
+
+    if let Some(middleware) = middleware {
+        middleware.middleware(path, &bytes).await?;
+    }
+
     store
         .put(&key, bytes)
         .await
@@ -395,6 +416,16 @@ mod tests {
 
     use super::*;
 
+    struct NullMiddleware;
+
+    impl DirArchiveMiddleware for NullMiddleware {
+        async fn middleware(&self, _: &Path, _: &[u8]) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    const NONE_MIDDLEWARE_REF: Option<&NullMiddleware> = None;
+
     #[tokio::test]
     async fn test_archive_dir_uploads_new_files() {
         let store: KVStoreErased = MemoryStorage::new("test").into();
@@ -421,6 +452,7 @@ mod tests {
             &Metrics::none(),
             None,
             ".",
+            NONE_MIDDLEWARE_REF,
         )
         .await
         .unwrap();
@@ -468,6 +500,7 @@ mod tests {
             &Metrics::none(),
             None,
             ".",
+            NONE_MIDDLEWARE_REF,
         )
         .await
         .unwrap();
@@ -499,6 +532,7 @@ mod tests {
             &Metrics::none(),
             None,
             ".",
+            NONE_MIDDLEWARE_REF,
         )
         .await
         .unwrap();
@@ -532,6 +566,7 @@ mod tests {
             &Metrics::none(),
             None,
             ".",
+            NONE_MIDDLEWARE_REF,
         )
         .await
         .unwrap();
@@ -579,6 +614,7 @@ mod tests {
             None,
             ".",
             &mut dir_states,
+            NONE_MIDDLEWARE_REF,
         )
         .await
         .unwrap();
@@ -639,6 +675,7 @@ mod tests {
             None,
             ".",
             &mut dir_states,
+            NONE_MIDDLEWARE_REF,
         )
         .await
         .unwrap();

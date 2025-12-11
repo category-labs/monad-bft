@@ -18,11 +18,13 @@
 use monad_archive::{cli::set_source_and_sink_metrics, prelude::*};
 
 mod bft_archive_worker;
+mod bft_archive_worker2;
+mod bft_archive_worker3;
 mod block_archive_worker;
 mod file_checkpointer;
 mod generic_folder_archiver;
 
-use bft_archive_worker::bft_block_archive_worker;
+use bft_archive_worker2::bft_block_archive_worker;
 use block_archive_worker::{archive_worker, ArchiveWorkerOpts};
 use cli::{Commands, ParsedCli};
 use file_checkpointer::file_checkpoint_worker;
@@ -132,6 +134,7 @@ async fn main() -> Result<()> {
             metrics.clone(),
             Some(Duration::from_secs(1)),
             Duration::from_secs(60 * 60), // 1 hour hot TTL
+            NullMiddleware,
         ));
         worker_handles.push(handle);
     }

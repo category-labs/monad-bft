@@ -15,8 +15,8 @@
 
 use std::path::{Path, PathBuf};
 
-use alloy_rlp::{RlpDecodable, RlpEncodable};
-use ist::{block_id_to_hex_prefix, BlockPersist, FileBlockPersist};
+use alloy_rlp::{RlpDecodable, RlpEncodable, Decodable, Encodable};
+use monad_block_persist::{block_id_to_hex_prefix, BlockPersist, FileBlockPersist};
 use monad_consensus_types::{
     block::ConsensusBlockHeader,
     payload::{ConsensusBlockBody, ConsensusBlockBodyId, RoundSignature},
@@ -305,14 +305,14 @@ where
         ConsensusBlockHeader {
             block_round: self.block_round,
             epoch: self.epoch,
-            qc: QuorumCertificate {
-                info: Vote {
+            qc: QuorumCertificate::new(
+                Vote {
                     id: self.qc.info.id,
                     round: self.qc.info.round,
-                    epoch: self.qc.info.epoch,
+                    epoch: self.qc.info.epoch
                 },
-                signatures: self.qc.signatures,
-            },
+                self.qc.signatures
+            ),
             author: self.author,
             seq_num: self.seq_num,
             timestamp_ns: self.timestamp_ns,

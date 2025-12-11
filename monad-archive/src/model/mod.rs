@@ -15,6 +15,7 @@
 
 pub mod bft_archive_store;
 pub mod bft_iter;
+pub mod bft_block_index;
 pub mod block_data_archive;
 pub mod index_repr;
 pub mod logs_index;
