@@ -77,7 +77,7 @@ pub struct TraverseEntry {
 /// # Safety
 /// This should be used only as a callback for async TrieDB calls
 ///
-/// This function is called by TrieDB once it proceses a single read async call
+/// This function is called by TrieDB once it processes a single read async call
 pub unsafe extern "C" fn read_async_callback(
     value_ptr: *const u8,
     value_len: i32,
