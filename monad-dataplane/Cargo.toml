@@ -23,6 +23,7 @@ tracing = { workspace = true }
 zerocopy = { workspace = true }
 
 [dev-dependencies]
+clap = { workspace = true, features = ["derive"] }
 ntest = { workspace = true }
 rstest = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
