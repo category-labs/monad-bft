@@ -517,6 +517,7 @@ fn build_raptorcast_router<ST, SCT, M, OM>(
     MonadEvent<ST, SCT, ExecutionProtocolType>,
     PeerDiscovery<ST>,
     monad_raptorcast::auth::WireAuthProtocol,
+    monad_raptorcast::networking::Dataplane,
 >
 where
     ST: CertificateSignatureRecoverable<KeyPairType = monad_secp::KeyPair>,

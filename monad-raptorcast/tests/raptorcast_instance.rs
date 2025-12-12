@@ -37,6 +37,8 @@ use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand};
 use monad_peer_discovery::mock::NopDiscovery;
 use monad_raptorcast::{
+    auth::NoopAuthProtocol,
+    networking::Dataplane,
     new_defaulted_raptorcast_for_tests,
     packet::build_messages,
     raptorcast_secondary::{group_message::FullNodesGroupMessage, SecondaryOutboundMessage},
@@ -466,7 +468,8 @@ fn setup_raptorcast_service(
     MockMessage,
     MockEvent<CertificateSignaturePubKey<SignatureType>>,
     NopDiscovery<SignatureType>,
-    monad_raptorcast::auth::NoopAuthProtocol<CertificateSignaturePubKey<SignatureType>>,
+    NoopAuthProtocol<CertificateSignaturePubKey<SignatureType>>,
+    Dataplane,
 > {
     new_defaulted_raptorcast_for_tests::<
         SignatureType,
