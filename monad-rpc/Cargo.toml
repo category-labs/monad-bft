@@ -29,7 +29,6 @@ monad-eth-txpool-types = { workspace = true }
 monad-ethcall = { workspace = true }
 monad-event-ring = { workspace = true }
 monad-exec-events = { workspace = true, features = ["alloy"] }
-monad-node-config = { workspace = true, features = ["crypto"] }
 monad-rpc-docs = { workspace = true }
 monad-tracing-timing = { workspace = true }
 monad-triedb-utils = { workspace = true }
