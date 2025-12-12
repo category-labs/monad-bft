@@ -46,11 +46,13 @@ use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tokio::{sync::mpsc, time::Instant};
 use tracing::{debug, debug_span, error, info, trace_span, warn};
 
-pub use self::{client::EthTxPoolExecutorClient, ipc::EthTxPoolIpcConfig};
+pub use self::{
+    client::EthTxPoolExecutorClient,
+    ipc::{EthTxPoolIpcConfig, EthTxPoolIpcServer, TxPoolServer},
+};
 use self::{
-    client::ForwardedTxs, forward::EthTxPoolForwardingManager, ipc::EthTxPoolIpcServer,
-    metrics::EthTxPoolExecutorMetrics, preload::EthTxPoolPreloadManager,
-    reset::EthTxPoolResetTrigger,
+    client::ForwardedTxs, forward::EthTxPoolForwardingManager, metrics::EthTxPoolExecutorMetrics,
+    preload::EthTxPoolPreloadManager, reset::EthTxPoolResetTrigger,
 };
 
 mod client;
@@ -60,16 +62,17 @@ mod metrics;
 mod preload;
 mod reset;
 
-pub struct EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT>
+pub struct EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT, PST>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SBT: StateBackend<ST, SCT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
+    PST: TxPoolServer,
 {
     pool: EthTxPool<ST, SCT, SBT, CCT, CRT>,
-    ipc: Pin<Box<EthTxPoolIpcServer>>,
+    ipc: Pin<Box<PST>>,
 
     reset: EthTxPoolResetTrigger,
     block_policy: EthBlockPolicy<ST, SCT, CCT, CRT>,
@@ -88,7 +91,7 @@ where
     _phantom: PhantomData<CRT>,
 }
 
-impl<ST, SCT, SBT, CCT, CRT> EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT>
+impl<ST, SCT, SBT, CCT, CRT, PST> EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT, PST>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -109,7 +112,7 @@ where
         execution_timestamp_s: u64,
         do_local_insert: bool,
     ) -> io::Result<EthTxPoolExecutorClient<ST, SCT, SBT, CCT, CRT>> {
-        let ipc = Box::pin(EthTxPoolIpcServer::new(ipc_config)?);
+        let ipc = Box::pin(PST::new(ipc_config)?);
 
         let (events_tx, events) = mpsc::unbounded_channel();
 
@@ -222,7 +225,7 @@ where
     }
 }
 
-impl<ST, SCT, SBT, CCT, CRT> EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT>
+impl<ST, SCT, SBT, CCT, CRT, PST> EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT, PST>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -230,6 +233,7 @@ where
     CertificateSignaturePubKey<ST>: ExtractEthAddress,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
+    PST: TxPoolServer,
 {
     fn process_forwarded_txs(&mut self, forwarded_txs: Vec<ForwardedTxs<SCT>>) {
         for ForwardedTxs { sender, txs } in forwarded_txs {
@@ -270,7 +274,7 @@ where
     }
 }
 
-impl<ST, SCT, SBT, CCT, CRT> Executor for EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT>
+impl<ST, SCT, SBT, CCT, CRT, PST> Executor for EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT, PST>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -278,6 +282,7 @@ where
     CertificateSignaturePubKey<ST>: ExtractEthAddress,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
+    PST: TxPoolServer,
 {
     type Command = TxPoolCommand<
         ST,
@@ -466,7 +471,7 @@ where
     }
 }
 
-impl<ST, SCT, SBT, CCT, CRT> Stream for EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT>
+impl<ST, SCT, SBT, CCT, CRT, PST> Stream for EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT, PST>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -474,7 +479,7 @@ where
     CertificateSignaturePubKey<ST>: ExtractEthAddress,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
-
+    PST: TxPoolServer,
     Self: Unpin,
 {
     type Item = MonadEvent<ST, SCT, EthExecutionProtocol>;
