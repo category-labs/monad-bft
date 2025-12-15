@@ -589,7 +589,7 @@ where
     T: Triedb,
 {
     let latest_plus_one = match latest {
-        BlockTags::Latest | BlockTags::Safe => {
+        BlockTags::Latest | BlockTags::Safe | BlockTags::Proposed => {
             // Latest/Safe block is the voted block
             // TODO: rpc does not have access to consensus headers to calculate the next block base fee.
             // Return base fee of the previous block.

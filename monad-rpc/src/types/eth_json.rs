@@ -269,6 +269,7 @@ pub enum BlockTags {
     Latest, // voted
     Safe,             // voted
     Finalized,        // finalized
+    Proposed,         // proposed
 }
 
 impl schemars::JsonSchema for BlockTags {
@@ -292,6 +293,7 @@ fn block_tags_schema(gen: &mut schemars::gen::SchemaGenerator) -> schemars::sche
             "safe".into(),
             "finalized".into(),
             "pending".into(),
+            "proposed".into(),
         ]),
         ..Default::default()
     };
@@ -315,6 +317,7 @@ impl FromStr for BlockTags {
             "safe" => Ok(Self::Safe),
             "finalized" => Ok(Self::Finalized),
             "pending" => Ok(Self::Latest),
+            "proposed" => Ok(Self::Proposed),
             _ => decode_quantity(s).map(|q| Self::Number(Quantity(q))),
         }
     }
