@@ -58,6 +58,8 @@ pub struct ChainStateBuffer {
     latest_voted: Arc<AtomicU64>,
     // The latest finalized block's SeqNum
     latest_finalized: Arc<AtomicU64>,
+    // The latest proposed block's SeqNum
+    latest_proposed: Arc<AtomicU64>,
 }
 
 impl ChainStateBuffer {
@@ -72,6 +74,7 @@ impl ChainStateBuffer {
 
             latest_voted: Arc::new(AtomicU64::new(0)),
             latest_finalized: Arc::new(AtomicU64::new(0)),
+            latest_proposed: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -81,12 +84,31 @@ impl ChainStateBuffer {
             _ => return,
         };
 
-        if block_event.commit_state != BlockCommitState::Voted {
-            if block_event.commit_state == BlockCommitState::Finalized {
-                let height = block_event.data.header.number;
+        let height = block_event.data.header.number;
+        let block_hash_key = FixedData(block_event.data.header.hash.0);
+        match block_event.commit_state {
+            BlockCommitState::Finalized => {
                 self.latest_finalized.fetch_max(height, Ordering::SeqCst);
+                if self.block_height_by_hash.contains_key(&block_hash_key) {
+                    return;
+                }
             }
-            return;
+            BlockCommitState::Voted => {
+                let voted_block_height = self.latest_voted.fetch_max(height, Ordering::SeqCst);
+
+                if voted_block_height >= height {
+                    warn!(?voted_block_height, event_block_height = height, "ChainStateBuffer received voted block event with lower height than existing voted block height");
+                }
+                if self.block_height_by_hash.contains_key(&block_hash_key) {
+                    return;
+                }
+            }
+            BlockCommitState::Proposed => {
+                self.latest_proposed.fetch_max(height, Ordering::SeqCst);
+            }
+            BlockCommitState::Verified => {
+                return;
+            }
         }
 
         let block: Block<Transaction, alloy_rpc_types::Header> = Block {
@@ -99,11 +121,25 @@ impl ChainStateBuffer {
         let block_hash = block.header.hash;
         let block_tx_hashes = block.transactions.hashes().collect_vec();
 
-        if self.block_by_height.insert(block_height, block).is_some() {
+        // Check if there's already a block at this height and clean it up
+        if let Some(old_block) = self.block_by_height.insert(block_height, block) {
             warn!(
                 ?block_height,
-                "ChainStateBuffer received block event for existing block height"
+                old_hash = ?old_block.header.hash,
+                new_hash = ?block_hash,
+                "ChainStateBuffer received block event for existing block height, replacing old block"
             );
+
+            // Remove old block's hash from by_hash
+            self.block_height_by_hash
+                .remove(&FixedData(old_block.header.hash.0));
+
+            // Remove old block's transactions from tx_loc_by_hash
+            if let alloy_rpc_types::BlockTransactions::Full(txs) = &old_block.transactions {
+                for tx in txs {
+                    self.tx_loc_by_hash.remove(&FixedData(tx.inner.tx_hash().0));
+                }
+            }
         }
 
         if self
@@ -134,17 +170,6 @@ impl ChainStateBuffer {
                     "ChainStateBuffer received block event with existing transaction hash"
                 );
             }
-        }
-
-        let voted_block_height = self.latest_voted.fetch_max(block_height, Ordering::SeqCst);
-
-        if voted_block_height >= block_height {
-            warn!(
-                ?voted_block_height,
-                event_block_height = block_height,
-                "ChainStateBuffer received voted block event with lower height than existing voted block height"
-            );
-            return;
         }
 
         let mut block_heights = self.block_heights.lock().await;
@@ -213,6 +238,10 @@ impl ChainStateBuffer {
         }
     }
 
+    pub fn get_latest_proposed_block_num(&self) -> u64 {
+        self.latest_proposed.load(Ordering::SeqCst)
+    }
+
     pub fn get_latest_voted_block_num(&self) -> u64 {
         self.latest_voted.load(Ordering::SeqCst)
     }
@@ -225,8 +254,371 @@ impl ChainStateBuffer {
 pub(super) fn block_height_from_tag(buffer: &ChainStateBuffer, tag: &BlockTags) -> u64 {
     match tag {
         BlockTags::Number(n) => n.0,
-        BlockTags::Latest => buffer.get_latest_voted_block_num(),
+        BlockTags::Latest => buffer.get_latest_proposed_block_num(),
         BlockTags::Safe => buffer.get_latest_voted_block_num(),
         BlockTags::Finalized => buffer.get_latest_finalized_block_num(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use alloy_consensus::{transaction::Recovered, SignableTransaction, TxEip1559};
+    use alloy_primitives::{Address, TxKind, B256};
+    use alloy_signer::SignerSync;
+    use alloy_signer_local::PrivateKeySigner;
+    use monad_types::BlockId;
+
+    use super::*;
+    use crate::types::{eth_json::MonadNotification, serialize::JsonSerialized};
+
+    #[tokio::test]
+    async fn test_many_proposed_blocks() {
+        // Buffer receives many proposed blocks in a row and should handle it correctly.
+        // Make sure that the ring buffer is correctly updated and the cached values are correctly updated and removed.
+        let capacity = 3;
+        let buffer = ChainStateBuffer::new(capacity);
+
+        // Generate and propose (capacity + 2) blocks, so oldest blocks are evicted from the ring.
+        let total_blocks = capacity + 2;
+        for i in 0..total_blocks {
+            let height = (i + 1) as u64;
+            let block_hash = B256::from([i as u8; 32]);
+
+            // Create a simple transaction
+            let tx_inner = TxEip1559 {
+                chain_id: 1,
+                nonce: 0,
+                gas_limit: 21000,
+                max_fee_per_gas: 1000,
+                max_priority_fee_per_gas: 100,
+                to: TxKind::Call(Address::default()),
+                value: Default::default(),
+                access_list: Default::default(),
+                input: vec![].into(),
+            };
+            let signer = PrivateKeySigner::random();
+            let signature = signer.sign_hash_sync(&tx_inner.signature_hash()).unwrap();
+            let tx_envelope: TxEnvelope = tx_inner.into_signed(signature).into();
+            let recovered = Recovered::new_unchecked(tx_envelope, signer.address());
+
+            let tx = Transaction {
+                inner: recovered,
+                block_hash: Some(block_hash),
+                block_number: Some(height),
+                transaction_index: Some(0),
+                effective_gas_price: None,
+            };
+
+            // Create an alloy Header with inner field
+            let inner_header = alloy_consensus::Header {
+                number: height,
+                ..Default::default()
+            };
+            let rpc_header = alloy_rpc_types::Header {
+                inner: inner_header,
+                hash: block_hash,
+                total_difficulty: None,
+                size: None,
+            };
+
+            // Wrap the header in the event type system
+            let serialized_header = JsonSerialized::new_shared(rpc_header);
+            let monad_header = MonadNotification {
+                block_id: BlockId(monad_types::Hash(block_hash.0)),
+                commit_state: BlockCommitState::Proposed,
+                data: serialized_header.clone(),
+            };
+            let serialized_monad_header = JsonSerialized::new_shared(monad_header);
+
+            // Create the block
+            let rpc_block = alloy_rpc_types::Block {
+                header: serialized_header,
+                transactions: alloy_rpc_types::BlockTransactions::Full(vec![tx]),
+                uncles: Vec::new(),
+                withdrawals: None,
+            };
+            let serialized_block = JsonSerialized::new_shared(rpc_block);
+            let monad_block = MonadNotification {
+                block_id: BlockId(monad_types::Hash(block_hash.0)),
+                commit_state: BlockCommitState::Proposed,
+                data: serialized_block,
+            };
+            let serialized_monad_block = JsonSerialized::new_shared(monad_block);
+
+            let event = EventServerEvent::Block {
+                header: serialized_monad_header,
+                block: serialized_monad_block,
+                logs: Arc::new(Vec::new()),
+            };
+
+            // Propose the block.
+            buffer.insert(event).await;
+
+            // Check that the latest proposed height is correct.
+            assert_eq!(buffer.get_latest_proposed_block_num(), height);
+            assert_eq!(block_height_from_tag(&buffer, &BlockTags::Latest), height);
+
+            // Verify the ring buffer length
+            let ring = buffer.block_heights.lock().await;
+            let expected_ring_len = if i < capacity { i + 1 } else { capacity };
+            assert_eq!(
+                ring.len(),
+                expected_ring_len,
+                "Ring buffer length should be {} at iteration {}",
+                expected_ring_len,
+                i
+            );
+            drop(ring); // Release the lock before continuing
+
+            // Verify by_height and by_hash buffer lengths match ring buffer
+            assert_eq!(
+                buffer.block_by_height.len(),
+                expected_ring_len,
+                "by_height length should be {} at iteration {}",
+                expected_ring_len,
+                i
+            );
+            assert_eq!(
+                buffer.block_height_by_hash.len(),
+                expected_ring_len,
+                "by_hash length should be {} at iteration {}",
+                expected_ring_len,
+                i
+            );
+
+            // Check the block is accessible by height if within ring.
+            if i >= capacity {
+                // The block at height (height - capacity) should be evicted.
+                let evicted_height = height - capacity as u64;
+                assert!(
+                    buffer.block_by_height.get(&evicted_height).is_none(),
+                    "Block at height {} should be evicted",
+                    evicted_height
+                );
+            }
+            assert!(
+                buffer.block_by_height.get(&height).is_some(),
+                "Block at height {} should be present",
+                height
+            );
+        }
+
+        // Verify final ring buffer length
+        let ring = buffer.block_heights.lock().await;
+        assert_eq!(
+            ring.len(),
+            capacity,
+            "Final ring buffer length should be {}",
+            capacity
+        );
+        drop(ring);
+
+        // Verify final by_height and by_hash buffer lengths
+        assert_eq!(
+            buffer.block_by_height.len(),
+            capacity,
+            "Final by_height length should be {}",
+            capacity
+        );
+        assert_eq!(
+            buffer.block_height_by_hash.len(),
+            capacity,
+            "Final by_hash length should be {}",
+            capacity
+        );
+
+        // Now verify that only the last 'capacity' blocks remain.
+        for i in 0..total_blocks {
+            let height = (i + 1) as u64;
+            if i < total_blocks - capacity {
+                // These should have been evicted from the ring.
+                assert!(
+                    buffer.block_by_height.get(&height).is_none(),
+                    "Block at height {} should be evicted",
+                    height
+                );
+            } else {
+                // These should still be present.
+                assert!(
+                    buffer.block_by_height.get(&height).is_some(),
+                    "Block at height {} should still be present",
+                    height
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_duplicate_height_different_hash() {
+        // Test inserting two proposed blocks with the same height but different hashes.
+
+        let capacity = 5;
+        let buffer = ChainStateBuffer::new(capacity);
+
+        let height = 1u64;
+
+        // Create first block at height 1 with hash A
+        let block_hash_a = B256::from([1u8; 32]);
+        let event_a = create_test_block_event(height, block_hash_a);
+        buffer.insert(event_a).await;
+
+        // Capture block A's tx hash before it gets replaced
+        let tx_hash_a = match &buffer.block_by_height.get(&height).unwrap().transactions {
+            alloy_rpc_types::BlockTransactions::Full(txs) => *txs[0].inner.tx_hash(),
+            _ => panic!("expected full transactions"),
+        };
+
+        // Verify initial state
+        assert_eq!(
+            buffer.block_by_height.len(),
+            1,
+            "Should have 1 entry in by_height after first insert"
+        );
+        assert_eq!(
+            buffer.block_height_by_hash.len(),
+            1,
+            "Should have 1 entry in by_hash after first insert"
+        );
+        assert_eq!(
+            buffer.tx_loc_by_hash.len(),
+            1,
+            "Should have 1 entry in tx_loc_by_hash after first insert"
+        );
+        assert!(
+            buffer
+                .get_transaction_by_hash(&FixedData(tx_hash_a.0))
+                .is_some(),
+            "Block A's transaction should be findable by hash"
+        );
+
+        // Create second block at the same height 1 but with different hash B
+        let block_hash_b = B256::from([2u8; 32]);
+        let event_b = create_test_block_event(height, block_hash_b);
+        buffer.insert(event_b).await;
+
+        // Capture block B's tx hash
+        let tx_hash_b = match &buffer.block_by_height.get(&height).unwrap().transactions {
+            alloy_rpc_types::BlockTransactions::Full(txs) => *txs[0].inner.tx_hash(),
+            _ => panic!("expected full transactions"),
+        };
+
+        assert_eq!(
+            buffer.block_by_height.len(),
+            buffer.block_height_by_hash.len(),
+            "by_height and by_hash lengths should match after duplicate height insert"
+        );
+
+        // Verify the block stored at height 1 is the most recent one (block B)
+        let stored_block = buffer
+            .block_by_height
+            .get(&height)
+            .expect("Block should exist at height 1");
+        assert_eq!(
+            stored_block.header.hash, block_hash_b,
+            "Block at height 1 should be the most recently inserted block (hash B)"
+        );
+
+        let hash_a_exists = buffer
+            .block_height_by_hash
+            .get(&FixedData(block_hash_a.0))
+            .is_some();
+        let hash_b_exists = buffer
+            .block_height_by_hash
+            .get(&FixedData(block_hash_b.0))
+            .is_some();
+
+        assert!(!hash_a_exists, "Old hash A should be removed from by_hash");
+        assert!(hash_b_exists, "New hash B should exist in by_hash");
+
+        // Verify tx_loc_by_hash cleanup: old block's txs removed, new block's txs present
+        assert_eq!(
+            buffer.tx_loc_by_hash.len(),
+            1,
+            "tx_loc_by_hash should have exactly 1 entry after replacement"
+        );
+        assert!(
+            buffer
+                .get_transaction_by_hash(&FixedData(tx_hash_a.0))
+                .is_none(),
+            "Block A's transaction should be removed from tx_loc_by_hash after replacement"
+        );
+        assert!(
+            buffer
+                .get_transaction_by_hash(&FixedData(tx_hash_b.0))
+                .is_some(),
+            "Block B's transaction should be findable by hash after replacement"
+        );
+    }
+
+    // Helper function to create a test block event
+    fn create_test_block_event(height: u64, block_hash: B256) -> EventServerEvent {
+        // Create a simple transaction
+        let tx_inner = TxEip1559 {
+            chain_id: 1,
+            nonce: 0,
+            gas_limit: 21000,
+            max_fee_per_gas: 1000,
+            max_priority_fee_per_gas: 100,
+            to: TxKind::Call(Address::default()),
+            value: Default::default(),
+            access_list: Default::default(),
+            input: vec![].into(),
+        };
+        let signer = PrivateKeySigner::random();
+        let signature = signer.sign_hash_sync(&tx_inner.signature_hash()).unwrap();
+        let tx_envelope: TxEnvelope = tx_inner.into_signed(signature).into();
+        let recovered = Recovered::new_unchecked(tx_envelope, signer.address());
+
+        let tx = Transaction {
+            inner: recovered,
+            block_hash: Some(block_hash),
+            block_number: Some(height),
+            transaction_index: Some(0),
+            effective_gas_price: None,
+        };
+
+        // Create an alloy Header with inner field
+        let inner_header = alloy_consensus::Header {
+            number: height,
+            ..Default::default()
+        };
+        let rpc_header = alloy_rpc_types::Header {
+            inner: inner_header,
+            hash: block_hash,
+            total_difficulty: None,
+            size: None,
+        };
+
+        // Wrap the header in the event type system
+        let serialized_header = JsonSerialized::new_shared(rpc_header);
+        let monad_header = MonadNotification {
+            block_id: BlockId(monad_types::Hash(block_hash.0)),
+            commit_state: BlockCommitState::Proposed,
+            data: serialized_header.clone(),
+        };
+        let serialized_monad_header = JsonSerialized::new_shared(monad_header);
+
+        // Create the block
+        let rpc_block = alloy_rpc_types::Block {
+            header: serialized_header,
+            transactions: alloy_rpc_types::BlockTransactions::Full(vec![tx]),
+            uncles: Vec::new(),
+            withdrawals: None,
+        };
+        let serialized_block = JsonSerialized::new_shared(rpc_block);
+        let monad_block = MonadNotification {
+            block_id: BlockId(monad_types::Hash(block_hash.0)),
+            commit_state: BlockCommitState::Proposed,
+            data: serialized_block,
+        };
+        let serialized_monad_block = JsonSerialized::new_shared(monad_block);
+
+        EventServerEvent::Block {
+            header: serialized_monad_header,
+            block: serialized_monad_block,
+            logs: Arc::new(Vec::new()),
+        }
     }
 }

@@ -264,11 +264,11 @@ impl<'de, const N: usize> Deserialize<'de> for FixedData<N> {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum BlockTags {
-    Number(Quantity), // voted or finalized
+    Number(Quantity),
     #[default]
-    Latest, // voted
-    Safe,             // voted
-    Finalized,        // finalized
+    Latest, // proposed
+    Safe,      // voted
+    Finalized, // finalized
 }
 
 impl schemars::JsonSchema for BlockTags {

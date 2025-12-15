@@ -103,7 +103,7 @@ pub async fn rpc_handler(
 
             if let Some(comparator) = &app_state.rpc_comparator {
                 let block_number = if let Some(triedb_env) = &app_state.triedb_reader {
-                    triedb_env.get_latest_voted_block_key().seq_num().0
+                    triedb_env.get_latest_proposed_block_key().seq_num().0
                 } else {
                     0
                 };

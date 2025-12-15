@@ -77,7 +77,7 @@ impl From<monad_archive::prelude::Report> for ChainStateError {
 
 // BlockTags::Latest
 pub fn get_latest_block_key(triedb_env: &impl Triedb) -> BlockKey {
-    triedb_env.get_latest_voted_block_key()
+    triedb_env.get_latest_proposed_block_key()
 }
 
 pub fn get_block_key_from_tag(triedb_env: &impl Triedb, tag: BlockTags) -> Option<BlockKey> {
@@ -109,7 +109,7 @@ impl<T: Triedb> ChainState<T> {
         // There is a race condition between buffer and triedb for common wallet workflows.
         // For example, a wallet might call `eth_getBalance` after calling `eth_getBlockByNumber`
         // and the balance might not be updated in triedb yet.
-        self.triedb_env.get_latest_voted_block_key().seq_num().0
+        self.triedb_env.get_latest_proposed_block_key().seq_num().0
     }
 
     pub async fn get_transaction_receipt(
