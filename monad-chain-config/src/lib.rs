@@ -184,15 +184,15 @@ const MONAD_TESTNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
     epoch_start_delay: Round(5_000),
 
     v_0_7_0_activation: Round::MIN,
-    v_0_8_0_activation: Round(3_263_000),
-    v_0_10_0_activation: Round(32_026_929), // 2025-08-12T13:30:00.000Z
-    v_0_11_0_activation: Round(45_151_268), // Approx 2025-10-14T13:00:00.000Z
+    v_0_8_0_activation: Round::MIN,
+    v_0_10_0_activation: Round::MIN,
+    v_0_11_0_activation: Round::MIN,
 
     staking_config: MONAD_TESTNET_STAKING_CONFIG,
 
-    execution_v_one_activation: 1739559600, // 2025-02-14T19:00:00.000Z
-    execution_v_two_activation: 1741978800, // 2025-03-14T19:00:00.000Z
-    execution_v_four_activation: 1760448600, // 2025-10-14T13:30:00.000Z
+    execution_v_one_activation: 0,
+    execution_v_two_activation: 0,
+    execution_v_four_activation: 0,
 };
 
 // Mainnet uses latest version of testnet from genesis
