@@ -81,7 +81,8 @@ impl SystemTransactionValidator {
         SystemCall::is_restricted_system_call(txn)
     }
 
-    fn static_validate_system_transaction<CCT, CRT>(
+    /// Set as a public function for fuzzer integration but does not need to be called externally otherwise
+    pub fn static_validate_system_transaction<CCT, CRT>(
         txn: &Recovered<TxEnvelope>,
         chain_config: &CCT,
     ) -> Result<(), SystemTransactionError>
