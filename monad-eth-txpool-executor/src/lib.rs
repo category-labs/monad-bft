@@ -99,6 +99,7 @@ where
     SBT: StateBackend<ST, SCT> + Send + 'static,
     CCT: ChainConfig<CRT> + Send + 'static,
     CRT: ChainRevision + Send + 'static,
+    PST: TxPoolServer + Send + 'static,
     Self: Unpin,
 {
     pub fn start(
