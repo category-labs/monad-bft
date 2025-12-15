@@ -16,6 +16,7 @@
 use std::{collections::BTreeMap, num::NonZero, ops::Range};
 
 use bytes::Bytes;
+use governor::{DefaultDirectRateLimiter, Quota, RateLimiter};
 use lru::LruCache;
 use monad_crypto::{
     certificate_signature::{
@@ -24,10 +25,8 @@ use monad_crypto::{
     hasher::{Hasher, HasherType},
     signing_domain,
 };
-use monad_dataplane::{
-    udp::{segment_size_for_mtu, ETHERNET_SEGMENT_SIZE},
-    RecvUdpMsg,
-};
+use monad_dataplane::udp::{segment_size_for_mtu, ETHERNET_SEGMENT_SIZE};
+use monad_executor::ExecutorMetricsChain;
 use monad_merkle::{MerkleHash, MerkleProof};
 use monad_types::{Epoch, NodeId, Round};
 use tracing::warn;
@@ -36,7 +35,9 @@ pub use crate::packet::build_messages;
 use crate::{
     decoding::{DecoderCache, DecodingContext, TryDecodeError, TryDecodeStatus},
     message::MAX_MESSAGE_SIZE,
-    metrics::UdpStateMetrics,
+    metrics::{
+        UdpStateMetrics, GAUGE_RAPTORCAST_DECODING_CACHE_SIGNATURE_VERIFICATIONS_RATE_LIMITED,
+    },
     packet::{assembler::HEADER_LEN, PacketLayout},
     util::{
         compute_hash, unix_ts_ms_now, AppMessageHash, BroadcastMode, EpochValidators, HexBytes,
@@ -48,6 +49,11 @@ use crate::{
 const _: () = assert!(
     MAX_MERKLE_TREE_DEPTH <= 0xF,
     "merkle tree depth must be <= 4 bits"
+);
+
+const _: () = assert!(
+    MIN_SEGMENT_LENGTH == segment_size_for_mtu(1280) as usize,
+    "MIN_SEGMENT_LENGTH should be the segment size for the IPv6 minimum MTU of 1280 bytes"
 );
 
 pub const SIGNATURE_CACHE_SIZE: NonZero<usize> = NonZero::new(10_000).unwrap();
@@ -87,11 +93,6 @@ pub const MAX_MERKLE_TREE_DEPTH: u8 = 9;
 pub const MIN_SEGMENT_LENGTH: usize =
     PacketLayout::calc_segment_len(MIN_CHUNK_LENGTH, MAX_MERKLE_TREE_DEPTH);
 
-const _: () = assert!(
-    MIN_SEGMENT_LENGTH == segment_size_for_mtu(1280) as usize,
-    "MIN_SEGMENT_LENGTH should be the segment size for the IPv6 minimum MTU of 1280 bytes"
-);
-
 /// The max segment length should not exceed the standard MTU for
 /// Ethernet to avoid fragmentation when routed across the internet.
 pub const MAX_SEGMENT_LENGTH: usize = ETHERNET_SEGMENT_SIZE as usize;
@@ -112,17 +113,30 @@ pub(crate) struct UdpState<ST: CertificateSignatureRecoverable> {
 
     signature_cache: LruCache<[u8; HEADER_LEN + 20], NodeId<CertificateSignaturePubKey<ST>>>,
 
+    sig_verification_rate_limiter: DefaultDirectRateLimiter,
+
     metrics: UdpStateMetrics,
 }
 
 impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
-    pub fn new(self_id: NodeId<CertificateSignaturePubKey<ST>>, max_age_ms: u64) -> Self {
+    pub fn new(
+        self_id: NodeId<CertificateSignaturePubKey<ST>>,
+        max_age_ms: u64,
+        sig_verification_rate_limit: u32,
+    ) -> Self {
+        let quota = Quota::per_second(
+            NonZero::new(sig_verification_rate_limit)
+                .expect("sig_verification_rate_limit must be non-zero"),
+        );
+        let sig_verification_rate_limiter = RateLimiter::direct(quota);
+
         Self {
             self_id,
             max_age_ms,
 
             decoder_cache: DecoderCache::default(),
             signature_cache: LruCache::new(SIGNATURE_CACHE_SIZE),
+            sig_verification_rate_limiter,
 
             metrics: UdpStateMetrics::new(),
         }
@@ -132,6 +146,10 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
         &self.metrics
     }
 
+    pub fn decoder_metrics(&self) -> ExecutorMetricsChain<'_> {
+        self.decoder_cache.metrics()
+    }
+
     /// Given a RecvUdpMsg, emits all decoded messages while rebroadcasting as necessary
     #[tracing::instrument(level = "debug", name = "udp_handle_message", skip_all)]
     pub fn handle_message(
@@ -139,7 +157,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
         group_map: &ReBroadcastGroupMap<ST>,
         epoch_validators: &BTreeMap<Epoch, EpochValidators<ST>>,
         rebroadcast: impl FnMut(Vec<NodeId<CertificateSignaturePubKey<ST>>>, Bytes, u16),
-        message: RecvUdpMsg,
+        message: crate::auth::AuthRecvMsg<CertificateSignaturePubKey<ST>>,
     ) -> Vec<(NodeId<CertificateSignaturePubKey<ST>>, Bytes)> {
         let self_id = self.self_id;
         let self_hash = compute_hash(&self_id);
@@ -157,13 +175,40 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
             let payload_end_idx =
                 (payload_start_idx + usize::from(message.stride)).min(message.payload.len());
             let payload = message.payload.slice(payload_start_idx..payload_end_idx);
+
             // "message" here means a raptor-casted chunk (AKA r10 symbol), not the whole final message (proposal)
-            let parsed_message = match parse_message::<ST>(
+            let parsed_message = match parse_message::<ST, _>(
                 &mut self.signature_cache,
                 payload,
                 self.max_age_ms,
+                |group_id| {
+                    let allowed = self.sig_verification_rate_limiter.check().is_ok();
+                    let is_validator = match (message.auth_public_key.as_ref(), group_id) {
+                        (Some(pk), GroupId::Primary(epoch)) => {
+                            let node_id = NodeId::new(*pk);
+                            epoch_validators
+                                .get(&epoch)
+                                .is_some_and(|ev| ev.validators.contains_key(&node_id))
+                        }
+                        _ => false,
+                    };
+                    if allowed || is_validator {
+                        Ok(())
+                    } else {
+                        Err(MessageValidationError::RateLimited)
+                    }
+                },
             ) {
                 Ok(message) => message,
+                Err(MessageValidationError::RateLimited) => {
+                    tracing::debug!(
+                        src_addr = ?message.src_addr,
+                        "rate limited raptorcast chunk signature verification"
+                    );
+                    self.metrics.executor_metrics_mut()
+                        [GAUGE_RAPTORCAST_DECODING_CACHE_SIGNATURE_VERIFICATIONS_RATE_LIMITED] += 1;
+                    continue;
+                }
                 Err(err) => {
                     tracing::debug!(src_addr = ?message.src_addr, ?err, "unable to parse message");
                     continue;
@@ -365,6 +410,7 @@ pub enum MessageValidationError {
         delta: i64,
     },
     InvalidBroadcastBits,
+    RateLimited,
 }
 
 /// - 65 bytes => Signature of sender over hash(rest of message up to merkle proof, concatenated with merkle root)
@@ -389,13 +435,15 @@ pub enum MessageValidationError {
 /// - 1 byte => reserved
 /// - 2 bytes (u16) => This chunk's id
 /// - rest => data
-pub fn parse_message<ST>(
+pub fn parse_message<ST, F>(
     signature_cache: &mut LruCache<[u8; HEADER_LEN + 20], NodeId<CertificateSignaturePubKey<ST>>>,
     message: Bytes,
     max_age_ms: u64,
+    rate_limit_check: F,
 ) -> Result<ValidatedMessage<CertificateSignaturePubKey<ST>>, MessageValidationError>
 where
     ST: CertificateSignatureRecoverable,
+    F: Fn(GroupId) -> Result<(), MessageValidationError>,
 {
     let mut cursor: Bytes = message.clone();
     let mut split_off = |mid| {
@@ -538,6 +586,7 @@ where
     signed_over[HEADER_LEN..].copy_from_slice(&root);
 
     let author = *signature_cache.try_get_or_insert(signed_over, || {
+        rate_limit_check(group_id)?;
         let author = signature
             .recover_pubkey::<signing_domain::RaptorcastChunk>(&signed_over[SIGNATURE_SIZE..])
             .map_err(|_| MessageValidationError::InvalidSignature)?;
@@ -740,16 +789,18 @@ mod tests {
     use std::{
         collections::{HashMap, HashSet},
         net::{IpAddr, Ipv4Addr, SocketAddr},
+        num::NonZero,
     };
 
     use bytes::{Bytes, BytesMut};
+    use governor::{Quota, RateLimiter};
     use itertools::Itertools as _;
     use lru::LruCache;
     use monad_crypto::{
         certificate_signature::CertificateSignaturePubKey,
         hasher::{Hasher, HasherType},
     };
-    use monad_dataplane::{udp::DEFAULT_SEGMENT_SIZE, RecvUdpMsg};
+    use monad_dataplane::udp::DEFAULT_SEGMENT_SIZE;
     use monad_secp::{KeyPair, SecpSignature};
     use monad_types::{Epoch, NodeId, Round, RoundSpan, Stake};
     use rstest::*;
@@ -834,9 +885,13 @@ mod tests {
         for (_to, mut aggregate_message) in messages {
             while !aggregate_message.is_empty() {
                 let message = aggregate_message.split_to(DEFAULT_SEGMENT_SIZE.into());
-                let parsed_message =
-                    parse_message::<SignatureType>(&mut signature_cache, message.clone(), u64::MAX)
-                        .expect("valid message");
+                let parsed_message = parse_message::<SignatureType, _>(
+                    &mut signature_cache,
+                    message.clone(),
+                    u64::MAX,
+                    |_| Ok(()),
+                )
+                .expect("valid message");
                 assert_eq!(parsed_message.message, message);
                 assert_eq!(parsed_message.app_message_hash.0, app_message_hash.0[..20]);
                 assert_eq!(parsed_message.unix_ts_ms, UNIX_TS_MS);
@@ -851,7 +906,7 @@ mod tests {
     }
 
     #[test]
-    fn test_bit_flip_parse_failure() {
+    fn test_bit_flip_parse_failure_slow() {
         let (key, validators, known_addresses) = validator_set();
         let epoch_validators = validators.view_without(vec![&NodeId::new(key.pubkey())]);
 
@@ -881,10 +936,11 @@ mod tests {
                     let old_byte = message[bit_idx / 8];
                     // flip bit
                     message[bit_idx / 8] = old_byte ^ (1 << (bit_idx % 8));
-                    let maybe_parsed = parse_message::<SignatureType>(
+                    let maybe_parsed = parse_message::<SignatureType, _>(
                         &mut signature_cache,
                         message.clone().into(),
                         u64::MAX,
+                        |_| Ok(()),
                     );
 
                     // check that decoding fails
@@ -925,9 +981,13 @@ mod tests {
         for (_to, mut aggregate_message) in messages {
             while !aggregate_message.is_empty() {
                 let message = aggregate_message.split_to(DEFAULT_SEGMENT_SIZE.into());
-                let parsed_message =
-                    parse_message::<SignatureType>(&mut signature_cache, message.clone(), u64::MAX)
-                        .expect("valid message");
+                let parsed_message = parse_message::<SignatureType, _>(
+                    &mut signature_cache,
+                    message.clone(),
+                    u64::MAX,
+                    |_| Ok(()),
+                )
+                .expect("valid message");
                 let newly_inserted = used_ids.insert(parsed_message.chunk_id);
                 assert!(newly_inserted);
             }
@@ -969,10 +1029,11 @@ mod tests {
             for (_to, mut aggregate_message) in messages {
                 while !aggregate_message.is_empty() {
                     let message = aggregate_message.split_to(DEFAULT_SEGMENT_SIZE.into());
-                    let parsed_message = parse_message::<SignatureType>(
+                    let parsed_message = parse_message::<SignatureType, _>(
                         &mut signature_cache,
                         message.clone(),
                         u64::MAX,
+                        |_| Ok(()),
                     )
                     .expect("valid message");
 
@@ -1021,9 +1082,13 @@ mod tests {
         for (to, mut aggregate_message) in messages {
             while !aggregate_message.is_empty() {
                 let message = aggregate_message.split_to(DEFAULT_SEGMENT_SIZE.into());
-                let parsed_message =
-                    parse_message::<SignatureType>(&mut signature_cache, message.clone(), u64::MAX)
-                        .expect("valid message");
+                let parsed_message = parse_message::<SignatureType, _>(
+                    &mut signature_cache,
+                    message.clone(),
+                    u64::MAX,
+                    |_| Ok(()),
+                )
+                .expect("valid message");
                 let newly_inserted = used_ids
                     .entry(to)
                     .or_default()
@@ -1050,14 +1115,15 @@ mod tests {
         group_map.push_group_validator_set(node_stake_pairs, Epoch(1));
         let validator_set = [(Epoch(1), validators)].into_iter().collect();
 
-        let mut udp_state = UdpState::<SignatureType>::new(self_id, u64::MAX);
+        let mut udp_state = UdpState::<SignatureType>::new(self_id, u64::MAX, 10_000);
 
         // payload will fail to parse but shouldn't panic on index error
         let payload: Bytes = vec![1_u8; 1024 * 8 + 1].into();
-        let recv_msg = RecvUdpMsg {
+        let recv_msg = crate::auth::AuthRecvMsg {
             src_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8000),
             payload,
             stride: 1024,
+            auth_public_key: None::<CertificateSignaturePubKey<SignatureType>>,
         };
 
         udp_state.handle_message(
@@ -1103,7 +1169,12 @@ mod tests {
             &known_addresses,
         );
         let message = messages.into_iter().next().unwrap().1;
-        let result = parse_message::<SignatureType>(&mut signature_cache, message, max_age_ms);
+        let result = parse_message::<SignatureType, _>(
+            &mut signature_cache,
+            message,
+            max_age_ms,
+            |_| Ok(()),
+        );
 
         if should_succeed {
             assert!(result.is_ok(), "unexpected success: {:?}", result.err());
@@ -1151,16 +1222,18 @@ mod tests {
         let message = messages.unwrap().into_iter().next().unwrap();
         let mut payload = BytesMut::from(&message.payload[..message.stride]);
 
-        let current_time = std::time::UNIX_EPOCH.elapsed().unwrap().as_millis() as u64;
-
         let layout = PacketLayout::new(DEFAULT_SEGMENT_SIZE as usize, MERKLE_TREE_DEPTH);
         let chunk_header = &mut payload[layout.chunk_header_range()];
         let chunk_id_buf: &mut [u8] = &mut chunk_header[22..24];
         chunk_id_buf.copy_from_slice(&chunk_id.to_le_bytes()); // override chunk id
 
         let mut signature_cache = LruCache::new(SIGNATURE_CACHE_SIZE);
-        let result =
-            parse_message::<SignatureType>(&mut signature_cache, payload.freeze(), u64::MAX);
+        let result = parse_message::<SignatureType, _>(
+            &mut signature_cache,
+            payload.freeze(),
+            u64::MAX,
+            |_| Ok(()),
+        );
 
         if should_succeed {
             // modifying the chunk_id field can still result in invalid leaf hash/signature.
@@ -1211,7 +1284,73 @@ mod tests {
             packet
         };
         let mut signature_cache = LruCache::new(SIGNATURE_CACHE_SIZE);
-        let result = parse_message::<SignatureType>(&mut signature_cache, payload.into(), u64::MAX);
+        let result = parse_message::<SignatureType, _>(
+            &mut signature_cache,
+            payload.into(),
+            u64::MAX,
+            |_| Ok(()),
+        );
         assert_eq!(result.err(), Some(MessageValidationError::TooShort))
+    }
+
+    #[test]
+    fn test_rate_limiting_per_signature() {
+        let (key, validators, known_addresses) = validator_set();
+        let epoch_validators = validators.view_without(vec![&NodeId::new(key.pubkey())]);
+
+        // 1 second is long enough for governor to be reliable
+        let quota = Quota::per_second(NonZero::new(10).unwrap());
+        let rate_limiter = RateLimiter::direct(quota);
+        let mut signature_cache = LruCache::new(SIGNATURE_CACHE_SIZE);
+
+        const UNIX_TS_MS: u64 = 1000;
+        const EPOCH: Epoch = Epoch(1);
+
+        // Create 11 different messages to force signature verification on each call
+        for i in 0..11 {
+            let message = format!("test message {}", i);
+            let app_message: Bytes = message.as_bytes().to_vec().into();
+            let messages = build_messages::<SignatureType>(
+                &key,
+                DEFAULT_SEGMENT_SIZE,
+                app_message,
+                Redundancy::from_u8(1),
+                GroupId::Primary(EPOCH),
+                UNIX_TS_MS,
+                BuildTarget::Broadcast(epoch_validators.clone().into()),
+                &known_addresses,
+            );
+
+            let first_message = messages.into_iter().next().unwrap().1;
+
+            let result = parse_message::<SignatureType, _>(
+                &mut signature_cache,
+                first_message.clone(),
+                u64::MAX,
+                |_| {
+                    if rate_limiter.check().is_ok() {
+                        Ok(())
+                    } else {
+                        Err(MessageValidationError::RateLimited)
+                    }
+                },
+            );
+
+            if i < 10 {
+                assert!(
+                    result.is_ok(),
+                    "parse_message #{} should succeed, got error: {:?}",
+                    i + 1,
+                    result.err()
+                );
+            } else {
+                // 11th call should fail due to rate limiting
+                assert!(
+                    matches!(result, Err(MessageValidationError::RateLimited)),
+                    "parse_message #11 should be rate limited, got: {:?}",
+                    result
+                );
+            }
+        }
     }
 }

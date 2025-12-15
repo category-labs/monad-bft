@@ -20,7 +20,7 @@ use std::{
 };
 
 use futures::stream::{self, StreamExt};
-use monad_archive::prelude::*;
+use monad_archive::{kvstore::WritePolicy, prelude::*};
 
 const BFT_BLOCK_PREFIX: &str = "bft_block/";
 const BFT_BLOCK_HEADER_EXTENSION: &str = ".header";
@@ -123,11 +123,21 @@ async fn archive_bft_blocks(
         return Ok(());
     }
 
+    info!(num_local = local.len(), "Local BFT files found");
+    info!(known_in_s3 = known_in_s3.len(), "Known in S3");
+
     // 2) GC: drop known keys that no longer exist locally (memory hygiene only).
     known_in_s3.retain(|k| local.contains_key(k));
 
+    info!(num_known_in_s3 = known_in_s3.len(), "Known in S3 after GC");
+
     // Remove keys that are already known to be in S3
     local.retain(|k, _| !known_in_s3.contains(k));
+
+    info!(
+        num_local_to_upload = local.len(),
+        "Local BFT files to upload after removing known in S3"
+    );
 
     // 3) Process files concurrently using streams
     stream::iter(local.into_iter())
@@ -176,7 +186,7 @@ async fn process_single_file(
         .wrap_err("Failed to read local BFT file")?;
 
     store
-        .put(&key, bytes)
+        .put(&key, bytes, WritePolicy::NoClobber)
         .await
         .wrap_err("Failed to upload BFT block")?;
     metrics.inc_counter(MetricNames::BFT_BLOCK_FILES_UPLOADED);
@@ -374,7 +384,11 @@ mod tests {
         // Pre-upload a file to S3
         let header_key = format!("{BFT_BLOCK_PREFIX}block_003{BFT_BLOCK_HEADER_EXTENSION}");
         store
-            .put(&header_key, b"already uploaded".to_vec())
+            .put(
+                &header_key,
+                b"already uploaded".to_vec(),
+                WritePolicy::NoClobber,
+            )
             .await
             .unwrap();
 
@@ -514,7 +528,10 @@ mod tests {
 
         // Add a key to the store
         let key = format!("{BFT_BLOCK_PREFIX}test_block{BFT_BLOCK_HEADER_EXTENSION}");
-        store.put(&key, b"content".to_vec()).await.unwrap();
+        store
+            .put(&key, b"content".to_vec(), WritePolicy::NoClobber)
+            .await
+            .unwrap();
 
         // Check existence
         assert!(s3_exists_key(&store, &key).await.unwrap());
@@ -525,7 +542,10 @@ mod tests {
         let store: KVStoreErased = MemoryStorage::new("test").into();
 
         // Add a different key
-        store.put("other_key", b"content".to_vec()).await.unwrap();
+        store
+            .put("other_key", b"content".to_vec(), WritePolicy::NoClobber)
+            .await
+            .unwrap();
 
         // Check non-existent key
         let key = format!("{BFT_BLOCK_PREFIX}missing{BFT_BLOCK_HEADER_EXTENSION}");
@@ -538,11 +558,19 @@ mod tests {
 
         // Add keys with partial matches
         store
-            .put("bft_block/test", b"content".to_vec())
+            .put(
+                "bft_block/test",
+                b"content".to_vec(),
+                WritePolicy::NoClobber,
+            )
             .await
             .unwrap();
         store
-            .put("bft_block/test_longer", b"content".to_vec())
+            .put(
+                "bft_block/test_longer",
+                b"content".to_vec(),
+                WritePolicy::NoClobber,
+            )
             .await
             .unwrap();
 

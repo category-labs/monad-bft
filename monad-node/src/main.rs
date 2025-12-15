@@ -17,6 +17,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     marker::PhantomData,
     net::{IpAddr, SocketAddr, ToSocketAddrs},
+    path::PathBuf,
     process,
     sync::Arc,
     time::{Duration, Instant},
@@ -171,6 +172,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         locked_epoch_validators.clone(),
         current_epoch,
         current_round,
+        node_state.persisted_peers_path,
     );
 
     let statesync_threshold: usize = node_state.node_config.statesync_threshold.into();
@@ -507,6 +509,7 @@ fn build_raptorcast_router<ST, SCT, M, OM>(
     locked_epoch_validators: Vec<ValidatorSetDataWithEpoch<SCT>>,
     current_epoch: Epoch,
     current_round: Round,
+    persisted_peers_path: PathBuf,
 ) -> MultiRouter<
     ST,
     M,
@@ -580,18 +583,24 @@ where
     }
     dp_builder = dp_builder.extend_udp_sockets(udp_sockets);
 
+    // auth port in peer discovery config and network config should be set and unset simultaneously
+    assert_eq!(
+        peer_discovery_config.self_auth_port.is_some(),
+        network_config.authenticated_bind_address_port.is_some()
+    );
+
     let self_id = NodeId::new(identity.pubkey());
-    let self_record = match network_config.authenticated_bind_address_port {
+    let self_record = match peer_discovery_config.self_auth_port {
         Some(auth_port) => NameRecord::new_with_authentication(
             *name_record_address.ip(),
             name_record_address.port(),
-            network_config.bind_address_port,
+            name_record_address.port(),
             auth_port,
             peer_discovery_config.self_record_seq_num,
         ),
         None => NameRecord::new(
             *name_record_address.ip(),
-            network_config.bind_address_port,
+            name_record_address.port(),
             peer_discovery_config.self_record_seq_num,
         ),
     };
@@ -685,6 +694,7 @@ where
         enable_publisher: node_config.fullnode_raptorcast.enable_publisher,
         enable_client: node_config.fullnode_raptorcast.enable_client,
         rng: ChaCha8Rng::from_entropy(),
+        persisted_peers_path,
     };
 
     let shared_key = Arc::new(identity);
@@ -698,6 +708,7 @@ where
             shared_key,
             mtu: network_config.mtu,
             udp_message_max_age_ms: network_config.udp_message_max_age_ms,
+            sig_verification_rate_limit: network_config.signature_verifications_per_second,
             primary_instance: RaptorCastConfigPrimary {
                 raptor10_redundancy: 2.5f32,
                 fullnode_dedicated: full_nodes

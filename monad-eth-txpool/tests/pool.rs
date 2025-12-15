@@ -238,7 +238,11 @@ fn run_custom_iter<const N: usize>(
                 let pool_previous_num_txs = pool.num_txs();
 
                 let mut num_inserted = 0;
-                let num_expected = should_insert.then_some(txs.len()).unwrap_or_default();
+                let num_expected = if should_insert {
+                    txs.len()
+                } else {
+                    Default::default()
+                };
 
                 pool.insert_txs(
                     &mut event_tracker,

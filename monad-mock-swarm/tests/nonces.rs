@@ -433,8 +433,8 @@ mod test {
         assert_eq!(
             swarm
                 .states()
-                .iter()
-                .map(|(_, state)| state.state.metrics().consensus_events.created_nec)
+                .values()
+                .map(|state| state.state.metrics().consensus_events.created_nec)
                 .max()
                 .unwrap(),
             1

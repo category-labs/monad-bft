@@ -219,37 +219,31 @@ pub async fn monad_eth_sendRawTransaction(
     Ok(tx_hash.to_string())
 }
 
-fn validate_and_decode_tx<F>(
+fn validate_and_decode_tx(
     hex_tx: &[u8],
     chain_id: u64,
     allow_unprotected_txs: bool,
-    decode_error_fn: F,
-) -> Result<TxEnvelope, JsonRpcError>
-where
-    F: Fn() -> JsonRpcError,
-{
-    match TxEnvelope::decode(&mut &hex_tx[..]) {
-        Ok(tx) => {
-            // drop pre EIP-155 transactions if disallowed by the rpc (for user protection purposes)
-            if !allow_unprotected_txs && tx.chain_id().is_none() {
-                return Err(JsonRpcError::custom(
-                    "Unprotected transactions (pre-EIP155) are not allowed over RPC".to_string(),
-                ));
-            }
+    decode_error_fn: impl FnOnce() -> JsonRpcError,
+) -> Result<TxEnvelope, JsonRpcError> {
+    let tx = TxEnvelope::decode(&mut &hex_tx[..]).map_err(|err| {
+        debug!(?err, "eth txn decode failed");
+        decode_error_fn()
+    })?;
 
-            if let Some(tx_chain_id) = tx.chain_id() {
-                if tx_chain_id != chain_id {
-                    return Err(JsonRpcError::invalid_chain_id(chain_id, tx_chain_id));
-                }
-            }
+    // drop pre EIP-155 transactions if disallowed by the rpc (for user protection purposes)
+    if !allow_unprotected_txs && tx.chain_id().is_none() {
+        return Err(JsonRpcError::custom(
+            "Unprotected transactions (pre-EIP155) are not allowed over RPC".to_string(),
+        ));
+    }
 
-            Ok(tx)
-        }
-        Err(e) => {
-            debug!(?e, "eth txn decode failed");
-            Err(decode_error_fn())
+    if let Some(tx_chain_id) = tx.chain_id() {
+        if tx_chain_id != chain_id {
+            return Err(JsonRpcError::invalid_chain_id(chain_id, tx_chain_id));
         }
     }
+
+    Ok(tx)
 }
 
 async fn submit_to_txpool(
@@ -258,42 +252,61 @@ async fn submit_to_txpool(
 ) -> Result<(), JsonRpcError> {
     let Some(_tx_inflight_guard) = txpool_bridge_client.acquire_tx_inflight_guard() else {
         warn!("txpool overloaded");
-        return Err(JsonRpcError::custom(
-            "overloaded, try again later".to_owned(),
-        ));
+        return Err(JsonRpcError::overloaded());
     };
 
-    let (tx_status_send, tx_status_recv) = tokio::sync::oneshot::channel::<TxStatus>();
+    let (tx_status_recv_send, tx_status_recv_recv) =
+        tokio::sync::oneshot::channel::<tokio::sync::watch::Receiver<TxStatus>>();
 
-    if let Err(err) = txpool_bridge_client.try_send(tx, tx_status_send) {
+    if let Err(err) = txpool_bridge_client.try_send(tx, tx_status_recv_send) {
         error!(
             ?err,
             "txpool bridge try_send error after acquiring tx_inflight_guard"
         );
-        return Err(JsonRpcError::internal_error(
-            "overloaded, try again later".to_owned(),
-        ));
+        return Err(JsonRpcError::overloaded());
     }
 
-    match tokio::time::timeout(Duration::from_secs(1), tx_status_recv).await {
-        Ok(Ok(tx_status)) => match tx_status {
-            TxStatus::Evicted { reason: _ } => {
-                return Err(JsonRpcError::custom("rejected".to_string()))
+    let mut tx_status_recv =
+        match tokio::time::timeout(Duration::from_secs(1), tx_status_recv_recv).await {
+            Ok(Ok(tx_status_recv)) => tx_status_recv,
+            Ok(Err(_)) | Err(_) => {
+                warn!("txpool bridge not responding, tx status receiver was not sent");
+                return Err(JsonRpcError::overloaded());
             }
-            TxStatus::Dropped { reason } => {
-                return Err(JsonRpcError::custom(reason.as_user_string()))
-            }
-            TxStatus::Tracked | TxStatus::Committed => return Ok(()),
-            TxStatus::Unknown => {
-                error!("txpool bridge sent unknown status");
-            }
-        },
-        Ok(Err(_)) | Err(_) => {
-            warn!("txpool not responding");
+        };
+
+    match tokio::time::timeout(Duration::from_secs(1), tx_status_recv.changed()).await {
+        Ok(Ok(())) => {}
+        Ok(Err(_)) => {
+            // If the tx_status_send was dropped, then the tx was evicted from RPC state
+            return match tx_status_recv.borrow().to_owned() {
+                TxStatus::Unknown => Err(JsonRpcError::overloaded()),
+                TxStatus::Tracked
+                | TxStatus::Dropped { .. }
+                | TxStatus::Evicted { .. }
+                | TxStatus::Committed => Err(JsonRpcError::custom(
+                    "rpc no longer tracking tx".to_string(),
+                )),
+            };
+        }
+        Err(_) => {
+            // If the changed future times out, RPC should still try returning whatever status it
+            // currently has, even if it might be stale.
+            warn!("txpool bridge not responding, tx status has not changed");
         }
     }
 
-    Err(JsonRpcError::custom("txpool not responding".to_string()))
+    let latest_tx_status = tx_status_recv.borrow_and_update().to_owned();
+
+    match latest_tx_status {
+        TxStatus::Evicted { reason: _ } => Err(JsonRpcError::custom("rejected".to_string())),
+        TxStatus::Dropped { reason } => Err(JsonRpcError::custom(reason.as_user_string())),
+        TxStatus::Tracked | TxStatus::Committed => Ok(()),
+        TxStatus::Unknown => {
+            warn!("txpool tx status last value was unknown");
+            Err(JsonRpcError::overloaded())
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -488,7 +501,7 @@ mod tests {
         chainstate::ChainState, eth_json_types::UnformattedData, txpool::EthTxPoolBridgeClient,
     };
 
-    fn serialize_tx(tx: (impl Encodable + Encodable2718)) -> UnformattedData {
+    fn serialize_tx(tx: impl Encodable + Encodable2718) -> UnformattedData {
         let mut rlp_encoded_tx = Vec::new();
         tx.encode_2718(&mut rlp_encoded_tx);
         UnformattedData(rlp_encoded_tx)

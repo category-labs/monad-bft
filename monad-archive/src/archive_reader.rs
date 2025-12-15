@@ -338,7 +338,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        kvstore::memory::MemoryStorage,
+        kvstore::{memory::MemoryStorage, WritePolicy},
         test_utils::{mock_block, mock_rx, mock_tx},
     };
 
@@ -529,7 +529,10 @@ mod tests {
         let (primary, fallback) = setup_bdr();
 
         let block = mock_block(12, vec![]);
-        fallback.archive_block(block.clone()).await.unwrap();
+        fallback
+            .archive_block(block.clone(), WritePolicy::NoClobber)
+            .await
+            .unwrap();
 
         let fallback = ArchiveReader::new(
             fallback,
@@ -553,7 +556,10 @@ mod tests {
         let (primary, _) = setup_bdr();
 
         let block = mock_block(12, vec![]);
-        primary.archive_block(block.clone()).await.unwrap();
+        primary
+            .archive_block(block.clone(), WritePolicy::NoClobber)
+            .await
+            .unwrap();
 
         let reader = ArchiveReader::new(
             primary.clone(),
@@ -571,7 +577,10 @@ mod tests {
         let (primary, fallback) = setup_bdr();
 
         let block = mock_block(12, vec![]);
-        primary.archive_block(block.clone()).await.unwrap();
+        primary
+            .archive_block(block.clone(), WritePolicy::NoClobber)
+            .await
+            .unwrap();
 
         let fallback = ArchiveReader::new(
             fallback,
@@ -612,7 +621,10 @@ mod tests {
 
         // Store block in fallback
         let block = mock_block(42, vec![]);
-        fallback_bdr.archive_block(block.clone()).await.unwrap();
+        fallback_bdr
+            .archive_block(block.clone(), WritePolicy::NoClobber)
+            .await
+            .unwrap();
 
         // Create readers
         let primary_reader = ArchiveReader::new(
@@ -648,7 +660,10 @@ mod tests {
         should_fail_ref.store(false, Ordering::SeqCst);
 
         // Store the block in primary now so it can succeed
-        primary_bdr.archive_block(block.clone()).await.unwrap();
+        primary_bdr
+            .archive_block(block.clone(), WritePolicy::NoClobber)
+            .await
+            .unwrap();
 
         // Wait for recovery timeout (5 minutes is too long for test, so let's test half-open behavior)
         // The circuit breaker should transition to half-open after the timeout
@@ -703,11 +718,11 @@ mod tests {
         };
 
         primary_bdr
-            .archive_block(primary_block.clone())
+            .archive_block(primary_block.clone(), WritePolicy::NoClobber)
             .await
             .unwrap();
         fallback_bdr
-            .archive_block(fallback_block.clone())
+            .archive_block(fallback_block.clone(), WritePolicy::NoClobber)
             .await
             .unwrap();
 
@@ -871,11 +886,11 @@ mod tests {
         };
 
         primary_bdr
-            .archive_block(primary_block.clone())
+            .archive_block(primary_block.clone(), WritePolicy::NoClobber)
             .await
             .unwrap();
         fallback_bdr
-            .archive_block(fallback_block.clone())
+            .archive_block(fallback_block.clone(), WritePolicy::NoClobber)
             .await
             .unwrap();
 

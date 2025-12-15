@@ -23,7 +23,10 @@ use super::{
     block_data_archive::BlockDataArchive,
     index_repr::{IndexDataStorageRepr, ReferenceV0},
 };
-use crate::{kvstore::KVReaderErased, prelude::*};
+use crate::{
+    kvstore::{KVReaderErased, WritePolicy},
+    prelude::*,
+};
 
 #[derive(Clone)]
 pub struct TxIndexArchiver {
@@ -269,8 +272,9 @@ impl TxIndexArchiver {
             });
 
         self.index_store
-            .bulk_put(requests)
+            .bulk_put(requests, WritePolicy::NoClobber)
             .await
+            .map(|_| ())
             .wrap_err("Error indexing block")
     }
 }

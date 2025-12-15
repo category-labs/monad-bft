@@ -22,6 +22,7 @@ use bytes::Bytes;
 use eyre::Result;
 use tokio::sync::Mutex;
 
+use super::{PutResult, WritePolicy};
 use crate::prelude::*;
 
 #[derive(Clone)]
@@ -59,7 +60,12 @@ impl KVStore for MemoryStorage {
         &self.name
     }
 
-    async fn put(&self, key: impl AsRef<str>, data: Vec<u8>) -> Result<()> {
+    async fn put(
+        &self,
+        key: impl AsRef<str>,
+        data: Vec<u8>,
+        policy: WritePolicy,
+    ) -> Result<PutResult> {
         use std::sync::atomic::Ordering;
 
         // Check if we should simulate a failure
@@ -67,11 +73,19 @@ impl KVStore for MemoryStorage {
             return Err(eyre::eyre!("MemoryStorage simulated failure"));
         }
 
-        self.db
-            .lock()
-            .await
-            .insert(key.as_ref().to_owned(), data.into());
-        Ok(())
+        let key = key.as_ref();
+        let mut db = self.db.lock().await;
+
+        if policy == WritePolicy::NoClobber && db.contains_key(key) {
+            warn!(
+                key,
+                "Memory put skipped: key already exists (NoClobber policy)"
+            );
+            return Ok(PutResult::Skipped);
+        }
+
+        db.insert(key.to_owned(), data.into());
+        Ok(PutResult::Written)
     }
 
     async fn scan_prefix(&self, prefix: &str) -> Result<Vec<String>> {
@@ -117,7 +131,9 @@ mod tests {
         // Test upload and read
         let key = "test-key";
         let data = b"hello world".to_vec();
-        storage.put(key, data.clone()).await?;
+        storage
+            .put(key, data.clone(), WritePolicy::AllowOverwrite)
+            .await?;
 
         let result = storage.get(key).await?.unwrap();
         assert_eq!(result, Bytes::from(data));
@@ -134,9 +150,15 @@ mod tests {
         let storage = MemoryStorage::new("test-bucket");
 
         // Upload test data
-        storage.put("test1", b"data1".to_vec()).await?;
-        storage.put("test2", b"data2".to_vec()).await?;
-        storage.put("other", b"data3".to_vec()).await?;
+        storage
+            .put("test1", b"data1".to_vec(), WritePolicy::AllowOverwrite)
+            .await?;
+        storage
+            .put("test2", b"data2".to_vec(), WritePolicy::AllowOverwrite)
+            .await?;
+        storage
+            .put("other", b"data3".to_vec(), WritePolicy::AllowOverwrite)
+            .await?;
 
         // Test scanning with prefix
         let results = storage.scan_prefix("test").await?;
@@ -156,5 +178,56 @@ mod tests {
         let name = "test-bucket";
         let storage = MemoryStorage::new(name);
         assert_eq!(storage.bucket_name(), name);
+    }
+
+    #[tokio::test]
+    async fn test_noclobber_skips_existing_key() -> Result<()> {
+        let storage = MemoryStorage::new("test-bucket");
+
+        let key = "noclobber-test";
+        let original_data = b"original".to_vec();
+        let new_data = b"new".to_vec();
+
+        // First write should succeed
+        let result = storage
+            .put(key, original_data.clone(), WritePolicy::NoClobber)
+            .await?;
+        assert_eq!(result, PutResult::Written);
+
+        // Second write with NoClobber should be skipped
+        let result = storage.put(key, new_data, WritePolicy::NoClobber).await?;
+        assert_eq!(result, PutResult::Skipped);
+
+        // Verify original data is preserved
+        let stored = storage.get(key).await?.unwrap();
+        assert_eq!(stored, Bytes::from(original_data));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_allow_overwrite_overwrites_existing_key() -> Result<()> {
+        let storage = MemoryStorage::new("test-bucket");
+
+        let key = "overwrite-test";
+        let original_data = b"original".to_vec();
+        let new_data = b"new".to_vec();
+
+        // First write
+        storage
+            .put(key, original_data, WritePolicy::AllowOverwrite)
+            .await?;
+
+        // Second write with AllowOverwrite should succeed
+        let result = storage
+            .put(key, new_data.clone(), WritePolicy::AllowOverwrite)
+            .await?;
+        assert_eq!(result, PutResult::Written);
+
+        // Verify new data is stored
+        let stored = storage.get(key).await?.unwrap();
+        assert_eq!(stored, Bytes::from(new_data));
+
+        Ok(())
     }
 }

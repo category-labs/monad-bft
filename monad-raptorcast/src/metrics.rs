@@ -23,6 +23,9 @@ pub const GAUGE_RAPTORCAST_TOTAL_MESSAGES_RECEIVED: &str =
     "monad.raptorcast.total_messages_received";
 pub const GAUGE_RAPTORCAST_TOTAL_RECV_ERRORS: &str = "monad.raptorcast.total_recv_errors";
 
+pub const GAUGE_RAPTORCAST_DECODING_CACHE_SIGNATURE_VERIFICATIONS_RATE_LIMITED: &str =
+    "monad.raptorcast.decoding_cache.signature_verifications_rate_limited";
+
 const HISTOGRAM_CLEAR_INTERVAL: Duration = Duration::from_secs(30);
 
 pub const PRIMARY_BROADCAST_LATENCY_P99_MS: &str =
@@ -112,6 +115,10 @@ impl UdpStateMetrics {
 
     pub fn executor_metrics(&self) -> &ExecutorMetrics {
         &self.executor_metrics
+    }
+
+    pub fn executor_metrics_mut(&mut self) -> &mut ExecutorMetrics {
+        &mut self.executor_metrics
     }
 }
 

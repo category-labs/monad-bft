@@ -215,7 +215,11 @@ where
 
             current_epoch,
 
-            udp_state: udp::UdpState::new(self_id, config.udp_message_max_age_ms),
+            udp_state: udp::UdpState::new(
+                self_id,
+                config.udp_message_max_age_ms,
+                config.sig_verification_rate_limit,
+            ),
 
             tcp_reader,
             tcp_writer,
@@ -565,6 +569,7 @@ where
         shared_key,
         mtu: DEFAULT_MTU,
         udp_message_max_age_ms: u64::MAX, // No timestamp validation for tests
+        sig_verification_rate_limit: 10_000,
         primary_instance: Default::default(),
         secondary_instance: FullNodeRaptorCastConfig {
             enable_publisher: false,
@@ -641,6 +646,7 @@ where
         shared_key: shared_key.clone(),
         mtu: DEFAULT_MTU,
         udp_message_max_age_ms: u64::MAX,
+        sig_verification_rate_limit: 10_000,
         primary_instance: Default::default(),
         secondary_instance: FullNodeRaptorCastConfig {
             enable_publisher: false,
@@ -894,11 +900,12 @@ where
         }
     }
 
-    fn metrics(&self) -> ExecutorMetricsChain {
+    fn metrics(&self) -> ExecutorMetricsChain<'_> {
         ExecutorMetricsChain::default()
             .push(self.metrics.as_ref())
             .push(self.peer_discovery_metrics.as_ref())
             .push(self.udp_state.metrics().executor_metrics())
+            .chain(self.udp_state.decoder_metrics())
             .chain(self.dual_socket.metrics())
     }
 }

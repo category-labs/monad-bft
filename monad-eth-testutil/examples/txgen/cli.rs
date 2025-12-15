@@ -193,6 +193,7 @@ pub enum RequiredContract {
     ECMUL,
     Uniswap,
     EIP7702,
+    ERC4337_7702,
 }
 
 #[derive(Debug, Subcommand, Clone)]
@@ -225,6 +226,10 @@ pub enum CliGenMode {
         authorizations_per_tx: usize,
     },
     NftSale,
+    ERC4337_7702Bundled {
+        #[clap(long, default_value = "4")]
+        ops_per_bundle: usize,
+    },
 }
 
 impl From<CliGenMode> for GenMode {
@@ -273,6 +278,9 @@ impl From<CliGenMode> for GenMode {
                 authorizations_per_tx,
             }),
             CliGenMode::NftSale => GenMode::NftSale,
+            CliGenMode::ERC4337_7702Bundled { ops_per_bundle } => {
+                GenMode::ERC4337_7702Bundled(ERC4337_7702Config { ops_per_bundle })
+            }
         }
     }
 }

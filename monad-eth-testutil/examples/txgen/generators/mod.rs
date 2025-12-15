@@ -21,6 +21,7 @@ use duplicates::DuplicateTxGenerator;
 use ecmul::ECMulGenerator;
 use eip7702::EIP7702Generator;
 use eip7702_create::EIP7702CreateGenerator;
+use erc4337_7702_bundled::ERC4337_7702BundledGenerator;
 use extreme_values::ExtremeValuesGenerator;
 use few_to_many::CreateAccountsGenerator;
 use high_call_data::HighCallDataTxGenerator;
@@ -45,6 +46,7 @@ mod duplicates;
 mod ecmul;
 mod eip7702;
 mod eip7702_create;
+mod erc4337_7702_bundled;
 mod extreme_values;
 mod few_to_many;
 mod high_call_data;
@@ -182,6 +184,18 @@ pub fn make_generator(
             nft_sale: deployed_contract.nft_sale()?,
             tx_per_sender,
         }),
+        GenMode::ERC4337_7702Bundled(config) => {
+            let erc4337_7702 = deployed_contract.erc4337_7702()?;
+
+            Box::new(ERC4337_7702BundledGenerator::new(
+                erc4337_7702.entrypoint,
+                erc4337_7702.simple7702account,
+                config.ops_per_bundle,
+                tx_per_sender,
+                None,
+                recipient_keys,
+            ))
+        }
     })
 }
 

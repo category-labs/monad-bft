@@ -17,13 +17,18 @@ use core::str;
 
 use aws_config::SdkConfig;
 use aws_sdk_s3::{
-    error::SdkError, operation::create_bucket::CreateBucketError, primitives::ByteStream, Client,
+    error::{ProvideErrorMetadata, SdkError},
+    operation::create_bucket::CreateBucketError,
+    primitives::ByteStream,
+    Client,
 };
 use bytes::Bytes;
 use eyre::{Context, Result};
 use tracing::trace;
 
-use super::{kvstore_get_metrics, KVStoreType, MetricsResultExt};
+use super::{
+    kvstore_get_metrics, kvstore_put_metrics, KVStoreType, MetricsResultExt, PutResult, WritePolicy,
+};
 use crate::{metrics::Metrics, prelude::*};
 
 #[derive(Clone)]
@@ -118,10 +123,15 @@ impl KVReader for Bucket {
 
 impl KVStore for Bucket {
     // Upload rlp-encoded bytes with retry
-    async fn put(&self, key: impl AsRef<str>, data: Vec<u8>) -> Result<()> {
+    async fn put(
+        &self,
+        key: impl AsRef<str>,
+        data: Vec<u8>,
+        policy: WritePolicy,
+    ) -> Result<PutResult> {
         let key = key.as_ref();
 
-        let req = self
+        let mut req = self
             .client
             .put_object()
             .bucket(&self.bucket)
@@ -129,13 +139,32 @@ impl KVStore for Bucket {
             .body(ByteStream::from(data.clone()))
             .request_payer(aws_sdk_s3::types::RequestPayer::Requester);
 
-        let start = Instant::now();
-        req.send()
-            .await
-            .write_put_metrics(start.elapsed(), KVStoreType::AwsS3, &self.metrics)
-            .wrap_err_with(|| format!("Failed to upload, retries exhausted. Key: {}", key))?;
+        if policy == WritePolicy::NoClobber {
+            req = req.if_none_match("*");
+        }
 
-        Ok(())
+        let start = Instant::now();
+        let result = req.send().await;
+
+        match result {
+            Ok(_) => {
+                kvstore_put_metrics(start.elapsed(), true, KVStoreType::AwsS3, &self.metrics);
+                Ok(PutResult::Written)
+            }
+            Err(SdkError::ServiceError(service_err))
+                if policy == WritePolicy::NoClobber
+                    && service_err.err().code() == Some("PreconditionFailed") =>
+            {
+                kvstore_put_metrics(start.elapsed(), true, KVStoreType::AwsS3, &self.metrics);
+                warn!(key, "S3 put skipped: key already exists (NoClobber policy)");
+                Ok(PutResult::Skipped)
+            }
+            Err(e) => {
+                kvstore_put_metrics(start.elapsed(), false, KVStoreType::AwsS3, &self.metrics);
+                Err(e)
+                    .wrap_err_with(|| format!("Failed to upload, retries exhausted. Key: {}", key))
+            }
+        }
     }
 
     fn bucket_name(&self) -> &str {
@@ -213,7 +242,10 @@ mod tests {
 
         bucket.create_bucket().await.unwrap();
 
-        bucket.put("test-key", vec![1, 2, 3]).await.unwrap();
+        bucket
+            .put("test-key", vec![1, 2, 3], WritePolicy::AllowOverwrite)
+            .await
+            .unwrap();
         let value = bucket.get("test-key").await.unwrap().unwrap();
         assert_eq!(value, Bytes::from(vec![1, 2, 3]));
     }

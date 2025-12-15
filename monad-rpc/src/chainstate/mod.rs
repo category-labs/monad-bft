@@ -1125,6 +1125,7 @@ mod tests {
     use alloy_eips::BlockNumberOrTag;
     use alloy_rpc_types::{Filter, FilterBlockOption};
     use monad_archive::{
+        kvstore::WritePolicy,
         prelude::{ArchiveReader, BlockDataArchive, IndexReaderImpl, TxIndexArchiver},
         test_utils::{mock_block, mock_rx, mock_tx, MemoryStorage},
     };
@@ -1151,9 +1152,12 @@ mod tests {
         let block = mock_block(10, vec![tx.clone()]);
         let receipts = mock_rx(100, 10);
 
-        primary_bdr.archive_block(block.clone()).await.unwrap();
         primary_bdr
-            .archive_receipts(vec![receipts.clone()], 10)
+            .archive_block(block.clone(), WritePolicy::NoClobber)
+            .await
+            .unwrap();
+        primary_bdr
+            .archive_receipts(vec![receipts.clone()], 10, WritePolicy::NoClobber)
             .await
             .unwrap();
         primary

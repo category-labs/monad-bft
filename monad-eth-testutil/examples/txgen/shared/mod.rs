@@ -23,10 +23,12 @@ pub mod blockstream;
 pub mod ecmul;
 pub mod eip7702;
 pub mod erc20;
+pub mod erc4337_entrypoint;
 pub mod eth_json_rpc;
 pub mod key_pool;
 pub mod nft_sale;
 pub mod private_key;
+pub mod simple7702_account;
 pub mod uniswap;
 pub mod weth;
 

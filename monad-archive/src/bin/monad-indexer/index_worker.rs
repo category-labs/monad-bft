@@ -104,7 +104,7 @@ pub async fn index_worker(
 
 async fn index_blocks(
     block_data_reader: &(impl BlockDataReader + Send),
-    fallback_block_data_source: &Option<(impl BlockDataReader + Send)>,
+    fallback_block_data_source: &Option<impl BlockDataReader + Send>,
     indexer: &TxIndexArchiver,
     log_index: Option<&LogsIndexArchiver>,
     block_range: RangeInclusive<u64>,
@@ -161,7 +161,7 @@ async fn index_blocks(
 
 async fn handle_block(
     block_data_reader: &(impl BlockDataReader + Send),
-    fallback_block_data_source: &Option<(impl BlockDataReader + Send)>,
+    fallback_block_data_source: &Option<impl BlockDataReader + Send>,
     tx_index_archiver: &TxIndexArchiver,
     log_index: Option<&LogsIndexArchiver>,
     block_num: u64,
@@ -274,7 +274,7 @@ mod tests {
     use alloy_primitives::{Bloom, Log, B256, U256};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
-    use monad_archive::kvstore::memory::MemoryStorage;
+    use monad_archive::kvstore::{memory::MemoryStorage, WritePolicy};
     use monad_triedb_utils::triedb_env::{ReceiptWithLogIndex, TxEnvelopeWithSender};
 
     use super::*;
@@ -353,9 +353,18 @@ mod tests {
             let receipts = vec![mock_rx()];
             let traces = vec![vec![]];
 
-            reader.archive_block(block).await.unwrap();
-            reader.archive_receipts(receipts, block_num).await.unwrap();
-            reader.archive_traces(traces, block_num).await.unwrap();
+            reader
+                .archive_block(block, WritePolicy::NoClobber)
+                .await
+                .unwrap();
+            reader
+                .archive_receipts(receipts, block_num, WritePolicy::NoClobber)
+                .await
+                .unwrap();
+            reader
+                .archive_traces(traces, block_num, WritePolicy::NoClobber)
+                .await
+                .unwrap();
         }
 
         reader.update_latest(5, LatestKind::Uploaded).await.unwrap();
@@ -395,9 +404,18 @@ mod tests {
         let receipts = vec![mock_rx()];
         let traces = vec![vec![]];
 
-        reader.archive_block(block).await.unwrap();
-        reader.archive_receipts(receipts, 3).await.unwrap();
-        reader.archive_traces(traces, 3).await.unwrap();
+        reader
+            .archive_block(block, WritePolicy::NoClobber)
+            .await
+            .unwrap();
+        reader
+            .archive_receipts(receipts, 3, WritePolicy::NoClobber)
+            .await
+            .unwrap();
+        reader
+            .archive_traces(traces, 3, WritePolicy::NoClobber)
+            .await
+            .unwrap();
 
         // Wait for worker to complete all blocks
         worker_handle.await.unwrap();
@@ -434,9 +452,18 @@ mod tests {
             let receipts = vec![mock_rx()];
             let traces = vec![vec![]];
 
-            reader.archive_block(block).await.unwrap();
-            reader.archive_receipts(receipts, block_num).await.unwrap();
-            reader.archive_traces(traces, block_num).await.unwrap();
+            reader
+                .archive_block(block, WritePolicy::NoClobber)
+                .await
+                .unwrap();
+            reader
+                .archive_receipts(receipts, block_num, WritePolicy::NoClobber)
+                .await
+                .unwrap();
+            reader
+                .archive_traces(traces, block_num, WritePolicy::NoClobber)
+                .await
+                .unwrap();
         }
 
         // Set initial latest
@@ -471,9 +498,18 @@ mod tests {
             let receipts = vec![mock_rx()];
             let traces = vec![vec![]];
 
-            reader.archive_block(block).await.unwrap();
-            reader.archive_receipts(receipts, block_num).await.unwrap();
-            reader.archive_traces(traces, block_num).await.unwrap();
+            reader
+                .archive_block(block, WritePolicy::NoClobber)
+                .await
+                .unwrap();
+            reader
+                .archive_receipts(receipts, block_num, WritePolicy::NoClobber)
+                .await
+                .unwrap();
+            reader
+                .archive_traces(traces, block_num, WritePolicy::NoClobber)
+                .await
+                .unwrap();
         }
 
         // Update latest to include new blocks
@@ -517,9 +553,18 @@ mod tests {
             let receipts = vec![mock_rx()];
             let traces = vec![vec![]];
 
-            reader.archive_block(block).await.unwrap();
-            reader.archive_receipts(receipts, block_num).await.unwrap();
-            reader.archive_traces(traces, block_num).await.unwrap();
+            reader
+                .archive_block(block, WritePolicy::NoClobber)
+                .await
+                .unwrap();
+            reader
+                .archive_receipts(receipts, block_num, WritePolicy::NoClobber)
+                .await
+                .unwrap();
+            reader
+                .archive_traces(traces, block_num, WritePolicy::NoClobber)
+                .await
+                .unwrap();
         }
 
         // Set up latest block in source
@@ -583,9 +628,18 @@ mod tests {
             let receipts = (0..num_txs).map(|_| mock_rx()).collect();
             let traces = (0..num_txs).map(|_| vec![]).collect();
 
-            reader.archive_block(block).await.unwrap();
-            reader.archive_receipts(receipts, block_num).await.unwrap();
-            reader.archive_traces(traces, block_num).await.unwrap();
+            reader
+                .archive_block(block, WritePolicy::NoClobber)
+                .await
+                .unwrap();
+            reader
+                .archive_receipts(receipts, block_num, WritePolicy::NoClobber)
+                .await
+                .unwrap();
+            reader
+                .archive_traces(traces, block_num, WritePolicy::NoClobber)
+                .await
+                .unwrap();
         }
 
         let result = index_blocks(
@@ -637,9 +691,18 @@ mod tests {
             let receipts = vec![mock_rx()];
             let traces = vec![vec![]];
 
-            reader.archive_block(block).await.unwrap();
-            reader.archive_receipts(receipts, block_num).await.unwrap();
-            reader.archive_traces(traces, block_num).await.unwrap();
+            reader
+                .archive_block(block, WritePolicy::NoClobber)
+                .await
+                .unwrap();
+            reader
+                .archive_receipts(receipts, block_num, WritePolicy::NoClobber)
+                .await
+                .unwrap();
+            reader
+                .archive_traces(traces, block_num, WritePolicy::NoClobber)
+                .await
+                .unwrap();
         }
 
         let result = index_blocks(
@@ -685,13 +748,16 @@ mod tests {
         let traces = vec![vec![]]; // Empty trace for now
 
         // Store test data in reader
-        reader.archive_block(block.clone()).await.unwrap();
         reader
-            .archive_receipts(receipts.clone(), block_num)
+            .archive_block(block.clone(), WritePolicy::NoClobber)
             .await
             .unwrap();
         reader
-            .archive_traces(traces.clone(), block_num)
+            .archive_receipts(receipts.clone(), block_num, WritePolicy::NoClobber)
+            .await
+            .unwrap();
+        reader
+            .archive_traces(traces.clone(), block_num, WritePolicy::NoClobber)
             .await
             .unwrap();
 
@@ -726,13 +792,16 @@ mod tests {
         let traces = vec![vec![]]; // Empty trace for now
 
         // Store test data in reader
-        reader.archive_block(block.clone()).await.unwrap();
         reader
-            .archive_receipts(receipts.clone(), block_num)
+            .archive_block(block.clone(), WritePolicy::NoClobber)
             .await
             .unwrap();
         reader
-            .archive_traces(traces.clone(), block_num)
+            .archive_receipts(receipts.clone(), block_num, WritePolicy::NoClobber)
+            .await
+            .unwrap();
+        reader
+            .archive_traces(traces.clone(), block_num, WritePolicy::NoClobber)
             .await
             .unwrap();
 
@@ -766,9 +835,18 @@ mod tests {
         let traces: BlockTraces = vec![];
 
         // Store test data in reader
-        reader.archive_block(block.clone()).await.unwrap();
-        reader.archive_receipts(receipts, block_num).await.unwrap();
-        reader.archive_traces(traces, block_num).await.unwrap();
+        reader
+            .archive_block(block.clone(), WritePolicy::NoClobber)
+            .await
+            .unwrap();
+        reader
+            .archive_receipts(receipts, block_num, WritePolicy::NoClobber)
+            .await
+            .unwrap();
+        reader
+            .archive_traces(traces, block_num, WritePolicy::NoClobber)
+            .await
+            .unwrap();
 
         // Test handle_block
         let num_txs = handle_block(&reader, &NO_FALLBACK, &index_archiver, None, block_num)
@@ -790,13 +868,16 @@ mod tests {
         let traces = vec![vec![], vec![], vec![]];
 
         // Store test data
-        reader.archive_block(block.clone()).await.unwrap();
         reader
-            .archive_receipts(receipts.clone(), block_num)
+            .archive_block(block.clone(), WritePolicy::NoClobber)
             .await
             .unwrap();
         reader
-            .archive_traces(traces.clone(), block_num)
+            .archive_receipts(receipts.clone(), block_num, WritePolicy::NoClobber)
+            .await
+            .unwrap();
+        reader
+            .archive_traces(traces.clone(), block_num, WritePolicy::NoClobber)
             .await
             .unwrap();
 
@@ -827,8 +908,14 @@ mod tests {
         // Only store receipts and traces, omit block
         let receipts = vec![mock_rx()];
         let traces = vec![vec![]];
-        reader.archive_receipts(receipts, block_num).await.unwrap();
-        reader.archive_traces(traces, block_num).await.unwrap();
+        reader
+            .archive_receipts(receipts, block_num, WritePolicy::NoClobber)
+            .await
+            .unwrap();
+        reader
+            .archive_traces(traces, block_num, WritePolicy::NoClobber)
+            .await
+            .unwrap();
 
         // Should fail since block is missing
         let result = handle_block(&reader, &NO_FALLBACK, &index_archiver, None, block_num).await;
@@ -845,23 +932,26 @@ mod tests {
         let receipts = vec![mock_rx()];
         let traces = vec![vec![]];
         reader
-            .archive_receipts(receipts.clone(), block_num)
+            .archive_receipts(receipts.clone(), block_num, WritePolicy::NoClobber)
             .await
             .unwrap();
         reader
-            .archive_traces(traces.clone(), block_num)
+            .archive_traces(traces.clone(), block_num, WritePolicy::NoClobber)
             .await
             .unwrap();
 
         // Fallback has everything
         let block = mock_block(block_num, vec![mock_tx(123)]);
-        fallback_reader.archive_block(block).await.unwrap();
         fallback_reader
-            .archive_receipts(receipts, block_num)
+            .archive_block(block, WritePolicy::NoClobber)
             .await
             .unwrap();
         fallback_reader
-            .archive_traces(traces, block_num)
+            .archive_receipts(receipts, block_num, WritePolicy::NoClobber)
+            .await
+            .unwrap();
+        fallback_reader
+            .archive_traces(traces, block_num, WritePolicy::NoClobber)
             .await
             .unwrap();
 
@@ -885,8 +975,14 @@ mod tests {
         let tx = mock_tx(123);
         let block = mock_block(block_num, vec![tx]);
         let traces = vec![vec![]];
-        reader.archive_block(block).await.unwrap();
-        reader.archive_traces(traces, block_num).await.unwrap();
+        reader
+            .archive_block(block, WritePolicy::NoClobber)
+            .await
+            .unwrap();
+        reader
+            .archive_traces(traces, block_num, WritePolicy::NoClobber)
+            .await
+            .unwrap();
 
         let result = handle_block(&reader, &NO_FALLBACK, &index_archiver, None, block_num).await;
         assert!(result.is_err());
@@ -901,8 +997,14 @@ mod tests {
         let tx = mock_tx(123);
         let block = mock_block(block_num, vec![tx]);
         let receipts = vec![mock_rx()];
-        reader.archive_block(block).await.unwrap();
-        reader.archive_receipts(receipts, block_num).await.unwrap();
+        reader
+            .archive_block(block, WritePolicy::NoClobber)
+            .await
+            .unwrap();
+        reader
+            .archive_receipts(receipts, block_num, WritePolicy::NoClobber)
+            .await
+            .unwrap();
 
         let result = handle_block(&reader, &NO_FALLBACK, &index_archiver, None, block_num).await;
         assert!(result.is_err());
@@ -919,9 +1021,18 @@ mod tests {
         let receipts = vec![mock_rx()]; // Only one receipt
         let traces = vec![vec![], vec![]];
 
-        reader.archive_block(block).await.unwrap();
-        reader.archive_receipts(receipts, block_num).await.unwrap();
-        reader.archive_traces(traces, block_num).await.unwrap();
+        reader
+            .archive_block(block, WritePolicy::NoClobber)
+            .await
+            .unwrap();
+        reader
+            .archive_receipts(receipts, block_num, WritePolicy::NoClobber)
+            .await
+            .unwrap();
+        reader
+            .archive_traces(traces, block_num, WritePolicy::NoClobber)
+            .await
+            .unwrap();
 
         let result = handle_block(&reader, &NO_FALLBACK, &index_archiver, None, block_num).await;
         assert!(result.is_err());
@@ -938,9 +1049,18 @@ mod tests {
         let receipts = vec![mock_rx(), mock_rx()];
         let traces = vec![vec![], vec![], vec![]]; // Extra trace
 
-        reader.archive_block(block).await.unwrap();
-        reader.archive_receipts(receipts, block_num).await.unwrap();
-        reader.archive_traces(traces, block_num).await.unwrap();
+        reader
+            .archive_block(block, WritePolicy::NoClobber)
+            .await
+            .unwrap();
+        reader
+            .archive_receipts(receipts, block_num, WritePolicy::NoClobber)
+            .await
+            .unwrap();
+        reader
+            .archive_traces(traces, block_num, WritePolicy::NoClobber)
+            .await
+            .unwrap();
 
         let result = handle_block(&reader, &NO_FALLBACK, &index_archiver, None, block_num).await;
         assert!(result.is_err());
@@ -957,9 +1077,18 @@ mod tests {
         let receipts = vec![mock_rx()];
         let traces = vec![vec![]];
 
-        reader.archive_block(block).await.unwrap();
-        reader.archive_receipts(receipts, block_num).await.unwrap();
-        reader.archive_traces(traces, block_num).await.unwrap();
+        reader
+            .archive_block(block, WritePolicy::NoClobber)
+            .await
+            .unwrap();
+        reader
+            .archive_receipts(receipts, block_num, WritePolicy::NoClobber)
+            .await
+            .unwrap();
+        reader
+            .archive_traces(traces, block_num, WritePolicy::NoClobber)
+            .await
+            .unwrap();
 
         let result = handle_block(&reader, &NO_FALLBACK, &index_archiver, None, block_num).await;
         assert!(result.is_err());

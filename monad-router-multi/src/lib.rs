@@ -429,7 +429,7 @@ where
         }
     }
 
-    fn metrics(&self) -> ExecutorMetricsChain {
+    fn metrics(&self) -> ExecutorMetricsChain<'_> {
         let m1 = self.rc_primary.metrics();
         let res: ExecutorMetricsChain = if self.rc_secondary.is_some() {
             let m2 = self.rc_secondary.as_ref().unwrap().metrics();
