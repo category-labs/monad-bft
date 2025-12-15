@@ -36,7 +36,6 @@ pub struct MonadStakingConfig {
     staking_activation: Epoch,
 
     block_reward_v_one: BlockRewardConfig,
-    block_reward_v_two: BlockRewardConfig,
 }
 
 impl MonadStakingConfig {
@@ -45,9 +44,7 @@ impl MonadStakingConfig {
     }
 
     pub fn get_block_reward_mon(&self, epoch: Epoch) -> u64 {
-        if epoch >= self.block_reward_v_two.block_reward_activation {
-            self.block_reward_v_two.block_reward_mon
-        } else if epoch >= self.block_reward_v_one.block_reward_activation {
+        if epoch >= self.block_reward_v_one.block_reward_activation {
             self.block_reward_v_one.block_reward_mon
         } else {
             0
@@ -62,18 +59,13 @@ pub const MONAD_DEVNET_STAKING_CONFIG: MonadStakingConfig = MonadStakingConfig {
         block_reward_activation: Epoch(3),
         block_reward_mon: 1,
     },
-    block_reward_v_two: BlockRewardConfig::unused(),
 };
 
 pub const MONAD_TESTNET_STAKING_CONFIG: MonadStakingConfig = MonadStakingConfig {
-    staking_activation: Epoch(868),
+    staking_activation: Epoch(2),
 
     block_reward_v_one: BlockRewardConfig {
-        block_reward_activation: Epoch(869),
-        block_reward_mon: 1,
-    },
-    block_reward_v_two: BlockRewardConfig {
-        block_reward_activation: Epoch(953),
+        block_reward_activation: Epoch(3),
         block_reward_mon: 25,
     },
 };
@@ -85,5 +77,4 @@ pub const MONAD_MAINNET_STAKING_CONFIG: MonadStakingConfig = MonadStakingConfig 
         block_reward_activation: Epoch(747),
         block_reward_mon: 25,
     },
-    block_reward_v_two: BlockRewardConfig::unused(),
 };
