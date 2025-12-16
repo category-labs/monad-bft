@@ -1,11 +1,12 @@
 services:
   build_triedb:
-    image: categoryxyz/monad-execution:latest
+    image: categoryxyz/monad:latest
+    command: monad-mpt --storage /monad/triedb/test.db --create --root-offsets-chunk-count=2
   build_genesis:
-    image: categoryxyz/monad-execution:latest
+    image: categoryxyz/monad:latest
   monad_execution:
-    image: categoryxyz/monad-execution:latest
+    image: categoryxyz/monad:latest
   monad_node:
-    image: categoryxyz/monad-bft:latest
+    image: categoryxyz/monad:latest
   monad_rpc:
-    image: categoryxyz/monad-rpc:latest
+    image: categoryxyz/monad:latest

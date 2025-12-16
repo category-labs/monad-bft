@@ -1,11 +1,17 @@
 services:
   build_triedb:
     image: monad-execution-builder:latest
-    command: monad_mpt --storage /monad/triedb/test.db --create
+    command: monad_mpt --storage /monad/triedb/test.db --create --root-offsets-chunk-count=2
     volumes:
       - ./node:/monad
-    security_opt:
-      - "seccomp:${MONAD_BFT_ROOT}/docker/devnet/monad/config/profile.json"
+    privileged: true
+    ulimits: &ulimits
+      nofile:
+        soft: 1048576
+        hard: 1048576
+      memlock:
+        soft: 16770785280
+        hard: 16770785280
 
   build_genesis:
     image: monad-execution-builder:latest
@@ -14,8 +20,7 @@ services:
         condition: service_completed_successfully
     volumes:
       - ./node:/monad
-    security_opt:
-      - "seccomp:${MONAD_BFT_ROOT}/docker/devnet/monad/config/profile.json"
+    privileged: true
     command:
       monad
       --chain monad_devnet
@@ -23,10 +28,7 @@ services:
       --block_db /monad/ledger
       --nblocks 0
       --log_level ERROR
-    ulimits:
-      memlock:
-        soft: "16770785280"
-        hard: "16770785280"
+    ulimits: *ulimits
 
   monad_execution:
     image: monad-execution-builder:latest
@@ -37,8 +39,7 @@ services:
         condition: service_completed_successfully
     volumes:
       - ./node:/monad
-    security_opt:
-      - "seccomp:${MONAD_BFT_ROOT}/docker/devnet/monad/config/profile.json"
+    privileged: true
     command: |
       monad
       --chain monad_devnet
@@ -46,10 +47,7 @@ services:
       --block_db /monad/ledger
       --statesync /monad/statesync.sock
       --log_level ERROR
-    ulimits:
-      memlock:
-        soft: "16770785280"
-        hard: "16770785280"
+    ulimits: *ulimits
 
   monad_node:
     build:
@@ -65,8 +63,7 @@ services:
       - RUST_LOG=
     volumes:
       - ./node:/monad
-    security_opt:
-      - "seccomp:${MONAD_BFT_ROOT}/docker/devnet/monad/config/profile.json"
+    privileged: true
     command: |
       monad-node
       --secp-identity /monad/config/id-secp
@@ -81,10 +78,7 @@ services:
       --control-panel-ipc-path /monad/controlpanel.sock
       --ledger-path /monad/ledger
       --triedb-path /monad/triedb
-    ulimits:
-      memlock:
-        soft: "16770785280"
-        hard: "16770785280"
+    ulimits: *ulimits
 
   monad_rpc:
     build:
@@ -98,8 +92,7 @@ services:
       - monad_node
     volumes:
       - ./node:/monad
-    security_opt:
-      - "seccomp:${MONAD_BFT_ROOT}/docker/devnet/monad/config/profile.json"
+    privileged: true
     ports:
       - "8080:8080"
     command: |
@@ -107,11 +100,4 @@ services:
       --ipc-path /monad/mempool.sock
       --triedb-path /monad/triedb
       --node-config /monad/config/node.toml
-    ulimits:
-      memlock:
-        soft: "16770785280"
-        hard: "16770785280"
-
-networks:
-  default:
-    driver: bridge
+    ulimits: *ulimits
