@@ -485,9 +485,7 @@ where
 
         let mut txn_fees: TxnFees = TxnFees::default();
         for eth_txn in validated_txns.iter() {
-            let block_base_fee = header
-                .base_fee
-                .unwrap_or(monad_tfm::base_fee::PRE_TFM_BASE_FEE);
+            let block_base_fee = header.base_fee;
             if eth_txn.max_fee_per_gas() < block_base_fee.into() {
                 debug!(
                     ?eth_txn,
@@ -664,9 +662,9 @@ mod test {
             GENESIS_SEQ_NUM + SeqNum(1),
             1,
             RoundSignature::new(Round(1), &nop_keypair),
-            Some(BASE_FEE as u64),
-            Some(BASE_FEE_TREND),
-            Some(BASE_FEE_MOMENT),
+            BASE_FEE as u64,
+            BASE_FEE_TREND,
+            BASE_FEE_MOMENT,
         )
     }
 
