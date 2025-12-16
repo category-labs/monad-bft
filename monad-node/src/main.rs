@@ -119,9 +119,9 @@ fn main() {
 
     MONAD_NODE_VERSION.map(|v| info!("starting monad-bft with version {}", v));
 
-    if !node_state.pprof.is_empty() {
+    if let Some(pprof) = &node_state.node_config.pprof {
+        let pprof = pprof.to_owned();
         runtime.spawn({
-            let pprof = node_state.pprof.clone();
             async {
                 let server = match start_pprof_server(pprof) {
                     Ok(server) => server,
@@ -172,17 +172,49 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         locked_epoch_validators.clone(),
         current_epoch,
         current_round,
-        node_state.persisted_peers_path,
+        node_state
+            .node_config
+            .persisted_peers_path
+            .expect("persisted_peers_path not set"),
     );
 
     let statesync_threshold: usize = node_state.node_config.statesync_threshold.into();
 
-    _ = std::fs::remove_file(node_state.mempool_ipc_path.as_path());
-    _ = std::fs::remove_file(node_state.control_panel_ipc_path.as_path());
-    _ = std::fs::remove_file(node_state.statesync_ipc_path.as_path());
+    let triedb_path = node_state
+        .node_config
+        .triedb_path
+        .expect("triedb_path not set");
+    let ledger_path = node_state
+        .node_config
+        .ledger_path
+        .expect("ledger_path not set");
+    let forkpoint_path = node_state
+        .node_config
+        .forkpoint_config
+        .expect("forkpoint_config not set");
+    let validators_path = node_state
+        .node_config
+        .validators_path
+        .expect("validators_path not set");
+    let wal_path = node_state.node_config.wal_path.expect("wal_path not set");
+    let mempool_ipc_path = node_state
+        .node_config
+        .mempool_ipc_path
+        .expect("mempool_ipc_path not set");
+    let control_panel_ipc_path = node_state
+        .node_config
+        .control_panel_ipc_path
+        .expect("control_panel_ipc_path not set");
+    let statesync_ipc_path = node_state
+        .node_config
+        .statesync_ipc_path
+        .expect("statesync_ipc_path not set");
+    _ = std::fs::remove_file(mempool_ipc_path.as_path());
+    _ = std::fs::remove_file(control_panel_ipc_path.as_path());
+    _ = std::fs::remove_file(statesync_ipc_path.as_path());
 
     // FIXME this is super jank... we should always just pass the 1 file in monad-node
-    let mut statesync_triedb_path = node_state.triedb_path.clone();
+    let mut statesync_triedb_path = triedb_path.clone();
     if let Ok(files) = std::fs::read_dir(&statesync_triedb_path) {
         let mut files: Vec<_> = files.collect();
         assert_eq!(files.len(), 1, "nothing in triedb path");
@@ -216,7 +248,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
     };
 
     let state_backend = StateBackendThreadClient::new({
-        let triedb_path = node_state.triedb_path.clone();
+        let triedb_path = triedb_path.clone();
 
         move || {
             let triedb_handle =
@@ -230,14 +262,14 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         metrics: Default::default(),
         router,
         timer: TokioTimer::default(),
-        ledger: MonadBlockFileLedger::new(node_state.ledger_path),
+        ledger: MonadBlockFileLedger::new(ledger_path),
         config_file: ConfigFile::new(
-            node_state.forkpoint_path,
-            node_state.validators_path.clone(),
+            forkpoint_path,
+            validators_path.clone(),
             node_state.chain_config,
         ),
         val_set: ValSetUpdater::new(
-            node_state.validators_path,
+            validators_path,
             node_state.chain_config.get_epoch_length(),
             node_state.chain_config.get_staking_activation(),
             state_backend.clone(),
@@ -247,7 +279,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
             create_block_policy(),
             state_backend.clone(),
             EthTxPoolIpcConfig {
-                bind_path: node_state.mempool_ipc_path,
+                bind_path: mempool_ipc_path,
                 tx_batch_size: node_state.node_config.ipc_tx_batch_size as usize,
                 max_queued_batches: node_state.node_config.ipc_max_queued_batches as usize,
                 queued_batches_watermark: node_state.node_config.ipc_queued_batches_watermark
@@ -268,7 +300,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         )
         .expect("txpool ipc succeeds"),
         control_panel: ControlPanelIpcReceiver::new(
-            node_state.control_panel_ipc_path,
+            control_panel_ipc_path,
             node_state.reload_handle,
             1000,
         )
@@ -276,7 +308,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         loopback: LoopbackExecutor::default(),
         state_sync: StateSync::<SignatureType, SignatureCollectionType>::new(
             vec![statesync_triedb_path.to_string_lossy().to_string()],
-            node_state.statesync_sq_thread_cpu,
+            node_state.node_config.statesync_sq_thread_cpu,
             state_sync_init_peers,
             node_state
                 .node_config
@@ -284,8 +316,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
                 .into(),
             STATESYNC_REQUEST_TIMEOUT,
             STATESYNC_REQUEST_TIMEOUT,
-            node_state
-                .statesync_ipc_path
+            statesync_ipc_path
                 .to_str()
                 .expect("invalid file name")
                 .to_owned(),
@@ -294,13 +325,13 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
     };
 
     let logger_config: WALoggerConfig<LogFriendlyMonadEvent<_, _, _>> = WALoggerConfig::new(
-        node_state.wal_path.clone(), // output wal path
-        false,                       // flush on every write
+        wal_path.clone(), // output wal path
+        false,            // flush on every write
     );
     let Ok(mut wal) = logger_config.build() else {
         event!(
             Level::ERROR,
-            path = node_state.wal_path.as_path().display().to_string(),
+            path = wal_path.as_path().display().to_string(),
             "failed to initialize wal",
         );
         return Err(());

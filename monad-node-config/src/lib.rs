@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::path::PathBuf;
+
 use alloy_primitives::Address;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -45,6 +47,25 @@ pub struct NodeConfig<ST: CertificateSignatureRecoverable> {
     /////////////////////////////////
     // NODE-SPECIFIC CONFIGURATION //
     /////////////////////////////////
+    pub bls_identity: Option<PathBuf>,
+    pub secp_identity: Option<PathBuf>,
+    pub forkpoint_config: Option<PathBuf>,
+    pub validators_path: Option<PathBuf>,
+    pub devnet_chain_config_override: Option<PathBuf>,
+    pub wal_path: Option<PathBuf>,
+    pub ledger_path: Option<PathBuf>,
+    pub mempool_ipc_path: Option<PathBuf>,
+    pub triedb_path: Option<PathBuf>,
+    pub control_panel_ipc_path: Option<PathBuf>,
+    pub statesync_ipc_path: Option<PathBuf>,
+    pub statesync_sq_thread_cpu: Option<u32>,
+    pub otel_endpoint: Option<String>,
+    pub keystore_password: Option<String>,
+    pub record_metrics_interval_seconds: Option<u64>,
+    pub pprof: Option<String>,
+    pub manytrace_socket: Option<String>,
+    pub persisted_peers_path: Option<PathBuf>,
+
     pub node_name: String,
     pub network_name: String,
 
