@@ -40,7 +40,7 @@ use crate::{
 /// Additional gas added during a CALL.
 const CALL_STIPEND: u64 = 2_300;
 
-trait EthCallProvider {
+pub(super) trait EthCallProvider {
     async fn eth_call(
         &self,
         txn: TxEnvelope,
@@ -48,7 +48,7 @@ trait EthCallProvider {
     ) -> CallResult;
 }
 
-struct GasEstimator {
+pub(super) struct GasEstimator {
     chain_id: u64,
     block_header: Header,
     sender: Address,
@@ -58,7 +58,7 @@ struct GasEstimator {
 }
 
 impl GasEstimator {
-    fn new(
+    pub(super) fn new(
         chain_id: u64,
         block_header: Header,
         sender: Address,
@@ -110,7 +110,7 @@ impl EthCallProvider for GasEstimator {
     }
 }
 
-async fn estimate_gas<T: EthCallProvider>(
+pub(super) async fn estimate_gas<T: EthCallProvider>(
     provider: &T,
     eth_call_executor: Option<Arc<EthCallExecutor>>,
     call_request: &mut CallRequest,
