@@ -5141,6 +5141,7 @@ name = "monad-dataplane"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "clap 4.5.47",
  "env_logger 0.10.2",
  "futures",
  "futures-util",
@@ -6479,8 +6480,7 @@ dependencies = [
 [[package]]
 name = "monoio"
 version = "0.2.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3bd0f8bcde87b1949f95338b547543fcab187bc7e7a5024247e359a5e828ba6a"
+source = "git+https://github.com/category-labs/monoio.git?tag=0.2.4-category#de97820bff58120407ced67b3b11e00550cd1598"
 dependencies = [
  "auto-const-array",
  "bytes",
@@ -6502,8 +6502,7 @@ dependencies = [
 [[package]]
 name = "monoio-macros"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "176a5f5e69613d9e88337cf2a65e11135332b4efbcc628404a7c555e4452084c"
+source = "git+https://github.com/category-labs/monoio.git?tag=0.2.4-category#de97820bff58120407ced67b3b11e00550cd1598"
 dependencies = [
  "proc-macro2",
  "quote",

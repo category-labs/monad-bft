@@ -599,6 +599,7 @@ fn setup_node(
         SocketAddr::V4(SocketAddrV4::new(bind_ip, my_config.udp_addr.port()));
 
     let dataplane = DataplaneBuilder::new(&tcp_addr, UDP_BW)
+        .with_udp_multishot(true)
         .extend_udp_sockets(vec![
             monad_dataplane::UdpSocketConfig {
                 socket_addr: authenticated_udp_addr,

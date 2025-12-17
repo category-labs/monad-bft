@@ -557,7 +557,8 @@ where
 
     let network_config = node_config.network;
 
-    let mut dp_builder = DataplaneBuilder::new(&bind_address, network_config.max_mbps.into());
+    let mut dp_builder = DataplaneBuilder::new(&bind_address, network_config.max_mbps.into())
+        .with_udp_multishot(network_config.enable_udp_multishot);
     if let Some(buffer_size) = network_config.buffer_size {
         dp_builder = dp_builder.with_udp_buffer_size(buffer_size);
     }

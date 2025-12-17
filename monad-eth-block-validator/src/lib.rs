@@ -180,7 +180,8 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     CertificateSignaturePubKey<ST>: ExtractEthAddress,
 {
-    fn validate_block_header(
+    /// Set as a public function for fuzzer integration but does not need to be called externally otherwise
+    pub fn validate_block_header(
         header: &ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>,
         body: &ConsensusBlockBody<EthExecutionProtocol>,
         author_pubkey: Option<&SignatureCollectionPubKeyType<SCT>>,
@@ -305,7 +306,8 @@ where
     /// However, consensus does not have the latest account state to validate this due to delayed execution
     /// It is deemed acceptable to skip this validation in consensus
     /// As it is impractical for a sender to find a hash collision to deploy code on its own address
-    fn validate_block_body<CCT, CRT>(
+    /// Set as a public function for fuzzer integration but does not need to be called externally otherwise
+    pub fn validate_block_body<CCT, CRT>(
         header: &ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>,
         body: &ConsensusBlockBody<EthExecutionProtocol>,
         chain_config: &CCT,
