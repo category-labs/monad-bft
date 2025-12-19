@@ -13,11 +13,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{
-    net::SocketAddr,
-    time::{Duration, SystemTime},
-};
+use std::{net::SocketAddr, time::Duration};
 
+use tai64::Tai64N;
 use tracing::debug;
 
 use crate::{
@@ -83,7 +81,7 @@ pub struct SessionState {
     pub stored_cookie: Option<[u8; 16]>,
     pub last_handshake_mac1: Option<[u8; 16]>,
     pub retry_attempts: u64,
-    pub initiator_system_time: Option<SystemTime>,
+    pub initiator_timestamp: Option<Tai64N>,
     pub remote_addr: SocketAddr,
     pub remote_public_key: monad_secp::PubKey,
     pub local_index: SessionIndex,
@@ -98,7 +96,7 @@ impl SessionState {
         local_index: SessionIndex,
         created: Duration,
         retry_attempts: u64,
-        initiator_system_time: Option<SystemTime>,
+        initiator_timestamp: Option<Tai64N>,
         is_initiator: bool,
     ) -> Self {
         Self {
@@ -109,7 +107,7 @@ impl SessionState {
             stored_cookie: None,
             last_handshake_mac1: None,
             retry_attempts,
-            initiator_system_time,
+            initiator_timestamp,
             remote_addr,
             remote_public_key,
             local_index,
@@ -184,8 +182,8 @@ impl SessionState {
         self.stored_cookie
     }
 
-    pub fn initiator_system_time(&self) -> Option<SystemTime> {
-        self.initiator_system_time
+    pub fn initiator_timestamp(&self) -> Option<Tai64N> {
+        self.initiator_timestamp
     }
 
     pub fn handle_cookie(

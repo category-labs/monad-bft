@@ -13,8 +13,6 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::time::SystemTime;
-
 use tai64::Tai64N;
 use zeroize::Zeroizing;
 
@@ -54,14 +52,18 @@ impl Default for HandshakeState {
     }
 }
 
-pub fn send_handshake_init<R: secp256k1::rand::Rng + secp256k1::rand::CryptoRng>(
+pub fn send_handshake_init<R, T>(
     rng: &mut R,
-    system_time: SystemTime,
+    timestamp: T,
     local_session_index: u32,
     initiator_static_keypair: &monad_secp::KeyPair,
     responder_static_public: &monad_secp::PubKey,
     stored_cookie: Option<&[u8; 16]>,
-) -> (HandshakeInitiation, HandshakeState) {
+) -> (HandshakeInitiation, HandshakeState)
+where
+    R: secp256k1::rand::Rng + secp256k1::rand::CryptoRng,
+    T: Into<Tai64N>,
+{
     let initiator_static_public = initiator_static_keypair.pubkey().bytes_compressed();
     let ephemeral_keypair = monad_secp::KeyPair::generate(rng);
     let ephemeral_public = ephemeral_keypair.pubkey();
@@ -117,7 +119,7 @@ pub fn send_handshake_init<R: secp256k1::rand::Rng + secp256k1::rand::CryptoRng>
     inititiator.chaining_key = keyed_hash!(temp.as_ref(), &[0x1]).into();
     let key = keyed_hash!(temp.as_ref(), inititiator.chaining_key.as_ref(), &[0x2]);
 
-    let timestamp: Tai64N = system_time.into();
+    let timestamp: Tai64N = timestamp.into();
     msg.encrypted_timestamp = timestamp.to_bytes();
     msg.encrypted_timestamp_tag = encrypt_in_place(
         &(&key).into(),
@@ -145,7 +147,7 @@ pub fn send_handshake_init<R: secp256k1::rand::Rng + secp256k1::rand::CryptoRng>
 pub fn accept_handshake_init(
     responder_static_keypair: &monad_secp::KeyPair,
     msg: &mut HandshakeInitiation,
-) -> Result<(HandshakeState, SystemTime), HandshakeError> {
+) -> Result<(HandshakeState, Tai64N), HandshakeError> {
     let responder_static_public = responder_static_keypair.pubkey();
 
     let mut state = HandshakeState {
@@ -220,9 +222,8 @@ pub fn accept_handshake_init(
             size: msg.encrypted_timestamp.len(),
         }
     })?;
-    let system_time = timestamp.to_system_time();
 
-    Ok((state, system_time))
+    Ok((state, timestamp))
 }
 
 pub fn send_handshake_response<R: secp256k1::rand::Rng + secp256k1::rand::CryptoRng>(
@@ -357,6 +358,7 @@ pub fn derive_transport_keys(chaining_key: &HashOutput, is_initiator: bool) -> T
 mod tests {
     use std::time::{Duration, SystemTime};
 
+    use proptest::prelude::*;
     use secp256k1::rand::{rngs::StdRng, Rng, SeedableRng};
     use serde::Serialize;
     use zerocopy::IntoBytes;
@@ -832,5 +834,58 @@ mod tests {
         }
 
         insta::assert_yaml_snapshot!("multiple_protocol_vectors", all_traces);
+    }
+
+    fn tai64n_timestamp_strategy() -> impl Strategy<Value = (u64, u32)> {
+        prop_oneof![
+            // edge cases
+            Just((0u64, 0u32)),
+            Just((u64::MAX, 0u32)),
+            Just((u64::MAX, 999_999_999u32)),
+            // random timestamps
+            (any::<u64>(), 0u32..1_000_000_000u32),
+        ]
+    }
+
+    proptest! {
+        #[test]
+        fn prop_handshake_timestamp_no_panic(
+            (seconds, nanos) in tai64n_timestamp_strategy(),
+        ) {
+            let mut timestamp_bytes = [0u8; 12];
+            timestamp_bytes[..8].copy_from_slice(&seconds.to_be_bytes());
+            timestamp_bytes[8..].copy_from_slice(&nanos.to_be_bytes());
+
+            let mut rng = StdRng::seed_from_u64(999);
+
+            let initiator_keypair = monad_secp::KeyPair::generate(&mut rng);
+            let responder_keypair = monad_secp::KeyPair::generate(&mut rng);
+            let responder_public = responder_keypair.pubkey();
+
+            let timestamp = Tai64N::try_from(timestamp_bytes).unwrap();
+
+            let (init_msg, _) = send_handshake_init(
+                &mut rng,
+                timestamp,
+                1,
+                &initiator_keypair,
+                &responder_public,
+                None,
+            );
+
+            let mut init_msg_mut = init_msg;
+            let (_, decoded_timestamp) =
+                accept_handshake_init(&responder_keypair, &mut init_msg_mut).unwrap();
+
+            prop_assert_eq!(decoded_timestamp, timestamp);
+
+            let normal_timestamp = Tai64N::now();
+            let _ = decoded_timestamp.cmp(&normal_timestamp);
+            let _ = decoded_timestamp <= normal_timestamp;
+            let _ = decoded_timestamp >= normal_timestamp;
+
+            let stored: Option<Tai64N> = Some(decoded_timestamp);
+            let _ = stored.is_some_and(|max| normal_timestamp <= max);
+        }
     }
 }

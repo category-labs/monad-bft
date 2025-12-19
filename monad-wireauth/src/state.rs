@@ -16,10 +16,11 @@
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
     net::{IpAddr, SocketAddr},
-    time::{Duration, SystemTime},
+    time::Duration,
 };
 
 use monad_executor::ExecutorMetrics;
+use tai64::Tai64N;
 
 use crate::{
     metrics::*,
@@ -527,12 +528,12 @@ impl State {
             })
     }
 
-    pub fn get_max_timestamp(&self, remote_key: &monad_secp::PubKey) -> Option<SystemTime> {
+    pub fn get_max_timestamp(&self, remote_key: &monad_secp::PubKey) -> Option<Tai64N> {
         let accepted_max = self
             .accepted_sessions_by_peer
             .range((*remote_key, SessionIndex::new(0))..=(*remote_key, SessionIndex::new(u32::MAX)))
             .filter_map(|(_, session_id)| self.responding_sessions.get(session_id))
-            .filter_map(|s| s.initiator_system_time())
+            .filter_map(|s| s.initiator_timestamp())
             .max();
 
         let open_max = self
@@ -541,7 +542,7 @@ impl State {
             .and_then(|sessions| sessions.responder.current)
             .map(|(session_id, _)| session_id)
             .and_then(|session_id| self.transport_sessions.get(&session_id))
-            .and_then(|s| s.initiator_system_time());
+            .and_then(|s| s.initiator_timestamp());
 
         match (accepted_max, open_max) {
             (Some(a), Some(o)) => Some(a.max(o)),
@@ -739,7 +740,7 @@ mod tests {
         let validated_init = crate::session::responder::ValidatedHandshakeInit {
             handshake_state,
             remote_public_key: *remote_public_key,
-            system_time: SystemTime::now(),
+            timestamp: Tai64N::now(),
         };
 
         let config = Config::default();

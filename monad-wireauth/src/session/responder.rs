@@ -19,6 +19,8 @@ use std::{
     time::Duration,
 };
 
+use tai64::Tai64N;
+
 use super::{
     common::{add_jitter, RenewedTimer, SessionError, SessionState, SessionTimeoutResult},
     transport::TransportState,
@@ -35,7 +37,7 @@ use crate::{
 pub struct ValidatedHandshakeInit {
     pub(crate) handshake_state: crate::protocol::handshake::HandshakeState,
     pub(crate) remote_public_key: monad_secp::PubKey,
-    pub(crate) system_time: std::time::SystemTime,
+    pub(crate) timestamp: Tai64N,
 }
 
 pub struct ResponderState {
@@ -61,7 +63,7 @@ impl ResponderState {
         local_static_key: &monad_secp::KeyPair,
         handshake_packet: &mut HandshakeInitiation,
     ) -> Result<ValidatedHandshakeInit, SessionError> {
-        let (handshake_state, system_time) =
+        let (handshake_state, timestamp) =
             handshake::accept_handshake_init(local_static_key, handshake_packet)
                 .map_err(SessionError::HandshakeError)?;
 
@@ -72,7 +74,7 @@ impl ResponderState {
         Ok(ValidatedHandshakeInit {
             handshake_state,
             remote_public_key,
-            system_time,
+            timestamp,
         })
     }
 
@@ -102,7 +104,7 @@ impl ResponderState {
             local_session_index,
             duration_since_start,
             0,
-            Some(validated_init.system_time),
+            Some(validated_init.timestamp),
             false,
         );
         common.last_handshake_mac1 = Some(response_mac1);
