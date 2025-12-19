@@ -430,53 +430,70 @@ where
             Role::Client(client) => {
                 trace!("RaptorCastSecondary received group message");
                 // Received group message from validator
-                if let FullNodesGroupMessage::ConfirmGroup(confirm_msg) = &inbound_grp_msg {
-                    let num_mappings = confirm_msg.name_records.len();
-                    if num_mappings > 0 && num_mappings == confirm_msg.peers.len() {
-                        let mut peers: Vec<PeerEntry<ST>> = Vec::new();
-                        // FIXME: bind name records with peers and ask peer discovery to verify
-                        for ii in 0..num_mappings {
-                            let rec = &confirm_msg.name_records[ii];
-                            peers.push(rec.with_pubkey(confirm_msg.peers[ii].pubkey()).into());
-                        }
-                        this.peer_discovery_driver
-                            .lock()
-                            .unwrap()
-                            .update(PeerDiscoveryEvent::UpdatePeers { peers });
+                match inbound_grp_msg {
+                    FullNodesGroupMessage::PrepareGroup(invite_msg) => {
+                        let dest_node_id = invite_msg.validator_id;
+                        let resp = client.handle_prepare_group_message(invite_msg);
 
-                        // participated_nodes contains the validator and all full nodes in the group
-                        let mut participated_nodes: BTreeSet<
-                            NodeId<CertificateSignaturePubKey<ST>>,
-                        > = confirm_msg.peers.clone().into_iter().collect();
-                        participated_nodes.insert(confirm_msg.prepare.validator_id);
-                        this.peer_discovery_driver.lock().unwrap().update(
-                            PeerDiscoveryEvent::UpdateConfirmGroup {
-                                end_round: confirm_msg.prepare.end_round,
-                                peers: participated_nodes.clone(),
-                            },
-                        );
-
-                        ret = Poll::Ready(Some(
-                            RaptorCastEvent::SecondaryRaptorcastPeersUpdate(
-                                confirm_msg.prepare.end_round,
-                                participated_nodes.into_iter().collect(),
-                            )
-                            .into(),
-                        ));
-                    } else if num_mappings > 0 {
-                        warn!( ?confirm_msg, num_peers =? confirm_msg.peers.len(), num_name_recs =? confirm_msg.name_records.len(),
-                            "Number of peers does not match the number \
-                            of name records in ConfirmGroup message. \
-                            Skipping PeerDiscovery update"
+                        // Send back a response to the validator
+                        trace!("RaptorCastSecondary sending back response for group message");
+                        this.send_single_msg(
+                            FullNodesGroupMessage::PrepareGroupResponse(resp),
+                            dest_node_id,
                         );
                     }
-                }
-                if let Some((response_msg, validator_id)) =
-                    client.on_receive_group_message(inbound_grp_msg)
-                {
-                    // Send back a response to the validator
-                    trace!("RaptorCastSecondary sending back response for group message");
-                    this.send_single_msg(response_msg, validator_id);
+                    FullNodesGroupMessage::PrepareGroupResponse(_) => {
+                        error!(
+                            "RaptorCastSecondary client received a \
+                                PrepareGroupResponse message"
+                        );
+                    }
+                    FullNodesGroupMessage::ConfirmGroup(confirm_msg) => {
+                        let is_valid = client.handle_confirm_group_message(confirm_msg.clone());
+                        if is_valid {
+                            // Update peer discovery with peers from confirm group message
+                            let num_mappings = confirm_msg.name_records.len();
+                            if num_mappings > 0 && num_mappings == confirm_msg.peers.len() {
+                                let peers: Vec<PeerEntry<ST>> = confirm_msg
+                                    .name_records
+                                    .iter()
+                                    .zip(confirm_msg.peers.iter())
+                                    .map(|(rec, peer)| rec.with_pubkey(peer.pubkey()).into())
+                                    .collect();
+
+                                this.peer_discovery_driver
+                                    .lock()
+                                    .unwrap()
+                                    .update(PeerDiscoveryEvent::UpdatePeers { peers });
+
+                                // participated_nodes contains the validator and all full nodes in the group
+                                let mut participated_nodes: BTreeSet<
+                                    NodeId<CertificateSignaturePubKey<ST>>,
+                                > = confirm_msg.peers.clone().into_iter().collect();
+                                participated_nodes.insert(confirm_msg.prepare.validator_id);
+                                this.peer_discovery_driver.lock().unwrap().update(
+                                    PeerDiscoveryEvent::UpdateConfirmGroup {
+                                        end_round: confirm_msg.prepare.end_round,
+                                        peers: participated_nodes.clone(),
+                                    },
+                                );
+
+                                ret = Poll::Ready(Some(
+                                    RaptorCastEvent::SecondaryRaptorcastPeersUpdate(
+                                        confirm_msg.prepare.end_round,
+                                        participated_nodes.into_iter().collect(),
+                                    )
+                                    .into(),
+                                ));
+                            } else if num_mappings > 0 {
+                                warn!( ?confirm_msg, num_peers =? confirm_msg.peers.len(), num_name_recs =? confirm_msg.name_records.len(),
+                                    "Number of peers does not match the number \
+                                    of name records in ConfirmGroup message. \
+                                    Skipping PeerDiscovery update"
+                                );
+                            }
+                        }
+                    }
                 }
             }
         }

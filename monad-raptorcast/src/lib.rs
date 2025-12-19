@@ -1033,9 +1033,20 @@ where
                             match &this.channel_to_secondary {
                                 Some(channel) => {
                                     // drop full node group message with unauthorized sender
+                                    let Some(current_epoch_validators) =
+                                        this.epoch_validators.get(&this.current_epoch)
+                                    else {
+                                        warn!(
+                                            "No validators found for current epoch: {:?}",
+                                            this.current_epoch
+                                        );
+                                        continue;
+                                    };
+
                                     if !validate_group_message_sender(
                                         &from,
                                         &full_nodes_group_message,
+                                        current_epoch_validators,
                                     ) {
                                         warn!(
                                             ?from,
@@ -1301,12 +1312,16 @@ where
 fn validate_group_message_sender<ST>(
     sender: &NodeId<CertificateSignaturePubKey<ST>>,
     group_message: &FullNodesGroupMessage<ST>,
+    epoch_validators: &EpochValidators<ST>,
 ) -> bool
 where
     ST: CertificateSignatureRecoverable,
 {
     match group_message {
-        FullNodesGroupMessage::PrepareGroup(msg) => &msg.validator_id == sender,
+        // Prepare group message should originate from a validator
+        FullNodesGroupMessage::PrepareGroup(msg) => {
+            &msg.validator_id == sender && epoch_validators.validators.contains_key(sender)
+        }
         FullNodesGroupMessage::PrepareGroupResponse(msg) => &msg.node_id == sender,
         FullNodesGroupMessage::ConfirmGroup(msg) => &msg.prepare.validator_id == sender,
     }

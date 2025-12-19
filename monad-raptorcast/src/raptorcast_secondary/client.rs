@@ -26,7 +26,7 @@ use tracing::{debug, error, warn};
 
 use super::{
     super::{config::RaptorCastConfigSecondaryClient, util::Group},
-    group_message::{ConfirmGroup, FullNodesGroupMessage, PrepareGroup, PrepareGroupResponse},
+    group_message::{ConfirmGroup, PrepareGroup, PrepareGroupResponse},
 };
 
 /// Metrics constant
@@ -255,7 +255,7 @@ where
         true
     }
 
-    fn handle_prepare_group_message(
+    pub fn handle_prepare_group_message(
         &mut self,
         invite_msg: PrepareGroup<ST>,
     ) -> PrepareGroupResponse<ST> {
@@ -284,7 +284,7 @@ where
         }
     }
 
-    fn handle_confirm_group_message(&mut self, confirm_msg: ConfirmGroup<ST>) {
+    pub fn handle_confirm_group_message(&mut self, confirm_msg: ConfirmGroup<ST>) -> bool {
         let start_round = &confirm_msg.prepare.start_round;
 
         // Drop the message if the round span is invalid
@@ -296,7 +296,7 @@ where
                 "RaptorCastSecondary ignoring invalid round span, confirm = {:?}",
                 confirm_msg
             );
-            return;
+            return false;
         };
 
         // Drop the group if we've already entered the round
@@ -306,7 +306,7 @@ where
                         {:?}, confirm = {:?}",
                 self.curr_round, confirm_msg
             );
-            return;
+            return false;
         }
 
         let Some(invites) = self.pending_confirms.get_mut(start_round) else {
@@ -315,7 +315,7 @@ where
                         for unrecognized start round: {:?}",
                 confirm_msg
             );
-            return;
+            return false;
         };
 
         let maybe_entry = invites.get(&confirm_msg.prepare.validator_id);
@@ -325,7 +325,7 @@ where
                             unrecognized validator id: {:?}",
                 confirm_msg
             );
-            return;
+            return false;
         };
 
         if old_invite != &confirm_msg.prepare {
@@ -334,7 +334,7 @@ where
                                 doesn't match the original invite. Expected: {:?}, got: {:?}",
                 old_invite, confirm_msg.prepare
             );
-            return;
+            return false;
         }
 
         let confirm_group_size = confirm_msg.peers.len();
@@ -347,7 +347,7 @@ where
                 confirm_msg.prepare.max_group_size,
                 confirm_msg
             );
-            return;
+            return false;
         }
 
         if !confirm_msg.peers.contains(&self.client_node_id) {
@@ -356,7 +356,7 @@ where
                                 with a group that does not contain our node_id: {:?}",
                 confirm_msg
             );
-            return;
+            return false;
         }
 
         let group = GroupAsClient::new_fullnode_group(
@@ -394,43 +394,14 @@ where
         invites.remove(&confirm_msg.prepare.validator_id);
 
         self.metrics[CLIENT_NUM_CURRENT_GROUPS] = self.get_current_group_count();
+
+        true
     }
 
     fn get_current_group_count(&self) -> u64 {
         self.confirmed_groups
             .intervals(self.curr_round..self.curr_round + Round(1))
             .count() as u64
-    }
-
-    // Called when group invite or group confirmation is received from validator
-    pub fn on_receive_group_message(
-        &mut self,
-        msg: FullNodesGroupMessage<ST>,
-    ) -> Option<(
-        FullNodesGroupMessage<ST>,
-        NodeId<CertificateSignaturePubKey<ST>>,
-    )> {
-        match msg {
-            FullNodesGroupMessage::PrepareGroup(invite_msg) => {
-                let dest_node_id = invite_msg.validator_id;
-                let resp = self.handle_prepare_group_message(invite_msg);
-                Some((
-                    FullNodesGroupMessage::PrepareGroupResponse(resp),
-                    dest_node_id,
-                ))
-            }
-            FullNodesGroupMessage::ConfirmGroup(confirm_msg) => {
-                self.handle_confirm_group_message(confirm_msg);
-                None
-            }
-            FullNodesGroupMessage::PrepareGroupResponse(_) => {
-                error!(
-                    "RaptorCastSecondary client received a \
-                                PrepareGroupResponse message"
-                );
-                None
-            }
-        }
     }
 
     fn overlaps(begin: Round, end: Round, group: &PrepareGroup<ST>) -> bool {
