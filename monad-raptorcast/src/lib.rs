@@ -586,6 +586,7 @@ where
             invite_future_dist_min: Round(1),
             invite_future_dist_max: Round(5),
             invite_accept_heartbeat_ms: 100,
+            prioritized_upstream: vec![],
         },
     };
     let pd = PeerDiscoveryDriver::new(peer_discovery_builder);
@@ -895,6 +896,10 @@ where
                     prioritized_full_nodes: _,
                 } => {
                     self.dedicated_full_nodes.list = dedicated_full_nodes;
+                }
+                RouterCommand::UpdateUpstreamValidators { .. } => {
+                    // Primary RaptorCast doesn't need upstream validators config
+                    // This command is consumed by secondary RaptorCast only
                 }
             }
         }

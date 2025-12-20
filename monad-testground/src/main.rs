@@ -352,6 +352,7 @@ where
                                 invite_future_dist_min: Round(1),
                                 invite_future_dist_max: Round(5),
                                 invite_accept_heartbeat_ms: 100,
+                                prioritized_upstream: vec![],
                             },
                         }),
                     },

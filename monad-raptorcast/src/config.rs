@@ -134,12 +134,15 @@ where
     ST: CertificateSignatureRecoverable,
 {
     None, // Not participating in any raptor-casting to full-nodes.
-    Client(RaptorCastConfigSecondaryClient), // i.e. we are a full-node
+    Client(RaptorCastConfigSecondaryClient<ST>), // i.e. we are a full-node
     Publisher(RaptorCastConfigSecondaryPublisher<ST>), // we are a validator
 }
 
 #[derive(Clone)]
-pub struct RaptorCastConfigSecondaryClient {
+pub struct RaptorCastConfigSecondaryClient<ST>
+where
+    ST: CertificateSignatureRecoverable,
+{
     // Maximum number of groups a full node will join at a time
     pub max_num_group: usize,
     // Maximum number of full nodes in a group
@@ -150,16 +153,22 @@ pub struct RaptorCastConfigSecondaryClient {
     pub invite_future_dist_min: Round,
     pub invite_future_dist_max: Round,
     pub invite_accept_heartbeat: Duration,
+    // Prioritized upstream validators that this full node prefers to connect to
+    pub prioritized_upstream: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
 }
 
-impl Default for RaptorCastConfigSecondaryClient {
-    fn default() -> RaptorCastConfigSecondaryClient {
+impl<ST> Default for RaptorCastConfigSecondaryClient<ST>
+where
+    ST: CertificateSignatureRecoverable,
+{
+    fn default() -> RaptorCastConfigSecondaryClient<ST> {
         RaptorCastConfigSecondaryClient {
             max_num_group: 3,
             max_group_size: 50,
             invite_future_dist_min: Round(1),
             invite_future_dist_max: Round(600), // ~5 minutes into the future, with current round length of 500ms
             invite_accept_heartbeat: Duration::from_secs(10),
+            prioritized_upstream: Default::default(),
         }
     }
 }
