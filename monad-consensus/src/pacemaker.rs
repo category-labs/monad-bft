@@ -194,9 +194,20 @@ where
         safety: &mut Safety<ST, SCT, EPT>,
         certificate: RoundCertificate<ST, SCT, EPT>,
     ) -> Vec<PacemakerCommand<ST, SCT, EPT>> {
-        if certificate.round() <= self.high_certificate.round() {
+          if certificate.round() <= self.high_certificate.round() {
+            match (&certificate, &self.high_certificate) {
+                (RoundCertificate::Qc(qc), RoundCertificate::Tc(tc)) => {
+                    if qc.info.round == tc.round {
+                        debug!(?certificate, "same round qc");
+                        safety.process_certificate(&certificate);
+                        self.high_certificate = certificate;
+                    }
+                }
+                _ =>{}
+            }
             return Default::default();
         }
+
         debug!(?certificate, "advancing round");
         match &certificate {
             RoundCertificate::Qc(_) => {
