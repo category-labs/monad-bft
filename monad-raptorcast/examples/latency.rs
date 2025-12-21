@@ -45,7 +45,9 @@ use monad_peer_discovery::{
     MonadNameRecord, NameRecord,
 };
 use monad_raptorcast::{
+    auth::WireAuthProtocol,
     config::{RaptorCastConfig, RaptorCastConfigPrimary},
+    networking::Dataplane,
     raptorcast_secondary::SecondaryRaptorCastModeConfig,
     RaptorCast, RaptorCastEvent, AUTHENTICATED_RAPTORCAST_SOCKET, RAPTORCAST_SOCKET,
 };
@@ -519,7 +521,8 @@ struct NodeSetup {
         MockMessage,
         <MockMessage as Message>::Event,
         NopDiscovery<SignatureType>,
-        monad_raptorcast::auth::WireAuthProtocol,
+        WireAuthProtocol,
+        Dataplane,
     >,
     node_id: NodeId<CertificateSignaturePubKey<SignatureType>>,
     tcp_addr: SocketAddrV4,
@@ -637,8 +640,7 @@ fn setup_node(
 
     let keypair_arc = Arc::new(keypair);
     let wireauth_config = monad_wireauth::Config::default();
-    let auth_protocol =
-        monad_raptorcast::auth::WireAuthProtocol::new(wireauth_config, keypair_arc.clone());
+    let auth_protocol = WireAuthProtocol::new(wireauth_config, keypair_arc.clone());
 
     let mut raptorcast = RaptorCast::<
         SignatureType,
@@ -646,7 +648,8 @@ fn setup_node(
         MockMessage,
         <MockMessage as Message>::Event,
         NopDiscovery<SignatureType>,
-        monad_raptorcast::auth::WireAuthProtocol,
+        WireAuthProtocol,
+        Dataplane,
     >::new(
         create_raptorcast_config(keypair_arc),
         SecondaryRaptorCastModeConfig::None,
