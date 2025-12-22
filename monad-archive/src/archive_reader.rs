@@ -41,6 +41,13 @@ pub struct ArchiveReader {
     pub log_index: Option<LogsIndexArchiver>,
 }
 
+pub fn redact_mongo_url(url: &str) -> String {
+    let redacted = regex::Regex::new(r"(mongodb(?:\+srv)?://)[^@]+(@)")
+        .unwrap()
+        .replace(url, "$1***$2");
+    redacted.to_string()
+}
+
 impl ArchiveReader {
     pub fn get_circuit_breaker_metrics(
         &self,
@@ -102,7 +109,11 @@ impl ArchiveReader {
         metrics: Metrics,
         max_time_get: Option<Duration>,
     ) -> Result<ArchiveReader> {
-        info!(url, db, "Initializing MongoDB ArchiveReader");
+        info!(
+            "Initializing MongoDB ArchiveReader with connection: {}, database: {}",
+            redact_mongo_url(&url),
+            db
+        );
         trace!("Creating MongoDB block store");
         let mut block_store = MongoDbStorage::new_block_store(&url, &db, metrics.clone()).await?;
         if let Some(max_time_get) = max_time_get {
@@ -963,5 +974,47 @@ mod tests {
 
         // This is the DESIRABLE behavior - we don't want to hammer a recovering service
         // but we also don't want to use fallback forever
+    }
+
+    #[test]
+    fn test_redact_mongo_url() {
+        // Standard mongodb URL with credentials
+        assert_eq!(
+            redact_mongo_url("mongodb://user:password@localhost:27017/testdb"),
+            "mongodb://***@localhost:27017/testdb"
+        );
+
+        // MongoDB SRV URL with credentials
+        assert_eq!(
+            redact_mongo_url("mongodb+srv://admin:secret123@cluster.mongodb.net/mydb"),
+            "mongodb+srv://***@cluster.mongodb.net/mydb"
+        );
+
+        // URL without credentials (no @ sign) - should remain unchanged
+        assert_eq!(
+            redact_mongo_url("mongodb://localhost:27017/testdb"),
+            "mongodb://localhost:27017/testdb"
+        );
+
+        // URL with only username (no password)
+        assert_eq!(
+            redact_mongo_url("mongodb://onlyuser@host:27017/db"),
+            "mongodb://***@host:27017/db"
+        );
+
+        // Non-mongodb URL - should remain unchanged
+        assert_eq!(
+            redact_mongo_url("postgres://user:pass@host/db"),
+            "postgres://user:pass@host/db"
+        );
+
+        // Empty string
+        assert_eq!(redact_mongo_url(""), "");
+
+        // Credentials with special characters
+        assert_eq!(
+            redact_mongo_url("mongodb://user:p%40ssword@host:27017/db"),
+            "mongodb://***@host:27017/db"
+        );
     }
 }

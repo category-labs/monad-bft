@@ -27,7 +27,7 @@ use serde::{
 };
 use serde_json::{Map as JsonMap, Value as JsonValue};
 
-use crate::{kvstore::mongo::MongoDbStorage, prelude::*};
+use crate::{archive_reader::redact_mongo_url, kvstore::mongo::MongoDbStorage, prelude::*};
 
 const DEFAULT_BUCKET_TIMEOUT: u64 = 10;
 const DEFAULT_CONCURRENCY: usize = 50;
@@ -265,7 +265,11 @@ impl BlockDataReaderArgs {
             Aws(aws_cli_args) => aws_cli_args.bucket.clone(),
             Triedb(trie_db_cli_args) => trie_db_cli_args.triedb_path.clone(),
             MongoDb(mongo_db_cli_args) => {
-                format!("{}:{}", mongo_db_cli_args.url, mongo_db_cli_args.db)
+                format!(
+                    "{}:{}",
+                    redact_mongo_url(&mongo_db_cli_args.url),
+                    mongo_db_cli_args.db
+                )
             }
             Fs(fs_cli_args) => fs_cli_args.path.to_string_lossy().into_owned(),
         }

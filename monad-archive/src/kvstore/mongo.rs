@@ -25,6 +25,7 @@ use serde::{Deserialize, Serialize};
 use tracing::trace;
 
 use crate::{
+    archive_reader::redact_mongo_url,
     kvstore::{kvstore_put_metrics, KVStoreType, MetricsResultExt, PutResult, WritePolicy},
     prelude::*,
 };
@@ -132,7 +133,7 @@ impl MongoDbStorage {
     ) -> Result<Self> {
         trace!(
             "Creating MongoDB index store with connection: {}, database: {}",
-            connection_string,
+            redact_mongo_url(connection_string),
             database
         );
         Self::new(connection_string, database, "tx_index", metrics).await
@@ -145,7 +146,7 @@ impl MongoDbStorage {
     ) -> Result<Self> {
         trace!(
             "Creating MongoDB block store with connection: {}, database: {}",
-            connection_string,
+            redact_mongo_url(connection_string),
             database
         );
         Self::new(connection_string, database, "block_level", metrics).await
@@ -159,7 +160,8 @@ impl MongoDbStorage {
     ) -> Result<Self> {
         info!(
             "Initializing MongoDB connection to {}/{}",
-            connection_string, database
+            redact_mongo_url(connection_string),
+            database
         );
 
         let client = new_client(connection_string).await?;
