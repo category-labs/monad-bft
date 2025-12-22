@@ -495,7 +495,7 @@ fn deserialize_variant<E: de::Error, T: DeserializeOwned>(
         .map_err(|err| E::custom(format!("failed to parse {label}: {err}")))
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default, Eq, PartialEq, Hash)]
+#[derive(Clone, Serialize, Deserialize, Default, Eq, PartialEq, Hash)]
 pub struct AwsCliArgs {
     pub bucket: String,
     pub region: Option<String>,
@@ -512,6 +512,31 @@ pub struct AwsCliArgs {
     pub operation_attempt_timeout_secs: u64,
     #[serde(default = "get_default_bucket_timeout")]
     pub read_timeout_secs: u64,
+}
+
+impl std::fmt::Debug for AwsCliArgs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AwsCliArgs")
+            .field("bucket", &self.bucket)
+            .field("region", &self.region)
+            .field("endpoint", &self.endpoint)
+            .field(
+                "access_key_id",
+                &self.access_key_id.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field(
+                "secret_access_key",
+                &self.secret_access_key.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("concurrency", &self.concurrency)
+            .field("operation_timeout_secs", &self.operation_timeout_secs)
+            .field(
+                "operation_attempt_timeout_secs",
+                &self.operation_attempt_timeout_secs,
+            )
+            .field("read_timeout_secs", &self.read_timeout_secs)
+            .finish()
+    }
 }
 
 impl AwsCliArgs {
@@ -958,5 +983,79 @@ mod tests {
 
         let local = ArchiveArgs::from_str("fs /tmp/archive").unwrap();
         assert_eq!(local.replica_name(), "/tmp/archive");
+    }
+
+    #[test]
+    fn aws_debug_redacts_secrets_when_present() {
+        let args = AwsCliArgs {
+            bucket: "my-bucket".to_string(),
+            region: Some("us-east-1".to_string()),
+            endpoint: Some("https://s3.amazonaws.com".to_string()),
+            access_key_id: Some("AKIAIOSFODNN7EXAMPLE".to_string()),
+            secret_access_key: Some("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY".to_string()),
+            concurrency: 10,
+            operation_timeout_secs: 30,
+            operation_attempt_timeout_secs: 30,
+            read_timeout_secs: 30,
+        };
+
+        let debug_output = format!("{:?}", args);
+
+        // Should NOT contain actual secrets
+        assert!(!debug_output.contains("AKIAIOSFODNN7EXAMPLE"));
+        assert!(!debug_output.contains("wJalrXUtnFEMI"));
+        assert!(!debug_output.contains("bPxRfiCYEXAMPLEKEY"));
+
+        // Should contain [REDACTED] for secret fields
+        assert!(debug_output.contains("[REDACTED]"));
+
+        // Should still contain non-secret fields
+        assert!(debug_output.contains("my-bucket"));
+        assert!(debug_output.contains("us-east-1"));
+    }
+
+    #[test]
+    fn aws_debug_shows_none_when_secrets_absent() {
+        let args = AwsCliArgs {
+            bucket: "my-bucket".to_string(),
+            region: None,
+            endpoint: None,
+            access_key_id: None,
+            secret_access_key: None,
+            concurrency: 10,
+            operation_timeout_secs: 30,
+            operation_attempt_timeout_secs: 30,
+            read_timeout_secs: 30,
+        };
+
+        let debug_output = format!("{:?}", args);
+
+        // When secrets are None, should show None (not [REDACTED])
+        assert!(debug_output.contains("access_key_id: None"));
+        assert!(debug_output.contains("secret_access_key: None"));
+    }
+
+    #[test]
+    fn aws_debug_does_not_leak_secrets_in_alternate_format() {
+        let args = AwsCliArgs {
+            bucket: "test".to_string(),
+            region: None,
+            endpoint: None,
+            access_key_id: Some("SECRET_KEY_ID".to_string()),
+            secret_access_key: Some("SECRET_ACCESS_KEY".to_string()),
+            concurrency: default_aws_concurrency(),
+            operation_timeout_secs: get_default_bucket_timeout(),
+            operation_attempt_timeout_secs: get_default_bucket_timeout(),
+            read_timeout_secs: get_default_bucket_timeout(),
+        };
+
+        // Test both {:?} and {:#?} (pretty print)
+        let debug_output = format!("{:?}", args);
+        let pretty_output = format!("{:#?}", args);
+
+        assert!(!debug_output.contains("SECRET_KEY_ID"));
+        assert!(!debug_output.contains("SECRET_ACCESS_KEY"));
+        assert!(!pretty_output.contains("SECRET_KEY_ID"));
+        assert!(!pretty_output.contains("SECRET_ACCESS_KEY"));
     }
 }
