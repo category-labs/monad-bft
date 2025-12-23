@@ -29,9 +29,6 @@ const BFT_BLOCK_BODY_EXTENSION: &str = ".body";
 const BFT_BLOCK_HEADER_FILE_PATH: &str = "headers/";
 const BFT_BLOCK_BODY_FILE_PATH: &str = "bodies/";
 
-// Number of concurrent uploads
-const UPLOAD_CONCURRENCY: usize = 20;
-
 #[allow(clippy::doc_overindented_list_items)]
 /// Worker that archives BFT consensus block files to durable storage.
 /// Simple algorithm:
@@ -52,6 +49,7 @@ pub async fn bft_block_archive_worker(
     poll_frequency: Duration,
     metrics: Metrics,
     min_age: Option<Duration>,
+    upload_concurrency: usize,
 ) -> Result<()> {
     let mut interval = tokio::time::interval(poll_frequency);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -75,6 +73,7 @@ pub async fn bft_block_archive_worker(
             bodies_path.clone(),
             &metrics,
             min_age,
+            upload_concurrency,
         )
         .await;
 
@@ -92,6 +91,7 @@ async fn archive_bft_blocks(
     bodies_path: PathBuf,
     metrics: &Metrics,
     min_age: Option<Duration>,
+    upload_concurrency: usize,
 ) -> Result<()> {
     // 1) Build a single map of local keys to paths.
     let mut local: HashMap<String, PathBuf> = HashMap::new();
@@ -145,7 +145,7 @@ async fn archive_bft_blocks(
                 }
             }
         })
-        .buffer_unordered(UPLOAD_CONCURRENCY)
+        .buffer_unordered(upload_concurrency)
         .for_each(|x| {
             if let Some(key) = x {
                 known_in_s3.insert(key);
@@ -290,6 +290,7 @@ mod tests {
             bodies_path.clone(),
             &Metrics::none(),
             None,
+            10,
         )
         .await
         .unwrap();
@@ -350,6 +351,7 @@ mod tests {
             bodies_path.clone(),
             &Metrics::none(),
             None,
+            10,
         )
         .await
         .unwrap();
@@ -391,6 +393,7 @@ mod tests {
             bodies_path.clone(),
             &Metrics::none(),
             None,
+            10,
         )
         .await
         .unwrap();
@@ -445,6 +448,7 @@ mod tests {
             bodies_path.clone(),
             &Metrics::none(),
             None,
+            10,
         )
         .await
         .unwrap();
@@ -582,6 +586,7 @@ mod tests {
                 Duration::from_millis(20),
                 metrics,
                 None,
+                10,
             )
             .await;
         });

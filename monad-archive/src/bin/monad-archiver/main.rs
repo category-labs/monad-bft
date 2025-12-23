@@ -90,6 +90,7 @@ async fn main() -> Result<()> {
             Duration::from_secs(args.bft_block_poll_freq_secs),
             metrics.clone(),
             Some(Duration::from_secs(args.bft_block_min_age_secs)),
+            args.bft_block_upload_concurrency,
         ));
         worker_handles.push(handle);
     }

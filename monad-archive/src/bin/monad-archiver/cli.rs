@@ -88,6 +88,9 @@ pub struct Cli {
     #[serde(default = "default_bft_block_min_age_secs")]
     pub bft_block_min_age_secs: u64,
 
+    #[serde(default = "default_bft_block_upload_concurrency")]
+    pub bft_block_upload_concurrency: usize,
+
     /// Path to forkpoint for checkpoint'ing
     /// If set, archiver will save a copy of this file every forkpoint_checkpoint_freq_secs
     pub forkpoint_path: Option<PathBuf>,
@@ -175,6 +178,7 @@ impl Cli {
             bft_block_path,
             bft_block_poll_freq_secs,
             bft_block_min_age_secs,
+            bft_block_upload_concurrency,
             forkpoint_path,
             forkpoint_checkpoint_freq_secs,
             additional_files_to_checkpoint,
@@ -208,6 +212,8 @@ impl Cli {
                 .unwrap_or_else(default_bft_block_poll_freq_secs),
             bft_block_min_age_secs: bft_block_min_age_secs
                 .unwrap_or_else(default_bft_block_min_age_secs),
+            bft_block_upload_concurrency: bft_block_upload_concurrency
+                .unwrap_or_else(default_bft_block_upload_concurrency),
             forkpoint_path,
             forkpoint_checkpoint_freq_secs: forkpoint_checkpoint_freq_secs
                 .unwrap_or_else(default_forkpoint_checkpoint_freq_secs),
@@ -259,6 +265,9 @@ impl Cli {
         }
         if let Some(value) = overrides.bft_block_min_age_secs {
             self.bft_block_min_age_secs = value;
+        }
+        if let Some(value) = overrides.bft_block_upload_concurrency {
+            self.bft_block_upload_concurrency = value;
         }
         if let Some(value) = overrides.forkpoint_path {
             self.forkpoint_path = Some(value);
@@ -380,6 +389,9 @@ struct CliArgs {
     #[arg(long)]
     bft_block_min_age_secs: Option<u64>,
 
+    #[arg(long)]
+    bft_block_upload_concurrency: Option<usize>,
+
     /// Path to forkpoint for checkpoint'ing
     /// If set, archiver will save a copy of this file every forkpoint_checkpoint_freq_secs
     #[arg(long)]
@@ -441,6 +453,7 @@ impl CliArgs {
             bft_block_path,
             bft_block_poll_freq_secs,
             bft_block_min_age_secs,
+            bft_block_upload_concurrency,
             forkpoint_path,
             forkpoint_checkpoint_freq_secs,
             additional_files_to_checkpoint,
@@ -468,6 +481,7 @@ impl CliArgs {
             bft_block_path,
             bft_block_poll_freq_secs,
             bft_block_min_age_secs,
+            bft_block_upload_concurrency,
             forkpoint_path,
             forkpoint_checkpoint_freq_secs,
             additional_files_to_checkpoint,
@@ -503,6 +517,7 @@ struct CliOverrides {
     bft_block_path: Option<PathBuf>,
     bft_block_poll_freq_secs: Option<u64>,
     bft_block_min_age_secs: Option<u64>,
+    bft_block_upload_concurrency: Option<usize>,
     forkpoint_path: Option<PathBuf>,
     forkpoint_checkpoint_freq_secs: Option<u64>,
     additional_files_to_checkpoint: Option<Vec<PathBuf>>,
@@ -540,6 +555,10 @@ fn default_bft_block_poll_freq_secs() -> u64 {
 }
 
 fn default_bft_block_min_age_secs() -> u64 {
+    10
+}
+
+fn default_bft_block_upload_concurrency() -> usize {
     10
 }
 

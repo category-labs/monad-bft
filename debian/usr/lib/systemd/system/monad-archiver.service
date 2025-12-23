@@ -10,7 +10,8 @@ ExecStart=/usr/local/bin/monad-archiver \
     --archive-sink ${ARCHIVE_SINK} \
     --bft-block-path ${BFT_BLOCK_PATH} \
     --otel-endpoint ${OTEL_ENDPOINT} \
-    --max-concurrent-blocks ${MAX_CONCURRENT_BLOCKS}
+    --max-concurrent-blocks ${MAX_CONCURRENT_BLOCKS} \
+    --bft-block-upload-concurrency ${BFT_BLOCK_UPLOAD_CONCURRENCY}
 EnvironmentFile=-/home/monad/.env
 Environment="RUST_LOG=debug,h2=warn,tower=warn"
 Restart=no
