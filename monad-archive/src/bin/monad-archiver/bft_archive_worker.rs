@@ -30,7 +30,7 @@ const BFT_BLOCK_HEADER_FILE_PATH: &str = "headers/";
 const BFT_BLOCK_BODY_FILE_PATH: &str = "bodies/";
 
 // Number of concurrent uploads
-const UPLOAD_CONCURRENCY: usize = 10;
+const UPLOAD_CONCURRENCY: usize = 20;
 
 #[allow(clippy::doc_overindented_list_items)]
 /// Worker that archives BFT consensus block files to durable storage.
