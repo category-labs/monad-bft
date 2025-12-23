@@ -63,4 +63,9 @@ impl KVReader for CloudProxyReader {
 
         Ok(Some(bytes.into()))
     }
+
+    async fn head(&self, key: &str) -> Result<Option<u64>> {
+        // CloudProxy doesn't have a native HEAD operation, fall back to get
+        Ok(self.get(key).await?.map(|b| b.len() as u64))
+    }
 }

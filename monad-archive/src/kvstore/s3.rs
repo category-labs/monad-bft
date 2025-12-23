@@ -114,6 +114,29 @@ impl KVReader for Bucket {
             Ok(Some(bytes))
         }
     }
+
+    async fn head(&self, key: &str) -> Result<Option<u64>> {
+        trace!(key, "S3 head");
+        let req = self
+            .client
+            .head_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .request_payer(aws_sdk_s3::types::RequestPayer::Requester);
+
+        match req.send().await {
+            Ok(resp) => Ok(Some(resp.content_length().unwrap_or(0) as u64)),
+            Err(SdkError::ServiceError(service_err)) => {
+                if service_err.err().is_not_found() {
+                    Ok(None)
+                } else {
+                    Err(SdkError::ServiceError(service_err))
+                        .wrap_err_with(|| format!("Failed to head key from s3 {key}"))
+                }
+            }
+            Err(e) => Err(e).wrap_err_with(|| format!("Failed to head key from s3 {key}")),
+        }
+    }
 }
 
 impl KVStore for Bucket {

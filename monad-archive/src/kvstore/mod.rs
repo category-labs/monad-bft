@@ -114,6 +114,9 @@ pub trait KVStore: KVReader {
 #[enum_dispatch]
 pub trait KVReader: Clone {
     async fn get(&self, key: &str) -> Result<Option<Bytes>>;
+    /// Returns content length if key exists, None if not found.
+    /// More efficient than get() for existence checks as it doesn't download content.
+    async fn head(&self, key: &str) -> Result<Option<u64>>;
     async fn bulk_get(&self, keys: &[String]) -> Result<HashMap<String, Bytes>> {
         // Note: a stream based approach runs into lifetime generality errors for some reason here.
         // After a lot of variations I could not get it to work, so fell back on this join_all approach even

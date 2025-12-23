@@ -163,11 +163,21 @@ async fn process_single_file(
     path: &PathBuf,
     metrics: &Metrics,
 ) -> Result<Option<String>> {
-    // Check if file exists in S3
-    if s3_exists_key(&store, key).await? {
-        metrics.inc_counter(MetricNames::BFT_BLOCK_FILES_ALREADY_IN_S3);
-        // Already exists, mark as known and skip
-        return Ok(Some(key.to_string()));
+    // Get local file size first (cheap metadata call)
+    let local_size = tokio::fs::metadata(&path)
+        .await
+        .wrap_err("Failed to get local file metadata")?
+        .len();
+
+    // Check if file exists in S3 using HEAD (fast, no content download)
+    if let Some(remote_size) = store.head(key).await? {
+        if remote_size == local_size {
+            metrics.inc_counter(MetricNames::BFT_BLOCK_FILES_ALREADY_IN_S3);
+            // Already exists with matching size, mark as known and skip
+            return Ok(Some(key.to_string()));
+        }
+        // Size mismatch - re-upload
+        debug!(key, local_size, remote_size, "Size mismatch, re-uploading");
     }
 
     // Need to upload; read file then put
@@ -246,10 +256,6 @@ async fn add_dir_to_local_map(
     Ok(())
 }
 
-/// Check if key exists using GET instead of LIST - O(1) on large buckets.
-async fn s3_exists_key(store: &impl KVReader, key: &str) -> Result<bool> {
-    Ok(store.get(key).await?.is_some())
-}
 
 #[cfg(test)]
 mod tests {
@@ -512,19 +518,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_s3_exists_key_found() {
+    async fn test_head_found() {
         let store: KVStoreErased = MemoryStorage::new("test").into();
 
         // Add a key to the store
         let key = format!("{BFT_BLOCK_PREFIX}test_block{BFT_BLOCK_HEADER_EXTENSION}");
-        store.put(&key, b"content".to_vec()).await.unwrap();
+        let content = b"content".to_vec();
+        store.put(&key, content.clone()).await.unwrap();
 
-        // Check existence
-        assert!(s3_exists_key(&store, &key).await.unwrap());
+        // Check existence and size
+        let size = store.head(&key).await.unwrap();
+        assert_eq!(size, Some(content.len() as u64));
     }
 
     #[tokio::test]
-    async fn test_s3_exists_key_not_found() {
+    async fn test_head_not_found() {
         let store: KVStoreErased = MemoryStorage::new("test").into();
 
         // Add a different key
@@ -532,11 +540,11 @@ mod tests {
 
         // Check non-existent key
         let key = format!("{BFT_BLOCK_PREFIX}missing{BFT_BLOCK_HEADER_EXTENSION}");
-        assert!(!s3_exists_key(&store, &key).await.unwrap());
+        assert!(store.head(&key).await.unwrap().is_none());
     }
 
     #[tokio::test]
-    async fn test_s3_exists_key_partial_match_not_counted() {
+    async fn test_head_exact_match() {
         let store: KVStoreErased = MemoryStorage::new("test").into();
 
         // Add keys with partial matches
@@ -550,8 +558,8 @@ mod tests {
             .unwrap();
 
         // Check for exact match only
-        assert!(s3_exists_key(&store, "bft_block/test").await.unwrap());
-        assert!(!s3_exists_key(&store, "bft_block/te").await.unwrap());
+        assert!(store.head("bft_block/test").await.unwrap().is_some());
+        assert!(store.head("bft_block/te").await.unwrap().is_none());
     }
 
     #[tokio::test]

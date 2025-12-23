@@ -111,6 +111,15 @@ impl KVReader for FsStorage {
                 .write_get_metrics_on_err(start.elapsed(), KVStoreType::FileSystem, &self.metrics),
         }
     }
+
+    async fn head(&self, key: &str) -> Result<Option<u64>> {
+        let path = self.key_path(key)?;
+        match fs::metadata(&path).await {
+            Ok(meta) => Ok(Some(meta.len())),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(err) => Err(err).wrap_err_with(|| format!("Failed to head key {key}")),
+        }
+    }
 }
 
 impl KVStore for FsStorage {

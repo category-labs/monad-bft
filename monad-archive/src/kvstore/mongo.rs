@@ -229,6 +229,11 @@ impl KVReader for MongoDbStorage {
             .wrap_err("MongoDB bulk_get operation failed")
             .write_get_metrics(start.elapsed(), KVStoreType::Mongo, &self.metrics)
     }
+
+    async fn head(&self, key: &str) -> Result<Option<u64>> {
+        // MongoDB doesn't have a native HEAD operation, fall back to get
+        Ok(self.get(key).await?.map(|b| b.len() as u64))
+    }
 }
 
 impl KVStore for MongoDbStorage {

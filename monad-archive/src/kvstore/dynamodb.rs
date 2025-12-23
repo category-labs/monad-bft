@@ -53,6 +53,11 @@ impl KVReader for DynamoDBArchive {
             .await
             .map(|mut v| v.remove(key))
     }
+
+    async fn head(&self, key: &str) -> Result<Option<u64>> {
+        // DynamoDB doesn't have a native HEAD operation, fall back to get
+        Ok(self.get(key).await?.map(|b| b.len() as u64))
+    }
 }
 
 impl KVStore for DynamoDBArchive {
