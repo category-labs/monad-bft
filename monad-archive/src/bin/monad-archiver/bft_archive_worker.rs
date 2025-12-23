@@ -246,10 +246,9 @@ async fn add_dir_to_local_map(
     Ok(())
 }
 
-/// Poor-man's exists: list with the exact key as prefix and look for an exact match.
-async fn s3_exists_key(store: &impl KVStore, key: &str) -> Result<bool> {
-    let objs = store.scan_prefix(key).await?;
-    Ok(objs.iter().any(|k| k == key))
+/// Check if key exists using GET instead of LIST - O(1) on large buckets.
+async fn s3_exists_key(store: &impl KVReader, key: &str) -> Result<bool> {
+    Ok(store.get(key).await?.is_some())
 }
 
 #[cfg(test)]
