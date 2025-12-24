@@ -18,7 +18,7 @@ use std::{sync::Arc, time::Duration};
 use actix_web::{web, App, HttpServer};
 use agent::AgentBuilder;
 use clap::Parser;
-use monad_archive::archive_reader::ArchiveReader;
+use monad_archive::archive_reader::{redact_mongo_url, ArchiveReader};
 use monad_ethcall::EthCallExecutor;
 use monad_event_ring::EventRing;
 use monad_node_config::MonadNodeConfig;
@@ -220,7 +220,11 @@ async fn main() -> std::io::Result<()> {
 
     let archive_reader = match (&args.mongo_db_name, &args.mongo_url) {
         (Some(db_name), Some(url)) => {
-            info!(url, db_name, "Initializing MongoDB archive reader");
+            info!(
+                "Initializing MongoDB archive reader  with connection: {}, database: {}",
+                redact_mongo_url(url),
+                db_name
+            );
             match ArchiveReader::init_mongo_reader(
                 url.clone(),
                 db_name.clone(),
