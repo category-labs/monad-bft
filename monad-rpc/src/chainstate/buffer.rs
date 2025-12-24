@@ -217,5 +217,6 @@ pub(super) fn block_height_from_tag(buffer: &ChainStateBuffer, tag: &BlockTags) 
         BlockTags::Latest => buffer.get_latest_voted_block_num(),
         BlockTags::Safe => buffer.get_latest_voted_block_num(),
         BlockTags::Finalized => buffer.get_latest_finalized_block_num(),
+        BlockTags::Proposed => buffer.get_latest_voted_block_num() + 1,
     }
 }
