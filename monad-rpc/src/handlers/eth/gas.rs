@@ -31,9 +31,12 @@ use serde::Deserialize;
 use tracing::trace;
 
 use crate::{
-    chainstate::{get_block_key_from_tag, ChainState},
+    chainstate::ChainState,
     eth_json_types::{BlockTagOrHash, BlockTags, MonadFeeHistory, Quantity},
-    handlers::eth::call::{fill_gas_params, CallRequest},
+    handlers::eth::{
+        block::get_block_key_from_tag_or_hash,
+        call::{fill_gas_params, CallRequest},
+    },
     jsonrpc::{JsonRpcError, JsonRpcResult},
 };
 
@@ -217,7 +220,7 @@ async fn estimate_gas<T: EthCallProvider>(
 pub struct MonadEthEstimateGasParams {
     tx: CallRequest,
     #[serde(default)]
-    block: BlockTags,
+    block: BlockTagOrHash,
     #[schemars(skip)] // TODO: move StateOverrideSet from monad-cxx
     #[serde(default)]
     state_override_set: StateOverrideSet,
@@ -257,8 +260,7 @@ pub async fn monad_eth_estimateGas<T: Triedb>(
         ));
     }
 
-    let block_key =
-        get_block_key_from_tag(triedb_env, params.block).ok_or(JsonRpcError::block_not_found())?;
+    let block_key = get_block_key_from_tag_or_hash(triedb_env, params.block).await?;
 
     let mut header = match triedb_env
         .get_block_header(block_key)
