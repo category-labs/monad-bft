@@ -20,6 +20,7 @@ ignored = [
     "monad-tracing-timing",
     "monad-event-ring",
     "monad-exec-events",
+    "monad-txgen",
     "monad-wireauth",
 ]
 
@@ -81,6 +82,7 @@ monad-triedb = { path = "./monad-triedb" }
 monad-triedb-cache = { path = "./monad-triedb-cache" }
 monad-triedb-utils = { path = "./monad-triedb-utils" }
 monad-twins-utils = { path = "./monad-twins/utils" }
+monad-txgen = { path = "./monad-txgen" }
 monad-types = { path = "./monad-types" }
 monad-updaters = { path = "./monad-updaters" }
 monad-validator = { path = "./monad-validator" }

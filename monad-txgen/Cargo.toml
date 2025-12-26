@@ -1,50 +1,36 @@
 [package]
-name = "monad-eth-testutil"
+name = "monad-txgen"
 version = "0.1.0"
 edition = "2021"
 
-# this is necessary for criterion bench options
-# https://bheisler.github.io/criterion.rs/book/faq.html#cargo-bench-gives-unrecognized-option-errors-for-valid-command-line-options
-[lib]
-bench = false
+[[bin]]
+name = "txgen"
+path = "src/main.rs"
 
 [dependencies]
-monad-chain-config = { workspace = true }
-monad-consensus-types = { workspace = true }
-monad-crypto = { workspace = true }
-monad-eth-block-policy = { workspace = true }
-monad-eth-types = { workspace = true }
 monad-secp = { workspace = true }
-monad-testutil = { workspace = true }
-monad-tfm = { workspace = true }
 monad-types = { workspace = true }
-monad-validator = { workspace = true }
+monad-version = { workspace = true }
 
 alloy-consensus = { workspace = true, features = ["k256"] }
 alloy-eips = { workspace = true }
-alloy-primitives = { workspace = true }
-alloy-signer = { workspace = true }
-alloy-signer-local = { workspace = true }
-rand = { workspace = true }
-
-[build-dependencies]
-monad-version = { workspace = true }
-
-[dev-dependencies]
 alloy-json-rpc = { workspace = true }
 alloy-network = { workspace = true }
+alloy-primitives = { workspace = true, features = ["rand"] }
 alloy-rlp = { workspace = true }
 alloy-rpc-client = { workspace = true }
 alloy-rpc-types = { workspace = true }
 alloy-rpc-types-eth = { workspace = true }
 alloy-rpc-types-trace = { workspace = true }
+alloy-signer = { workspace = true }
+alloy-signer-local = { workspace = true }
 alloy-sol-macro = { workspace = true }
 alloy-sol-types = { workspace = true }
 alloy-transport = { workspace = true }
 alloy-transport-http = { workspace = true, features = ["reqwest-rustls-tls"] }
 async-channel = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }
 clap = { workspace = true, features = ["derive"] }
-chrono = { workspace = true }
 dashmap = { workspace = true }
 eyre = { workspace = true }
 futures = { workspace = true }
@@ -56,7 +42,11 @@ opentelemetry-semantic-conventions = { workspace = true }
 rand = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
+tokio-tungstenite = { workspace = true, features = ["native-tls"] }
+toml = { workspace = true }
 tracing = { workspace = true, features = ["log", "std"] }
 tracing-subscriber = { workspace = true, features = [
     "env-filter",
@@ -64,4 +54,6 @@ tracing-subscriber = { workspace = true, features = [
     "std",
 ] }
 url = { workspace = true }
+
+[build-dependencies]
 monad-version = { workspace = true }
