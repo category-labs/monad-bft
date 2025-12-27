@@ -22,7 +22,26 @@ use itertools::Itertools;
 use monad_crypto::certificate_signature::PubKey;
 use monad_types::{NodeId, Stake};
 
-pub type Result<T, PT> = std::result::Result<T, ValidatorSetError<PT>>;
+#[derive(Debug, PartialEq, Eq)]
+pub enum ValidatorSetCreationError<PT: PubKey> {
+    EmptyValidatorSet,
+    ZeroStakeValidator(NodeId<PT>),
+    DuplicateValidator(NodeId<PT>),
+}
+
+impl<PT: PubKey> fmt::Display for ValidatorSetCreationError<PT> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyValidatorSet => write!(f, "Validator set is empty"),
+            Self::ZeroStakeValidator(node_id) => {
+                write!(f, "Validator has zero stake: {:?}", node_id)
+            }
+            Self::DuplicateValidator(node_id) => write!(f, "Duplicate NodeId: {:?}", node_id),
+        }
+    }
+}
+
+impl<PT: PubKey> error::Error for ValidatorSetCreationError<PT> {}
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ValidatorSetError<PT>
@@ -52,7 +71,7 @@ pub trait ValidatorSetTypeFactory {
     fn create(
         &self,
         validators: Vec<(NodeId<Self::NodeIdPubKey>, Stake)>,
-    ) -> Result<Self::ValidatorSetType, Self::NodeIdPubKey>;
+    ) -> Result<Self::ValidatorSetType, ValidatorSetCreationError<Self::NodeIdPubKey>>;
 }
 
 /// Helper trait that's only used for dynamic dispatch boxing
@@ -63,7 +82,10 @@ trait ValidatorSetTypeFactoryHelper {
     fn create(
         &self,
         validators: Vec<(NodeId<Self::NodeIdPubKey>, Stake)>,
-    ) -> Result<Box<dyn ValidatorSetType<NodeIdPubKey = Self::NodeIdPubKey>>, Self::NodeIdPubKey>;
+    ) -> Result<
+        Box<dyn ValidatorSetType<NodeIdPubKey = Self::NodeIdPubKey>>,
+        ValidatorSetCreationError<Self::NodeIdPubKey>,
+    >;
 }
 
 impl<T> ValidatorSetTypeFactoryHelper for T
@@ -76,8 +98,10 @@ where
     fn create(
         &self,
         validators: Vec<(NodeId<Self::NodeIdPubKey>, Stake)>,
-    ) -> Result<Box<dyn ValidatorSetType<NodeIdPubKey = Self::NodeIdPubKey>>, Self::NodeIdPubKey>
-    {
+    ) -> Result<
+        Box<dyn ValidatorSetType<NodeIdPubKey = Self::NodeIdPubKey>>,
+        ValidatorSetCreationError<Self::NodeIdPubKey>,
+    > {
         let validator_set = self.create(validators)?;
         Ok(Box::new(validator_set))
     }
@@ -103,7 +127,7 @@ impl<PT: PubKey> ValidatorSetTypeFactory for BoxedValidatorSetTypeFactory<PT> {
     fn create(
         &self,
         validators: Vec<(NodeId<Self::NodeIdPubKey>, Stake)>,
-    ) -> Result<Self::ValidatorSetType, Self::NodeIdPubKey> {
+    ) -> Result<Self::ValidatorSetType, ValidatorSetCreationError<Self::NodeIdPubKey>> {
         self.0.create(validators)
     }
 }
@@ -121,23 +145,23 @@ pub trait ValidatorSetType: Send + Sync + AsAny {
     fn has_super_majority_votes(
         &self,
         addrs: &[NodeId<Self::NodeIdPubKey>],
-    ) -> Result<bool, Self::NodeIdPubKey>;
+    ) -> Result<bool, ValidatorSetError<Self::NodeIdPubKey>>;
 
     fn has_honest_vote(
         &self,
         addrs: &[NodeId<Self::NodeIdPubKey>],
-    ) -> Result<bool, Self::NodeIdPubKey>;
+    ) -> Result<bool, ValidatorSetError<Self::NodeIdPubKey>>;
 
     fn has_threshold_votes(
         &self,
         addrs: &[NodeId<Self::NodeIdPubKey>],
         threshold: Stake,
-    ) -> Result<bool, Self::NodeIdPubKey>;
+    ) -> Result<bool, ValidatorSetError<Self::NodeIdPubKey>>;
 
     fn calculate_current_stake(
         &self,
         addrs: &[NodeId<Self::NodeIdPubKey>],
-    ) -> Result<Stake, Self::NodeIdPubKey>;
+    ) -> Result<Stake, ValidatorSetError<Self::NodeIdPubKey>>;
 }
 
 #[derive(Clone, Copy)]
@@ -155,17 +179,23 @@ impl<PT: PubKey> ValidatorSetTypeFactory for ValidatorSetFactory<PT> {
     fn create(
         &self,
         validators: Vec<(NodeId<Self::NodeIdPubKey>, Stake)>,
-    ) -> Result<Self::ValidatorSetType, Self::NodeIdPubKey> {
+    ) -> Result<Self::ValidatorSetType, ValidatorSetCreationError<Self::NodeIdPubKey>> {
         let mut vmap = BTreeMap::new();
         let mut total_stake = Stake::ZERO;
         for (node_id, stake) in validators.into_iter() {
-            assert!(stake > Stake::ZERO, "validator should have non-zero stake");
+            if stake == Stake::ZERO {
+                return Err(ValidatorSetCreationError::ZeroStakeValidator(node_id));
+            }
 
             let duplicate = vmap.insert(node_id, stake);
             if duplicate.is_some() {
-                return Err(ValidatorSetError::DuplicateValidator(node_id));
+                return Err(ValidatorSetCreationError::DuplicateValidator(node_id));
             }
             total_stake += stake;
+        }
+
+        if vmap.is_empty() {
+            return Err(ValidatorSetCreationError::EmptyValidatorSet);
         }
 
         Ok(ValidatorSet {
@@ -207,14 +237,17 @@ impl<PT: PubKey> ValidatorSetType for ValidatorSet<PT> {
     fn has_super_majority_votes(
         &self,
         addrs: &[NodeId<Self::NodeIdPubKey>],
-    ) -> Result<bool, Self::NodeIdPubKey> {
+    ) -> Result<bool, ValidatorSetError<Self::NodeIdPubKey>> {
         self.has_threshold_votes(
             addrs,
             Stake(self.total_stake.0 * U256::from(2) / U256::from(3) + U256::ONE),
         )
     }
 
-    fn has_honest_vote(&self, addrs: &[NodeId<PT>]) -> Result<bool, Self::NodeIdPubKey> {
+    fn has_honest_vote(
+        &self,
+        addrs: &[NodeId<PT>],
+    ) -> Result<bool, ValidatorSetError<Self::NodeIdPubKey>> {
         self.has_threshold_votes(addrs, Stake(self.total_stake.0 / U256::from(3) + U256::ONE))
     }
 
@@ -222,7 +255,7 @@ impl<PT: PubKey> ValidatorSetType for ValidatorSet<PT> {
         &self,
         addrs: &[NodeId<Self::NodeIdPubKey>],
         threshold: Stake,
-    ) -> Result<bool, Self::NodeIdPubKey> {
+    ) -> Result<bool, ValidatorSetError<Self::NodeIdPubKey>> {
         let voter_stake = self.calculate_current_stake(addrs)?;
 
         Ok(voter_stake >= threshold)
@@ -231,7 +264,7 @@ impl<PT: PubKey> ValidatorSetType for ValidatorSet<PT> {
     fn calculate_current_stake(
         &self,
         addrs: &[NodeId<Self::NodeIdPubKey>],
-    ) -> Result<Stake, Self::NodeIdPubKey> {
+    ) -> Result<Stake, ValidatorSetError<Self::NodeIdPubKey>> {
         if let Some(node) = addrs.iter().duplicates().next() {
             return Err(ValidatorSetError::DuplicateValidator(*node));
         }
@@ -248,14 +281,17 @@ impl<PT: PubKey> ValidatorSetType for ValidatorSet<PT> {
 mod test {
     use alloy_primitives::U256;
     use monad_crypto::{
-        certificate_signature::{CertificateKeyPair, CertificateSignature},
+        certificate_signature::{
+            CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
+        },
         NopSignature,
     };
     use monad_testutil::signing::{create_keys, get_key};
     use monad_types::{NodeId, Stake};
 
     use crate::validator_set::{
-        ValidatorSetError, ValidatorSetFactory, ValidatorSetType, ValidatorSetTypeFactory,
+        ValidatorSetCreationError, ValidatorSetError, ValidatorSetFactory, ValidatorSetType,
+        ValidatorSetTypeFactory,
     };
 
     type SignatureType = NopSignature;
@@ -365,6 +401,17 @@ mod test {
         assert_eq!(
             vs.calculate_current_stake(&[v2.0, v1.0, v2.0]),
             Err(ValidatorSetError::DuplicateValidator(v2.0))
+        );
+    }
+
+    #[test]
+    fn test_empty_validator_set() {
+        let validators: Vec<(NodeId<CertificateSignaturePubKey<SignatureType>>, Stake)> = vec![];
+        assert_eq!(
+            ValidatorSetFactory::default()
+                .create(validators)
+                .unwrap_err(),
+            ValidatorSetCreationError::EmptyValidatorSet
         );
     }
 }
