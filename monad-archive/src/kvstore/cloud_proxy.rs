@@ -19,9 +19,10 @@ use alloy_primitives::TxHash;
 use base64::Engine;
 use bytes::Bytes;
 use eyre::Result;
-use reqwest::header::HeaderValue;
+use reqwest::{header::HeaderValue, StatusCode};
 use url::Url;
 
+use super::{KVStoreType, MetricsResultExt};
 use crate::prelude::*;
 
 #[derive(Clone)]
@@ -31,17 +32,40 @@ struct CloudProxyReaderInner {
     pub client: reqwest::Client,
     pub url: Url,
     pub table: String,
+    pub metrics: Metrics,
 }
 
 impl CloudProxyReader {
     pub fn new(api_key: &str, url: Url, table: String) -> Result<Self> {
+        Self::new_with_metrics(api_key, url, table, Metrics::none())
+    }
+
+    pub fn new_with_metrics(
+        api_key: &str,
+        url: Url,
+        table: String,
+        metrics: Metrics,
+    ) -> Result<Self> {
         let mut headers = reqwest::header::HeaderMap::with_capacity(1);
         headers.insert("x-api-key", HeaderValue::from_str(api_key)?);
         let client = reqwest::ClientBuilder::new()
             .default_headers(headers)
             .timeout(Duration::from_secs(2))
             .build()?;
-        Ok(Self(Arc::new(CloudProxyReaderInner { client, url, table })))
+        Ok(Self(Arc::new(CloudProxyReaderInner {
+            client,
+            url,
+            table,
+            metrics,
+        })))
+    }
+
+    fn build_url(&self, key: &str) -> Url {
+        let mut url = self.0.url.clone();
+        url.query_pairs_mut()
+            .append_pair("txhash", key)
+            .append_pair("table", &self.0.table);
+        url
     }
 }
 
@@ -53,14 +77,43 @@ struct ProxyResponse {
 
 impl KVReader for CloudProxyReader {
     async fn get(&self, key: &str) -> Result<Option<Bytes>> {
-        let url = format!("{}?txhash={}&table={}", self.0.url, key, self.0.table);
-        let resp = self.0.client.get(url).send().await?;
-        if resp.status() == 404 {
-            return Ok(None);
-        }
-        let resp: ProxyResponse = resp.json().await?;
-        let bytes = base64::prelude::BASE64_STANDARD.decode(resp.data)?;
+        let start = Instant::now();
+        let result = async {
+            let url = self.build_url(key);
+            let resp = self.0.client.get(url).send().await?;
+            let status = resp.status();
+            if status == StatusCode::NOT_FOUND {
+                return Ok(None);
+            }
+            if !status.is_success() {
+                bail!("cloud proxy get failed with status: {status}");
+            }
+            let resp: ProxyResponse = resp.json().await?;
+            let bytes = base64::prelude::BASE64_STANDARD.decode(resp.data)?;
 
-        Ok(Some(bytes.into()))
+            Ok(Some(bytes.into()))
+        }
+        .await;
+
+        result.write_get_metrics(start.elapsed(), KVStoreType::CloudProxy, &self.0.metrics)
+    }
+
+    async fn exists(&self, key: &str) -> Result<bool> {
+        let start = Instant::now();
+        let result = async {
+            let url = self.build_url(key);
+            let resp = self.0.client.head(url).send().await?;
+            let status = resp.status();
+            if status == StatusCode::NOT_FOUND {
+                return Ok(false);
+            }
+            if !status.is_success() {
+                bail!("cloud proxy exists check failed with status: {status}");
+            }
+            Ok(true)
+        }
+        .await;
+
+        result.write_get_metrics(start.elapsed(), KVStoreType::CloudProxy, &self.0.metrics)
     }
 }

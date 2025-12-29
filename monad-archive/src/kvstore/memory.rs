@@ -53,6 +53,16 @@ impl KVReader for MemoryStorage {
 
         Ok(self.db.lock().await.get(key).map(ToOwned::to_owned))
     }
+
+    async fn exists(&self, key: &str) -> Result<bool> {
+        use std::sync::atomic::Ordering;
+
+        if self.should_fail.load(Ordering::SeqCst) {
+            return Err(eyre::eyre!("MemoryStorage simulated failure"));
+        }
+
+        Ok(self.db.lock().await.contains_key(key))
+    }
 }
 
 impl KVStore for MemoryStorage {

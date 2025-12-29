@@ -53,6 +53,26 @@ impl KVReader for DynamoDBArchive {
             .await
             .map(|mut v| v.remove(key))
     }
+
+    async fn exists(&self, key: &str) -> Result<bool> {
+        let start = Instant::now();
+        let result = self
+            .client
+            .get_item()
+            .table_name(&self.table)
+            .key("tx_hash", AttributeValue::S(key.to_owned()))
+            .projection_expression("tx_hash")
+            .send()
+            .await
+            .wrap_err("DynamoDB exists check failed")
+            .write_get_metrics_on_err(start.elapsed(), KVStoreType::AwsDynamoDB, &self.metrics)?;
+
+        Ok(result.item.is_some()).write_get_metrics(
+            start.elapsed(),
+            KVStoreType::AwsDynamoDB,
+            &self.metrics,
+        )
+    }
 }
 
 impl KVStore for DynamoDBArchive {

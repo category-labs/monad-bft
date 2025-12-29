@@ -119,6 +119,35 @@ impl KVReader for Bucket {
             Ok(Some(bytes))
         }
     }
+
+    async fn exists(&self, key: &str) -> Result<bool> {
+        trace!(key, "S3 exists check");
+        let start = Instant::now();
+        let resp = self
+            .client
+            .head_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .request_payer(aws_sdk_s3::types::RequestPayer::Requester)
+            .send()
+            .await;
+        let duration = start.elapsed();
+
+        match resp {
+            Ok(_) => {
+                kvstore_get_metrics(duration, true, KVStoreType::AwsS3, &self.metrics);
+                Ok(true)
+            }
+            Err(SdkError::ServiceError(service_err)) if service_err.err().is_not_found() => {
+                kvstore_get_metrics(duration, true, KVStoreType::AwsS3, &self.metrics);
+                Ok(false)
+            }
+            Err(e) => {
+                kvstore_get_metrics(duration, false, KVStoreType::AwsS3, &self.metrics);
+                Err(e).wrap_err_with(|| format!("S3 exists check failed for key {key}"))
+            }
+        }
+    }
 }
 
 impl KVStore for Bucket {
