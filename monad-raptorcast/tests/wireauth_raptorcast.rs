@@ -13,8 +13,6 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-mod common;
-
 use std::{
     collections::HashMap,
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},
@@ -25,7 +23,6 @@ use std::{
 
 use alloy_rlp::{RlpDecodable, RlpEncodable};
 use bytes::{Bytes, BytesMut};
-use common::{find_tcp_free_port, find_udp_free_port};
 use futures_util::StreamExt;
 use itertools::Itertools;
 use monad_crypto::certificate_signature::{
@@ -34,13 +31,12 @@ use monad_crypto::certificate_signature::{
 use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand};
 use monad_peer_discovery::{MonadNameRecord, NameRecord};
-use monad_raptorcast::RaptorCastEvent;
+use monad_raptorcast::{create_dataplane_for_tests, DataplaneHandles, RaptorCastEvent};
 use monad_secp::{KeyPair, SecpSignature};
 use monad_types::{Deserializable, Epoch, NodeId, Serializable, Stake};
 use rstest::rstest;
 use tracing_subscriber::EnvFilter;
 
-const UP_BANDWIDTH_MBPS: u64 = 1_000;
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
 const MESSAGE_TIMEOUT: Duration = Duration::from_secs(10);
 const NUM_NODES: usize = 10;
@@ -128,9 +124,6 @@ struct ValidatorInfo {
     keypair: Arc<KeyPair>,
     nodeid: NodeId<CertificateSignaturePubKey<SecpSignature>>,
     pubkey: monad_secp::PubKey,
-    tcp_addr: SocketAddrV4,
-    auth_addr: SocketAddrV4,
-    non_auth_addr: SocketAddrV4,
 }
 
 impl ValidatorInfo {
@@ -138,30 +131,30 @@ impl ValidatorInfo {
         let kp = keypair(seed);
         let nodeid = NodeId::new(kp.pubkey());
         let pubkey = kp.pubkey();
-        let tcp_addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), find_tcp_free_port());
-        let auth_addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), find_udp_free_port());
-        let non_auth_addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), find_udp_free_port());
         Self {
             keypair: Arc::new(kp),
             nodeid,
             pubkey,
-            tcp_addr,
-            auth_addr,
-            non_auth_addr,
         }
     }
 
-    fn create_name_record(&self, with_auth: bool) -> MonadNameRecord<SecpSignature> {
+    fn create_name_record(
+        &self,
+        with_auth: bool,
+        tcp_addr: SocketAddrV4,
+        auth_addr: SocketAddrV4,
+        non_auth_addr: SocketAddrV4,
+    ) -> MonadNameRecord<SecpSignature> {
         let name_record = if with_auth {
             NameRecord::new_with_authentication(
                 Ipv4Addr::new(127, 0, 0, 1),
-                self.tcp_addr.port(),
-                self.non_auth_addr.port(),
-                self.auth_addr.port(),
+                tcp_addr.port(),
+                non_auth_addr.port(),
+                auth_addr.port(),
                 1,
             )
         } else {
-            NameRecord::new(Ipv4Addr::new(127, 0, 0, 1), self.non_auth_addr.port(), 1)
+            NameRecord::new(Ipv4Addr::new(127, 0, 0, 1), non_auth_addr.port(), 1)
         };
         MonadNameRecord::new(name_record, &*self.keypair)
     }
@@ -198,46 +191,6 @@ fn create_raptorcast_config(
     }
 }
 
-fn create_dataplane(
-    tcp_addr: SocketAddrV4,
-    auth_addr: SocketAddrV4,
-    non_auth_addr: SocketAddrV4,
-) -> (
-    monad_dataplane::TcpSocketHandle,
-    monad_dataplane::UdpSocketHandle,
-    monad_dataplane::UdpSocketHandle,
-    monad_dataplane::DataplaneControl,
-) {
-    let dp = monad_dataplane::DataplaneBuilder::new(&SocketAddr::V4(tcp_addr), UP_BANDWIDTH_MBPS)
-        .extend_udp_sockets(vec![
-            monad_dataplane::UdpSocketConfig {
-                socket_addr: SocketAddr::V4(auth_addr),
-                label: monad_raptorcast::AUTHENTICATED_RAPTORCAST_SOCKET.to_string(),
-            },
-            monad_dataplane::UdpSocketConfig {
-                socket_addr: SocketAddr::V4(non_auth_addr),
-                label: monad_raptorcast::RAPTORCAST_SOCKET.to_string(),
-            },
-        ])
-        .build();
-    assert!(dp.block_until_ready(Duration::from_secs(1)));
-
-    let (tcp_socket, mut udp_dataplane, control) = dp.split();
-    let authenticated_socket = udp_dataplane
-        .take_socket(monad_raptorcast::AUTHENTICATED_RAPTORCAST_SOCKET)
-        .expect("authenticated socket");
-    let non_authenticated_socket = udp_dataplane
-        .take_socket(monad_raptorcast::RAPTORCAST_SOCKET)
-        .expect("non-authenticated socket");
-
-    (
-        tcp_socket,
-        authenticated_socket,
-        non_authenticated_socket,
-        control,
-    )
-}
-
 fn create_peer_discovery(
     known_addresses: HashMap<NodeId<CertificateSignaturePubKey<SecpSignature>>, SocketAddrV4>,
     name_records: HashMap<
@@ -262,9 +215,7 @@ fn create_peer_discovery(
 
 fn spawn_noop_validator(
     keypair: Arc<KeyPair>,
-    tcp_addr: SocketAddrV4,
-    auth_addr: SocketAddrV4,
-    non_auth_addr: SocketAddrV4,
+    dataplane: DataplaneHandles,
     known_addresses: HashMap<NodeId<CertificateSignaturePubKey<SecpSignature>>, SocketAddrV4>,
     name_records: HashMap<
         NodeId<CertificateSignaturePubKey<SecpSignature>>,
@@ -277,9 +228,7 @@ fn spawn_noop_validator(
 
     tokio::task::spawn_local(async move {
         let shared_pd = create_peer_discovery(known_addresses, name_records);
-        let (tcp_socket, _authenticated_socket, non_authenticated_socket, control) =
-            create_dataplane(tcp_addr, auth_addr, non_auth_addr);
-        let (tcp_reader, tcp_writer) = tcp_socket.split();
+        let (tcp_reader, tcp_writer) = dataplane.tcp_socket.split();
         let config = create_raptorcast_config(keypair, DEFAULT_SIG_VERIFICATION_RATE_LIMIT);
         let auth_protocol = monad_raptorcast::auth::NoopAuthProtocol::new();
 
@@ -296,8 +245,8 @@ fn spawn_noop_validator(
             tcp_reader,
             tcp_writer,
             None,
-            non_authenticated_socket,
-            control,
+            dataplane.non_authenticated_socket,
+            dataplane.control,
             shared_pd,
             Epoch(0),
             auth_protocol,
@@ -329,9 +278,7 @@ fn spawn_noop_validator(
 
 fn spawn_wireauth_validator(
     keypair: Arc<KeyPair>,
-    tcp_addr: SocketAddrV4,
-    auth_addr: SocketAddrV4,
-    non_auth_addr: SocketAddrV4,
+    dataplane: DataplaneHandles,
     known_addresses: HashMap<NodeId<CertificateSignaturePubKey<SecpSignature>>, SocketAddrV4>,
     name_records: HashMap<
         NodeId<CertificateSignaturePubKey<SecpSignature>>,
@@ -346,9 +293,7 @@ fn spawn_wireauth_validator(
 
     tokio::task::spawn_local(async move {
         let shared_pd = create_peer_discovery(known_addresses, name_records);
-        let (tcp_socket, authenticated_socket, non_authenticated_socket, control) =
-            create_dataplane(tcp_addr, auth_addr, non_auth_addr);
-        let (tcp_reader, tcp_writer) = tcp_socket.split();
+        let (tcp_reader, tcp_writer) = dataplane.tcp_socket.split();
         let config = create_raptorcast_config(keypair.clone(), sig_verification_rate_limit);
         let wireauth_config = monad_wireauth::Config::default();
         let auth_protocol =
@@ -366,9 +311,9 @@ fn spawn_wireauth_validator(
             monad_raptorcast::raptorcast_secondary::SecondaryRaptorCastModeConfig::None,
             tcp_reader,
             tcp_writer,
-            Some(authenticated_socket),
-            non_authenticated_socket,
-            control,
+            dataplane.authenticated_socket,
+            dataplane.non_authenticated_socket,
+            dataplane.control,
             shared_pd,
             Epoch(0),
             auth_protocol,
@@ -463,28 +408,46 @@ enum RoutingType {
 async fn run_test_scenario(num_auth_nodes: usize, routing_type: RoutingType, message_size: usize) {
     let validator_infos: Vec<_> = (1..=NUM_NODES as u8).map(ValidatorInfo::new).collect();
 
+    let dataplanes: Vec<_> = (0..NUM_NODES)
+        .map(|_| create_dataplane_for_tests(true))
+        .collect();
+
     let name_records: HashMap<_, _> = validator_infos
         .iter()
+        .zip(dataplanes.iter())
         .enumerate()
-        .map(|(i, v)| (v.nodeid, v.create_name_record(i < num_auth_nodes)))
+        .map(|(i, (v, dp))| {
+            (
+                v.nodeid,
+                v.create_name_record(
+                    i < num_auth_nodes,
+                    dp.tcp_addr,
+                    dp.auth_addr.expect("auth enabled"),
+                    dp.non_auth_addr,
+                ),
+            )
+        })
         .collect();
 
     let known_addresses: HashMap<_, _> = validator_infos
         .iter()
-        .map(|v| (v.nodeid, v.non_auth_addr))
+        .zip(dataplanes.iter())
+        .map(|(v, dp)| (v.nodeid, dp.non_auth_addr))
         .collect();
 
     let peers_for_check: Vec<_> = validator_infos
         .iter()
+        .zip(dataplanes.iter())
         .enumerate()
         .filter(|(i, _)| *i < num_auth_nodes)
-        .map(|(_, v)| (v.auth_addr, v.pubkey))
+        .map(|(_, (v, dp))| (dp.auth_addr.expect("auth enabled"), v.pubkey))
         .collect();
 
     let validators: Vec<_> = validator_infos
         .iter()
+        .zip(dataplanes)
         .enumerate()
-        .map(|(i, v)| {
+        .map(|(i, (v, dp))| {
             if i < num_auth_nodes {
                 let peers = peers_for_check
                     .iter()
@@ -494,9 +457,7 @@ async fn run_test_scenario(num_auth_nodes: usize, routing_type: RoutingType, mes
                     .collect();
                 spawn_wireauth_validator(
                     v.keypair.clone(),
-                    v.tcp_addr,
-                    v.auth_addr,
-                    v.non_auth_addr,
+                    dp,
                     known_addresses.clone(),
                     name_records.clone(),
                     peers,
@@ -505,9 +466,7 @@ async fn run_test_scenario(num_auth_nodes: usize, routing_type: RoutingType, mes
             } else {
                 spawn_noop_validator(
                     v.keypair.clone(),
-                    v.tcp_addr,
-                    v.auth_addr,
-                    v.non_auth_addr,
+                    dp,
                     known_addresses.clone(),
                     name_records.clone(),
                 )
@@ -598,25 +557,43 @@ async fn test_rate_limiting_basic() {
 
     let validator_infos: Vec<_> = (1..=NUM_TEST_NODES as u8).map(ValidatorInfo::new).collect();
 
+    let dataplanes: Vec<_> = (0..NUM_TEST_NODES)
+        .map(|_| create_dataplane_for_tests(true))
+        .collect();
+
     let name_records: HashMap<_, _> = validator_infos
         .iter()
-        .map(|v| (v.nodeid, v.create_name_record(true)))
+        .zip(dataplanes.iter())
+        .map(|(v, dp)| {
+            (
+                v.nodeid,
+                v.create_name_record(
+                    true,
+                    dp.tcp_addr,
+                    dp.auth_addr.expect("auth enabled"),
+                    dp.non_auth_addr,
+                ),
+            )
+        })
         .collect();
 
     let known_addresses: HashMap<_, _> = validator_infos
         .iter()
-        .map(|v| (v.nodeid, v.non_auth_addr))
+        .zip(dataplanes.iter())
+        .map(|(v, dp)| (v.nodeid, dp.non_auth_addr))
         .collect();
 
     let peers_for_check: Vec<_> = validator_infos
         .iter()
-        .map(|v| (v.auth_addr, v.pubkey))
+        .zip(dataplanes.iter())
+        .map(|(v, dp)| (dp.auth_addr.expect("auth enabled"), v.pubkey))
         .collect();
 
     let validators: Vec<_> = validator_infos
         .iter()
+        .zip(dataplanes)
         .enumerate()
-        .map(|(i, v)| {
+        .map(|(i, (v, dp))| {
             let peers = peers_for_check
                 .iter()
                 .enumerate()
@@ -625,9 +602,7 @@ async fn test_rate_limiting_basic() {
                 .collect();
             spawn_wireauth_validator(
                 v.keypair.clone(),
-                v.tcp_addr,
-                v.auth_addr,
-                v.non_auth_addr,
+                dp,
                 known_addresses.clone(),
                 name_records.clone(),
                 peers,
@@ -747,7 +722,6 @@ async fn test_rate_limiting_p2p() {
 #[case(0, RoutingType::Raptorcast, 2_000_000)]
 #[case(5, RoutingType::Broadcast, 10_000)]
 #[case(5, RoutingType::PointToPoint, 1_000)]
-#[serial_test::file_serial]
 #[tokio::test(flavor = "current_thread")]
 async fn test_wireauth_matrix(
     #[case] num_auth_nodes: usize,

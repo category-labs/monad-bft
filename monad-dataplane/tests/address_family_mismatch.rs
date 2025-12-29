@@ -23,9 +23,12 @@ const UP_BANDWIDTH_MBPS: u64 = 1_000;
 
 const LEGACY_SOCKET: &str = "legacy";
 
-const BIND_ADDRS: [&str; 2] = ["0.0.0.0:19100", "127.0.0.1:19101"];
+const BIND_ADDRS: [&str; 2] = ["0.0.0.0:0", "127.0.0.1:0"];
 
-const TX_ADDRS: [&str; 2] = ["127.0.0.1:19200", "[::1]:19201"];
+fn find_ipv6_address() -> std::net::SocketAddr {
+    let socket = std::net::UdpSocket::bind("[::1]:0").unwrap();
+    socket.local_addr().unwrap()
+}
 
 #[test]
 fn address_family_mismatch() {
@@ -41,6 +44,9 @@ fn address_family_mismatch() {
         std::process::exit(1);
     }));
 
+    let ipv4_target: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let ipv6_target = find_ipv6_address();
+
     for addr in BIND_ADDRS {
         let bind_addr = addr.parse().unwrap();
         let mut dataplane = DataplaneBuilder::new(&bind_addr, UP_BANDWIDTH_MBPS)
@@ -50,15 +56,14 @@ fn address_family_mismatch() {
             }])
             .build();
 
-        assert!(dataplane.block_until_ready(Duration::from_secs(1)));
-
         let socket = dataplane.take_udp_socket_handle(LEGACY_SOCKET).unwrap();
+        let local_addr = socket.local_addr();
 
-        for tx_addr in TX_ADDRS {
-            debug!("sending to {} from {}", tx_addr, addr);
+        for tx_addr in [ipv4_target, ipv6_target] {
+            debug!("sending to {} from {}", tx_addr, local_addr);
 
             socket.write_broadcast(BroadcastMsg {
-                targets: vec![tx_addr.parse().unwrap(); 1],
+                targets: vec![tx_addr; 1],
                 payload: vec![0; DEFAULT_SEGMENT_SIZE.into()].into(),
                 stride: DEFAULT_SEGMENT_SIZE,
             });

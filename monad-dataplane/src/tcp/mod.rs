@@ -68,9 +68,12 @@ pub(crate) fn spawn_tasks(
     local_addr: SocketAddr,
     tcp_ingress_tx: mpsc::Sender<RecvTcpMsg>,
     tcp_egress_rx: mpsc::Receiver<(SocketAddr, TcpMsg)>,
+    bound_addr_tx: std::sync::mpsc::SyncSender<SocketAddr>,
 ) {
     let opts = ListenerOpts::new().reuse_addr(true);
     let tcp_listener = TcpListener::bind_with_config(local_addr, &opts).unwrap();
+    let actual_addr = tcp_listener.local_addr().unwrap();
+    bound_addr_tx.send(actual_addr).unwrap();
 
     spawn(rx::task(
         cfg,

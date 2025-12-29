@@ -58,7 +58,6 @@ opentelemetry-otlp = { workspace = true, features = ["metrics", "grpc-tonic"] }
 opentelemetry-semantic-conventions = { workspace = true }
 rand_distr = { workspace = true }
 rstest = { workspace = true }
-serial_test = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 tikv-jemallocator = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "test-util"] }
