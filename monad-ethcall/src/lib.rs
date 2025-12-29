@@ -646,13 +646,21 @@ pub async fn eth_simulate_v1(
     let mut rlp_encoded_senders = vec![];
     senders.encode(&mut rlp_encoded_senders);
 
+    dbg!(&rlp_encoded_senders);
+
     let mut rlp_encoded_txns = vec![];
     calls.encode(&mut rlp_encoded_txns);
+
+    dbg!(&rlp_encoded_txns);
 
     let mut rlp_encoded_block_header = vec![];
     block_header.encode(&mut rlp_encoded_block_header);
 
+    dbg!(&rlp_encoded_block_header);
+
     let rlp_encoded_block_id = alloy_rlp::encode(block_id.unwrap_or([0_u8; 32]));
+
+    dbg!(&rlp_encoded_block_id);
 
     let chain_config = match chain_id {
         ETHEREUM_MAINNET_CHAIN_ID => bindings::monad_chain_config_CHAIN_CONFIG_ETHEREUM_MAINNET,
