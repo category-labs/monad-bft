@@ -538,6 +538,7 @@ pub enum DeployedContract {
 pub struct ERC4337_7702Bundled {
     pub entrypoint: Address,
     pub simple7702account: Address,
+    pub paymaster: Address,
 }
 
 impl DeployedContract {
@@ -630,6 +631,8 @@ pub enum GenMode {
 pub struct ERC4337_7702Config {
     /// Number of UserOperations per handleOps() call
     pub ops_per_bundle: usize,
+    /// Whether to use a paymaster for the ERC4337_7702Bundled
+    pub use_paymaster: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
