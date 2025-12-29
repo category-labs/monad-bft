@@ -55,7 +55,7 @@ pub struct Encoder<'a> {
 }
 
 impl Encoder<'_> {
-    pub fn new(src: &[u8], symbol_len: usize) -> Result<Encoder, Error> {
+    pub fn new(src: &[u8], symbol_len: usize) -> Result<Encoder<'_>, Error> {
         if symbol_len == 0 {
             return Err(Error::new(
                 ErrorKind::InvalidInput,

@@ -209,7 +209,7 @@ where
         }
     }
 
-    pub fn metrics(&self) -> ExecutorMetricsChain {
+    pub fn metrics(&self) -> ExecutorMetricsChain<'_> {
         let mut chain = ExecutorMetricsChain::default().push(self.metrics.as_ref());
         if let Some(authenticated) = &self.authenticated {
             chain = chain.chain(authenticated.auth_protocol.metrics());

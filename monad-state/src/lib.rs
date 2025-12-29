@@ -1018,8 +1018,7 @@ where
 
                 if consensus_cmds
                     .iter()
-                    .find(|cmd| matches!(cmd.command, ConsensusCommand::EnterRound(_, _)))
-                    .is_some()
+                    .any(|cmd| matches!(cmd.command, ConsensusCommand::EnterRound(_, _)))
                 {
                     self.metrics.node_state.self_stake_bps = self.get_self_stake_bps();
                 }

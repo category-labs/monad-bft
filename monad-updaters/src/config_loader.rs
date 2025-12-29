@@ -68,7 +68,7 @@ where
 
     fn exec(&mut self, _commands: Vec<Self::Command>) {}
 
-    fn metrics(&self) -> monad_executor::ExecutorMetricsChain {
+    fn metrics(&self) -> monad_executor::ExecutorMetricsChain<'_> {
         Default::default()
     }
 }
@@ -261,7 +261,7 @@ where
         }
     }
 
-    fn metrics(&self) -> monad_executor::ExecutorMetricsChain {
+    fn metrics(&self) -> monad_executor::ExecutorMetricsChain<'_> {
         Default::default()
     }
 }

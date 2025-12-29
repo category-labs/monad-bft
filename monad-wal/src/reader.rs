@@ -150,8 +150,7 @@ where
 
     fused_events
         .into_iter()
-        .map(|(_, events)| events)
-        .flatten()
+        .flat_map(|(_, events)| events)
         .skip_while(move |event| event_to_ts(event) < start)
         .take_while(move |event| event_to_ts(event) <= end)
 }

@@ -153,7 +153,7 @@ pub fn create_triedb_key(version: Version, key: KeyInput) -> (Vec<u8>, u8) {
         }
     };
 
-    if num_nibbles % 2 != 0 {
+    if !num_nibbles.is_multiple_of(2) {
         key_nibbles.push(0);
     }
 
@@ -190,7 +190,7 @@ pub fn create_range_key(tx_index: u64) -> (Vec<u8>, u8) {
         }
     };
 
-    if num_nibbles % 2 != 0 {
+    if !num_nibbles.is_multiple_of(2) {
         key_nibbles.push(0);
     }
 

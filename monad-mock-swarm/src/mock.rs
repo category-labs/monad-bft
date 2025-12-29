@@ -411,7 +411,7 @@ impl<S: SwarmRelation> Executor for MockExecutor<S> {
         }
     }
 
-    fn metrics(&self) -> ExecutorMetricsChain {
+    fn metrics(&self) -> ExecutorMetricsChain<'_> {
         // TODO do we want to see executor metrics in mock?
         Default::default()
     }
@@ -543,7 +543,7 @@ where
             }
         }
     }
-    fn metrics(&self) -> ExecutorMetricsChain {
+    fn metrics(&self) -> ExecutorMetricsChain<'_> {
         Default::default()
     }
 }

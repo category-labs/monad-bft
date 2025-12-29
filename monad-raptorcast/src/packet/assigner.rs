@@ -334,7 +334,7 @@ pub(crate) trait ChunkAssigner<PT: PubKey> {
         &self,
         num_symbols: usize,
         preferred_order: Option<ChunkOrder>,
-    ) -> Result<ChunkAssignment<PT>>;
+    ) -> Result<ChunkAssignment<'_, PT>>;
 }
 
 impl<PT: PubKey> ChunkAssigner<PT> for Replicated<PT> {
@@ -342,7 +342,7 @@ impl<PT: PubKey> ChunkAssigner<PT> for Replicated<PT> {
         &self,
         num_symbols: usize,
         preferred_order: Option<ChunkOrder>,
-    ) -> Result<ChunkAssignment<PT>> {
+    ) -> Result<ChunkAssignment<'_, PT>> {
         if self.recipients.is_empty() {
             tracing::warn!("no recipients specified for chunk assigner");
             return Ok(ChunkAssignment::empty());
@@ -415,7 +415,7 @@ impl<PT: PubKey> Partitioned<PT> {
         }
     }
 
-    fn assign_gso(&self, num_symbols: usize) -> ChunkAssignment<PT> {
+    fn assign_gso(&self, num_symbols: usize) -> ChunkAssignment<'_, PT> {
         let num_nodes = self.weighted_nodes.len();
         let mut assignment = ChunkAssignment::with_capacity(num_nodes);
         assignment.hint_order(ChunkOrder::GsoFriendly);
@@ -439,7 +439,7 @@ impl<PT: PubKey> ChunkAssigner<PT> for Partitioned<PT> {
         &self,
         num_symbols: usize,
         _preferred_order: Option<ChunkOrder>,
-    ) -> Result<ChunkAssignment<PT>> {
+    ) -> Result<ChunkAssignment<'_, PT>> {
         if self.weighted_nodes.is_empty() {
             tracing::warn!("no nodes specified for partitioned chunk assigner");
             return Ok(ChunkAssignment::empty());
@@ -511,7 +511,7 @@ impl<PT: PubKey> ChunkAssigner<PT> for StakeBasedWithRC<PT> {
         &self,
         num_symbols: usize,
         _preferred_order: Option<ChunkOrder>,
-    ) -> Result<ChunkAssignment<PT>> {
+    ) -> Result<ChunkAssignment<'_, PT>> {
         if self.validator_set.is_empty() {
             tracing::warn!("no nodes specified for partitioned chunk assigner");
             return Ok(ChunkAssignment::empty());
@@ -625,7 +625,7 @@ mod tests {
             Self { slices }
         }
 
-        fn assign_chunks(&self) -> ChunkAssignment<PT> {
+        fn assign_chunks(&self) -> ChunkAssignment<'_, PT> {
             let mut assignment = ChunkAssignment::with_capacity(self.slices.len());
             for slice in &self.slices {
                 assignment.push(&slice.0, slice.1.clone());

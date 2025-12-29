@@ -869,7 +869,7 @@ fn sufficient_single_emptying_transaction_inputs() -> (
 ) {
     let signer = S1;
 
-    let max_fee_per_gas = (1 * ONE_ETHER) / 50_000;
+    let max_fee_per_gas = ONE_ETHER / 50_000;
 
     let tx1 = make_test_tx(signer, 50_000, max_fee_per_gas, 3 * ONE_ETHER, 0);
     let sender = tx1.signer();
@@ -954,7 +954,7 @@ fn sufficient_emptying_transaction_inputs() -> (
     let tx1 = make_test_tx(signer, 50_000, max_fee_per_gas, 2 * ONE_ETHER, 0);
     let sender = tx1.signer();
 
-    let max_fee_per_gas = (1 * ONE_ETHER) / 50_000;
+    let max_fee_per_gas = ONE_ETHER / 50_000;
     let tx2 = make_test_tx(signer, 50_000, max_fee_per_gas, ONE_ETHER, 1);
 
     let txs = BTreeMap::from([
@@ -1037,7 +1037,7 @@ fn emptying_transaction_different_blocks_sufficient_inputs() -> (
     let tx1 = make_test_tx(signer, 50_000, max_fee_per_gas, 2 * ONE_ETHER, 0);
     let sender = tx1.signer();
 
-    let max_fee_per_gas = (1 * ONE_ETHER) / 50_000;
+    let max_fee_per_gas = ONE_ETHER / 50_000;
     let tx2 = make_test_tx(signer, 50_000, max_fee_per_gas, ONE_ETHER, 1);
 
     let txs = BTreeMap::from([
@@ -1224,7 +1224,7 @@ fn delegation_non_emptying_same_block_sufficient_inputs() -> (
         make_eip7702_tx_with_value(S2, 0, 100_000_000_000, 0, 50_000, 0, vec![signed_auth], 0);
     let bundler = tx1.signer();
 
-    let max_fee_per_gas = (1 * ONE_ETHER) / 50_000;
+    let max_fee_per_gas = ONE_ETHER / 50_000;
     let tx2 = make_test_tx(signer, 50_000, max_fee_per_gas, 0, 1);
     let sender = tx2.signer();
 
@@ -1375,7 +1375,7 @@ fn delegation_non_emptying_different_blocks_sufficient_inputs() -> (
     let bundler = tx1.signer();
     let sender = signer;
 
-    let max_fee_per_gas = (1 * ONE_ETHER) / 50_000;
+    let max_fee_per_gas = ONE_ETHER / 50_000;
     let tx2 = make_test_tx(signer, 50_000, max_fee_per_gas, 0, 1);
 
     let txs = BTreeMap::from([
@@ -1568,7 +1568,7 @@ fn sufficient_balance_emptying_txn_with_value_and_delegation_same_block_inputs()
 ) {
     let signer = S1;
 
-    let max_fee_per_gas = (1 * ONE_ETHER) / 50_000;
+    let max_fee_per_gas = ONE_ETHER / 50_000;
     let tx1 = make_test_tx(signer, 50_000, max_fee_per_gas, 3 * ONE_ETHER, 0);
     let sender = tx1.signer();
 
@@ -1944,7 +1944,7 @@ fn emptying_and_delegation_preceding_blocks_sufficient_inputs() -> (
         make_eip7702_tx_with_value(S2, 0, 100_000_000_000, 0, 50_000, 0, vec![signed_auth], 0);
     let bundler = tx2.signer();
 
-    let max_fee_per_gas = (1 * ONE_ETHER) / 50_000;
+    let max_fee_per_gas = ONE_ETHER / 50_000;
     let tx3 = make_test_tx(signer, 50_000, max_fee_per_gas, 0, 2);
 
     let txs = BTreeMap::from([
@@ -2016,7 +2016,7 @@ fn multiple_non_emptying_same_block_sufficient_inputs() -> (
     let max_fee_per_gas = (5 * ONE_ETHER) / 50_000;
     let tx2 = make_test_tx(signer, 50_000, max_fee_per_gas, 0, 2);
 
-    let max_fee_per_gas = (1 * ONE_ETHER) / 50_000;
+    let max_fee_per_gas = ONE_ETHER / 50_000;
     let tx3 = make_test_tx(signer, 50_000, max_fee_per_gas, 0, 3);
 
     let txs = BTreeMap::from([
@@ -2054,7 +2054,7 @@ fn multiple_non_emptying_different_blocks_insufficient_inputs() -> (
     let max_fee_per_gas = (2 * ONE_ETHER) / 50_000;
     let tx3 = make_test_tx(signer, 50_000, max_fee_per_gas, 0, 3);
 
-    let max_fee_per_gas = (1 * ONE_ETHER) / 50_000;
+    let max_fee_per_gas = ONE_ETHER / 50_000;
     let tx4 = make_test_tx(signer, 50_000, max_fee_per_gas, 0, 4);
 
     let txs = BTreeMap::from([
@@ -2088,7 +2088,7 @@ fn multiple_non_emptying_different_blocks_sufficient_inputs() -> (
     let max_fee_per_gas = (3 * ONE_ETHER) / 50_000;
     let tx2 = make_test_tx(signer, 50_000, max_fee_per_gas, 0, 2);
 
-    let max_fee_per_gas = (1 * ONE_ETHER) / 50_000;
+    let max_fee_per_gas = ONE_ETHER / 50_000;
     let tx3 = make_test_tx(signer, 50_000, max_fee_per_gas, 0, 3);
 
     let tx4 = make_test_tx(signer, 50_000, max_fee_per_gas, 0, 4);

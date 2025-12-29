@@ -188,7 +188,7 @@ impl TriedbHandle {
             error!("Key length nibbles exceeds maximum allowed value");
             return None;
         }
-        if (key_len_nibbles as usize + 1) / 2 > key.len() {
+        if (key_len_nibbles as usize).div_ceil(2) > key.len() {
             error!("Key length is insufficient for the given nibbles");
             return None;
         }
@@ -249,7 +249,7 @@ impl TriedbHandle {
             error!("Key length nibbles exceeds maximum allowed value");
             return;
         }
-        if (key_len_nibbles as usize + 1) / 2 > key.len() {
+        if (key_len_nibbles as usize).div_ceil(2) > key.len() {
             error!("Key length is insufficient for the given nibbles");
             return;
         }
@@ -300,7 +300,7 @@ impl TriedbHandle {
             error!("Key length nibbles exceeds maximum allowed value");
             return;
         }
-        if (key_len_nibbles as usize + 1) / 2 > key.len() {
+        if (key_len_nibbles as usize).div_ceil(2) > key.len() {
             error!("Key length is insufficient for the given nibbles");
             return;
         }
@@ -336,7 +336,7 @@ impl TriedbHandle {
             error!("Key length nibbles exceeds maximum allowed value");
             return;
         }
-        if (key_len_nibbles as usize + 1) / 2 > key.len() {
+        if (key_len_nibbles as usize).div_ceil(2) > key.len() {
             error!("Key length is insufficient for the given nibbles");
             return;
         }
@@ -378,7 +378,7 @@ impl TriedbHandle {
             error!("Min key length nibbles exceeds maximum allowed value");
             return;
         }
-        if (min_key_len_nibbles as usize + 1) / 2 > min_key.len() {
+        if (min_key_len_nibbles as usize).div_ceil(2) > min_key.len() {
             error!("Min key length is insufficient for the given nibbles");
             return;
         }
@@ -386,7 +386,7 @@ impl TriedbHandle {
             error!("Max key length nibbles exceeds maximum allowed value");
             return;
         }
-        if (max_key_len_nibbles as usize + 1) / 2 > max_key.len() {
+        if (max_key_len_nibbles as usize).div_ceil(2) > max_key.len() {
             error!("Max key length is insufficient for the given nibbles");
             return;
         }

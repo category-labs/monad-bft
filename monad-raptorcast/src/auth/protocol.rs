@@ -75,7 +75,7 @@ pub trait AuthenticationProtocol {
 
     fn next_deadline(&self) -> Option<Instant>;
 
-    fn metrics(&self) -> ExecutorMetricsChain;
+    fn metrics(&self) -> ExecutorMetricsChain<'_>;
 }
 
 pub struct WireAuthProtocol {
@@ -185,7 +185,7 @@ impl AuthenticationProtocol for WireAuthProtocol {
         self.api.has_any_session_by_public_key(public_key)
     }
 
-    fn metrics(&self) -> ExecutorMetricsChain {
+    fn metrics(&self) -> ExecutorMetricsChain<'_> {
         self.api.metrics()
     }
 }
@@ -288,7 +288,7 @@ impl<P: PubKey> AuthenticationProtocol for NoopAuthProtocol<P> {
         false
     }
 
-    fn metrics(&self) -> ExecutorMetricsChain {
+    fn metrics(&self) -> ExecutorMetricsChain<'_> {
         ExecutorMetricsChain::default()
     }
 }

@@ -474,16 +474,9 @@ pub enum RpcWorkflowConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
+#[derive(Default)]
 pub struct RpcRequestGeneratorConfig {
     pub workflows: Vec<RpcWorkflowConfig>,
-}
-
-impl Default for RpcRequestGeneratorConfig {
-    fn default() -> Self {
-        Self {
-            workflows: Vec::new(),
-        }
-    }
 }
 
 impl RpcRequestGeneratorConfig {

@@ -165,7 +165,7 @@ where
         }
     }
 
-    fn metrics(&self) -> ExecutorMetricsChain {
+    fn metrics(&self) -> ExecutorMetricsChain<'_> {
         self.metrics.as_ref().into()
     }
 }
@@ -260,7 +260,7 @@ where
             }
             let locked_epoch = seq_num.get_locked_epoch(self.epoch_length);
             assert_eq!(locked_epoch, seq_num.to_epoch(self.epoch_length) + Epoch(1));
-            self.next_val_data = if locked_epoch.0 % 2 == 0 {
+            self.next_val_data = if locked_epoch.0.is_multiple_of(2) {
                 Some(ValidatorSetDataWithEpoch {
                     epoch: locked_epoch,
                     validators: self.val_data_1.clone(),
@@ -302,7 +302,7 @@ where
         // at the end of Epoch(even), next validator set is val_data_1
         // odd epoch number <> val_data_1
         // even epoch number <> val_data_2
-        if epoch.0 % 2 == 0 {
+        if epoch.0.is_multiple_of(2) {
             self.val_data_2.clone()
         } else {
             self.val_data_1.clone()
@@ -336,7 +336,7 @@ where
         }
     }
 
-    fn metrics(&self) -> ExecutorMetricsChain {
+    fn metrics(&self) -> ExecutorMetricsChain<'_> {
         self.metrics.as_ref().into()
     }
 }

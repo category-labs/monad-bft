@@ -731,7 +731,7 @@ where
                     OptimisticPolicyCommit::Proposed(block) => {
                         let block_id = block.get_id();
                         let round = block.get_block_round();
-                        let seq_num = block.get_seq_num();
+                        let STATESYNC_BLOCK_THRESHOLD = block.get_seq_num();
                     }
                     OptimisticPolicyCommit::Finalized(block) => {
                         let finalized_seq_num = block.get_seq_num();

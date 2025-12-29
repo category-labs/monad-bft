@@ -280,7 +280,7 @@ impl RpcRequestGenerator {
                         let params = (addr, U64::from(block_number));
                         batch
                             .add_call::<_, U256>("eth_getBalance", &params)
-                            .map(|w| async move { w.await })
+                            .map(|w| w)
                             .unwrap()
                     })
                     .collect::<Vec<_>>();
@@ -324,7 +324,7 @@ impl RpcRequestGenerator {
                         let params = (txn, config);
                         batch
                             .add_call::<_, GethTrace>("debug_traceTransaction", &params)
-                            .map(|w| async move { w.await })
+                            .map(|w| w)
                             .unwrap()
                     })
                     .collect::<Vec<_>>();

@@ -326,7 +326,7 @@ impl PacketLayout {
     pub const fn merkle_tree_depth(&self) -> u8 {
         let proof_len = self.chunk_header_start - HEADER_LEN;
         debug_assert!(proof_len < u8::MAX as usize * MERKLE_HASH_LEN);
-        debug_assert!(proof_len % MERKLE_HASH_LEN == 0);
+        debug_assert!(proof_len.is_multiple_of(MERKLE_HASH_LEN));
         (proof_len / MERKLE_HASH_LEN) as u8 + 1
     }
 
@@ -407,7 +407,7 @@ pub(super) struct MerkleBatch<'a, PT: PubKey> {
 pub(super) fn merkle_batches<PT: PubKey>(
     all_chunks: &mut [Chunk<PT>],
     layout: PacketLayout,
-) -> impl Iterator<Item = MerkleBatch<PT>> {
+) -> impl Iterator<Item = MerkleBatch<'_, PT>> {
     let batch_len = layout.merkle_batch_len();
     debug_assert!(batch_len > 0);
     all_chunks.chunks_mut(batch_len).map(MerkleBatch::from)

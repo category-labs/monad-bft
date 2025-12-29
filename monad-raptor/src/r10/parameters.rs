@@ -140,7 +140,7 @@ impl CodeParameters {
     fn determine_num_ldpc_symbols(num_source_symbols: u16, x: u8) -> Result<u16, String> {
         // "Let S be the smallest prime integer such that S >= ceil(0.01*K) + X"
         // where S = num_ldpc_symbols, K = num_source_symbols.
-        let num_ldpc_symbols_min = ((num_source_symbols + 99) / 100) + u16::from(x);
+        let num_ldpc_symbols_min = num_source_symbols.div_ceil(100) + u16::from(x);
 
         // For num_source_symbols = 4, X = 4, and so, num_ldpc_symbols >= 1 + 4 = 5.
         // For num_source_symbols = 8192, X = 129, and so, num_ldpc_symbols >= 82 + 129 = 211.
@@ -193,7 +193,7 @@ impl CodeParameters {
             smallest_integer_satisfying(Self::HALF_MIN, Self::HALF_MAX + 1, |pivot| {
                 let pivot = pivot.try_into().unwrap();
 
-                Self::choose(pivot, (pivot + 1) / 2) >= num_source_symbols + num_ldpc_symbols
+                Self::choose(pivot, pivot.div_ceil(2)) >= num_source_symbols + num_ldpc_symbols
             });
 
         match num_half_symbols {

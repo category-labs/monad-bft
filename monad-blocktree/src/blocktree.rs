@@ -920,7 +920,7 @@ mod test {
 
     #[test]
     fn duplicate_blocks() {
-        let mut metrics = Metrics::default();
+        let metrics = Metrics::default();
         let g = get_genesis_block();
         let b1 = get_next_block(&g, None, &[1]);
 
@@ -1793,7 +1793,7 @@ mod test {
         //    |
         //   b2
 
-        let mut metrics = Metrics::default();
+        let metrics = Metrics::default();
         let b1 = get_genesis_block();
         let b2 = get_next_block(&b1, None, &[1]);
 

@@ -51,7 +51,7 @@ where
         let mut decompressed = Vec::new();
 
         zstd::stream::copy_decode(zstd_bytes, &mut decompressed)
-            .expect(format!("could not decompress `{}`", name.as_ref()).as_str());
+            .unwrap_or_else(|_| panic!("could not decompress `{}`", name.as_ref()));
 
         let n_write = unsafe {
             libc::write(
