@@ -260,40 +260,88 @@ pub enum GetMetrics {
     Response(Metrics),
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Deserialize)]
+#[serde(bound = "ST: CertificateSignatureRecoverable")]
+struct PeerEntryRaw<ST: CertificateSignatureRecoverable> {
+    #[serde(deserialize_with = "deserialize_pubkey::<_, CertificateSignaturePubKey<ST>>")]
+    pubkey: CertificateSignaturePubKey<ST>,
+    addr: SocketAddrV4,
+    signature: ST,
+    record_seq_num: u64,
+    #[serde(alias = "auth_port")]
+    udp_auth_port: Option<u16>,
+    tcp_auth_port: Option<u16>,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[serde(bound = "ST: CertificateSignatureRecoverable")]
 pub struct PeerEntry<ST: CertificateSignatureRecoverable> {
     #[serde(serialize_with = "serialize_pubkey::<_, CertificateSignaturePubKey<ST>>")]
-    #[serde(deserialize_with = "deserialize_pubkey::<_, CertificateSignaturePubKey<ST>>")]
     pub pubkey: CertificateSignaturePubKey<ST>,
     pub addr: SocketAddrV4,
 
     pub signature: ST,
     pub record_seq_num: u64,
 
+    #[serde(alias = "auth_port")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub auth_port: Option<u16>,
+    pub udp_auth_port: Option<u16>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tcp_auth_port: Option<u16>,
+}
+
+impl<'de, ST: CertificateSignatureRecoverable> Deserialize<'de> for PeerEntry<ST> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = PeerEntryRaw::deserialize(deserializer)?;
+        if raw.tcp_auth_port.is_some() && raw.udp_auth_port.is_none() {
+            return Err(serde::de::Error::custom(
+                "tcp_auth_port requires udp_auth_port to be set",
+            ));
+        }
+        Ok(Self {
+            pubkey: raw.pubkey,
+            addr: raw.addr,
+            signature: raw.signature,
+            record_seq_num: raw.record_seq_num,
+            udp_auth_port: raw.udp_auth_port,
+            tcp_auth_port: raw.tcp_auth_port,
+        })
+    }
 }
 
 impl<ST: CertificateSignatureRecoverable> Encodable for PeerEntry<ST> {
     fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
-        if let Some(auth_port) = self.auth_port {
-            let enc: [&dyn Encodable; 5] = [
-                &self.pubkey,
-                &self.addr.to_string(),
-                &self.signature,
-                &self.record_seq_num,
-                &auth_port,
-            ];
-            encode_list::<_, dyn Encodable>(&enc, out);
-        } else {
-            let enc: [&dyn Encodable; 4] = [
-                &self.pubkey,
-                &self.addr.to_string(),
-                &self.signature,
-                &self.record_seq_num,
-            ];
-            encode_list::<_, dyn Encodable>(&enc, out);
+        // Invariant: tcp_auth_port requires udp_auth_port (enforced by Deserialize impl)
+        debug_assert!(
+            !(self.tcp_auth_port.is_some() && self.udp_auth_port.is_none()),
+            "tcp_auth_port requires udp_auth_port to be set"
+        );
+
+        let addr_str = self.addr.to_string();
+        let base: [&dyn Encodable; 4] = [
+            &self.pubkey,
+            &addr_str,
+            &self.signature,
+            &self.record_seq_num,
+        ];
+
+        match (self.udp_auth_port, self.tcp_auth_port) {
+            (Some(ref udp), Some(ref tcp)) => {
+                let enc: [&dyn Encodable; 6] = [base[0], base[1], base[2], base[3], udp, tcp];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            (Some(ref udp), None) => {
+                let enc: [&dyn Encodable; 5] = [base[0], base[1], base[2], base[3], udp];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            (None, Some(_)) => unreachable!(),
+            (None, None) => {
+                encode_list::<_, dyn Encodable>(&base, out);
+            }
         }
     }
 }
@@ -310,7 +358,15 @@ impl<ST: CertificateSignatureRecoverable> Decodable for PeerEntry<ST> {
         let signature = ST::decode(&mut payload)?;
         let record_seq_num = u64::decode(&mut payload)?;
 
-        let auth_port = if !payload.is_empty() {
+        let udp_auth_port = if !payload.is_empty() {
+            Some(u16::decode(&mut payload)?)
+        } else {
+            None
+        };
+
+        // Only decode tcp_auth_port if udp_auth_port is present to avoid ambiguity:
+        // if only one port is present, we wouldn't know if it's UDP or TCP.
+        let tcp_auth_port = if udp_auth_port.is_some() && !payload.is_empty() {
             Some(u16::decode(&mut payload)?)
         } else {
             None
@@ -321,8 +377,36 @@ impl<ST: CertificateSignatureRecoverable> Decodable for PeerEntry<ST> {
             addr,
             signature,
             record_seq_num,
-            auth_port,
+            udp_auth_port,
+            tcp_auth_port,
         })
+    }
+}
+
+pub struct ResolvedPeerConfig<'a, ST: CertificateSignatureRecoverable> {
+    peer_config: &'a monad_node_config::NodeBootstrapPeerConfig<ST>,
+    addr: SocketAddrV4,
+}
+
+impl<'a, ST: CertificateSignatureRecoverable> ResolvedPeerConfig<'a, ST> {
+    pub fn new(
+        peer_config: &'a monad_node_config::NodeBootstrapPeerConfig<ST>,
+        addr: SocketAddrV4,
+    ) -> Self {
+        Self { peer_config, addr }
+    }
+}
+
+impl<ST: CertificateSignatureRecoverable> From<ResolvedPeerConfig<'_, ST>> for PeerEntry<ST> {
+    fn from(resolved: ResolvedPeerConfig<'_, ST>) -> Self {
+        PeerEntry {
+            pubkey: resolved.peer_config.secp256k1_pubkey,
+            addr: resolved.addr,
+            signature: resolved.peer_config.name_record_sig,
+            record_seq_num: resolved.peer_config.record_seq_num,
+            udp_auth_port: resolved.peer_config.udp_auth_port,
+            tcp_auth_port: resolved.peer_config.tcp_auth_port,
+        }
     }
 }
 
@@ -2365,6 +2449,7 @@ mod tests {
         certificate_signature::{CertificateSignaturePubKey, PubKey},
         NopSignature,
     };
+    use monad_secp::SecpSignature;
 
     use crate::{
         PeerEntry, StateSyncRequest, StateSyncResponse, StateSyncUpsertType, StateSyncUpsertV1,
@@ -2525,10 +2610,73 @@ mod tests {
             addr,
             signature,
             record_seq_num,
-            auth_port: None,
+            udp_auth_port: None,
+            tcp_auth_port: None,
         };
         let encoded = alloy_rlp::encode(&entry);
         let decoded: PeerEntry<NopSignature> = alloy_rlp::decode_exact(&encoded).unwrap();
         assert_eq!(entry, decoded);
+    }
+
+    #[test]
+    fn peer_entry_rlp_encode_decode_with_udp_auth_only() {
+        let pubkey = CertificateSignaturePubKey::<NopSignature>::from_bytes(&[2u8; 32]).unwrap();
+        let addr: SocketAddrV4 = "127.0.0.1:8001".parse().unwrap();
+        let signature = NopSignature { pubkey, id: 5678 };
+        let record_seq_num = 1;
+        let entry = PeerEntry {
+            pubkey,
+            addr,
+            signature,
+            record_seq_num,
+            udp_auth_port: Some(9001),
+            tcp_auth_port: None,
+        };
+        let encoded = alloy_rlp::encode(&entry);
+        let decoded: PeerEntry<NopSignature> = alloy_rlp::decode_exact(&encoded).unwrap();
+        assert_eq!(entry, decoded);
+        assert_eq!(decoded.udp_auth_port, Some(9001));
+        assert_eq!(decoded.tcp_auth_port, None);
+    }
+
+    #[test]
+    fn peer_entry_rlp_encode_decode_with_both_auth_ports() {
+        let pubkey = CertificateSignaturePubKey::<NopSignature>::from_bytes(&[3u8; 32]).unwrap();
+        let addr: SocketAddrV4 = "127.0.0.1:8002".parse().unwrap();
+        let signature = NopSignature { pubkey, id: 9012 };
+        let record_seq_num = 2;
+        let entry = PeerEntry {
+            pubkey,
+            addr,
+            signature,
+            record_seq_num,
+            udp_auth_port: Some(9001),
+            tcp_auth_port: Some(9002),
+        };
+        let encoded = alloy_rlp::encode(&entry);
+        let decoded: PeerEntry<NopSignature> = alloy_rlp::decode_exact(&encoded).unwrap();
+        assert_eq!(entry, decoded);
+        assert_eq!(decoded.udp_auth_port, Some(9001));
+        assert_eq!(decoded.tcp_auth_port, Some(9002));
+    }
+
+    #[test]
+    fn peer_entry_serde_rejects_tcp_without_udp() {
+        let toml_invalid = r#"
+            pubkey = "0x0334944627833fe16cc7e21cd5e1442b42b3eb9bbd0cdd266e449a9dc026b45a39"
+            addr = "127.0.0.1:8000"
+            signature = "0x92cfa40bcf8f1041b6220c7e9cd96e31f024d8aa59be3a9f23126e2056bfc1735878a8a52114ec83d8c4fa24f5f3502b0362a1bf9b1bf927a3da1a031ec167cd00"
+            record_seq_num = 5
+            tcp_auth_port = 9002
+        "#;
+
+        let result: Result<PeerEntry<SecpSignature>, _> = toml::from_str(toml_invalid);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("tcp_auth_port requires udp_auth_port"),
+            "unexpected error: {}",
+            err
+        );
     }
 }

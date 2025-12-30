@@ -151,6 +151,7 @@ impl ValidatorInfo {
                 tcp_addr.port(),
                 non_auth_addr.port(),
                 auth_addr.port(),
+                None,
                 1,
             )
         } else {
