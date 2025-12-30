@@ -36,6 +36,12 @@ struct Args {
     )]
     authenticated_udp_port: Option<u16>,
 
+    #[arg(
+        long,
+        help = "Optional authenticated TCP port. If provided, will create name record with authenticated TCP port"
+    )]
+    authenticated_tcp_port: Option<u16>,
+
     /// Sequence number for the name record
     #[arg(long)]
     self_record_seq_num: Option<u64>,
@@ -81,9 +87,13 @@ fn main() {
             self_address.port(),
             self_address.port(),
             authenticated_udp_port,
+            args.authenticated_tcp_port,
             self_record_seq_num,
         )
     } else {
+        if args.authenticated_tcp_port.is_some() {
+            panic!("authenticated_tcp_port requires authenticated_udp_port");
+        }
         NameRecord::new(*self_address.ip(), self_address.port(), self_record_seq_num)
     };
     let signed_name_record: MonadNameRecord<SecpSignature> =
@@ -93,6 +103,9 @@ fn main() {
     println!("self_record_seq_num = {}", self_record_seq_num);
     if let Some(authenticated_udp_port) = args.authenticated_udp_port {
         println!("authenticated_udp_port = {}", authenticated_udp_port);
+    }
+    if let Some(authenticated_tcp_port) = args.authenticated_tcp_port {
+        println!("authenticated_tcp_port = {}", authenticated_tcp_port);
     }
     println!(
         "self_name_record_sig = {:?}",

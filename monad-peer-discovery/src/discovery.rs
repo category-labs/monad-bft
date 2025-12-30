@@ -2656,8 +2656,14 @@ mod tests {
 
         // peer2 has authenticated UDP port
         let peer2_name_record = {
-            let name_record =
-                NameRecord::new_with_authentication(Ipv4Addr::new(8, 8, 4, 4), 8001, 8001, 9001, 2);
+            let name_record = NameRecord::new_with_authentication(
+                Ipv4Addr::new(8, 8, 4, 4),
+                8001,
+                8001,
+                9001,
+                None,
+                2,
+            );
             let mut encoded = Vec::new();
             name_record.encode(&mut encoded);
             let signature = SecpSignature::sign::<signing_domain::NameRecord>(&encoded, peer2);
