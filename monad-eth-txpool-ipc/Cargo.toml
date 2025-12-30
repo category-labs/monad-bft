@@ -12,6 +12,7 @@ bench = false
 monad-eth-txpool-types = { workspace = true }
 
 alloy-consensus = { workspace = true }
+alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
 bincode = { workspace = true }
 futures = { workspace = true }

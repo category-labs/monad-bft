@@ -20,7 +20,6 @@ use std::{
     task::{Context, Poll},
 };
 
-use alloy_consensus::TxEnvelope;
 use futures::{FutureExt, Sink, SinkExt, Stream, StreamExt};
 use monad_eth_txpool_types::{EthTxPoolEvent, EthTxPoolSnapshot};
 use tokio::{net::UnixStream, sync::mpsc};
@@ -28,11 +27,15 @@ use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 use tracing::warn;
 
+pub use self::message::EthTxPoolIpcTx;
+
+mod message;
+
 const SOCKET_SEND_TIMEOUT_MS: u64 = 1_000;
 
 pub struct EthTxPoolIpcStream {
     tx: mpsc::Sender<Vec<EthTxPoolEvent>>,
-    rx: ReceiverStream<TxEnvelope>,
+    rx: ReceiverStream<EthTxPoolIpcTx>,
 
     handle: tokio::task::JoinHandle<io::Result<()>>,
 }
@@ -53,7 +56,7 @@ impl EthTxPoolIpcStream {
     async fn run(
         stream: UnixStream,
         snapshot: EthTxPoolSnapshot,
-        tx_sender: mpsc::Sender<TxEnvelope>,
+        tx_sender: mpsc::Sender<EthTxPoolIpcTx>,
         mut event_rx: mpsc::Receiver<Vec<EthTxPoolEvent>>,
     ) -> io::Result<()> {
         let mut stream = Framed::new(stream, LengthDelimitedCodec::default());
@@ -69,7 +72,7 @@ impl EthTxPoolIpcStream {
                         break;
                     };
 
-                    let Ok(tx) = alloy_rlp::decode_exact::<TxEnvelope>(result?.as_ref()) else {
+                    let Ok(tx) = alloy_rlp::decode_exact::<EthTxPoolIpcTx>(result?.as_ref()) else {
                         return Err(io::Error::new(
                             ErrorKind::InvalidData,
                             "EthTxPoolIpcStream received invalid tx serialized bytes!"
@@ -131,7 +134,7 @@ impl EthTxPoolIpcStream {
 }
 
 impl Stream for EthTxPoolIpcStream {
-    type Item = TxEnvelope;
+    type Item = EthTxPoolIpcTx;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         if let Poll::Ready(result) = self.handle.poll_unpin(cx) {
@@ -179,14 +182,14 @@ impl EthTxPoolIpcClient {
     }
 }
 
-impl<'a> Sink<&'a TxEnvelope> for EthTxPoolIpcClient {
+impl Sink<EthTxPoolIpcTx> for EthTxPoolIpcClient {
     type Error = io::Error;
 
     fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         self.stream.poll_ready_unpin(cx)
     }
 
-    fn start_send(mut self: Pin<&mut Self>, tx: &'a TxEnvelope) -> Result<(), Self::Error> {
+    fn start_send(mut self: Pin<&mut Self>, tx: EthTxPoolIpcTx) -> Result<(), Self::Error> {
         let bytes = alloy_rlp::encode(tx);
         self.stream.start_send_unpin(bytes.into())
     }
