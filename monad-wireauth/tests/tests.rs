@@ -17,6 +17,7 @@ use std::{convert::TryFrom, net::SocketAddr, time::Duration};
 
 use monad_wireauth::{
     messages::{CookieReply, DataPacketHeader, HandshakeInitiation, HandshakeResponse, Packet},
+    metrics::DefaultMetrics,
     Config, Context, TestContext, API, DEFAULT_RETRY_ATTEMPTS,
 };
 use secp256k1::rand::rng;
@@ -468,7 +469,8 @@ fn test_next_deadline_includes_filter_reset() {
 
     let peer_keypair = monad_secp::KeyPair::generate(&mut rng);
     let peer_ctx = TestContext::new();
-    let peer = API::new(config, peer_keypair, peer_ctx.clone());
+    let peer: API<TestContext, _, DefaultMetrics> =
+        API::new(config, peer_keypair, peer_ctx.clone());
 
     // 2. verify next_deadline returns filter reset deadline
     let deadline = peer.next_deadline();
@@ -487,7 +489,8 @@ fn test_next_deadline_returns_minimum_of_session_and_filter() {
 
     let peer1_keypair = monad_secp::KeyPair::generate(&mut rng);
     let peer1_ctx = TestContext::new();
-    let mut peer1 = API::new(config.clone(), peer1_keypair, peer1_ctx.clone());
+    let mut peer1: API<TestContext, _, DefaultMetrics> =
+        API::new(config.clone(), peer1_keypair, peer1_ctx.clone());
 
     let peer2_keypair = monad_secp::KeyPair::generate(&mut rng);
     let peer2_public = peer2_keypair.pubkey();

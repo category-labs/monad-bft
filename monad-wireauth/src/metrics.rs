@@ -94,3 +94,317 @@ pub const GAUGE_WIREAUTH_ENQUEUED_COOKIE_REPLY: &str = "monad.wireauth.enqueued.
 pub const GAUGE_WIREAUTH_ENQUEUED_KEEPALIVE: &str = "monad.wireauth.enqueued.keepalive";
 
 pub const GAUGE_WIREAUTH_RATE_LIMIT_DROP: &str = "monad.wireauth.rate_limit.drop";
+
+pub trait MetricNames {
+    const STATE_INITIATING_SESSIONS: &'static str;
+    const STATE_RESPONDING_SESSIONS: &'static str;
+    const STATE_TRANSPORT_SESSIONS: &'static str;
+    const STATE_TOTAL_SESSIONS: &'static str;
+    const STATE_ALLOCATED_INDICES: &'static str;
+    const STATE_SESSIONS_BY_PUBLIC_KEY: &'static str;
+    const STATE_SESSIONS_BY_SOCKET: &'static str;
+    const STATE_SESSION_INDEX_ALLOCATED: &'static str;
+    const STATE_SESSION_ESTABLISHED_INITIATOR: &'static str;
+    const STATE_SESSION_ESTABLISHED_RESPONDER: &'static str;
+    const STATE_SESSION_TERMINATED: &'static str;
+    const STATE_TIMERS_SIZE: &'static str;
+    const STATE_PACKET_QUEUE_SIZE: &'static str;
+    const STATE_INITIATED_SESSION_BY_PEER_SIZE: &'static str;
+    const STATE_ACCEPTED_SESSIONS_BY_PEER_SIZE: &'static str;
+    const STATE_IP_SESSION_COUNTS_SIZE: &'static str;
+
+    const FILTER_PASS: &'static str;
+    const FILTER_SEND_COOKIE: &'static str;
+    const FILTER_DROP: &'static str;
+    const FILTER_IP_REQUEST_HISTORY_SIZE: &'static str;
+
+    const API_CONNECT: &'static str;
+    const API_DECRYPT: &'static str;
+    const API_ENCRYPT_BY_PUBLIC_KEY: &'static str;
+    const API_ENCRYPT_BY_SOCKET: &'static str;
+    const API_DISCONNECT: &'static str;
+    const API_DISPATCH_CONTROL: &'static str;
+    const API_NEXT_PACKET: &'static str;
+    const API_TICK: &'static str;
+
+    const DISPATCH_HANDSHAKE_INIT: &'static str;
+    const DISPATCH_HANDSHAKE_RESPONSE: &'static str;
+    const DISPATCH_COOKIE_REPLY: &'static str;
+    const DISPATCH_KEEPALIVE: &'static str;
+
+    const ERROR_CONNECT: &'static str;
+    const ERROR_DECRYPT: &'static str;
+    const ERROR_DECRYPT_NONCE_OUTSIDE_WINDOW: &'static str;
+    const ERROR_DECRYPT_NONCE_DUPLICATE: &'static str;
+    const ERROR_DECRYPT_MAC: &'static str;
+    const ERROR_ENCRYPT_BY_PUBLIC_KEY: &'static str;
+    const ERROR_ENCRYPT_BY_SOCKET: &'static str;
+    const ERROR_DISPATCH_CONTROL: &'static str;
+
+    const ERROR_SESSION_EXHAUSTED: &'static str;
+    const ERROR_MAC1_VERIFICATION_FAILED: &'static str;
+    const ERROR_TIMESTAMP_REPLAY: &'static str;
+    const ERROR_SESSION_NOT_FOUND: &'static str;
+    const ERROR_SESSION_INDEX_NOT_FOUND: &'static str;
+    const ERROR_HANDSHAKE_INIT_VALIDATION: &'static str;
+    const ERROR_COOKIE_REPLY: &'static str;
+    const ERROR_HANDSHAKE_RESPONSE_VALIDATION: &'static str;
+
+    const ENQUEUED_HANDSHAKE_INIT: &'static str;
+    const ENQUEUED_HANDSHAKE_RESPONSE: &'static str;
+    const ENQUEUED_COOKIE_REPLY: &'static str;
+    const ENQUEUED_KEEPALIVE: &'static str;
+
+    const RATE_LIMIT_DROP: &'static str;
+}
+
+#[macro_export]
+macro_rules! impl_metric_names {
+    ($type:ident, $transport:literal) => {
+        impl $crate::metrics::MetricNames for $type {
+            const STATE_INITIATING_SESSIONS: &'static str =
+                concat!("monad.wireauth.", $transport, ".state.initiating_sessions");
+            const STATE_RESPONDING_SESSIONS: &'static str =
+                concat!("monad.wireauth.", $transport, ".state.responding_sessions");
+            const STATE_TRANSPORT_SESSIONS: &'static str =
+                concat!("monad.wireauth.", $transport, ".state.transport_sessions");
+            const STATE_TOTAL_SESSIONS: &'static str =
+                concat!("monad.wireauth.", $transport, ".state.total_sessions");
+            const STATE_ALLOCATED_INDICES: &'static str =
+                concat!("monad.wireauth.", $transport, ".state.allocated_indices");
+            const STATE_SESSIONS_BY_PUBLIC_KEY: &'static str = concat!(
+                "monad.wireauth.",
+                $transport,
+                ".state.sessions_by_public_key"
+            );
+            const STATE_SESSIONS_BY_SOCKET: &'static str =
+                concat!("monad.wireauth.", $transport, ".state.sessions_by_socket");
+            const STATE_SESSION_INDEX_ALLOCATED: &'static str = concat!(
+                "monad.wireauth.",
+                $transport,
+                ".state.session_index_allocated"
+            );
+            const STATE_SESSION_ESTABLISHED_INITIATOR: &'static str = concat!(
+                "monad.wireauth.",
+                $transport,
+                ".state.session_established_initiator"
+            );
+            const STATE_SESSION_ESTABLISHED_RESPONDER: &'static str = concat!(
+                "monad.wireauth.",
+                $transport,
+                ".state.session_established_responder"
+            );
+            const STATE_SESSION_TERMINATED: &'static str =
+                concat!("monad.wireauth.", $transport, ".state.session_terminated");
+            const STATE_TIMERS_SIZE: &'static str =
+                concat!("monad.wireauth.", $transport, ".state.timers_size");
+            const STATE_PACKET_QUEUE_SIZE: &'static str =
+                concat!("monad.wireauth.", $transport, ".state.packet_queue_size");
+            const STATE_INITIATED_SESSION_BY_PEER_SIZE: &'static str = concat!(
+                "monad.wireauth.",
+                $transport,
+                ".state.initiated_session_by_peer_size"
+            );
+            const STATE_ACCEPTED_SESSIONS_BY_PEER_SIZE: &'static str = concat!(
+                "monad.wireauth.",
+                $transport,
+                ".state.accepted_sessions_by_peer_size"
+            );
+            const STATE_IP_SESSION_COUNTS_SIZE: &'static str = concat!(
+                "monad.wireauth.",
+                $transport,
+                ".state.ip_session_counts_size"
+            );
+
+            const FILTER_PASS: &'static str =
+                concat!("monad.wireauth.", $transport, ".filter.pass");
+            const FILTER_SEND_COOKIE: &'static str =
+                concat!("monad.wireauth.", $transport, ".filter.send_cookie");
+            const FILTER_DROP: &'static str =
+                concat!("monad.wireauth.", $transport, ".filter.drop");
+            const FILTER_IP_REQUEST_HISTORY_SIZE: &'static str = concat!(
+                "monad.wireauth.",
+                $transport,
+                ".filter.ip_request_history_size"
+            );
+
+            const API_CONNECT: &'static str =
+                concat!("monad.wireauth.", $transport, ".api.connect");
+            const API_DECRYPT: &'static str =
+                concat!("monad.wireauth.", $transport, ".api.decrypt");
+            const API_ENCRYPT_BY_PUBLIC_KEY: &'static str =
+                concat!("monad.wireauth.", $transport, ".api.encrypt_by_public_key");
+            const API_ENCRYPT_BY_SOCKET: &'static str =
+                concat!("monad.wireauth.", $transport, ".api.encrypt_by_socket");
+            const API_DISCONNECT: &'static str =
+                concat!("monad.wireauth.", $transport, ".api.disconnect");
+            const API_DISPATCH_CONTROL: &'static str =
+                concat!("monad.wireauth.", $transport, ".api.dispatch_control");
+            const API_NEXT_PACKET: &'static str =
+                concat!("monad.wireauth.", $transport, ".api.next_packet");
+            const API_TICK: &'static str = concat!("monad.wireauth.", $transport, ".api.tick");
+
+            const DISPATCH_HANDSHAKE_INIT: &'static str = concat!(
+                "monad.wireauth.",
+                $transport,
+                ".dispatch.handshake_initiation"
+            );
+            const DISPATCH_HANDSHAKE_RESPONSE: &'static str = concat!(
+                "monad.wireauth.",
+                $transport,
+                ".dispatch.handshake_response"
+            );
+            const DISPATCH_COOKIE_REPLY: &'static str =
+                concat!("monad.wireauth.", $transport, ".dispatch.cookie_reply");
+            const DISPATCH_KEEPALIVE: &'static str =
+                concat!("monad.wireauth.", $transport, ".dispatch.keepalive");
+
+            const ERROR_CONNECT: &'static str =
+                concat!("monad.wireauth.", $transport, ".error.connect");
+            const ERROR_DECRYPT: &'static str =
+                concat!("monad.wireauth.", $transport, ".error.decrypt");
+            const ERROR_DECRYPT_NONCE_OUTSIDE_WINDOW: &'static str = concat!(
+                "monad.wireauth.",
+                $transport,
+                ".error.decrypt.nonce_outside_window"
+            );
+            const ERROR_DECRYPT_NONCE_DUPLICATE: &'static str = concat!(
+                "monad.wireauth.",
+                $transport,
+                ".error.decrypt.nonce_duplicate"
+            );
+            const ERROR_DECRYPT_MAC: &'static str =
+                concat!("monad.wireauth.", $transport, ".error.decrypt.mac");
+            const ERROR_ENCRYPT_BY_PUBLIC_KEY: &'static str = concat!(
+                "monad.wireauth.",
+                $transport,
+                ".error.encrypt_by_public_key"
+            );
+            const ERROR_ENCRYPT_BY_SOCKET: &'static str =
+                concat!("monad.wireauth.", $transport, ".error.encrypt_by_socket");
+            const ERROR_DISPATCH_CONTROL: &'static str =
+                concat!("monad.wireauth.", $transport, ".error.dispatch_control");
+
+            const ERROR_SESSION_EXHAUSTED: &'static str =
+                concat!("monad.wireauth.", $transport, ".error.session_exhausted");
+            const ERROR_MAC1_VERIFICATION_FAILED: &'static str = concat!(
+                "monad.wireauth.",
+                $transport,
+                ".error.mac1_verification_failed"
+            );
+            const ERROR_TIMESTAMP_REPLAY: &'static str =
+                concat!("monad.wireauth.", $transport, ".error.timestamp_replay");
+            const ERROR_SESSION_NOT_FOUND: &'static str =
+                concat!("monad.wireauth.", $transport, ".error.session_not_found");
+            const ERROR_SESSION_INDEX_NOT_FOUND: &'static str = concat!(
+                "monad.wireauth.",
+                $transport,
+                ".error.session_index_not_found"
+            );
+            const ERROR_HANDSHAKE_INIT_VALIDATION: &'static str = concat!(
+                "monad.wireauth.",
+                $transport,
+                ".error.handshake_init_validation"
+            );
+            const ERROR_COOKIE_REPLY: &'static str =
+                concat!("monad.wireauth.", $transport, ".error.cookie_reply");
+            const ERROR_HANDSHAKE_RESPONSE_VALIDATION: &'static str = concat!(
+                "monad.wireauth.",
+                $transport,
+                ".error.handshake_response_validation"
+            );
+
+            const ENQUEUED_HANDSHAKE_INIT: &'static str =
+                concat!("monad.wireauth.", $transport, ".enqueued.handshake_init");
+            const ENQUEUED_HANDSHAKE_RESPONSE: &'static str = concat!(
+                "monad.wireauth.",
+                $transport,
+                ".enqueued.handshake_response"
+            );
+            const ENQUEUED_COOKIE_REPLY: &'static str =
+                concat!("monad.wireauth.", $transport, ".enqueued.cookie_reply");
+            const ENQUEUED_KEEPALIVE: &'static str =
+                concat!("monad.wireauth.", $transport, ".enqueued.keepalive");
+
+            const RATE_LIMIT_DROP: &'static str =
+                concat!("monad.wireauth.", $transport, ".rate_limit.drop");
+        }
+    };
+}
+
+pub struct DefaultMetrics;
+
+impl MetricNames for DefaultMetrics {
+    const STATE_INITIATING_SESSIONS: &'static str = GAUGE_WIREAUTH_STATE_INITIATING_SESSIONS;
+    const STATE_RESPONDING_SESSIONS: &'static str = GAUGE_WIREAUTH_STATE_RESPONDING_SESSIONS;
+    const STATE_TRANSPORT_SESSIONS: &'static str = GAUGE_WIREAUTH_STATE_TRANSPORT_SESSIONS;
+    const STATE_TOTAL_SESSIONS: &'static str = GAUGE_WIREAUTH_STATE_TOTAL_SESSIONS;
+    const STATE_ALLOCATED_INDICES: &'static str = GAUGE_WIREAUTH_STATE_ALLOCATED_INDICES;
+    const STATE_SESSIONS_BY_PUBLIC_KEY: &'static str = GAUGE_WIREAUTH_STATE_SESSIONS_BY_PUBLIC_KEY;
+    const STATE_SESSIONS_BY_SOCKET: &'static str = GAUGE_WIREAUTH_STATE_SESSIONS_BY_SOCKET;
+    const STATE_SESSION_INDEX_ALLOCATED: &'static str =
+        GAUGE_WIREAUTH_STATE_SESSION_INDEX_ALLOCATED;
+    const STATE_SESSION_ESTABLISHED_INITIATOR: &'static str =
+        GAUGE_WIREAUTH_STATE_SESSION_ESTABLISHED_INITIATOR;
+    const STATE_SESSION_ESTABLISHED_RESPONDER: &'static str =
+        GAUGE_WIREAUTH_STATE_SESSION_ESTABLISHED_RESPONDER;
+    const STATE_SESSION_TERMINATED: &'static str = GAUGE_WIREAUTH_STATE_SESSION_TERMINATED;
+    const STATE_TIMERS_SIZE: &'static str = GAUGE_WIREAUTH_STATE_TIMERS_SIZE;
+    const STATE_PACKET_QUEUE_SIZE: &'static str = GAUGE_WIREAUTH_STATE_PACKET_QUEUE_SIZE;
+    const STATE_INITIATED_SESSION_BY_PEER_SIZE: &'static str =
+        GAUGE_WIREAUTH_STATE_INITIATED_SESSION_BY_PEER_SIZE;
+    const STATE_ACCEPTED_SESSIONS_BY_PEER_SIZE: &'static str =
+        GAUGE_WIREAUTH_STATE_ACCEPTED_SESSIONS_BY_PEER_SIZE;
+    const STATE_IP_SESSION_COUNTS_SIZE: &'static str = GAUGE_WIREAUTH_STATE_IP_SESSION_COUNTS_SIZE;
+
+    const FILTER_PASS: &'static str = GAUGE_WIREAUTH_FILTER_PASS;
+    const FILTER_SEND_COOKIE: &'static str = GAUGE_WIREAUTH_FILTER_SEND_COOKIE;
+    const FILTER_DROP: &'static str = GAUGE_WIREAUTH_FILTER_DROP;
+    const FILTER_IP_REQUEST_HISTORY_SIZE: &'static str =
+        GAUGE_WIREAUTH_FILTER_IP_REQUEST_HISTORY_SIZE;
+
+    const API_CONNECT: &'static str = GAUGE_WIREAUTH_API_CONNECT;
+    const API_DECRYPT: &'static str = GAUGE_WIREAUTH_API_DECRYPT;
+    const API_ENCRYPT_BY_PUBLIC_KEY: &'static str = GAUGE_WIREAUTH_API_ENCRYPT_BY_PUBLIC_KEY;
+    const API_ENCRYPT_BY_SOCKET: &'static str = GAUGE_WIREAUTH_API_ENCRYPT_BY_SOCKET;
+    const API_DISCONNECT: &'static str = GAUGE_WIREAUTH_API_DISCONNECT;
+    const API_DISPATCH_CONTROL: &'static str = GAUGE_WIREAUTH_API_DISPATCH_CONTROL;
+    const API_NEXT_PACKET: &'static str = GAUGE_WIREAUTH_API_NEXT_PACKET;
+    const API_TICK: &'static str = GAUGE_WIREAUTH_API_TICK;
+
+    const DISPATCH_HANDSHAKE_INIT: &'static str = GAUGE_WIREAUTH_DISPATCH_HANDSHAKE_INIT;
+    const DISPATCH_HANDSHAKE_RESPONSE: &'static str = GAUGE_WIREAUTH_DISPATCH_HANDSHAKE_RESPONSE;
+    const DISPATCH_COOKIE_REPLY: &'static str = GAUGE_WIREAUTH_DISPATCH_COOKIE_REPLY;
+    const DISPATCH_KEEPALIVE: &'static str = GAUGE_WIREAUTH_DISPATCH_KEEPALIVE;
+
+    const ERROR_CONNECT: &'static str = GAUGE_WIREAUTH_ERROR_CONNECT;
+    const ERROR_DECRYPT: &'static str = GAUGE_WIREAUTH_ERROR_DECRYPT;
+    const ERROR_DECRYPT_NONCE_OUTSIDE_WINDOW: &'static str =
+        GAUGE_WIREAUTH_ERROR_DECRYPT_NONCE_OUTSIDE_WINDOW;
+    const ERROR_DECRYPT_NONCE_DUPLICATE: &'static str =
+        GAUGE_WIREAUTH_ERROR_DECRYPT_NONCE_DUPLICATE;
+    const ERROR_DECRYPT_MAC: &'static str = GAUGE_WIREAUTH_ERROR_DECRYPT_MAC;
+    const ERROR_ENCRYPT_BY_PUBLIC_KEY: &'static str = GAUGE_WIREAUTH_ERROR_ENCRYPT_BY_PUBLIC_KEY;
+    const ERROR_ENCRYPT_BY_SOCKET: &'static str = GAUGE_WIREAUTH_ERROR_ENCRYPT_BY_SOCKET;
+    const ERROR_DISPATCH_CONTROL: &'static str = GAUGE_WIREAUTH_ERROR_DISPATCH_CONTROL;
+
+    const ERROR_SESSION_EXHAUSTED: &'static str = GAUGE_WIREAUTH_ERROR_SESSION_EXHAUSTED;
+    const ERROR_MAC1_VERIFICATION_FAILED: &'static str =
+        GAUGE_WIREAUTH_ERROR_MAC1_VERIFICATION_FAILED;
+    const ERROR_TIMESTAMP_REPLAY: &'static str = GAUGE_WIREAUTH_ERROR_TIMESTAMP_REPLAY;
+    const ERROR_SESSION_NOT_FOUND: &'static str = GAUGE_WIREAUTH_ERROR_SESSION_NOT_FOUND;
+    const ERROR_SESSION_INDEX_NOT_FOUND: &'static str =
+        GAUGE_WIREAUTH_ERROR_SESSION_INDEX_NOT_FOUND;
+    const ERROR_HANDSHAKE_INIT_VALIDATION: &'static str =
+        GAUGE_WIREAUTH_ERROR_HANDSHAKE_INIT_VALIDATION;
+    const ERROR_COOKIE_REPLY: &'static str = GAUGE_WIREAUTH_ERROR_COOKIE_REPLY;
+    const ERROR_HANDSHAKE_RESPONSE_VALIDATION: &'static str =
+        GAUGE_WIREAUTH_ERROR_HANDSHAKE_RESPONSE_VALIDATION;
+
+    const ENQUEUED_HANDSHAKE_INIT: &'static str = GAUGE_WIREAUTH_ENQUEUED_HANDSHAKE_INIT;
+    const ENQUEUED_HANDSHAKE_RESPONSE: &'static str = GAUGE_WIREAUTH_ENQUEUED_HANDSHAKE_RESPONSE;
+    const ENQUEUED_COOKIE_REPLY: &'static str = GAUGE_WIREAUTH_ENQUEUED_COOKIE_REPLY;
+    const ENQUEUED_KEEPALIVE: &'static str = GAUGE_WIREAUTH_ENQUEUED_KEEPALIVE;
+
+    const RATE_LIMIT_DROP: &'static str = GAUGE_WIREAUTH_RATE_LIMIT_DROP;
+}

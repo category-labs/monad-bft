@@ -79,7 +79,11 @@ pub trait AuthenticationProtocol {
 }
 
 pub struct WireAuthProtocol {
-    api: monad_wireauth::API<monad_wireauth::StdContext, Arc<monad_secp::KeyPair>>,
+    api: monad_wireauth::API<
+        monad_wireauth::StdContext,
+        Arc<monad_secp::KeyPair>,
+        super::metrics::UdpMetrics,
+    >,
 }
 
 impl WireAuthProtocol {
