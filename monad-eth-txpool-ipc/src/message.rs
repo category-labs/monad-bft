@@ -22,13 +22,17 @@ use monad_eth_txpool_types::DEFAULT_TX_PRIORITY;
 pub struct EthTxPoolIpcTx {
     pub tx: TxEnvelope,
     pub priority: U256,
+
+    // TODO(andr-dev): Pass extra_data to custom sequencers
+    pub extra_data: Vec<u8>,
 }
 
 impl EthTxPoolIpcTx {
-    pub fn new_with_default_priority(tx: TxEnvelope) -> Self {
+    pub fn new_with_default_priority(tx: TxEnvelope, extra_data: Vec<u8>) -> Self {
         Self {
             tx,
             priority: DEFAULT_TX_PRIORITY,
+            extra_data,
         }
     }
 }
