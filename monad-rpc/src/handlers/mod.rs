@@ -91,7 +91,7 @@ pub async fn rpc_handler(
 
     let response = match request {
         RequestWrapper::Single(json_request) => {
-            let Ok(request) = serde_json::from_str::<Request>(json_request.get()) else {
+            let Ok(request) = Request::from_raw_value(json_request) else {
                 return HttpResponse::Ok().json(Response::from_error(JsonRpcError::parse_error()));
             };
             root_span.record("json_method", &request.method);
@@ -138,8 +138,7 @@ pub async fn rpc_handler(
                     let app_state = app_state.clone(); // cheap copy
 
                     async move {
-                        let Ok(request) = serde_json::from_str::<Request>(json_request.get())
-                        else {
+                        let Ok(request) = Request::from_raw_value(json_request) else {
                             return (
                                 crate::jsonrpc::RequestId::Null,
                                 Err(JsonRpcError::invalid_request()),
