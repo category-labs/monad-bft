@@ -63,4 +63,17 @@ impl KVReader for CloudProxyReader {
 
         Ok(Some(bytes.into()))
     }
+
+    async fn exists(&self, key: &str) -> Result<bool> {
+        let url = format!("{}?txhash={}&table={}", self.0.url, key, self.0.table);
+        let resp = self.0.client.head(&url).send().await?;
+        let status = resp.status();
+        if status == 404 {
+            return Ok(false);
+        }
+        if !status.is_success() {
+            bail!("cloud proxy exists check failed with status: {status}");
+        }
+        Ok(true)
+    }
 }
