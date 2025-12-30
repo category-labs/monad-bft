@@ -1042,6 +1042,7 @@ mod tests {
             None,
             bob_auth_addr.port(),
             None,
+            None,
             1,
         );
         let payload = Bytes::from_static(b"authenticated path");
@@ -1085,6 +1086,7 @@ mod tests {
             bob_auth_addr.port(),
             None,
             bob_auth_addr.port(),
+            None,
             None,
             1,
         );

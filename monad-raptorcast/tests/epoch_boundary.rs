@@ -156,6 +156,7 @@ impl ValidatorInfo {
             Some(dp.non_auth_addr.port()),
             dp.auth_addr.port(),
             None,
+            None,
             1,
         );
         MonadNameRecord::new(name_record, &*self.keypair)
