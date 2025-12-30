@@ -1,6 +1,6 @@
 ---
 source: monad-peer-discovery/src/discovery.rs
-assertion_line: 3344
+assertion_line: 3612
 expression: written_content
 ---
 [[peers]]
@@ -11,6 +11,16 @@ record_seq_num = 1
 secp256k1_pubkey = "0x0334944627833fe16cc7e21cd5e1442b42b3eb9bbd0cdd266e449a9dc026b45a39"
 name_record_sig = "0x22da25d0c0525eb01f8c37766439fc48f95b02eee0cba578cdbf03038114650c5ce59614af8c51f38f46e174edd7a1ebeb767f5d1d2b215998e95fac1615872f01"
 auth_port = 9000
+
+[[peers]]
+address = "8.8.2.2"
+tcp_port = 8002
+udp_port = 8002
+record_seq_num = 3
+secp256k1_pubkey = "0x02871061053f395ab80a6ba139fe2ed41d3d99c3df3f9d8b311ecac952f85af805"
+name_record_sig = "0x7d7a0988c907dc40c1a5f6daa4c11564dc6b3749f811bc555e7c8de0619c9b2c0e4f436aafa98e0991296d608360de557f10b37ccf55d040a9819a61357a13a800"
+auth_port = 9003
+tcp_auth_port = 9004
 
 [[peers]]
 address = "8.8.4.4"
