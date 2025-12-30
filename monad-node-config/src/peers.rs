@@ -35,6 +35,9 @@ pub struct PeerDiscoveryConfig<ST: CertificateSignatureRecoverable> {
     #[serde(alias = "self_direct_udp_auth_port")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub self_direct_udp_port: Option<NonZeroU16>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub self_tcp_auth_port: Option<NonZeroU16>,
     pub self_record_seq_num: u64,
 
     pub self_name_record_sig: ST,

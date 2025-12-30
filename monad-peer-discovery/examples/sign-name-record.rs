@@ -42,6 +42,9 @@ struct Args {
     #[arg(long, help = "Optional direct UDP port")]
     direct_udp_port: Option<NonZeroU16>,
 
+    #[arg(long, help = "Optional authenticated TCP port")]
+    authenticated_tcp_port: Option<NonZeroU16>,
+
     /// Sequence number for the name record
     #[arg(long)]
     self_record_seq_num: Option<u64>,
@@ -86,6 +89,7 @@ fn main() {
         args.udp_port.map(NonZeroU16::get),
         args.authenticated_udp_port.get(),
         args.direct_udp_port.map(NonZeroU16::get),
+        args.authenticated_tcp_port.map(NonZeroU16::get),
         self_record_seq_num,
     );
     let signed_name_record: MonadNameRecord<SecpSignature> =
@@ -99,7 +103,10 @@ fn main() {
     println!("self_record_seq_num = {}", self_record_seq_num);
     println!("self_auth_port = {}", args.authenticated_udp_port);
     if let Some(direct_udp_port) = args.direct_udp_port {
-        println!("self_direct_udp_auth_port = {}", direct_udp_port);
+        println!("self_direct_udp_port = {}", direct_udp_port);
+    }
+    if let Some(authenticated_tcp_port) = args.authenticated_tcp_port {
+        println!("self_tcp_auth_port = {}", authenticated_tcp_port);
     }
     println!(
         "self_name_record_sig = {:?}",
