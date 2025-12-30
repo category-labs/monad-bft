@@ -33,7 +33,7 @@ use monad_chain_config::{
     ChainConfig,
 };
 use monad_consensus_types::{
-    block::{BlockPolicy, ConsensusBlockHeader, ConsensusFullBlock, TxnFee, TxnFees},
+    block::{BlockPolicy, ConsensusBlockHeader, ConsensusFullBlock},
     block_validator::BlockValidator,
     metrics::Metrics,
     payload::ConsensusBlockBody,
@@ -42,7 +42,6 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_block_policy::{
-    compute_txn_max_gas_cost,
     nonce_usage::{NonceUsage, NonceUsageMap},
     timestamp_ns_to_secs,
     validation::static_validate_transaction,
@@ -54,7 +53,6 @@ use monad_eth_types::{
 use monad_secp::RecoverableAddress;
 use monad_state_backend::StateBackend;
 use monad_system_calls::{validator::SystemTransactionValidator, SYSTEM_SENDER_ETH_ADDRESS};
-use monad_types::Balance;
 use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionPubKeyType};
 use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterator};
 use tracing::{debug, trace, trace_span, warn};
@@ -141,7 +139,7 @@ where
         }
 
         match Self::validate_block_body(&header, &body, chain_config) {
-            Ok((system_txns, validated_txns, nonce_usages, txn_fees)) => {
+            Ok((system_txns, validated_txns, nonce_usages)) => {
                 let block = ConsensusFullBlock::new(header, body).expect("verified block body id");
 
                 Ok(EthValidatedBlock {
@@ -149,7 +147,6 @@ where
                     system_txns,
                     validated_txns,
                     nonce_usages,
-                    txn_fees,
                 })
             }
             Err(error) => {
@@ -318,7 +315,7 @@ where
         header: &ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>,
         body: &ConsensusBlockBody<EthExecutionProtocol>,
         chain_config: &CCT,
-    ) -> Result<(SystemTransactions, ValidatedTxns, NonceUsageMap, TxnFees), EthBlockValidationError>
+    ) -> Result<(SystemTransactions, ValidatedTxns, NonceUsageMap), EthBlockValidationError>
     where
         CCT: ChainConfig<CRT>,
         CRT: ChainRevision,
@@ -490,7 +487,6 @@ where
             })
             .collect();
 
-        let mut txn_fees: TxnFees = TxnFees::default();
         for eth_txn in validated_txns.iter() {
             let block_base_fee = header.base_fee;
             if eth_txn.max_fee_per_gas() < block_base_fee.into() {
@@ -542,19 +538,6 @@ where
                         return Err(TxnError::InvalidSystemAccountAuthorization.into());
                     }
 
-                    // TODO: currently consensus and execution both treats invalid authorization as has_delegated
-                    // this has to be updated together with execution change in the future
-                    txn_fees
-                        .entry(authority)
-                        .and_modify(|e| e.is_delegated = true)
-                        .or_insert(TxnFee {
-                            first_txn_value: Balance::ZERO,
-                            first_txn_gas: Balance::ZERO,
-                            max_gas_cost: Balance::ZERO,
-                            is_delegated: true,
-                            delegation_before_first_txn: true,
-                        });
-
                     // authorizations with invalid chain id are skipped for nonce tracking
                     if recovered_auth.chain_id() != 0_u64
                         && recovered_auth.chain_id() != chain_config.chain_id()
@@ -594,25 +577,10 @@ where
                 }
             }
 
-            let txn_fee_entry = txn_fees
-                .entry(eth_txn.signer())
-                .and_modify(|e| {
-                    e.max_gas_cost = e
-                        .max_gas_cost
-                        .saturating_add(compute_txn_max_gas_cost(eth_txn, block_base_fee));
-                })
-                .or_insert(TxnFee {
-                    first_txn_value: eth_txn.value(),
-                    first_txn_gas: compute_txn_max_gas_cost(eth_txn, block_base_fee),
-                    max_gas_cost: Balance::ZERO,
-                    is_delegated: false,
-                    delegation_before_first_txn: false,
-                });
-
-            trace!(seq_num = ?header.seq_num, address = ?eth_txn.signer(), nonce = ?eth_txn.nonce(), ?txn_fee_entry, "TxnFeeEntry");
+            trace!(seq_num = ?header.seq_num, txn = ?eth_txn, "Transaction details");
         }
 
-        Ok((system_txns, validated_txns, nonce_usages, txn_fees))
+        Ok((system_txns, validated_txns, nonce_usages))
     }
 }
 
@@ -720,71 +688,10 @@ mod test {
             );
         assert!(result.is_ok());
 
-        let (_, validated_txns, _, _) = result.unwrap();
+        let (_, validated_txns, _) = result.unwrap();
         assert_eq!(validated_txns.len(), 2);
         assert_eq!(validated_txns[0].authorizations_7702.len(), 0);
         assert_eq!(validated_txns[1].authorizations_7702.len(), 2);
-    }
-
-    #[test]
-    fn test_delegation_status_extraction() {
-        let authorization_list = vec![
-            make_signed_authorization(
-                B256::repeat_byte(0xAu8),
-                secret_to_eth_address(B256::repeat_byte(0x1u8)),
-                50,
-            ),
-            make_signed_authorization(
-                B256::repeat_byte(0xCu8),
-                secret_to_eth_address(B256::repeat_byte(0x2u8)),
-                2,
-            ),
-        ];
-        let txn1 = make_legacy_tx(B256::repeat_byte(0xCu8), BASE_FEE, 30_000, 1, 10);
-        let txn2 = make_eip7702_tx(
-            B256::repeat_byte(0xBu8),
-            BASE_FEE,
-            0,
-            1_000_000,
-            2,
-            authorization_list,
-            0,
-        );
-        let txn3 = make_legacy_tx(B256::repeat_byte(0xAu8), BASE_FEE, 30_000, 1, 10);
-
-        // create a block with the above transactions
-        let txs = vec![txn1, txn2, txn3];
-        let payload = ConsensusBlockBody::new(ConsensusBlockBodyInner {
-            execution_body: EthBlockBody {
-                transactions: txs,
-                ommers: Vec::new(),
-                withdrawals: Vec::new(),
-            },
-        });
-        let header = get_header(payload.get_id());
-
-        let result =
-            EthBlockValidator::<NopSignature, MockSignatures<NopSignature>>::validate_block_body(
-                &header,
-                &payload,
-                &MockChainConfig::DEFAULT,
-            );
-        assert!(result.is_ok());
-
-        let (_, _, _, txn_fees) = result.unwrap();
-        assert_eq!(txn_fees.len(), 3);
-        let signer_a = secret_to_eth_address(B256::repeat_byte(0xAu8));
-        let signer_b = secret_to_eth_address(B256::repeat_byte(0xBu8));
-        let signer_c = secret_to_eth_address(B256::repeat_byte(0xCu8));
-
-        assert!(txn_fees.get(&signer_a).unwrap().is_delegated);
-        assert!(txn_fees.get(&signer_a).unwrap().delegation_before_first_txn);
-
-        assert!(!txn_fees.get(&signer_b).unwrap().is_delegated);
-        assert!(!txn_fees.get(&signer_b).unwrap().delegation_before_first_txn);
-
-        assert!(txn_fees.get(&signer_c).unwrap().is_delegated);
-        assert!(!txn_fees.get(&signer_c).unwrap().delegation_before_first_txn);
     }
 
     #[test]
