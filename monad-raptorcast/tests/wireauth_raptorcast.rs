@@ -228,7 +228,6 @@ fn spawn_noop_validator(
 
     tokio::task::spawn_local(async move {
         let shared_pd = create_peer_discovery(known_addresses, name_records);
-        let (tcp_reader, tcp_writer) = dataplane.tcp_socket.split();
         let config = create_raptorcast_config(keypair, DEFAULT_SIG_VERIFICATION_RATE_LIMIT);
         let auth_protocol = monad_raptorcast::auth::NoopAuthProtocol::new();
 
@@ -242,8 +241,7 @@ fn spawn_noop_validator(
         >::new(
             config,
             monad_raptorcast::raptorcast_secondary::SecondaryRaptorCastModeConfig::None,
-            tcp_reader,
-            tcp_writer,
+            dataplane.tcp_socket,
             None,
             dataplane.non_authenticated_socket,
             dataplane.control,
@@ -293,7 +291,6 @@ fn spawn_wireauth_validator(
 
     tokio::task::spawn_local(async move {
         let shared_pd = create_peer_discovery(known_addresses, name_records);
-        let (tcp_reader, tcp_writer) = dataplane.tcp_socket.split();
         let config = create_raptorcast_config(keypair.clone(), sig_verification_rate_limit);
         let wireauth_config = monad_wireauth::Config::default();
         let auth_protocol =
@@ -309,8 +306,7 @@ fn spawn_wireauth_validator(
         >::new(
             config,
             monad_raptorcast::raptorcast_secondary::SecondaryRaptorCastModeConfig::None,
-            tcp_reader,
-            tcp_writer,
+            dataplane.tcp_socket,
             dataplane.authenticated_socket,
             dataplane.non_authenticated_socket,
             dataplane.control,

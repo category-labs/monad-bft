@@ -39,8 +39,8 @@ use monad_crypto::{
 };
 use monad_dataplane::{
     udp::{DEFAULT_MTU, ETHERNET_SEGMENT_SIZE},
-    DataplaneBuilder, DataplaneControl, RecvTcpMsg, TcpMsg, TcpSocketReader, TcpSocketWriter,
-    UdpSocketHandle, UnicastMsg,
+    DataplaneBuilder, DataplaneControl, RecvTcpMsg, TcpMsg, TcpSocketHandle, TcpSocketId,
+    TcpSocketReader, TcpSocketWriter, UdpSocketHandle, UdpSocketId, UnicastMsg,
 };
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{
@@ -83,8 +83,6 @@ const SIGNATURE_SIZE: usize = 65;
 const DEFAULT_RETRY_ATTEMPTS: u64 = 3;
 
 pub const UNICAST_MSG_BATCH_SIZE: usize = 32;
-pub const RAPTORCAST_SOCKET: &str = "raptorcast";
-pub const AUTHENTICATED_RAPTORCAST_SOCKET: &str = "authenticated_raptorcast";
 
 pub(crate) type OwnedMessageBuilder<ST, PD> =
     packet::MessageBuilder<'static, ST, Arc<Mutex<PeerDiscoveryDriver<PD>>>>;
@@ -151,8 +149,7 @@ where
     pub fn new(
         config: config::RaptorCastConfig<ST>,
         secondary_mode: SecondaryRaptorCastModeConfig,
-        tcp_reader: TcpSocketReader,
-        tcp_writer: TcpSocketWriter,
+        tcp_socket: TcpSocketHandle,
         authenticated_socket: Option<UdpSocketHandle>,
         non_authenticated_socket: UdpSocketHandle,
         control: DataplaneControl,
@@ -160,6 +157,8 @@ where
         current_epoch: Epoch,
         auth_protocol: AP,
     ) -> Self {
+        let (tcp_reader, tcp_writer) = tcp_socket.split();
+
         if config.primary_instance.raptor10_redundancy < 1f32 {
             panic!(
                 "Configuration value raptor10_redundancy must be equal or greater than 1, \
@@ -535,35 +534,28 @@ pub fn create_dataplane_for_tests(with_auth: bool) -> DataplaneHandles {
     let bind_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
     let up_bandwidth_mbps = 1_000;
 
-    let mut udp_sockets = vec![monad_dataplane::UdpSocketConfig {
-        socket_addr: bind_addr,
-        label: RAPTORCAST_SOCKET.to_string(),
-    }];
+    let mut udp_sockets: Vec<(UdpSocketId, SocketAddr)> =
+        vec![(UdpSocketId::Raptorcast, bind_addr)];
 
     if with_auth {
-        udp_sockets.insert(
-            0,
-            monad_dataplane::UdpSocketConfig {
-                socket_addr: bind_addr,
-                label: AUTHENTICATED_RAPTORCAST_SOCKET.to_string(),
-            },
-        );
+        udp_sockets.insert(0, (UdpSocketId::AuthenticatedRaptorcast, bind_addr));
     }
 
-    let dp = DataplaneBuilder::new(&bind_addr, up_bandwidth_mbps)
-        .extend_udp_sockets(udp_sockets)
+    let mut dp = DataplaneBuilder::new(up_bandwidth_mbps)
+        .with_tcp_sockets([(TcpSocketId::Raptorcast, bind_addr)])
+        .with_udp_sockets(udp_sockets)
         .build();
 
-    let tcp_addr = match dp.tcp_local_addr() {
+    let tcp_socket = dp.tcp_sockets.take(TcpSocketId::Raptorcast).unwrap();
+    let tcp_addr = match tcp_socket.local_addr() {
         SocketAddr::V4(addr) => addr,
         _ => panic!("expected v4 address"),
     };
 
-    let (tcp_socket, mut udp_dataplane, control) = dp.split();
-
     let (authenticated_socket, auth_addr) = if with_auth {
-        let socket = udp_dataplane
-            .take_socket(AUTHENTICATED_RAPTORCAST_SOCKET)
+        let socket = dp
+            .udp_sockets
+            .take(UdpSocketId::AuthenticatedRaptorcast)
             .expect("authenticated socket");
         let addr = match socket.local_addr() {
             SocketAddr::V4(addr) => addr,
@@ -574,8 +566,9 @@ pub fn create_dataplane_for_tests(with_auth: bool) -> DataplaneHandles {
         (None, None)
     };
 
-    let non_authenticated_socket = udp_dataplane
-        .take_socket(RAPTORCAST_SOCKET)
+    let non_authenticated_socket = dp
+        .udp_sockets
+        .take(UdpSocketId::Raptorcast)
         .expect("non-authenticated socket");
     let non_auth_addr = match non_authenticated_socket.local_addr() {
         SocketAddr::V4(addr) => addr,
@@ -586,7 +579,7 @@ pub fn create_dataplane_for_tests(with_auth: bool) -> DataplaneHandles {
         tcp_socket,
         authenticated_socket,
         non_authenticated_socket,
-        control,
+        control: dp.control,
         tcp_addr,
         auth_addr,
         non_auth_addr,
@@ -614,7 +607,6 @@ where
         known_addresses,
         ..Default::default()
     };
-    let (tcp_reader, tcp_writer) = dataplane.tcp_socket.split();
     let config = config::RaptorCastConfig {
         shared_key,
         mtu: DEFAULT_MTU,
@@ -644,8 +636,7 @@ where
     RaptorCast::<ST, M, OM, SE, NopDiscovery<ST>, _>::new(
         config,
         SecondaryRaptorCastModeConfig::None,
-        tcp_reader,
-        tcp_writer,
+        dataplane.tcp_socket,
         dataplane.authenticated_socket,
         dataplane.non_authenticated_socket,
         dataplane.control,
@@ -669,7 +660,6 @@ where
         known_addresses,
         ..Default::default()
     };
-    let (tcp_reader, tcp_writer) = dataplane.tcp_socket.split();
     let config = config::RaptorCastConfig {
         shared_key: shared_key.clone(),
         mtu: DEFAULT_MTU,
@@ -700,8 +690,7 @@ where
     RaptorCast::<ST, M, OM, SE, NopDiscovery<ST>, _>::new(
         config,
         SecondaryRaptorCastModeConfig::None,
-        tcp_reader,
-        tcp_writer,
+        dataplane.tcp_socket,
         dataplane.authenticated_socket,
         dataplane.non_authenticated_socket,
         dataplane.control,

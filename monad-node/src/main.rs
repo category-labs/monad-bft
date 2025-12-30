@@ -34,7 +34,7 @@ use monad_control_panel::ipc::ControlPanelIpcReceiver;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
-use monad_dataplane::DataplaneBuilder;
+use monad_dataplane::{DataplaneBuilder, TcpSocketId, UdpSocketId};
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthBlockValidator;
 use monad_eth_txpool_executor::{EthTxPoolExecutor, EthTxPoolIpcConfig};
@@ -50,10 +50,7 @@ use monad_peer_discovery::{
     MonadNameRecord, NameRecord,
 };
 use monad_pprof::start_pprof_server;
-use monad_raptorcast::{
-    config::{RaptorCastConfig, RaptorCastConfigPrimary},
-    AUTHENTICATED_RAPTORCAST_SOCKET, RAPTORCAST_SOCKET,
-};
+use monad_raptorcast::config::{RaptorCastConfig, RaptorCastConfigPrimary};
 use monad_router_multi::MultiRouter;
 use monad_state::{MonadMessage, MonadStateBuilder, VerifiedMonadMessage};
 use monad_state_backend::StateBackendThreadClient;
@@ -557,7 +554,7 @@ where
 
     let network_config = node_config.network;
 
-    let mut dp_builder = DataplaneBuilder::new(&bind_address, network_config.max_mbps.into())
+    let mut dp_builder = DataplaneBuilder::new(network_config.max_mbps.into())
         .with_udp_multishot(network_config.enable_udp_multishot);
     if let Some(buffer_size) = network_config.buffer_size {
         dp_builder = dp_builder.with_udp_buffer_size(buffer_size);
@@ -572,17 +569,14 @@ where
             network_config.tcp_rate_limit_burst,
         );
 
-    let mut udp_sockets = vec![monad_dataplane::UdpSocketConfig {
-        socket_addr: bind_address,
-        label: RAPTORCAST_SOCKET.to_string(),
-    }];
+    let mut udp_sockets: Vec<(UdpSocketId, std::net::SocketAddr)> =
+        vec![(UdpSocketId::Raptorcast, bind_address)];
     if let Some(auth_addr) = authenticated_bind_address {
-        udp_sockets.push(monad_dataplane::UdpSocketConfig {
-            socket_addr: auth_addr,
-            label: AUTHENTICATED_RAPTORCAST_SOCKET.to_string(),
-        });
+        udp_sockets.push((UdpSocketId::AuthenticatedRaptorcast, auth_addr));
     }
-    dp_builder = dp_builder.extend_udp_sockets(udp_sockets);
+    dp_builder = dp_builder
+        .with_udp_sockets(udp_sockets)
+        .with_tcp_sockets([(TcpSocketId::Raptorcast, bind_address)]);
 
     // auth port in peer discovery config and network config should be set and unset simultaneously
     assert_eq!(

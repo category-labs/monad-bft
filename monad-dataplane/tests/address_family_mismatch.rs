@@ -15,13 +15,11 @@
 
 use std::{thread::sleep, time::Duration};
 
-use monad_dataplane::{udp::DEFAULT_SEGMENT_SIZE, BroadcastMsg, DataplaneBuilder};
+use monad_dataplane::{udp::DEFAULT_SEGMENT_SIZE, BroadcastMsg, DataplaneBuilder, UdpSocketId};
 use tracing::debug;
 
 /// 1_000 = 1 Gbps, 10_000 = 10 Gbps
 const UP_BANDWIDTH_MBPS: u64 = 1_000;
-
-const LEGACY_SOCKET: &str = "legacy";
 
 const BIND_ADDRS: [&str; 2] = ["0.0.0.0:0", "127.0.0.1:0"];
 
@@ -49,14 +47,11 @@ fn address_family_mismatch() {
 
     for addr in BIND_ADDRS {
         let bind_addr = addr.parse().unwrap();
-        let mut dataplane = DataplaneBuilder::new(&bind_addr, UP_BANDWIDTH_MBPS)
-            .extend_udp_sockets(vec![monad_dataplane::UdpSocketConfig {
-                socket_addr: bind_addr,
-                label: LEGACY_SOCKET.to_string(),
-            }])
+        let mut dataplane = DataplaneBuilder::new(UP_BANDWIDTH_MBPS)
+            .with_udp_sockets([(UdpSocketId::Raptorcast, bind_addr)])
             .build();
 
-        let socket = dataplane.take_udp_socket_handle(LEGACY_SOCKET).unwrap();
+        let socket = dataplane.udp_sockets.take(UdpSocketId::Raptorcast).unwrap();
         let local_addr = socket.local_addr();
 
         for tx_addr in [ipv4_target, ipv6_target] {

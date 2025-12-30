@@ -35,7 +35,7 @@ use tracing::{debug, enabled, trace, warn, Level};
 use zerocopy::FromBytes;
 
 use super::{
-    message_timeout, RecvTcpMsg, TcpConfig, TcpControl, TcpControlMsg, TcpMsgHdr, HEADER_MAGIC,
+    message_timeout, RecvTcpMsg, TcpControl, TcpControlMsg, TcpMsgHdr, TcpRateLimit, HEADER_MAGIC,
     HEADER_VERSION, TCP_MESSAGE_LENGTH_LIMIT,
 };
 use crate::{
@@ -46,13 +46,13 @@ use crate::{
 const HEADER_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Clone)]
-struct RxState {
+pub(crate) struct RxState {
     inner: Rc<RefCell<RxStateInner>>,
     addrlist: Arc<Addrlist>,
 }
 
 impl RxState {
-    fn new(
+    pub(crate) fn new(
         addrlist: Arc<Addrlist>,
         tcp_connections_limit: usize,
         tcp_per_ip_connections_limit: usize,
@@ -168,19 +168,12 @@ struct RxStateInner {
 }
 
 pub(crate) async fn task(
-    tcp_config: TcpConfig,
+    rate_limit: TcpRateLimit,
     tcp_control_map: TcpControl,
-    addrlist: Arc<Addrlist>,
+    rx_state: RxState,
     tcp_listener: TcpListener,
     tcp_ingress_tx: mpsc::Sender<RecvTcpMsg>,
 ) {
-    let TcpConfig {
-        rate_limit,
-        connections_limit,
-        per_ip_connections_limit,
-    } = tcp_config;
-    let rx_state = RxState::new(addrlist, connections_limit, per_ip_connections_limit);
-
     let mut conn_id: u64 = 0;
     loop {
         match tcp_listener.accept().await {
