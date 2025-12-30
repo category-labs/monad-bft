@@ -261,6 +261,16 @@ impl ValidEthTransaction {
         }
     }
 
+    pub fn is_owned_and_forwardable(&self) -> bool {
+        match &self.kind {
+            PoolTransactionKind::Owned {
+                priority,
+                extra_data: _,
+            } => priority <= &DEFAULT_TX_PRIORITY,
+            PoolTransactionKind::Forwarded => false,
+        }
+    }
+
     pub fn has_higher_priority(&self, other: &Self, _base_fee: u64) -> bool {
         if self.tx_kind_priority() != other.tx_kind_priority() {
             // If either tx has a custom tx kind priority, the pool will ignore all other tx related
@@ -301,7 +311,7 @@ impl ValidEthTransaction {
         last_commit_seq_num: SeqNum,
         last_commit_base_fee: u64,
     ) -> Option<&TxEnvelope> {
-        if !self.is_owned() {
+        if !self.is_owned_and_forwardable() {
             return None;
         }
 
