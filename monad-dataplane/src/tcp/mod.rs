@@ -32,7 +32,7 @@ use zerocopy::{
     FromBytes, Immutable, IntoBytes,
 };
 
-use super::{RecvTcpMsg, TcpMsg};
+use super::{RecvTcpMsg, TcpMsg, TcpSocketId};
 use crate::Addrlist;
 
 pub mod rx;
@@ -65,20 +65,22 @@ pub(crate) fn spawn_tasks(
     cfg: TcpConfig,
     tcp_control_map: TcpControl,
     addrlist: Arc<Addrlist>,
-    local_addr: SocketAddr,
-    tcp_ingress_tx: mpsc::Sender<RecvTcpMsg>,
+    socket_configs: Vec<(TcpSocketId, SocketAddr, mpsc::Sender<RecvTcpMsg>)>,
     tcp_egress_rx: mpsc::Receiver<(SocketAddr, TcpMsg)>,
 ) {
-    let opts = ListenerOpts::new().reuse_addr(true);
-    let tcp_listener = TcpListener::bind_with_config(local_addr, &opts).unwrap();
+    for (socket_id, socket_addr, ingress_tx) in socket_configs {
+        let opts = ListenerOpts::new().reuse_addr(true);
+        let tcp_listener = TcpListener::bind_with_config(socket_addr, &opts).unwrap();
 
-    spawn(rx::task(
-        cfg,
-        tcp_control_map,
-        addrlist,
-        tcp_listener,
-        tcp_ingress_tx,
-    ));
+        spawn(rx::task(
+            cfg,
+            tcp_control_map.clone(),
+            addrlist.clone(),
+            tcp_listener,
+            ingress_tx,
+        ));
+        trace!(?socket_id, ?socket_addr, "created tcp listener");
+    }
     spawn(tx::task(tcp_egress_rx));
 }
 
