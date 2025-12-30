@@ -578,7 +578,7 @@ where
             block_policy,
             state_backend,
             &MockChainConfig::DEFAULT,
-            vec![(tx, PoolTransactionKind::Owned)],
+            vec![(tx, PoolTransactionKind::owned_default())],
             |tx| {
                 self.events.push_back(MempoolEvent::ForwardTxs(vec![
                     alloy_rlp::encode(tx.raw()).into()

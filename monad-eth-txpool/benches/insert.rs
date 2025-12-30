@@ -65,7 +65,7 @@ fn criterion_benchmark(c: &mut Criterion) {
                 state_backend,
                 &MockChainConfig::DEFAULT,
                 txs.iter()
-                    .map(|tx| (tx.clone(), PoolTransactionKind::Owned))
+                    .map(|tx| (tx.clone(), PoolTransactionKind::owned_default()))
                     .collect(),
                 |_| {},
             );
