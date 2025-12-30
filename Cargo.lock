@@ -5580,6 +5580,7 @@ dependencies = [
  "monad-consensus",
  "monad-consensus-types",
  "monad-crypto",
+ "monad-node-config",
  "monad-state-backend",
  "monad-types",
  "monad-validator",

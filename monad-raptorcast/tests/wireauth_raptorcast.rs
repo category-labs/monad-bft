@@ -148,9 +148,10 @@ impl ValidatorInfo {
         let name_record = if with_auth {
             NameRecord::new_with_authentication(
                 Ipv4Addr::new(127, 0, 0, 1),
-                tcp_addr.port(),
-                non_auth_addr.port(),
-                auth_addr.port(),
+                self.tcp_addr.port(),
+                self.non_auth_addr.port(),
+                self.auth_addr.port(),
+                None,
                 1,
             )
         } else {
