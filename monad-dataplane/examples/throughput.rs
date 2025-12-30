@@ -27,7 +27,7 @@ use std::{
 use bytes::Bytes;
 use clap::{Parser, Subcommand};
 use futures::executor::block_on;
-use monad_dataplane::{DataplaneBuilder, UdpSocketConfig};
+use monad_dataplane::{DataplaneBuilder, UdpSocketId};
 use tracing::info;
 
 const UDP_SEGMENT: i32 = 103;
@@ -332,11 +332,8 @@ fn run_native_writer(
         "starting native dataplane writer"
     );
 
-    let mut dataplane = DataplaneBuilder::new(&bind_addr, dataplane_bandwidth_mbps)
-        .extend_udp_sockets(vec![UdpSocketConfig {
-            socket_addr: bind_addr,
-            label: "writer".to_string(),
-        }])
+    let mut dataplane = DataplaneBuilder::new(dataplane_bandwidth_mbps)
+        .with_udp_sockets([(UdpSocketId::Raptorcast, bind_addr)])
         .build();
 
     dataplane
@@ -345,7 +342,8 @@ fn run_native_writer(
         .expect("dataplane not ready");
 
     let udp_socket = dataplane
-        .take_udp_socket_handle("writer")
+        .udp_sockets
+        .take(UdpSocketId::Raptorcast)
         .expect("failed to get writer socket");
 
     let writer = udp_socket.writer().clone();
@@ -366,12 +364,9 @@ fn run_native_writer(
 fn run_native(bind_addr: SocketAddr, multishot: bool) {
     info!(addr = %bind_addr, multishot, "starting native dataplane reader");
 
-    let mut dataplane = DataplaneBuilder::new(&bind_addr, 10_000)
+    let mut dataplane = DataplaneBuilder::new(10_000)
         .with_udp_multishot(multishot)
-        .extend_udp_sockets(vec![UdpSocketConfig {
-            socket_addr: bind_addr,
-            label: "bench".to_string(),
-        }])
+        .with_udp_sockets([(UdpSocketId::Raptorcast, bind_addr)])
         .build();
 
     dataplane
@@ -380,7 +375,8 @@ fn run_native(bind_addr: SocketAddr, multishot: bool) {
         .expect("dataplane not ready");
 
     let mut udp_socket = dataplane
-        .take_udp_socket_handle("bench")
+        .udp_sockets
+        .take(UdpSocketId::Raptorcast)
         .expect("failed to get bench socket");
 
     let mut msgs_received = 0u64;

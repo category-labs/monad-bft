@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     io::{Error, ErrorKind},
     net::SocketAddr,
     os::fd::{AsRawFd, FromRawFd},
@@ -33,7 +33,7 @@ use thiserror::Error;
 use tokio::sync::mpsc;
 use tracing::{debug, error, trace, warn};
 
-use super::{RecvUdpMsg, UdpMsg};
+use super::{RecvUdpMsg, UdpMsg, UdpSocketId};
 use crate::buffer_ext::SocketBufferExt;
 
 const PRIORITY_QUEUE_BYTES_CAPACITY: usize = 100 * 1024 * 1024;
@@ -164,42 +164,43 @@ fn set_mtu_discovery(socket: &UdpSocket) {
 }
 
 pub(crate) fn spawn_tasks(
-    socket_configs: Vec<(usize, SocketAddr, String, mpsc::Sender<RecvUdpMsg>)>,
+    socket_configs: Vec<(UdpSocketId, SocketAddr, mpsc::Sender<RecvUdpMsg>)>,
     udp_egress_rx: mpsc::Receiver<UdpMsg>,
     up_bandwidth_mbps: u64,
     buffer_size: Option<usize>,
     use_multishot: bool,
-    bound_addrs_tx: std::sync::mpsc::SyncSender<Vec<(usize, SocketAddr)>>,
+    bound_addrs_tx: std::sync::mpsc::SyncSender<Vec<(UdpSocketId, SocketAddr)>>,
 ) {
     let mut tx_sockets = Vec::new();
     let mut bound_addrs = Vec::with_capacity(socket_configs.len());
 
-    for (socket_id, socket_addr, label, ingress_tx) in socket_configs {
+    for (socket_id, socket_addr, ingress_tx) in socket_configs {
         let socket = std::net::UdpSocket::bind(socket_addr).unwrap();
         let tx = UdpSocket::from_std(socket).unwrap();
         configure_socket(&tx, buffer_size);
         let actual_addr = tx.local_addr().unwrap();
         bound_addrs.push((socket_id, actual_addr));
 
+        let group_id = socket_id as u16;
         if use_multishot {
             let rx = tx.dup().expect("failed to dup socket");
-            spawn(rx_multishot_socket(
-                rx,
-                ingress_tx.clone(),
-                socket_id as u16,
-            ));
-            trace!(socket_id, label = %label, configured_addr = ?socket_addr, actual_addr = ?actual_addr, "created multishot socket");
+            spawn(rx_multishot_socket(rx, ingress_tx.clone(), group_id));
+            trace!(
+                ?socket_id,
+                ?socket_addr,
+                ?actual_addr,
+                "created multishot socket"
+            );
         } else {
             let rx = tx.dup().expect("failed to dup socket");
             spawn(rx_single_socket(rx, ingress_tx.clone()));
-            trace!(socket_id, label = %label, configured_addr = ?socket_addr, actual_addr = ?actual_addr, "created socket");
+            trace!(?socket_id, ?socket_addr, ?actual_addr, "created socket");
         }
 
-        tx_sockets.push(tx);
+        tx_sockets.push((socket_id, tx));
     }
 
     bound_addrs_tx.send(bound_addrs).unwrap();
-
     spawn(tx(tx_sockets, udp_egress_rx, up_bandwidth_mbps));
 }
 
@@ -309,10 +310,11 @@ async fn rx_multishot_socket(
 const PACING_SLEEP_OVERSHOOT_DETECTION_WINDOW: Duration = Duration::from_millis(100);
 
 async fn tx(
-    tx_sockets: Vec<UdpSocket>,
+    tx_sockets: Vec<(UdpSocketId, UdpSocket)>,
     mut udp_egress_rx: mpsc::Receiver<UdpMsg>,
     up_bandwidth_mbps: u64,
 ) {
+    let tx_sockets: HashMap<UdpSocketId, UdpSocket> = tx_sockets.into_iter().collect();
     let mut next_transmit = Instant::now();
 
     let mut priority_queues = PriorityQueues::new();
@@ -372,7 +374,7 @@ async fn tx(
             let socket_id = msg.socket_id;
             let dst = msg.dst;
 
-            let socket = tx_sockets.get(socket_id).expect("valid socket_id");
+            let socket = tx_sockets.get(&socket_id).expect("valid socket_id");
 
             if !msg.payload.is_empty() {
                 if let Err(err) = priority_queues.try_push(msg) {
@@ -381,7 +383,7 @@ async fn tx(
             }
 
             trace!(
-                socket_id,
+                ?socket_id,
                 dst_addr = ?dst,
                 chunk_len = chunk.len(),
                 "preparing udp send"
@@ -488,7 +490,7 @@ mod tests {
 
     fn create_test_msg(priority: UdpPriority, payload_size: usize) -> UdpMsg {
         UdpMsg {
-            socket_id: 0,
+            socket_id: UdpSocketId::Raptorcast,
             dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8080),
             payload: Bytes::from(vec![0u8; payload_size]),
             stride: 1024,

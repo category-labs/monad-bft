@@ -32,7 +32,7 @@ use zerocopy::{
     FromBytes, Immutable, IntoBytes,
 };
 
-use super::{RecvTcpMsg, TcpMsg};
+use super::{RecvTcpMsg, TcpMsg, TcpSocketId};
 use crate::Addrlist;
 
 pub mod rx;
@@ -65,23 +65,29 @@ pub(crate) fn spawn_tasks(
     cfg: TcpConfig,
     tcp_control_map: TcpControl,
     addrlist: Arc<Addrlist>,
-    local_addr: SocketAddr,
-    tcp_ingress_tx: mpsc::Sender<RecvTcpMsg>,
+    socket_configs: Vec<(TcpSocketId, SocketAddr, mpsc::Sender<RecvTcpMsg>)>,
     tcp_egress_rx: mpsc::Receiver<(SocketAddr, TcpMsg)>,
-    bound_addr_tx: std::sync::mpsc::SyncSender<SocketAddr>,
+    bound_addrs_tx: std::sync::mpsc::SyncSender<Vec<(TcpSocketId, SocketAddr)>>,
 ) {
-    let opts = ListenerOpts::new().reuse_addr(true);
-    let tcp_listener = TcpListener::bind_with_config(local_addr, &opts).unwrap();
-    let actual_addr = tcp_listener.local_addr().unwrap();
-    bound_addr_tx.send(actual_addr).unwrap();
+    let mut bound_addrs = Vec::with_capacity(socket_configs.len());
 
-    spawn(rx::task(
-        cfg,
-        tcp_control_map,
-        addrlist,
-        tcp_listener,
-        tcp_ingress_tx,
-    ));
+    for (socket_id, socket_addr, ingress_tx) in socket_configs {
+        let opts = ListenerOpts::new().reuse_addr(true);
+        let tcp_listener = TcpListener::bind_with_config(socket_addr, &opts).unwrap();
+        let actual_addr = tcp_listener.local_addr().unwrap();
+        bound_addrs.push((socket_id, actual_addr));
+
+        spawn(rx::task(
+            cfg,
+            tcp_control_map.clone(),
+            addrlist.clone(),
+            tcp_listener,
+            ingress_tx,
+        ));
+        trace!(?socket_id, ?socket_addr, actual_addr = ?actual_addr, "created tcp listener");
+    }
+
+    bound_addrs_tx.send(bound_addrs).unwrap();
     spawn(tx::task(tcp_egress_rx));
 }
 
