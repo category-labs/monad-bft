@@ -45,6 +45,7 @@ use monad_eth_testutil::{
 };
 use monad_eth_txpool::{
     max_eip2718_encoded_length, EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics,
+    PoolTransactionKind,
 };
 use monad_eth_txpool_types::EthTxPoolSnapshot;
 use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner};
@@ -202,8 +203,14 @@ fn run_custom_iter<const N: usize>(
                         &eth_block_policy,
                         &state_backend,
                         &MockChainConfig::DEFAULT,
-                        vec![tx.clone()],
-                        owned,
+                        vec![(
+                            tx.clone(),
+                            if owned {
+                                PoolTransactionKind::Owned
+                            } else {
+                                PoolTransactionKind::Forwarded
+                            },
+                        )],
                         |inserted_tx| {
                             assert_eq!(&tx, inserted_tx.raw());
 
@@ -252,8 +259,17 @@ fn run_custom_iter<const N: usize>(
                     txs.into_iter()
                         .map(ToOwned::to_owned)
                         .map(recover_tx)
+                        .map(|tx| {
+                            (
+                                tx,
+                                if owned {
+                                    PoolTransactionKind::Owned
+                                } else {
+                                    PoolTransactionKind::Forwarded
+                                },
+                            )
+                        })
                         .collect(),
-                    owned,
                     |_| {
                         if !should_insert {
                             panic!("tx inserted when it shouldn't have been!");

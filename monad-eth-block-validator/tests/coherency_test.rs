@@ -39,7 +39,7 @@ use monad_crypto::{certificate_signature::CertificateKeyPair, NopKeyPair, NopSig
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
 use monad_eth_block_validator::EthBlockValidator;
 use monad_eth_testutil::{recover_tx, secret_to_eth_address, S1, S2};
-use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics};
+use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics, PoolTransactionKind};
 use monad_eth_types::{EthBlockBody, EthExecutionProtocol, EthHeader, ProposedEthHeader};
 use monad_state_backend::NopStateBackend;
 use monad_testutil::signing::MockSignatures;
@@ -460,8 +460,10 @@ fn check_txpool_coherency(
             &block_policy,
             state_backend,
             chain_config,
-            block_txs,
-            false,
+            block_txs
+                .into_iter()
+                .map(|tx| (tx, PoolTransactionKind::Forwarded))
+                .collect(),
             |_tx| {},
         );
     }

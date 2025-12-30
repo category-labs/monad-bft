@@ -19,7 +19,7 @@ use monad_chain_config::{revision::MockChainRevision, MockChainConfig};
 use monad_crypto::NopSignature;
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_testutil::{generate_block_with_txs, make_legacy_tx, recover_tx, S1};
-use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics};
+use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics, PoolTransactionKind};
 use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner};
 use monad_testutil::signing::MockSignatures;
 use monad_types::{Balance, Round, SeqNum, GENESIS_SEQ_NUM};
@@ -94,8 +94,14 @@ fn with_txpool(
         &eth_block_policy,
         &state_backend,
         &MockChainConfig::DEFAULT,
-        vec![tx],
-        insert_tx_owned,
+        vec![(
+            tx,
+            if insert_tx_owned {
+                PoolTransactionKind::Owned
+            } else {
+                PoolTransactionKind::Forwarded
+            },
+        )],
         |_| {},
     );
 

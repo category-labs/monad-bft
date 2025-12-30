@@ -19,7 +19,7 @@ use common::SignatureType;
 use criterion::{criterion_group, criterion_main, Criterion};
 use monad_chain_config::{revision::MockChainRevision, MockChainConfig};
 use monad_eth_block_policy::EthBlockPolicy;
-use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics};
+use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics, PoolTransactionKind};
 use monad_types::GENESIS_SEQ_NUM;
 
 use self::common::{run_txpool_benches, BenchController, SignatureCollectionType, EXECUTION_DELAY};
@@ -64,8 +64,9 @@ fn criterion_benchmark(c: &mut Criterion) {
                 &block_policy,
                 state_backend,
                 &MockChainConfig::DEFAULT,
-                txs.to_owned(),
-                true,
+                txs.iter()
+                    .map(|tx| (tx.clone(), PoolTransactionKind::Owned))
+                    .collect(),
                 |_| {},
             );
         },

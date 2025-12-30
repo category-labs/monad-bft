@@ -41,9 +41,15 @@ pub const fn max_eip2718_encoded_length(execution_params: &ExecutionChainParams)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PoolTransactionKind {
+    Owned,
+    Forwarded,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ValidEthTransaction {
     tx: Recovered<TxEnvelope>,
-    owned: bool,
+    kind: PoolTransactionKind,
     forward_last_seqnum: SeqNum,
     forward_retries: usize,
     max_value: Balance,
@@ -64,7 +70,7 @@ impl ValidEthTransaction {
         chain_params: &ChainParams,
         execution_params: &ExecutionChainParams,
         tx: Recovered<TxEnvelope>,
-        owned: bool,
+        kind: PoolTransactionKind,
     ) -> Result<Self, (Recovered<TxEnvelope>, EthTxPoolDropReason)>
     where
         ST: CertificateSignatureRecoverable,
@@ -153,7 +159,7 @@ impl ValidEthTransaction {
 
         Ok(Self {
             tx,
-            owned,
+            kind,
             forward_last_seqnum: last_commit.seq_num,
             forward_retries: 0,
             max_value,
@@ -232,8 +238,11 @@ impl ValidEthTransaction {
         self.tx
     }
 
-    pub(crate) fn is_owned(&self) -> bool {
-        self.owned
+    pub fn is_owned(&self) -> bool {
+        match self.kind {
+            PoolTransactionKind::Owned => true,
+            PoolTransactionKind::Forwarded => false,
+        }
     }
 
     pub fn has_higher_priority(&self, other: &Self, _base_fee: u64) -> bool {
@@ -268,7 +277,7 @@ impl ValidEthTransaction {
         last_commit_seq_num: SeqNum,
         last_commit_base_fee: u64,
     ) -> Option<&TxEnvelope> {
-        if !self.owned {
+        if !self.is_owned() {
             return None;
         }
 
