@@ -172,6 +172,7 @@ impl ValidatorInfo {
             non_auth_addr.map(|addr| addr.port()),
             auth_addr.port(),
             direct_udp_addr.map(|addr| addr.port()),
+            None,
             1,
         );
         MonadNameRecord::new(name_record, &*self.keypair)
