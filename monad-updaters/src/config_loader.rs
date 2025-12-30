@@ -21,7 +21,8 @@ use monad_crypto::certificate_signature::{
 };
 use monad_executor::Executor;
 use monad_executor_glue::{
-    ConfigEvent, ConfigReloadCommand, ConfigUpdate, KnownPeersUpdate, MonadEvent, PeerEntry,
+    ConfigEvent, ConfigReloadCommand, ConfigUpdate, KnownPeersUpdate, MonadEvent,
+    NodeBootstrapPeerConfigWithAddr, PeerEntry,
 };
 use monad_node_config::{NodeBootstrapPeerConfig, NodeConfig};
 use monad_types::{ExecutionProtocol, NodeId};
@@ -212,13 +213,9 @@ where
                     continue;
                 }
             };
-            peer_entries.push(PeerEntry {
-                pubkey: peer.secp256k1_pubkey,
-                addr,
-                signature: peer.name_record_sig,
-                record_seq_num: peer.record_seq_num,
-                auth_port: peer.auth_port,
-            });
+            peer_entries.push(PeerEntry::from(
+                NodeBootstrapPeerConfigWithAddr::with_resolved_addr(&peer, addr),
+            ));
         }
         peer_entries
     }

@@ -41,6 +41,10 @@ pub struct NodeBootstrapPeerConfig<ST: CertificateSignatureRecoverable> {
     #[serde(bound = "ST: CertificateSignatureRecoverable")]
     pub name_record_sig: ST,
 
+    #[serde(alias = "auth_port")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub auth_port: Option<u16>,
+    pub udp_auth_port: Option<u16>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tcp_auth_port: Option<u16>,
 }
