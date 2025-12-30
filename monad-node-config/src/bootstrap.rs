@@ -62,6 +62,9 @@ pub struct NodeBootstrapPeerConfig<ST: CertificateSignatureRecoverable> {
         skip_serializing_if = "Option::is_none"
     )]
     pub direct_udp_port: Option<NonZeroU16>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tcp_auth_port: Option<NonZeroU16>,
 }
 
 fn deserialize_bootstrap_peers<'de, D, ST>(
