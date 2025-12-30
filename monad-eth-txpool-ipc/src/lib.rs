@@ -34,6 +34,12 @@ mod message;
 const TX_CHANNEL_SEND_TIMEOUT_MS: u64 = 1_000;
 const SOCKET_SEND_TIMEOUT_MS: u64 = 1_000;
 
+fn build_length_delimited_codec() -> LengthDelimitedCodec {
+    LengthDelimitedCodec::builder()
+        .max_frame_length(64 * 1024 * 1024)
+        .new_codec()
+}
+
 pub struct EthTxPoolIpcStream {
     tx: mpsc::Sender<Vec<EthTxPoolEvent>>,
     rx: ReceiverStream<EthTxPoolIpcTx>,
@@ -60,7 +66,7 @@ impl EthTxPoolIpcStream {
         tx_sender: mpsc::Sender<EthTxPoolIpcTx>,
         mut event_rx: mpsc::Receiver<Vec<EthTxPoolEvent>>,
     ) -> io::Result<()> {
-        let mut stream = Framed::new(stream, LengthDelimitedCodec::default());
+        let mut stream = Framed::new(stream, build_length_delimited_codec());
 
         let snapshot_bytes = bincode::serialize(&snapshot).expect("snapshot is serializable");
 
@@ -172,7 +178,7 @@ impl EthTxPoolIpcClient {
         P: AsRef<Path>,
     {
         let stream = UnixStream::connect(path).await?;
-        let mut stream = Framed::new(stream, LengthDelimitedCodec::default());
+        let mut stream = Framed::new(stream, build_length_delimited_codec());
 
         let snapshot_bytes = stream.next().await.ok_or_else(|| {
             io::Error::new(

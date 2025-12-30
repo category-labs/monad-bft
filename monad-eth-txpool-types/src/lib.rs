@@ -15,6 +15,7 @@
 
 use std::collections::HashSet;
 
+use alloy_consensus::TxEnvelope;
 use alloy_primitives::{Address, TxHash, U256};
 use monad_eth_block_policy::validation::StaticValidationError;
 use serde::{Deserialize, Serialize};
@@ -35,7 +36,13 @@ pub struct EthTxPoolEvent {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum EthTxPoolEventType {
     /// The tx was inserted into the txpool.
-    Insert { address: Address, owned: bool },
+    Insert {
+        address: Address,
+        owned: bool,
+
+        #[serde(with = "eth_tx_pool_event_type_tx_serde")]
+        tx: TxEnvelope,
+    },
 
     /// The tx was committed and is thus finalized.
     Commit,
@@ -45,6 +52,29 @@ pub enum EthTxPoolEventType {
 
     /// The tx timed out and was evicted.
     Evict { reason: EthTxPoolEvictReason },
+}
+
+mod eth_tx_pool_event_type_tx_serde {
+    use alloy_consensus::TxEnvelope;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub(super) fn serialize<S>(tx: &TxEnvelope, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let bytes = alloy_rlp::encode(tx);
+
+        <Vec<u8> as Serialize>::serialize(&bytes, serializer)
+    }
+
+    pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<TxEnvelope, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let bytes = <Vec<u8> as Deserialize>::deserialize(deserializer)?;
+
+        alloy_rlp::decode_exact(bytes).map_err(<D::Error as serde::de::Error>::custom)
+    }
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

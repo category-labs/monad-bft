@@ -201,7 +201,11 @@ impl EthTxPoolBridgeState {
 
         for EthTxPoolEvent { tx_hash, action } in events {
             match action {
-                EthTxPoolEventType::Insert { address, owned: _ } => {
+                EthTxPoolEventType::Insert {
+                    address,
+                    owned: _,
+                    tx: _,
+                } => {
                     insert(tx_hash, TxStatus::Tracked);
 
                     self.hash_address.entry(tx_hash).insert(address);
@@ -443,6 +447,7 @@ mod test {
                             action: EthTxPoolEventType::Insert {
                                 address: tx.recover_signer().unwrap(),
                                 owned: true,
+                                tx: tx.clone(),
                             },
                         }],
                     );

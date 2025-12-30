@@ -13,14 +13,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{
-    collections::BTreeMap,
-    task::{Context, Poll},
-    time::Duration,
-};
+use std::{collections::BTreeMap, time::Duration};
 
 use bytes::Bytes;
-use futures::{task::noop_waker_ref, SinkExt, StreamExt};
+use futures::{SinkExt, StreamExt};
 use monad_chain_config::{revision::MockChainRevision, ChainConfig, MockChainConfig};
 use monad_consensus_types::block::GENESIS_TIMESTAMP;
 use monad_crypto::NopSignature;
@@ -102,53 +98,48 @@ async fn setup_txpool_executor_with_client() -> (
 async fn test_ipc_tx_forwarding_pacing() {
     let (mut txpool_executor, mut ipc_client) = setup_txpool_executor_with_client().await;
 
-    let mut cx = Context::from_waker(noop_waker_ref());
-
-    assert!(txpool_executor.poll_next_unpin(&mut cx).is_pending());
+    assert!(
+        tokio::time::timeout(Duration::from_secs(1), txpool_executor.next())
+            .await
+            .is_err()
+    );
 
     const NUM_TXS: usize = 1024;
 
-    for nonce in 0..NUM_TXS {
-        ipc_client
-            .feed(EthTxPoolIpcTx::new_with_default_priority(
-                make_legacy_tx(
-                    S1,
-                    MIN_BASE_FEE.into(),
-                    30_000_000,
-                    nonce as u64,
-                    egress_max_size_bytes(
-                        MockChainConfig::DEFAULT
-                            .get_execution_chain_revision(0)
-                            .execution_chain_params(),
-                    ) / 2
-                        - 256,
-                ),
-                Vec::default(),
-            ))
-            .await
-            .unwrap();
-    }
+    let handle = tokio::task::spawn(async move {
+        for nonce in 0..NUM_TXS {
+            ipc_client
+                .feed(EthTxPoolIpcTx::new_with_default_priority(
+                    make_legacy_tx(
+                        S1,
+                        MIN_BASE_FEE.into(),
+                        30_000_000,
+                        nonce as u64,
+                        egress_max_size_bytes(
+                            MockChainConfig::DEFAULT
+                                .get_execution_chain_revision(0)
+                                .execution_chain_params(),
+                        ) / 2
+                            - 256,
+                    ),
+                    Vec::default(),
+                ))
+                .await
+                .unwrap();
+        }
 
-    ipc_client.flush().await.unwrap();
+        ipc_client.flush().await.unwrap();
+
+        ipc_client
+    });
 
     let mut forwarded_txs = 0;
 
     while forwarded_txs < NUM_TXS {
-        let event;
-        let mut retries = 0;
-
-        loop {
-            if let Poll::Ready(result) = txpool_executor.poll_next_unpin(&mut cx) {
-                event = result.unwrap();
-                break;
-            };
-            if retries > 10 {
-                panic!("max retries hit");
-            }
-
-            tokio::time::sleep(Duration::from_millis(10)).await;
-            retries += 1;
-        }
+        let event = tokio::time::timeout(Duration::from_secs(1), txpool_executor.next())
+            .await
+            .expect("TxpoolExecutor does not timeout")
+            .unwrap();
 
         match event {
             MonadEvent::MempoolEvent(mempool_event) => match mempool_event {
@@ -174,7 +165,12 @@ async fn test_ipc_tx_forwarding_pacing() {
 
     assert_eq!(forwarded_txs, NUM_TXS);
 
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(
+        tokio::time::timeout(Duration::from_secs(1), txpool_executor.next())
+            .await
+            .is_err()
+    );
 
-    assert!(txpool_executor.poll_next_unpin(&mut cx).is_pending());
+    let ipc_client = handle.await.unwrap();
+    drop(ipc_client);
 }
