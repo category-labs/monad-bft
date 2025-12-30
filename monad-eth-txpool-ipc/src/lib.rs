@@ -31,6 +31,7 @@ pub use self::message::EthTxPoolIpcTx;
 
 mod message;
 
+const TX_CHANNEL_SEND_TIMEOUT_MS: u64 = 1_000;
 const SOCKET_SEND_TIMEOUT_MS: u64 = 1_000;
 
 pub struct EthTxPoolIpcStream {
@@ -67,6 +68,8 @@ impl EthTxPoolIpcStream {
 
         loop {
             tokio::select! {
+                biased;
+
                 result = stream.next() => {
                     let Some(result) = result else {
                         break;
@@ -79,17 +82,19 @@ impl EthTxPoolIpcStream {
                         ));
                     };
 
-                    let Err(error) = tx_sender.try_send(tx) else {
-                        continue;
-                    };
-
-                    match error {
-                        mpsc::error::TrySendError::Full(_) => {
-                            // TODO(andr-dev): Make "overloaded" IPC type that RPC can monitor to pace out
-                            // tx sends
-                            warn!("dropping tx, reason: channel full");
+                    match tokio::time::timeout(
+                        std::time::Duration::from_millis(TX_CHANNEL_SEND_TIMEOUT_MS),
+                        tx_sender.send(tx)
+                    ).await {
+                        Ok(Ok(())) => continue,
+                        Ok(Err(err)) => {
+                            warn!(?err, "EthTxPoolIpcStream tx channel error, disconnecting");
+                            break;
                         },
-                        mpsc::error::TrySendError::Closed(_) => break,
+                        Err(elapsed) => {
+                            warn!(?elapsed, "EthTxPoolIpcStream tx channel timed out, disconnecting");
+                            break;
+                        },
                     }
                 }
 
