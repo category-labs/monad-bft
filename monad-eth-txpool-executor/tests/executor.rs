@@ -13,10 +13,14 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{collections::BTreeMap, time::Duration};
+use std::{
+    collections::BTreeMap,
+    task::{Context, Poll},
+    time::Duration,
+};
 
 use bytes::Bytes;
-use futures::{SinkExt, StreamExt};
+use futures::{task::noop_waker_ref, SinkExt, StreamExt};
 use monad_chain_config::{revision::MockChainRevision, ChainConfig, MockChainConfig};
 use monad_consensus_types::block::GENESIS_TIMESTAMP;
 use monad_crypto::NopSignature;
@@ -173,4 +177,62 @@ async fn test_ipc_tx_forwarding_pacing() {
 
     let ipc_client = handle.await.unwrap();
     drop(ipc_client);
+}
+
+#[tokio::test]
+async fn test_ipc_full() {
+    let (mut txpool_executor, mut ipc_client) = setup_txpool_executor_with_client().await;
+
+    let mut cx = Context::from_waker(noop_waker_ref());
+
+    assert!(txpool_executor.poll_next_unpin(&mut cx).is_pending());
+
+    const TX_BYTES: usize = 256 * 1024;
+
+    let handle = tokio::task::spawn(async move {
+        for nonce in 0.. {
+            let tx = make_legacy_tx(S1, MIN_BASE_FEE.into(), 30_000_000, nonce as u64, TX_BYTES);
+
+            match tokio::time::timeout(
+                std::time::Duration::from_millis(10),
+                ipc_client.send(EthTxPoolIpcTx::new_with_default_priority(tx, vec![])),
+            )
+            .await
+            {
+                Ok(Ok(())) => continue,
+                Err(_) => break,
+                Ok(Err(err)) => panic!("send failed: {err:#?}"),
+            }
+        }
+
+        ipc_client
+    });
+
+    // Wait for executor to process some events
+    tokio::time::sleep(std::time::Duration::from_millis(1_000)).await;
+
+    // IPC socket is full on send side
+    assert!(txpool_executor
+        .poll_next_unpin(&mut cx)
+        .map(|result| result.unwrap())
+        .is_ready());
+
+    while let Poll::Ready(result) = txpool_executor.poll_next_unpin(&mut cx) {
+        assert!(result.is_some());
+        tokio::task::yield_now().await;
+    }
+
+    let tx = make_legacy_tx(S1, MIN_BASE_FEE.into(), 30_000_000, 0, 0);
+
+    let mut ipc_client = handle.await.unwrap();
+
+    // IPC socket send succeeds
+
+    let () = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        ipc_client.send(EthTxPoolIpcTx::new_with_default_priority(tx, vec![])),
+    )
+    .await
+    .unwrap()
+    .unwrap();
 }
