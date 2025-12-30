@@ -47,7 +47,7 @@ use monad_peer_discovery::{
 use monad_raptorcast::{
     config::{RaptorCastConfig, RaptorCastConfigPrimary},
     raptorcast_secondary::SecondaryRaptorCastModeConfig,
-    RaptorCast, RaptorCastEvent, AUTHENTICATED_RAPTORCAST_SOCKET, RAPTORCAST_SOCKET,
+    RaptorCast, RaptorCastEvent,
 };
 use monad_secp::{KeyPair, SecpSignature};
 use monad_types::{Deserializable, Epoch, NodeId, RouterTarget, Serializable, Stake};
@@ -598,29 +598,35 @@ fn setup_node(
     let non_authenticated_addr =
         SocketAddr::V4(SocketAddrV4::new(bind_ip, my_config.udp_addr.port()));
 
-    let dataplane = DataplaneBuilder::new(&tcp_addr, UDP_BW)
+    let mut dataplane = DataplaneBuilder::new(UDP_BW)
         .with_udp_multishot(true)
-        .extend_udp_sockets(vec![
-            monad_dataplane::UdpSocketConfig {
-                socket_addr: authenticated_udp_addr,
-                label: AUTHENTICATED_RAPTORCAST_SOCKET.to_string(),
-            },
-            monad_dataplane::UdpSocketConfig {
-                socket_addr: non_authenticated_addr,
-                label: RAPTORCAST_SOCKET.to_string(),
-            },
+        .with_tcp_sockets([(monad_dataplane::TcpSocketId::Raptorcast, tcp_addr)])
+        .with_udp_sockets([
+            (
+                monad_dataplane::UdpSocketId::AuthenticatedRaptorcast,
+                authenticated_udp_addr,
+            ),
+            (
+                monad_dataplane::UdpSocketId::Raptorcast,
+                non_authenticated_addr,
+            ),
         ])
         .build();
     assert!(dataplane.block_until_ready(Duration::from_secs(2)));
 
-    let (tcp_socket, mut udp_dataplane, dataplane_control) = dataplane.split();
-    let (tcp_reader, tcp_writer) = tcp_socket.split();
-    let authenticated_socket = udp_dataplane
-        .take_socket(AUTHENTICATED_RAPTORCAST_SOCKET)
+    let tcp_socket = dataplane
+        .tcp_sockets
+        .take(monad_dataplane::TcpSocketId::Raptorcast)
+        .expect("tcp socket not found");
+    let authenticated_socket = dataplane
+        .udp_sockets
+        .take(monad_dataplane::UdpSocketId::AuthenticatedRaptorcast)
         .expect("authenticated socket not found");
-    let non_authenticated_socket = udp_dataplane
-        .take_socket(RAPTORCAST_SOCKET)
+    let non_authenticated_socket = dataplane
+        .udp_sockets
+        .take(monad_dataplane::UdpSocketId::Raptorcast)
         .expect("non-authenticated socket not found");
+    let dataplane_control = dataplane.control.clone();
 
     let mut known_addresses = std::collections::HashMap::new();
     for (node_id, record) in &routing_info {
@@ -650,8 +656,7 @@ fn setup_node(
     >::new(
         create_raptorcast_config(keypair_arc),
         SecondaryRaptorCastModeConfig::None,
-        tcp_reader,
-        tcp_writer,
+        tcp_socket,
         Some(authenticated_socket),
         non_authenticated_socket,
         dataplane_control,

@@ -40,27 +40,69 @@ pub(crate) mod buffer_ext;
 pub mod tcp;
 pub mod udp;
 
-pub struct UdpSocketConfig {
-    pub socket_addr: SocketAddr,
-    pub label: String,
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TcpSocketId {
+    Raptorcast,
+    AuthenticatedRaptorcast,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum UdpSocketId {
+    Raptorcast,
+    AuthenticatedRaptorcast,
+}
+
+#[derive(Default)]
+pub struct TcpSocketHandles {
+    handles: Vec<(TcpSocketId, TcpSocketHandle)>,
+}
+
+impl TcpSocketHandles {
+    fn push(&mut self, id: TcpSocketId, handle: TcpSocketHandle) {
+        self.handles.push((id, handle));
+    }
+
+    pub fn take(&mut self, id: TcpSocketId) -> Option<TcpSocketHandle> {
+        self.handles
+            .iter()
+            .position(|(h_id, _)| *h_id == id)
+            .map(|idx| self.handles.swap_remove(idx).1)
+    }
+}
+
+#[derive(Default)]
+pub struct UdpSocketHandles {
+    handles: Vec<(UdpSocketId, UdpSocketHandle)>,
+}
+
+impl UdpSocketHandles {
+    fn push(&mut self, id: UdpSocketId, handle: UdpSocketHandle) {
+        self.handles.push((id, handle));
+    }
+
+    pub fn take(&mut self, id: UdpSocketId) -> Option<UdpSocketHandle> {
+        self.handles
+            .iter()
+            .position(|(h_id, _)| *h_id == id)
+            .map(|idx| self.handles.swap_remove(idx).1)
+    }
 }
 
 pub struct DataplaneBuilder {
-    local_addr: SocketAddr,
     trusted_addresses: Vec<IpAddr>,
     /// 1_000 = 1 Gbps, 10_000 = 10 Gbps
     udp_up_bandwidth_mbps: u64,
     udp_buffer_size: Option<usize>,
     tcp_config: TcpConfig,
     ban_duration: Duration,
-    udp_sockets: Vec<UdpSocketConfig>,
+    udp_sockets: Vec<(UdpSocketId, SocketAddr)>,
+    tcp_sockets: Vec<(TcpSocketId, SocketAddr)>,
     udp_multishot: bool,
 }
 
 impl DataplaneBuilder {
-    pub fn new(local_addr: &SocketAddr, up_bandwidth_mbps: u64) -> Self {
+    pub fn new(up_bandwidth_mbps: u64) -> Self {
         Self {
-            local_addr: *local_addr,
             udp_up_bandwidth_mbps: up_bandwidth_mbps,
             udp_buffer_size: None,
             trusted_addresses: vec![],
@@ -72,8 +114,9 @@ impl DataplaneBuilder {
                 connections_limit: 10000,
                 per_ip_connections_limit: 100,
             },
-            ban_duration: Duration::from_secs(5 * 60), // 5 minutes
-            udp_sockets: vec![],
+            ban_duration: Duration::from_secs(5 * 60),
+            udp_sockets: Vec::new(),
+            tcp_sockets: Vec::new(),
             udp_multishot: true,
         }
     }
@@ -101,8 +144,19 @@ impl DataplaneBuilder {
         self
     }
 
-    pub fn extend_udp_sockets(mut self, sockets: Vec<UdpSocketConfig>) -> Self {
+    pub fn with_udp_sockets(
+        mut self,
+        sockets: impl IntoIterator<Item = (UdpSocketId, SocketAddr)>,
+    ) -> Self {
         self.udp_sockets.extend(sockets);
+        self
+    }
+
+    pub fn with_tcp_sockets(
+        mut self,
+        sockets: impl IntoIterator<Item = (TcpSocketId, SocketAddr)>,
+    ) -> Self {
+        self.tcp_sockets.extend(sockets);
         self
     }
 
@@ -113,46 +167,36 @@ impl DataplaneBuilder {
 
     pub fn build(self) -> Dataplane {
         let DataplaneBuilder {
-            local_addr,
             udp_up_bandwidth_mbps: up_bandwidth_mbps,
             udp_buffer_size,
             trusted_addresses: trusted,
             tcp_config,
             ban_duration,
             udp_sockets,
+            tcp_sockets,
             udp_multishot,
         } = self;
 
-        let mut seen_labels = std::collections::HashSet::new();
-        let mut seen_ports = std::collections::HashSet::new();
-        for socket in &udp_sockets {
-            assert!(
-                seen_labels.insert(socket.label.clone()),
-                "duplicate udp socket label: {}",
-                socket.label
-            );
-            assert!(
-                seen_ports.insert(socket.socket_addr.port()),
-                "duplicate udp socket port: {}",
-                socket.socket_addr.port()
-            );
-        }
+        validate_sockets(udp_sockets.iter(), "udp");
+        validate_sockets(tcp_sockets.iter(), "tcp");
 
-        let (tcp_ingress_tx, tcp_ingress_rx) = mpsc::channel(TCP_INGRESS_CHANNEL_SIZE);
         let (tcp_egress_tx, tcp_egress_rx) = mpsc::channel(TCP_EGRESS_CHANNEL_SIZE);
-
         let (udp_egress_tx, udp_egress_rx) = mpsc::channel(UDP_EGRESS_CHANNEL_SIZE);
 
-        let mut udp_socket_handles = Vec::new();
-        let mut socket_configs = Vec::new();
+        let mut udp_socket_configs = Vec::new();
+        let mut udp_socket_handles = UdpSocketHandles::default();
+        for (id, addr) in udp_sockets {
+            let (handle, config) = create_udp_socket_handle(id, addr, udp_egress_tx.clone());
+            udp_socket_configs.push(config);
+            udp_socket_handles.push(id, handle);
+        }
 
-        for (socket_id, UdpSocketConfig { socket_addr, label }) in
-            udp_sockets.into_iter().enumerate()
-        {
-            let (handle, config) =
-                create_socket_handle(socket_id, socket_addr, label, udp_egress_tx.clone());
-            udp_socket_handles.push(handle);
-            socket_configs.push(config);
+        let mut tcp_socket_configs = Vec::new();
+        let mut tcp_socket_handles = TcpSocketHandles::default();
+        for (id, addr) in tcp_sockets {
+            let (handle, config) = create_tcp_socket_handle(id, addr, tcp_egress_tx.clone());
+            tcp_socket_configs.push(config);
+            tcp_socket_handles.push(id, handle);
         }
 
         let ready = Arc::new(AtomicBool::new(false));
@@ -182,12 +226,11 @@ impl DataplaneBuilder {
                                 tcp_config,
                                 tcp_control_map,
                                 addrlist.clone(),
-                                local_addr,
-                                tcp_ingress_tx,
+                                tcp_socket_configs,
                                 tcp_egress_rx,
                             );
                             udp::spawn_tasks(
-                                socket_configs,
+                                udp_socket_configs,
                                 udp_egress_rx,
                                 up_bandwidth_mbps,
                                 udp_buffer_size,
@@ -204,21 +247,9 @@ impl DataplaneBuilder {
 
         let control = DataplaneControl::new(tcp_control_map, banned_ips_tx, addrlist);
 
-        let tcp_reader = TcpSocketReader {
-            ingress_rx: tcp_ingress_rx,
-        };
-        let tcp_writer = TcpSocketWriter {
-            egress_tx: tcp_egress_tx,
-            msgs_dropped: Arc::new(AtomicUsize::new(0)),
-        };
-        let tcp_socket = TcpSocketHandle {
-            reader: tcp_reader,
-            writer: tcp_writer,
-        };
-
         Dataplane {
-            tcp_socket: Some(tcp_socket),
-            udp_socket_handles,
+            tcp_sockets: tcp_socket_handles,
+            udp_sockets: udp_socket_handles,
             control,
             ready,
         }
@@ -226,34 +257,30 @@ impl DataplaneBuilder {
 }
 
 pub struct Dataplane {
-    tcp_socket: Option<TcpSocketHandle>,
-    udp_socket_handles: Vec<UdpSocketHandle>,
-    control: DataplaneControl,
+    pub tcp_sockets: TcpSocketHandles,
+    pub udp_sockets: UdpSocketHandles,
+    pub control: DataplaneControl,
     ready: Arc<AtomicBool>,
 }
 
 pub struct UdpSocketReader {
-    socket_id: usize,
-    label: String,
+    socket_id: UdpSocketId,
     ingress_rx: mpsc::Receiver<RecvUdpMsg>,
 }
 
 impl UdpSocketReader {
     pub async fn recv(&mut self) -> RecvUdpMsg {
-        self.ingress_rx.recv().await.unwrap_or_else(|| {
-            panic!(
-                "socket {} ({}) ingress channel closed",
-                self.socket_id, self.label
-            )
-        })
+        self.ingress_rx
+            .recv()
+            .await
+            .unwrap_or_else(|| panic!("socket {:?} ingress channel closed", self.socket_id))
     }
 }
 
 #[derive(Clone)]
 pub struct UdpSocketWriter {
-    socket_id: usize,
+    socket_id: UdpSocketId,
     socket_addr: SocketAddr,
-    label: String,
     egress_tx: mpsc::Sender<UdpMsg>,
     msgs_dropped: Arc<AtomicUsize>,
 }
@@ -296,8 +323,8 @@ impl UdpSocketHandle {
         &self.writer
     }
 
-    pub fn label(&self) -> &str {
-        &self.writer.label
+    pub fn id(&self) -> UdpSocketId {
+        self.writer.socket_id
     }
 }
 
@@ -317,8 +344,7 @@ impl UdpSocketWriter {
             Err(TrySendError::Full(_)) => {
                 let total = self.msgs_dropped.fetch_add(1, Ordering::Relaxed);
                 warn!(
-                    socket_id = self.socket_id,
-                    label = %self.label,
+                    socket_id = ?self.socket_id,
                     ?dst,
                     msg_length,
                     total_msgs_dropped = total,
@@ -326,10 +352,7 @@ impl UdpSocketWriter {
                 );
             }
             Err(TrySendError::Closed(_)) => {
-                panic!(
-                    "socket {} ({}) egress channel closed",
-                    self.socket_id, self.label
-                )
+                panic!("socket {:?} egress channel closed", self.socket_id)
             }
         }
     }
@@ -347,10 +370,7 @@ impl UdpSocketWriter {
                 Ok(()) => pending_count -= 1,
                 Err(TrySendError::Full(_)) => break,
                 Err(TrySendError::Closed(_)) => {
-                    panic!(
-                        "socket {} ({}) egress channel closed",
-                        self.socket_id, self.label
-                    )
+                    panic!("socket {:?} egress channel closed", self.socket_id)
                 }
             }
         }
@@ -360,8 +380,7 @@ impl UdpSocketWriter {
                 .msgs_dropped
                 .fetch_add(pending_count, Ordering::Relaxed);
             warn!(
-                socket_id = self.socket_id,
-                label = %self.label,
+                socket_id = ?self.socket_id,
                 num_msgs_dropped = pending_count,
                 total_msgs_dropped = total,
                 msg_length = msg_len,
@@ -383,10 +402,7 @@ impl UdpSocketWriter {
                 Ok(()) => pending_count -= 1,
                 Err(TrySendError::Full(_)) => break,
                 Err(TrySendError::Closed(_)) => {
-                    panic!(
-                        "socket {} ({}) egress channel closed",
-                        self.socket_id, self.label
-                    )
+                    panic!("socket {:?} egress channel closed", self.socket_id)
                 }
             }
         }
@@ -396,8 +412,7 @@ impl UdpSocketWriter {
                 .msgs_dropped
                 .fetch_add(pending_count, Ordering::Relaxed);
             warn!(
-                socket_id = self.socket_id,
-                label = %self.label,
+                socket_id = ?self.socket_id,
                 num_msgs_dropped = pending_count,
                 total_msgs_dropped = total,
                 ?priority,
@@ -411,26 +426,13 @@ impl Debug for UdpSocketHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("UdpSocketHandle")
             .field("socket_id", &self.writer.socket_id)
-            .field("label", &self.writer.label)
             .field("socket_addr", &self.writer.socket_addr)
             .finish()
     }
 }
 
-pub struct UdpDataplane {
-    socket_handles: Vec<UdpSocketHandle>,
-}
-
-impl UdpDataplane {
-    pub fn take_socket(&mut self, label: &str) -> Option<UdpSocketHandle> {
-        self.socket_handles
-            .iter()
-            .position(|h| h.label() == label)
-            .map(|idx| self.socket_handles.swap_remove(idx))
-    }
-}
-
 pub struct TcpSocketReader {
+    socket_id: TcpSocketId,
     ingress_rx: mpsc::Receiver<RecvTcpMsg>,
 }
 
@@ -439,12 +441,14 @@ impl TcpSocketReader {
         self.ingress_rx
             .recv()
             .await
-            .unwrap_or_else(|| panic!("tcp ingress channel closed"))
+            .unwrap_or_else(|| panic!("socket {:?} tcp ingress channel closed", self.socket_id))
     }
 }
 
 #[derive(Clone)]
 pub struct TcpSocketWriter {
+    socket_id: TcpSocketId,
+    socket_addr: SocketAddr,
     egress_tx: mpsc::Sender<(SocketAddr, TcpMsg)>,
     msgs_dropped: Arc<AtomicUsize>,
 }
@@ -458,13 +462,16 @@ impl TcpSocketWriter {
             Err(TrySendError::Full(_)) => {
                 let total = self.msgs_dropped.fetch_add(1, Ordering::Relaxed);
                 warn!(
+                    socket_id = ?self.socket_id,
                     ?addr,
                     msg_length,
                     total_msgs_dropped = total,
                     "tcp egress channel full, dropping message"
                 );
             }
-            Err(TrySendError::Closed(_)) => panic!("tcp egress channel closed"),
+            Err(TrySendError::Closed(_)) => {
+                panic!("socket {:?} tcp egress channel closed", self.socket_id)
+            }
         }
     }
 }
@@ -485,6 +492,23 @@ impl TcpSocketHandle {
 
     pub fn write(&self, addr: SocketAddr, msg: TcpMsg) {
         self.writer.write(addr, msg)
+    }
+
+    pub fn writer(&self) -> &TcpSocketWriter {
+        &self.writer
+    }
+
+    pub fn id(&self) -> TcpSocketId {
+        self.writer.socket_id
+    }
+}
+
+impl Debug for TcpSocketHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TcpSocketHandle")
+            .field("socket_id", &self.writer.socket_id)
+            .field("socket_addr", &self.writer.socket_addr)
+            .finish()
     }
 }
 
@@ -570,7 +594,7 @@ impl BroadcastMsg {
 
     fn into_iter_with_priority(
         self,
-        socket_id: usize,
+        socket_id: UdpSocketId,
         priority: UdpPriority,
     ) -> impl Iterator<Item = UdpMsg> {
         let Self {
@@ -601,7 +625,7 @@ impl UnicastMsg {
 
     fn into_iter_with_priority(
         self,
-        socket_id: usize,
+        socket_id: UdpSocketId,
         priority: UdpPriority,
     ) -> impl Iterator<Item = UdpMsg> {
         let Self { msgs, stride } = self;
@@ -634,7 +658,7 @@ pub struct TcpMsg {
 }
 
 pub(crate) struct UdpMsg {
-    pub(crate) socket_id: usize,
+    pub(crate) socket_id: UdpSocketId,
     pub(crate) dst: SocketAddr,
     pub(crate) payload: Bytes,
     pub(crate) stride: u16,
@@ -646,61 +670,63 @@ const TCP_EGRESS_CHANNEL_SIZE: usize = 1024;
 const UDP_INGRESS_CHANNEL_SIZE: usize = 12_800;
 const UDP_EGRESS_CHANNEL_SIZE: usize = 12_800;
 
-fn create_socket_handle(
-    socket_id: usize,
+fn create_udp_socket_handle(
+    socket_id: UdpSocketId,
     socket_addr: SocketAddr,
-    label: String,
     egress_tx: mpsc::Sender<UdpMsg>,
 ) -> (
     UdpSocketHandle,
-    (usize, SocketAddr, String, mpsc::Sender<RecvUdpMsg>),
+    (UdpSocketId, SocketAddr, mpsc::Sender<RecvUdpMsg>),
 ) {
     let (ingress_tx, ingress_rx) = mpsc::channel(UDP_INGRESS_CHANNEL_SIZE);
     let msgs_dropped = Arc::new(AtomicUsize::new(0));
 
     let reader = UdpSocketReader {
         socket_id,
-        label: label.clone(),
         ingress_rx,
     };
 
     let writer = UdpSocketWriter {
         socket_id,
         socket_addr,
-        label: label.clone(),
         egress_tx,
         msgs_dropped,
     };
 
     let handle = UdpSocketHandle { reader, writer };
-    let config = (socket_id, socket_addr, label, ingress_tx);
+    let config = (socket_id, socket_addr, ingress_tx);
+    (handle, config)
+}
+
+fn create_tcp_socket_handle(
+    socket_id: TcpSocketId,
+    socket_addr: SocketAddr,
+    egress_tx: mpsc::Sender<(SocketAddr, TcpMsg)>,
+) -> (
+    TcpSocketHandle,
+    (TcpSocketId, SocketAddr, mpsc::Sender<RecvTcpMsg>),
+) {
+    let (ingress_tx, ingress_rx) = mpsc::channel(TCP_INGRESS_CHANNEL_SIZE);
+    let msgs_dropped = Arc::new(AtomicUsize::new(0));
+
+    let reader = TcpSocketReader {
+        socket_id,
+        ingress_rx,
+    };
+
+    let writer = TcpSocketWriter {
+        socket_id,
+        socket_addr,
+        egress_tx,
+        msgs_dropped,
+    };
+
+    let handle = TcpSocketHandle { reader, writer };
+    let config = (socket_id, socket_addr, ingress_tx);
     (handle, config)
 }
 
 impl Dataplane {
-    pub fn split(self) -> (TcpSocketHandle, UdpDataplane, DataplaneControl) {
-        let tcp_socket = self.tcp_socket.expect("tcp socket already taken");
-        let udp = UdpDataplane {
-            socket_handles: self.udp_socket_handles,
-        };
-        (tcp_socket, udp, self.control)
-    }
-
-    pub fn take_tcp_socket(&mut self) -> Option<TcpSocketHandle> {
-        self.tcp_socket.take()
-    }
-
-    pub fn udp_socket_handles(&mut self) -> &mut [UdpSocketHandle] {
-        &mut self.udp_socket_handles
-    }
-
-    pub fn take_udp_socket_handle(&mut self, label: &str) -> Option<UdpSocketHandle> {
-        self.udp_socket_handles
-            .iter()
-            .position(|h| h.label() == label)
-            .map(|idx| self.udp_socket_handles.swap_remove(idx))
-    }
-
     pub fn add_trusted(&self, addr: IpAddr) {
         self.control.add_trusted(addr);
     }
@@ -725,21 +751,6 @@ impl Dataplane {
         self.control.disconnect(addr);
     }
 
-    pub async fn tcp_read(&mut self) -> RecvTcpMsg {
-        self.tcp_socket
-            .as_mut()
-            .expect("tcp socket already taken")
-            .recv()
-            .await
-    }
-
-    pub fn tcp_write(&self, addr: SocketAddr, msg: TcpMsg) {
-        self.tcp_socket
-            .as_ref()
-            .expect("tcp socket already taken")
-            .write(addr, msg);
-    }
-
     pub fn ready(&self) -> bool {
         self.ready.load(Ordering::Acquire)
     }
@@ -753,5 +764,22 @@ impl Dataplane {
             std::thread::sleep(Duration::from_millis(1));
         }
         true
+    }
+}
+
+fn validate_sockets<'a, I: Eq + std::hash::Hash + std::fmt::Debug + 'a>(
+    sockets: impl Iterator<Item = &'a (I, SocketAddr)>,
+    kind: impl AsRef<str>,
+) {
+    let kind = kind.as_ref();
+    let mut seen_ids = std::collections::HashSet::new();
+    let mut seen_ports = std::collections::HashSet::new();
+    for (id, addr) in sockets {
+        assert!(seen_ids.insert(id), "duplicate {kind} socket id {id:?}");
+        assert!(
+            seen_ports.insert(addr.port()),
+            "duplicate {kind} port {} for socket {id:?}",
+            addr.port()
+        );
     }
 }

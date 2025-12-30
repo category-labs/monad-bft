@@ -435,9 +435,6 @@ mod tests {
     use super::{AuthenticatedSocketHandle, DualSocketHandle};
     use crate::auth::protocol::WireAuthProtocol;
 
-    const AUTHENTICATED_SOCKET: &str = "authenticated_socket";
-    const NON_AUTHENTICATED_SOCKET: &str = "non_authenticated_socket";
-
     fn init_tracing() {
         let _ = tracing_subscriber::fmt()
             .with_env_filter(EnvFilter::from_default_env())
@@ -465,28 +462,31 @@ mod tests {
                 non_auth_port,
             ));
 
-            let dp = DataplaneBuilder::new(&auth_addr, 1000)
-                .extend_udp_sockets(vec![
-                    monad_dataplane::UdpSocketConfig {
-                        socket_addr: auth_addr,
-                        label: AUTHENTICATED_SOCKET.to_string(),
-                    },
-                    monad_dataplane::UdpSocketConfig {
-                        socket_addr: non_auth_addr,
-                        label: NON_AUTHENTICATED_SOCKET.to_string(),
-                    },
+            let mut dp = DataplaneBuilder::new(1000)
+                .with_tcp_sockets([(monad_dataplane::TcpSocketId::Raptorcast, auth_addr)])
+                .with_udp_sockets([
+                    (
+                        monad_dataplane::UdpSocketId::AuthenticatedRaptorcast,
+                        auth_addr,
+                    ),
+                    (monad_dataplane::UdpSocketId::Raptorcast, non_auth_addr),
                 ])
                 .build();
 
             assert!(dp.block_until_ready(Duration::from_secs(1)));
-            let (tcp_socket, mut udp_dataplane, control) = dp.split();
-
-            let authenticated_socket = udp_dataplane
-                .take_socket(AUTHENTICATED_SOCKET)
+            let tcp_socket = dp
+                .tcp_sockets
+                .take(monad_dataplane::TcpSocketId::Raptorcast)
+                .expect("tcp socket");
+            let authenticated_socket = dp
+                .udp_sockets
+                .take(monad_dataplane::UdpSocketId::AuthenticatedRaptorcast)
                 .expect("authenticated socket");
-            let non_authenticated_socket = udp_dataplane
-                .take_socket(NON_AUTHENTICATED_SOCKET)
+            let non_authenticated_socket = dp
+                .udp_sockets
+                .take(monad_dataplane::UdpSocketId::Raptorcast)
                 .expect("non-authenticated socket");
+            let control = dp.control.clone();
 
             let keypair = keypair(seed);
             let public_key = keypair.pubkey();
@@ -589,18 +589,18 @@ mod tests {
 
         let auth_addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 19003));
 
-        let dp = DataplaneBuilder::new(&auth_addr, 1000)
-            .extend_udp_sockets(vec![monad_dataplane::UdpSocketConfig {
-                socket_addr: auth_addr,
-                label: AUTHENTICATED_SOCKET.to_string(),
-            }])
+        let mut dp = DataplaneBuilder::new(1000)
+            .with_tcp_sockets([(monad_dataplane::TcpSocketId::Raptorcast, auth_addr)])
+            .with_udp_sockets([(
+                monad_dataplane::UdpSocketId::AuthenticatedRaptorcast,
+                auth_addr,
+            )])
             .build();
 
         assert!(dp.block_until_ready(Duration::from_secs(1)));
-        let (_tcp_socket, mut udp_dataplane, _control) = dp.split();
-
-        let authenticated_socket = udp_dataplane
-            .take_socket(AUTHENTICATED_SOCKET)
+        let authenticated_socket = dp
+            .udp_sockets
+            .take(monad_dataplane::UdpSocketId::AuthenticatedRaptorcast)
             .expect("authenticated socket");
 
         let local_keypair = keypair(1);
