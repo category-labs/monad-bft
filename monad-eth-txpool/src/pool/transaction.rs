@@ -247,6 +247,13 @@ impl ValidEthTransaction {
         self.tx
     }
 
+    pub fn tx_kind_priority(&self) -> U256 {
+        match self.kind {
+            PoolTransactionKind::Owned { priority, .. } => priority,
+            PoolTransactionKind::Forwarded => DEFAULT_TX_PRIORITY,
+        }
+    }
+
     pub fn is_owned(&self) -> bool {
         match self.kind {
             PoolTransactionKind::Owned { .. } => true,
@@ -255,6 +262,14 @@ impl ValidEthTransaction {
     }
 
     pub fn has_higher_priority(&self, other: &Self, _base_fee: u64) -> bool {
+        if self.tx_kind_priority() != other.tx_kind_priority() {
+            // If either tx has a custom tx kind priority, the pool will ignore all other tx related
+            // fields and purely order based on that custom priority. This allows sidecars to
+            // force replace any tx occupying some (address, nonce) pair in the pool with any other
+            // tx with the same (address, nonce) pair.
+            return self.tx_kind_priority() >= other.tx_kind_priority();
+        }
+
         // Note: When considering whether a tx has higher priority than another (and thus should
         // replace it), we do not enforce a minimum gas fee bump. This behavior deviates from
         // Ethereum clients like geth for two primary reasons:

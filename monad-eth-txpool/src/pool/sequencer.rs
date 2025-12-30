@@ -65,8 +65,16 @@ impl<'a> PartialOrd for OrderedTx<'a> {
 
 impl<'a> Ord for OrderedTx<'a> {
     fn cmp(&self, other: &Self) -> Ordering {
-        (self.effective_tip_per_gas, self.tx.gas_limit())
-            .cmp(&(other.effective_tip_per_gas, other.tx.gas_limit()))
+        (
+            self.tx.tx_kind_priority(),
+            self.effective_tip_per_gas,
+            self.tx.gas_limit(),
+        )
+            .cmp(&(
+                other.tx.tx_kind_priority(),
+                other.effective_tip_per_gas,
+                other.tx.gas_limit(),
+            ))
     }
 }
 
