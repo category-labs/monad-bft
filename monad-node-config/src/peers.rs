@@ -22,7 +22,14 @@ use serde::{Deserialize, Serialize};
 #[serde(bound = "ST: CertificateSignatureRecoverable")]
 pub struct PeerDiscoveryConfig<ST: CertificateSignatureRecoverable> {
     pub self_address: String,
-    pub self_auth_port: Option<u16>,
+
+    #[serde(alias = "self_auth_port")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub self_udp_auth_port: Option<u16>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub self_tcp_auth_port: Option<u16>,
+
     pub self_record_seq_num: u64,
 
     pub self_name_record_sig: ST,

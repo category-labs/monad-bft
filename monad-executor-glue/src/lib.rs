@@ -271,29 +271,52 @@ pub struct PeerEntry<ST: CertificateSignatureRecoverable> {
     pub signature: ST,
     pub record_seq_num: u64,
 
+    #[serde(alias = "auth_port")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub auth_port: Option<u16>,
+    pub udp_auth_port: Option<u16>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tcp_auth_port: Option<u16>,
 }
 
 impl<ST: CertificateSignatureRecoverable> Encodable for PeerEntry<ST> {
     fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
-        if let Some(auth_port) = self.auth_port {
-            let enc: [&dyn Encodable; 5] = [
-                &self.pubkey,
-                &self.addr.to_string(),
-                &self.signature,
-                &self.record_seq_num,
-                &auth_port,
-            ];
-            encode_list::<_, dyn Encodable>(&enc, out);
-        } else {
-            let enc: [&dyn Encodable; 4] = [
-                &self.pubkey,
-                &self.addr.to_string(),
-                &self.signature,
-                &self.record_seq_num,
-            ];
-            encode_list::<_, dyn Encodable>(&enc, out);
+        match (self.udp_auth_port, self.tcp_auth_port) {
+            (Some(udp_auth), Some(tcp_auth)) => {
+                let enc: [&dyn Encodable; 6] = [
+                    &self.pubkey,
+                    &self.addr.to_string(),
+                    &self.signature,
+                    &self.record_seq_num,
+                    &udp_auth,
+                    &tcp_auth,
+                ];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            (Some(udp_auth), None) => {
+                let enc: [&dyn Encodable; 5] = [
+                    &self.pubkey,
+                    &self.addr.to_string(),
+                    &self.signature,
+                    &self.record_seq_num,
+                    &udp_auth,
+                ];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            // TCP auth port cannot be set without UDP auth port to avoid ambiguity:
+            // if only one port is present, we wouldn't know if it's UDP or TCP.
+            (None, Some(_)) => {
+                panic!("tcp_auth_port requires udp_auth_port to be set");
+            }
+            (None, None) => {
+                let enc: [&dyn Encodable; 4] = [
+                    &self.pubkey,
+                    &self.addr.to_string(),
+                    &self.signature,
+                    &self.record_seq_num,
+                ];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
         }
     }
 }
@@ -310,7 +333,15 @@ impl<ST: CertificateSignatureRecoverable> Decodable for PeerEntry<ST> {
         let signature = ST::decode(&mut payload)?;
         let record_seq_num = u64::decode(&mut payload)?;
 
-        let auth_port = if !payload.is_empty() {
+        let udp_auth_port = if !payload.is_empty() {
+            Some(u16::decode(&mut payload)?)
+        } else {
+            None
+        };
+
+        // Only decode tcp_auth_port if udp_auth_port is present to avoid ambiguity:
+        // if only one port is present, we wouldn't know if it's UDP or TCP.
+        let tcp_auth_port = if udp_auth_port.is_some() && !payload.is_empty() {
             Some(u16::decode(&mut payload)?)
         } else {
             None
@@ -321,8 +352,38 @@ impl<ST: CertificateSignatureRecoverable> Decodable for PeerEntry<ST> {
             addr,
             signature,
             record_seq_num,
-            auth_port,
+            udp_auth_port,
+            tcp_auth_port,
         })
+    }
+}
+
+pub struct NodeBootstrapPeerConfigWithAddr<'a, ST: CertificateSignatureRecoverable> {
+    peer_config: &'a monad_node_config::NodeBootstrapPeerConfig<ST>,
+    addr: SocketAddrV4,
+}
+
+impl<'a, ST: CertificateSignatureRecoverable> NodeBootstrapPeerConfigWithAddr<'a, ST> {
+    pub fn with_resolved_addr(
+        peer_config: &'a monad_node_config::NodeBootstrapPeerConfig<ST>,
+        addr: SocketAddrV4,
+    ) -> Self {
+        Self { peer_config, addr }
+    }
+}
+
+impl<ST: CertificateSignatureRecoverable> From<NodeBootstrapPeerConfigWithAddr<'_, ST>>
+    for PeerEntry<ST>
+{
+    fn from(config_with_addr: NodeBootstrapPeerConfigWithAddr<'_, ST>) -> Self {
+        PeerEntry {
+            pubkey: config_with_addr.peer_config.secp256k1_pubkey,
+            addr: config_with_addr.addr,
+            signature: config_with_addr.peer_config.name_record_sig,
+            record_seq_num: config_with_addr.peer_config.record_seq_num,
+            udp_auth_port: config_with_addr.peer_config.udp_auth_port,
+            tcp_auth_port: config_with_addr.peer_config.tcp_auth_port,
+        }
     }
 }
 
@@ -2525,7 +2586,8 @@ mod tests {
             addr,
             signature,
             record_seq_num,
-            auth_port: None,
+            udp_auth_port: None,
+            tcp_auth_port: None,
         };
         let encoded = alloy_rlp::encode(&entry);
         let decoded: PeerEntry<NopSignature> = alloy_rlp::decode_exact(&encoded).unwrap();
