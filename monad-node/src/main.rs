@@ -583,6 +583,10 @@ where
         peer_discovery_config.self_direct_udp_port.is_some(),
         network_config.direct_udp_bind_address_port.is_some()
     );
+    assert_eq!(
+        peer_discovery_config.self_tcp_auth_port.is_some(),
+        network_config.authenticated_tcp_bind_address_port.is_some()
+    );
 
     let self_id = NodeId::new(identity.pubkey());
     let self_record = NameRecord::new_with_ports(
@@ -591,6 +595,7 @@ where
         name_record_address.port(),
         Some(peer_discovery_config.self_auth_port),
         peer_discovery_config.self_direct_udp_port,
+        peer_discovery_config.self_tcp_auth_port,
         peer_discovery_config.self_record_seq_num,
     );
     let self_record = MonadNameRecord::new(self_record, &identity);
@@ -624,6 +629,7 @@ where
                 record_seq_num: peer.record_seq_num,
                 auth_port: peer.auth_port,
                 direct_udp_port: peer.direct_udp_port,
+                tcp_auth_port: peer.tcp_auth_port,
             };
 
             match MonadNameRecord::try_from(&peer_entry) {

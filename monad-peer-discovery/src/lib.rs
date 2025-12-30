@@ -54,6 +54,7 @@ pub enum PortTag {
     UDP = 1,
     AuthenticatedUDP = 2,
     DirectUDP = 3,
+    AuthenticatedTCP = 4,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, RlpEncodable, RlpDecodable)]
@@ -76,6 +77,7 @@ impl Port {
             1 => Some(PortTag::UDP),
             2 => Some(PortTag::AuthenticatedUDP),
             3 => Some(PortTag::DirectUDP),
+            4 => Some(PortTag::AuthenticatedTCP),
             _ => None,
         }
     }
@@ -198,6 +200,10 @@ impl<const N: usize> PortList<N> {
 
     fn direct_udp_port(&self) -> Option<u16> {
         self.port_by_tag(PortTag::DirectUDP)
+    }
+
+    fn authenticated_tcp_port(&self) -> Option<u16> {
+        self.port_by_tag(PortTag::AuthenticatedTCP)
     }
 }
 
@@ -328,6 +334,7 @@ impl NameRecord {
         tcp_port: u16,
         udp_port: u16,
         authenticated_udp_port: u16,
+        authenticated_tcp_port: Option<u16>,
         seq: u64,
     ) -> Self {
         Self::new_with_ports(
@@ -336,6 +343,7 @@ impl NameRecord {
             udp_port,
             Some(authenticated_udp_port),
             None,
+            authenticated_tcp_port,
             seq,
         )
     }
@@ -346,6 +354,7 @@ impl NameRecord {
         udp_port: u16,
         authenticated_udp_port: Option<u16>,
         direct_udp_port: Option<u16>,
+        authenticated_tcp_port: Option<u16>,
         seq: u64,
     ) -> Self {
         let mut ports_vec = ArrayVec::new();
@@ -356,6 +365,9 @@ impl NameRecord {
         }
         if let Some(direct_udp_port) = direct_udp_port {
             ports_vec.push(Port::new(PortTag::DirectUDP, direct_udp_port));
+        }
+        if let Some(authenticated_tcp_port) = authenticated_tcp_port {
+            ports_vec.push(Port::new(PortTag::AuthenticatedTCP, authenticated_tcp_port));
         }
         let wire = WireNameRecordV2 {
             ip,
@@ -439,6 +451,18 @@ impl NameRecord {
             .map(|port| SocketAddrV4::new(self.ip(), port))
     }
 
+    pub fn authenticated_tcp_port(&self) -> Option<u16> {
+        match &self.record {
+            VersionedNameRecord::V1(_) => None,
+            VersionedNameRecord::V2(v2) => v2.ports.authenticated_tcp_port(),
+        }
+    }
+
+    pub fn authenticated_tcp_socket(&self) -> Option<SocketAddrV4> {
+        self.authenticated_tcp_port()
+            .map(|port| SocketAddrV4::new(self.ip(), port))
+    }
+
     pub fn check_capability(&self, capability: Capability) -> bool {
         (self.capabilities() & (1u64 << (capability as u8))) != 0
     }
@@ -515,6 +539,10 @@ impl<ST: CertificateSignatureRecoverable> MonadNameRecord<ST> {
         self.name_record.direct_udp_socket()
     }
 
+    pub fn authenticated_tcp_address(&self) -> Option<SocketAddrV4> {
+        self.name_record.authenticated_tcp_socket()
+    }
+
     pub fn all_udp_sockets(&self) -> impl Iterator<Item = SocketAddrV4> + '_ {
         [
             Some(self.udp_address()),
@@ -544,14 +572,17 @@ impl<ST: CertificateSignatureRecoverable> TryFrom<&PeerEntry<ST>> for MonadNameR
     type Error = <ST as CertificateSignature>::Error;
 
     fn try_from(peer: &PeerEntry<ST>) -> Result<Self, Self::Error> {
-        let name_record = match (peer.auth_port, peer.direct_udp_port) {
-            (None, None) => NameRecord::new(*peer.addr.ip(), peer.addr.port(), peer.record_seq_num),
-            (auth_port, direct_udp_port) => NameRecord::new_with_ports(
+        let name_record = match (peer.auth_port, peer.direct_udp_port, peer.tcp_auth_port) {
+            (None, None, None) => {
+                NameRecord::new(*peer.addr.ip(), peer.addr.port(), peer.record_seq_num)
+            }
+            (auth_port, direct_udp_port, tcp_auth_port) => NameRecord::new_with_ports(
                 *peer.addr.ip(),
                 peer.addr.port(),
                 peer.addr.port(),
                 auth_port,
                 direct_udp_port,
+                tcp_auth_port,
                 peer.record_seq_num,
             ),
         };
@@ -581,6 +612,7 @@ impl<ST: CertificateSignatureRecoverable> TryFrom<&MonadNameRecord<ST>> for Peer
             record_seq_num: record.name_record.seq(),
             auth_port: record.name_record.authenticated_udp_port(),
             direct_udp_port: record.name_record.direct_udp_port(),
+            tcp_auth_port: record.name_record.authenticated_tcp_port(),
         })
     }
 }
@@ -599,6 +631,10 @@ impl<ST: CertificateSignatureRecoverable> From<MonadNameRecordWithPubkey<'_, ST>
                 .name_record
                 .authenticated_udp_port(),
             direct_udp_port: record_with_pubkey.record.name_record.direct_udp_port(),
+            tcp_auth_port: record_with_pubkey
+                .record
+                .name_record
+                .authenticated_tcp_port(),
         }
     }
 }
@@ -619,14 +655,21 @@ impl<ST: CertificateSignatureRecoverable> TryFrom<&NodeBootstrapPeerConfig<ST>>
             .address
             .parse::<SocketAddrV4>()
             .map_err(|_| PeerConfigConversionError::InvalidAddress(peer_config.address.clone()))?;
-        let name_record = match (peer_config.auth_port, peer_config.direct_udp_port) {
-            (None, None) => NameRecord::new(*addr.ip(), addr.port(), peer_config.record_seq_num),
-            (auth_port, direct_udp_port) => NameRecord::new_with_ports(
+        let name_record = match (
+            peer_config.auth_port,
+            peer_config.direct_udp_port,
+            peer_config.tcp_auth_port,
+        ) {
+            (None, None, None) => {
+                NameRecord::new(*addr.ip(), addr.port(), peer_config.record_seq_num)
+            }
+            (auth_port, direct_udp_port, tcp_auth_port) => NameRecord::new_with_ports(
                 *addr.ip(),
                 addr.port(),
                 addr.port(),
                 auth_port,
                 direct_udp_port,
+                tcp_auth_port,
                 peer_config.record_seq_num,
             ),
         };
@@ -664,6 +707,10 @@ impl<ST: CertificateSignatureRecoverable> From<MonadNameRecordWithPubkey<'_, ST>
                 .name_record
                 .authenticated_udp_port(),
             direct_udp_port: record_with_pubkey.record.name_record.direct_udp_port(),
+            tcp_auth_port: record_with_pubkey
+                .record
+                .name_record
+                .authenticated_tcp_port(),
         }
     }
 }
@@ -1159,6 +1206,7 @@ mod tests {
             tcp_port,
             udp_port,
             authenticated_udp_port,
+            None,
             seq,
         );
 
@@ -1223,6 +1271,7 @@ mod tests {
             udp_port,
             Some(authenticated_udp_port),
             Some(direct_udp_port),
+            None,
             seq,
         );
 
@@ -1259,6 +1308,57 @@ mod tests {
         assert_eq!(encoded, reencoded);
     }
 
+    #[test]
+    fn test_name_record_with_tcp_auth_only_roundtrip() {
+        let ip = Ipv4Addr::from_str("10.0.0.48").unwrap();
+        let tcp_port = 9104u16;
+        let udp_port = 9105u16;
+        let authenticated_tcp_port = 9106u16;
+        let seq = 106u64;
+
+        let record = NameRecord::new_with_ports(
+            ip,
+            tcp_port,
+            udp_port,
+            None,
+            None,
+            Some(authenticated_tcp_port),
+            seq,
+        );
+
+        assert_eq!(record.ip(), ip);
+        assert_eq!(record.tcp_port(), tcp_port);
+        assert_eq!(record.udp_port(), udp_port);
+        assert_eq!(record.authenticated_udp_port(), None);
+        assert_eq!(
+            record.authenticated_tcp_port(),
+            Some(authenticated_tcp_port)
+        );
+        assert_eq!(
+            record.authenticated_tcp_socket(),
+            Some(SocketAddrV4::from_str("10.0.0.48:9106").unwrap())
+        );
+        assert_eq!(record.seq(), seq);
+
+        let mut encoded = Vec::new();
+        record.encode(&mut encoded);
+
+        let decoded = NameRecord::decode(&mut encoded.as_slice()).unwrap();
+        assert_eq!(decoded.ip(), ip);
+        assert_eq!(decoded.tcp_port(), tcp_port);
+        assert_eq!(decoded.udp_port(), udp_port);
+        assert_eq!(decoded.authenticated_udp_port(), None);
+        assert_eq!(
+            decoded.authenticated_tcp_port(),
+            Some(authenticated_tcp_port)
+        );
+        assert_eq!(decoded.seq(), seq);
+
+        let mut reencoded = Vec::new();
+        decoded.encode(&mut reencoded);
+        assert_eq!(encoded, reencoded);
+    }
+
     #[rstest]
     #[case::auth_and_direct(
         NameRecord::new_with_ports(
@@ -1267,6 +1367,7 @@ mod tests {
             9201,
             Some(9202),
             Some(9203),
+            None,
             102,
         ),
         vec![
@@ -1282,6 +1383,7 @@ mod tests {
             9301,
             None,
             Some(9303),
+            None,
             103,
         ),
         vec![
@@ -1296,12 +1398,25 @@ mod tests {
             9401,
             Some(9402),
             None,
+            None,
             104,
         ),
         vec![
             SocketAddrV4::new(Ipv4Addr::new(10, 0, 0, 46), 9401),
             SocketAddrV4::new(Ipv4Addr::new(10, 0, 0, 46), 9402),
         ],
+    )]
+    #[case::tcp_auth_only_optional_middle_nones(
+        NameRecord::new_with_ports(
+            Ipv4Addr::new(10, 0, 0, 48),
+            9600,
+            9601,
+            None,
+            None,
+            Some(9602),
+            106,
+        ),
+        vec![SocketAddrV4::new(Ipv4Addr::new(10, 0, 0, 48), 9601)],
     )]
     #[case::udp_only(
         NameRecord::new(Ipv4Addr::new(10, 0, 0, 47), 9501, 105),
@@ -1340,6 +1455,7 @@ mod tests {
             record_seq_num: seq,
             auth_port: None,
             direct_udp_port: None,
+            tcp_auth_port: None,
         };
 
         let result = MonadNameRecord::<SecpSignature>::try_from(&peer_entry);
@@ -1379,7 +1495,7 @@ mod tests {
         let seq = 99u64;
 
         let keypair = KeyPair::from_ikm(b"test roundtrip auth").unwrap();
-        let name_record = NameRecord::new_with_authentication(ip, port, port, auth_port, seq);
+        let name_record = NameRecord::new_with_authentication(ip, port, port, auth_port, None, seq);
         let original_monad_record = MonadNameRecord::<SecpSignature>::new(name_record, &keypair);
 
         let pubkey = original_monad_record.recover_pubkey().unwrap().pubkey();
@@ -1408,8 +1524,15 @@ mod tests {
         let seq = 100u64;
 
         let keypair = KeyPair::from_ikm(b"test roundtrip direct udp").unwrap();
-        let name_record =
-            NameRecord::new_with_ports(ip, port, port, Some(auth_port), Some(direct_udp_port), seq);
+        let name_record = NameRecord::new_with_ports(
+            ip,
+            port,
+            port,
+            Some(auth_port),
+            Some(direct_udp_port),
+            None,
+            seq,
+        );
         let original_monad_record = MonadNameRecord::<SecpSignature>::new(name_record, &keypair);
 
         let pubkey = original_monad_record.recover_pubkey().unwrap().pubkey();
@@ -1447,7 +1570,7 @@ mod tests {
 
         let keypair = KeyPair::from_ikm(b"test roundtrip direct udp only").unwrap();
         let name_record =
-            NameRecord::new_with_ports(ip, port, port, None, Some(direct_udp_port), seq);
+            NameRecord::new_with_ports(ip, port, port, None, Some(direct_udp_port), None, seq);
         let original_monad_record = MonadNameRecord::<SecpSignature>::new(name_record, &keypair);
 
         let pubkey = original_monad_record.recover_pubkey().unwrap().pubkey();
@@ -1473,6 +1596,78 @@ mod tests {
         assert_eq!(
             converted_monad_record.name_record.direct_udp_port(),
             Some(direct_udp_port)
+        );
+    }
+
+    #[test]
+    fn test_peer_entry_monad_name_record_roundtrip_with_tcp_auth() {
+        let ip = Ipv4Addr::from_str("172.31.0.103").unwrap();
+        let port = 8895u16;
+        let auth_port = 8896u16;
+        let tcp_auth_port = 8897u16;
+        let seq = 102u64;
+
+        let keypair = KeyPair::from_ikm(b"test roundtrip tcp auth").unwrap();
+        let name_record = NameRecord::new_with_authentication(
+            ip,
+            port,
+            port,
+            auth_port,
+            Some(tcp_auth_port),
+            seq,
+        );
+        let original_monad_record = MonadNameRecord::<SecpSignature>::new(name_record, &keypair);
+
+        let pubkey = original_monad_record.recover_pubkey().unwrap().pubkey();
+        let peer_entry = PeerEntry::from(original_monad_record.with_pubkey(pubkey));
+        assert_eq!(peer_entry.auth_port, Some(auth_port));
+        assert_eq!(peer_entry.tcp_auth_port, Some(tcp_auth_port));
+
+        let converted_monad_record =
+            MonadNameRecord::<SecpSignature>::try_from(&peer_entry).unwrap();
+
+        assert_eq!(
+            converted_monad_record.name_record,
+            original_monad_record.name_record
+        );
+        assert_eq!(
+            converted_monad_record.name_record.authenticated_tcp_port(),
+            Some(tcp_auth_port)
+        );
+    }
+
+    #[test]
+    fn test_peer_entry_monad_name_record_roundtrip_with_tcp_auth_only() {
+        let ip = Ipv4Addr::from_str("172.31.0.104").unwrap();
+        let port = 8898u16;
+        let tcp_auth_port = 8899u16;
+        let seq = 103u64;
+
+        let keypair = KeyPair::from_ikm(b"test roundtrip tcp auth only").unwrap();
+        let name_record =
+            NameRecord::new_with_ports(ip, port, port, None, None, Some(tcp_auth_port), seq);
+        let original_monad_record = MonadNameRecord::<SecpSignature>::new(name_record, &keypair);
+
+        let pubkey = original_monad_record.recover_pubkey().unwrap().pubkey();
+        let peer_entry = PeerEntry::from(original_monad_record.with_pubkey(pubkey));
+        assert_eq!(peer_entry.auth_port, None);
+        assert_eq!(peer_entry.direct_udp_port, None);
+        assert_eq!(peer_entry.tcp_auth_port, Some(tcp_auth_port));
+
+        let converted_monad_record =
+            MonadNameRecord::<SecpSignature>::try_from(&peer_entry).unwrap();
+
+        assert_eq!(
+            converted_monad_record.name_record,
+            original_monad_record.name_record
+        );
+        assert_eq!(
+            converted_monad_record.name_record.authenticated_udp_port(),
+            None
+        );
+        assert_eq!(
+            converted_monad_record.name_record.authenticated_tcp_port(),
+            Some(tcp_auth_port)
         );
     }
 }

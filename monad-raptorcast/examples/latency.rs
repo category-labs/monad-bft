@@ -586,6 +586,7 @@ fn setup_node(
             participant.tcp_addr.port(),
             participant.udp_addr.port(),
             participant.authenticated_udp_addr.port(),
+            None,
             0,
         );
         let monad_name_record =

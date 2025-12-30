@@ -178,6 +178,7 @@ fn main() -> Result<(), Error> {
                         record_seq_num: peer.record_seq_num,
                         auth_port: peer.auth_port,
                         direct_udp_port: peer.direct_udp_port,
+                        tcp_auth_port: peer.tcp_auth_port,
                     };
                     peer_configs.push(peer_config);
                 }

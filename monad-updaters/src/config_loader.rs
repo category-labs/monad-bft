@@ -219,6 +219,7 @@ where
                 record_seq_num: peer.record_seq_num,
                 auth_port: peer.auth_port,
                 direct_udp_port: peer.direct_udp_port,
+                tcp_auth_port: peer.tcp_auth_port,
             });
         }
         peer_entries
