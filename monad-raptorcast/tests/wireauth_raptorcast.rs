@@ -288,10 +288,10 @@ fn spawn_noop_validator(
 
     tokio::task::spawn_local(async move {
         let shared_pd = create_peer_discovery(known_addresses, name_records);
-        let (tcp_socket, _authenticated_socket, non_authenticated_socket, control) =
+        let (tcp_socket, authenticated_udp_socket, non_authenticated_udp_socket, control) =
             create_dataplane(tcp_addr, auth_addr, non_auth_addr);
         let config = create_raptorcast_config(keypair, DEFAULT_SIG_VERIFICATION_RATE_LIMIT);
-        let auth_protocol = monad_raptorcast::auth::NoopAuthProtocol::new();
+        let udp_auth_protocol = monad_raptorcast::auth::NoopAuthProtocol::new();
 
         let mut validator_rc = monad_raptorcast::RaptorCast::<
             SecpSignature,
@@ -305,11 +305,13 @@ fn spawn_noop_validator(
             monad_raptorcast::raptorcast_secondary::SecondaryRaptorCastModeConfig::None,
             tcp_socket,
             None,
-            non_authenticated_socket,
+            Some(authenticated_udp_socket),
+            non_authenticated_udp_socket,
             control,
             shared_pd,
             Epoch(0),
-            auth_protocol,
+            udp_auth_protocol,
+            None,
         );
 
         let mut cmd_rx = cmd_rx;
@@ -359,7 +361,7 @@ fn spawn_wireauth_validator(
             create_dataplane(tcp_addr, auth_addr, non_auth_addr);
         let config = create_raptorcast_config(keypair.clone(), sig_verification_rate_limit);
         let wireauth_config = monad_wireauth::Config::default();
-        let auth_protocol =
+        let udp_auth_protocol =
             monad_raptorcast::auth::WireAuthProtocol::new(wireauth_config, keypair.clone());
 
         let mut validator_rc = monad_raptorcast::RaptorCast::<
@@ -373,12 +375,14 @@ fn spawn_wireauth_validator(
             config,
             monad_raptorcast::raptorcast_secondary::SecondaryRaptorCastModeConfig::None,
             tcp_socket,
+            None,
             Some(authenticated_socket),
             non_authenticated_socket,
             control,
             shared_pd,
             Epoch(0),
-            auth_protocol,
+            udp_auth_protocol,
+            None,
         );
 
         let mut cmd_rx = cmd_rx;

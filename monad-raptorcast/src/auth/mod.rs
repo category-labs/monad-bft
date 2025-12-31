@@ -16,12 +16,20 @@
 pub mod metrics;
 pub mod protocol;
 pub mod socket;
+pub mod tcp_socket;
 
 pub use metrics::{
     GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_READ,
     GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_WRITTEN,
     GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_READ,
     GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_WRITTEN,
+    GAUGE_RAPTORCAST_AUTH_SIGAUTH_TCP_BYTES_READ, GAUGE_RAPTORCAST_AUTH_SIGAUTH_TCP_BYTES_WRITTEN,
+    GAUGE_RAPTORCAST_AUTH_WIREAUTH_TCP_BYTES_READ,
+    GAUGE_RAPTORCAST_AUTH_WIREAUTH_TCP_BYTES_WRITTEN,
 };
 pub use protocol::{AuthenticationProtocol, NoopAuthProtocol, NoopHeader, WireAuthProtocol};
 pub use socket::{AuthRecvMsg, AuthenticatedSocketHandle, DualSocketHandle};
+pub use tcp_socket::{
+    AuthRecvTcpMsg, AuthenticatedTcpSocketHandle, DualTcpRecvError, DualTcpSocketHandle,
+    SigAuthError, SigAuthTcpSocket,
+};

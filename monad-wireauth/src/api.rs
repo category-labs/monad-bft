@@ -759,6 +759,10 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>, M: MetricNames> API<C, K, M> {
         self.state.has_any_session_by_public_key(public_key)
     }
 
+    pub fn has_initiating_session_by_public_key(&self, public_key: &monad_secp::PubKey) -> bool {
+        self.state.has_initiating_session_by_public_key(public_key)
+    }
+
     pub fn is_connected_socket_and_public_key(
         &self,
         socket_addr: &SocketAddr,

@@ -644,7 +644,7 @@ fn setup_node(
 
     let keypair_arc = Arc::new(keypair);
     let wireauth_config = monad_wireauth::Config::default();
-    let auth_protocol =
+    let udp_auth_protocol =
         monad_raptorcast::auth::WireAuthProtocol::new(wireauth_config, keypair_arc.clone());
 
     let mut raptorcast = RaptorCast::<
@@ -658,12 +658,14 @@ fn setup_node(
         create_raptorcast_config(keypair_arc),
         SecondaryRaptorCastModeConfig::None,
         tcp_socket,
+        None,
         Some(authenticated_socket),
         non_authenticated_socket,
         dataplane_control,
         Arc::new(std::sync::Mutex::new(pd)),
         Epoch(0),
-        auth_protocol,
+        udp_auth_protocol,
+        None,
     );
 
     raptorcast.exec(vec![RouterCommand::AddEpochValidatorSet {
