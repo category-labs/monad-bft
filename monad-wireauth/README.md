@@ -139,6 +139,13 @@ session_decrypt         time:   [166.11 ns 168.75 ns 171.20 ns]
 | `monad.wireauth.enqueued.cookie_reply` | cookie challenges added to outbound queue |
 | `monad.wireauth.enqueued.keepalive` | keepalive packets added to outbound queue |
 
+### initiator buffering
+
+| metric | description |
+|--------|-------------|
+| `monad.wireauth.initiator.buffered_messages` | messages buffered in initiator sessions during handshake |
+| `monad.wireauth.initiator.messages_sent_from_buffer` | buffered messages sent after session established |
+
 ## Configuration
 
 | parameter | type | default | description |
@@ -160,3 +167,5 @@ session_decrypt         time:   [166.11 ns 168.75 ns 171.20 ns]
 | `max_requests_per_ip` | usize | 10 | max handshake requests from single ip within rate limit window |
 | `ip_history_capacity` | usize | 1000000 | lru cache size for tracking handshake request timestamps per ip |
 | `psk` | [u8; 32] | zeros | optional pre-shared key mixed into handshake for additional auth |
+| `max_initiated_sessions` | usize | 1000 | max concurrent initiated sessions (handshakes in progress) |
+| `max_buffered_bytes_per_session` | usize | 131072 | max bytes of buffered messages per initiated session (128KB) |
