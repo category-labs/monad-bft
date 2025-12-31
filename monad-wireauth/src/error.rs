@@ -51,6 +51,12 @@ pub enum Error {
     #[error("invalid receiver index {index}")]
     InvalidReceiverIndex { index: SessionIndex },
 
+    #[error("handshake response source address mismatch: expected {expected}, got {actual}")]
+    HandshakeResponseAddressMismatch {
+        expected: SocketAddr,
+        actual: SocketAddr,
+    },
+
     #[error("timestamp replay detected: received timestamp is not newer than expected")]
     TimestampReplay,
 
@@ -62,6 +68,12 @@ pub enum Error {
         limit: u64,
         interval: std::time::Duration,
     },
+
+    #[error("too many initiated sessions: limit is {limit}")]
+    TooManyInitiatedSessions { limit: usize },
+
+    #[error("buffer limit exceeded: {size} bytes exceeds limit of {limit} bytes")]
+    BufferLimitExceeded { size: usize, limit: usize },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

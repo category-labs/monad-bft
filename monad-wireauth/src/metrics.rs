@@ -75,6 +75,9 @@ pub struct MetricNames {
 
     pub rate_limit_drop: &'static str,
     pub rate_limit_connect: &'static str,
+
+    pub initiator_buffered_messages: &'static str,
+    pub initiator_messages_sent_from_buffer: &'static str,
 }
 
 #[macro_export]
@@ -273,6 +276,17 @@ macro_rules! define_metric_names {
 
             rate_limit_drop: concat!("monad.wireauth.", $transport, ".rate_limit.drop"),
             rate_limit_connect: concat!("monad.wireauth.", $transport, ".rate_limit.connect"),
+
+            initiator_buffered_messages: concat!(
+                "monad.wireauth.",
+                $transport,
+                ".initiator.buffered_messages"
+            ),
+            initiator_messages_sent_from_buffer: concat!(
+                "monad.wireauth.",
+                $transport,
+                ".initiator.messages_sent_from_buffer"
+            ),
         };
     };
 }
