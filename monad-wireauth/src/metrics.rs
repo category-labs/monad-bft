@@ -95,6 +95,11 @@ pub const GAUGE_WIREAUTH_ENQUEUED_KEEPALIVE: &str = "monad.wireauth.enqueued.kee
 
 pub const GAUGE_WIREAUTH_RATE_LIMIT_DROP: &str = "monad.wireauth.rate_limit.drop";
 
+pub const GAUGE_WIREAUTH_INITIATOR_BUFFERED_MESSAGES: &str =
+    "monad.wireauth.initiator.buffered_messages";
+pub const GAUGE_WIREAUTH_INITIATOR_MESSAGES_SENT_FROM_BUFFER: &str =
+    "monad.wireauth.initiator.messages_sent_from_buffer";
+
 pub trait MetricNames {
     const STATE_INITIATING_SESSIONS: &'static str;
     const STATE_RESPONDING_SESSIONS: &'static str;
@@ -156,6 +161,9 @@ pub trait MetricNames {
     const ENQUEUED_KEEPALIVE: &'static str;
 
     const RATE_LIMIT_DROP: &'static str;
+
+    const INITIATOR_BUFFERED_MESSAGES: &'static str;
+    const INITIATOR_MESSAGES_SENT_FROM_BUFFER: &'static str;
 }
 
 #[macro_export]
@@ -328,6 +336,17 @@ macro_rules! impl_metric_names {
 
             const RATE_LIMIT_DROP: &'static str =
                 concat!("monad.wireauth.", $transport, ".rate_limit.drop");
+
+            const INITIATOR_BUFFERED_MESSAGES: &'static str = concat!(
+                "monad.wireauth.",
+                $transport,
+                ".initiator.buffered_messages"
+            );
+            const INITIATOR_MESSAGES_SENT_FROM_BUFFER: &'static str = concat!(
+                "monad.wireauth.",
+                $transport,
+                ".initiator.messages_sent_from_buffer"
+            );
         }
     };
 }
@@ -407,4 +426,8 @@ impl MetricNames for DefaultMetrics {
     const ENQUEUED_KEEPALIVE: &'static str = GAUGE_WIREAUTH_ENQUEUED_KEEPALIVE;
 
     const RATE_LIMIT_DROP: &'static str = GAUGE_WIREAUTH_RATE_LIMIT_DROP;
+
+    const INITIATOR_BUFFERED_MESSAGES: &'static str = GAUGE_WIREAUTH_INITIATOR_BUFFERED_MESSAGES;
+    const INITIATOR_MESSAGES_SENT_FROM_BUFFER: &'static str =
+        GAUGE_WIREAUTH_INITIATOR_MESSAGES_SENT_FROM_BUFFER;
 }

@@ -716,3 +716,131 @@ fn test_keepalive_reset_on_encrypt() {
         unexpected_packet
     );
 }
+
+#[test]
+fn test_message_buffering_during_handshake() {
+    init_tracing();
+    let (mut peer1, _, _, _) = create_manager();
+    let (mut peer2, peer2_pubkey, _, _) = create_manager();
+    let peer1_addr: SocketAddr = "127.0.0.1:8001".parse().unwrap();
+    let peer2_addr: SocketAddr = "127.0.0.1:8002".parse().unwrap();
+
+    peer1
+        .connect(peer2_pubkey, peer2_addr, DEFAULT_RETRY_ATTEMPTS)
+        .unwrap();
+
+    peer1
+        .buffer_message(&peer2_pubkey, bytes::Bytes::from_static(b"buffered1"))
+        .unwrap();
+    peer1
+        .buffer_message(&peer2_pubkey, bytes::Bytes::from_static(b"buffered2"))
+        .unwrap();
+    peer1
+        .buffer_message(&peer2_pubkey, bytes::Bytes::from_static(b"buffered3"))
+        .unwrap();
+
+    let init = collect::<HandshakeInitiation>(&mut peer1);
+    dispatch(&mut peer2, &init, peer1_addr);
+
+    let response = collect::<HandshakeResponse>(&mut peer2);
+    dispatch(&mut peer1, &response, peer2_addr);
+
+    let packet1 = peer1.next_packet().unwrap();
+    let decrypted1 = decrypt(&mut peer2, &packet1.1, peer1_addr);
+    assert_eq!(decrypted1, b"buffered1");
+
+    let packet2 = peer1.next_packet().unwrap();
+    let decrypted2 = decrypt(&mut peer2, &packet2.1, peer1_addr);
+    assert_eq!(decrypted2, b"buffered2");
+
+    let packet3 = peer1.next_packet().unwrap();
+    let decrypted3 = decrypt(&mut peer2, &packet3.1, peer1_addr);
+    assert_eq!(decrypted3, b"buffered3");
+
+    assert!(peer1.next_packet().is_none());
+}
+
+#[test]
+fn test_max_initiated_sessions_limit() {
+    init_tracing();
+    let config = Config {
+        max_initiated_sessions: 3,
+        ..Config::default()
+    };
+
+    let mut rng = rng();
+    let keypair = monad_secp::KeyPair::generate(&mut rng);
+    let context = TestContext::new();
+    let mut peer: API<TestContext, _, DefaultMetrics> = API::new(config, keypair, context);
+
+    for i in 0..3 {
+        let remote_keypair = monad_secp::KeyPair::generate(&mut rng);
+        let remote_pubkey = remote_keypair.pubkey();
+        let remote_addr: SocketAddr = format!("127.0.0.1:800{}", i).parse().unwrap();
+        peer.connect(remote_pubkey, remote_addr, DEFAULT_RETRY_ATTEMPTS)
+            .unwrap();
+    }
+
+    let extra_keypair = monad_secp::KeyPair::generate(&mut rng);
+    let extra_pubkey = extra_keypair.pubkey();
+    let extra_addr: SocketAddr = "127.0.0.1:9000".parse().unwrap();
+    let result = peer.connect(extra_pubkey, extra_addr, DEFAULT_RETRY_ATTEMPTS);
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(matches!(
+        err,
+        monad_wireauth::Error::TooManyInitiatedSessions { limit: 3 }
+    ));
+}
+
+#[test]
+fn test_buffer_limit_per_session() {
+    init_tracing();
+    let config = Config {
+        max_buffered_bytes_per_session: 100,
+        ..Config::default()
+    };
+
+    let mut rng = rng();
+    let keypair = monad_secp::KeyPair::generate(&mut rng);
+    let context = TestContext::new();
+    let mut peer: API<TestContext, _, DefaultMetrics> = API::new(config, keypair, context);
+
+    let remote_keypair = monad_secp::KeyPair::generate(&mut rng);
+    let remote_pubkey = remote_keypair.pubkey();
+    let remote_addr: SocketAddr = "127.0.0.1:8001".parse().unwrap();
+    peer.connect(remote_pubkey, remote_addr, DEFAULT_RETRY_ATTEMPTS)
+        .unwrap();
+
+    peer.buffer_message(&remote_pubkey, bytes::Bytes::from(vec![0u8; 50]))
+        .unwrap();
+
+    peer.buffer_message(&remote_pubkey, bytes::Bytes::from(vec![0u8; 40]))
+        .unwrap();
+
+    let result = peer.buffer_message(&remote_pubkey, bytes::Bytes::from(vec![0u8; 20]));
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(matches!(
+        err,
+        monad_wireauth::Error::BufferLimitExceeded {
+            size: 110,
+            limit: 100
+        }
+    ));
+}
+
+#[test]
+fn test_buffer_message_session_not_found() {
+    init_tracing();
+    let (mut peer, _, _, _) = create_manager();
+
+    let mut rng = rng();
+    let remote_keypair = monad_secp::KeyPair::generate(&mut rng);
+    let remote_pubkey = remote_keypair.pubkey();
+
+    let result = peer.buffer_message(&remote_pubkey, bytes::Bytes::from_static(b"test"));
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(matches!(err, monad_wireauth::Error::SessionNotFound));
+}
