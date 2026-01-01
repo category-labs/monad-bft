@@ -35,16 +35,31 @@ use tracing::{debug, enabled, trace, warn, Level};
 use zerocopy::FromBytes;
 
 use super::{
-    message_timeout, RecvTcpMsg, TcpControl, TcpControlMsg, TcpMsgHdr, TcpRateLimit, HEADER_MAGIC,
-    HEADER_VERSION, TCP_MESSAGE_LENGTH_LIMIT,
+    message_timeout, split_stream, RecvTcpMsg, TcpConnection, TcpControl, TcpMsgHdr, TcpRateLimit,
+    TcpReadHalf, TcpWriteHalf, HEADER_MAGIC, HEADER_VERSION, TCP_MESSAGE_LENGTH_LIMIT,
 };
 use crate::{
     addrlist::{Addrlist, Status},
     metrics::{ActiveConnectionGuard, DataplaneMetrics},
-    tcp::RateLimiter,
+    TcpSocketId,
 };
 
+pub(crate) type WriteHalfSender =
+    mpsc::UnboundedSender<(TcpSocketId, SocketAddr, TcpWriteHalf, TcpConnection)>;
+pub(crate) type ReadHalfReceiver =
+    mpsc::UnboundedReceiver<(SocketAddr, TcpReadHalf, TcpConnection)>;
+
 const HEADER_TIMEOUT: Duration = Duration::from_secs(10);
+
+#[derive(Clone)]
+pub(crate) struct RxContext {
+    pub(crate) socket_id: TcpSocketId,
+    pub(crate) rate_limit: TcpRateLimit,
+    pub(crate) tcp_control_map: TcpControl,
+    pub(crate) tcp_ingress_tx: mpsc::Sender<RecvTcpMsg>,
+    pub(crate) write_half_tx: WriteHalfSender,
+    pub(crate) metrics: DataplaneMetrics,
+}
 
 #[derive(Clone)]
 pub(crate) struct RxState {
@@ -159,11 +174,6 @@ enum ConnectionToken {
     },
 }
 
-struct ConnectionContext {
-    _token: ConnectionToken,
-    metrics: DataplaneMetrics,
-}
-
 impl Drop for ConnectionToken {
     fn drop(&mut self) {
         match self {
@@ -195,79 +205,113 @@ struct RxStateInner {
 }
 
 pub(crate) async fn task(
-    rate_limit: TcpRateLimit,
-    tcp_control_map: TcpControl,
+    context: RxContext,
     rx_state: RxState,
     tcp_listener: TcpListener,
-    tcp_ingress_tx: mpsc::Sender<RecvTcpMsg>,
+    mut read_half_rx: ReadHalfReceiver,
 ) {
     let mut conn_id: u64 = 0;
     loop {
-        match tcp_listener.accept().await {
-            Ok((tcp_stream, addr)) => match rx_state.apply_limits(addr.ip()) {
-                Ok(conn_state) => {
-                    spawn(task_connection(
-                        rate_limit.new_rate_limiter(),
-                        tcp_control_map.clone(),
-                        ConnectionContext {
-                            _token: conn_state,
-                            metrics: rx_state.metrics.clone(),
-                        },
-                        conn_id,
-                        addr,
-                        tcp_stream,
-                        tcp_ingress_tx.clone(),
-                    ));
+        select! {
+            accepted = tcp_listener.accept() => {
+                match accepted {
+                    Ok((tcp_stream, addr)) => match rx_state.apply_limits(addr.ip()) {
+                        Ok(conn_state) => {
+                            spawn(task_connection(
+                                context.clone(),
+                                conn_state,
+                                conn_id,
+                                addr,
+                                tcp_stream,
+                            ));
+                        }
+                        Err(()) => {
+                            debug!(
+                                conn_id,
+                                ?addr,
+                                "connection limit reached, rejecting tcp connection"
+                            );
+                        }
+                    },
+                    Err(err) => {
+                        context.metrics.tcp_receive_errors.inc();
+                        warn!(conn_id, ?err, "error accepting tcp connection");
+                    }
                 }
-                Err(()) => {
-                    debug!(
-                        conn_id,
-                        ?addr,
-                        "connection limit reached, rejecting tcp connection"
-                    );
-                }
-            },
-            Err(err) => {
-                rx_state.metrics.tcp_receive_errors.inc();
-                warn!(conn_id, ?err, "error accepting tcp connection");
+                conn_id += 1;
+            }
+            read_half = read_half_rx.recv() => {
+                let Some((addr, read_half, connection)) = read_half else {
+                    break;
+                };
+                trace!(conn_id, ?addr, "received read half from tx");
+
+                spawn(task_read(
+                    context.clone(),
+                    None,
+                    conn_id,
+                    addr,
+                    read_half,
+                    connection,
+                ));
+                conn_id += 1;
             }
         }
-
-        conn_id += 1;
     }
 }
 
 async fn task_connection(
-    rate_limiter: RateLimiter,
-    tcp_control_map: TcpControl,
-    connection: ConnectionContext,
+    context: RxContext,
+    _rx_state: ConnectionToken,
     conn_id: u64,
     addr: SocketAddr,
-    mut tcp_stream: TcpStream,
-    tcp_ingress_tx: mpsc::Sender<RecvTcpMsg>,
+    tcp_stream: TcpStream,
 ) {
-    let mut control_rx = tcp_control_map.register((addr.ip(), addr.port(), conn_id));
+    let (read_half, write_half) = split_stream(tcp_stream);
+    let connection = TcpConnection::new();
+
+    if let Err(err) =
+        context
+            .write_half_tx
+            .send((context.socket_id, addr, write_half, connection.clone()))
+    {
+        warn!(conn_id, ?addr, ?err, "failed to send write half to tx task");
+        return;
+    }
+
+    task_read(
+        context,
+        Some(_rx_state),
+        conn_id,
+        addr,
+        read_half,
+        connection,
+    )
+    .await;
+}
+
+async fn task_read(
+    context: RxContext,
+    _rx_state: Option<ConnectionToken>,
+    conn_id: u64,
+    addr: SocketAddr,
+    mut read_half: TcpReadHalf,
+    connection: TcpConnection,
+) {
+    let rate_limiter = context.rate_limit.new_rate_limiter();
+    let tcp_id = (addr.ip(), addr.port(), conn_id);
+    context.tcp_control_map.register(tcp_id, connection.clone());
     let mut message_id: u64 = 0;
     loop {
         select! {
             biased;
-            ctl = control_rx.recv() => {
-                match ctl {
-                    None => {
-                        break;
-                    }
-                    Some(TcpControlMsg::Disconnect) => {
-                        trace!(conn_id, ?addr, "received disconnect control message");
-                        break;
-                    }
-                }
-            },
-            msg = read_message(conn_id, addr, message_id, &mut tcp_stream, &connection.metrics) => {
+            _ = connection.disconnected() => break,
+            msg = read_message(conn_id, addr, message_id, &mut read_half, &context.metrics) => {
                 let Some(message) = msg else {
                     break;
                 };
                 if rate_limiter.check().is_err() {
-                    connection.metrics.tcp_connections_rate_limited.inc();
+                    context.metrics.tcp_connections_rate_limited.inc();
                     warn!(conn_id, ?addr, "rate limit exceeded");
                     break;
                 }
@@ -275,7 +319,7 @@ async fn task_connection(
                     src_addr: addr,
                     payload: message,
                 };
-                if let Err(err) = tcp_ingress_tx.send(recv_msg).await {
+                if let Err(err) = context.tcp_ingress_tx.send(recv_msg).await {
                     warn!(
                         conn_id,
                         ?addr,
@@ -289,7 +333,8 @@ async fn task_connection(
             }
         }
     }
-    tcp_control_map.unregister(&(addr.ip(), addr.port(), conn_id));
+    connection.disconnect();
+    context.tcp_control_map.unregister(&tcp_id);
     trace!(
         conn_id,
         ?addr,
@@ -301,7 +346,7 @@ async fn read_message(
     conn_id: u64,
     addr: SocketAddr,
     message_id: u64,
-    tcp_stream: &mut TcpStream,
+    read_half: &mut TcpReadHalf,
     metrics: &DataplaneMetrics,
 ) -> Option<Bytes> {
     let start_time = if enabled!(Level::DEBUG) {
@@ -312,12 +357,12 @@ async fn read_message(
 
     let header_bytes = BytesMut::with_capacity(std::mem::size_of::<TcpMsgHdr>());
 
-    let header = match timeout(HEADER_TIMEOUT, tcp_stream.read_exact(header_bytes)).await {
+    let header = match timeout(HEADER_TIMEOUT, read_half.read_exact(header_bytes)).await {
         Ok((ret, header_bytes)) => match ret {
             Ok(_len) => TcpMsgHdr::read_from_bytes(&header_bytes[..]).unwrap(),
             Err(err) => {
+                metrics.tcp_receive_errors.inc();
                 if message_id == 0 || err.kind() != ErrorKind::UnexpectedEof {
-                    metrics.tcp_receive_errors.inc();
                     debug!(
                         conn_id,
                         ?addr,
@@ -398,7 +443,7 @@ async fn read_message(
 
     let message = match timeout(
         message_timeout(message_length),
-        tcp_stream.read_exact(message),
+        read_half.read_exact(message),
     )
     .await
     {
