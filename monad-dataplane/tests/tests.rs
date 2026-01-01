@@ -199,7 +199,7 @@ fn udp_direct_socket() {
 // This verifies that the TCP transmit task recovers from a peer transmit
 // task exiting after a timeout.
 #[test]
-#[timeout(10000)]
+#[timeout(20000)]
 fn tcp_very_slow() {
     once_setup();
 

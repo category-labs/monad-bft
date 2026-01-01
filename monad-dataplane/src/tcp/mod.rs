@@ -61,16 +61,26 @@ impl TcpMsgHdr {
     }
 }
 
+const WRITE_HALF_CHANNEL_SIZE: usize = 128;
+const READ_HALF_CHANNEL_SIZE: usize = 128;
+
 pub(crate) fn spawn_tasks(
     cfg: TcpConfig,
     tcp_control_map: TcpControl,
     addrlist: Arc<Addrlist>,
     socket_configs: Vec<(TcpSocketId, SocketAddr, mpsc::Sender<RecvTcpMsg>)>,
-    tcp_egress_rx: mpsc::Receiver<(SocketAddr, TcpMsg)>,
+    tcp_egress_rx: mpsc::Receiver<(TcpSocketId, SocketAddr, TcpMsg)>,
 ) {
+    let (write_half_tx, write_half_rx) = mpsc::channel(WRITE_HALF_CHANNEL_SIZE);
+
+    let mut read_half_txs = BTreeMap::new();
+
     for (socket_id, socket_addr, ingress_tx) in socket_configs {
         let opts = ListenerOpts::new().reuse_addr(true);
         let tcp_listener = TcpListener::bind_with_config(socket_addr, &opts).unwrap();
+
+        let (read_half_tx, read_half_rx) = mpsc::channel(READ_HALF_CHANNEL_SIZE);
+        read_half_txs.insert(socket_id, read_half_tx);
 
         spawn(rx::task(
             cfg,
@@ -78,10 +88,12 @@ pub(crate) fn spawn_tasks(
             addrlist.clone(),
             tcp_listener,
             ingress_tx,
+            write_half_tx.clone(),
+            read_half_rx,
         ));
         trace!(?socket_id, ?socket_addr, "created tcp listener");
     }
-    spawn(tx::task(tcp_egress_rx));
+    spawn(tx::task(tcp_egress_rx, write_half_rx, read_half_txs));
 }
 
 // Minimum message receive/transmit speed in bytes per second.  Messages that are
@@ -196,11 +208,16 @@ mod tests {
     use std::{
         collections::HashMap,
         net::{IpAddr, Ipv4Addr},
+        num::NonZeroU32,
     };
 
+    use bytes::BytesMut;
+    use monoio::io::{AsyncReadRentExt, AsyncWriteRentExt, Splitable};
     use rstest::*;
+    use zerocopy::IntoBytes;
 
     use super::*;
+    use crate::{addrlist::Addrlist, TcpSocketId};
 
     #[fixture]
     fn tcp_control() -> TcpControl {
@@ -347,5 +364,168 @@ mod tests {
                 assert!(rx.try_recv().is_err());
             }
         }
+    }
+
+    async fn write_tcp_message(
+        write_half: &mut monoio::net::tcp::TcpOwnedWriteHalf,
+        payload: &[u8],
+    ) {
+        let header = TcpMsgHdr::new(payload.len() as u64);
+        let (ret, _) = write_half
+            .write_all(Box::<[u8]>::from(header.as_bytes()))
+            .await;
+        ret.unwrap();
+        let (ret, _) = write_half.write_all(payload.to_vec()).await;
+        ret.unwrap();
+    }
+
+    async fn read_tcp_message(read_half: &mut monoio::net::tcp::TcpOwnedReadHalf) -> bytes::Bytes {
+        let header_buf = BytesMut::with_capacity(std::mem::size_of::<TcpMsgHdr>());
+        let (ret, header_buf) = read_half.read_exact(header_buf).await;
+        ret.unwrap();
+        let header = TcpMsgHdr::read_from_bytes(&header_buf[..]).unwrap();
+        assert_eq!(header.magic.get(), HEADER_MAGIC);
+        assert_eq!(header.version.get(), HEADER_VERSION);
+
+        let msg_len = header.length.get() as usize;
+        let msg_buf = BytesMut::with_capacity(msg_len);
+        let (ret, msg_buf) = read_half.read_exact(msg_buf).await;
+        ret.unwrap();
+        msg_buf.freeze()
+    }
+
+    #[monoio::test(enable_timer = true)]
+    async fn test_outbound_connection_receives_messages() {
+        let server_listener = monoio::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let server_addr = server_listener.local_addr().unwrap();
+
+        let (tcp_egress_tx, tcp_egress_rx) = mpsc::channel(16);
+        let (tcp_ingress_tx, mut tcp_ingress_rx) = mpsc::channel(16);
+
+        let tcp_config = TcpConfig {
+            rate_limit: TcpRateLimit {
+                rps: NonZeroU32::new(1000).unwrap(),
+                rps_burst: NonZeroU32::new(100).unwrap(),
+            },
+            connections_limit: 100,
+            per_ip_connections_limit: 10,
+        };
+
+        let tcp_control = TcpControl::new();
+        let addrlist = Arc::new(Addrlist::new());
+
+        let listen_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let socket_configs = vec![(TcpSocketId::Raptorcast, listen_addr, tcp_ingress_tx)];
+
+        spawn_tasks(
+            tcp_config,
+            tcp_control,
+            addrlist,
+            socket_configs,
+            tcp_egress_rx,
+        );
+
+        let test_payload = b"hello from client";
+        tcp_egress_tx
+            .send((
+                TcpSocketId::Raptorcast,
+                server_addr,
+                TcpMsg {
+                    msg: bytes::Bytes::from_static(test_payload),
+                    completion: None,
+                },
+            ))
+            .await
+            .unwrap();
+
+        let (server_stream, _client_addr) = server_listener.accept().await.unwrap();
+        let (mut server_read, mut server_write) = server_stream.into_split();
+
+        let received = read_tcp_message(&mut server_read).await;
+        assert_eq!(&received[..], test_payload);
+
+        let response_payload = b"hello from server";
+        write_tcp_message(&mut server_write, response_payload).await;
+
+        let recv_msg =
+            monoio::time::timeout(std::time::Duration::from_secs(5), tcp_ingress_rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+
+        assert_eq!(&recv_msg.payload[..], response_payload);
+        assert_eq!(recv_msg.src_addr, server_addr);
+    }
+
+    #[monoio::test(enable_timer = true)]
+    async fn test_accepted_connection_can_send_messages() {
+        let (tcp_egress_tx, tcp_egress_rx) = mpsc::channel(16);
+        let (tcp_ingress_tx, mut tcp_ingress_rx) = mpsc::channel(16);
+
+        let tcp_config = TcpConfig {
+            rate_limit: TcpRateLimit {
+                rps: NonZeroU32::new(1000).unwrap(),
+                rps_burst: NonZeroU32::new(100).unwrap(),
+            },
+            connections_limit: 100,
+            per_ip_connections_limit: 10,
+        };
+
+        let tcp_control = TcpControl::new();
+        let addrlist = Arc::new(Addrlist::new());
+
+        let temp_listener = monoio::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let listen_addr = temp_listener.local_addr().unwrap();
+        drop(temp_listener);
+
+        let socket_configs = vec![(TcpSocketId::Raptorcast, listen_addr, tcp_ingress_tx)];
+
+        spawn_tasks(
+            tcp_config,
+            tcp_control,
+            addrlist,
+            socket_configs,
+            tcp_egress_rx,
+        );
+
+        monoio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let client_stream = monoio::net::TcpStream::connect(listen_addr).await.unwrap();
+        let client_addr = client_stream.local_addr().unwrap();
+        let (mut client_read, mut client_write) = client_stream.into_split();
+
+        let test_payload = b"hello from raw client";
+        write_tcp_message(&mut client_write, test_payload).await;
+
+        let recv_msg =
+            monoio::time::timeout(std::time::Duration::from_secs(5), tcp_ingress_rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+
+        assert_eq!(&recv_msg.payload[..], test_payload);
+        assert_eq!(recv_msg.src_addr, client_addr);
+
+        let response_payload = b"response to raw client";
+        tcp_egress_tx
+            .send((
+                TcpSocketId::Raptorcast,
+                client_addr,
+                TcpMsg {
+                    msg: bytes::Bytes::from_static(response_payload),
+                    completion: None,
+                },
+            ))
+            .await
+            .unwrap();
+
+        let received = monoio::time::timeout(
+            std::time::Duration::from_secs(5),
+            read_tcp_message(&mut client_read),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(&received[..], response_payload);
     }
 }

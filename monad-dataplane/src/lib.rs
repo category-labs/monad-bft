@@ -40,7 +40,7 @@ pub(crate) mod buffer_ext;
 pub mod tcp;
 pub mod udp;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum TcpSocketId {
     Raptorcast,
     AuthenticatedRaptorcast,
@@ -449,7 +449,7 @@ impl TcpSocketReader {
 pub struct TcpSocketWriter {
     socket_id: TcpSocketId,
     socket_addr: SocketAddr,
-    egress_tx: mpsc::Sender<(SocketAddr, TcpMsg)>,
+    egress_tx: mpsc::Sender<(TcpSocketId, SocketAddr, TcpMsg)>,
     msgs_dropped: Arc<AtomicUsize>,
 }
 
@@ -457,7 +457,7 @@ impl TcpSocketWriter {
     pub fn write(&self, addr: SocketAddr, msg: TcpMsg) {
         let msg_length = msg.msg.len();
 
-        match self.egress_tx.try_send((addr, msg)) {
+        match self.egress_tx.try_send((self.socket_id, addr, msg)) {
             Ok(()) => {}
             Err(TrySendError::Full(_)) => {
                 let total = self.msgs_dropped.fetch_add(1, Ordering::Relaxed);
@@ -701,7 +701,7 @@ fn create_udp_socket_handle(
 fn create_tcp_socket_handle(
     socket_id: TcpSocketId,
     socket_addr: SocketAddr,
-    egress_tx: mpsc::Sender<(SocketAddr, TcpMsg)>,
+    egress_tx: mpsc::Sender<(TcpSocketId, SocketAddr, TcpMsg)>,
 ) -> (
     TcpSocketHandle,
     (TcpSocketId, SocketAddr, mpsc::Sender<RecvTcpMsg>),
