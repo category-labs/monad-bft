@@ -40,7 +40,7 @@ pub(crate) mod buffer_ext;
 pub mod tcp;
 pub mod udp;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum TcpSocketId {
     Raptorcast,
     AuthenticatedRaptorcast,
@@ -533,7 +533,7 @@ impl TcpSocketReader {
 pub struct TcpSocketWriter {
     socket_id: TcpSocketId,
     socket_addr: SocketAddr,
-    egress_tx: mpsc::Sender<(SocketAddr, TcpMsg)>,
+    egress_tx: mpsc::Sender<(TcpSocketId, SocketAddr, TcpMsg)>,
     msgs_dropped: Arc<AtomicUsize>,
 }
 
@@ -541,7 +541,7 @@ impl TcpSocketWriter {
     pub fn write(&self, addr: SocketAddr, msg: TcpMsg) {
         let msg_length = msg.msg.len();
 
-        match self.egress_tx.try_send((addr, msg)) {
+        match self.egress_tx.try_send((self.socket_id, addr, msg)) {
             Ok(()) => {}
             Err(TrySendError::Full(_)) => {
                 let total = self.msgs_dropped.fetch_add(1, Ordering::Relaxed);
@@ -758,6 +758,66 @@ const TCP_INGRESS_CHANNEL_SIZE: usize = 1024;
 const TCP_EGRESS_CHANNEL_SIZE: usize = 1024;
 const UDP_INGRESS_CHANNEL_SIZE: usize = 12_800;
 const UDP_EGRESS_CHANNEL_SIZE: usize = 12_800;
+
+fn create_udp_socket_handle(
+    socket_id: UdpSocketId,
+    socket_addr: SocketAddr,
+    egress_tx: mpsc::Sender<UdpMsg>,
+) -> (
+    UdpSocketHandle,
+    (UdpSocketId, SocketAddr, mpsc::Sender<RecvUdpMsg>),
+) {
+    let (ingress_tx, ingress_rx) = mpsc::channel(UDP_INGRESS_CHANNEL_SIZE);
+    let msgs_dropped = Arc::new(AtomicUsize::new(0));
+
+    let reader = UdpSocketReader {
+        socket_id,
+        ingress_rx,
+    };
+
+    let writer = UdpSocketWriter {
+        socket_id,
+        socket_addr,
+        egress_tx,
+        msgs_dropped,
+    };
+
+    let handle = UdpSocketHandle { reader, writer };
+    let config = (socket_id, socket_addr, ingress_tx);
+    (handle, config)
+}
+
+fn create_tcp_socket_handle(
+    socket_id: TcpSocketId,
+    socket_addr: SocketAddr,
+    egress_tx: mpsc::Sender<(TcpSocketId, SocketAddr, TcpMsg)>,
+) -> (
+    TcpSocketHandle,
+    (TcpSocketId, SocketAddr, mpsc::Sender<RecvTcpMsg>),
+) {
+    let (ingress_tx, ingress_rx) = mpsc::channel(TCP_INGRESS_CHANNEL_SIZE);
+    let msgs_dropped = Arc::new(AtomicUsize::new(0));
+
+    let reader = TcpSocketReader {
+        socket_id,
+        ingress_rx,
+    };
+
+    let writer = TcpSocketWriter {
+        socket_id,
+        socket_addr,
+        egress_tx,
+        msgs_dropped,
+    };
+
+    let handle = TcpSocketHandle {
+        local_addr: socket_addr,
+        reader,
+        writer,
+    };
+    let config = (socket_id, socket_addr, ingress_tx);
+    (handle, config)
+}
 
 impl Dataplane {
     pub fn add_trusted(&self, addr: IpAddr) {

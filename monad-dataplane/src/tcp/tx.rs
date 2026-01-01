@@ -24,9 +24,12 @@ use std::{
 };
 
 use monoio::{
-    io::AsyncWriteRentExt,
-    net::TcpStream,
-    spawn,
+    io::{AsyncWriteRentExt, Splitable},
+    net::{
+        tcp::{TcpOwnedReadHalf, TcpOwnedWriteHalf},
+        TcpStream,
+    },
+    select, spawn,
     time::{sleep, timeout},
 };
 use tokio::sync::mpsc::{
@@ -37,6 +40,11 @@ use tracing::{debug, enabled, trace, warn, Level};
 use zerocopy::IntoBytes;
 
 use super::{message_timeout, TcpMsg, TcpMsgHdr, TCP_MESSAGE_LENGTH_LIMIT};
+use crate::TcpSocketId;
+
+pub(crate) type WriteHalfReceiver = mpsc::Receiver<(SocketAddr, RawFd, TcpOwnedWriteHalf)>;
+pub(crate) type ReadHalfSenders =
+    BTreeMap<TcpSocketId, mpsc::Sender<(SocketAddr, TcpOwnedReadHalf)>>;
 
 // These are per-peer limits.
 pub const QUEUED_MESSAGE_WARN_LIMIT: usize = 100;
@@ -44,7 +52,7 @@ pub const QUEUED_MESSAGE_WARN_LIMIT: usize = 100;
 pub const QUEUED_MESSAGE_LIMIT: usize = 150;
 // TODO add QUEUED_MESSAGE_BYTE_LIMIT
 
-pub const MSG_WAIT_TIMEOUT: Duration = Duration::from_secs(1);
+pub const MSG_WAIT_TIMEOUT: Duration = Duration::from_secs(4);
 
 const TCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const TCP_FAILURE_LINGER_WAIT: Duration = Duration::from_secs(1);
@@ -52,6 +60,11 @@ const TCP_FAILURE_LINGER_WAIT: Duration = Duration::from_secs(1);
 #[derive(Clone)]
 struct TxState {
     inner: Rc<RefCell<TxStateInner>>,
+}
+
+enum RegisterResult {
+    Existing,
+    New(mpsc::Receiver<TcpMsg>, TxStatePeerHandle),
 }
 
 impl TxState {
@@ -63,51 +76,58 @@ impl TxState {
         TxState { inner }
     }
 
-    fn push(
-        &self,
-        addr: &SocketAddr,
-        msg: TcpMsg,
-    ) -> Option<(mpsc::Receiver<TcpMsg>, TxStatePeerHandle)> {
-        let mut ret = None;
+    fn try_send(&self, addr: &SocketAddr, msg: TcpMsg) -> Option<TcpMsg> {
+        let inner_ref = self.inner.borrow();
 
+        if let Some(sender) = inner_ref.peer_channels.get(addr) {
+            match sender.try_send(msg) {
+                Ok(()) => {
+                    let message_count = sender.max_capacity() - sender.capacity();
+
+                    if message_count >= QUEUED_MESSAGE_WARN_LIMIT {
+                        warn!(
+                            ?addr,
+                            message_count, "excessive number of messages queued for peer"
+                        );
+                    }
+                    None
+                }
+                Err(TrySendError::Full(msg)) => {
+                    warn!(
+                        ?addr,
+                        message_count = sender.max_capacity(),
+                        "peer message limit reached, dropping message"
+                    );
+                    Some(msg)
+                }
+                Err(TrySendError::Closed(msg)) => {
+                    warn!(?addr, "channel unexpectedly closed");
+                    Some(msg)
+                }
+            }
+        } else {
+            Some(msg)
+        }
+    }
+
+    fn register(&self, addr: &SocketAddr) -> RegisterResult {
         let mut inner_ref = self.inner.borrow_mut();
 
-        let msg_sender = inner_ref.peer_channels.entry(*addr).or_insert_with(|| {
+        let mut ret = RegisterResult::Existing;
+
+        inner_ref.peer_channels.entry(*addr).or_insert_with(|| {
             let (sender, receiver) = mpsc::channel(QUEUED_MESSAGE_LIMIT);
 
-            ret = Some((
+            ret = RegisterResult::New(
                 receiver,
                 TxStatePeerHandle {
                     tx_state: self.clone(),
                     addr: *addr,
                 },
-            ));
+            );
 
             sender
         });
-
-        match msg_sender.try_send(msg) {
-            Ok(()) => {
-                let message_count = msg_sender.max_capacity() - msg_sender.capacity();
-
-                if message_count >= QUEUED_MESSAGE_WARN_LIMIT {
-                    warn!(
-                        ?addr,
-                        message_count, "excessive number of messages queued for peer"
-                    );
-                }
-            }
-            Err(TrySendError::Full(_)) => {
-                warn!(
-                    ?addr,
-                    message_count = msg_sender.max_capacity(),
-                    "peer message limit reached, dropping message"
-                );
-            }
-            Err(TrySendError::Closed(_)) => {
-                warn!(?addr, "channel unexpectedly closed");
-            }
-        }
 
         ret
     }
@@ -136,51 +156,124 @@ struct TxStateInner {
     peer_channels: BTreeMap<SocketAddr, mpsc::Sender<TcpMsg>>,
 }
 
-pub async fn task(mut tcp_egress_rx: mpsc::Receiver<(SocketAddr, TcpMsg)>) {
+pub async fn task(
+    mut tcp_egress_rx: mpsc::Receiver<(TcpSocketId, SocketAddr, TcpMsg)>,
+    mut write_half_rx: WriteHalfReceiver,
+    read_half_txs: ReadHalfSenders,
+) {
     let tx_state = TxState::new();
 
     let mut conn_id: u64 = 0;
 
-    while let Some((addr, msg)) = tcp_egress_rx.recv().await {
-        debug!(?addr, len = msg.msg.len(), "queueing up TCP message");
+    loop {
+        select! {
+            egress = tcp_egress_rx.recv() => {
+                let Some((socket_id, addr, msg)) = egress else {
+                    break;
+                };
+                debug!(?socket_id, ?addr, len = msg.msg.len(), "queueing up TCP message");
 
-        if let Some((msg_receiver, tx_state_peer_handle)) = tx_state.push(&addr, msg) {
-            let peer_count = tx_state.inner.borrow().peer_channels.len();
-            trace!(
-                conn_id,
-                ?addr,
-                total_tx_connections = peer_count,
-                "spawning tcp transmit connection task for peer"
-            );
+                if let RegisterResult::New(msg_receiver, tx_state_peer_handle) = tx_state.register(&addr) {
+                    let peer_count = tx_state.inner.borrow().peer_channels.len();
+                    trace!(
+                        conn_id,
+                        ?socket_id,
+                        ?addr,
+                        total_tx_connections = peer_count,
+                        "spawning tcp connect and send task for peer"
+                    );
 
-            spawn(task_connection(
-                conn_id,
-                addr,
-                msg_receiver,
-                tx_state_peer_handle,
-            ));
+                    let read_half_tx = read_half_txs.get(&socket_id).cloned();
 
-            conn_id += 1;
+                    spawn(task_connect_and_send(
+                        conn_id,
+                        addr,
+                        msg_receiver,
+                        tx_state_peer_handle,
+                        read_half_tx,
+                    ));
+
+                    conn_id += 1;
+                }
+
+                if tx_state.try_send(&addr, msg).is_some() {
+                    warn!(?addr, "failed to send message after register");
+                }
+            }
+            write_half = write_half_rx.recv() => {
+                let Some((addr, raw_fd, write_half)) = write_half else {
+                    break;
+                };
+                trace!(conn_id, ?addr, "received write half from rx");
+
+                if let RegisterResult::New(msg_receiver, tx_state_peer_handle) = tx_state.register(&addr) {
+                    let peer_count = tx_state.inner.borrow().peer_channels.len();
+                    trace!(
+                        conn_id,
+                        ?addr,
+                        total_tx_connections = peer_count,
+                        "spawning tcp send task for peer"
+                    );
+
+                    spawn(task_send(
+                        conn_id,
+                        addr,
+                        raw_fd,
+                        write_half,
+                        msg_receiver,
+                        tx_state_peer_handle,
+                    ));
+
+                    conn_id += 1;
+                } else {
+                    warn!(?addr, "received write half for already registered peer");
+                }
+            }
         }
     }
 }
 
-async fn task_connection(
+async fn task_send(
+    conn_id: u64,
+    addr: SocketAddr,
+    raw_fd: RawFd,
+    write_half: TcpOwnedWriteHalf,
+    mut msg_receiver: mpsc::Receiver<TcpMsg>,
+    _tx_state_peer_handle: TxStatePeerHandle,
+) {
+    trace!(conn_id, ?addr, "starting tcp send task");
+
+    if let Err(err) = send_messages(conn_id, &addr, raw_fd, write_half, &mut msg_receiver).await {
+        let mut additional_messages_dropped = 0;
+        while let Ok(_msg) = msg_receiver.try_recv() {
+            additional_messages_dropped += 1;
+        }
+
+        warn!(
+            conn_id,
+            ?addr,
+            ?err,
+            additional_messages_dropped,
+            "error transmitting tcp message"
+        );
+    }
+
+    trace!(conn_id, ?addr, "exiting tcp send task");
+}
+
+async fn task_connect_and_send(
     conn_id: u64,
     addr: SocketAddr,
     mut msg_receiver: mpsc::Receiver<TcpMsg>,
     _tx_state_peer_handle: TxStatePeerHandle,
+    read_half_tx: Option<mpsc::Sender<(SocketAddr, TcpOwnedReadHalf)>>,
 ) {
-    trace!(
-        conn_id,
-        ?addr,
-        "starting tcp transmit connection task for peer"
-    );
+    trace!(conn_id, ?addr, "starting tcp connect and send task");
 
-    if let Err(err) = connect_and_send_messages(conn_id, &addr, &mut msg_receiver).await {
+    if let Err(err) =
+        connect_and_send_messages(conn_id, &addr, &mut msg_receiver, read_half_tx).await
+    {
         let mut additional_messages_dropped = 0;
-
-        // Throw away (and fail) all remaining queued messages immediately.
         while let Ok(_msg) = msg_receiver.try_recv() {
             additional_messages_dropped += 1;
         }
@@ -193,30 +286,45 @@ async fn task_connection(
             "error transmitting tcp message"
         );
 
-        // Sleep to avoid reconnecting too soon.
         sleep(TCP_FAILURE_LINGER_WAIT).await;
     }
 
-    trace!(
-        conn_id,
-        ?addr,
-        "exiting tcp transmit connection task for peer"
-    );
+    trace!(conn_id, ?addr, "exiting tcp connect and send task");
 }
 
 async fn connect_and_send_messages(
     conn_id: u64,
     addr: &SocketAddr,
     msg_receiver: &mut mpsc::Receiver<TcpMsg>,
+    read_half_tx: Option<mpsc::Sender<(SocketAddr, TcpOwnedReadHalf)>>,
 ) -> Result<(), Error> {
-    let mut stream = timeout(TCP_CONNECT_TIMEOUT, TcpStream::connect(addr))
+    let stream = timeout(TCP_CONNECT_TIMEOUT, TcpStream::connect(addr))
         .await
         .unwrap_or_else(|_| Err(Error::from(ErrorKind::TimedOut)))
         .map_err(|err| Error::other(format!("error connecting to remote host: {}", err)))?;
 
     trace!(conn_id, ?addr, "outbound tcp connection established");
 
-    conn_cork(stream.as_raw_fd(), true);
+    let raw_fd = stream.as_raw_fd();
+    let (read_half, write_half) = stream.into_split();
+
+    if let Some(read_half_tx) = read_half_tx {
+        if let Err(err) = read_half_tx.send((*addr, read_half)).await {
+            warn!(conn_id, ?addr, ?err, "failed to send read half to rx task");
+        }
+    }
+
+    send_messages(conn_id, addr, raw_fd, write_half, msg_receiver).await
+}
+
+async fn send_messages(
+    conn_id: u64,
+    addr: &SocketAddr,
+    raw_fd: RawFd,
+    mut write_half: TcpOwnedWriteHalf,
+    msg_receiver: &mut mpsc::Receiver<TcpMsg>,
+) -> Result<(), Error> {
+    conn_cork(raw_fd, true);
 
     let mut message_id: u64 = 0;
 
@@ -225,12 +333,12 @@ async fn connect_and_send_messages(
             Ok(msg) => msg,
             Err(TryRecvError::Disconnected) => break,
             Err(TryRecvError::Empty) => {
-                conn_cork(stream.as_raw_fd(), false);
+                conn_cork(raw_fd, false);
 
                 match timeout(MSG_WAIT_TIMEOUT, msg_receiver.recv()).await {
                     Ok(None) => break,
                     Ok(Some(msg)) => {
-                        conn_cork(stream.as_raw_fd(), true);
+                        conn_cork(raw_fd, true);
                         msg
                     }
                     Err(_) => break,
@@ -264,7 +372,7 @@ async fn connect_and_send_messages(
 
         timeout(
             message_timeout(len),
-            send_message(conn_id, addr, &mut stream, message_id, msg),
+            send_message(conn_id, addr, raw_fd, &mut write_half, message_id, msg),
         )
         .await
         .unwrap_or_else(|_| Err(Error::from(ErrorKind::TimedOut)))
@@ -305,7 +413,8 @@ fn conn_cork(raw_fd: RawFd, cork_flag: bool) {
 async fn send_message(
     conn_id: u64,
     addr: &SocketAddr,
-    stream: &mut TcpStream,
+    raw_fd: RawFd,
+    write_half: &mut TcpOwnedWriteHalf,
     message_id: u64,
     message: TcpMsg,
 ) -> Result<(), Error> {
@@ -318,7 +427,7 @@ async fn send_message(
     );
 
     let start = if enabled!(Level::DEBUG) {
-        Some((Instant::now(), num_unacked_bytes(stream.as_raw_fd())))
+        Some((Instant::now(), num_unacked_bytes(raw_fd)))
     } else {
         None
     };
@@ -327,14 +436,16 @@ async fn send_message(
 
     let header = TcpMsgHdr::new(message_len as u64);
 
-    let (ret, _header) = stream.write_all(Box::<[u8]>::from(header.as_bytes())).await;
+    let (ret, _header) = write_half
+        .write_all(Box::<[u8]>::from(header.as_bytes()))
+        .await;
     ret?;
 
-    let (ret, _message) = stream.write_all(message.msg).await;
+    let (ret, _message) = write_half.write_all(message.msg).await;
     ret?;
 
     if let Some((start_time, start_unacked_bytes)) = start {
-        let end_unacked_bytes = num_unacked_bytes(stream.as_raw_fd());
+        let end_unacked_bytes = num_unacked_bytes(raw_fd);
 
         let duration = Instant::now() - start_time;
 
