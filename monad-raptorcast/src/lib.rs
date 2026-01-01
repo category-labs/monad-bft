@@ -39,8 +39,7 @@ use monad_crypto::{
 };
 use monad_dataplane::{
     udp::{DEFAULT_MTU, ETHERNET_SEGMENT_SIZE},
-    DataplaneBuilder, DataplaneControl, RecvTcpMsg, TcpMsg, TcpSocketReader, TcpSocketWriter,
-    UdpSocketHandle, UnicastMsg,
+    DataplaneBuilder, RecvTcpMsg, TcpMsg, UnicastMsg,
 };
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{
@@ -62,6 +61,7 @@ use util::{BuildTarget, EpochValidators, FullNodes, Group, ReBroadcastGroupMap, 
 
 use crate::{
     metrics::{GAUGE_RAPTORCAST_TOTAL_MESSAGES_RECEIVED, GAUGE_RAPTORCAST_TOTAL_RECV_ERRORS},
+    networking::{Control as _, DataplaneType, TcpMessageSink as _, TcpMessageSource as _},
     packet::RetrofitResult as _,
     raptorcast_secondary::{
         group_message::FullNodesGroupMessage, SecondaryOutboundMessage,
@@ -74,6 +74,7 @@ pub mod config;
 pub mod decoding;
 pub mod message;
 pub mod metrics;
+pub mod networking;
 pub mod packet;
 pub mod raptorcast_secondary;
 pub mod udp;
@@ -89,13 +90,14 @@ pub const AUTHENTICATED_RAPTORCAST_SOCKET: &str = "authenticated_raptorcast";
 pub(crate) type OwnedMessageBuilder<ST, PD> =
     packet::MessageBuilder<'static, ST, Arc<Mutex<PeerDiscoveryDriver<PD>>>>;
 
-pub struct RaptorCast<ST, M, OM, SE, PD, AP>
+pub struct RaptorCast<ST, M, OM, SE, PD, AP, DP>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Decodable,
     OM: Encodable + Into<M> + Clone,
     PD: PeerDiscoveryAlgo<SignatureType = ST>,
     AP: auth::AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
+    DP: DataplaneType,
 {
     signing_key: Arc<ST::KeyPairType>,
     is_dynamic_fullnode: bool,
@@ -112,12 +114,12 @@ where
     message_builder: OwnedMessageBuilder<ST, PD>,
     secondary_message_builder: Option<OwnedMessageBuilder<ST, PD>>,
 
-    tcp_reader: TcpSocketReader,
-    tcp_writer: TcpSocketWriter,
-    dual_socket: auth::DualSocketHandle<AP>,
-    dataplane_control: DataplaneControl,
-    pending_events: VecDeque<RaptorCastEvent<M::Event, ST>>,
+    tcp_reader: DP::TcpMessageSource,
+    tcp_writer: DP::TcpMessageSink,
+    dual_socket: auth::DualSocketHandle<AP, DP::UdpMessageEndpoint>,
+    dataplane_control: DP::Control,
 
+    pending_events: VecDeque<RaptorCastEvent<M::Event, ST>>,
     channel_to_secondary: Option<UnboundedSender<FullNodesGroupMessage<ST>>>,
     channel_from_secondary: Option<UnboundedReceiver<Group<ST>>>,
     channel_from_secondary_outbound: Option<UnboundedReceiver<SecondaryOutboundMessage<ST>>>,
@@ -139,23 +141,24 @@ pub enum RaptorCastEvent<E, ST: CertificateSignatureRecoverable> {
     SecondaryRaptorcastPeersUpdate(Round, Vec<NodeId<CertificateSignaturePubKey<ST>>>),
 }
 
-impl<ST, M, OM, SE, PD, AP> RaptorCast<ST, M, OM, SE, PD, AP>
+impl<ST, M, OM, SE, PD, AP, DP> RaptorCast<ST, M, OM, SE, PD, AP, DP>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Decodable,
     OM: Encodable + Into<M> + Clone,
     PD: PeerDiscoveryAlgo<SignatureType = ST>,
     AP: auth::AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
+    DP: DataplaneType,
 {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         config: config::RaptorCastConfig<ST>,
         secondary_mode: SecondaryRaptorCastModeConfig,
-        tcp_reader: TcpSocketReader,
-        tcp_writer: TcpSocketWriter,
-        authenticated_socket: Option<UdpSocketHandle>,
-        non_authenticated_socket: UdpSocketHandle,
-        control: DataplaneControl,
+        tcp_reader: DP::TcpMessageSource,
+        tcp_writer: DP::TcpMessageSink,
+        authenticated_socket: Option<DP::UdpMessageEndpoint>,
+        non_authenticated_socket: DP::UdpMessageEndpoint,
+        control: DP::Control,
         peer_discovery_driver: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
         current_epoch: Epoch,
         auth_protocol: AP,
@@ -532,6 +535,7 @@ pub fn new_defaulted_raptorcast_for_tests<ST, M, OM, SE>(
     SE,
     NopDiscovery<ST>,
     auth::NoopAuthProtocol<CertificateSignaturePubKey<ST>>,
+    networking::Dataplane,
 >
 where
     ST: CertificateSignatureRecoverable,
@@ -591,7 +595,7 @@ where
     let pd = PeerDiscoveryDriver::new(peer_discovery_builder);
     let shared_pd = Arc::new(Mutex::new(pd));
     let auth_protocol = auth::NoopAuthProtocol::new();
-    RaptorCast::<ST, M, OM, SE, NopDiscovery<ST>, _>::new(
+    RaptorCast::<ST, M, OM, SE, NopDiscovery<ST>, _, _>::new(
         config,
         SecondaryRaptorCastModeConfig::None,
         tcp_reader,
@@ -609,7 +613,7 @@ pub fn new_wireauth_raptorcast_for_tests<ST, M, OM, SE>(
     local_addr: SocketAddr,
     known_addresses: HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddrV4>,
     shared_key: Arc<ST::KeyPairType>,
-) -> RaptorCast<ST, M, OM, SE, NopDiscovery<ST>, auth::WireAuthProtocol>
+) -> RaptorCast<ST, M, OM, SE, NopDiscovery<ST>, auth::WireAuthProtocol, networking::Dataplane>
 where
     ST: CertificateSignatureRecoverable<KeyPairType = monad_secp::KeyPair>,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Decodable,
@@ -669,7 +673,7 @@ where
     let shared_pd = Arc::new(Mutex::new(pd));
     let wireauth_config = monad_wireauth::Config::default();
     let auth_protocol = auth::WireAuthProtocol::new(wireauth_config, shared_key);
-    RaptorCast::<ST, M, OM, SE, NopDiscovery<ST>, _>::new(
+    RaptorCast::<ST, M, OM, SE, NopDiscovery<ST>, _, _>::new(
         config,
         SecondaryRaptorCastModeConfig::None,
         tcp_reader,
@@ -683,13 +687,14 @@ where
     )
 }
 
-impl<ST, M, OM, SE, PD, AP> Executor for RaptorCast<ST, M, OM, SE, PD, AP>
+impl<ST, M, OM, SE, PD, AP, DP> Executor for RaptorCast<ST, M, OM, SE, PD, AP, DP>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Decodable,
     OM: Encodable + Into<M> + Clone,
     PD: PeerDiscoveryAlgo<SignatureType = ST>,
     AP: auth::AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
+    DP: DataplaneType,
 {
     type Command = RouterCommand<ST, OM>;
 
@@ -921,7 +926,7 @@ fn iter_ips<'a, ST: CertificateSignatureRecoverable, PD: PeerDiscoveryAlgo<Signa
         .map(|socket| socket.ip())
 }
 
-impl<ST, M, OM, E, PD, AP> Stream for RaptorCast<ST, M, OM, E, PD, AP>
+impl<ST, M, OM, E, PD, AP, DP> Stream for RaptorCast<ST, M, OM, E, PD, AP, DP>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Decodable,
@@ -929,6 +934,7 @@ where
     E: From<RaptorCastEvent<M::Event, ST>>,
     PD: PeerDiscoveryAlgo<SignatureType = ST>,
     AP: auth::AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
+    DP: DataplaneType,
     PeerDiscoveryDriver<PD>: Unpin,
     Self: Unpin,
 {
@@ -1159,7 +1165,7 @@ where
 
         {
             let send_peer_disc_msg =
-                |this: &mut RaptorCast<ST, M, OM, E, PD, AP>,
+                |this: &mut RaptorCast<ST, M, OM, E, PD, AP, DP>,
                  target: NodeId<CertificateSignaturePubKey<ST>>,
                  target_name_record: Option<NameRecord>,
                  message: PeerDiscoveryMessage<ST>| {
@@ -1327,8 +1333,8 @@ where
     }
 }
 
-fn send<ST, PD, AP>(
-    dual_socket: &mut auth::DualSocketHandle<AP>,
+fn send<ST, PD, AP, UE>(
+    dual_socket: &mut auth::DualSocketHandle<AP, UE>,
     peer_discovery_driver: &Arc<Mutex<PeerDiscoveryDriver<PD>>>,
     message_builder: &mut OwnedMessageBuilder<ST, PD>,
     message: &Bytes,
@@ -1339,6 +1345,7 @@ fn send<ST, PD, AP>(
     ST: CertificateSignatureRecoverable,
     PD: PeerDiscoveryAlgo<SignatureType = ST>,
     AP: auth::AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
+    UE: networking::UdpMessageEndpoint,
 {
     {
         let dual_socket_cell = std::cell::RefCell::new(&mut *dual_socket);
@@ -1358,8 +1365,8 @@ fn send<ST, PD, AP>(
     ensure_authenticated_sessions(dual_socket, peer_discovery_driver, build_target.iter());
 }
 
-fn send_with_record<ST, PD, AP>(
-    dual_socket: &mut auth::DualSocketHandle<AP>,
+fn send_with_record<ST, PD, AP, UE>(
+    dual_socket: &mut auth::DualSocketHandle<AP, UE>,
     peer_discovery_driver: &Arc<Mutex<PeerDiscoveryDriver<PD>>>,
     message_builder: &mut OwnedMessageBuilder<ST, PD>,
     message: &Bytes,
@@ -1370,13 +1377,14 @@ fn send_with_record<ST, PD, AP>(
     ST: CertificateSignatureRecoverable,
     PD: PeerDiscoveryAlgo<SignatureType = ST>,
     AP: auth::AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
+    UE: networking::UdpMessageEndpoint,
 {
     let build_target: BuildTarget<'_, ST> = BuildTarget::PointToPoint(target);
     let should_authenticate = name_record.authenticated_udp_socket().is_some();
 
     {
         let dual_socket_cell = std::cell::RefCell::new(&mut *dual_socket);
-        let lookup = NameRecordLookup::<ST, AP> {
+        let lookup = NameRecordLookup::<ST, AP, UE> {
             target: *target,
             name_record,
             dual_socket: &dual_socket_cell,
@@ -1398,8 +1406,8 @@ fn send_with_record<ST, PD, AP>(
     }
 }
 
-fn rebroadcast_packet<ST, PD, AP>(
-    dual_socket: &mut auth::DualSocketHandle<AP>,
+fn rebroadcast_packet<ST, PD, AP, UE>(
+    dual_socket: &mut auth::DualSocketHandle<AP, UE>,
     peer_discovery_driver: &Arc<Mutex<PeerDiscoveryDriver<PD>>>,
     target: &NodeId<CertificateSignaturePubKey<ST>>,
     payload: Bytes,
@@ -1408,6 +1416,7 @@ fn rebroadcast_packet<ST, PD, AP>(
     ST: CertificateSignatureRecoverable,
     PD: PeerDiscoveryAlgo<SignatureType = ST>,
     AP: auth::AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
+    UE: networking::UdpMessageEndpoint,
 {
     // if the packet was created by non-upgraded node we won't be able to fit auth header
     let fits_with_auth_header =
@@ -1446,14 +1455,15 @@ fn rebroadcast_packet<ST, PD, AP>(
     ensure_authenticated_sessions(dual_socket, peer_discovery_driver, std::iter::once(target));
 }
 
-fn ensure_authenticated_sessions<'a, ST, PD, AP>(
-    dual_socket: &mut auth::DualSocketHandle<AP>,
+fn ensure_authenticated_sessions<'a, ST, PD, AP, UE>(
+    dual_socket: &mut auth::DualSocketHandle<AP, UE>,
     peer_discovery_driver: &Arc<Mutex<PeerDiscoveryDriver<PD>>>,
     targets: impl Iterator<Item = &'a NodeId<CertificateSignaturePubKey<ST>>>,
 ) where
     ST: CertificateSignatureRecoverable,
     PD: PeerDiscoveryAlgo<SignatureType = ST>,
     AP: auth::AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
+    UE: networking::UdpMessageEndpoint,
 {
     let pd_driver = peer_discovery_driver.lock().unwrap();
 
@@ -1486,15 +1496,16 @@ fn ensure_authenticated_sessions<'a, ST, PD, AP>(
     dual_socket.flush();
 }
 
-impl<ST, PD, AP> packet::PeerAddrLookup<CertificateSignaturePubKey<ST>>
+impl<ST, PD, AP, UE> packet::PeerAddrLookup<CertificateSignaturePubKey<ST>>
     for (
         &Arc<Mutex<PeerDiscoveryDriver<PD>>>,
-        &std::cell::RefCell<&mut auth::DualSocketHandle<AP>>,
+        &std::cell::RefCell<&mut auth::DualSocketHandle<AP, UE>>,
     )
 where
     ST: CertificateSignatureRecoverable,
     PD: PeerDiscoveryAlgo<SignatureType = ST>,
     AP: auth::AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
+    UE: networking::UdpMessageEndpoint,
 {
     fn lookup(&self, node_id: &NodeId<CertificateSignaturePubKey<ST>>) -> Option<SocketAddr> {
         let (discovery, auth_socket) = self;
@@ -1510,20 +1521,23 @@ where
     }
 }
 
-struct NameRecordLookup<'a, ST, AP>
+struct NameRecordLookup<'a, ST, AP, UE>
 where
     ST: CertificateSignatureRecoverable,
     AP: auth::AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
+    UE: networking::UdpMessageEndpoint,
 {
     pub target: NodeId<CertificateSignaturePubKey<ST>>,
     pub name_record: &'a NameRecord,
-    pub dual_socket: &'a std::cell::RefCell<&'a mut auth::DualSocketHandle<AP>>,
+    pub dual_socket: &'a std::cell::RefCell<&'a mut auth::DualSocketHandle<AP, UE>>,
 }
 
-impl<ST, AP> packet::PeerAddrLookup<CertificateSignaturePubKey<ST>> for NameRecordLookup<'_, ST, AP>
+impl<ST, AP, UE> packet::PeerAddrLookup<CertificateSignaturePubKey<ST>>
+    for NameRecordLookup<'_, ST, AP, UE>
 where
     ST: CertificateSignatureRecoverable,
     AP: auth::AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
+    UE: networking::UdpMessageEndpoint,
 {
     fn lookup(&self, node_id: &NodeId<CertificateSignaturePubKey<ST>>) -> Option<SocketAddr> {
         if *node_id != self.target {

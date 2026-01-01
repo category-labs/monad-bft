@@ -22,12 +22,14 @@ use std::{
 };
 
 use bytes::{Bytes, BytesMut};
-use monad_dataplane::{UdpSocketHandle, UnicastMsg};
+use monad_dataplane::UnicastMsg;
 use monad_executor::{ExecutorMetrics, ExecutorMetricsChain};
 use monad_types::UdpPriority;
 use tokio::time::Sleep;
 use tracing::{debug, trace, warn};
 use zerocopy::IntoBytes;
+
+use crate::networking::UdpMessageEndpoint;
 
 #[derive(Clone)]
 pub struct AuthRecvMsg<P> {
@@ -47,22 +49,24 @@ use super::{
     protocol::AuthenticationProtocol,
 };
 
-pub struct DualSocketHandle<AP>
+pub struct DualSocketHandle<AP, UE>
 where
     AP: AuthenticationProtocol,
+    UE: UdpMessageEndpoint,
 {
-    authenticated: Option<AuthenticatedSocketHandle<AP>>,
-    non_authenticated: UdpSocketHandle,
+    authenticated: Option<AuthenticatedSocketHandle<AP, UE>>,
+    non_authenticated: UE,
     metrics: ExecutorMetrics,
 }
 
-impl<AP> DualSocketHandle<AP>
+impl<AP, UE> DualSocketHandle<AP, UE>
 where
     AP: AuthenticationProtocol,
+    UE: UdpMessageEndpoint,
 {
     pub fn new(
-        authenticated: Option<AuthenticatedSocketHandle<AP>>,
-        non_authenticated: UdpSocketHandle,
+        authenticated: Option<AuthenticatedSocketHandle<AP, UE>>,
+        non_authenticated: UE,
     ) -> Self {
         Self {
             authenticated,
@@ -218,21 +222,23 @@ where
     }
 }
 
-pub struct AuthenticatedSocketHandle<AP>
+pub struct AuthenticatedSocketHandle<AP, UE>
 where
     AP: AuthenticationProtocol,
+    UE: UdpMessageEndpoint,
 {
-    socket: UdpSocketHandle,
+    socket: UE,
     auth_protocol: AP,
     auth_timer: Option<(Pin<Box<Sleep>>, Instant)>,
 }
 
-impl<AP> AuthenticatedSocketHandle<AP>
+impl<AP, UE> AuthenticatedSocketHandle<AP, UE>
 where
     AP: AuthenticationProtocol,
     AP::PublicKey: Clone,
+    UE: UdpMessageEndpoint,
 {
-    pub fn new(socket: UdpSocketHandle, auth_protocol: AP) -> Self {
+    pub fn new(socket: UE, auth_protocol: AP) -> Self {
         Self {
             socket,
             auth_protocol,
@@ -449,7 +455,7 @@ mod tests {
     }
 
     struct PeerNode {
-        socket: DualSocketHandle<WireAuthProtocol>,
+        socket: DualSocketHandle<WireAuthProtocol, monad_dataplane::UdpSocketHandle>,
         auth_addr: SocketAddr,
         public_key: monad_secp::PubKey,
         _tcp_socket: monad_dataplane::TcpSocketHandle,
