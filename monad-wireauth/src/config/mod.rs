@@ -60,6 +60,8 @@ pub struct Config {
     pub max_initiated_sessions: usize,
     /// max bytes of buffered messages per initiated session
     pub max_buffered_bytes_per_session: usize,
+    /// idle time (without useful data) before session is garbage collected
+    pub gc_idle_timeout: Duration,
 }
 
 impl Default for Config {
@@ -84,6 +86,7 @@ impl Default for Config {
             psk: Zeroizing::new([0u8; 32]),
             max_initiated_sessions: 1000,
             max_buffered_bytes_per_session: 128 * 1024,
+            gc_idle_timeout: Duration::from_secs(120),
         }
     }
 }
