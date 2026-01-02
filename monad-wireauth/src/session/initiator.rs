@@ -142,6 +142,8 @@ impl InitiatorState {
         );
         self.common
             .set_max_session_duration(duration_since_start, config.max_session_duration);
+        self.common
+            .reset_gc_deadline(duration_since_start, config.gc_idle_timeout);
 
         let transport = TransportState::new(
             validated_response.remote_index,

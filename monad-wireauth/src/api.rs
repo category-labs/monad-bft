@@ -161,27 +161,39 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
         let duration_since_start = self.context.duration_since_start();
 
         self.filter.tick(duration_since_start);
+        let max_expired_timers_per_tick = self.config.max_expired_timers_per_tick;
 
-        let expired_timers: Vec<(Duration, SessionIndex)> = self
+        let has_expired_timer = self
             .timers
-            .range(..=(duration_since_start, SessionIndex::MAX))
-            .copied()
-            .collect();
-
+            .first()
+            .is_some_and(|&(deadline, _)| deadline <= duration_since_start);
         if let Some(last_tick) = self.last_tick {
             let checked_duration = duration_since_start.saturating_sub(last_tick);
             trace!(
                 checked_duration_ms = checked_duration.as_millis(),
-                expired_timers = expired_timers.len(),
+                has_expired_timer,
+                timers_size = self.timers.len(),
                 "tick"
             );
         } else {
-            trace!(expired_timers = expired_timers.len(), "tick");
+            trace!(has_expired_timer, timers_size = self.timers.len(), "tick");
         }
 
-        for (duration, session_id) in expired_timers {
-            self.timers.remove(&(duration, session_id));
+        let mut processed_timers = 0usize;
+
+        while processed_timers < max_expired_timers_per_tick {
+            let Some((deadline, _)) = self.timers.first().copied() else {
+                break;
+            };
+            if deadline > duration_since_start {
+                break;
+            }
+            let (duration, session_id) = self
+                .timers
+                .pop_first()
+                .expect("timer disappeared after checking it exists");
             self.metrics[self.metric_names.state_timers_size] = self.timers.len() as u64;
+            processed_timers += 1;
 
             if let Some(elapsed) = duration_since_start.checked_sub(duration) {
                 let elapsed_ms = elapsed.as_millis();
