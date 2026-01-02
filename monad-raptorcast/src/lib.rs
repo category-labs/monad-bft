@@ -144,7 +144,7 @@ where
         config: config::RaptorCastConfig<ST>,
         secondary_mode: SecondaryRaptorCastModeConfig,
         non_authenticated_tcp_socket: TcpSocketHandle,
-        authenticated_tcp_socket: Option<(TcpSocketHandle, AP)>,
+        authenticated_tcp_socket: Option<TcpSocketHandle>,
         authenticated_udp_socket: Option<UdpSocketHandle>,
         non_authenticated_udp_socket: UdpSocketHandle,
         control: DataplaneControl,
@@ -162,7 +162,7 @@ where
         let authenticated_tcp_handle =
             authenticated_tcp_socket
                 .zip(tcp_auth_protocol)
-                .map(|((socket, _), protocol)| {
+                .map(|(socket, protocol)| {
                     let (reader, writer) = socket.split();
                     auth::AuthenticatedTcpSocketHandle::new(reader, writer, protocol)
                 });

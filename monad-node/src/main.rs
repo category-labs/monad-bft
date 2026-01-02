@@ -576,9 +576,16 @@ where
     if let Some(auth_addr) = authenticated_udp_bind_address {
         udp_sockets.push((UdpSocketId::AuthenticatedRaptorcast, auth_addr));
     }
+    let mut tcp_sockets: Vec<(TcpSocketId, std::net::SocketAddr)> =
+        vec![(TcpSocketId::Raptorcast, bind_address)];
+    if let Some(auth_tcp_port) = network_config.authenticated_tcp_bind_address_port {
+        let auth_tcp_addr =
+            SocketAddr::new(IpAddr::V4(network_config.bind_address_host), auth_tcp_port);
+        tcp_sockets.push((TcpSocketId::AuthenticatedRaptorcast, auth_tcp_addr));
+    }
     dp_builder = dp_builder
         .with_udp_sockets(udp_sockets)
-        .with_tcp_sockets([(TcpSocketId::Raptorcast, bind_address)]);
+        .with_tcp_sockets(tcp_sockets);
 
     // UDP auth port in peer discovery config and network config should be set and unset simultaneously
     assert_eq!(
@@ -702,8 +709,11 @@ where
 
     let shared_key = Arc::new(identity);
     let wireauth_config = monad_wireauth::Config::default();
-    let auth_protocol =
-        monad_raptorcast::auth::WireAuthProtocol::new(wireauth_config, shared_key.clone());
+    let udp_auth_protocol =
+        monad_raptorcast::auth::WireAuthProtocol::new(wireauth_config.clone(), shared_key.clone());
+    let tcp_auth_protocol = network_config.authenticated_tcp_bind_address_port.map(|_| {
+        monad_raptorcast::auth::WireAuthProtocol::new(wireauth_config, shared_key.clone())
+    });
 
     MultiRouter::new(
         self_id,
@@ -725,7 +735,8 @@ where
         peer_discovery_builder,
         current_epoch,
         epoch_validators,
-        auth_protocol,
+        udp_auth_protocol,
+        tcp_auth_protocol,
     )
 }
 
