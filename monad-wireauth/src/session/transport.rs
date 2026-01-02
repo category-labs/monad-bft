@@ -76,6 +76,11 @@ impl TransportState {
 
         self.send_nonce += 1;
 
+        if !plaintext.is_empty() {
+            self.common
+                .reset_gc_deadline(duration_since_start, config.gc_idle_timeout);
+        }
+
         let keepalive_timer = self.common.reset_keepalive(
             duration_since_start,
             super::common::add_jitter(rng, config.keepalive_interval, config.keepalive_jitter),
@@ -117,6 +122,11 @@ impl TransportState {
         .map_err(SessionError::InvalidMac)?;
 
         self.replay_filter.update(counter);
+
+        if !data_packet.data().is_empty() {
+            self.common
+                .reset_gc_deadline(duration_since_start, config.gc_idle_timeout);
+        }
 
         let session_timer = self
             .common
@@ -219,6 +229,24 @@ impl TransportState {
             let (terminated_event, _) = self.common.handle_session_timeout();
             terminated = Some(terminated_event);
             rekey = None;
+        }
+
+        let gc_expired = self
+            .common
+            .gc_deadline
+            .is_some_and(|deadline| deadline <= duration_since_start);
+        if gc_expired {
+            self.common.clear_gc_deadline();
+
+            debug!(
+                remote_addr = ?self.common.remote_addr,
+                "gc timer expired (no useful data)"
+            );
+
+            terminated = Some(TerminatedEvent {
+                remote_public_key: self.common.remote_public_key,
+                remote_addr: self.common.remote_addr,
+            });
         }
 
         let next_timer = self.common.get_next_deadline();
