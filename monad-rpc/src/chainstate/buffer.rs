@@ -50,6 +50,8 @@ pub struct ChainStateBuffer {
     transactions: Arc<DashMap<FixedData<32>, TxLoc>>,
     // Ring buffer holding SeqNums
     ring: Arc<Mutex<VecDeque<u64>>>,
+    // The latest proposed block's SeqNum
+    proposed: Arc<AtomicU64>,
     // The latest voted block's SeqNum
     voted: Arc<AtomicU64>,
     // The latest finalized block's SeqNum
@@ -65,6 +67,7 @@ impl ChainStateBuffer {
             by_hash: Arc::new(DashMap::new()),
             transactions: Arc::new(DashMap::new()),
             ring: Arc::new(Mutex::new(VecDeque::with_capacity(capacity))),
+            proposed: Arc::new(AtomicU64::new(0)),
             voted: Arc::new(AtomicU64::new(0)),
             finalized: Arc::new(AtomicU64::new(0)),
             capacity,
@@ -77,10 +80,21 @@ impl ChainStateBuffer {
             _ => return,
         };
 
-        if block_event.commit_state != BlockCommitState::Voted {
-            if block_event.commit_state == BlockCommitState::Finalized {
-                let height = block_event.data.header.number;
-                self.finalized.fetch_max(height, Ordering::SeqCst);
+        if block_event.commit_state != BlockCommitState::Proposed {
+            match block_event.commit_state {
+                BlockCommitState::Finalized => {
+                    let height = block_event.data.header.number;
+                    self.finalized.fetch_max(height, Ordering::SeqCst);
+                }
+                BlockCommitState::Voted => {
+                    let height = block_event.data.header.number;
+                    let voted_block_height = self.voted.fetch_max(height, Ordering::SeqCst);
+
+                    if voted_block_height >= height {
+                        warn!(?voted_block_height, event_block_height = height, "ChainStateBuffer received voted block event with lower height than existing voted block height");
+                    }
+                }
+                _ => {}
             }
             return;
         }
@@ -130,12 +144,7 @@ impl ChainStateBuffer {
             }
         }
 
-        let voted_block_height = self.voted.fetch_max(block_height, Ordering::SeqCst);
-
-        if voted_block_height >= block_height {
-            warn!(?voted_block_height, event_block_height = block_height, "ChainStateBuffer received voted block event with lower height than existing voted block height");
-            return;
-        }
+        self.proposed.fetch_max(block_height, Ordering::SeqCst);
 
         let mut ring = self.ring.lock().await;
         ring.push_front(block_height);
@@ -202,6 +211,10 @@ impl ChainStateBuffer {
         }
     }
 
+    pub fn get_latest_proposed_block_num(&self) -> u64 {
+        self.proposed.load(Ordering::SeqCst)
+    }
+
     pub fn get_latest_voted_block_num(&self) -> u64 {
         self.voted.load(Ordering::SeqCst)
     }
@@ -217,5 +230,6 @@ pub(super) fn block_height_from_tag(buffer: &ChainStateBuffer, tag: &BlockTags) 
         BlockTags::Latest => buffer.get_latest_voted_block_num(),
         BlockTags::Safe => buffer.get_latest_voted_block_num(),
         BlockTags::Finalized => buffer.get_latest_finalized_block_num(),
+        BlockTags::Proposed => buffer.get_latest_proposed_block_num(),
     }
 }
