@@ -361,8 +361,11 @@ fn spawn_wireauth_validator(
             create_dataplane(tcp_addr, auth_addr, non_auth_addr);
         let config = create_raptorcast_config(keypair.clone(), sig_verification_rate_limit);
         let wireauth_config = monad_wireauth::Config::default();
-        let udp_auth_protocol =
-            monad_raptorcast::auth::WireAuthProtocol::new(wireauth_config, keypair.clone());
+        let udp_auth_protocol = monad_raptorcast::auth::WireAuthProtocol::new(
+            &monad_raptorcast::auth::UDP_METRICS,
+            wireauth_config,
+            keypair.clone(),
+        );
 
         let mut validator_rc = monad_raptorcast::RaptorCast::<
             SecpSignature,

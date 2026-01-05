@@ -665,7 +665,8 @@ where
     let pd = PeerDiscoveryDriver::new(peer_discovery_builder);
     let shared_pd = Arc::new(Mutex::new(pd));
     let wireauth_config = monad_wireauth::Config::default();
-    let udp_auth_protocol = auth::WireAuthProtocol::new(wireauth_config, shared_key);
+    let udp_auth_protocol =
+        auth::WireAuthProtocol::new(&auth::UDP_METRICS, wireauth_config, shared_key);
     RaptorCast::<ST, M, OM, SE, NopDiscovery<ST>, _>::new(
         config,
         SecondaryRaptorCastModeConfig::None,

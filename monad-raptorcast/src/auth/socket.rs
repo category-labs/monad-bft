@@ -433,7 +433,7 @@ mod tests {
     use tracing_subscriber::EnvFilter;
 
     use super::{AuthenticatedSocketHandle, DualSocketHandle};
-    use crate::auth::protocol::WireAuthProtocol;
+    use crate::auth::{metrics::UDP_METRICS, protocol::WireAuthProtocol};
 
     fn init_tracing() {
         let _ = tracing_subscriber::fmt()
@@ -491,7 +491,7 @@ mod tests {
             let keypair = keypair(seed);
             let public_key = keypair.pubkey();
             let config = Config::default();
-            let auth_protocol = WireAuthProtocol::new(config, Arc::new(keypair));
+            let auth_protocol = WireAuthProtocol::new(&UDP_METRICS, config, Arc::new(keypair));
             let authenticated_handle =
                 AuthenticatedSocketHandle::new(authenticated_socket, auth_protocol);
             let socket =
@@ -611,7 +611,7 @@ mod tests {
             ..Default::default()
         };
 
-        let auth_protocol = WireAuthProtocol::new(config, Arc::new(local_keypair));
+        let auth_protocol = WireAuthProtocol::new(&UDP_METRICS, config, Arc::new(local_keypair));
         let mut handle = AuthenticatedSocketHandle::new(authenticated_socket, auth_protocol);
 
         assert_eq!(poll!(pin!(handle.timer())), Poll::Pending);

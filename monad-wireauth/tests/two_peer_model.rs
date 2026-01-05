@@ -21,7 +21,7 @@ mod tests {
         time::Duration,
     };
 
-    use monad_wireauth::{messages::Packet, Config, TestContext, API};
+    use monad_wireauth::{messages::Packet, metrics::DEFAULT_METRICS, Config, TestContext, API};
     use proptest::prelude::*;
     use secp256k1::rand::{rng, Rng};
     use tracing_subscriber::EnvFilter;
@@ -67,7 +67,7 @@ mod tests {
             let public_key = keypair.pubkey();
             let context = TestContext::new();
             let config = test_config();
-            let manager = API::new(config, keypair, context.clone());
+            let manager = API::new(DEFAULT_METRICS, config, keypair, context.clone());
             let addr = SocketAddr::new(
                 IpAddr::V4(Ipv4Addr::new(10, 0, 0, peer_id)),
                 30000 + peer_id as u16,
@@ -284,7 +284,8 @@ mod tests {
                     let mut key_bytes = self.peers[peer_idx].private_key_bytes;
                     let keypair = monad_secp::KeyPair::from_bytes(&mut key_bytes).unwrap();
 
-                    self.peers[peer_idx].manager = API::new(config, keypair, context.clone());
+                    self.peers[peer_idx].manager =
+                        API::new(DEFAULT_METRICS, config, keypair, context.clone());
                     self.peers[peer_idx].context = context;
 
                     self.connected_for = Duration::ZERO;
@@ -301,7 +302,8 @@ mod tests {
                     let mut key_bytes = self.peers[peer_idx].private_key_bytes;
                     let keypair = monad_secp::KeyPair::from_bytes(&mut key_bytes).unwrap();
 
-                    self.peers[peer_idx].manager = API::new(config, keypair, context.clone());
+                    self.peers[peer_idx].manager =
+                        API::new(DEFAULT_METRICS, config, keypair, context.clone());
                     self.peers[peer_idx].context = context;
 
                     self.connected_for = Duration::ZERO;

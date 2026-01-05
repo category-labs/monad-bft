@@ -709,10 +709,17 @@ where
 
     let shared_key = Arc::new(identity);
     let wireauth_config = monad_wireauth::Config::default();
-    let udp_auth_protocol =
-        monad_raptorcast::auth::WireAuthProtocol::new(wireauth_config.clone(), shared_key.clone());
+    let udp_auth_protocol = monad_raptorcast::auth::WireAuthProtocol::new(
+        &monad_raptorcast::auth::UDP_METRICS,
+        wireauth_config.clone(),
+        shared_key.clone(),
+    );
     let tcp_auth_protocol = network_config.authenticated_tcp_bind_address_port.map(|_| {
-        monad_raptorcast::auth::WireAuthProtocol::new(wireauth_config, shared_key.clone())
+        monad_raptorcast::auth::WireAuthProtocol::new(
+            &monad_raptorcast::auth::TCP_METRICS,
+            wireauth_config,
+            shared_key.clone(),
+        )
     });
 
     MultiRouter::new(

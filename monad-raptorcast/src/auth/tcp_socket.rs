@@ -498,7 +498,7 @@ mod tests {
     use tracing_subscriber::EnvFilter;
 
     use super::{AuthenticatedTcpSocketHandle, DualTcpSocketHandle, SigAuthTcpSocket};
-    use crate::auth::protocol::WireAuthProtocol;
+    use crate::auth::{metrics::TCP_METRICS, protocol::WireAuthProtocol};
 
     fn keypair(seed: u8) -> KeyPair {
         KeyPair::from_bytes(&mut [seed; 32]).unwrap()
@@ -581,7 +581,7 @@ mod tests {
         let (sigauth_reader, sigauth_writer) = sigauth_tcp.split();
 
         let config = Config::default();
-        let auth_protocol = WireAuthProtocol::new(config, node.keypair.clone());
+        let auth_protocol = WireAuthProtocol::new(&TCP_METRICS, config, node.keypair.clone());
         let authenticated_handle =
             AuthenticatedTcpSocketHandle::new(wireauth_reader, wireauth_writer, auth_protocol);
         let sig_auth = SigAuthTcpSocket::<SecpSignature>::new(

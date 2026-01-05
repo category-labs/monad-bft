@@ -87,18 +87,18 @@ pub trait AuthenticationProtocol {
 }
 
 pub struct WireAuthProtocol {
-    api: monad_wireauth::API<
-        monad_wireauth::StdContext,
-        Arc<monad_secp::KeyPair>,
-        super::metrics::UdpMetrics,
-    >,
+    api: monad_wireauth::API<monad_wireauth::StdContext, Arc<monad_secp::KeyPair>>,
 }
 
 impl WireAuthProtocol {
-    pub fn new(config: monad_wireauth::Config, signing_key: Arc<monad_secp::KeyPair>) -> Self {
+    pub fn new(
+        metric_names: &'static monad_wireauth::metrics::MetricNames,
+        config: monad_wireauth::Config,
+        signing_key: Arc<monad_secp::KeyPair>,
+    ) -> Self {
         let context = monad_wireauth::StdContext::new();
         Self {
-            api: monad_wireauth::API::new(config, signing_key, context),
+            api: monad_wireauth::API::new(metric_names, config, signing_key, context),
         }
     }
 }

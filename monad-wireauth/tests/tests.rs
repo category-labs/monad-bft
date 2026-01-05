@@ -17,7 +17,7 @@ use std::{convert::TryFrom, net::SocketAddr, time::Duration};
 
 use monad_wireauth::{
     messages::{CookieReply, DataPacketHeader, HandshakeInitiation, HandshakeResponse, Packet},
-    metrics::DefaultMetrics,
+    metrics::DEFAULT_METRICS,
     Config, Context, TestContext, API, DEFAULT_RETRY_ATTEMPTS,
 };
 use secp256k1::rand::rng;
@@ -37,7 +37,7 @@ fn create_manager() -> (API<TestContext>, monad_secp::PubKey, TestContext, Confi
     let config = Config::default();
     let context = TestContext::new();
     let context_clone = context.clone();
-    let manager = API::new(config.clone(), keypair, context);
+    let manager = API::new(DEFAULT_METRICS, config.clone(), keypair, context);
     (manager, public_key, context_clone, config)
 }
 
@@ -237,12 +237,12 @@ fn test_cookie_reply_on_init() {
     let mut rng = rng();
     let keypair1 = monad_secp::KeyPair::generate(&mut rng);
     let context1 = TestContext::new();
-    let mut peer1 = API::new(config.clone(), keypair1, context1.clone());
+    let mut peer1 = API::new(DEFAULT_METRICS, config.clone(), keypair1, context1.clone());
 
     let keypair2 = monad_secp::KeyPair::generate(&mut rng);
     let public_key2 = keypair2.pubkey();
     let context2 = TestContext::new();
-    let mut peer2 = API::new(config, keypair2, context2);
+    let mut peer2 = API::new(DEFAULT_METRICS, config, keypair2, context2);
 
     let peer1_addr: SocketAddr = "192.0.0.1:8001".parse().unwrap();
     let peer2_addr: SocketAddr = "192.0.0.2:8002".parse().unwrap();
@@ -337,14 +337,24 @@ fn test_too_many_accepted_sessions() {
     let responder_keypair = monad_secp::KeyPair::generate(&mut rng);
     let responder_public = responder_keypair.pubkey();
     let responder_ctx = TestContext::new();
-    let mut responder = API::new(config.clone(), responder_keypair, responder_ctx);
+    let mut responder = API::new(
+        DEFAULT_METRICS,
+        config.clone(),
+        responder_keypair,
+        responder_ctx,
+    );
     let responder_addr: SocketAddr = "127.0.0.1:9000".parse().unwrap();
 
     // 2. 10 initiators each send init to responder
     for i in 0..10 {
         let initiator_ctx = TestContext::new();
         let initiator_keypair = monad_secp::KeyPair::generate(&mut rng);
-        let mut initiator = API::new(config.clone(), initiator_keypair, initiator_ctx);
+        let mut initiator = API::new(
+            DEFAULT_METRICS,
+            config.clone(),
+            initiator_keypair,
+            initiator_ctx,
+        );
         let initiator_addr: SocketAddr = format!("127.0.0.1:800{}", i).parse().unwrap();
 
         initiator
@@ -388,14 +398,24 @@ fn test_filter_drop_rate_limit() {
     let responder_keypair = monad_secp::KeyPair::generate(&mut rng);
     let responder_public = responder_keypair.pubkey();
     let responder_ctx = TestContext::new();
-    let mut responder = API::new(config.clone(), responder_keypair, responder_ctx);
+    let mut responder = API::new(
+        DEFAULT_METRICS,
+        config.clone(),
+        responder_keypair,
+        responder_ctx,
+    );
     let responder_addr: SocketAddr = "127.0.0.1:9000".parse().unwrap();
 
     // 2. exceed rate limit with 4 inits (limit is 3)
     for i in 0..4 {
         let initiator_keypair = monad_secp::KeyPair::generate(&mut rng);
         let initiator_ctx = TestContext::new();
-        let mut initiator = API::new(config.clone(), initiator_keypair, initiator_ctx);
+        let mut initiator = API::new(
+            DEFAULT_METRICS,
+            config.clone(),
+            initiator_keypair,
+            initiator_ctx,
+        );
         let initiator_addr: SocketAddr = format!("127.0.0.1:800{}", i).parse().unwrap();
 
         initiator
@@ -469,8 +489,7 @@ fn test_next_deadline_includes_filter_reset() {
 
     let peer_keypair = monad_secp::KeyPair::generate(&mut rng);
     let peer_ctx = TestContext::new();
-    let peer: API<TestContext, _, DefaultMetrics> =
-        API::new(config, peer_keypair, peer_ctx.clone());
+    let peer = API::new(DEFAULT_METRICS, config, peer_keypair, peer_ctx.clone());
 
     // 2. verify next_deadline returns filter reset deadline
     let deadline = peer.next_deadline();
@@ -489,13 +508,17 @@ fn test_next_deadline_returns_minimum_of_session_and_filter() {
 
     let peer1_keypair = monad_secp::KeyPair::generate(&mut rng);
     let peer1_ctx = TestContext::new();
-    let mut peer1: API<TestContext, _, DefaultMetrics> =
-        API::new(config.clone(), peer1_keypair, peer1_ctx.clone());
+    let mut peer1 = API::new(
+        DEFAULT_METRICS,
+        config.clone(),
+        peer1_keypair,
+        peer1_ctx.clone(),
+    );
 
     let peer2_keypair = monad_secp::KeyPair::generate(&mut rng);
     let peer2_public = peer2_keypair.pubkey();
     let peer2_ctx = TestContext::new();
-    let mut peer2 = API::new(config, peer2_keypair, peer2_ctx);
+    let mut peer2 = API::new(DEFAULT_METRICS, config, peer2_keypair, peer2_ctx);
 
     let peer2_addr: SocketAddr = "127.0.0.1:8002".parse().unwrap();
     let peer1_addr: SocketAddr = "127.0.0.1:8001".parse().unwrap();
@@ -656,12 +679,12 @@ fn test_keepalive_reset_on_encrypt() {
     let mut rng = rng();
     let keypair1 = monad_secp::KeyPair::generate(&mut rng);
     let context1 = TestContext::new();
-    let mut peer1 = API::new(config.clone(), keypair1, context1.clone());
+    let mut peer1 = API::new(DEFAULT_METRICS, config.clone(), keypair1, context1.clone());
 
     let keypair2 = monad_secp::KeyPair::generate(&mut rng);
     let peer2_pubkey = keypair2.pubkey();
     let context2 = TestContext::new();
-    let mut peer2 = API::new(config, keypair2, context2);
+    let mut peer2 = API::new(DEFAULT_METRICS, config, keypair2, context2);
 
     let peer1_addr: SocketAddr = "127.0.0.1:8001".parse().unwrap();
     let peer2_addr: SocketAddr = "127.0.0.1:8002".parse().unwrap();
@@ -771,7 +794,7 @@ fn test_max_initiated_sessions_limit() {
     let mut rng = rng();
     let keypair = monad_secp::KeyPair::generate(&mut rng);
     let context = TestContext::new();
-    let mut peer: API<TestContext, _, DefaultMetrics> = API::new(config, keypair, context);
+    let mut peer = API::new(DEFAULT_METRICS, config, keypair, context);
 
     for i in 0..3 {
         let remote_keypair = monad_secp::KeyPair::generate(&mut rng);
@@ -804,7 +827,7 @@ fn test_buffer_limit_per_session() {
     let mut rng = rng();
     let keypair = monad_secp::KeyPair::generate(&mut rng);
     let context = TestContext::new();
-    let mut peer: API<TestContext, _, DefaultMetrics> = API::new(config, keypair, context);
+    let mut peer = API::new(DEFAULT_METRICS, config, keypair, context);
 
     let remote_keypair = monad_secp::KeyPair::generate(&mut rng);
     let remote_pubkey = remote_keypair.pubkey();
@@ -861,12 +884,12 @@ fn test_gc_timer_reset_on_useful_data() {
     let keypair1 = monad_secp::KeyPair::generate(&mut rng);
     let peer1_pubkey = keypair1.pubkey();
     let context1 = TestContext::new();
-    let mut peer1 = API::new(config.clone(), keypair1, context1.clone());
+    let mut peer1 = API::new(DEFAULT_METRICS, config.clone(), keypair1, context1.clone());
 
     let keypair2 = monad_secp::KeyPair::generate(&mut rng);
     let peer2_pubkey = keypair2.pubkey();
     let context2 = TestContext::new();
-    let mut peer2 = API::new(config, keypair2, context2.clone());
+    let mut peer2 = API::new(DEFAULT_METRICS, config, keypair2, context2.clone());
 
     let peer1_addr: SocketAddr = "127.0.0.1:8001".parse().unwrap();
     let peer2_addr: SocketAddr = "127.0.0.1:8002".parse().unwrap();
