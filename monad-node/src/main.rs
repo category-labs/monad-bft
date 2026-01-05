@@ -345,6 +345,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         forkpoint: node_state.forkpoint_config.into(),
         locked_epoch_validators,
         block_sync_override_peers,
+        maybe_blocksync_rng_seed: None,
         consensus_config: ConsensusConfig {
             execution_delay: SeqNum(EXECUTION_DELAY),
             delta: Duration::from_millis(100),

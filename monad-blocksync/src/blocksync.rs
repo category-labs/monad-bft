@@ -196,6 +196,7 @@ where
     pub fn new(
         override_peers_inc_self: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
         self_node_id: NodeId<CertificateSignaturePubKey<ST>>,
+        maybe_rng_seed: Option<u64>,
     ) -> Self {
         let mut blocksync_instance = Self {
             headers_requests: Default::default(),
@@ -207,7 +208,7 @@ where
             self_request_mode: BlockSyncSelfRequester::StateSync,
             override_peers: Default::default(),
             self_node_id,
-            rng: ChaCha8Rng::seed_from_u64(123456),
+            rng: maybe_rng_seed.map_or(ChaCha8Rng::from_entropy(), ChaCha8Rng::seed_from_u64),
         };
         blocksync_instance.set_override_peers(override_peers_inc_self);
 
@@ -1563,7 +1564,7 @@ mod test {
         let peer_id = NodeId::new(keys[1].pubkey());
 
         BlockSyncContext {
-            block_sync: BlockSync::new(Default::default(), self_node_id),
+            block_sync: BlockSync::new(Default::default(), self_node_id, Some(123456)),
             blocktree,
             metrics: Metrics::default(),
             self_node_id,
@@ -1625,7 +1626,7 @@ mod test {
         let peer_id = NodeId::new(keys[1].pubkey());
 
         BlockSyncContext {
-            block_sync: BlockSync::new(Default::default(), self_node_id),
+            block_sync: BlockSync::new(Default::default(), self_node_id, Some(123456)),
             blocktree,
             metrics: Metrics::default(),
             self_node_id,

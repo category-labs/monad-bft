@@ -104,6 +104,7 @@ pub fn make_state_configs<S: SwarmRelation>(
 
             beneficiary: Default::default(),
             block_sync_override_peers: Default::default(),
+            maybe_blocksync_rng_seed: Some(123456),
 
             consensus_config: ConsensusConfig {
                 execution_delay,

@@ -147,6 +147,7 @@ where
 
                 beneficiary: self.state_config.beneficiary,
                 block_sync_override_peers: self.state_config.block_sync_override_peers.clone(),
+                maybe_blocksync_rng_seed: self.state_config.maybe_blocksync_rng_seed,
 
                 consensus_config: self.state_config.consensus_config,
 
@@ -391,6 +392,7 @@ where
 
             beneficiary: Default::default(),
             block_sync_override_peers: Default::default(),
+            maybe_blocksync_rng_seed: Some(123456),
 
             consensus_config: ConsensusConfig {
                 execution_delay: SeqNum(TWINS_STATE_ROOT_DELAY),
