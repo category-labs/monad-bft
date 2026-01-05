@@ -114,35 +114,16 @@ impl KVReader for Bucket {
             Ok(Some(bytes))
         }
     }
-}
-
-impl KVStore for Bucket {
-    // Upload rlp-encoded bytes with retry
-    async fn put(&self, key: impl AsRef<str>, data: Vec<u8>) -> Result<()> {
-        let key = key.as_ref();
-
-        let req = self
-            .client
-            .put_object()
-            .bucket(&self.bucket)
-            .key(key)
-            .body(ByteStream::from(data.clone()))
-            .request_payer(aws_sdk_s3::types::RequestPayer::Requester);
-
-        let start = Instant::now();
-        req.send()
-            .await
-            .write_put_metrics(start.elapsed(), KVStoreType::AwsS3, &self.metrics)
-            .wrap_err_with(|| format!("Failed to upload, retries exhausted. Key: {}", key))?;
-
-        Ok(())
-    }
-
-    fn bucket_name(&self) -> &str {
-        &self.bucket
-    }
 
     async fn scan_prefix(&self, prefix: &str) -> Result<Vec<String>> {
+        self.scan_prefix_with_max_keys(prefix, usize::MAX).await
+    }
+
+    async fn scan_prefix_with_max_keys(
+        &self,
+        prefix: &str,
+        max_keys: usize,
+    ) -> Result<Vec<String>> {
         let mut objects = Vec::new();
         let mut continuation_token = None;
 
@@ -173,7 +154,36 @@ impl KVStore for Bucket {
             continuation_token = response.next_continuation_token;
         }
 
+        objects.truncate(max_keys);
+
         Ok(objects)
+    }
+}
+
+impl KVStore for Bucket {
+    // Upload rlp-encoded bytes with retry
+    async fn put(&self, key: impl AsRef<str>, data: Vec<u8>) -> Result<()> {
+        let key = key.as_ref();
+
+        let req = self
+            .client
+            .put_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .body(ByteStream::from(data.clone()))
+            .request_payer(aws_sdk_s3::types::RequestPayer::Requester);
+
+        let start = Instant::now();
+        req.send()
+            .await
+            .write_put_metrics(start.elapsed(), KVStoreType::AwsS3, &self.metrics)
+            .wrap_err_with(|| format!("Failed to upload, retries exhausted. Key: {}", key))?;
+
+        Ok(())
+    }
+
+    fn bucket_name(&self) -> &str {
+        &self.bucket
     }
 
     async fn delete(&self, key: impl AsRef<str>) -> Result<()> {

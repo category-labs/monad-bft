@@ -53,13 +53,17 @@ impl KVReader for DynamoDBArchive {
             .await
             .map(|mut v| v.remove(key))
     }
+
+    async fn scan_prefix_with_max_keys(
+        &self,
+        _prefix: &str,
+        _max_keys: usize,
+    ) -> Result<Vec<String>> {
+        unimplemented!()
+    }
 }
 
 impl KVStore for DynamoDBArchive {
-    async fn scan_prefix(&self, _prefix: &str) -> Result<Vec<String>> {
-        unimplemented!()
-    }
-
     fn bucket_name(&self) -> &str {
         &self.table
     }

@@ -24,6 +24,7 @@ pub use std::{
 
 pub use alloy_consensus::{BlockBody, Header, ReceiptEnvelope, ReceiptWithBloom};
 pub use alloy_primitives::{U128, U256, U64};
+pub use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
 pub use bytes::Bytes;
 pub use eyre::{bail, eyre, Context, ContextCompat, OptionExt, Report, Result};
 pub use futures::{try_join, StreamExt, TryStream, TryStreamExt};

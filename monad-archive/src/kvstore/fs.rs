@@ -111,33 +111,12 @@ impl KVReader for FsStorage {
                 .write_get_metrics_on_err(start.elapsed(), KVStoreType::FileSystem, &self.metrics),
         }
     }
-}
 
-impl KVStore for FsStorage {
-    fn bucket_name(&self) -> &str {
-        &self.name
-    }
-
-    async fn put(&self, key: impl AsRef<str>, data: Vec<u8>) -> Result<()> {
-        let key = key.as_ref();
-        let path = self.key_path(key)?;
-
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .await
-                .wrap_err_with(|| format!("Failed to create directory {parent:?}"))?;
-        }
-
-        let start = Instant::now();
-        fs::write(&path, &data)
-            .await
-            .write_put_metrics(start.elapsed(), KVStoreType::FileSystem, &self.metrics)
-            .wrap_err_with(|| format!("Failed to write key {key} to path {path:?}"))?;
-
-        Ok(())
-    }
-
-    async fn scan_prefix(&self, prefix: &str) -> Result<Vec<String>> {
+    async fn scan_prefix_with_max_keys(
+        &self,
+        prefix: &str,
+        max_keys: usize,
+    ) -> Result<Vec<String>> {
         let root = self.root.clone();
         let prefix = prefix.to_owned();
         let name = self.name.clone();
@@ -164,8 +143,13 @@ impl KVStore for FsStorage {
 
                     let key = Self::path_to_key(&root, &name, &path)?;
 
-                    if key.starts_with(&prefix) {
-                        matches.push(key);
+                    if !key.starts_with(&prefix) {
+                        continue;
+                    }
+
+                    matches.push(key);
+                    if matches.len() >= max_keys {
+                        return Ok(matches);
                     }
                 }
             }
@@ -173,6 +157,31 @@ impl KVStore for FsStorage {
             Ok(matches)
         })
         .await?
+    }
+}
+
+impl KVStore for FsStorage {
+    fn bucket_name(&self) -> &str {
+        &self.name
+    }
+
+    async fn put(&self, key: impl AsRef<str>, data: Vec<u8>) -> Result<()> {
+        let key = key.as_ref();
+        let path = self.key_path(key)?;
+
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .await
+                .wrap_err_with(|| format!("Failed to create directory {parent:?}"))?;
+        }
+
+        let start = Instant::now();
+        fs::write(&path, &data)
+            .await
+            .write_put_metrics(start.elapsed(), KVStoreType::FileSystem, &self.metrics)
+            .wrap_err_with(|| format!("Failed to write key {key} to path {path:?}"))?;
+
+        Ok(())
     }
 
     async fn delete(&self, key: impl AsRef<str>) -> Result<()> {

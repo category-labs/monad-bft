@@ -229,6 +229,36 @@ impl KVReader for MongoDbStorage {
             .wrap_err("MongoDB bulk_get operation failed")
             .write_get_metrics(start.elapsed(), KVStoreType::Mongo, &self.metrics)
     }
+
+    async fn scan_prefix(&self, prefix: &str) -> Result<Vec<String>> {
+        self.scan_prefix_with_max_keys(prefix, usize::MAX).await
+    }
+
+    async fn scan_prefix_with_max_keys(
+        &self,
+        prefix: &str,
+        max_keys: usize,
+    ) -> Result<Vec<String>> {
+        let filter = doc! {
+            "_id": {
+                "$regex": format!("^{}", regex::escape(prefix))
+            }
+        };
+
+        let mut keys = Vec::new();
+        let mut cursor = self
+            .collection
+            .find(filter)
+            .limit(max_keys as i64)
+            .await
+            .wrap_err("MongoDB scan operation failed")?;
+
+        while let Some(doc) = cursor.try_next().await? {
+            keys.push(doc._id);
+        }
+
+        Ok(keys)
+    }
 }
 
 impl KVStore for MongoDbStorage {
@@ -283,27 +313,6 @@ impl KVStore for MongoDbStorage {
             .write_put_metrics(start.elapsed(), KVStoreType::Mongo, &self.metrics)?;
 
         Ok(())
-    }
-
-    async fn scan_prefix(&self, prefix: &str) -> Result<Vec<String>> {
-        let filter = doc! {
-            "_id": {
-                "$regex": format!("^{}", regex::escape(prefix))
-            }
-        };
-
-        let mut keys = Vec::new();
-        let mut cursor = self
-            .collection
-            .find(filter)
-            .await
-            .wrap_err("MongoDB scan operation failed")?;
-
-        while let Some(doc) = cursor.try_next().await? {
-            keys.push(doc._id);
-        }
-
-        Ok(keys)
     }
 
     async fn delete(&self, key: impl AsRef<str>) -> Result<()> {

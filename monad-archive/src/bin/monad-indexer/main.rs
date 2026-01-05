@@ -27,6 +27,7 @@ use tracing::{info, Level};
 use crate::{migrate_capped::migrate_to_uncapped, migrate_logs::run_migrate_logs};
 
 mod cli;
+mod migrate_bft_archive;
 mod migrate_capped;
 mod migrate_logs;
 
