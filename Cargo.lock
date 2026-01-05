@@ -5693,8 +5693,8 @@ dependencies = [
  "monad-secp",
  "monad-state",
  "monad-state-backend",
+ "monad-state-backend-cache",
  "monad-statesync",
- "monad-triedb-cache",
  "monad-triedb-utils",
  "monad-types",
  "monad-updaters",
@@ -6065,6 +6065,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-state-backend-cache"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "itertools 0.10.5",
+ "monad-crypto",
+ "monad-eth-types",
+ "monad-state-backend",
+ "monad-types",
+ "monad-validator",
+ "tracing",
+]
+
+[[package]]
 name = "monad-statesync"
 version = "0.1.0"
 dependencies = [
@@ -6209,20 +6223,6 @@ dependencies = [
  "monad-cxx",
  "monad-secp",
  "monad-types",
- "tracing",
-]
-
-[[package]]
-name = "monad-triedb-cache"
-version = "0.1.0"
-dependencies = [
- "alloy-primitives",
- "itertools 0.10.5",
- "monad-crypto",
- "monad-eth-types",
- "monad-state-backend",
- "monad-types",
- "monad-validator",
  "tracing",
 ]
 

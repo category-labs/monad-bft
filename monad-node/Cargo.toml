@@ -25,14 +25,14 @@ monad-keystore = { workspace = true }
 monad-ledger = { workspace = true }
 monad-node-config = { workspace = true, features = ["crypto"] }
 monad-peer-discovery = { workspace = true }
+monad-pprof = { workspace = true }
 monad-raptorcast = { workspace = true }
 monad-router-multi = { workspace = true}
 monad-secp = { workspace = true }
 monad-state = { workspace = true }
 monad-state-backend = { workspace = true }
+monad-state-backend-cache = { workspace = true }
 monad-statesync = { workspace = true }
-monad-pprof = { workspace = true }
-monad-triedb-cache = { workspace = true }
 monad-triedb-utils = { workspace = true }
 monad-types = { workspace = true }
 monad-updaters = { workspace = true, features = ["monad-triedb", "tokio"] }

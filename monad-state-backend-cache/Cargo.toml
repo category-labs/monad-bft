@@ -1,5 +1,5 @@
 [package]
-name = "monad-triedb-cache"
+name = "monad-state-backend-cache"
 version = "0.1.0"
 edition = "2021"
 

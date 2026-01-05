@@ -16,10 +16,10 @@ ignored = [
     "alloy-transport-http",
     "getrandom",
     "monad-cxx",
-    "monad-peer-disc-swarm",
-    "monad-tracing-timing",
     "monad-event-ring",
     "monad-exec-events",
+    "monad-peer-disc-swarm",
+    "monad-tracing-timing",
     "monad-wireauth",
 ]
 
@@ -71,6 +71,7 @@ monad-rpc-docs-derive = { path = "./monad-rpc/monad-rpc-docs/monad-rpc-docs-deri
 monad-secp = { path = "./monad-secp" }
 monad-state = { path = "./monad-state" }
 monad-state-backend = { path = "./monad-state-backend" }
+monad-state-backend-cache = { path = "./monad-state-backend-cache" }
 monad-statesync = { path = "./monad-statesync" }
 monad-system-calls = { path = "./monad-system-calls" }
 monad-testutil = { path = "./monad-testutil" }
@@ -78,7 +79,6 @@ monad-tfm = { path = "./monad-tfm" }
 monad-tracing-timing = { path = "./monad-tracing-timing" }
 monad-transformer = { path = "./monad-transformer" }
 monad-triedb = { path = "./monad-triedb" }
-monad-triedb-cache = { path = "./monad-triedb-cache" }
 monad-triedb-utils = { path = "./monad-triedb-utils" }
 monad-twins-utils = { path = "./monad-twins/utils" }
 monad-types = { path = "./monad-types" }
