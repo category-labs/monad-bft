@@ -457,28 +457,22 @@ mod tests {
     }
 
     impl PeerNode {
-        fn new(auth_port: u16, non_auth_port: u16, seed: u8) -> Self {
-            let auth_addr =
-                SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), auth_port));
-            let non_auth_addr = SocketAddr::V4(SocketAddrV4::new(
-                Ipv4Addr::new(127, 0, 0, 1),
-                non_auth_port,
-            ));
+        fn new(seed: u8) -> Self {
+            let bind_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
 
-            let dp = DataplaneBuilder::new(&auth_addr, 1000)
+            let dp = DataplaneBuilder::new(&bind_addr, 1000)
                 .extend_udp_sockets(vec![
                     monad_dataplane::UdpSocketConfig {
-                        socket_addr: auth_addr,
+                        socket_addr: bind_addr,
                         label: AUTHENTICATED_SOCKET.to_string(),
                     },
                     monad_dataplane::UdpSocketConfig {
-                        socket_addr: non_auth_addr,
+                        socket_addr: bind_addr,
                         label: NON_AUTHENTICATED_SOCKET.to_string(),
                     },
                 ])
                 .build();
 
-            assert!(dp.block_until_ready(Duration::from_secs(1)));
             let (tcp_socket, mut udp_dataplane, control) = dp.split();
 
             let authenticated_socket = udp_dataplane
@@ -487,6 +481,8 @@ mod tests {
             let non_authenticated_socket = udp_dataplane
                 .take_socket(NON_AUTHENTICATED_SOCKET)
                 .expect("non-authenticated socket");
+
+            let auth_addr = authenticated_socket.local_addr();
 
             let keypair = keypair(seed);
             let public_key = keypair.pubkey();
@@ -554,8 +550,8 @@ mod tests {
     async fn test_e2e_bidirectional() {
         init_tracing();
 
-        let mut alice = PeerNode::new(18001, 19001, 1);
-        let mut bob = PeerNode::new(18002, 19002, 2);
+        let mut alice = PeerNode::new(1);
+        let mut bob = PeerNode::new(2);
 
         let bob_addr = bob.auth_addr;
         let alice_addr = alice.auth_addr;
@@ -587,16 +583,15 @@ mod tests {
     async fn test_timer_deadline() {
         init_tracing();
 
-        let auth_addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 19003));
+        let bind_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
 
-        let dp = DataplaneBuilder::new(&auth_addr, 1000)
+        let dp = DataplaneBuilder::new(&bind_addr, 1000)
             .extend_udp_sockets(vec![monad_dataplane::UdpSocketConfig {
-                socket_addr: auth_addr,
+                socket_addr: bind_addr,
                 label: AUTHENTICATED_SOCKET.to_string(),
             }])
             .build();
 
-        assert!(dp.block_until_ready(Duration::from_secs(1)));
         let (_tcp_socket, mut udp_dataplane, _control) = dp.split();
 
         let authenticated_socket = udp_dataplane

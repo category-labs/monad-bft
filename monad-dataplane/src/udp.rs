@@ -169,13 +169,17 @@ pub(crate) fn spawn_tasks(
     up_bandwidth_mbps: u64,
     buffer_size: Option<usize>,
     use_multishot: bool,
+    bound_addrs_tx: std::sync::mpsc::SyncSender<Vec<(usize, SocketAddr)>>,
 ) {
     let mut tx_sockets = Vec::new();
+    let mut bound_addrs = Vec::with_capacity(socket_configs.len());
 
     for (socket_id, socket_addr, label, ingress_tx) in socket_configs {
         let socket = std::net::UdpSocket::bind(socket_addr).unwrap();
         let tx = UdpSocket::from_std(socket).unwrap();
         configure_socket(&tx, buffer_size);
+        let actual_addr = tx.local_addr().unwrap();
+        bound_addrs.push((socket_id, actual_addr));
 
         if use_multishot {
             let rx = tx.dup().expect("failed to dup socket");
@@ -184,15 +188,17 @@ pub(crate) fn spawn_tasks(
                 ingress_tx.clone(),
                 socket_id as u16,
             ));
-            trace!(socket_id, label = %label, ?socket_addr, "created multishot socket");
+            trace!(socket_id, label = %label, configured_addr = ?socket_addr, actual_addr = ?actual_addr, "created multishot socket");
         } else {
             let rx = tx.dup().expect("failed to dup socket");
             spawn(rx_single_socket(rx, ingress_tx.clone()));
-            trace!(socket_id, label = %label, ?socket_addr, "created socket");
+            trace!(socket_id, label = %label, configured_addr = ?socket_addr, actual_addr = ?actual_addr, "created socket");
         }
 
         tx_sockets.push(tx);
     }
+
+    bound_addrs_tx.send(bound_addrs).unwrap();
 
     spawn(tx(tx_sockets, udp_egress_rx, up_bandwidth_mbps));
 }

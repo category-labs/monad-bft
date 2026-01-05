@@ -131,11 +131,14 @@ impl DataplaneBuilder {
                 "duplicate udp socket label: {}",
                 socket.label
             );
-            assert!(
-                seen_ports.insert(socket.socket_addr.port()),
-                "duplicate udp socket port: {}",
-                socket.socket_addr.port()
-            );
+            let port = socket.socket_addr.port();
+            if port != 0 {
+                assert!(
+                    seen_ports.insert(port),
+                    "duplicate udp socket port: {}",
+                    port
+                );
+            }
         }
 
         let (tcp_ingress_tx, tcp_ingress_rx) = mpsc::channel(TCP_INGRESS_CHANNEL_SIZE);
@@ -143,16 +146,15 @@ impl DataplaneBuilder {
 
         let (udp_egress_tx, udp_egress_rx) = mpsc::channel(UDP_EGRESS_CHANNEL_SIZE);
 
-        let mut udp_socket_handles = Vec::new();
         let mut socket_configs = Vec::new();
+        let mut pending_handles: Vec<(usize, String, mpsc::Receiver<RecvUdpMsg>)> = Vec::new();
 
         for (socket_id, UdpSocketConfig { socket_addr, label }) in
             udp_sockets.into_iter().enumerate()
         {
-            let (handle, config) =
-                create_socket_handle(socket_id, socket_addr, label, udp_egress_tx.clone());
-            udp_socket_handles.push(handle);
-            socket_configs.push(config);
+            let (ingress_tx, ingress_rx) = mpsc::channel(UDP_INGRESS_CHANNEL_SIZE);
+            socket_configs.push((socket_id, socket_addr, label.clone(), ingress_tx));
+            pending_handles.push((socket_id, label, ingress_rx));
         }
 
         let ready = Arc::new(AtomicBool::new(false));
@@ -161,6 +163,10 @@ impl DataplaneBuilder {
         let (banned_ips_tx, banned_ips_rx) = mpsc::unbounded_channel();
         let addrlist = Arc::new(Addrlist::new_with_trusted(trusted.into_iter()));
         let tcp_control_map = TcpControl::new();
+
+        let (tcp_bound_addr_tx, tcp_bound_addr_rx) = std::sync::mpsc::sync_channel(1);
+        let (udp_bound_addrs_tx, udp_bound_addrs_rx) = std::sync::mpsc::sync_channel(1);
+
         thread::Builder::new()
             .name("monad-dataplane".into())
             .spawn({
@@ -185,6 +191,7 @@ impl DataplaneBuilder {
                                 local_addr,
                                 tcp_ingress_tx,
                                 tcp_egress_rx,
+                                tcp_bound_addr_tx,
                             );
                             udp::spawn_tasks(
                                 socket_configs,
@@ -192,6 +199,7 @@ impl DataplaneBuilder {
                                 up_bandwidth_mbps,
                                 udp_buffer_size,
                                 udp_multishot,
+                                udp_bound_addrs_tx,
                             );
 
                             ready_clone.store(true, Ordering::Release);
@@ -202,18 +210,27 @@ impl DataplaneBuilder {
             })
             .expect("failed to spawn dataplane thread");
 
+        let tcp_local_addr = tcp_bound_addr_rx
+            .recv()
+            .expect("failed to receive tcp bound address");
+        let udp_bound_addrs = udp_bound_addrs_rx
+            .recv()
+            .expect("failed to receive udp bound addresses");
+
+        let udp_socket_handles =
+            create_udp_socket_handles(pending_handles, udp_bound_addrs, udp_egress_tx);
+
         let control = DataplaneControl::new(tcp_control_map, banned_ips_tx, addrlist);
 
-        let tcp_reader = TcpSocketReader {
-            ingress_rx: tcp_ingress_rx,
-        };
-        let tcp_writer = TcpSocketWriter {
-            egress_tx: tcp_egress_tx,
-            msgs_dropped: Arc::new(AtomicUsize::new(0)),
-        };
         let tcp_socket = TcpSocketHandle {
-            reader: tcp_reader,
-            writer: tcp_writer,
+            local_addr: tcp_local_addr,
+            reader: TcpSocketReader {
+                ingress_rx: tcp_ingress_rx,
+            },
+            writer: TcpSocketWriter {
+                egress_tx: tcp_egress_tx,
+                msgs_dropped: Arc::new(AtomicUsize::new(0)),
+            },
         };
 
         Dataplane {
@@ -298,6 +315,10 @@ impl UdpSocketHandle {
 
     pub fn label(&self) -> &str {
         &self.writer.label
+    }
+
+    pub fn local_addr(&self) -> SocketAddr {
+        self.writer.local_addr()
     }
 }
 
@@ -405,6 +426,10 @@ impl UdpSocketWriter {
             );
         }
     }
+
+    pub fn local_addr(&self) -> SocketAddr {
+        self.socket_addr
+    }
 }
 
 impl Debug for UdpSocketHandle {
@@ -470,6 +495,7 @@ impl TcpSocketWriter {
 }
 
 pub struct TcpSocketHandle {
+    local_addr: SocketAddr,
     reader: TcpSocketReader,
     writer: TcpSocketWriter,
 }
@@ -485,6 +511,10 @@ impl TcpSocketHandle {
 
     pub fn write(&self, addr: SocketAddr, msg: TcpMsg) {
         self.writer.write(addr, msg)
+    }
+
+    pub fn local_addr(&self) -> SocketAddr {
+        self.local_addr
     }
 }
 
@@ -646,35 +676,38 @@ const TCP_EGRESS_CHANNEL_SIZE: usize = 1024;
 const UDP_INGRESS_CHANNEL_SIZE: usize = 12_800;
 const UDP_EGRESS_CHANNEL_SIZE: usize = 12_800;
 
-fn create_socket_handle(
-    socket_id: usize,
-    socket_addr: SocketAddr,
-    label: String,
+fn create_udp_socket_handles(
+    pending_handles: Vec<(usize, String, mpsc::Receiver<RecvUdpMsg>)>,
+    bound_addrs: Vec<(usize, SocketAddr)>,
     egress_tx: mpsc::Sender<UdpMsg>,
-) -> (
-    UdpSocketHandle,
-    (usize, SocketAddr, String, mpsc::Sender<RecvUdpMsg>),
-) {
-    let (ingress_tx, ingress_rx) = mpsc::channel(UDP_INGRESS_CHANNEL_SIZE);
-    let msgs_dropped = Arc::new(AtomicUsize::new(0));
+) -> Vec<UdpSocketHandle> {
+    let bound_addrs_map: std::collections::HashMap<usize, SocketAddr> =
+        bound_addrs.into_iter().collect();
 
-    let reader = UdpSocketReader {
-        socket_id,
-        label: label.clone(),
-        ingress_rx,
-    };
+    pending_handles
+        .into_iter()
+        .map(|(socket_id, label, ingress_rx)| {
+            let socket_addr = *bound_addrs_map
+                .get(&socket_id)
+                .unwrap_or_else(|| panic!("missing bound address for socket_id {}", socket_id));
 
-    let writer = UdpSocketWriter {
-        socket_id,
-        socket_addr,
-        label: label.clone(),
-        egress_tx,
-        msgs_dropped,
-    };
+            let reader = UdpSocketReader {
+                socket_id,
+                label: label.clone(),
+                ingress_rx,
+            };
 
-    let handle = UdpSocketHandle { reader, writer };
-    let config = (socket_id, socket_addr, label, ingress_tx);
-    (handle, config)
+            let writer = UdpSocketWriter {
+                socket_id,
+                socket_addr,
+                label,
+                egress_tx: egress_tx.clone(),
+                msgs_dropped: Arc::new(AtomicUsize::new(0)),
+            };
+
+            UdpSocketHandle { reader, writer }
+        })
+        .collect()
 }
 
 impl Dataplane {
@@ -738,6 +771,13 @@ impl Dataplane {
             .as_ref()
             .expect("tcp socket already taken")
             .write(addr, msg);
+    }
+
+    pub fn tcp_local_addr(&self) -> SocketAddr {
+        self.tcp_socket
+            .as_ref()
+            .expect("tcp socket already taken")
+            .local_addr()
     }
 
     pub fn ready(&self) -> bool {

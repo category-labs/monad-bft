@@ -611,7 +611,6 @@ fn setup_node(
             },
         ])
         .build();
-    assert!(dataplane.block_until_ready(Duration::from_secs(2)));
 
     let (tcp_socket, mut udp_dataplane, dataplane_control) = dataplane.split();
     let (tcp_reader, tcp_writer) = tcp_socket.split();
