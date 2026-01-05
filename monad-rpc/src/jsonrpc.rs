@@ -23,15 +23,66 @@ use crate::chainstate::ChainStateError;
 
 pub const JSONRPC_VERSION: &str = "2.0";
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize)]
 pub struct Request<'p> {
-    #[serde(deserialize_with = "deserialize_jsonrpc")]
     pub jsonrpc: String,
     pub method: String,
-    #[serde(borrow, default)]
+    #[serde(borrow)]
     pub params: RequestParams<'p>,
-    #[serde(deserialize_with = "deserialize_id")]
     pub id: RequestId,
+}
+
+impl<'p> Request<'p> {
+    pub fn from_raw_value(raw_value: &'p RawValue) -> serde_json::Result<Self> {
+        #[derive(Deserialize)]
+        struct RequestRaw<'p> {
+            #[serde(deserialize_with = "deserialize_jsonrpc")]
+            pub jsonrpc: String,
+            pub method: String,
+            #[serde(borrow, default)]
+            pub params: RequestParams<'p>,
+            #[serde(borrow)]
+            pub id: &'p RawValue,
+        }
+
+        let RequestRaw {
+            jsonrpc,
+            method,
+            params,
+            id,
+        } = serde_json::from_str(raw_value.get())?;
+
+        if let Ok(number) = serde_json::from_str(id.get()) {
+            return Ok(Self {
+                jsonrpc,
+                method,
+                params,
+                id: RequestId::Number(number),
+            });
+        }
+
+        if let Ok(string) = serde_json::from_str(id.get()) {
+            return Ok(Self {
+                jsonrpc,
+                method,
+                params,
+                id: RequestId::String(string),
+            });
+        }
+
+        if id.get().trim() == "null" {
+            return Ok(Self {
+                jsonrpc,
+                method,
+                params,
+                id: RequestId::Null,
+            });
+        }
+
+        Err(serde::de::Error::custom(
+            "id must be an integer, string, or null",
+        ))
+    }
 }
 
 fn deserialize_jsonrpc<'de, D>(deserializer: D) -> Result<String, D::Error>
@@ -59,43 +110,12 @@ impl<'p> RequestParams<'p> {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum RequestId {
     Number(i64),
     String(String),
     Null,
-}
-
-impl<'de> Deserialize<'de> for RequestId {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = Value::deserialize(deserializer)?;
-
-        match value {
-            Value::Number(n) => {
-                if let Some(i) = n.as_i64() {
-                    Ok(RequestId::Number(i))
-                } else {
-                    Err(serde::de::Error::custom("number must be a valid integer"))
-                }
-            }
-            Value::String(s) => Ok(RequestId::String(s)),
-            Value::Null => Ok(RequestId::Null),
-            _ => Err(serde::de::Error::custom(
-                "id must be a integer, string, or null",
-            )),
-        }
-    }
-}
-
-fn deserialize_id<'de, D>(deserializer: D) -> Result<RequestId, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    RequestId::deserialize(deserializer)
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -476,60 +496,58 @@ mod test {
     use crate::jsonrpc::RequestId;
 
     #[test]
-    fn test_request_id_number() {
-        let s = r#"
+    fn test_request() {
+        for (s, expected_request_id) in [
+            (
+                r#"
                 {
                     "jsonrpc": "2.0",
                     "method": "foobar",
                     "params": [42, 43],
                     "id": 1
                 }
-                "#;
-
-        for result in [
-            serde_json::from_str(s),
-            serde_json::from_slice(s.as_bytes()),
-        ] {
-            let Request {
-                jsonrpc,
-                method,
-                params,
-                id,
-            } = result.unwrap();
-
-            assert_eq!(jsonrpc, "2.0");
-            assert_eq!(method, "foobar");
-            assert_eq!(params.get(), "[42, 43]");
-            assert_eq!(id, RequestId::Number(1));
-        }
-    }
-
-    #[test]
-    fn test_request_id_str() {
-        let s = r#"
+                "#,
+                RequestId::Number(1),
+            ),
+            (
+                r#"
                 {
                     "jsonrpc": "2.0",
                     "method": "foobar",
                     "params": [42, 43],
                     "id": "string-id"
                 }
-                "#;
-
-        for result in [
-            serde_json::from_str(s),
-            serde_json::from_slice(s.as_bytes()),
+                "#,
+                RequestId::String("string-id".to_string()),
+            ),
+            (
+                r#"
+                {
+                    "jsonrpc": "2.0",
+                    "method": "foobar",
+                    "params": [42, 43],
+                    "id": null
+                }
+                "#,
+                RequestId::Null,
+            ),
         ] {
-            let Request {
-                jsonrpc,
-                method,
-                params,
-                id,
-            } = result.unwrap();
+            for raw_value in [
+                serde_json::from_str(s).unwrap(),
+                serde_json::from_slice(s.as_bytes()).unwrap(),
+            ] {
+                let Request {
+                    jsonrpc,
+                    method,
+                    id,
+                    params,
+                } = Request::from_raw_value(raw_value).unwrap();
 
-            assert_eq!(jsonrpc, "2.0");
-            assert_eq!(method, "foobar");
-            assert_eq!(params.get(), "[42, 43]");
-            assert_eq!(id, RequestId::String("string-id".into()));
+                assert_eq!(jsonrpc, "2.0");
+                assert_eq!(method, "foobar");
+                assert_eq!(params.get(), "[42, 43]");
+                assert_eq!(id, expected_request_id);
+            }
         }
     }
 
@@ -543,21 +561,79 @@ mod test {
                 }
                 "#;
 
-        for result in [
-            serde_json::from_str(s),
-            serde_json::from_slice(s.as_bytes()),
+        for raw_value in [
+            serde_json::from_str(s).unwrap(),
+            serde_json::from_slice(s.as_bytes()).unwrap(),
         ] {
             let Request {
                 jsonrpc,
                 method,
-                params,
                 id,
-            } = result.unwrap();
+                params,
+            } = Request::from_raw_value(raw_value).unwrap();
 
             assert_eq!(jsonrpc, "2.0");
             assert_eq!(method, "foobar");
             assert_eq!(params.get(), "");
             assert_eq!(id, RequestId::Number(1));
         }
+    }
+
+    #[test]
+    fn test_request_without_id() {
+        let s = r#"
+                {
+                    "jsonrpc": "2.0",
+                    "method": "foobar",
+                    "params": [42, 43]
+                }
+                "#;
+
+        assert_eq!(
+            Request::from_raw_value(serde_json::from_str(s).unwrap())
+                .err()
+                .unwrap()
+                .to_string(),
+            "missing field `id` at line 5 column 17"
+        );
+    }
+
+    #[test]
+    fn test_request_with_invalid_id() {
+        // ID is one smaller than i64::MIN
+        let s = r#"
+                {
+                    "jsonrpc": "2.0",
+                    "method": "foobar",
+                    "params": [42, 43],
+                    "id": -9223372036854775809
+                }
+                "#;
+
+        assert_eq!(
+            Request::from_raw_value(serde_json::from_str(s).unwrap())
+                .err()
+                .unwrap()
+                .to_string(),
+            "id must be an integer, string, or null"
+        );
+
+        // ID is float
+        let s = r#"
+                {
+                    "jsonrpc": "2.0",
+                    "method": "foobar",
+                    "params": [42, 43],
+                    "id": 1.0
+                }
+                "#;
+
+        assert_eq!(
+            Request::from_raw_value(serde_json::from_str(s).unwrap())
+                .err()
+                .unwrap()
+                .to_string(),
+            "id must be an integer, string, or null"
+        );
     }
 }
