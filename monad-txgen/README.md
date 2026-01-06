@@ -10,7 +10,7 @@ The entry point in `run.rs` wires together the major components and loops throug
 
 **Components**
 
-- **Workload Scheduler** (`monad-eth-testutil/examples/txgen/run.rs`) – Reads the `Config`, deploys/loads any contracts required by the `TrafficGen`, and spawns the worker trio for each generator inside the current workload group phase. While a workload group is running, helper tasks keep metrics flowing, watch committed blocks, and build optional JSON reports.
+- **Workload Scheduler** (`monad-txgen/src/run.rs`) – Reads the `Config`, deploys/loads any contracts required by the `TrafficGen`, and spawns the worker trio for each generator inside the current workload group phase. While a workload group is running, helper tasks keep metrics flowing, watch committed blocks, and build optional JSON reports.
 - **Refresher** (`workers/refresher.rs`) – Owns the canonical account state for a worker. It batches `eth_getBalance`, `eth_getTransactionCount`, and (optionally) `balanceOf` calls for the sender set, updates local `SimpleAccount`s, and pushes them back into the generator channel on a configurable cadence.
 - **Generator harness** (`workers/gen_harness.rs`) – Wraps a `Generator` implementation and handles balance seeding, nonce management, gas-price jittering, and configurable batch transformations (mutate/drop/convert). It produces `(TxEnvelope, Address, PrivateKey)` triples that the RPC sender can sign and transmit as-is.
 - **RPC sender** (`workers/rpc_sender.rs`) – Enforces the target TPS by rate-limiting batches, performs dynamic interval adjustment based on the recent batch history, ensures request payloads stay below server limits, records `tx_hash → send_time` for later confirmation, and hands the processed accounts back to the refresher.
@@ -75,6 +75,6 @@ After these changes, txgen will automatically deploy (or reuse) the contract bef
 
 ## References
 
-- `monad-eth-testutil/examples/txgen/cli.rs` – CLI arguments, logging setup, and config loading.
-- `monad-eth-testutil/examples/txgen/sample_configs/` – Minimal JSON/TOML configs showing multiple workload groups.
-- `monad-eth-testutil/examples/txgen/report/` – Optional JSON reporting pipeline that snapshots metrics, Prometheus stats, and RPC responses when `report_dir` is configured.
+- `monad-txgen/src/cli.rs` – CLI arguments, logging setup, and config loading.
+- `monad-txgen/sample_configs/` – Minimal JSON/TOML configs showing multiple workload groups.
+- `monad-txgen/src/report/` – Optional JSON reporting pipeline that snapshots metrics, Prometheus stats, and RPC responses when `report_dir` is configured.
