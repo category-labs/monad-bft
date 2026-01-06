@@ -1,3 +1,18 @@
+// Copyright (C) 2025 Category Labs, Inc.
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
 use std::path::{Path, PathBuf};
 
 use futures::StreamExt;
@@ -18,7 +33,7 @@ const BFT_BLOCK_BODY_FILE_PATH: &str = "bodies/";
 const HEADER_BYTES_MEMORY_THRESHOLD: usize = 10_000;
 
 struct BftUploadItem {
-    num: u64,
+    seq_num: u64,
     header_id: BlockId,
     header_path: PathBuf,
     /// Header bytes, if kept in memory. None during large catch-up batches.
@@ -82,7 +97,7 @@ async fn index_ledger_dir(
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 if let Some(earliest_item) = upload_items.last() {
                     warn!(
-                        earliest_header_num = ?earliest_item.num,
+                        earliest_header_seq_num = ?earliest_item.seq_num,
                         earliest_header_id = ?earliest_item.header_id,
                         earliest_body_id = ?earliest_item.body_id,
                         latest_uploaded,
@@ -101,7 +116,7 @@ async fn index_ledger_dir(
 
         let header = BftBlockHeader::decode(&mut &bytes[..]).wrap_err("Failed to decode header")?;
         let item = BftUploadItem {
-            num: header.seq_num.0,
+            seq_num: header.seq_num.0,
             header_id: header.get_id(),
             header_path: head.clone(),
             header_bytes: if keep_header_bytes { Some(bytes) } else { None },
@@ -144,8 +159,8 @@ async fn index_ledger_dir(
 /// looping on each upload until it succeeds which helps with backpressure and naturally
 /// throttles upload concurrency if set too high
 ///
-/// Reading block bodies from disk is not retried since those failures are not intermitent and
-/// will not eventually resolve
+/// Reading block bodies from disk is not retried in-place; read failures are retried in the next batch
+/// to avoid advancing latest_uploaded past gaps.
 async fn upload_bft_blocks(
     model: BftBlockModel,
     mut to_upload: Receiver<BftUploadItem>,
@@ -158,7 +173,7 @@ async fn upload_bft_blocks(
         }
 
         let Some(new_latest) = upload_batch(&mut items, model.clone()).await? else {
-            warn!("No items uploaded in batch, skipping latest_uploaded update");
+            warn!("Skipping latest_uploaded update due to empty or failed batch");
             continue;
         };
 
@@ -172,32 +187,63 @@ async fn upload_bft_blocks(
 }
 
 async fn upload_batch(items: &mut Vec<BftUploadItem>, model: BftBlockModel) -> Result<Option<u64>> {
-    Ok(futures::stream::iter(items.drain(..))
+    enum ReadOutcome {
+        Ready(BftUploadItem, Vec<u8>, Vec<u8>),
+        Failed(BftUploadItem),
+    }
+
+    let outcomes: Vec<ReadOutcome> = futures::stream::iter(items.drain(..))
         .map(|mut item: BftUploadItem| async move {
-            // Read header bytes from disk if not cached
-            let header_bytes = match item.header_bytes.take() {
-                Some(bytes) => bytes,
-                None => fs::read(&item.header_path)
+            let read_result: Result<(Vec<u8>, Vec<u8>)> = async {
+                // Read header bytes from disk if not cached
+                let header_bytes = match item.header_bytes.take() {
+                    Some(bytes) => bytes,
+                    None => fs::read(&item.header_path)
+                        .await
+                        .wrap_err("Failed to read bft block header")?,
+                };
+
+                let body_bytes = fs::read(&item.body_path)
                     .await
-                    .wrap_err("Failed to read bft block header")?,
-            };
+                    .wrap_err("Failed to read bft block body")?;
 
-            let body_bytes = fs::read(&item.body_path)
-                .await
-                .wrap_err("Failed to read bft block body")?;
+                Ok((header_bytes, body_bytes))
+            }
+            .await;
 
-            Ok((item, header_bytes, body_bytes))
-        })
-        .buffered(UPLOAD_CONCURRENCY)
-        .filter_map(|result: Result<(BftUploadItem, Vec<u8>, Vec<u8>)>| async {
-            match result {
-                Ok(item) => Some(item),
+            match read_result {
+                Ok((header_bytes, body_bytes)) => {
+                    ReadOutcome::Ready(item, header_bytes, body_bytes)
+                }
                 Err(e) => {
                     error!("Failed to read bft block from disk: {e:?}");
-                    None
+                    ReadOutcome::Failed(item)
                 }
             }
         })
+        .buffered(UPLOAD_CONCURRENCY)
+        .collect()
+        .await;
+
+    let mut ready_items = Vec::new();
+    let mut failed_items = Vec::new();
+    for outcome in outcomes {
+        match outcome {
+            ReadOutcome::Ready(item, header_bytes, body_bytes) => {
+                ready_items.push((item, header_bytes, body_bytes));
+            }
+            ReadOutcome::Failed(item) => failed_items.push(item),
+        }
+    }
+
+    let had_failures = !failed_items.is_empty();
+    items.extend(failed_items);
+
+    if ready_items.is_empty() {
+        return Ok(None);
+    }
+
+    let max_uploaded = futures::stream::iter(ready_items)
         .map(|(item, header_bytes, body_bytes)| {
             let model = model.clone();
             async move {
@@ -210,14 +256,20 @@ async fn upload_batch(items: &mut Vec<BftUploadItem>, model: BftBlockModel) -> R
                         }
                     }
                 }
-                item.num
+                item.seq_num
             }
         })
         .buffer_unordered(UPLOAD_CONCURRENCY)
         .fold(None, |acc: Option<u64>, num| async move {
             Some(acc.map_or(num, |acc| acc.max(num)))
         })
-        .await)
+        .await;
+
+    if had_failures {
+        return Ok(None);
+    }
+
+    Ok(max_uploaded)
 }
 
 async fn upload(
@@ -229,7 +281,7 @@ async fn upload(
     try_join!(
         model.put_header_bytes(&item.header_id, &header_bytes),
         model.put_body_bytes(&item.body_id, &body_bytes),
-        model.put_index(item.num, &item.header_id),
+        model.put_index(item.seq_num, &item.header_id),
     )
     .map(|_| ())
 }

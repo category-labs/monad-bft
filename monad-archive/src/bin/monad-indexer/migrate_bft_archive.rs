@@ -16,7 +16,9 @@
 use alloy_rlp::Decodable;
 use futures::future::join_all;
 use monad_archive::{
-    kvstore::WritePolicy, model::bft_ledger::{BftBlockHeader, BftBlockModel}, prelude::*
+    kvstore::WritePolicy,
+    model::bft_ledger::{BftBlockHeader, BftBlockModel},
+    prelude::*,
 };
 use monad_types::{BlockId, Hash};
 use serde::{Deserialize, Serialize};
@@ -25,13 +27,22 @@ const LEGACY_BFT_BLOCKS_PREFIX: &str = "bft_block/";
 const BFT_INDEX_MARKERS_PREFIX: &str = "bft/index_markers/";
 const RETRY_DELAY: Duration = Duration::from_millis(500);
 const MAX_STARTUP_RETRIES: usize = 10;
+// scan_prefix counts .header and .body keys, so we overscan to find enough headers.
+const CANDIDATE_SCAN_MULTIPLIER: usize = 40;
 
+/// Tracks indexing progress for a sub-chain starting at a committable head and
+/// walking backwards toward its ancestors. The tail points at the next block
+/// to index, which is expected to have a lower seq_num than the head.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 struct IndexedRangeMarker {
-    start_num: u64,
-    end_num: u64,
-    start_id: BlockId,
-    end_id: BlockId,
+    #[serde(rename = "start_num")]
+    head_num: u64,
+    #[serde(rename = "end_num")]
+    tail_num: u64,
+    #[serde(rename = "start_id")]
+    head_id: BlockId,
+    #[serde(rename = "end_id")]
+    tail_id: BlockId,
 }
 
 #[derive(Clone)]
@@ -67,8 +78,8 @@ impl BftBlockIndex {
         let handles = known_committable_heads.iter().map(|marker| {
             let other_sub_chain_tips = known_committable_heads
                 .iter()
-                .map(|h| h.start_id)
-                .filter(|h| h != &marker.start_id)
+                .map(|h| h.head_id)
+                .filter(|h| h != &marker.head_id)
                 .collect::<HashSet<BlockId>>();
 
             let mut marker = marker.clone();
@@ -145,12 +156,15 @@ impl BftBlockIndex {
         let candidates = self
             .source
             // Get extras in case some are not canonical
-            .scan_prefix_with_max_keys(LEGACY_BFT_BLOCKS_PREFIX, concurrency * 20)
+            .scan_prefix_with_max_keys(
+                LEGACY_BFT_BLOCKS_PREFIX,
+                concurrency * CANDIDATE_SCAN_MULTIPLIER,
+            )
             .await?;
 
         info!(?candidates, "Found {} candidates", candidates.len());
 
-        let candidates = candidates.into_iter().into_iter().filter_map(|key| {
+        let candidates = candidates.into_iter().filter_map(|key| {
             info!("Candidate key: {}", key);
             let hex_str = key
                 .strip_prefix(LEGACY_BFT_BLOCKS_PREFIX)?
@@ -174,10 +188,10 @@ impl BftBlockIndex {
                     let (committable_header, _) =
                         self.fetch_legacy_header_by_id(&committable_id).await?;
                     known_committable_heads.insert(IndexedRangeMarker {
-                        start_num: committable_header.seq_num.0,
-                        end_num: committable_header.seq_num.0,
-                        start_id: committable_id,
-                        end_id: committable_id,
+                        head_num: committable_header.seq_num.0,
+                        tail_num: committable_header.seq_num.0,
+                        head_id: committable_id,
+                        tail_id: committable_id,
                     });
                 }
                 Ok(None) => {}
@@ -193,7 +207,7 @@ impl BftBlockIndex {
         futures::stream::iter(known_committable_heads.iter())
             .for_each_concurrent(Some(100), |marker| {
                 retry_forever(
-                    move || self.write_marker(&marker),
+                    move || self.write_marker(marker),
                     "write marker",
                     RETRY_DELAY,
                 )
@@ -224,29 +238,55 @@ impl BftBlockIndex {
         max_num_per_batch: usize,
         copy_data: bool,
     ) -> Result<()> {
-        while !other_sub_chain_tips.contains(&marker.end_id) {
+        while !other_sub_chain_tips.contains(&marker.tail_id) {
+            if self.model.get_id_by_num(marker.tail_num).await.is_ok() {
+                info!(
+                    "Sub-chain already indexed at num {}, stopping",
+                    marker.tail_num
+                );
+                return Ok(());
+            }
             info!(
                 "Indexing sub-chain from num: {}, to num: {}",
-                marker.end_num,
-                marker.end_num.saturating_sub(max_num_per_batch as u64)
+                marker.tail_num,
+                marker.tail_num.saturating_sub(max_num_per_batch as u64)
             );
             for _ in 0..max_num_per_batch {
-                if other_sub_chain_tips.contains(&marker.end_id) {
+                if other_sub_chain_tips.contains(&marker.tail_id) {
+                    return Ok(());
+                }
+                if self.model.get_id_by_num(marker.tail_num).await.is_ok() {
+                    info!(
+                        "Sub-chain already indexed at num {}, stopping",
+                        marker.tail_num
+                    );
                     return Ok(());
                 }
 
-                let current_id = marker.end_id;
+                let current_id = marker.tail_id;
+                let current_header_key = format!(
+                    "{}{}.header",
+                    LEGACY_BFT_BLOCKS_PREFIX,
+                    hex::encode(current_id.0)
+                );
+                if self.source.get(&current_header_key).await?.is_none() {
+                    warn!(
+                        "Stopping sub-chain: missing legacy header for id {}",
+                        hex::encode(current_id.0)
+                    );
+                    return Ok(());
+                }
                 let (next_id, next_num) = retry_forever(
                     || self.index_single_block(current_id, copy_data),
                     "index block",
                     RETRY_DELAY,
                 )
                 .await;
-                marker.end_id = next_id;
-                marker.end_num = next_num;
+                marker.tail_id = next_id;
+                marker.tail_num = next_num;
             }
 
-            retry_forever(|| self.write_marker(&marker), "write marker", RETRY_DELAY).await;
+            retry_forever(|| self.write_marker(marker), "write marker", RETRY_DELAY).await;
             info!("Written marker {:?}", marker);
         }
 
@@ -299,15 +339,11 @@ impl BftBlockIndex {
             .await
     }
 
-    fn marker_key(start_num: u64) -> String {
-        format!("{BFT_INDEX_MARKERS_PREFIX}{start_num}")
+    fn marker_key(head_num: u64) -> String {
+        format!("{BFT_INDEX_MARKERS_PREFIX}{head_num}")
     }
 
-    async fn ensure_marker_slot_matches_start_id(
-        &self,
-        key: &str,
-        start_id: &BlockId,
-    ) -> Result<()> {
+    async fn ensure_marker_slot_matches_head_id(&self, key: &str, head_id: &BlockId) -> Result<()> {
         let Some(existing) = self.sink.get(key).await? else {
             return Ok(());
         };
@@ -315,11 +351,11 @@ impl BftBlockIndex {
         let existing: IndexedRangeMarker = serde_json::from_slice(&existing)
             .wrap_err_with(|| format!("Failed to deserialize marker at key {key}"))?;
 
-        if existing.start_id != *start_id {
+        if existing.head_id != *head_id {
             return Err(eyre!(
-                "Marker key collision at key={key}: existing start_id={}, attempted start_id={}",
-                hex::encode(existing.start_id.0),
-                hex::encode(start_id.0),
+                "Marker key collision at key={key}: existing head_id={}, attempted head_id={}",
+                hex::encode(existing.head_id.0),
+                hex::encode(head_id.0),
             ));
         }
 
@@ -327,8 +363,8 @@ impl BftBlockIndex {
     }
 
     async fn write_marker(&self, range: &IndexedRangeMarker) -> Result<()> {
-        let key = Self::marker_key(range.start_num);
-        self.ensure_marker_slot_matches_start_id(&key, &range.start_id)
+        let key = Self::marker_key(range.head_num);
+        self.ensure_marker_slot_matches_head_id(&key, &range.head_id)
             .await?;
         let bytes = serde_json::to_vec(&range).wrap_err("Failed to serialize index range")?;
         self.sink
@@ -339,8 +375,8 @@ impl BftBlockIndex {
     }
 
     async fn delete_marker(&self, range: &IndexedRangeMarker) -> Result<()> {
-        let key = Self::marker_key(range.start_num);
-        self.ensure_marker_slot_matches_start_id(&key, &range.start_id)
+        let key = Self::marker_key(range.head_num);
+        self.ensure_marker_slot_matches_head_id(&key, &range.head_id)
             .await?;
         self.sink
             .delete(&key)
@@ -379,10 +415,10 @@ impl std::fmt::Display for IndexedRangeMarker {
         write!(
             f,
             "IndexedRangeMarker: num: {}..{}, id: {}..{}",
-            self.start_num,
-            self.end_num,
-            hex::encode(self.start_id.0),
-            hex::encode(self.end_id.0)
+            self.head_num,
+            self.tail_num,
+            hex::encode(self.head_id.0),
+            hex::encode(self.tail_id.0)
         )
     }
 }
@@ -398,16 +434,16 @@ mod tests {
     }
 
     fn marker(
-        start_num: u64,
-        start_id: BlockId,
-        end_num: u64,
-        end_id: BlockId,
+        head_num: u64,
+        head_id: BlockId,
+        tail_num: u64,
+        tail_id: BlockId,
     ) -> IndexedRangeMarker {
         IndexedRangeMarker {
-            start_num,
-            end_num,
-            start_id,
-            end_id,
+            head_num,
+            tail_num,
+            head_id,
+            tail_id,
         }
     }
 
@@ -418,7 +454,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn write_marker_rejects_start_id_collision() {
+    async fn write_marker_rejects_head_id_collision() {
         let index = test_index();
         let first = marker(100, block_id(0xAA), 100, block_id(0xAA));
         let colliding = marker(100, block_id(0xBB), 99, block_id(0xCC));
@@ -429,7 +465,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn write_marker_allows_updates_for_same_start_id() {
+    async fn write_marker_allows_updates_for_same_head_id() {
         let index = test_index();
         let first = marker(200, block_id(0x11), 200, block_id(0x11));
         let advanced = marker(200, block_id(0x11), 150, block_id(0x22));
@@ -437,14 +473,14 @@ mod tests {
         index.write_marker(&first).await.unwrap();
         index.write_marker(&advanced).await.unwrap();
 
-        let key = BftBlockIndex::marker_key(advanced.start_num);
+        let key = BftBlockIndex::marker_key(advanced.head_num);
         let stored = index.sink.get(&key).await.unwrap().unwrap();
         let stored: IndexedRangeMarker = serde_json::from_slice(&stored).unwrap();
         assert_eq!(stored, advanced);
     }
 
     #[tokio::test]
-    async fn delete_marker_rejects_start_id_collision() {
+    async fn delete_marker_rejects_head_id_collision() {
         let index = test_index();
         let first = marker(300, block_id(0x01), 300, block_id(0x01));
         let colliding = marker(300, block_id(0x02), 299, block_id(0x03));
@@ -453,7 +489,7 @@ mod tests {
         let err = index.delete_marker(&colliding).await.unwrap_err();
         assert!(err.to_string().contains("Marker key collision"));
 
-        let key = BftBlockIndex::marker_key(first.start_num);
+        let key = BftBlockIndex::marker_key(first.head_num);
         assert!(index.sink.get(&key).await.unwrap().is_some());
     }
 }

@@ -179,7 +179,7 @@ impl CliArgs {
                     return Err(Self::missing_archive_sink_error());
                 }
             }
-            Commands::MigrateLogs { .. } => {}
+            Commands::MigrateLogs { .. } | Commands::MigrateBftIndex { .. } => {}
         }
         Ok(())
     }

@@ -80,7 +80,10 @@ async fn main() -> Result<()> {
                 concurrency,
                 batch_size,
                 no_copy_data,
-            } => run_migrate_bft_index(source, sink, concurrency, batch_size, !no_copy_data).await,
+            } => {
+                // Default behavior is to copy data; the flag disables it.
+                run_migrate_bft_index(source, sink, concurrency, batch_size, !no_copy_data).await
+            }
         },
         cli::ParsedCli::Daemon(args) => {
             info!(?args, "Cli Arguments: ");
