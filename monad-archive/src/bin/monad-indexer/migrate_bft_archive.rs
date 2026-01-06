@@ -118,7 +118,12 @@ impl BftBlockIndex {
             .scan_prefix_with_max_keys(LEGACY_BFT_BLOCKS_PREFIX, concurrency * 2)
             .await?
             .into_iter()
-            .map(|s| BlockId(Hash::decode(&mut s.as_bytes()).unwrap()));
+            .filter_map(|key| {
+                let hex_str = key.strip_prefix(LEGACY_BFT_BLOCKS_PREFIX)?;
+                let bytes = hex::decode(hex_str).ok()?;
+                let arr: [u8; 32] = bytes.try_into().ok()?;
+                Some(BlockId(Hash(arr)))
+            });
 
         for candidate in candidates {
             if known_committable_heads.len() >= concurrency {
@@ -215,7 +220,7 @@ impl BftBlockIndex {
             .map(|s| async move {
                 let value = self
                     .kv
-                    .get(&format!("{BFT_INDEX_MARKERS_PREFIX}/{s}"))
+                    .get(&format!("{BFT_INDEX_MARKERS_PREFIX}{s}"))
                     .await?
                     .ok_or_eyre("Marker not found")?;
                 serde_json::from_slice(&value[..]).wrap_err("Failed to deserialize index range")

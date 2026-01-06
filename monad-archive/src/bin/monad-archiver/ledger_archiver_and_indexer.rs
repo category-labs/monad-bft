@@ -1,31 +1,28 @@
-use std::{
-    collections::{BTreeMap, HashMap, HashSet},
-    path::{Path, PathBuf},
-    time::SystemTime,
-};
+use std::path::{Path, PathBuf};
 
-use futures::{
-    join,
-    stream::{self, StreamExt},
-};
+use futures::StreamExt;
 use monad_archive::{
     model::bft_ledger::{BftBlockHeader, BftBlockModel},
     prelude::*,
 };
-use monad_types::{BlockId, SeqNum};
+use monad_types::BlockId;
 use tokio::{
     fs,
     sync::mpsc::{self, Receiver},
 };
 
 const UPLOAD_CONCURRENCY: usize = 10;
-const BFT_BLOCK_HEADER_FILE_PATH: &str = "headers/";
 const BFT_BLOCK_BODY_FILE_PATH: &str = "bodies/";
+/// Threshold for keeping header bytes in memory during scan.
+/// Above this, we discard bytes to bound memory and re-read during upload.
+const HEADER_BYTES_MEMORY_THRESHOLD: usize = 10_000;
 
 struct BftUploadItem {
     num: u64,
     header_id: BlockId,
-    header_bytes: Vec<u8>,
+    header_path: PathBuf,
+    /// Header bytes, if kept in memory. None during large catch-up batches.
+    header_bytes: Option<Vec<u8>>,
     body_id: monad_types::Hash,
     body_path: PathBuf,
 }
@@ -34,14 +31,12 @@ pub async fn bft_archive_worker(
     model: BftBlockModel,
     ledger_dir: PathBuf,
     poll_frequency: Duration,
-    metrics: Metrics,
+    _metrics: Metrics,
 ) -> Result<()> {
-    let latest_uploaded = model.get_latest_uploaded().await?;
-
     let (tx, rx) = mpsc::channel(100);
     tokio::spawn({
-        let ledger_dir = ledger_dir.clone();
-        upload_bft_blocks(model, ledger_dir, rx)
+        let model = model.clone();
+        upload_bft_blocks(model, rx)
     });
 
     let mut interval = tokio::time::interval(poll_frequency);
@@ -49,7 +44,16 @@ pub async fn bft_archive_worker(
 
     loop {
         interval.tick().await;
-        let items = index_ledger_dir(&ledger_dir, latest_uploaded).await?;
+
+        let latest_uploaded = model.get_latest_uploaded().await?;
+        let items = match index_ledger_dir(&ledger_dir, latest_uploaded).await {
+            Ok(items) => items,
+            Err(e) => {
+                warn!("Failed to index ledger dir: {e:?}");
+                continue;
+            }
+        };
+
         for item in items {
             tx.send(item).await?;
         }
@@ -69,13 +73,14 @@ async fn index_ledger_dir(
     let headers_dir = ledger_dir.join("headers");
 
     let mut head = fs::read_link(headers_dir.join("finalized_head")).await?;
-    let mut num_to_hash: Vec<BftUploadItem> = Default::default();
+    let mut upload_items: Vec<BftUploadItem> = Default::default();
+    let mut keep_header_bytes = true;
 
     loop {
         let bytes = match fs::read(&head).await {
             Ok(bytes) => bytes,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                if let Some(earliest_item) = num_to_hash.last() {
+                if let Some(earliest_item) = upload_items.last() {
                     warn!(
                         earliest_header_num = ?earliest_item.num,
                         earliest_header_id = ?earliest_item.header_id,
@@ -87,7 +92,7 @@ async fn index_ledger_dir(
                     warn!("Gap exists between latest uploaded and earliest header in ledger dir");
                 }
 
-                return Ok(num_to_hash);
+                break;
             }
             Err(e) => {
                 return Err(e.into());
@@ -95,32 +100,43 @@ async fn index_ledger_dir(
         };
 
         let header = BftBlockHeader::decode(&mut &bytes[..]).wrap_err("Failed to decode header")?;
-        let block_id = head.file_name().ok_or_eyre("Failed to get file name")?;
         let item = BftUploadItem {
             num: header.seq_num.0,
             header_id: header.get_id(),
-            header_bytes: bytes,
+            header_path: head.clone(),
+            header_bytes: if keep_header_bytes { Some(bytes) } else { None },
             body_path: ledger_dir
                 .join(BFT_BLOCK_BODY_FILE_PATH)
                 .join(&hex::encode(header.block_body_id.0)),
             body_id: header.block_body_id.0,
         };
+        upload_items.push(item);
 
-        // remove after debugging
-        // assert!(
-        //     item.header_id == hex::encode(block_id.to_string_lossy().as_bytes()),
-        //     "Filename and header id mismatch"
-        // );
-        num_to_hash.push(item);
+        // Check if we've exceeded memory threshold for header bytes
+        if keep_header_bytes && upload_items.len() > HEADER_BYTES_MEMORY_THRESHOLD {
+            info!(
+                "Exceeded header bytes memory threshold ({}), switching to lightweight mode",
+                HEADER_BYTES_MEMORY_THRESHOLD
+            );
+            // Clear bytes from already collected items to free memory
+            for item in &mut upload_items {
+                item.header_bytes = None;
+            }
+            keep_header_bytes = false;
+        }
 
         head = headers_dir.join(hex::encode(header.get_parent_id().0));
 
         if let Some(latest_uploaded) = latest_uploaded {
             if header.seq_num.0 <= latest_uploaded {
-                return Ok(num_to_hash);
+                break;
             }
         }
     }
+
+    // Reverse so oldest blocks are uploaded first
+    upload_items.reverse();
+    Ok(upload_items)
 }
 
 /// Worker that uploads bft blocks to the kv store
@@ -132,7 +148,6 @@ async fn index_ledger_dir(
 /// will not eventually resolve
 async fn upload_bft_blocks(
     model: BftBlockModel,
-    ledger_dir: PathBuf,
     mut to_upload: Receiver<BftUploadItem>,
 ) -> Result<()> {
     let mut items = Vec::new();
@@ -142,35 +157,40 @@ async fn upload_bft_blocks(
             items.push(item);
         }
 
-        let new_latest = items
-            .iter()
-            .map(|item| item.num)
-            .max()
-            .expect("Items non-empty");
+        let new_latest = futures::stream::iter(items.drain(..))
+            .map(|mut item: BftUploadItem| async move {
+                // Read header bytes from disk if not cached
+                let header_bytes = match item.header_bytes.take() {
+                    Some(bytes) => bytes,
+                    None => fs::read(&item.header_path)
+                        .await
+                        .wrap_err("Failed to read bft block header")?,
+                };
 
-        futures::stream::iter(items.drain(..))
-            .map(|item: BftUploadItem| async move {
                 let body_bytes = fs::read(&item.body_path)
                     .await
                     .wrap_err("Failed to read bft block body")?;
 
-                Ok((item, body_bytes))
+                Ok((item, header_bytes, body_bytes))
             })
             .buffered(UPLOAD_CONCURRENCY)
-            .filter_map(|result: Result<(BftUploadItem, Vec<u8>)>| async {
-                match result {
-                    Ok(item) => Some(item),
-                    Err(e) => {
-                        error!("Failed to read bft block body from disk: {e:?}");
-                        None
+            .filter_map(
+                |result: Result<(BftUploadItem, Vec<u8>, Vec<u8>)>| async {
+                    match result {
+                        Ok(item) => Some(item),
+                        Err(e) => {
+                            error!("Failed to read bft block from disk: {e:?}");
+                            None
+                        }
                     }
-                }
-            })
-            .for_each_concurrent(Some(UPLOAD_CONCURRENCY), |(item, body_bytes)| {
+                },
+            )
+            .map(|(item, header_bytes, body_bytes)| {
                 let model = model.clone();
                 async move {
                     loop {
-                        match upload(&model, &item, body_bytes.clone()).await {
+                        match upload(&model, &item, header_bytes.clone(), body_bytes.clone()).await
+                        {
                             Ok(_) => break,
                             Err(e) => {
                                 error!("Failed to upload bft block: {e:?}");
@@ -178,9 +198,19 @@ async fn upload_bft_blocks(
                             }
                         }
                     }
+                    item.num
                 }
             })
+            .buffer_unordered(UPLOAD_CONCURRENCY)
+            .fold(None, |acc: Option<u64>, num| async move {
+                Some(acc.map_or(num, |acc| acc.max(num)))
+            })
             .await;
+
+        let Some(new_latest) = new_latest else {
+            warn!("No items uploaded in batch, skipping latest_uploaded update");
+            continue;
+        };
 
         while let Err(e) = model.set_latest_uploaded(new_latest).await {
             error!("Failed to set latest uploaded: {e:?}");
@@ -191,9 +221,14 @@ async fn upload_bft_blocks(
     Ok(())
 }
 
-async fn upload(model: &BftBlockModel, item: &BftUploadItem, body_bytes: Vec<u8>) -> Result<()> {
+async fn upload(
+    model: &BftBlockModel,
+    item: &BftUploadItem,
+    header_bytes: Vec<u8>,
+    body_bytes: Vec<u8>,
+) -> Result<()> {
     try_join!(
-        model.put_header_bytes(&item.header_id, &item.header_bytes),
+        model.put_header_bytes(&item.header_id, &header_bytes),
         model.put_body_bytes(&item.body_id, &body_bytes),
         model.put_index(item.num, &item.header_id),
     )
