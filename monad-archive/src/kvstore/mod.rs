@@ -26,7 +26,7 @@ use std::collections::HashMap;
 use bytes::Bytes;
 use enum_dispatch::enum_dispatch;
 use eyre::Result;
-use futures::{future::try_join_all, Stream};
+use futures::future::try_join_all;
 use tokio_retry::{
     strategy::{jitter, ExponentialBackoff},
     RetryIf,

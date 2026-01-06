@@ -23,9 +23,14 @@ pub async fn run_migrate_logs(
 ) -> Result<()> {
     let metrics = Metrics::none();
 
-    let block_data_reader = args.block_data_source.build(&metrics).await?;
+    let block_data_reader = args
+        .block_data_source
+        .expect("block_data_source is required")
+        .build(&metrics)
+        .await?;
     let tx_index_archiver = args
         .archive_sink
+        .expect("archive_sink is required")
         .build_index_archive(&metrics, 350 * 1024)
         .await?;
 
