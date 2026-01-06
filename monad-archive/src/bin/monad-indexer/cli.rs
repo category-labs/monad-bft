@@ -24,7 +24,7 @@ pub struct Cli {
 
     /// Source to read block data that will be indexed
     #[arg(long, value_parser = clap::value_parser!(BlockDataReaderArgs))]
-    pub block_data_source: BlockDataReaderArgs,
+    pub block_data_source: Option<BlockDataReaderArgs>,
 
     /// If reading from --block-data-source fails, attempts to read from
     /// this optional fallback
@@ -34,7 +34,7 @@ pub struct Cli {
     /// Where archive data is written to
     /// For aws: 'aws <bucket_name> <concurrent_requests>'
     #[arg(long, value_parser = clap::value_parser!(ArchiveArgs))]
-    pub archive_sink: ArchiveArgs,
+    pub archive_sink: Option<ArchiveArgs>,
 
     /// If set, indexer will perform an asynchronous backfill of the index
     /// This allows a second indexer to backfill a range while the first indexer is running
@@ -116,5 +116,27 @@ pub enum Commands {
         /// Set the async-backfill marker instead of the primary marker
         #[arg(long, action = ArgAction::SetTrue)]
         async_backfill: bool,
+    },
+    /// Build seq_num -> block_id index from legacy bft_blocks/ archive data
+    MigrateBftIndex {
+        /// Source archive containing the legacy bft_blocks/ data
+        #[arg(long, value_parser = clap::value_parser!(ArchiveArgs))]
+        source: ArchiveArgs,
+
+        /// Sink archive to write index and markers to
+        #[arg(long, value_parser = clap::value_parser!(ArchiveArgs))]
+        sink: ArchiveArgs,
+
+        /// Number of sub-chains to index in parallel
+        #[arg(long, default_value_t = 4)]
+        concurrency: usize,
+
+        /// Max blocks to index before persisting progress marker
+        #[arg(long, default_value_t = 1000)]
+        batch_size: usize,
+
+        /// Skip copying header and body bytes to the new schema
+        #[arg(long)]
+        no_copy_data: bool,
     },
 }

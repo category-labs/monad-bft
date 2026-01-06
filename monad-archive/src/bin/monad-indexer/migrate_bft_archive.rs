@@ -13,27 +13,19 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::path::{Path, PathBuf};
-
-use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
+use alloy_rlp::Decodable;
 use futures::future::join_all;
 use monad_archive::{
     model::bft_ledger::{BftBlockHeader, BftBlockModel},
     prelude::*,
 };
-use monad_block_persist::{block_id_to_hex_prefix, BlockPersist, FileBlockPersist};
-use monad_consensus_types::{
-    block::ConsensusBlockHeader,
-    payload::{ConsensusBlockBody, ConsensusBlockBodyId, RoundSignature},
-    quorum_certificate::QuorumCertificate,
-    voting::Vote,
-};
-use monad_node_config::{ExecutionProtocolType, SignatureCollectionType, SignatureType};
-use monad_types::{BlockId, Epoch, ExecutionProtocol, Hash, NodeId, Round, SeqNum};
+use monad_types::{BlockId, Hash};
 use serde::{Deserialize, Serialize};
 
-const LEGACY_BFT_BLOCKS_PREFIX: &str = "bft_blocks/";
+const LEGACY_BFT_BLOCKS_PREFIX: &str = "bft_block/";
 const BFT_INDEX_MARKERS_PREFIX: &str = "bft/index_markers/";
+const RETRY_DELAY: Duration = Duration::from_millis(500);
+const MAX_STARTUP_RETRIES: usize = 10;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 struct IndexedRangeMarker {
@@ -45,15 +37,19 @@ struct IndexedRangeMarker {
 
 #[derive(Clone)]
 pub struct BftBlockIndex {
-    pub kv: KVStoreErased,
+    /// Read-only source for legacy bft_blocks/ data
+    pub source: KVStoreErased,
+    /// Read-write sink for markers and index
+    pub sink: KVStoreErased,
     pub model: BftBlockModel,
 }
 
 impl BftBlockIndex {
-    pub fn new(kv: KVStoreErased) -> Self {
+    pub fn new(source: KVStoreErased, sink: KVStoreErased) -> Self {
         Self {
-            model: BftBlockModel::new(kv.clone()),
-            kv,
+            source,
+            model: BftBlockModel::new(sink.clone()),
+            sink,
         }
     }
 
@@ -61,8 +57,25 @@ impl BftBlockIndex {
         &self,
         concurrency: usize,
         max_num_per_batch: usize,
+        copy_data: bool,
     ) -> Result<()> {
-        let known_committable_heads = Arc::new(self.ensure_markers(concurrency).await?);
+        // Bounded retry for startup - failures here likely indicate misconfiguration
+        let mut retries = 0;
+        let known_committable_heads = loop {
+            match self.ensure_markers(concurrency).await {
+                Ok(markers) => break Arc::new(markers),
+                Err(e) => {
+                    retries += 1;
+                    if retries >= MAX_STARTUP_RETRIES {
+                        return Err(e.wrap_err(format!(
+                            "Failed to initialize markers after {retries} retries"
+                        )));
+                    }
+                    error!(?e, retries, "Failed to ensure markers, retrying...");
+                    tokio::time::sleep(RETRY_DELAY).await;
+                }
+            }
+        };
         info!("Indexing {} sub-chains", known_committable_heads.len());
         for marker in known_committable_heads.iter() {
             info!("Marker: {}", marker);
@@ -78,9 +91,14 @@ impl BftBlockIndex {
             let mut marker = marker.clone();
             let this = self.clone();
             tokio::spawn(async move {
-                this.index_sub_chain(&mut marker, other_sub_chain_tips, max_num_per_batch)
-                    .await
-                    .wrap_err("Failed to index sub-chain")?;
+                this.index_sub_chain(
+                    &mut marker,
+                    other_sub_chain_tips,
+                    max_num_per_batch,
+                    copy_data,
+                )
+                .await
+                .wrap_err("Failed to index sub-chain")?;
                 info!(
                     "Sub-chain indexed successfully, deleting marker {:?}",
                     &marker
@@ -89,16 +107,23 @@ impl BftBlockIndex {
             })
         });
 
+        let mut errors = Vec::new();
         for result in join_all(handles).await {
             match result {
                 Ok(Ok(())) => {}
                 Ok(Err(e)) => {
                     error!(?e, "Failed to index sub-chain");
+                    errors.push(e);
                 }
                 Err(e) => {
-                    error!(?e, "Failed to index sub-chain");
+                    error!(?e, "Task panicked while indexing sub-chain");
+                    errors.push(eyre::eyre!("Task panicked: {e}"));
                 }
             }
+        }
+
+        if let Some(error) = errors.pop() {
+            return Err(error);
         }
 
         Ok(())
@@ -113,17 +138,23 @@ impl BftBlockIndex {
         }
 
         let candidates = self
-            .kv
+            .source
             // Get extras in case some are not canonical
-            .scan_prefix_with_max_keys(LEGACY_BFT_BLOCKS_PREFIX, concurrency * 2)
-            .await?
-            .into_iter()
-            .filter_map(|key| {
-                let hex_str = key.strip_prefix(LEGACY_BFT_BLOCKS_PREFIX)?;
-                let bytes = hex::decode(hex_str).ok()?;
-                let arr: [u8; 32] = bytes.try_into().ok()?;
-                Some(BlockId(Hash(arr)))
-            });
+            .scan_prefix_with_max_keys(LEGACY_BFT_BLOCKS_PREFIX, concurrency * 20)
+            .await?;
+
+        info!(?candidates, "Found {} candidates", candidates.len());
+
+        let candidates = candidates.into_iter().into_iter().filter_map(|key| {
+            info!("Candidate key: {}", key);
+            let hex_str = key
+                .strip_prefix(LEGACY_BFT_BLOCKS_PREFIX)?
+                .strip_suffix(".header")?;
+            info!("Hex string: {}", hex_str);
+            let bytes = hex::decode(hex_str).ok()?;
+            let arr: [u8; 32] = bytes.try_into().ok()?;
+            Some(BlockId(Hash(arr)))
+        });
 
         for candidate in candidates {
             if known_committable_heads.len() >= concurrency {
@@ -131,11 +162,12 @@ impl BftBlockIndex {
                 break;
             }
 
-            let header = self.fetch_header_by_id(&candidate).await?;
+            let (header, _) = self.fetch_legacy_header_by_id(&candidate).await?;
             match self.find_committable_head(header).await {
                 Ok(Some(committable_id)) => {
                     info!("Found committable head {:?}", committable_id);
-                    let committable_header = self.fetch_header_by_id(&committable_id).await?;
+                    let (committable_header, _) =
+                        self.fetch_legacy_header_by_id(&committable_id).await?;
                     known_committable_heads.insert(IndexedRangeMarker {
                         start_num: committable_header.seq_num.0,
                         end_num: committable_header.seq_num.0,
@@ -154,10 +186,14 @@ impl BftBlockIndex {
         }
 
         futures::stream::iter(known_committable_heads.iter())
-            .map(|marker| async move { self.write_marker(&marker).await })
-            .buffer_unordered(100)
-            .try_collect::<()>()
-            .await?;
+            .for_each_concurrent(Some(100), |marker| {
+                retry_forever(
+                    move || self.write_marker(&marker),
+                    "write marker",
+                    RETRY_DELAY,
+                )
+            })
+            .await;
 
         Ok(known_committable_heads)
     }
@@ -168,7 +204,7 @@ impl BftBlockIndex {
     ) -> Result<Option<BlockId>> {
         loop {
             let parent_id = bft_header.get_parent_id();
-            let parent_header = self.fetch_header_by_id(&parent_id).await?;
+            let (parent_header, _) = self.fetch_legacy_header_by_id(&parent_id).await?;
             if let Some(committable) = bft_header.qc.get_committable_id(&parent_header) {
                 return Ok(Some(committable));
             }
@@ -181,6 +217,7 @@ impl BftBlockIndex {
         marker: &mut IndexedRangeMarker,
         other_sub_chain_tips: HashSet<BlockId>,
         max_num_per_batch: usize,
+        copy_data: bool,
     ) -> Result<()> {
         while !other_sub_chain_tips.contains(&marker.end_id) {
             info!(
@@ -192,37 +229,64 @@ impl BftBlockIndex {
                 if other_sub_chain_tips.contains(&marker.end_id) {
                     return Ok(());
                 }
+
                 let current_id = marker.end_id;
-                let current_header = self.fetch_header_by_id(&current_id).await?;
-                self.model
-                    .put_index(current_header.seq_num.0, &current_id)
-                    .await?;
-                marker.end_id = current_header.get_parent_id();
-                marker.end_num = current_header.seq_num.0.saturating_sub(1);
-                info!(
-                    "Indexed bft block num: {}, id: {}",
-                    current_header.seq_num.0,
-                    hex::encode(current_id.0)
-                );
+                let (next_id, next_num) = retry_forever(
+                    || self.index_single_block(current_id, copy_data),
+                    "index block",
+                    RETRY_DELAY,
+                )
+                .await;
+                marker.end_id = next_id;
+                marker.end_num = next_num;
             }
 
-            self.write_marker(&marker).await?;
+            retry_forever(|| self.write_marker(&marker), "write marker", RETRY_DELAY).await;
             info!("Written marker {:?}", marker);
         }
 
         Ok(())
     }
 
+    /// Index a single block and return (next_block_id, next_seq_num) for marker update
+    async fn index_single_block(
+        &self,
+        current_id: BlockId,
+        copy_data: bool,
+    ) -> Result<(BlockId, u64)> {
+        let (current_header, header_bytes) = self.fetch_legacy_header_by_id(&current_id).await?;
+
+        self.model
+            .put_index(current_header.seq_num.0, &current_id)
+            .await?;
+
+        if copy_data {
+            let body_bytes = self.fetch_legacy_body_bytes_by_id(&current_header).await?;
+            self.model
+                .put_header_bytes(&current_id, &header_bytes)
+                .await?;
+            self.model
+                .put_body_bytes(&current_header.block_body_id.0, &body_bytes)
+                .await?;
+        }
+
+        info!(
+            "Indexed bft block num: {}, id: {}",
+            current_header.seq_num.0,
+            hex::encode(current_id.0)
+        );
+
+        let next_id = current_header.get_parent_id();
+        let next_num = current_header.seq_num.0.saturating_sub(1);
+        Ok((next_id, next_num))
+    }
+
     async fn get_markers(&self) -> Result<HashSet<IndexedRangeMarker>> {
-        let markers = self.kv.scan_prefix(BFT_INDEX_MARKERS_PREFIX).await?;
+        let markers = self.sink.scan_prefix(BFT_INDEX_MARKERS_PREFIX).await?;
 
         futures::stream::iter(markers)
             .map(|s| async move {
-                let value = self
-                    .kv
-                    .get(&format!("{BFT_INDEX_MARKERS_PREFIX}{s}"))
-                    .await?
-                    .ok_or_eyre("Marker not found")?;
+                let value = self.sink.get(&s).await?.ok_or_eyre("Marker not found")?;
                 serde_json::from_slice(&value[..]).wrap_err("Failed to deserialize index range")
             })
             .buffer_unordered(100)
@@ -233,7 +297,7 @@ impl BftBlockIndex {
     async fn write_marker(&self, range: &IndexedRangeMarker) -> Result<()> {
         let key = format!("{BFT_INDEX_MARKERS_PREFIX}{}", range.start_num);
         let bytes = serde_json::to_vec(&range).wrap_err("Failed to serialize index range")?;
-        self.kv
+        self.sink
             .put(key, bytes)
             .await
             .wrap_err("Failed to write index marker")?;
@@ -242,16 +306,35 @@ impl BftBlockIndex {
 
     async fn delete_marker(&self, range: &IndexedRangeMarker) -> Result<()> {
         let key = format!("{BFT_INDEX_MARKERS_PREFIX}{}", range.start_num);
-        self.kv
+        self.sink
             .delete(&key)
             .await
             .wrap_err("Failed to delete index marker")
     }
 
-    pub async fn fetch_header_by_id(&self, hash: &BlockId) -> Result<BftBlockHeader> {
-        let key = format!("{}{}", LEGACY_BFT_BLOCKS_PREFIX, hex::encode(hash.0));
-        let value = self.kv.get(&key).await?.ok_or_eyre("Header not found")?;
-        BftBlockHeader::decode(&mut &value[..]).wrap_err("Failed to decode header")
+    pub async fn fetch_legacy_header_by_id(
+        &self,
+        hash: &BlockId,
+    ) -> Result<(BftBlockHeader, Vec<u8>)> {
+        let key = format!("{}{}.header", LEGACY_BFT_BLOCKS_PREFIX, hex::encode(hash.0));
+        let bytes = self
+            .source
+            .get(&key)
+            .await?
+            .ok_or_eyre("Header not found")?;
+        let header = BftBlockHeader::decode(&mut &bytes[..]).wrap_err("Failed to decode header")?;
+        Ok((header, bytes.to_vec()))
+    }
+
+    async fn fetch_legacy_body_bytes_by_id(&self, header: &BftBlockHeader) -> Result<Vec<u8>> {
+        let body_id = header.block_body_id.0;
+        let key = format!("{}{}.body", LEGACY_BFT_BLOCKS_PREFIX, hex::encode(body_id));
+        Ok(self
+            .source
+            .get(&key)
+            .await?
+            .ok_or_eyre("Body not found")?
+            .to_vec())
     }
 }
 

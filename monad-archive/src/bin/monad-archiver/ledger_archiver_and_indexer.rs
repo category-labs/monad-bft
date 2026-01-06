@@ -157,57 +157,7 @@ async fn upload_bft_blocks(
             items.push(item);
         }
 
-        let new_latest = futures::stream::iter(items.drain(..))
-            .map(|mut item: BftUploadItem| async move {
-                // Read header bytes from disk if not cached
-                let header_bytes = match item.header_bytes.take() {
-                    Some(bytes) => bytes,
-                    None => fs::read(&item.header_path)
-                        .await
-                        .wrap_err("Failed to read bft block header")?,
-                };
-
-                let body_bytes = fs::read(&item.body_path)
-                    .await
-                    .wrap_err("Failed to read bft block body")?;
-
-                Ok((item, header_bytes, body_bytes))
-            })
-            .buffered(UPLOAD_CONCURRENCY)
-            .filter_map(
-                |result: Result<(BftUploadItem, Vec<u8>, Vec<u8>)>| async {
-                    match result {
-                        Ok(item) => Some(item),
-                        Err(e) => {
-                            error!("Failed to read bft block from disk: {e:?}");
-                            None
-                        }
-                    }
-                },
-            )
-            .map(|(item, header_bytes, body_bytes)| {
-                let model = model.clone();
-                async move {
-                    loop {
-                        match upload(&model, &item, header_bytes.clone(), body_bytes.clone()).await
-                        {
-                            Ok(_) => break,
-                            Err(e) => {
-                                error!("Failed to upload bft block: {e:?}");
-                                tokio::time::sleep(Duration::from_millis(100)).await;
-                            }
-                        }
-                    }
-                    item.num
-                }
-            })
-            .buffer_unordered(UPLOAD_CONCURRENCY)
-            .fold(None, |acc: Option<u64>, num| async move {
-                Some(acc.map_or(num, |acc| acc.max(num)))
-            })
-            .await;
-
-        let Some(new_latest) = new_latest else {
+        let Some(new_latest) = upload_batch(&mut items, model.clone()).await? else {
             warn!("No items uploaded in batch, skipping latest_uploaded update");
             continue;
         };
@@ -219,6 +169,55 @@ async fn upload_bft_blocks(
     }
 
     Ok(())
+}
+
+async fn upload_batch(items: &mut Vec<BftUploadItem>, model: BftBlockModel) -> Result<Option<u64>> {
+    Ok(futures::stream::iter(items.drain(..))
+        .map(|mut item: BftUploadItem| async move {
+            // Read header bytes from disk if not cached
+            let header_bytes = match item.header_bytes.take() {
+                Some(bytes) => bytes,
+                None => fs::read(&item.header_path)
+                    .await
+                    .wrap_err("Failed to read bft block header")?,
+            };
+
+            let body_bytes = fs::read(&item.body_path)
+                .await
+                .wrap_err("Failed to read bft block body")?;
+
+            Ok((item, header_bytes, body_bytes))
+        })
+        .buffered(UPLOAD_CONCURRENCY)
+        .filter_map(|result: Result<(BftUploadItem, Vec<u8>, Vec<u8>)>| async {
+            match result {
+                Ok(item) => Some(item),
+                Err(e) => {
+                    error!("Failed to read bft block from disk: {e:?}");
+                    None
+                }
+            }
+        })
+        .map(|(item, header_bytes, body_bytes)| {
+            let model = model.clone();
+            async move {
+                loop {
+                    match upload(&model, &item, header_bytes.clone(), body_bytes.clone()).await {
+                        Ok(_) => break,
+                        Err(e) => {
+                            error!("Failed to upload bft block: {e:?}");
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                        }
+                    }
+                }
+                item.num
+            }
+        })
+        .buffer_unordered(UPLOAD_CONCURRENCY)
+        .fold(None, |acc: Option<u64>, num| async move {
+            Some(acc.map_or(num, |acc| acc.max(num)))
+        })
+        .await)
 }
 
 async fn upload(

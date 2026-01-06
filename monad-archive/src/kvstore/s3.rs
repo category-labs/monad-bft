@@ -147,6 +147,10 @@ impl KVReader for Bucket {
                 objects.extend(keys);
             }
 
+            if objects.len() >= max_keys {
+                break;
+            }
+
             // Check if we need to continue
             if !response.is_truncated.unwrap_or(false) {
                 break;

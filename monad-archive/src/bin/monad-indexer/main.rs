@@ -24,7 +24,10 @@ mod index_worker;
 use index_worker::index_worker;
 use tracing::{info, Level};
 
-use crate::{migrate_capped::migrate_to_uncapped, migrate_logs::run_migrate_logs};
+use crate::{
+    migrate_bft_archive::BftBlockIndex, migrate_capped::migrate_to_uncapped,
+    migrate_logs::run_migrate_logs,
+};
 
 mod cli;
 mod migrate_bft_archive;
@@ -54,28 +57,39 @@ async fn main() -> Result<()> {
             archive_sink,
             async_backfill,
         }) => run_set_start_block(block, archive_sink, async_backfill).await,
+        Some(cli::Commands::MigrateBftIndex {
+            source,
+            sink,
+            concurrency,
+            batch_size,
+            no_copy_data,
+        }) => run_migrate_bft_index(source, sink, concurrency, batch_size, !no_copy_data).await,
         None => run_indexer(args).await,
     }
 }
 
 async fn run_indexer(args: cli::Cli) -> Result<()> {
+    let archive_sink = args.archive_sink.expect("archive_sink is required");
+    let block_data_source = args
+        .block_data_source
+        .expect("block_data_source is required");
+
     let metrics = Metrics::new(
         args.otel_endpoint,
         "monad-indexer",
         args.otel_replica_name_override
-            .unwrap_or_else(|| args.archive_sink.replica_name()),
+            .unwrap_or_else(|| archive_sink.replica_name()),
         Duration::from_secs(15),
     )?;
-    set_source_and_sink_metrics(&args.archive_sink, &args.block_data_source, &metrics);
+    set_source_and_sink_metrics(&archive_sink, &block_data_source, &metrics);
 
-    let block_data_reader = args.block_data_source.build(&metrics).await?;
+    let block_data_reader = block_data_source.build(&metrics).await?;
     // Optional fallback
     let fallback_block_data_source = match args.fallback_block_data_source {
         Some(source) => Some(source.build(&metrics).await?),
         None => None,
     };
-    let tx_index_archiver = args
-        .archive_sink
+    let tx_index_archiver = archive_sink
         .build_index_archive(&metrics, args.max_inline_encoded_len)
         .await?;
 
@@ -127,8 +141,8 @@ async fn run_migrate_capped(
 ) -> Result<()> {
     let metrics = Metrics::none();
 
-    let tx_index_archiver = args
-        .archive_sink
+    let archive_sink = args.archive_sink.expect("archive_sink is required");
+    let tx_index_archiver = archive_sink
         .build_index_archive(&metrics, args.max_inline_encoded_len)
         .await?;
 
@@ -165,4 +179,19 @@ async fn run_set_start_block(
 
     println!("Set latest marker: key=\"{key_name}\", block={block}");
     Ok(())
+}
+
+async fn run_migrate_bft_index(
+    source: monad_archive::cli::ArchiveArgs,
+    sink: monad_archive::cli::ArchiveArgs,
+    concurrency: usize,
+    batch_size: usize,
+    copy_data: bool,
+) -> Result<()> {
+    let metrics = Metrics::none();
+    let source_archive = source.build_block_data_archive(&metrics).await?;
+    let sink_archive = sink.build_block_data_archive(&metrics).await?;
+
+    let indexer = BftBlockIndex::new(source_archive.store, sink_archive.store);
+    indexer.index_bft_headers(concurrency, batch_size, copy_data).await
 }

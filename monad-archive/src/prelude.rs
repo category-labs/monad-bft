@@ -57,3 +57,19 @@ where
     });
     rx.await.map_err(Into::into)
 }
+
+pub async fn retry_forever<T, F, Fut>(mut op: F, context: &str, retry_delay: Duration) -> T
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T>>,
+{
+    loop {
+        match op().await {
+            Ok(result) => return result,
+            Err(e) => {
+                error!(?e, context, "retrying...");
+                tokio::time::sleep(retry_delay).await;
+            }
+        }
+    }
+}
