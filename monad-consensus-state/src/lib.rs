@@ -746,10 +746,37 @@ where
             cmds.extend(handle_vote_cmds);
         }
 
+        let current_round = self.consensus.pacemaker.get_current_round();
         match &timeout.last_round_certificate {
-            Some(RoundCertificate::Tc(tc)) => {
+            Some(RoundCertificate::Tc(tc)) if tc.round == current_round => {
                 self.metrics.consensus_events.remote_timeout_msg_with_tc += 1;
+
+                // broadcast Timeout message immediately if received
+                // TC to advance round. this helps other validators to
+                // form their own TC
+                cmds.extend(self.handle_timeout_expiry(tc.round));
                 cmds.extend(self.process_tc(tc));
+            }
+            Some(RoundCertificate::Tc(tc)) if tc.round > current_round => {
+                self.metrics
+                    .consensus_events
+                    .remote_timeout_msg_with_future_tc += 1;
+
+                // broadcast AdvanceRound message with the TC for
+                // skipped round. this helps other validators to
+                // advance their rounds.
+                //
+                // Note: cannot broadcast a Timeout message for due
+                // to the lack of required round certificate for the
+                // skipped round.
+                let round_certificate = RoundCertificate::Tc(tc.clone());
+                let messages = self.broadcast_advance_round_message(round_certificate);
+
+                cmds.extend(messages);
+                cmds.extend(self.process_tc(tc));
+            }
+            Some(RoundCertificate::Tc(_)) => {
+                // ignore TC from past rounds
             }
             Some(RoundCertificate::Qc(qc)) => {
                 cmds.extend(self.process_qc(qc));
@@ -779,11 +806,44 @@ where
                 cmd,
             )
         }));
+
         // Note that this try_propose is necessary because process_remote_timeout may internally
         // construct a TC
         cmds.extend(self.try_propose());
 
         cmds
+    }
+
+    #[must_use]
+    pub fn broadcast_advance_round_message(
+        &self,
+        last_round_certificate: RoundCertificate<ST, SCT, EPT>,
+    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
+        let certificate_round = last_round_certificate.round();
+        let Some(epoch) = self.epoch_manager.get_epoch(certificate_round) else {
+            let current_round = self.consensus.pacemaker.get_current_round();
+            let current_epoch = self.consensus.get_current_epoch();
+            warn!(
+                ?certificate_round,
+                ?current_round,
+                ?current_epoch,
+                "cannot broadcast advance round message, epoch not found"
+            );
+            return vec![];
+        };
+
+        let message = ConsensusMessage {
+            message: ProtocolMessage::AdvanceRound(AdvanceRoundMessage {
+                last_round_certificate,
+            }),
+            version: self.version,
+        };
+        let command = ConsensusCommand::Publish {
+            target: RouterTarget::Broadcast(epoch),
+            message: message.sign(self.keypair),
+        };
+
+        vec![command]
     }
 
     #[must_use]
@@ -1864,7 +1924,7 @@ mod test {
     use monad_consensus::{
         messages::{
             consensus_message::ProtocolMessage,
-            message::{ProposalMessage, TimeoutMessage, VoteMessage},
+            message::{AdvanceRoundMessage, ProposalMessage, TimeoutMessage, VoteMessage},
         },
         pacemaker::PacemakerCommand,
         validation::{safety::Safety, signing::Verified},
@@ -2438,6 +2498,72 @@ mod test {
                     message,
                 } => match message.deref().deref().message {
                     ProtocolMessage::Vote(vote) => Some(vote),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    }
+
+    fn extract_timeout_msgs<ST, SCT, BPT, SBT>(
+        cmds: Vec<
+            ConsensusCommand<
+                ST,
+                SCT,
+                EthExecutionProtocol,
+                BPT,
+                SBT,
+                MockChainConfig,
+                MockChainRevision,
+            >,
+        >,
+    ) -> Vec<TimeoutMessage<ST, SCT, EthExecutionProtocol>>
+    where
+        ST: CertificateSignatureRecoverable,
+        SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+        BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT, MockChainConfig, MockChainRevision>,
+        SBT: StateBackend<ST, SCT>,
+    {
+        cmds.into_iter()
+            .filter_map(|c| match c {
+                ConsensusCommand::Publish {
+                    target: RouterTarget::Broadcast(_),
+                    message,
+                } => match &message.deref().deref().message {
+                    ProtocolMessage::Timeout(tm) => Some(tm.clone()),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    }
+
+    fn extract_advance_round_msgs<ST, SCT, BPT, SBT>(
+        cmds: Vec<
+            ConsensusCommand<
+                ST,
+                SCT,
+                EthExecutionProtocol,
+                BPT,
+                SBT,
+                MockChainConfig,
+                MockChainRevision,
+            >,
+        >,
+    ) -> Vec<AdvanceRoundMessage<ST, SCT, EthExecutionProtocol>>
+    where
+        ST: CertificateSignatureRecoverable,
+        SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+        BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT, MockChainConfig, MockChainRevision>,
+        SBT: StateBackend<ST, SCT>,
+    {
+        cmds.into_iter()
+            .filter_map(|c| match c {
+                ConsensusCommand::Publish {
+                    target: RouterTarget::Broadcast(_),
+                    message,
+                } => match &message.deref().deref().message {
+                    ProtocolMessage::AdvanceRound(av) => Some(av.clone()),
                     _ => None,
                 },
                 _ => None,
@@ -5359,5 +5485,308 @@ mod test {
 
             assert_eq!(future_other_leaders, expected_future_other_leaders);
         }
+    }
+
+    #[test]
+    fn test_tc_from_timeout_for_next_round() {
+        /*
+        validator set:
+
+        - f+1 honest nodes (group 1)
+        - f byzantine (group 2)
+        - f honest nodes (group 3)
+
+        scenario:
+
+        - group 1 times out round r locally and broadcasts T(r) to all other nodes
+        - group 2 times out round r locally but broadcast T(r) only within group 2
+        - group 2 forms TC, advances to round r+1
+        - group 2 times out round r+1, and sends T(r+1) with TC(r) to group 3
+          + before the f+1 timeout messages from group 1 reach group 3
+          + because otherwise group 3 will broadcast timeout automatically
+        - group 3 advances to round r+1 without sending any timeout message for round r
+        - group 1 is stuck at round r
+
+        the fix:
+
+        - have group 3 broadcast T(r) upon advancing round from r to r+1 using T(r+1).tc
+        - this T(r) helps group 1 to form TC(r) and advance to round r+1
+         */
+
+        // let f=1
+        // let group 1 be {node0, node1}
+        // let group 2 be {node2}
+        // let group 3 be {node3}
+        let num_states = 4;
+        let execution_delay = SeqNum::MAX;
+        let (_, mut nodes) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            BlockPolicyType,
+            StateBackendType,
+            BlockValidatorType,
+            _,
+            _,
+        >(
+            num_states as u32,
+            ValidatorSetFactory::default(),
+            SimpleRoundRobin::default(),
+            || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0),
+            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
+            EthBlockValidator::default,
+            execution_delay,
+        );
+        let (mut node0, mut node1, mut node2, mut node3) = (
+            nodes.pop().unwrap(),
+            nodes.pop().unwrap(),
+            nodes.pop().unwrap(),
+            nodes.pop().unwrap(),
+        );
+
+        let handle_own_timeout =
+            |node: &mut NodeContext<_, _, _, _, _, _, _>, timeout: &TimeoutMessage<_, _, _>| {
+                let nodeid = node.nodeid;
+                node.wrapped_state()
+                    .handle_timeout_message(nodeid, timeout.clone())
+            };
+        let handle_timeout = |node: &mut NodeContext<_, _, _, _, _, _, _>,
+                              author: &NodeContext<_, _, _, _, _, _, _>,
+                              timeout: &TimeoutMessage<_, _, _>| {
+            let author_nodeid = author.nodeid;
+            node.wrapped_state()
+                .handle_timeout_message(author_nodeid, timeout.clone())
+        };
+        let timeout_locally = |node: &mut NodeContext<_, _, _, _, _, _, _>| {
+            let round = node.consensus_state.get_current_round();
+            let cmds = node.wrapped_state().handle_timeout_expiry(round);
+            let timeout = extract_timeout_msgs(cmds).remove(0);
+            let _ = handle_own_timeout(node, &timeout);
+            timeout
+        };
+
+        /*
+        - group 1 times out round r locally and broadcasts T(r) to all other nodes
+        - group 2 times out round r locally but broadcasts T(r) only within group 2
+         */
+        let round = node0.consensus_state.get_current_round(); // initial round
+
+        // group 1
+        let timeout0 = timeout_locally(&mut node0);
+        let timeout1 = timeout_locally(&mut node1);
+        // group 2 (byzantine)
+        let _timeout2 = timeout_locally(&mut node2);
+
+        // broadcast from group 1. group 2 doesn't broadcast.
+        let _ = handle_timeout(&mut node1, &node0, &timeout0);
+        let _ = handle_timeout(&mut node2, &node0, &timeout0);
+
+        let _ = handle_timeout(&mut node0, &node1, &timeout1);
+        let _ = handle_timeout(&mut node2, &node1, &timeout1);
+
+        // delayed group 1 broadcast to group 3:
+        //
+        // handle_timeout(&mut node3, &node0, &timeout0);
+        // handle_timeout(&mut node3, &node1, &timeout1);
+
+        /*
+        - group 2 forms TC, advances to round r+1
+        - group 2 times out round r+1, and sends T(r+1) with TC(r) to group 3
+         */
+        assert_eq!(node2.consensus_state.get_current_round(), round + Round(1));
+        let timeout2 = timeout_locally(&mut node2);
+
+        // group 3 advances to round r+1 without sending any timeout message for round r
+        let mut node3_broadcasts =
+            extract_timeout_msgs(handle_timeout(&mut node3, &node2, &timeout2));
+        assert_eq!(node3.consensus_state.get_current_round(), round + Round(1));
+
+        // meanwhile group 1 is stuck on initial round
+        assert_eq!(node0.consensus_state.get_current_round(), round);
+        assert_eq!(node1.consensus_state.get_current_round(), round);
+
+        /*
+        the fix:
+
+        - have group 3 broadcast T(r) upon advancing round from r to r+1 using T(r+1).tc
+        - this T(r) helps group 1 to form TC(r) and advance to round r+1
+         */
+        assert!(!node3_broadcasts.is_empty());
+        let timeout3 = node3_broadcasts.remove(0);
+
+        let _ = handle_timeout(&mut node0, &node3, &timeout3);
+        let _ = handle_timeout(&mut node1, &node3, &timeout3);
+
+        assert_eq!(node0.consensus_state.get_current_round(), round + Round(1));
+        assert_eq!(node1.consensus_state.get_current_round(), round + Round(1));
+    }
+
+    #[test]
+    fn test_tc_from_timeout_for_skipped_round() {
+        /*
+        validator set:
+
+        - f+1 honest nodes currently on round r (group 1)
+        - f byzantine currently on round r (group 2)
+        - f honest nodes currently on round r-1 (group 3)
+
+        scenario:
+
+        - group 1 times out round r locally and broadcasts T(r) to all other nodes
+        - group 2 times out round r locally but broadcasts T(r) only within group 2
+        - group 2 forms TC(r), advances to round r+1
+        - group 2 quickly times out round r+1, and sends T(r+1) with TC(r) to group 3
+          + before the f+1 timeout messages from group 1 reach group 3
+          + because otherwise group 3 will broadcast timeout automatically
+        - group 3 advances round r+1 (skipping round r)
+          + group 3 cannot broadcast T(r) because T(r) must include TC(r-1)/QC(r-1) as last_round_rc.
+          + but group 3 never sees a TC(r-1) or a QC(r-1)
+        - group 1 is stuck at round r
+
+        the fix:
+
+        - have group 3 broadcast TC(r) upon skipping round using T(r+1).tc
+        - this TC(r) helps group 1 to advance to round r+1
+         */
+
+        // let f=1
+        // let group 1 be {node0, node1}
+        // let group 2 be {node2}
+        // let group 3 be {node3}
+        let num_states = 4;
+        let execution_delay = SeqNum::MAX;
+        let (_, mut nodes) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            BlockPolicyType,
+            StateBackendType,
+            BlockValidatorType,
+            _,
+            _,
+        >(
+            num_states as u32,
+            ValidatorSetFactory::default(),
+            SimpleRoundRobin::default(),
+            || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0),
+            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
+            EthBlockValidator::default,
+            execution_delay,
+        );
+        let (mut node0, mut node1, mut node2, mut node3) = (
+            nodes.pop().unwrap(),
+            nodes.pop().unwrap(),
+            nodes.pop().unwrap(),
+            nodes.pop().unwrap(),
+        );
+
+        let handle_own_timeout =
+            |node: &mut NodeContext<_, _, _, _, _, _, _>, timeout: &TimeoutMessage<_, _, _>| {
+                let nodeid = node.nodeid;
+                node.wrapped_state()
+                    .handle_timeout_message(nodeid, timeout.clone())
+            };
+        let handle_timeout = |node: &mut NodeContext<_, _, _, _, _, _, _>,
+                              author: &NodeContext<_, _, _, _, _, _, _>,
+                              timeout: &TimeoutMessage<_, _, _>| {
+            let author_nodeid = author.nodeid;
+            node.wrapped_state()
+                .handle_timeout_message(author_nodeid, timeout.clone())
+        };
+        let timeout_locally = |node: &mut NodeContext<_, _, _, _, _, _, _>| {
+            let round = node.consensus_state.get_current_round();
+            let cmds = node.wrapped_state().handle_timeout_expiry(round);
+            let timeout = extract_timeout_msgs(cmds).remove(0);
+            let _ = handle_own_timeout(node, &timeout);
+            timeout
+        };
+
+        let initial_round = node0.consensus_state.get_current_round(); // r-1
+
+        // setup: advance to round r for group 1 and group 2.
+        //
+        // let group 1 and group 2 time out and fully exchange timeout
+        // messages, so they can all form TC(r-1) and advance to round
+        // r.
+        let timeout0 = timeout_locally(&mut node0);
+        let timeout1 = timeout_locally(&mut node1);
+        let timeout2 = timeout_locally(&mut node2);
+
+        let _ = handle_timeout(&mut node0, &node1, &timeout1);
+        let _ = handle_timeout(&mut node0, &node2, &timeout2);
+
+        let _ = handle_timeout(&mut node1, &node0, &timeout0);
+        let _ = handle_timeout(&mut node1, &node2, &timeout2);
+
+        let _ = handle_timeout(&mut node2, &node0, &timeout0);
+        let _ = handle_timeout(&mut node2, &node1, &timeout1);
+
+        // - node0, node1, node2 currently in round r
+        // - node3 currently in round r-1
+        let round = node0.consensus_state.get_current_round(); // r
+        assert_eq!(round, initial_round + Round(1));
+        assert_eq!(node1.consensus_state.get_current_round(), round);
+        assert_eq!(node2.consensus_state.get_current_round(), round);
+        assert_eq!(node3.consensus_state.get_current_round(), initial_round);
+
+        /*
+        scenario:
+
+        - group 1 times out round r locally and broadcasts T(r) to all other nodes
+        - group 2 times out round r locally but broadcasts T(r) only within group 2
+         */
+
+        // group 1
+        let timeout0 = timeout_locally(&mut node0);
+        let timeout1 = timeout_locally(&mut node1);
+        // group 2 (byzantine)
+        let _timeout2 = timeout_locally(&mut node2);
+
+        // broadcast from group 1. group 2 doesn't broadcast.
+        let _ = handle_timeout(&mut node1, &node0, &timeout0);
+        let _ = handle_timeout(&mut node2, &node0, &timeout0);
+
+        let _ = handle_timeout(&mut node0, &node1, &timeout1);
+        let _ = handle_timeout(&mut node2, &node1, &timeout1);
+
+        // delayed group 1 broadcast to group 3
+        //
+        // handle_timeout(&mut node3, &node0, &timeout0);
+        // handle_timeout(&mut node3, &node1, &timeout1);
+
+        /*
+        - group 2 forms TC, advances to round r+1
+        - group 2 times out round r+1, and sends T(r+1) with TC(r) to group 3
+         */
+        assert_eq!(node2.consensus_state.get_current_round(), round + Round(1));
+
+        let timeout2 = timeout_locally(&mut node2);
+
+        // group 3 advances to round r+1 using the TC(r)
+        let node3_cmds = handle_timeout(&mut node3, &node2, &timeout2);
+        assert_eq!(node3.consensus_state.get_current_round(), round + Round(1));
+
+        // meanwhile group 1 is stuck on round r
+        assert_eq!(node0.consensus_state.get_current_round(), round);
+        assert_eq!(node1.consensus_state.get_current_round(), round);
+
+        /*
+        the fix:
+
+        - have group 3 broadcast TC(r) upon skipping round using T(r+1).tc
+        - this TC(r) helps group 1 to advance to round r+1
+         */
+        let mut advance_round_msgs = extract_advance_round_msgs(node3_cmds);
+        assert!(!advance_round_msgs.is_empty());
+
+        let advance_round = advance_round_msgs.remove(0);
+
+        let _ = node0
+            .wrapped_state()
+            .handle_advance_round_message(node3.nodeid, advance_round.clone());
+        let _ = node1
+            .wrapped_state()
+            .handle_advance_round_message(node3.nodeid, advance_round);
+
+        assert_eq!(node0.consensus_state.get_current_round(), round + Round(1));
+        assert_eq!(node1.consensus_state.get_current_round(), round + Round(1));
     }
 }

@@ -111,6 +111,7 @@ metrics!(
             old_remote_timeout,
             remote_timeout_msg,
             remote_timeout_msg_with_tc,
+            remote_timeout_msg_with_future_tc,
             created_tc,
             process_old_qc,
             process_qc,
