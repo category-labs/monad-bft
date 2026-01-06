@@ -425,7 +425,9 @@ where
 
         match &mut this.role {
             Role::Publisher(publisher) => {
-                publisher.on_candidate_response(inbound_grp_msg);
+                if let Some((msg, node_id)) = publisher.on_candidate_response(inbound_grp_msg) {
+                    this.send_single_msg(msg, node_id);
+                }
             }
 
             Role::Client(client) => {
@@ -487,13 +489,16 @@ where
                                     .into(),
                                 ));
                             } else if num_mappings > 0 {
-                                warn!( ?confirm_msg, num_peers =? confirm_msg.peers.len(), num_name_recs =? confirm_msg.name_records.len(),
+                                warn!(?confirm_msg, num_peers =? confirm_msg.peers.len(), num_name_recs =? confirm_msg.name_records.len(),
                                     "Number of peers does not match the number \
                                     of name records in ConfirmGroup message. \
                                     Skipping PeerDiscovery update"
                                 );
                             }
                         }
+                    }
+                    FullNodesGroupMessage::NoConfirm(no_confirm) => {
+                        client.handle_no_confirm_message(no_confirm);
                     }
                 }
             }
