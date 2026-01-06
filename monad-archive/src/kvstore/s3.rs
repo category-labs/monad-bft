@@ -266,6 +266,61 @@ impl KVReader for Bucket {
             }
         }
     }
+
+    async fn scan_prefix(&self, prefix: &str) -> Result<Vec<String>> {
+        self.scan_prefix_with_max_keys(prefix, usize::MAX).await
+    }
+
+    async fn scan_prefix_with_max_keys(
+        &self,
+        prefix: &str,
+        max_keys: usize,
+    ) -> Result<Vec<String>> {
+        let mut objects = Vec::new();
+        let mut continuation_token = None;
+
+        loop {
+            let client = self.client();
+            let token = continuation_token.as_ref();
+            let mut request = client
+                .list_objects_v2()
+                .bucket(&self.inner.bucket)
+                .prefix(prefix)
+                .request_payer(aws_sdk_s3::types::RequestPayer::Requester);
+
+            if let Some(token) = token {
+                request = request.continuation_token(token);
+            }
+            let response = match request.send().await {
+                Ok(resp) => {
+                    self.on_result(true);
+                    resp
+                }
+                Err(e) => {
+                    self.on_result(false);
+                    return Err(e).wrap_err("Failed to list objects");
+                }
+            };
+
+            if let Some(contents) = response.contents {
+                let keys = contents.into_iter().filter_map(|obj| obj.key);
+                objects.extend(keys);
+            }
+
+            if objects.len() >= max_keys {
+                break;
+            }
+
+            if !response.is_truncated.unwrap_or(false) {
+                break;
+            }
+            continuation_token = response.next_continuation_token;
+        }
+
+        objects.truncate(max_keys);
+
+        Ok(objects)
+    }
 }
 
 impl KVStore for Bucket {
@@ -314,49 +369,6 @@ impl KVStore for Bucket {
 
     fn bucket_name(&self) -> &str {
         &self.inner.bucket
-    }
-
-    async fn scan_prefix(&self, prefix: &str) -> Result<Vec<String>> {
-        let mut objects = Vec::new();
-        let mut continuation_token = None;
-
-        loop {
-            let client = self.client();
-            let token = continuation_token.as_ref();
-            let mut request = client
-                .list_objects_v2()
-                .bucket(&self.inner.bucket)
-                .prefix(prefix)
-                .request_payer(aws_sdk_s3::types::RequestPayer::Requester);
-
-            if let Some(token) = token {
-                request = request.continuation_token(token);
-            }
-            let response = match request.send().await {
-                Ok(resp) => {
-                    self.on_result(true);
-                    resp
-                }
-                Err(e) => {
-                    self.on_result(false);
-                    return Err(e).wrap_err("Failed to list objects");
-                }
-            };
-
-            // Process objects
-            if let Some(contents) = response.contents {
-                let keys = contents.into_iter().filter_map(|obj| obj.key);
-                objects.extend(keys);
-            }
-
-            // Check if we need to continue
-            if !response.is_truncated.unwrap_or(false) {
-                break;
-            }
-            continuation_token = response.next_continuation_token;
-        }
-
-        Ok(objects)
     }
 
     async fn delete(&self, key: impl AsRef<str>) -> Result<()> {

@@ -55,6 +55,11 @@ eyre = { workspace = true }
 futures = { workspace = true }
 hex = { workspace = true }
 mongodb = { workspace = true }
+monad-block-persist = { workspace = true }
+monad-consensus-types = { workspace = true }
+monad-crypto = { workspace = true }
+monad-validator = { workspace = true }
+monad-node-config = { workspace = true, features = ["crypto"] }
 opentelemetry = { workspace = true }
 opentelemetry-otlp = { workspace = true, features = ["metrics", "grpc-tonic"] }
 opentelemetry-semantic-conventions = { workspace = true }

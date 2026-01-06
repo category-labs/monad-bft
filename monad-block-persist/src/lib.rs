@@ -59,8 +59,12 @@ where
     ) -> io::Result<ConsensusBlockBody<EPT>>;
 }
 
-fn block_id_to_hex(hash: &Hash) -> String {
+pub fn block_id_to_hex_prefix(hash: &Hash) -> String {
     hex::encode(hash.0)
+}
+
+fn block_id_to_hex(hash: &Hash) -> String {
+    block_id_to_hex_prefix(hash)
 }
 
 fn create_dir_safe(base: &Path, name: &str) -> PathBuf {

@@ -63,6 +63,33 @@ impl KVReader for MemoryStorage {
 
         Ok(self.db.lock().await.contains_key(key))
     }
+
+    async fn scan_prefix_with_max_keys(
+        &self,
+        prefix: &str,
+        max_keys: usize,
+    ) -> Result<Vec<String>> {
+        use std::sync::atomic::Ordering;
+
+        if self.should_fail.load(Ordering::SeqCst) {
+            return Err(eyre::eyre!("MemoryStorage simulated failure"));
+        }
+
+        Ok(self
+            .db
+            .lock()
+            .await
+            .keys()
+            .take(max_keys)
+            .filter_map(|k| {
+                if k.starts_with(prefix) {
+                    Some(k.to_owned())
+                } else {
+                    None
+                }
+            })
+            .collect())
+    }
 }
 
 impl KVStore for MemoryStorage {
@@ -96,29 +123,6 @@ impl KVStore for MemoryStorage {
 
         db.insert(key.to_owned(), data.into());
         Ok(PutResult::Written)
-    }
-
-    async fn scan_prefix(&self, prefix: &str) -> Result<Vec<String>> {
-        use std::sync::atomic::Ordering;
-
-        // Check if we should simulate a failure
-        if self.should_fail.load(Ordering::SeqCst) {
-            return Err(eyre::eyre!("MemoryStorage simulated failure"));
-        }
-
-        Ok(self
-            .db
-            .lock()
-            .await
-            .keys()
-            .filter_map(|k| {
-                if k.starts_with(prefix) {
-                    Some(k.to_owned())
-                } else {
-                    None
-                }
-            })
-            .collect())
     }
 
     async fn delete(&self, key: impl AsRef<str>) -> Result<()> {
