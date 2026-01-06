@@ -1370,6 +1370,7 @@ where
         }
         FullNodesGroupMessage::PrepareGroupResponse(msg) => &msg.node_id == sender,
         FullNodesGroupMessage::ConfirmGroup(msg) => &msg.prepare.validator_id == sender,
+        FullNodesGroupMessage::NoConfirm(msg) => &msg.prepare.validator_id == sender,
     }
 }
 
