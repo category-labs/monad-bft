@@ -80,7 +80,6 @@ impl KVReader for MemoryStorage {
             .lock()
             .await
             .keys()
-            .take(max_keys)
             .filter_map(|k| {
                 if k.starts_with(prefix) {
                     Some(k.to_owned())
@@ -88,6 +87,7 @@ impl KVReader for MemoryStorage {
                     None
                 }
             })
+            .take(max_keys)
             .collect())
     }
 }

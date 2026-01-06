@@ -15,16 +15,12 @@
 
 #![allow(async_fn_in_trait)]
 
-use monad_archive::{
-    cli::set_source_and_sink_metrics, kvstore::WritePolicy, model::bft_ledger::BftBlockModel,
-    prelude::*,
-};
+use monad_archive::{cli::set_source_and_sink_metrics, kvstore::WritePolicy, prelude::*};
 
 mod block_archive_worker;
 mod file_checkpointer;
 mod generic_folder_archiver;
 mod ledger_archiver_and_indexer;
-mod legacy_bft_archive_worker;
 
 use block_archive_worker::{archive_worker, ArchiveWorkerOpts};
 use cli::{Commands, ParsedCli};
@@ -85,11 +81,11 @@ async fn main() -> Result<()> {
             .wrap_err("Cannot connect to archive sink")?;
     }
 
-    if let Some(ledger_dir) = args.bft_block_path {
+    if let Some(path) = args.bft_block_path {
         info!("Spawning bft block archive worker...");
         let handle = tokio::spawn(ledger_archiver_and_indexer::bft_archive_worker(
-            BftBlockModel::new(archive_writer.store.clone()),
-            ledger_dir,
+            monad_archive::model::bft_ledger::BftBlockModel::new(archive_writer.store.clone()),
+            path,
             Duration::from_secs(args.bft_block_poll_freq_secs),
             metrics.clone(),
         ));
