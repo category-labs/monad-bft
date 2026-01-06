@@ -63,4 +63,16 @@ impl KVReader for CloudProxyReader {
 
         Ok(Some(bytes.into()))
     }
+
+    async fn scan_prefix_with_max_keys(
+        &self,
+        _prefix: &str,
+        _max_keys: usize,
+    ) -> Result<Vec<String>> {
+        // Intentional panic: using prefix scans against CloudProxy indicates a catastrophic
+        // backend selection/misconfiguration for this process.
+        unimplemented!(
+            "scan_prefix_with_max_keys is intentionally unsupported for CloudProxy; this is a catastrophic misconfiguration"
+        )
+    }
 }

@@ -30,7 +30,7 @@ pub type Block = AlloyBlock<TxEnvelopeWithSender, Header>;
 pub type BlockReceipts = Vec<ReceiptWithLogIndex>;
 pub type BlockTraces = Vec<Vec<u8>>;
 
-const BLOCK_PADDING_WIDTH: usize = 12;
+pub(super) const BLOCK_PADDING_WIDTH: usize = 12;
 
 pub(crate) enum BlockStorageRepr {
     V0(AlloyBlock<TxEnvelope, Header>),

@@ -26,7 +26,7 @@ use std::collections::HashMap;
 use bytes::Bytes;
 use enum_dispatch::enum_dispatch;
 use eyre::Result;
-use futures::future::try_join_all;
+use futures::{future::try_join_all, Stream};
 use tokio_retry::{
     strategy::{jitter, ExponentialBackoff},
     RetryIf,
@@ -139,13 +139,17 @@ pub trait KVStore: KVReader {
             Ok(PutResult::Written)
         }
     }
-    async fn scan_prefix(&self, prefix: &str) -> Result<Vec<String>>;
     async fn delete(&self, key: impl AsRef<str>) -> Result<()>;
     fn bucket_name(&self) -> &str;
 }
 
 #[enum_dispatch]
 pub trait KVReader: Clone {
+    async fn scan_prefix(&self, prefix: &str) -> Result<Vec<String>> {
+        self.scan_prefix_with_max_keys(prefix, usize::MAX).await
+    }
+    async fn scan_prefix_with_max_keys(&self, prefix: &str, max_keys: usize)
+        -> Result<Vec<String>>;
     async fn get(&self, key: &str) -> Result<Option<Bytes>>;
     async fn bulk_get(&self, keys: &[String]) -> Result<HashMap<String, Bytes>> {
         // Note: a stream based approach runs into lifetime generality errors for some reason here.

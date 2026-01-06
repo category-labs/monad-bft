@@ -24,6 +24,7 @@ pub use std::{
 
 pub use alloy_consensus::{BlockBody, Header, ReceiptEnvelope, ReceiptWithBloom};
 pub use alloy_primitives::{U128, U256, U64};
+pub use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
 pub use bytes::Bytes;
 pub use eyre::{bail, eyre, Context, ContextCompat, OptionExt, Report, Result};
 pub use futures::{try_join, StreamExt, TryStream, TryStreamExt};
@@ -55,4 +56,20 @@ where
         let _ = tx.send(func());
     });
     rx.await.map_err(Into::into)
+}
+
+pub async fn retry_forever<T, F, Fut>(mut op: F, context: &str, retry_delay: Duration) -> T
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T>>,
+{
+    loop {
+        match op().await {
+            Ok(result) => return result,
+            Err(e) => {
+                error!(?e, context, "retrying...");
+                tokio::time::sleep(retry_delay).await;
+            }
+        }
+    }
 }
