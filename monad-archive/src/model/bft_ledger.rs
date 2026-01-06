@@ -13,11 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::path::{Path, PathBuf};
-
-use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
-use futures::future::join_all;
-use monad_block_persist::{block_id_to_hex_prefix, BlockPersist, FileBlockPersist};
+use alloy_rlp::{Decodable, Encodable};
 use monad_consensus_types::{block::ConsensusBlockHeader, payload::ConsensusBlockBody};
 use monad_node_config::{ExecutionProtocolType, SignatureCollectionType, SignatureType};
 use monad_types::{BlockId, Hash, SeqNum};

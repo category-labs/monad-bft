@@ -23,9 +23,13 @@ mod index_worker;
 use index_worker::index_worker;
 use tracing::{info, Level};
 
-use crate::{migrate_capped::migrate_to_uncapped, migrate_logs::run_migrate_logs};
+use crate::{
+    migrate_bft_archive::BftBlockIndex, migrate_capped::migrate_to_uncapped,
+    migrate_logs::run_migrate_logs,
+};
 
 mod cli;
+mod migrate_bft_archive;
 mod migrate_capped;
 mod migrate_logs;
 
@@ -70,6 +74,13 @@ async fn main() -> Result<()> {
                 };
                 run_set_start_block(block, archive_sink, async_backfill).await
             }
+            cli::Commands::MigrateBftIndex {
+                source,
+                sink,
+                concurrency,
+                batch_size,
+                no_copy_data,
+            } => run_migrate_bft_index(source, sink, concurrency, batch_size, !no_copy_data).await,
         },
         cli::ParsedCli::Daemon(args) => {
             info!(?args, "Cli Arguments: ");
@@ -185,4 +196,21 @@ async fn run_set_start_block(
 
     println!("Set latest marker: key=\"{key_name}\", block={block}");
     Ok(())
+}
+
+async fn run_migrate_bft_index(
+    source: monad_archive::cli::ArchiveArgs,
+    sink: monad_archive::cli::ArchiveArgs,
+    concurrency: usize,
+    batch_size: usize,
+    copy_data: bool,
+) -> Result<()> {
+    let metrics = Metrics::none();
+    let source_archive = source.build_block_data_archive(&metrics).await?;
+    let sink_archive = sink.build_block_data_archive(&metrics).await?;
+
+    let indexer = BftBlockIndex::new(source_archive.store, sink_archive.store);
+    indexer
+        .index_bft_headers(concurrency, batch_size, copy_data)
+        .await
 }
