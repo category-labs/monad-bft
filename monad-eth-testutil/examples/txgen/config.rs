@@ -464,12 +464,42 @@ impl Default for SpamRpcWsConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct CompareRpcWsConfig {}
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EthCallType {
+    UniswapQuote,
+    HeavyWrite,
+}
+
+impl Default for EthCallType {
+    fn default() -> Self {
+        Self::HeavyWrite
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct EthCallStressConfig {
+    pub requests_per_block: usize,
+    pub call_type: EthCallType,
+}
+
+impl Default for EthCallStressConfig {
+    fn default() -> Self {
+        Self {
+            requests_per_block: 100,
+            call_type: EthCallType::default(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "mode", rename_all = "snake_case")]
 pub enum RpcWorkflowConfig {
     Indexer(IndexerConfig),
     SpamRpcWs(SpamRpcWsConfig),
     CompareRpcWs(CompareRpcWsConfig),
+    EthCallStress(EthCallStressConfig),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -508,6 +538,13 @@ impl RpcRequestGeneratorConfig {
     pub fn compare_rpc_ws_config(&self) -> Option<&CompareRpcWsConfig> {
         self.workflows.iter().find_map(|w| match w {
             RpcWorkflowConfig::CompareRpcWs(config) => Some(config),
+            _ => None,
+        })
+    }
+
+    pub fn eth_call_stress_config(&self) -> Option<&EthCallStressConfig> {
+        self.workflows.iter().find_map(|w| match w {
+            RpcWorkflowConfig::EthCallStress(config) => Some(config),
             _ => None,
         })
     }

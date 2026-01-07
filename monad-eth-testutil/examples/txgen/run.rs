@@ -38,8 +38,8 @@ use crate::{
     report::Report,
     shared::{
         ecmul::ECMul, eip7702::EIP7702, erc20::ERC20, erc4337_entrypoint::EntryPoint,
-        eth_json_rpc::EthJsonRpc, nft_sale::NftSale, simple7702_account::Simple7702Account,
-        uniswap::Uniswap,
+        eth_json_rpc::EthJsonRpc, heavy_write_contract::HeavyWriteContract, nft_sale::NftSale,
+        simple7702_account::Simple7702Account, uniswap::Uniswap,
     },
     workers::transform::TransformOptions,
 };
@@ -167,6 +167,56 @@ async fn run_workload_group(
                     critical_task(
                         "Compare RPC WS",
                         tokio::spawn(async move { compare_rpc_ws.run(shutdown_clone).await }),
+                    )
+                    .boxed(),
+                );
+            }
+            RpcWorkflowConfig::EthCallStress(eth_call_config) => {
+                let eth_call_stress = RpcRequestGenerator::new(
+                    read_client.clone(),
+                    config.ws_url().expect("WS URL is not valid"),
+                    eth_call_config.requests_per_block,
+                    1, // num_ws_connections not used by eth_call_stress
+                );
+                let shutdown_clone = Arc::clone(&shutdown);
+                let deployer = PrivateKey::new(&config.root_private_keys[0]);
+                let chain_id = config.chain_id;
+                let call_type = eth_call_config.call_type.clone();
+
+                // For UniswapQuote, we need to deploy Uniswap contracts
+                let uniswap = if matches!(call_type, crate::config::EthCallType::UniswapQuote) {
+                    match load_or_deploy_uniswap_for_eth_call(config, &read_client).await {
+                        Ok(uni) => Some(uni),
+                        Err(e) => {
+                            error!("Failed to deploy Uniswap for UniswapQuote eth_call: {}", e);
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
+
+                // For HeavyWrite, we need to deploy the heavy write contract
+                let heavy_write_contract = if matches!(call_type, crate::config::EthCallType::HeavyWrite) {
+                    match load_or_deploy_heavy_write_contract_for_eth_call(config, &read_client).await {
+                        Ok(hwc) => Some(hwc),
+                        Err(e) => {
+                            error!("Failed to deploy HeavyWriteContract for HeavyWrite eth_call: {}", e);
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
+
+                tasks.push(
+                    critical_task(
+                        "EthCallStress",
+                        tokio::spawn(async move {
+                            eth_call_stress
+                                .run_eth_call_stress_workflow(shutdown_clone, deployer, chain_id, call_type, uniswap, heavy_write_contract)
+                                .await
+                        }),
                     )
                     .boxed(),
                 );
@@ -415,6 +465,7 @@ struct DeployedContractFile {
     eip7702: Option<Address>,
     nft_sale: Option<Address>,
     erc4337_7702: Option<ERC4337_7702Bundled>,
+    heavy_write_contract: Option<Address>,
 }
 
 async fn load_or_deploy_contracts(
@@ -502,6 +553,7 @@ async fn load_or_deploy_contracts(
                 eip7702: None,
                 nft_sale: None,
                 erc4337_7702: None,
+                heavy_write_contract: None,
             };
 
             write_and_verify_deployed_contracts(client, PATH, &deployed).await?;
@@ -542,6 +594,7 @@ async fn load_or_deploy_contracts(
                 eip7702: None,
                 nft_sale: None,
                 erc4337_7702: None,
+                heavy_write_contract: None,
             };
 
             write_and_verify_deployed_contracts(client, PATH, &deployed).await?;
@@ -583,6 +636,7 @@ async fn load_or_deploy_contracts(
                 eip7702: None,
                 nft_sale: None,
                 erc4337_7702: None,
+                heavy_write_contract: None,
             };
 
             write_and_verify_deployed_contracts(client, PATH, &deployed).await?;
@@ -623,6 +677,7 @@ async fn load_or_deploy_contracts(
                 eip7702: Some(eip7702.addr),
                 nft_sale: None,
                 erc4337_7702: None,
+                heavy_write_contract: None,
             };
 
             write_and_verify_deployed_contracts(client, PATH, &deployed).await?;
@@ -668,6 +723,7 @@ async fn load_or_deploy_contracts(
                 eip7702: None,
                 nft_sale: Some(nft_sale.addr),
                 erc4337_7702: None,
+                heavy_write_contract: None,
             };
 
             write_and_verify_deployed_contracts(client, PATH, &deployed).await?;
@@ -718,6 +774,7 @@ async fn load_or_deploy_contracts(
                 eip7702: None,
                 nft_sale: None,
                 erc4337_7702: Some(erc4337_7702),
+                heavy_write_contract: None,
             };
 
             write_and_verify_deployed_contracts(client, PATH, &deployed).await?;
@@ -786,4 +843,119 @@ async fn write_and_verify_deployed_contracts(
     info!("Wrote deployed contract addresses to {path}");
 
     Ok(())
+}
+
+async fn load_or_deploy_uniswap_for_eth_call(
+    config: &Config,
+    client: &ReqwestClient,
+) -> Result<Uniswap> {
+    const PATH: &str = "deployed_contracts.json";
+    let deployer = PrivateKey::new(&config.root_private_keys[0]);
+    let base_fee = client.get_base_fee().await?;
+    let max_fee_per_gas = base_fee * 2;
+    let chain_id = config.chain_id;
+
+    // Try to load existing Uniswap deployment
+    let existing_file = open_deployed_contracts_file(PATH).ok();
+
+    if let Some(ref file) = existing_file {
+        if let Some(ref uniswap) = file.uniswap {
+            // Verify all Uniswap contract addresses
+            if verify_contract_code(client, uniswap.factory_addr).await?
+                && verify_contract_code(client, uniswap.nonfungible_position_manager_addr).await?
+                && verify_contract_code(client, uniswap.weth_addr).await?
+                && verify_contract_code(client, uniswap.token_a_addr).await?
+                && verify_contract_code(client, uniswap.token_b_addr).await?
+                && verify_contract_code(client, uniswap.pool_addr).await?
+            {
+                info!("Using existing Uniswap deployment for eth_call stress test");
+                return Ok(*uniswap);
+            }
+            warn!("Uniswap contracts from file are incomplete or not found on chain, deploying new contracts...");
+        }
+    }
+
+    // Deploy new Uniswap contracts
+    info!("Deploying Uniswap contracts for eth_call stress test...");
+    let uniswap = Uniswap::deploy(
+        &deployer,
+        client,
+        max_fee_per_gas,
+        chain_id,
+        config.gas_limit_contract_deployment,
+    )
+    .await?;
+
+    // Preserve existing contracts when writing
+    let deployed = DeployedContractFile {
+        erc20: existing_file.as_ref().and_then(|f| f.erc20.clone()),
+        ecmul: existing_file.as_ref().and_then(|f| f.ecmul),
+        uniswap: Some(uniswap),
+        eip7702: existing_file.as_ref().and_then(|f| f.eip7702),
+        nft_sale: existing_file.as_ref().and_then(|f| f.nft_sale),
+        erc4337_7702: existing_file.as_ref().and_then(|f| f.erc4337_7702),
+        heavy_write_contract: existing_file.as_ref().and_then(|f| f.heavy_write_contract),
+    };
+
+    // Write the file without re-verifying (already verified during Uniswap::deploy)
+    let mut file = std::fs::File::create(PATH)?;
+    serde_json::to_writer_pretty(&mut file, &deployed)
+        .context("Failed to serialize deployed contracts")?;
+    file.flush()?;
+    info!("Uniswap contracts deployed for eth_call stress test");
+    Ok(uniswap)
+}
+
+async fn load_or_deploy_heavy_write_contract_for_eth_call(
+    config: &Config,
+    client: &ReqwestClient,
+) -> Result<HeavyWriteContract> {
+    const PATH: &str = "deployed_contracts.json";
+    let deployer = PrivateKey::new(&config.root_private_keys[0]);
+    let base_fee = client.get_base_fee().await?;
+    let max_fee_per_gas = base_fee * 2;
+    let chain_id = config.chain_id;
+
+    // Try to load existing HeavyWriteContract deployment
+    let existing_file = open_deployed_contracts_file(PATH).ok();
+
+    if let Some(ref file) = existing_file {
+        if let Some(heavy_write_contract_addr) = file.heavy_write_contract {
+            // Verify the heavy write contract is deployed
+            if verify_contract_code(client, heavy_write_contract_addr).await? {
+                info!("Using existing HeavyWriteContract deployment for eth_call stress test");
+                return Ok(HeavyWriteContract { addr: heavy_write_contract_addr });
+            }
+            warn!("HeavyWriteContract from file not found on chain, deploying new contract...");
+        }
+    }
+
+    // Deploy new HeavyWriteContract
+    info!("Deploying HeavyWriteContract for eth_call stress test...");
+    let heavy_write_contract = HeavyWriteContract::deploy(
+        &deployer,
+        client,
+        max_fee_per_gas,
+        chain_id,
+    )
+    .await?;
+
+    // Preserve existing contracts when writing
+    let deployed = DeployedContractFile {
+        erc20: existing_file.as_ref().and_then(|f| f.erc20.clone()),
+        ecmul: existing_file.as_ref().and_then(|f| f.ecmul),
+        uniswap: existing_file.as_ref().and_then(|f| f.uniswap),
+        eip7702: existing_file.as_ref().and_then(|f| f.eip7702),
+        nft_sale: existing_file.as_ref().and_then(|f| f.nft_sale),
+        erc4337_7702: existing_file.as_ref().and_then(|f| f.erc4337_7702),
+        heavy_write_contract: Some(heavy_write_contract.addr),
+    };
+
+    // Write the file without re-verifying (already verified during HeavyWriteContract::deploy)
+    let mut file = std::fs::File::create(PATH)?;
+    serde_json::to_writer_pretty(&mut file, &deployed)
+        .context("Failed to serialize deployed contracts")?;
+    file.flush()?;
+    info!("HeavyWriteContract deployed for eth_call stress test at {:?}", heavy_write_contract.addr);
+    Ok(heavy_write_contract)
 }

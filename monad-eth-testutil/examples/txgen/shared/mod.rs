@@ -28,6 +28,7 @@ pub mod eth_json_rpc;
 pub mod key_pool;
 pub mod nft_sale;
 pub mod private_key;
+pub mod heavy_write_contract;
 pub mod simple7702_account;
 pub mod uniswap;
 pub mod weth;

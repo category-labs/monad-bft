@@ -28,15 +28,15 @@ use serde::Deserialize;
 use super::ensure_contract_deployed;
 use crate::shared::{eth_json_rpc::EthJsonRpc, private_key::PrivateKey};
 
-const BYTECODE: &str = include_str!("weth_bytecode.txt");
+const BYTECODE: &str = include_str!("stress_contract_bytecode.txt");
 
 #[derive(Deserialize, Debug, Clone, Copy)]
 #[serde(transparent)]
-pub struct WETH {
+pub struct HeavyWriteContract {
     pub addr: Address,
 }
 
-impl WETH {
+impl HeavyWriteContract {
     pub async fn deploy(
         deployer: &(Address, PrivateKey),
         client: &ReqwestClient,
@@ -61,7 +61,7 @@ impl WETH {
             nonce,
             gas_limit: 20_000_000,
             max_fee_per_gas,
-            max_priority_fee_per_gas: 10,
+            max_priority_fee_per_gas: 1_000_000_000, // 1 gwei
             to: TxKind::Create,
             value: U256::ZERO,
             access_list: Default::default(),
@@ -79,10 +79,10 @@ impl WETH {
             )
             .await?;
 
-        let weth_addr = calculate_contract_addr(&deployer.0, nonce);
-        ensure_contract_deployed(client, weth_addr, tx.tx_hash()).await?;
+        let contract_addr = calculate_contract_addr(&deployer.0, nonce);
+        ensure_contract_deployed(client, contract_addr, tx.tx_hash()).await?;
 
-        Ok(WETH { addr: weth_addr })
+        Ok(HeavyWriteContract { addr: contract_addr })
     }
 }
 
@@ -97,13 +97,7 @@ fn calculate_contract_addr(deployer: &Address, nonce: u64) -> Address {
 }
 
 sol! {
-    contract Weth {
-        function deposit() public payable;
-        function withdraw(uint wad) public;
-        function totalSupply() public view returns (uint);
-
-        function approve(address guy, uint wad) public returns (bool);
-        function transfer(address dst, uint wad) public returns (bool);
-        function transferFrom(address src, address dst, uint wad) public returns (bool);
+    contract SpartaGasTest3Writer {
+        function spartaWrite(uint256 start) external returns (uint256 matches);
     }
 }

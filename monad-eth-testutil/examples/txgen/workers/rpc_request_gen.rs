@@ -23,7 +23,7 @@ use std::{
 
 use alloy_json_rpc::RpcError;
 use alloy_network::TransactionResponse;
-use alloy_primitives::{Address, BlockNumber, LogData, U256, U64};
+use alloy_primitives::{hex, Address, BlockNumber, LogData, U256, U64};
 use alloy_rpc_client::ReqwestClient;
 use alloy_rpc_types::{BlockTransactionHashes, Filter, TransactionRequest};
 use alloy_rpc_types_trace::geth::{
@@ -38,7 +38,7 @@ use itertools::Itertools;
 use serde::de::DeserializeOwned;
 use tokio::time::{Duration, Instant};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 use url::Url;
 
 const MAX_CONCURRENT_REQUESTS: usize = 10;
@@ -810,6 +810,166 @@ impl RpcRequestGenerator {
             if let Err(err) = res {
                 warn!(?err, "connection task failed");
             }
+        }
+    }
+
+
+    pub async fn run_eth_call_stress_workflow(
+        &self,
+        shutdown: Arc<AtomicBool>,
+        _deployer: (Address, crate::shared::private_key::PrivateKey),
+        _chain_id: u64,
+        call_type: crate::config::EthCallType,
+        uniswap: Option<crate::shared::uniswap::Uniswap>,
+        heavy_write_contract: Option<crate::shared::heavy_write_contract::HeavyWriteContract>,
+    ) {
+        use crate::config::EthCallType;
+
+        match call_type {
+            EthCallType::HeavyWrite => {
+                if let Some(heavy_write_contract) = heavy_write_contract {
+                    self.run_heavy_write_eth_call(shutdown, heavy_write_contract).await;
+                } else {
+                    error!("HeavyWrite eth_call requires HeavyWriteContract deployment, but none was provided");
+                }
+            }
+            EthCallType::UniswapQuote => {
+                if let Some(uniswap) = uniswap {
+                    self.run_uniswap_quote_eth_call(shutdown, uniswap).await;
+                } else {
+                    error!("UniswapQuote eth_call requires Uniswap deployment, but none was provided");
+                }
+            }
+        }
+    }
+
+    async fn run_uniswap_quote_eth_call(
+        &self,
+        shutdown: Arc<AtomicBool>,
+        uniswap: crate::shared::uniswap::Uniswap,
+    ) {
+        let pool_addr = uniswap.pool_addr;
+        // slot0() function selector: 0x3850c7bd
+        let call_data = alloy_primitives::hex!("3850c7bd").to_vec();
+
+        info!("Starting EthCallStress (UniswapQuote) workflow with Uniswap pool at {:?}", pool_addr);
+
+        while !shutdown.load(Ordering::Relaxed) {
+            let start = Instant::now();
+
+            // Create parallel eth_call requests to Uniswap pool slot0()
+            let futures: Vec<_> = (0..self.requests_per_block)
+                .map(|_| {
+                    let client = self.rpc_client.clone();
+                    let addr = pool_addr;
+                    let data = call_data.clone();
+
+                    async move {
+                        let tx_request = TransactionRequest {
+                            to: Some(addr.into()),
+                            input: alloy_rpc_types::TransactionInput::new(data.into()),
+                            ..Default::default()
+                        };
+
+                        client.request::<_, alloy_primitives::Bytes>("eth_call", (tx_request, "latest")).await
+                    }
+                })
+                .collect();
+
+            // Execute all calls in parallel
+            let results: Vec<_> = stream::iter(futures)
+                .buffer_unordered(self.requests_per_block)
+                .collect()
+                .await;
+
+            let duration = start.elapsed();
+            let duration_ms = duration.as_millis() as u64;
+
+            let successful = results.iter().filter(|r| r.is_ok()).count();
+            let failed = results.iter().filter(|r| r.is_err()).count();
+
+            debug!(
+                requests_per_block = self.requests_per_block,
+                successful,
+                failed,
+                duration_ms,
+                "EthCallStress (UniswapQuote - Uniswap slot0) batch completed"
+            );
+
+            // Small delay between batches to prevent overwhelming the RPC
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    async fn run_heavy_write_eth_call(
+        &self,
+        shutdown: Arc<AtomicBool>,
+        heavy_write_contract: crate::shared::heavy_write_contract::HeavyWriteContract,
+    ) {
+        use alloy_primitives::keccak256;
+
+        let contract_addr = heavy_write_contract.addr;
+
+        // Calculate function selector for spartaWrite(uint256)
+        let selector_hash = keccak256("spartaWrite(uint256)");
+        let selector = &selector_hash[0..4];
+
+        info!("Starting EthCallStress (HeavyWrite) workflow with heavy write contract at {:?}", contract_addr);
+        info!("Using function selector: 0x{}", hex::encode(selector));
+
+        while !shutdown.load(Ordering::Relaxed) {
+            let start = Instant::now();
+
+            // Create parallel eth_call requests to heavy write contract spartaWrite()
+            let futures: Vec<_> = (0..self.requests_per_block)
+                .map(|i| {
+                    let client = self.rpc_client.clone();
+                    let addr = contract_addr;
+
+                    // Encode spartaWrite(uint256 start) call with varying start parameter
+                    // Function selector (4 bytes) + uint256 parameter (32 bytes)
+                    let mut call_data = Vec::with_capacity(36);
+                    call_data.extend_from_slice(selector);
+
+                    // Use different start values for each call in the batch
+                    let start_param = U256::from(i * 100);
+                    let param_bytes = start_param.to_be_bytes::<32>();
+                    call_data.extend_from_slice(&param_bytes);
+
+                    async move {
+                        let tx_request = TransactionRequest {
+                            to: Some(addr.into()),
+                            input: alloy_rpc_types::TransactionInput::new(call_data.into()),
+                            ..Default::default()
+                        };
+
+                        client.request::<_, alloy_primitives::Bytes>("eth_call", (tx_request, "latest")).await
+                    }
+                })
+                .collect();
+
+            // Execute all calls in parallel
+            let results: Vec<_> = stream::iter(futures)
+                .buffer_unordered(self.requests_per_block)
+                .collect()
+                .await;
+
+            let duration = start.elapsed();
+            let duration_ms = duration.as_millis() as u64;
+
+            let successful = results.iter().filter(|r| r.is_ok()).count();
+            let failed = results.iter().filter(|r| r.is_err()).count();
+
+            debug!(
+                requests_per_block = self.requests_per_block,
+                successful,
+                failed,
+                duration_ms,
+                "EthCallStress (HeavyWrite - HeavyWriteContract spartaWrite) batch completed"
+            );
+
+            // Small delay between batches to prevent overwhelming the RPC
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
 }
