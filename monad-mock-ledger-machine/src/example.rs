@@ -15,7 +15,6 @@ use alloy_signer_local::PrivateKeySigner;
 use std::path::PathBuf;
 
 mod block_generator;
-mod faucet;
 mod runloop_interface_monad;
 
 use runloop_interface_monad::MonadRunloop;
@@ -71,8 +70,6 @@ fn write_blocks(runloop: &mut MonadRunloop, ledger_path: PathBuf) {
 
     // Build the mock ledger state machine:
     let mut machine = MonadMockLedgerMachine::new(chain_config, ledger_path, proposer_private_key);
-
-    let mut faucet = faucet::Faucet::new();
 
     set_balance(runloop, USER1);
     set_balance(runloop, USER2);
