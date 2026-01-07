@@ -39,7 +39,7 @@ use monad_eth_types::{EthExecutionProtocol, ExtractEthAddress};
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
 use monad_state_backend::StateBackend;
-use monad_types::ExecutionProtocol;
+use monad_types::{ExecutionProtocol, SeqNum};
 use monad_validator::signature_collection::SignatureCollection;
 
 pub trait MockableTxPool:
@@ -100,6 +100,11 @@ impl<T: MockableTxPool + ?Sized> MockableTxPool for Box<T> {
     }
 }
 
+#[derive(Default)]
+pub struct ByzantineConfig {
+    pub no_increment_seq_num: bool,
+}
+
 pub struct MockTxPoolExecutor<ST, SCT, EPT, BPT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
@@ -112,6 +117,7 @@ where
     // This field is only populated when the execution protocol is EthExecutionProtocol
     eth: Option<(EthTxPool<ST, SCT, SBT, CCT, CRT>, BPT, SBT)>,
     chain_config: CCT,
+    byzantine_config: ByzantineConfig,
 
     events: VecDeque<MempoolEvent<ST, SCT, EPT>>,
     waker: Option<Waker>,
@@ -133,6 +139,7 @@ where
         Self {
             eth: None,
             chain_config: CCT::default(),
+            byzantine_config: ByzantineConfig::default(),
 
             events: VecDeque::default(),
             waker: None,
@@ -165,6 +172,7 @@ where
         Self {
             eth: Some((EthTxPool::default_testing(), block_policy, state_backend)),
             chain_config: MockChainConfig::DEFAULT,
+            byzantine_config: ByzantineConfig::default(),
 
             events: VecDeque::default(),
             waker: None,
@@ -176,6 +184,11 @@ where
 
     pub fn with_chain_params(mut self, chain_params: &'static ChainParams) -> Self {
         self.chain_config = MockChainConfig::new(chain_params);
+        self
+    }
+
+    pub fn with_byzantine_config(mut self, byzantine: ByzantineConfig) -> Self {
+        self.byzantine_config = byzantine;
         self
     }
 }
@@ -232,6 +245,11 @@ where
                     extending_blocks: _,
                     delayed_execution_results,
                 } => {
+                    let seq_num = if self.byzantine_config.no_increment_seq_num {
+                        seq_num - SeqNum(1)
+                    } else {
+                        seq_num
+                    };
                     self.events.push_back(MempoolEvent::Proposal {
                         epoch,
                         round,
@@ -360,6 +378,12 @@ where
                             &self.chain_config,
                         )
                         .expect("proposal succeeds");
+
+                    let seq_num = if self.byzantine_config.no_increment_seq_num {
+                        seq_num - SeqNum(1)
+                    } else {
+                        seq_num
+                    };
 
                     self.events.push_back(MempoolEvent::Proposal {
                         epoch,

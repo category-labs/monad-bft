@@ -54,7 +54,9 @@ mod test {
     };
     use monad_types::{Balance, NodeId, SeqNum, GENESIS_SEQ_NUM};
     use monad_updaters::{
-        ledger::MockableLedger, statesync::MockStateSyncExecutor, txpool::MockTxPoolExecutor,
+        ledger::MockableLedger,
+        statesync::MockStateSyncExecutor,
+        txpool::{ByzantineConfig, MockTxPoolExecutor},
         val_set::MockValSetUpdaterNop,
     };
     use monad_validator::{
@@ -145,6 +147,7 @@ mod test {
     fn generate_eth_swarm(
         num_nodes: u16,
         existing_accounts: impl IntoIterator<Item = Address>,
+        txpool_byzantine_config: impl Fn(usize) -> ByzantineConfig,
     ) -> Nodes<EthSwarm> {
         let epoch_length = SeqNum(2000);
         let execution_delay = SeqNum(4);
@@ -182,7 +185,7 @@ mod test {
             state_configs
                 .into_iter()
                 .enumerate()
-                .map(|(seed, state_builder)| {
+                .map(|(idx, state_builder)| {
                     let validators = state_builder.locked_epoch_validators[0].clone();
                     let state_backend = state_builder.state_backend.clone();
                     NodeBuilder::<EthSwarm>::new(
@@ -191,7 +194,8 @@ mod test {
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockValSetUpdaterNop::new(validators.validators, epoch_length),
                         MockTxPoolExecutor::new(create_block_policy(), state_backend.clone())
-                            .with_chain_params(&CHAIN_PARAMS),
+                            .with_chain_params(&CHAIN_PARAMS)
+                            .with_byzantine_config(txpool_byzantine_config(idx)),
                         MockEthLedger::new(state_backend.clone()),
                         MockStateSyncExecutor::new(state_backend),
                         vec![GenericTransformer::Latency(LatencyTransformer::new(
@@ -199,7 +203,7 @@ mod test {
                         ))],
                         vec![],
                         TimestamperConfig::default(),
-                        seed.try_into().unwrap(),
+                        idx.try_into().unwrap(),
                     )
                 })
                 .collect(),
@@ -247,7 +251,9 @@ mod test {
     #[test]
     fn non_sequential_nonces() {
         let sender_1_key = B256::repeat_byte(15);
-        let mut swarm = generate_eth_swarm(2, vec![secret_to_eth_address(sender_1_key)]);
+        let mut swarm = generate_eth_swarm(2, vec![secret_to_eth_address(sender_1_key)], |_| {
+            ByzantineConfig::default()
+        });
         let node_ids = swarm.states().keys().copied().collect_vec();
         let node_1_id = node_ids[0];
 
@@ -296,7 +302,9 @@ mod test {
     #[test]
     fn duplicate_nonces_multi_nodes() {
         let sender_1_key = B256::repeat_byte(15);
-        let mut swarm = generate_eth_swarm(2, vec![secret_to_eth_address(sender_1_key)]);
+        let mut swarm = generate_eth_swarm(2, vec![secret_to_eth_address(sender_1_key)], |_| {
+            ByzantineConfig::default()
+        });
 
         let node_ids = swarm.states().keys().copied().collect_vec();
         let node_1_id = node_ids[0];
@@ -362,7 +370,9 @@ mod test {
     #[test]
     fn test_forkpoint_serde_roundtrip() {
         let sender_1_key = B256::repeat_byte(15);
-        let mut swarm = generate_eth_swarm(4, vec![secret_to_eth_address(sender_1_key)]);
+        let mut swarm = generate_eth_swarm(4, vec![secret_to_eth_address(sender_1_key)], |_| {
+            ByzantineConfig::default()
+        });
 
         // pick the second node because it proposes in the first `delay` blocks
         let bad_node_idx = 1;
@@ -412,7 +422,9 @@ mod test {
     #[test]
     fn test_nec() {
         let sender_1_key = B256::repeat_byte(15);
-        let mut swarm = generate_eth_swarm(4, vec![secret_to_eth_address(sender_1_key)]);
+        let mut swarm = generate_eth_swarm(4, vec![secret_to_eth_address(sender_1_key)], |_| {
+            ByzantineConfig::default()
+        });
 
         // pick the second node because it proposes in the first `delay` blocks
         let bad_node_idx = 1;
@@ -465,6 +477,7 @@ mod test {
                 secret_to_eth_address(sender_1_key),
                 secret_to_eth_address(sender_2_key),
             ],
+            |_| ByzantineConfig::default(),
         );
 
         let node_ids = swarm.states().keys().copied().collect_vec();
@@ -558,7 +571,9 @@ mod test {
     fn blocksync_missing_nonces() {
         let sender_1_key = B256::repeat_byte(15);
 
-        let mut swarm = generate_eth_swarm(4, vec![secret_to_eth_address(sender_1_key)]);
+        let mut swarm = generate_eth_swarm(4, vec![secret_to_eth_address(sender_1_key)], |_| {
+            ByzantineConfig::default()
+        });
         let node_ids = swarm.states().keys().copied().collect_vec();
         let (node_1_id, other_nodes) = node_ids.split_first().unwrap();
         let node_1_id = *node_1_id;
@@ -648,5 +663,28 @@ mod test {
             swarm.states().keys().cloned().collect_vec(),
             expected_txns
         ));
+    }
+
+    #[test]
+    fn non_sequential_seqnum() {
+        for byz_idx in 0..4 {
+            let mut swarm = generate_eth_swarm(4, Vec::new(), |idx| {
+                if idx == byz_idx {
+                    ByzantineConfig {
+                        no_increment_seq_num: true,
+                        ..Default::default()
+                    }
+                } else {
+                    ByzantineConfig::default()
+                }
+            });
+
+            while swarm
+                .step_until(&mut UntilTerminator::new().until_block(20))
+                .is_some()
+            {}
+
+            swarm_ledger_verification(&swarm, 18);
+        }
     }
 }
