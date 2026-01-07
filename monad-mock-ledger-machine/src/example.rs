@@ -18,6 +18,8 @@ mod block_generator;
 mod faucet;
 mod runloop_interface_monad;
 
+use runloop_interface_monad::MonadRunloop;
+
 const CHAIN_ID: u64 = MONAD_DEVNET_CHAIN_ID;
 
 fn get_dummy_tx_eip1559(sender: [u8; 32], nonce: u64) -> TxEnvelope {
@@ -38,7 +40,32 @@ fn get_dummy_tx_eip1559(sender: [u8; 32], nonce: u64) -> TxEnvelope {
     tx.into_signed(tx_signature).into()
 }
 
-fn write_blocks(ledger_path: PathBuf) {
+fn start_balance() -> U256 {
+    let mon = U256::from(1_000_000_000_000_000_000u64);
+    U256::from(10_000) * mon
+}
+
+fn set_balance(runloop: &mut MonadRunloop, user: [u8; 32]) {
+    let addr_bytes = FixedBytes(user);
+    let addr = PrivateKeySigner::from_bytes(&addr_bytes)
+        .unwrap()
+        .address();
+    runloop.set_balance(addr, start_balance())
+}
+
+fn get_balance(runloop: &mut MonadRunloop, user: [u8; 32]) -> U256 {
+    let addr_bytes = FixedBytes(user);
+    let addr = PrivateKeySigner::from_bytes(&addr_bytes)
+        .unwrap()
+        .address();
+    runloop.get_balance(addr)
+}
+
+const USER1: [u8; 32] = [1u8; 32];
+const USER2: [u8; 32] = [2u8; 32];
+const USER3: [u8; 32] = [3u8; 32];
+
+fn write_blocks(runloop: &mut MonadRunloop, ledger_path: PathBuf) {
     let chain_config = MonadChainConfig::new(CHAIN_ID, None).unwrap();
     let proposer_private_key = [1u8; 32];
 
@@ -47,13 +74,17 @@ fn write_blocks(ledger_path: PathBuf) {
 
     let mut faucet = faucet::Faucet::new();
 
-    let user1 = [1u8; 32];
-    let user2 = [2u8; 32];
-    let user3 = [3u8; 32];
+    set_balance(runloop, USER1);
+    set_balance(runloop, USER2);
+    set_balance(runloop, USER3);
 
-    // Propose block 1 (funding 3 test accounts from a faucet):
+    assert!(get_balance(runloop, USER1) == start_balance());
+    assert!(get_balance(runloop, USER2) == start_balance());
+    assert!(get_balance(runloop, USER3) == start_balance());
+
+    // Propose block 1 (without any transactions):
     machine.propose(
-        /* txs: */ vec![faucet.fund(user1), faucet.fund(user2), faucet.fund(user3)],
+        /* txs: */ vec![],
         /* base_fee: */ 100_000_000_000,
         /* base_fee_trend: */ 0,
         /* base_fee_moment: */ 0,
@@ -64,8 +95,8 @@ fn write_blocks(ledger_path: PathBuf) {
     machine.propose(
         /* txs: */
         vec![
-            get_dummy_tx_eip1559(user1, 0),
-            get_dummy_tx_eip1559(user1, 1),
+            get_dummy_tx_eip1559(USER1, 0),
+            get_dummy_tx_eip1559(USER1, 1),
         ],
         /* base_fee: */ 100_000_000_000,
         /* base_fee_trend: */ 0,
@@ -77,9 +108,9 @@ fn write_blocks(ledger_path: PathBuf) {
     machine.finalize();
 
     // Propose block 3 (with three transactions from different senders):
-    let tx0 = get_dummy_tx_eip1559([1u8; 32], 2);
-    let tx1 = get_dummy_tx_eip1559([2u8; 32], 0);
-    let tx2 = get_dummy_tx_eip1559([3u8; 32], 0);
+    let tx0 = get_dummy_tx_eip1559(USER1, 2);
+    let tx1 = get_dummy_tx_eip1559(USER2, 0);
+    let tx2 = get_dummy_tx_eip1559(USER3, 0);
     machine.propose(
         /* txs: */ vec![tx0, tx1, tx2],
         /* base_fee: */ 100_000_000_000,
@@ -96,22 +127,48 @@ fn write_blocks(ledger_path: PathBuf) {
 }
 
 fn run_finalized_blocks(ledger_path: PathBuf, db_path: PathBuf) {
-    let mut runloop = runloop_interface_monad::MonadRunloop::new(
-        CHAIN_ID,
-        ledger_path,
-        db_path
-    );
-    runloop.run(1);
-    println!("state root after block 1 is {:x}", runloop.get_state_root());
-    runloop.run(2);
-    println!("final state root is {:x}", runloop.get_state_root());
 }
 
 fn main() {
     let ledger_path: PathBuf = "/tmp/ledger".into();
     let db_path: PathBuf = "/dev/triedb".into();
 
-    write_blocks(ledger_path.clone());
+    let mut runloop = MonadRunloop::new(
+        CHAIN_ID,
+        ledger_path.clone(),
+        db_path
+    );
 
-    run_finalized_blocks(ledger_path, db_path);
+    write_blocks(&mut runloop, ledger_path.clone());
+
+    runloop.run(2);
+
+    assert!(get_balance(&mut runloop, USER1) < start_balance());
+    assert!(get_balance(&mut runloop, USER2) == start_balance());
+    assert!(get_balance(&mut runloop, USER3) == start_balance());
+
+    println!();
+    println!("state root after block 2 is\n\t{:x}", runloop.get_state_root());
+    println!(
+        "balances after block 2 are\n\tuser1: {}\n\tuser2: {}\n\tuser3: {}",
+        get_balance(&mut runloop, USER1),
+        get_balance(&mut runloop, USER2),
+        get_balance(&mut runloop, USER3),
+    );
+
+    runloop.run(1);
+
+    assert!(get_balance(&mut runloop, USER1) < start_balance());
+    assert!(get_balance(&mut runloop, USER2) < start_balance());
+    assert!(get_balance(&mut runloop, USER3) < start_balance());
+
+    println!();
+    println!("state root after block 3 is\n\t{:x}", runloop.get_state_root());
+    println!(
+        "balances after block 2 are\n\tuser1: {}\n\tuser2: {}\n\tuser3: {}",
+        get_balance(&mut runloop, USER1),
+        get_balance(&mut runloop, USER2),
+        get_balance(&mut runloop, USER3),
+    );
+    println!();
 }
