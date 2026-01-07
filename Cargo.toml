@@ -229,6 +229,7 @@ tracing-test = "0.2"
 unicode-normalization = "0.1"
 url = "2.5.0"
 wasm-bindgen = "0.2"
+wycheproof = "0.6.0"
 zerocopy = { version = "0.8", features = ["derive"] }
 zeroize = { version = "1.7", features = ["derive"] }
 zstd = "0.13"

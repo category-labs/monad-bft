@@ -36,6 +36,8 @@ rand = { workspace = true }
 rstest = { workspace = true }
 tiny-keccak = { workspace = true, features = ["keccak"] }
 
+wycheproof = { workspace = true }
+
 [[bench]]
 name = "secp"
 harness = false
