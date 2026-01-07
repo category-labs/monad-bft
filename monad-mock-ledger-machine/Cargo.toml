@@ -5,13 +5,17 @@ edition = "2021"
 
 [[bin]]
 name = "monad-mock-ledger-machine"
-bench = false
+
+[[bin]]
+name = "monad-mock-ledger-example"
+path = "./src/example.rs"
 
 [dependencies]
 monad-bls = { workspace = true }
 monad-chain-config = { workspace = true }
 monad-consensus-types = { workspace = true }
 monad-crypto = { workspace = true }
+monad-cxx = { workspace = true }
 monad-eth-block-policy = { workspace = true }
 monad-eth-block-validator = { workspace = true }
 monad-eth-types = { workspace = true }

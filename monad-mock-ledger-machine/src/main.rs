@@ -5,6 +5,7 @@ use alloy_consensus::Transaction;
 use std::collections::VecDeque;
 use std::time::Instant;
 
+mod runloop_interface_monad;
 mod block_generator;
 use block_generator::BlockGenerator;
 

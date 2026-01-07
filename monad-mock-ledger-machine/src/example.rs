@@ -12,13 +12,17 @@ use alloy_primitives::U256;
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
 
-mod faucet;
+use std::path::PathBuf;
 
 mod block_generator;
+mod faucet;
+mod runloop_interface_monad;
+
+const CHAIN_ID: u64 = MONAD_DEVNET_CHAIN_ID;
 
 fn get_dummy_tx_eip1559(sender: [u8; 32], nonce: u64) -> TxEnvelope {
     let tx = TxEip1559 {
-        chain_id: MONAD_DEVNET_CHAIN_ID,
+        chain_id: CHAIN_ID,
         nonce,
         gas_limit: 30000,
         max_priority_fee_per_gas: 20,
@@ -34,9 +38,8 @@ fn get_dummy_tx_eip1559(sender: [u8; 32], nonce: u64) -> TxEnvelope {
     tx.into_signed(tx_signature).into()
 }
 
-fn main() {
-    let chain_config = MonadChainConfig::new(MONAD_DEVNET_CHAIN_ID, None).unwrap();
-    let ledger_path = "/tmp/ledger".into();
+fn write_blocks(ledger_path: PathBuf) {
+    let chain_config = MonadChainConfig::new(CHAIN_ID, None).unwrap();
     let proposer_private_key = [1u8; 32];
 
     // Build the mock ledger state machine:
@@ -90,4 +93,25 @@ fn main() {
 
     // Finalize block 3:
     machine.finalize();
+}
+
+fn run_finalized_blocks(ledger_path: PathBuf, db_path: PathBuf) {
+    let mut runloop = runloop_interface_monad::MonadRunloop::new(
+        CHAIN_ID,
+        ledger_path,
+        db_path
+    );
+    runloop.run(1);
+    println!("state root after block 1 is {:x}", runloop.get_state_root());
+    runloop.run(2);
+    println!("final state root is {:x}", runloop.get_state_root());
+}
+
+fn main() {
+    let ledger_path: PathBuf = "/tmp/ledger".into();
+    let db_path: PathBuf = "/dev/triedb".into();
+
+    write_blocks(ledger_path.clone());
+
+    run_finalized_blocks(ledger_path, db_path);
 }

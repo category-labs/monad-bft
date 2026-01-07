@@ -5517,6 +5517,7 @@ dependencies = [
  "monad-chain-config",
  "monad-consensus-types",
  "monad-crypto",
+ "monad-cxx",
  "monad-eth-block-policy",
  "monad-eth-block-validator",
  "monad-eth-types",
