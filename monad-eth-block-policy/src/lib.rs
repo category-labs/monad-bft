@@ -1300,13 +1300,6 @@ where
     ) -> Result<(), BlockPolicyError> {
         let chain_id = chain_config.chain_id();
 
-        let first_block = extending_blocks
-            .iter()
-            .chain(std::iter::once(&block))
-            .next()
-            .unwrap();
-        assert_eq!(first_block.get_seq_num(), self.last_commit + SeqNum(1));
-
         // check coherency against the block being extended or against the root of the blocktree if
         // there is no extending branch
         let (extending_seq_num, extending_timestamp) =
@@ -1485,6 +1478,7 @@ mod test {
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use monad_chain_config::{revision::MockChainRevision, MockChainConfig};
+    use monad_consensus_types::block::GENESIS_TIMESTAMP;
     use monad_crypto::NopSignature;
     use monad_eth_testutil::{
         generate_consensus_test_block, make_eip1559_tx, make_eip1559_tx_with_value,
@@ -4016,5 +4010,34 @@ mod test {
             max_gas_cost,
             Balance::from((base_fee as u128 + max_priority_fee_per_gas) * gas_limit as u128)
         );
+    }
+
+    #[test]
+    fn test_non_consecutive_seqnum() {
+        let state_backend = NopStateBackend::default();
+        let block_policy = EthBlockPolicy::<
+            SignatureType,
+            SignatureCollectionType,
+            ChainConfigType,
+            ChainRevisionType,
+        >::new(GENESIS_SEQ_NUM, EXEC_DELAY.0);
+
+        let txs = Vec::new();
+        let block = make_test_block(Round(1), GENESIS_SEQ_NUM, txs);
+
+        let result = block_policy.check_coherency(
+            &block,
+            Vec::new(),
+            RootInfo {
+                round: GENESIS_ROUND,
+                seq_num: GENESIS_SEQ_NUM,
+                epoch: Epoch(1),
+                block_id: GENESIS_BLOCK_ID,
+                timestamp_ns: GENESIS_TIMESTAMP,
+            },
+            &state_backend,
+            &MockChainConfig::default(),
+        );
+        assert_eq!(result, Err(BlockPolicyError::BlockNotCoherent));
     }
 }
