@@ -383,7 +383,7 @@ where
         }
     }
 
-    fn metrics(&self) -> ExecutorMetricsChain {
+    fn metrics(&self) -> ExecutorMetricsChain<'_> {
         match &self.role {
             Role::Publisher(publisher) => publisher.metrics().into(),
             Role::Client(client) => client.metrics().into(),

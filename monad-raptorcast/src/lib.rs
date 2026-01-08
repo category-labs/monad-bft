@@ -86,8 +86,7 @@ pub const UNICAST_MSG_BATCH_SIZE: usize = 32;
 pub const RAPTORCAST_SOCKET: &str = "raptorcast";
 pub const AUTHENTICATED_RAPTORCAST_SOCKET: &str = "authenticated_raptorcast";
 
-pub(crate) type OwnedMessageBuilder<ST, PD> =
-    packet::MessageBuilder<'static, ST, Arc<Mutex<PeerDiscoveryDriver<PD>>>>;
+pub(crate) type OwnedMessageBuilder<ST> = packet::MessageBuilder<'static, ST>;
 
 pub struct RaptorCast<ST, M, OM, SE, PD, AP>
 where
@@ -109,8 +108,8 @@ where
     current_epoch: Epoch,
 
     udp_state: udp::UdpState<ST>,
-    message_builder: OwnedMessageBuilder<ST, PD>,
-    secondary_message_builder: Option<OwnedMessageBuilder<ST, PD>>,
+    message_builder: OwnedMessageBuilder<ST>,
+    secondary_message_builder: Option<OwnedMessageBuilder<ST>>,
 
     tcp_reader: TcpSocketReader,
     tcp_writer: TcpSocketWriter,
@@ -182,11 +181,10 @@ where
         let redundancy = Redundancy::from_f32(config.primary_instance.raptor10_redundancy)
             .expect("primary raptor10_redundancy doesn't fit");
         let segment_size = dual_socket.segment_size(config.mtu);
-        let message_builder =
-            OwnedMessageBuilder::new(config.shared_key.clone(), peer_discovery_driver.clone())
-                .segment_size(segment_size)
-                .group_id(GroupId::Primary(current_epoch))
-                .redundancy(redundancy);
+        let message_builder = OwnedMessageBuilder::new(config.shared_key.clone())
+            .segment_size(segment_size)
+            .group_id(GroupId::Primary(current_epoch))
+            .redundancy(redundancy);
 
         let secondary_redundancy = Redundancy::from_f32(
             config
@@ -194,11 +192,10 @@ where
                 .raptor10_fullnode_redundancy_factor,
         )
         .expect("secondary raptor10_redundancy doesn't fit");
-        let secondary_message_builder =
-            OwnedMessageBuilder::new(config.shared_key.clone(), peer_discovery_driver.clone())
-                .segment_size(segment_size)
-                .group_id(GroupId::Primary(current_epoch))
-                .redundancy(secondary_redundancy);
+        let secondary_message_builder = OwnedMessageBuilder::new(config.shared_key.clone())
+            .segment_size(segment_size)
+            .group_id(GroupId::Primary(current_epoch))
+            .redundancy(secondary_redundancy);
 
         Self {
             is_dynamic_fullnode,
@@ -1358,7 +1355,7 @@ where
 fn send<ST, PD, AP>(
     dual_socket: &mut auth::DualSocketHandle<AP>,
     peer_discovery_driver: &Arc<Mutex<PeerDiscoveryDriver<PD>>>,
-    message_builder: &mut OwnedMessageBuilder<ST, PD>,
+    message_builder: &mut OwnedMessageBuilder<ST>,
     message: &Bytes,
     build_target: &BuildTarget<ST>,
     priority: UdpPriority,
@@ -1370,14 +1367,18 @@ fn send<ST, PD, AP>(
 {
     {
         let dual_socket_cell = std::cell::RefCell::new(&mut *dual_socket);
-        let mut sink = packet::UdpMessageBatcher::new(UNICAST_MSG_BATCH_SIZE, |rc_chunks| {
-            dual_socket_cell
-                .borrow_mut()
-                .write_unicast_with_priority(rc_chunks, priority);
-        });
+        let mut sink = packet::UdpMessageBatcher::new(
+            UNICAST_MSG_BATCH_SIZE,
+            (peer_discovery_driver, &dual_socket_cell),
+            |rc_chunks| {
+                dual_socket_cell
+                    .borrow_mut()
+                    .write_unicast_with_priority(rc_chunks, priority);
+            },
+        );
 
         message_builder
-            .prepare_with_peer_lookup((peer_discovery_driver, &dual_socket_cell))
+            .prepare()
             .group_id(group_id)
             .build_into(message, build_target, &mut sink)
             .unwrap_log_on_error(message, build_target);
@@ -1389,7 +1390,7 @@ fn send<ST, PD, AP>(
 fn send_with_record<ST, PD, AP>(
     dual_socket: &mut auth::DualSocketHandle<AP>,
     peer_discovery_driver: &Arc<Mutex<PeerDiscoveryDriver<PD>>>,
-    message_builder: &mut OwnedMessageBuilder<ST, PD>,
+    message_builder: &mut OwnedMessageBuilder<ST>,
     message: &Bytes,
     priority: UdpPriority,
     target: &NodeId<CertificateSignaturePubKey<ST>>,
@@ -1409,14 +1410,14 @@ fn send_with_record<ST, PD, AP>(
             name_record,
             dual_socket: &dual_socket_cell,
         };
-        let mut sink = packet::UdpMessageBatcher::new(UNICAST_MSG_BATCH_SIZE, |rc_chunks| {
-            dual_socket_cell
-                .borrow_mut()
-                .write_unicast_with_priority(rc_chunks, priority);
-        });
+        let mut sink =
+            packet::UdpMessageBatcher::new(UNICAST_MSG_BATCH_SIZE, lookup, |rc_chunks| {
+                dual_socket_cell
+                    .borrow_mut()
+                    .write_unicast_with_priority(rc_chunks, priority);
+            });
 
         message_builder
-            .prepare_with_peer_lookup(&lookup)
             .build_into(message, &build_target, &mut sink)
             .unwrap_log_on_error(message, &build_target);
     }

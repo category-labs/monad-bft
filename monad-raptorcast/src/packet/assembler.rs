@@ -53,19 +53,17 @@ pub enum AssembleMode {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn assemble<ST, PL>(
+pub(crate) fn assemble<ST>(
     key: &ST::KeyPairType,
     layout: PacketLayout,
     app_message: &[u8],
     header_buf: &[u8],
     assignment: ChunkAssignment<CertificateSignaturePubKey<ST>>,
     mode: AssembleMode,
-    peer_lookup: &PL,
-    collector: &mut impl Collector<UdpMessage>,
+    collector: &mut impl Collector<UdpMessage<CertificateSignaturePubKey<ST>>>,
 ) -> Result<()>
 where
     ST: CertificateSignature,
-    PL: PeerAddrLookup<CertificateSignaturePubKey<ST>> + ?Sized,
 {
     // step 1. generate the chunks
     let mut chunks = assignment.generate(layout);
@@ -77,26 +75,23 @@ where
         encode_symbols(app_message, &mut chunks, layout)?;
     }
 
-    // step 3. lookup recipient addresses
-    lookup_recipient_addrs(&chunks, peer_lookup);
-
     if mode.stream_mode() {
         for mut batch in owned_merkle_batches(chunks, layout) {
-            // step 4. sign and write headers for this merkle batch
+            // step 3. sign and write headers for this merkle batch
             let merkle_batch = MerkleBatch::from(&mut batch[..]);
             merkle_batch.write_header::<ST>(layout, key, header_buf)?;
 
-            // step 5. assemble udp messages
-            mode.assemble_udp_messages_into(collector, batch, layout);
+            // step 4. assemble udp messages
+            mode.assemble_udp_messages_into(collector, batch);
         }
     } else {
-        // step 4. sign and write headers for this merkle batch
+        // step 3. sign and write headers for this merkle batch
         for batch in merkle_batches(&mut chunks, layout) {
             batch.write_header::<ST>(layout, key, header_buf)?;
         }
 
-        // step 5. assemble udp messages
-        mode.assemble_udp_messages_into(collector, chunks, layout);
+        // step 4. assemble udp messages
+        mode.assemble_udp_messages_into(collector, chunks);
     }
 
     Ok(())
@@ -106,6 +101,16 @@ pub(crate) struct Chunk<PT: PubKey> {
     chunk_id: usize,
     recipient: Recipient<PT>,
     payload: BytesMut,
+}
+
+impl<PT: PubKey> From<Chunk<PT>> for UdpMessage<PT> {
+    fn from(chunk: Chunk<PT>) -> Self {
+        Self {
+            recipient: chunk.recipient,
+            stride: chunk.payload.len(),
+            payload: chunk.payload.freeze(),
+        }
+    }
 }
 
 impl<PT: PubKey> Chunk<PT> {
@@ -123,7 +128,7 @@ impl<PT: PubKey> Chunk<PT> {
 //
 // Change to Arc if we need parallel processing.
 #[derive(Clone, PartialEq, Eq)]
-pub(crate) struct Recipient<PT: PubKey>(Rc<RecipientInner<PT>>);
+pub struct Recipient<PT: PubKey>(Rc<RecipientInner<PT>>);
 
 impl<PT: PubKey> std::hash::Hash for Recipient<PT> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
@@ -158,6 +163,20 @@ impl<PT: PubKey> PartialEq for RecipientInner<PT> {
     }
 }
 
+impl Recipient<monad_crypto::NopPubKey> {
+    // only used for testing
+    #[cfg(test)]
+    pub fn dummy(addr: Option<SocketAddr>) -> Self {
+        let mut bytes = format!("{:?}", addr).into_bytes();
+        bytes.resize(32, 0u8);
+
+        let pubkey = monad_crypto::NopPubKey::from_bytes(&bytes).expect("pubkey");
+        let recipient = Self::new(NodeId::new(pubkey));
+        recipient.0.addr.set(addr).expect("addr not set");
+        recipient
+    }
+}
+
 impl<PT: PubKey> Recipient<PT> {
     pub fn new(node_id: NodeId<PT>) -> Self {
         let node_hash = compute_hash(&node_id).0;
@@ -175,11 +194,12 @@ impl<PT: PubKey> Recipient<PT> {
     }
 
     // Expect `lookup` or `set_addr` performed earlier, otherwise panic.
+    #[allow(unused)]
     pub(super) fn get_addr(&self) -> Option<SocketAddr> {
         *self.0.addr.get().expect("get addr called before lookup")
     }
 
-    fn lookup(&self, handle: &(impl PeerAddrLookup<PT> + ?Sized)) -> &Option<SocketAddr> {
+    pub fn lookup(&self, handle: &(impl PeerAddrLookup<PT> + ?Sized)) -> &Option<SocketAddr> {
         self.0.addr.get_or_init(|| {
             let addr = handle.lookup(&self.0.node_id);
             if addr.is_none() {
@@ -187,6 +207,16 @@ impl<PT: PubKey> Recipient<PT> {
             }
             addr
         })
+    }
+}
+
+#[cfg(test)]
+pub struct DummyPeerLookup;
+
+#[cfg(test)]
+impl<PT: PubKey> PeerAddrLookup<PT> for DummyPeerLookup {
+    fn lookup(&self, _node_id: &NodeId<PT>) -> Option<SocketAddr> {
+        panic!("recipient addr should be self contained")
     }
 }
 
@@ -407,7 +437,7 @@ pub(super) struct MerkleBatch<'a, PT: PubKey> {
 pub(super) fn merkle_batches<PT: PubKey>(
     all_chunks: &mut [Chunk<PT>],
     layout: PacketLayout,
-) -> impl Iterator<Item = MerkleBatch<PT>> {
+) -> impl Iterator<Item = MerkleBatch<'_, PT>> {
     let batch_len = layout.merkle_batch_len();
     debug_assert!(batch_len > 0);
     all_chunks.chunks_mut(batch_len).map(MerkleBatch::from)
@@ -639,16 +669,6 @@ pub(crate) fn build_header(
     Ok(buffer.freeze())
 }
 
-fn lookup_recipient_addrs<PT, PL>(chunks: &Vec<Chunk<PT>>, handle: &PL)
-where
-    PT: PubKey,
-    PL: PeerAddrLookup<PT> + ?Sized,
-{
-    for chunk in chunks {
-        chunk.recipient.lookup(handle);
-    }
-}
-
 impl AssembleMode {
     pub fn expected_chunk_order(self) -> Option<ChunkOrder> {
         match self {
@@ -667,95 +687,92 @@ impl AssembleMode {
 
     fn assemble_udp_messages_into<PT: PubKey>(
         self,
-        collector: &mut impl Collector<UdpMessage>,
+        collector: &mut impl Collector<UdpMessage<PT>>,
         chunks: Vec<Chunk<PT>>,
-        layout: PacketLayout,
     ) {
         match self {
             AssembleMode::GsoFull | AssembleMode::GsoBestEffort => {
-                Self::assemble_gso_udp_messages_into(collector, chunks, layout);
+                Self::assemble_gso_udp_messages_into(collector, chunks);
             }
             AssembleMode::RoundRobin => {
-                Self::assemble_standalone_udp_messages_into(collector, chunks, layout);
+                Self::assemble_standalone_udp_messages_into(collector, chunks);
             }
         }
     }
 
     fn assemble_standalone_udp_messages_into<PT: PubKey>(
-        collector: &mut impl Collector<UdpMessage>,
+        collector: &mut impl Collector<UdpMessage<PT>>,
         chunks: Vec<Chunk<PT>>,
-        layout: PacketLayout,
     ) {
         collector.reserve(chunks.len());
         for chunk in chunks {
-            let Some(dest) = chunk.recipient.get_addr() else {
-                continue;
-            };
-            collector.push(UdpMessage {
-                dest,
-                payload: chunk.payload.freeze(),
-                stride: layout.segment_len(),
-            });
+            collector.push(chunk.into());
         }
     }
 
     fn assemble_gso_udp_messages_into<PT: PubKey>(
-        collector: &mut impl Collector<UdpMessage>,
+        collector: &mut impl Collector<UdpMessage<PT>>,
         chunks: Vec<Chunk<PT>>,
-        layout: PacketLayout,
     ) {
-        struct AggregatedChunk {
-            dest: SocketAddr,
-            payload: BytesMut,
-        }
-
-        impl AggregatedChunk {
-            fn from_chunk<PT: PubKey>(chunk: Chunk<PT>, dest: SocketAddr) -> Self {
-                Self {
-                    dest,
-                    payload: chunk.payload,
-                }
-            }
-
-            fn into_udp_message(self, stride: usize) -> UdpMessage {
-                UdpMessage {
-                    dest: self.dest,
-                    payload: self.payload.freeze(),
-                    stride,
-                }
-            }
-        }
-
-        let stride = layout.segment_len();
         let mut agg_chunk = None;
 
         for chunk in chunks {
-            let Some(dest) = chunk.recipient.get_addr() else {
-                // skip chunks with unknown recipient
-                continue;
-            };
-
             let Some(agg) = &mut agg_chunk else {
                 // first chunk, start a new aggregation
-                agg_chunk = Some(AggregatedChunk::from_chunk(chunk, dest));
+                agg_chunk = Some(AggregatedChunk::from(chunk));
                 continue;
             };
 
-            if agg.dest == dest {
-                // same recipient, merge the payload BytesMut::unsplit
-                // is O(1) when the chunk payload are consecutive.
-                agg.payload.unsplit(chunk.payload);
-                continue;
+            if let Some(to_flush) = agg.aggregate(chunk) {
+                // different recipient, flush the previous message
+                collector.push(to_flush.into());
             }
-
-            // different recipient, flush the previous message
-            let next_agg = AggregatedChunk::from_chunk(chunk, dest);
-            let udp_msg = std::mem::replace(agg, next_agg).into_udp_message(stride);
-            collector.push(udp_msg);
         }
 
         if let Some(agg) = agg_chunk.take() {
-            collector.push(agg.into_udp_message(stride));
+            collector.push(agg.into());
+        }
+    }
+}
+
+// used in gso grouping
+struct AggregatedChunk<PT: PubKey> {
+    recipient: Recipient<PT>,
+    payload: BytesMut,
+    stride: usize,
+}
+
+impl<PT: PubKey> AggregatedChunk<PT> {
+    #[must_use]
+    fn aggregate(&mut self, chunk: Chunk<PT>) -> Option<Self> {
+        if self.recipient == chunk.recipient && chunk.payload.len() == self.stride {
+            // same recipient, merge the payload. BytesMut::unsplit is
+            // O(1) when the chunk payload are consecutive.
+            self.payload.unsplit(chunk.payload);
+            return None;
+        }
+
+        let new_agg = chunk.into();
+        Some(std::mem::replace(self, new_agg))
+    }
+}
+
+impl<PT: PubKey> From<Chunk<PT>> for AggregatedChunk<PT> {
+    fn from(chunk: Chunk<PT>) -> Self {
+        Self {
+            recipient: chunk.recipient,
+            stride: chunk.payload.len(),
+            payload: chunk.payload,
+        }
+    }
+}
+
+impl<PT: PubKey> From<AggregatedChunk<PT>> for UdpMessage<PT> {
+    fn from(agg_chunk: AggregatedChunk<PT>) -> Self {
+        UdpMessage {
+            recipient: agg_chunk.recipient,
+            stride: agg_chunk.stride,
+            payload: agg_chunk.payload.freeze(),
         }
     }
 }

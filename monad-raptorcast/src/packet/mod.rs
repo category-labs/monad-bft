@@ -36,8 +36,8 @@ use crate::{
 };
 
 #[derive(Debug, Clone)]
-pub struct UdpMessage {
-    pub dest: SocketAddr,
+pub struct UdpMessage<PT: PubKey> {
+    pub recipient: Recipient<PT>,
     pub payload: Bytes,
     pub stride: usize,
 }
@@ -64,7 +64,7 @@ pub enum BuildError {
     RedundancyTooHigh,
 }
 
-pub(crate) trait PeerAddrLookup<PT: PubKey> {
+pub trait PeerAddrLookup<PT: PubKey> {
     fn lookup(&self, node_id: &NodeId<PT>) -> Option<SocketAddr>;
 }
 
@@ -91,7 +91,7 @@ pub fn build_messages<ST>(
 where
     ST: CertificateSignatureRecoverable,
 {
-    let builder = MessageBuilder::new(key, known_addresses)
+    let builder = MessageBuilder::new(key)
         .segment_size(segment_size)
         .group_id(group_id)
         .unix_ts_ms(unix_ts_ms)
@@ -103,7 +103,11 @@ where
 
     packets
         .into_iter()
-        .map(|msg| (msg.dest, msg.payload))
+        .filter_map(|msg| {
+            msg.recipient
+                .lookup(known_addresses)
+                .map(|dest| (dest, msg.payload))
+        })
         .collect()
 }
 
@@ -172,15 +176,15 @@ where
     }
 }
 
-impl<PT, T> PeerAddrLookup<PT> for &T
+impl<PT: PubKey, F> PeerAddrLookup<PT> for F
 where
-    PT: PubKey,
-    T: PeerAddrLookup<PT>,
+    F: Fn(&NodeId<PT>) -> Option<SocketAddr>,
 {
     fn lookup(&self, node_id: &NodeId<PT>) -> Option<SocketAddr> {
-        (*self).lookup(node_id)
+        self(node_id)
     }
 }
+
 impl<PT, T> PeerAddrLookup<PT> for std::sync::Arc<T>
 where
     PT: PubKey,
@@ -212,21 +216,23 @@ where
 
 // Batch assembled UdpMessages into UnicastMsgs for consumption in
 // dataplane, flush on buffer full and on drop.
-pub struct UdpMessageBatcher<F>
+pub struct UdpMessageBatcher<F, PL>
 where
     F: FnMut(monad_dataplane::UnicastMsg),
 {
+    peer_lookup: PL,
     buffer_size: usize,
     buffer: monad_dataplane::UnicastMsg,
     sink: F,
 }
 
-impl<F> UdpMessageBatcher<F>
+impl<F, PL> UdpMessageBatcher<F, PL>
 where
     F: FnMut(monad_dataplane::UnicastMsg),
 {
-    pub fn new(buffer_size: usize, sink: F) -> Self {
+    pub fn new(buffer_size: usize, peer_lookup: PL, sink: F) -> Self {
         Self {
+            peer_lookup,
             buffer_size,
             buffer: monad_dataplane::UnicastMsg {
                 msgs: Vec::with_capacity(buffer_size),
@@ -252,7 +258,7 @@ where
     }
 }
 
-impl<F> Drop for UdpMessageBatcher<F>
+impl<F, PL> Drop for UdpMessageBatcher<F, PL>
 where
     F: FnMut(monad_dataplane::UnicastMsg),
 {
@@ -261,11 +267,16 @@ where
     }
 }
 
-impl<F> Collector<UdpMessage> for UdpMessageBatcher<F>
+impl<F, PL, PT> Collector<UdpMessage<PT>> for UdpMessageBatcher<F, PL>
 where
     F: FnMut(monad_dataplane::UnicastMsg),
+    PT: PubKey,
+    PL: PeerAddrLookup<PT>,
 {
-    fn push(&mut self, item: UdpMessage) {
+    fn push(&mut self, item: UdpMessage<PT>) {
+        let Some(dest) = item.recipient.lookup(&self.peer_lookup) else {
+            return;
+        };
         let stride = item.stride as u16;
 
         // uninitialized, set the stride
@@ -285,7 +296,7 @@ where
             self.buffer.stride = stride;
         }
 
-        self.buffer.msgs.push((item.dest, item.payload));
+        self.buffer.msgs.push((*dest, item.payload));
 
         if self.buffer.msgs.len() >= self.buffer_size {
             self.flush();
@@ -298,22 +309,23 @@ mod tests {
     use std::cell::RefCell;
 
     use super::*;
+    use crate::packet::assembler::DummyPeerLookup;
 
     #[test]
     fn test_udp_message_batcher() {
         let collected_batches: RefCell<Vec<monad_dataplane::UnicastMsg>> = Default::default();
-        let dest = "127.0.0.1:3000".parse().unwrap();
+        let recipient = Recipient::dummy("127.0.0.1:3000".parse().ok());
         let msg_batch_1 = vec![
             // 4 messages, each with stride 4
-            UdpMessage { dest, payload: Bytes::from(vec![42; 4]), stride: 4 }; 4
+            UdpMessage { recipient: recipient.clone(), payload: Bytes::from(vec![42; 4]), stride: 4 }; 4
         ];
 
         let msg_batch_2 = vec![
             // 4 messages, each with stride 5
-            UdpMessage { dest, payload: Bytes::from(vec![43; 5]), stride: 5 }; 4
+            UdpMessage { recipient, payload: Bytes::from(vec![43; 5]), stride: 5 }; 4
         ];
 
-        let mut batcher = UdpMessageBatcher::new(3, |batch| {
+        let mut batcher = UdpMessageBatcher::new(3, DummyPeerLookup, |batch| {
             collected_batches.borrow_mut().push(batch);
         });
         for msg in msg_batch_1 {

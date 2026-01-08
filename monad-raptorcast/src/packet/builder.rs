@@ -26,7 +26,7 @@ use rand::Rng;
 use super::{
     assembler::{self, build_header, AssembleMode, BroadcastType, PacketLayout},
     assigner::{self, ChunkAssignment},
-    BuildError, ChunkAssigner, PeerAddrLookup, UdpMessage,
+    BuildError, ChunkAssigner, UdpMessage,
 };
 use crate::{
     message::MAX_MESSAGE_SIZE,
@@ -82,14 +82,12 @@ enum TimestampMode {
     RealTime,
 }
 
-pub struct MessageBuilder<'key, ST, PL>
+pub struct MessageBuilder<'key, ST>
 where
     ST: CertificateSignatureRecoverable,
-    PL: PeerAddrLookup<CertificateSignaturePubKey<ST>>,
 {
     // support both owned or borrowed keys
     key: MaybeArc<'key, ST::KeyPairType>,
-    peer_lookup: PL,
 
     // required fields
     group_id: Option<GroupId>,
@@ -102,15 +100,13 @@ where
     assemble_mode: AssembleMode,
 }
 
-impl<'key, ST, PL> Clone for MessageBuilder<'key, ST, PL>
+impl<'key, ST> Clone for MessageBuilder<'key, ST>
 where
     ST: CertificateSignatureRecoverable,
-    PL: PeerAddrLookup<CertificateSignaturePubKey<ST>> + Clone,
 {
     fn clone(&self) -> Self {
         Self {
             key: self.key.clone(),
-            peer_lookup: self.peer_lookup.clone(),
             group_id: self.group_id,
             redundancy: self.redundancy,
             unix_ts_ms: self.unix_ts_ms,
@@ -121,13 +117,12 @@ where
     }
 }
 
-impl<'key, ST, PL> MessageBuilder<'key, ST, PL>
+impl<'key, ST> MessageBuilder<'key, ST>
 where
     ST: CertificateSignatureRecoverable,
-    PL: PeerAddrLookup<CertificateSignaturePubKey<ST>>,
 {
     #[allow(private_bounds)]
-    pub fn new<K>(key: K, peer_lookup: PL) -> Self
+    pub fn new<K>(key: K) -> Self
     where
         K: Into<MaybeArc<'key, ST::KeyPairType>>,
     {
@@ -137,7 +132,6 @@ where
 
         Self {
             key,
-            peer_lookup,
 
             // default fields
             redundancy: None,
@@ -192,24 +186,9 @@ where
     }
 
     // ----- Prepare override builder -----
-    pub fn prepare(&self) -> PreparedMessageBuilder<'_, 'key, ST, PL, PL> {
+    pub fn prepare(&self) -> PreparedMessageBuilder<'_, 'key, ST> {
         PreparedMessageBuilder {
             base: self,
-            peer_lookup: None,
-            group_id: None,
-        }
-    }
-
-    pub fn prepare_with_peer_lookup<PL2>(
-        &self,
-        peer_lookup: PL2,
-    ) -> PreparedMessageBuilder<'_, 'key, ST, PL, PL2>
-    where
-        PL2: PeerAddrLookup<CertificateSignaturePubKey<ST>>,
-    {
-        PreparedMessageBuilder {
-            base: self,
-            peer_lookup: Some(peer_lookup),
             group_id: None,
         }
     }
@@ -222,7 +201,7 @@ where
         collector: &mut C,
     ) -> Result<()>
     where
-        C: super::Collector<super::UdpMessage>,
+        C: super::Collector<UdpMessage<CertificateSignaturePubKey<ST>>>,
     {
         self.prepare()
             .build_into(app_message, build_target, collector)
@@ -232,29 +211,24 @@ where
         &self,
         app_message: &[u8],
         build_target: &BuildTarget<ST>,
-    ) -> Result<Vec<UdpMessage>> {
+    ) -> Result<Vec<UdpMessage<CertificateSignaturePubKey<ST>>>> {
         self.prepare().build_vec(app_message, build_target)
     }
 }
 
-pub struct PreparedMessageBuilder<'base, 'key, ST, PL, PL2>
+pub struct PreparedMessageBuilder<'base, 'key, ST>
 where
     ST: CertificateSignatureRecoverable,
-    PL: PeerAddrLookup<CertificateSignaturePubKey<ST>>,
-    PL2: PeerAddrLookup<CertificateSignaturePubKey<ST>>,
 {
-    base: &'base MessageBuilder<'key, ST, PL>,
+    base: &'base MessageBuilder<'key, ST>,
 
     // Add extra override fields as needed
-    peer_lookup: Option<PL2>,
     group_id: Option<GroupId>,
 }
 
-impl<'base, 'key, ST, PL, PL2> PreparedMessageBuilder<'base, 'key, ST, PL, PL2>
+impl<'base, 'key, ST> PreparedMessageBuilder<'base, 'key, ST>
 where
     ST: CertificateSignatureRecoverable,
-    PL: PeerAddrLookup<CertificateSignaturePubKey<ST>>,
-    PL2: PeerAddrLookup<CertificateSignaturePubKey<ST>>,
 {
     // ----- Setters for overrides -----
     pub fn group_id(mut self, group_id: GroupId) -> Self {
@@ -423,7 +397,7 @@ where
         collector: &mut C,
     ) -> Result<()>
     where
-        C: super::Collector<super::UdpMessage>,
+        C: super::Collector<super::UdpMessage<CertificateSignaturePubKey<ST>>>,
     {
         // figure out the layout of the packet
         let segment_size = self.unwrap_segment_size()?;
@@ -459,18 +433,13 @@ where
         )?;
 
         // assemble the chunks's headers and content
-        let peer_lookup: &dyn PeerAddrLookup<_> = match &self.peer_lookup {
-            Some(pl) => pl,
-            None => &self.base.peer_lookup,
-        };
-        assembler::assemble::<ST, _>(
+        assembler::assemble::<ST>(
             self.base.key.as_ref(),
             layout,
             app_message,
             &header,
             assignment,
             assemble_mode,
-            peer_lookup,
             collector,
         )?;
 
@@ -481,7 +450,7 @@ where
         &self,
         app_message: &[u8],
         build_target: &BuildTarget<ST>,
-    ) -> Result<Vec<UdpMessage>> {
+    ) -> Result<Vec<UdpMessage<CertificateSignaturePubKey<ST>>>> {
         let mut packets = Vec::new();
         self.build_into(app_message, build_target, &mut packets)?;
         Ok(packets)

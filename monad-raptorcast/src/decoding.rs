@@ -330,7 +330,7 @@ where
         self.pending_messages.consistency_breaches()
     }
 
-    pub fn metrics(&self) -> ExecutorMetricsChain {
+    pub fn metrics(&self) -> ExecutorMetricsChain<'_> {
         ExecutorMetricsChain::default()
             .push(&self.metrics)
             .push(self.pending_messages.validator.metrics())

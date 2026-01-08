@@ -130,7 +130,7 @@ impl<P: PubKey> FullNodes<P> {
         Self { list: nodes }
     }
 
-    pub fn view(&self) -> FullNodesView<P> {
+    pub fn view(&self) -> FullNodesView<'_, P> {
         FullNodesView(&self.list)
     }
 }
@@ -443,7 +443,7 @@ where
         &self.round_span
     }
 
-    fn empty_iterator(&self) -> GroupIterator<ST> {
+    fn empty_iterator(&self) -> GroupIterator<'_, ST> {
         GroupIterator {
             group: self,
             num_consumed: usize::MAX,
@@ -461,7 +461,7 @@ where
         &self,
         author_id: &NodeId<CertificateSignaturePubKey<ST>>,
         seed: usize,
-    ) -> GroupIterator<ST> {
+    ) -> GroupIterator<'_, ST> {
         // Hint for the index of author_id within self.sorted_other_peers.
         // We want to skip it when iterating the peers for broadcasting.
         let author_id_ix = if let Some(root_vid) = self.validator_id {
@@ -647,7 +647,7 @@ where
         &self,
         msg_group_id: GroupId,
         msg_author: &NodeId<CertificateSignaturePubKey<ST>>, // skipped when iterating RaptorCast group
-    ) -> Option<GroupIterator<ST>> {
+    ) -> Option<GroupIterator<'_, ST>> {
         let rebroadcast_group = match msg_group_id {
             GroupId::Primary(msg_epoch) => self.validator_map.get(&msg_epoch)?,
             GroupId::Secondary(msg_round) => {

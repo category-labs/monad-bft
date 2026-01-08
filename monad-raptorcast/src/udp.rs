@@ -1205,7 +1205,7 @@ mod tests {
         #[case] raptorcast: bool,
         #[case] should_succeed: bool,
     ) {
-        let (key, validators, known_addresses) = validator_set();
+        let (key, validators, _known_addresses) = validator_set();
         let epoch_validators = validators.view_without(vec![&NodeId::new(key.pubkey())]);
         let target = if raptorcast {
             BuildTarget::Raptorcast(epoch_validators)
@@ -1213,7 +1213,7 @@ mod tests {
             BuildTarget::Broadcast(epoch_validators.into())
         };
         let app_msg = vec![0; app_msg_len];
-        let messages = MessageBuilder::new(&key, known_addresses)
+        let messages = MessageBuilder::new(&key)
             .segment_size(DEFAULT_SEGMENT_SIZE as usize)
             .group_id(GroupId::Primary(EPOCH))
             .redundancy(Redundancy::from_u8(1))

@@ -91,7 +91,7 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
         }
     }
 
-    pub fn metrics(&self) -> ExecutorMetricsChain {
+    pub fn metrics(&self) -> ExecutorMetricsChain<'_> {
         ExecutorMetricsChain::default()
             .push(&self.metrics)
             .push(self.state.metrics())
