@@ -26,7 +26,7 @@ use rand::Rng;
 use super::{
     assembler::{self, build_header, AssembleMode, PacketLayout},
     assigner::{self, ChunkAssignment},
-    BuildError, ChunkAssigner, UdpMessage,
+    BuildError, ChunkAssigner,
 };
 use crate::{
     message::MAX_MESSAGE_SIZE,
@@ -34,7 +34,10 @@ use crate::{
         GroupId, MAX_MERKLE_TREE_DEPTH, MAX_NUM_PACKETS, MAX_REDUNDANCY, MAX_SEGMENT_LENGTH,
         MIN_CHUNK_LENGTH, MIN_MERKLE_TREE_DEPTH,
     },
-    util::{compute_app_message_hash, unix_ts_ms_now, BroadcastMode, BuildTarget, Redundancy},
+    util::{
+        compute_app_message_hash, unix_ts_ms_now, BroadcastMode, BuildTarget, Collector,
+        Redundancy, UdpMessage,
+    },
 };
 
 pub const DEFAULT_MERKLE_TREE_DEPTH: u8 = 6;
@@ -190,6 +193,9 @@ where
         PreparedMessageBuilder {
             base: self,
             group_id: None,
+            segment_size: None,
+            broadcast_mode: None,
+            app_message_hash: None,
         }
     }
 
@@ -201,7 +207,7 @@ where
         collector: &mut C,
     ) -> Result<()>
     where
-        C: super::Collector<UdpMessage<CertificateSignaturePubKey<ST>>>,
+        C: Collector<UdpMessage<CertificateSignaturePubKey<ST>>>,
     {
         self.prepare()
             .build_into(app_message, build_target, collector)
@@ -224,6 +230,9 @@ where
 
     // Add extra override fields as needed
     group_id: Option<GroupId>,
+    segment_size: Option<usize>,
+    broadcast_mode: Option<BroadcastMode>,
+    app_message_hash: Option<[u8; 20]>,
 }
 
 impl<'base, 'key, ST> PreparedMessageBuilder<'base, 'key, ST>
@@ -233,6 +242,21 @@ where
     // ----- Setters for overrides -----
     pub fn group_id(mut self, group_id: GroupId) -> Self {
         self.group_id = Some(group_id);
+        self
+    }
+
+    #[expect(unused)] // not currently used
+    pub fn segment_size(mut self, segment_size: usize) -> Self {
+        self.segment_size = Some(segment_size);
+        self
+    }
+
+    pub fn broadcast_mode(mut self, broadcast_mode: BroadcastMode) -> Self {
+        self.broadcast_mode = Some(broadcast_mode);
+        self
+    }
+    pub fn app_message_hash(mut self, hash: [u8; 20]) -> Self {
+        self.app_message_hash = Some(hash);
         self
     }
 
@@ -278,13 +302,20 @@ where
     }
 
     fn unwrap_segment_size(&self) -> Result<usize> {
-        let segment_size = self.base.segment_size;
+        let segment_size = self.segment_size.unwrap_or(self.base.segment_size);
         debug_assert!(segment_size <= MAX_SEGMENT_LENGTH);
         let min_segment_size_for_depth =
             PacketLayout::calc_segment_len(MIN_CHUNK_LENGTH, self.base.merkle_tree_depth);
         debug_assert!(segment_size >= min_segment_size_for_depth);
 
         Ok(segment_size)
+    }
+
+    fn unwrap_broadcast_type(&self) -> Result<BroadcastMode> {
+        if let Some(broadcast_type) = self.broadcast_mode {
+            return Ok(broadcast_type);
+        }
+        Err(BuildError::InvalidBroadcastMode)
     }
 
     fn checked_message_len(&self, len: usize) -> Result<usize> {
@@ -371,7 +402,7 @@ where
                     StakeBasedWithRC::<CertificateSignaturePubKey<ST>>::seed_from_app_message_hash(
                         app_message_hash,
                     );
-                let sorted_validators = StakeBasedWithRC::shuffle_validators(validators, seed);
+                let sorted_validators = StakeBasedWithRC::shuffle_validators_view(validators, seed);
                 let assigner = StakeBasedWithRC::from_validator_set(sorted_validators);
                 Box::new(assigner)
             }
@@ -387,6 +418,57 @@ where
     }
 
     // ----- Build methods -----
+    pub fn build_for<C, A>(&self, app_message: &[u8], assigner: A, collector: &mut C) -> Result<()>
+    where
+        C: Collector<UdpMessage<CertificateSignaturePubKey<ST>>>,
+        A: ChunkAssigner<CertificateSignaturePubKey<ST>>,
+    {
+        // figure out the layout of the packet
+        let segment_size = self.unwrap_segment_size()?;
+        let depth = self.unwrap_merkle_tree_depth()?;
+        let layout = PacketLayout::new(segment_size, depth);
+
+        // compute app message hash
+        let app_message_hash = self
+            .app_message_hash
+            .unwrap_or_else(|| compute_app_message_hash(app_message).0);
+
+        // calculate the number of symbols needed for assignment
+        let app_message_len = self.checked_message_len(app_message.len())?;
+        let num_symbols = self.calc_num_symbols(layout, app_message_len)?;
+
+        // assign the chunks to recipients
+        let assemble_mode = self.base.assemble_mode;
+        let order = assemble_mode.expected_chunk_order();
+        let mut assignment = assigner.assign_chunks(num_symbols, order)?;
+        assignment.ensure_order(order);
+        self.check_assignment(&assignment, app_message_len)?;
+
+        // build the shared header
+        let broadcast_type = self.unwrap_broadcast_type()?;
+
+        let header = self.build_header(
+            depth,
+            layout,
+            broadcast_type,
+            &app_message_hash,
+            app_message.len(),
+        )?;
+
+        // assemble the chunks's headers and content
+        assembler::assemble::<ST>(
+            self.base.key.as_ref(),
+            layout,
+            app_message,
+            &header,
+            assignment,
+            assemble_mode,
+            collector,
+        )?;
+
+        Ok(())
+    }
+
     pub fn build_into<C>(
         &self,
         app_message: &[u8],
@@ -402,7 +484,9 @@ where
         let layout = PacketLayout::new(segment_size, depth);
 
         // compute app message hash
-        let app_message_hash = compute_app_message_hash(app_message).0;
+        let app_message_hash = self
+            .app_message_hash
+            .unwrap_or_else(|| compute_app_message_hash(app_message).0);
 
         // select chunk assignment algorithm based on build target
         let rng = &mut rand::thread_rng();
@@ -421,10 +505,15 @@ where
         self.check_assignment(&assignment, app_message_len)?;
 
         // build the shared header
+        let broadcast_type = self
+            .unwrap_broadcast_type()
+            // retrofitting for unspecified broadcast type
+            .unwrap_or_else(|_| broadcast_mode_from_build_target(build_target));
+
         let header = self.build_header(
             depth,
             layout,
-            broadcast_mode_from_build_target(build_target),
+            broadcast_type,
             &app_message_hash,
             app_message.len(),
         )?;

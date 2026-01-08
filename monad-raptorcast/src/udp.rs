@@ -34,7 +34,7 @@ use tracing::warn;
 
 pub use crate::packet::build_messages;
 use crate::{
-    decoding::{DecoderCache, DecodingContext, TryDecodeError, TryDecodeStatus},
+    decoding::{DecoderCache, DecodingContext, DecodingResultLogging, TryDecodeStatus},
     message::MAX_MESSAGE_SIZE,
     metrics::{
         UdpStateMetrics, GAUGE_RAPTORCAST_DECODING_CACHE_SIGNATURE_VERIFICATIONS_RATE_LIMITED,
@@ -102,6 +102,7 @@ pub const MAX_SEGMENT_LENGTH: usize = ETHERNET_SEGMENT_SIZE as usize;
 /// <execution>/monad/staking/util/constants.hpp.
 pub const MAX_VALIDATOR_SET_SIZE: usize = 200;
 
+#[expect(unused)]
 pub(crate) struct UdpState<ST: CertificateSignatureRecoverable> {
     self_id: NodeId<CertificateSignaturePubKey<ST>>,
     max_age_ms: u64,
@@ -293,42 +294,22 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
             };
 
             let validator_set = match parsed_message.group_id {
-                GroupId::Primary(epoch) => epoch_validators.get(&epoch).map(|ev| &ev.validators),
+                GroupId::Primary(epoch) => epoch_validators
+                    .get(&epoch)
+                    .map(|ev| ev.validators.clone())
+                    .clone(),
                 GroupId::Secondary(_round) => None,
             };
 
-            let decoding_context = DecodingContext::new(validator_set, unix_ts_ms_now());
+            let decoding_context = DecodingContext::new(validator_set.as_ref(), unix_ts_ms_now());
 
             match self
                 .decoder_cache
                 .try_decode(&parsed_message, &decoding_context)
+                .log_decoding_error(&parsed_message, "udp-state")
             {
-                Err(TryDecodeError::InvalidSymbol(err)) => {
-                    err.log(&parsed_message, &self.self_id);
-                }
-
-                Err(TryDecodeError::UnableToReconstructSourceData) => {
-                    tracing::error!("failed to reconstruct source data");
-                }
-
-                Err(TryDecodeError::AppMessageHashMismatch { expected, actual }) => {
-                    tracing::error!(
-                        ?self_id,
-                        author =? parsed_message.author,
-                        ?expected,
-                        ?actual,
-                        "mismatch message hash"
-                    );
-                }
-
-                Ok(TryDecodeStatus::RejectedByCache) => {
-                    tracing::warn!(
-                        ?self_id,
-                        author =? parsed_message.author,
-                        chunk_id = parsed_message.chunk_id,
-                        "message rejected by cache, author may be flooding messages",
-                    );
-                }
+                Err(_) => {}
+                Ok(TryDecodeStatus::RejectedByCache) => {} // already logged
 
                 Ok(TryDecodeStatus::RecentlyDecoded) | Ok(TryDecodeStatus::NeedsMoreSymbols) => {
                     // TODO: cap rebroadcast symbols based on some multiple of esis.
@@ -376,6 +357,7 @@ pub struct ValidatedMessage<PT>
 where
     PT: PubKey,
 {
+    // the original message, including signature, headers, and payload
     pub message: Bytes,
 
     // `author` is recovered from the public key in the chunk signature, which
@@ -398,9 +380,10 @@ where
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum MessageValidationError {
-    UnknownVersion,
+    UnknownVersion(u16),
     TooShort,
     TooLong,
+    ChunkTooSmall(usize),
     InvalidSignature,
     InvalidTreeDepth,
     InvalidMerkleProof,
@@ -412,6 +395,50 @@ pub enum MessageValidationError {
     },
     InvalidBroadcastBits(u8),
     RateLimited,
+}
+
+impl MessageValidationError {
+    pub fn log(&self, context: &str) {
+        match self {
+            MessageValidationError::UnknownVersion(version) => {
+                tracing::debug!(context, version, "unknown protocol version");
+            }
+            MessageValidationError::TooShort => {
+                tracing::debug!(context, "message too short");
+            }
+            MessageValidationError::TooLong => {
+                tracing::debug!(context, "message too long");
+            }
+            MessageValidationError::ChunkTooSmall(len) => {
+                tracing::debug!(context, chunk_len = len, "chunk too small");
+            }
+            MessageValidationError::InvalidSignature => {
+                tracing::debug!(context, "invalid signature");
+            }
+            MessageValidationError::InvalidTreeDepth => {
+                tracing::debug!(context, "invalid merkle tree depth");
+            }
+            MessageValidationError::InvalidMerkleProof => {
+                tracing::debug!(context, "invalid merkle proof");
+            }
+            MessageValidationError::InvalidChunkId => {
+                tracing::debug!(context, "invalid chunk id");
+            }
+            MessageValidationError::InvalidTimestamp {
+                timestamp,
+                max,
+                delta,
+            } => {
+                tracing::debug!(context, timestamp, max, delta, "invalid timestamp");
+            }
+            MessageValidationError::InvalidBroadcastBits(bits) => {
+                tracing::debug!(context, bits, "invalid broadcast bits");
+            }
+            MessageValidationError::RateLimited => {
+                tracing::debug!(context, "rate limited");
+            }
+        }
+    }
 }
 
 /// - 65 bytes => Signature of sender over hash(rest of message up to merkle proof, concatenated with merkle root)
@@ -461,7 +488,7 @@ where
     let cursor_version = split_off(2)?;
     let version = u16::from_le_bytes(cursor_version.as_ref().try_into().expect("u16 is 2 bytes"));
     if version != 0 {
-        return Err(MessageValidationError::UnknownVersion);
+        return Err(MessageValidationError::UnknownVersion(version));
     }
 
     let cursor_broadcast_tree_depth = split_off(1)?[0];
@@ -730,6 +757,7 @@ where
         }
     }
 }
+#[expect(unused)]
 pub(crate) struct BatcherGuard<'a, 'g, F, PT>
 where
     'a: 'g,

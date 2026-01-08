@@ -163,6 +163,10 @@ impl RoundSpan {
     pub fn overlaps(&self, other: &RoundSpan) -> bool {
         self.start < other.end && other.start < self.end
     }
+
+    pub fn to_range(&self) -> std::ops::Range<Round> {
+        self.start..self.end
+    }
 }
 
 impl Default for RoundSpan {

@@ -14,16 +14,22 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
+    cell::OnceCell,
     cmp::Ordering,
     collections::{BTreeMap, HashSet},
     fmt,
     net::SocketAddr,
+    rc::Rc,
+    sync::Arc,
 };
 
+use bytes::Bytes;
 use fixed::{types::extra::U11, FixedU16};
 use itertools::Itertools;
+#[cfg(test)]
+use monad_crypto::NopPubKey;
 use monad_crypto::{
-    certificate_signature::PubKey,
+    certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey},
     hasher::{Hasher, HasherType},
 };
 use monad_types::{Epoch, NodeId, Round, RoundSpan, Stake};
@@ -725,6 +731,279 @@ impl Redundancy {
 impl fmt::Debug for Redundancy {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.to_f32().fmt(f)
+    }
+}
+
+// Similar to std::iter::Extend trait but implemented for FnMut as
+// well.
+pub trait Collector<T> {
+    fn push(&mut self, item: T);
+    fn reserve(&mut self, _additional: usize) {}
+}
+
+impl<T> Collector<T> for Vec<T> {
+    fn push(&mut self, item: T) {
+        Vec::push(self, item)
+    }
+
+    fn reserve(&mut self, additional: usize) {
+        Vec::reserve(self, additional)
+    }
+}
+
+impl<F, T> Collector<T> for F
+where
+    F: FnMut(T),
+{
+    fn push(&mut self, item: T) {
+        self(item)
+    }
+}
+
+// Expect collecting no message.
+pub struct EmptyCollector;
+impl<T> Collector<T> for EmptyCollector {
+    fn push(&mut self, _item: T) {
+        tracing::debug!("Unexpected message collected in EmptyCollector");
+    }
+}
+
+// discards all collected messages.
+pub struct BlackholeCollector;
+impl<T> Collector<T> for BlackholeCollector {
+    fn push(&mut self, _item: T) {}
+}
+
+#[derive(Debug, Clone)]
+pub struct AuthenticatedPayload<PT: PubKey, P = bytes::Bytes> {
+    pub author: NodeId<PT>,
+    pub payload: P,
+}
+
+impl<PT: PubKey, P> From<(NodeId<PT>, P)> for AuthenticatedPayload<PT, P> {
+    fn from((author, payload): (NodeId<PT>, P)) -> Self {
+        Self { author, payload }
+    }
+}
+
+pub trait PeerAddrLookup<PT: PubKey> {
+    fn lookup(&self, node_id: &NodeId<PT>) -> Option<SocketAddr>;
+}
+
+impl<PT: PubKey> PeerAddrLookup<PT> for std::collections::HashMap<NodeId<PT>, SocketAddr> {
+    fn lookup(&self, node_id: &NodeId<PT>) -> Option<SocketAddr> {
+        self.get(node_id).copied()
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct KnownSocketAddr<'a, PT: PubKey>(pub &'a NodeId<PT>, pub SocketAddr);
+
+impl<PT: PubKey> PeerAddrLookup<PT> for KnownSocketAddr<'_, PT> {
+    fn lookup(&self, node_id: &NodeId<PT>) -> Option<SocketAddr> {
+        if self.0 == node_id {
+            Some(self.1)
+        } else {
+            None
+        }
+    }
+}
+
+impl<PT: PubKey, F> PeerAddrLookup<PT> for F
+where
+    F: Fn(&NodeId<PT>) -> Option<SocketAddr>,
+{
+    fn lookup(&self, node_id: &NodeId<PT>) -> Option<SocketAddr> {
+        self(node_id)
+    }
+}
+
+// lookup in a fallback manner
+impl<PT: PubKey, PL1, PL2> PeerAddrLookup<PT> for (&PL1, &PL2)
+where
+    PL1: PeerAddrLookup<PT>,
+    PL2: PeerAddrLookup<PT>,
+{
+    fn lookup(&self, node_id: &NodeId<PT>) -> Option<SocketAddr> {
+        self.0.lookup(node_id).or_else(|| self.1.lookup(node_id))
+    }
+}
+
+impl<PT, T> PeerAddrLookup<PT> for std::sync::Arc<T>
+where
+    PT: PubKey,
+    T: PeerAddrLookup<PT>,
+{
+    fn lookup(&self, node_id: &NodeId<PT>) -> Option<SocketAddr> {
+        self.as_ref().lookup(node_id)
+    }
+}
+
+/// Used in RaptorCast instance to lookup peer addresses with the peer discovery driver.
+impl<ST: CertificateSignatureRecoverable, PD> PeerAddrLookup<CertificateSignaturePubKey<ST>>
+    for std::sync::Mutex<monad_peer_discovery::driver::PeerDiscoveryDriver<PD>>
+where
+    PD: monad_peer_discovery::PeerDiscoveryAlgo<SignatureType = ST>,
+{
+    fn lookup(&self, node_id: &NodeId<CertificateSignaturePubKey<ST>>) -> Option<SocketAddr> {
+        let guard = self.lock().ok()?;
+        guard.lookup(node_id)
+    }
+}
+
+impl<ST: CertificateSignatureRecoverable, PD> PeerAddrLookup<CertificateSignaturePubKey<ST>>
+    for monad_peer_discovery::driver::PeerDiscoveryDriver<PD>
+where
+    PD: monad_peer_discovery::PeerDiscoveryAlgo<SignatureType = ST>,
+{
+    fn lookup(&self, node_id: &NodeId<CertificateSignaturePubKey<ST>>) -> Option<SocketAddr> {
+        self.get_addr(node_id)
+    }
+}
+
+// A cheaply cloned wrapper around a node_id with lazily-calculated
+// hash and a lazily-lookedup socket address.
+//
+// Change to Arc if we need parallel processing.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Recipient<PT: PubKey>(Rc<RecipientInner<PT>>);
+
+impl<PT: PubKey> std::hash::Hash for Recipient<PT> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.node_hash().hash(state);
+    }
+}
+
+impl<PT: PubKey> std::fmt::Debug for Recipient<PT> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "<node-{}>", &hex::encode(&self.node_hash()[..6]))?;
+        if let Some(addr) = self.0.addr.get() {
+            if let Some(addr) = addr {
+                write!(f, "@{}", addr)?;
+            } else {
+                write!(f, "@<unknown>")?;
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Eq)]
+struct RecipientInner<PT: PubKey> {
+    node_id: NodeId<PT>,
+    node_hash: OnceCell<[u8; 20]>,
+    addr: OnceCell<Option<SocketAddr>>,
+}
+
+impl<PT: PubKey> PartialEq for RecipientInner<PT> {
+    fn eq(&self, other: &Self) -> bool {
+        self.node_hash == other.node_hash
+    }
+}
+
+impl Recipient<monad_crypto::NopPubKey> {
+    // only used for testing
+    #[cfg(test)]
+    pub fn dummy(addr: Option<SocketAddr>) -> Self {
+        let mut bytes = format!("{:?}", addr).into_bytes();
+        bytes.resize(32, 0u8);
+
+        let pubkey = monad_crypto::NopPubKey::from_bytes(&bytes).expect("pubkey");
+        let recipient = Self::new(NodeId::new(pubkey));
+        recipient.0.addr.set(addr).expect("addr not set");
+        recipient
+    }
+}
+
+impl<PT: PubKey> Recipient<PT> {
+    pub fn new(node_id: NodeId<PT>) -> Self {
+        let node_hash = OnceCell::new();
+        let addr = OnceCell::new();
+        let inner = RecipientInner {
+            node_id,
+            node_hash,
+            addr,
+        };
+        Self(Rc::new(inner))
+    }
+
+    pub fn node_id(&self) -> &NodeId<PT> {
+        &self.0.node_id
+    }
+
+    pub(super) fn node_hash(&self) -> &[u8; 20] {
+        self.0
+            .node_hash
+            .get_or_init(|| compute_hash(&self.0.node_id).0)
+    }
+
+    // Expect `lookup` or `set_addr` performed earlier, otherwise panic.
+    #[allow(unused)]
+    pub(super) fn get_addr(&self) -> Option<SocketAddr> {
+        *self.0.addr.get().expect("get addr called before lookup")
+    }
+
+    pub fn lookup(&self, handle: &(impl PeerAddrLookup<PT> + ?Sized)) -> &Option<SocketAddr> {
+        self.0.addr.get_or_init(|| {
+            let addr = handle.lookup(&self.0.node_id);
+            if addr.is_none() {
+                tracing::warn!("raptorcast: unknown address for node {}", self.0.node_id);
+            }
+            addr
+        })
+    }
+}
+
+#[cfg(test)]
+pub struct DummyPeerLookup;
+
+#[cfg(test)]
+impl PeerAddrLookup<NopPubKey> for DummyPeerLookup {
+    fn lookup(&self, _node_id: &NodeId<NopPubKey>) -> Option<SocketAddr> {
+        panic!("recipient addr should be self contained")
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct UdpMessage<PT: PubKey> {
+    pub recipient: Recipient<PT>,
+    pub payload: Bytes,
+    pub stride: usize,
+}
+
+#[derive(Debug)]
+pub struct TcpMessage<PT: PubKey> {
+    pub recipient: Recipient<PT>,
+    pub payload: Bytes,
+    pub completion: Option<futures::channel::oneshot::Sender<()>>,
+}
+
+pub struct EpochValidatorMap<PT: PubKey> {
+    map: BTreeMap<Epoch, Arc<ValidatorSet<PT>>>,
+}
+
+impl<PT: PubKey> Default for EpochValidatorMap<PT> {
+    fn default() -> Self {
+        Self {
+            map: BTreeMap::new(),
+        }
+    }
+}
+
+impl<PT: PubKey> EpochValidatorMap<PT> {
+    pub fn update(&mut self, epoch: Epoch, validator_set: Arc<ValidatorSet<PT>>) {
+        self.map.insert(epoch, validator_set);
+    }
+
+    pub fn prune(&mut self, curr_epoch: Epoch) {
+        const PRUNE_BEHIND: u64 = 2;
+
+        self.map
+            .retain(|&e, _| e + Epoch(PRUNE_BEHIND) < curr_epoch);
+    }
+
+    pub fn get(&self, epoch: &Epoch) -> Option<&ValidatorSet<PT>> {
+        self.map.get(epoch).map(|arc| arc.as_ref())
     }
 }
 
