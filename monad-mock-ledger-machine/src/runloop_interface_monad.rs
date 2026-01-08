@@ -36,20 +36,20 @@ type RawMonadRunloop = c_void;
 
 extern "C" {
     // Make a new runloop client
-    pub fn monad_runloop_new(
+    fn monad_runloop_new(
         chain_id: u64,
         ledger_path: *const c_char,
         db_path: *const c_char,
     ) -> *mut RawMonadRunloop;
 
     // Deallocate a runloop client
-    pub fn monad_runloop_delete(runloop: *mut RawMonadRunloop);
+    fn monad_runloop_delete(runloop: *mut RawMonadRunloop);
 
     // Execute and finalize `nblocks` number of blocks.
-    pub fn monad_runloop_run(runloop: *mut RawMonadRunloop, nblocks: u64);
+    fn monad_runloop_run(runloop: *mut RawMonadRunloop, nblocks: u64);
 
     // Set balance of the account with given address.
-    pub fn monad_runloop_set_balance(
+    fn monad_runloop_set_balance(
         runloop: *mut RawMonadRunloop,
         address: *const RawMonadRunloopAddress,
         balance: *const RawMonadRunloopWord,
@@ -57,14 +57,14 @@ extern "C" {
 
     // Get balance of the account with given address.
     // Balance is stored in `result_balance`
-    pub fn monad_runloop_get_balance(
+    fn monad_runloop_get_balance(
         runloop: *mut RawMonadRunloop,
         address: *const RawMonadRunloopAddress,
         result_balance: *mut RawMonadRunloopWord,
     );
 
     // Store current state root in `result_state_root`.
-    pub fn monad_runloop_get_state_root(
+    fn monad_runloop_get_state_root(
         runloop: *mut RawMonadRunloop,
         result_state_root: *mut RawMonadRunloopWord,
     );

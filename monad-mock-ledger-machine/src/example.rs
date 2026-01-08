@@ -14,7 +14,6 @@ use alloy_signer_local::PrivateKeySigner;
 
 use std::path::PathBuf;
 
-mod block_generator;
 mod runloop_interface_monad;
 
 use runloop_interface_monad::MonadRunloop;
@@ -121,9 +120,6 @@ fn write_blocks(runloop: &mut MonadRunloop, ledger_path: PathBuf) {
 
     // Finalize block 3:
     machine.finalize();
-}
-
-fn run_finalized_blocks(ledger_path: PathBuf, db_path: PathBuf) {
 }
 
 fn main() {
