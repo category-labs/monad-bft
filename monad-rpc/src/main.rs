@@ -21,11 +21,11 @@ use clap::Parser;
 use monad_archive::archive_reader::{redact_mongo_url, ArchiveReader};
 use monad_ethcall::EthCallExecutor;
 use monad_event_ring::EventRing;
-use monad_node_config::MonadNodeConfig;
 use monad_pprof::start_pprof_server;
 use monad_rpc::{
     chainstate::{buffer::ChainStateBuffer, ChainState},
     comparator::RpcComparator,
+    config::MonadRpcConfig,
     event::EventServer,
     handlers::{
         resources::{MonadJsonRootSpanBuilder, MonadRpcResources},
@@ -66,10 +66,11 @@ pub static malloc_conf: &[u8] = b"prof:true,prof_active:true,lg_prof_sample:19\0
 async fn main() -> std::io::Result<()> {
     let args = Cli::parse();
 
-    let node_config: MonadNodeConfig = toml::from_str(&std::fs::read_to_string(&args.node_config)?)
-        .expect("node toml parse error");
+    let mut rpc_config: MonadRpcConfig =
+        toml::from_str(&std::fs::read_to_string(&args.rpc_config)?).expect("rpc toml parse error");
+    args.apply_to_config(&mut rpc_config);
 
-    let _agent = if let Some(socket_path) = &args.manytrace_socket {
+    let _agent = if let Some(socket_path) = &rpc_config.manytrace_socket {
         let extension = Arc::new(TracingExtension::new());
         let agent = AgentBuilder::new(socket_path.clone())
             .register_tracing(Box::new((*extension).clone()))
@@ -108,9 +109,10 @@ async fn main() -> std::io::Result<()> {
         None
     };
 
-    if !args.pprof.is_empty() {
+    if let Some(pprof) = &rpc_config.pprof {
+        let pprof = pprof.to_owned();
         tokio::spawn(async {
-            let server = match start_pprof_server(args.pprof) {
+            let server = match start_pprof_server(pprof) {
                 Ok(server) => server,
                 Err(err) => {
                     error!("failed to start pprof server: {}", err);
@@ -125,12 +127,13 @@ async fn main() -> std::io::Result<()> {
 
     // initialize concurrent requests limiter
     let concurrent_requests_limiter = Arc::new(Semaphore::new(
-        args.eth_call_max_concurrent_requests as usize,
+        rpc_config.eth_call_max_concurrent_requests as usize,
     ));
 
     MONAD_RPC_VERSION.map(|v| info!("starting monad-rpc with version {}", v));
 
-    let (txpool_bridge_client, _txpool_bridge_handle) = if let Some(ipc_path) = args.ipc_path {
+    let (txpool_bridge_client, _txpool_bridge_handle) = if let Some(ipc_path) = rpc_config.ipc_path
+    {
         // Wait for bft to be in a ready state before starting the RPC server.
         // Bft will bind to the ipc socket after state syncing.
         let mut print_message_timer = tokio::time::interval(Duration::from_secs(60));
@@ -159,23 +162,23 @@ async fn main() -> std::io::Result<()> {
         (None, None)
     };
 
-    let triedb_env = args.triedb_path.clone().as_deref().map(|path| {
+    let triedb_env = rpc_config.triedb_path.clone().as_deref().map(|path| {
         TriedbEnv::new(
             path,
-            args.triedb_node_lru_max_mem,
-            args.triedb_max_buffered_read_requests as usize,
-            args.triedb_max_async_read_concurrency as usize,
-            args.triedb_max_buffered_traverse_requests as usize,
-            args.triedb_max_async_traverse_concurrency as usize,
-            args.max_finalized_block_cache_len as usize,
-            args.max_voted_block_cache_len as usize,
+            rpc_config.triedb_node_lru_max_mem,
+            rpc_config.triedb_max_buffered_read_requests as usize,
+            rpc_config.triedb_max_async_read_concurrency as usize,
+            rpc_config.triedb_max_buffered_traverse_requests as usize,
+            rpc_config.triedb_max_async_traverse_concurrency as usize,
+            rpc_config.max_finalized_block_cache_len as usize,
+            rpc_config.max_voted_block_cache_len as usize,
         )
     });
 
     // Used for compute heavy tasks
     rayon::ThreadPoolBuilder::new()
         .thread_name(|i| format!("monad-rpc-rn-{i}"))
-        .num_threads(args.compute_threadpool_size)
+        .num_threads(rpc_config.compute_threadpool_size)
         .build_global()
         .unwrap();
 
@@ -183,10 +186,10 @@ async fn main() -> std::io::Result<()> {
     info!("Initializing archive readers for historical data access");
 
     let aws_archive_reader = match (
-        &args.s3_bucket,
-        &args.region,
-        &args.archive_url,
-        &args.archive_api_key,
+        &rpc_config.s3_bucket,
+        &rpc_config.region,
+        &rpc_config.archive_url,
+        &rpc_config.archive_api_key,
     ) {
         (Some(s3_bucket), Some(region), Some(archive_url), Some(archive_api_key)) => {
             info!(
@@ -218,7 +221,7 @@ async fn main() -> std::io::Result<()> {
         }
     };
 
-    let archive_reader = match (&args.mongo_db_name, &args.mongo_url) {
+    let archive_reader = match (&rpc_config.mongo_db_name, &rpc_config.mongo_url) {
         (Some(db_name), Some(url)) => {
             info!(
                 "Initializing MongoDB archive reader  with connection: {}, database: {}",
@@ -229,7 +232,9 @@ async fn main() -> std::io::Result<()> {
                 url.clone(),
                 db_name.clone(),
                 monad_archive::prelude::Metrics::none(),
-                args.mongo_max_time_get_millis.map(Duration::from_millis),
+                rpc_config
+                    .mongo_max_time_get_millis
+                    .map(Duration::from_millis),
             )
             .await
             {
@@ -239,11 +244,15 @@ async fn main() -> std::io::Result<()> {
                         has_aws_fallback,
                         "MongoDB archive reader initialized successfully"
                     );
-                    Some(mongo_reader.with_fallback(
-                        aws_archive_reader,
-                        args.mongo_failure_threshold,
-                        args.mongo_failure_timeout_millis.map(Duration::from_millis),
-                    ))
+                    Some(
+                        mongo_reader.with_fallback(
+                            aws_archive_reader,
+                            rpc_config.mongo_failure_threshold,
+                            rpc_config
+                                .mongo_failure_timeout_millis
+                                .map(Duration::from_millis),
+                        ),
+                    )
                 }
                 Err(e) => {
                     warn!(error = %e, "Unable to initialize MongoDB archive reader");
@@ -265,41 +274,41 @@ async fn main() -> std::io::Result<()> {
     };
 
     let low_pool_config = monad_ethcall::PoolConfig {
-        num_threads: args.eth_call_executor_threads,
-        num_fibers: args.eth_call_executor_fibers,
-        timeout_sec: args.eth_call_executor_queuing_timeout,
-        queue_limit: args.eth_call_max_concurrent_requests,
+        num_threads: rpc_config.eth_call_executor_threads,
+        num_fibers: rpc_config.eth_call_executor_fibers,
+        timeout_sec: rpc_config.eth_call_executor_queuing_timeout,
+        queue_limit: rpc_config.eth_call_max_concurrent_requests,
     };
     let high_pool_config = monad_ethcall::PoolConfig {
-        num_threads: args.eth_call_high_executor_threads,
-        num_fibers: args.eth_call_high_executor_fibers,
-        timeout_sec: args.eth_call_high_executor_queuing_timeout,
-        queue_limit: args.eth_call_high_max_concurrent_requests,
+        num_threads: rpc_config.eth_call_high_executor_threads,
+        num_fibers: rpc_config.eth_call_high_executor_fibers,
+        timeout_sec: rpc_config.eth_call_high_executor_queuing_timeout,
+        queue_limit: rpc_config.eth_call_high_max_concurrent_requests,
     };
     let block_pool_config = monad_ethcall::PoolConfig {
-        num_threads: args.eth_trace_block_executor_threads,
-        num_fibers: args.eth_trace_block_executor_fibers,
-        timeout_sec: args.eth_trace_block_executor_queuing_timeout,
-        queue_limit: args.eth_trace_block_max_concurrent_requests,
+        num_threads: rpc_config.eth_trace_block_executor_threads,
+        num_fibers: rpc_config.eth_trace_block_executor_fibers,
+        timeout_sec: rpc_config.eth_trace_block_executor_queuing_timeout,
+        queue_limit: rpc_config.eth_trace_block_max_concurrent_requests,
     };
-    let tx_exec_num_fibers = args.eth_trace_tx_executor_fibers;
+    let tx_exec_num_fibers = rpc_config.eth_trace_tx_executor_fibers;
 
-    let eth_call_executor = args.triedb_path.clone().as_deref().map(|path| {
+    let eth_call_executor = rpc_config.triedb_path.clone().as_deref().map(|path| {
         Arc::new(EthCallExecutor::new(
             low_pool_config,
             high_pool_config,
             block_pool_config,
             tx_exec_num_fibers,
-            args.eth_call_executor_node_lru_max_mem,
+            rpc_config.eth_call_executor_node_lru_max_mem,
             path,
         ))
     });
 
     let meter_provider: Option<opentelemetry_sdk::metrics::SdkMeterProvider> =
-        args.otel_endpoint.as_ref().map(|endpoint| {
+        rpc_config.otel_endpoint.as_ref().map(|endpoint| {
             let provider = metrics::build_otel_meter_provider(
                 endpoint,
-                node_config.node_name.clone(),
+                rpc_config.node_name.clone(),
                 std::time::Duration::from_secs(5),
             )
             .expect("failed to build otel meter");
@@ -312,25 +321,26 @@ async fn main() -> std::io::Result<()> {
         .map(|provider| metrics::Metrics::new(provider.clone().meter("opentelemetry")));
 
     // Configure event ring, websocket server and event cache.
-    let (events_client, events_for_cache) = if let Some(exec_event_path) = args.exec_event_path {
-        let event_ring =
-            EventRing::new_from_path(exec_event_path).expect("Execution event ring is ready");
+    let (events_client, events_for_cache) =
+        if let Some(exec_event_path) = rpc_config.exec_event_path {
+            let event_ring =
+                EventRing::new_from_path(exec_event_path).expect("Execution event ring is ready");
 
-        let events_client = EventServer::start(event_ring);
+            let events_client = EventServer::start(event_ring);
 
-        // Subscribe to the event server to populate the event cache.
-        let events_for_cache = events_client
-            .subscribe()
-            .expect("Failed to subscribe to event server");
+            // Subscribe to the event server to populate the event cache.
+            let events_for_cache = events_client
+                .subscribe()
+                .expect("Failed to subscribe to event server");
 
-        (Some(events_client), Some(events_for_cache))
-    } else {
-        if args.ws_enabled {
-            panic!("exec-event-path is not set but is required for websockets");
-        }
+            (Some(events_client), Some(events_for_cache))
+        } else {
+            if rpc_config.ws_enabled {
+                panic!("exec-event-path is not set but is required for websockets");
+            }
 
-        (None, None)
-    };
+            (None, None)
+        };
 
     let event_buffer = if let Some(mut events_for_cache) = events_for_cache {
         let event_buffer = Arc::new(ChainStateBuffer::new(1024));
@@ -351,33 +361,33 @@ async fn main() -> std::io::Result<()> {
         .clone()
         .map(|t| ChainState::new(event_buffer, t, archive_reader.clone()));
 
-    let rpc_comparator: Option<RpcComparator> = args
+    let rpc_comparator: Option<RpcComparator> = rpc_config
         .rpc_comparison_endpoint
         .as_ref()
-        .map(|endpoint| RpcComparator::new(endpoint.to_string(), node_config.node_name));
+        .map(|endpoint| RpcComparator::new(endpoint.to_string(), rpc_config.node_name));
 
     let app_state = MonadRpcResources::new(
         txpool_bridge_client,
         triedb_env,
         eth_call_executor,
-        args.eth_call_executor_fibers as usize,
+        rpc_config.eth_call_executor_fibers as usize,
         archive_reader,
-        node_config.chain_id,
+        rpc_config.chain_id,
         chain_state,
-        args.batch_request_limit,
-        args.max_response_size,
-        args.allow_unprotected_txs,
+        rpc_config.batch_request_limit,
+        rpc_config.max_response_size,
+        rpc_config.allow_unprotected_txs,
         concurrent_requests_limiter,
-        args.eth_call_max_concurrent_requests as usize,
-        args.eth_get_logs_max_block_range,
-        args.eth_call_provider_gas_limit,
-        args.eth_estimate_gas_provider_gas_limit,
-        args.eth_send_raw_transaction_sync_default_timeout_ms,
-        args.eth_send_raw_transaction_sync_max_timeout_ms,
-        args.dry_run_get_logs_index,
-        args.use_eth_get_logs_index,
-        args.max_finalized_block_cache_len,
-        args.enable_admin_eth_call_statistics,
+        rpc_config.eth_call_max_concurrent_requests as usize,
+        rpc_config.eth_get_logs_max_block_range,
+        rpc_config.eth_call_provider_gas_limit,
+        rpc_config.eth_estimate_gas_provider_gas_limit,
+        rpc_config.eth_send_raw_transaction_sync_default_timeout_ms,
+        rpc_config.eth_send_raw_transaction_sync_max_timeout_ms,
+        rpc_config.dry_run_get_logs_index,
+        rpc_config.use_eth_get_logs_index,
+        rpc_config.max_finalized_block_cache_len,
+        rpc_config.enable_admin_eth_call_statistics,
         with_metrics.clone(),
         rpc_comparator.clone(),
     );
@@ -385,10 +395,10 @@ async fn main() -> std::io::Result<()> {
     // Configure the websocket server if enabled
     let ws_server_handle = if let Some(events_client) = events_client {
         let ws_app_data = app_state.clone();
-        let conn_limit = websocket::handler::ConnectionLimit::new(args.ws_conn_limit);
-        let sub_limit = websocket::handler::SubscriptionLimit(args.ws_sub_per_conn_limit);
+        let conn_limit = websocket::handler::ConnectionLimit::new(rpc_config.ws_conn_limit);
+        let sub_limit = websocket::handler::SubscriptionLimit(rpc_config.ws_sub_per_conn_limit);
 
-        args.ws_enabled.then(|| {
+        rpc_config.ws_enabled.then(|| {
             HttpServer::new(move || {
                 App::new()
                     .app_data(web::Data::new(conn_limit.clone()))
@@ -399,10 +409,10 @@ async fn main() -> std::io::Result<()> {
                         web::resource("/").route(web::get().to(websocket::handler::ws_handler)),
                     )
             })
-            .bind((args.rpc_addr.clone(), args.ws_port))
+            .bind((rpc_config.rpc_addr.clone(), rpc_config.ws_port))
             .expect("Failed to bind WebSocket server")
             .shutdown_timeout(1)
-            .workers(args.ws_worker_threads)
+            .workers(rpc_config.ws_worker_threads)
         })
     } else {
         None
@@ -415,25 +425,25 @@ async fn main() -> std::io::Result<()> {
                 .wrap(metrics.clone())
                 .wrap(TracingLogger::<MonadJsonRootSpanBuilder>::new())
                 .wrap(TimingMiddleware)
-                .app_data(web::PayloadConfig::default().limit(args.max_request_size))
+                .app_data(web::PayloadConfig::default().limit(rpc_config.max_request_size))
                 .app_data(web::Data::new(app_state.clone()))
                 .service(web::resource("/").route(web::post().to(rpc_handler)))
         })
-        .bind((args.rpc_addr, args.rpc_port))?
+        .bind((rpc_config.rpc_addr, rpc_config.rpc_port))?
         .shutdown_timeout(1)
-        .workers(args.worker_threads)
+        .workers(rpc_config.worker_threads)
         .run(),
         None => HttpServer::new(move || {
             App::new()
                 .wrap(TracingLogger::<MonadJsonRootSpanBuilder>::new())
                 .wrap(TimingMiddleware)
-                .app_data(web::PayloadConfig::default().limit(args.max_request_size))
+                .app_data(web::PayloadConfig::default().limit(rpc_config.max_request_size))
                 .app_data(web::Data::new(app_state.clone()))
                 .service(web::resource("/").route(web::post().to(rpc_handler)))
         })
-        .bind((args.rpc_addr, args.rpc_port))?
+        .bind((rpc_config.rpc_addr, rpc_config.rpc_port))?
         .shutdown_timeout(1)
-        .workers(args.worker_threads)
+        .workers(rpc_config.worker_threads)
         .run(),
     };
 

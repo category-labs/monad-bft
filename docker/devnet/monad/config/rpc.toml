@@ -1,0 +1,65 @@
+# Optional: Set the mempool ipc path
+# If not set, the tx pool will be disabled.
+ipc_path = "/home/monad/monad-bft/mempool.sock"
+
+triedb_path = "/dev/triedb"
+rpc_addr = "0.0.0.0"
+rpc_port = 8080
+worker_threads = 2
+ws_enabled = false
+ws_port = 8081
+ws_worker_threads = 2
+ws_conn_limit = 500
+ws_sub_per_conn_limit = 100
+batch_request_limit = 5000
+max_request_size = 2_000_000
+max_response_size = 25_000_000
+# otel_endpoint = "..."
+# rpc_comparison_endpoint = "..."
+allow_unprotected_txs = false
+eth_get_logs_max_block_range = 1000
+eth_call_max_concurrent_requests = 1000
+eth_call_executor_threads = 2
+eth_call_executor_fibers = 64
+eth_call_high_max_concurrent_requests = 20
+eth_call_high_executor_threads = 1
+eth_call_high_executor_fibers = 2
+eth_trace_block_max_concurrent_requests = 20
+eth_trace_block_executor_threads = 1
+eth_trace_block_executor_fibers = 2
+eth_trace_tx_executor_fibers = 100
+eth_call_executor_node_lru_max_mem = 100_000_000 # 100MB
+eth_call_provider_gas_limit = 30_000_000
+eth_estimate_gas_provider_gas_limit = 30_000_000
+eth_send_raw_transaction_sync_default_timeout_ms = 2_000
+eth_send_raw_transaction_sync_max_timeout_ms = 10_000
+enable_admin_eth_call_statistics = false
+eth_trace_block_executor_queuing_timeout = 30
+eth_call_high_executor_queuing_timeout = 30
+eth_call_executor_queuing_timeout = 2
+triedb_node_lru_max_mem = 100_000_000 # 100MB
+triedb_max_buffered_read_requests = 20_000
+triedb_max_async_read_concurrency = 10_000
+triedb_max_buffered_traverse_requests = 40
+triedb_max_async_traverse_concurrency = 20
+compute_threadpool_size = 1
+max_finalized_block_cache_len = 200
+max_voted_block_cache_len = 3
+
+# Archive Options
+# s3_bucket = "..."
+# s3_region = "..."
+# region = "..."
+# archive_url = "..."
+# archive_api_key = "..."
+# mongo_url = "..."
+# mongo_db_name = "..."
+# mongo_max_time_get_millis = ...
+# mongo_failure_threshold = ...
+# mongo_failure_timeout_millis = ...
+use_eth_get_logs_index = false
+dry_run_get_logs_index = false
+
+# pprof = "..."
+# exec_event_path = "..."
+# manytrace_socket = "..."

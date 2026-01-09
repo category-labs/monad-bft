@@ -5987,7 +5987,6 @@ dependencies = [
  "monad-ethcall",
  "monad-event-ring",
  "monad-exec-events",
- "monad-node-config",
  "monad-pprof",
  "monad-rpc-docs",
  "monad-tracing-timing",
