@@ -180,7 +180,7 @@ where
                     .expect("raptorcast socket");
                 let control = dp.control;
 
-                let auth_protocol = NoopAuthProtocol::new();
+                let udp_auth_protocol = NoopAuthProtocol::new();
                 Updater::boxed(RaptorCast::<
                     ST,
                     MonadMessage<ST, SCT, MockExecutionProtocol>,
@@ -192,12 +192,14 @@ where
                     cfg,
                     SecondaryRaptorCastModeConfig::None,
                     tcp_socket,
+                    None, // authenticated_tcp_socket
                     authenticated_socket,
                     non_authenticated_socket,
                     control,
                     shared_peer_discovery_driver,
                     Epoch(0),
-                    auth_protocol,
+                    udp_auth_protocol,
+                    None, // tcp_auth_protocol
                 ))
             }
         },

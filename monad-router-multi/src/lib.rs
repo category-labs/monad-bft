@@ -90,7 +90,8 @@ where
         peer_discovery_builder: B,
         current_epoch: Epoch,
         epoch_validators: BTreeMap<Epoch, BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>>,
-        auth_protocol: AP,
+        udp_auth_protocol: AP,
+        tcp_auth_protocol: Option<AP>,
     ) -> Self
     where
         B: PeerDiscoveryAlgoBuilder<PeerDiscoveryAlgoType = PD>,
@@ -103,7 +104,8 @@ where
         assert!(dp.block_until_ready(Duration::from_secs(1)));
 
         let tcp_socket = dp.tcp_sockets.take(TcpSocketId::Raptorcast).unwrap();
-        let authenticated_socket = dp.udp_sockets.take(UdpSocketId::AuthenticatedRaptorcast);
+        let authenticated_tcp_socket = dp.tcp_sockets.take(TcpSocketId::AuthenticatedRaptorcast);
+        let authenticated_udp_socket = dp.udp_sockets.take(UdpSocketId::AuthenticatedRaptorcast);
         let non_authenticated_socket = dp
             .udp_sockets
             .take(UdpSocketId::Raptorcast)
@@ -147,12 +149,14 @@ where
             cfg.clone(),
             secondary_mode,
             tcp_socket,
-            authenticated_socket,
+            authenticated_tcp_socket,
+            authenticated_udp_socket,
             non_authenticated_socket,
             control,
             shared_pdd.clone(),
             current_epoch,
-            auth_protocol,
+            udp_auth_protocol,
+            tcp_auth_protocol,
         );
         rc_primary.bind_channel_to_secondary_raptorcast(
             send_net_messages,

@@ -26,21 +26,16 @@ use std::{
 };
 
 use alloy_rlp::{Decodable, Encodable};
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use futures::{channel::oneshot, FutureExt, Stream, StreamExt};
 use itertools::Itertools;
 use message::{InboundRouterMessage, OutboundRouterMessage};
-use monad_crypto::{
-    certificate_signature::{
-        CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
-        CertificateSignatureRecoverable,
-    },
-    signing_domain,
+use monad_crypto::certificate_signature::{
+    CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_dataplane::{
     udp::{DEFAULT_MTU, ETHERNET_SEGMENT_SIZE},
-    DataplaneBuilder, DataplaneControl, RecvTcpMsg, TcpMsg, TcpSocketHandle, TcpSocketId,
-    TcpSocketReader, TcpSocketWriter, UdpSocketHandle, UdpSocketId, UnicastMsg,
+    DataplaneBuilder, DataplaneControl, TcpSocketHandle, UdpSocketHandle, UnicastMsg,
 };
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{
@@ -79,7 +74,7 @@ pub mod raptorcast_secondary;
 pub mod udp;
 pub mod util;
 
-const SIGNATURE_SIZE: usize = 65;
+pub(crate) const SIGNATURE_SIZE: usize = 65;
 const DEFAULT_RETRY_ATTEMPTS: u64 = 3;
 
 pub const UNICAST_MSG_BATCH_SIZE: usize = 32;
@@ -110,8 +105,7 @@ where
     message_builder: OwnedMessageBuilder<ST, PD>,
     secondary_message_builder: Option<OwnedMessageBuilder<ST, PD>>,
 
-    tcp_reader: TcpSocketReader,
-    tcp_writer: TcpSocketWriter,
+    dual_tcp_socket: auth::DualTcpSocketHandle<ST, AP, PD>,
     dual_socket: auth::DualSocketHandle<AP>,
     dataplane_control: DataplaneControl,
     pending_events: VecDeque<RaptorCastEvent<M::Event, ST>>,
@@ -149,15 +143,34 @@ where
     pub fn new(
         config: config::RaptorCastConfig<ST>,
         secondary_mode: SecondaryRaptorCastModeConfig,
-        tcp_socket: TcpSocketHandle,
-        authenticated_socket: Option<UdpSocketHandle>,
-        non_authenticated_socket: UdpSocketHandle,
+        non_authenticated_tcp_socket: TcpSocketHandle,
+        authenticated_tcp_socket: Option<TcpSocketHandle>,
+        authenticated_udp_socket: Option<UdpSocketHandle>,
+        non_authenticated_udp_socket: UdpSocketHandle,
         control: DataplaneControl,
         peer_discovery_driver: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
         current_epoch: Epoch,
-        auth_protocol: AP,
+        udp_auth_protocol: AP,
+        tcp_auth_protocol: Option<AP>,
     ) -> Self {
-        let (tcp_reader, tcp_writer) = tcp_socket.split();
+        let (non_auth_tcp_reader, non_auth_tcp_writer) = non_authenticated_tcp_socket.split();
+        let sig_auth_tcp = auth::SigAuthTcpSocket::new(
+            non_auth_tcp_reader,
+            non_auth_tcp_writer,
+            config.shared_key.clone(),
+        );
+        let authenticated_tcp_handle =
+            authenticated_tcp_socket
+                .zip(tcp_auth_protocol)
+                .map(|(socket, protocol)| {
+                    let (reader, writer) = socket.split();
+                    auth::AuthenticatedTcpSocketHandle::new(reader, writer, protocol)
+                });
+        let dual_tcp_socket = auth::DualTcpSocketHandle::new(
+            authenticated_tcp_handle,
+            sig_auth_tcp,
+            peer_discovery_driver.clone(),
+        );
 
         if config.primary_instance.raptor10_redundancy < 1f32 {
             panic!(
@@ -173,9 +186,9 @@ where
         );
 
         let dual_socket = auth::DualSocketHandle::new(
-            authenticated_socket
-                .map(|socket| auth::AuthenticatedSocketHandle::new(socket, auth_protocol)),
-            non_authenticated_socket,
+            authenticated_udp_socket
+                .map(|socket| auth::AuthenticatedSocketHandle::new(socket, udp_auth_protocol)),
+            non_authenticated_udp_socket,
         );
 
         let redundancy = Redundancy::from_f32(config.primary_instance.raptor10_redundancy)
@@ -220,8 +233,7 @@ where
                 config.sig_verification_rate_limit,
             ),
 
-            tcp_reader,
-            tcp_writer,
+            dual_tcp_socket,
             dual_socket,
             dataplane_control: control,
             pending_events: Default::default(),
@@ -295,36 +307,9 @@ where
         make_app_message: impl FnOnce() -> Bytes,
         completion: Option<oneshot::Sender<()>>,
     ) {
-        match self.peer_discovery_driver.lock().unwrap().get_addr(to) {
-            None => {
-                warn!(
-                    ?to,
-                    "RaptorCastPrimary TcpPointToPoint not sending message, address unknown"
-                );
-            }
-            Some(address) => {
-                let app_message = make_app_message();
-                // TODO make this more sophisticated
-                // include timestamp, etc
-                let mut signed_message = BytesMut::zeroed(SIGNATURE_SIZE + app_message.len());
-                let signature = <ST as CertificateSignature>::serialize(&ST::sign::<
-                    signing_domain::RaptorcastAppMessage,
-                >(
-                    &app_message,
-                    &self.signing_key,
-                ));
-                assert_eq!(signature.len(), SIGNATURE_SIZE);
-                signed_message[..SIGNATURE_SIZE].copy_from_slice(&signature);
-                signed_message[SIGNATURE_SIZE..].copy_from_slice(&app_message);
-                self.tcp_writer.write(
-                    address,
-                    TcpMsg {
-                        msg: signed_message.freeze(),
-                        completion,
-                    },
-                );
-            }
-        };
+        let app_message = make_app_message();
+        self.dual_tcp_socket
+            .write_to_peer(to, app_message, completion);
     }
 
     fn handle_secondary_outbound_message(&mut self, outbound_msg: SecondaryOutboundMessage<ST>) {
@@ -520,74 +505,8 @@ where
     }
 }
 
-pub struct DataplaneHandles {
-    pub tcp_socket: monad_dataplane::TcpSocketHandle,
-    pub authenticated_socket: Option<UdpSocketHandle>,
-    pub non_authenticated_socket: UdpSocketHandle,
-    pub control: DataplaneControl,
-    pub tcp_addr: SocketAddrV4,
-    pub auth_addr: Option<SocketAddrV4>,
-    pub non_auth_addr: SocketAddrV4,
-}
-
-pub fn create_dataplane_for_tests(with_auth: bool) -> DataplaneHandles {
-    let bind_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let up_bandwidth_mbps = 1_000;
-
-    let mut udp_sockets: Vec<(UdpSocketId, SocketAddr)> =
-        vec![(UdpSocketId::Raptorcast, bind_addr)];
-
-    if with_auth {
-        udp_sockets.insert(0, (UdpSocketId::AuthenticatedRaptorcast, bind_addr));
-    }
-
-    let mut dp = DataplaneBuilder::new(up_bandwidth_mbps)
-        .with_tcp_sockets([(TcpSocketId::Raptorcast, bind_addr)])
-        .with_udp_sockets(udp_sockets)
-        .build();
-
-    let tcp_socket = dp.tcp_sockets.take(TcpSocketId::Raptorcast).unwrap();
-    let tcp_addr = match tcp_socket.local_addr() {
-        SocketAddr::V4(addr) => addr,
-        _ => panic!("expected v4 address"),
-    };
-
-    let (authenticated_socket, auth_addr) = if with_auth {
-        let socket = dp
-            .udp_sockets
-            .take(UdpSocketId::AuthenticatedRaptorcast)
-            .expect("authenticated socket");
-        let addr = match socket.local_addr() {
-            SocketAddr::V4(addr) => addr,
-            _ => panic!("expected v4 address"),
-        };
-        (Some(socket), Some(addr))
-    } else {
-        (None, None)
-    };
-
-    let non_authenticated_socket = dp
-        .udp_sockets
-        .take(UdpSocketId::Raptorcast)
-        .expect("non-authenticated socket");
-    let non_auth_addr = match non_authenticated_socket.local_addr() {
-        SocketAddr::V4(addr) => addr,
-        _ => panic!("expected v4 address"),
-    };
-
-    DataplaneHandles {
-        tcp_socket,
-        authenticated_socket,
-        non_authenticated_socket,
-        control: dp.control,
-        tcp_addr,
-        auth_addr,
-        non_auth_addr,
-    }
-}
-
 pub fn new_defaulted_raptorcast_for_tests<ST, M, OM, SE>(
-    dataplane: DataplaneHandles,
+    local_addr: SocketAddr,
     known_addresses: HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddrV4>,
     shared_key: Arc<ST::KeyPairType>,
 ) -> RaptorCast<
@@ -607,6 +526,35 @@ where
         known_addresses,
         ..Default::default()
     };
+    let up_bandwidth_mbps = 1_000;
+    let non_authenticated_addr = SocketAddr::new(local_addr.ip(), local_addr.port() + 1);
+    let mut dp = DataplaneBuilder::new(up_bandwidth_mbps)
+        .with_tcp_sockets([(monad_dataplane::TcpSocketId::Raptorcast, local_addr)])
+        .with_udp_sockets([
+            (
+                monad_dataplane::UdpSocketId::AuthenticatedRaptorcast,
+                local_addr,
+            ),
+            (
+                monad_dataplane::UdpSocketId::Raptorcast,
+                non_authenticated_addr,
+            ),
+        ])
+        .build();
+    assert!(dp.block_until_ready(Duration::from_secs(1)));
+    let tcp_socket = dp
+        .tcp_sockets
+        .take(monad_dataplane::TcpSocketId::Raptorcast)
+        .expect("tcp socket");
+    let authenticated_udp_socket = dp
+        .udp_sockets
+        .take(monad_dataplane::UdpSocketId::AuthenticatedRaptorcast)
+        .expect("authenticated socket");
+    let non_authenticated_udp_socket = dp
+        .udp_sockets
+        .take(monad_dataplane::UdpSocketId::Raptorcast)
+        .expect("non-authenticated socket");
+    let control = dp.control.clone();
     let config = config::RaptorCastConfig {
         shared_key,
         mtu: DEFAULT_MTU,
@@ -632,22 +580,24 @@ where
     };
     let pd = PeerDiscoveryDriver::new(peer_discovery_builder);
     let shared_pd = Arc::new(Mutex::new(pd));
-    let auth_protocol = auth::NoopAuthProtocol::new();
+    let udp_auth_protocol = auth::NoopAuthProtocol::new();
     RaptorCast::<ST, M, OM, SE, NopDiscovery<ST>, _>::new(
         config,
         SecondaryRaptorCastModeConfig::None,
-        dataplane.tcp_socket,
-        dataplane.authenticated_socket,
-        dataplane.non_authenticated_socket,
-        dataplane.control,
+        tcp_socket,
+        None,
+        Some(authenticated_udp_socket),
+        non_authenticated_udp_socket,
+        control,
         shared_pd,
         Epoch(0),
-        auth_protocol,
+        udp_auth_protocol,
+        None,
     )
 }
 
 pub fn new_wireauth_raptorcast_for_tests<ST, M, OM, SE>(
-    dataplane: DataplaneHandles,
+    local_addr: SocketAddr,
     known_addresses: HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddrV4>,
     shared_key: Arc<ST::KeyPairType>,
 ) -> RaptorCast<ST, M, OM, SE, NopDiscovery<ST>, auth::WireAuthProtocol>
@@ -660,6 +610,35 @@ where
         known_addresses,
         ..Default::default()
     };
+    let up_bandwidth_mbps = 1_000;
+    let non_authenticated_addr = SocketAddr::new(local_addr.ip(), local_addr.port() + 1);
+    let mut dp = DataplaneBuilder::new(up_bandwidth_mbps)
+        .with_tcp_sockets([(monad_dataplane::TcpSocketId::Raptorcast, local_addr)])
+        .with_udp_sockets([
+            (
+                monad_dataplane::UdpSocketId::AuthenticatedRaptorcast,
+                local_addr,
+            ),
+            (
+                monad_dataplane::UdpSocketId::Raptorcast,
+                non_authenticated_addr,
+            ),
+        ])
+        .build();
+    assert!(dp.block_until_ready(Duration::from_secs(1)));
+    let tcp_socket = dp
+        .tcp_sockets
+        .take(monad_dataplane::TcpSocketId::Raptorcast)
+        .expect("tcp socket");
+    let authenticated_udp_socket = dp
+        .udp_sockets
+        .take(monad_dataplane::UdpSocketId::AuthenticatedRaptorcast)
+        .expect("authenticated socket");
+    let non_authenticated_udp_socket = dp
+        .udp_sockets
+        .take(monad_dataplane::UdpSocketId::Raptorcast)
+        .expect("non-authenticated socket");
+    let control = dp.control.clone();
     let config = config::RaptorCastConfig {
         shared_key: shared_key.clone(),
         mtu: DEFAULT_MTU,
@@ -686,18 +665,20 @@ where
     let pd = PeerDiscoveryDriver::new(peer_discovery_builder);
     let shared_pd = Arc::new(Mutex::new(pd));
     let wireauth_config = monad_wireauth::Config::default();
-    let auth_protocol =
+    let udp_auth_protocol =
         auth::WireAuthProtocol::new(&auth::metrics::UDP_METRICS, wireauth_config, shared_key);
     RaptorCast::<ST, M, OM, SE, NopDiscovery<ST>, _>::new(
         config,
         SecondaryRaptorCastModeConfig::None,
-        dataplane.tcp_socket,
-        dataplane.authenticated_socket,
-        dataplane.non_authenticated_socket,
-        dataplane.control,
+        tcp_socket,
+        None,
+        Some(authenticated_udp_socket),
+        non_authenticated_udp_socket,
+        control,
         shared_pd,
         Epoch(0),
-        auth_protocol,
+        udp_auth_protocol,
+        None,
     )
 }
 
@@ -925,6 +906,7 @@ where
             .push(self.udp_state.metrics().executor_metrics())
             .chain(self.udp_state.decoder_metrics())
             .chain(self.dual_socket.metrics())
+            .chain(self.dual_tcp_socket.metrics())
     }
 }
 
@@ -1108,31 +1090,25 @@ where
         }
 
         loop {
-            let Poll::Ready(msg) = pin!(this.tcp_reader.recv()).poll_unpin(cx) else {
+            let Poll::Ready(result) = pin!(this.dual_tcp_socket.recv()).poll_unpin(cx) else {
                 break;
             };
-            let RecvTcpMsg { payload, src_addr } = msg;
-            // check message length to prevent panic during message slicing
-            if payload.len() < SIGNATURE_SIZE {
-                warn!(
-                    ?src_addr,
-                    "invalid message, message length less than signature size"
-                );
-                this.dataplane_control.disconnect(src_addr);
-                continue;
-            }
-            let signature_bytes = &payload[..SIGNATURE_SIZE];
-            let signature = match <ST as CertificateSignature>::deserialize(signature_bytes) {
-                Ok(signature) => signature,
+            let msg = match result {
+                Ok(msg) => msg,
                 Err(err) => {
-                    warn!(?err, ?src_addr, "invalid signature");
-                    this.dataplane_control.disconnect(src_addr);
+                    warn!(?err, "tcp error");
+                    this.dataplane_control.disconnect(err.src_addr());
                     continue;
                 }
             };
-            let app_message_bytes = payload.slice(SIGNATURE_SIZE..);
+            let auth::AuthRecvTcpMsg {
+                payload,
+                src_addr,
+                from,
+            } = msg;
+
             let deserialized_message =
-                match InboundRouterMessage::<M, ST>::try_deserialize(&app_message_bytes) {
+                match InboundRouterMessage::<M, ST>::try_deserialize(&payload) {
                     Ok(message) => message,
                     Err(err) => {
                         warn!(?err, ?src_addr, "failed to deserialize message");
@@ -1140,18 +1116,7 @@ where
                         continue;
                     }
                 };
-            let from = match signature
-                .recover_pubkey::<signing_domain::RaptorcastAppMessage>(app_message_bytes.as_ref())
-            {
-                Ok(from) => from,
-                Err(err) => {
-                    warn!(?err, ?src_addr, "failed to recover pubkey");
-                    this.dataplane_control.disconnect(src_addr);
-                    continue;
-                }
-            };
 
-            // Dispatch messages received via TCP
             match deserialized_message {
                 InboundRouterMessage::AppMessage(message) => {
                     return Poll::Ready(Some(
@@ -1159,7 +1124,6 @@ where
                     ));
                 }
                 InboundRouterMessage::PeerDiscoveryMessage(message) => {
-                    // peer discovery message should come through udp
                     debug!(
                         ?message,
                         "dropping peer discovery message, should come through udp channel"

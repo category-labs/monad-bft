@@ -13,15 +13,25 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+pub mod common;
 pub mod metrics;
 pub mod protocol;
 pub mod socket;
+pub mod tcp_socket;
 
+pub use common::{encrypt_packet, AuthenticatedTimerFuture};
 pub use metrics::{
     GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_READ,
     GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_WRITTEN,
     GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_READ,
     GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_WRITTEN,
+    GAUGE_RAPTORCAST_AUTH_SIGAUTH_TCP_BYTES_READ, GAUGE_RAPTORCAST_AUTH_SIGAUTH_TCP_BYTES_WRITTEN,
+    GAUGE_RAPTORCAST_AUTH_WIREAUTH_TCP_BYTES_READ,
+    GAUGE_RAPTORCAST_AUTH_WIREAUTH_TCP_BYTES_WRITTEN, TCP_METRICS, UDP_METRICS,
 };
 pub use protocol::{AuthenticationProtocol, NoopAuthProtocol, NoopHeader, WireAuthProtocol};
 pub use socket::{AuthRecvMsg, AuthenticatedSocketHandle, DualSocketHandle};
+pub use tcp_socket::{
+    AuthRecvTcpMsg, AuthenticatedTcpSocketHandle, DualTcpRecvError, DualTcpSocketHandle,
+    SigAuthError, SigAuthTcpSocket,
+};
