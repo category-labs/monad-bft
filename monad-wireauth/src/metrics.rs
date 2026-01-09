@@ -13,85 +13,272 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-pub const GAUGE_WIREAUTH_STATE_INITIATING_SESSIONS: &str =
-    "monad.wireauth.state.initiating_sessions";
-pub const GAUGE_WIREAUTH_STATE_RESPONDING_SESSIONS: &str =
-    "monad.wireauth.state.responding_sessions";
-pub const GAUGE_WIREAUTH_STATE_TRANSPORT_SESSIONS: &str = "monad.wireauth.state.transport_sessions";
-pub const GAUGE_WIREAUTH_STATE_TOTAL_SESSIONS: &str = "monad.wireauth.state.total_sessions";
-pub const GAUGE_WIREAUTH_STATE_ALLOCATED_INDICES: &str = "monad.wireauth.state.allocated_indices";
-pub const GAUGE_WIREAUTH_STATE_SESSIONS_BY_PUBLIC_KEY: &str =
-    "monad.wireauth.state.sessions_by_public_key";
-pub const GAUGE_WIREAUTH_STATE_SESSIONS_BY_SOCKET: &str = "monad.wireauth.state.sessions_by_socket";
-pub const GAUGE_WIREAUTH_STATE_SESSION_INDEX_ALLOCATED: &str =
-    "monad.wireauth.state.session_index_allocated";
-pub const GAUGE_WIREAUTH_STATE_SESSION_ESTABLISHED_INITIATOR: &str =
-    "monad.wireauth.state.session_established_initiator";
-pub const GAUGE_WIREAUTH_STATE_SESSION_ESTABLISHED_RESPONDER: &str =
-    "monad.wireauth.state.session_established_responder";
-pub const GAUGE_WIREAUTH_STATE_SESSION_TERMINATED: &str = "monad.wireauth.state.session_terminated";
-pub const GAUGE_WIREAUTH_STATE_TIMERS_SIZE: &str = "monad.wireauth.state.timers_size";
-pub const GAUGE_WIREAUTH_STATE_PACKET_QUEUE_SIZE: &str = "monad.wireauth.state.packet_queue_size";
-pub const GAUGE_WIREAUTH_STATE_INITIATED_SESSION_BY_PEER_SIZE: &str =
-    "monad.wireauth.state.initiated_session_by_peer_size";
-pub const GAUGE_WIREAUTH_STATE_ACCEPTED_SESSIONS_BY_PEER_SIZE: &str =
-    "monad.wireauth.state.accepted_sessions_by_peer_size";
-pub const GAUGE_WIREAUTH_STATE_IP_SESSION_COUNTS_SIZE: &str =
-    "monad.wireauth.state.ip_session_counts_size";
-pub const GAUGE_WIREAUTH_FILTER_IP_REQUEST_HISTORY_SIZE: &str =
-    "monad.wireauth.filter.ip_request_history_size";
+pub struct MetricNames {
+    pub state_initiating_sessions: &'static str,
+    pub state_responding_sessions: &'static str,
+    pub state_transport_sessions: &'static str,
+    pub state_total_sessions: &'static str,
+    pub state_allocated_indices: &'static str,
+    pub state_sessions_by_public_key: &'static str,
+    pub state_sessions_by_socket: &'static str,
+    pub state_session_index_allocated: &'static str,
+    pub state_session_established_initiator: &'static str,
+    pub state_session_established_responder: &'static str,
+    pub state_session_terminated: &'static str,
+    pub state_timers_size: &'static str,
+    pub state_packet_queue_size: &'static str,
+    pub state_initiated_session_by_peer_size: &'static str,
+    pub state_accepted_sessions_by_peer_size: &'static str,
+    pub state_ip_session_counts_size: &'static str,
 
-pub const GAUGE_WIREAUTH_FILTER_PASS: &str = "monad.wireauth.filter.pass";
-pub const GAUGE_WIREAUTH_FILTER_SEND_COOKIE: &str = "monad.wireauth.filter.send_cookie";
-pub const GAUGE_WIREAUTH_FILTER_DROP: &str = "monad.wireauth.filter.drop";
+    pub filter_pass: &'static str,
+    pub filter_send_cookie: &'static str,
+    pub filter_drop: &'static str,
+    pub filter_ip_request_history_size: &'static str,
 
-pub const GAUGE_WIREAUTH_API_CONNECT: &str = "monad.wireauth.api.connect";
-pub const GAUGE_WIREAUTH_API_DECRYPT: &str = "monad.wireauth.api.decrypt";
-pub const GAUGE_WIREAUTH_API_ENCRYPT_BY_PUBLIC_KEY: &str =
-    "monad.wireauth.api.encrypt_by_public_key";
-pub const GAUGE_WIREAUTH_API_ENCRYPT_BY_SOCKET: &str = "monad.wireauth.api.encrypt_by_socket";
-pub const GAUGE_WIREAUTH_API_DISCONNECT: &str = "monad.wireauth.api.disconnect";
-pub const GAUGE_WIREAUTH_API_DISPATCH_CONTROL: &str = "monad.wireauth.api.dispatch_control";
-pub const GAUGE_WIREAUTH_API_NEXT_PACKET: &str = "monad.wireauth.api.next_packet";
-pub const GAUGE_WIREAUTH_API_TICK: &str = "monad.wireauth.api.tick";
+    pub api_connect: &'static str,
+    pub api_decrypt: &'static str,
+    pub api_encrypt_by_public_key: &'static str,
+    pub api_encrypt_by_socket: &'static str,
+    pub api_disconnect: &'static str,
+    pub api_dispatch_control: &'static str,
+    pub api_next_packet: &'static str,
+    pub api_tick: &'static str,
 
-pub const GAUGE_WIREAUTH_DISPATCH_HANDSHAKE_INIT: &str =
-    "monad.wireauth.dispatch.handshake_initiation";
-pub const GAUGE_WIREAUTH_DISPATCH_HANDSHAKE_RESPONSE: &str =
-    "monad.wireauth.dispatch.handshake_response";
-pub const GAUGE_WIREAUTH_DISPATCH_COOKIE_REPLY: &str = "monad.wireauth.dispatch.cookie_reply";
-pub const GAUGE_WIREAUTH_DISPATCH_KEEPALIVE: &str = "monad.wireauth.dispatch.keepalive";
+    pub dispatch_handshake_init: &'static str,
+    pub dispatch_handshake_response: &'static str,
+    pub dispatch_cookie_reply: &'static str,
+    pub dispatch_keepalive: &'static str,
 
-pub const GAUGE_WIREAUTH_ERROR_CONNECT: &str = "monad.wireauth.error.connect";
-pub const GAUGE_WIREAUTH_ERROR_DECRYPT: &str = "monad.wireauth.error.decrypt";
-pub const GAUGE_WIREAUTH_ERROR_DECRYPT_NONCE_OUTSIDE_WINDOW: &str =
-    "monad.wireauth.error.decrypt.nonce_outside_window";
-pub const GAUGE_WIREAUTH_ERROR_DECRYPT_NONCE_DUPLICATE: &str =
-    "monad.wireauth.error.decrypt.nonce_duplicate";
-pub const GAUGE_WIREAUTH_ERROR_DECRYPT_MAC: &str = "monad.wireauth.error.decrypt.mac";
-pub const GAUGE_WIREAUTH_ERROR_ENCRYPT_BY_PUBLIC_KEY: &str =
-    "monad.wireauth.error.encrypt_by_public_key";
-pub const GAUGE_WIREAUTH_ERROR_ENCRYPT_BY_SOCKET: &str = "monad.wireauth.error.encrypt_by_socket";
-pub const GAUGE_WIREAUTH_ERROR_DISPATCH_CONTROL: &str = "monad.wireauth.error.dispatch_control";
+    pub error_connect: &'static str,
+    pub error_decrypt: &'static str,
+    pub error_decrypt_nonce_outside_window: &'static str,
+    pub error_decrypt_nonce_duplicate: &'static str,
+    pub error_decrypt_mac: &'static str,
+    pub error_encrypt_by_public_key: &'static str,
+    pub error_encrypt_by_socket: &'static str,
+    pub error_dispatch_control: &'static str,
 
-pub const GAUGE_WIREAUTH_ERROR_SESSION_EXHAUSTED: &str = "monad.wireauth.error.session_exhausted";
-pub const GAUGE_WIREAUTH_ERROR_MAC1_VERIFICATION_FAILED: &str =
-    "monad.wireauth.error.mac1_verification_failed";
-pub const GAUGE_WIREAUTH_ERROR_TIMESTAMP_REPLAY: &str = "monad.wireauth.error.timestamp_replay";
-pub const GAUGE_WIREAUTH_ERROR_SESSION_NOT_FOUND: &str = "monad.wireauth.error.session_not_found";
-pub const GAUGE_WIREAUTH_ERROR_SESSION_INDEX_NOT_FOUND: &str =
-    "monad.wireauth.error.session_index_not_found";
-pub const GAUGE_WIREAUTH_ERROR_HANDSHAKE_INIT_VALIDATION: &str =
-    "monad.wireauth.error.handshake_init_validation";
-pub const GAUGE_WIREAUTH_ERROR_COOKIE_REPLY: &str = "monad.wireauth.error.cookie_reply";
-pub const GAUGE_WIREAUTH_ERROR_HANDSHAKE_RESPONSE_VALIDATION: &str =
-    "monad.wireauth.error.handshake_response_validation";
+    pub error_session_exhausted: &'static str,
+    pub error_mac1_verification_failed: &'static str,
+    pub error_timestamp_replay: &'static str,
+    pub error_session_not_found: &'static str,
+    pub error_session_index_not_found: &'static str,
+    pub error_handshake_init_validation: &'static str,
+    pub error_cookie_reply: &'static str,
+    pub error_handshake_response_validation: &'static str,
 
-pub const GAUGE_WIREAUTH_ENQUEUED_HANDSHAKE_INIT: &str = "monad.wireauth.enqueued.handshake_init";
-pub const GAUGE_WIREAUTH_ENQUEUED_HANDSHAKE_RESPONSE: &str =
-    "monad.wireauth.enqueued.handshake_response";
-pub const GAUGE_WIREAUTH_ENQUEUED_COOKIE_REPLY: &str = "monad.wireauth.enqueued.cookie_reply";
-pub const GAUGE_WIREAUTH_ENQUEUED_KEEPALIVE: &str = "monad.wireauth.enqueued.keepalive";
+    pub enqueued_handshake_init: &'static str,
+    pub enqueued_handshake_response: &'static str,
+    pub enqueued_cookie_reply: &'static str,
+    pub enqueued_keepalive: &'static str,
 
-pub const GAUGE_WIREAUTH_RATE_LIMIT_DROP: &str = "monad.wireauth.rate_limit.drop";
-pub const GAUGE_WIREAUTH_RATE_LIMIT_CONNECT: &str = "monad.wireauth.rate_limit.connect";
+    pub rate_limit_drop: &'static str,
+    pub rate_limit_connect: &'static str,
+}
+
+#[macro_export]
+macro_rules! define_metric_names {
+    ($name:ident, $transport:literal) => {
+        $crate::define_metric_names!(pub $name, $transport);
+    };
+    ($vis:vis $name:ident, $transport:literal) => {
+        $vis static $name: $crate::MetricNames = $crate::MetricNames {
+            state_initiating_sessions: concat!(
+                "monad.wireauth.",
+                $transport,
+                ".state.initiating_sessions"
+            ),
+            state_responding_sessions: concat!(
+                "monad.wireauth.",
+                $transport,
+                ".state.responding_sessions"
+            ),
+            state_transport_sessions: concat!(
+                "monad.wireauth.",
+                $transport,
+                ".state.transport_sessions"
+            ),
+            state_total_sessions: concat!("monad.wireauth.", $transport, ".state.total_sessions"),
+            state_allocated_indices: concat!(
+                "monad.wireauth.",
+                $transport,
+                ".state.allocated_indices"
+            ),
+            state_sessions_by_public_key: concat!(
+                "monad.wireauth.",
+                $transport,
+                ".state.sessions_by_public_key"
+            ),
+            state_sessions_by_socket: concat!(
+                "monad.wireauth.",
+                $transport,
+                ".state.sessions_by_socket"
+            ),
+            state_session_index_allocated: concat!(
+                "monad.wireauth.",
+                $transport,
+                ".state.session_index_allocated"
+            ),
+            state_session_established_initiator: concat!(
+                "monad.wireauth.",
+                $transport,
+                ".state.session_established_initiator"
+            ),
+            state_session_established_responder: concat!(
+                "monad.wireauth.",
+                $transport,
+                ".state.session_established_responder"
+            ),
+            state_session_terminated: concat!(
+                "monad.wireauth.",
+                $transport,
+                ".state.session_terminated"
+            ),
+            state_timers_size: concat!("monad.wireauth.", $transport, ".state.timers_size"),
+            state_packet_queue_size: concat!(
+                "monad.wireauth.",
+                $transport,
+                ".state.packet_queue_size"
+            ),
+            state_initiated_session_by_peer_size: concat!(
+                "monad.wireauth.",
+                $transport,
+                ".state.initiated_session_by_peer_size"
+            ),
+            state_accepted_sessions_by_peer_size: concat!(
+                "monad.wireauth.",
+                $transport,
+                ".state.accepted_sessions_by_peer_size"
+            ),
+            state_ip_session_counts_size: concat!(
+                "monad.wireauth.",
+                $transport,
+                ".state.ip_session_counts_size"
+            ),
+
+            filter_pass: concat!("monad.wireauth.", $transport, ".filter.pass"),
+            filter_send_cookie: concat!("monad.wireauth.", $transport, ".filter.send_cookie"),
+            filter_drop: concat!("monad.wireauth.", $transport, ".filter.drop"),
+            filter_ip_request_history_size: concat!(
+                "monad.wireauth.",
+                $transport,
+                ".filter.ip_request_history_size"
+            ),
+
+            api_connect: concat!("monad.wireauth.", $transport, ".api.connect"),
+            api_decrypt: concat!("monad.wireauth.", $transport, ".api.decrypt"),
+            api_encrypt_by_public_key: concat!(
+                "monad.wireauth.",
+                $transport,
+                ".api.encrypt_by_public_key"
+            ),
+            api_encrypt_by_socket: concat!("monad.wireauth.", $transport, ".api.encrypt_by_socket"),
+            api_disconnect: concat!("monad.wireauth.", $transport, ".api.disconnect"),
+            api_dispatch_control: concat!("monad.wireauth.", $transport, ".api.dispatch_control"),
+            api_next_packet: concat!("monad.wireauth.", $transport, ".api.next_packet"),
+            api_tick: concat!("monad.wireauth.", $transport, ".api.tick"),
+
+            dispatch_handshake_init: concat!(
+                "monad.wireauth.",
+                $transport,
+                ".dispatch.handshake_initiation"
+            ),
+            dispatch_handshake_response: concat!(
+                "monad.wireauth.",
+                $transport,
+                ".dispatch.handshake_response"
+            ),
+            dispatch_cookie_reply: concat!("monad.wireauth.", $transport, ".dispatch.cookie_reply"),
+            dispatch_keepalive: concat!("monad.wireauth.", $transport, ".dispatch.keepalive"),
+
+            error_connect: concat!("monad.wireauth.", $transport, ".error.connect"),
+            error_decrypt: concat!("monad.wireauth.", $transport, ".error.decrypt"),
+            error_decrypt_nonce_outside_window: concat!(
+                "monad.wireauth.",
+                $transport,
+                ".error.decrypt.nonce_outside_window"
+            ),
+            error_decrypt_nonce_duplicate: concat!(
+                "monad.wireauth.",
+                $transport,
+                ".error.decrypt.nonce_duplicate"
+            ),
+            error_decrypt_mac: concat!("monad.wireauth.", $transport, ".error.decrypt.mac"),
+            error_encrypt_by_public_key: concat!(
+                "monad.wireauth.",
+                $transport,
+                ".error.encrypt_by_public_key"
+            ),
+            error_encrypt_by_socket: concat!(
+                "monad.wireauth.",
+                $transport,
+                ".error.encrypt_by_socket"
+            ),
+            error_dispatch_control: concat!(
+                "monad.wireauth.",
+                $transport,
+                ".error.dispatch_control"
+            ),
+
+            error_session_exhausted: concat!(
+                "monad.wireauth.",
+                $transport,
+                ".error.session_exhausted"
+            ),
+            error_mac1_verification_failed: concat!(
+                "monad.wireauth.",
+                $transport,
+                ".error.mac1_verification_failed"
+            ),
+            error_timestamp_replay: concat!(
+                "monad.wireauth.",
+                $transport,
+                ".error.timestamp_replay"
+            ),
+            error_session_not_found: concat!(
+                "monad.wireauth.",
+                $transport,
+                ".error.session_not_found"
+            ),
+            error_session_index_not_found: concat!(
+                "monad.wireauth.",
+                $transport,
+                ".error.session_index_not_found"
+            ),
+            error_handshake_init_validation: concat!(
+                "monad.wireauth.",
+                $transport,
+                ".error.handshake_init_validation"
+            ),
+            error_cookie_reply: concat!("monad.wireauth.", $transport, ".error.cookie_reply"),
+            error_handshake_response_validation: concat!(
+                "monad.wireauth.",
+                $transport,
+                ".error.handshake_response_validation"
+            ),
+
+            enqueued_handshake_init: concat!(
+                "monad.wireauth.",
+                $transport,
+                ".enqueued.handshake_init"
+            ),
+            enqueued_handshake_response: concat!(
+                "monad.wireauth.",
+                $transport,
+                ".enqueued.handshake_response"
+            ),
+            enqueued_cookie_reply: concat!("monad.wireauth.", $transport, ".enqueued.cookie_reply"),
+            enqueued_keepalive: concat!("monad.wireauth.", $transport, ".enqueued.keepalive"),
+
+            rate_limit_drop: concat!("monad.wireauth.", $transport, ".rate_limit.drop"),
+            rate_limit_connect: concat!("monad.wireauth.", $transport, ".rate_limit.connect"),
+        };
+    };
+}
+
+// `MetricNames` instances are intended to be defined by integration crates (e.g. raptorcast),
+// but keep a `DEFAULT_METRICS` for wireauth's own examples/tests.
+define_metric_names!(pub(crate) DEFAULT_METRIC_NAMES, "udp");
+
+pub static DEFAULT_METRICS: &MetricNames = &DEFAULT_METRIC_NAMES;

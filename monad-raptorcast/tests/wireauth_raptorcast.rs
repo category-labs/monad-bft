@@ -304,8 +304,11 @@ fn spawn_wireauth_validator(
     tokio::task::spawn_local(async move {
         let config = create_raptorcast_config(keypair.clone(), sig_verification_rate_limit);
         let wireauth_config = monad_wireauth::Config::default();
-        let auth_protocol =
-            monad_raptorcast::auth::WireAuthProtocol::new(wireauth_config, keypair.clone());
+        let auth_protocol = monad_raptorcast::auth::WireAuthProtocol::new(
+            &monad_raptorcast::auth::metrics::UDP_METRICS,
+            wireauth_config,
+            keypair.clone(),
+        );
 
         let mut validator_rc = monad_raptorcast::RaptorCast::<
             SecpSignature,
