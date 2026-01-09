@@ -99,6 +99,7 @@ where
         direct_udp_auth_protocol: Option<AP>,
         direct_udp_peer_score: DS,
         proposer_schedule: BoxedProposerSchedule<CertificateSignaturePubKey<ST>>,
+        tcp_auth_protocol: Option<AP>,
     ) -> Self
     where
         B: PeerDiscoveryAlgoBuilder<PeerDiscoveryAlgoType = PD>,
@@ -111,6 +112,7 @@ where
         assert!(dp.block_until_ready(Duration::from_secs(1)));
 
         let tcp_socket = dp.tcp_sockets.take(TcpSocketId::Raptorcast).unwrap();
+        let authenticated_tcp_socket = dp.tcp_sockets.take(TcpSocketId::AuthenticatedRaptorcast);
         let authenticated_socket = dp
             .udp_sockets
             .take(UdpSocketId::AuthenticatedRaptorcast)
@@ -169,6 +171,7 @@ where
             cfg.clone(),
             secondary_mode,
             tcp_socket,
+            authenticated_tcp_socket,
             (authenticated_socket, auth_protocol),
             direct_udp,
             non_authenticated_socket,
@@ -176,6 +179,7 @@ where
             shared_pdd.clone(),
             current_epoch,
             proposer_schedule,
+            tcp_auth_protocol,
         );
         rc_primary.bind_channel_to_secondary_raptorcast(
             secondary_mode,

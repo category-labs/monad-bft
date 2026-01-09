@@ -264,6 +264,7 @@ fn spawn_noop_validator(
             config,
             monad_raptorcast::raptorcast_secondary::SecondaryRaptorCastModeConfig::None,
             dataplane.tcp_socket,
+            dataplane.authenticated_tcp_socket,
             (
                 dataplane.authenticated_socket,
                 monad_raptorcast::auth::NoopAuthProtocol::new(),
@@ -274,6 +275,7 @@ fn spawn_noop_validator(
             shared_pd,
             monad_types::Epoch(0),
             monad_raptorcast::dummy_proposer_schedule(),
+            None,
         );
 
         let mut cmd_rx = cmd_rx;
@@ -363,6 +365,7 @@ fn spawn_wireauth_validator(
             config,
             monad_raptorcast::raptorcast_secondary::SecondaryRaptorCastModeConfig::None,
             dataplane.tcp_socket,
+            dataplane.authenticated_tcp_socket,
             authenticated,
             direct_udp,
             non_authenticated_socket,
@@ -370,6 +373,7 @@ fn spawn_wireauth_validator(
             shared_pd,
             monad_types::Epoch(0),
             monad_raptorcast::dummy_proposer_schedule(),
+            None,
         );
 
         let mut cmd_rx = cmd_rx;

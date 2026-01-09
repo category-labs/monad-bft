@@ -197,6 +197,7 @@ where
                     cfg,
                     SecondaryRaptorCastModeConfig::None,
                     tcp_socket,
+                    None,
                     authenticated,
                     None,
                     Some(non_authenticated_socket),
@@ -204,6 +205,7 @@ where
                     shared_peer_discovery_driver,
                     Epoch(0),
                     monad_raptorcast::dummy_proposer_schedule(),
+                    None,
                 ))
             }
         },
