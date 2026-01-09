@@ -83,10 +83,14 @@ pub struct WireAuthProtocol {
 }
 
 impl WireAuthProtocol {
-    pub fn new(config: monad_wireauth::Config, signing_key: Arc<monad_secp::KeyPair>) -> Self {
+    pub fn new(
+        metric_names: &'static monad_wireauth::MetricNames,
+        config: monad_wireauth::Config,
+        signing_key: Arc<monad_secp::KeyPair>,
+    ) -> Self {
         let context = monad_wireauth::StdContext::new();
         Self {
-            api: monad_wireauth::API::new(config, signing_key, context),
+            api: monad_wireauth::API::new(metric_names, config, signing_key, context),
         }
     }
 }

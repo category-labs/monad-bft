@@ -694,8 +694,11 @@ where
 
     let shared_key = Arc::new(identity);
     let wireauth_config = monad_wireauth::Config::default();
-    let auth_protocol =
-        monad_raptorcast::auth::WireAuthProtocol::new(wireauth_config, shared_key.clone());
+    let auth_protocol = monad_raptorcast::auth::WireAuthProtocol::new(
+        &monad_raptorcast::auth::metrics::UDP_METRICS,
+        wireauth_config,
+        shared_key.clone(),
+    );
 
     MultiRouter::new(
         self_id,
