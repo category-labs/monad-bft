@@ -487,7 +487,11 @@ mod tests {
             let keypair = keypair(seed);
             let public_key = keypair.pubkey();
             let config = Config::default();
-            let auth_protocol = WireAuthProtocol::new(config, Arc::new(keypair));
+            let auth_protocol = WireAuthProtocol::new(
+                &crate::auth::metrics::UDP_METRICS,
+                config,
+                Arc::new(keypair),
+            );
             let authenticated_handle =
                 AuthenticatedSocketHandle::new(authenticated_socket, auth_protocol);
             let socket =
@@ -606,7 +610,11 @@ mod tests {
             ..Default::default()
         };
 
-        let auth_protocol = WireAuthProtocol::new(config, Arc::new(local_keypair));
+        let auth_protocol = WireAuthProtocol::new(
+            &crate::auth::metrics::UDP_METRICS,
+            config,
+            Arc::new(local_keypair),
+        );
         let mut handle = AuthenticatedSocketHandle::new(authenticated_socket, auth_protocol);
 
         assert_eq!(poll!(pin!(handle.timer())), Poll::Pending);

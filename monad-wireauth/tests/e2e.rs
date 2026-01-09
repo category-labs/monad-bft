@@ -16,7 +16,9 @@
 use std::{convert::TryFrom, rc::Rc, time::Duration};
 
 use bytes::Bytes;
-use monad_wireauth::{messages::Packet, Config, StdContext, API, DEFAULT_RETRY_ATTEMPTS};
+use monad_wireauth::{
+    messages::Packet, Config, StdContext, API, DEFAULT_METRICS, DEFAULT_RETRY_ATTEMPTS,
+};
 use monoio::net::udp::UdpSocket;
 use secp256k1::rand::{rngs::StdRng, SeedableRng};
 use zerocopy::IntoBytes;
@@ -44,7 +46,7 @@ impl PeerNode {
         };
 
         let context = StdContext::new();
-        let manager = API::new(config, keypair, context);
+        let manager = API::new(DEFAULT_METRICS, config, keypair, context);
 
         let addr = format!("127.0.0.1:{}", port);
         let socket = UdpSocket::bind(addr)?;
