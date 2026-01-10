@@ -247,9 +247,14 @@ impl<'ring> ExecEventRef<'ring> {
 
 /// Flow info for execution events.
 pub struct ExecEventRingFlowInfo {
-    block_seqno: u64,
-    txn_idx: Option<usize>,
-    account_idx: u64,
+    /// The sequence number of the block associated with this event.
+    pub block_seqno: u64,
+
+    /// The index of the transaction within the block associated with this event.
+    pub txn_idx: Option<usize>,
+
+    /// The index of the account within the block associated with this event.
+    pub account_idx: u64,
 }
 
 impl EventDecoder for ExecEventDecoder {
