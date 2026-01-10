@@ -408,6 +408,14 @@ async fn main() -> std::io::Result<()> {
         None
     };
 
+    let ws_server_fut = async {
+        if let Some(ws) = ws_server_handle {
+            ws.run().await
+        } else {
+            futures::future::pending().await
+        }
+    };
+
     // Configure the rpc server with or without metrics
     let app = match with_metrics {
         Some(metrics) => HttpServer::new(move || {
@@ -437,21 +445,17 @@ async fn main() -> std::io::Result<()> {
         .run(),
     };
 
-    let ws_fut = ws_server_handle.map(|ws| ws.run());
-
     tokio::select! {
         result = app => {
             let () = result?;
         }
 
-        result = async {
-            if let Some(fut) = ws_fut {
-                fut.await
-            } else {
-                futures::future::pending().await
-            }
-        } => {
+        result = ws_server_fut => {
             let () = result?;
+        }
+
+        () = txpool_bridge_handle => {
+            error!("txpool bridge crashed");
         }
     }
 
