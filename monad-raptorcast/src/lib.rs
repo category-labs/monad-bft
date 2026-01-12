@@ -54,7 +54,10 @@ use monad_peer_discovery::{
     NameRecord, PeerDiscoveryAlgo, PeerDiscoveryEvent,
 };
 use monad_types::{DropTimer, Epoch, ExecutionProtocol, NodeId, Round, RouterTarget, UdpPriority};
-use monad_validator::{signature_collection::SignatureCollection, validator_set::{ValidatorSet, ValidatorSetType as _}};
+use monad_validator::{
+    signature_collection::SignatureCollection,
+    validator_set::{ValidatorSet, ValidatorSetType as _},
+};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tracing::{debug, debug_span, error, trace, warn};
 use udp::GroupId;
@@ -99,8 +102,8 @@ where
     signing_key: Arc<ST::KeyPairType>,
     is_dynamic_fullnode: bool,
 
-    epoch_validators: BTreeMap<Epoch, EpochValidators<ST>>,
-    rebroadcast_map: ReBroadcastGroupMap<ST>,
+    epoch_validators: BTreeMap<Epoch, EpochValidators<CertificateSignaturePubKey<ST>>>,
+    rebroadcast_map: ReBroadcastGroupMap<CertificateSignaturePubKey<ST>>,
 
     dedicated_full_nodes: FullNodes<CertificateSignaturePubKey<ST>>,
     peer_discovery_driver: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
@@ -118,8 +121,9 @@ where
     pending_events: VecDeque<RaptorCastEvent<M::Event, ST>>,
 
     channel_to_secondary: Option<UnboundedSender<FullNodesGroupMessage<ST>>>,
-    channel_from_secondary: Option<UnboundedReceiver<Group<ST>>>,
-    channel_from_secondary_outbound: Option<UnboundedReceiver<SecondaryOutboundMessage<ST>>>,
+    channel_from_secondary: Option<UnboundedReceiver<Group<CertificateSignaturePubKey<ST>>>>,
+    channel_from_secondary_outbound:
+        Option<UnboundedReceiver<SecondaryOutboundMessage<CertificateSignaturePubKey<ST>>>>,
 
     waker: Option<Waker>,
     metrics: ExecutorMetrics,
@@ -240,8 +244,10 @@ where
     pub fn bind_channel_to_secondary_raptorcast(
         &mut self,
         channel_to_secondary: UnboundedSender<FullNodesGroupMessage<ST>>,
-        channel_from_secondary: UnboundedReceiver<Group<ST>>,
-        channel_from_secondary_outbound: UnboundedReceiver<SecondaryOutboundMessage<ST>>,
+        channel_from_secondary: UnboundedReceiver<Group<CertificateSignaturePubKey<ST>>>,
+        channel_from_secondary_outbound: UnboundedReceiver<
+            SecondaryOutboundMessage<CertificateSignaturePubKey<ST>>,
+        >,
     ) {
         self.channel_to_secondary = Some(channel_to_secondary);
         self.channel_from_secondary_outbound = Some(channel_from_secondary_outbound);
@@ -261,7 +267,7 @@ where
         self.dedicated_full_nodes = FullNodes::new(nodes);
     }
 
-    pub fn get_rebroadcast_groups(&self) -> &ReBroadcastGroupMap<ST> {
+    pub fn get_rebroadcast_groups(&self) -> &ReBroadcastGroupMap<CertificateSignaturePubKey<ST>> {
         &self.rebroadcast_map
     }
 
@@ -325,7 +331,10 @@ where
         };
     }
 
-    fn handle_secondary_outbound_message(&mut self, outbound_msg: SecondaryOutboundMessage<ST>) {
+    fn handle_secondary_outbound_message(
+        &mut self,
+        outbound_msg: SecondaryOutboundMessage<CertificateSignaturePubKey<ST>>,
+    ) {
         let Some(secondary_mb) = self.secondary_message_builder.as_mut() else {
             error!("secondary_message_builder not configured");
             return;
@@ -342,7 +351,7 @@ where
                     msg_len = msg_bytes.len(),
                     "raptorcastprimary handling single message from secondary"
                 );
-                let build_target = BuildTarget::<ST>::PointToPoint(&dest);
+                let build_target = BuildTarget::PointToPoint(&dest);
                 send(
                     &mut self.dual_socket,
                     &self.peer_discovery_driver,
@@ -474,7 +483,7 @@ where
                             return;
                         }
                     };
-                    let build_target = BuildTarget::<ST>::PointToPoint(&to);
+                    let build_target = BuildTarget::PointToPoint(&to);
 
                     let _timer = DropTimer::start(Duration::from_millis(10), |elapsed| {
                         warn!(
@@ -939,7 +948,7 @@ where
 }
 
 fn iter_ips<'a, ST: CertificateSignatureRecoverable, PD: PeerDiscoveryAlgo<SignatureType = ST>>(
-    validators: &'a EpochValidators<ST>,
+    validators: &'a EpochValidators<CertificateSignaturePubKey<ST>>,
     peer_discovery: &'a PeerDiscoveryDriver<PD>,
 ) -> impl Iterator<Item = IpAddr> + 'a {
     validators
@@ -1201,7 +1210,8 @@ where
                         return;
                     };
 
-                    let build_target = BuildTarget::<ST>::PointToPoint(&target);
+                    let build_target =
+                        BuildTarget::<CertificateSignaturePubKey<ST>>::PointToPoint(&target);
 
                     let _timer = DropTimer::start(Duration::from_millis(10), |elapsed| {
                         warn!(
@@ -1341,7 +1351,7 @@ where
 fn validate_group_message_sender<ST>(
     sender: &NodeId<CertificateSignaturePubKey<ST>>,
     group_message: &FullNodesGroupMessage<ST>,
-    epoch_validators: &EpochValidators<ST>,
+    epoch_validators: &EpochValidators<CertificateSignaturePubKey<ST>>,
 ) -> bool
 where
     ST: CertificateSignatureRecoverable,
@@ -1361,7 +1371,7 @@ fn send<ST, PD, AP>(
     peer_discovery_driver: &Arc<Mutex<PeerDiscoveryDriver<PD>>>,
     message_builder: &mut OwnedMessageBuilder<ST>,
     message: &Bytes,
-    build_target: &BuildTarget<ST>,
+    build_target: &BuildTarget<CertificateSignaturePubKey<ST>>,
     priority: UdpPriority,
     group_id: GroupId,
 ) where
@@ -1404,7 +1414,8 @@ fn send_with_record<ST, PD, AP>(
     PD: PeerDiscoveryAlgo<SignatureType = ST>,
     AP: auth::AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
 {
-    let build_target: BuildTarget<'_, ST> = BuildTarget::PointToPoint(target);
+    let build_target: BuildTarget<'_, CertificateSignaturePubKey<ST>> =
+        BuildTarget::PointToPoint(target);
     let should_authenticate = name_record.authenticated_udp_socket().is_some();
 
     {

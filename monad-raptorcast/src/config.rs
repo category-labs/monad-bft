@@ -16,7 +16,7 @@
 use std::{sync::Arc, time::Duration};
 
 use monad_crypto::certificate_signature::{
-    CertificateSignaturePubKey, CertificateSignatureRecoverable,
+    CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
 use monad_node_config::FullNodeRaptorCastConfig;
 use monad_types::{NodeId, Round};
@@ -100,10 +100,7 @@ where
 
 /// Configuration for the secondary instance of RaptorCast
 #[derive(Clone)]
-pub struct RaptorCastConfigSecondary<ST>
-where
-    ST: CertificateSignatureRecoverable,
-{
+pub struct RaptorCastConfigSecondary<PT: PubKey> {
     /// Amount of redundancy (in Raptor10 encoding) to send.
     /// A value of 2 == send 2x total payload size.
     /// Higher values make the broadcasting more tolerant to UDP packet drops.
@@ -112,14 +109,11 @@ where
 
     /// Client mode if we are a full-node, publisher mode if we are a validator.
     /// None if we are not participating in any raptor-casting to full-nodes.
-    pub mode: SecondaryRaptorCastMode<ST>,
+    pub mode: SecondaryRaptorCastMode<PT>,
 }
 
-impl<ST> Default for RaptorCastConfigSecondary<ST>
-where
-    ST: CertificateSignatureRecoverable,
-{
-    fn default() -> RaptorCastConfigSecondary<ST> {
+impl<PT: PubKey> Default for RaptorCastConfigSecondary<PT> {
+    fn default() -> RaptorCastConfigSecondary<PT> {
         RaptorCastConfigSecondary {
             raptor10_redundancy: 2f32,           // for full-nodes
             mode: SecondaryRaptorCastMode::None, // no raptorcasting to full-nodes
@@ -129,13 +123,10 @@ where
 
 /// Configuration for the secondary instance of RaptorCast (group of full-nodes)
 #[derive(Clone)]
-pub enum SecondaryRaptorCastMode<ST>
-where
-    ST: CertificateSignatureRecoverable,
-{
+pub enum SecondaryRaptorCastMode<PT: PubKey> {
     None, // Not participating in any raptor-casting to full-nodes.
     Client(RaptorCastConfigSecondaryClient), // i.e. we are a full-node
-    Publisher(RaptorCastConfigSecondaryPublisher<ST>), // we are a validator
+    Publisher(RaptorCastConfigSecondaryPublisher<PT>), // we are a validator
 }
 
 #[derive(Clone)]
@@ -166,24 +157,18 @@ impl Default for RaptorCastConfigSecondaryClient {
 
 // Only relevant to the secondary RaptorCast instance, and only when running as full-node
 #[derive(Clone)]
-pub struct RaptorCastConfigSecondaryPublisher<ST>
-where
-    ST: CertificateSignatureRecoverable,
-{
+pub struct RaptorCastConfigSecondaryPublisher<PT: PubKey> {
     /// These are the full-nodes that we, as validator, will always ask to join
     /// raptorcast groups. AKA `always_ask_full_nodes`.`
-    pub full_nodes_prioritized: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
+    pub full_nodes_prioritized: Vec<NodeId<PT>>,
 
     /// Group here means a temporary raptorcast group consisting of random
     /// full-nodes and which only lasts for a few rounds.
     pub group_scheduling: GroupSchedulingConfig,
 }
 
-impl<ST> Default for RaptorCastConfigSecondaryPublisher<ST>
-where
-    ST: CertificateSignatureRecoverable,
-{
-    fn default() -> RaptorCastConfigSecondaryPublisher<ST> {
+impl<PT: PubKey> Default for RaptorCastConfigSecondaryPublisher<PT> {
+    fn default() -> RaptorCastConfigSecondaryPublisher<PT> {
         RaptorCastConfigSecondaryPublisher {
             full_nodes_prioritized: Vec::new(),
             group_scheduling: Default::default(),

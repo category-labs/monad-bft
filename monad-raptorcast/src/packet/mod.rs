@@ -85,13 +85,13 @@ pub fn build_messages<ST>(
     redundancy: Redundancy,
     group_id: GroupId,
     unix_ts_ms: u64,
-    build_target: BuildTarget<ST>,
+    build_target: BuildTarget<CertificateSignaturePubKey<ST>>,
     known_addresses: &HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
 ) -> Vec<(SocketAddr, Bytes)>
 where
     ST: CertificateSignatureRecoverable,
 {
-    let builder = MessageBuilder::new(key)
+    let builder = MessageBuilder::<ST>::new(key)
         .segment_size(segment_size)
         .group_id(group_id)
         .unix_ts_ms(unix_ts_ms)
@@ -113,18 +113,18 @@ where
 
 // retrofit original error handling
 pub trait RetrofitResult<T> {
-    fn unwrap_log_on_error<ST>(self, ctx_app_msg: &[u8], ctx_build_target: &BuildTarget<ST>) -> T
+    fn unwrap_log_on_error<PT>(self, ctx_app_msg: &[u8], ctx_build_target: &BuildTarget<PT>) -> T
     where
-        ST: CertificateSignatureRecoverable;
+        PT: PubKey;
 }
 
 impl<T> RetrofitResult<T> for Result<T>
 where
     T: Default,
 {
-    fn unwrap_log_on_error<ST>(self, ctx_app_msg: &[u8], ctx_build_target: &BuildTarget<ST>) -> T
+    fn unwrap_log_on_error<PT>(self, ctx_app_msg: &[u8], ctx_build_target: &BuildTarget<PT>) -> T
     where
-        ST: CertificateSignatureRecoverable,
+        PT: PubKey,
     {
         let app_message_len = ctx_app_msg.len();
         let build_target = ctx_build_target;

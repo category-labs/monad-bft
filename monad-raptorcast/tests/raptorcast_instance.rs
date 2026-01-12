@@ -585,9 +585,9 @@ async fn delete_expired_groups() {
 
     // setup
     let (send_net_messages, _) = unbounded_channel::<FullNodesGroupMessage<SignatureType>>();
-    let (send_group_infos, recv_group_infos) = unbounded_channel::<Group<SignatureType>>();
+    let (send_group_infos, recv_group_infos) = unbounded_channel::<Group<PubKeyType>>();
     let (_, recv_outbound_from_secondary) =
-        unbounded_channel::<SecondaryOutboundMessage<SignatureType>>();
+        unbounded_channel::<SecondaryOutboundMessage<PubKeyType>>();
     raptorcast.set_is_dynamic_full_node(true);
     raptorcast.bind_channel_to_secondary_raptorcast(
         send_net_messages,

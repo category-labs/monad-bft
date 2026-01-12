@@ -155,8 +155,8 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
     #[tracing::instrument(level = "debug", name = "udp_handle_message", skip_all)]
     pub fn handle_message(
         &mut self,
-        group_map: &ReBroadcastGroupMap<ST>,
-        epoch_validators: &BTreeMap<Epoch, EpochValidators<ST>>,
+        group_map: &ReBroadcastGroupMap<CertificateSignaturePubKey<ST>>,
+        epoch_validators: &BTreeMap<Epoch, EpochValidators<CertificateSignaturePubKey<ST>>>,
         rebroadcast: impl FnMut(Vec<NodeId<CertificateSignaturePubKey<ST>>>, Bytes, u16),
         message: crate::auth::AuthRecvMsg<CertificateSignaturePubKey<ST>>,
     ) -> Vec<(NodeId<CertificateSignaturePubKey<ST>>, Bytes)> {
@@ -187,9 +187,9 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                     let is_validator = match (message.auth_public_key.as_ref(), group_id) {
                         (Some(pk), GroupId::Primary(epoch)) => {
                             let node_id = NodeId::new(*pk);
-                            epoch_validators.get(&epoch).is_some_and(|ev| {
-                                ev.validators.get_members().contains_key(&node_id)
-                            })
+                            epoch_validators
+                                .get(&epoch)
+                                .is_some_and(|ev| ev.validators.is_member(&node_id))
                         }
                         _ => false,
                     };
@@ -821,7 +821,7 @@ mod tests {
 
     fn validator_set() -> (
         KeyPairType,
-        EpochValidators<SignatureType>,
+        EpochValidators<CertificateSignaturePubKey<SignatureType>>,
         HashMap<NodeId<CertificateSignaturePubKey<SignatureType>>, SocketAddr>,
     ) {
         const NUM_KEYS: u8 = 100;
@@ -1217,7 +1217,7 @@ mod tests {
             BuildTarget::Broadcast(epoch_validators.into())
         };
         let app_msg = vec![0; app_msg_len];
-        let messages = MessageBuilder::new(&key)
+        let messages = MessageBuilder::<SignatureType>::new(&key)
             .segment_size(DEFAULT_SEGMENT_SIZE as usize)
             .group_id(GroupId::Primary(EPOCH))
             .redundancy(Redundancy::from_u8(1))

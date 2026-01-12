@@ -67,7 +67,7 @@ where
     // We can't keep it inside the map because we want to return a reference to
     // the full-nodes in it (FullNodesView).
     // Actually we only need full_nodes_accepted & end_round from curr_group.
-    curr_group: Group<ST>,
+    curr_group: Group<CertificateSignaturePubKey<ST>>,
 
     // Metrics
     metrics: ExecutorMetrics,
@@ -79,7 +79,7 @@ where
 {
     pub fn new(
         validator_node_id: NodeId<CertificateSignaturePubKey<ST>>,
-        config: RaptorCastConfigSecondaryPublisher<ST>,
+        config: RaptorCastConfigSecondaryPublisher<CertificateSignaturePubKey<ST>>,
         rng: ChaCha8Rng,
     ) -> Self {
         let scheduling_cfg = config.group_scheduling;
@@ -126,7 +126,7 @@ where
         }
     }
 
-    fn new_empty_group(&self, start_round: Round) -> Group<ST> {
+    fn new_empty_group(&self, start_round: Round) -> Group<CertificateSignaturePubKey<ST>> {
         let end_round = start_round + self.scheduling_cfg.init_empty_round_span;
         let round_span = RoundSpan::new(start_round, end_round).expect("round is near Round::MAX");
 
@@ -329,7 +329,7 @@ where
         }
     }
 
-    pub fn get_current_raptorcast_group(&self) -> Option<&Group<ST>> {
+    pub fn get_current_raptorcast_group(&self) -> Option<&Group<CertificateSignaturePubKey<ST>>> {
         if self.curr_group.get_round_span().contains(self.curr_round) {
             Some(&self.curr_group)
         } else {
@@ -581,7 +581,7 @@ where
     pub fn to_finalized_group(
         &self,
         validator_id: NodeId<CertificateSignaturePubKey<ST>>,
-    ) -> Group<ST> {
+    ) -> Group<CertificateSignaturePubKey<ST>> {
         let round_span =
             RoundSpan::new(self.start_round, self.end_round).expect("invalid round span");
 
@@ -620,7 +620,10 @@ mod tests {
 
     type ST = SecpSignature;
     type PubKeyType = CertificateSignaturePubKey<ST>;
-    type RcToRcChannelGrp<ST> = (UnboundedSender<Group<ST>>, UnboundedReceiver<Group<ST>>);
+    type RcToRcChannelGrp = (
+        UnboundedSender<Group<PubKeyType>>,
+        UnboundedReceiver<Group<PubKeyType>>,
+    );
     type NodeIdST<ST> = NodeId<CertificateSignaturePubKey<ST>>;
 
     // Creates a node id that we can refer to just from its seed
@@ -739,7 +742,7 @@ mod tests {
         res
     }
 
-    fn dump_formed_grp(grp: &Group<ST>) -> String {
+    fn dump_formed_grp(grp: &Group<PubKeyType>) -> String {
         let mut res = String::new();
         let span = grp.get_round_span();
         res += format!("[{:?}-{:?})", span.start, span.end).as_str();
@@ -980,13 +983,13 @@ mod tests {
     // This is a mock of how the primary raptorcast instance would represent
     // the rebroadcast group map.
     struct MockGroupMap {
-        rx_from_client: UnboundedReceiver<Group<ST>>,
-        group_map: ReBroadcastGroupMap<ST>,
+        rx_from_client: UnboundedReceiver<Group<PubKeyType>>,
+        group_map: ReBroadcastGroupMap<PubKeyType>,
     }
     impl MockGroupMap {
         fn new(
-            clt_node_id: NodeId<CertificateSignaturePubKey<ST>>,
-            rx_from_client: UnboundedReceiver<Group<ST>>,
+            clt_node_id: NodeId<PubKeyType>,
+            rx_from_client: UnboundedReceiver<Group<PubKeyType>>,
         ) -> Self {
             Self {
                 group_map: ReBroadcastGroupMap::new(clt_node_id),
@@ -1388,7 +1391,7 @@ mod tests {
     #[test]
     fn client_avoid_one_round_gap() {
         enable_tracer();
-        let (clt_tx, clt_rx): RcToRcChannelGrp<ST> = unbounded_channel();
+        let (clt_tx, clt_rx): RcToRcChannelGrp = unbounded_channel();
         let mut clt =
             Client::<ST>::new(nid(10), clt_tx, RaptorCastConfigSecondaryClient::default());
         let mut group_map = MockGroupMap::new(nid(10), clt_rx);
@@ -1488,7 +1491,7 @@ mod tests {
     #[test]
     fn standalone_client_single_group() {
         enable_tracer();
-        let (clt_tx, clt_rx): RcToRcChannelGrp<ST> = unbounded_channel();
+        let (clt_tx, clt_rx): RcToRcChannelGrp = unbounded_channel();
         let mut clt = Client::<ST>::new(
             nid(10),
             clt_tx,
@@ -1604,7 +1607,7 @@ mod tests {
     #[test]
     fn mid_round_client_start() {
         enable_tracer();
-        let (clt_tx, clt_rx): RcToRcChannelGrp<ST> = unbounded_channel();
+        let (clt_tx, clt_rx): RcToRcChannelGrp = unbounded_channel();
         let mut clt = Client::<ST>::new(
             nid(10),
             clt_tx,
@@ -1735,7 +1738,7 @@ mod tests {
         // 16       | v0.2  v1.1  v2.1
 
         let me = 10;
-        let (clt_tx, clt_rx): RcToRcChannelGrp<ST> = unbounded_channel();
+        let (clt_tx, clt_rx): RcToRcChannelGrp = unbounded_channel();
         let mut clt = Client::<ST>::new(
             nid(me),
             clt_tx,

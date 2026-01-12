@@ -23,7 +23,7 @@ use std::{
 use fixed::{types::extra::U11, FixedU16};
 use itertools::Itertools;
 use monad_crypto::{
-    certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey},
+    certificate_signature::PubKey,
     hasher::{Hasher, HasherType},
 };
 use monad_types::{Epoch, NodeId, Round, RoundSpan, Stake};
@@ -33,30 +33,21 @@ use tracing::{debug, warn};
 use crate::udp::GroupId;
 
 #[derive(Clone, Debug)]
-pub struct EpochValidators<ST>
-where
-    ST: CertificateSignatureRecoverable,
-{
-    pub validators: ValidatorSet<CertificateSignaturePubKey<ST>>,
+pub struct EpochValidators<PT: PubKey> {
+    pub validators: ValidatorSet<PT>,
 }
 
-impl<ST> EpochValidators<ST>
-where
-    ST: CertificateSignatureRecoverable,
-{
+impl<PT: PubKey> EpochValidators<PT> {
     /// Returns a view of the validator set without a given node. On ValidatorsView being dropped,
     /// the validator set is reverted back to normal.
-    pub fn view_without(
-        &self,
-        without: Vec<&NodeId<CertificateSignaturePubKey<ST>>>,
-    ) -> ValidatorsView<'_, ST> {
+    pub fn view_without(&self, without: Vec<&NodeId<PT>>) -> ValidatorsView<'_, PT> {
         ValidatorsView {
             view: self.validators.get_members(),
             without: without.into_iter().cloned().collect(),
         }
     }
 
-    pub fn get(&self, node_id: &NodeId<CertificateSignaturePubKey<ST>>) -> Option<Stake> {
+    pub fn get(&self, node_id: &NodeId<PT>) -> Option<Stake> {
         self.validators.get_members().get(node_id).copied()
     }
 
@@ -70,28 +61,20 @@ where
 }
 
 #[derive(Debug, Clone)]
-pub struct ValidatorsView<'a, ST>
-where
-    ST: CertificateSignatureRecoverable,
-{
-    view: &'a BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, Stake>,
-    without: HashSet<NodeId<CertificateSignaturePubKey<ST>>>,
+pub struct ValidatorsView<'a, PT: PubKey> {
+    view: &'a BTreeMap<NodeId<PT>, Stake>,
+    without: HashSet<NodeId<PT>>,
 }
 
-impl<ST> ValidatorsView<'_, ST>
-where
-    ST: CertificateSignatureRecoverable,
-{
-    pub fn iter(
-        &self,
-    ) -> impl Iterator<Item = (&NodeId<CertificateSignaturePubKey<ST>>, Stake)> + '_ {
+impl<PT: PubKey> ValidatorsView<'_, PT> {
+    pub fn iter(&self) -> impl Iterator<Item = (&NodeId<PT>, Stake)> + '_ {
         self.view
             .iter()
             .filter(|(id, _)| !self.without.contains(id))
             .map(|(id, stake)| (id, *stake))
     }
 
-    pub fn iter_nodes(&self) -> impl Iterator<Item = &NodeId<CertificateSignaturePubKey<ST>>> + '_ {
+    pub fn iter_nodes(&self) -> impl Iterator<Item = &NodeId<PT>> + '_ {
         self.view
             .keys()
             .filter(move |id| !self.without.contains(id))
@@ -154,36 +137,24 @@ impl<P: PubKey> FullNodesView<'_, P> {
 }
 
 #[derive(Debug, Clone)]
-pub enum NodesView<'a, ST>
-where
-    ST: CertificateSignatureRecoverable,
-{
-    Validators(ValidatorsView<'a, ST>),
-    FullNodes(FullNodesView<'a, CertificateSignaturePubKey<ST>>),
+pub enum NodesView<'a, PT: PubKey> {
+    Validators(ValidatorsView<'a, PT>),
+    FullNodes(FullNodesView<'a, PT>),
 }
 
-impl<'a, ST> From<ValidatorsView<'a, ST>> for NodesView<'a, ST>
-where
-    ST: CertificateSignatureRecoverable,
-{
-    fn from(view: ValidatorsView<'a, ST>) -> Self {
+impl<'a, PT: PubKey> From<ValidatorsView<'a, PT>> for NodesView<'a, PT> {
+    fn from(view: ValidatorsView<'a, PT>) -> Self {
         NodesView::Validators(view)
     }
 }
 
-impl<'a, ST> From<FullNodesView<'a, CertificateSignaturePubKey<ST>>> for NodesView<'a, ST>
-where
-    ST: CertificateSignatureRecoverable,
-{
-    fn from(view: FullNodesView<'a, CertificateSignaturePubKey<ST>>) -> Self {
+impl<'a, PT: PubKey> From<FullNodesView<'a, PT>> for NodesView<'a, PT> {
+    fn from(view: FullNodesView<'a, PT>) -> Self {
         NodesView::FullNodes(view)
     }
 }
 
-impl<'a, ST> NodesView<'a, ST>
-where
-    ST: CertificateSignatureRecoverable,
-{
+impl<'a, PT: PubKey> NodesView<'a, PT> {
     pub fn len(&self) -> usize {
         match self {
             NodesView::Validators(view) => view.len(),
@@ -198,7 +169,7 @@ where
         }
     }
 
-    pub fn iter(&self) -> Box<dyn Iterator<Item = &NodeId<CertificateSignaturePubKey<ST>>> + '_> {
+    pub fn iter(&self) -> Box<dyn Iterator<Item = &NodeId<PT>> + '_> {
         match self {
             NodesView::Validators(view) => Box::new(view.iter_nodes()),
             NodesView::FullNodes(view) => Box::new(view.iter()),
@@ -208,13 +179,13 @@ where
 
 // Argument for raptorcast send
 #[derive(Debug, Clone)]
-pub enum BuildTarget<'a, ST: CertificateSignatureRecoverable> {
+pub enum BuildTarget<'a, PT: PubKey> {
     // raptorcast to a set of nodes without stake-based distribution
     // of chunks.
     Broadcast(
         // validator stakes for given epoch_no, not including self
         // this MUST NOT BE EMPTY
-        NodesView<'a, ST>,
+        NodesView<'a, PT>,
     ),
     // raptorcast to a set of validators, chunks distributed by their
     // proportion of stakes.
@@ -222,16 +193,16 @@ pub enum BuildTarget<'a, ST: CertificateSignatureRecoverable> {
         // validator stakes for given epoch_no, not including self
         // this MUST NOT BE EMPTY
         // Contains Stake information per validator node id
-        ValidatorsView<'a, ST>,
+        ValidatorsView<'a, PT>,
     ),
     // sharded raptor-aware broadcast
-    PointToPoint(&'a NodeId<CertificateSignaturePubKey<ST>>),
+    PointToPoint(&'a NodeId<PT>),
     // Group should not be empty after excluding self node Id
-    FullNodeRaptorCast(&'a Group<ST>),
+    FullNodeRaptorCast(&'a Group<PT>),
 }
 
-impl<'a, ST: CertificateSignatureRecoverable> BuildTarget<'a, ST> {
-    pub fn iter(&self) -> Box<dyn Iterator<Item = &NodeId<CertificateSignaturePubKey<ST>>> + '_> {
+impl<'a, PT: PubKey> BuildTarget<'a, PT> {
+    pub fn iter(&self) -> Box<dyn Iterator<Item = &NodeId<PT>> + '_> {
         match self {
             BuildTarget::Broadcast(nodes_view) => match nodes_view {
                 NodesView::Validators(validators_view) => Box::new(validators_view.iter_nodes()),
@@ -297,24 +268,18 @@ pub enum BroadcastMode {
 // Validator->Validator send group is presented by EpochValidators instead, as
 // that contains stake info per validator.
 #[derive(Clone, PartialEq, Eq)] // For some reason Default doesn't work
-pub struct Group<ST>
-where
-    ST: CertificateSignatureRecoverable,
-{
+pub struct Group<PT: PubKey> {
     // The node_id of the validator publishing to full-nodes.
-    validator_id: Option<NodeId<CertificateSignaturePubKey<ST>>>,
+    validator_id: Option<NodeId<PT>>,
     round_span: RoundSpan,
-    sorted_other_peers: Vec<NodeId<CertificateSignaturePubKey<ST>>>, // Excludes self
+    sorted_other_peers: Vec<NodeId<PT>>, // Excludes self
 }
 
 // Keyed by starting round
-type GroupQueue<ST> = BTreeMap<Round, Group<ST>>;
+type GroupQueue<PT> = BTreeMap<Round, Group<PT>>;
 
 // Groups in a GroupQueue should be sorted by start round, earliest round first
-impl<ST> Ord for Group<ST>
-where
-    ST: CertificateSignatureRecoverable,
-{
+impl<PT: PubKey> Ord for Group<PT> {
     fn cmp(&self, other: &Self) -> Ordering {
         // Compare fields other than round_span.start as well, to make the
         // ordering more consistent and predictable
@@ -327,19 +292,13 @@ where
     }
 }
 
-impl<ST> PartialOrd for Group<ST>
-where
-    ST: CertificateSignatureRecoverable,
-{
+impl<PT: PubKey> PartialOrd for Group<PT> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl<ST> fmt::Debug for Group<ST>
-where
-    ST: CertificateSignatureRecoverable,
-{
+impl<PT: PubKey> fmt::Debug for Group<PT> {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt.debug_struct("Group")
             .field("start", &self.round_span.start.0)
@@ -349,11 +308,8 @@ where
     }
 }
 
-// the trait `Default` is not implemented for `ST`
-impl<ST> Default for Group<ST>
-where
-    ST: CertificateSignatureRecoverable,
-{
+// the trait `Default` is not implemented for `PT`
+impl<PT: PubKey> Default for Group<PT> {
     fn default() -> Self {
         Self {
             validator_id: None,
@@ -363,15 +319,9 @@ where
     }
 }
 
-impl<ST> Group<ST>
-where
-    ST: CertificateSignatureRecoverable,
-{
+impl<PT: PubKey> Group<PT> {
     // For the use case where we re-raptorcast to validators
-    pub fn new_validator_group(
-        all_peers: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
-        self_id: &NodeId<CertificateSignaturePubKey<ST>>,
-    ) -> Self {
+    pub fn new_validator_group(all_peers: Vec<NodeId<PT>>, self_id: &NodeId<PT>) -> Self {
         // We will call `check_author_node_id()` often, so sorting here will
         // allow us to use binary search instead of linear search.
         let sorted_other_peers: Vec<_> = all_peers
@@ -392,9 +342,9 @@ where
     // This is specially important when a client receives a `ConfirmGroup`
     // message over the network from a (rogue?) validator.
     pub fn new_fullnode_group(
-        all_peers: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
-        self_id: &NodeId<CertificateSignaturePubKey<ST>>,
-        validator_id: NodeId<CertificateSignaturePubKey<ST>>,
+        all_peers: Vec<NodeId<PT>>,
+        self_id: &NodeId<PT>,
+        validator_id: NodeId<PT>,
         round_span: RoundSpan,
     ) -> Self {
         // We will call `check_author_node_id()` often, so sorting here will
@@ -426,17 +376,17 @@ where
         self.sorted_other_peers.len()
     }
 
-    pub fn get_validator_id(&self) -> &NodeId<CertificateSignaturePubKey<ST>> {
+    pub fn get_validator_id(&self) -> &NodeId<PT> {
         // Only set when re-raptorcasting to full-nodes
         self.validator_id.as_ref().expect("Validator ID is not set")
     }
 
-    pub fn iter_peers(&self) -> impl Iterator<Item = &NodeId<CertificateSignaturePubKey<ST>>> + '_ {
+    pub fn iter_peers(&self) -> impl Iterator<Item = &NodeId<PT>> + '_ {
         self.sorted_other_peers.iter()
     }
 
     #[cfg(test)]
-    pub fn get_other_peers(&self) -> &Vec<NodeId<CertificateSignaturePubKey<ST>>> {
+    pub fn get_other_peers(&self) -> &Vec<NodeId<PT>> {
         &self.sorted_other_peers
     }
 
@@ -444,7 +394,7 @@ where
         &self.round_span
     }
 
-    fn empty_iterator(&self) -> GroupIterator<'_, ST> {
+    fn empty_iterator(&self) -> GroupIterator<'_, PT> {
         GroupIterator {
             group: self,
             num_consumed: usize::MAX,
@@ -460,9 +410,9 @@ where
     // Yields NodeIds.
     pub fn iter_skip_self_and_author(
         &self,
-        author_id: &NodeId<CertificateSignaturePubKey<ST>>,
+        author_id: &NodeId<PT>,
         seed: usize,
-    ) -> GroupIterator<'_, ST> {
+    ) -> GroupIterator<'_, PT> {
         // Hint for the index of author_id within self.sorted_other_peers.
         // We want to skip it when iterating the peers for broadcasting.
         let author_id_ix = if let Some(root_vid) = self.validator_id {
@@ -506,7 +456,7 @@ where
 
     // There are cases where we need to check that the source node is valid
     // before we get to call iter_skip_self_and_author()
-    pub fn check_author_node_id(&self, author_id: &NodeId<CertificateSignaturePubKey<ST>>) -> bool {
+    pub fn check_author_node_id(&self, author_id: &NodeId<PT>) -> bool {
         if let Some(root_vid) = self.validator_id {
             // Case for full-node raptorcasting
             let good = &root_vid == author_id;
@@ -530,21 +480,15 @@ where
 // Intended to be used in the recv leg of re-raptorcasting to validators, or for
 // both the recv & send leg of (re-) raptorcasting to fullnodes, as these do
 // not need Stake information for each validator.
-pub struct GroupIterator<'a, ST>
-where
-    ST: CertificateSignatureRecoverable,
-{
-    group: &'a Group<ST>,
+pub struct GroupIterator<'a, PT: PubKey> {
+    group: &'a Group<PT>,
     num_consumed: usize,
     author_id_ix: usize,
     start_ix: usize,
 }
 
-impl<'a, ST> Iterator for GroupIterator<'a, ST>
-where
-    ST: CertificateSignatureRecoverable,
-{
-    type Item = &'a NodeId<CertificateSignaturePubKey<ST>>;
+impl<'a, PT: PubKey> Iterator for GroupIterator<'a, PT> {
+    type Item = &'a NodeId<PT>;
 
     fn next(&mut self) -> Option<Self::Item> {
         while self.num_consumed < self.group.sorted_other_peers.len() {
@@ -562,26 +506,20 @@ where
 // The send side, i.e. initiating a RaptorCast proposal, is represented with
 // struct `EpochValidators` instead.
 #[derive(Debug)]
-pub struct ReBroadcastGroupMap<ST>
-where
-    ST: CertificateSignatureRecoverable,
-{
+pub struct ReBroadcastGroupMap<PT: PubKey> {
     // When iterating nodeIds in a raptorcast group, this node id is always skipped
-    our_node_id: NodeId<CertificateSignaturePubKey<ST>>,
+    our_node_id: NodeId<PT>,
 
     // For Validator->validator re-raptorcasting
-    validator_map: BTreeMap<Epoch, Group<ST>>,
+    validator_map: BTreeMap<Epoch, Group<PT>>,
 
     // For Validator->fullnode re-raptorcasting: each entry is keyed by
     // validator NodeId. GroupQueue is a BTreeMap keyed by starting round
-    fullnode_map: BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, GroupQueue<ST>>,
+    fullnode_map: BTreeMap<NodeId<PT>, GroupQueue<PT>>,
 }
 
-impl<ST> ReBroadcastGroupMap<ST>
-where
-    ST: CertificateSignatureRecoverable,
-{
-    pub fn new(our_node_id: NodeId<CertificateSignaturePubKey<ST>>) -> Self {
+impl<PT: PubKey> ReBroadcastGroupMap<PT> {
+    pub fn new(our_node_id: NodeId<PT>) -> Self {
         Self {
             our_node_id,
             validator_map: BTreeMap::new(),
@@ -594,7 +532,7 @@ where
     pub fn check_source(
         &self,
         msg_group_id: GroupId,
-        author_node_id: &NodeId<CertificateSignaturePubKey<ST>>,
+        author_node_id: &NodeId<PT>,
         src_addr: &SocketAddr,
     ) -> bool {
         match msg_group_id {
@@ -647,8 +585,8 @@ where
     pub fn iterate_rebroadcast_peers(
         &self,
         msg_group_id: GroupId,
-        msg_author: &NodeId<CertificateSignaturePubKey<ST>>, // skipped when iterating RaptorCast group
-    ) -> Option<GroupIterator<'_, ST>> {
+        msg_author: &NodeId<PT>, // skipped when iterating RaptorCast group
+    ) -> Option<GroupIterator<'_, PT>> {
         let rebroadcast_group = match msg_group_id {
             GroupId::Primary(msg_epoch) => self.validator_map.get(&msg_epoch)?,
             GroupId::Secondary(msg_round) => {
@@ -678,7 +616,7 @@ where
     // As Validator: When we get an AddEpochValidatorSet.
     pub fn push_group_validator_set(
         &mut self,
-        validator_set: Vec<(NodeId<CertificateSignaturePubKey<ST>>, Stake)>,
+        validator_set: Vec<(NodeId<PT>, Stake)>,
         epoch: Epoch,
     ) {
         let (all_peers, _validator_stakes): (Vec<_>, Vec<_>) = validator_set.into_iter().unzip();
@@ -693,7 +631,7 @@ where
     }
 
     // As Full-node: When secondary RaptorCast instance (Client) sends us a Group<>
-    pub fn push_group_fullnodes(&mut self, group: Group<ST>) {
+    pub fn push_group_fullnodes(&mut self, group: Group<PT>) {
         let vid = *group.get_validator_id();
         let prev_group_queue_from_vid = format!("{:?}", self.fullnode_map.get(&vid));
         self.fullnode_map
@@ -729,7 +667,7 @@ where
         );
     }
 
-    pub fn get_fullnode_map(&self) -> BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, Group<ST>> {
+    pub fn get_fullnode_map(&self) -> BTreeMap<NodeId<PT>, Group<PT>> {
         let mut res: BTreeMap<_, _> = BTreeMap::new();
         for (vid, group_queue) in &self.fullnode_map {
             if let Some((_start_round, group)) = group_queue.first_key_value() {
@@ -802,15 +740,16 @@ pub fn unix_ts_ms_now() -> u64 {
 mod tests {
     use std::collections::HashSet;
 
+    use monad_crypto::certificate_signature::CertificateSignaturePubKey;
     use monad_secp::SecpSignature;
     use monad_testutil::signing::get_key;
 
     use super::*;
     type ST = SecpSignature;
-    type PubKeyType = CertificateSignaturePubKey<ST>;
+    type PT = CertificateSignaturePubKey<ST>;
 
     // Creates a node id that we can refer to just from its seed
-    fn nid(seed: u64) -> NodeId<PubKeyType> {
+    fn nid(seed: u64) -> NodeId<PT> {
         let key_pair = get_key::<ST>(seed);
         let pub_key = key_pair.pubkey();
         NodeId::new(pub_key)
@@ -818,7 +757,7 @@ mod tests {
 
     #[test]
     fn test_fullnode_iterator_self_on() {
-        let group = Group::<ST>::new_fullnode_group(
+        let group = Group::<PT>::new_fullnode_group(
             vec![nid(0), nid(1), nid(2)],
             &nid(1), // self_id
             nid(3),  // validator
@@ -857,7 +796,7 @@ mod tests {
 
     #[test]
     fn test_fullnode_iterator_self_off() {
-        let group = Group::<ST>::new_fullnode_group(
+        let group = Group::<PT>::new_fullnode_group(
             vec![nid(0), nid(1), nid(2)],
             &nid(3), // self_id
             nid(3),  // validator id
@@ -889,7 +828,7 @@ mod tests {
 
     #[test]
     fn test_fullnode_iterator_only_self() {
-        let group = Group::<ST>::new_fullnode_group(
+        let group = Group::<PT>::new_fullnode_group(
             vec![nid(1)],
             &nid(1), // self_id
             nid(3),  // validator id
@@ -920,7 +859,7 @@ mod tests {
 
     #[test]
     fn test_validator_iterator_self_on() {
-        let group = Group::<ST>::new_validator_group(
+        let group = Group::<PT>::new_validator_group(
             vec![nid(0), nid(1), nid(2)],
             &nid(1), // self_id
         );
@@ -946,7 +885,7 @@ mod tests {
 
     #[test]
     fn test_iterator_rand() {
-        let group = Group::<ST>::new_fullnode_group(
+        let group = Group::<PT>::new_fullnode_group(
             vec![nid(0), nid(1), nid(2), nid(3), nid(4)],
             &nid(0),  // self_id
             nid(100), // validator id
@@ -963,7 +902,7 @@ mod tests {
         assert_eq!(&it, &org_nodes);
 
         // "Randomized" iterations
-        let mut permutations_seen = HashSet::<Vec<NodeId<CertificateSignaturePubKey<ST>>>>::new();
+        let mut permutations_seen = HashSet::<Vec<NodeId<PT>>>::new();
         for seed in 1..10 {
             let it: Vec<_> = group
                 .iter_skip_self_and_author(&nid(100), seed)
@@ -980,7 +919,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn test_no_validator_id_in_validator_group() {
-        let group = Group::<ST>::new_validator_group(
+        let group = Group::<PT>::new_validator_group(
             vec![nid(0), nid(1), nid(2)],
             &nid(1), // self_id
         );

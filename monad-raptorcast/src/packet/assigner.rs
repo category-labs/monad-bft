@@ -16,9 +16,7 @@
 use std::{collections::HashMap, ops::Range};
 
 use bytes::BytesMut;
-use monad_crypto::certificate_signature::{
-    CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
-};
+use monad_crypto::certificate_signature::PubKey;
 use monad_types::{NodeId, Stake};
 use rand::{rngs::StdRng, seq::SliceRandom as _, SeedableRng as _};
 
@@ -472,13 +470,10 @@ impl<PT: PubKey> StakeBasedWithRC<PT> {
     // this should be done using known shuffling algorithm to allow
     // for easy implementation in other languages, e.g., using Mt19937
     // and Fisher Yates shuffle.
-    pub fn shuffle_validators<ST>(
-        view: &crate::util::ValidatorsView<ST>,
+    pub fn shuffle_validators(
+        view: &crate::util::ValidatorsView<PT>,
         seed: [u8; 32],
-    ) -> Vec<(NodeId<CertificateSignaturePubKey<ST>>, Stake)>
-    where
-        ST: CertificateSignatureRecoverable,
-    {
+    ) -> Vec<(NodeId<PT>, Stake)> {
         let mut validator_set = view
             .iter()
             .map(|(node_id, stake)| (*node_id, stake))

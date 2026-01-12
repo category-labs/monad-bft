@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use monad_crypto::certificate_signature::{
-    CertificateKeyPair as _, CertificateSignaturePubKey, CertificateSignatureRecoverable,
+    CertificateKeyPair as _, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
 use monad_dataplane::udp::DEFAULT_SEGMENT_SIZE;
 use monad_types::NodeId;
@@ -197,7 +197,7 @@ where
     pub fn build_into<C>(
         &self,
         app_message: &[u8],
-        build_target: &BuildTarget<ST>,
+        build_target: &BuildTarget<CertificateSignaturePubKey<ST>>,
         collector: &mut C,
     ) -> Result<()>
     where
@@ -210,7 +210,7 @@ where
     pub fn build_vec(
         &self,
         app_message: &[u8],
-        build_target: &BuildTarget<ST>,
+        build_target: &BuildTarget<CertificateSignaturePubKey<ST>>,
     ) -> Result<Vec<UdpMessage<CertificateSignaturePubKey<ST>>>> {
         self.prepare().build_vec(app_message, build_target)
     }
@@ -350,12 +350,12 @@ where
         Ok(header_buf)
     }
 
-    fn make_assigner(
-        build_target: &BuildTarget<ST>,
-        self_node_id: &NodeId<CertificateSignaturePubKey<ST>>,
+    fn make_assigner<PT: PubKey>(
+        build_target: &BuildTarget<PT>,
+        self_node_id: &NodeId<PT>,
         app_message_hash: &[u8; 20],
         rng: &mut impl Rng,
-    ) -> Box<dyn ChunkAssigner<CertificateSignaturePubKey<ST>>>
+    ) -> Box<dyn ChunkAssigner<PT>>
     where
         ST: CertificateSignatureRecoverable,
     {
@@ -371,10 +371,7 @@ where
                     StakeBasedWithRC::<CertificateSignaturePubKey<ST>>::seed_from_app_message_hash(
                         app_message_hash,
                     );
-                let sorted_validators =
-                    StakeBasedWithRC::<CertificateSignaturePubKey<ST>>::shuffle_validators::<ST>(
-                        validators, seed,
-                    );
+                let sorted_validators = StakeBasedWithRC::shuffle_validators(validators, seed);
                 let assigner = StakeBasedWithRC::from_validator_set(sorted_validators);
                 Box::new(assigner)
             }
@@ -393,7 +390,7 @@ where
     pub fn build_into<C>(
         &self,
         app_message: &[u8],
-        build_target: &BuildTarget<ST>,
+        build_target: &BuildTarget<CertificateSignaturePubKey<ST>>,
         collector: &mut C,
     ) -> Result<()>
     where
@@ -449,7 +446,7 @@ where
     pub fn build_vec(
         &self,
         app_message: &[u8],
-        build_target: &BuildTarget<ST>,
+        build_target: &BuildTarget<CertificateSignaturePubKey<ST>>,
     ) -> Result<Vec<UdpMessage<CertificateSignaturePubKey<ST>>>> {
         let mut packets = Vec::new();
         self.build_into(app_message, build_target, &mut packets)?;
@@ -457,9 +454,9 @@ where
     }
 }
 
-fn broadcast_type_from_build_target<ST>(build_target: &BuildTarget<'_, ST>) -> BroadcastType
+fn broadcast_type_from_build_target<PT>(build_target: &BuildTarget<'_, PT>) -> BroadcastType
 where
-    ST: CertificateSignatureRecoverable,
+    PT: PubKey,
 {
     match build_target {
         BuildTarget::Raptorcast { .. } => BroadcastType::Primary,

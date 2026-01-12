@@ -16,30 +16,30 @@
 use alloy_rlp::{encode_list, Decodable, Encodable, Header, RlpDecodable, RlpEncodable};
 use bytes::BufMut;
 use monad_crypto::certificate_signature::{
-    CertificateSignaturePubKey, CertificateSignatureRecoverable,
+    CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
 use monad_peer_discovery::MonadNameRecord;
 use monad_types::{NodeId, Round};
 
 #[derive(RlpEncodable, RlpDecodable, Debug, Eq, PartialEq, Clone)]
-pub struct PrepareGroup<ST: CertificateSignatureRecoverable> {
-    pub validator_id: NodeId<CertificateSignaturePubKey<ST>>,
+pub struct PrepareGroup<PT: PubKey> {
+    pub validator_id: NodeId<PT>,
     pub max_group_size: usize,
     pub start_round: Round,
     pub end_round: Round,
 }
 
 #[derive(Debug, Clone, RlpEncodable, RlpDecodable, Eq, PartialEq)]
-pub struct PrepareGroupResponse<ST: CertificateSignatureRecoverable> {
-    pub req: PrepareGroup<ST>,
-    pub node_id: NodeId<CertificateSignaturePubKey<ST>>,
+pub struct PrepareGroupResponse<PT: PubKey> {
+    pub req: PrepareGroup<PT>,
+    pub node_id: NodeId<PT>,
     pub accept: bool,
 }
 
 #[derive(Debug, Clone, RlpEncodable, RlpDecodable, Eq, PartialEq)]
 #[rlp(trailing)]
 pub struct ConfirmGroup<ST: CertificateSignatureRecoverable> {
-    pub prepare: PrepareGroup<ST>,
+    pub prepare: PrepareGroup<CertificateSignaturePubKey<ST>>,
     pub peers: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
     pub name_records: Vec<MonadNameRecord<ST>>,
 }
@@ -52,8 +52,8 @@ const MESSAGE_TYPE_CONF_GRP: u8 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FullNodesGroupMessage<ST: CertificateSignatureRecoverable> {
-    PrepareGroup(PrepareGroup<ST>), // MESSAGE_TYPE_PREP_REQ
-    PrepareGroupResponse(PrepareGroupResponse<ST>), // MESSAGE_TYPE_PREP_RES
+    PrepareGroup(PrepareGroup<CertificateSignaturePubKey<ST>>), // MESSAGE_TYPE_PREP_REQ
+    PrepareGroupResponse(PrepareGroupResponse<CertificateSignaturePubKey<ST>>), // MESSAGE_TYPE_PREP_RES
     ConfirmGroup(ConfirmGroup<ST>), // MESSAGE_TYPE_CONF_GRP
 }
 
@@ -125,7 +125,7 @@ mod tests {
         .to_string()
     }
 
-    fn make_prep_group(seed: u32) -> PrepareGroup<ST> {
+    fn make_prep_group(seed: u32) -> PrepareGroup<CertificateSignaturePubKey<ST>> {
         PrepareGroup {
             validator_id: nid(seed as u64),
             max_group_size: 1 + seed as usize,

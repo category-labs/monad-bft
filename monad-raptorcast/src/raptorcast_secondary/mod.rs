@@ -30,7 +30,7 @@ use client::Client;
 use futures::{Future, Stream};
 use group_message::FullNodesGroupMessage;
 use monad_crypto::certificate_signature::{
-    CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
+    CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{Message, PeerEntry, RouterCommand};
@@ -58,15 +58,15 @@ pub enum SecondaryRaptorCastModeConfig {
 }
 
 #[derive(Debug, Clone)]
-pub enum SecondaryOutboundMessage<ST: CertificateSignatureRecoverable> {
+pub enum SecondaryOutboundMessage<PT: PubKey> {
     SendSingle {
         msg_bytes: bytes::Bytes,
-        dest: NodeId<CertificateSignaturePubKey<ST>>,
+        dest: NodeId<PT>,
         group_id: GroupId,
     },
     SendToGroup {
         msg_bytes: bytes::Bytes,
-        group: Group<ST>,
+        group: Group<PT>,
         group_id: GroupId,
     },
 }
@@ -97,7 +97,9 @@ where
     peer_discovery_driver: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
 
     channel_from_primary: UnboundedReceiver<FullNodesGroupMessage<ST>>,
-    channel_to_primary_outbound: UnboundedSender<SecondaryOutboundMessage<ST>>,
+    channel_to_primary_outbound:
+        UnboundedSender<SecondaryOutboundMessage<CertificateSignaturePubKey<ST>>>,
+
     #[expect(unused)]
     metrics: ExecutorMetrics,
     _phantom: PhantomData<(OM, SE, M)>,
@@ -112,11 +114,13 @@ where
 {
     pub fn new(
         config: RaptorCastConfig<ST>,
-        secondary_mode: SecondaryRaptorCastMode<ST>,
+        secondary_mode: SecondaryRaptorCastMode<CertificateSignaturePubKey<ST>>,
         peer_discovery_driver: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
         channel_from_primary: UnboundedReceiver<FullNodesGroupMessage<ST>>,
-        channel_to_primary: UnboundedSender<Group<ST>>,
-        channel_to_primary_outbound: UnboundedSender<SecondaryOutboundMessage<ST>>,
+        channel_to_primary: UnboundedSender<Group<CertificateSignaturePubKey<ST>>>,
+        channel_to_primary_outbound: UnboundedSender<
+            SecondaryOutboundMessage<CertificateSignaturePubKey<ST>>,
+        >,
         current_epoch: Epoch,
     ) -> Self {
         let node_id = NodeId::new(config.shared_key.pubkey());
@@ -334,7 +338,7 @@ where
                     round,
                     message,
                 } => {
-                    let curr_group: Group<ST> = match &mut self.role {
+                    let curr_group: Group<_> = match &mut self.role {
                         Role::Client(_) => {
                             continue;
                         }

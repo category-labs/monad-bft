@@ -468,7 +468,7 @@ impl<ST: CertificateSignatureRecoverable> MonadNameRecord<ST> {
     pub fn with_pubkey(
         &self,
         pubkey: CertificateSignaturePubKey<ST>,
-    ) -> MonadNameRecordWithPubkey<ST> {
+    ) -> MonadNameRecordWithPubkey<'_, ST> {
         MonadNameRecordWithPubkey {
             record: self,
             pubkey,

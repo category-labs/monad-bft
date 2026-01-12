@@ -28,6 +28,7 @@ use monad_raptorcast::{
 use monad_secp::SecpSignature;
 use monad_testutil::signing::get_key;
 use monad_types::{Epoch, NodeId, Stake};
+use monad_validator::validator_set::ValidatorSet;
 
 const NUM_NODES: usize = 100;
 
@@ -59,7 +60,7 @@ pub fn bench_build_messages(c: &mut Criterion, name: &str, message_size: usize, 
 
     group.bench_function("packet::build_messages", |b| {
         b.iter(|| {
-            let _ = packet::build_messages(
+            let _ = packet::build_messages::<ST>(
                 &author,
                 DEFAULT_SEGMENT_SIZE, // segment_size
                 message.clone(),
@@ -81,7 +82,7 @@ type KeyPair = <ST as CertificateSignature>::KeyPairType;
 
 fn setup_raptorcast() -> (
     KeyPair,
-    BuildTarget<'static, ST>,
+    BuildTarget<'static, PT>,
     HashMap<NodeId<PT>, SocketAddr>,
 ) {
     let mut keys = (0..(NUM_NODES as u64)).map(get_key::<ST>).collect_vec();
@@ -113,7 +114,7 @@ fn setup_raptorcast() -> (
 
 fn setup_broadcast() -> (
     KeyPair,
-    BuildTarget<'static, ST>,
+    BuildTarget<'static, PT>,
     HashMap<NodeId<PT>, SocketAddr>,
 ) {
     let mut keys = (0..100).map(get_key::<ST>).collect_vec();
