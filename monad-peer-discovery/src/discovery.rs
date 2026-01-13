@@ -816,6 +816,19 @@ where
             return cmds;
         }
 
+        // do not process ping if node id recovered from name record does not match sender node id
+        let peer_name_record = ping_msg.local_name_record.clone();
+        if !peer_name_record
+            .recover_pubkey()
+            .is_ok_and(|recovered_node_id| recovered_node_id == from)
+        {
+            debug!(
+                ?from,
+                "ping sender node ID does not match recovered node ID from name record, dropping ping"
+            );
+            return cmds;
+        }
+
         // do not insert to pending queue if peer list is full and incoming ping is not from a validator or pinned full node
         // we still respond with pong even if peer list is full
         let mut peer_list_full = false;
@@ -832,24 +845,14 @@ where
         }
 
         if !peer_list_full {
-            let peer_name_record = ping_msg.local_name_record.clone();
             if self
                 .routing_info
                 .get(&from)
                 .is_none_or(|local| peer_name_record.seq() > local.seq())
             {
-                let verified = peer_name_record
-                    .recover_pubkey()
-                    .is_ok_and(|recovered_node_id| recovered_node_id == from);
-
-                if verified {
-                    match self.insert_peer_to_pending(from, peer_name_record) {
-                        Ok(cmds_from_insert) => cmds.extend(cmds_from_insert),
-                        Err(_) => return cmds,
-                    }
-                } else {
-                    debug!("invalid signature in ping.local_name_record");
-                    return cmds;
+                match self.insert_peer_to_pending(from, peer_name_record) {
+                    Ok(cmds_from_insert) => cmds.extend(cmds_from_insert),
+                    Err(_) => return cmds,
                 }
             } else if self
                 .routing_info
@@ -3121,5 +3124,38 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(&temp_file);
+    }
+
+    #[test]
+    fn test_drop_ping_with_mismatched_sender_node_id() {
+        let keys = create_keys::<SignatureType>(3);
+        let peer0 = &keys[0];
+        let peer1 = &keys[1];
+        let peer1_pubkey = NodeId::new(peer1.pubkey());
+        let peer2 = &keys[2];
+
+        let mut state = generate_test_state(peer0, vec![]);
+
+        // create a name record signed by peer2, but claim it's from peer1
+        let incorrect_name_record = generate_name_record(peer2, 0);
+
+        // send ping with from=peer1_pubkey but name record signed by peer2
+        let cmds = state.handle_ping(
+            peer1_pubkey,
+            Ping {
+                id: 123,
+                local_name_record: incorrect_name_record,
+            },
+        );
+
+        // ping should be dropped - no commands returned
+        assert!(
+            cmds.is_empty(),
+            "ping with mismatched sender node ID should be dropped"
+        );
+        assert!(
+            !state.pending_queue.contains_key(&peer1_pubkey),
+            "peer should not be added to pending queue"
+        );
     }
 }
