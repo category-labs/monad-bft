@@ -12,11 +12,16 @@ use alloy_primitives::U256;
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
 
+use std::fmt::Pointer;
 use std::path::PathBuf;
 
+mod runloop;
 mod runloop_interface_monad;
+mod runloop_interface_ocaml;
 
+use runloop::Runloop;
 use runloop_interface_monad::MonadRunloop;
+use runloop_interface_ocaml::CamlRunloop;
 
 const CHAIN_ID: u64 = MONAD_DEVNET_CHAIN_ID;
 
@@ -43,19 +48,15 @@ fn start_balance() -> U256 {
     U256::from(10_000) * mon
 }
 
-fn set_balance(runloop: &mut MonadRunloop, user: [u8; 32]) {
+fn set_balance(runloop: &mut impl Runloop, user: [u8; 32]) {
     let addr_bytes = FixedBytes(user);
-    let addr = PrivateKeySigner::from_bytes(&addr_bytes)
-        .unwrap()
-        .address();
+    let addr = PrivateKeySigner::from_bytes(&addr_bytes).unwrap().address();
     runloop.set_balance(addr, start_balance())
 }
 
-fn get_balance(runloop: &mut MonadRunloop, user: [u8; 32]) -> U256 {
+fn get_balance(runloop: &mut impl Runloop, user: [u8; 32]) -> U256 {
     let addr_bytes = FixedBytes(user);
-    let addr = PrivateKeySigner::from_bytes(&addr_bytes)
-        .unwrap()
-        .address();
+    let addr = PrivateKeySigner::from_bytes(&addr_bytes).unwrap().address();
     runloop.get_balance(addr)
 }
 
@@ -63,7 +64,7 @@ const USER1: [u8; 32] = [1u8; 32];
 const USER2: [u8; 32] = [2u8; 32];
 const USER3: [u8; 32] = [3u8; 32];
 
-fn write_blocks(runloop: &mut MonadRunloop, ledger_path: PathBuf) {
+fn write_blocks(runloop: &mut impl Runloop, ledger_path: PathBuf) {
     let chain_config = MonadChainConfig::new(CHAIN_ID, None).unwrap();
     let proposer_private_key = [1u8; 32];
 
@@ -122,46 +123,63 @@ fn write_blocks(runloop: &mut MonadRunloop, ledger_path: PathBuf) {
     machine.finalize();
 }
 
-fn main() {
-    let ledger_path: PathBuf = "/tmp/ledger".into();
-    let db_path: PathBuf = "/dev/triedb".into();
-
-    let mut runloop = MonadRunloop::new(
-        CHAIN_ID,
-        ledger_path.clone(),
-        db_path
-    );
-
-    write_blocks(&mut runloop, ledger_path.clone());
+fn run_example(runloop: &mut impl Runloop, ledger_path: PathBuf) {
+    write_blocks(runloop, ledger_path);
 
     runloop.run(2);
 
-    assert!(get_balance(&mut runloop, USER1) < start_balance());
-    assert!(get_balance(&mut runloop, USER2) == start_balance());
-    assert!(get_balance(&mut runloop, USER3) == start_balance());
+    assert!(get_balance(runloop, USER1) < start_balance());
+    assert!(get_balance(runloop, USER2) == start_balance());
+    assert!(get_balance(runloop, USER3) == start_balance());
 
     println!();
-    println!("state root after block 2 is\n\t{:x}", runloop.get_state_root());
+    println!(
+        "state root after block 2 is\n\t{:x}",
+        runloop.get_state_root()
+    );
     println!(
         "balances after block 2 are\n\tuser1: {}\n\tuser2: {}\n\tuser3: {}",
-        get_balance(&mut runloop, USER1),
-        get_balance(&mut runloop, USER2),
-        get_balance(&mut runloop, USER3),
+        get_balance(runloop, USER1),
+        get_balance(runloop, USER2),
+        get_balance(runloop, USER3),
     );
 
     runloop.run(1);
 
-    assert!(get_balance(&mut runloop, USER1) < start_balance());
-    assert!(get_balance(&mut runloop, USER2) < start_balance());
-    assert!(get_balance(&mut runloop, USER3) < start_balance());
+    assert!(get_balance(runloop, USER1) < start_balance());
+    assert!(get_balance(runloop, USER2) < start_balance());
+    assert!(get_balance(runloop, USER3) < start_balance());
 
     println!();
-    println!("state root after block 3 is\n\t{:x}", runloop.get_state_root());
+    println!(
+        "state root after block 3 is\n\t{:x}",
+        runloop.get_state_root()
+    );
     println!(
         "balances after block 2 are\n\tuser1: {}\n\tuser2: {}\n\tuser3: {}",
-        get_balance(&mut runloop, USER1),
-        get_balance(&mut runloop, USER2),
-        get_balance(&mut runloop, USER3),
+        get_balance(runloop, USER1),
+        get_balance(runloop, USER2),
+        get_balance(runloop, USER3),
     );
     println!();
+}
+
+fn main() {
+    let ledger_path: PathBuf = "/tmp/ledger".into();
+    let db_path: PathBuf = "triedb".into();
+
+    let args: Vec<_> = std::env::args().collect();
+    match args.as_slice() {
+        [_, version] if version == "--ocaml" => {
+            let mut runloop = CamlRunloop::new(CHAIN_ID, ledger_path.clone(), db_path);
+            run_example(&mut runloop, ledger_path);
+        },
+        [_, version] if version == "--monad" => {
+            let mut runloop = MonadRunloop::new(CHAIN_ID, ledger_path.clone(), db_path);
+            run_example(&mut runloop, ledger_path);
+        },
+        _ => {
+            panic!("Invalid arguments {args:?}")
+        }
+    }
 }

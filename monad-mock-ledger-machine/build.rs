@@ -21,5 +21,7 @@ fn main() {
     let has_execution_lib = env::var("TRIEDB_TARGET").is_ok_and(|target| target == "triedb_driver");
     if has_execution_lib {
         println!("cargo:rustc-link-lib=dylib=monad_execution");
+        println!("cargo:rustc-link-search=native=./");
+        println!("cargo:rustc-link-lib=dylib=fuzzrun");
     }
 }
