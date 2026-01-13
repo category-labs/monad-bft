@@ -17,7 +17,7 @@ use actix_web::{web, HttpResponse};
 use monad_tracing_timing::TimingSpanExtension;
 use monad_triedb_utils::triedb_env::Triedb;
 use serde_json::value::RawValue;
-use tracing::{debug, info, trace_span, warn, Instrument, Span};
+use tracing::{debug, info, trace_span, Instrument, Span};
 use tracing_actix_web::RootSpan;
 
 use self::{
@@ -62,8 +62,8 @@ use crate::{
         eth::call::monad_createAccessList,
     },
     jsonrpc::{
-        JsonRpcError, JsonRpcResultExt, Request, RequestParams, RequestWrapper, Response,
-        ResponseWrapper,
+        serialize_with_size_limit, JsonRpcError, JsonRpcResultExt, Request, RequestParams,
+        RequestWrapper, Response, ResponseWrapper,
     },
     timing::RequestId,
     vpool::{monad_txpool_statusByAddress, monad_txpool_statusByHash},
@@ -157,21 +157,14 @@ pub async fn rpc_handler(
         }
     };
 
-    let response_raw_value = match serde_json::value::to_raw_value(&response) {
-        Err(e) => {
-            debug!("response serialization error: {e}");
-            return HttpResponse::Ok().json(Response::from_error(JsonRpcError::internal_error(
-                format!("serialization error: {}", e),
-            )));
-        }
-        Ok(response) => response,
-    };
-
-    if response_raw_value.get().len() > app_state.max_response_size as usize {
-        debug!(?request_id, ?body, "response exceeds size limit");
-        warn!(?request_id, "response exceeds size limit");
-        return HttpResponse::Ok().json(Response::from_error(JsonRpcError::max_size_exceeded()));
-    }
+    let response_raw_value =
+        match serialize_with_size_limit(&response, app_state.max_response_size as usize) {
+            Ok(raw) => raw,
+            Err(e) => {
+                debug!("response error: {}", e.message);
+                return HttpResponse::Ok().json(Response::from_error(e));
+            }
+        };
 
     // log the request and response based on the response content
     match &response {

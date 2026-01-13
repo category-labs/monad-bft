@@ -40,7 +40,9 @@ use crate::{
     },
     event::{EventServerClient, EventServerClientError, EventServerEvent},
     handlers::{resources::MonadRpcResources, rpc_select},
-    jsonrpc::{JsonRpcError, Request, RequestWrapper},
+    jsonrpc::{
+        serialize_with_size_limit, JsonRpcError, Notification, Request, RequestWrapper, Response,
+    },
     serialize::SharedJsonSerialized,
     timing::RequestId,
 };
@@ -248,7 +250,12 @@ async fn handler(
             cmd = broadcast_rx.recv() => {
                 match cmd {
                     Ok(msg) => {
-                        if let Err(close_reason) = handle_notification(session, subscriptions, msg).await {
+                        if let Err(close_reason) = handle_notification(
+                            session,
+                            subscriptions,
+                            msg,
+                            app_state.max_response_size as usize,
+                        ).await {
                             return Some(close_reason);
                         }
                     }
@@ -278,6 +285,7 @@ async fn handle_notification(
     session: &mut actix_ws::Session,
     subscriptions: &HashMap<SubscriptionKind, Vec<(SubscriptionId, Option<Filter>)>>,
     msg: EventServerEvent,
+    max_response_size: usize,
 ) -> Result<(), CloseReason> {
     match msg {
         EventServerEvent::Gap => {
@@ -296,7 +304,7 @@ async fn handle_notification(
                 .map(|x| x.iter())
                 .unwrap_or_default()
             {
-                send_notification(session, id, header.as_ref()).await?;
+                send_notification(session, id, header.as_ref(), max_response_size).await?;
             }
 
             if header.commit_state == BlockCommitState::Finalized {
@@ -305,7 +313,7 @@ async fn handle_notification(
                     .map(|x| x.iter())
                     .unwrap_or_default()
                 {
-                    send_notification(session, id, header.data.as_ref()).await?;
+                    send_notification(session, id, header.data.as_ref(), max_response_size).await?;
                 }
             }
 
@@ -320,7 +328,7 @@ async fn handle_notification(
                 };
 
                 for log in logs {
-                    send_notification(session, id, log.as_ref()).await?;
+                    send_notification(session, id, log.as_ref(), max_response_size).await?;
                 }
             }
 
@@ -336,7 +344,8 @@ async fn handle_notification(
                     };
 
                     for log in logs {
-                        send_notification(session, id, log.data.as_ref()).await?;
+                        send_notification(session, id, log.data.as_ref(), max_response_size)
+                            .await?;
                     }
                 }
             }
@@ -570,17 +579,28 @@ async fn handle_request(
         }
         method => {
             let result = rpc_select(app_state, method, request.params, RequestId::random()).await;
-            if let Err(err) = ctx
-                .text(to_response(&crate::jsonrpc::Response::from_result(
-                    request.id, result,
-                )))
-                .await
-            {
-                warn!(?err, "ws handle_request failed to send rpc response");
-                return Err(CloseReason {
-                    code: ws::CloseCode::Error,
-                    description: None,
-                });
+            let response = Response::from_result(request.id.clone(), result);
+            let result =
+                match serialize_with_size_limit(&response, app_state.max_response_size as usize) {
+                    Ok(raw) => ctx.text(raw.get()).await,
+                    Err(err) => {
+                        warn!(
+                            "ws handle_request failed to serialize rpc response, error: {:?}",
+                            err
+                        );
+                        ctx.text(to_response(&Response::new(None, Some(err), request.id)))
+                            .await
+                    }
+                };
+            if let Err(err) = result {
+                warn!(
+                    "ws handle_request failed to send rpc response, error: {:?}",
+                    err
+                );
+                return Err(CloseReason::from((
+                    CloseCode::Error,
+                    "ws server failed to send rpc response".to_string(),
+                )));
             }
         }
     }
@@ -593,13 +613,35 @@ async fn send_notification(
     session: &mut actix_ws::Session,
     id: &SubscriptionId,
     result: impl AsRef<RawValue>,
+    max_response_size: usize,
 ) -> Result<(), CloseReason> {
     let subscribe_result = EthSubscribeResult::new(id.0, result.as_ref());
+    let notification = Notification::new("eth_subscription".to_string(), subscribe_result);
 
-    let notification =
-        crate::jsonrpc::Notification::new("eth_subscription".to_string(), subscribe_result);
+    let result = match serialize_with_size_limit(&notification, max_response_size) {
+        Ok(raw) => session.text(raw.get()).await,
+        Err(err) => {
+            warn!(
+                "ws send_notification failed to serialize notification, error: {:?}",
+                err
+            );
+            let error_result = serde_json::value::to_raw_value(&JsonRpcError::internal_error(
+                "notification exceeds size limit".to_string(),
+            ))
+            .expect("failed to serialize error");
+            let error_notification = Notification::new(
+                "eth_subscription".to_string(),
+                EthSubscribeResult::new(id.0, &error_result),
+            );
+            session.text(to_response(&error_notification)).await
+        }
+    };
 
-    if session.text(to_response(&notification)).await.is_err() {
+    if let Err(err) = result {
+        warn!(
+            "ws send_notification failed to send notification, error: {:?}",
+            err
+        );
         return Err(CloseReason {
             code: CloseCode::Error,
             description: Some("ws server failed to send notification".to_string()),
