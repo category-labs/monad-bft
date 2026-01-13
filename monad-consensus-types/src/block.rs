@@ -284,7 +284,7 @@ pub enum BlockPolicyError {
     TimestampError,
     ExecutionResultMismatch,
     BaseFeeError,
-    BlockPolicyBlockValidatorError(BlockPolicyBlockValidatorError),
+    ReserveBalanceUpdaterError(ReserveBalanceUpdaterError),
     Eip7702Error,
     SystemTransactionError,
 }
@@ -319,7 +319,7 @@ impl AccountBalanceState {
 pub type AccountBalanceStates = BTreeMap<Address, AccountBalanceState>;
 
 #[derive(Debug, PartialEq)]
-pub enum BlockPolicyBlockValidatorError {
+pub enum ReserveBalanceUpdaterError {
     AccountBalanceMissing,
     InsufficientBalance,
     InsufficientReserveBalance,

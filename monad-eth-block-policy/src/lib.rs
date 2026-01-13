@@ -29,8 +29,8 @@ use itertools::Itertools;
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_consensus_types::{
     block::{
-        AccountBalanceState, BlockPolicy, BlockPolicyBlockValidatorError, BlockPolicyError,
-        ConsensusFullBlock,
+        AccountBalanceState, BlockPolicy, BlockPolicyError, ConsensusFullBlock,
+        ReserveBalanceUpdaterError,
     },
     checkpoint::RootInfo,
 };
@@ -220,17 +220,6 @@ where
     }
 }
 
-pub struct EthBlockPolicyBlockValidator<CRT>
-where
-    CRT: ChainRevision,
-{
-    block_seq_num: SeqNum,
-    execution_delay: SeqNum,
-    base_fee: u64,
-    chain_revision: CRT,
-    _phantom: PhantomData<CRT>,
-}
-
 fn is_possibly_emptying_transaction(
     block_seq_num_of_curr_txn: SeqNum,
     balance_state: &AccountBalanceState,
@@ -251,23 +240,19 @@ pub fn timestamp_ns_to_secs(timestamp_ns: u128) -> u64 {
     timestamp_seconds.min(u64::MAX.into()) as u64
 }
 
-impl<CRT> EthBlockPolicyBlockValidator<CRT>
-where
-    CRT: ChainRevision,
-{
-    pub fn new(
-        block_seq_num: SeqNum,
-        execution_delay: SeqNum,
-        base_fee: u64,
-        chain_revision: &CRT,
-    ) -> Result<Self, BlockPolicyError> {
-        Ok(Self {
+pub struct ReserveBalanceUpdater {
+    block_seq_num: SeqNum,
+    execution_delay: SeqNum,
+    base_fee: u64,
+}
+
+impl ReserveBalanceUpdater {
+    pub fn new(block_seq_num: SeqNum, execution_delay: SeqNum, base_fee: u64) -> Self {
+        Self {
             block_seq_num,
             execution_delay,
             base_fee,
-            chain_revision: *chain_revision,
-            _phantom: PhantomData,
-        })
+        }
     }
 
     pub fn try_add_transaction(
@@ -310,8 +295,8 @@ where
                     ?is_emptying_transaction,
                     "Emptying txn can not be accepted insufficient balance"
                 );
-                return Err(BlockPolicyError::BlockPolicyBlockValidatorError(
-                    BlockPolicyBlockValidatorError::InsufficientBalance,
+                return Err(BlockPolicyError::ReserveBalanceUpdaterError(
+                    ReserveBalanceUpdaterError::InsufficientBalance,
                 ));
             }
 
@@ -349,8 +334,8 @@ where
                     ?is_emptying_transaction,
                     "Non-emptying txn can not be accepted insufficient reserve balance"
                 );
-                return Err(BlockPolicyError::BlockPolicyBlockValidatorError(
-                    BlockPolicyBlockValidatorError::InsufficientReserveBalance,
+                return Err(BlockPolicyError::ReserveBalanceUpdaterError(
+                    ReserveBalanceUpdaterError::InsufficientReserveBalance,
                 ));
             }
             let reserve_balance = account_balance
@@ -671,15 +656,14 @@ where
                     }
                 }
             } else {
-                let validator = EthBlockPolicyBlockValidator::new(
+                let reserve_balance_updater = ReserveBalanceUpdater::new(
                     block.get_seq_num(),
                     self.execution_delay,
                     block.get_base_fee(),
-                    &chain_config.get_chain_revision(block.get_block_round()),
-                )?;
+                );
 
                 for txn in &block.validated_txns {
-                    validator.try_add_transaction(&mut account_balances, txn)?;
+                    reserve_balance_updater.try_add_transaction(&mut account_balances, txn)?;
                 }
             }
             next_validate += SeqNum(1);
@@ -1013,12 +997,11 @@ where
             tx_signers.iter(),
         )?;
 
-        let validator = EthBlockPolicyBlockValidator::new(
+        let reserve_balance_updater = ReserveBalanceUpdater::new(
             block.get_seq_num(),
             self.execution_delay,
             block.get_base_fee(),
-            &chain_config.get_chain_revision(block.get_block_round()),
-        )?;
+        );
 
         if let Err(system_txn_error) =
             self.validate_system_transactions_input(block, &extending_blocks, chain_config)
@@ -1036,7 +1019,7 @@ where
 
             // account balance must exist since we populated from tx signers
             assert!(account_balances.contains_key(&txn.signer()));
-            validator.try_add_transaction(&mut account_balances, txn)?;
+            reserve_balance_updater.try_add_transaction(&mut account_balances, txn)?;
 
             // https://eips.ethereum.org/EIPS/eip-7702#behavior
             // "The authorization list is processed before the execution portion
@@ -1246,15 +1229,14 @@ mod test {
             addresses.iter(),
         )?;
 
-        let validator = EthBlockPolicyBlockValidator::new(
+        let reserve_balance_updater = ReserveBalanceUpdater::new(
             incoming_block.get_seq_num(),
             block_policy.execution_delay,
             BASE_FEE,
-            &MockChainRevision::DEFAULT,
-        )?;
+        );
 
         for txn in incoming_block.validated_txns.iter() {
-            validator.try_add_transaction(&mut account_balances, txn)?;
+            reserve_balance_updater.try_add_transaction(&mut account_balances, txn)?;
         }
 
         Ok(())
@@ -1390,8 +1372,8 @@ mod test {
         );
         assert_eq!(
             result,
-            Err(BlockPolicyError::BlockPolicyBlockValidatorError(
-                BlockPolicyBlockValidatorError::InsufficientBalance
+            Err(BlockPolicyError::ReserveBalanceUpdaterError(
+                ReserveBalanceUpdaterError::InsufficientBalance
             )),
             "Block coherency check should have failed: {:?}",
             result
@@ -1443,8 +1425,8 @@ mod test {
         );
         assert_eq!(
             result,
-            Err(BlockPolicyError::BlockPolicyBlockValidatorError(
-                BlockPolicyBlockValidatorError::InsufficientReserveBalance
+            Err(BlockPolicyError::ReserveBalanceUpdaterError(
+                ReserveBalanceUpdaterError::InsufficientReserveBalance
             )),
             "Block coherency check should have failed: {:?}",
             result
@@ -1472,8 +1454,8 @@ mod test {
         );
         assert_eq!(
             result,
-            Err(BlockPolicyError::BlockPolicyBlockValidatorError(
-                BlockPolicyBlockValidatorError::InsufficientReserveBalance
+            Err(BlockPolicyError::ReserveBalanceUpdaterError(
+                ReserveBalanceUpdaterError::InsufficientReserveBalance
             )),
             "Block coherency check should have failed: {:?}",
             result
@@ -1551,8 +1533,8 @@ mod test {
         );
         assert_eq!(
             result,
-            Err(BlockPolicyError::BlockPolicyBlockValidatorError(
-                BlockPolicyBlockValidatorError::InsufficientReserveBalance
+            Err(BlockPolicyError::ReserveBalanceUpdaterError(
+                ReserveBalanceUpdaterError::InsufficientReserveBalance
             )),
             "Block coherency check should have failed: {:?}",
             result
@@ -1581,8 +1563,8 @@ mod test {
         );
         assert_eq!(
             result,
-            Err(BlockPolicyError::BlockPolicyBlockValidatorError(
-                BlockPolicyBlockValidatorError::InsufficientReserveBalance
+            Err(BlockPolicyError::ReserveBalanceUpdaterError(
+                ReserveBalanceUpdaterError::InsufficientReserveBalance
             )),
             "Block coherency check should have failed: {:?}",
             result
@@ -1663,8 +1645,8 @@ mod test {
         );
         assert_eq!(
             result,
-            Err(BlockPolicyError::BlockPolicyBlockValidatorError(
-                BlockPolicyBlockValidatorError::InsufficientReserveBalance
+            Err(BlockPolicyError::ReserveBalanceUpdaterError(
+                ReserveBalanceUpdaterError::InsufficientReserveBalance
             )),
             "Block coherency check should have failed: {:?}",
             result
@@ -1696,8 +1678,8 @@ mod test {
         );
         assert_eq!(
             result,
-            Err(BlockPolicyError::BlockPolicyBlockValidatorError(
-                BlockPolicyBlockValidatorError::InsufficientReserveBalance
+            Err(BlockPolicyError::ReserveBalanceUpdaterError(
+                ReserveBalanceUpdaterError::InsufficientReserveBalance
             )),
             "Block coherency check should have failed: {:?}",
             result
@@ -1885,8 +1867,8 @@ mod test {
         );
         assert_eq!(
             result,
-            Err(BlockPolicyError::BlockPolicyBlockValidatorError(
-                BlockPolicyBlockValidatorError::InsufficientReserveBalance
+            Err(BlockPolicyError::ReserveBalanceUpdaterError(
+                ReserveBalanceUpdaterError::InsufficientReserveBalance
             )),
             "Block coherency check should have failed: {:?}",
             result
@@ -1933,8 +1915,8 @@ mod test {
         );
         assert_eq!(
             result,
-            Err(BlockPolicyError::BlockPolicyBlockValidatorError(
-                BlockPolicyBlockValidatorError::InsufficientReserveBalance
+            Err(BlockPolicyError::ReserveBalanceUpdaterError(
+                ReserveBalanceUpdaterError::InsufficientReserveBalance
             )),
             "Block coherency check should have failed: {:?}",
             result
@@ -1987,8 +1969,8 @@ mod test {
         );
         assert_eq!(
             result,
-            Err(BlockPolicyError::BlockPolicyBlockValidatorError(
-                BlockPolicyBlockValidatorError::InsufficientReserveBalance
+            Err(BlockPolicyError::ReserveBalanceUpdaterError(
+                ReserveBalanceUpdaterError::InsufficientReserveBalance
             )),
             "Block coherency check should have failed: {:?}",
             result
@@ -2042,8 +2024,8 @@ mod test {
         );
         assert_eq!(
             result,
-            Err(BlockPolicyError::BlockPolicyBlockValidatorError(
-                BlockPolicyBlockValidatorError::InsufficientReserveBalance
+            Err(BlockPolicyError::ReserveBalanceUpdaterError(
+                ReserveBalanceUpdaterError::InsufficientReserveBalance
             )),
             "Block coherency check should have failed: {:?}",
             result
@@ -2347,16 +2329,11 @@ mod test {
             },
         );
 
-        let validator = EthBlockPolicyBlockValidator::new(
-            block_seq_num,
-            EXEC_DELAY,
-            BASE_FEE,
-            &MockChainRevision::DEFAULT,
-        )
-        .unwrap();
+        let reserve_balance_updater =
+            ReserveBalanceUpdater::new(block_seq_num, EXEC_DELAY, BASE_FEE);
 
         for txn in txs.iter() {
-            assert!(validator
+            assert!(reserve_balance_updater
                 .try_add_transaction(&mut account_balances, txn)
                 .is_ok());
         }
@@ -2373,19 +2350,14 @@ mod test {
             },
         );
 
-        let validator = EthBlockPolicyBlockValidator::new(
-            block_seq_num,
-            EXEC_DELAY,
-            BASE_FEE,
-            &MockChainRevision::DEFAULT,
-        )
-        .unwrap();
+        let reserve_balance_updater =
+            ReserveBalanceUpdater::new(block_seq_num, EXEC_DELAY, BASE_FEE);
 
         for txn in txs.iter() {
             assert!(
-                validator.try_add_transaction(&mut account_balances, txn)
-                    == Err(BlockPolicyError::BlockPolicyBlockValidatorError(
-                        BlockPolicyBlockValidatorError::InsufficientBalance
+                reserve_balance_updater.try_add_transaction(&mut account_balances, txn)
+                    == Err(BlockPolicyError::ReserveBalanceUpdaterError(
+                        ReserveBalanceUpdaterError::InsufficientBalance
                     ))
             );
         }
@@ -2416,16 +2388,11 @@ mod test {
             },
         );
 
-        let validator = EthBlockPolicyBlockValidator::new(
-            block_seq_num,
-            EXEC_DELAY,
-            BASE_FEE,
-            &MockChainRevision::DEFAULT,
-        )
-        .unwrap();
+        let reserve_balance_updater =
+            ReserveBalanceUpdater::new(block_seq_num, EXEC_DELAY, BASE_FEE);
 
         for txn in txs.iter() {
-            assert!(validator
+            assert!(reserve_balance_updater
                 .try_add_transaction(&mut account_balances, txn)
                 .is_ok());
         }
@@ -2442,19 +2409,14 @@ mod test {
             },
         );
 
-        let validator = EthBlockPolicyBlockValidator::new(
-            block_seq_num,
-            EXEC_DELAY,
-            BASE_FEE,
-            &MockChainRevision::DEFAULT,
-        )
-        .unwrap();
+        let reserve_balance_updater =
+            ReserveBalanceUpdater::new(block_seq_num, EXEC_DELAY, BASE_FEE);
 
         for txn in txs.iter() {
             assert!(
-                validator.try_add_transaction(&mut account_balances, txn)
-                    == Err(BlockPolicyError::BlockPolicyBlockValidatorError(
-                        BlockPolicyBlockValidatorError::InsufficientReserveBalance
+                reserve_balance_updater.try_add_transaction(&mut account_balances, txn)
+                    == Err(BlockPolicyError::ReserveBalanceUpdaterError(
+                        ReserveBalanceUpdaterError::InsufficientReserveBalance
                     ))
             );
         }
@@ -2486,16 +2448,11 @@ mod test {
             },
         );
 
-        let validator = EthBlockPolicyBlockValidator::new(
-            block_seq_num,
-            EXEC_DELAY,
-            BASE_FEE,
-            &MockChainRevision::DEFAULT,
-        )
-        .unwrap();
+        let reserve_balance_updater =
+            ReserveBalanceUpdater::new(block_seq_num, EXEC_DELAY, BASE_FEE);
 
         for txn in txs.iter() {
-            assert!(validator
+            assert!(reserve_balance_updater
                 .try_add_transaction(&mut account_balances, txn)
                 .is_ok());
         }
@@ -2515,16 +2472,11 @@ mod test {
             },
         );
 
-        let validator = EthBlockPolicyBlockValidator::new(
-            block_seq_num,
-            EXEC_DELAY,
-            BASE_FEE,
-            &MockChainRevision::DEFAULT,
-        )
-        .unwrap();
+        let reserve_balance_updater =
+            ReserveBalanceUpdater::new(block_seq_num, EXEC_DELAY, BASE_FEE);
 
         for txn in txs.iter() {
-            assert!(validator
+            assert!(reserve_balance_updater
                 .try_add_transaction(&mut account_balances, txn)
                 .is_ok());
         }
@@ -2559,16 +2511,11 @@ mod test {
             },
         );
 
-        let validator = EthBlockPolicyBlockValidator::new(
-            block_seq_num,
-            EXEC_DELAY,
-            BASE_FEE,
-            &MockChainRevision::DEFAULT,
-        )
-        .unwrap();
+        let reserve_balance_updater =
+            ReserveBalanceUpdater::new(block_seq_num, EXEC_DELAY, BASE_FEE);
 
         for txn in txs.iter() {
-            assert!(validator
+            assert!(reserve_balance_updater
                 .try_add_transaction(&mut account_balances, txn)
                 .is_ok());
         }
@@ -2588,24 +2535,19 @@ mod test {
             },
         );
 
-        let validator = EthBlockPolicyBlockValidator::new(
-            latest_seq_num,
-            EXEC_DELAY,
-            BASE_FEE,
-            &MockChainRevision::DEFAULT,
-        )
-        .unwrap();
+        let reserve_balance_updater =
+            ReserveBalanceUpdater::new(latest_seq_num, EXEC_DELAY, BASE_FEE);
 
         for txn in txs.iter() {
-            assert!(validator
+            assert!(reserve_balance_updater
                 .try_add_transaction(&mut account_balances, txn)
                 .is_ok());
         }
     }
 
     const RESERVE_FAIL: Result<(), BlockPolicyError> =
-        Err(BlockPolicyError::BlockPolicyBlockValidatorError(
-            BlockPolicyBlockValidatorError::InsufficientReserveBalance,
+        Err(BlockPolicyError::ReserveBalanceUpdaterError(
+            ReserveBalanceUpdaterError::InsufficientReserveBalance,
         ));
 
     #[rstest]
@@ -2664,16 +2606,11 @@ mod test {
         let mut account_balances: BTreeMap<&Address, AccountBalanceState> = BTreeMap::new();
         account_balances.insert(&signer, abs);
 
-        let validator = EthBlockPolicyBlockValidator::new(
-            block_seq_num,
-            EXEC_DELAY,
-            BASE_FEE,
-            &MockChainRevision::DEFAULT,
-        )
-        .unwrap();
+        let reserve_balance_updater =
+            ReserveBalanceUpdater::new(block_seq_num, EXEC_DELAY, BASE_FEE);
 
         assert_eq!(
-            validator.try_add_transaction(&mut account_balances, &txn),
+            reserve_balance_updater.try_add_transaction(&mut account_balances, &txn),
             expect
         );
     }
@@ -2908,16 +2845,11 @@ mod test {
         expect: Result<(), BlockPolicyError>,
     ) {
         let txn = &make_validated_tx(txn.clone());
-        let validator = EthBlockPolicyBlockValidator::new(
-            block_seq_num,
-            EXEC_DELAY,
-            BASE_FEE,
-            &MockChainRevision::DEFAULT,
-        )
-        .unwrap();
+        let reserve_balance_updater =
+            ReserveBalanceUpdater::new(block_seq_num, EXEC_DELAY, BASE_FEE);
 
         assert_eq!(
-            validator.try_add_transaction(account_balances, txn),
+            reserve_balance_updater.try_add_transaction(account_balances, txn),
             expect,
             "txn nonce {}",
             txn.nonce()
