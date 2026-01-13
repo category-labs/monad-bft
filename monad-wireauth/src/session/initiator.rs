@@ -14,13 +14,16 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
+    collections::VecDeque,
     net::SocketAddr,
     ops::{Deref, DerefMut},
     time::{Duration, SystemTime},
 };
 
+use bytes::Bytes;
+
 use super::{
-    common::{add_jitter, RenewedTimer, SessionError, SessionState, SessionTimeoutResult},
+    common::{add_jitter, SessionError, SessionState, SessionTimeoutResult},
     transport::TransportState,
 };
 use crate::{
@@ -28,7 +31,7 @@ use crate::{
     protocol::{
         common::*,
         handshake::{self},
-        messages::{CookieReply, DataPacketHeader, HandshakeInitiation, HandshakeResponse},
+        messages::{CookieReply, HandshakeInitiation, HandshakeResponse},
     },
 };
 
@@ -40,6 +43,8 @@ pub struct ValidatedHandshakeResponse {
 pub struct InitiatorState {
     handshake_state: handshake::HandshakeState,
     common: SessionState,
+    buffered_messages: VecDeque<Bytes>,
+    buffered_bytes: usize,
 }
 
 impl InitiatorState {
@@ -81,6 +86,8 @@ impl InitiatorState {
         let mut session = InitiatorState {
             handshake_state,
             common,
+            buffered_messages: VecDeque::new(),
+            buffered_bytes: 0,
         };
 
         let timeout_with_jitter =
@@ -123,8 +130,7 @@ impl InitiatorState {
         config: &Config,
         duration_since_start: Duration,
         validated_response: ValidatedHandshakeResponse,
-        _remote_addr: SocketAddr,
-    ) -> (TransportState, RenewedTimer, DataPacketHeader) {
+    ) -> (TransportState, BufferedMessages) {
         self.common.reset_session_timeout(
             duration_since_start,
             add_jitter(rng, config.session_timeout, config.session_timeout_jitter),
@@ -135,15 +141,17 @@ impl InitiatorState {
         );
         self.common
             .set_max_session_duration(duration_since_start, config.max_session_duration);
+        self.common
+            .reset_gc_deadline(duration_since_start, config.gc_idle_timeout);
 
-        let mut transport = TransportState::new(
+        let transport = TransportState::new(
             validated_response.remote_index,
             validated_response.transport_keys.send_key,
             validated_response.transport_keys.recv_key,
             self.common,
         );
-        let (header, timer) = transport.encrypt(rng, config, duration_since_start, &mut []);
-        (transport, timer, header)
+        let messages = BufferedMessages::new(self.buffered_messages);
+        (transport, messages)
     }
 
     pub fn handle_cookie(&mut self, cookie_reply: &mut CookieReply) -> Result<(), SessionError> {
@@ -167,6 +175,61 @@ impl InitiatorState {
         let (terminated, rekey) = self.handle_session_timeout();
         let timer = self.common.get_next_deadline();
         Some((timer, SessionTimeoutResult { terminated, rekey }))
+    }
+
+    pub fn buffer_message(&mut self, message: Bytes) {
+        self.buffered_bytes += message.len();
+        self.buffered_messages.push_back(message);
+    }
+
+    pub fn buffered_message_count(&self) -> usize {
+        self.buffered_messages.len()
+    }
+
+    pub fn buffered_bytes(&self) -> usize {
+        self.buffered_bytes
+    }
+}
+
+pub struct BufferedMessages {
+    inner: BufferedMessagesInner,
+}
+
+enum BufferedMessagesInner {
+    Buffered(std::collections::vec_deque::IntoIter<Bytes>),
+    Keepalive(std::iter::Once<Bytes>),
+}
+
+impl BufferedMessages {
+    fn new(messages: VecDeque<Bytes>) -> Self {
+        let inner = if messages.is_empty() {
+            BufferedMessagesInner::Keepalive(std::iter::once(Bytes::new()))
+        } else {
+            BufferedMessagesInner::Buffered(messages.into_iter())
+        };
+        Self { inner }
+    }
+
+    pub fn is_buffered(&self) -> bool {
+        matches!(self.inner, BufferedMessagesInner::Buffered(_))
+    }
+}
+
+impl Iterator for BufferedMessages {
+    type Item = Bytes;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match &mut self.inner {
+            BufferedMessagesInner::Buffered(iter) => iter.next(),
+            BufferedMessagesInner::Keepalive(iter) => iter.next(),
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        match &self.inner {
+            BufferedMessagesInner::Buffered(iter) => iter.size_hint(),
+            BufferedMessagesInner::Keepalive(iter) => iter.size_hint(),
+        }
     }
 }
 

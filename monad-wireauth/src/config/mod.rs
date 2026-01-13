@@ -56,6 +56,12 @@ pub struct Config {
     pub ip_history_capacity: usize,
     /// optional pre-shared key mixed into handshake for additional auth
     pub psk: Zeroizing<[u8; 32]>,
+    /// max concurrent initiated sessions (handshakes in progress)
+    pub max_initiated_sessions: usize,
+    /// max bytes of buffered messages per initiated session
+    pub max_buffered_bytes_per_session: usize,
+    /// idle time (without useful data) before session is garbage collected
+    pub gc_idle_timeout: Duration,
 }
 
 impl Default for Config {
@@ -78,6 +84,9 @@ impl Default for Config {
             max_requests_per_ip: 10,
             ip_history_capacity: 1_000_000,
             psk: Zeroizing::new([0u8; 32]),
+            max_initiated_sessions: 1000,
+            max_buffered_bytes_per_session: 128 * 1024,
+            gc_idle_timeout: Duration::from_secs(120),
         }
     }
 }

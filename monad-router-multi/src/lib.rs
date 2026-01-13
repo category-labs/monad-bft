@@ -27,7 +27,7 @@ use futures::{Stream, StreamExt};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_dataplane::DataplaneBuilder;
+use monad_dataplane::{DataplaneBuilder, TcpSocketId, UdpSocketId};
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{Message, RouterCommand};
 use monad_node_config::{FullNodeConfig, FullNodeIdentityConfig};
@@ -46,7 +46,7 @@ use monad_raptorcast::{
         SecondaryRaptorCastModeConfig,
     },
     util::Group,
-    RaptorCast, RaptorCastEvent, AUTHENTICATED_RAPTORCAST_SOCKET, RAPTORCAST_SOCKET,
+    RaptorCast, RaptorCastEvent,
 };
 use monad_types::{Epoch, NodeId};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
@@ -90,7 +90,8 @@ where
         peer_discovery_builder: B,
         current_epoch: Epoch,
         epoch_validators: BTreeMap<Epoch, BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>>,
-        auth_protocol: AP,
+        udp_auth_protocol: AP,
+        tcp_auth_protocol: Option<AP>,
     ) -> Self
     where
         B: PeerDiscoveryAlgoBuilder<PeerDiscoveryAlgoType = PD>,
@@ -99,16 +100,17 @@ where
         let pdd = PeerDiscoveryDriver::new(peer_discovery_builder);
         let shared_pdd = Arc::new(Mutex::new(pdd));
 
-        let dp = dataplane_builder.build();
+        let mut dp = dataplane_builder.build();
         assert!(dp.block_until_ready(Duration::from_secs(1)));
 
-        let (tcp_socket, mut udp_dataplane, control) = dp.split();
-        let authenticated_socket = udp_dataplane.take_socket(AUTHENTICATED_RAPTORCAST_SOCKET);
-        let non_authenticated_socket = udp_dataplane
-            .take_socket(RAPTORCAST_SOCKET)
+        let tcp_socket = dp.tcp_sockets.take(TcpSocketId::Raptorcast).unwrap();
+        let authenticated_tcp_socket = dp.tcp_sockets.take(TcpSocketId::AuthenticatedRaptorcast);
+        let authenticated_udp_socket = dp.udp_sockets.take(UdpSocketId::AuthenticatedRaptorcast);
+        let non_authenticated_socket = dp
+            .udp_sockets
+            .take(UdpSocketId::Raptorcast)
             .expect("raptorcast socket");
-
-        let (tcp_reader, tcp_writer) = tcp_socket.split();
+        let control = dp.control;
 
         // Create channels between primary and secondary raptorcast instances.
         // Fundamentally this is needed because, while both can send, only the
@@ -146,14 +148,15 @@ where
         let mut rc_primary = RaptorCast::new(
             cfg.clone(),
             secondary_mode,
-            tcp_reader,
-            tcp_writer,
-            authenticated_socket,
+            tcp_socket,
+            authenticated_tcp_socket,
+            authenticated_udp_socket,
             non_authenticated_socket,
             control,
             shared_pdd.clone(),
             current_epoch,
-            auth_protocol,
+            udp_auth_protocol,
+            tcp_auth_protocol,
         );
         rc_primary.bind_channel_to_secondary_raptorcast(
             send_net_messages,

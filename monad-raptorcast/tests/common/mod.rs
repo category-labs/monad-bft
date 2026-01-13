@@ -13,22 +13,17 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-pub(crate) mod protocol;
-pub(crate) mod session;
+use std::net::{TcpListener, UdpSocket};
 
-mod api;
-mod config;
-mod context;
-mod cookie;
-mod error;
-mod filter;
-mod metrics;
-mod state;
+/// Find a free UDP port by binding to an ephemeral port and returning it.
+pub fn find_udp_free_port() -> u16 {
+    let socket = UdpSocket::bind("127.0.0.1:0").expect("failed to bind");
+    socket.local_addr().expect("failed to get addr").port()
+}
 
-pub use api::API;
-pub use config::{Config, DEFAULT_RETRY_ATTEMPTS, RETRY_ALWAYS};
-pub use context::{Context, StdContext, TestContext};
-pub use error::{Error, Result};
-pub use metrics::{MetricNames, DEFAULT_METRICS, TCP_METRICS, UDP_METRICS};
-pub use monad_secp::PubKey as PublicKey;
-pub use protocol::{crypto, messages};
+/// Find a free TCP port by binding to an ephemeral port and returning it.
+#[allow(dead_code)]
+pub fn find_tcp_free_port() -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("failed to bind");
+    listener.local_addr().expect("failed to get addr").port()
+}

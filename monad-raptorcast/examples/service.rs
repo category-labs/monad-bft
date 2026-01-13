@@ -15,7 +15,7 @@
 
 use std::{
     collections::{BTreeMap, HashMap},
-    net::SocketAddrV4,
+    net::{SocketAddr, SocketAddrV4},
     num::ParseIntError,
     sync::Arc,
     time::{Duration, Instant},
@@ -124,8 +124,8 @@ fn service(
             let rx_writer = rx_writer.clone();
             let me = NodeId::new(key.pubkey());
             let all_peers = peers.clone();
+            let server_address = SocketAddr::V4(*known_addresses.get(&me).unwrap());
             let known_addresses = known_addresses.clone();
-            let dataplane = monad_raptorcast::create_dataplane_for_tests(false);
 
             rt.spawn(async move {
                 let mut service = new_defaulted_raptorcast_for_tests::<
@@ -133,7 +133,7 @@ fn service(
                     MockMessage,
                     MockMessage,
                     <MockMessage as Message>::Event,
-                >(dataplane, known_addresses, Arc::new(key));
+                >(server_address, known_addresses, Arc::new(key));
 
                 service.exec(vec![RouterCommand::AddEpochValidatorSet {
                     epoch: Epoch(0),

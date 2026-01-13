@@ -56,6 +56,12 @@ pub enum Error {
 
     #[error("session index not found: {index}")]
     SessionIndexNotFound { index: SessionIndex },
+
+    #[error("too many initiated sessions: limit is {limit}")]
+    TooManyInitiatedSessions { limit: usize },
+
+    #[error("buffer limit exceeded: {size} bytes exceeds limit of {limit} bytes")]
+    BufferLimitExceeded { size: usize, limit: usize },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

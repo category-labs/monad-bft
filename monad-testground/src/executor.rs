@@ -32,7 +32,7 @@ use monad_control_panel::ipc::ControlPanelIpcReceiver;
 use monad_crypto::certificate_signature::{
     CertificateSignature, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_dataplane::{DataplaneBuilder, UdpSocketConfig};
+use monad_dataplane::{DataplaneBuilder, TcpSocketId, UdpSocketId};
 use monad_executor_glue::{Command, MonadEvent, RouterCommand, ValSetCommand};
 use monad_peer_discovery::{
     driver::PeerDiscoveryDriver,
@@ -41,7 +41,6 @@ use monad_peer_discovery::{
 use monad_raptorcast::{
     auth::NoopAuthProtocol, config::RaptorCastConfig,
     raptorcast_secondary::SecondaryRaptorCastModeConfig, RaptorCast,
-    AUTHENTICATED_RAPTORCAST_SOCKET, RAPTORCAST_SOCKET,
 };
 use monad_state::{Forkpoint, MonadMessage, MonadState, MonadStateBuilder, VerifiedMonadMessage};
 use monad_state_backend::InMemoryState;
@@ -158,32 +157,30 @@ where
 
                 let auth_socket_addr =
                     SocketAddr::new(config.local_addr.ip(), config.local_addr.port() + 1);
-                let dataplane_builder = DataplaneBuilder::new(&config.local_addr, 1_000)
+                let dataplane_builder = DataplaneBuilder::new(1_000)
                     .with_udp_buffer_size(62_500_000)
-                    .extend_udp_sockets(vec![
-                        UdpSocketConfig {
-                            socket_addr: auth_socket_addr,
-                            label: AUTHENTICATED_RAPTORCAST_SOCKET.to_string(),
-                        },
-                        UdpSocketConfig {
-                            socket_addr: config.local_addr,
-                            label: RAPTORCAST_SOCKET.to_string(),
-                        },
-                    ]);
+                    .with_udp_sockets([
+                        (UdpSocketId::Raptorcast, config.local_addr),
+                        (UdpSocketId::AuthenticatedRaptorcast, auth_socket_addr),
+                    ])
+                    .with_tcp_sockets([(TcpSocketId::Raptorcast, config.local_addr)]);
 
-                let dp = dataplane_builder.build();
+                let mut dp = dataplane_builder.build();
                 assert!(dp.block_until_ready(Duration::from_secs(1)));
 
-                let (tcp_socket, mut udp_dataplane, control) = dp.split();
-                let authenticated_socket = udp_dataplane
-                    .take_socket(AUTHENTICATED_RAPTORCAST_SOCKET)
-                    .expect("authenticated raptorcast socket");
-                let non_authenticated_socket = udp_dataplane
-                    .take_socket(RAPTORCAST_SOCKET)
+                let tcp_socket = dp
+                    .tcp_sockets
+                    .take(TcpSocketId::Raptorcast)
+                    .expect("tcp raptorcast socket");
+                let authenticated_socket =
+                    dp.udp_sockets.take(UdpSocketId::AuthenticatedRaptorcast);
+                let non_authenticated_socket = dp
+                    .udp_sockets
+                    .take(UdpSocketId::Raptorcast)
                     .expect("raptorcast socket");
-                let (tcp_reader, tcp_writer) = tcp_socket.split();
+                let control = dp.control;
 
-                let auth_protocol = NoopAuthProtocol::new();
+                let udp_auth_protocol = NoopAuthProtocol::new();
                 Updater::boxed(RaptorCast::<
                     ST,
                     MonadMessage<ST, SCT, MockExecutionProtocol>,
@@ -194,14 +191,15 @@ where
                 >::new(
                     cfg,
                     SecondaryRaptorCastModeConfig::None,
-                    tcp_reader,
-                    tcp_writer,
-                    Some(authenticated_socket),
+                    tcp_socket,
+                    None, // authenticated_tcp_socket
+                    authenticated_socket,
                     non_authenticated_socket,
                     control,
                     shared_peer_discovery_driver,
                     Epoch(0),
-                    auth_protocol,
+                    udp_auth_protocol,
+                    None, // tcp_auth_protocol
                 ))
             }
         },

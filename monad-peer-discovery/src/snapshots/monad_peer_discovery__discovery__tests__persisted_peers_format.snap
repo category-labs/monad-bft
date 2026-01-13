@@ -13,4 +13,4 @@ address = "8.8.4.4:8001"
 record_seq_num = 2
 secp256k1_pubkey = "0x03efb87e9679dd855714c66e0e262b8a73b359cf4ff92124b3f7f556fd3cf15441"
 name_record_sig = "0xb9d4a8783b1fba411536c072ccf3a0320aede4b6d19a2ac2654bd6a57cd8632776808fd7ed405a558c11b2b55346b024e04fe4765676a614c3f0c48bcbf81ef200"
-auth_port = 9001
+udp_auth_port = 9001

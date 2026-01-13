@@ -78,6 +78,7 @@ pub struct SessionState {
     pub rekey_deadline: Option<Duration>,
     pub session_timeout_deadline: Option<Duration>,
     pub max_session_duration_deadline: Option<Duration>,
+    pub gc_deadline: Option<Duration>,
     pub stored_cookie: Option<[u8; 16]>,
     pub last_handshake_mac1: Option<[u8; 16]>,
     pub retry_attempts: u64,
@@ -104,6 +105,7 @@ impl SessionState {
             rekey_deadline: None,
             session_timeout_deadline: None,
             max_session_duration_deadline: None,
+            gc_deadline: None,
             stored_cookie: None,
             last_handshake_mac1: None,
             retry_attempts,
@@ -166,12 +168,21 @@ impl SessionState {
         self.max_session_duration_deadline = None;
     }
 
+    pub fn reset_gc_deadline(&mut self, duration_since_start: Duration, timer_duration: Duration) {
+        self.gc_deadline = Some(duration_since_start + timer_duration);
+    }
+
+    pub fn clear_gc_deadline(&mut self) {
+        self.gc_deadline = None;
+    }
+
     pub fn get_next_deadline(&self) -> Option<Duration> {
         [
             self.keepalive_deadline,
             self.rekey_deadline,
             self.session_timeout_deadline,
             self.max_session_duration_deadline,
+            self.gc_deadline,
         ]
         .iter()
         .filter_map(|&timer| timer)

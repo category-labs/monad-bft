@@ -34,12 +34,14 @@ use monad_control_panel::ipc::ControlPanelIpcReceiver;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
-use monad_dataplane::DataplaneBuilder;
+use monad_dataplane::{DataplaneBuilder, TcpSocketId, UdpSocketId};
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthBlockValidator;
 use monad_eth_txpool_executor::{EthTxPoolExecutor, EthTxPoolIpcConfig};
 use monad_executor::{Executor, ExecutorMetricsChain};
-use monad_executor_glue::{LogFriendlyMonadEvent, Message, MonadEvent};
+use monad_executor_glue::{
+    LogFriendlyMonadEvent, Message, MonadEvent, NodeBootstrapPeerConfigWithAddr, PeerEntry,
+};
 use monad_ledger::MonadBlockFileLedger;
 use monad_node_config::{
     ExecutionProtocolType, FullNodeIdentityConfig, NodeBootstrapConfig, NodeConfig,
@@ -50,10 +52,7 @@ use monad_peer_discovery::{
     MonadNameRecord, NameRecord,
 };
 use monad_pprof::start_pprof_server;
-use monad_raptorcast::{
-    config::{RaptorCastConfig, RaptorCastConfigPrimary},
-    AUTHENTICATED_RAPTORCAST_SOCKET, RAPTORCAST_SOCKET,
-};
+use monad_raptorcast::config::{RaptorCastConfig, RaptorCastConfigPrimary};
 use monad_router_multi::MultiRouter;
 use monad_state::{MonadMessage, MonadStateBuilder, VerifiedMonadMessage};
 use monad_state_backend::StateBackendThreadClient;
@@ -533,9 +532,13 @@ where
         IpAddr::V4(node_config.network.bind_address_host),
         node_config.network.bind_address_port,
     );
-    let authenticated_bind_address = node_config
+    let authenticated_udp_bind_address = node_config
         .network
-        .authenticated_bind_address_port
+        .authenticated_udp_bind_address_port
+        .map(|port| SocketAddr::new(IpAddr::V4(node_config.network.bind_address_host), port));
+    let authenticated_tcp_bind_address = node_config
+        .network
+        .authenticated_tcp_bind_address_port
         .map(|port| SocketAddr::new(IpAddr::V4(node_config.network.bind_address_host), port));
     let Some(SocketAddr::V4(name_record_address)) = resolve_domain_v4(
         &NodeId::new(identity.pubkey()),
@@ -549,7 +552,8 @@ where
 
     tracing::debug!(
         ?bind_address,
-        ?authenticated_bind_address,
+        ?authenticated_udp_bind_address,
+        ?authenticated_tcp_bind_address,
         ?name_record_address,
         "Monad-node starting, pid: {}",
         process::id()
@@ -557,7 +561,7 @@ where
 
     let network_config = node_config.network;
 
-    let mut dp_builder = DataplaneBuilder::new(&bind_address, network_config.max_mbps.into())
+    let mut dp_builder = DataplaneBuilder::new(network_config.max_mbps.into())
         .with_udp_multishot(network_config.enable_udp_multishot);
     if let Some(buffer_size) = network_config.buffer_size {
         dp_builder = dp_builder.with_udp_buffer_size(buffer_size);
@@ -572,31 +576,43 @@ where
             network_config.tcp_rate_limit_burst,
         );
 
-    let mut udp_sockets = vec![monad_dataplane::UdpSocketConfig {
-        socket_addr: bind_address,
-        label: RAPTORCAST_SOCKET.to_string(),
-    }];
-    if let Some(auth_addr) = authenticated_bind_address {
-        udp_sockets.push(monad_dataplane::UdpSocketConfig {
-            socket_addr: auth_addr,
-            label: AUTHENTICATED_RAPTORCAST_SOCKET.to_string(),
-        });
+    let mut udp_sockets: Vec<(UdpSocketId, std::net::SocketAddr)> =
+        vec![(UdpSocketId::Raptorcast, bind_address)];
+    if let Some(auth_addr) = authenticated_udp_bind_address {
+        udp_sockets.push((UdpSocketId::AuthenticatedRaptorcast, auth_addr));
     }
-    dp_builder = dp_builder.extend_udp_sockets(udp_sockets);
+    let mut tcp_sockets: Vec<(TcpSocketId, std::net::SocketAddr)> =
+        vec![(TcpSocketId::Raptorcast, bind_address)];
+    if let Some(auth_addr) = authenticated_tcp_bind_address {
+        tcp_sockets.push((TcpSocketId::AuthenticatedRaptorcast, auth_addr));
+    }
+    dp_builder = dp_builder
+        .with_udp_sockets(udp_sockets)
+        .with_tcp_sockets(tcp_sockets);
 
-    // auth port in peer discovery config and network config should be set and unset simultaneously
+    // UDP auth port in peer discovery config and network config should be set and unset simultaneously
     assert_eq!(
-        peer_discovery_config.self_auth_port.is_some(),
-        network_config.authenticated_bind_address_port.is_some()
+        peer_discovery_config.self_udp_auth_port.is_some(),
+        network_config.authenticated_udp_bind_address_port.is_some()
+    );
+    assert_eq!(
+        peer_discovery_config.self_tcp_auth_port.is_some(),
+        network_config.authenticated_tcp_bind_address_port.is_some()
+    );
+    assert!(
+        !(peer_discovery_config.self_tcp_auth_port.is_some()
+            && peer_discovery_config.self_udp_auth_port.is_none()),
+        "self_tcp_auth_port requires self_udp_auth_port to be set"
     );
 
     let self_id = NodeId::new(identity.pubkey());
-    let self_record = match peer_discovery_config.self_auth_port {
-        Some(auth_port) => NameRecord::new_with_authentication(
+    let self_record = match peer_discovery_config.self_udp_auth_port {
+        Some(udp_auth_port) => NameRecord::new_with_authentication(
             *name_record_address.ip(),
             name_record_address.port(),
             name_record_address.port(),
-            auth_port,
+            udp_auth_port,
+            peer_discovery_config.self_tcp_auth_port,
             peer_discovery_config.self_record_seq_num,
         ),
         None => NameRecord::new(
@@ -628,13 +644,9 @@ where
                 }
             };
 
-            let peer_entry = monad_executor_glue::PeerEntry {
-                pubkey: peer.secp256k1_pubkey,
-                addr: address,
-                signature: peer.name_record_sig,
-                record_seq_num: peer.record_seq_num,
-                auth_port: peer.auth_port,
-            };
+            let peer_entry = PeerEntry::from(NodeBootstrapPeerConfigWithAddr::with_resolved_addr(
+                peer, address,
+            ));
 
             match MonadNameRecord::try_from(&peer_entry) {
                 Ok(monad_name_record) => Some((node_id, monad_name_record)),
@@ -700,8 +712,18 @@ where
 
     let shared_key = Arc::new(identity);
     let wireauth_config = monad_wireauth::Config::default();
-    let auth_protocol =
-        monad_raptorcast::auth::WireAuthProtocol::new(wireauth_config, shared_key.clone());
+    let udp_auth_protocol = monad_raptorcast::auth::WireAuthProtocol::new(
+        &monad_raptorcast::auth::metrics::UDP_METRICS,
+        wireauth_config.clone(),
+        shared_key.clone(),
+    );
+    let tcp_auth_protocol = authenticated_tcp_bind_address.map(|_| {
+        monad_raptorcast::auth::WireAuthProtocol::new(
+            &monad_raptorcast::auth::metrics::TCP_METRICS,
+            wireauth_config,
+            shared_key.clone(),
+        )
+    });
 
     MultiRouter::new(
         self_id,
@@ -723,7 +745,8 @@ where
         peer_discovery_builder,
         current_epoch,
         epoch_validators,
-        auth_protocol,
+        udp_auth_protocol,
+        tcp_auth_protocol,
     )
 }
 

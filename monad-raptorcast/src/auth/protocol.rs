@@ -69,6 +69,14 @@ pub trait AuthenticationProtocol {
 
     fn has_any_session_by_public_key(&self, public_key: &Self::PublicKey) -> bool;
 
+    fn has_initiating_session_by_public_key(&self, public_key: &Self::PublicKey) -> bool;
+
+    fn buffer_message(
+        &mut self,
+        public_key: &Self::PublicKey,
+        message: Bytes,
+    ) -> Result<(), Self::Error>;
+
     fn next_packet(&mut self) -> Option<(SocketAddr, Bytes)>;
 
     fn tick(&mut self);
@@ -83,10 +91,14 @@ pub struct WireAuthProtocol {
 }
 
 impl WireAuthProtocol {
-    pub fn new(config: monad_wireauth::Config, signing_key: Arc<monad_secp::KeyPair>) -> Self {
+    pub fn new(
+        metric_names: &'static monad_wireauth::MetricNames,
+        config: monad_wireauth::Config,
+        signing_key: Arc<monad_secp::KeyPair>,
+    ) -> Self {
         let context = monad_wireauth::StdContext::new();
         Self {
-            api: monad_wireauth::API::new(config, signing_key, context),
+            api: monad_wireauth::API::new(metric_names, config, signing_key, context),
         }
     }
 }
@@ -183,6 +195,18 @@ impl AuthenticationProtocol for WireAuthProtocol {
 
     fn has_any_session_by_public_key(&self, public_key: &Self::PublicKey) -> bool {
         self.api.has_any_session_by_public_key(public_key)
+    }
+
+    fn has_initiating_session_by_public_key(&self, public_key: &Self::PublicKey) -> bool {
+        self.api.has_initiating_session_by_public_key(public_key)
+    }
+
+    fn buffer_message(
+        &mut self,
+        public_key: &Self::PublicKey,
+        message: Bytes,
+    ) -> Result<(), Self::Error> {
+        self.api.buffer_message(public_key, message)
     }
 
     fn metrics(&self) -> ExecutorMetricsChain {
@@ -286,6 +310,18 @@ impl<P: PubKey> AuthenticationProtocol for NoopAuthProtocol<P> {
 
     fn has_any_session_by_public_key(&self, _public_key: &Self::PublicKey) -> bool {
         false
+    }
+
+    fn has_initiating_session_by_public_key(&self, _public_key: &Self::PublicKey) -> bool {
+        false
+    }
+
+    fn buffer_message(
+        &mut self,
+        _public_key: &Self::PublicKey,
+        _message: Bytes,
+    ) -> Result<(), Self::Error> {
+        Ok(())
     }
 
     fn metrics(&self) -> ExecutorMetricsChain {
