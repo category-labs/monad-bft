@@ -308,7 +308,7 @@ where
                     metrics.consensus_events.rx_base_fee_error += 1;
                 }
                 Err(
-                    BlockPolicyError::BlockPolicyBlockValidatorError(_)
+                    BlockPolicyError::ReserveBalanceUpdaterError(_)
                     | BlockPolicyError::BlockNotCoherent
                     | BlockPolicyError::Eip7702Error
                     | BlockPolicyError::TimestampError
