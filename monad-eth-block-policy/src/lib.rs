@@ -220,17 +220,6 @@ where
     }
 }
 
-pub struct EthBlockPolicyBlockValidator<CRT>
-where
-    CRT: ChainRevision,
-{
-    block_seq_num: SeqNum,
-    execution_delay: SeqNum,
-    base_fee: u64,
-    chain_revision: CRT,
-    _phantom: PhantomData<CRT>,
-}
-
 fn is_possibly_emptying_transaction(
     block_seq_num_of_curr_txn: SeqNum,
     balance_state: &AccountBalanceState,
@@ -251,22 +240,22 @@ pub fn timestamp_ns_to_secs(timestamp_ns: u128) -> u64 {
     timestamp_seconds.min(u64::MAX.into()) as u64
 }
 
-impl<CRT> EthBlockPolicyBlockValidator<CRT>
-where
-    CRT: ChainRevision,
-{
+pub struct ReserveBalanceUpdater {
+    block_seq_num: SeqNum,
+    execution_delay: SeqNum,
+    base_fee: u64,
+}
+
+impl ReserveBalanceUpdater {
     pub fn new(
         block_seq_num: SeqNum,
         execution_delay: SeqNum,
         base_fee: u64,
-        chain_revision: &CRT,
     ) -> Result<Self, BlockPolicyError> {
         Ok(Self {
             block_seq_num,
             execution_delay,
             base_fee,
-            chain_revision: *chain_revision,
-            _phantom: PhantomData,
         })
     }
 
@@ -671,15 +660,14 @@ where
                     }
                 }
             } else {
-                let validator = EthBlockPolicyBlockValidator::new(
+                let reserve_balance_updater = ReserveBalanceUpdater::new(
                     block.get_seq_num(),
                     self.execution_delay,
                     block.get_base_fee(),
-                    &chain_config.get_chain_revision(block.get_block_round()),
                 )?;
 
                 for txn in &block.validated_txns {
-                    validator.try_add_transaction(&mut account_balances, txn)?;
+                    reserve_balance_updater.try_add_transaction(&mut account_balances, txn)?;
                 }
             }
             next_validate += SeqNum(1);
@@ -1013,11 +1001,10 @@ where
             tx_signers.iter(),
         )?;
 
-        let validator = EthBlockPolicyBlockValidator::new(
+        let reserve_balance_updater = ReserveBalanceUpdater::new(
             block.get_seq_num(),
             self.execution_delay,
             block.get_base_fee(),
-            &chain_config.get_chain_revision(block.get_block_round()),
         )?;
 
         if let Err(system_txn_error) =
@@ -1036,7 +1023,7 @@ where
 
             // account balance must exist since we populated from tx signers
             assert!(account_balances.contains_key(&txn.signer()));
-            validator.try_add_transaction(&mut account_balances, txn)?;
+            reserve_balance_updater.try_add_transaction(&mut account_balances, txn)?;
 
             // https://eips.ethereum.org/EIPS/eip-7702#behavior
             // "The authorization list is processed before the execution portion
@@ -1246,15 +1233,14 @@ mod test {
             addresses.iter(),
         )?;
 
-        let validator = EthBlockPolicyBlockValidator::new(
+        let reserve_balance_updater = ReserveBalanceUpdater::new(
             incoming_block.get_seq_num(),
             block_policy.execution_delay,
             BASE_FEE,
-            &MockChainRevision::DEFAULT,
         )?;
 
         for txn in incoming_block.validated_txns.iter() {
-            validator.try_add_transaction(&mut account_balances, txn)?;
+            reserve_balance_updater.try_add_transaction(&mut account_balances, txn)?;
         }
 
         Ok(())
@@ -2347,16 +2333,11 @@ mod test {
             },
         );
 
-        let validator = EthBlockPolicyBlockValidator::new(
-            block_seq_num,
-            EXEC_DELAY,
-            BASE_FEE,
-            &MockChainRevision::DEFAULT,
-        )
-        .unwrap();
+        let reserve_balance_updater =
+            ReserveBalanceUpdater::new(block_seq_num, EXEC_DELAY, BASE_FEE).unwrap();
 
         for txn in txs.iter() {
-            assert!(validator
+            assert!(reserve_balance_updater
                 .try_add_transaction(&mut account_balances, txn)
                 .is_ok());
         }
@@ -2373,17 +2354,12 @@ mod test {
             },
         );
 
-        let validator = EthBlockPolicyBlockValidator::new(
-            block_seq_num,
-            EXEC_DELAY,
-            BASE_FEE,
-            &MockChainRevision::DEFAULT,
-        )
-        .unwrap();
+        let reserve_balance_updater =
+            ReserveBalanceUpdater::new(block_seq_num, EXEC_DELAY, BASE_FEE).unwrap();
 
         for txn in txs.iter() {
             assert!(
-                validator.try_add_transaction(&mut account_balances, txn)
+                reserve_balance_updater.try_add_transaction(&mut account_balances, txn)
                     == Err(BlockPolicyError::BlockPolicyBlockValidatorError(
                         BlockPolicyBlockValidatorError::InsufficientBalance
                     ))
@@ -2416,16 +2392,11 @@ mod test {
             },
         );
 
-        let validator = EthBlockPolicyBlockValidator::new(
-            block_seq_num,
-            EXEC_DELAY,
-            BASE_FEE,
-            &MockChainRevision::DEFAULT,
-        )
-        .unwrap();
+        let reserve_balance_updater =
+            ReserveBalanceUpdater::new(block_seq_num, EXEC_DELAY, BASE_FEE).unwrap();
 
         for txn in txs.iter() {
-            assert!(validator
+            assert!(reserve_balance_updater
                 .try_add_transaction(&mut account_balances, txn)
                 .is_ok());
         }
@@ -2442,17 +2413,12 @@ mod test {
             },
         );
 
-        let validator = EthBlockPolicyBlockValidator::new(
-            block_seq_num,
-            EXEC_DELAY,
-            BASE_FEE,
-            &MockChainRevision::DEFAULT,
-        )
-        .unwrap();
+        let reserve_balance_updater =
+            ReserveBalanceUpdater::new(block_seq_num, EXEC_DELAY, BASE_FEE).unwrap();
 
         for txn in txs.iter() {
             assert!(
-                validator.try_add_transaction(&mut account_balances, txn)
+                reserve_balance_updater.try_add_transaction(&mut account_balances, txn)
                     == Err(BlockPolicyError::BlockPolicyBlockValidatorError(
                         BlockPolicyBlockValidatorError::InsufficientReserveBalance
                     ))
@@ -2486,16 +2452,11 @@ mod test {
             },
         );
 
-        let validator = EthBlockPolicyBlockValidator::new(
-            block_seq_num,
-            EXEC_DELAY,
-            BASE_FEE,
-            &MockChainRevision::DEFAULT,
-        )
-        .unwrap();
+        let reserve_balance_updater =
+            ReserveBalanceUpdater::new(block_seq_num, EXEC_DELAY, BASE_FEE).unwrap();
 
         for txn in txs.iter() {
-            assert!(validator
+            assert!(reserve_balance_updater
                 .try_add_transaction(&mut account_balances, txn)
                 .is_ok());
         }
@@ -2515,16 +2476,11 @@ mod test {
             },
         );
 
-        let validator = EthBlockPolicyBlockValidator::new(
-            block_seq_num,
-            EXEC_DELAY,
-            BASE_FEE,
-            &MockChainRevision::DEFAULT,
-        )
-        .unwrap();
+        let reserve_balance_updater =
+            ReserveBalanceUpdater::new(block_seq_num, EXEC_DELAY, BASE_FEE).unwrap();
 
         for txn in txs.iter() {
-            assert!(validator
+            assert!(reserve_balance_updater
                 .try_add_transaction(&mut account_balances, txn)
                 .is_ok());
         }
@@ -2559,16 +2515,11 @@ mod test {
             },
         );
 
-        let validator = EthBlockPolicyBlockValidator::new(
-            block_seq_num,
-            EXEC_DELAY,
-            BASE_FEE,
-            &MockChainRevision::DEFAULT,
-        )
-        .unwrap();
+        let reserve_balance_updater =
+            ReserveBalanceUpdater::new(block_seq_num, EXEC_DELAY, BASE_FEE).unwrap();
 
         for txn in txs.iter() {
-            assert!(validator
+            assert!(reserve_balance_updater
                 .try_add_transaction(&mut account_balances, txn)
                 .is_ok());
         }
@@ -2588,16 +2539,11 @@ mod test {
             },
         );
 
-        let validator = EthBlockPolicyBlockValidator::new(
-            latest_seq_num,
-            EXEC_DELAY,
-            BASE_FEE,
-            &MockChainRevision::DEFAULT,
-        )
-        .unwrap();
+        let reserve_balance_updater =
+            ReserveBalanceUpdater::new(latest_seq_num, EXEC_DELAY, BASE_FEE).unwrap();
 
         for txn in txs.iter() {
-            assert!(validator
+            assert!(reserve_balance_updater
                 .try_add_transaction(&mut account_balances, txn)
                 .is_ok());
         }
@@ -2664,16 +2610,11 @@ mod test {
         let mut account_balances: BTreeMap<&Address, AccountBalanceState> = BTreeMap::new();
         account_balances.insert(&signer, abs);
 
-        let validator = EthBlockPolicyBlockValidator::new(
-            block_seq_num,
-            EXEC_DELAY,
-            BASE_FEE,
-            &MockChainRevision::DEFAULT,
-        )
-        .unwrap();
+        let reserve_balance_updater =
+            ReserveBalanceUpdater::new(block_seq_num, EXEC_DELAY, BASE_FEE).unwrap();
 
         assert_eq!(
-            validator.try_add_transaction(&mut account_balances, &txn),
+            reserve_balance_updater.try_add_transaction(&mut account_balances, &txn),
             expect
         );
     }
@@ -2908,16 +2849,11 @@ mod test {
         expect: Result<(), BlockPolicyError>,
     ) {
         let txn = &make_validated_tx(txn.clone());
-        let validator = EthBlockPolicyBlockValidator::new(
-            block_seq_num,
-            EXEC_DELAY,
-            BASE_FEE,
-            &MockChainRevision::DEFAULT,
-        )
-        .unwrap();
+        let reserve_balance_updater =
+            ReserveBalanceUpdater::new(block_seq_num, EXEC_DELAY, BASE_FEE).unwrap();
 
         assert_eq!(
-            validator.try_add_transaction(account_balances, txn),
+            reserve_balance_updater.try_add_transaction(account_balances, txn),
             expect,
             "txn nonce {}",
             txn.nonce()
