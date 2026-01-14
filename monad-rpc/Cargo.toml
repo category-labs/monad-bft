@@ -30,20 +30,20 @@ monad-ethcall = { workspace = true }
 monad-event-ring = { workspace = true }
 monad-exec-events = { workspace = true, features = ["alloy"] }
 monad-node-config = { workspace = true, features = ["crypto"] }
+monad-pprof = { workspace = true }
 monad-rpc-docs = { workspace = true }
 monad-tracing-timing = { workspace = true }
 monad-triedb-utils = { workspace = true }
 monad-types = { workspace = true }
-monad-pprof = { workspace = true }
 monad-version = { workspace = true }
 
 actix = { workspace = true }
-agent = { workspace = true }
 actix-http = { workspace = true }
 actix-rt = { workspace = true }
 actix-test = { workspace = true }
 actix-web = { workspace = true }
 actix-ws = { workspace = true }
+agent = { workspace = true }
 alloy-consensus = { workspace = true, features = ["k256"] }
 alloy-eips = { workspace = true }
 alloy-primitives = { workspace = true }
@@ -55,8 +55,8 @@ dashmap = { workspace = true }
 flume = { workspace = true }
 futures = { workspace = true }
 futures-util = { workspace = true }
+inotify = { workspace = true }
 itertools = { workspace = true }
-notify = { workspace = true }
 opentelemetry = { workspace = true, features = ["metrics", "trace"] }
 opentelemetry_sdk = { workspace = true, features = ["rt-tokio", "trace"] }
 opentelemetry-otlp = { workspace = true, features = ["metrics", "grpc-tonic"] }
@@ -68,17 +68,13 @@ schemars = { workspace = true, features = ["preserve_order", "raw_value"] }
 serde = { workspace = true, features = ["derive", "rc"] }
 serde_cbor = { workspace = true }
 serde_json = { workspace = true, features = ["raw_value"] }
-tokio = { workspace = true, features = [
-    "net",
-    "macros",
-    "rt-multi-thread",
-    "fs",
-] }
+tokio = { workspace = true, features = ["net", "macros", "rt-multi-thread", "fs"] }
 toml = { workspace = true }
 tracing = { workspace = true, features = ["log"] }
 tracing-actix-web = { workspace = true }
 tracing-manytrace = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
+
 [target.'cfg(not(target_env = "msvc"))'.dependencies.tikv-jemallocator]
 workspace = true
 features = [
@@ -104,6 +100,7 @@ arbitrary = { workspace = true }
 awc = { workspace = true }
 criterion = { workspace = true }
 reqwest = { workspace = true }
+tempfile = { workspace = true }
 test-case = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 
