@@ -264,13 +264,7 @@ impl BlockDataReaderArgs {
         match self {
             Aws(aws_cli_args) => aws_cli_args.bucket.clone(),
             Triedb(trie_db_cli_args) => trie_db_cli_args.triedb_path.clone(),
-            MongoDb(mongo_db_cli_args) => {
-                format!(
-                    "{}:{}",
-                    redact_mongo_url(&mongo_db_cli_args.url),
-                    mongo_db_cli_args.db
-                )
-            }
+            MongoDb(mongo_db_cli_args) => mongo_db_cli_args.replica_name(),
             Fs(fs_cli_args) => fs_cli_args.path.to_string_lossy().into_owned(),
         }
     }
@@ -373,7 +367,7 @@ impl ArchiveArgs {
     pub fn replica_name(&self) -> String {
         match self {
             ArchiveArgs::Aws(aws_cli_args) => aws_cli_args.bucket.clone(),
-            ArchiveArgs::MongoDb(mongo_db_cli_args) => mongo_db_cli_args.db.clone(),
+            ArchiveArgs::MongoDb(mongo_db_cli_args) => mongo_db_cli_args.replica_name(),
             ArchiveArgs::Fs(fs_cli_args) => fs_cli_args.path.to_string_lossy().into_owned(),
         }
     }
@@ -697,6 +691,9 @@ impl TrieDbCliArgs {
 pub struct MongoDbCliArgs {
     pub url: String,
     pub db: String,
+    /// Optional explicit replica name. If not set, derived from redacted URL and db name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replica_name: Option<String>,
 }
 
 impl MongoDbCliArgs {
@@ -711,7 +708,16 @@ impl MongoDbCliArgs {
                 .remove("db")
                 .or_else(|| positional.get(1).cloned())
                 .ok_or_eyre("storage args missing mongo db name")?,
+            replica_name: kv.remove("replica-name"),
         })
+    }
+
+    /// Returns the replica name for this MongoDB connection.
+    /// Uses explicit replica_name if set, otherwise derives from redacted URL and db name.
+    pub fn replica_name(&self) -> String {
+        self.replica_name
+            .clone()
+            .unwrap_or_else(|| format!("{}:{}", redact_mongo_url(&self.url), self.db))
     }
 }
 
@@ -978,11 +984,54 @@ mod tests {
         let aws = ArchiveArgs::from_str("aws my-bucket 10 us-west-1").unwrap();
         assert_eq!(aws.replica_name(), "my-bucket");
 
+        // MongoDB without explicit replica name derives from redacted URL and db
         let mongo = ArchiveArgs::from_str("mongodb mongodb://h:27017 mydb").unwrap();
-        assert_eq!(mongo.replica_name(), "mydb");
+        assert_eq!(mongo.replica_name(), "mongodb://h:27017:mydb");
 
         let local = ArchiveArgs::from_str("fs /tmp/archive").unwrap();
         assert_eq!(local.replica_name(), "/tmp/archive");
+    }
+
+    #[test]
+    fn mongodb_explicit_replica_name() {
+        // Explicit replica name takes precedence
+        let mongo =
+            ArchiveArgs::from_str("mongodb mongodb://h:27017 mydb --replica-name my-replica")
+                .unwrap();
+        assert_eq!(mongo.replica_name(), "my-replica");
+
+        // BlockDataReaderArgs also supports explicit replica name
+        let mongo_reader = BlockDataReaderArgs::from_str(
+            "mongodb mongodb://h:27017 mydb --replica-name reader-replica",
+        )
+        .unwrap();
+        assert_eq!(mongo_reader.replica_name(), "reader-replica");
+    }
+
+    #[test]
+    fn mongodb_replica_name_includes_host() {
+        // Different hosts should produce different replica names
+        let mongo1 = ArchiveArgs::from_str("mongodb mongodb://host1:27017 mydb").unwrap();
+        let mongo2 = ArchiveArgs::from_str("mongodb mongodb://host2:27017 mydb").unwrap();
+
+        assert_ne!(mongo1.replica_name(), mongo2.replica_name());
+        assert_eq!(mongo1.replica_name(), "mongodb://host1:27017:mydb");
+        assert_eq!(mongo2.replica_name(), "mongodb://host2:27017:mydb");
+    }
+
+    #[test]
+    fn mongodb_replica_name_redacts_credentials() {
+        let mongo =
+            ArchiveArgs::from_str("mongodb mongodb://user:password@host:27017 mydb").unwrap();
+        let replica_name = mongo.replica_name();
+
+        // Should not contain credentials
+        assert!(!replica_name.contains("user"));
+        assert!(!replica_name.contains("password"));
+        // Should contain redacted marker and host
+        assert!(replica_name.contains("***"));
+        assert!(replica_name.contains("host:27017"));
+        assert!(replica_name.contains("mydb"));
     }
 
     #[test]
