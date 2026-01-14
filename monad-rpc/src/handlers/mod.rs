@@ -169,9 +169,7 @@ pub async fn rpc_handler(
 
     if response_raw_value.get().as_bytes().len() > app_state.max_response_size as usize {
         info!("response exceed size limit: {body:?}");
-        return HttpResponse::Ok().json(Response::from_error(JsonRpcError::custom(
-            "response exceed size limit".to_string(),
-        )));
+        return HttpResponse::Ok().json(Response::from_error(JsonRpcError::max_size_exceeded()));
     }
 
     // log the request and response based on the response content
@@ -489,6 +487,7 @@ async fn eth_getLogs(
         let params = serde_json::from_str(params.get()).invalid_params()?;
         monad_eth_getLogs(
             chain_state,
+            app_state.max_response_size,
             app_state.logs_max_block_range,
             params,
             app_state.use_eth_get_logs_index,

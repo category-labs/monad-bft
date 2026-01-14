@@ -44,6 +44,7 @@ use crate::{
         block::{block_receipts, get_block_key_from_tag_or_hash},
         txn::{parse_tx_receipt, FilterError},
     },
+    heuristic_size::HeuristicSize,
     jsonrpc::{ArchiveErrorExt, JsonRpcError, JsonRpcResult},
 };
 
@@ -565,6 +566,7 @@ impl<T: Triedb> ChainState<T> {
     pub async fn get_logs(
         &self,
         filter: Filter,
+        max_response_size: u32,
         max_block_range: u64,
         use_eth_get_logs_index: bool,
         dry_run_get_logs_index: bool,
@@ -672,7 +674,12 @@ impl<T: Triedb> ChainState<T> {
             )
             .await
             {
-                Ok(logs) => match try_collect_logs_stream(logs).await? {
+                Ok(logs) => match try_collect_logs_stream_with_heuristic_response_limit(
+                    max_response_size,
+                    logs,
+                )
+                .await?
+                {
                     Ok(logs) => return Ok(logs),
                     Err(err) => {
                         debug!(?err, "Error getting logs from log stream with index. Falling back to unindexed method.");
@@ -768,7 +775,9 @@ impl<T: Triedb> ChainState<T> {
             })
         });
 
-        let logs = try_collect_logs_stream(logs_stream).await??;
+        let logs =
+            try_collect_logs_stream_with_heuristic_response_limit(max_response_size, logs_stream)
+                .await??;
 
         if dry_run_get_logs_index {
             if let Some(archive_reader) = self.archive_reader.clone() {
@@ -796,10 +805,13 @@ impl<T: Triedb> ChainState<T> {
     }
 }
 
-async fn try_collect_logs_stream<E>(
+async fn try_collect_logs_stream_with_heuristic_response_limit<E>(
+    max_response_size: u32,
     stream: impl Stream<Item = Result<impl IntoIterator<Item = Log>, E>>,
 ) -> JsonRpcResult<Result<Vec<MonadLog>, E>> {
     let mut stream = std::pin::pin!(stream);
+
+    let mut heuristic_response_size = 0u64;
 
     let mut response_logs = Vec::<MonadLog>::default();
 
@@ -807,7 +819,14 @@ async fn try_collect_logs_stream<E>(
         match result {
             Err(err) => return Ok(Err(err)),
             Ok(logs) => {
-                response_logs.extend(logs.into_iter().map(MonadLog));
+                response_logs.extend(logs.into_iter().map(|log| {
+                    heuristic_response_size += HeuristicSize::heuristic_json_len(&log) as u64;
+                    MonadLog(log)
+                }));
+
+                if heuristic_response_size > max_response_size as u64 {
+                    return Err(JsonRpcError::max_size_exceeded());
+                }
             }
         }
     }
@@ -1345,7 +1364,7 @@ mod tests {
             ..Default::default()
         };
         let logs = chain_state
-            .get_logs(filter, 1, false, false, 1)
+            .get_logs(filter, u32::MAX, 1, false, false, 1)
             .await
             .unwrap();
         assert!(!logs.is_empty());
@@ -1355,7 +1374,7 @@ mod tests {
             ..Default::default()
         };
         let logs = chain_state
-            .get_logs(filter, 1, false, false, 1)
+            .get_logs(filter, u32::MAX, 1, false, false, 1)
             .await
             .unwrap();
         assert!(!logs.is_empty());
