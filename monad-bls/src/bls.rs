@@ -324,6 +324,20 @@ impl BlsKeyPair {
         Ok(keypair)
     }
 
+    /// Import an already-derived secret scalar bytes.
+    #[cfg(test)]
+    fn from_secret_key_bytes(mut secret_key: impl AsMut<[u8]>) -> Result<Self, BlsError> {
+        let b = secret_key.as_mut();
+        // blst validates the scalar (non-zero, < r).
+        let sk = BlsSecretKey(blst_core::SecretKey::from_bytes(b).map_err(BlsError)?);
+        b.zeroize();
+        let keypair = Self {
+            pubkey: sk.sk_to_pk(),
+            secretkey: sk,
+        };
+        Ok(keypair)
+    }
+
     pub fn from_ikm(mut ikm: impl AsMut<[u8]>) -> Result<Self, BlsError> {
         let dst = b"monad-bls-keygen";
         let ikm_mut = ikm.as_mut();
@@ -673,13 +687,17 @@ impl<'de> Deserialize<'de> for BlsAggregateSignature {
 
 #[cfg(test)]
 mod test {
-    use std::collections::HashSet;
+    use std::{
+        collections::HashSet,
+        panic::{catch_unwind, AssertUnwindSafe},
+    };
 
-    use monad_crypto::signing_domain;
+    use monad_crypto::{signing_domain, signing_domain::SigningDomain};
 
     use super::{
         blst_core, BlsAggregatePubKey, BlsAggregateSignature, BlsError, BlsKeyPair, BlsPubKey,
-        BlsSecretKey, BlsSignature, BLST_BAD_ENCODING, INFINITY_PUBKEY,
+        BlsSecretKey, BlsSignature, BLST_BAD_ENCODING, INFINITY_PUBKEY, INFINITY_SIGNATURE,
+        SIGNATURE_COMPRESSED_LEN,
     };
 
     type SigningDomainType = signing_domain::Vote;
@@ -1283,5 +1301,1788 @@ mod test {
         assert!(sig1.fast_verify::<SigningDomainType>(msg, &agg_pk).is_ok());
         assert!(sig2.fast_verify::<SigningDomainType>(msg, &agg_pk).is_ok());
         assert_eq!(sig1, sig2);
+    }
+
+    struct DomainA;
+    impl SigningDomain for DomainA {
+        const PREFIX: &'static [u8] = b"test-domain-a:";
+    }
+
+    struct DomainB;
+    impl SigningDomain for DomainB {
+        const PREFIX: &'static [u8] = b"test-domain-b:";
+    }
+
+    #[test]
+    fn test_sign_is_deterministic_for_same_key_and_message() {
+        let kp = keygen(7);
+        let msg = b"determinism";
+
+        let s1 = kp.sign::<SigningDomainType>(msg).serialize();
+        let s2 = kp.sign::<SigningDomainType>(msg).serialize();
+
+        assert_eq!(s1, s2);
+    }
+
+    #[test]
+    fn test_sig_verify_fails_with_wrong_pubkey() {
+        let kp1 = keygen(7);
+        let kp2 = keygen(8);
+
+        let msg = b"hello world";
+        let sig = kp1.sign::<SigningDomainType>(msg);
+
+        assert_eq!(
+            sig.verify::<SigningDomainType>(msg, &kp2.pubkey()),
+            Err(BlsError(blst::BLST_ERROR::BLST_VERIFY_FAIL))
+        );
+    }
+
+    #[test]
+    fn test_sig_verify_fails_with_wrong_message() {
+        let kp = keygen(7);
+        let msg1 = b"msg1";
+        let msg2 = b"msg2";
+
+        let sig = kp.sign::<SigningDomainType>(msg1);
+
+        assert_eq!(
+            sig.verify::<SigningDomainType>(msg2, &kp.pubkey()),
+            Err(BlsError(blst::BLST_ERROR::BLST_VERIFY_FAIL))
+        );
+    }
+
+    #[test]
+    fn test_domain_separation_changes_signature_and_breaks_cross_domain_verify() {
+        let kp = keygen(7);
+        let msg = b"same message";
+
+        let sig_a = kp.sign::<DomainA>(msg);
+        let sig_b = kp.sign::<DomainB>(msg);
+
+        // Same key+msg but different domain => different signature bytes.
+        assert_ne!(sig_a.serialize(), sig_b.serialize());
+
+        // Verify must be domain-consistent.
+        assert!(sig_a.verify::<DomainA>(msg, &kp.pubkey()).is_ok());
+        assert_eq!(
+            sig_a.verify::<DomainB>(msg, &kp.pubkey()),
+            Err(BlsError(blst::BLST_ERROR::BLST_VERIFY_FAIL))
+        );
+    }
+
+    #[test]
+    fn test_keygen_error_path_still_zeroizes_ikm() {
+        // Spec requires >= 32 bytes IKM; ensure we error AND still zeroize.
+        let mut short_ikm = [0xABu8; 31];
+        let res = BlsSecretKey::key_gen(short_ikm.as_mut_slice(), &[]);
+        assert!(res.is_err());
+        assert_eq!(short_ikm, [0u8; 31]);
+    }
+
+    #[test]
+    fn test_signature_deserialize_rejects_wrong_lengths() {
+        let too_short = vec![0u8; SIGNATURE_COMPRESSED_LEN - 1];
+        assert_eq!(
+            BlsSignature::deserialize(&too_short),
+            Err(BlsError(BLST_BAD_ENCODING))
+        );
+
+        let too_long = vec![0u8; SIGNATURE_COMPRESSED_LEN + 1];
+        assert_eq!(
+            BlsSignature::deserialize(&too_long),
+            Err(BlsError(BLST_BAD_ENCODING))
+        );
+    }
+
+    #[test]
+    fn test_aggregate_signature_deserialize_rejects_wrong_lengths() {
+        let too_short = vec![0u8; SIGNATURE_COMPRESSED_LEN - 1];
+        assert_eq!(
+            BlsAggregateSignature::deserialize(&too_short),
+            Err(BlsError(BLST_BAD_ENCODING))
+        );
+
+        let too_long = vec![0u8; SIGNATURE_COMPRESSED_LEN + 1];
+        assert_eq!(
+            BlsAggregateSignature::deserialize(&too_long),
+            Err(BlsError(BLST_BAD_ENCODING))
+        );
+    }
+
+    #[test]
+    fn test_aggsig_verify_length_mismatch_does_not_panic() {
+        // Robustness: calling verify() with mismatched slice lengths should not unwind.
+        let keypairs = gen_keypairs(3);
+
+        let pks: Vec<_> = keypairs
+            .iter()
+            .map(|kp| BlsAggregatePubKey::from_pubkey(&kp.pubkey()))
+            .collect();
+        let pks_ref: Vec<_> = pks.iter().collect();
+
+        let msgs: Vec<_> = keypairs.iter().map(|kp| kp.pubkey().serialize()).collect();
+        let msgs_ref: Vec<&[u8]> = msgs.iter().map(|m| m.as_slice()).collect();
+
+        let mut aggsig = BlsAggregateSignature::infinity();
+        for (kp, msg) in keypairs.iter().zip(msgs_ref.iter()) {
+            aggsig
+                .add_assign(&kp.sign::<SigningDomainType>(msg))
+                .unwrap();
+        }
+
+        let res = catch_unwind(AssertUnwindSafe(|| {
+            aggsig.verify::<SigningDomainType>(&msgs_ref[..2], &pks_ref[..3])
+        }));
+
+        assert!(res.is_ok());
+        assert!(res.unwrap().is_err());
+    }
+
+    #[test]
+    fn test_signature_infinity_is_rejected() {
+        let sig = BlsSignature::uncompress(&INFINITY_SIGNATURE).unwrap();
+        assert!(sig.validate(true).is_err());
+    }
+
+    #[test]
+    fn test_ethereum_bls12_381_minpk() {
+        // A test suite from https://github.com/ethereum/bls12-381-tests used in Ethereum 2.0 BLS Signature APIs,
+        // as well as common extensions such as signature-sets (batch aggregate verification) and serialization.
+
+        run_ethereum_bls12_381_aggregate();
+        run_ethereum_bls12_381_aggregate_verify();
+        run_ethereum_bls12_381_batch_verify();
+        run_ethereum_bls12_381_deserialization_g1();
+        run_ethereum_bls12_381_deserialization_g2();
+        run_ethereum_bls12_381_fast_aggregate_verify();
+        run_ethereum_bls12_381_sign();
+        run_ethereum_bls12_381_verify()
+    }
+
+    fn run_ethereum_bls12_381_aggregate() {
+        // Test: aggregate_0x0000000000000000000000000000000000000000000000000000000000000000.json
+        {
+            let sigs_bytes = vec![
+                hex::decode("b6ed936746e01f8ecf281f020953fbf1f01debd5657c4a383940b020b26507f6076334f91e2366c96e9ab279fb5158090352ea1c5b0c9274504f4f0e7053af24802e51e4568d164fe986834f41e55c8e850ce1f98458c0cfc9ab380b55285a55").unwrap(),
+                hex::decode("b23c46be3a001c63ca711f87a005c200cc550b9429d5f4eb38d74322144f1b63926da3388979e5321012fb1a0526bcd100b5ef5fe72628ce4cd5e904aeaa3279527843fae5ca9ca675f4f51ed8f83bbf7155da9ecc9663100a885d5dc6df96d9").unwrap(),
+                hex::decode("948a7cb99f76d616c2c564ce9bf4a519f1bea6b0a624a02276443c245854219fabb8d4ce061d255af5330b078d5380681751aa7053da2c98bae898edc218c75f07e24d8802a17cd1f6833b71e58f5eb5b94208b4d0bb3848cecb075ea21be115").unwrap(),
+            ];
+
+            let mut agg_sig = BlsAggregateSignature::infinity();
+            for sig_bytes in &sigs_bytes {
+                let sig = BlsSignature::uncompress(sig_bytes).unwrap();
+                agg_sig.add_assign(&sig).unwrap();
+            }
+
+            let expected_bytes = hex::decode("9683b3e6701f9a4b706709577963110043af78a5b41991b998475a3d3fd62abf35ce03b33908418efc95a058494a8ae504354b9f626231f6b3f3c849dfdeaf5017c4780e2aee1850ceaf4b4d9ce70971a3d2cfcd97b7e5ecf6759f8da5f76d31").unwrap();
+            let expected_sig = BlsAggregateSignature::deserialize(&expected_bytes).unwrap();
+            assert_eq!(agg_sig, expected_sig);
+        }
+
+        // Test: aggregate_0x5656565656565656565656565656565656565656565656565656565656565656.json
+        {
+            let sigs_bytes = vec![
+                hex::decode("882730e5d03f6b42c3abc26d3372625034e1d871b65a8a6b900a56dae22da98abbe1b68f85e49fe7652a55ec3d0591c20767677e33e5cbb1207315c41a9ac03be39c2e7668edc043d6cb1d9fd93033caa8a1c5b0e84bedaeb6c64972503a43eb").unwrap(),
+                hex::decode("af1390c3c47acdb37131a51216da683c509fce0e954328a59f93aebda7e4ff974ba208d9a4a2a2389f892a9d418d618418dd7f7a6bc7aa0da999a9d3a5b815bc085e14fd001f6a1948768a3f4afefc8b8240dda329f984cb345c6363272ba4fe").unwrap(),
+                hex::decode("a4efa926610b8bd1c8330c918b7a5e9bf374e53435ef8b7ec186abf62e1b1f65aeaaeb365677ac1d1172a1f5b44b4e6d022c252c58486c0a759fbdc7de15a756acc4d343064035667a594b4c2a6f0b0b421975977f297dba63ee2f63ffe47bb6").unwrap(),
+            ];
+
+            let mut agg_sig = BlsAggregateSignature::infinity();
+            for sig_bytes in &sigs_bytes {
+                let sig = BlsSignature::uncompress(sig_bytes).unwrap();
+                agg_sig.add_assign(&sig).unwrap();
+            }
+
+            let expected_bytes = hex::decode("ad38fc73846583b08d110d16ab1d026c6ea77ac2071e8ae832f56ac0cbcdeb9f5678ba5ce42bd8dce334cc47b5abcba40a58f7f1f80ab304193eb98836cc14d8183ec14cc77de0f80c4ffd49e168927a968b5cdaa4cf46b9805be84ad7efa77b").unwrap();
+            let expected_agg_sig = BlsAggregateSignature::deserialize(&expected_bytes).unwrap();
+            assert_eq!(agg_sig, expected_agg_sig);
+        }
+
+        // Test: aggregate_0xabababababababababababababababababababababababababababababababab.json
+        {
+            let sigs_bytes = vec![
+                hex::decode("91347bccf740d859038fcdcaf233eeceb2a436bcaaee9b2aa3bfb70efe29dfb2677562ccbea1c8e061fb9971b0753c240622fab78489ce96768259fc01360346da5b9f579e5da0d941e4c6ba18a0e64906082375394f337fa1af2b7127b0d121").unwrap(),
+                hex::decode("9674e2228034527f4c083206032b020310face156d4a4685e2fcaec2f6f3665aa635d90347b6ce124eb879266b1e801d185de36a0a289b85e9039662634f2eea1e02e670bc7ab849d006a70b2f93b84597558a05b879c8d445f387a5d5b653df").unwrap(),
+                hex::decode("ae82747ddeefe4fd64cf9cedb9b04ae3e8a43420cd255e3c7cd06a8d88b7c7f8638543719981c5d16fa3527c468c25f0026704a6951bde891360c7e8d12ddee0559004ccdbe6046b55bae1b257ee97f7cdb955773d7cf29adf3ccbb9975e4eb9").unwrap(),
+            ];
+
+            let mut agg_sig = BlsAggregateSignature::infinity();
+            for sig_bytes in &sigs_bytes {
+                let sig = BlsSignature::uncompress(sig_bytes).unwrap();
+                agg_sig.add_assign(&sig).unwrap();
+            }
+
+            let expected_bytes = hex::decode("9712c3edd73a209c742b8250759db12549b3eaf43b5ca61376d9f30e2747dbcf842d8b2ac0901d2a093713e20284a7670fcf6954e9ab93de991bb9b313e664785a075fc285806fa5224c82bde146561b446ccfc706a64b8579513cfc4ff1d930").unwrap();
+            let expected_agg_sig = BlsAggregateSignature::deserialize(&expected_bytes).unwrap();
+            assert_eq!(agg_sig, expected_agg_sig);
+        }
+
+        // Test: aggregate_infinity_signature.json
+        {
+            let sigs_bytes = vec![
+                hex::decode("c00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000").unwrap(),
+            ];
+
+            let mut agg_sig = BlsAggregateSignature::infinity();
+            for sig_bytes in &sigs_bytes {
+                let sig = BlsSignature::uncompress(sig_bytes).unwrap();
+                agg_sig.add_assign(&sig).unwrap();
+            }
+
+            let expected_bytes = hex::decode("c00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000").unwrap();
+            let expected_agg_sig = BlsAggregateSignature::deserialize(&expected_bytes).unwrap();
+            assert_eq!(agg_sig, expected_agg_sig);
+        }
+
+        // Test: aggregate_na_signatures.json (empty array)
+        {
+            let sigs_bytes: Vec<Vec<u8>> = vec![];
+            // When input is empty, we expect output to be null, so we skip aggregation
+            assert!(sigs_bytes.is_empty());
+        }
+
+        // Test: aggregate_single_signature.json
+        {
+            let sigs_bytes = vec![
+                hex::decode("b6ed936746e01f8ecf281f020953fbf1f01debd5657c4a383940b020b26507f6076334f91e2366c96e9ab279fb5158090352ea1c5b0c9274504f4f0e7053af24802e51e4568d164fe986834f41e55c8e850ce1f98458c0cfc9ab380b55285a55").unwrap(),
+            ];
+
+            let mut agg_sig = BlsAggregateSignature::infinity();
+            for sig_bytes in &sigs_bytes {
+                let sig = BlsSignature::uncompress(sig_bytes).unwrap();
+                agg_sig.add_assign(&sig).unwrap();
+            }
+
+            let expected_bytes = hex::decode("b6ed936746e01f8ecf281f020953fbf1f01debd5657c4a383940b020b26507f6076334f91e2366c96e9ab279fb5158090352ea1c5b0c9274504f4f0e7053af24802e51e4568d164fe986834f41e55c8e850ce1f98458c0cfc9ab380b55285a55").unwrap();
+            let expected_agg_sig = BlsAggregateSignature::deserialize(&expected_bytes).unwrap();
+            assert_eq!(agg_sig, expected_agg_sig);
+        }
+    }
+
+    fn run_ethereum_bls12_381_verify() {
+        struct NoPrefix;
+        impl SigningDomain for NoPrefix {
+            const PREFIX: &'static [u8] = b"";
+        }
+
+        // Test: verify_valid_case_195246ee3bd3b6ec.json
+        {
+            let pubkey = hex::decode("b53d21a4cfd562c469cc81514d4ce5a6b577d8403d32a394dc265dd190b47fa9f829fdd7963afdf972e5e77854051f6f").unwrap();
+            let message =
+                hex::decode("abababababababababababababababababababababababababababababababab")
+                    .unwrap();
+            let signature = hex::decode("ae82747ddeefe4fd64cf9cedb9b04ae3e8a43420cd255e3c7cd06a8d88b7c7f8638543719981c5d16fa3527c468c25f0026704a6951bde891360c7e8d12ddee0559004ccdbe6046b55bae1b257ee97f7cdb955773d7cf29adf3ccbb9975e4eb9").unwrap();
+            let expected = true;
+
+            let pk = BlsPubKey::uncompress(&pubkey).unwrap();
+            let sig = BlsSignature::uncompress(&signature).unwrap();
+            let ok = sig.verify::<NoPrefix>(&message, &pk).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: verify_valid_case_2ea479adf8c40300.json
+        {
+            let pubkey = hex::decode("a491d1b0ecd9bb917989f0e74f0dea0422eac4a873e5e2644f368dffb9a6e20fd6e10c1b77654d067c0618f6e5a7f79a").unwrap();
+            let message =
+                hex::decode("5656565656565656565656565656565656565656565656565656565656565656")
+                    .unwrap();
+            let signature = hex::decode("882730e5d03f6b42c3abc26d3372625034e1d871b65a8a6b900a56dae22da98abbe1b68f85e49fe7652a55ec3d0591c20767677e33e5cbb1207315c41a9ac03be39c2e7668edc043d6cb1d9fd93033caa8a1c5b0e84bedaeb6c64972503a43eb").unwrap();
+            let expected = true;
+
+            let pk = BlsPubKey::uncompress(&pubkey).unwrap();
+            let sig = BlsSignature::uncompress(&signature).unwrap();
+            let ok = sig.verify::<NoPrefix>(&message, &pk).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: verify_valid_case_2f09d443ab8a3ac2.json
+        {
+            let pubkey = hex::decode("b301803f8b5ac4a1133581fc676dfedc60d891dd5fa99028805e5ea5b08d3491af75d0707adab3b70c6a6a580217bf81").unwrap();
+            let message =
+                hex::decode("0000000000000000000000000000000000000000000000000000000000000000")
+                    .unwrap();
+            let signature = hex::decode("b23c46be3a001c63ca711f87a005c200cc550b9429d5f4eb38d74322144f1b63926da3388979e5321012fb1a0526bcd100b5ef5fe72628ce4cd5e904aeaa3279527843fae5ca9ca675f4f51ed8f83bbf7155da9ecc9663100a885d5dc6df96d9").unwrap();
+            let expected = true;
+
+            let pk = BlsPubKey::uncompress(&pubkey).unwrap();
+            let sig = BlsSignature::uncompress(&signature).unwrap();
+            let ok = sig.verify::<NoPrefix>(&message, &pk).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: verify_valid_case_3208262581c8fc09.json
+        {
+            let pubkey = hex::decode("b301803f8b5ac4a1133581fc676dfedc60d891dd5fa99028805e5ea5b08d3491af75d0707adab3b70c6a6a580217bf81").unwrap();
+            let message =
+                hex::decode("5656565656565656565656565656565656565656565656565656565656565656")
+                    .unwrap();
+            let signature = hex::decode("af1390c3c47acdb37131a51216da683c509fce0e954328a59f93aebda7e4ff974ba208d9a4a2a2389f892a9d418d618418dd7f7a6bc7aa0da999a9d3a5b815bc085e14fd001f6a1948768a3f4afefc8b8240dda329f984cb345c6363272ba4fe").unwrap();
+            let expected = true;
+
+            let pk = BlsPubKey::uncompress(&pubkey).unwrap();
+            let sig = BlsSignature::uncompress(&signature).unwrap();
+            let ok = sig.verify::<NoPrefix>(&message, &pk).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: verify_valid_case_6b3b17f6962a490c.json
+        {
+            let pubkey = hex::decode("b53d21a4cfd562c469cc81514d4ce5a6b577d8403d32a394dc265dd190b47fa9f829fdd7963afdf972e5e77854051f6f").unwrap();
+            let message =
+                hex::decode("5656565656565656565656565656565656565656565656565656565656565656")
+                    .unwrap();
+            let signature = hex::decode("a4efa926610b8bd1c8330c918b7a5e9bf374e53435ef8b7ec186abf62e1b1f65aeaaeb365677ac1d1172a1f5b44b4e6d022c252c58486c0a759fbdc7de15a756acc4d343064035667a594b4c2a6f0b0b421975977f297dba63ee2f63ffe47bb6").unwrap();
+            let expected = true;
+
+            let pk = BlsPubKey::uncompress(&pubkey).unwrap();
+            let sig = BlsSignature::uncompress(&signature).unwrap();
+            let ok = sig.verify::<NoPrefix>(&message, &pk).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: verify_valid_case_6eeb7c52dfd9baf0.json
+        {
+            let pubkey = hex::decode("b301803f8b5ac4a1133581fc676dfedc60d891dd5fa99028805e5ea5b08d3491af75d0707adab3b70c6a6a580217bf81").unwrap();
+            let message =
+                hex::decode("abababababababababababababababababababababababababababababababab")
+                    .unwrap();
+            let signature = hex::decode("9674e2228034527f4c083206032b020310face156d4a4685e2fcaec2f6f3665aa635d90347b6ce124eb879266b1e801d185de36a0a289b85e9039662634f2eea1e02e670bc7ab849d006a70b2f93b84597558a05b879c8d445f387a5d5b653df").unwrap();
+            let expected = true;
+
+            let pk = BlsPubKey::uncompress(&pubkey).unwrap();
+            let sig = BlsSignature::uncompress(&signature).unwrap();
+            let ok = sig.verify::<NoPrefix>(&message, &pk).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: verify_valid_case_8761a0b7e920c323.json
+        {
+            let pubkey = hex::decode("a491d1b0ecd9bb917989f0e74f0dea0422eac4a873e5e2644f368dffb9a6e20fd6e10c1b77654d067c0618f6e5a7f79a").unwrap();
+            let message =
+                hex::decode("abababababababababababababababababababababababababababababababab")
+                    .unwrap();
+            let signature = hex::decode("91347bccf740d859038fcdcaf233eeceb2a436bcaaee9b2aa3bfb70efe29dfb2677562ccbea1c8e061fb9971b0753c240622fab78489ce96768259fc01360346da5b9f579e5da0d941e4c6ba18a0e64906082375394f337fa1af2b7127b0d121").unwrap();
+            let expected = true;
+
+            let pk = BlsPubKey::uncompress(&pubkey).unwrap();
+            let sig = BlsSignature::uncompress(&signature).unwrap();
+            let ok = sig.verify::<NoPrefix>(&message, &pk).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: verify_valid_case_d34885d766d5f705.json
+        {
+            let pubkey = hex::decode("b53d21a4cfd562c469cc81514d4ce5a6b577d8403d32a394dc265dd190b47fa9f829fdd7963afdf972e5e77854051f6f").unwrap();
+            let message =
+                hex::decode("0000000000000000000000000000000000000000000000000000000000000000")
+                    .unwrap();
+            let signature = hex::decode("948a7cb99f76d616c2c564ce9bf4a519f1bea6b0a624a02276443c245854219fabb8d4ce061d255af5330b078d5380681751aa7053da2c98bae898edc218c75f07e24d8802a17cd1f6833b71e58f5eb5b94208b4d0bb3848cecb075ea21be115").unwrap();
+            let expected = true;
+
+            let pk = BlsPubKey::uncompress(&pubkey).unwrap();
+            let sig = BlsSignature::uncompress(&signature).unwrap();
+            let ok = sig.verify::<NoPrefix>(&message, &pk).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: verify_valid_case_e8a50c445c855360.json
+        {
+            let pubkey = hex::decode("a491d1b0ecd9bb917989f0e74f0dea0422eac4a873e5e2644f368dffb9a6e20fd6e10c1b77654d067c0618f6e5a7f79a").unwrap();
+            let message =
+                hex::decode("0000000000000000000000000000000000000000000000000000000000000000")
+                    .unwrap();
+            let signature = hex::decode("b6ed936746e01f8ecf281f020953fbf1f01debd5657c4a383940b020b26507f6076334f91e2366c96e9ab279fb5158090352ea1c5b0c9274504f4f0e7053af24802e51e4568d164fe986834f41e55c8e850ce1f98458c0cfc9ab380b55285a55").unwrap();
+            let expected = true;
+
+            let pk = BlsPubKey::uncompress(&pubkey).unwrap();
+            let sig = BlsSignature::uncompress(&signature).unwrap();
+            let ok = sig.verify::<NoPrefix>(&message, &pk).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: verifycase_one_privkey_47117849458281be.json
+        {
+            let pubkey = hex::decode("97f1d3a73197d7942695638c4fa9ac0fc3688c4f9774b905a14e3a3f171bac586c55e83ff97a1aeffb3af00adb22c6bb").unwrap();
+            let message =
+                hex::decode("1212121212121212121212121212121212121212121212121212121212121212")
+                    .unwrap();
+            let signature = hex::decode("a42ae16f1c2a5fa69c04cb5998d2add790764ce8dd45bf25b29b4700829232052b52352dcff1cf255b3a7810ad7269601810f03b2bc8b68cf289cf295b206770605a190b6842583e47c3d1c0f73c54907bfb2a602157d46a4353a20283018763").unwrap();
+            let expected = true;
+
+            let pk = BlsPubKey::uncompress(&pubkey).unwrap();
+            let sig = BlsSignature::uncompress(&signature).unwrap();
+            let ok = sig.verify::<NoPrefix>(&message, &pk).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: verify_wrong_pubkey_case_195246ee3bd3b6ec.json
+        {
+            let pubkey = hex::decode("b53d21a4cfd562c469cc81514d4ce5a6b577d8403d32a394dc265dd190b47fa9f829fdd7963afdf972e5e77854051f6f").unwrap();
+            let message =
+                hex::decode("abababababababababababababababababababababababababababababababab")
+                    .unwrap();
+            let signature = hex::decode("9674e2228034527f4c083206032b020310face156d4a4685e2fcaec2f6f3665aa635d90347b6ce124eb879266b1e801d185de36a0a289b85e9039662634f2eea1e02e670bc7ab849d006a70b2f93b84597558a05b879c8d445f387a5d5b653df").unwrap();
+            let expected = false;
+
+            let pk = BlsPubKey::uncompress(&pubkey).unwrap();
+            let sig = BlsSignature::uncompress(&signature).unwrap();
+            let ok = sig.verify::<NoPrefix>(&message, &pk).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: verify_wrong_pubkey_case_2ea479adf8c40300.json
+        {
+            let pubkey = hex::decode("a491d1b0ecd9bb917989f0e74f0dea0422eac4a873e5e2644f368dffb9a6e20fd6e10c1b77654d067c0618f6e5a7f79a").unwrap();
+            let message =
+                hex::decode("5656565656565656565656565656565656565656565656565656565656565656")
+                    .unwrap();
+            let signature = hex::decode("a4efa926610b8bd1c8330c918b7a5e9bf374e53435ef8b7ec186abf62e1b1f65aeaaeb365677ac1d1172a1f5b44b4e6d022c252c58486c0a759fbdc7de15a756acc4d343064035667a594b4c2a6f0b0b421975977f297dba63ee2f63ffe47bb6").unwrap();
+            let expected = false;
+
+            let pk = BlsPubKey::uncompress(&pubkey).unwrap();
+            let sig = BlsSignature::uncompress(&signature).unwrap();
+            let ok = sig.verify::<NoPrefix>(&message, &pk).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: verify_wrong_pubkey_case_2f09d443ab8a3ac2.json
+        {
+            let pubkey = hex::decode("b301803f8b5ac4a1133581fc676dfedc60d891dd5fa99028805e5ea5b08d3491af75d0707adab3b70c6a6a580217bf81").unwrap();
+            let message =
+                hex::decode("0000000000000000000000000000000000000000000000000000000000000000")
+                    .unwrap();
+            let signature = hex::decode("b6ed936746e01f8ecf281f020953fbf1f01debd5657c4a383940b020b26507f6076334f91e2366c96e9ab279fb5158090352ea1c5b0c9274504f4f0e7053af24802e51e4568d164fe986834f41e55c8e850ce1f98458c0cfc9ab380b55285a55").unwrap();
+            let expected = false;
+
+            let pk = BlsPubKey::uncompress(&pubkey).unwrap();
+            let sig = BlsSignature::uncompress(&signature).unwrap();
+            let ok = sig.verify::<NoPrefix>(&message, &pk).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: verify_wrong_pubkey_case_3208262581c8fc09.json
+        {
+            let pubkey = hex::decode("b301803f8b5ac4a1133581fc676dfedc60d891dd5fa99028805e5ea5b08d3491af75d0707adab3b70c6a6a580217bf81").unwrap();
+            let message =
+                hex::decode("5656565656565656565656565656565656565656565656565656565656565656")
+                    .unwrap();
+            let signature = hex::decode("882730e5d03f6b42c3abc26d3372625034e1d871b65a8a6b900a56dae22da98abbe1b68f85e49fe7652a55ec3d0591c20767677e33e5cbb1207315c41a9ac03be39c2e7668edc043d6cb1d9fd93033caa8a1c5b0e84bedaeb6c64972503a43eb").unwrap();
+            let expected = false;
+
+            let pk = BlsPubKey::uncompress(&pubkey).unwrap();
+            let sig = BlsSignature::uncompress(&signature).unwrap();
+            let ok = sig.verify::<NoPrefix>(&message, &pk).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: verify_wrong_pubkey_case_6b3b17f6962a490c.json
+        {
+            let pubkey = hex::decode("b53d21a4cfd562c469cc81514d4ce5a6b577d8403d32a394dc265dd190b47fa9f829fdd7963afdf972e5e77854051f6f").unwrap();
+            let message =
+                hex::decode("5656565656565656565656565656565656565656565656565656565656565656")
+                    .unwrap();
+            let signature = hex::decode("af1390c3c47acdb37131a51216da683c509fce0e954328a59f93aebda7e4ff974ba208d9a4a2a2389f892a9d418d618418dd7f7a6bc7aa0da999a9d3a5b815bc085e14fd001f6a1948768a3f4afefc8b8240dda329f984cb345c6363272ba4fe").unwrap();
+            let expected = false;
+
+            let pk = BlsPubKey::uncompress(&pubkey).unwrap();
+            let sig = BlsSignature::uncompress(&signature).unwrap();
+            let ok = sig.verify::<NoPrefix>(&message, &pk).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: verify_wrong_pubkey_case_6eeb7c52dfd9baf0.json
+        {
+            let pubkey = hex::decode("b301803f8b5ac4a1133581fc676dfedc60d891dd5fa99028805e5ea5b08d3491af75d0707adab3b70c6a6a580217bf81").unwrap();
+            let message =
+                hex::decode("abababababababababababababababababababababababababababababababab")
+                    .unwrap();
+            let signature = hex::decode("91347bccf740d859038fcdcaf233eeceb2a436bcaaee9b2aa3bfb70efe29dfb2677562ccbea1c8e061fb9971b0753c240622fab78489ce96768259fc01360346da5b9f579e5da0d941e4c6ba18a0e64906082375394f337fa1af2b7127b0d121").unwrap();
+            let expected = false;
+
+            let pk = BlsPubKey::uncompress(&pubkey).unwrap();
+            let sig = BlsSignature::uncompress(&signature).unwrap();
+            let ok = sig.verify::<NoPrefix>(&message, &pk).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: verify_wrong_pubkey_case_8761a0b7e920c323.json
+        {
+            let pubkey = hex::decode("a491d1b0ecd9bb917989f0e74f0dea0422eac4a873e5e2644f368dffb9a6e20fd6e10c1b77654d067c0618f6e5a7f79a").unwrap();
+            let message =
+                hex::decode("abababababababababababababababababababababababababababababababab")
+                    .unwrap();
+            let signature = hex::decode("ae82747ddeefe4fd64cf9cedb9b04ae3e8a43420cd255e3c7cd06a8d88b7c7f8638543719981c5d16fa3527c468c25f0026704a6951bde891360c7e8d12ddee0559004ccdbe6046b55bae1b257ee97f7cdb955773d7cf29adf3ccbb9975e4eb9").unwrap();
+            let expected = false;
+
+            let pk = BlsPubKey::uncompress(&pubkey).unwrap();
+            let sig = BlsSignature::uncompress(&signature).unwrap();
+            let ok = sig.verify::<NoPrefix>(&message, &pk).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: verify_wrong_pubkey_case_d34885d766d5f705.json
+        {
+            let pubkey = hex::decode("b53d21a4cfd562c469cc81514d4ce5a6b577d8403d32a394dc265dd190b47fa9f829fdd7963afdf972e5e77854051f6f").unwrap();
+            let message =
+                hex::decode("0000000000000000000000000000000000000000000000000000000000000000")
+                    .unwrap();
+            let signature = hex::decode("b23c46be3a001c63ca711f87a005c200cc550b9429d5f4eb38d74322144f1b63926da3388979e5321012fb1a0526bcd100b5ef5fe72628ce4cd5e904aeaa3279527843fae5ca9ca675f4f51ed8f83bbf7155da9ecc9663100a885d5dc6df96d9").unwrap();
+            let expected = false;
+
+            let pk = BlsPubKey::uncompress(&pubkey).unwrap();
+            let sig = BlsSignature::uncompress(&signature).unwrap();
+            let ok = sig.verify::<NoPrefix>(&message, &pk).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: verify_wrong_pubkey_case_e8a50c445c855360.json
+        {
+            let pubkey = hex::decode("a491d1b0ecd9bb917989f0e74f0dea0422eac4a873e5e2644f368dffb9a6e20fd6e10c1b77654d067c0618f6e5a7f79a").unwrap();
+            let message =
+                hex::decode("0000000000000000000000000000000000000000000000000000000000000000")
+                    .unwrap();
+            let signature = hex::decode("948a7cb99f76d616c2c564ce9bf4a519f1bea6b0a624a02276443c245854219fabb8d4ce061d255af5330b078d5380681751aa7053da2c98bae898edc218c75f07e24d8802a17cd1f6833b71e58f5eb5b94208b4d0bb3848cecb075ea21be115").unwrap();
+            let expected = false;
+
+            let pk = BlsPubKey::uncompress(&pubkey).unwrap();
+            let sig = BlsSignature::uncompress(&signature).unwrap();
+            let ok = sig.verify::<NoPrefix>(&message, &pk).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: verify_tampered_signature_case_195246ee3bd3b6ec.json
+        {
+            let pubkey = hex::decode("b53d21a4cfd562c469cc81514d4ce5a6b577d8403d32a394dc265dd190b47fa9f829fdd7963afdf972e5e77854051f6f").unwrap();
+            let message =
+                hex::decode("abababababababababababababababababababababababababababababababab")
+                    .unwrap();
+            let signature = hex::decode("ae82747ddeefe4fd64cf9cedb9b04ae3e8a43420cd255e3c7cd06a8d88b7c7f8638543719981c5d16fa3527c468c25f0026704a6951bde891360c7e8d12ddee0559004ccdbe6046b55bae1b257ee97f7cdb955773d7cf29adf3ccbb9ffffffff").unwrap();
+            let expected = false;
+
+            let pk = match BlsPubKey::uncompress(&pubkey) {
+                Ok(pk) => pk,
+                Err(_) => {
+                    assert!(!expected);
+                    return;
+                }
+            };
+            let sig = match BlsSignature::uncompress(&signature) {
+                Ok(sig) => sig,
+                Err(_) => {
+                    assert!(!expected);
+                    return;
+                }
+            };
+            let ok = sig.verify::<NoPrefix>(&message, &pk).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: verify_tampered_signature_case_2ea479adf8c40300.json
+        {
+            let pubkey = hex::decode("a491d1b0ecd9bb917989f0e74f0dea0422eac4a873e5e2644f368dffb9a6e20fd6e10c1b77654d067c0618f6e5a7f79a").unwrap();
+            let message =
+                hex::decode("5656565656565656565656565656565656565656565656565656565656565656")
+                    .unwrap();
+            let signature = hex::decode("882730e5d03f6b42c3abc26d3372625034e1d871b65a8a6b900a56dae22da98abbe1b68f85e49fe7652a55ec3d0591c20767677e33e5cbb1207315c41a9ac03be39c2e7668edc043d6cb1d9fd93033caa8a1c5b0e84bedaeb6c64972ffffffff").unwrap();
+            let expected = false;
+
+            let pk = match BlsPubKey::uncompress(&pubkey) {
+                Ok(pk) => pk,
+                Err(_) => {
+                    assert!(!expected);
+                    return;
+                }
+            };
+            let sig = match BlsSignature::uncompress(&signature) {
+                Ok(sig) => sig,
+                Err(_) => {
+                    assert!(!expected);
+                    return;
+                }
+            };
+            let ok = sig.verify::<NoPrefix>(&message, &pk).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: verify_tampered_signature_case_2f09d443ab8a3ac2.json
+        {
+            let pubkey = hex::decode("b301803f8b5ac4a1133581fc676dfedc60d891dd5fa99028805e5ea5b08d3491af75d0707adab3b70c6a6a580217bf81").unwrap();
+            let message =
+                hex::decode("0000000000000000000000000000000000000000000000000000000000000000")
+                    .unwrap();
+            let signature = hex::decode("b23c46be3a001c63ca711f87a005c200cc550b9429d5f4eb38d74322144f1b63926da3388979e5321012fb1a0526bcd100b5ef5fe72628ce4cd5e904aeaa3279527843fae5ca9ca675f4f51ed8f83bbf7155da9ecc9663100a885d5dffffffff").unwrap();
+            let expected = false;
+
+            let pk = match BlsPubKey::uncompress(&pubkey) {
+                Ok(pk) => pk,
+                Err(_) => {
+                    assert!(!expected);
+                    return;
+                }
+            };
+            let sig = match BlsSignature::uncompress(&signature) {
+                Ok(sig) => sig,
+                Err(_) => {
+                    assert!(!expected);
+                    return;
+                }
+            };
+            let ok = sig.verify::<NoPrefix>(&message, &pk).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: verify_tampered_signature_case_3208262581c8fc09.json
+        {
+            let pubkey = hex::decode("b301803f8b5ac4a1133581fc676dfedc60d891dd5fa99028805e5ea5b08d3491af75d0707adab3b70c6a6a580217bf81").unwrap();
+            let message =
+                hex::decode("5656565656565656565656565656565656565656565656565656565656565656")
+                    .unwrap();
+            let signature = hex::decode("af1390c3c47acdb37131a51216da683c509fce0e954328a59f93aebda7e4ff974ba208d9a4a2a2389f892a9d418d618418dd7f7a6bc7aa0da999a9d3a5b815bc085e14fd001f6a1948768a3f4afefc8b8240dda329f984cb345c6363ffffffff").unwrap();
+            let expected = false;
+
+            let pk = match BlsPubKey::uncompress(&pubkey) {
+                Ok(pk) => pk,
+                Err(_) => {
+                    assert!(!expected);
+                    return;
+                }
+            };
+            let sig = match BlsSignature::uncompress(&signature) {
+                Ok(sig) => sig,
+                Err(_) => {
+                    assert!(!expected);
+                    return;
+                }
+            };
+            let ok = sig.verify::<NoPrefix>(&message, &pk).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: verify_tampered_signature_case_6b3b17f6962a490c.json
+        {
+            let pubkey = hex::decode("b53d21a4cfd562c469cc81514d4ce5a6b577d8403d32a394dc265dd190b47fa9f829fdd7963afdf972e5e77854051f6f").unwrap();
+            let message =
+                hex::decode("5656565656565656565656565656565656565656565656565656565656565656")
+                    .unwrap();
+            let signature = hex::decode("a4efa926610b8bd1c8330c918b7a5e9bf374e53435ef8b7ec186abf62e1b1f65aeaaeb365677ac1d1172a1f5b44b4e6d022c252c58486c0a759fbdc7de15a756acc4d343064035667a594b4c2a6f0b0b421975977f297dba63ee2f63ffffffff").unwrap();
+            let expected = false;
+
+            let pk = match BlsPubKey::uncompress(&pubkey) {
+                Ok(pk) => pk,
+                Err(_) => {
+                    assert!(!expected);
+                    return;
+                }
+            };
+            let sig = match BlsSignature::uncompress(&signature) {
+                Ok(sig) => sig,
+                Err(_) => {
+                    assert!(!expected);
+                    return;
+                }
+            };
+            let ok = sig.verify::<NoPrefix>(&message, &pk).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: verify_tampered_signature_case_6eeb7c52dfd9baf0.json
+        {
+            let pubkey = hex::decode("b301803f8b5ac4a1133581fc676dfedc60d891dd5fa99028805e5ea5b08d3491af75d0707adab3b70c6a6a580217bf81").unwrap();
+            let message =
+                hex::decode("abababababababababababababababababababababababababababababababab")
+                    .unwrap();
+            let signature = hex::decode("9674e2228034527f4c083206032b020310face156d4a4685e2fcaec2f6f3665aa635d90347b6ce124eb879266b1e801d185de36a0a289b85e9039662634f2eea1e02e670bc7ab849d006a70b2f93b84597558a05b879c8d445f387a5ffffffff").unwrap();
+            let expected = false;
+
+            let pk = match BlsPubKey::uncompress(&pubkey) {
+                Ok(pk) => pk,
+                Err(_) => {
+                    assert!(!expected);
+                    return;
+                }
+            };
+            let sig = match BlsSignature::uncompress(&signature) {
+                Ok(sig) => sig,
+                Err(_) => {
+                    assert!(!expected);
+                    return;
+                }
+            };
+            let ok = sig.verify::<NoPrefix>(&message, &pk).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: verify_tampered_signature_case_8761a0b7e920c323.json
+        {
+            let pubkey = hex::decode("a491d1b0ecd9bb917989f0e74f0dea0422eac4a873e5e2644f368dffb9a6e20fd6e10c1b77654d067c0618f6e5a7f79a").unwrap();
+            let message =
+                hex::decode("abababababababababababababababababababababababababababababababab")
+                    .unwrap();
+            let signature = hex::decode("91347bccf740d859038fcdcaf233eeceb2a436bcaaee9b2aa3bfb70efe29dfb2677562ccbea1c8e061fb9971b0753c240622fab78489ce96768259fc01360346da5b9f579e5da0d941e4c6ba18a0e64906082375394f337fa1af2b71ffffffff").unwrap();
+            let expected = false;
+
+            let pk = match BlsPubKey::uncompress(&pubkey) {
+                Ok(pk) => pk,
+                Err(_) => {
+                    assert!(!expected);
+                    return;
+                }
+            };
+            let sig = match BlsSignature::uncompress(&signature) {
+                Ok(sig) => sig,
+                Err(_) => {
+                    assert!(!expected);
+                    return;
+                }
+            };
+            let ok = sig.verify::<NoPrefix>(&message, &pk).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: verify_tampered_signature_case_d34885d766d5f705.json
+        {
+            let pubkey = hex::decode("b53d21a4cfd562c469cc81514d4ce5a6b577d8403d32a394dc265dd190b47fa9f829fdd7963afdf972e5e77854051f6f").unwrap();
+            let message =
+                hex::decode("0000000000000000000000000000000000000000000000000000000000000000")
+                    .unwrap();
+            let signature = hex::decode("948a7cb99f76d616c2c564ce9bf4a519f1bea6b0a624a02276443c245854219fabb8d4ce061d255af5330b078d5380681751aa7053da2c98bae898edc218c75f07e24d8802a17cd1f6833b71e58f5eb5b94208b4d0bb3848cecb075effffffff").unwrap();
+            let expected = false;
+
+            let pk = match BlsPubKey::uncompress(&pubkey) {
+                Ok(pk) => pk,
+                Err(_) => {
+                    assert!(!expected);
+                    return;
+                }
+            };
+            let sig = match BlsSignature::uncompress(&signature) {
+                Ok(sig) => sig,
+                Err(_) => {
+                    assert!(!expected);
+                    return;
+                }
+            };
+            let ok = sig.verify::<NoPrefix>(&message, &pk).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: verify_tampered_signature_case_e8a50c445c855360.json
+        {
+            let pubkey = hex::decode("a491d1b0ecd9bb917989f0e74f0dea0422eac4a873e5e2644f368dffb9a6e20fd6e10c1b77654d067c0618f6e5a7f79a").unwrap();
+            let message =
+                hex::decode("0000000000000000000000000000000000000000000000000000000000000000")
+                    .unwrap();
+            let signature = hex::decode("b6ed936746e01f8ecf281f020953fbf1f01debd5657c4a383940b020b26507f6076334f91e2366c96e9ab279fb5158090352ea1c5b0c9274504f4f0e7053af24802e51e4568d164fe986834f41e55c8e850ce1f98458c0cfc9ab380bffffffff").unwrap();
+            let expected = false;
+
+            let pk = match BlsPubKey::uncompress(&pubkey) {
+                Ok(pk) => pk,
+                Err(_) => {
+                    assert!(!expected);
+                    return;
+                }
+            };
+            let sig = match BlsSignature::uncompress(&signature) {
+                Ok(sig) => sig,
+                Err(_) => {
+                    assert!(!expected);
+                    return;
+                }
+            };
+            let ok = sig.verify::<NoPrefix>(&message, &pk).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: verify_infinity_pubkey_and_infinity_signature.json
+        {
+            let pubkey = hex::decode("c00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000").unwrap();
+            let message =
+                hex::decode("1212121212121212121212121212121212121212121212121212121212121212")
+                    .unwrap();
+            let signature = hex::decode("c00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000").unwrap();
+            let expected = false;
+
+            let pk = match BlsPubKey::uncompress(&pubkey) {
+                Ok(pk) => pk,
+                Err(_) => {
+                    assert!(!expected);
+                    return;
+                }
+            };
+            let sig = match BlsSignature::uncompress(&signature) {
+                Ok(sig) => sig,
+                Err(_) => {
+                    assert!(!expected);
+                    return;
+                }
+            };
+            let ok = sig.verify::<NoPrefix>(&message, &pk).is_ok();
+            assert_eq!(ok, expected);
+        }
+    }
+
+    fn run_ethereum_bls12_381_sign() {
+        struct NoPrefix;
+        impl SigningDomain for NoPrefix {
+            const PREFIX: &'static [u8] = b"";
+        }
+
+        // Test: sign_case_11b8c7cad5238946.json
+        {
+            let privkey =
+                hex::decode("47b8192d77bf871b62e87859d653922725724a5c031afeabc60bcef5ff665138")
+                    .unwrap();
+            let message =
+                hex::decode("0000000000000000000000000000000000000000000000000000000000000000")
+                    .unwrap();
+            let expected = hex::decode("b23c46be3a001c63ca711f87a005c200cc550b9429d5f4eb38d74322144f1b63926da3388979e5321012fb1a0526bcd100b5ef5fe72628ce4cd5e904aeaa3279527843fae5ca9ca675f4f51ed8f83bbf7155da9ecc9663100a885d5dc6df96d9").unwrap();
+
+            let keypair = BlsKeyPair::from_secret_key_bytes(privkey).unwrap();
+            let sig = BlsSignature::sign::<NoPrefix>(&message, &keypair).compress();
+            assert_eq!(sig, expected);
+        }
+
+        // Test: sign_case_142f678a8d05fcd1.json
+        {
+            let privkey =
+                hex::decode("47b8192d77bf871b62e87859d653922725724a5c031afeabc60bcef5ff665138")
+                    .unwrap();
+            let message =
+                hex::decode("5656565656565656565656565656565656565656565656565656565656565656")
+                    .unwrap();
+            let expected = hex::decode("af1390c3c47acdb37131a51216da683c509fce0e954328a59f93aebda7e4ff974ba208d9a4a2a2389f892a9d418d618418dd7f7a6bc7aa0da999a9d3a5b815bc085e14fd001f6a1948768a3f4afefc8b8240dda329f984cb345c6363272ba4fe").unwrap();
+
+            let keypair = BlsKeyPair::from_secret_key_bytes(privkey).unwrap();
+            let sig = BlsSignature::sign::<NoPrefix>(&message, &keypair).compress();
+            assert_eq!(sig, expected);
+        }
+
+        // Test: sign_case_37286e1a6d1f6eb3.json
+        {
+            let privkey =
+                hex::decode("47b8192d77bf871b62e87859d653922725724a5c031afeabc60bcef5ff665138")
+                    .unwrap();
+            let message =
+                hex::decode("abababababababababababababababababababababababababababababababab")
+                    .unwrap();
+            let expected = hex::decode("9674e2228034527f4c083206032b020310face156d4a4685e2fcaec2f6f3665aa635d90347b6ce124eb879266b1e801d185de36a0a289b85e9039662634f2eea1e02e670bc7ab849d006a70b2f93b84597558a05b879c8d445f387a5d5b653df").unwrap();
+
+            let keypair = BlsKeyPair::from_secret_key_bytes(privkey).unwrap();
+            let sig = BlsSignature::sign::<NoPrefix>(&message, &keypair).compress();
+            assert_eq!(sig, expected);
+        }
+
+        // Test: sign_case_7055381f640f2c1d.json
+        {
+            let privkey =
+                hex::decode("328388aff0d4a5b7dc9205abd374e7e98f3cd9f3418edb4eafda5fb16473d216")
+                    .unwrap();
+            let message =
+                hex::decode("0000000000000000000000000000000000000000000000000000000000000000")
+                    .unwrap();
+            let expected = hex::decode("948a7cb99f76d616c2c564ce9bf4a519f1bea6b0a624a02276443c245854219fabb8d4ce061d255af5330b078d5380681751aa7053da2c98bae898edc218c75f07e24d8802a17cd1f6833b71e58f5eb5b94208b4d0bb3848cecb075ea21be115").unwrap();
+
+            let keypair = BlsKeyPair::from_secret_key_bytes(privkey).unwrap();
+            let sig = BlsSignature::sign::<NoPrefix>(&message, &keypair).compress();
+            assert_eq!(sig, expected);
+        }
+
+        // Test: sign_case_84d45c9c7cca6b92.json
+        {
+            let privkey =
+                hex::decode("328388aff0d4a5b7dc9205abd374e7e98f3cd9f3418edb4eafda5fb16473d216")
+                    .unwrap();
+            let message =
+                hex::decode("abababababababababababababababababababababababababababababababab")
+                    .unwrap();
+            let expected = hex::decode("ae82747ddeefe4fd64cf9cedb9b04ae3e8a43420cd255e3c7cd06a8d88b7c7f8638543719981c5d16fa3527c468c25f0026704a6951bde891360c7e8d12ddee0559004ccdbe6046b55bae1b257ee97f7cdb955773d7cf29adf3ccbb9975e4eb9").unwrap();
+
+            let keypair = BlsKeyPair::from_secret_key_bytes(privkey).unwrap();
+            let sig = BlsSignature::sign::<NoPrefix>(&message, &keypair).compress();
+            assert_eq!(sig, expected);
+        }
+
+        // Test: sign_case_8cd3d4d0d9a5b265.json
+        {
+            let privkey =
+                hex::decode("328388aff0d4a5b7dc9205abd374e7e98f3cd9f3418edb4eafda5fb16473d216")
+                    .unwrap();
+            let message =
+                hex::decode("5656565656565656565656565656565656565656565656565656565656565656")
+                    .unwrap();
+            let expected = hex::decode("a4efa926610b8bd1c8330c918b7a5e9bf374e53435ef8b7ec186abf62e1b1f65aeaaeb365677ac1d1172a1f5b44b4e6d022c252c58486c0a759fbdc7de15a756acc4d343064035667a594b4c2a6f0b0b421975977f297dba63ee2f63ffe47bb6").unwrap();
+
+            let keypair = BlsKeyPair::from_secret_key_bytes(privkey).unwrap();
+            let sig = BlsSignature::sign::<NoPrefix>(&message, &keypair).compress();
+            assert_eq!(sig, expected);
+        }
+
+        // Test: sign_case_c82df61aa3ee60fb.json
+        {
+            let privkey =
+                hex::decode("263dbd792f5b1be47ed85f8938c0f29586af0d3ac7b977f21c278fe1462040e3")
+                    .unwrap();
+            let message =
+                hex::decode("0000000000000000000000000000000000000000000000000000000000000000")
+                    .unwrap();
+            let expected = hex::decode("b6ed936746e01f8ecf281f020953fbf1f01debd5657c4a383940b020b26507f6076334f91e2366c96e9ab279fb5158090352ea1c5b0c9274504f4f0e7053af24802e51e4568d164fe986834f41e55c8e850ce1f98458c0cfc9ab380b55285a55").unwrap();
+
+            let keypair = BlsKeyPair::from_secret_key_bytes(privkey).unwrap();
+            let sig = BlsSignature::sign::<NoPrefix>(&message, &keypair).compress();
+            assert_eq!(sig, expected);
+        }
+
+        // Test: sign_case_d0e28d7e76eb6e9c.json
+        {
+            let privkey =
+                hex::decode("263dbd792f5b1be47ed85f8938c0f29586af0d3ac7b977f21c278fe1462040e3")
+                    .unwrap();
+            let message =
+                hex::decode("5656565656565656565656565656565656565656565656565656565656565656")
+                    .unwrap();
+            let expected = hex::decode("882730e5d03f6b42c3abc26d3372625034e1d871b65a8a6b900a56dae22da98abbe1b68f85e49fe7652a55ec3d0591c20767677e33e5cbb1207315c41a9ac03be39c2e7668edc043d6cb1d9fd93033caa8a1c5b0e84bedaeb6c64972503a43eb").unwrap();
+
+            let keypair = BlsKeyPair::from_secret_key_bytes(privkey).unwrap();
+            let sig = BlsSignature::sign::<NoPrefix>(&message, &keypair).compress();
+            assert_eq!(sig, expected);
+        }
+
+        // Test: sign_case_f2ae1097e7d0e18b.json
+        {
+            let privkey =
+                hex::decode("263dbd792f5b1be47ed85f8938c0f29586af0d3ac7b977f21c278fe1462040e3")
+                    .unwrap();
+            let message =
+                hex::decode("abababababababababababababababababababababababababababababababab")
+                    .unwrap();
+            let expected = hex::decode("91347bccf740d859038fcdcaf233eeceb2a436bcaaee9b2aa3bfb70efe29dfb2677562ccbea1c8e061fb9971b0753c240622fab78489ce96768259fc01360346da5b9f579e5da0d941e4c6ba18a0e64906082375394f337fa1af2b7127b0d121").unwrap();
+
+            let keypair = BlsKeyPair::from_secret_key_bytes(privkey).unwrap();
+            let sig = BlsSignature::sign::<NoPrefix>(&message, &keypair).compress();
+            assert_eq!(sig, expected);
+        }
+
+        // Test: sign_case_zero_privkey.json
+        {
+            let privkey =
+                hex::decode("0000000000000000000000000000000000000000000000000000000000000000")
+                    .unwrap();
+            let _message =
+                hex::decode("abababababababababababababababababababababababababababababababab")
+                    .unwrap();
+            let expected = false;
+
+            // Expected output is null - this should fail
+            assert_eq!(expected, BlsKeyPair::from_secret_key_bytes(privkey).is_ok());
+        }
+    }
+
+    fn run_ethereum_bls12_381_aggregate_verify() {
+        struct NoPrefix;
+        impl SigningDomain for NoPrefix {
+            const PREFIX: &'static [u8] = b"";
+        }
+
+        // Test: aggregate_verify_valid.json
+        {
+            let pubkeys = [
+                hex::decode("a491d1b0ecd9bb917989f0e74f0dea0422eac4a873e5e2644f368dffb9a6e20fd6e10c1b77654d067c0618f6e5a7f79a").unwrap(),
+                hex::decode("b301803f8b5ac4a1133581fc676dfedc60d891dd5fa99028805e5ea5b08d3491af75d0707adab3b70c6a6a580217bf81").unwrap(),
+                hex::decode("b53d21a4cfd562c469cc81514d4ce5a6b577d8403d32a394dc265dd190b47fa9f829fdd7963afdf972e5e77854051f6f").unwrap(),
+            ];
+            let messages = [
+                hex::decode("0000000000000000000000000000000000000000000000000000000000000000")
+                    .unwrap(),
+                hex::decode("5656565656565656565656565656565656565656565656565656565656565656")
+                    .unwrap(),
+                hex::decode("abababababababababababababababababababababababababababababababab")
+                    .unwrap(),
+            ];
+            let signature = hex::decode("9104e74b9dfd3ad502f25d6a5ef57db0ed7d9a0e00f3500586d8ce44231212542fcfaf87840539b398bf07626705cf1105d246ca1062c6c2e1a53029a0f790ed5e3cb1f52f8234dc5144c45fc847c0cd37a92d68e7c5ba7c648a8a339f171244").unwrap();
+            let expected = true;
+
+            let mut pks: Vec<BlsAggregatePubKey> = Vec::new();
+            for pk_bytes in &pubkeys {
+                let pk = BlsPubKey::uncompress(pk_bytes).unwrap();
+                pks.push(BlsAggregatePubKey::from_pubkey(&pk));
+            }
+
+            let aggsig = BlsAggregateSignature::deserialize(&signature).unwrap();
+            let msgs_ref: Vec<&[u8]> = messages.iter().map(|m| m.as_slice()).collect();
+            let pks_ref: Vec<&BlsAggregatePubKey> = pks.iter().collect();
+
+            let ok = aggsig.verify::<NoPrefix>(&msgs_ref, &pks_ref).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: aggregate_verify_infinity_pubkey.json
+        {
+            let pubkeys = [
+                hex::decode("a491d1b0ecd9bb917989f0e74f0dea0422eac4a873e5e2644f368dffb9a6e20fd6e10c1b77654d067c0618f6e5a7f79a").unwrap(),
+                hex::decode("b301803f8b5ac4a1133581fc676dfedc60d891dd5fa99028805e5ea5b08d3491af75d0707adab3b70c6a6a580217bf81").unwrap(),
+                hex::decode("b53d21a4cfd562c469cc81514d4ce5a6b577d8403d32a394dc265dd190b47fa9f829fdd7963afdf972e5e77854051f6f").unwrap(),
+                hex::decode("c00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000").unwrap(), // infinity pubkey
+            ];
+            let messages = [
+                hex::decode("0000000000000000000000000000000000000000000000000000000000000000")
+                    .unwrap(),
+                hex::decode("5656565656565656565656565656565656565656565656565656565656565656")
+                    .unwrap(),
+                hex::decode("abababababababababababababababababababababababababababababababab")
+                    .unwrap(),
+                hex::decode("1212121212121212121212121212121212121212121212121212121212121212")
+                    .unwrap(),
+            ];
+            let signature = hex::decode("9104e74b9dfd3ad502f25d6a5ef57db0ed7d9a0e00f3500586d8ce44231212542fcfaf87840539b398bf07626705cf1105d246ca1062c6c2e1a53029a0f790ed5e3cb1f52f8234dc5144c45fc847c0cd37a92d68e7c5ba7c648a8a339f171244").unwrap();
+            let expected = false;
+
+            let mut pks: Vec<BlsAggregatePubKey> = Vec::new();
+            for pk_bytes in &pubkeys {
+                match BlsPubKey::uncompress(pk_bytes) {
+                    Ok(pk) => pks.push(BlsAggregatePubKey::from_pubkey(&pk)),
+                    Err(_) => {
+                        // Infinity pubkey should fail to uncompress
+                        assert!(!expected);
+                        continue;
+                    }
+                }
+            }
+
+            let aggsig = BlsAggregateSignature::deserialize(&signature).unwrap();
+            let msgs_ref: Vec<&[u8]> = messages.iter().map(|m| m.as_slice()).collect();
+            let pks_ref: Vec<&BlsAggregatePubKey> = pks.iter().collect();
+            let ok = aggsig.verify::<NoPrefix>(&msgs_ref, &pks_ref).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: aggregate_verify_na_pubkeys_and_infinity_signature.json
+        {
+            let pubkeys: Vec<Vec<u8>> = vec![];
+            let messages: Vec<Vec<u8>> = vec![];
+            let signature = hex::decode("c00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000").unwrap();
+            let expected = false;
+
+            let mut pks: Vec<BlsAggregatePubKey> = Vec::new();
+            for pk_bytes in &pubkeys {
+                let pk = BlsPubKey::uncompress(pk_bytes).unwrap();
+                pks.push(BlsAggregatePubKey::from_pubkey(&pk));
+            }
+            let aggsig = BlsAggregateSignature::deserialize(&signature).unwrap();
+            let msgs_ref: Vec<&[u8]> = messages.iter().map(|m| m.as_slice()).collect();
+            let pks_ref: Vec<&BlsAggregatePubKey> = pks.iter().collect();
+
+            let ok = aggsig.verify::<NoPrefix>(&msgs_ref, &pks_ref).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: aggregate_verify_na_pubkeys_and_na_signature.json
+        {
+            let pubkeys: Vec<Vec<u8>> = vec![];
+            let messages: Vec<Vec<u8>> = vec![];
+            let signature = hex::decode("000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000").unwrap();
+            let expected = false;
+
+            let mut pks: Vec<BlsAggregatePubKey> = Vec::new();
+            for pk_bytes in &pubkeys {
+                let pk = BlsPubKey::uncompress(pk_bytes).unwrap();
+                pks.push(BlsAggregatePubKey::from_pubkey(&pk));
+            }
+            let msgs_ref: Vec<&[u8]> = messages.iter().map(|m| m.as_slice()).collect();
+            let pks_ref: Vec<&BlsAggregatePubKey> = pks.iter().collect();
+
+            // Zero signature might fail to deserialize
+            match BlsAggregateSignature::deserialize(&signature) {
+                Ok(aggsig) => {
+                    let ok = aggsig.verify::<NoPrefix>(&msgs_ref, &pks_ref).is_ok();
+                    assert_eq!(ok, expected);
+                }
+                Err(_) => {
+                    assert!(!expected);
+                }
+            }
+        }
+
+        // Test: aggregate_verify_tampered_signature.json
+        {
+            let pubkeys = [
+                hex::decode("a491d1b0ecd9bb917989f0e74f0dea0422eac4a873e5e2644f368dffb9a6e20fd6e10c1b77654d067c0618f6e5a7f79a").unwrap(),
+                hex::decode("b301803f8b5ac4a1133581fc676dfedc60d891dd5fa99028805e5ea5b08d3491af75d0707adab3b70c6a6a580217bf81").unwrap(),
+                hex::decode("b53d21a4cfd562c469cc81514d4ce5a6b577d8403d32a394dc265dd190b47fa9f829fdd7963afdf972e5e77854051f6f").unwrap(),
+            ];
+            let messages = [
+                hex::decode("0000000000000000000000000000000000000000000000000000000000000000")
+                    .unwrap(),
+                hex::decode("5656565656565656565656565656565656565656565656565656565656565656")
+                    .unwrap(),
+                hex::decode("abababababababababababababababababababababababababababababababab")
+                    .unwrap(),
+            ];
+            let signature = hex::decode("9104e74bffffffff").unwrap(); // Tampered/truncated
+            let expected = false;
+
+            let mut pks: Vec<BlsAggregatePubKey> = Vec::new();
+            for pk_bytes in &pubkeys {
+                let pk = BlsPubKey::uncompress(pk_bytes).unwrap();
+                pks.push(BlsAggregatePubKey::from_pubkey(&pk));
+            }
+            let pks_ref: Vec<&BlsAggregatePubKey> = pks.iter().collect();
+            let msgs_ref: Vec<&[u8]> = messages.iter().map(|m| m.as_slice()).collect();
+
+            // This should fail to deserialize due to truncated signature
+            match BlsAggregateSignature::deserialize(&signature) {
+                Ok(aggsig) => {
+                    let ok = aggsig.verify::<NoPrefix>(&msgs_ref, &pks_ref).is_ok();
+                    assert_eq!(ok, expected);
+                }
+                Err(_) => {
+                    assert!(!expected);
+                }
+            }
+        }
+    }
+
+    fn run_ethereum_bls12_381_batch_verify() {
+        struct NoPrefix;
+        impl SigningDomain for NoPrefix {
+            const PREFIX: &'static [u8] = b"";
+        }
+
+        // Test: batc_verify_valid_signature_set.json
+        {
+            let pubkeys = [
+                hex::decode("a491d1b0ecd9bb917989f0e74f0dea0422eac4a873e5e2644f368dffb9a6e20fd6e10c1b77654d067c0618f6e5a7f79a").unwrap(),
+                hex::decode("b301803f8b5ac4a1133581fc676dfedc60d891dd5fa99028805e5ea5b08d3491af75d0707adab3b70c6a6a580217bf81").unwrap(),
+                hex::decode("b53d21a4cfd562c469cc81514d4ce5a6b577d8403d32a394dc265dd190b47fa9f829fdd7963afdf972e5e77854051f6f").unwrap(),
+            ];
+            let messages = [
+                hex::decode("0000000000000000000000000000000000000000000000000000000000000000")
+                    .unwrap(),
+                hex::decode("5656565656565656565656565656565656565656565656565656565656565656")
+                    .unwrap(),
+                hex::decode("abababababababababababababababababababababababababababababababab")
+                    .unwrap(),
+            ];
+            let signatures = [
+                hex::decode("b6ed936746e01f8ecf281f020953fbf1f01debd5657c4a383940b020b26507f6076334f91e2366c96e9ab279fb5158090352ea1c5b0c9274504f4f0e7053af24802e51e4568d164fe986834f41e55c8e850ce1f98458c0cfc9ab380b55285a55").unwrap(),
+                hex::decode("af1390c3c47acdb37131a51216da683c509fce0e954328a59f93aebda7e4ff974ba208d9a4a2a2389f892a9d418d618418dd7f7a6bc7aa0da999a9d3a5b815bc085e14fd001f6a1948768a3f4afefc8b8240dda329f984cb345c6363272ba4fe").unwrap(),
+                hex::decode("ae82747ddeefe4fd64cf9cedb9b04ae3e8a43420cd255e3c7cd06a8d88b7c7f8638543719981c5d16fa3527c468c25f0026704a6951bde891360c7e8d12ddee0559004ccdbe6046b55bae1b257ee97f7cdb955773d7cf29adf3ccbb9975e4eb9").unwrap(),
+            ];
+            let expected = true;
+
+            // Batch verify semantics: true iff all individual verifications succeed
+            let mut ok = true;
+            for i in 0..pubkeys.len() {
+                let pk = match BlsPubKey::uncompress(&pubkeys[i]) {
+                    Ok(pk) => pk,
+                    Err(_) => {
+                        ok = false;
+                        break;
+                    }
+                };
+                let sig = match BlsSignature::uncompress(&signatures[i]) {
+                    Ok(sig) => sig,
+                    Err(_) => {
+                        ok = false;
+                        break;
+                    }
+                };
+                if sig.verify::<NoPrefix>(&messages[i], &pk).is_err() {
+                    ok = false;
+                    break;
+                }
+            }
+            assert_eq!(ok, expected);
+        }
+    }
+
+    fn run_ethereum_bls12_381_fast_aggregate_verify() {
+        use blst::BLST_ERROR::BLST_PK_IS_INFINITY;
+        struct NoPrefix;
+        impl SigningDomain for NoPrefix {
+            const PREFIX: &'static [u8] = b"";
+        }
+
+        // Test: fast_aggregate_verify_valid_3d7576f3c0e3570a.json
+        {
+            let pubkeys = vec![
+                hex::decode("a491d1b0ecd9bb917989f0e74f0dea0422eac4a873e5e2644f368dffb9a6e20fd6e10c1b77654d067c0618f6e5a7f79a").unwrap(),
+                hex::decode("b301803f8b5ac4a1133581fc676dfedc60d891dd5fa99028805e5ea5b08d3491af75d0707adab3b70c6a6a580217bf81").unwrap(),
+                hex::decode("b53d21a4cfd562c469cc81514d4ce5a6b577d8403d32a394dc265dd190b47fa9f829fdd7963afdf972e5e77854051f6f").unwrap(),
+            ];
+            let message =
+                hex::decode("abababababababababababababababababababababababababababababababab")
+                    .unwrap();
+            let signature = hex::decode("9712c3edd73a209c742b8250759db12549b3eaf43b5ca61376d9f30e2747dbcf842d8b2ac0901d2a093713e20284a7670fcf6954e9ab93de991bb9b313e664785a075fc285806fa5224c82bde146561b446ccfc706a64b8579513cfc4ff1d930").unwrap();
+            let expected = true;
+
+            let mut pks_plain: Vec<BlsPubKey> = Vec::new();
+            for pk_bytes in &pubkeys {
+                let pk = BlsPubKey::uncompress(pk_bytes).unwrap();
+                pks_plain.push(pk);
+            }
+            let pk_refs: Vec<&BlsPubKey> = pks_plain.iter().collect();
+            let agg_pk = BlsAggregatePubKey::aggregate(&pk_refs).unwrap();
+            let aggsig = BlsAggregateSignature::deserialize(&signature).unwrap();
+            let ok = aggsig.fast_verify::<NoPrefix>(&message, &agg_pk).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: fast_aggregate_verify_valid_5e745ad0c6199a6c.json
+        {
+            let pubkeys = vec![
+                hex::decode("a491d1b0ecd9bb917989f0e74f0dea0422eac4a873e5e2644f368dffb9a6e20fd6e10c1b77654d067c0618f6e5a7f79a").unwrap(),
+            ];
+            let message =
+                hex::decode("0000000000000000000000000000000000000000000000000000000000000000")
+                    .unwrap();
+            let signature = hex::decode("b6ed936746e01f8ecf281f020953fbf1f01debd5657c4a383940b020b26507f6076334f91e2366c96e9ab279fb5158090352ea1c5b0c9274504f4f0e7053af24802e51e4568d164fe986834f41e55c8e850ce1f98458c0cfc9ab380b55285a55").unwrap();
+            let expected = true;
+
+            let mut pks_plain: Vec<BlsPubKey> = Vec::new();
+            for pk_bytes in &pubkeys {
+                let pk = BlsPubKey::uncompress(pk_bytes).unwrap();
+                pks_plain.push(pk);
+            }
+            let pk_refs: Vec<&BlsPubKey> = pks_plain.iter().collect();
+            let agg_pk = BlsAggregatePubKey::aggregate(&pk_refs).unwrap();
+            let aggsig = BlsAggregateSignature::deserialize(&signature).unwrap();
+            let ok = aggsig.fast_verify::<NoPrefix>(&message, &agg_pk).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: fast_aggregate_verify_valid_652ce62f09290811.json
+        {
+            let pubkeys = vec![
+                hex::decode("a491d1b0ecd9bb917989f0e74f0dea0422eac4a873e5e2644f368dffb9a6e20fd6e10c1b77654d067c0618f6e5a7f79a").unwrap(),
+                hex::decode("b301803f8b5ac4a1133581fc676dfedc60d891dd5fa99028805e5ea5b08d3491af75d0707adab3b70c6a6a580217bf81").unwrap(),
+            ];
+            let message =
+                hex::decode("5656565656565656565656565656565656565656565656565656565656565656")
+                    .unwrap();
+            let signature = hex::decode("912c3615f69575407db9392eb21fee18fff797eeb2fbe1816366ca2a08ae574d8824dbfafb4c9eaa1cf61b63c6f9b69911f269b664c42947dd1b53ef1081926c1e82bb2a465f927124b08391a5249036146d6f3f1e17ff5f162f779746d830d1").unwrap();
+            let expected = true;
+
+            let mut pks_plain: Vec<BlsPubKey> = Vec::new();
+            for pk_bytes in &pubkeys {
+                let pk = BlsPubKey::uncompress(pk_bytes).unwrap();
+                pks_plain.push(pk);
+            }
+            let pk_refs: Vec<&BlsPubKey> = pks_plain.iter().collect();
+            let agg_pk = BlsAggregatePubKey::aggregate(&pk_refs).unwrap();
+            let aggsig = BlsAggregateSignature::deserialize(&signature).unwrap();
+            let ok = aggsig.fast_verify::<NoPrefix>(&message, &agg_pk).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: fast_aggregate_verify_extra_pubkey_4f079f946446fabf.json
+        {
+            let pubkeys = vec![
+                hex::decode("a491d1b0ecd9bb917989f0e74f0dea0422eac4a873e5e2644f368dffb9a6e20fd6e10c1b77654d067c0618f6e5a7f79a").unwrap(),
+                hex::decode("b301803f8b5ac4a1133581fc676dfedc60d891dd5fa99028805e5ea5b08d3491af75d0707adab3b70c6a6a580217bf81").unwrap(),
+                hex::decode("b53d21a4cfd562c469cc81514d4ce5a6b577d8403d32a394dc265dd190b47fa9f829fdd7963afdf972e5e77854051f6f").unwrap(),
+            ];
+            let message =
+                hex::decode("5656565656565656565656565656565656565656565656565656565656565656")
+                    .unwrap();
+            let signature = hex::decode("912c3615f69575407db9392eb21fee18fff797eeb2fbe1816366ca2a08ae574d8824dbfafb4c9eaa1cf61b63c6f9b69911f269b664c42947dd1b53ef1081926c1e82bb2a465f927124b08391a5249036146d6f3f1e17ff5f162f779746d830d1").unwrap();
+            let expected = false;
+
+            let mut pks_plain: Vec<BlsPubKey> = Vec::new();
+            for pk_bytes in &pubkeys {
+                let pk = BlsPubKey::uncompress(pk_bytes).unwrap();
+                pks_plain.push(pk);
+            }
+            let pk_refs: Vec<&BlsPubKey> = pks_plain.iter().collect();
+            let agg_pk = BlsAggregatePubKey::aggregate(&pk_refs).unwrap();
+            let aggsig = BlsAggregateSignature::deserialize(&signature).unwrap();
+            let ok = aggsig.fast_verify::<NoPrefix>(&message, &agg_pk).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: fast_aggregate_verify_extra_pubkey_5a38e6b4017fe4dd.json
+        {
+            let pubkeys = vec![
+                hex::decode("a491d1b0ecd9bb917989f0e74f0dea0422eac4a873e5e2644f368dffb9a6e20fd6e10c1b77654d067c0618f6e5a7f79a").unwrap(),
+                hex::decode("b301803f8b5ac4a1133581fc676dfedc60d891dd5fa99028805e5ea5b08d3491af75d0707adab3b70c6a6a580217bf81").unwrap(),
+                hex::decode("b53d21a4cfd562c469cc81514d4ce5a6b577d8403d32a394dc265dd190b47fa9f829fdd7963afdf972e5e77854051f6f").unwrap(),
+                hex::decode("b53d21a4cfd562c469cc81514d4ce5a6b577d8403d32a394dc265dd190b47fa9f829fdd7963afdf972e5e77854051f6f").unwrap(),
+            ];
+            let message =
+                hex::decode("abababababababababababababababababababababababababababababababab")
+                    .unwrap();
+            let signature = hex::decode("9712c3edd73a209c742b8250759db12549b3eaf43b5ca61376d9f30e2747dbcf842d8b2ac0901d2a093713e20284a7670fcf6954e9ab93de991bb9b313e664785a075fc285806fa5224c82bde146561b446ccfc706a64b8579513cfc4ff1d930").unwrap();
+            let expected = false;
+
+            let mut pks_plain: Vec<BlsPubKey> = Vec::new();
+            for pk_bytes in &pubkeys {
+                let pk = BlsPubKey::uncompress(pk_bytes).unwrap();
+                pks_plain.push(pk);
+            }
+            let pk_refs: Vec<&BlsPubKey> = pks_plain.iter().collect();
+            let agg_pk = BlsAggregatePubKey::aggregate(&pk_refs).unwrap();
+            let aggsig = BlsAggregateSignature::deserialize(&signature).unwrap();
+            let ok = aggsig.fast_verify::<NoPrefix>(&message, &agg_pk).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: fast_aggregate_verify_extra_pubkey_a698ea45b109f303.json
+        {
+            let pubkeys = vec![
+                hex::decode("a491d1b0ecd9bb917989f0e74f0dea0422eac4a873e5e2644f368dffb9a6e20fd6e10c1b77654d067c0618f6e5a7f79a").unwrap(),
+                hex::decode("b53d21a4cfd562c469cc81514d4ce5a6b577d8403d32a394dc265dd190b47fa9f829fdd7963afdf972e5e77854051f6f").unwrap(),
+            ];
+            let message =
+                hex::decode("0000000000000000000000000000000000000000000000000000000000000000")
+                    .unwrap();
+            let signature = hex::decode("b6ed936746e01f8ecf281f020953fbf1f01debd5657c4a383940b020b26507f6076334f91e2366c96e9ab279fb5158090352ea1c5b0c9274504f4f0e7053af24802e51e4568d164fe986834f41e55c8e850ce1f98458c0cfc9ab380b55285a55").unwrap();
+            let expected = false;
+
+            let mut pks_plain: Vec<BlsPubKey> = Vec::new();
+            for pk_bytes in &pubkeys {
+                let pk = BlsPubKey::uncompress(pk_bytes).unwrap();
+                pks_plain.push(pk);
+            }
+            let pk_refs: Vec<&BlsPubKey> = pks_plain.iter().collect();
+            let agg_pk = BlsAggregatePubKey::aggregate(&pk_refs).unwrap();
+            let aggsig = BlsAggregateSignature::deserialize(&signature).unwrap();
+            let ok = aggsig.fast_verify::<NoPrefix>(&message, &agg_pk).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: fast_aggregate_verify_infinity_pubkey.json
+        {
+            let pubkeys = vec![
+                hex::decode("a491d1b0ecd9bb917989f0e74f0dea0422eac4a873e5e2644f368dffb9a6e20fd6e10c1b77654d067c0618f6e5a7f79a").unwrap(),
+                hex::decode("b301803f8b5ac4a1133581fc676dfedc60d891dd5fa99028805e5ea5b08d3491af75d0707adab3b70c6a6a580217bf81").unwrap(),
+                hex::decode("b53d21a4cfd562c469cc81514d4ce5a6b577d8403d32a394dc265dd190b47fa9f829fdd7963afdf972e5e77854051f6f").unwrap(),
+                hex::decode("c00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000").unwrap(),
+            ];
+            let message =
+                hex::decode("1212121212121212121212121212121212121212121212121212121212121212")
+                    .unwrap();
+            let signature = hex::decode("afcb4d980f079265caa61aee3e26bf48bebc5dc3e7f2d7346834d76cbc812f636c937b6b44a9323d8bc4b1cdf71d6811035ddc2634017faab2845308f568f2b9a0356140727356eae9eded8b87fd8cb8024b440c57aee06076128bb32921f584").unwrap();
+            let expected = false;
+
+            let mut pks_plain: Vec<BlsPubKey> = Vec::new();
+            let mut has_infinity = false;
+            for pk_bytes in &pubkeys {
+                match BlsPubKey::uncompress(pk_bytes) {
+                    Ok(pk) => pks_plain.push(pk),
+                    Err(err) => {
+                        if err == BlsError(BLST_PK_IS_INFINITY) {
+                            has_infinity = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if has_infinity {
+                assert!(!expected);
+            } else {
+                let pk_refs: Vec<&BlsPubKey> = pks_plain.iter().collect();
+                let agg_pk = BlsAggregatePubKey::aggregate(&pk_refs).unwrap();
+                let aggsig = BlsAggregateSignature::deserialize(&signature).unwrap();
+                let ok = aggsig.fast_verify::<NoPrefix>(&message, &agg_pk).is_ok();
+                assert_eq!(ok, expected);
+            }
+        }
+
+        // Test: fast_aggregate_verify_na_pubkeys_and_infinity_signature.json
+        {
+            let pubkeys: Vec<Vec<u8>> = vec![];
+            let message =
+                hex::decode("abababababababababababababababababababababababababababababababab")
+                    .unwrap();
+            let signature = hex::decode("c00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000").unwrap();
+            let expected = false;
+
+            let mut pks_plain: Vec<BlsPubKey> = Vec::new();
+            for pk_bytes in &pubkeys {
+                let pk = BlsPubKey::uncompress(pk_bytes).unwrap();
+                pks_plain.push(pk);
+            }
+            let pk_refs: Vec<&BlsPubKey> = pks_plain.iter().collect();
+            if let Ok(agg_pk) = BlsAggregatePubKey::aggregate(&pk_refs) {
+                if let Ok(aggsig) = BlsAggregateSignature::deserialize(&signature) {
+                    let ok = aggsig.fast_verify::<NoPrefix>(&message, &agg_pk).is_ok();
+                    assert_eq!(ok, expected);
+                }
+            }
+        }
+
+        // Test: fast_aggregate_verify_na_pubkeys_and_na_signature.json
+        {
+            let pubkeys: Vec<Vec<u8>> = vec![];
+            let message =
+                hex::decode("abababababababababababababababababababababababababababababababab")
+                    .unwrap();
+            let signature = hex::decode("000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000").unwrap();
+            let expected = false;
+
+            let mut pks_plain: Vec<BlsPubKey> = Vec::new();
+            for pk_bytes in &pubkeys {
+                let pk = BlsPubKey::uncompress(pk_bytes).unwrap();
+                pks_plain.push(pk);
+            }
+            let pk_refs: Vec<&BlsPubKey> = pks_plain.iter().collect();
+            if let Ok(agg_pk) = BlsAggregatePubKey::aggregate(&pk_refs) {
+                if let Ok(aggsig) = BlsAggregateSignature::deserialize(&signature) {
+                    let ok = aggsig.fast_verify::<NoPrefix>(&message, &agg_pk).is_ok();
+                    assert_eq!(ok, expected);
+                }
+            }
+        }
+
+        // Test: fast_aggregate_verify_tampered_signature_3d7576f3c0e3570a.json
+        {
+            let pubkeys = vec![
+                hex::decode("a491d1b0ecd9bb917989f0e74f0dea0422eac4a873e5e2644f368dffb9a6e20fd6e10c1b77654d067c0618f6e5a7f79a").unwrap(),
+                hex::decode("b301803f8b5ac4a1133581fc676dfedc60d891dd5fa99028805e5ea5b08d3491af75d0707adab3b70c6a6a580217bf81").unwrap(),
+                hex::decode("b53d21a4cfd562c469cc81514d4ce5a6b577d8403d32a394dc265dd190b47fa9f829fdd7963afdf972e5e77854051f6f").unwrap(),
+            ];
+            let message =
+                hex::decode("abababababababababababababababababababababababababababababababab")
+                    .unwrap();
+            let signature = hex::decode("9712c3edd73a209c742b8250759db12549b3eaf43b5ca61376d9f30e2747dbcf842d8b2ac0901d2a093713e20284a7670fcf6954e9ab93de991bb9b313e664785a075fc285806fa5224c82bde146561b446ccfc706a64b8579513cfcffffffff").unwrap();
+            let expected = false;
+
+            let mut pks_plain: Vec<BlsPubKey> = Vec::new();
+            for pk_bytes in &pubkeys {
+                let pk = BlsPubKey::uncompress(pk_bytes).unwrap();
+                pks_plain.push(pk);
+            }
+            let pk_refs: Vec<&BlsPubKey> = pks_plain.iter().collect();
+            let agg_pk = BlsAggregatePubKey::aggregate(&pk_refs).unwrap();
+            match BlsAggregateSignature::deserialize(&signature) {
+                Ok(aggsig) => {
+                    let ok = aggsig.fast_verify::<NoPrefix>(&message, &agg_pk).is_ok();
+                    assert_eq!(ok, expected);
+                }
+                Err(_) => {
+                    assert!(!expected);
+                }
+            }
+        }
+
+        // Test: fast_aggregate_verify_tampered_signature_5e745ad0c6199a6c.json
+        {
+            let pubkeys = vec![
+                hex::decode("a491d1b0ecd9bb917989f0e74f0dea0422eac4a873e5e2644f368dffb9a6e20fd6e10c1b77654d067c0618f6e5a7f79a").unwrap(),
+            ];
+            let message =
+                hex::decode("0000000000000000000000000000000000000000000000000000000000000000")
+                    .unwrap();
+            let signature = hex::decode("b6ed936746e01f8ecf281f020953fbf1f01debd5657c4a383940b020b26507f6076334f91e2366c96e9ab279fb5158090352ea1c5b0c9274504f4f0e7053af24802e51e4568d164fe986834f41e55c8e850ce1f98458c0cfc9ab380bffffffff").unwrap();
+            let expected = false;
+
+            let mut pks_plain: Vec<BlsPubKey> = Vec::new();
+            for pk_bytes in &pubkeys {
+                let pk = BlsPubKey::uncompress(pk_bytes).unwrap();
+                pks_plain.push(pk);
+            }
+            let pk_refs: Vec<&BlsPubKey> = pks_plain.iter().collect();
+            let agg_pk = BlsAggregatePubKey::aggregate(&pk_refs).unwrap();
+            match BlsAggregateSignature::deserialize(&signature) {
+                Ok(aggsig) => {
+                    let ok = aggsig.fast_verify::<NoPrefix>(&message, &agg_pk).is_ok();
+                    assert_eq!(ok, expected);
+                }
+                Err(_) => {
+                    assert!(!expected);
+                }
+            }
+        }
+
+        // Test: fast_aggregate_verify_tampered_signature_652ce62f09290811.json
+        {
+            let pubkeys = vec![
+                hex::decode("a491d1b0ecd9bb917989f0e74f0dea0422eac4a873e5e2644f368dffb9a6e20fd6e10c1b77654d067c0618f6e5a7f79a").unwrap(),
+                hex::decode("b301803f8b5ac4a1133581fc676dfedc60d891dd5fa99028805e5ea5b08d3491af75d0707adab3b70c6a6a580217bf81").unwrap(),
+            ];
+            let message =
+                hex::decode("5656565656565656565656565656565656565656565656565656565656565656")
+                    .unwrap();
+            let signature = hex::decode("912c3615f69575407db9392eb21fee18fff797eeb2fbe1816366ca2a08ae574d8824dbfafb4c9eaa1cf61b63c6f9b69911f269b664c42947dd1b53ef1081926c1e82bb2a465f927124b08391a5249036146d6f3f1e17ff5f162f7797ffffffff").unwrap();
+            let expected = false;
+
+            let mut pks_plain: Vec<BlsPubKey> = Vec::new();
+            for pk_bytes in &pubkeys {
+                let pk = BlsPubKey::uncompress(pk_bytes).unwrap();
+                pks_plain.push(pk);
+            }
+            let pk_refs: Vec<&BlsPubKey> = pks_plain.iter().collect();
+            let agg_pk = BlsAggregatePubKey::aggregate(&pk_refs).unwrap();
+            match BlsAggregateSignature::deserialize(&signature) {
+                Ok(aggsig) => {
+                    let ok = aggsig.fast_verify::<NoPrefix>(&message, &agg_pk).is_ok();
+                    assert_eq!(ok, expected);
+                }
+                Err(_) => {
+                    assert!(!expected);
+                }
+            }
+        }
+    }
+
+    fn run_ethereum_bls12_381_deserialization_g1() {
+        // Test: deserialization_succeeds_correct_point.json
+        {
+            let pubkey_bytes = hex::decode("a491d1b0ecd9bb917989f0e74f0dea0422eac4a873e5e2644f368dffb9a6e20fd6e10c1b77654d067c0618f6e5a7f79a").unwrap();
+            let expected = true;
+
+            let ok = BlsPubKey::uncompress(&pubkey_bytes).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: deserialization_succeeds_infinity_with_true_b_flag.json
+        {
+            let pubkey_bytes = hex::decode("c00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000").unwrap();
+            let expected = true;
+
+            // This is the valid infinity point representation
+            let ok = pubkey_bytes.as_slice() == INFINITY_PUBKEY.as_slice()
+                || BlsPubKey::uncompress(&pubkey_bytes).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: deserialization_fails_infinity_with_false_b_flag.json
+        {
+            let pubkey_bytes = hex::decode("800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000").unwrap();
+            let expected = false;
+
+            let ok = BlsPubKey::uncompress(&pubkey_bytes).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: deserialization_fails_infinity_with_true_b_flag.json
+        {
+            let pubkey_bytes = hex::decode("c01000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000").unwrap();
+            let expected = false;
+
+            let ok = BlsPubKey::uncompress(&pubkey_bytes).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: deserialization_fails_not_in_curve.json
+        {
+            let pubkey_bytes = hex::decode("8123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde0").unwrap();
+            let expected = false;
+
+            let ok = BlsPubKey::uncompress(&pubkey_bytes).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: deserialization_fails_not_in_G1.json
+        {
+            let pubkey_bytes = hex::decode("8123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef").unwrap();
+            let expected = false;
+
+            let ok = BlsPubKey::uncompress(&pubkey_bytes).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: deserialization_fails_too_few_bytes.json
+        {
+            let pubkey_bytes = hex::decode("9a0111ea397fe69a4b1ba7b6434bacd764774b84f38512bf6730d2a0f6b0f6241eabfffeb153ffffb9feffffffffaa").unwrap();
+            let expected = false;
+
+            let ok = BlsPubKey::uncompress(&pubkey_bytes).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: deserialization_fails_too_many_bytes.json
+        {
+            let pubkey_bytes = hex::decode("9a0111ea397fe69a4b1ba7b6434bacd764774b84f38512bf6730d2a0f6b0f6241eabfffeb153ffffb9feffffffffaaa900").unwrap();
+            let expected = false;
+
+            let ok = BlsPubKey::uncompress(&pubkey_bytes).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: deserialization_fails_with_b_flag_and_a_flag_true.json
+        {
+            let pubkey_bytes = hex::decode("e00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000").unwrap();
+            let expected = false;
+
+            let ok = BlsPubKey::uncompress(&pubkey_bytes).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: deserialization_fails_with_b_flag_and_x_nonzero.json
+        {
+            let pubkey_bytes = hex::decode("c123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef").unwrap();
+            let expected = false;
+
+            let ok = BlsPubKey::uncompress(&pubkey_bytes).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: deserialization_fails_with_wrong_c_flag.json
+        {
+            let pubkey_bytes = hex::decode("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef").unwrap();
+            let expected = false;
+
+            let ok = BlsPubKey::uncompress(&pubkey_bytes).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: deserialization_fails_x_equal_to_modulus.json
+        {
+            let pubkey_bytes = hex::decode("9a0111ea397fe69a4b1ba7b6434bacd764774b84f38512bf6730d2a0f6b0f6241eabfffeb153ffffb9feffffffffaaab").unwrap();
+            let expected = false;
+
+            let ok = BlsPubKey::uncompress(&pubkey_bytes).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: deserialization_fails_x_greater_than_modulus.json
+        {
+            let pubkey_bytes = hex::decode("9a0111ea397fe69a4b1ba7b6434bacd764774b84f38512bf6730d2a0f6b0f6241eabfffeb153ffffb9feffffffffaaac").unwrap();
+            let expected = false;
+
+            let ok = BlsPubKey::uncompress(&pubkey_bytes).is_ok();
+            assert_eq!(ok, expected);
+        }
+    }
+
+    fn run_ethereum_bls12_381_deserialization_g2() {
+        // Test: deserialization_succeeds_correct_point.json
+        {
+            let signature_bytes = hex::decode("b2cc74bc9f089ed9764bbceac5edba416bef5e73701288977b9cac1ccb6964269d4ebf78b4e8aa7792ba09d3e49c8e6a1351bdf582971f796bbaf6320e81251c9d28f674d720cca07ed14596b96697cf18238e0e03ebd7fc1353d885a39407e0").unwrap();
+            let expected = true;
+
+            let ok = BlsSignature::uncompress(&signature_bytes).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: deserialization_succeeds_infinity_with_true_b_flag.json
+        {
+            let signature_bytes = hex::decode("c00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000").unwrap();
+            let expected = true;
+
+            // This is the valid infinity point representation
+            let ok = signature_bytes.as_slice() == INFINITY_SIGNATURE.as_slice()
+                || BlsSignature::uncompress(&signature_bytes).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: deserialization_fails_infinity_with_false_b_flag.json
+        {
+            let signature_bytes = hex::decode("800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000").unwrap();
+            let expected = false;
+
+            let ok = BlsSignature::uncompress(&signature_bytes).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: deserialization_fails_infinity_with_true_b_flag.json
+        {
+            let signature_bytes = hex::decode("c01000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000").unwrap();
+            let expected = false;
+
+            let ok = BlsSignature::uncompress(&signature_bytes).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: deserialization_fails_not_in_curve.json
+        {
+            let signature_bytes = hex::decode("8123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde0").unwrap();
+            let expected = false;
+
+            let ok = BlsSignature::uncompress(&signature_bytes).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: deserialization_fails_not_in_G2.json
+        {
+            let signature_bytes = hex::decode("8123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef").unwrap();
+            let expected = false;
+
+            let sig = BlsSignature::uncompress(&signature_bytes).unwrap();
+            assert_eq!(expected, sig.validate(true).is_ok());
+        }
+
+        // Test: deserialization_fails_too_few_bytes.json
+        {
+            let signature_bytes = hex::decode("8123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcd").unwrap();
+            let expected = false;
+
+            let ok = BlsSignature::uncompress(&signature_bytes).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: deserialization_fails_too_many_bytes.json
+        {
+            let signature_bytes = hex::decode("8123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdefff").unwrap();
+            let expected = false;
+
+            let ok = BlsSignature::uncompress(&signature_bytes).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: deserialization_fails_with_b_flag_and_a_flag_true.json
+        {
+            let signature_bytes = hex::decode("e00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000").unwrap();
+            let expected = false;
+
+            let ok = BlsSignature::uncompress(&signature_bytes).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: deserialization_fails_with_b_flag_and_x_nonzero.json
+        {
+            let signature_bytes = hex::decode("c123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef").unwrap();
+            let expected = false;
+
+            let ok = BlsSignature::uncompress(&signature_bytes).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: deserialization_fails_with_wrong_c_flag.json
+        {
+            let signature_bytes = hex::decode("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef").unwrap();
+            let expected = false;
+
+            let ok = BlsSignature::uncompress(&signature_bytes).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: deserialization_fails_xim_equal_to_modulus.json
+        {
+            let signature_bytes = hex::decode("9a0111ea397fe69a4b1ba7b6434bacd764774b84f38512bf6730d2a0f6b0f6241eabfffeb153ffffb9feffffffffaaab000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000").unwrap();
+            let expected = false;
+
+            let ok = BlsSignature::uncompress(&signature_bytes).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: deserialization_fails_xim_greater_than_modulus.json
+        {
+            let signature_bytes = hex::decode("9a0111ea397fe69a4b1ba7b6434bacd764774b84f38512bf6730d2a0f6b0f6241eabfffeb153ffffb9feffffffffaaac000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000").unwrap();
+            let expected = false;
+
+            let ok = BlsSignature::uncompress(&signature_bytes).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: deserialization_fails_xre_equal_to_modulus.json
+        {
+            let signature_bytes = hex::decode("8000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001a0111ea397fe69a4b1ba7b6434bacd764774b84f38512bf6730d2a0f6b0f6241eabfffeb153ffffb9feffffffffaaab").unwrap();
+            let expected = false;
+
+            let ok = BlsSignature::uncompress(&signature_bytes).is_ok();
+            assert_eq!(ok, expected);
+        }
+
+        // Test: deserialization_fails_xre_greater_than_modulus.json
+        {
+            let signature_bytes = hex::decode("8000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001a0111ea397fe69a4b1ba7b6434bacd764774b84f38512bf6730d2a0f6b0f6241eabfffeb153ffffb9feffffffffaaac").unwrap();
+            let expected = false;
+
+            let ok = BlsSignature::uncompress(&signature_bytes).is_ok();
+            assert_eq!(ok, expected);
+        }
     }
 }
