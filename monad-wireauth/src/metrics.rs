@@ -74,6 +74,9 @@ pub struct MetricNames {
     pub enqueued_keepalive: &'static str,
 
     pub rate_limit_drop: &'static str,
+
+    pub initiator_buffered_messages: &'static str,
+    pub initiator_messages_sent_from_buffer: &'static str,
 }
 
 #[macro_export]
@@ -268,6 +271,17 @@ macro_rules! define_metric_names {
             enqueued_keepalive: concat!("monad.wireauth.", $transport, ".enqueued.keepalive"),
 
             rate_limit_drop: concat!("monad.wireauth.", $transport, ".rate_limit.drop"),
+
+            initiator_buffered_messages: concat!(
+                "monad.wireauth.",
+                $transport,
+                ".initiator.buffered_messages"
+            ),
+            initiator_messages_sent_from_buffer: concat!(
+                "monad.wireauth.",
+                $transport,
+                ".initiator.messages_sent_from_buffer"
+            ),
         };
     };
 }
