@@ -32,15 +32,15 @@ const DEFAULT_MAX_TXS: usize = 64 * 1024;
 const DEFAULT_MAX_EIP2718_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 
 #[derive(Clone, Debug)]
-pub(crate) struct TrackedTxLimitsConfig {
-    max_addresses: usize,
-    max_txs: usize,
-    max_eip2718_bytes: u64,
+pub struct TrackedTxLimitsConfig {
+    pub max_addresses: usize,
+    pub max_txs: usize,
+    pub max_eip2718_bytes: u64,
 
-    soft_evict_addresses_watermark: usize,
+    pub soft_evict_addresses_watermark: usize,
 
-    soft_tx_expiry: Duration,
-    hard_tx_expiry: Duration,
+    pub soft_tx_expiry: Duration,
+    pub hard_tx_expiry: Duration,
 }
 
 impl TrackedTxLimitsConfig {

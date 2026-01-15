@@ -44,8 +44,8 @@ use monad_eth_testutil::{
     make_signed_authorization, recover_tx, secret_to_eth_address, S1, S2, S3, S4, S5,
 };
 use monad_eth_txpool::{
-    max_eip2718_encoded_length, EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics,
-    PoolTransactionKind,
+    max_eip2718_encoded_length, EthTxPool, EthTxPoolConfig, EthTxPoolEventTracker,
+    EthTxPoolMetrics, PoolTransactionKind, TrackedTxLimitsConfig,
 };
 use monad_eth_txpool_types::EthTxPoolSnapshot;
 use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner};
@@ -1625,16 +1625,20 @@ fn test_eviction_policy() {
         run_custom(
             || {
                 EthTxPool::new(
-                    Some(2),
-                    Some(3),
-                    None,
-                    Some(3),
-                    Duration::from_secs(60),
-                    Duration::from_secs(60),
+                    EthTxPoolConfig {
+                        limits: TrackedTxLimitsConfig::new(
+                            Some(2),
+                            Some(3),
+                            None,
+                            Some(3),
+                            Duration::from_secs(60),
+                            Duration::from_secs(60),
+                        ),
+                        do_local_insert: true,
+                    },
                     MockChainConfig::DEFAULT.chain_id(),
                     MockChainConfig::DEFAULT.get_chain_revision(GENESIS_ROUND),
                     MockChainConfig::DEFAULT.get_execution_chain_revision(GENESIS_TIMESTAMP as u64),
-                    true,
                 )
             },
             make_test_block_policy,

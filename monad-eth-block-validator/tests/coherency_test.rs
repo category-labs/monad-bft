@@ -39,7 +39,10 @@ use monad_crypto::{certificate_signature::CertificateKeyPair, NopKeyPair, NopSig
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
 use monad_eth_block_validator::EthBlockValidator;
 use monad_eth_testutil::{recover_tx, secret_to_eth_address, S1, S2};
-use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics, PoolTransactionKind};
+use monad_eth_txpool::{
+    EthTxPool, EthTxPoolConfig, EthTxPoolEventTracker, EthTxPoolMetrics, PoolTransactionKind,
+    TrackedTxLimitsConfig,
+};
 use monad_eth_types::{EthBlockBody, EthExecutionProtocol, EthHeader, ProposedEthHeader};
 use monad_state_backend::NopStateBackend;
 use monad_testutil::signing::MockSignatures;
@@ -424,16 +427,20 @@ fn test_invalid_delegation_non_emptying_insufficient() {
 
 fn create_test_txpool(chain_config: &MonadChainConfig) -> TestTxPool {
     TestTxPool::new(
-        None,                               // max_addresses
-        None,                               // max_txs
-        None,                               // max_eip2718_bytes
-        None,                               // soft_evict_addresses_watermark
-        std::time::Duration::from_secs(60), // soft_tx_expiry
-        std::time::Duration::from_secs(60), // hard_tx_expiry
+        EthTxPoolConfig {
+            limits: TrackedTxLimitsConfig::new(
+                None,
+                None,
+                None,
+                None,
+                std::time::Duration::from_secs(60),
+                std::time::Duration::from_secs(60),
+            ),
+            do_local_insert: true,
+        },
         chain_config.chain_id(),
         chain_config.get_chain_revision(GENESIS_ROUND),
         chain_config.get_execution_chain_revision(0), // genesis timestamp
-        true,                                         // do_local_insert
     )
 }
 

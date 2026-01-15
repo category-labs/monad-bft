@@ -13,15 +13,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-pub use self::{
-    event_tracker::EthTxPoolEventTracker,
-    metrics::EthTxPoolMetrics,
-    pool::{
-        max_eip2718_encoded_length, EthTxPool, EthTxPoolConfig, PoolTransactionKind,
-        TrackedTxLimitsConfig,
-    },
-};
+use super::TrackedTxLimitsConfig;
 
-mod event_tracker;
-mod metrics;
-mod pool;
+#[derive(Clone, Debug)]
+pub struct EthTxPoolConfig {
+    pub limits: TrackedTxLimitsConfig,
+    pub do_local_insert: bool,
+}

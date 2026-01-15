@@ -33,7 +33,9 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_block_policy::EthBlockPolicy;
-use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, PoolTransactionKind};
+use monad_eth_txpool::{
+    EthTxPool, EthTxPoolConfig, EthTxPoolEventTracker, PoolTransactionKind, TrackedTxLimitsConfig,
+};
 use monad_eth_txpool_ipc::EthTxPoolIpcTx;
 use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolEventType};
 use monad_eth_types::{EthExecutionProtocol, ExtractEthAddress};
@@ -125,16 +127,20 @@ where
 
                 move |command_rx, forwarded_rx, event_tx| {
                     let pool = EthTxPool::new(
-                        None,
-                        None,
-                        None,
-                        None,
-                        soft_tx_expiry,
-                        hard_tx_expiry,
+                        EthTxPoolConfig {
+                            limits: TrackedTxLimitsConfig::new(
+                                None,
+                                None,
+                                None,
+                                None,
+                                soft_tx_expiry,
+                                hard_tx_expiry,
+                            ),
+                            do_local_insert,
+                        },
                         chain_config.chain_id(),
                         chain_config.get_chain_revision(round),
                         chain_config.get_execution_chain_revision(execution_timestamp_s),
-                        do_local_insert,
                     );
 
                     Self {

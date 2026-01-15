@@ -32,7 +32,8 @@ use monad_validator::signature_collection::SignatureCollection;
 use tracing::error;
 
 use self::limits::TrackedTxLimits;
-pub(super) use self::{limits::TrackedTxLimitsConfig, list::TrackedTxList};
+pub use self::limits::TrackedTxLimitsConfig;
+pub(super) use self::list::TrackedTxList;
 use super::transaction::ValidEthTransaction;
 use crate::{pool::tracked::priority::PriorityMap, EthTxPoolEventTracker};
 
