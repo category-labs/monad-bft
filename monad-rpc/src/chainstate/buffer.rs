@@ -42,32 +42,36 @@ struct TxLoc {
 /// Buffer maintains a capped buffer of blocks.
 #[derive(Clone)]
 pub struct ChainStateBuffer {
-    // Maps a block by its SeqNum
-    by_height: Arc<DashMap<u64, Block>>,
-    // Maps a block by its blockhash
-    by_hash: Arc<DashMap<FixedData<32>, u64>>,
-    // Maps a transaction by its hash to a block's height and its index in that block
-    transactions: Arc<DashMap<FixedData<32>, TxLoc>>,
     // Ring buffer holding SeqNums
-    ring: Arc<Mutex<VecDeque<u64>>>,
-    // The latest voted block's SeqNum
-    voted: Arc<AtomicU64>,
-    // The latest finalized block's SeqNum
-    finalized: Arc<AtomicU64>,
+    block_heights: Arc<Mutex<VecDeque<u64>>>,
     // Capacity of the ring buffer
-    capacity: usize,
+    block_heights_capacity: usize,
+
+    // Maps a block by its SeqNum
+    block_by_height: Arc<DashMap<u64, Block>>,
+    // Maps a block by its blockhash
+    block_height_by_hash: Arc<DashMap<FixedData<32>, u64>>,
+    // Maps a transaction by its hash to a block's height and its index in that block
+    tx_loc_by_hash: Arc<DashMap<FixedData<32>, TxLoc>>,
+
+    // The latest voted block's SeqNum
+    latest_voted: Arc<AtomicU64>,
+    // The latest finalized block's SeqNum
+    latest_finalized: Arc<AtomicU64>,
 }
 
 impl ChainStateBuffer {
     pub fn new(capacity: usize) -> Self {
         Self {
-            by_height: Arc::new(DashMap::new()),
-            by_hash: Arc::new(DashMap::new()),
-            transactions: Arc::new(DashMap::new()),
-            ring: Arc::new(Mutex::new(VecDeque::with_capacity(capacity))),
-            voted: Arc::new(AtomicU64::new(0)),
-            finalized: Arc::new(AtomicU64::new(0)),
-            capacity,
+            block_heights: Arc::new(Mutex::new(VecDeque::with_capacity(capacity))),
+            block_heights_capacity: capacity,
+
+            block_by_height: Arc::new(DashMap::new()),
+            block_height_by_hash: Arc::new(DashMap::new()),
+            tx_loc_by_hash: Arc::new(DashMap::new()),
+
+            latest_voted: Arc::new(AtomicU64::new(0)),
+            latest_finalized: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -80,7 +84,7 @@ impl ChainStateBuffer {
         if block_event.commit_state != BlockCommitState::Voted {
             if block_event.commit_state == BlockCommitState::Finalized {
                 let height = block_event.data.header.number;
-                self.finalized.fetch_max(height, Ordering::SeqCst);
+                self.latest_finalized.fetch_max(height, Ordering::SeqCst);
             }
             return;
         }
@@ -95,14 +99,15 @@ impl ChainStateBuffer {
         let block_hash = block.header.hash;
         let block_tx_hashes = block.transactions.hashes().collect_vec();
 
-        if self.by_height.insert(block_height, block).is_some() {
+        if self.block_by_height.insert(block_height, block).is_some() {
             warn!(
                 ?block_height,
                 "ChainStateBuffer received block event for existing block height"
             );
         }
+
         if self
-            .by_hash
+            .block_height_by_hash
             .insert(FixedData(block_hash.0), block_height)
             .is_some()
         {
@@ -111,9 +116,10 @@ impl ChainStateBuffer {
                 "ChainStateBuffer received block event for existing block hash"
             );
         }
+
         for (tx_idx, tx_hash) in block_tx_hashes.into_iter().enumerate() {
             if self
-                .transactions
+                .tx_loc_by_hash
                 .insert(
                     FixedData(tx_hash.0),
                     TxLoc {
@@ -130,27 +136,27 @@ impl ChainStateBuffer {
             }
         }
 
-        let voted_block_height = self.voted.fetch_max(block_height, Ordering::SeqCst);
+        let voted_block_height = self.latest_voted.fetch_max(block_height, Ordering::SeqCst);
 
         if voted_block_height >= block_height {
             warn!(?voted_block_height, event_block_height = block_height, "ChainStateBuffer received voted block event with lower height than existing voted block height");
             return;
         }
 
-        let mut ring = self.ring.lock().await;
-        ring.push_front(block_height);
+        let mut block_heights = self.block_heights.lock().await;
+        block_heights.push_front(block_height);
 
-        while ring.len() > self.capacity {
-            let Some(evicted_block_height) = ring.pop_back() else {
+        while block_heights.len() > self.block_heights_capacity {
+            let Some(evicted_block_height) = block_heights.pop_back() else {
                 continue;
             };
 
-            if let Some((_, evicted_block)) = self.by_height.remove(&evicted_block_height) {
+            if let Some((_, evicted_block)) = self.block_by_height.remove(&evicted_block_height) {
                 match evicted_block.transactions {
                     alloy_rpc_types::BlockTransactions::Full(v) => {
                         v.into_iter().for_each(|tx| {
                             let id = tx.inner.tx_hash();
-                            self.transactions.remove(&FixedData(id.0));
+                            self.tx_loc_by_hash.remove(&FixedData(id.0));
                         });
                     }
                     alloy_rpc_types::BlockTransactions::Hashes(_) => {
@@ -161,29 +167,30 @@ impl ChainStateBuffer {
                     }
                 }
 
-                self.by_hash.remove(&FixedData(evicted_block.header.hash.0));
+                self.block_height_by_hash
+                    .remove(&FixedData(evicted_block.header.hash.0));
             }
         }
     }
 
     pub fn get_block_by_height(&self, height: u64) -> Option<Block> {
-        Some(self.by_height.get(&height)?.clone())
+        Some(self.block_by_height.get(&height)?.clone())
     }
 
     pub fn get_block_by_hash(&self, hash: &FixedData<32>) -> Option<Block> {
-        let block_height = *self.by_hash.get(hash)?;
+        let block_height = *self.block_height_by_hash.get(hash)?;
 
-        Some(self.by_height.get(&block_height)?.clone())
+        Some(self.block_by_height.get(&block_height)?.clone())
     }
 
     pub fn latest_block(&self) -> Option<Block> {
         let finalized_block_height = self.get_latest_finalized_block_num();
 
-        Some(self.by_height.get(&finalized_block_height)?.clone())
+        Some(self.block_by_height.get(&finalized_block_height)?.clone())
     }
 
     pub fn get_transaction_by_hash(&self, hash: &FixedData<32>) -> Option<Transaction<TxEnvelope>> {
-        let tx_loc = &*self.transactions.get(hash)?;
+        let tx_loc = &*self.tx_loc_by_hash.get(hash)?;
 
         self.get_transaction_by_location(tx_loc.block_height, tx_loc.tx_idx)
     }
@@ -193,7 +200,7 @@ impl ChainStateBuffer {
         height: u64,
         idx: u64,
     ) -> Option<Transaction<TxEnvelope>> {
-        let block = self.by_height.get(&height)?;
+        let block = self.block_by_height.get(&height)?;
 
         if let alloy_rpc_types::BlockTransactions::Full(transactions) = &block.transactions {
             transactions.get(idx as usize).cloned()
@@ -203,11 +210,11 @@ impl ChainStateBuffer {
     }
 
     pub fn get_latest_voted_block_num(&self) -> u64 {
-        self.voted.load(Ordering::SeqCst)
+        self.latest_voted.load(Ordering::SeqCst)
     }
 
     pub fn get_latest_finalized_block_num(&self) -> u64 {
-        self.finalized.load(Ordering::SeqCst)
+        self.latest_finalized.load(Ordering::SeqCst)
     }
 }
 
