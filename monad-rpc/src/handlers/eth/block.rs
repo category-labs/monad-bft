@@ -201,14 +201,14 @@ pub fn map_block_receipts<R>(
             cumulative_gas_used = new_cumulative_gas_used;
 
             let parsed_receipt = parse_tx_receipt(
-                block_header.base_fee_per_gas,
-                Some(block_header.timestamp),
                 block_hash,
-                tx,
-                tx_gas_used,
-                receipt,
                 block_num,
+                Some(block_header.timestamp),
+                block_header.base_fee_per_gas,
                 tx_index as u64,
+                tx,
+                receipt,
+                tx_gas_used,
             );
 
             f(parsed_receipt)

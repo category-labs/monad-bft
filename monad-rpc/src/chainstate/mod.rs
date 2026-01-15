@@ -28,7 +28,7 @@ use alloy_rpc_types::{
 use futures::{stream, Stream, StreamExt, TryStreamExt};
 use itertools::Either;
 use monad_archive::{
-    model::BlockDataReader,
+    model::{BlockDataReader, TxIndexedData},
     prelude::{ArchiveReader, Context, ContextCompat, IndexReader, TxEnvelopeWithSender},
 };
 use monad_triedb_utils::triedb_env::{
@@ -136,19 +136,23 @@ impl<T: Triedb> ChainState<T> {
 
         // try archive if transaction hash not found and archive reader specified
         if let Some(archive_reader) = &self.archive_reader {
-            if let Some(tx_data) = archive_reader.get_tx_indexed_data(&hash.into()).await? {
-                let receipt = crate::handlers::eth::txn::parse_tx_receipt(
-                    tx_data.header_subset.base_fee_per_gas,
-                    Some(tx_data.header_subset.block_timestamp),
-                    tx_data.header_subset.block_hash,
-                    tx_data.tx,
-                    tx_data.header_subset.gas_used,
-                    tx_data.receipt,
-                    tx_data.header_subset.block_number,
-                    tx_data.header_subset.tx_index,
-                );
-
-                return Ok(receipt);
+            if let Some(TxIndexedData {
+                tx,
+                trace: _,
+                receipt,
+                header_subset,
+            }) = archive_reader.get_tx_indexed_data(&hash.into()).await?
+            {
+                return Ok(parse_tx_receipt(
+                    header_subset.block_hash,
+                    header_subset.block_number,
+                    Some(header_subset.block_timestamp),
+                    header_subset.base_fee_per_gas,
+                    header_subset.tx_index,
+                    tx,
+                    receipt,
+                    header_subset.gas_used,
+                ));
             }
         }
 
@@ -1044,21 +1048,28 @@ async fn get_receipts_stream_using_index<'a>(
     let mut stream = log_index
         .query_logs(from_block, to_block, filter.address.iter(), &filter.topics)
         .await?
-        .map_ok(|tx_data| {
-            (
-                tx_data.header_subset.block_number,
-                parse_tx_receipt(
-                    tx_data.header_subset.base_fee_per_gas,
-                    Some(tx_data.header_subset.block_timestamp),
-                    tx_data.header_subset.block_hash,
-                    tx_data.tx,
-                    tx_data.header_subset.gas_used,
-                    tx_data.receipt,
-                    tx_data.header_subset.block_number,
-                    tx_data.header_subset.tx_index,
-                ),
-            )
-        });
+        .map_ok(
+            |TxIndexedData {
+                 tx,
+                 trace: _,
+                 receipt,
+                 header_subset,
+             }| {
+                (
+                    header_subset.block_number,
+                    parse_tx_receipt(
+                        header_subset.block_hash,
+                        header_subset.block_number,
+                        Some(header_subset.block_timestamp),
+                        header_subset.base_fee_per_gas,
+                        header_subset.tx_index,
+                        tx,
+                        receipt,
+                        header_subset.gas_used,
+                    ),
+                )
+            },
+        );
 
     Ok(async_stream::stream! {
         let mut block_number = None;
@@ -1272,15 +1283,15 @@ async fn get_receipt_from_triedb<T: Triedb>(
                 receipt.receipt.cumulative_gas_used()
             };
 
-            let receipt = crate::handlers::eth::txn::parse_tx_receipt(
-                header.header.base_fee_per_gas,
-                Some(header.header.timestamp),
+            let receipt = parse_tx_receipt(
                 header.hash,
-                tx,
-                gas_used,
-                receipt,
                 block_key.seq_num().0,
+                Some(header.header.timestamp),
+                header.header.base_fee_per_gas,
                 tx_index,
+                tx,
+                receipt,
+                gas_used,
             );
 
             Ok(Some(receipt))

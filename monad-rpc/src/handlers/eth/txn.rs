@@ -36,23 +36,21 @@ use crate::{
 };
 
 pub fn parse_tx_receipt(
-    base_fee_per_gas: Option<u64>,
-    block_timestamp: Option<u64>,
     block_hash: FixedBytes<32>,
-    tx: TxEnvelopeWithSender,
-    gas_used: u128,
-    receipt: ReceiptWithLogIndex,
     block_num: u64,
+    block_timestamp: Option<u64>,
+    base_fee_per_gas: Option<u64>,
     tx_index: u64,
+    tx: TxEnvelopeWithSender,
+    receipt: ReceiptWithLogIndex,
+    gas_used: u128,
 ) -> TransactionReceipt {
-    // unpack data
-    let sender = tx.sender;
-    let tx = tx.tx;
-    let starting_log_index = receipt.starting_log_index;
-    let receipt = receipt.receipt;
+    let TxEnvelopeWithSender { tx, sender } = tx;
 
-    // effective gas price is calculated according to eth json rpc specification
-    let effective_gas_price = tx.effective_gas_price(base_fee_per_gas);
+    let ReceiptWithLogIndex {
+        receipt,
+        starting_log_index,
+    } = receipt;
 
     let block_hash = Some(block_hash);
     let block_number = Some(block_num);
@@ -105,7 +103,8 @@ pub fn parse_tx_receipt(
         to: tx.to(),
         contract_address,
         gas_used,
-        effective_gas_price,
+        // effective gas price is calculated according to eth json rpc specification
+        effective_gas_price: tx.effective_gas_price(base_fee_per_gas),
         // TODO: EIP4844 fields
         blob_gas_used: None,
         blob_gas_price: None,
