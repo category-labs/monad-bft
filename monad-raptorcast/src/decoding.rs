@@ -352,7 +352,7 @@ impl MessageTier {
     where
         PT: PubKey,
     {
-        if message.maybe_broadcast_mode.is_some() {
+        if !matches!(message.broadcast_mode, BroadcastMode::Unspecified) {
             return MessageTier::Broadcast;
         }
 
@@ -1514,7 +1514,7 @@ impl DecoderState {
             .scale(num_source_symbols)
             .expect("redundancy-scaled num_source_symbols doesn't fit in usize");
 
-        if matches!(message.maybe_broadcast_mode, Some(BroadcastMode::Primary)) {
+        if matches!(message.broadcast_mode, BroadcastMode::Primary) {
             // Validator-to-validator raptorcast can include up to |valset| round-up chunks.
             encoded_symbol_capacity += context.validator_set_size().unwrap_or_else(|| {
                 tracing::warn!(
@@ -1757,7 +1757,7 @@ mod test {
                 author,
                 app_message_hash,
                 app_message_len: app_message.len() as u32,
-                maybe_broadcast_mode: None,
+                broadcast_mode: BroadcastMode::Unspecified,
                 chunk: chunk.freeze(),
                 // these fields are never touched in this module
                 recipient_hash: HexBytes([0; 20]),
@@ -1830,7 +1830,7 @@ mod test {
         );
         symbols_broadcast
             .iter_mut()
-            .for_each(|msg| msg.maybe_broadcast_mode = Some(BroadcastMode::Primary));
+            .for_each(|msg| msg.broadcast_mode = BroadcastMode::Primary);
 
         let symbols_validator = make_symbols(
             &Bytes::from(vec![3u8; APP_MESSAGE_LEN]),
@@ -2011,10 +2011,10 @@ mod test {
         // Use broadcast tier so that validator's and non-validator's
         // messages get mixed in the same cache.
         for msg in &mut all_symbols_part_1 {
-            msg.maybe_broadcast_mode = Some(BroadcastMode::Primary);
+            msg.broadcast_mode = BroadcastMode::Primary;
         }
         for msg in &mut all_symbols_part_2 {
-            msg.maybe_broadcast_mode = Some(BroadcastMode::Primary);
+            msg.broadcast_mode = BroadcastMode::Primary;
         }
 
         let mut cache = DecoderCache::new(config);

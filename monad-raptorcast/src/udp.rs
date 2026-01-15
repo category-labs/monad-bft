@@ -244,7 +244,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
             // Note: The check that parsed_message.author is valid is already
             // done in iterate_rebroadcast_peers(), but we want to drop invalid
             // chunks ASAP, before changing `recently_decoded_state`.
-            if parsed_message.maybe_broadcast_mode.is_some() {
+            if !matches!(parsed_message.broadcast_mode, BroadcastMode::Unspecified) {
                 if !group_map.check_source(
                     parsed_message.group_id,
                     &parsed_message.author,
@@ -276,7 +276,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
             let mut try_rebroadcast_symbol = || {
                 // rebroadcast raptorcast chunks if broadcast mode is set and
                 // we're the assigned rebroadcaster
-                if parsed_message.maybe_broadcast_mode.is_some()
+                if !matches!(parsed_message.broadcast_mode, BroadcastMode::Unspecified)
                     && self_hash == parsed_message.recipient_hash
                 {
                     let maybe_targets = group_map
@@ -342,10 +342,10 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                     // TODO: cap rebroadcast symbols based on some multiple of esis.
                     try_rebroadcast_symbol();
 
-                    if let Some(mode) = parsed_message.maybe_broadcast_mode {
-                        self.metrics
-                            .record_broadcast_latency(mode, parsed_message.unix_ts_ms);
-                    }
+                    self.metrics.record_broadcast_latency(
+                        parsed_message.broadcast_mode,
+                        parsed_message.unix_ts_ms,
+                    );
 
                     messages.push((author, app_message));
                 }
@@ -390,7 +390,7 @@ where
     pub unix_ts_ms: u64,
     pub app_message_hash: AppMessageHash,
     pub app_message_len: u32,
-    pub maybe_broadcast_mode: Option<BroadcastMode>,
+    pub broadcast_mode: BroadcastMode,
     pub recipient_hash: NodeIdHash, // if this matches our node_id, then we need to re-broadcast RaptorCast chunks
     pub chunk_id: u16,
     pub chunk: Bytes, // raptor-coded portion
@@ -410,7 +410,7 @@ pub enum MessageValidationError {
         max: u64,
         delta: i64,
     },
-    InvalidBroadcastBits,
+    InvalidBroadcastBits(u8),
     RateLimited,
 }
 
@@ -469,12 +469,12 @@ where
     let secondary_broadcast = (cursor_broadcast_tree_depth & (1 << 6)) != 0;
     let tree_depth = cursor_broadcast_tree_depth & 0b0000_1111; // bottom 4 bits
 
-    let maybe_broadcast_mode = match (broadcast, secondary_broadcast) {
-        (true, false) => Some(BroadcastMode::Primary),
-        (false, true) => Some(BroadcastMode::Secondary),
-        (false, false) => None, // broadcast or unicast
+    let broadcast_mode = match (broadcast, secondary_broadcast) {
+        (true, false) => BroadcastMode::Primary,
+        (false, true) => BroadcastMode::Secondary,
+        (false, false) => BroadcastMode::Unspecified, // unicast or broadcast
         (true, true) => {
-            return Err(MessageValidationError::InvalidBroadcastBits);
+            return Err(MessageValidationError::InvalidBroadcastBits(0b11));
         }
     };
 
@@ -484,9 +484,9 @@ where
 
     let cursor_group_id = split_off(8)?;
     let group_id = u64::from_le_bytes(cursor_group_id.as_ref().try_into().expect("u64 is 8 bytes"));
-    let group_id = match maybe_broadcast_mode {
-        Some(BroadcastMode::Primary) | None => GroupId::Primary(Epoch(group_id)),
-        Some(BroadcastMode::Secondary) => GroupId::Secondary(Round(group_id)),
+    let group_id = match broadcast_mode {
+        BroadcastMode::Primary | BroadcastMode::Unspecified => GroupId::Primary(Epoch(group_id)),
+        BroadcastMode::Secondary => GroupId::Secondary(Round(group_id)),
     };
 
     let cursor_unix_ts_ms = split_off(8)?;
@@ -553,9 +553,11 @@ where
         return Err(MessageValidationError::TooShort);
     }
 
-    let chunk_id_range = match maybe_broadcast_mode {
-        None | Some(BroadcastMode::Secondary) => valid_chunk_id_range(app_message_len, symbol_len)?,
-        Some(BroadcastMode::Primary) => {
+    let chunk_id_range = match broadcast_mode {
+        BroadcastMode::Unspecified | BroadcastMode::Secondary => {
+            valid_chunk_id_range(app_message_len, symbol_len)?
+        }
+        BroadcastMode::Primary => {
             // only perform a basic sanity check here. more precise
             // check of chunk_id is in decoding.rs when the validator
             // set is available.
@@ -601,7 +603,7 @@ where
         unix_ts_ms,
         app_message_hash,
         app_message_len: app_message_len as u32,
-        maybe_broadcast_mode,
+        broadcast_mode,
         recipient_hash,
         chunk_id,
         chunk: cursor_payload,
@@ -899,8 +901,8 @@ mod tests {
                 assert_eq!(parsed_message.app_message_hash.0, app_message_hash.0[..20]);
                 assert_eq!(parsed_message.unix_ts_ms, UNIX_TS_MS);
                 assert!(matches!(
-                    parsed_message.maybe_broadcast_mode,
-                    Some(BroadcastMode::Primary)
+                    parsed_message.broadcast_mode,
+                    BroadcastMode::Primary
                 ));
                 assert_eq!(parsed_message.app_message_len, app_message.len() as u32);
                 assert_eq!(parsed_message.author, NodeId::new(key.pubkey()));
@@ -1043,14 +1045,14 @@ mod tests {
                     match build_target {
                         BuildTarget::Raptorcast(_) => {
                             assert!(matches!(
-                                parsed_message.maybe_broadcast_mode,
-                                Some(BroadcastMode::Primary)
+                                parsed_message.broadcast_mode,
+                                BroadcastMode::Primary
                             ));
                         }
                         BuildTarget::FullNodeRaptorCast(_) => {
                             assert!(matches!(
-                                parsed_message.maybe_broadcast_mode,
-                                Some(BroadcastMode::Secondary)
+                                parsed_message.broadcast_mode,
+                                BroadcastMode::Secondary
                             ));
                         }
                         _ => unreachable!(),

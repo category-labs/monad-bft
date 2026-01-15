@@ -32,7 +32,7 @@ use super::{
 };
 use crate::{
     udp::GroupId,
-    util::{compute_hash, Redundancy},
+    util::{compute_hash, BroadcastMode, Redundancy},
     SIGNATURE_SIZE,
 };
 
@@ -600,16 +600,10 @@ fn encode_symbols<PT: PubKey>(
     Ok(())
 }
 
-pub(crate) enum BroadcastType {
-    Secondary,
-    Primary,
-    Unspecified,
-}
-
 // return the shared header for all chunks sans the signature.
 pub(crate) fn build_header(
     version: u16,
-    broadcast_type: BroadcastType,
+    broadcast_mode: BroadcastMode,
     merkle_tree_depth: u8,
     group_id: GroupId,
     unix_ts_ms: u64,
@@ -633,10 +627,10 @@ pub(crate) fn build_header(
 
     let (cursor_broadcast_merkle_depth, cursor) =
         cursor.split_at_mut_checked(1).expect("header to short");
-    let mut broadcast_byte: u8 = match broadcast_type {
-        BroadcastType::Primary => 0b10 << 6,
-        BroadcastType::Secondary => 0b01 << 6,
-        BroadcastType::Unspecified => 0b00 << 6,
+    let mut broadcast_byte: u8 = match broadcast_mode {
+        BroadcastMode::Primary => 0b10 << 6,
+        BroadcastMode::Secondary => 0b01 << 6,
+        BroadcastMode::Unspecified => 0b00 << 6,
     };
     // tree_depth max 4 bits
     if (merkle_tree_depth & 0b1111_0000) != 0 {

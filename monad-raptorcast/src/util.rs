@@ -259,6 +259,7 @@ pub type AppMessageHash = HexBytes<20>;
 pub enum BroadcastMode {
     Primary,
     Secondary,
+    Unspecified,
 }
 
 // This represents a raptorcast group abstracted over the use cases below:
