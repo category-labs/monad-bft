@@ -436,7 +436,6 @@ fn create_test_txpool(chain_config: &MonadChainConfig) -> TestTxPool {
                 std::time::Duration::from_secs(60),
                 std::time::Duration::from_secs(60),
             ),
-            do_local_insert: true,
         },
         chain_config.chain_id(),
         chain_config.get_chain_revision(GENESIS_ROUND),
