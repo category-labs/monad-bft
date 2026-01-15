@@ -15,12 +15,7 @@ panic = "abort"
 ignored = [
     "alloy-transport-http",
     "getrandom",
-    "monad-cxx",
-    "monad-event-ring",
-    "monad-exec-events",
     "monad-peer-disc-swarm",
-    "monad-tracing-timing",
-    "monad-wireauth",
 ]
 
 [workspace.dependencies]
