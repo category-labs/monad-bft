@@ -110,7 +110,7 @@ To run a JsonRpc server, follow instructions [here](monad-rpc/README.md).
 sequenceDiagram
 autonumber
     participant D as Driver
-    box Purple Executor
+    box rgb(191,93,233) Executor
     participant S as impl Stream
     participant E as impl Executor
     end
