@@ -20,7 +20,7 @@ use std::{
 };
 
 use futures::FutureExt;
-use tokio::task::JoinHandle;
+use tokio::task::{JoinError, JoinHandle};
 
 pub struct EthTxPoolBridgeHandle {
     handle: JoinHandle<()>,
@@ -33,13 +33,9 @@ impl EthTxPoolBridgeHandle {
 }
 
 impl Future for EthTxPoolBridgeHandle {
-    type Output = ();
+    type Output = Result<(), JoinError>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let Poll::Ready(result) = self.handle.poll_unpin(cx) else {
-            return Poll::Pending;
-        };
-
-        Poll::Ready(result.unwrap())
+        self.handle.poll_unpin(cx)
     }
 }
