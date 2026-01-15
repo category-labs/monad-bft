@@ -424,7 +424,9 @@ where
 
         match &mut this.role {
             Role::Publisher(publisher) => {
-                publisher.on_candidate_response(inbound_grp_msg);
+                if let Some((msg, node_id)) = publisher.on_candidate_response(inbound_grp_msg) {
+                    this.send_single_msg(msg, node_id);
+                }
             }
 
             Role::Client(client) => {
@@ -493,6 +495,9 @@ where
                                 );
                             }
                         }
+                    }
+                    FullNodesGroupMessage::NoConfirm(no_confirm) => {
+                        client.handle_no_confirm_message(no_confirm);
                     }
                 }
             }

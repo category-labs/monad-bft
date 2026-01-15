@@ -44,17 +44,60 @@ pub struct ConfirmGroup<ST: CertificateSignatureRecoverable> {
     pub name_records: Vec<MonadNameRecord<ST>>,
 }
 
+const NO_CONF_REASON_GROUP_FULL: u8 = 1;
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum NoConfirmReason {
+    GroupFull,
+}
+
+impl Encodable for NoConfirmReason {
+    fn encode(&self, out: &mut dyn BufMut) {
+        match self {
+            Self::GroupFull => {
+                let enc: [&dyn Encodable; 1] = [&NO_CONF_REASON_GROUP_FULL];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+        }
+    }
+}
+
+impl Decodable for NoConfirmReason {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = Header::decode_bytes(buf, true)?;
+        let reason = match u8::decode(&mut payload)? {
+            NO_CONF_REASON_GROUP_FULL => Self::GroupFull,
+            _ => {
+                return Err(alloy_rlp::Error::Custom(
+                    "Unknown NoConfirmReason enum variant",
+                ))
+            }
+        };
+        if !payload.is_empty() {
+            return Err(alloy_rlp::Error::Custom("Extra bytes in NoConfirmReason"));
+        }
+        Ok(reason)
+    }
+}
+#[derive(Debug, Clone, RlpEncodable, RlpDecodable, Eq, PartialEq)]
+pub struct NoConfirm<ST: CertificateSignatureRecoverable> {
+    pub prepare: PrepareGroup<ST>,
+    pub reason: NoConfirmReason,
+}
+
 const GROUP_MSG_VERSION: u8 = 1;
 
 const MESSAGE_TYPE_PREP_REQ: u8 = 1;
 const MESSAGE_TYPE_PREP_RES: u8 = 2;
 const MESSAGE_TYPE_CONF_GRP: u8 = 3;
+const MESSAGE_TYPE_NO_CONF: u8 = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FullNodesGroupMessage<ST: CertificateSignatureRecoverable> {
     PrepareGroup(PrepareGroup<ST>), // MESSAGE_TYPE_PREP_REQ
     PrepareGroupResponse(PrepareGroupResponse<ST>), // MESSAGE_TYPE_PREP_RES
     ConfirmGroup(ConfirmGroup<ST>), // MESSAGE_TYPE_CONF_GRP
+    NoConfirm(NoConfirm<ST>),       // MESSAGE_TYPE_NO_CONF
 }
 
 impl<ST: CertificateSignatureRecoverable> Encodable for FullNodesGroupMessage<ST> {
@@ -71,6 +114,10 @@ impl<ST: CertificateSignatureRecoverable> Encodable for FullNodesGroupMessage<ST
             }
             Self::ConfirmGroup(inner_msg) => {
                 let enc: [&dyn Encodable; 3] = [&version, &MESSAGE_TYPE_CONF_GRP, inner_msg];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::NoConfirm(inner_msg) => {
+                let enc: [&dyn Encodable; 3] = [&version, &MESSAGE_TYPE_NO_CONF, inner_msg];
                 encode_list::<_, dyn Encodable>(&enc, out);
             }
         }
@@ -90,6 +137,7 @@ impl<ST: CertificateSignatureRecoverable> Decodable for FullNodesGroupMessage<ST
                 &mut payload,
             )?)),
             MESSAGE_TYPE_CONF_GRP => Ok(Self::ConfirmGroup(ConfirmGroup::decode(&mut payload)?)),
+            MESSAGE_TYPE_NO_CONF => Ok(Self::NoConfirm(NoConfirm::decode(&mut payload)?)),
             _ => Err(alloy_rlp::Error::Custom(
                 "Unknown FullNodesGroupMessage enum variant",
             )),
@@ -121,6 +169,7 @@ mod tests {
             FullNodesGroupMessage::PrepareGroup(_) => "PrepareGroup",
             FullNodesGroupMessage::PrepareGroupResponse(_) => "PrepareGroupResponse",
             FullNodesGroupMessage::ConfirmGroup(_) => "ConfirmGroup",
+            FullNodesGroupMessage::NoConfirm(_) => "NoConfirm",
         }
         .to_string()
     }
@@ -206,5 +255,37 @@ mod tests {
         let decoded_enum =
             FullNodesGroupMessage::<ST>::decode(&mut encoded_bytes.as_slice()).unwrap();
         assert_eq!(decoded_enum, org_enum);
+    }
+
+    #[test]
+    fn serialize_roundtrip_group_no_conf() {
+        let org_msg = NoConfirm {
+            prepare: make_prep_group(13),
+            reason: NoConfirmReason::GroupFull,
+        };
+        let org_enum = FullNodesGroupMessage::NoConfirm(org_msg);
+
+        let mut encoded_bytes = Vec::new();
+        org_enum.encode(&mut encoded_bytes); // 44 bytes
+
+        insta::assert_debug_snapshot!("no_conf_encoded", hex::encode(&encoded_bytes));
+
+        let decoded_enum =
+            FullNodesGroupMessage::<ST>::decode(&mut encoded_bytes.as_slice()).unwrap();
+        assert_eq!(decoded_enum, org_enum);
+    }
+
+    #[test]
+    fn no_confirm_reason_rejects_extra_bytes() {
+        // Encode NoConfirmReason::GroupFull normally: RLP list with single u8
+        // Valid encoding is [0xc1, 0x01] - a list of length 1 containing the byte 0x01
+        // We'll create a malformed encoding with extra bytes: [0xc2, 0x01, 0xff]
+        let malformed_encoding: &[u8] = &[0xc2, 0x01, 0xff];
+
+        let result = NoConfirmReason::decode(&mut &malformed_encoding[..]);
+        assert_eq!(
+            result.unwrap_err(),
+            alloy_rlp::Error::Custom("Extra bytes in NoConfirmReason")
+        );
     }
 }

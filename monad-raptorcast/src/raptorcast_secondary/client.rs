@@ -28,6 +28,7 @@ use super::{
     super::{config::RaptorCastConfigSecondaryClient, util::Group},
     group_message::{ConfirmGroup, PrepareGroup, PrepareGroupResponse},
 };
+use crate::raptorcast_secondary::group_message::NoConfirm;
 
 /// Metrics constant
 pub const CLIENT_NUM_CURRENT_GROUPS: &str =
@@ -318,21 +319,23 @@ where
             return false;
         };
 
-        let maybe_entry = invites.get(&confirm_msg.prepare.validator_id);
-        let Some(old_invite) = maybe_entry else {
+        // TODO: discount validator reputation if it has sent an invalid
+        // ConfirmGroup
+        let Some(accepted_invite) = invites.get(&confirm_msg.prepare.validator_id) else {
             warn!(
+                ?confirm_msg,
                 "RaptorCastSecondary ignoring ConfirmGroup from \
-                            unrecognized validator id: {:?}",
-                confirm_msg
+                            unrecognized validator id"
             );
             return false;
         };
 
-        if old_invite != &confirm_msg.prepare {
+        if accepted_invite != &confirm_msg.prepare {
             warn!(
-                "RaptorCastSecondary ignoring ConfirmGroup that \
-                                doesn't match the original invite. Expected: {:?}, got: {:?}",
-                old_invite, confirm_msg.prepare
+                ?accepted_invite,
+                confirming_invite = ?confirm_msg.prepare,
+                "RaptorCastSecondary dropping ConfirmGroup that \
+                                doesn't match the original invite"
             );
             return false;
         }
@@ -340,21 +343,27 @@ where
         let confirm_group_size = confirm_msg.peers.len();
         if confirm_group_size > confirm_msg.prepare.max_group_size {
             warn!(
-                "RaptorCastSecondary ignoring ConfirmGroup that \
-                                is larger ({}) than the promised max_group_size ({}). \
-                                Message details: {:?}",
+                ?confirm_msg,
+                "RaptorCastSecondary dropping ConfirmGroup that \
+                                is larger ({}) than the promised max_group_size ({})",
                 confirm_msg.peers.len(),
                 confirm_msg.prepare.max_group_size,
-                confirm_msg
             );
             return false;
         }
 
         if !confirm_msg.peers.contains(&self.client_node_id) {
+            if confirm_msg.peers.len() == confirm_msg.prepare.max_group_size {
+                debug!(
+                    ?confirm_msg,
+                    "Group invite has reached max_group_size. Node participation is not confirmed"
+                );
+                return false;
+            }
             warn!(
-                "RaptorCastSecondary ignoring ConfirmGroup \
-                                with a group that does not contain our node_id: {:?}",
-                confirm_msg
+                ?confirm_msg,
+                "RaptorCastSecondary dropping ConfirmGroup \
+                                with a group that does not contain our node_id",
             );
             return false;
         }
@@ -371,7 +380,7 @@ where
         // round gaps, as they aren't receiving proposals and hence can't advance
         // (enter) rounds.
         if let Err(error) = self.group_sink_channel.send(group.clone()) {
-            tracing::error!(
+            error!(
                 "RaptorCastSecondary failed to send group to primary \
                                     Raptorcast instance: {}",
                 error
@@ -388,14 +397,49 @@ where
             confirm_group_size,
         );
 
+        // Remove the invite from pending_confirms and add the group to confirmed_groups
+        invites.remove(&confirm_msg.prepare.validator_id);
         self.confirmed_groups
             .force_insert(round_span.start..round_span.end, group);
-
-        invites.remove(&confirm_msg.prepare.validator_id);
-
         self.metrics[CLIENT_NUM_CURRENT_GROUPS] = self.get_current_group_count();
 
         true
+    }
+
+    pub fn handle_no_confirm_message(&mut self, no_confim_msg: NoConfirm<ST>) {
+        let Some(invites) = self
+            .pending_confirms
+            .get_mut(&no_confim_msg.prepare.start_round)
+        else {
+            warn!(
+                ?no_confim_msg,
+                "RaptorCastSecondary ignoring no confirm message: unrecognized start round",
+            );
+            return;
+        };
+
+        let Some(accepted_invite) = invites.get(&no_confim_msg.prepare.validator_id) else {
+            warn!(
+                ?no_confim_msg,
+                "RaptorCastSecondary ignoring no confirm message: unrecognized validator id",
+            );
+            return;
+        };
+
+        if accepted_invite != &no_confim_msg.prepare {
+            warn!(
+                ?accepted_invite,
+                ?no_confim_msg,
+                "RaptorCastSecondary ignoring no confirm message: invite mismatch",
+            );
+            return;
+        };
+
+        invites.remove(&no_confim_msg.prepare.validator_id);
+        debug!(
+            ?no_confim_msg,
+            "RaptorCastSecondary received no confirm message. Releasing round to other invites",
+        );
     }
 
     fn get_current_group_count(&self) -> u64 {
@@ -441,6 +485,7 @@ mod tests {
     use super::{
         super::{
             super::{config::RaptorCastConfigSecondaryClient, util::Group},
+            group_message::{NoConfirm, NoConfirmReason, PrepareGroup},
             Client,
         },
         *,
@@ -582,6 +627,54 @@ mod tests {
         // when we enter round 5, the group [1, 5) is expired
         clt.enter_round(Round(5));
         assert_eq!(clt.get_current_group_count(), 0);
+    }
+
+    #[test]
+    fn test_no_confirm_message() {
+        let (clt_tx, _clt_rx): RcToRcChannelGrp<ST> = unbounded_channel();
+        let self_id = nid(1);
+        let mut clt = Client::<ST>::new(
+            self_id,
+            clt_tx,
+            RaptorCastConfigSecondaryClient {
+                max_num_group: 5,
+                max_group_size: 3,
+                invite_future_dist_min: Round(1),
+                invite_future_dist_max: Round(100),
+                invite_accept_heartbeat: Duration::from_secs(10),
+            },
+        );
+
+        let validator_id = nid(2);
+        let prepare_invite = PrepareGroup {
+            max_group_size: 3,
+            validator_id,
+            start_round: Round(5),
+            end_round: Round(10),
+        };
+
+        // Set up client state: client has accepted an invite and is waiting for confirmation
+        clt.pending_confirms.insert(
+            Round(5),
+            BTreeMap::from([(validator_id, prepare_invite.clone())]),
+        );
+
+        // Test 1: Valid NoConfirm message - should be accepted and remove the invite
+        let valid_no_confirm = NoConfirm {
+            prepare: prepare_invite,
+            reason: NoConfirmReason::GroupFull,
+        };
+
+        clt.handle_no_confirm_message(valid_no_confirm);
+
+        // Verify the invite was removed from pending_confirms
+        assert!(
+            !clt.pending_confirms
+                .get(&Round(5))
+                .unwrap()
+                .contains_key(&validator_id),
+            "Valid NoConfirm should remove the invite from pending_confirms"
+        );
     }
 
     // Creates a node id that we can refer to just from its seed
