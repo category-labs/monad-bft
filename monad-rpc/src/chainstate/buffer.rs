@@ -13,12 +13,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{
-    collections::VecDeque,
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc,
-    },
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
 };
 
 use alloy_consensus::TxEnvelope;
@@ -42,10 +39,8 @@ struct TxLoc {
 /// Buffer maintains a capped buffer of blocks.
 #[derive(Clone)]
 pub struct ChainStateBuffer {
-    // Ring buffer holding SeqNums
-    block_heights: Arc<Mutex<VecDeque<u64>>>,
-    // Capacity of the ring buffer
-    block_heights_capacity: usize,
+    block_height_range: Arc<Mutex<(u64, u64)>>,
+    block_height_range_max_len: u64,
 
     // Maps a block by its SeqNum
     block_by_height: Arc<DashMap<u64, Block>>,
@@ -63,8 +58,8 @@ pub struct ChainStateBuffer {
 impl ChainStateBuffer {
     pub fn new(capacity: usize) -> Self {
         Self {
-            block_heights: Arc::new(Mutex::new(VecDeque::with_capacity(capacity))),
-            block_heights_capacity: capacity,
+            block_height_range: Arc::new(Mutex::default()),
+            block_height_range_max_len: capacity as u64,
 
             block_by_height: Arc::new(DashMap::new()),
             block_height_by_hash: Arc::new(DashMap::new()),
@@ -143,13 +138,32 @@ impl ChainStateBuffer {
             return;
         }
 
-        let mut block_heights = self.block_heights.lock().await;
-        block_heights.push_front(block_height);
+        let mut block_range = self.block_height_range.lock().await;
 
-        while block_heights.len() > self.block_heights_capacity {
-            let Some(evicted_block_height) = block_heights.pop_back() else {
-                continue;
-            };
+        if block_range.0 == 0 || block_range.1 == 0 {
+            assert_eq!(block_range.0, 0);
+            assert_eq!(block_range.1, 0);
+
+            block_range.0 = block_height;
+            block_range.1 = block_height;
+        } else {
+            assert!(
+                block_range.0 <= block_range.1,
+                "Block range end greater than start"
+            );
+
+            assert_eq!(
+                block_range.1.saturating_add(1),
+                block_height,
+                "Block height out of order"
+            );
+
+            block_range.1 = block_height;
+        }
+
+        while block_range.1 - block_range.0 > self.block_height_range_max_len {
+            let evicted_block_height = block_range.0;
+            block_range.0 += 1;
 
             if let Some((_, evicted_block)) = self.block_by_height.remove(&evicted_block_height) {
                 match evicted_block.transactions {
