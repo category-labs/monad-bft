@@ -87,11 +87,12 @@ fn setup_raptorcast() -> (
     let mut keys = (0..(NUM_NODES as u64)).map(get_key::<ST>).collect_vec();
 
     // leak the value to get a 'static reference
+    let valset = keys
+        .iter()
+        .map(|key| (NodeId::new(key.pubkey()), Stake::ONE))
+        .collect();
     let validators = Box::leak(Box::new(EpochValidators {
-        validators: keys
-            .iter()
-            .map(|key| (NodeId::new(key.pubkey()), Stake::ONE))
-            .collect(),
+        validators: ValidatorSet::new_unchecked(valset),
     }));
 
     let addr = SocketAddr::from_str("127.0.0.1:9999").unwrap();
@@ -118,11 +119,12 @@ fn setup_broadcast() -> (
     let mut keys = (0..100).map(get_key::<ST>).collect_vec();
 
     // leak the value to get a 'static reference
+    let valset = keys
+        .iter()
+        .map(|key| (NodeId::new(key.pubkey()), Stake::ONE))
+        .collect();
     let validators = Box::leak(Box::new(EpochValidators {
-        validators: keys
-            .iter()
-            .map(|key| (NodeId::new(key.pubkey()), Stake::ONE))
-            .collect(),
+        validators: ValidatorSet::new_unchecked(valset),
     }));
 
     let addr = SocketAddr::from_str("127.0.0.1:9999").unwrap();

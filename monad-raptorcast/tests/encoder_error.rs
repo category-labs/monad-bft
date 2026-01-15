@@ -26,6 +26,7 @@ use monad_raptorcast::{
 };
 use monad_secp::{KeyPair, SecpSignature};
 use monad_types::{Epoch, NodeId, Stake};
+use monad_validator::validator_set::ValidatorSet;
 use tracing_subscriber::fmt::format::FmtSpan;
 
 // Try to encode a message that is too large to be encoded, to verify that the encoder
@@ -50,11 +51,12 @@ pub fn encoder_error() {
         })
         .collect_vec();
 
+    let valset = keys
+        .iter()
+        .map(|key| (NodeId::new(key.pubkey()), Stake::ONE))
+        .collect();
     let validators = EpochValidators {
-        validators: keys
-            .iter()
-            .map(|key| (NodeId::new(key.pubkey()), Stake::ONE))
-            .collect(),
+        validators: ValidatorSet::new_unchecked(valset),
     };
 
     let known_addresses = keys

@@ -27,16 +27,17 @@ use monad_crypto::{
     hasher::{Hasher, HasherType},
 };
 use monad_types::{Epoch, NodeId, Round, RoundSpan, Stake};
+use monad_validator::validator_set::{ValidatorSet, ValidatorSetType as _};
 use tracing::{debug, warn};
 
 use crate::udp::GroupId;
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct EpochValidators<ST>
 where
     ST: CertificateSignatureRecoverable,
 {
-    pub validators: BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, Stake>,
+    pub validators: ValidatorSet<CertificateSignaturePubKey<ST>>,
 }
 
 impl<ST> EpochValidators<ST>
@@ -50,21 +51,21 @@ where
         without: Vec<&NodeId<CertificateSignaturePubKey<ST>>>,
     ) -> ValidatorsView<'_, ST> {
         ValidatorsView {
-            view: &self.validators,
+            view: self.validators.get_members(),
             without: without.into_iter().cloned().collect(),
         }
     }
 
     pub fn get(&self, node_id: &NodeId<CertificateSignaturePubKey<ST>>) -> Option<Stake> {
-        self.validators.get(node_id).copied()
+        self.validators.get_members().get(node_id).copied()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.validators.is_empty()
+        self.validators.get_members().is_empty()
     }
 
     pub fn len(&self) -> usize {
-        self.validators.len()
+        self.validators.get_members().len()
     }
 }
 

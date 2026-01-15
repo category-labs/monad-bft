@@ -211,6 +211,19 @@ pub struct ValidatorSet<PT: PubKey> {
     total_stake: Stake,
 }
 
+impl<PT: PubKey> ValidatorSet<PT> {
+    // SAFETY: the caller must ensure that the validators map is
+    // valid. See ValidatorSetCreationError for the required
+    // invariances.
+    pub fn new_unchecked(validators: BTreeMap<NodeId<PT>, Stake>) -> Self {
+        let total_stake = validators.values().cloned().sum();
+        Self {
+            validators,
+            total_stake,
+        }
+    }
+}
+
 impl<PT: PubKey> ValidatorSetType for ValidatorSet<PT> {
     type NodeIdPubKey = PT;
 

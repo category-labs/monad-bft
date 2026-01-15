@@ -45,6 +45,7 @@ use monad_secp::{KeyPair, SecpSignature};
 use monad_types::{
     Deserializable, Epoch, NodeId, Round, RoundSpan, Serializable, Stake, UdpPriority,
 };
+use monad_validator::validator_set::ValidatorSet;
 use tokio::sync::mpsc::unbounded_channel;
 use tracing_subscriber::fmt::format::FmtSpan;
 
@@ -81,8 +82,9 @@ pub fn different_symbol_sizes() {
             _ => panic!(),
         };
 
+        let valset = BTreeMap::from([(rx_nodeid, Stake::ONE), (tx_nodeid, Stake::ONE)]);
         let validators = EpochValidators {
-            validators: BTreeMap::from([(rx_nodeid, Stake::ONE), (tx_nodeid, Stake::ONE)]),
+            validators: ValidatorSet::new_unchecked(valset),
         };
 
         let epoch_validators = validators.view_without(vec![&tx_nodeid]);
@@ -138,8 +140,9 @@ pub fn buffer_count_overflow() {
 
     let tx_socket = UdpSocket::bind("127.0.0.1:0").unwrap();
 
+    let valset = BTreeMap::from([(rx_nodeid, Stake::ONE), (tx_nodeid, Stake::ONE)]);
     let validators = EpochValidators {
-        validators: BTreeMap::from([(rx_nodeid, Stake::ONE), (tx_nodeid, Stake::ONE)]),
+        validators: ValidatorSet::new_unchecked(valset),
     };
 
     let epoch_validators = validators.view_without(vec![&tx_nodeid]);
@@ -211,8 +214,9 @@ pub fn valid_rebroadcast() {
         .set_read_timeout(Some(Duration::from_millis(100)))
         .unwrap();
 
+    let valset = BTreeMap::from([(rx_nodeid, Stake::ONE), (tx_nodeid, Stake::ONE)]);
     let validators = EpochValidators {
-        validators: BTreeMap::from([(rx_nodeid, Stake::ONE), (tx_nodeid, Stake::ONE)]),
+        validators: ValidatorSet::new_unchecked(valset),
     };
 
     let epoch_validators = validators.view_without(vec![&tx_nodeid]);

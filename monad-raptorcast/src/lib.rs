@@ -54,7 +54,7 @@ use monad_peer_discovery::{
     NameRecord, PeerDiscoveryAlgo, PeerDiscoveryEvent,
 };
 use monad_types::{DropTimer, Epoch, ExecutionProtocol, NodeId, Round, RouterTarget, UdpPriority};
-use monad_validator::signature_collection::SignatureCollection;
+use monad_validator::{signature_collection::SignatureCollection, validator_set::{ValidatorSet, ValidatorSetType as _}};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tracing::{debug, debug_span, error, trace, warn};
 use udp::GroupId;
@@ -402,7 +402,7 @@ where
                     return;
                 };
 
-                if epoch_validators.validators.contains_key(&self_id) {
+                if epoch_validators.validators.is_member(&self_id) {
                     Self::enqueue_message_to_self(
                         message.clone(),
                         &mut self.pending_events,
@@ -783,12 +783,15 @@ where
 
                         warn!("duplicate validator set update (this is safe but unexpected)")
                     } else {
-                        let removed = self.epoch_validators.insert(
-                            epoch,
-                            EpochValidators {
-                                validators: validator_set.clone().into_iter().collect(),
-                            },
+                        // SAFETY: the validator_set comes from
+                        // ValidatorSetData, which should not have
+                        // duplicates or invalid entries.
+                        let validators = ValidatorSet::new_unchecked(
+                            validator_set.clone().into_iter().collect(),
                         );
+                        let removed = self
+                            .epoch_validators
+                            .insert(epoch, EpochValidators { validators });
                         assert!(removed.is_none());
                     }
                     self.peer_discovery_driver.lock().unwrap().update(
@@ -941,6 +944,7 @@ fn iter_ips<'a, ST: CertificateSignatureRecoverable, PD: PeerDiscoveryAlgo<Signa
 ) -> impl Iterator<Item = IpAddr> + 'a {
     validators
         .validators
+        .get_members()
         .iter()
         .filter_map(|(node_id, _)| peer_discovery.get_addr(node_id))
         .map(|socket| socket.ip())
@@ -1345,7 +1349,7 @@ where
     match group_message {
         // Prepare group message should originate from a validator
         FullNodesGroupMessage::PrepareGroup(msg) => {
-            &msg.validator_id == sender && epoch_validators.validators.contains_key(sender)
+            &msg.validator_id == sender && epoch_validators.validators.is_member(sender)
         }
         FullNodesGroupMessage::PrepareGroupResponse(msg) => &msg.node_id == sender,
         FullNodesGroupMessage::ConfirmGroup(msg) => &msg.prepare.validator_id == sender,

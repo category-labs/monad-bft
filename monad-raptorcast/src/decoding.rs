@@ -34,6 +34,7 @@ use monad_crypto::{
 use monad_executor::{ExecutorMetrics, ExecutorMetricsChain};
 use monad_raptor::{ManagedDecoder, SOURCE_SYMBOLS_MIN};
 use monad_types::{NodeId, Stake};
+use monad_validator::validator_set::{ValidatorSet, ValidatorSetType as _};
 use rand::Rng as _;
 
 use crate::{
@@ -339,8 +340,6 @@ where
     }
 }
 
-type ValidatorSet<PT> = BTreeMap<NodeId<PT>, Stake>;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MessageTier {
     Broadcast,
@@ -358,7 +357,7 @@ impl MessageTier {
         }
 
         if let Some(validator_set) = context.validator_set {
-            if validator_set.contains_key(&message.author) {
+            if validator_set.is_member(&message.author) {
                 return MessageTier::Validator;
             }
         }
@@ -493,7 +492,7 @@ impl<'a, PT: PubKey> DecodingContext<'a, PT> {
     }
 
     pub fn validator_set_size(&self) -> Option<usize> {
-        self.validator_set.map(|set| set.len())
+        self.validator_set.map(|set| set.get_members().len())
     }
 }
 
@@ -1338,7 +1337,7 @@ impl<PT: PubKey> QuotaPolicy<PT> for QuotaByStake {
         };
 
         // author is not validator, defaults to non-validator slot.
-        let Some(stake) = validator_set.get(&message.author) else {
+        let Some(stake) = validator_set.get_members().get(&message.author) else {
             return Quota {
                 max_slots: self.non_validator_slots.min(total_slots),
                 max_size: self.non_validator_max_size,
@@ -1346,7 +1345,7 @@ impl<PT: PubKey> QuotaPolicy<PT> for QuotaByStake {
         };
 
         // quota = proportional to stake
-        let total_stake: Stake = validator_set.values().copied().sum();
+        let total_stake: Stake = validator_set.get_total_stake();
         let stake_fraction = stake.checked_div(total_stake).unwrap_or(0.0);
         let calculated_slots = (stake_fraction * (total_slots as f64)).ceil() as usize;
 
@@ -1710,15 +1709,15 @@ mod test {
         NodeId::new(PT::from_bytes(&[seed as u8; 32]).unwrap())
     }
 
-    fn empty_validator_set() -> ValidatorSet<PT> {
-        BTreeMap::new()
-    }
-    fn add_validators(set: &mut ValidatorSet<PT>, ids: &[u64], stake: u64) {
-        let stake = Stake::from(stake);
-        for id in ids {
+    fn make_validator_set(node_stakes: &[(u64, u64)]) -> ValidatorSet<PT> {
+        let mut set = BTreeMap::new();
+        for (id, stake) in node_stakes {
             let node_id = node_id(*id);
+            let stake = Stake::from(*stake);
             set.insert(node_id, stake);
         }
+
+        ValidatorSet::new_unchecked(set)
     }
 
     fn make_cache(
@@ -1839,8 +1838,7 @@ mod test {
             UNIX_TS_MS,
         );
 
-        let mut validator_set = empty_validator_set();
-        add_validators(&mut validator_set, &[1], 100);
+        let validator_set = make_validator_set(&[(1, 100)]);
 
         let mut all_symbols: Vec<_> = []
             .into_iter()
@@ -1915,12 +1913,9 @@ mod test {
 
     #[test]
     fn test_stake_based_quota_allocation() {
-        let mut validator_set = empty_validator_set();
-
         // Author 0 has 80% of the stake, so should get 80% of the cache slots.
         // Author 1 has 20% of the stake, so should get 20% of the cache slots.
-        add_validators(&mut validator_set, &[0], 80);
-        add_validators(&mut validator_set, &[1], 20);
+        let validator_set = make_validator_set(&[(0, 80), (1, 20)]);
 
         // Part 1 is designed to be contain insufficient symbols
         let mut all_symbols_part_1 = vec![];
@@ -1988,10 +1983,7 @@ mod test {
         config.broadcast_tier.min_slots_per_validator = Some(2);
         config.broadcast_tier.min_slots_per_author = 1;
 
-        let mut validator_set = empty_validator_set();
-        add_validators(&mut validator_set, &[0], 50);
-        add_validators(&mut validator_set, &[1], 49);
-        add_validators(&mut validator_set, &[2], 1);
+        let validator_set = make_validator_set(&[(0, 50), (1, 49), (2, 1)]);
         // Author 3 is not a validator.
 
         // Part 1 is designed to be contain insufficient symbols

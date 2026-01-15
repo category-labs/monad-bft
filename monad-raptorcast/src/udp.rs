@@ -29,6 +29,7 @@ use monad_dataplane::udp::{segment_size_for_mtu, ETHERNET_SEGMENT_SIZE};
 use monad_executor::ExecutorMetricsChain;
 use monad_merkle::{MerkleHash, MerkleProof};
 use monad_types::{Epoch, NodeId, Round};
+use monad_validator::validator_set::ValidatorSetType as _;
 use tracing::warn;
 
 pub use crate::packet::build_messages;
@@ -186,9 +187,9 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                     let is_validator = match (message.auth_public_key.as_ref(), group_id) {
                         (Some(pk), GroupId::Primary(epoch)) => {
                             let node_id = NodeId::new(*pk);
-                            epoch_validators
-                                .get(&epoch)
-                                .is_some_and(|ev| ev.validators.contains_key(&node_id))
+                            epoch_validators.get(&epoch).is_some_and(|ev| {
+                                ev.validators.get_members().contains_key(&node_id)
+                            })
                         }
                         _ => false,
                     };
@@ -803,6 +804,7 @@ mod tests {
     use monad_dataplane::udp::DEFAULT_SEGMENT_SIZE;
     use monad_secp::{KeyPair, SecpSignature};
     use monad_types::{Epoch, NodeId, Round, RoundSpan, Stake};
+    use monad_validator::validator_set::{ValidatorSet, ValidatorSetType as _};
     use rstest::*;
 
     use super::{GroupId, MessageValidationError, UdpState};
@@ -832,11 +834,12 @@ mod tests {
             })
             .collect_vec();
 
+        let valset = keys
+            .iter()
+            .map(|key| (NodeId::new(key.pubkey()), Stake::ONE))
+            .collect();
         let validators = EpochValidators {
-            validators: keys
-                .iter()
-                .map(|key| (NodeId::new(key.pubkey()), Stake::ONE))
-                .collect(),
+            validators: ValidatorSet::new_unchecked(valset),
         };
 
         let known_addresses = keys
@@ -1109,6 +1112,7 @@ mod tests {
         let mut group_map = ReBroadcastGroupMap::new(self_id);
         let node_stake_pairs: Vec<_> = validators
             .validators
+            .get_members()
             .iter()
             .map(|(node_id, stake)| (*node_id, *stake))
             .collect();
