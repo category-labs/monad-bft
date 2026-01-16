@@ -188,6 +188,16 @@ where
                     );
                     self.blocks.insert(block.get_id(), block);
                 }
+                LedgerCommand::LedgerCommit(OptimisticCommit::Voted(block)) => {
+                    self.state_backend.lock().unwrap().ledger_propose(
+                        block.get_id(),
+                        block.get_seq_num(),
+                        block.get_block_round(),
+                        block.get_parent_id(),
+                        BTreeMap::default(), // TODO parse out txs
+                    );
+                    self.blocks.insert(block.get_id(), block);
+                }
                 LedgerCommand::LedgerCommit(OptimisticCommit::Finalized(block)) => {
                     if block.get_seq_num() <= self.finalization_delay {
                         continue;
