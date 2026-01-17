@@ -20,6 +20,7 @@ k256 = { workspace = true }
 rand = { workspace = true }
 secp256k1 = { workspace = true, features = ["global-context", "recovery", "rand"] }
 serde = { workspace = true, features = ["derive"] }
+serde_with = { workspace = true }
 sha2 = { workspace = true }
 zeroize = { workspace = true, features = ["derive"] }
 
