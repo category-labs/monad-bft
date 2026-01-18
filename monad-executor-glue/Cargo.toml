@@ -14,6 +14,7 @@ monad-chain-config = { workspace = true }
 monad-consensus = { workspace = true }
 monad-consensus-types = { workspace = true }
 monad-crypto = { workspace = true }
+monad-node-config = { workspace = true }
 monad-state-backend = { workspace = true }
 monad-types = { workspace = true }
 monad-validator = { workspace = true }
@@ -28,6 +29,8 @@ serde_with = { workspace = true, features = ["hex"] }
 
 [dev-dependencies]
 criterion = { workspace = true }
+monad-secp = { workspace = true }
+toml = { workspace = true }
 
 [[bench]]
 name = "rlp_bench"

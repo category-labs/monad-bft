@@ -2961,14 +2961,16 @@ mod tests {
         use monad_secp::SecpSignature;
         use monad_testutil::signing::create_keys as create_secp_keys;
 
-        let keys = create_secp_keys::<SecpSignature>(3);
+        let keys = create_secp_keys::<SecpSignature>(4);
         let peer0 = &keys[0];
         let peer1 = &keys[1];
         let peer1_pubkey = NodeId::new(peer1.pubkey());
         let peer2 = &keys[2];
         let peer2_pubkey = NodeId::new(peer2.pubkey());
+        let peer3 = &keys[3];
+        let peer3_pubkey = NodeId::new(peer3.pubkey());
 
-        // peer1 has no authenticated UDP port
+        // peer1 has no authenticated ports
         let peer1_name_record = {
             let name_record = NameRecord::new(Ipv4Addr::new(8, 8, 8, 8), 8000, 1);
             let mut encoded = Vec::new();
@@ -2980,10 +2982,16 @@ mod tests {
             }
         };
 
-        // peer2 has authenticated UDP port
+        // peer2 has authenticated UDP port only
         let peer2_name_record = {
-            let name_record =
-                NameRecord::new_with_authentication(Ipv4Addr::new(8, 8, 4, 4), 8001, 8001, 9001, 2);
+            let name_record = NameRecord::new_with_authentication(
+                Ipv4Addr::new(8, 8, 4, 4),
+                8001,
+                8001,
+                9001,
+                None,
+                2,
+            );
             let mut encoded = Vec::new();
             name_record.encode(&mut encoded);
             let signature = SecpSignature::sign::<signing_domain::NameRecord>(&encoded, peer2);
@@ -2993,7 +3001,26 @@ mod tests {
             }
         };
 
-        // initial state: peer1 in routing_info and peer2 in pending_queue
+        // peer3 has both authenticated UDP and TCP ports
+        let peer3_name_record = {
+            let name_record = NameRecord::new_with_authentication(
+                Ipv4Addr::new(8, 8, 2, 2),
+                8002,
+                8002,
+                9002,
+                Some(9003),
+                3,
+            );
+            let mut encoded = Vec::new();
+            name_record.encode(&mut encoded);
+            let signature = SecpSignature::sign::<signing_domain::NameRecord>(&encoded, peer3);
+            MonadNameRecord {
+                name_record,
+                signature,
+            }
+        };
+
+        // initial state: peer1 in routing_info and peer2, peer3 in pending_queue
         let mut routing_info = BTreeMap::new();
         routing_info.insert(peer1_pubkey, peer1_name_record);
         let mut pending_queue = BTreeMap::new();
@@ -3006,6 +3033,17 @@ mod tests {
                 },
                 unresponsive_pings: 0,
                 name_record: peer2_name_record,
+            },
+        );
+        pending_queue.insert(
+            peer3_pubkey,
+            ConnectionInfo {
+                last_ping: Ping {
+                    id: 0,
+                    local_name_record: peer3_name_record.clone(),
+                },
+                unresponsive_pings: 0,
+                name_record: peer3_name_record,
             },
         );
 
@@ -3059,10 +3097,12 @@ mod tests {
         // clean up any existing file
         let _ = std::fs::remove_file(&temp_file);
 
-        // verify initial state has peer1 in routing_info and peer2 in pending_queue
+        // verify initial state has peer1 in routing_info and peer2, peer3 in pending_queue
         assert!(state.routing_info.contains_key(&peer1_pubkey));
         assert!(!state.routing_info.contains_key(&peer2_pubkey));
+        assert!(!state.routing_info.contains_key(&peer3_pubkey));
         assert!(state.pending_queue.contains_key(&peer2_pubkey));
+        assert!(state.pending_queue.contains_key(&peer3_pubkey));
         assert!(!state.pending_queue.contains_key(&peer1_pubkey));
 
         // write peers to file
@@ -3087,15 +3127,16 @@ mod tests {
 
         state.read_peers_from_file();
 
-        // verify that peer1 and peer2 are restored from file and now in pending_queue
+        // verify that peer1, peer2, and peer3 are restored from file and now in pending_queue
         assert!(state.pending_queue.contains_key(&peer1_pubkey));
         assert!(state.pending_queue.contains_key(&peer2_pubkey));
+        assert!(state.pending_queue.contains_key(&peer3_pubkey));
         assert!(
             state.routing_info.is_empty(),
             "routing_info should still be empty before ping pong"
         );
 
-        // verify peer1 data (no auth port)
+        // verify peer1 data (no auth ports)
         let loaded_peer1 = &state.pending_queue.get(&peer1_pubkey).unwrap().name_record;
         assert_eq!(
             loaded_peer1.udp_address(),
@@ -3106,10 +3147,15 @@ mod tests {
         assert_eq!(
             loaded_peer1.name_record.authenticated_udp_port(),
             None,
-            "peer1 should not have auth port"
+            "peer1 should not have udp auth port"
+        );
+        assert_eq!(
+            loaded_peer1.name_record.authenticated_tcp_port(),
+            None,
+            "peer1 should not have tcp auth port"
         );
 
-        // verify peer2 data (with auth port)
+        // verify peer2 data (with udp auth port only)
         let loaded_peer2 = &state.pending_queue.get(&peer2_pubkey).unwrap().name_record;
         assert_eq!(
             loaded_peer2.udp_address(),
@@ -3120,7 +3166,31 @@ mod tests {
         assert_eq!(
             loaded_peer2.name_record.authenticated_udp_port(),
             Some(9001),
-            "peer2 auth port should match"
+            "peer2 udp auth port should match"
+        );
+        assert_eq!(
+            loaded_peer2.name_record.authenticated_tcp_port(),
+            None,
+            "peer2 should not have tcp auth port"
+        );
+
+        // verify peer3 data (with both udp and tcp auth ports)
+        let loaded_peer3 = &state.pending_queue.get(&peer3_pubkey).unwrap().name_record;
+        assert_eq!(
+            loaded_peer3.udp_address(),
+            SocketAddrV4::new(Ipv4Addr::new(8, 8, 2, 2), 8002),
+            "peer3 address should match"
+        );
+        assert_eq!(loaded_peer3.seq(), 3, "peer3 seq should match");
+        assert_eq!(
+            loaded_peer3.name_record.authenticated_udp_port(),
+            Some(9002),
+            "peer3 udp auth port should match"
+        );
+        assert_eq!(
+            loaded_peer3.name_record.authenticated_tcp_port(),
+            Some(9003),
+            "peer3 tcp auth port should match"
         );
 
         let _ = std::fs::remove_file(&temp_file);

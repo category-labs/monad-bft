@@ -5539,11 +5539,14 @@ dependencies = [
  "monad-consensus",
  "monad-consensus-types",
  "monad-crypto",
+ "monad-node-config",
+ "monad-secp",
  "monad-state-backend",
  "monad-types",
  "monad-validator",
  "serde",
  "serde_with",
+ "toml",
 ]
 
 [[package]]
