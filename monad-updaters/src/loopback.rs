@@ -81,11 +81,15 @@ where
         let this = self.deref_mut();
 
         if let Some(e) = this.buffer.pop_front() {
-            Poll::Ready(Some(e))
+            return Poll::Ready(Some(e));
+        }
+
+        if let Some(waker) = this.waker.as_mut() {
+            waker.clone_from(cx.waker());
         } else {
             this.waker = Some(cx.waker().clone());
-            Poll::Pending
         }
+        Poll::Pending
     }
 }
 
