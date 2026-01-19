@@ -37,7 +37,7 @@ use monad_crypto::certificate_signature::{
 use monad_dataplane::{DataplaneBuilder, TcpSocketId, UdpSocketId};
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthBlockValidator;
-use monad_eth_txpool_executor::{EthTxPoolExecutor, EthTxPoolIpcConfig};
+use monad_eth_txpool_executor::{EthTxPoolExecutor, EthTxPoolIpcConfig, EthTxPoolIpcServer};
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{LogFriendlyMonadEvent, Message, MonadEvent};
 use monad_ledger::MonadBlockFileLedger;
@@ -240,7 +240,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
             state_backend.clone(),
         ),
         timestamp: TokioTimestamp::new(Duration::from_millis(5), 100, 10001),
-        txpool: EthTxPoolExecutor::start(
+        txpool: EthTxPoolExecutor::<_, _, _, _, _, EthTxPoolIpcServer>::start(
             create_block_policy(),
             state_backend.clone(),
             EthTxPoolIpcConfig {
