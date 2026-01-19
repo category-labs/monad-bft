@@ -20,6 +20,10 @@ use std::{
     net::SocketAddr,
     os::fd::{AsRawFd, RawFd},
     rc::Rc,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
     time::{Duration, Instant},
 };
 
@@ -36,44 +40,154 @@ use tokio::sync::mpsc::{
 use tracing::{debug, enabled, trace, warn, Level};
 use zerocopy::IntoBytes;
 
-use super::{message_timeout, TcpMsg, TcpMsgHdr, TCP_MESSAGE_LENGTH_LIMIT};
+use super::{message_timeout, TcpConfig, TcpMsg, TcpMsgHdr, TCP_MESSAGE_LENGTH_LIMIT};
+use crate::addrlist::{Addrlist, Status};
 
 // These are per-peer limits.
 pub const QUEUED_MESSAGE_WARN_LIMIT: usize = 100;
 // should be higher than MAX_UNACKNOWLEDGED_RESPONSES
 pub const QUEUED_MESSAGE_LIMIT: usize = 150;
-// TODO add QUEUED_MESSAGE_BYTE_LIMIT
+pub const QUEUED_MESSAGE_BYTE_LIMIT: usize = 4 * 1024 * 1024;
 
 pub const MSG_WAIT_TIMEOUT: Duration = Duration::from_secs(1);
 
 const TCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const TCP_FAILURE_LINGER_WAIT: Duration = Duration::from_secs(1);
 
+enum BoundedQueueError {
+    ByteLimitExceeded,
+    Full,
+    Closed,
+}
+
+struct BoundedQueueSender {
+    tx: mpsc::Sender<TcpMsg>,
+    queued_bytes: Arc<AtomicUsize>,
+}
+
+struct BoundedQueueReceiver {
+    rx: mpsc::Receiver<TcpMsg>,
+    queued_bytes: Arc<AtomicUsize>,
+}
+
+fn bounded_queue() -> (BoundedQueueSender, BoundedQueueReceiver) {
+    let (sender, receiver) = mpsc::channel(QUEUED_MESSAGE_LIMIT);
+    let queued_bytes = Arc::new(AtomicUsize::new(0));
+    (
+        BoundedQueueSender {
+            tx: sender,
+            queued_bytes: queued_bytes.clone(),
+        },
+        BoundedQueueReceiver {
+            rx: receiver,
+            queued_bytes,
+        },
+    )
+}
+
+impl BoundedQueueSender {
+    fn try_send(&self, msg: TcpMsg) -> Result<(), BoundedQueueError> {
+        let msg_len = msg.msg.len();
+        let mut current = self.queued_bytes.load(Ordering::Relaxed);
+        loop {
+            if msg_len > QUEUED_MESSAGE_BYTE_LIMIT.saturating_sub(current) {
+                return Err(BoundedQueueError::ByteLimitExceeded);
+            }
+            let new_value = current + msg_len;
+            match self.queued_bytes.compare_exchange_weak(
+                current,
+                new_value,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(actual) => current = actual,
+            }
+        }
+
+        match self.tx.try_send(msg) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(_)) => {
+                self.queued_bytes.fetch_sub(msg_len, Ordering::Relaxed);
+                Err(BoundedQueueError::Full)
+            }
+            Err(TrySendError::Closed(_)) => {
+                self.queued_bytes.fetch_sub(msg_len, Ordering::Relaxed);
+                Err(BoundedQueueError::Closed)
+            }
+        }
+    }
+
+    fn queued_bytes(&self) -> usize {
+        self.queued_bytes.load(Ordering::Relaxed)
+    }
+
+    fn message_count(&self) -> usize {
+        self.tx.max_capacity() - self.tx.capacity()
+    }
+}
+
+impl BoundedQueueReceiver {
+    fn try_recv(&mut self) -> Result<TcpMsg, TryRecvError> {
+        let msg = self.rx.try_recv()?;
+        self.queued_bytes
+            .fetch_sub(msg.msg.len(), Ordering::Relaxed);
+        Ok(msg)
+    }
+
+    async fn recv(&mut self) -> Option<TcpMsg> {
+        let msg = self.rx.recv().await?;
+        self.queued_bytes
+            .fetch_sub(msg.msg.len(), Ordering::Relaxed);
+        Some(msg)
+    }
+}
+
 #[derive(Clone)]
 struct TxState {
     inner: Rc<RefCell<TxStateInner>>,
+    addrlist: Arc<Addrlist>,
+    connections_limit: usize,
 }
 
 impl TxState {
-    fn new() -> TxState {
+    fn new(addrlist: Arc<Addrlist>, connections_limit: usize) -> TxState {
         let inner = Rc::new(RefCell::new(TxStateInner {
             peer_channels: BTreeMap::new(),
         }));
 
-        TxState { inner }
+        TxState {
+            inner,
+            addrlist,
+            connections_limit,
+        }
     }
 
     fn push(
         &self,
         addr: &SocketAddr,
         msg: TcpMsg,
-    ) -> Option<(mpsc::Receiver<TcpMsg>, TxStatePeerHandle)> {
+    ) -> Option<(BoundedQueueReceiver, TxStatePeerHandle)> {
         let mut ret = None;
 
         let mut inner_ref = self.inner.borrow_mut();
 
+        let is_new_peer = !inner_ref.peer_channels.contains_key(addr);
+        if is_new_peer {
+            let is_trusted = self.addrlist.status(&addr.ip()) == Status::Trusted;
+            if !is_trusted && inner_ref.peer_channels.len() >= self.connections_limit {
+                warn!(
+                    ?addr,
+                    total_connections = inner_ref.peer_channels.len(),
+                    connections_limit = self.connections_limit,
+                    "outgoing connection limit reached, dropping message"
+                );
+                return None;
+            }
+        }
+
         let msg_sender = inner_ref.peer_channels.entry(*addr).or_insert_with(|| {
-            let (sender, receiver) = mpsc::channel(QUEUED_MESSAGE_LIMIT);
+            let (sender, receiver) = bounded_queue();
 
             ret = Some((
                 receiver,
@@ -88,8 +202,7 @@ impl TxState {
 
         match msg_sender.try_send(msg) {
             Ok(()) => {
-                let message_count = msg_sender.max_capacity() - msg_sender.capacity();
-
+                let message_count = msg_sender.message_count();
                 if message_count >= QUEUED_MESSAGE_WARN_LIMIT {
                     warn!(
                         ?addr,
@@ -97,14 +210,23 @@ impl TxState {
                     );
                 }
             }
-            Err(TrySendError::Full(_)) => {
+            Err(BoundedQueueError::ByteLimitExceeded) => {
                 warn!(
                     ?addr,
-                    message_count = msg_sender.max_capacity(),
+                    queued_bytes = msg_sender.queued_bytes(),
+                    byte_limit = QUEUED_MESSAGE_BYTE_LIMIT,
+                    "peer byte limit reached, dropping message"
+                );
+            }
+            Err(BoundedQueueError::Full) => {
+                warn!(
+                    ?addr,
+                    message_count = msg_sender.message_count(),
+                    message_limit = QUEUED_MESSAGE_LIMIT,
                     "peer message limit reached, dropping message"
                 );
             }
-            Err(TrySendError::Closed(_)) => {
+            Err(BoundedQueueError::Closed) => {
                 warn!(?addr, "channel unexpectedly closed");
             }
         }
@@ -133,11 +255,15 @@ struct TxStateInner {
     // There is a transmit connection task running for a given peer iff there is an
     // entry for the peer address in this map.  Exiting the transmit connection task
     // drops a TxStatePeerHandle which removes the entry from this map.
-    peer_channels: BTreeMap<SocketAddr, mpsc::Sender<TcpMsg>>,
+    peer_channels: BTreeMap<SocketAddr, BoundedQueueSender>,
 }
 
-pub async fn task(mut tcp_egress_rx: mpsc::Receiver<(SocketAddr, TcpMsg)>) {
-    let tx_state = TxState::new();
+pub(crate) async fn task(
+    cfg: TcpConfig,
+    addrlist: Arc<Addrlist>,
+    mut tcp_egress_rx: mpsc::Receiver<(SocketAddr, TcpMsg)>,
+) {
+    let tx_state = TxState::new(addrlist, cfg.connections_limit);
 
     let mut conn_id: u64 = 0;
 
@@ -168,7 +294,7 @@ pub async fn task(mut tcp_egress_rx: mpsc::Receiver<(SocketAddr, TcpMsg)>) {
 async fn task_connection(
     conn_id: u64,
     addr: SocketAddr,
-    mut msg_receiver: mpsc::Receiver<TcpMsg>,
+    mut msg_receiver: BoundedQueueReceiver,
     _tx_state_peer_handle: TxStatePeerHandle,
 ) {
     trace!(
@@ -181,7 +307,7 @@ async fn task_connection(
         let mut additional_messages_dropped = 0;
 
         // Throw away (and fail) all remaining queued messages immediately.
-        while let Ok(_msg) = msg_receiver.try_recv() {
+        while msg_receiver.try_recv().is_ok() {
             additional_messages_dropped += 1;
         }
 
@@ -207,7 +333,7 @@ async fn task_connection(
 async fn connect_and_send_messages(
     conn_id: u64,
     addr: &SocketAddr,
-    msg_receiver: &mut mpsc::Receiver<TcpMsg>,
+    msg_receiver: &mut BoundedQueueReceiver,
 ) -> Result<(), Error> {
     let mut stream = timeout(TCP_CONNECT_TIMEOUT, TcpStream::connect(addr))
         .await
@@ -228,24 +354,14 @@ async fn connect_and_send_messages(
                 conn_cork(stream.as_raw_fd(), false);
 
                 match timeout(MSG_WAIT_TIMEOUT, msg_receiver.recv()).await {
-                    Ok(None) => break,
+                    Ok(None) | Err(_) => break,
                     Ok(Some(msg)) => {
                         conn_cork(stream.as_raw_fd(), true);
                         msg
                     }
-                    Err(_) => break,
                 }
             }
         };
-
-        let message_count = msg_receiver.max_capacity() - msg_receiver.capacity();
-
-        if message_count >= QUEUED_MESSAGE_WARN_LIMIT {
-            warn!(
-                ?addr,
-                message_count, "excessive number of messages queued for peer"
-            );
-        }
 
         let len = msg.msg.len();
 
@@ -390,5 +506,54 @@ fn num_unacked_bytes(raw_fd: RawFd) -> usize {
     } else {
         warn!("ioctl(TIOCOUTQ) failed with: {}", Error::last_os_error());
         0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bytes::Bytes;
+
+    use super::*;
+
+    fn make_msg(size: usize) -> TcpMsg {
+        TcpMsg {
+            msg: Bytes::from(vec![0u8; size]),
+            completion: None,
+        }
+    }
+
+    #[test]
+    fn bounded_queue_limits() {
+        let (sender, mut receiver) = bounded_queue();
+
+        assert!(sender.try_send(make_msg(1024)).is_ok());
+        assert_eq!(sender.queued_bytes(), 1024);
+        assert_eq!(sender.message_count(), 1);
+
+        let msg = receiver.try_recv().unwrap();
+        assert_eq!(msg.msg.len(), 1024);
+        assert_eq!(sender.queued_bytes(), 0);
+
+        let large_msg_size = QUEUED_MESSAGE_BYTE_LIMIT + 1;
+        assert!(matches!(
+            sender.try_send(make_msg(large_msg_size)),
+            Err(BoundedQueueError::ByteLimitExceeded)
+        ));
+        assert_eq!(sender.queued_bytes(), 0);
+
+        for _ in 0..QUEUED_MESSAGE_LIMIT {
+            assert!(sender.try_send(make_msg(1)).is_ok());
+        }
+        assert_eq!(sender.message_count(), QUEUED_MESSAGE_LIMIT);
+        assert!(matches!(
+            sender.try_send(make_msg(1)),
+            Err(BoundedQueueError::Full)
+        ));
+
+        drop(receiver);
+        assert!(matches!(
+            sender.try_send(make_msg(1)),
+            Err(BoundedQueueError::Closed)
+        ));
     }
 }

@@ -24,7 +24,7 @@ use std::{
 
 use futures::{channel::oneshot, executor, FutureExt};
 use monad_dataplane::{
-    tcp::tx::{MSG_WAIT_TIMEOUT, QUEUED_MESSAGE_LIMIT},
+    tcp::tx::{MSG_WAIT_TIMEOUT, QUEUED_MESSAGE_BYTE_LIMIT, QUEUED_MESSAGE_LIMIT},
     udp::DEFAULT_SEGMENT_SIZE,
     BroadcastMsg, DataplaneBuilder, RecvUdpMsg, TcpMsg, TcpSocketId, UdpSocketId, UnicastMsg,
 };
@@ -286,7 +286,7 @@ fn tcp_rapid() {
     once_setup();
 
     let bind_addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let num_msgs = 1024;
+    let num_msgs = 512;
 
     let mut rx = DataplaneBuilder::new(UP_BANDWIDTH_MBPS)
         .with_tcp_sockets([(TcpSocketId::Raptorcast, bind_addr)])
@@ -294,6 +294,7 @@ fn tcp_rapid() {
     let mut tx = DataplaneBuilder::new(UP_BANDWIDTH_MBPS)
         .with_tcp_sockets([(TcpSocketId::Raptorcast, bind_addr)])
         .build();
+    tx.add_trusted("127.0.0.1".parse().unwrap());
 
     let mut rx_socket = rx.tcp_sockets.take(TcpSocketId::Raptorcast).unwrap();
     let rx_addr = rx_socket.local_addr();
@@ -428,6 +429,120 @@ fn tcp_exceed_queue_limits() {
 
     // We should have at least some messages that failed to transmit.
     assert_ne!(failures, 0);
+}
+
+#[test]
+#[timeout(2000)]
+fn tcp_exceed_queue_byte_limit() {
+    once_setup();
+
+    let bind_addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
+
+    // Use 100KB messages so we hit the byte limit (4MB) before the message count limit (150).
+    // 4MB / 100KB = 40 messages can be queued at once.
+    let message_size = 100 * 1024;
+    let queue_byte_capacity = QUEUED_MESSAGE_BYTE_LIMIT / message_size;
+    let num_msgs = queue_byte_capacity * 10;
+
+    assert!(queue_byte_capacity < QUEUED_MESSAGE_LIMIT);
+    assert!(message_size < QUEUED_MESSAGE_BYTE_LIMIT);
+    assert!(num_msgs * message_size > QUEUED_MESSAGE_BYTE_LIMIT);
+
+    let mut rx = DataplaneBuilder::new(UP_BANDWIDTH_MBPS)
+        .with_tcp_sockets([(TcpSocketId::Raptorcast, bind_addr)])
+        .build();
+    let mut tx = DataplaneBuilder::new(UP_BANDWIDTH_MBPS)
+        .with_tcp_sockets([(TcpSocketId::Raptorcast, bind_addr)])
+        .build();
+    tx.add_trusted("127.0.0.1".parse().unwrap());
+
+    let mut rx_socket = rx.tcp_sockets.take(TcpSocketId::Raptorcast).unwrap();
+    let rx_addr = rx_socket.local_addr();
+    let tcp_socket = tx.tcp_sockets.take(TcpSocketId::Raptorcast).unwrap();
+
+    let payload: Vec<u8> = vec![0u8; message_size];
+
+    let mut completions = Vec::with_capacity(num_msgs);
+
+    for _ in 0..num_msgs {
+        let (sender, receiver) = oneshot::channel::<()>();
+
+        tcp_socket.write(
+            rx_addr,
+            TcpMsg {
+                msg: payload.clone().into(),
+                completion: Some(sender),
+            },
+        );
+
+        completions.push(receiver);
+    }
+
+    for _ in 0..queue_byte_capacity {
+        let recv_msg = executor::block_on(rx_socket.recv());
+        assert_eq!(recv_msg.payload.len(), message_size);
+    }
+
+    let failures: usize = completions
+        .into_iter()
+        .map(executor::block_on)
+        .filter(|result| result.is_err())
+        .count();
+
+    assert!(failures > 0, "expected some failures due to byte limit");
+}
+
+#[test]
+#[timeout(1000)]
+fn tcp_outgoing_connection_limit() {
+    once_setup();
+
+    let bind_addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
+
+    let mut rx1 = DataplaneBuilder::new(UP_BANDWIDTH_MBPS)
+        .with_tcp_sockets([(TcpSocketId::Raptorcast, bind_addr)])
+        .build();
+    let mut rx2 = DataplaneBuilder::new(UP_BANDWIDTH_MBPS)
+        .with_tcp_sockets([(TcpSocketId::Raptorcast, bind_addr)])
+        .build();
+    let mut tx = DataplaneBuilder::new(UP_BANDWIDTH_MBPS)
+        .with_tcp_sockets([(TcpSocketId::Raptorcast, bind_addr)])
+        .with_tcp_connections_limit(1, 1)
+        .build();
+
+    let mut rx1_socket = rx1.tcp_sockets.take(TcpSocketId::Raptorcast).unwrap();
+    let rx1_addr = rx1_socket.local_addr();
+    let mut rx2_socket = rx2.tcp_sockets.take(TcpSocketId::Raptorcast).unwrap();
+    let rx2_addr = rx2_socket.local_addr();
+    let tcp_socket = tx.tcp_sockets.take(TcpSocketId::Raptorcast).unwrap();
+
+    let payload1: Vec<u8> = "first message".into();
+    let (sender1, receiver1) = oneshot::channel::<()>();
+    tcp_socket.write(
+        rx1_addr,
+        TcpMsg {
+            msg: payload1.clone().into(),
+            completion: Some(sender1),
+        },
+    );
+
+    let recv_msg = executor::block_on(rx1_socket.recv());
+    assert_eq!(recv_msg.payload, payload1);
+    assert!(executor::block_on(receiver1).is_ok());
+
+    let payload2: Vec<u8> = "second message".into();
+    let (sender2, receiver2) = oneshot::channel::<()>();
+    tcp_socket.write(
+        rx2_addr,
+        TcpMsg {
+            msg: payload2.into(),
+            completion: Some(sender2),
+        },
+    );
+
+    assert!(executor::block_on(receiver2).is_err());
+    sleep(Duration::from_millis(5));
+    assert!(rx2_socket.recv().now_or_never().is_none());
 }
 
 const MINIMUM_SEGMENT_SIZE: u16 = 256;

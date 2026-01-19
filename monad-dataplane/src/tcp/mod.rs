@@ -72,7 +72,7 @@ pub(crate) fn spawn_tasks(
     let mut bound_addrs = Vec::with_capacity(socket_configs.len());
 
     let rx_state = rx::RxState::new(
-        addrlist,
+        addrlist.clone(),
         cfg.connections_limit,
         cfg.per_ip_connections_limit,
     );
@@ -94,7 +94,7 @@ pub(crate) fn spawn_tasks(
     }
 
     bound_addrs_tx.send(bound_addrs).unwrap();
-    spawn(tx::task(tcp_egress_rx));
+    spawn(tx::task(cfg, addrlist, tcp_egress_rx));
 }
 
 // Minimum message receive/transmit speed in bytes per second.  Messages that are

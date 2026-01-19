@@ -745,7 +745,7 @@ pub(crate) struct UdpMsg {
 }
 
 const TCP_INGRESS_CHANNEL_SIZE: usize = 1024;
-const TCP_EGRESS_CHANNEL_SIZE: usize = 1024;
+const TCP_EGRESS_CHANNEL_SIZE: usize = 256;
 const UDP_INGRESS_CHANNEL_SIZE: usize = 12_800;
 const UDP_EGRESS_CHANNEL_SIZE: usize = 12_800;
 
