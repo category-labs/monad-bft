@@ -1889,9 +1889,9 @@ mod test {
             GENESIS_SEQ_NUM + SeqNum(1),
             1,
             RoundSignature::new(Round(1), author_cert_key),
-            Some(BASE_FEE),
-            Some(BASE_FEE_TREND),
-            Some(BASE_FEE_MOMENT),
+            BASE_FEE,
+            BASE_FEE_TREND,
+            BASE_FEE_MOMENT,
         );
         let unvalidated_proposal: ProposalMessage<
             SignatureType,

@@ -107,9 +107,7 @@ impl ValidEthTransaction {
             return Err((tx, EthTxPoolDropReason::FeeTooLow));
         }
 
-        let last_commit_base_fee = last_commit
-            .base_fee
-            .unwrap_or(monad_tfm::base_fee::PRE_TFM_BASE_FEE);
+        let last_commit_base_fee = last_commit.base_fee;
         let max_value = compute_txn_max_value(&tx, last_commit_base_fee);
         let max_gas_cost = compute_txn_max_gas_cost(&tx, last_commit_base_fee);
 

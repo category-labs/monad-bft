@@ -1426,9 +1426,9 @@ mod test {
                     seq_num,
                     timestamp,
                     RoundSignature::new(round, leader_certkey),
-                    Some(BASE_FEE),
-                    Some(BASE_FEE_TREND),
-                    Some(BASE_FEE_MOMENT),
+                    BASE_FEE,
+                    BASE_FEE_TREND,
+                    BASE_FEE_MOMENT,
                 );
 
                 let validator_cert_pubkeys = self

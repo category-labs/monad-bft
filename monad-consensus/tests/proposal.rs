@@ -129,9 +129,9 @@ fn setup_block(
                 block_round,
                 &NopKeyPair::from_bytes(&mut [1_u8; 32]).unwrap(),
             ),
-            Some(BASE_FEE),
-            Some(BASE_FEE_TREND),
-            Some(BASE_FEE_MOMENT),
+            BASE_FEE,
+            BASE_FEE_TREND,
+            BASE_FEE_MOMENT,
         ),
         payload,
     )
@@ -1243,9 +1243,9 @@ fn test_validate_tc_invalid_tc_signature() {
                 block_round,
                 &NopKeyPair::from_bytes(&mut [1_u8; 32]).unwrap(),
             ),
-            Some(BASE_FEE),
-            Some(BASE_FEE_TREND),
-            Some(BASE_FEE_MOMENT),
+            BASE_FEE,
+            BASE_FEE_TREND,
+            BASE_FEE_MOMENT,
         );
 
     let proposal = ProposalMessage {

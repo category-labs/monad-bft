@@ -633,9 +633,9 @@ mod test {
             SeqNum(1),
             1,
             RoundSignature::new(Round(1), &NopKeyPair::from_bytes(&mut [1_u8; 32]).unwrap()),
-            Some(BASE_FEE),
-            Some(BASE_FEE_TREND),
-            Some(BASE_FEE_MOMENT),
+            BASE_FEE,
+            BASE_FEE_TREND,
+            BASE_FEE_MOMENT,
         );
 
         FullBlock::new(header, body).unwrap()
@@ -665,9 +665,9 @@ mod test {
             parent.seq_num + SeqNum(1),
             parent.timestamp_ns + 1,
             RoundSignature::new(round, &NopKeyPair::from_bytes(&mut [1_u8; 32]).unwrap()),
-            Some(BASE_FEE),
-            Some(BASE_FEE_TREND),
-            Some(BASE_FEE_MOMENT),
+            BASE_FEE,
+            BASE_FEE_TREND,
+            BASE_FEE_MOMENT,
         );
 
         FullBlock::new(header, body).unwrap()

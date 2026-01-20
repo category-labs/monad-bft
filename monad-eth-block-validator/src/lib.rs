@@ -286,15 +286,11 @@ where
             ));
         }
 
-        if let Some(consensus_header_base_fee) = header.base_fee {
-            if consensus_header_base_fee != *base_fee_per_gas {
-                return Err(HeaderError::InvalidBaseFee {
-                    consensus_header_base_fee,
-                    eth_header_base_fee: *base_fee_per_gas,
-                });
-            }
-        } else {
-            return Err(HeaderError::EmptyHeaderBaseFee);
+        if header.base_fee != *base_fee_per_gas {
+            return Err(HeaderError::InvalidBaseFee {
+                consensus_header_base_fee: header.base_fee,
+                eth_header_base_fee: *base_fee_per_gas,
+            });
         }
 
         // Monad does not use request hashes yet
@@ -496,9 +492,7 @@ where
 
         let mut txn_fees: TxnFees = TxnFees::default();
         for eth_txn in validated_txns.iter() {
-            let block_base_fee = header
-                .base_fee
-                .unwrap_or(monad_tfm::base_fee::PRE_TFM_BASE_FEE);
+            let block_base_fee = header.base_fee;
             if eth_txn.max_fee_per_gas() < block_base_fee.into() {
                 debug!(
                     ?eth_txn,
@@ -675,9 +669,9 @@ mod test {
             GENESIS_SEQ_NUM + SeqNum(1),
             1,
             RoundSignature::new(Round(1), &nop_keypair),
-            Some(BASE_FEE as u64),
-            Some(BASE_FEE_TREND),
-            Some(BASE_FEE_MOMENT),
+            BASE_FEE as u64,
+            BASE_FEE_TREND,
+            BASE_FEE_MOMENT,
         )
     }
 
@@ -1430,9 +1424,9 @@ mod test {
             seq_num,
             timestamp_ns,
             round_signature,
-            Some(consensus_base_fee),
-            Some(BASE_FEE_TREND),
-            Some(BASE_FEE_MOMENT),
+            consensus_base_fee,
+            BASE_FEE_TREND,
+            BASE_FEE_MOMENT,
         );
 
         let result =

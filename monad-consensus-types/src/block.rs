@@ -94,12 +94,12 @@ where
     pub block_body_id: ConsensusBlockBodyId,
 
     // Base fee update rule
-    #[serde_as(as = "Option<DisplayFromStr>")]
-    pub base_fee: Option<u64>,
-    #[serde_as(as = "Option<DisplayFromStr>")]
-    pub base_fee_trend: Option<u64>,
-    #[serde_as(as = "Option<DisplayFromStr>")]
-    pub base_fee_moment: Option<u64>,
+    #[serde_as(as = "DisplayFromStr")]
+    pub base_fee: u64,
+    #[serde_as(as = "DisplayFromStr")]
+    pub base_fee_trend: u64,
+    #[serde_as(as = "DisplayFromStr")]
+    pub base_fee_moment: u64,
 }
 
 /// Encodable and Decodable impls follow https://github.com/alloy-rs/alloy/blob/b0e06a09e9b18d13f9a5c0e0951a00a88545bc8f/crates/consensus/src/block/header.rs
@@ -130,18 +130,9 @@ where
         self.delayed_execution_results.encode(out);
         self.execution_inputs.encode(out);
         self.block_body_id.encode(out);
-
-        if let Some(base_fee) = self.base_fee {
-            base_fee.encode(out);
-        }
-
-        if let Some(base_fee_trend) = self.base_fee_trend {
-            base_fee_trend.encode(out);
-        }
-
-        if let Some(base_fee_moment) = self.base_fee_moment {
-            base_fee_moment.encode(out);
-        }
+        self.base_fee.encode(out);
+        self.base_fee_trend.encode(out);
+        self.base_fee_moment.encode(out);
     }
 }
 
@@ -157,7 +148,7 @@ where
             return Err(alloy_rlp::Error::UnexpectedString);
         }
         let starting_len = buf.len();
-        let mut this = Self {
+        let this = Self {
             block_round: Decodable::decode(buf)?,
             epoch: Decodable::decode(buf)?,
             qc: Decodable::decode(buf)?,
@@ -168,22 +159,10 @@ where
             delayed_execution_results: Decodable::decode(buf)?,
             execution_inputs: Decodable::decode(buf)?,
             block_body_id: Decodable::decode(buf)?,
-            base_fee: None,
-            base_fee_trend: None,
-            base_fee_moment: None,
+            base_fee: Decodable::decode(buf)?,
+            base_fee_trend: Decodable::decode(buf)?,
+            base_fee_moment: Decodable::decode(buf)?,
         };
-
-        if starting_len - buf.len() < rlp_header.payload_length {
-            this.base_fee = Some(Decodable::decode(buf)?);
-        }
-
-        if starting_len - buf.len() < rlp_header.payload_length {
-            this.base_fee_trend = Some(Decodable::decode(buf)?);
-        }
-
-        if starting_len - buf.len() < rlp_header.payload_length {
-            this.base_fee_moment = Some(Decodable::decode(buf)?);
-        }
 
         let consumed = starting_len - buf.len();
         if consumed != rlp_header.payload_length {
@@ -225,18 +204,9 @@ where
         length += self.delayed_execution_results.length();
         length += self.execution_inputs.length();
         length += self.block_body_id.length();
-
-        if let Some(base_fee) = self.base_fee {
-            length += base_fee.length();
-        }
-
-        if let Some(base_fee_trend) = self.base_fee_trend {
-            length += base_fee_trend.length();
-        }
-
-        if let Some(base_fee_moment) = self.base_fee_moment {
-            length += base_fee_moment.length();
-        }
+        length += self.base_fee.length();
+        length += self.base_fee_trend.length();
+        length += self.base_fee_moment.length();
 
         length
     }
@@ -259,12 +229,7 @@ where
             .field("timestamp_ns", &self.timestamp_ns)
             .field("id", &self.get_id())
             .field("base_fee", &self.base_fee)
-            .field(
-                "base_fee_trend",
-                &self
-                    .base_fee_trend
-                    .map(|base_fee_trend| base_fee_trend.cast_signed()),
-            )
+            .field("base_fee_trend", &self.base_fee_trend.cast_signed())
             .field("base_fee_moment", &self.base_fee_moment)
             .finish_non_exhaustive()
     }
@@ -288,9 +253,9 @@ where
         seq_num: SeqNum,
         timestamp_ns: u128,
         round_signature: RoundSignature<SCT::SignatureType>,
-        base_fee: Option<u64>,
-        base_fee_trend: Option<u64>,
-        base_fee_moment: Option<u64>,
+        base_fee: u64,
+        base_fee_trend: u64,
+        base_fee_moment: u64,
     ) -> Self {
         Self {
             author,
@@ -592,13 +557,13 @@ where
     pub fn get_timestamp(&self) -> u128 {
         self.header.timestamp_ns
     }
-    pub fn get_base_fee(&self) -> Option<u64> {
+    pub fn get_base_fee(&self) -> u64 {
         self.header.base_fee
     }
-    pub fn get_base_fee_trend(&self) -> Option<u64> {
+    pub fn get_base_fee_trend(&self) -> u64 {
         self.header.base_fee_trend
     }
-    pub fn get_base_fee_moment(&self) -> Option<u64> {
+    pub fn get_base_fee_moment(&self) -> u64 {
         self.header.base_fee_moment
     }
     pub fn get_author(&self) -> &NodeId<CertificateSignaturePubKey<ST>> {
@@ -717,124 +682,6 @@ mod test {
     type ExecutionProtocolType = MockExecutionProtocol;
     use monad_testutil::signing::{get_certificate_key, get_key};
 
-    #[derive(Clone, PartialEq, Eq, RlpDecodable, RlpEncodable)]
-    pub struct ConsensusBlockHeaderV_0_10<ST, SCT, EPT>
-    where
-        ST: CertificateSignatureRecoverable,
-        SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-        EPT: ExecutionProtocol,
-    {
-        /// round this block was first proposed in
-        /// note that this will differ from proposal_round for a reproposal
-        pub block_round: Round,
-        /// Epoch this block was proposed in
-        pub epoch: Epoch,
-        /// Certificate of votes for the parent block
-        pub qc: QuorumCertificate<SCT>,
-        /// proposer of this block
-        pub author: NodeId<CertificateSignaturePubKey<ST>>,
-
-        pub seq_num: SeqNum,
-        pub timestamp_ns: u128,
-        // This is SCT::SignatureType because SCT signatures are guaranteed to be deterministic
-        pub round_signature: RoundSignature<SCT::SignatureType>,
-
-        /// data related to the execution side of the protocol
-        pub delayed_execution_results: Vec<EPT::FinalizedHeader>,
-        pub execution_inputs: EPT::ProposedHeader,
-        /// identifier for the transaction payload of this block
-        pub block_body_id: ConsensusBlockBodyId,
-    }
-
-    #[test]
-    fn test_rlp_base_fee_back_compat() {
-        let key = get_key::<SignatureType>(1246);
-        let cert_key = get_certificate_key::<SignatureCollectionType>(22354);
-
-        // old encoding can be decoded as new header
-        let old_header = ConsensusBlockHeaderV_0_10::<
-            SignatureType,
-            SignatureCollectionType,
-            ExecutionProtocolType,
-        > {
-            block_round: Round(10),
-            epoch: Epoch(1),
-            qc: QuorumCertificate::genesis_qc(),
-            author: NodeId::new(key.pubkey()),
-            seq_num: SeqNum(1),
-            timestamp_ns: 1726592,
-            round_signature: RoundSignature::new(Round(10), &cert_key),
-            delayed_execution_results: Vec::new(),
-            execution_inputs: MockExecutionProposedHeader {},
-            block_body_id: ConsensusBlockBodyId(monad_crypto::hasher::Hash::default()),
-        };
-
-        let encoded = alloy_rlp::encode(&old_header);
-        let new_header: ConsensusBlockHeader<
-            SignatureType,
-            SignatureCollectionType,
-            ExecutionProtocolType,
-        > = alloy_rlp::decode_exact(&encoded).unwrap();
-
-        assert_eq!(old_header.block_round, new_header.block_round);
-        assert_eq!(old_header.epoch, new_header.epoch);
-        assert_eq!(old_header.qc, new_header.qc);
-        assert_eq!(old_header.author, new_header.author);
-        assert_eq!(old_header.seq_num, new_header.seq_num);
-        assert_eq!(old_header.timestamp_ns, new_header.timestamp_ns);
-        assert_eq!(old_header.round_signature, new_header.round_signature);
-        assert_eq!(
-            old_header.delayed_execution_results,
-            new_header.delayed_execution_results
-        );
-        assert_eq!(old_header.execution_inputs, new_header.execution_inputs);
-        assert_eq!(old_header.block_body_id, new_header.block_body_id);
-        assert_eq!(new_header.base_fee, None);
-        assert_eq!(new_header.base_fee_trend, None);
-        assert_eq!(new_header.base_fee_moment, None);
-
-        // new encoding with base fee == None can be decoded as old header
-        let new_header = ConsensusBlockHeader::<
-            SignatureType,
-            SignatureCollectionType,
-            ExecutionProtocolType,
-        >::new(
-            NodeId::new(key.pubkey()),
-            Epoch(1),
-            Round(10),
-            Vec::new(),
-            MockExecutionProposedHeader {},
-            ConsensusBlockBodyId(monad_crypto::hasher::Hash::default()),
-            QuorumCertificate::genesis_qc(),
-            SeqNum(10),
-            12658127,
-            RoundSignature::new(Round(10), &cert_key),
-            None,
-            None,
-            None,
-        );
-
-        let encoded = alloy_rlp::encode(&new_header);
-        let old_header: ConsensusBlockHeaderV_0_10<
-            SignatureType,
-            SignatureCollectionType,
-            ExecutionProtocolType,
-        > = alloy_rlp::decode_exact(&encoded).unwrap();
-        assert_eq!(old_header.block_round, new_header.block_round);
-        assert_eq!(old_header.epoch, new_header.epoch);
-        assert_eq!(old_header.qc, new_header.qc);
-        assert_eq!(old_header.author, new_header.author);
-        assert_eq!(old_header.seq_num, new_header.seq_num);
-        assert_eq!(old_header.timestamp_ns, new_header.timestamp_ns);
-        assert_eq!(old_header.round_signature, new_header.round_signature);
-        assert_eq!(
-            old_header.delayed_execution_results,
-            new_header.delayed_execution_results
-        );
-        assert_eq!(old_header.execution_inputs, new_header.execution_inputs);
-        assert_eq!(old_header.block_body_id, new_header.block_body_id);
-    }
-
     #[test]
     fn test_header_rlp_roundtrip_trailing_zero() {
         let key = get_key::<SignatureType>(1246);
@@ -855,9 +702,9 @@ mod test {
             SeqNum(10),
             12658127,
             RoundSignature::new(Round(10), &cert_key),
-            Some(124),
-            Some(0),
-            None, // not possible in practice because base fee fields are always coupled. Only for testing purpose
+            124,
+            0,
+            100,
         );
 
         let encoded = alloy_rlp::encode(&header);
@@ -892,9 +739,9 @@ mod test {
             SeqNum::MAX,
             u128::MAX,
             RoundSignature::new(Round::MAX, &cert_key),
-            Some(u64::MAX),
-            Some(u64::MAX),
-            None, // test optional
+            u64::MAX,
+            u64::MAX,
+            u64::MAX,
         );
 
         let encoded = toml::to_string_pretty(&header).unwrap();

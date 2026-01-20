@@ -492,7 +492,7 @@ fn check_txpool_coherency(
     }
 
     // create proposal
-    let base_fee = block_under_test.header().base_fee.unwrap_or(0);
+    let base_fee = block_under_test.header().base_fee;
     let timestamp_ns = block_under_test.header().timestamp_ns;
     let beneficiary: [u8; 20] = block_under_test
         .header()
@@ -697,9 +697,9 @@ fn create_block_header_helper(
         seq_num,
         timestamp,
         signature,
-        Some(base_fee),
-        Some(base_trend),
-        Some(base_moment),
+        base_fee,
+        base_trend,
+        base_moment,
     )
 }
 
@@ -720,8 +720,7 @@ fn create_test_block_helper(
         .compute_base_fee::<EthValidatedBlock<NopSignature, MockSignatures<NopSignature>>>(
             blocks,
             chain_config,
-        )
-        .unwrap();
+        );
     let header = create_block_header_helper(
         round,
         seq_num,
