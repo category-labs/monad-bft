@@ -185,7 +185,7 @@ rand_distr = "0.4"
 ratatui = "0.29.0"
 rayon = "1.7"
 regex = "1.10.2"
-reqwest = { version = "0.11", features = ["json"] }
+reqwest = { version = "0.12.28", features = ["json"] }
 rstest = "0.25.0"
 schemars = "0.8.21"
 scrypt = { version = "0.11", default-features = false }
