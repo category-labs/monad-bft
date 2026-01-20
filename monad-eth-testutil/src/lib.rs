@@ -13,10 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{
-    collections::{BTreeMap, VecDeque},
-    iter::repeat_n,
-};
+use std::{collections::VecDeque, iter::repeat_n};
 
 use alloy_consensus::{
     constants::EMPTY_WITHDRAWALS, proofs::calculate_transaction_root, transaction::Recovered,
@@ -33,7 +30,7 @@ use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
 use monad_chain_config::{revision::ChainRevision, ChainConfig, MockChainConfig};
 use monad_consensus_types::{
-    block::{ConsensusBlockHeader, ConsensusFullBlock, TxnFee},
+    block::{ConsensusBlockHeader, ConsensusFullBlock},
     payload::{ConsensusBlockBody, ConsensusBlockBodyInner, RoundSignature},
     quorum_certificate::QuorumCertificate,
 };
@@ -44,17 +41,14 @@ use monad_crypto::{
     NopKeyPair, NopSignature,
 };
 use monad_eth_block_policy::{
-    compute_txn_max_gas_cost,
     nonce_usage::{NonceUsage, NonceUsageMap},
     EthValidatedBlock,
 };
 use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ProposedEthHeader, ValidatedTx};
 use monad_secp::KeyPair;
 use monad_testutil::signing::MockSignatures;
-use monad_types::{Balance, Epoch, NodeId, Round, SeqNum};
+use monad_types::{Epoch, NodeId, Round, SeqNum};
 use monad_validator::signature_collection::SignatureCollection;
-
-const BASE_FEE: u64 = 100_000_000_000;
 
 // pubkey starts with AAA
 pub const S1: B256 = B256::new(hex!(
@@ -90,7 +84,6 @@ where
     pub block: ConsensusFullBlock<ST, SCT, EthExecutionProtocol>,
     pub validated_txns: Vec<ValidatedTx>,
     pub nonce_usages: NonceUsageMap,
-    pub txn_fees: BTreeMap<Address, TxnFee>,
 }
 
 pub fn make_legacy_tx(
@@ -268,48 +261,7 @@ pub fn secret_to_eth_address(mut secret: FixedBytes<32>) -> Address {
     Address::from_slice(&hash[12..])
 }
 
-fn compute_expected_txn_fees_and_nonce_usages(
-    txs: &[Recovered<TxEnvelope>],
-) -> (BTreeMap<Address, TxnFee>, NonceUsageMap) {
-    let mut txn_fees: BTreeMap<_, TxnFee> = BTreeMap::new();
-
-    for eth_txn in txs.iter() {
-        if eth_txn.is_eip7702() {
-            if let Some(auth_list) = eth_txn.authorization_list() {
-                for auth in auth_list {
-                    let authority = auth.recover_authority().unwrap();
-                    txn_fees
-                        .entry(authority)
-                        .and_modify(|e| {
-                            e.is_delegated = true;
-                        })
-                        .or_insert(TxnFee {
-                            first_txn_value: U256::ZERO,
-                            first_txn_gas: Balance::ZERO,
-                            max_gas_cost: Balance::ZERO,
-                            is_delegated: true,
-                            delegation_before_first_txn: true,
-                        });
-                }
-            }
-        }
-
-        txn_fees
-            .entry(eth_txn.signer())
-            .and_modify(|e| {
-                e.max_gas_cost = e
-                    .max_gas_cost
-                    .saturating_add(compute_txn_max_gas_cost(eth_txn, BASE_FEE));
-            })
-            .or_insert_with(|| TxnFee {
-                first_txn_value: eth_txn.value(),
-                first_txn_gas: compute_txn_max_gas_cost(eth_txn, BASE_FEE),
-                max_gas_cost: Balance::ZERO,
-                is_delegated: false,
-                delegation_before_first_txn: false,
-            });
-    }
-
+pub fn compute_expected_nonce_usages(txs: &[Recovered<TxEnvelope>]) -> NonceUsageMap {
     let nonce_usages = txs
         .iter()
         .flat_map(|t| {
@@ -345,11 +297,7 @@ fn compute_expected_txn_fees_and_nonce_usages(
             },
         );
 
-    (txn_fees, nonce_usages)
-}
-
-pub fn compute_expected_nonce_usages(txs: &[Recovered<TxEnvelope>]) -> NonceUsageMap {
-    compute_expected_txn_fees_and_nonce_usages(txs).1
+    nonce_usages
 }
 
 pub fn generate_consensus_test_block(
@@ -400,7 +348,7 @@ pub fn generate_consensus_test_block(
         monad_tfm::base_fee::GENESIS_BASE_FEE_MOMENT,
     );
 
-    let (txn_fees, nonce_usages) = compute_expected_txn_fees_and_nonce_usages(&txs);
+    let nonce_usages = compute_expected_nonce_usages(&txs);
 
     let mut validated_txns: Vec<ValidatedTx> = Vec::new();
     for tx in txs.into_iter() {
@@ -427,7 +375,6 @@ pub fn generate_consensus_test_block(
         block: ConsensusFullBlock::new(header, body).expect("header doesn't match body"),
         validated_txns,
         nonce_usages,
-        txn_fees,
     }
 }
 
@@ -445,7 +392,6 @@ pub fn generate_block_with_txs(
         system_txns: Vec::new(),
         validated_txns: test_block.validated_txns,
         nonce_usages: test_block.nonce_usages,
-        txn_fees: test_block.txn_fees,
     }
 }
 

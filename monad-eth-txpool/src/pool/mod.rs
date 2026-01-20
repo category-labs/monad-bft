@@ -34,8 +34,8 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_block_policy::{
-    compute_txn_max_gas_cost, timestamp_ns_to_secs, EthBlockPolicy, EthBlockPolicyBlockValidator,
-    EthValidatedBlock,
+    compute_txn_max_gas_cost, timestamp_ns_to_secs, EthBlockPolicy, EthValidatedBlock,
+    ReserveBalanceUpdater,
 };
 use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolInternalDropReason, EthTxPoolSnapshot};
 use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ExtractEthAddress, ProposedEthHeader};
@@ -685,11 +685,10 @@ where
             "txpool sequencing transactions"
         );
 
-        let validator = EthBlockPolicyBlockValidator::new(
+        let reserve_balance_updater = ReserveBalanceUpdater::new(
             proposed_seq_num,
             block_policy.get_execution_delay(),
             base_fee,
-            &self.chain_revision,
         )?;
 
         let proposal = sequencer.build_proposal(
@@ -698,7 +697,7 @@ where
             proposal_byte_limit,
             chain_config,
             account_balances,
-            validator,
+            reserve_balance_updater,
         );
 
         let proposal_num_txs = proposal.txs.len();
