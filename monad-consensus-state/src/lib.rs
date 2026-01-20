@@ -1436,6 +1436,11 @@ where
         updated_block_id: BlockId,
     ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
         let mut cmds = Vec::new();
+
+        // Get high_qc block ID to determine the canonical chain
+        let high_qc_block_id = self.consensus.pacemaker.high_certificate().qc().get_block_id();
+
+        // Process coherent blocks for Voted commits (high_qc block only)
         for newly_coherent_block in self.consensus.pending_block_tree.try_update_coherency(
             self.metrics,
             updated_block_id,
@@ -1443,17 +1448,37 @@ where
             self.state_backend,
             &self.config.chain_config,
         ) {
-            debug!(
-                seq_num =? newly_coherent_block.header().seq_num,
-                block_round =? newly_coherent_block.header().block_round,
-                "committing block proposed"
-            );
-            // optimistically commit any block that has been added to the blocktree and is coherent
-            cmds.push(ConsensusCommand::CommitBlocks(
-                OptimisticPolicyCommit::Proposed(newly_coherent_block.to_owned()),
-            ));
+            let block_id = newly_coherent_block.get_id();
 
-            // TODO update tip to highest round proposed block
+            // Only emit Voted for the high_qc block
+            if block_id == high_qc_block_id {
+                debug!(
+                    seq_num =? newly_coherent_block.header().seq_num,
+                    block_round =? newly_coherent_block.header().block_round,
+                    "committing block voted"
+                );
+                cmds.push(ConsensusCommand::CommitBlocks(
+                    OptimisticPolicyCommit::Voted(newly_coherent_block.to_owned()),
+                ));
+            }
+        }
+
+        // Emit single Proposed commit for the canonical tip (if beyond high_qc)
+        if let Some(proposed_tip) = self
+            .consensus
+            .pending_block_tree
+            .find_canonical_coherent_tip(&high_qc_block_id)
+        {
+            if let Some(tip_block) = self.consensus.pending_block_tree.get_block(&proposed_tip) {
+                debug!(
+                    seq_num =? tip_block.header().seq_num,
+                    block_round =? tip_block.header().block_round,
+                    "committing block proposed (tip)"
+                );
+                cmds.push(ConsensusCommand::CommitBlocks(
+                    OptimisticPolicyCommit::Proposed(tip_block.clone()),
+                ));
+            }
         }
 
         let high_commit_qc = self.consensus.pending_block_tree.get_high_committable_qc();
@@ -2706,7 +2731,8 @@ mod test {
     {
         cmds.iter()
             .filter_map(|c| match c {
-                ConsensusCommand::CommitBlocks(OptimisticPolicyCommit::Proposed(block)) => {
+                ConsensusCommand::CommitBlocks(OptimisticPolicyCommit::Proposed(block))
+                | ConsensusCommand::CommitBlocks(OptimisticPolicyCommit::Voted(block)) => {
                     Some(block.get_block_round())
                 }
                 _ => None,
