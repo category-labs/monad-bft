@@ -13,7 +13,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use criterion::{black_box, criterion_group, criterion_main, BatchSize, Criterion};
+use std::hint::black_box;
+
+use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
 use monad_event_ring::{DecodedEventRing, EventNextResult, SnapshotEventRing};
 use monad_exec_events::ExecEventDecoder;
 

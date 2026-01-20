@@ -403,6 +403,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "alloca"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e5a7d05ea6aea7e9e64d25b9156ba2fee3fdd659e34e41063cd2fc7cd020d7f4"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "allocator-api2"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1309,17 +1318,6 @@ name = "atomic-waker"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
-
-[[package]]
-name = "atty"
-version = "0.2.14"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d9b39be18770d11421cdb1b9947a45dd3f37e93092cbf377614828a319d5fee8"
-dependencies = [
- "hermit-abi 0.1.19",
- "libc",
- "winapi",
-]
 
 [[package]]
 name = "auto-const-array"
@@ -2353,18 +2351,6 @@ dependencies = [
 
 [[package]]
 name = "clap"
-version = "3.2.25"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ea181bf566f71cb9a5d17a59e1871af638180a18fb0035c92ae62b705207123"
-dependencies = [
- "bitflags 1.3.2",
- "clap_lex 0.2.4",
- "indexmap 1.9.3",
- "textwrap",
-]
-
-[[package]]
-name = "clap"
 version = "4.5.54"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c6e6ff9dcd79cff5cd969a17a545d79e84ab086e444102a591e288a8aa3ce394"
@@ -2381,7 +2367,7 @@ checksum = "fa42cf4d2b7a41bc8f663a7cab4031ebafa1bf3875705bfaf8466dc60ab52c00"
 dependencies = [
  "anstream",
  "anstyle",
- "clap_lex 0.7.6",
+ "clap_lex",
  "strsim",
 ]
 
@@ -2395,15 +2381,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.113",
-]
-
-[[package]]
-name = "clap_lex"
-version = "0.2.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2850f2f5a82cbf437dd5af4d49848fbdfc27c157c3d010345776f952765261c5"
-dependencies = [
- "os_str_bytes",
 ]
 
 [[package]]
@@ -2640,26 +2617,24 @@ dependencies = [
 
 [[package]]
 name = "criterion"
-version = "0.4.0"
+version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e7c76e09c1aae2bc52b3d2f29e13c6572553b30c4aa1b8a49fd70de6412654cb"
+checksum = "4d883447757bb0ee46f233e9dc22eb84d93a9508c9b868687b274fc431d886bf"
 dependencies = [
+ "alloca",
  "anes",
- "atty",
  "cast",
  "ciborium",
- "clap 3.2.25",
+ "clap",
  "criterion-plot",
- "futures",
- "itertools 0.10.5",
- "lazy_static",
+ "itertools 0.13.0",
  "num-traits",
  "oorandom",
+ "page_size",
  "plotters",
  "rayon",
  "regex",
  "serde",
- "serde_derive",
  "serde_json",
  "tinytemplate",
  "tokio",
@@ -2668,12 +2643,12 @@ dependencies = [
 
 [[package]]
 name = "criterion-plot"
-version = "0.5.0"
+version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6b50826342786a51a89e2da3a28f1c32b06e387201bc2d19791f622c673706b1"
+checksum = "ed943f81ea2faa8dcecbbfa50164acf95d555afec96a27871663b300e387b2e4"
 dependencies = [
  "cast",
- "itertools 0.10.5",
+ "itertools 0.13.0",
 ]
 
 [[package]]
@@ -3852,15 +3827,6 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "hermit-abi"
-version = "0.1.19"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "62b467343b94ba476dcb2500d242dadbb39557df889310ac77c5d99100aaac33"
-dependencies = [
- "libc",
-]
-
-[[package]]
-name = "hermit-abi"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc0fef456e4baa96da950455cd02c081ca953b141298e41db3fc7e36b1da849c"
@@ -4460,7 +4426,7 @@ version = "0.4.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
 dependencies = [
- "hermit-abi 0.5.2",
+ "hermit-abi",
  "libc",
  "windows-sys 0.61.2",
 ]
@@ -4917,7 +4883,7 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "chrono",
- "clap 4.5.54",
+ "clap",
  "dashmap",
  "enum_dispatch",
  "eyre",
@@ -5149,7 +5115,7 @@ name = "monad-dataplane"
 version = "0.1.0"
 dependencies = [
  "bytes",
- "clap 4.5.54",
+ "clap",
  "env_logger 0.10.2",
  "futures",
  "futures-util",
@@ -5172,7 +5138,7 @@ dependencies = [
 name = "monad-debug-node"
 version = "0.1.0"
 dependencies = [
- "clap 4.5.54",
+ "clap",
  "futures",
  "itertools 0.10.5",
  "monad-crypto",
@@ -5315,7 +5281,7 @@ dependencies = [
  "alloy-transport-http",
  "async-channel",
  "chrono",
- "clap 4.5.54",
+ "clap",
  "dashmap",
  "eyre",
  "futures",
@@ -5485,7 +5451,7 @@ version = "0.1.0"
 dependencies = [
  "bindgen",
  "cc",
- "clap 4.5.54",
+ "clap",
  "cmake",
  "criterion",
  "itertools 0.10.5",
@@ -5503,7 +5469,7 @@ dependencies = [
  "alloy-rpc-types",
  "bindgen",
  "chrono",
- "clap 4.5.54",
+ "clap",
  "criterion",
  "hex",
  "itertools 0.10.5",
@@ -5551,7 +5517,7 @@ name = "monad-keystore"
 version = "0.1.0"
 dependencies = [
  "aes",
- "clap 4.5.54",
+ "clap",
  "ctr",
  "hex",
  "monad-bls",
@@ -5665,7 +5631,7 @@ dependencies = [
  "agent",
  "alloy-rlp",
  "chrono",
- "clap 4.5.54",
+ "clap",
  "futures-util",
  "hex",
  "inotify",
@@ -5723,7 +5689,7 @@ name = "monad-node-config"
 version = "0.1.0"
 dependencies = [
  "alloy-primitives",
- "clap 4.5.54",
+ "clap",
  "codespan-reporting",
  "monad-bls",
  "monad-chain-config",
@@ -5764,7 +5730,7 @@ version = "0.1.0"
 dependencies = [
  "alloy-rlp",
  "arrayvec",
- "clap 4.5.54",
+ "clap",
  "futures",
  "governor",
  "hex",
@@ -5836,7 +5802,7 @@ dependencies = [
  "bitvec",
  "byte-unit",
  "bytes",
- "clap 4.5.54",
+ "clap",
  "criterion",
  "eyre",
  "fixed",
@@ -5933,7 +5899,7 @@ dependencies = [
  "async-stream",
  "awc",
  "bytes",
- "clap 4.5.54",
+ "clap",
  "criterion",
  "dashmap",
  "flume",
@@ -6130,7 +6096,7 @@ dependencies = [
 name = "monad-testground"
 version = "0.1.0"
 dependencies = [
- "clap 4.5.54",
+ "clap",
  "futures-util",
  "monad-bls",
  "monad-chain-config",
@@ -6237,7 +6203,7 @@ dependencies = [
  "alloy-consensus",
  "alloy-primitives",
  "alloy-rlp",
- "clap 4.5.54",
+ "clap",
  "futures",
  "hex",
  "monad-bls",
@@ -6365,7 +6331,7 @@ name = "monad-wal"
 version = "0.1.0"
 dependencies = [
  "bytes",
- "clap 4.5.54",
+ "clap",
  "criterion",
  "dateparser",
  "itertools 0.10.5",
@@ -6389,7 +6355,7 @@ dependencies = [
  "aegis",
  "blake3",
  "bytes",
- "clap 4.5.54",
+ "clap",
  "criterion",
  "hex",
  "insta",
@@ -6784,7 +6750,7 @@ version = "1.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "91df4bbde75afed763b708b7eee1e8e7651e02d97f6d5dd763e89367e957b23b"
 dependencies = [
- "hermit-abi 0.5.2",
+ "hermit-abi",
  "libc",
 ]
 
@@ -6958,12 +6924,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "os_str_bytes"
-version = "6.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e2355d85b9a3786f481747ced0e0ff2ba35213a1f9bd406ed906554d7af805a1"
-
-[[package]]
 name = "outref"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6978,6 +6938,16 @@ dependencies = [
  "ecdsa 0.14.8",
  "elliptic-curve 0.12.3",
  "sha2",
+]
+
+[[package]]
+name = "page_size"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "30d5b2194ed13191c1999ae0704b7839fb18384fa22e49b57eeaa97d79ce40da"
+dependencies = [
+ "libc",
+ "winapi",
 ]
 
 [[package]]
@@ -9047,12 +9017,6 @@ dependencies = [
  "syn 2.0.113",
  "test-case-core",
 ]
-
-[[package]]
-name = "textwrap"
-version = "0.16.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c13547615a44dc9c452a8a534638acdf07120d4b6847c8178705da06306a3057"
 
 [[package]]
 name = "thiserror"
