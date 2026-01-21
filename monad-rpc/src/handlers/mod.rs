@@ -17,7 +17,7 @@ use actix_web::{web, HttpResponse};
 use monad_tracing_timing::TimingSpanExtension;
 use monad_triedb_utils::triedb_env::Triedb;
 use serde_json::value::RawValue;
-use tracing::{debug, info, trace_span, Instrument, Span};
+use tracing::{debug, info, trace_span, warn, Instrument, Span};
 use tracing_actix_web::RootSpan;
 
 use self::{
@@ -168,7 +168,8 @@ pub async fn rpc_handler(
     };
 
     if response_raw_value.get().as_bytes().len() > app_state.max_response_size as usize {
-        info!("response exceed size limit: {body:?}");
+        debug!(?request_id, ?body, "response exceeds size limit");
+        warn!(?request_id, "response exceeds size limit");
         return HttpResponse::Ok().json(Response::from_error(JsonRpcError::max_size_exceeded()));
     }
 

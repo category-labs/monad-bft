@@ -38,7 +38,7 @@ use serde::{Deserialize, Serialize};
 use serde_cbor;
 use serde_json::value::RawValue;
 use tokio::sync::Mutex;
-use tracing::{info, trace};
+use tracing::{debug, trace};
 
 use super::block::get_block_key_from_tag_or_hash;
 use crate::{
@@ -816,7 +816,7 @@ pub async fn monad_debug_traceCall<T: Triedb + TriedbPath>(
     eth_call_gas_limit: u64,
     params: MonadDebugTraceCallParams,
 ) -> JsonRpcResult<Box<RawValue>> {
-    info!("monad_debug_traceCall: {params:?}");
+    debug!(?params, "monad_debug_traceCall");
 
     let block_key = get_block_key_from_tag_or_hash(triedb_env, params.block.clone()).await?;
 
