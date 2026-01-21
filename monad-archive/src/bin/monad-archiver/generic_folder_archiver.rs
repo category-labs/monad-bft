@@ -310,7 +310,7 @@ async fn process_single_file(
     path: &PathBuf,
     metrics: &Metrics,
 ) -> Result<Option<String>> {
-    if s3_exists_key(&store, key).await? {
+    if store.exists(key).await? {
         metrics.inc_counter(MetricNames::GENERIC_ARCHIVE_FILES_ALREADY_IN_S3);
         return Ok(Some(key.to_string()));
     }
@@ -326,11 +326,6 @@ async fn process_single_file(
     info!(key, ?path, "Uploaded file to archive store");
     // Do NOT mark as known here; wait for next tick's exists check
     Ok(None)
-}
-
-async fn s3_exists_key(store: &impl KVStore, key: &str) -> Result<bool> {
-    let objs = store.scan_prefix(key).await?;
-    Ok(objs.iter().any(|k| k == key))
 }
 
 fn derive_prefix(base_prefix: &str, folder_path: &Path) -> Result<String> {

@@ -113,6 +113,28 @@ impl KVReader for FsStorage {
                 .write_get_metrics_on_err(start.elapsed(), KVStoreType::FileSystem, &self.metrics),
         }
     }
+
+    async fn exists(&self, key: &str) -> Result<bool> {
+        let path = self.key_path(key)?;
+        let start = Instant::now();
+
+        match fs::try_exists(&path).await {
+            Ok(exists) => {
+                kvstore_get_metrics(
+                    start.elapsed(),
+                    true,
+                    KVStoreType::FileSystem,
+                    &self.metrics,
+                );
+                Ok(exists)
+            }
+            Err(err) => Err(err)
+                .wrap_err_with(|| {
+                    format!("Failed to check existence of key {key} at path {path:?}")
+                })
+                .write_get_metrics_on_err(start.elapsed(), KVStoreType::FileSystem, &self.metrics),
+        }
+    }
 }
 
 impl KVStore for FsStorage {
