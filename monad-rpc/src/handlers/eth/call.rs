@@ -27,6 +27,7 @@ use alloy_consensus::{Header, SignableTransaction, TxEip1559, TxEip7702, TxEnvel
 use alloy_eips::eip7702::SignedAuthorization;
 use alloy_primitives::{Address, PrimitiveSignature, TxKind, Uint, B256, U256, U64, U8};
 use alloy_rpc_types::{AccessList, AccessListItem, AccessListResult};
+use ciborium;
 use monad_chain_config::execution_revision::MonadExecutionRevision;
 use monad_ethcall::{eth_call, CallResult, EthCallExecutor, MonadTracer, StateOverrideSet};
 use monad_rpc_docs::rpc;
@@ -35,7 +36,6 @@ use monad_triedb_utils::triedb_env::{
 };
 use monad_types::{BlockId, Hash, SeqNum};
 use serde::{Deserialize, Serialize};
-use serde_cbor;
 use serde_json::value::RawValue;
 use tokio::sync::Mutex;
 use tracing::{info, trace};
@@ -854,7 +854,7 @@ pub async fn monad_debug_traceCall<T: Triedb + TriedbPath>(
         }
 
         MonadTracer::PreStateTracer | MonadTracer::StateDiffTracer => {
-            let v: serde_cbor::Value = serde_cbor::from_slice(&raw_payload)
+            let v: ciborium::Value = ciborium::de::from_reader(raw_payload.as_slice())
                 .map_err(|e| JsonRpcError::internal_error(format!("cbor decode error: {}", e)))?;
             serde_json::value::to_raw_value(&v).map_err(|e| {
                 JsonRpcError::internal_error(format!("json serialization error: {}", e))
@@ -905,16 +905,13 @@ pub async fn monad_createAccessList<T: Triedb + TriedbPath>(
         }
     };
 
-    let v: serde_cbor::Value = if raw_payload.is_empty() {
-        serde_cbor::Value::Array(vec![])
+    let access_list: AccessList = if raw_payload.is_empty() {
+        AccessList::default()
     } else {
-        serde_cbor::from_slice(&raw_payload)
-            .map_err(|e| JsonRpcError::internal_error(format!("cbor decode error: {}", e)))?
+        ciborium::de::from_reader(raw_payload.as_slice()).map_err(|e| {
+            JsonRpcError::internal_error(format!("failed to decode access list: {}", e))
+        })?
     };
-
-    let access_list: AccessList = serde_cbor::value::from_value(v).map_err(|e| {
-        JsonRpcError::internal_error(format!("failed to decode access list: {}", e))
-    })?;
 
     let mut with_access_list_tx = params.transaction.clone();
     with_access_list_tx.access_list = Some(merge_access_lists(

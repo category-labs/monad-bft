@@ -51,6 +51,7 @@ alloy-rlp = { workspace = true }
 alloy-rpc-types = { workspace = true, features = ["eth"] }
 async-stream = { workspace = true }
 bytes = { workspace = true }
+ciborium = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 dashmap = { workspace = true }
 flume = { workspace = true }
@@ -67,7 +68,6 @@ rayon = { workspace = true }
 reqwest = { workspace = true }
 schemars = { workspace = true, features = ["preserve_order", "raw_value"] }
 serde = { workspace = true, features = ["derive", "rc"] }
-serde_cbor = { workspace = true }
 serde_json = { workspace = true, features = ["raw_value"] }
 tokio = { workspace = true, features = ["net", "macros", "rt-multi-thread", "fs"] }
 toml = { workspace = true }

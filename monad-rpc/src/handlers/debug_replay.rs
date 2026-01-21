@@ -242,7 +242,7 @@ pub async fn monad_debug_trace_replay<T: Triedb>(
         }
         CallResult::Revert(result) => result.trace,
     };
-    let v: serde_cbor::Value = serde_cbor::from_slice(&raw_payload)
+    let v: ciborium::Value = ciborium::de::from_reader(raw_payload.as_slice())
         .map_err(|e| JsonRpcError::internal_error(format!("cbor decode error: {}", e)))?;
     serde_json::value::to_raw_value(&v)
         .map_err(|e| JsonRpcError::internal_error(format!("json serialization error: {}", e)))
