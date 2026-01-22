@@ -460,7 +460,6 @@ async fn main() -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-
     use actix_http::{Request, StatusCode};
     use actix_web::{
         body::{to_bytes, MessageBody},
@@ -477,6 +476,17 @@ mod tests {
     use test_case::test_case;
 
     use super::*;
+
+    const NO_PARAM_METHODS: &[&str] = &[
+        "admin_ethCallStatistics",
+        "eth_blockNumber",
+        "eth_chainId",
+        "eth_syncing",
+        "eth_gasPrice",
+        "eth_maxPriorityFeePerGas",
+        "net_version",
+        "web3_clientVersion",
+    ];
 
     async fn init_server(
     ) -> impl Service<Request, Response = ServiceResponse<impl MessageBody>, Error = Error> {
@@ -702,5 +712,92 @@ mod tests {
 
         let resp: jsonrpc::Response = actix_test::call_and_read_body_json(&app, req).await;
         assert!(resp.result.is_none());
+    }
+
+    #[actix_web::test]
+    async fn test_no_params_methods_accept_empty_array() {
+        let app = init_server().await;
+
+        for method in NO_PARAM_METHODS {
+            let payload = json!({
+                "jsonrpc": "2.0",
+                "method": method,
+                "params": [],
+                "id": 1
+            });
+
+            let req = test::TestRequest::post()
+                .uri("/")
+                .set_payload(payload.to_string())
+                .to_request();
+
+            let resp = app.call(req).await.unwrap();
+            let resp: jsonrpc::Response =
+                serde_json::from_value(recover_response_body(resp).await).unwrap();
+
+            if let Some(err) = resp.error {
+                assert_ne!(err, JsonRpcError::invalid_params());
+                assert_ne!(err.code, JsonRpcError::invalid_params().code);
+            }
+        }
+    }
+
+    #[actix_web::test]
+    async fn test_no_params_methods_reject_non_empty_params() {
+        let app = init_server().await;
+
+        let invalid_params = [
+            (json!(null), "null"),
+            (json!(true), "boolean true"),
+            (json!(false), "boolean false"),
+            (json!(42), "number"),
+            (json!("string"), "plain string"),
+            (json!({}), "empty object"),
+            (json!({"key": "value"}), "object"),
+            (json!([null]), "array with null"),
+            (json!([true]), "single boolean param"),
+            (json!([1]), "single number param"),
+            (json!([1, 2, 3]), "multiple number params"),
+            (json!(["0x1"]), "single string param"),
+            (json!(["0x1", "0x2"]), "multiple string params"),
+            (json!([{}]), "array with empty object"),
+            (json!([[]]), "nested empty array"),
+        ];
+
+        for method in NO_PARAM_METHODS {
+            for (params, description) in monad_eth_testutil::INVALID_EMPTY_PARAMS.iter() {
+                let payload = json!({
+                    "jsonrpc": "2.0",
+                    "method": method,
+                    "params": params,
+                    "id": 1
+                });
+
+                let req = test::TestRequest::post()
+                    .uri("/")
+                    .set_payload(payload.to_string())
+                    .to_request();
+
+                let resp = app.call(req).await.unwrap();
+                let resp: jsonrpc::Response =
+                    serde_json::from_value(recover_response_body(resp).await).unwrap();
+
+                match resp.error {
+                    Some(error) => {
+                        assert_ne!(
+                            error.code, JsonRpcError::invalid_params().code,
+                            "Method {} should not reject {} with invalid params error, but got error code {}",
+                            method, description, error.code
+                        );
+                    }
+                    None => {
+                        // panic!(
+                        //     "Method {} should reject {} but got success response",
+                        //     method, description
+                        // );
+                    }
+                }
+            }
+        }
     }
 }

@@ -16,6 +16,7 @@
 use std::{
     collections::{BTreeMap, VecDeque},
     iter::repeat_n,
+    sync::LazyLock,
 };
 
 use alloy_consensus::{
@@ -53,6 +54,7 @@ use monad_secp::KeyPair;
 use monad_testutil::signing::MockSignatures;
 use monad_types::{Balance, Epoch, NodeId, Round, SeqNum};
 use monad_validator::signature_collection::SignatureCollection;
+use serde_json::{json, Value};
 
 const BASE_FEE: u64 = 100_000_000_000;
 
@@ -450,6 +452,26 @@ pub fn generate_block_with_txs(
         txn_fees: test_block.txn_fees,
     }
 }
+
+pub static INVALID_EMPTY_PARAMS: LazyLock<Vec<(Value, &'static str)>> = LazyLock::new(|| {
+    vec![
+        (json!(null), "null"),
+        (json!(true), "boolean true"),
+        (json!(false), "boolean false"),
+        (json!(42), "number"),
+        (json!("string"), "plain string"),
+        (json!({}), "empty object"),
+        (json!({"key": "value"}), "object"),
+        (json!([null]), "array with null"),
+        (json!([true]), "single boolean param"),
+        (json!([1]), "single number param"),
+        (json!([1, 2, 3]), "multiple number params"),
+        (json!(["0x1"]), "single string param"),
+        (json!(["0x1", "0x2"]), "multiple string params"),
+        (json!([{}]), "array with empty object"),
+        (json!([[]]), "nested empty array"),
+    ]
+});
 
 #[cfg(test)]
 mod test {
