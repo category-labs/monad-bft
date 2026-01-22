@@ -189,7 +189,7 @@ impl<'a, PT: PubKey> ChunkAssignment<'a, PT> {
                 Entry::Occupied(mut e) => {
                     let (_recipient, ranges) = e.get_mut();
                     let last = ranges.last_mut().expect("occupied entry never empty");
-                    if last.end + 1 == chunk_slice.chunk_id_range.start {
+                    if last.end == chunk_slice.chunk_id_range.start {
                         last.end = chunk_slice.chunk_id_range.end;
                         continue;
                     }
@@ -832,6 +832,93 @@ mod tests {
                 assert!(*num_chunks_rc.unwrap() >= num_chunks);
             }
         }
+    }
+
+    #[test]
+    fn test_reorder_to_gso_merges_adjacent_ranges() {
+        // Test that adjacent ranges for the same recipient are merged correctly.
+        // This tests the fix for the off-by-one bug where `last.end + 1` was
+        // incorrectly used instead of `last.end` for Range (which is end-exclusive).
+
+        use super::ChunkSlice;
+
+        let r1 = Recipient::new(node_id(1));
+        let r2 = Recipient::new(node_id(2));
+
+        // Create slices in round-robin order: interleaved recipients with adjacent chunk ranges
+        // Node 1 gets chunks 0..1, 1..2, 2..3 (should merge to 0..3 after reorder)
+        // Node 2 gets chunks 1..2, 2..3, 3..4 (should merge to 1..4 after reorder)
+        let slices = vec![
+            ChunkSlice {
+                recipient: &r1,
+                chunk_id_range: 0..1,
+            },
+            ChunkSlice {
+                recipient: &r2,
+                chunk_id_range: 1..2,
+            },
+            ChunkSlice {
+                recipient: &r1,
+                chunk_id_range: 1..2,
+            },
+            ChunkSlice {
+                recipient: &r2,
+                chunk_id_range: 2..3,
+            },
+            ChunkSlice {
+                recipient: &r1,
+                chunk_id_range: 2..3,
+            },
+            ChunkSlice {
+                recipient: &r2,
+                chunk_id_range: 3..4,
+            },
+        ];
+
+        let reordered = ChunkAssignment::reorder_to_gso(slices, Some(2));
+
+        // After reordering, each recipient should have their ranges merged
+        // Node 1: 0..1, 1..2, 2..3 -> 0..3
+        // Node 2: 1..2, 2..3, 3..4 -> 1..4
+        assert_eq!(reordered.len(), 2);
+
+        let r1_slice = reordered
+            .iter()
+            .find(|s| s.recipient.node_hash() == r1.node_hash())
+            .unwrap();
+        let r2_slice = reordered
+            .iter()
+            .find(|s| s.recipient.node_hash() == r2.node_hash())
+            .unwrap();
+
+        assert_eq!(r1_slice.chunk_id_range, 0..3);
+        assert_eq!(r2_slice.chunk_id_range, 1..4);
+    }
+
+    #[test]
+    fn test_reorder_to_gso_non_adjacent_ranges() {
+        // Test that non-adjacent ranges are NOT merged
+        // Node 1 gets chunks 0..1 and 2..3 (gap at 1, should not merge)
+
+        use super::ChunkSlice;
+
+        let r1 = Recipient::new(node_id(1));
+
+        let slices = vec![
+            ChunkSlice {
+                recipient: &r1,
+                chunk_id_range: 0..1,
+            },
+            ChunkSlice {
+                recipient: &r1,
+                chunk_id_range: 2..3,
+            },
+        ];
+
+        let reordered = ChunkAssignment::reorder_to_gso(slices, Some(1));
+
+        // Should have 2 slices since ranges are not adjacent
+        assert_eq!(reordered.len(), 2);
     }
 
     // Ported from alloy_primitives::U256::from_f64_lossy from a newer version
