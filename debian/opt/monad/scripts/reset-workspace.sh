@@ -12,6 +12,7 @@ rm -rf /home/monad/monad-bft/snapshots
 rm -f /home/monad/monad-bft/mempool.sock
 rm -f /home/monad/monad-bft/controlpanel.sock
 rm -f /home/monad/monad-bft/wal_*
+rm -f /home/monad/monad-bft/config/peers.toml
 rm -rf /home/monad/monad-bft/blockdb
 source /home/monad/.env
 monad-mpt --storage /dev/triedb --truncate --yes

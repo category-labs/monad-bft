@@ -601,6 +601,7 @@ where
         ),
     };
     let self_record = MonadNameRecord::new(self_record, &identity);
+    info!(?self_id, ?self_record, "self name record");
     assert!(
         self_record.signature == peer_discovery_config.self_name_record_sig,
         "self name record signature mismatch"
