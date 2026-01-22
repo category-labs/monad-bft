@@ -61,7 +61,7 @@ impl Decoder {
         if self.buffers_inactivated.peek_min().unwrap().1.get() == 1 {
             // There is an inactivated intermediate symbol we can reactivate, so there is no
             // need to perform Gaussian elimination at this point.
-            return false;
+            return true;
         }
 
         let mut inactivated_buffer_indices: Vec<u16> = Vec::new();
