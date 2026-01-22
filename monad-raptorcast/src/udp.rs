@@ -31,6 +31,7 @@ use monad_merkle::{MerkleHash, MerkleProof};
 use monad_types::{Epoch, NodeId, Round};
 use monad_validator::validator_set::ValidatorSetType as _;
 use tracing::warn;
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Ref, LE, U16, U32, U64};
 
 pub use crate::packet::build_messages;
 use crate::{
@@ -39,13 +40,305 @@ use crate::{
     metrics::{
         UdpStateMetrics, GAUGE_RAPTORCAST_DECODING_CACHE_SIGNATURE_VERIFICATIONS_RATE_LIMITED,
     },
-    packet::{assembler::HEADER_LEN, PacketLayout},
+    packet::PacketLayout,
     util::{
         compute_hash, unix_ts_ms_now, AppMessageHash, BroadcastMode, EpochValidators, HexBytes,
         NodeIdHash, ReBroadcastGroupMap, Redundancy,
     },
     SIGNATURE_SIZE,
 };
+
+const MERKLE_HASH_SIZE: usize = 20;
+
+/// Raptorcast packet header (common to all versions):
+/// - 65 bytes => Signature of sender
+/// - 2 bytes => Version number
+#[repr(C, packed)]
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Clone, Copy)]
+struct RaptorcastHeader {
+    signature: [u8; SIGNATURE_SIZE],
+    version: U16<LE>,
+}
+
+impl RaptorcastHeader {
+    const SIZE: usize = SIGNATURE_SIZE + 2;
+}
+
+/// Raptorcast packet V0 versioned header layout (follows common header):
+/// - 1 bit => broadcast or not
+/// - 1 bit => secondary broadcast or not (full-node raptorcast)
+/// - 2 bits => unused
+/// - 4 bits => Merkle tree depth
+/// - 8 bytes (u64) => Epoch #
+/// - 8 bytes (u64) => Unix timestamp
+/// - 20 bytes => first 20 bytes of hash of AppMessage
+///   - this isn't technically necessary if payload_len is small enough to fit in 1 chunk, but keep
+///     for simplicity
+/// - 4 bytes (u32) => Serialized AppMessage length (bytes)
+#[repr(C, packed)]
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Clone, Copy)]
+struct RaptorcastHeaderV0 {
+    broadcast_tree_depth: u8,
+    group_id: U64<LE>,
+    unix_ts_ms: U64<LE>,
+    app_message_hash: [u8; MERKLE_HASH_SIZE],
+    app_message_len: U32<LE>,
+}
+
+impl RaptorcastHeaderV0 {
+    const SIZE: usize = 1 + 8 + 8 + MERKLE_HASH_SIZE + 4;
+
+    fn broadcast(&self) -> bool {
+        (self.broadcast_tree_depth & (1 << 7)) != 0
+    }
+
+    fn secondary_broadcast(&self) -> bool {
+        (self.broadcast_tree_depth & (1 << 6)) != 0
+    }
+
+    fn tree_depth(&self) -> u8 {
+        self.broadcast_tree_depth & 0b0000_1111
+    }
+
+    fn merkle_proof_size(&self) -> usize {
+        MERKLE_HASH_SIZE * (self.tree_depth() as usize - 1)
+    }
+
+    fn broadcast_mode(&self) -> Result<Option<BroadcastMode>, MessageValidationError> {
+        match (self.broadcast(), self.secondary_broadcast()) {
+            (true, false) => Ok(Some(BroadcastMode::Primary)),
+            (false, true) => Ok(Some(BroadcastMode::Secondary)),
+            (false, false) => Ok(None),
+            (true, true) => Err(MessageValidationError::InvalidBroadcastBits),
+        }
+    }
+
+    fn group_id(&self) -> Result<GroupId, MessageValidationError> {
+        match self.broadcast_mode()? {
+            Some(BroadcastMode::Primary) | None => Ok(GroupId::Primary(Epoch(self.group_id.get()))),
+            Some(BroadcastMode::Secondary) => Ok(GroupId::Secondary(Round(self.group_id.get()))),
+        }
+    }
+}
+
+/// Combined header size for V0 (common header + versioned header)
+const RAPTORCAST_HEADER_V0_SIZE: usize = RaptorcastHeader::SIZE + RaptorcastHeaderV0::SIZE;
+
+const _: () = assert!(
+    RAPTORCAST_HEADER_V0_SIZE == crate::packet::assembler::HEADER_LEN,
+    "RaptorcastHeader size must match HEADER_LEN"
+);
+
+/// Raptorcast V0 chunk header layout (follows header and merkle proof):
+/// - 20 bytes * (merkle_tree_depth - 1) => merkle proof (leaves include everything that follows,
+///   eg hash(chunk_recipient + chunk_byte_offset + symbol_len + payload))
+/// - 20 bytes => first 20 bytes of hash of chunk's first hop recipient
+///   - we set this even if broadcast bit is not set so that it's known if a message was intended
+///     to be sent to self
+/// - 1 byte => Chunk's merkle leaf idx
+/// - 1 byte => reserved
+/// - 2 bytes (u16) => This chunk's id
+/// - rest => data
+#[repr(C, packed)]
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Clone, Copy)]
+struct RaptorcastChunkHeaderV0 {
+    recipient_hash: [u8; MERKLE_HASH_SIZE],
+    merkle_leaf_idx: u8,
+    reserved: u8,
+    chunk_id: U16<LE>,
+}
+
+impl RaptorcastChunkHeaderV0 {
+    const SIZE: usize = MERKLE_HASH_SIZE + 1 + 1 + 2;
+}
+
+const _: () = assert!(
+    RaptorcastChunkHeaderV0::SIZE == crate::packet::assembler::CHUNK_HEADER_LEN,
+    "RaptorcastChunkHeader size must match CHUNK_HEADER_LEN"
+);
+
+#[repr(transparent)]
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct SignedOverDataV0([u8; RAPTORCAST_HEADER_V0_SIZE + MERKLE_HASH_SIZE]);
+
+impl SignedOverDataV0 {
+    fn new(
+        common_header: &Ref<&[u8], RaptorcastHeader>,
+        versioned_header: &Ref<&[u8], RaptorcastHeaderV0>,
+        merkle_root: &MerkleHash,
+    ) -> Self {
+        let mut data = [0u8; RAPTORCAST_HEADER_V0_SIZE + MERKLE_HASH_SIZE];
+        data[..RaptorcastHeader::SIZE].copy_from_slice(common_header.as_bytes());
+        data[RaptorcastHeader::SIZE..RAPTORCAST_HEADER_V0_SIZE]
+            .copy_from_slice(versioned_header.as_bytes());
+        data[RAPTORCAST_HEADER_V0_SIZE..].copy_from_slice(merkle_root);
+        Self(data)
+    }
+
+    fn signed_message(&self) -> &[u8] {
+        &self.0[SIGNATURE_SIZE..]
+    }
+}
+
+/// V0 packet structure (everything after the common header)
+struct RaptorcastPacketV0<'a> {
+    header: Ref<&'a [u8], RaptorcastHeaderV0>,
+    merkle_proof: Ref<&'a [u8], [MerkleHash]>,
+    chunk_header: Ref<&'a [u8], RaptorcastChunkHeaderV0>,
+    chunk_header_and_payload: &'a [u8],
+    payload: &'a [u8],
+    payload_offset: usize,
+}
+
+impl<'a> RaptorcastPacketV0<'a> {
+    fn parse(rest: &'a [u8]) -> Result<Self, MessageValidationError> {
+        if rest.len() < RaptorcastHeaderV0::SIZE {
+            return Err(MessageValidationError::TooShort);
+        }
+        let (header_bytes, rest) = rest.split_at(RaptorcastHeaderV0::SIZE);
+        let header: Ref<&[u8], RaptorcastHeaderV0> =
+            Ref::from_bytes(header_bytes).map_err(|_| MessageValidationError::TooShort)?;
+
+        let tree_depth = header.tree_depth();
+        if !(MIN_MERKLE_TREE_DEPTH..=MAX_MERKLE_TREE_DEPTH).contains(&tree_depth) {
+            return Err(MessageValidationError::InvalidTreeDepth);
+        }
+
+        let merkle_proof_len = header.merkle_proof_size();
+        if rest.len() < merkle_proof_len {
+            return Err(MessageValidationError::TooShort);
+        }
+        let (merkle_proof_bytes, chunk_header_and_payload) = rest.split_at(merkle_proof_len);
+        let merkle_proof: Ref<&[u8], [MerkleHash]> =
+            Ref::from_bytes(merkle_proof_bytes).map_err(|_| MessageValidationError::TooShort)?;
+
+        if chunk_header_and_payload.len() < RaptorcastChunkHeaderV0::SIZE {
+            return Err(MessageValidationError::TooShort);
+        }
+        let (chunk_header_bytes, payload) =
+            chunk_header_and_payload.split_at(RaptorcastChunkHeaderV0::SIZE);
+        let chunk_header: Ref<&[u8], RaptorcastChunkHeaderV0> =
+            Ref::from_bytes(chunk_header_bytes).map_err(|_| MessageValidationError::TooShort)?;
+
+        if payload.is_empty() {
+            return Err(MessageValidationError::TooShort);
+        }
+
+        let payload_offset =
+            RAPTORCAST_HEADER_V0_SIZE + merkle_proof_len + RaptorcastChunkHeaderV0::SIZE;
+
+        Ok(Self {
+            header,
+            merkle_proof,
+            chunk_header,
+            chunk_header_and_payload,
+            payload,
+            payload_offset,
+        })
+    }
+
+    fn payload(&self) -> &'a [u8] {
+        self.payload
+    }
+
+    fn split_chunk(&self, message: &Bytes) -> Result<Bytes, MessageValidationError> {
+        if message.len() < self.payload_offset {
+            return Err(MessageValidationError::TooShort);
+        }
+        Ok(message.slice(self.payload_offset..))
+    }
+
+    fn compute_merkle_root(&self) -> Result<MerkleHash, MessageValidationError> {
+        let proof = MerkleProof::new_from_leaf_idx(
+            self.merkle_proof.to_vec(),
+            self.chunk_header.merkle_leaf_idx,
+        )
+        .ok_or(MessageValidationError::InvalidMerkleProof)?;
+
+        let mut hasher = HasherType::new();
+        hasher.update(self.chunk_header_and_payload);
+        let leaf_hash = hasher.hash();
+
+        proof
+            .compute_root(&leaf_hash)
+            .ok_or(MessageValidationError::InvalidMerkleProof)
+    }
+
+    fn signed_over_data(
+        &self,
+        common_header: &Ref<&[u8], RaptorcastHeader>,
+        merkle_root: &MerkleHash,
+    ) -> SignedOverDataV0 {
+        SignedOverDataV0::new(common_header, &self.header, merkle_root)
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub enum SignedOverData {
+    V0(SignedOverDataV0),
+}
+
+impl SignedOverData {
+    fn signed_message(&self) -> &[u8] {
+        match self {
+            SignedOverData::V0(v0) => v0.signed_message(),
+        }
+    }
+}
+
+enum RaptorcastPacketVersioned<'a> {
+    V0(RaptorcastPacketV0<'a>),
+}
+
+struct RaptorcastPacket<'a> {
+    header: Ref<&'a [u8], RaptorcastHeader>,
+    versioned: RaptorcastPacketVersioned<'a>,
+}
+
+impl<'a> RaptorcastPacket<'a> {
+    fn parse(data: &'a [u8]) -> Result<Self, MessageValidationError> {
+        if data.len() < RaptorcastHeader::SIZE {
+            return Err(MessageValidationError::TooShort);
+        }
+
+        let (header_bytes, rest) = data.split_at(RaptorcastHeader::SIZE);
+        let header: Ref<&[u8], RaptorcastHeader> =
+            Ref::from_bytes(header_bytes).map_err(|_| MessageValidationError::TooShort)?;
+
+        let versioned = match header.version.get() {
+            0 => RaptorcastPacketVersioned::V0(RaptorcastPacketV0::parse(rest)?),
+            v => return Err(MessageValidationError::UnknownVersion(v)),
+        };
+
+        Ok(Self { header, versioned })
+    }
+}
+
+fn ensure_valid_chunk_id(
+    chunk_id: u16,
+    app_message_len: u32,
+    symbol_len: usize,
+    broadcast_mode: Option<BroadcastMode>,
+) -> Result<(), MessageValidationError> {
+    let app_message_len = app_message_len as usize;
+    let chunk_id = chunk_id as usize;
+
+    let max_chunk_id = match broadcast_mode {
+        None | Some(BroadcastMode::Secondary) => valid_chunk_id_range(app_message_len, symbol_len)?,
+        Some(BroadcastMode::Primary) => {
+            // only perform a basic sanity check here. more precise
+            // check of chunk_id is in decoding.rs when the validator
+            // set is available.
+            valid_chunk_id_range_raptorcast(app_message_len, symbol_len, MAX_VALIDATOR_SET_SIZE)?
+        }
+    };
+
+    if max_chunk_id.contains(&chunk_id) {
+        Ok(())
+    } else {
+        Err(MessageValidationError::InvalidChunkId)
+    }
+}
 
 const _: () = assert!(
     MAX_MERKLE_TREE_DEPTH <= 0xF,
@@ -112,7 +405,7 @@ pub(crate) struct UdpState<ST: CertificateSignatureRecoverable> {
     // generate a bunch of linearly dependent chunks and cause unbounded memory usage.
     decoder_cache: DecoderCache<CertificateSignaturePubKey<ST>>,
 
-    signature_cache: LruCache<[u8; HEADER_LEN + 20], NodeId<CertificateSignaturePubKey<ST>>>,
+    signature_cache: LruCache<SignedOverData, NodeId<CertificateSignaturePubKey<ST>>>,
 
     sig_verification_rate_limiter: DefaultDirectRateLimiter,
 
@@ -398,7 +691,7 @@ where
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum MessageValidationError {
-    UnknownVersion,
+    UnknownVersion(u16),
     TooShort,
     TooLong,
     InvalidSignature,
@@ -414,30 +707,8 @@ pub enum MessageValidationError {
     RateLimited,
 }
 
-/// - 65 bytes => Signature of sender over hash(rest of message up to merkle proof, concatenated with merkle root)
-/// - 2 bytes => Version: bumped on protocol updates
-/// - 1 bit => broadcast or not
-/// - 1 bit => secondary broadcast or not (full-node raptorcast)
-/// - 2 bits => unused
-/// - 4 bits => Merkle tree depth
-/// - 8 bytes (u64) => Epoch #
-/// - 8 bytes (u64) => Unix timestamp
-/// - 20 bytes => first 20 bytes of hash of AppMessage
-///   - this isn't technically necessary if payload_len is small enough to fit in 1 chunk, but keep
-///     for simplicity
-/// - 4 bytes (u32) => Serialized AppMessage length (bytes)
-/// - 20 bytes * (merkle_tree_depth - 1) => merkle proof (leaves include everything that follows,
-///   eg hash(chunk_recipient + chunk_byte_offset + symbol_len + payload))
-///
-/// - 20 bytes => first 20 bytes of hash of chunk's first hop recipient
-///   - we set this even if broadcast bit is not set so that it's known if a message was intended
-///     to be sent to self
-/// - 1 byte => Chunk's merkle leaf idx
-/// - 1 byte => reserved
-/// - 2 bytes (u16) => This chunk's id
-/// - rest => data
 pub fn parse_message<ST, F>(
-    signature_cache: &mut LruCache<[u8; HEADER_LEN + 20], NodeId<CertificateSignaturePubKey<ST>>>,
+    signature_cache: &mut LruCache<SignedOverData, NodeId<CertificateSignaturePubKey<ST>>>,
     message: Bytes,
     max_age_ms: u64,
     rate_limit_check: F,
@@ -446,165 +717,75 @@ where
     ST: CertificateSignatureRecoverable,
     F: Fn(GroupId) -> Result<(), MessageValidationError>,
 {
-    let mut cursor: Bytes = message.clone();
-    let mut split_off = |mid| {
-        if mid > cursor.len() {
-            Err(MessageValidationError::TooShort)
-        } else {
-            Ok(cursor.split_to(mid))
-        }
-    };
-    let cursor_signature = split_off(SIGNATURE_SIZE)?;
-    let signature = <ST as CertificateSignature>::deserialize(&cursor_signature)
+    // we do basic validation in parse to guarantee that all fields can be read safely
+    let packet = RaptorcastPacket::parse(&message)?;
+    // below is the protocol specific validation
+    match &packet.versioned {
+        RaptorcastPacketVersioned::V0(v0) => validate_message_v0::<ST, F>(
+            signature_cache,
+            &message,
+            max_age_ms,
+            &packet.header,
+            v0,
+            rate_limit_check,
+        ),
+    }
+}
+
+fn validate_message_v0<ST, F>(
+    signature_cache: &mut LruCache<SignedOverData, NodeId<CertificateSignaturePubKey<ST>>>,
+    message: &Bytes,
+    max_age_ms: u64,
+    common_header: &Ref<&[u8], RaptorcastHeader>,
+    packet: &RaptorcastPacketV0<'_>,
+    rate_limit_check: F,
+) -> Result<ValidatedMessage<CertificateSignaturePubKey<ST>>, MessageValidationError>
+where
+    ST: CertificateSignatureRecoverable,
+    F: Fn(GroupId) -> Result<(), MessageValidationError>,
+{
+    // V0 protocol validation
+    if packet.header.app_message_len.get() as usize > MAX_MESSAGE_SIZE {
+        return Err(MessageValidationError::TooLong);
+    }
+    ensure_valid_timestamp(packet.header.unix_ts_ms.get(), max_age_ms)?;
+    ensure_valid_chunk_id(
+        packet.chunk_header.chunk_id.get(),
+        packet.header.app_message_len.get(),
+        packet.payload().len(),
+        packet.header.broadcast_mode()?,
+    )?;
+
+    let signature = <ST as CertificateSignature>::deserialize(&common_header.signature)
         .map_err(|_| MessageValidationError::InvalidSignature)?;
 
-    let cursor_version = split_off(2)?;
-    let version = u16::from_le_bytes(cursor_version.as_ref().try_into().expect("u16 is 2 bytes"));
-    if version != 0 {
-        return Err(MessageValidationError::UnknownVersion);
-    }
+    let merkle_root = packet.compute_merkle_root()?;
 
-    let cursor_broadcast_tree_depth = split_off(1)?[0];
-    let broadcast = (cursor_broadcast_tree_depth & (1 << 7)) != 0;
-    let secondary_broadcast = (cursor_broadcast_tree_depth & (1 << 6)) != 0;
-    let tree_depth = cursor_broadcast_tree_depth & 0b0000_1111; // bottom 4 bits
+    let signed_over = SignedOverData::V0(packet.signed_over_data(common_header, &merkle_root));
 
-    let maybe_broadcast_mode = match (broadcast, secondary_broadcast) {
-        (true, false) => Some(BroadcastMode::Primary),
-        (false, true) => Some(BroadcastMode::Secondary),
-        (false, false) => None, // broadcast or unicast
-        (true, true) => {
-            return Err(MessageValidationError::InvalidBroadcastBits);
-        }
-    };
-
-    if !(MIN_MERKLE_TREE_DEPTH..=MAX_MERKLE_TREE_DEPTH).contains(&tree_depth) {
-        return Err(MessageValidationError::InvalidTreeDepth);
-    }
-
-    let cursor_group_id = split_off(8)?;
-    let group_id = u64::from_le_bytes(cursor_group_id.as_ref().try_into().expect("u64 is 8 bytes"));
-    let group_id = match maybe_broadcast_mode {
-        Some(BroadcastMode::Primary) | None => GroupId::Primary(Epoch(group_id)),
-        Some(BroadcastMode::Secondary) => GroupId::Secondary(Round(group_id)),
-    };
-
-    let cursor_unix_ts_ms = split_off(8)?;
-    let unix_ts_ms = u64::from_le_bytes(
-        cursor_unix_ts_ms
-            .as_ref()
-            .try_into()
-            .expect("u64 is 8 bytes"),
-    );
-
-    ensure_valid_timestamp(unix_ts_ms, max_age_ms)?;
-
-    let cursor_app_message_hash = split_off(20)?;
-    let app_message_hash: AppMessageHash = HexBytes(
-        cursor_app_message_hash
-            .as_ref()
-            .try_into()
-            .expect("Hash is 20 bytes"),
-    );
-
-    let cursor_app_message_len = split_off(4)?;
-    let app_message_len = u32::from_le_bytes(
-        cursor_app_message_len
-            .as_ref()
-            .try_into()
-            .expect("u32 is 4 bytes"),
-    ) as usize;
-
-    if app_message_len > MAX_MESSAGE_SIZE {
-        return Err(MessageValidationError::TooLong);
-    };
-
-    let proof_size: u16 = 20 * (u16::from(tree_depth) - 1);
-
-    let mut merkle_proof = Vec::new();
-    for _ in 0..tree_depth - 1 {
-        let cursor_sibling = split_off(20)?;
-        let sibling =
-            MerkleHash::try_from(cursor_sibling.as_ref()).expect("MerkleHash is 20 bytes");
-        merkle_proof.push(sibling);
-    }
-
-    let cursor_recipient = split_off(20)?;
-    let recipient_hash: NodeIdHash = HexBytes(
-        cursor_recipient
-            .as_ref()
-            .try_into()
-            .expect("Hash is 20 bytes"),
-    );
-
-    let cursor_merkle_idx = split_off(1)?[0];
-    let merkle_proof = MerkleProof::new_from_leaf_idx(merkle_proof, cursor_merkle_idx)
-        .ok_or(MessageValidationError::InvalidMerkleProof)?;
-
-    let _cursor_reserved = split_off(1)?;
-
-    let cursor_chunk_id = split_off(2)?;
-    let chunk_id = u16::from_le_bytes(cursor_chunk_id.as_ref().try_into().expect("u16 is 2 bytes"));
-
-    let cursor_payload = cursor;
-    let symbol_len = cursor_payload.len();
-    if symbol_len == 0 {
-        // handle the degenerate case
-        return Err(MessageValidationError::TooShort);
-    }
-
-    let chunk_id_range = match maybe_broadcast_mode {
-        None | Some(BroadcastMode::Secondary) => valid_chunk_id_range(app_message_len, symbol_len)?,
-        Some(BroadcastMode::Primary) => {
-            // only perform a basic sanity check here. more precise
-            // check of chunk_id is in decoding.rs when the validator
-            // set is available.
-            valid_chunk_id_range_raptorcast(app_message_len, symbol_len, MAX_VALIDATOR_SET_SIZE)?
-        }
-    };
-    if !chunk_id_range.contains(&(chunk_id as usize)) {
-        return Err(MessageValidationError::InvalidChunkId);
-    }
-
-    let leaf_hash = {
-        let mut hasher = HasherType::new();
-        hasher.update(
-            &message[HEADER_LEN + proof_size as usize..
-                // HEADER_LEN as usize
-                //     + proof_size as usize
-                //     + CHUNK_HEADER_LEN as usize
-                //     + payload_len as usize
-                ],
-        );
-        hasher.hash()
-    };
-    let root = merkle_proof
-        .compute_root(&leaf_hash)
-        .ok_or(MessageValidationError::InvalidMerkleProof)?;
-    let mut signed_over = [0_u8; HEADER_LEN + 20];
-    // TODO can avoid this copy if necessary
-    signed_over[..HEADER_LEN].copy_from_slice(&message[..HEADER_LEN]);
-    signed_over[HEADER_LEN..].copy_from_slice(&root);
-
-    let author = *signature_cache.try_get_or_insert(signed_over, || {
-        rate_limit_check(group_id)?;
+    let author = if let Some(&author) = signature_cache.get(&signed_over) {
+        author
+    } else {
+        rate_limit_check(packet.header.group_id()?)?;
         let author = signature
-            .recover_pubkey::<signing_domain::RaptorcastChunk>(&signed_over[SIGNATURE_SIZE..])
+            .recover_pubkey::<signing_domain::RaptorcastChunk>(signed_over.signed_message())
             .map_err(|_| MessageValidationError::InvalidSignature)?;
-        Ok(NodeId::new(author))
-    })?;
+        let author = NodeId::new(author);
+        signature_cache.put(signed_over.clone(), author);
+        author
+    };
 
     Ok(ValidatedMessage {
-        message,
+        message: message.clone(),
         author,
-        group_id,
-        unix_ts_ms,
-        app_message_hash,
-        app_message_len: app_message_len as u32,
-        maybe_broadcast_mode,
-        recipient_hash,
-        chunk_id,
-        chunk: cursor_payload,
+        group_id: packet.header.group_id()?,
+        unix_ts_ms: packet.header.unix_ts_ms.get(),
+        app_message_hash: HexBytes(packet.header.app_message_hash),
+        app_message_len: packet.header.app_message_len.get(),
+        maybe_broadcast_mode: packet.header.broadcast_mode()?,
+        recipient_hash: HexBytes(packet.chunk_header.recipient_hash),
+        chunk_id: packet.chunk_header.chunk_id.get(),
+        chunk: packet.split_chunk(message)?,
     })
 }
 
