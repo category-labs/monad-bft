@@ -557,7 +557,7 @@ fn calculate_fee_history_rewards(
             let reward = tx.effective_tip_per_gas(base_fee).unwrap_or_default();
             (gas_used, reward)
         })
-        .sorted_by_key(|(gas_used, _)| *gas_used)
+        .sorted_by_key(|(_, reward)| *reward)
         .collect::<Vec<_>>();
 
     let mut idx = 0;
@@ -784,6 +784,35 @@ mod tests {
         transaction.into_signed(signature).into()
     }
 
+    fn make_receipt(gas_used: u128) -> TransactionReceipt {
+        use alloy_rpc_types::Log as RpcLog;
+
+        TransactionReceipt {
+            inner: alloy_consensus::ReceiptEnvelope::Eip1559(alloy_consensus::ReceiptWithBloom::<
+                alloy_consensus::Receipt<RpcLog>,
+            >::new(
+                alloy_consensus::Receipt::<RpcLog> {
+                    logs: vec![],
+                    status: Eip658Value::Eip658(true),
+                    cumulative_gas_used: gas_used,
+                },
+                Bloom::default(),
+            )),
+            transaction_hash: Default::default(),
+            transaction_index: None,
+            block_hash: None,
+            block_number: None,
+            gas_used,
+            effective_gas_price: 0,
+            blob_gas_used: None,
+            blob_gas_price: None,
+            from: Default::default(),
+            to: None,
+            contract_address: None,
+            authorization_list: None,
+        }
+    }
+
     #[tokio::test]
     async fn test_eth_fee_history() {
         let mut mock_triedb = MockTriedb::default();
@@ -890,5 +919,62 @@ mod tests {
         assert_eq!(res.0.base_fee_per_gas, vec![5_000, 1_000, 2_000]);
         assert_eq!(res.0.gas_used_ratio, vec![0.0, gas_used]);
         assert_eq!(res.0.reward, Some(vec![]));
+    }
+
+    /// When transactions have different gas_used values that don't correlate with rewards,
+    /// the returned percentile rewards should still be sorted in ascending order.
+    #[test]
+    fn test_fee_history_rewards_should_be_sorted_ascending() {
+        let sender = FixedBytes::<32>::from([1u8; 32]);
+        let base_fee = 1000u64;
+
+        // Create transactions where gas_used order doesn't match reward order
+        let txs = vec![
+            make_tx(sender, 4000, 4000, 10_000, 1, 1), // reward = 3000
+            make_tx(sender, 2000, 2000, 20_000, 2, 1), // reward = 1000
+            make_tx(sender, 5000, 5000, 30_000, 3, 1), // reward = 4000
+            make_tx(sender, 3000, 3000, 40_000, 4, 1), // reward = 2000
+        ];
+
+        let receipts: Vec<TransactionReceipt> = vec![
+            make_receipt(10_000),
+            make_receipt(20_000),
+            make_receipt(30_000),
+            make_receipt(40_000),
+        ];
+
+        let block_gas_used = 100_000u64;
+        let percentiles = vec![10.0, 30.0, 60.0, 100.0];
+
+        let signer = PrivateKeySigner::from_bytes(&sender).unwrap();
+        let from_addr = signer.address();
+
+        let transactions: Vec<alloy_rpc_types::Transaction> = txs
+            .into_iter()
+            .map(|tx| alloy_rpc_types::Transaction {
+                inner: tx,
+                block_hash: None,
+                block_number: None,
+                transaction_index: None,
+                effective_gas_price: None,
+                from: from_addr,
+            })
+            .collect();
+
+        let rewards = calculate_fee_history_rewards(
+            transactions,
+            receipts,
+            base_fee,
+            block_gas_used,
+            Some(&percentiles),
+        );
+
+        for i in 1..rewards.len() {
+            assert!(
+                rewards[i - 1] <= rewards[i],
+                "Rewards should be sorted in ascending order. Got {:?}",
+                rewards
+            );
+        }
     }
 }
