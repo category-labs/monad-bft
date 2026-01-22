@@ -784,17 +784,17 @@ mod tests {
 
                 match resp.error {
                     Some(error) => {
-                        assert_ne!(
+                        assert_eq!(
                             error.code, JsonRpcError::invalid_params().code,
-                            "Method {} should not reject {} with invalid params error, but got error code {}",
+                            "Method {} should reject {} with invalid params error, but got error code {}",
                             method, description, error.code
                         );
                     }
                     None => {
-                        // panic!(
-                        //     "Method {} should reject {} but got success response",
-                        //     method, description
-                        // );
+                        panic!(
+                            "Method {} should reject {} but got success response",
+                            method, description
+                        );
                     }
                 }
             }

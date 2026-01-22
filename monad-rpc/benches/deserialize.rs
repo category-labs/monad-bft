@@ -19,15 +19,14 @@ use criterion::{
     Criterion, Throughput,
 };
 use monad_rpc::{
+    eth_json_types::MonadNoParams,
     handlers::eth::call::MonadEthCallParams,
     jsonrpc::{JsonRpcError, JsonRpcResultExt, Request, RequestWrapper, ResponseWrapper},
 };
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-fn deserialize<const DESERIALIZE_TO_T: bool, T>(
-    body: &Bytes,
-) -> Result<ResponseWrapper<()>, JsonRpcError>
+fn deserialize<T>(body: &Bytes) -> Result<ResponseWrapper<()>, JsonRpcError>
 where
     T: DeserializeOwned,
 {
@@ -40,13 +39,9 @@ where
 
             let id = request.id.clone();
 
-            if DESERIALIZE_TO_T {
-                let parsed_params: T =
-                    serde_json::from_str(request.params.get()).invalid_params()?;
+            let parsed_params: T = serde_json::from_str(request.params.get()).invalid_params()?;
 
-                black_box(parsed_params);
-            }
-
+            black_box(parsed_params);
             black_box(id);
             black_box(request);
             black_box(json_request);
@@ -66,7 +61,7 @@ where
     }
 }
 
-fn bench_deserialize<const DESERIALIZE_TO_T: bool, T, M>(
+fn bench_deserialize<T, M>(
     g: &mut BenchmarkGroup<'_, M>,
     name: &'static str,
     body: &Bytes,
@@ -78,7 +73,7 @@ fn bench_deserialize<const DESERIALIZE_TO_T: bool, T, M>(
     g.throughput(Throughput::Bytes(body.len() as u64));
     g.bench_function(name, |b| {
         b.iter(|| {
-            let result = black_box(deserialize::<DESERIALIZE_TO_T, T>(black_box(body)));
+            let result = black_box(deserialize::<T>(black_box(body)));
 
             assert_eq!(result, expected);
         });
@@ -106,14 +101,14 @@ fn bench(c: &mut Criterion) {
         "id": 0
     });
 
-    bench_deserialize::<true, MonadEthCallParams, _>(
+    bench_deserialize::<MonadEthCallParams, _>(
         &mut g,
         "eth_call",
         &Bytes::from_owner(serde_json::to_string(&eth_call_request).unwrap()),
         Ok(ResponseWrapper::Single(())),
     );
 
-    bench_deserialize::<true, MonadEthCallParams, _>(
+    bench_deserialize::<MonadEthCallParams, _>(
         &mut g,
         "eth_call-batch",
         &Bytes::from_owner(
@@ -150,7 +145,7 @@ fn bench(c: &mut Criterion) {
     });
     assert!(attack_large_dict.is_object());
 
-    bench_deserialize::<false, (), _>(
+    bench_deserialize::<MonadNoParams, _>(
         &mut g,
         "attack_large_id_array",
         &Bytes::from_owner(
@@ -165,7 +160,7 @@ fn bench(c: &mut Criterion) {
         Err(JsonRpcError::parse_error()),
     );
 
-    bench_deserialize::<false, (), _>(
+    bench_deserialize::<MonadNoParams, _>(
         &mut g,
         "attack_large_id_dict",
         &Bytes::from_owner(
@@ -180,7 +175,7 @@ fn bench(c: &mut Criterion) {
         Err(JsonRpcError::parse_error()),
     );
 
-    bench_deserialize::<false, (), _>(
+    bench_deserialize::<MonadNoParams, _>(
         &mut g,
         "attack_large_payload_array_without_params",
         &Bytes::from_owner(
@@ -192,10 +187,10 @@ fn bench(c: &mut Criterion) {
             }))
             .unwrap(),
         ),
-        Ok(ResponseWrapper::Single(())),
+        Err(JsonRpcError::invalid_params()),
     );
 
-    bench_deserialize::<false, (), _>(
+    bench_deserialize::<MonadNoParams, _>(
         &mut g,
         "attack_large_payload_dict_without_params",
         &Bytes::from_owner(
@@ -207,10 +202,10 @@ fn bench(c: &mut Criterion) {
             }))
             .unwrap(),
         ),
-        Ok(ResponseWrapper::Single(())),
+        Err(JsonRpcError::invalid_params()),
     );
 
-    bench_deserialize::<true, (), _>(
+    bench_deserialize::<MonadNoParams, _>(
         &mut g,
         "attack_large_payload_array_with_params",
         &Bytes::from_owner(
@@ -224,7 +219,7 @@ fn bench(c: &mut Criterion) {
         ),
         Err(JsonRpcError::invalid_params()),
     );
-    bench_deserialize::<true, (), _>(
+    bench_deserialize::<MonadNoParams, _>(
         &mut g,
         "attack_large_payload_dict_with_params",
         &Bytes::from_owner(

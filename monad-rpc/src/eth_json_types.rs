@@ -467,13 +467,16 @@ pub fn serialize_result<T: Serialize>(value: T) -> Result<Box<RawValue>, JsonRpc
     })
 }
 
+#[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct MonadNoParams([(); 0]);
+
 #[cfg(test)]
 mod tests {
     use alloy_primitives::U256;
     use serde::Deserialize;
     use serde_json::json;
 
-    use super::{BlockTags, FixedData, Quantity, UnformattedData};
+    use super::{BlockTags, FixedData, MonadNoParams, Quantity, UnformattedData};
 
     #[derive(Deserialize, Debug)]
     struct OneDataParam {
@@ -607,5 +610,23 @@ mod tests {
         let mut expected_bytes = [0u8; 32];
         expected_bytes[30] = 0x04;
         assert_eq!(fixed_data.0, expected_bytes);
+    }
+
+    #[test]
+    fn test_monad_no_params_accepts_empty_array() {
+        let result = serde_json::from_value::<MonadNoParams>(json!([]));
+        assert!(result.is_ok(), "MonadNoParams should accept empty array []");
+    }
+
+    #[test]
+    fn test_monad_no_params_rejects_non_empty_params() {
+        for (input, description) in monad_eth_testutil::INVALID_EMPTY_PARAMS.iter() {
+            match serde_json::from_value::<MonadNoParams>(input.clone()) {
+                Ok(_) => panic!("MonadNoParams should reject {}: {:?}", description, input),
+                Err(_) => {
+                    // Expected - all non-empty params should be rejected
+                }
+            }
+        }
     }
 }
