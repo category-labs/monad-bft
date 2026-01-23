@@ -164,7 +164,7 @@ impl<S: PeerDiscSwarmRelation> Executor for MockPeerDiscExecutor<S> {
         }
     }
 
-    fn metrics(&self) -> monad_executor::ExecutorMetricsChain {
+    fn metrics(&self) -> monad_executor::ExecutorMetricsChain<'_> {
         Default::default()
     }
 }

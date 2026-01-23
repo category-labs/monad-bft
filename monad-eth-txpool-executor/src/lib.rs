@@ -468,7 +468,7 @@ where
         self.ipc.as_mut().broadcast_tx_events(ipc_events);
     }
 
-    fn metrics(&self) -> ExecutorMetricsChain {
+    fn metrics(&self) -> ExecutorMetricsChain<'_> {
         ExecutorMetricsChain::default().push(&self.executor_metrics)
     }
 }

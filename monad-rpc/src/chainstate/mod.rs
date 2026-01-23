@@ -850,7 +850,9 @@ async fn try_collect_logs_stream_with_heuristic_response_limit<E>(
                         ?block_number,
                         "logs stream block numbers inconsistent"
                     );
-                    return Err(JsonRpcError::internal_error(format!("Logs out of order")));
+                    return Err(JsonRpcError::internal_error(
+                        "Logs out of order".to_string(),
+                    ));
                 }
 
                 num_blocks_processed += 1;
@@ -863,7 +865,9 @@ async fn try_collect_logs_stream_with_heuristic_response_limit<E>(
                         ?num_blocks_total,
                         "logs stream block number exceeded range"
                     );
-                    return Err(JsonRpcError::internal_error(format!("Logs out of range")));
+                    return Err(JsonRpcError::internal_error(
+                        "Logs out of range".to_string(),
+                    ));
                 }
 
                 response_logs.extend(logs.into_iter().map(|log| {

@@ -356,7 +356,7 @@ impl PacketLayout {
     pub const fn merkle_tree_depth(&self) -> u8 {
         let proof_len = self.chunk_header_start - HEADER_LEN;
         debug_assert!(proof_len < u8::MAX as usize * MERKLE_HASH_LEN);
-        debug_assert!(proof_len % MERKLE_HASH_LEN == 0);
+        debug_assert!(proof_len.is_multiple_of(MERKLE_HASH_LEN));
         (proof_len / MERKLE_HASH_LEN) as u8 + 1
     }
 

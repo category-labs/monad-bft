@@ -167,7 +167,7 @@ pub async fn rpc_handler(
         Ok(response) => response,
     };
 
-    if response_raw_value.get().as_bytes().len() > app_state.max_response_size as usize {
+    if response_raw_value.get().len() > app_state.max_response_size as usize {
         debug!(?request_id, ?body, "response exceeds size limit");
         warn!(?request_id, "response exceeds size limit");
         return HttpResponse::Ok().json(Response::from_error(JsonRpcError::max_size_exceeded()));

@@ -276,7 +276,7 @@ fn compute_intrinsic_gas(tx: &TxEnvelope) -> u64 {
         intrinsic_gas += 32000;
         // EIP-3860: Limit and meter initcode
         // Init code stipend for bytecode analysis
-        intrinsic_gas += ((tx.input().len() as u64 + 31) / 32) * 2;
+        intrinsic_gas += (tx.input().len() as u64).div_ceil(32) * 2;
     }
 
     // EIP-2930

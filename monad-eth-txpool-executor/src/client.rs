@@ -227,7 +227,7 @@ where
         }
     }
 
-    fn metrics(&self) -> ExecutorMetricsChain {
+    fn metrics(&self) -> ExecutorMetricsChain<'_> {
         ExecutorMetricsChain::from(&self.metrics)
     }
 }

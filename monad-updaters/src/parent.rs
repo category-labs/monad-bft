@@ -136,7 +136,7 @@ where
         self.config_loader.exec(config_reload_cmds);
     }
 
-    fn metrics(&self) -> ExecutorMetricsChain {
+    fn metrics(&self) -> ExecutorMetricsChain<'_> {
         ExecutorMetricsChain::default()
             .push(&self.metrics.0)
             .chain(self.router.metrics())

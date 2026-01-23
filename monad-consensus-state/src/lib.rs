@@ -2074,6 +2074,7 @@ mod test {
         fn wrapped_state(
             &mut self,
         ) -> ConsensusStateWrapper<
+            '_,
             ST,
             SCT,
             EthExecutionProtocol,

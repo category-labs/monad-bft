@@ -30,7 +30,7 @@ fn split_ref_from_bytes<T>(bytes: &'_ [u8]) -> Result<(&'_ T, &'_ [u8]), String>
 
     let bytes_ptr = bytes.as_ptr();
 
-    if (bytes_ptr as usize) % align_of::<T>() != 0 {
+    if !(bytes_ptr as usize).is_multiple_of(align_of::<T>()) {
         return Err(format!(
             "Expected slice with alignment {} but slice has ptr {}",
             align_of::<T>(),

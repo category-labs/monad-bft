@@ -284,7 +284,7 @@ where
         }
     }
 
-    fn metrics(&self) -> ExecutorMetricsChain {
+    fn metrics(&self) -> ExecutorMetricsChain<'_> {
         ExecutorMetricsChain::default()
     }
 }
@@ -475,7 +475,7 @@ where
         self.metrics.update(&mut self.executor_metrics);
     }
 
-    fn metrics(&self) -> ExecutorMetricsChain {
+    fn metrics(&self) -> ExecutorMetricsChain<'_> {
         ExecutorMetricsChain::default().push(&self.executor_metrics)
     }
 }

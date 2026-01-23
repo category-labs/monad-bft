@@ -71,7 +71,7 @@ fn compute_heuristic_int_len(value: Option<u64>) -> usize {
                 // 0x
                 + 2
                 // value hex encoded
-                + ((bits + 3) / 4).max(1)
+                + bits.div_ceil(4).max(1)
         })
         .unwrap_or(
             // null

@@ -756,9 +756,9 @@ async fn build_call_tree(
             let Some(mut last) = stack.last().map(|last| last.borrow_mut()) else {
                 error!("Call tree root node was removed from stack");
 
-                return Err(JsonRpcError::internal_error(format!(
-                    "call tree inconsistent"
-                )));
+                return Err(JsonRpcError::internal_error(
+                    "call tree inconsistent".to_string(),
+                ));
             };
 
             if last.depth < depth {

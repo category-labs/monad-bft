@@ -35,7 +35,7 @@ const NODE_TWO_ADDR: &str = "127.0.0.1:60001";
 
 fn main() {
     env_logger::init();
-    let mut tx = Node::new(&NODE_ONE_ADDR.parse().unwrap(), NODE_TWO_ADDR);
+    let tx = Node::new(&NODE_ONE_ADDR.parse().unwrap(), NODE_TWO_ADDR);
     let mut rx = Node::new(&NODE_TWO_ADDR.parse().unwrap(), NODE_ONE_ADDR);
 
     let num_pkts = 10;

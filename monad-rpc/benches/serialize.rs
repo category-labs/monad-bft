@@ -49,7 +49,7 @@ where
     T: Serialize,
     M: Measurement,
 {
-    g.throughput(Throughput::Bytes(serialize(value).as_bytes().len() as u64));
+    g.throughput(Throughput::Bytes(serialize(value).len() as u64));
     g.bench_function(name, |b| {
         b.iter(|| serialize(black_box(value)));
     });

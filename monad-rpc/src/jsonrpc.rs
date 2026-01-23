@@ -490,7 +490,7 @@ impl From<monad_archive::prelude::Report> for JsonRpcError {
     fn from(e: monad_archive::prelude::Report) -> Self {
         // Log with debug to get more details, but return a generic error for response
         error!("Archive error: {e:?}");
-        Self::internal_error(format!("Archive error: {}", e.to_string()))
+        Self::internal_error(format!("Archive error: {}", e))
     }
 }
 

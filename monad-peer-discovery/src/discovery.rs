@@ -2755,7 +2755,7 @@ mod tests {
             .iter()
             .map(|key| {
                 let node_id = NodeId::new(key.pubkey());
-                let record = generate_name_record(*key, 0);
+                let record = generate_name_record(key, 0);
                 (node_id, record.udp_address())
             })
             .collect();

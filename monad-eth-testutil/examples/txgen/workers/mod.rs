@@ -73,14 +73,14 @@ impl From<Vec<SimpleAccount>> for Accounts {
 }
 
 impl Accounts {
-    pub fn iter_mut(&mut self) -> AccountsIterMut {
+    pub fn iter_mut(&mut self) -> AccountsIterMut<'_> {
         AccountsIterMut {
             slice: self.accts.iter_mut(),
             root: self.root.as_mut(),
             done: false,
         }
     }
-    pub fn iter(&self) -> AccountsIter {
+    pub fn iter(&self) -> AccountsIter<'_> {
         AccountsIter {
             slice: self.accts.iter(),
             root: &self.root,
