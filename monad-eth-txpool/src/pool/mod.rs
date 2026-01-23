@@ -325,38 +325,57 @@ where
             }
         }
 
-        let self_eth_address = node_id.pubkey().get_eth_address();
-        let system_transactions = self.get_system_transactions(
+        let txs_system = self.get_system_transactions(
             epoch,
             proposed_seq_num,
-            self_eth_address,
+            node_id.pubkey().get_eth_address(),
             &extending_blocks.iter().collect(),
             block_policy,
             state_backend,
             chain_config,
         )?;
-        let system_txs_size: u64 = system_transactions
-            .iter()
-            .map(|tx| tx.length() as u64)
-            .sum();
 
-        let user_transactions = self.sequence_user_transactions(
-            event_tracker,
-            proposed_seq_num,
-            base_fee,
-            tx_limit - system_transactions.len(),
-            proposal_gas_limit,
-            proposal_byte_limit - system_txs_size,
-            extending_blocks.iter().collect(),
-            block_policy,
-            state_backend,
-            chain_config,
-        )?;
+        let txs_user = {
+            let Some(user_tx_limit) = tx_limit.checked_sub(txs_system.len()) else {
+                error!(
+                    ?tx_limit,
+                    system_txs_len = txs_system.len(),
+                    "system txs exceeds proposal tx limit"
+                );
+
+                return Err(BlockPolicyError::SystemTransactionError);
+            };
+
+            let txs_system_bytes: u64 = txs_system.iter().map(|tx| tx.length() as u64).sum();
+
+            let Some(user_byte_limit) = proposal_byte_limit.checked_sub(txs_system_bytes) else {
+                error!(
+                    ?proposal_byte_limit,
+                    ?txs_system_bytes,
+                    "system txs exceeds proposal byte limit"
+                );
+
+                return Err(BlockPolicyError::SystemTransactionError);
+            };
+
+            self.sequence_user_transactions(
+                event_tracker,
+                proposed_seq_num,
+                base_fee,
+                user_tx_limit,
+                proposal_gas_limit,
+                user_byte_limit,
+                extending_blocks.iter().collect(),
+                block_policy,
+                state_backend,
+                chain_config,
+            )?
+        };
 
         let body = EthBlockBody {
-            transactions: system_transactions
+            transactions: txs_system
                 .into_iter()
-                .chain(user_transactions)
+                .chain(txs_user)
                 .map(|tx| tx.into_tx())
                 .collect(),
             ommers: Vec::new(),
