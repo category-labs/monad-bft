@@ -267,6 +267,12 @@ where
                         .update_proposed_head(&block_id)
                         .unwrap();
                 }
+                LedgerCommand::LedgerCommit(OptimisticCommit::Voted(block)) => {
+                    let block_id = block.get_id();
+                    self.update_cache(block);
+
+                    self.bft_block_persist.update_voted_head(&block_id).unwrap();
+                }
                 LedgerCommand::LedgerCommit(OptimisticCommit::Finalized(block)) => {
                     self.metrics[GAUGE_EXECUTION_LEDGER_NUM_COMMITS] += 1;
 

@@ -34,6 +34,7 @@ use monad_validator::signature_collection::SignatureCollection;
 pub const BLOCKDB_HEADERS_PATH: &str = "headers";
 const BLOCKDB_BODIES_PATH: &str = "bodies";
 const BLOCKDB_PROPOSED_HEAD_PATH: &str = "proposed_head";
+const BLOCKDB_VOTED_HEAD_PATH: &str = "voted_head";
 const BLOCKDB_FINALIZED_HEAD_PATH: &str = "finalized_head";
 
 pub trait BlockPersist<ST, SCT, EPT>
@@ -49,6 +50,7 @@ where
     fn write_bft_body(&mut self, payload: &ConsensusBlockBody<EPT>) -> std::io::Result<()>;
 
     fn update_proposed_head(&mut self, block_id: &BlockId) -> std::io::Result<()>;
+    fn update_voted_head(&mut self, block_id: &BlockId) -> std::io::Result<()>;
     fn update_finalized_head(&mut self, block_id: &BlockId) -> std::io::Result<()>;
 
     fn read_bft_header(
@@ -75,6 +77,7 @@ where
     headers_path: PathBuf,
     bodies_path: PathBuf,
     proposed_head_path: PathBuf,
+    voted_head_path: PathBuf,
     finalized_head_path: PathBuf,
 
     _pd: PhantomData<(ST, SCT, EPT)>,
@@ -108,12 +111,14 @@ where
         };
 
         let proposed_head_path = PathBuf::from(&headers_path).join(BLOCKDB_PROPOSED_HEAD_PATH);
+        let voted_head_path = PathBuf::from(&headers_path).join(BLOCKDB_VOTED_HEAD_PATH);
         let finalized_head_path = PathBuf::from(&headers_path).join(BLOCKDB_FINALIZED_HEAD_PATH);
 
         Self {
             headers_path,
             bodies_path,
             proposed_head_path,
+            voted_head_path,
             finalized_head_path,
 
             _pd: PhantomData,
@@ -195,6 +200,14 @@ where
         wip.set_extension(".wip");
         std::os::unix::fs::symlink(self.header_path(block_id), &wip)?;
         std::fs::rename(&wip, &self.proposed_head_path)?;
+        Ok(())
+    }
+
+    fn update_voted_head(&mut self, block_id: &BlockId) -> std::io::Result<()> {
+        let mut wip = PathBuf::from(&self.voted_head_path);
+        wip.set_extension(".wip");
+        std::os::unix::fs::symlink(self.header_path(block_id), &wip)?;
+        std::fs::rename(&wip, &self.voted_head_path)?;
         Ok(())
     }
 

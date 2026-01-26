@@ -439,6 +439,17 @@ where
         None
     }
 
+    /// Returns the highest coherent block on the path from root to the given block.
+    pub fn get_highest_coherent_block_on_path_from_root(
+        &self,
+        b: &BlockId,
+    ) -> Option<&BPT::ValidatedBlock> {
+        let path = self.get_blocks_on_path_from_root(b)?;
+        path.into_iter()
+            .rev()
+            .find(|block| self.is_coherent(&block.get_id()))
+    }
+
     // Take a QC and look for the block it certifies in the blocktree. If it exists, return its
     // seq_num
     pub fn get_seq_num_of_qc(&self, qc: &QuorumCertificate<SCT>) -> Option<SeqNum> {
@@ -1884,5 +1895,73 @@ mod test {
         );
         let high_commit_qc = blocktree.get_high_committable_qc();
         assert_eq!(high_commit_qc, Some(b11.get_qc().clone()));
+    }
+
+    #[test]
+    fn test_get_highest_coherent_block_on_path_from_root() {
+        let mut metrics = Metrics::default();
+        let g = get_genesis_block();
+        let b1 = get_next_block(&g, None, &[1]);
+        let b2 = get_next_block(&b1, None, &[2]);
+
+        let genesis_qc: QC = QuorumCertificate::genesis_qc();
+        let mut blocktree = BlockTreeType::new(RootInfo {
+            round: genesis_qc.get_round(),
+            seq_num: GENESIS_SEQ_NUM,
+            epoch: genesis_qc.get_epoch(),
+            block_id: genesis_qc.get_block_id(),
+            timestamp_ns: GENESIS_TIMESTAMP,
+        });
+        let state_backend = InMemoryStateInner::genesis(Balance::MAX, SeqNum(4));
+        let mut block_policy = PassthruBlockPolicy;
+
+        blocktree.add(g.clone().into());
+        blocktree.add(b1.clone().into());
+        blocktree.add(b2.clone().into());
+
+        // Make all blocks coherent
+        blocktree.try_update_coherency(
+            &mut metrics,
+            g.get_id(),
+            &mut block_policy,
+            &state_backend,
+            &MockChainConfig::DEFAULT,
+        );
+        blocktree.try_update_coherency(
+            &mut metrics,
+            b1.get_id(),
+            &mut block_policy,
+            &state_backend,
+            &MockChainConfig::DEFAULT,
+        );
+        blocktree.try_update_coherency(
+            &mut metrics,
+            b2.get_id(),
+            &mut block_policy,
+            &state_backend,
+            &MockChainConfig::DEFAULT,
+        );
+
+        // All coherent: should return b2 (highest on path)
+        let highest = blocktree.get_highest_coherent_block_on_path_from_root(&b2.get_id());
+        assert!(highest.is_some());
+        assert_eq!(highest.unwrap().get_id(), b2.get_id());
+
+        // Make b2 incoherent: should return b1
+        blocktree.tree.set_coherent(&b2.get_id(), false).unwrap();
+        let highest = blocktree.get_highest_coherent_block_on_path_from_root(&b2.get_id());
+        assert!(highest.is_some());
+        assert_eq!(highest.unwrap().get_id(), b1.get_id());
+
+        // Make b1 also incoherent: should return g
+        blocktree.tree.set_coherent(&b1.get_id(), false).unwrap();
+        let highest = blocktree.get_highest_coherent_block_on_path_from_root(&b2.get_id());
+        assert!(highest.is_some());
+        assert_eq!(highest.unwrap().get_id(), g.get_id());
+
+        // Make g also incoherent: should return None
+        blocktree.tree.set_coherent(&g.get_id(), false).unwrap();
+        let highest = blocktree.get_highest_coherent_block_on_path_from_root(&b2.get_id());
+        assert!(highest.is_none());
     }
 }

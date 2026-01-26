@@ -1200,6 +1200,19 @@ where
         self.metrics.consensus_events.process_qc += 1;
 
         let mut cmds = Vec::new();
+
+        // Emit Voted commit for the highest coherent block on the path to the QC block.
+        let qc_block_id = qc.get_block_id();
+        if let Some(voted_block) = self
+            .consensus
+            .pending_block_tree
+            .get_highest_coherent_block_on_path_from_root(&qc_block_id)
+        {
+            cmds.push(ConsensusCommand::CommitBlocks(
+                OptimisticPolicyCommit::Voted(voted_block.to_owned()),
+            ));
+        }
+
         cmds.extend(self.try_commit(qc));
 
         // cancel any obsolete blocksync requests
@@ -3219,6 +3232,100 @@ mod test {
         );
     }
 
+    /// Test that `Voted` commits only occur when a QC is observed, not at proposal time.
+    /// - First proposal: emits `Proposed` for block 1, no `Voted`
+    /// - Second proposal (contains QC for block 1): emits `Proposed` for block 2, `Voted` for block 1
+    #[test]
+    fn test_voted_commit_requires_qc() {
+        let num_state = 4;
+        let execution_delay = SeqNum::MAX;
+        let (mut env, mut ctx) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            BlockPolicyType,
+            StateBackendType,
+            BlockValidatorType,
+            _,
+            _,
+        >(
+            num_state,
+            ValidatorSetFactory::default(),
+            SimpleRoundRobin::default(),
+            || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0),
+            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
+            EthBlockValidator::default,
+            execution_delay,
+        );
+        let mut wrapped_state = ctx[0].wrapped_state();
+
+        // First proposal - block becomes coherent (Proposed) but has no QC yet
+        let p1 = env.next_proposal_empty();
+        let (author, _, verified_message) = p1.destructure();
+        let block_1_round = verified_message.tip.block_header.block_round;
+        let cmds = wrapped_state.handle_proposal_message(author, verified_message);
+
+        // Should have Proposed commit for block 1
+        let proposed_rounds: Vec<_> = cmds
+            .iter()
+            .filter_map(|c| match c {
+                ConsensusCommand::CommitBlocks(OptimisticPolicyCommit::Proposed(block)) => {
+                    Some(block.get_block_round())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(proposed_rounds, vec![block_1_round]);
+
+        // Should NOT have Voted commit yet (no QC observed)
+        let voted_rounds: Vec<_> = cmds
+            .iter()
+            .filter_map(|c| match c {
+                ConsensusCommand::CommitBlocks(OptimisticPolicyCommit::Voted(block)) => {
+                    Some(block.get_block_round())
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(
+            voted_rounds.is_empty(),
+            "No Voted commit expected before QC is observed"
+        );
+
+        // Second proposal - contains QC for block 1
+        let p2 = env.next_proposal_empty();
+        let (author, _, verified_message) = p2.destructure();
+        let block_2_round = verified_message.tip.block_header.block_round;
+        let cmds = wrapped_state.handle_proposal_message(author, verified_message);
+
+        // Should have Proposed commit for block 2
+        let proposed_rounds: Vec<_> = cmds
+            .iter()
+            .filter_map(|c| match c {
+                ConsensusCommand::CommitBlocks(OptimisticPolicyCommit::Proposed(block)) => {
+                    Some(block.get_block_round())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(proposed_rounds, vec![block_2_round]);
+
+        // Should have Voted commit for block 1 (QC observed via child proposal)
+        let voted_rounds: Vec<_> = cmds
+            .iter()
+            .filter_map(|c| match c {
+                ConsensusCommand::CommitBlocks(OptimisticPolicyCommit::Voted(block)) => {
+                    Some(block.get_block_round())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            voted_rounds,
+            vec![block_1_round],
+            "Voted commit expected for block 1 when QC is observed via child proposal"
+        );
+    }
+
     #[test]
     fn test_commit_rule_non_consecutive() {
         let num_state = 4;
@@ -3608,18 +3715,22 @@ mod test {
         assert_eq!(n0.metrics.consensus_events.rx_bad_state_root, 1);
 
         assert_eq!(n0.consensus_state.get_current_round(), Round(6));
-        assert_eq!(cmds.len(), 4);
+        assert_eq!(cmds.len(), 5);
         assert!(matches!(
             cmds[0],
+            ConsensusCommand::CommitBlocks(OptimisticPolicyCommit::Voted(_))
+        ));
+        assert!(matches!(
+            cmds[1],
             ConsensusCommand::CommitBlocks(OptimisticPolicyCommit::Finalized(_))
         ));
-        assert!(matches!(cmds[1], ConsensusCommand::EnterRound(_, _)));
+        assert!(matches!(cmds[2], ConsensusCommand::EnterRound(_, _)));
         assert!(matches!(
-            cmds[2],
+            cmds[3],
             ConsensusCommand::PublishToFullNodes { .. }
         ));
         assert!(matches!(
-            cmds[3],
+            cmds[4],
             ConsensusCommand::Schedule {
                 round: _,
                 duration: _

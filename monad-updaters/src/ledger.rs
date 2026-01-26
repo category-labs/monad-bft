@@ -188,6 +188,9 @@ where
                     );
                     self.blocks.insert(block.get_id(), block);
                 }
+                LedgerCommand::LedgerCommit(OptimisticCommit::Voted(block)) => {
+                    self.blocks.insert(block.get_id(), block);
+                }
                 LedgerCommand::LedgerCommit(OptimisticCommit::Finalized(block)) => {
                     if block.get_seq_num() <= self.finalization_delay {
                         continue;
