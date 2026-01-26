@@ -29,8 +29,8 @@ use monad_eth_testutil::{generate_block_with_txs, make_legacy_tx, secret_to_eth_
 use monad_eth_txpool_executor::{
     forward::egress_max_size_bytes, EthTxPoolExecutor, EthTxPoolExecutorClient, EthTxPoolIpcConfig,
 };
-use monad_eth_txpool_ipc::{EthTxPoolIpcClient, EthTxPoolIpcTx};
-use monad_eth_txpool_types::EthTxPoolSnapshot;
+use monad_eth_txpool_ipc::EthTxPoolIpcClient;
+use monad_eth_txpool_types::{EthTxPoolIpcTx, EthTxPoolSnapshot};
 use monad_executor::Executor;
 use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
 use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner};

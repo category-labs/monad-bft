@@ -24,8 +24,10 @@ use std::{
 
 use alloy_primitives::{TxHash, U256};
 use futures::StreamExt;
-use monad_eth_txpool_ipc::{EthTxPoolIpcStream, EthTxPoolIpcTx};
-use monad_eth_txpool_types::{EthTxPoolEvent, EthTxPoolEventType, EthTxPoolSnapshot};
+use monad_eth_txpool_ipc::EthTxPoolIpcStream;
+use monad_eth_txpool_types::{
+    EthTxPoolEvent, EthTxPoolEventType, EthTxPoolIpcTx, EthTxPoolSnapshot, EthTxPoolTxInputStream,
+};
 use pin_project::pin_project;
 use tokio::{
     net::UnixListener,
@@ -76,33 +78,10 @@ impl EthTxPoolIpcServer {
             queue_timer: time::sleep(Duration::ZERO),
         })
     }
+}
 
-    pub fn broadcast_tx_events(self: Pin<&mut Self>, events: BTreeMap<TxHash, EthTxPoolEventType>) {
-        if events.is_empty() {
-            return;
-        }
-
-        let events: Vec<EthTxPoolEvent> = events
-            .into_iter()
-            .map(|(tx_hash, action)| EthTxPoolEvent { tx_hash, action })
-            .collect();
-
-        self.project()
-            .connections
-            .retain(|stream| match stream.send_tx_events(events.clone()) {
-                Ok(()) => true,
-                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                    warn!("dropping ipc stream, reason: channel full!");
-                    false
-                }
-                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                    info!("dropping ipc stream, reason: channel closed!");
-                    false
-                }
-            });
-    }
-
-    pub fn poll_txs(
+impl EthTxPoolTxInputStream for EthTxPoolIpcServer {
+    fn poll_txs(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         generate_snapshot: impl Fn() -> EthTxPoolSnapshot,
@@ -186,5 +165,30 @@ impl EthTxPoolIpcServer {
         *queue_len -= batch.len();
 
         Poll::Ready(batch)
+    }
+
+    fn broadcast_tx_events(self: Pin<&mut Self>, events: BTreeMap<TxHash, EthTxPoolEventType>) {
+        if events.is_empty() {
+            return;
+        }
+
+        let events: Vec<EthTxPoolEvent> = events
+            .into_iter()
+            .map(|(tx_hash, action)| EthTxPoolEvent { tx_hash, action })
+            .collect();
+
+        self.project()
+            .connections
+            .retain(|stream| match stream.send_tx_events(events.clone()) {
+                Ok(()) => true,
+                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                    warn!("dropping ipc stream, reason: channel full!");
+                    false
+                }
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                    info!("dropping ipc stream, reason: channel closed!");
+                    false
+                }
+            });
     }
 }

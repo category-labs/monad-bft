@@ -21,15 +21,11 @@ use std::{
 };
 
 use futures::{FutureExt, Sink, SinkExt, Stream, StreamExt};
-use monad_eth_txpool_types::{EthTxPoolEvent, EthTxPoolSnapshot};
+use monad_eth_txpool_types::{EthTxPoolEvent, EthTxPoolIpcTx, EthTxPoolSnapshot};
 use tokio::{net::UnixStream, sync::mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 use tracing::warn;
-
-pub use self::message::EthTxPoolIpcTx;
-
-mod message;
 
 const TX_CHANNEL_SEND_TIMEOUT_MS: u64 = 1_000;
 const SOCKET_SEND_TIMEOUT_MS: u64 = 1_000;

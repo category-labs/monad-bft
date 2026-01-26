@@ -22,7 +22,8 @@ use std::{
 use alloy_consensus::TxEnvelope;
 use flume::Receiver;
 use futures::{SinkExt, StreamExt};
-use monad_eth_txpool_ipc::{EthTxPoolIpcClient, EthTxPoolIpcTx};
+use monad_eth_txpool_ipc::EthTxPoolIpcClient;
+use monad_eth_txpool_types::EthTxPoolIpcTx;
 use state::TxStatusReceiverSender;
 use tracing::{debug, error, info, warn};
 
