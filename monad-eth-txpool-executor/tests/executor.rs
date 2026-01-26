@@ -77,7 +77,6 @@ async fn setup_txpool_executor_with_client() -> (
         MockChainConfig::DEFAULT,
         GENESIS_ROUND,
         GENESIS_TIMESTAMP as u64,
-        true,
     )
     .unwrap();
 

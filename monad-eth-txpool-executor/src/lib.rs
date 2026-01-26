@@ -110,7 +110,6 @@ where
         chain_config: CCT,
         round: Round,
         execution_timestamp_s: u64,
-        do_local_insert: bool,
     ) -> io::Result<EthTxPoolExecutorClient<ST, SCT, SBT, CCT, CRT>> {
         let ipc = Box::pin(EthTxPoolIpcServer::new(ipc_config)?);
 
@@ -136,7 +135,6 @@ where
                                 soft_tx_expiry,
                                 hard_tx_expiry,
                             ),
-                            do_local_insert,
                         },
                         chain_config.chain_id(),
                         chain_config.get_chain_revision(round),

@@ -18,5 +18,4 @@ use super::TrackedTxLimitsConfig;
 #[derive(Clone, Debug)]
 pub struct EthTxPoolConfig {
     pub limits: TrackedTxLimitsConfig,
-    pub do_local_insert: bool,
 }
