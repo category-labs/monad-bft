@@ -44,7 +44,7 @@ use monad_crypto::certificate_signature::{
 use monad_eth_block_policy::{
     compute_txn_max_gas_cost,
     nonce_usage::{NonceUsage, NonceUsageMap},
-    pre_tfm_compute_max_txn_cost, timestamp_ns_to_secs,
+    timestamp_ns_to_secs,
     validation::static_validate_transaction,
     EthBlockPolicy, EthValidatedBlock,
 };
@@ -286,17 +286,15 @@ where
             ));
         }
 
-        if execution_chain_params.tfm_enabled {
-            if let Some(consensus_header_base_fee) = header.base_fee {
-                if consensus_header_base_fee != *base_fee_per_gas {
-                    return Err(HeaderError::InvalidBaseFee {
-                        consensus_header_base_fee,
-                        eth_header_base_fee: *base_fee_per_gas,
-                    });
-                }
-            } else {
-                return Err(HeaderError::EmptyHeaderBaseFee);
+        if let Some(consensus_header_base_fee) = header.base_fee {
+            if consensus_header_base_fee != *base_fee_per_gas {
+                return Err(HeaderError::InvalidBaseFee {
+                    consensus_header_base_fee,
+                    eth_header_base_fee: *base_fee_per_gas,
+                });
             }
+        } else {
+            return Err(HeaderError::EmptyHeaderBaseFee);
         }
 
         // Monad does not use request hashes yet
@@ -559,7 +557,6 @@ where
                             first_txn_value: Balance::ZERO,
                             first_txn_gas: Balance::ZERO,
                             max_gas_cost: Balance::ZERO,
-                            max_txn_cost: Balance::ZERO,
                             is_delegated: true,
                             delegation_before_first_txn: true,
                         });
@@ -609,15 +606,11 @@ where
                     e.max_gas_cost = e
                         .max_gas_cost
                         .saturating_add(compute_txn_max_gas_cost(eth_txn, block_base_fee));
-                    e.max_txn_cost = e
-                        .max_txn_cost
-                        .saturating_add(pre_tfm_compute_max_txn_cost(eth_txn));
                 })
                 .or_insert(TxnFee {
                     first_txn_value: eth_txn.value(),
                     first_txn_gas: compute_txn_max_gas_cost(eth_txn, block_base_fee),
                     max_gas_cost: Balance::ZERO,
-                    max_txn_cost: pre_tfm_compute_max_txn_cost(eth_txn),
                     is_delegated: false,
                     delegation_before_first_txn: false,
                 });

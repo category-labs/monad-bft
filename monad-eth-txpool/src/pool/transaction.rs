@@ -29,7 +29,7 @@ use monad_eth_block_policy::{
 use monad_eth_txpool_types::{EthTxPoolDropReason, DEFAULT_TX_PRIORITY};
 use monad_eth_types::EthExecutionProtocol;
 use monad_system_calls::{validator::SystemTransactionValidator, SYSTEM_SENDER_ETH_ADDRESS};
-use monad_tfm::base_fee::{MIN_BASE_FEE, PRE_TFM_BASE_FEE};
+use monad_tfm::base_fee::MIN_BASE_FEE;
 use monad_types::{Balance, Nonce, SeqNum};
 use monad_validator::signature_collection::SignatureCollection;
 use tracing::trace;
@@ -103,12 +103,7 @@ impl ValidEthTransaction {
         }
 
         // TODO(andr-dev): Adjust minimum dynamically using current base fee.
-        let min_base_fee = if execution_params.tfm_enabled {
-            MIN_BASE_FEE
-        } else {
-            PRE_TFM_BASE_FEE
-        };
-        if tx.max_fee_per_gas() < min_base_fee.into() {
+        if tx.max_fee_per_gas() < MIN_BASE_FEE.into() {
             return Err((tx, EthTxPoolDropReason::FeeTooLow));
         }
 

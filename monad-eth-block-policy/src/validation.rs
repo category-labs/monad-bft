@@ -65,7 +65,7 @@ pub fn static_validate_transaction(
         return Err(StaticValidationError::UnsupportedTransactionType);
     }
 
-    TfmValidator::validate(tx, chain_params, execution_chain_params)?;
+    TfmValidator::validate(tx, chain_params)?;
 
     // post Ethereum Homestead fork validation
     // includes EIP-155 validation
@@ -94,19 +94,13 @@ pub const EIP_7702_PER_EMPTY_ACCOUNT_COST: u64 = 25_000;
 
 struct TfmValidator;
 impl TfmValidator {
-    fn validate(
-        tx: &TxEnvelope,
-        chain_params: &ChainParams,
-        execution_chain_params: &ExecutionChainParams,
-    ) -> Result<(), StaticValidationError> {
-        if execution_chain_params.tfm_enabled {
-            // tfm-specific gating
-            if tx.gas_limit() > TFM_MAX_GAS_LIMIT {
-                return Err(StaticValidationError::GasLimitOverTFMGasLimit {
-                    tx_gas_limit: tx.gas_limit(),
-                    tfm_max_gas_limit: TFM_MAX_GAS_LIMIT,
-                });
-            }
+    fn validate(tx: &TxEnvelope, chain_params: &ChainParams) -> Result<(), StaticValidationError> {
+        // tfm-specific gating
+        if tx.gas_limit() > TFM_MAX_GAS_LIMIT {
+            return Err(StaticValidationError::GasLimitOverTFMGasLimit {
+                tx_gas_limit: tx.gas_limit(),
+                tfm_max_gas_limit: TFM_MAX_GAS_LIMIT,
+            });
         }
 
         if tx.gas_limit() > chain_params.proposal_gas_limit {
