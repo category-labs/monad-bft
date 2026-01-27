@@ -756,6 +756,16 @@ where
     }
 }
 
+impl<PT: PubKey, PL1, PL2> PeerAddrLookup<PT> for (&PL1, &PL2)
+where
+    PL1: PeerAddrLookup<PT>,
+    PL2: PeerAddrLookup<PT>,
+{
+    fn lookup(&self, node_id: &NodeId<PT>) -> Option<SocketAddr> {
+        self.0.lookup(node_id).or_else(|| self.1.lookup(node_id))
+    }
+}
+
 impl<PT, T> PeerAddrLookup<PT> for std::sync::Arc<T>
 where
     PT: PubKey,
