@@ -20,7 +20,8 @@ use monad_crypto::certificate_signature::PubKey;
 use monad_types::{NodeId, Stake};
 use rand::{rngs::StdRng, seq::SliceRandom as _, SeedableRng as _};
 
-use super::{BuildError, Chunk, PacketLayout, Recipient, Result};
+use super::{BuildError, Chunk, PacketLayout, Result};
+use crate::util::Recipient;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChunkOrder {
@@ -582,8 +583,8 @@ mod tests {
 
     use super::{ChunkAssignment, ChunkOrder, Partitioned, StakeBasedWithRC};
     use crate::{
-        packet::{assigner::Replicated, ChunkAssigner as _, PacketLayout, Recipient},
-        util::Redundancy,
+        packet::{assigner::Replicated, ChunkAssigner as _, PacketLayout},
+        util::{Recipient, Redundancy},
     };
 
     const DEFAULT_SEGMENT_LEN: usize = 1400;

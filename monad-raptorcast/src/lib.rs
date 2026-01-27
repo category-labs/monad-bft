@@ -61,7 +61,9 @@ use monad_validator::{
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tracing::{debug, debug_span, error, trace, warn};
 use udp::GroupId;
-use util::{BuildTarget, EpochValidators, FullNodes, Group, ReBroadcastGroupMap, Redundancy};
+use util::{
+    BuildTarget, EpochValidators, FullNodes, Group, PeerAddrLookup, ReBroadcastGroupMap, Redundancy,
+};
 
 use crate::{
     metrics::{GAUGE_RAPTORCAST_TOTAL_MESSAGES_RECEIVED, GAUGE_RAPTORCAST_TOTAL_RECV_ERRORS},
@@ -1519,7 +1521,7 @@ fn ensure_authenticated_sessions<'a, ST, PD, AP>(
     dual_socket.flush();
 }
 
-impl<ST, PD, AP> packet::PeerAddrLookup<CertificateSignaturePubKey<ST>>
+impl<ST, PD, AP> PeerAddrLookup<CertificateSignaturePubKey<ST>>
     for (
         &Arc<Mutex<PeerDiscoveryDriver<PD>>>,
         &std::cell::RefCell<&mut auth::DualSocketHandle<AP>>,
@@ -1553,7 +1555,7 @@ where
     pub dual_socket: &'a std::cell::RefCell<&'a mut auth::DualSocketHandle<AP>>,
 }
 
-impl<ST, AP> packet::PeerAddrLookup<CertificateSignaturePubKey<ST>> for NameRecordLookup<'_, ST, AP>
+impl<ST, AP> PeerAddrLookup<CertificateSignaturePubKey<ST>> for NameRecordLookup<'_, ST, AP>
 where
     ST: CertificateSignatureRecoverable,
     AP: auth::AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,

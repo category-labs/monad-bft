@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #![allow(clippy::identity_op)]
-use std::{cell::OnceCell, net::SocketAddr, ops::Range, rc::Rc};
+use std::ops::Range;
 
 use bytes::{Bytes, BytesMut};
 use monad_crypto::{
@@ -24,15 +24,14 @@ use monad_crypto::{
 };
 use monad_merkle::{MerkleHash, MerkleTree};
 use monad_raptor::Encoder;
-use monad_types::NodeId;
 
 use super::{
     assigner::{ChunkAssignment, ChunkOrder},
-    BuildError, Collector, PeerAddrLookup, Result, UdpMessage,
+    BuildError, Result,
 };
 use crate::{
     udp::GroupId,
-    util::{compute_hash, BroadcastMode, Redundancy},
+    util::{BroadcastMode, Collector, Recipient, Redundancy, UdpMessage},
     SIGNATURE_SIZE,
 };
 
@@ -120,103 +119,6 @@ impl<PT: PubKey> Chunk<PT> {
             recipient,
             payload,
         }
-    }
-}
-
-// A cheaply cloned wrapper around a node_id with pre-calculated hash
-// and a lazy socket address.
-//
-// Change to Arc if we need parallel processing.
-#[derive(Clone, PartialEq, Eq)]
-pub struct Recipient<PT: PubKey>(Rc<RecipientInner<PT>>);
-
-impl<PT: PubKey> std::hash::Hash for Recipient<PT> {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.0.node_hash.hash(state);
-    }
-}
-
-impl<PT: PubKey> std::fmt::Debug for Recipient<PT> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "<node-{}>", &hex::encode(&self.0.node_hash[..6]))?;
-        if let Some(addr) = self.0.addr.get() {
-            if let Some(addr) = addr {
-                write!(f, "@{}", addr)?;
-            } else {
-                write!(f, "@<unknown>")?;
-            }
-        }
-        Ok(())
-    }
-}
-
-#[derive(Clone, Eq)]
-struct RecipientInner<PT: PubKey> {
-    node_id: NodeId<PT>,
-    node_hash: [u8; 20],
-    addr: OnceCell<Option<SocketAddr>>,
-}
-
-impl<PT: PubKey> PartialEq for RecipientInner<PT> {
-    fn eq(&self, other: &Self) -> bool {
-        self.node_hash == other.node_hash
-    }
-}
-
-impl Recipient<monad_crypto::NopPubKey> {
-    // only used for testing
-    #[cfg(test)]
-    pub fn dummy(addr: Option<SocketAddr>) -> Self {
-        let mut bytes = format!("{:?}", addr).into_bytes();
-        bytes.resize(32, 0u8);
-
-        let pubkey = monad_crypto::NopPubKey::from_bytes(&bytes).expect("pubkey");
-        let recipient = Self::new(NodeId::new(pubkey));
-        recipient.0.addr.set(addr).expect("addr not set");
-        recipient
-    }
-}
-
-impl<PT: PubKey> Recipient<PT> {
-    pub fn new(node_id: NodeId<PT>) -> Self {
-        let node_hash = compute_hash(&node_id).0;
-        let addr = OnceCell::new();
-        let inner = RecipientInner {
-            node_id,
-            node_hash,
-            addr,
-        };
-        Self(Rc::new(inner))
-    }
-
-    pub(super) fn node_hash(&self) -> &[u8; 20] {
-        &self.0.node_hash
-    }
-
-    // Expect `lookup` or `set_addr` performed earlier, otherwise panic.
-    #[allow(unused)]
-    pub(super) fn get_addr(&self) -> Option<SocketAddr> {
-        *self.0.addr.get().expect("get addr called before lookup")
-    }
-
-    pub fn lookup(&self, handle: &(impl PeerAddrLookup<PT> + ?Sized)) -> &Option<SocketAddr> {
-        self.0.addr.get_or_init(|| {
-            let addr = handle.lookup(&self.0.node_id);
-            if addr.is_none() {
-                tracing::warn!("raptorcast: unknown address for node {}", self.0.node_id);
-            }
-            addr
-        })
-    }
-}
-
-#[cfg(test)]
-pub struct DummyPeerLookup;
-
-#[cfg(test)]
-impl<PT: PubKey> PeerAddrLookup<PT> for DummyPeerLookup {
-    fn lookup(&self, _node_id: &NodeId<PT>) -> Option<SocketAddr> {
-        panic!("recipient addr should be self contained")
     }
 }
 

@@ -26,21 +26,14 @@ use monad_crypto::certificate_signature::{
 use monad_types::NodeId;
 
 pub(crate) use self::{
-    assembler::{Chunk, PacketLayout, Recipient},
+    assembler::{Chunk, PacketLayout},
     assigner::ChunkAssigner,
     builder::MessageBuilder,
 };
 use crate::{
     udp::GroupId,
-    util::{BuildTarget, Redundancy},
+    util::{BuildTarget, Collector, PeerAddrLookup, Redundancy, UdpMessage},
 };
-
-#[derive(Debug, Clone)]
-pub struct UdpMessage<PT: PubKey> {
-    pub recipient: Recipient<PT>,
-    pub payload: Bytes,
-    pub stride: usize,
-}
 
 #[derive(Debug)]
 pub enum BuildError {
@@ -62,17 +55,6 @@ pub enum BuildError {
     ZeroTotalStake,
     // redundancy is too high
     RedundancyTooHigh,
-}
-
-pub trait PeerAddrLookup<PT: PubKey> {
-    fn lookup(&self, node_id: &NodeId<PT>) -> Option<SocketAddr>;
-}
-
-// Similar to std::iter::Extend trait but implemented for FnMut as
-// well.
-pub(crate) trait Collector<T> {
-    fn push(&mut self, item: T);
-    fn reserve(&mut self, _additional: usize) {}
 }
 
 type Result<A, E = BuildError> = std::result::Result<A, E>;
@@ -155,62 +137,6 @@ where
         }
 
         Default::default()
-    }
-}
-
-impl<PT: PubKey> PeerAddrLookup<PT> for HashMap<NodeId<PT>, SocketAddr> {
-    fn lookup(&self, node_id: &NodeId<PT>) -> Option<SocketAddr> {
-        self.get(node_id).copied()
-    }
-}
-
-/// Used in RaptorCast instance to lookup peer addresses with the peer discovery driver.
-impl<ST: CertificateSignatureRecoverable, PD> PeerAddrLookup<CertificateSignaturePubKey<ST>>
-    for std::sync::Mutex<monad_peer_discovery::driver::PeerDiscoveryDriver<PD>>
-where
-    PD: monad_peer_discovery::PeerDiscoveryAlgo<SignatureType = ST>,
-{
-    fn lookup(&self, node_id: &NodeId<CertificateSignaturePubKey<ST>>) -> Option<SocketAddr> {
-        let guard = self.lock().ok()?;
-        guard.get_addr(node_id)
-    }
-}
-
-impl<PT: PubKey, F> PeerAddrLookup<PT> for F
-where
-    F: Fn(&NodeId<PT>) -> Option<SocketAddr>,
-{
-    fn lookup(&self, node_id: &NodeId<PT>) -> Option<SocketAddr> {
-        self(node_id)
-    }
-}
-
-impl<PT, T> PeerAddrLookup<PT> for std::sync::Arc<T>
-where
-    PT: PubKey,
-    T: PeerAddrLookup<PT>,
-{
-    fn lookup(&self, node_id: &NodeId<PT>) -> Option<SocketAddr> {
-        self.as_ref().lookup(node_id)
-    }
-}
-
-impl<T> Collector<T> for Vec<T> {
-    fn push(&mut self, item: T) {
-        Vec::push(self, item)
-    }
-
-    fn reserve(&mut self, additional: usize) {
-        Vec::reserve(self, additional)
-    }
-}
-
-impl<F, T> Collector<T> for F
-where
-    F: FnMut(T),
-{
-    fn push(&mut self, item: T) {
-        self(item)
     }
 }
 
@@ -308,8 +234,10 @@ where
 mod tests {
     use std::cell::RefCell;
 
+    use bytes::Bytes;
+
     use super::*;
-    use crate::packet::assembler::DummyPeerLookup;
+    use crate::util::{DummyPeerLookup, Recipient};
 
     #[test]
     fn test_udp_message_batcher() {
