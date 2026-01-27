@@ -1224,6 +1224,7 @@ mod tests {
             .group_id(GroupId::Primary(EPOCH))
             .redundancy(Redundancy::from_u8(1))
             .merkle_tree_depth(MERKLE_TREE_DEPTH)
+            .prepare()
             .build_vec(&app_msg, &target);
         let message = messages.unwrap().into_iter().next().unwrap();
         let mut payload = BytesMut::from(&message.payload[..message.stride]);

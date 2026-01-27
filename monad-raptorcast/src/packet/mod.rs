@@ -32,7 +32,7 @@ pub(crate) use self::{
 };
 use crate::{
     udp::GroupId,
-    util::{BuildTarget, Collector, PeerAddrLookup, Redundancy, UdpMessage},
+    util::{BuildTarget, Redundancy},
 };
 
 #[derive(Debug)]
@@ -80,6 +80,7 @@ where
         .redundancy(redundancy);
 
     let packets = builder
+        .prepare()
         .build_vec(&app_message, &build_target)
         .unwrap_log_on_error(&app_message, &build_target);
 
@@ -137,147 +138,5 @@ where
         }
 
         Default::default()
-    }
-}
-
-// Batch assembled UdpMessages into UnicastMsgs for consumption in
-// dataplane, flush on buffer full and on drop.
-pub struct UdpMessageBatcher<F, PL>
-where
-    F: FnMut(monad_dataplane::UnicastMsg),
-{
-    peer_lookup: PL,
-    buffer_size: usize,
-    buffer: monad_dataplane::UnicastMsg,
-    sink: F,
-}
-
-impl<F, PL> UdpMessageBatcher<F, PL>
-where
-    F: FnMut(monad_dataplane::UnicastMsg),
-{
-    pub fn new(buffer_size: usize, peer_lookup: PL, sink: F) -> Self {
-        Self {
-            peer_lookup,
-            buffer_size,
-            buffer: monad_dataplane::UnicastMsg {
-                msgs: Vec::with_capacity(buffer_size),
-                stride: 0,
-            },
-            sink,
-        }
-    }
-
-    fn flush(&mut self) {
-        if self.buffer.msgs.is_empty() {
-            return;
-        }
-        debug_assert!(self.buffer.stride != 0);
-
-        let fresh_buffer = monad_dataplane::UnicastMsg {
-            msgs: Vec::with_capacity(self.buffer_size),
-            stride: 0,
-        };
-
-        let unicast_msg = std::mem::replace(&mut self.buffer, fresh_buffer);
-        (self.sink)(unicast_msg);
-    }
-}
-
-impl<F, PL> Drop for UdpMessageBatcher<F, PL>
-where
-    F: FnMut(monad_dataplane::UnicastMsg),
-{
-    fn drop(&mut self) {
-        self.flush();
-    }
-}
-
-impl<F, PL, PT> Collector<UdpMessage<PT>> for UdpMessageBatcher<F, PL>
-where
-    F: FnMut(monad_dataplane::UnicastMsg),
-    PT: PubKey,
-    PL: PeerAddrLookup<PT>,
-{
-    fn push(&mut self, item: UdpMessage<PT>) {
-        let Some(dest) = item.recipient.lookup(&self.peer_lookup) else {
-            return;
-        };
-        let stride = item.stride as u16;
-
-        // uninitialized, set the stride
-        if self.buffer.stride == 0 {
-            self.buffer.stride = stride;
-        }
-
-        // stride changes, flush the buffer and update the stride
-        if self.buffer.stride != stride {
-            tracing::debug!(
-                "UdpMessageBatcher: stride changed from {} to {}",
-                self.buffer.stride,
-                stride
-            );
-
-            self.flush();
-            self.buffer.stride = stride;
-        }
-
-        self.buffer.msgs.push((*dest, item.payload));
-
-        if self.buffer.msgs.len() >= self.buffer_size {
-            self.flush();
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::cell::RefCell;
-
-    use bytes::Bytes;
-
-    use super::*;
-    use crate::util::{DummyPeerLookup, Recipient};
-
-    #[test]
-    fn test_udp_message_batcher() {
-        let collected_batches: RefCell<Vec<monad_dataplane::UnicastMsg>> = Default::default();
-        let recipient = Recipient::dummy("127.0.0.1:3000".parse().ok());
-        let msg_batch_1 = vec![
-            // 4 messages, each with stride 4
-            UdpMessage { recipient: recipient.clone(), payload: Bytes::from(vec![42; 4]), stride: 4 }; 4
-        ];
-
-        let msg_batch_2 = vec![
-            // 4 messages, each with stride 5
-            UdpMessage { recipient, payload: Bytes::from(vec![43; 5]), stride: 5 }; 4
-        ];
-
-        let mut batcher = UdpMessageBatcher::new(3, DummyPeerLookup, |batch| {
-            collected_batches.borrow_mut().push(batch);
-        });
-        for msg in msg_batch_1 {
-            batcher.push(msg);
-        }
-        for msg in msg_batch_2 {
-            batcher.push(msg);
-        }
-        assert_eq!(collected_batches.borrow().len(), 3);
-        // first UnicastMsg: 3 messages with stride 4
-        assert_eq!(collected_batches.borrow()[0].msgs.len(), 3);
-        assert_eq!(collected_batches.borrow()[0].stride, 4);
-        // second UnicastMsg: 1 message with stride 4
-        assert_eq!(collected_batches.borrow()[1].msgs.len(), 1);
-        assert_eq!(collected_batches.borrow()[1].stride, 4);
-        // third UnicastMsg: 3 messages with stride 5
-        assert_eq!(collected_batches.borrow()[2].msgs.len(), 3);
-        assert_eq!(collected_batches.borrow()[2].stride, 5);
-
-        drop(batcher);
-
-        // on drop, the last message with stride 5 should be flushed
-        assert_eq!(collected_batches.borrow().len(), 4);
-        assert_eq!(collected_batches.borrow()[3].msgs.len(), 1);
-        assert_eq!(collected_batches.borrow()[3].stride, 5);
     }
 }
