@@ -18,13 +18,12 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use bytes::Bytes;
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion, Throughput};
 use itertools::Itertools;
-use lru::LruCache;
 use monad_crypto::hasher::{Hasher, HasherType};
 use monad_dataplane::udp::DEFAULT_SEGMENT_SIZE;
 use monad_raptor::ManagedDecoder;
 use monad_raptorcast::{
     packet::build_messages,
-    udp::{parse_message, GroupId, MAX_REDUNDANCY, SIGNATURE_CACHE_SIZE},
+    udp::{parse_message, ChunkSignatureVerifier, GroupId, MAX_REDUNDANCY, SIGNATURE_CACHE_SIZE},
     util::{BuildTarget, EpochValidators, Redundancy},
 };
 use monad_secp::{KeyPair, SecpSignature};
@@ -125,18 +124,21 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         .map(|(_to, message)| message)
         .collect_vec();
 
-        let example_chunk = parse_message::<SecpSignature, _>(
-            &mut LruCache::new(SIGNATURE_CACHE_SIZE),
+        let mut signature_verifier =
+            ChunkSignatureVerifier::<SecpSignature>::new().with_cache(SIGNATURE_CACHE_SIZE);
+        let example_chunk = parse_message(
+            &mut signature_verifier,
             messages[0].clone().split_to(DEFAULT_SEGMENT_SIZE.into()),
             u64::MAX,
-            |_| Ok(()),
+            |_| true,
         )
         .expect("valid chunk");
 
         b.iter_batched(
             || messages.clone(),
             |messages| {
-                let mut signature_cache = LruCache::new(SIGNATURE_CACHE_SIZE);
+                let mut signature_verifier =
+                    ChunkSignatureVerifier::<SecpSignature>::new().with_cache(SIGNATURE_CACHE_SIZE);
                 let mut decoder = {
                     let symbol_len = example_chunk.chunk.len();
 
@@ -150,11 +152,11 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 let mut decode_success = false;
                 for mut message in messages {
                     while !message.is_empty() {
-                        let parsed_message = parse_message::<SecpSignature, _>(
-                            &mut signature_cache,
+                        let parsed_message = parse_message(
+                            &mut signature_verifier,
                             message.split_to(DEFAULT_SEGMENT_SIZE.into()),
                             u64::MAX,
-                            |_| Ok(()),
+                            |_| true,
                         )
                         .expect("valid message");
                         decoder.received_encoded_symbol(

@@ -81,6 +81,7 @@ pub mod decoding;
 pub mod message;
 pub mod metrics;
 pub mod packet;
+pub mod parser;
 pub mod raptorcast_secondary;
 pub mod udp;
 pub mod util;
