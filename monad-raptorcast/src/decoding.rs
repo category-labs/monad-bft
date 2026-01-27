@@ -87,7 +87,7 @@ pub const MAX_TOTAL_SIZE_LIMIT: usize = 20 * 1024 * 1024 * 1024; // 20 GB
 type MessageSize = usize;
 
 #[derive(Debug, Clone)]
-pub(crate) struct DecoderCacheConfig {
+pub struct DecoderCacheConfig {
     // Number of entries to keep in recently decoded cache.
     pub recently_decoded_cache_size: usize,
 
@@ -97,7 +97,7 @@ pub(crate) struct DecoderCacheConfig {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct SoftQuotaCacheConfig {
+pub struct SoftQuotaCacheConfig {
     // Number of entries to keep.
     pub total_slots: usize,
 
@@ -126,7 +126,7 @@ impl Default for DecoderCacheConfig {
     }
 }
 
-pub(crate) struct DecoderCache<PT>
+pub struct DecoderCache<PT>
 where
     PT: PubKey,
 {
@@ -352,7 +352,7 @@ impl MessageTier {
     where
         PT: PubKey,
     {
-        if message.maybe_broadcast_mode.is_some() {
+        if !matches!(message.broadcast_mode, BroadcastMode::Unspecified) {
             return MessageTier::Broadcast;
         }
 
@@ -1365,7 +1365,7 @@ enum MessageCacheEntry<'a> {
 }
 
 #[derive(Debug)]
-pub(crate) enum TryDecodeError {
+pub enum TryDecodeError {
     InvalidSymbol(InvalidSymbol),
     UnableToReconstructSourceData,
     AppMessageHashMismatch {
@@ -1375,7 +1375,7 @@ pub(crate) enum TryDecodeError {
 }
 
 #[derive(Debug)]
-pub(crate) enum TryDecodeStatus<PT: PubKey> {
+pub enum TryDecodeStatus<PT: PubKey> {
     RejectedByCache,
     RecentlyDecoded,
     NeedsMoreSymbols,
@@ -1386,8 +1386,7 @@ pub(crate) enum TryDecodeStatus<PT: PubKey> {
 }
 
 #[derive(Debug)]
-#[expect(clippy::enum_variant_names)]
-pub(crate) enum InvalidSymbol {
+pub enum InvalidSymbol {
     /// The symbol length does not match the expected length.
     InvalidSymbolLength {
         expected_len: usize,
@@ -1411,15 +1410,52 @@ pub(crate) enum InvalidSymbol {
     InvalidDecoderParameter(std::io::Error),
 }
 
+pub(crate) trait DecodingResultLogging<PT: PubKey> {
+    fn log_decoding_error(self, chunk: &ValidatedMessage<PT>, context: &str) -> Self;
+}
+
+impl<PT: PubKey> DecodingResultLogging<PT> for Result<TryDecodeStatus<PT>, TryDecodeError> {
+    fn log_decoding_error(self, chunk: &ValidatedMessage<PT>, context: &str) -> Self {
+        match &self {
+            Err(TryDecodeError::InvalidSymbol(err)) => {
+                err.log(chunk, context);
+            }
+            Err(TryDecodeError::UnableToReconstructSourceData) => {
+                tracing::warn!("failed to reconstruct source data");
+            }
+            Err(TryDecodeError::AppMessageHashMismatch { expected, actual }) => {
+                tracing::warn!(
+                    author =? chunk.author,
+                    ?expected,
+                    ?actual,
+                    "mismatch message hash"
+                );
+            }
+            Ok(TryDecodeStatus::RejectedByCache) => {
+                tracing::warn!(
+                    author =? chunk.author,
+                    chunk_id = chunk.chunk_id,
+                    "message rejected by cache, author may be flooding messages",
+                );
+            }
+            Ok(TryDecodeStatus::RecentlyDecoded)
+            | Ok(TryDecodeStatus::NeedsMoreSymbols)
+            | Ok(TryDecodeStatus::Decoded { .. }) => {}
+        }
+
+        self
+    }
+}
+
 impl InvalidSymbol {
-    pub fn log<PT: PubKey>(&self, symbol: &ValidatedMessage<PT>, self_id: &NodeId<PT>) {
+    fn log<PT: PubKey>(&self, symbol: &ValidatedMessage<PT>, context: &str) {
         match self {
             InvalidSymbol::InvalidSymbolLength {
                 expected_len,
                 received_len,
             } => {
                 tracing::warn!(
-                    ?self_id,
+                    context,
                     author =? symbol.author,
                     unix_ts_ms = symbol.unix_ts_ms,
                     app_message_hash =? symbol.app_message_hash,
@@ -1435,7 +1471,7 @@ impl InvalidSymbol {
                 encoding_symbol_id,
             } => {
                 tracing::warn!(
-                    ?self_id,
+                    context,
                     author =? symbol.author,
                     unix_ts_ms = symbol.unix_ts_ms,
                     app_message_hash =? symbol.app_message_hash,
@@ -1450,20 +1486,20 @@ impl InvalidSymbol {
                 received_len,
             } => {
                 tracing::warn!(
-                    ?self_id,
+                    context,
                     author =? symbol.author,
                     unix_ts_ms = symbol.unix_ts_ms,
                     app_message_hash =? symbol.app_message_hash,
                     encoding_symbol_id = symbol.chunk_id,
                     expected_len,
                     received_len,
-                    "received inconsistent app message length"
+                    "received symbols with inconsistent app message length"
                 );
             }
 
             InvalidSymbol::DuplicateSymbol { encoding_symbol_id } => {
-                tracing::trace!(
-                    ?self_id,
+                tracing::warn!(
+                    context,
                     author =? symbol.author,
                     unix_ts_ms = symbol.unix_ts_ms,
                     app_message_hash =? symbol.app_message_hash,
@@ -1474,7 +1510,7 @@ impl InvalidSymbol {
 
             InvalidSymbol::InvalidDecoderParameter(err) => {
                 tracing::error!(
-                    ?self_id,
+                    context,
                     author =? symbol.author,
                     unix_ts_ms = symbol.unix_ts_ms,
                     app_message_hash =? symbol.app_message_hash,
@@ -1514,7 +1550,7 @@ impl DecoderState {
             .scale(num_source_symbols)
             .expect("redundancy-scaled num_source_symbols doesn't fit in usize");
 
-        if matches!(message.maybe_broadcast_mode, Some(BroadcastMode::Primary)) {
+        if matches!(message.broadcast_mode, BroadcastMode::Primary) {
             // Validator-to-validator raptorcast can include up to |valset| round-up chunks.
             encoded_symbol_capacity += context.validator_set_size().unwrap_or_else(|| {
                 tracing::warn!(
@@ -1757,7 +1793,7 @@ mod test {
                 author,
                 app_message_hash,
                 app_message_len: app_message.len() as u32,
-                maybe_broadcast_mode: None,
+                broadcast_mode: BroadcastMode::Unspecified,
                 chunk: chunk.freeze(),
                 // these fields are never touched in this module
                 recipient_hash: HexBytes([0; 20]),
@@ -1830,7 +1866,7 @@ mod test {
         );
         symbols_broadcast
             .iter_mut()
-            .for_each(|msg| msg.maybe_broadcast_mode = Some(BroadcastMode::Primary));
+            .for_each(|msg| msg.broadcast_mode = BroadcastMode::Primary);
 
         let symbols_validator = make_symbols(
             &Bytes::from(vec![3u8; APP_MESSAGE_LEN]),
@@ -2011,10 +2047,10 @@ mod test {
         // Use broadcast tier so that validator's and non-validator's
         // messages get mixed in the same cache.
         for msg in &mut all_symbols_part_1 {
-            msg.maybe_broadcast_mode = Some(BroadcastMode::Primary);
+            msg.broadcast_mode = BroadcastMode::Primary;
         }
         for msg in &mut all_symbols_part_2 {
-            msg.maybe_broadcast_mode = Some(BroadcastMode::Primary);
+            msg.broadcast_mode = BroadcastMode::Primary;
         }
 
         let mut cache = DecoderCache::new(config);

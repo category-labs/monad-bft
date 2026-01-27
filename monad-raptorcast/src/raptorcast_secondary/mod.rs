@@ -36,6 +36,7 @@ use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{Message, PeerEntry, RouterCommand};
 use monad_peer_discovery::{driver::PeerDiscoveryDriver, PeerDiscoveryAlgo, PeerDiscoveryEvent};
 use monad_types::{Epoch, NodeId};
+use monad_validator::validator_set::{ValidatorSet, ValidatorSetType as _};
 use publisher::Publisher;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
@@ -503,5 +504,23 @@ where
         }
 
         ret
+    }
+}
+
+pub(crate) fn validate_group_message_sender<ST>(
+    sender: &NodeId<CertificateSignaturePubKey<ST>>,
+    group_message: &FullNodesGroupMessage<ST>,
+    validator_set: &ValidatorSet<CertificateSignaturePubKey<ST>>,
+) -> bool
+where
+    ST: CertificateSignatureRecoverable,
+{
+    match group_message {
+        // Prepare group message should originate from a validator
+        FullNodesGroupMessage::PrepareGroup(msg) => {
+            &msg.validator_id == sender && validator_set.is_member(sender)
+        }
+        FullNodesGroupMessage::PrepareGroupResponse(msg) => &msg.node_id == sender,
+        FullNodesGroupMessage::ConfirmGroup(msg) => &msg.prepare.validator_id == sender,
     }
 }

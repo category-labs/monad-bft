@@ -34,7 +34,7 @@ use tracing::warn;
 
 pub use crate::packet::build_messages;
 use crate::{
-    decoding::{DecoderCache, DecodingContext, TryDecodeError, TryDecodeStatus},
+    decoding::{DecoderCache, DecodingContext, DecodingResultLogging, TryDecodeStatus},
     message::MAX_MESSAGE_SIZE,
     metrics::{
         UdpStateMetrics, GAUGE_RAPTORCAST_DECODING_CACHE_SIGNATURE_VERIFICATIONS_RATE_LIMITED,
@@ -102,6 +102,7 @@ pub const MAX_SEGMENT_LENGTH: usize = ETHERNET_SEGMENT_SIZE as usize;
 /// <execution>/monad/staking/util/constants.hpp.
 pub const MAX_VALIDATOR_SET_SIZE: usize = 200;
 
+#[expect(unused)]
 pub(crate) struct UdpState<ST: CertificateSignatureRecoverable> {
     self_id: NodeId<CertificateSignaturePubKey<ST>>,
     max_age_ms: u64,
@@ -244,7 +245,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
             // Note: The check that parsed_message.author is valid is already
             // done in iterate_rebroadcast_peers(), but we want to drop invalid
             // chunks ASAP, before changing `recently_decoded_state`.
-            if parsed_message.maybe_broadcast_mode.is_some() {
+            if !matches!(parsed_message.broadcast_mode, BroadcastMode::Unspecified) {
                 if !group_map.check_source(
                     parsed_message.group_id,
                     &parsed_message.author,
@@ -276,7 +277,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
             let mut try_rebroadcast_symbol = || {
                 // rebroadcast raptorcast chunks if broadcast mode is set and
                 // we're the assigned rebroadcaster
-                if parsed_message.maybe_broadcast_mode.is_some()
+                if !matches!(parsed_message.broadcast_mode, BroadcastMode::Unspecified)
                     && self_hash == parsed_message.recipient_hash
                 {
                     let maybe_targets = group_map
@@ -293,42 +294,22 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
             };
 
             let validator_set = match parsed_message.group_id {
-                GroupId::Primary(epoch) => epoch_validators.get(&epoch).map(|ev| &ev.validators),
+                GroupId::Primary(epoch) => epoch_validators
+                    .get(&epoch)
+                    .map(|ev| ev.validators.clone())
+                    .clone(),
                 GroupId::Secondary(_round) => None,
             };
 
-            let decoding_context = DecodingContext::new(validator_set, unix_ts_ms_now());
+            let decoding_context = DecodingContext::new(validator_set.as_ref(), unix_ts_ms_now());
 
             match self
                 .decoder_cache
                 .try_decode(&parsed_message, &decoding_context)
+                .log_decoding_error(&parsed_message, "udp-state")
             {
-                Err(TryDecodeError::InvalidSymbol(err)) => {
-                    err.log(&parsed_message, &self.self_id);
-                }
-
-                Err(TryDecodeError::UnableToReconstructSourceData) => {
-                    tracing::error!("failed to reconstruct source data");
-                }
-
-                Err(TryDecodeError::AppMessageHashMismatch { expected, actual }) => {
-                    tracing::error!(
-                        ?self_id,
-                        author =? parsed_message.author,
-                        ?expected,
-                        ?actual,
-                        "mismatch message hash"
-                    );
-                }
-
-                Ok(TryDecodeStatus::RejectedByCache) => {
-                    tracing::warn!(
-                        ?self_id,
-                        author =? parsed_message.author,
-                        chunk_id = parsed_message.chunk_id,
-                        "message rejected by cache, author may be flooding messages",
-                    );
-                }
+                Err(_) => {}
+                Ok(TryDecodeStatus::RejectedByCache) => {} // already logged
 
                 Ok(TryDecodeStatus::RecentlyDecoded) | Ok(TryDecodeStatus::NeedsMoreSymbols) => {
                     // TODO: cap rebroadcast symbols based on some multiple of esis.
@@ -342,10 +323,10 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                     // TODO: cap rebroadcast symbols based on some multiple of esis.
                     try_rebroadcast_symbol();
 
-                    if let Some(mode) = parsed_message.maybe_broadcast_mode {
-                        self.metrics
-                            .record_broadcast_latency(mode, parsed_message.unix_ts_ms);
-                    }
+                    self.metrics.record_broadcast_latency(
+                        parsed_message.broadcast_mode,
+                        parsed_message.unix_ts_ms,
+                    );
 
                     messages.push((author, app_message));
                 }
@@ -376,6 +357,7 @@ pub struct ValidatedMessage<PT>
 where
     PT: PubKey,
 {
+    // the original message, including signature, headers, and payload
     pub message: Bytes,
 
     // `author` is recovered from the public key in the chunk signature, which
@@ -390,7 +372,7 @@ where
     pub unix_ts_ms: u64,
     pub app_message_hash: AppMessageHash,
     pub app_message_len: u32,
-    pub maybe_broadcast_mode: Option<BroadcastMode>,
+    pub broadcast_mode: BroadcastMode,
     pub recipient_hash: NodeIdHash, // if this matches our node_id, then we need to re-broadcast RaptorCast chunks
     pub chunk_id: u16,
     pub chunk: Bytes, // raptor-coded portion
@@ -398,9 +380,10 @@ where
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum MessageValidationError {
-    UnknownVersion,
+    UnknownVersion(u16),
     TooShort,
     TooLong,
+    ChunkTooSmall(usize),
     InvalidSignature,
     InvalidTreeDepth,
     InvalidMerkleProof,
@@ -410,8 +393,52 @@ pub enum MessageValidationError {
         max: u64,
         delta: i64,
     },
-    InvalidBroadcastBits,
+    InvalidBroadcastBits(u8),
     RateLimited,
+}
+
+impl MessageValidationError {
+    pub fn log(&self, context: &str) {
+        match self {
+            MessageValidationError::UnknownVersion(version) => {
+                tracing::debug!(context, version, "unknown protocol version");
+            }
+            MessageValidationError::TooShort => {
+                tracing::debug!(context, "message too short");
+            }
+            MessageValidationError::TooLong => {
+                tracing::debug!(context, "message too long");
+            }
+            MessageValidationError::ChunkTooSmall(len) => {
+                tracing::debug!(context, chunk_len = len, "chunk too small");
+            }
+            MessageValidationError::InvalidSignature => {
+                tracing::debug!(context, "invalid signature");
+            }
+            MessageValidationError::InvalidTreeDepth => {
+                tracing::debug!(context, "invalid merkle tree depth");
+            }
+            MessageValidationError::InvalidMerkleProof => {
+                tracing::debug!(context, "invalid merkle proof");
+            }
+            MessageValidationError::InvalidChunkId => {
+                tracing::debug!(context, "invalid chunk id");
+            }
+            MessageValidationError::InvalidTimestamp {
+                timestamp,
+                max,
+                delta,
+            } => {
+                tracing::debug!(context, timestamp, max, delta, "invalid timestamp");
+            }
+            MessageValidationError::InvalidBroadcastBits(bits) => {
+                tracing::debug!(context, bits, "invalid broadcast bits");
+            }
+            MessageValidationError::RateLimited => {
+                tracing::debug!(context, "rate limited");
+            }
+        }
+    }
 }
 
 /// - 65 bytes => Signature of sender over hash(rest of message up to merkle proof, concatenated with merkle root)
@@ -461,7 +488,7 @@ where
     let cursor_version = split_off(2)?;
     let version = u16::from_le_bytes(cursor_version.as_ref().try_into().expect("u16 is 2 bytes"));
     if version != 0 {
-        return Err(MessageValidationError::UnknownVersion);
+        return Err(MessageValidationError::UnknownVersion(version));
     }
 
     let cursor_broadcast_tree_depth = split_off(1)?[0];
@@ -469,12 +496,12 @@ where
     let secondary_broadcast = (cursor_broadcast_tree_depth & (1 << 6)) != 0;
     let tree_depth = cursor_broadcast_tree_depth & 0b0000_1111; // bottom 4 bits
 
-    let maybe_broadcast_mode = match (broadcast, secondary_broadcast) {
-        (true, false) => Some(BroadcastMode::Primary),
-        (false, true) => Some(BroadcastMode::Secondary),
-        (false, false) => None, // broadcast or unicast
+    let broadcast_mode = match (broadcast, secondary_broadcast) {
+        (true, false) => BroadcastMode::Primary,
+        (false, true) => BroadcastMode::Secondary,
+        (false, false) => BroadcastMode::Unspecified, // unicast or broadcast
         (true, true) => {
-            return Err(MessageValidationError::InvalidBroadcastBits);
+            return Err(MessageValidationError::InvalidBroadcastBits(0b11));
         }
     };
 
@@ -484,9 +511,9 @@ where
 
     let cursor_group_id = split_off(8)?;
     let group_id = u64::from_le_bytes(cursor_group_id.as_ref().try_into().expect("u64 is 8 bytes"));
-    let group_id = match maybe_broadcast_mode {
-        Some(BroadcastMode::Primary) | None => GroupId::Primary(Epoch(group_id)),
-        Some(BroadcastMode::Secondary) => GroupId::Secondary(Round(group_id)),
+    let group_id = match broadcast_mode {
+        BroadcastMode::Primary | BroadcastMode::Unspecified => GroupId::Primary(Epoch(group_id)),
+        BroadcastMode::Secondary => GroupId::Secondary(Round(group_id)),
     };
 
     let cursor_unix_ts_ms = split_off(8)?;
@@ -553,9 +580,11 @@ where
         return Err(MessageValidationError::TooShort);
     }
 
-    let chunk_id_range = match maybe_broadcast_mode {
-        None | Some(BroadcastMode::Secondary) => valid_chunk_id_range(app_message_len, symbol_len)?,
-        Some(BroadcastMode::Primary) => {
+    let chunk_id_range = match broadcast_mode {
+        BroadcastMode::Unspecified | BroadcastMode::Secondary => {
+            valid_chunk_id_range(app_message_len, symbol_len)?
+        }
+        BroadcastMode::Primary => {
             // only perform a basic sanity check here. more precise
             // check of chunk_id is in decoding.rs when the validator
             // set is available.
@@ -601,7 +630,7 @@ where
         unix_ts_ms,
         app_message_hash,
         app_message_len: app_message_len as u32,
-        maybe_broadcast_mode,
+        broadcast_mode,
         recipient_hash,
         chunk_id,
         chunk: cursor_payload,
@@ -728,6 +757,7 @@ where
         }
     }
 }
+#[expect(unused)]
 pub(crate) struct BatcherGuard<'a, 'g, F, PT>
 where
     'a: 'g,
@@ -899,8 +929,8 @@ mod tests {
                 assert_eq!(parsed_message.app_message_hash.0, app_message_hash.0[..20]);
                 assert_eq!(parsed_message.unix_ts_ms, UNIX_TS_MS);
                 assert!(matches!(
-                    parsed_message.maybe_broadcast_mode,
-                    Some(BroadcastMode::Primary)
+                    parsed_message.broadcast_mode,
+                    BroadcastMode::Primary
                 ));
                 assert_eq!(parsed_message.app_message_len, app_message.len() as u32);
                 assert_eq!(parsed_message.author, NodeId::new(key.pubkey()));
@@ -1043,14 +1073,14 @@ mod tests {
                     match build_target {
                         BuildTarget::Raptorcast(_) => {
                             assert!(matches!(
-                                parsed_message.maybe_broadcast_mode,
-                                Some(BroadcastMode::Primary)
+                                parsed_message.broadcast_mode,
+                                BroadcastMode::Primary
                             ));
                         }
                         BuildTarget::FullNodeRaptorCast(_) => {
                             assert!(matches!(
-                                parsed_message.maybe_broadcast_mode,
-                                Some(BroadcastMode::Secondary)
+                                parsed_message.broadcast_mode,
+                                BroadcastMode::Secondary
                             ));
                         }
                         _ => unreachable!(),

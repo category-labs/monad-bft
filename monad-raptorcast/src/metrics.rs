@@ -107,6 +107,7 @@ impl UdpStateMetrics {
 
         let latency_ms = now_ms - message_ts_ms;
         let histogram = match mode {
+            crate::util::BroadcastMode::Unspecified => return,
             crate::util::BroadcastMode::Primary => &mut self.primary_broadcast,
             crate::util::BroadcastMode::Secondary => &mut self.secondary_broadcast,
         };

@@ -18,9 +18,11 @@ use std::{collections::HashMap, ops::Range};
 use bytes::BytesMut;
 use monad_crypto::certificate_signature::PubKey;
 use monad_types::{NodeId, Stake};
+use monad_validator::validator_set::{ValidatorSet, ValidatorSetType as _};
 use rand::{rngs::StdRng, seq::SliceRandom as _, SeedableRng as _};
 
-use super::{BuildError, Chunk, PacketLayout, Recipient, Result};
+use super::{BuildError, Chunk, PacketLayout, Result};
+use crate::util::Recipient;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChunkOrder {
@@ -470,7 +472,7 @@ impl<PT: PubKey> StakeBasedWithRC<PT> {
     // this should be done using known shuffling algorithm to allow
     // for easy implementation in other languages, e.g., using Mt19937
     // and Fisher Yates shuffle.
-    pub fn shuffle_validators(
+    pub fn shuffle_validators_view(
         view: &crate::util::ValidatorsView<PT>,
         seed: [u8; 32],
     ) -> Vec<(NodeId<PT>, Stake)> {
@@ -479,6 +481,30 @@ impl<PT: PubKey> StakeBasedWithRC<PT> {
             .map(|(node_id, stake)| (*node_id, stake))
             .collect::<std::collections::BinaryHeap<_>>()
             .into_sorted_vec();
+        let mut rng = StdRng::from_seed(seed);
+        validator_set.shuffle(&mut rng);
+        validator_set
+    }
+
+    pub fn shuffle_validators(
+        valset: &ValidatorSet<PT>,
+        exclude_self_id: Option<&NodeId<PT>>,
+        seed: [u8; 32],
+    ) -> Vec<(NodeId<PT>, Stake)>
+    where
+        PT: PubKey,
+    {
+        let mut validator_set: Vec<_> = valset
+            .get_members()
+            .iter()
+            .filter_map(|(node_id, stake)| {
+                if exclude_self_id.is_some_and(|self_id| self_id == node_id) {
+                    None
+                } else {
+                    Some((*node_id, *stake))
+                }
+            })
+            .collect();
         let mut rng = StdRng::from_seed(seed);
         validator_set.shuffle(&mut rng);
         validator_set
@@ -582,8 +608,8 @@ mod tests {
 
     use super::{ChunkAssignment, ChunkOrder, Partitioned, StakeBasedWithRC};
     use crate::{
-        packet::{assigner::Replicated, ChunkAssigner as _, PacketLayout, Recipient},
-        util::Redundancy,
+        packet::{assigner::Replicated, ChunkAssigner as _, PacketLayout},
+        util::{Recipient, Redundancy},
     };
 
     const DEFAULT_SEGMENT_LEN: usize = 1400;
