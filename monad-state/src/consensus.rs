@@ -733,6 +733,9 @@ where
                         let round = block.get_block_round();
                         let seq_num = block.get_seq_num();
                     }
+                    OptimisticPolicyCommit::Voted(block) => {
+                        let _ = block.get_id();
+                    }
                     OptimisticPolicyCommit::Finalized(block) => {
                         let finalized_seq_num = block.get_seq_num();
                         parent_cmds.push(Command::TxPoolCommand(TxPoolCommand::BlockCommit(vec![
