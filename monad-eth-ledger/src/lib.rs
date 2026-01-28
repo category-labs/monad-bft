@@ -156,6 +156,32 @@ where
 
                     self.blocks.insert(block.get_id(), block);
                 }
+                LedgerCommand::LedgerCommit(OptimisticCommit::Voted(block)) => {
+                    let _span = debug_span!("optimistic commit voted").entered();
+                    // generate eth block and update the state backend with committed nonces
+                    let new_account_nonces = block
+                        .body()
+                        .execution_body
+                        .transactions
+                        .iter()
+                        .map(|tx| {
+                            (
+                                tx.recover_signer().expect("invalid eth tx in block"),
+                                tx.nonce() + 1,
+                            )
+                        })
+                        .collect();
+                    let mut state = self.state.lock().unwrap();
+                    state.ledger_propose(
+                        block.get_id(),
+                        block.get_seq_num(),
+                        block.get_block_round(),
+                        block.get_parent_id(),
+                        new_account_nonces,
+                    );
+
+                    self.blocks.insert(block.get_id(), block);
+                }
                 LedgerCommand::LedgerCommit(OptimisticCommit::Finalized(block)) => {
                     let _span = debug_span!("optimistic commit finalized").entered();
                     self.finalized.insert(block.get_seq_num(), block.clone());

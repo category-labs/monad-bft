@@ -226,9 +226,13 @@ fn polling_thread(
     let triedb_async_traverse_concurrency_tracker: Arc<()> = Arc::new(());
 
     let mut last_meta_updated = Instant::now();
-    let (mut last_finalized, mut last_voted) = {
+    let (mut last_finalized, mut last_voted, mut last_proposed) = {
         let meta = meta.lock().expect("poller mutex poisoned");
-        (meta.latest_finalized, meta.latest_voted)
+        (
+            meta.latest_finalized,
+            meta.latest_voted,
+            meta.latest_proposed,
+        )
     };
 
     loop {
@@ -245,11 +249,27 @@ fn polling_thread(
                 // retry in case of a race
             }
 
+            let mut latest_proposed = last_proposed;
+            for _ in 0..3 {
+                if let (Some(proposed_block_num), Some(proposed_block_id)) = (
+                    triedb_handle.latest_proposed_block(),
+                    triedb_handle.latest_proposed_block_id(),
+                ) {
+                    latest_proposed = BlockKey::Proposed(ProposedBlockKey(
+                        SeqNum(proposed_block_num),
+                        BlockId(Hash(proposed_block_id)),
+                    ));
+                    break;
+                }
+                // retry in case of a race
+            }
+
             last_meta_updated = Instant::now();
 
             let finalized_is_updated = last_finalized != latest_finalized;
             let voted_is_updated = last_voted != latest_voted;
-            if finalized_is_updated || voted_is_updated {
+            let proposed_is_updated = last_proposed != latest_proposed;
+            if finalized_is_updated || voted_is_updated || proposed_is_updated {
                 if finalized_is_updated {
                     last_finalized = latest_finalized;
                     populate_cache(
@@ -271,9 +291,15 @@ fn polling_thread(
                     }
                 }
 
+                if proposed_is_updated {
+                    last_proposed = latest_proposed;
+                    populate_cache(&tokio_handle, &triedb_handle, meta.clone(), latest_proposed);
+                }
+
                 let mut meta = meta.lock().expect("triedb poller mutex poisoned");
                 meta.latest_finalized = latest_finalized;
                 meta.latest_voted = latest_voted;
+                meta.latest_proposed = latest_proposed;
                 while meta
                     .voted_proposals
                     .first_key_value()
@@ -492,6 +518,7 @@ pub trait Triedb: Debug {
     fn get_latest_finalized_block_key(&self) -> FinalizedBlockKey;
     /// returns a FinalizedBlockKey if latest_voted doesn't exist
     fn get_latest_voted_block_key(&self) -> BlockKey;
+    fn get_latest_proposed_block_key(&self) -> BlockKey;
     /// returns None if block number was never known to be valid
     /// a known-to-be-finalized BlockKey will never return None
     ///
@@ -585,6 +612,7 @@ pub struct TriedbEnv {
 struct TriedbEnvMeta {
     latest_finalized: FinalizedBlockKey,
     latest_voted: BlockKey,
+    latest_proposed: BlockKey,
     voted_proposals: BTreeMap<SeqNum, BlockId>,
 
     cache_manager: CacheManager,
@@ -679,9 +707,25 @@ impl TriedbEnv {
                 .expect("triedb should exist in path");
             SeqNum(triedb_handle.latest_finalized_block().unwrap_or_default())
         };
+
+        let (latest_proposed_seq_num, latest_proposed_block_id) = {
+            let triedb_handle: TriedbHandle = TriedbHandle::try_new(triedb_path, node_lru_max_mem)
+                .expect("triedb should exist in path");
+            (
+                SeqNum(triedb_handle.latest_proposed_block().unwrap_or_default()),
+                BlockId(Hash(
+                    triedb_handle.latest_proposed_block_id().unwrap_or_default(),
+                )),
+            )
+        };
+
         let meta = Arc::new(Mutex::new(TriedbEnvMeta {
             latest_finalized: FinalizedBlockKey(latest_finalized),
             latest_voted: BlockKey::Finalized(FinalizedBlockKey(latest_finalized)),
+            latest_proposed: BlockKey::Proposed(ProposedBlockKey(
+                latest_proposed_seq_num,
+                latest_proposed_block_id,
+            )),
             voted_proposals: Default::default(),
             cache_manager: CacheManager::new(
                 max_finalized_block_cache_len,
@@ -932,6 +976,10 @@ impl Triedb for TriedbEnv {
         let meta = self.meta.lock().expect("mutex poisoned");
         meta.latest_voted
     }
+    fn get_latest_proposed_block_key(&self) -> BlockKey {
+        let meta = self.meta.lock().expect("mutex poisoned");
+        meta.latest_proposed
+    }
     fn get_block_key(&self, seq_num: SeqNum) -> Option<BlockKey> {
         let meta = self.meta.lock().expect("mutex poisoned");
         if let Some(&voted_block_id) = meta.voted_proposals.get(&seq_num) {
@@ -943,6 +991,8 @@ impl Triedb for TriedbEnv {
         } else if seq_num <= meta.latest_finalized.0 {
             // this seq_num is finalized
             Some(BlockKey::Finalized(FinalizedBlockKey(seq_num)))
+        } else if seq_num == *meta.latest_proposed.seq_num() {
+            Some(meta.latest_proposed)
         } else {
             // get_block_key must return a state that was valid at some point
             // thus, it's not safe to default to finalized

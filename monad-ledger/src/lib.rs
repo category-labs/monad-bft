@@ -267,6 +267,18 @@ where
                         .update_proposed_head(&block_id)
                         .unwrap();
                 }
+                LedgerCommand::LedgerCommit(OptimisticCommit::Voted(block)) => {
+                    let block_id = block.get_id();
+
+                    // this can panic because failure to persist a block is fatal error
+                    self.write_bft_block(&block);
+
+                    self.update_cache(block);
+
+                    self.bft_block_persist
+                        .update_voted_head(&block_id)
+                        .unwrap();
+                }
                 LedgerCommand::LedgerCommit(OptimisticCommit::Finalized(block)) => {
                     self.metrics[GAUGE_EXECUTION_LEDGER_NUM_COMMITS] += 1;
 
