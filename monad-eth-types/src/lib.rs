@@ -18,17 +18,24 @@ use std::{fmt::Debug, ops::Deref};
 use ::serde::{Deserialize, Serialize};
 use alloy_consensus::{transaction::Recovered, Header, TxEnvelope};
 use alloy_eips::eip7702::RecoveredAuthorization;
-use alloy_primitives::{Address, B256};
+use alloy_primitives::{b256, Address, FixedBytes, B256};
 use alloy_rlp::{
     Decodable, Encodable, RlpDecodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper,
 };
 use monad_crypto::NopPubKey;
 use monad_types::{Balance, ExecutionProtocol, FinalizedHeader, Nonce, SeqNum};
 use serde_with::{serde_as, DisplayFromStr};
+use tracing::warn;
 
 pub mod serde;
 
 pub const EMPTY_RLP_TX_LIST: u8 = 0xc0;
+
+pub const EIP7702_DELEGATION_PREFIX: [u8; 3] = [0xef, 0x01, 0x00];
+pub const NULL_HASH: B256 =
+    b256!("0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470");
+const HASH_LENGTH: usize = 32;
+const INLINE_CODE_LENGTH: usize = 23;
 
 pub trait ExtractEthAddress {
     fn get_eth_address(&self) -> Address;
@@ -41,10 +48,60 @@ impl ExtractEthAddress for NopPubKey {
 }
 
 #[derive(Debug, Copy, Clone)]
+pub enum AccountCodeOrHash {
+    InlineCode(FixedBytes<INLINE_CODE_LENGTH>), // code for delegated per EIP7702 accounts.
+    CodeHash(B256),
+    IsEmpty,
+}
+
+impl Decodable for AccountCodeOrHash {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        const RLP_HASH_LENGTH: usize = HASH_LENGTH + 1;
+        const RLP_INLINE_CODE_LENGTH: usize = INLINE_CODE_LENGTH + 1;
+
+        let account: AccountCodeOrHash = match buf.len() {
+            0 => AccountCodeOrHash::IsEmpty,
+            RLP_HASH_LENGTH => match <[u8; HASH_LENGTH]>::decode(buf) {
+                Ok(x) => AccountCodeOrHash::CodeHash(B256::from(x)),
+                Err(e) => {
+                    warn!("rlp code_hash decode failed: {:?}", e);
+                    return Err(alloy_rlp::Error::Custom("code_hash decode failed"));
+                }
+            },
+            RLP_INLINE_CODE_LENGTH => match <[u8; INLINE_CODE_LENGTH]>::decode(buf) {
+                Ok(x) => {
+                    if x[..3] != EIP7702_DELEGATION_PREFIX {
+                        return Err(alloy_rlp::Error::Custom("unexpected inline code prefix"));
+                    }
+                    AccountCodeOrHash::InlineCode(FixedBytes::<INLINE_CODE_LENGTH>::from(x))
+                }
+                Err(e) => {
+                    warn!("rlp inline code decode failed: {:?}", e);
+                    return Err(alloy_rlp::Error::Custom("inline code decode failed"));
+                }
+            },
+            _ => {
+                return Err(alloy_rlp::Error::Custom(
+                    "stored code_hash length is unexpected",
+                ));
+            }
+        };
+
+        Ok(account)
+    }
+}
+
+impl Default for AccountCodeOrHash {
+    fn default() -> Self {
+        AccountCodeOrHash::IsEmpty
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
 pub struct EthAccount {
     pub nonce: Nonce,
     pub balance: Balance,
-    pub code_hash: Option<B256>,
+    pub code_or_hash: AccountCodeOrHash,
     pub is_delegated: bool,
 }
 

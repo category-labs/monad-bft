@@ -23,6 +23,7 @@ use alloy_primitives::{
 };
 use alloy_rlp::{Decodable, Encodable, RlpDecodable};
 use monad_archive::prelude::{ArchiveReader, BlockDataReader, IndexReader};
+use monad_eth_types::AccountCodeOrHash;
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{BlockKey, FinalizedBlockKey, Triedb};
 use monad_types::SeqNum;
@@ -723,13 +724,21 @@ async fn include_code_output<T: Triedb>(
             .get_account(block_key, contract_addr.0.into())
             .await
             .map_err(JsonRpcError::internal_error)?;
-        let code = triedb_env
-            .get_code(block_key, account.code_hash)
-            .await
-            .map_err(JsonRpcError::internal_error)?;
 
-        let decoded_code = hex::decode(&code)
-            .map_err(|_| JsonRpcError::internal_error("could not decode code".to_string()))?;
+        let decoded_code: Vec<u8> = match account.code_or_hash {
+            AccountCodeOrHash::CodeHash(hash) => {
+                let code = triedb_env
+                    .get_code_db(block_key, hash.into())
+                    .await
+                    .map_err(JsonRpcError::internal_error)?;
+                hex::decode(&code).map_err(|_| {
+                    JsonRpcError::internal_error("could not decode code".to_string())
+                })?
+            }
+            AccountCodeOrHash::InlineCode(inline_code) => inline_code.to_vec(),
+            AccountCodeOrHash::IsEmpty => vec![],
+        };
+
         frame.output = decoded_code.into();
     }
 
