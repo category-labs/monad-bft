@@ -46,7 +46,7 @@ fn bench_spans(c: &mut Criterion) {
             b.iter(|| {
                 let task = async {
                     let secondary_fut = async {
-                        criterion::black_box(());
+                        std::hint::black_box(());
                     };
 
                     let main_fut = async {
