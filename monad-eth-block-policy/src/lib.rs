@@ -42,7 +42,7 @@ use monad_crypto::certificate_signature::{
 use monad_eth_types::{
     EthAccount, EthExecutionProtocol, EthHeader, ExtractEthAddress, ValidatedTx,
 };
-use monad_state_backend::{StateBackend, StateBackendError};
+use monad_state_backend::{ReserveBalanceState, StateBackend, StateBackendError};
 use monad_system_calls::validator::{SystemTransactionValidationError, SystemTransactionValidator};
 use monad_types::{
     Balance, BlockId, Epoch, Nonce, Round, SeqNum, GENESIS_BLOCK_ID, GENESIS_ROUND, GENESIS_SEQ_NUM,
@@ -231,6 +231,7 @@ where
         &self,
         account_balance: &mut AccountBalanceState,
         eth_address: &Address,
+        reserve_balance_state: Option<&ReserveBalanceState>,
         execution_delay: SeqNum,
         emptying_txn_check_block_range: Range<SeqNum>,
         reserve_balance_check_block_range: RangeFrom<SeqNum>,
@@ -260,6 +261,20 @@ where
             assert_eq!(
                 *seq_num, next_validate,
                 "Reserve balance check range is not contiguous"
+            );
+
+            let fallback_reserve_balance = Balance::from(
+                chain_config
+                    .get_chain_revision(block.round)
+                    .chain_params()
+                    .max_reserve_balance,
+            );
+            clamp_account_reserve_balance(
+                account_balance,
+                reserve_balance_state,
+                fallback_reserve_balance,
+                block.seq_num,
+                execution_delay,
             );
 
             if let Some(block_txn_fees) = block.fees.get(eth_address) {
@@ -349,6 +364,7 @@ where
     block_seq_num: SeqNum,
     execution_delay: SeqNum,
     base_fee: u64,
+    #[allow(dead_code)]
     chain_revision: CRT,
     execution_chain_revision: MonadExecutionRevision,
     _phantom: PhantomData<CRT>,
@@ -366,6 +382,36 @@ fn is_possibly_emptying_transaction(
             .saturating_sub(balance_state.block_seqnum_of_latest_txn.0),
     );
     !balance_state.is_delegated && blocks_since_latest_txn > execution_delay - SeqNum(1)
+}
+
+fn reserve_balance_at_block(
+    reserve_balance_state: Option<&ReserveBalanceState>,
+    fallback_reserve_balance: Balance,
+    block_seq_num: SeqNum,
+    execution_delay: SeqNum,
+) -> Balance {
+    reserve_balance_state
+        .map(|state| state.delayed_reserve_balance(block_seq_num, execution_delay))
+        .unwrap_or(fallback_reserve_balance)
+}
+
+fn clamp_account_reserve_balance(
+    account_balance: &mut AccountBalanceState,
+    reserve_balance_state: Option<&ReserveBalanceState>,
+    fallback_reserve_balance: Balance,
+    block_seq_num: SeqNum,
+    execution_delay: SeqNum,
+) {
+    let reserve_balance = reserve_balance_at_block(
+        reserve_balance_state,
+        fallback_reserve_balance,
+        block_seq_num,
+        execution_delay,
+    );
+    account_balance.max_reserve_balance = reserve_balance;
+    account_balance.remaining_reserve_balance = account_balance
+        .remaining_reserve_balance
+        .min(reserve_balance);
 }
 
 pub fn timestamp_ns_to_secs(timestamp_ns: u128) -> u64 {
@@ -405,8 +451,7 @@ where
             .execution_chain_revision
             .execution_chain_params()
             .tfm_enabled;
-        let max_reserve_balance =
-            Balance::from(self.chain_revision.chain_params().max_reserve_balance);
+        let max_reserve_balance = account_balance.max_reserve_balance;
 
         if !tfm_enabled {
             if account_balance.balance < block_txn_fees.max_txn_cost {
@@ -868,6 +913,22 @@ where
         )
     }
 
+    fn get_reserve_balance_states<'a>(
+        &self,
+        state_backend: &impl StateBackend<ST, SCT>,
+        extending_blocks: &Option<&Vec<&EthValidatedBlock<ST, SCT>>>,
+        addresses: impl Iterator<Item = &'a Address>,
+        base_seq_num: &SeqNum,
+    ) -> Result<Vec<Option<ReserveBalanceState>>, StateBackendError> {
+        let block_index = self.get_block_index(extending_blocks, base_seq_num)?;
+        state_backend.get_reserve_balance_states(
+            &block_index.block_id,
+            base_seq_num,
+            block_index.is_finalized,
+            addresses,
+        )
+    }
+
     // Computes account balance available for the account
     pub fn compute_account_base_balances<'a>(
         &self,
@@ -893,35 +954,42 @@ where
         );
 
         let addresses = addresses.unique().collect_vec();
-        let account_balances = self
-            .get_account_statuses(
-                state_backend,
-                &extending_blocks,
-                addresses.iter().copied(),
-                &base_seq_num,
-            )?
-            .into_iter()
-            .map(|maybe_status| {
-                maybe_status.map_or(
-                    AccountBalanceState::new(base_max_reserve_balance),
-                    |status| {
-                        AccountBalanceState {
-                            balance: status.balance,
-                            remaining_reserve_balance: status.balance.min(base_max_reserve_balance),
-                            max_reserve_balance: base_max_reserve_balance,
-                            block_seqnum_of_latest_txn: base_seq_num, // most pessimistic assumption
-                            is_delegated: status.is_delegated,
-                        }
-                    },
-                )
-            })
-            .collect_vec();
+        let account_statuses = self.get_account_statuses(
+            state_backend,
+            &extending_blocks,
+            addresses.iter().copied(),
+            &base_seq_num,
+        )?;
+        let reserve_balance_states = self.get_reserve_balance_states(
+            state_backend,
+            &extending_blocks,
+            addresses.iter().copied(),
+            &base_seq_num,
+        )?;
 
         let account_balances: Result<BTreeMap<&'a Address, AccountBalanceState>, BlockPolicyError> =
             addresses
-                .into_iter()
-                .zip_eq(account_balances)
-                .map(|(address, mut balance_state)| {
+                .iter()
+                .copied()
+                .zip_eq(account_statuses)
+                .zip_eq(reserve_balance_states)
+                .map(|((address, maybe_status), reserve_balance_state)| {
+                    let base_reserve_balance = reserve_balance_at_block(
+                        reserve_balance_state.as_ref(),
+                        base_max_reserve_balance,
+                        base_seq_num,
+                        self.execution_delay,
+                    );
+                    let mut balance_state = maybe_status.map_or(
+                        AccountBalanceState::new(base_reserve_balance),
+                        |status| AccountBalanceState {
+                            balance: status.balance,
+                            remaining_reserve_balance: status.balance.min(base_reserve_balance),
+                            max_reserve_balance: base_reserve_balance,
+                            block_seqnum_of_latest_txn: base_seq_num, // most pessimistic assumption
+                            is_delegated: status.is_delegated,
+                        },
+                    );
                     // N - k + 1
                     let reserve_balance_check_start = base_seq_num + SeqNum(1);
                     // N - 2k + 2
@@ -948,6 +1016,7 @@ where
                     let mut next_validate = self.committed_cache.update_account_balance(
                         &mut balance_state,
                         address,
+                        reserve_balance_state.as_ref(),
                         self.execution_delay,
                         emptying_txn_check_block_range,
                         reserve_balance_check_block_range,
@@ -964,15 +1033,29 @@ where
                         for extending_block in next_blocks {
                             assert_eq!(next_validate, extending_block.get_seq_num());
 
-                            if let Some(txn_fee) = extending_block.txn_fees.get(address) {
-                                // if still within check emptying range, update latest tx seq num
-                                // otherwise check for reserve balance
-                                if next_validate < reserve_balance_check_start {
-                                    if balance_state.block_seqnum_of_latest_txn < next_validate {
-                                        balance_state.block_seqnum_of_latest_txn =
-                                            extending_block.get_seq_num();
-                                    }
-                                } else {
+                            if next_validate < reserve_balance_check_start {
+                                if extending_block.txn_fees.contains_key(address)
+                                    && balance_state.block_seqnum_of_latest_txn < next_validate
+                                {
+                                    balance_state.block_seqnum_of_latest_txn =
+                                        extending_block.get_seq_num();
+                                }
+                            } else {
+                                let fallback_reserve_balance = Balance::from(
+                                    chain_config
+                                        .get_chain_revision(extending_block.get_block_round())
+                                        .chain_params()
+                                        .max_reserve_balance,
+                                );
+                                clamp_account_reserve_balance(
+                                    &mut balance_state,
+                                    reserve_balance_state.as_ref(),
+                                    fallback_reserve_balance,
+                                    extending_block.get_seq_num(),
+                                    self.execution_delay,
+                                );
+
+                                if let Some(txn_fee) = extending_block.txn_fees.get(address) {
                                     let validator = EthBlockPolicyBlockValidator::new(
                                         extending_block.get_seq_num(),
                                         self.execution_delay,
@@ -996,6 +1079,14 @@ where
                             next_validate += SeqNum(1);
                         }
                     }
+
+                    clamp_account_reserve_balance(
+                        &mut balance_state,
+                        reserve_balance_state.as_ref(),
+                        base_max_reserve_balance,
+                        consensus_block_seq_num,
+                        self.execution_delay,
+                    );
 
                     Ok((address, balance_state))
                 })
@@ -2837,6 +2928,7 @@ mod test {
         let res = buffer.update_account_balance(
             &mut account_balance_address_1,
             &address1,
+            None,
             EXEC_DELAY,
             SeqNum(4)..SeqNum(5),
             SeqNum(5)..,
@@ -2857,6 +2949,7 @@ mod test {
         let res = buffer.update_account_balance(
             &mut account_balance_address_2,
             &address2,
+            None,
             EXEC_DELAY,
             emptying_txn_check_block_range.clone(),
             reserve_balance_check_block_range.clone(),
@@ -2881,6 +2974,7 @@ mod test {
         let res = buffer.update_account_balance(
             &mut account_balance_address_3,
             &address3,
+            None,
             EXEC_DELAY,
             emptying_txn_check_block_range,
             reserve_balance_check_block_range,

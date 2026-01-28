@@ -36,7 +36,7 @@ use monad_validator::signature_collection::{SignatureCollection, SignatureCollec
 use serde::{Deserialize, Serialize};
 use tracing::trace;
 
-use crate::{StateBackend, StateBackendError, StateBackendTest};
+use crate::{ReserveBalanceState, StateBackend, StateBackendError, StateBackendTest};
 
 pub type InMemoryState<ST, SCT> = Arc<Mutex<InMemoryStateInner<ST, SCT>>>;
 
@@ -58,6 +58,7 @@ where
     pub extra_data: u64,
 
     total_mock_lookups: Arc<AtomicU64>,
+    reserve_balance_states: BTreeMap<Address, ReserveBalanceState>,
 
     _phantom: PhantomData<(ST, SCT)>,
 }
@@ -104,6 +105,7 @@ where
 
             extra_data: 0,
             total_mock_lookups: Arc::default(),
+            reserve_balance_states: Default::default(),
 
             _phantom: PhantomData,
         }))
@@ -122,6 +124,7 @@ where
 
             extra_data: 0,
             total_mock_lookups: Arc::default(),
+            reserve_balance_states: Default::default(),
 
             _phantom: PhantomData,
         }))
@@ -332,6 +335,18 @@ where
             gas_limit: self.extra_data,
             ..Default::default()
         }))
+    }
+
+    fn get_reserve_balance_states<'a>(
+        &self,
+        _block_id: &BlockId,
+        _seq_num: &SeqNum,
+        _is_finalized: bool,
+        addresses: impl Iterator<Item = &'a Address>,
+    ) -> Result<Vec<Option<ReserveBalanceState>>, StateBackendError> {
+        Ok(addresses
+            .map(|address| self.reserve_balance_states.get(address).copied())
+            .collect())
     }
 
     fn raw_read_earliest_finalized_block(&self) -> Option<SeqNum> {

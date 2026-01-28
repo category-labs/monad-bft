@@ -27,7 +27,7 @@ use monad_types::{BlockId, Epoch, SeqNum, Stake};
 use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionPubKeyType};
 use tracing::warn;
 
-use crate::{StateBackend, StateBackendError};
+use crate::{ReserveBalanceState, StateBackend, StateBackendError};
 
 // Since the StateBackendThreadClient is synchronous, it will only allow one inflight request per
 // sync context so a value of 16 allows 16 threads to simulatneously make state backend requests.
@@ -50,6 +50,13 @@ where
         seq_num: SeqNum,
         is_finalized: bool,
         tx: mpsc::SyncSender<Result<EthHeader, StateBackendError>>,
+    },
+    GetReserveBalanceStates {
+        block_id: BlockId,
+        seq_num: SeqNum,
+        is_finalized: bool,
+        addresses: Vec<Address>,
+        tx: mpsc::SyncSender<Result<Vec<Option<ReserveBalanceState>>, StateBackendError>>,
     },
     RawReadEarliestFinalizedBlock {
         tx: mpsc::SyncSender<Option<SeqNum>>,
@@ -154,6 +161,22 @@ where
         })
     }
 
+    fn get_reserve_balance_states<'a>(
+        &self,
+        block_id: &BlockId,
+        seq_num: &SeqNum,
+        is_finalized: bool,
+        addresses: impl Iterator<Item = &'a Address>,
+    ) -> Result<Vec<Option<ReserveBalanceState>>, StateBackendError> {
+        self.send_and_recv_request(|tx| StateBackendThreadRequest::GetReserveBalanceStates {
+            block_id: block_id.to_owned(),
+            seq_num: seq_num.to_owned(),
+            is_finalized,
+            addresses: addresses.cloned().collect(),
+            tx,
+        })
+    }
+
     fn raw_read_earliest_finalized_block(&self) -> Option<SeqNum> {
         self.send_and_recv_request(
             |tx| StateBackendThreadRequest::RawReadEarliestFinalizedBlock { tx },
@@ -247,6 +270,21 @@ where
                 } => {
                     tx.send(state_backend.get_execution_result(&block_id, &seq_num, is_finalized))
                         .expect("StateBackendThreadClient is alive");
+                }
+                StateBackendThreadRequest::GetReserveBalanceStates {
+                    block_id,
+                    seq_num,
+                    is_finalized,
+                    addresses,
+                    tx,
+                } => {
+                    tx.send(state_backend.get_reserve_balance_states(
+                        &block_id,
+                        &seq_num,
+                        is_finalized,
+                        addresses.iter(),
+                    ))
+                    .expect("StateBackendThreadClient is alive");
                 }
                 StateBackendThreadRequest::RawReadEarliestFinalizedBlock { tx } => {
                     tx.send(state_backend.raw_read_earliest_finalized_block())

@@ -23,8 +23,9 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_types::{EthAccount, EthHeader};
-use monad_types::{BlockId, Epoch, Nonce, Round, SeqNum, Stake};
+use monad_types::{Balance, BlockId, Epoch, Nonce, Round, SeqNum, Stake};
 use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionPubKeyType};
+use serde::{Deserialize, Serialize};
 
 pub use self::{
     in_memory::{InMemoryBlockState, InMemoryState, InMemoryStateInner},
@@ -42,6 +43,30 @@ pub enum StateBackendError {
     NotAvailableYet,
     /// will never be available
     NeverAvailable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReserveBalanceState {
+    pub settled: Balance,
+    pub pending: Option<Balance>,
+    pub pending_block: SeqNum,
+}
+
+impl ReserveBalanceState {
+    pub fn delayed_reserve_balance(
+        &self,
+        block_seq_num: SeqNum,
+        execution_delay: SeqNum,
+    ) -> Balance {
+        match self.pending {
+            Some(pending)
+                if self.pending_block + execution_delay <= block_seq_num =>
+            {
+                pending
+            }
+            _ => self.settled,
+        }
+    }
 }
 
 /// Backend provider of account data: balance and nonce
@@ -64,6 +89,16 @@ where
         seq_num: &SeqNum,
         is_finalized: bool,
     ) -> Result<EthHeader, StateBackendError>;
+
+    fn get_reserve_balance_states<'a>(
+        &self,
+        _block_id: &BlockId,
+        _seq_num: &SeqNum,
+        _is_finalized: bool,
+        addresses: impl Iterator<Item = &'a Address>,
+    ) -> Result<Vec<Option<ReserveBalanceState>>, StateBackendError> {
+        Ok(addresses.map(|_| None).collect())
+    }
 
     /// Fetches earliest block from storage backend
     fn raw_read_earliest_finalized_block(&self) -> Option<SeqNum>;
@@ -121,6 +156,17 @@ where
     ) -> Result<EthHeader, StateBackendError> {
         let state = self.lock().unwrap();
         state.get_execution_result(block_id, seq_num, is_finalized)
+    }
+
+    fn get_reserve_balance_states<'a>(
+        &self,
+        block_id: &BlockId,
+        seq_num: &SeqNum,
+        is_finalized: bool,
+        addresses: impl Iterator<Item = &'a Address>,
+    ) -> Result<Vec<Option<ReserveBalanceState>>, StateBackendError> {
+        let state = self.lock().unwrap();
+        state.get_reserve_balance_states(block_id, seq_num, is_finalized, addresses)
     }
 
     fn raw_read_earliest_finalized_block(&self) -> Option<SeqNum> {
