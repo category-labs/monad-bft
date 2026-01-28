@@ -16,7 +16,7 @@
 use std::net::SocketAddr;
 
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
-use monad_wireauth::{messages::Packet, Config, TestContext, API};
+use monad_wireauth::{messages::Packet, Config, TestContext, API, DEFAULT_METRICS};
 use secp256k1::rand::rng;
 use zerocopy::IntoBytes;
 
@@ -31,7 +31,7 @@ fn create_test_manager() -> (API<TestContext>, monad_secp::PubKey, TestContext) 
     let context = TestContext::new();
     let context_clone = context.clone();
 
-    let manager = API::new(config, keypair, context);
+    let manager = API::new(DEFAULT_METRICS, config, keypair, context);
     (manager, public_key, context_clone)
 }
 

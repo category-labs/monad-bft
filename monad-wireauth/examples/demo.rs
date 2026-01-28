@@ -22,7 +22,9 @@ use std::{
 };
 
 use clap::Parser;
-use monad_wireauth::{messages::Packet, Config, PublicKey, StdContext, API, RETRY_ALWAYS};
+use monad_wireauth::{
+    messages::Packet, Config, PublicKey, StdContext, API, DEFAULT_METRICS, RETRY_ALWAYS,
+};
 use monoio::{net::udp::UdpSocket, time::sleep_until};
 use secp256k1::rand::{rngs::StdRng, SeedableRng};
 use tracing::{debug, info, warn};
@@ -63,7 +65,7 @@ impl PeerNode {
         };
 
         let context = StdContext::new();
-        let manager = API::new(config, keypair, context);
+        let manager = API::new(DEFAULT_METRICS, config, keypair, context);
         let socket = UdpSocket::bind(addr)?;
 
         Ok(Self {
