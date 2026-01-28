@@ -33,7 +33,9 @@ mod test {
     use monad_eth_block_policy::EthBlockPolicy;
     use monad_eth_block_validator::EthBlockValidator;
     use monad_eth_ledger::MockEthLedger;
-    use monad_eth_testutil::{make_legacy_tx, secret_to_eth_address};
+    use monad_eth_testutil::{
+        make_eip7702_tx, make_legacy_tx, make_signed_authorization, secret_to_eth_address,
+    };
     use monad_eth_types::EthExecutionProtocol;
     use monad_mock_swarm::{
         mock::TimestamperConfig,
@@ -46,13 +48,15 @@ mod test {
     use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler, RouterSchedulerBuilder};
     use monad_secp::{PubKey, SecpSignature};
     use monad_state::{MonadMessage, VerifiedMonadMessage};
-    use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner};
+    use monad_state_backend::{
+        AccountState, InMemoryBlockState, InMemoryState, InMemoryStateInner,
+    };
     use monad_testutil::swarm::{make_state_configs, swarm_ledger_verification};
     use monad_transformer::{
         DropTransformer, GenericTransformer, GenericTransformerPipeline, LatencyTransformer,
         PartitionTransformer, ID,
     };
-    use monad_types::{Balance, NodeId, SeqNum, GENESIS_SEQ_NUM};
+    use monad_types::{NodeId, SeqNum, GENESIS_SEQ_NUM};
     use monad_updaters::{
         ledger::MockableLedger,
         statesync::MockStateSyncExecutor,
@@ -62,6 +66,9 @@ mod test {
     use monad_validator::{
         simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory,
     };
+    use rand::Rng;
+    use rand_chacha::{rand_core::SeedableRng, ChaChaRng};
+    use seq_macro::seq;
     use tracing::info;
 
     pub struct EthSwarm;
@@ -152,8 +159,10 @@ mod test {
         let epoch_length = SeqNum(2000);
         let execution_delay = SeqNum(4);
 
-        let existing_nonces: BTreeMap<_, _> =
-            existing_accounts.into_iter().map(|acc| (acc, 0)).collect();
+        let existing_accounts: BTreeMap<Address, AccountState> = existing_accounts
+            .into_iter()
+            .map(|acc| (acc, AccountState::max_balance()))
+            .collect();
 
         let chain_config = MockChainConfig::new(&CHAIN_PARAMS);
 
@@ -167,9 +176,8 @@ mod test {
             create_block_policy,
             || {
                 InMemoryStateInner::new(
-                    Balance::MAX,
                     execution_delay,
-                    InMemoryBlockState::genesis(existing_nonces.clone()),
+                    InMemoryBlockState::genesis(existing_accounts.clone()),
                 )
             },
             execution_delay, // execution_delay
@@ -295,6 +303,141 @@ mod test {
             swarm.states().keys().cloned().collect_vec(),
             expected_txns
         ));
+
+        swarm_ledger_verification(&swarm, 2);
+    }
+
+    #[test]
+    fn sanity_7702() {
+        let sender_1_key = B256::repeat_byte(0xA);
+        let sender_2_key = B256::repeat_byte(0xBu8);
+        let mut swarm = generate_eth_swarm(
+            2,
+            vec![
+                secret_to_eth_address(sender_1_key),
+                secret_to_eth_address(sender_2_key),
+            ],
+            |_| ByzantineConfig::default(),
+        );
+        let node_ids = swarm.states().keys().copied().collect_vec();
+        let node_1_id = node_ids[0];
+
+        // step until nodes are ready to receive txs (post statesync)
+        while swarm
+            .step_until(&mut UntilTerminator::new().until_block(1))
+            .is_some()
+        {}
+
+        let mut expected_txns = Vec::new();
+        let txn1 = make_legacy_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 0, 10);
+        swarm.send_transaction(node_1_id, alloy_rlp::encode(&txn1).into());
+        expected_txns.push(txn1);
+
+        let auth_list = vec![
+            make_signed_authorization(
+                sender_2_key,
+                secret_to_eth_address(B256::repeat_byte(0x1u8)),
+                0,
+            ),
+            make_signed_authorization(
+                sender_2_key,
+                secret_to_eth_address(B256::repeat_byte(0x3u8)),
+                5,
+            ),
+        ];
+        let txn2 = make_eip7702_tx(sender_1_key, BASE_FEE, 1, 1_000_000, 1, auth_list, 0);
+        swarm.send_transaction(node_1_id, alloy_rlp::encode(&txn2).into());
+        expected_txns.push(txn2);
+
+        let txn3 = make_legacy_tx(sender_2_key, BASE_FEE, GAS_LIMIT, 1, 10);
+        swarm.send_transaction(node_1_id, alloy_rlp::encode(&txn3).into());
+        expected_txns.push(txn3);
+
+        while swarm
+            .step_until(&mut UntilTerminator::new().until_block(10))
+            .is_some()
+        {}
+
+        let mut verifier = MockSwarmVerifier::default().tick_range(
+            happy_path_tick_by_block(10, CONSENSUS_DELTA),
+            CONSENSUS_DELTA,
+        );
+        verifier.metrics_happy_path(&node_ids, &swarm);
+        assert!(verifier.verify(&swarm));
+
+        assert!(verify_transactions_in_ledger(
+            &swarm,
+            swarm.states().keys().cloned().collect_vec(),
+            expected_txns
+        ));
+
+        swarm_ledger_verification(&swarm, 2);
+    }
+
+    seq!(N in 0..512 {
+        #[test]
+        fn test_rand_nonces_7702_~N() {
+            rand_nonces_7702(N);
+        }
+
+    });
+
+    fn rand_nonces_7702(seed: u64) {
+        let test_sender = B256::repeat_byte(0xA);
+        let sender_7702 = B256::repeat_byte(0xBu8);
+        let mut swarm = generate_eth_swarm(
+            2,
+            vec![
+                secret_to_eth_address(test_sender),
+                secret_to_eth_address(sender_7702),
+            ],
+            |_| ByzantineConfig::default(),
+        );
+        let node_ids = swarm.states().keys().copied().collect_vec();
+        let node_1_id = node_ids[0];
+
+        // step until nodes are ready to receive txs (post statesync)
+        while swarm
+            .step_until(&mut UntilTerminator::new().until_block(1))
+            .is_some()
+        {}
+
+        // make a list of nonces, create txns or auths from those nonces, send
+        let mut rng = ChaChaRng::seed_from_u64(seed);
+
+        let nonces: Vec<u64> = (0..10).map(|_| rng.gen_range(1..=10)).collect();
+        let mut txns = Vec::new();
+        let mut auths = Vec::new();
+
+        for nonce in nonces {
+            if rng.gen_bool(0.5) {
+                txns.push(make_legacy_tx(test_sender, BASE_FEE, GAS_LIMIT, nonce, 10));
+            } else {
+                auths.push(make_signed_authorization(
+                    test_sender,
+                    secret_to_eth_address(B256::repeat_byte(0x1u8)),
+                    nonce,
+                ));
+            }
+        }
+
+        let txn1 = make_legacy_tx(test_sender, BASE_FEE, GAS_LIMIT, 0, 10);
+        swarm.send_transaction(node_1_id, alloy_rlp::encode(&txn1).into());
+
+        let txn2 = make_eip7702_tx(sender_7702, BASE_FEE, 1, 1_000_000, 1, auths, 0);
+        swarm.send_transaction(node_1_id, alloy_rlp::encode(&txn2).into());
+
+        while swarm
+            .step_until(&mut UntilTerminator::new().until_block(10))
+            .is_some()
+        {}
+
+        let mut verifier = MockSwarmVerifier::default().tick_range(
+            happy_path_tick_by_block(10, CONSENSUS_DELTA),
+            CONSENSUS_DELTA,
+        );
+        verifier.metrics_happy_path(&node_ids, &swarm);
+        assert!(verifier.verify(&swarm));
 
         swarm_ledger_verification(&swarm, 2);
     }

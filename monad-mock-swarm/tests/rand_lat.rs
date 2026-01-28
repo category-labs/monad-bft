@@ -38,7 +38,7 @@ use monad_router_scheduler::{NoSerRouterConfig, RouterSchedulerBuilder};
 use monad_state_backend::InMemoryStateInner;
 use monad_testutil::swarm::{make_state_configs, swarm_ledger_verification};
 use monad_transformer::{GenericTransformer, ID};
-use monad_types::{Balance, NodeId, SeqNum};
+use monad_types::{NodeId, SeqNum};
 use monad_updaters::{
     ledger::MockLedger, statesync::MockStateSyncExecutor, txpool::MockTxPoolExecutor,
     val_set::MockValSetUpdaterNop,
@@ -119,7 +119,7 @@ fn nodes_with_random_latency(latency_seed: u64) -> Result<(), String> {
         SimpleRoundRobin::default,
         || MockValidator,
         || PassthruBlockPolicy,
-        || InMemoryStateInner::genesis(Balance::MAX, SeqNum::MAX),
+        || InMemoryStateInner::genesis(SeqNum::MAX),
         // avoid state_root trigger in rand latency setting
         // TODO-1, cover cases with low state_root_delay once state_sync is done
         SeqNum::MAX,                         // execution_delay

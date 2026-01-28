@@ -22,7 +22,6 @@ use std::{
     time::Duration,
 };
 
-use alloy_primitives::U256;
 use itertools::{izip, Itertools};
 use monad_chain_config::{
     revision::{ChainParams, ChainRevision, MockChainRevision},
@@ -380,10 +379,7 @@ where
             leader_election: S::LeaderElection::default(),
             block_validator: S::BlockValidator::default(),
             block_policy: S::BlockPolicyType::default(),
-            state_backend: InMemoryStateInner::genesis(
-                U256::MAX,
-                monad_types::SeqNum(TWINS_STATE_ROOT_DELAY),
-            ),
+            state_backend: InMemoryStateInner::genesis(monad_types::SeqNum(TWINS_STATE_ROOT_DELAY)),
             forkpoint: forkpoint.clone(),
             locked_epoch_validators: locked_epoch_validators.clone(),
 
@@ -456,7 +452,7 @@ where
         let identifier = TWINS_DUP_IDENTIFIER + idx;
         twin.id = twin.id.as_non_unique(identifier);
         twin.state_config.state_backend =
-            InMemoryStateInner::genesis(U256::MAX, monad_types::SeqNum(TWINS_STATE_ROOT_DELAY));
+            InMemoryStateInner::genesis(monad_types::SeqNum(TWINS_STATE_ROOT_DELAY));
         duplicates
             .get_mut(twin.id.get_peer_id())
             .expect("mimic target doesn't exists when reading test case")
