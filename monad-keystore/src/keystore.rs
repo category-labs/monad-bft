@@ -147,7 +147,7 @@ impl KeystoreSecret {
                 KeyPair::from_bytes(self.as_mut()).map_err(|_| KeystoreError::InvalidJSONFormat)
             }
             KeystoreVersion::DirectIkm => {
-                KeyPair::from_ikm(self.as_ref()).map_err(|_| KeystoreError::InvalidJSONFormat)
+                KeyPair::from_ikm(self.as_mut()).map_err(|_| KeystoreError::InvalidJSONFormat)
             }
         }
     }

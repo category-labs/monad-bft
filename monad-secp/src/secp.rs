@@ -128,11 +128,12 @@ impl KeyPair {
         keypair
     }
 
-    pub fn from_ikm(ikm: &[u8]) -> Result<Self, Error> {
+    pub fn from_ikm(ikm: &mut [u8]) -> Result<Self, Error> {
         let dst = b"monad-ecdsa-keygen";
         let scalar =
             <K256Secp256k1 as GroupDigest>::hash_to_scalar::<ExpandMsgXmd<Sha256>>(&[ikm], &[dst])
                 .map_err(|_| Error(secp256k1::Error::InvalidSecretKey))?;
+        ikm.zeroize();
         let mut scalar_bytes = scalar.to_bytes();
         let result = Self::from_bytes(scalar_bytes.as_mut_slice());
         scalar_bytes.zeroize();
