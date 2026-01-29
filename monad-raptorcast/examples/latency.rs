@@ -642,8 +642,11 @@ fn setup_node(
 
     let keypair_arc = Arc::new(keypair);
     let wireauth_config = monad_wireauth::Config::default();
-    let auth_protocol =
-        monad_raptorcast::auth::WireAuthProtocol::new(wireauth_config, keypair_arc.clone());
+    let auth_protocol = monad_raptorcast::auth::WireAuthProtocol::new(
+        &monad_raptorcast::auth::metrics::UDP_METRICS,
+        wireauth_config,
+        keypair_arc.clone(),
+    );
 
     let mut raptorcast = RaptorCast::<
         SignatureType,
