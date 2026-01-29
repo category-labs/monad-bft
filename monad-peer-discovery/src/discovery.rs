@@ -40,15 +40,17 @@ use crate::{
     ipv4_validation::{IpCheckError, validate_socket_ipv4_address},
 };
 
-type RateLimiter = governor::RateLimiter<
+type RateLimiter<C> = governor::RateLimiter<
     governor::state::NotKeyed,
     governor::state::InMemoryState,
-    governor::clock::QuantaClock,
-    governor::middleware::NoOpMiddleware<governor::clock::QuantaInstant>,
+    C,
+    governor::middleware::NoOpMiddleware<<C as governor::clock::Clock>::Instant>,
 >;
 
 /// Maximum number of peers to be included in a PeerLookupResponse
 const MAX_PEER_IN_RESPONSE: usize = 16;
+/// Rate limit for incoming peer lookup requests (per second)
+const PEER_LOOKUP_RATE_LIMIT_PER_SECOND: u32 = 10;
 /// Number of peers to send lookup request to
 const NUM_LOOKUP_PEERS: usize = 3;
 /// Number of validators to connect to if self is a full node
@@ -131,7 +133,10 @@ pub struct LookupInfo<ST: CertificateSignatureRecoverable> {
     pub open_discovery: bool,
 }
 
-pub struct PeerDiscovery<ST: CertificateSignatureRecoverable> {
+pub struct PeerDiscovery<
+    ST: CertificateSignatureRecoverable,
+    C: governor::clock::Clock = governor::clock::QuantaClock,
+> {
     pub self_id: NodeId<CertificateSignaturePubKey<ST>>,
     pub self_record: MonadNameRecord<ST>,
     // role of the node in the current epoch
@@ -183,7 +188,9 @@ pub struct PeerDiscovery<ST: CertificateSignatureRecoverable> {
     pub rng: ChaCha8Rng,
     pub persisted_peers_path: PathBuf,
     // rate limiter for incoming pings
-    ping_rate_limiter: RateLimiter,
+    ping_rate_limiter: RateLimiter<C>,
+    // rate limiter for incoming peer lookup requests
+    peer_lookup_rate_limiter: RateLimiter<C>,
 }
 
 pub struct PeerDiscoveryBuilder<ST: CertificateSignatureRecoverable> {
@@ -287,6 +294,12 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscoveryAlgoBuilder for PeerDisco
                 )
                 .allow_burst(NonZeroU32::new(self.ping_rate_limit_per_second).unwrap()),
             ),
+            peer_lookup_rate_limiter: governor::RateLimiter::direct(
+                governor::Quota::per_second(
+                    NonZeroU32::new(PEER_LOOKUP_RATE_LIMIT_PER_SECOND).unwrap(),
+                )
+                .allow_burst(NonZeroU32::new(PEER_LOOKUP_RATE_LIMIT_PER_SECOND).unwrap()),
+            ),
         };
 
         let mut cmds = Vec::new();
@@ -306,7 +319,7 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscoveryAlgoBuilder for PeerDisco
     }
 }
 
-impl<ST: CertificateSignatureRecoverable> PeerDiscovery<ST> {
+impl<ST: CertificateSignatureRecoverable, C: governor::clock::Clock> PeerDiscovery<ST, C> {
     // schedule for ping timeout
     fn schedule_ping_timeout(
         &self,
@@ -759,9 +772,10 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscovery<ST> {
     }
 }
 
-impl<ST> PeerDiscoveryAlgo for PeerDiscovery<ST>
+impl<ST, C> PeerDiscoveryAlgo for PeerDiscovery<ST, C>
 where
     ST: CertificateSignatureRecoverable,
+    C: governor::clock::Clock,
 {
     type SignatureType = ST;
 
@@ -1015,6 +1029,14 @@ where
         self.metrics[GAUGE_PEER_DISC_RECV_LOOKUP_REQUEST] += 1;
 
         let mut cmds = Vec::new();
+
+        // check rate limit for incoming peer lookup requests
+        if self.peer_lookup_rate_limiter.check().is_err() {
+            debug!(?from, "peer lookup rate limit exceeded, dropping request");
+            self.metrics[GAUGE_PEER_DISC_RATE_LIMITED] += 1;
+            return cmds;
+        }
+
         let target = request.target;
 
         let mut name_records = if target == self.self_id {
@@ -1809,7 +1831,10 @@ mod tests {
     fn generate_test_state(
         self_key: &KeyPairType,
         peer_keys: Vec<&KeyPairType>,
-    ) -> PeerDiscovery<SignatureType> {
+    ) -> (
+        PeerDiscovery<SignatureType, governor::clock::FakeRelativeClock>,
+        governor::clock::FakeRelativeClock,
+    ) {
         let routing_info = peer_keys
             .clone()
             .into_iter()
@@ -1844,7 +1869,8 @@ mod tests {
             })
             .collect::<BTreeMap<_, _>>();
 
-        PeerDiscovery {
+        let clock = governor::clock::FakeRelativeClock::default();
+        let state = PeerDiscovery {
             self_id: NodeId::new(self_key.pubkey()),
             self_record: generate_name_record(self_key, 0),
             self_role: PeerDiscoveryRole::FullNodeNone,
@@ -1871,11 +1897,18 @@ mod tests {
             enable_client: false,
             rng: ChaCha8Rng::seed_from_u64(123456),
             persisted_peers_path: Default::default(),
-            ping_rate_limiter: governor::RateLimiter::direct(
+            ping_rate_limiter: governor::RateLimiter::direct_with_clock(
                 governor::Quota::per_second(NonZeroU32::new(100).unwrap())
                     .allow_burst(NonZeroU32::new(100).unwrap()),
+                clock.clone(),
             ),
-        }
+            peer_lookup_rate_limiter: governor::RateLimiter::direct_with_clock(
+                governor::Quota::per_second(NonZeroU32::new(5).unwrap())
+                    .allow_burst(NonZeroU32::new(5).unwrap()),
+                clock.clone(),
+            ),
+        };
+        (state, clock)
     }
 
     fn extract_lookup_requests(
@@ -1944,7 +1977,7 @@ mod tests {
         let peer1 = &keys[1];
         let peer1_pubkey = NodeId::new(peer1.pubkey());
 
-        let mut state = generate_test_state(peer0, vec![peer1]);
+        let (mut state, _clock) = generate_test_state(peer0, vec![peer1]);
 
         // send ping to peer1
         let ping = Ping {
@@ -1980,7 +2013,7 @@ mod tests {
         let peer1 = &keys[1];
         let peer1_pubkey = NodeId::new(peer1.pubkey());
 
-        let mut state = generate_test_state(peer0, vec![peer1]);
+        let (mut state, _clock) = generate_test_state(peer0, vec![peer1]);
         let last_ping = Ping {
             id: 12345,
             local_name_record: generate_name_record(peer0, 0),
@@ -2007,51 +2040,92 @@ mod tests {
         assert_eq!(connection_info.unwrap().last_ping, last_ping);
     }
 
+    fn test_rate_limit_helper<F>(
+        state: &mut PeerDiscovery<SignatureType, governor::clock::FakeRelativeClock>,
+        clock: &governor::clock::FakeRelativeClock,
+        rate_limit: u32,
+        mut send_request: F,
+        check_accepted: fn(&[PeerDiscoveryCommand<SignatureType>]) -> bool,
+    ) where
+        F: FnMut(
+            &mut PeerDiscovery<SignatureType, governor::clock::FakeRelativeClock>,
+            u32,
+        ) -> Vec<PeerDiscoveryCommand<SignatureType>>,
+    {
+        // send requests up to rate limit
+        for i in 0..rate_limit {
+            let cmds = send_request(state, i);
+            assert!(check_accepted(&cmds), "request {i} should be accepted");
+        }
+
+        // next request should be rate limited and dropped
+        let cmds = send_request(state, rate_limit + 1);
+        assert_eq!(cmds.len(), 0, "request should be rate limited and dropped");
+        assert_eq!(state.metrics[GAUGE_PEER_DISC_RATE_LIMITED], 1);
+
+        // advance time by 1 second
+        clock.advance(Duration::from_secs(1));
+
+        // next request should be accepted
+        let cmds = send_request(state, rate_limit + 2);
+        assert!(
+            check_accepted(&cmds),
+            "request after sleep should be accepted"
+        );
+    }
+
     #[test]
     fn test_rate_limit_pings() {
         let keys = create_keys::<SignatureType>(2);
         let peer0 = &keys[0];
         let peer1 = &keys[1];
         let peer1_pubkey = NodeId::new(peer1.pubkey());
-
-        let mut state = generate_test_state(peer0, vec![]);
-
-        // handle pings up to rate limit (100 pings per second)
         let peer_name_record = generate_name_record(peer1, 0);
-        for i in 0..100 {
-            let cmds = state.handle_ping(
-                peer1_pubkey,
-                Ping {
-                    id: i,
-                    local_name_record: peer_name_record.clone(),
-                },
-            );
-            assert_ne!(cmds.len(), 0); // should not drop pings
-        }
 
-        // next ping should be rate limited and dropped
-        let cmds = state.handle_ping(
-            peer1_pubkey,
-            Ping {
-                id: 101,
-                local_name_record: peer_name_record.clone(),
+        let (mut state, clock) = generate_test_state(peer0, vec![]);
+
+        test_rate_limit_helper(
+            &mut state,
+            &clock,
+            100, // ping rate limit in test state
+            |state, id| {
+                state.handle_ping(
+                    peer1_pubkey,
+                    Ping {
+                        id,
+                        local_name_record: peer_name_record.clone(),
+                    },
+                )
             },
+            |cmds| !cmds.is_empty(),
         );
-        assert_eq!(cmds.len(), 0); // should be rate limited and dropped
-        assert_eq!(state.metrics[GAUGE_PEER_DISC_RATE_LIMITED], 1);
+    }
 
-        // advance time by 1 second
-        std::thread::sleep(Duration::from_secs(1));
+    #[test]
+    fn test_rate_limit_peer_lookup_requests() {
+        let keys = create_keys::<SignatureType>(2);
+        let peer0 = &keys[0];
+        let peer1 = &keys[1];
+        let peer1_pubkey = NodeId::new(peer1.pubkey());
 
-        // next ping should be accepted
-        let cmds = state.handle_ping(
-            peer1_pubkey,
-            Ping {
-                id: 102,
-                local_name_record: peer_name_record,
+        let (mut state, clock) = generate_test_state(peer0, vec![]);
+
+        test_rate_limit_helper(
+            &mut state,
+            &clock,
+            5, // peer lookup rate limit in test state
+            |state, id| {
+                state.handle_peer_lookup_request(
+                    peer1_pubkey,
+                    PeerLookupRequest {
+                        lookup_id: id,
+                        target: peer1_pubkey,
+                        open_discovery: false,
+                    },
+                )
             },
+            |cmds| cmds.len() == 1,
         );
-        assert_ne!(cmds.len(), 0); // should not drop pings
     }
 
     #[test]
@@ -2061,7 +2135,7 @@ mod tests {
         let peer1 = &keys[1];
         let peer1_pubkey = NodeId::new(peer1.pubkey());
 
-        let mut state = generate_test_state(peer0, vec![]);
+        let (mut state, _clock) = generate_test_state(peer0, vec![]);
 
         let name_record = generate_name_record(peer1, 0);
         let ping = Ping {
@@ -2111,7 +2185,7 @@ mod tests {
         let peer2 = &keys[2];
         let peer2_pubkey = NodeId::new(peer2.pubkey());
 
-        let mut state = generate_test_state(peer0, vec![peer1]);
+        let (mut state, _clock) = generate_test_state(peer0, vec![peer1]);
 
         let cmds = state.send_peer_lookup_request(peer1_pubkey, peer2_pubkey, false);
 
@@ -2210,7 +2284,7 @@ mod tests {
         let peer3_pubkey = NodeId::new(peer3.pubkey());
 
         // routing_info contains peer1 and peer2
-        let mut state = generate_test_state(peer0, vec![peer1, peer2]);
+        let (mut state, _clock) = generate_test_state(peer0, vec![peer1, peer2]);
         state.self_role = PeerDiscoveryRole::ValidatorNone;
         state
             .epoch_validators
@@ -2249,7 +2323,7 @@ mod tests {
         let peer1 = &keys[1];
         let peer1_pubkey = NodeId::new(peer1.pubkey());
 
-        let mut state = generate_test_state(peer0, vec![peer1]);
+        let (mut state, _clock) = generate_test_state(peer0, vec![peer1]);
         let original_name_record = generate_name_record(peer1, 0);
         state.outstanding_lookup_requests.insert(
             1,
@@ -2334,7 +2408,7 @@ mod tests {
         let peer1 = &keys[1];
         let peer1_pubkey = NodeId::new(peer1.pubkey());
 
-        let mut state = generate_test_state(peer0, vec![]);
+        let (mut state, _clock) = generate_test_state(peer0, vec![]);
 
         // should not record peer lookup response if not in outstanding requests
         let record = generate_name_record(peer1, 0);
@@ -2359,7 +2433,7 @@ mod tests {
         let peer1_pubkey = NodeId::new(peer1.pubkey());
 
         let lookup_id = 1;
-        let mut state = generate_test_state(peer0, vec![]);
+        let (mut state, _clock) = generate_test_state(peer0, vec![]);
         state.outstanding_lookup_requests.insert(
             lookup_id,
             LookupInfo {
@@ -2391,7 +2465,7 @@ mod tests {
         let peer1 = &keys[1];
         let peer1_pubkey = NodeId::new(peer1.pubkey());
 
-        let mut state = generate_test_state(peer0, vec![]);
+        let (mut state, _clock) = generate_test_state(peer0, vec![]);
 
         // add peer1 to pending queue with unresponsive pings
         let ping_id = 12345;
@@ -2437,7 +2511,7 @@ mod tests {
         let peer1 = &keys[1];
         let peer1_pubkey = NodeId::new(peer1.pubkey());
 
-        let mut state = generate_test_state(peer0, vec![peer1]);
+        let (mut state, _clock) = generate_test_state(peer0, vec![peer1]);
         state.last_participation_prune_threshold = Round(10);
         if role == PeerDiscoveryRole::ValidatorNone {
             state
@@ -2485,7 +2559,7 @@ mod tests {
         let peer2 = &keys[2];
         let peer2_pubkey = NodeId::new(peer2.pubkey());
 
-        let mut state = generate_test_state(peer0, vec![peer1]);
+        let (mut state, _clock) = generate_test_state(peer0, vec![peer1]);
         state.epoch_validators.insert(
             Epoch(1),
             BTreeSet::from([peer0_pubkey, peer1_pubkey, peer2_pubkey]),
@@ -2515,7 +2589,7 @@ mod tests {
         let peer3_pubkey = NodeId::new(peer3.pubkey());
 
         // Peer1 in validator set, Peer2 is pinned full node
-        let mut state = generate_test_state(peer0, vec![peer1, peer2, peer3]);
+        let (mut state, _clock) = generate_test_state(peer0, vec![peer1, peer2, peer3]);
         state.min_num_peers = 0;
         state.max_num_peers = 1;
         state
@@ -2543,7 +2617,7 @@ mod tests {
         let peer4_pubkey = NodeId::new(peer4.pubkey());
 
         // max number of peers is 1, peer 1 is already in routing info occupying the slot
-        let mut state = generate_test_state(peer0, vec![peer1]);
+        let (mut state, _clock) = generate_test_state(peer0, vec![peer1]);
         state.min_num_peers = 0;
         state.max_num_peers = 1;
         state
@@ -2615,7 +2689,7 @@ mod tests {
             None => BTreeMap::new(),
         };
 
-        let mut state = generate_test_state(peer0, vec![]);
+        let (mut state, _clock) = generate_test_state(peer0, vec![]);
         state.self_role = PeerDiscoveryRole::ValidatorNone;
         state.routing_info = routing_info;
 
@@ -2667,7 +2741,7 @@ mod tests {
         let peer1_pubkey = NodeId::new(peer1.pubkey());
         let peer2_pubkey = NodeId::new(peer2.pubkey());
 
-        let mut state = generate_test_state(peer0, vec![]);
+        let (mut state, _clock) = generate_test_state(peer0, vec![]);
 
         // peer1 binds to DUMMY_ADDR
         let cmds = state.handle_ping(
@@ -2713,7 +2787,7 @@ mod tests {
         let peer1 = &keys[1];
         let peer1_pubkey = NodeId::new(peer1.pubkey());
 
-        let mut state = generate_test_state(peer0, vec![peer1]);
+        let (mut state, _clock) = generate_test_state(peer0, vec![peer1]);
 
         // verify peer1 is in routing_info and socket_to_id
         let peer1_record = generate_name_record(peer1, 0);
@@ -2745,7 +2819,7 @@ mod tests {
 
         // create 5 peers (exceeds max_num_peers)
         let peer_keys = vec![&keys[1], &keys[2], &keys[3], &keys[4], &keys[5]];
-        let mut state = generate_test_state(peer0, peer_keys.clone());
+        let (mut state, _clock) = generate_test_state(peer0, peer_keys.clone());
 
         // set max_num_peers to 3 to force pruning
         state.max_num_peers = 3;
@@ -2797,7 +2871,7 @@ mod tests {
         let peer2_pubkey = NodeId::new(peer2.pubkey());
         let peer3_pubkey = NodeId::new(peer3.pubkey());
 
-        let mut state = generate_test_state(peer0, vec![peer1, peer2, peer3]);
+        let (mut state, _clock) = generate_test_state(peer0, vec![peer1, peer2, peer3]);
 
         // do not respond to full node raptorcast request if self is not a validator publisher
         state.self_role = PeerDiscoveryRole::ValidatorNone;
@@ -2878,7 +2952,7 @@ mod tests {
         let peer1 = &keys[1];
         let peer1_pubkey = NodeId::new(peer1.pubkey());
 
-        let mut state = generate_test_state(peer0, vec![peer1]);
+        let (mut state, _clock) = generate_test_state(peer0, vec![peer1]);
         state
             .epoch_validators
             .insert(state.current_epoch, BTreeSet::from([peer1_pubkey]));
@@ -2917,7 +2991,7 @@ mod tests {
         let peer4 = &keys[4];
         let peer4_pubkey = NodeId::new(peer4.pubkey());
 
-        let mut state = generate_test_state(peer0, vec![peer1, peer2]);
+        let (mut state, _clock) = generate_test_state(peer0, vec![peer1, peer2]);
         state
             .epoch_validators
             .insert(state.current_epoch, BTreeSet::from([peer1_pubkey]));
@@ -3049,6 +3123,10 @@ mod tests {
                 governor::Quota::per_second(NonZeroU32::new(100).unwrap())
                     .allow_burst(NonZeroU32::new(100).unwrap()),
             ),
+            peer_lookup_rate_limiter: governor::RateLimiter::direct(
+                governor::Quota::per_second(NonZeroU32::new(5).unwrap())
+                    .allow_burst(NonZeroU32::new(5).unwrap()),
+            ),
         };
 
         // set up a temporary file path for testing
@@ -3134,7 +3212,7 @@ mod tests {
         let peer1_pubkey = NodeId::new(peer1.pubkey());
         let peer2 = &keys[2];
 
-        let mut state = generate_test_state(peer0, vec![]);
+        let (mut state, _clock) = generate_test_state(peer0, vec![]);
 
         // create a name record signed by peer2, but claim it's from peer1
         let incorrect_name_record = generate_name_record(peer2, 0);
