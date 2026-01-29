@@ -23,6 +23,10 @@ name = "fuzz_parse_message"
 path = "fuzz_targets/fuzz_parse_message.rs"
 
 [[bin]]
+name = "fuzz_parse_message_differential"
+path = "fuzz_targets/fuzz_parse_message_differential.rs"
+
+[[bin]]
 name = "fuzz_deserialize"
 path = "fuzz_targets/fuzz_deserialize.rs"
 
