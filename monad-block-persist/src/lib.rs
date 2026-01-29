@@ -61,7 +61,7 @@ where
     ) -> std::io::Result<ConsensusBlockBody<EPT>>;
 }
 
-fn block_id_to_hex_prefix(hash: &Hash) -> String {
+pub fn block_id_to_hex_prefix(hash: &Hash) -> String {
     hex::encode(hash.0)
 }
 

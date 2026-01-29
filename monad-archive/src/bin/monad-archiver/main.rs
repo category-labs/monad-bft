@@ -17,12 +17,11 @@
 
 use monad_archive::{cli::set_source_and_sink_metrics, kvstore::WritePolicy, prelude::*};
 
-mod bft_archive_worker;
 mod block_archive_worker;
 mod file_checkpointer;
 mod generic_folder_archiver;
+mod ledger_archiver_and_indexer;
 
-use bft_archive_worker::bft_block_archive_worker;
 use block_archive_worker::{archive_worker, ArchiveWorkerOpts};
 use cli::{Commands, ParsedCli};
 use file_checkpointer::file_checkpoint_worker;
@@ -84,12 +83,11 @@ async fn main() -> Result<()> {
 
     if let Some(path) = args.bft_block_path {
         info!("Spawning bft block archive worker...");
-        let handle = tokio::spawn(bft_block_archive_worker(
-            archive_writer.store.clone(),
+        let handle = tokio::spawn(ledger_archiver_and_indexer::bft_archive_worker(
+            monad_archive::model::bft_ledger::BftBlockModel::new(archive_writer.store.clone()),
             path,
             Duration::from_secs(args.bft_block_poll_freq_secs),
             metrics.clone(),
-            Some(Duration::from_secs(args.bft_block_min_age_secs)),
         ));
         worker_handles.push(handle);
     }

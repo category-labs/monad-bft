@@ -26,7 +26,7 @@ pub async fn run_migrate_logs(
     let block_data_reader = args.block_data_source.build(&metrics).await?;
     let tx_index_archiver = args
         .archive_sink
-        .build_index_archive(&metrics, 350 * 1024)
+        .build_index_archive(&metrics, args.max_inline_encoded_len)
         .await?;
 
     info!("Building log index archiver...");
