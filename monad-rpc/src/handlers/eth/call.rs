@@ -593,6 +593,7 @@ pub struct MonadDebugTraceCallParams {
 #[derive(Debug, Deserialize, schemars::JsonSchema, Clone)]
 pub struct MonadCreateAccessListParams {
     pub transaction: CallRequest,
+    #[serde(default)]
     pub block: BlockTagOrHash,
 }
 
