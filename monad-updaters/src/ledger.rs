@@ -178,7 +178,10 @@ where
     fn exec(&mut self, cmds: Vec<Self::Command>) {
         for cmd in cmds {
             match cmd {
-                LedgerCommand::LedgerCommit(OptimisticCommit::Proposed(block)) => {
+                LedgerCommand::LedgerCommit(OptimisticCommit::Proposed {
+                    block,
+                    is_canonical: _,
+                }) => {
                     self.state_backend.lock().unwrap().ledger_propose(
                         block.get_id(),
                         block.get_seq_num(),

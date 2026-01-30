@@ -539,6 +539,21 @@ where
 
         chain
     }
+
+    /// Find the highest coherent block on the canonical chain
+    pub fn get_canonical_coherent_tip(&self, high_qc_block_id: &BlockId) -> Option<BlockId> {
+        if *high_qc_block_id == self.root.info.block_id {
+            return None;
+        }
+        self.get_blocks_on_path_from_root(high_qc_block_id)
+            .and_then(|chain| {
+                chain
+                    .iter()
+                    .rev() // Start from high_qc, walk toward root
+                    .find(|block| self.is_coherent(&block.get_id()))
+                    .map(|block| block.get_id())
+            })
+    }
 }
 
 #[cfg(test)]
@@ -1963,5 +1978,141 @@ mod test {
         blocktree.tree.set_coherent(&g.get_id(), false).unwrap();
         let highest = blocktree.get_highest_coherent_block_on_path_from_root(&b2.get_id());
         assert!(highest.is_none());
+    }
+
+    #[test]
+    fn test_proposed_head_stays_on_canonical_chain() {
+        // Tree: A <- B <- C <- D (canonical, high_qc = D)
+        //          <- B' (side branch)
+        // When B' becomes coherent: proposed_head = D (not B')
+        let mut metrics = Metrics::default();
+        let g = get_genesis_block();
+        let b = get_next_block(&g, Some(Round(2)), &[1]);
+        let c = get_next_block(&b, Some(Round(3)), &[2]);
+        let d = get_next_block(&c, Some(Round(4)), &[3]);
+        // B' is on a side branch (same parent as B, higher round)
+        let b_prime = get_next_block(&g, Some(Round(5)), &[4]);
+
+        let genesis_qc: QC = QuorumCertificate::genesis_qc();
+        let mut blocktree = BlockTreeType::new(RootInfo {
+            round: genesis_qc.get_round(),
+            seq_num: GENESIS_SEQ_NUM,
+            epoch: genesis_qc.get_epoch(),
+            block_id: genesis_qc.get_block_id(),
+            timestamp_ns: GENESIS_TIMESTAMP,
+        });
+        let state_backend = InMemoryStateInner::genesis(Balance::MAX, SeqNum(10));
+        let mut block_policy = PassthruBlockPolicy;
+
+        // Add and make blocks on canonical chain coherent
+        blocktree.add(g.into());
+        blocktree.add(b.into());
+        blocktree.add(c.into());
+        blocktree.add(d.clone().into());
+
+        blocktree.try_update_coherency(
+            &mut metrics,
+            d.get_id(),
+            &mut block_policy,
+            &state_backend,
+            &MockChainConfig::DEFAULT,
+        );
+        assert!(blocktree.is_coherent(&d.get_id()));
+
+        // high_qc points to D (canonical chain tip)
+        let high_qc_block_id = d.get_id();
+        let proposed_head = blocktree.get_canonical_coherent_tip(&high_qc_block_id);
+        assert_eq!(proposed_head, Some(d.get_id()));
+
+        // Now add B' on side branch and make it coherent
+        blocktree.add(b_prime.clone().into());
+        blocktree.try_update_coherency(
+            &mut metrics,
+            b_prime.get_id(),
+            &mut block_policy,
+            &state_backend,
+            &MockChainConfig::DEFAULT,
+        );
+        assert!(blocktree.is_coherent(&b_prime.get_id()));
+
+        // proposed_head should still point to D (canonical chain), not B'
+        let proposed_head = blocktree.get_canonical_coherent_tip(&high_qc_block_id);
+        assert_eq!(proposed_head, Some(d.get_id()));
+    }
+
+    #[test]
+    fn test_proposed_head_follows_high_qc_branch() {
+        // Tree: A <- B <- C (all coherent)
+        //          <- B' <- C' (all coherent)
+        // high_qc changes from C to C': proposed_head should follow
+        let mut metrics = Metrics::default();
+        let g = get_genesis_block();
+        let a = get_next_block(&g, Some(Round(2)), &[1]);
+        let b = get_next_block(&a, Some(Round(3)), &[2]);
+        let c = get_next_block(&b, Some(Round(4)), &[3]);
+        let b_prime = get_next_block(&a, Some(Round(5)), &[4]);
+        let c_prime = get_next_block(&b_prime, Some(Round(6)), &[5]);
+
+        let genesis_qc: QC = QuorumCertificate::genesis_qc();
+        let mut blocktree = BlockTreeType::new(RootInfo {
+            round: genesis_qc.get_round(),
+            seq_num: GENESIS_SEQ_NUM,
+            epoch: genesis_qc.get_epoch(),
+            block_id: genesis_qc.get_block_id(),
+            timestamp_ns: GENESIS_TIMESTAMP,
+        });
+        let state_backend = InMemoryStateInner::genesis(Balance::MAX, SeqNum(10));
+        let mut block_policy = PassthruBlockPolicy;
+
+        // Add all blocks
+        blocktree.add(g.into());
+        blocktree.add(a.into());
+        blocktree.add(b.into());
+        blocktree.add(c.clone().into());
+        blocktree.add(b_prime.into());
+        blocktree.add(c_prime.clone().into());
+
+        // Make all blocks coherent
+        blocktree.try_update_coherency(
+            &mut metrics,
+            c.get_id(),
+            &mut block_policy,
+            &state_backend,
+            &MockChainConfig::DEFAULT,
+        );
+        blocktree.try_update_coherency(
+            &mut metrics,
+            c_prime.get_id(),
+            &mut block_policy,
+            &state_backend,
+            &MockChainConfig::DEFAULT,
+        );
+
+        assert!(blocktree.is_coherent(&c.get_id()));
+        assert!(blocktree.is_coherent(&c_prime.get_id()));
+
+        // When high_qc points to C, proposed_head is C
+        let proposed_head = blocktree.get_canonical_coherent_tip(&c.get_id());
+        assert_eq!(proposed_head, Some(c.get_id()));
+
+        // When high_qc changes to C', proposed_head should be C'
+        let proposed_head = blocktree.get_canonical_coherent_tip(&c_prime.get_id());
+        assert_eq!(proposed_head, Some(c_prime.get_id()));
+    }
+
+    #[test]
+    fn test_canonical_coherent_tip_returns_none_for_root() {
+        let genesis_qc: QC = QuorumCertificate::genesis_qc();
+        let blocktree = BlockTreeType::new(RootInfo {
+            round: genesis_qc.get_round(),
+            seq_num: GENESIS_SEQ_NUM,
+            epoch: genesis_qc.get_epoch(),
+            block_id: genesis_qc.get_block_id(),
+            timestamp_ns: GENESIS_TIMESTAMP,
+        });
+
+        // When high_qc points to root, should return None
+        let result = blocktree.get_canonical_coherent_tip(&genesis_qc.get_block_id());
+        assert_eq!(result, None);
     }
 }
