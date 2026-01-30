@@ -23,6 +23,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use actix_http::header;
 use alloy_consensus::{Header, SignableTransaction, TxEip1559, TxEip7702, TxEnvelope, TxLegacy};
 use alloy_eips::eip7702::SignedAuthorization;
 use alloy_primitives::{Address, PrimitiveSignature, TxKind, Uint, B256, U256, U64, U8};
@@ -478,6 +479,8 @@ pub fn merge_access_lists(generated: AccessList, original: Option<AccessList>) -
     AccessList(merged_items)
 }
 
+// aaaaa
+
 /// Populate gas limit and gas prices
 pub async fn fill_gas_params<T: Triedb>(
     triedb_env: &T,
@@ -693,6 +696,8 @@ pub async fn prepare_eth_call<T: Triedb + TriedbPath>(
         Some(header) => header,
         None => return Err(JsonRpcError::block_not_found()),
     };
+
+    dbg!(&header);
 
     let state_overrides = params.state_overrides();
     let gas_specified = params.tx().gas.is_some();

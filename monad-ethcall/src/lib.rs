@@ -631,6 +631,25 @@ pub struct BlockOverride {
     pub blob_base_fee: Option<U256>,
 }
 
+/// Formats bytes as a C++ hex string for easy copy-paste into C++ code.
+fn print_cpp_hex(var_name: &str, bytes: &[u8]) {
+    let hex = alloy_primitives::hex::encode(bytes);
+    let mut output = format!("    auto const {} =\n        evmc::from_hex(\n", var_name);
+    let chars_per_line = 64;
+    let mut first = true;
+    for chunk in hex.as_bytes().chunks(chars_per_line) {
+        let chunk_str = std::str::from_utf8(chunk).unwrap();
+        if first {
+            output.push_str(&format!("            \"0x{}\"\n", chunk_str));
+            first = false;
+        } else {
+            output.push_str(&format!("            \"{}\"\n", chunk_str));
+        }
+    }
+    output.push_str("            ).value();");
+    eprintln!("{}", output);
+}
+
 pub async fn eth_simulate_v1(
     chain_id: u64,
     senders: &Vec<Vec<Address>>,
@@ -645,22 +664,18 @@ pub async fn eth_simulate_v1(
 
     let mut rlp_encoded_senders = vec![];
     senders.encode(&mut rlp_encoded_senders);
-
-    dbg!(&rlp_encoded_senders);
+    print_cpp_hex("rlp_senders", &rlp_encoded_senders);
 
     let mut rlp_encoded_txns = vec![];
     calls.encode(&mut rlp_encoded_txns);
-
-    dbg!(&rlp_encoded_txns);
+    print_cpp_hex("rlp_calls", &rlp_encoded_txns);
 
     let mut rlp_encoded_block_header = vec![];
     block_header.encode(&mut rlp_encoded_block_header);
-
-    dbg!(&rlp_encoded_block_header);
+    print_cpp_hex("rlp_header", &rlp_encoded_block_header);
 
     let rlp_encoded_block_id = alloy_rlp::encode(block_id.unwrap_or([0_u8; 32]));
-
-    dbg!(&rlp_encoded_block_id);
+    print_cpp_hex("rlp_block_id", &rlp_encoded_block_id);
 
     let chain_config = match chain_id {
         ETHEREUM_MAINNET_CHAIN_ID => bindings::monad_chain_config_CHAIN_CONFIG_ETHEREUM_MAINNET,
@@ -708,10 +723,7 @@ pub async fn eth_simulate_v1(
     let result = match recv.await {
         Ok(r) => r,
         Err(e) => {
-            warn!(
-                "callback from eth_simulate_v1 failed: {:?}",
-                e
-            );
+            warn!("callback from eth_simulate_v1 failed: {:?}", e);
 
             return SimulateResult::Failure(FailureSimulateResult {
                 error_code: EthCallResult::OtherError,
@@ -733,17 +745,13 @@ pub async fn eth_simulate_v1(
                     vec![]
                 };
 
-                SimulateResult::Success(SuccessSimulateResult {
-                    output_data,
-                })
+                SimulateResult::Success(SuccessSimulateResult { output_data })
             }
             _ => {
                 let cstr_msg = CStr::from_ptr((*result).message.cast());
                 let message = match cstr_msg.to_str() {
                     Ok(str) => String::from(str),
-                    Err(_) => String::from(
-                        "execution error eth_simulate_v1 message invalid utf-8",
-                    ),
+                    Err(_) => String::from("execution error eth_simulate_v1 message invalid utf-8"),
                 };
 
                 SimulateResult::Failure(FailureSimulateResult {

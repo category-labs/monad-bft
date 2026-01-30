@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use alloy_consensus::TxEnvelope;
+use alloy_primitives::U256;
 use monad_ethcall::{
     eth_simulate_v1, BlockOverride, EthCallExecutor, SimulateResult, StateOverrideSet,
     SuccessSimulateResult,
@@ -14,7 +15,10 @@ use serde_json::value::RawValue;
 
 use crate::{
     eth_json_types::BlockTagOrHash,
-    handlers::eth::{block::get_block_key_from_tag_or_hash, call::CallRequest},
+    handlers::eth::{
+        block::get_block_key_from_tag_or_hash,
+        call::{fill_gas_params, CallRequest},
+    },
     jsonrpc::{JsonRpcError, JsonRpcResult},
 };
 
@@ -64,18 +68,6 @@ pub async fn monad_simulate_v1<T: Triedb + TriedbPath>(
         })
         .collect();
 
-    let calls: Vec<Vec<TxEnvelope>> = params
-        .simulation
-        .block_state_calls
-        .iter()
-        .map(|bsc| {
-            bsc.calls
-                .iter()
-                .map(|call| call.clone().try_into().unwrap())
-                .collect()
-        })
-        .collect();
-
     let mut header = match triedb_env
         .get_block_header(block_key)
         .await
@@ -85,6 +77,44 @@ pub async fn monad_simulate_v1<T: Triedb + TriedbPath>(
         None => return Err(JsonRpcError::block_not_found()),
     };
 
+    let state_overrides = StateOverrideSet::new();
+
+    let mut calls: Vec<Vec<CallRequest>> = params
+        .simulation
+        .block_state_calls
+        .iter()
+        .map(|bsc| {
+            bsc.calls
+                .iter()
+                .map(|call|
+                    call.clone()
+                )
+                .collect()
+        })
+        .collect();
+
+    for call_list in &mut calls {
+        for call in call_list {
+            fill_gas_params(
+                triedb_env,
+                block_key,
+                call,
+                &mut header.header,
+                &state_overrides,
+                U256::MAX,
+            ).await?;
+        }
+    }
+
+    let calls: Vec<Vec<TxEnvelope>> = calls
+        .into_iter()
+        .map(|call_list| {
+            call_list
+                .into_iter()
+                .map(|call| call.try_into().unwrap())
+                .collect()
+        })
+        .collect();
 
     let (block_number, block_id) = match block_key {
         BlockKey::Finalized(FinalizedBlockKey(SeqNum(n))) => (n, None),
@@ -109,7 +139,6 @@ pub async fn monad_simulate_v1<T: Triedb + TriedbPath>(
         &overrides,
     )
     .await;
-
 
     match result {
         SimulateResult::Success(SuccessSimulateResult { output_data, .. }) => {
