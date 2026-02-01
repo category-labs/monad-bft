@@ -35,8 +35,15 @@ use crate::{
 pub struct NopDiscovery<ST: CertificateSignatureRecoverable> {
     known_addresses: HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddrV4>,
     name_records: HashMap<NodeId<CertificateSignaturePubKey<ST>>, MonadNameRecord<ST>>,
+    received_pings: Vec<(NodeId<CertificateSignaturePubKey<ST>>, Ping<ST>)>,
     metrics: ExecutorMetrics,
     pd: PhantomData<ST>,
+}
+
+impl<ST: CertificateSignatureRecoverable> NopDiscovery<ST> {
+    pub fn received_pings(&self) -> &[(NodeId<CertificateSignaturePubKey<ST>>, Ping<ST>)] {
+        &self.received_pings
+    }
 }
 
 pub struct NopDiscoveryBuilder<ST: CertificateSignatureRecoverable> {
@@ -69,6 +76,7 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscoveryAlgoBuilder for NopDiscov
         let state = NopDiscovery {
             known_addresses: self.known_addresses,
             name_records: self.name_records,
+            received_pings: Vec::new(),
             metrics: ExecutorMetrics::default(),
             pd: PhantomData,
         };
@@ -87,12 +95,16 @@ where
     fn send_ping(
         &mut self,
         target: NodeId<CertificateSignaturePubKey<ST>>,
-        _name_record: crate::NameRecord,
-        _ping: Ping<ST>,
+        name_record: crate::NameRecord,
+        ping: Ping<ST>,
     ) -> Vec<PeerDiscoveryCommand<ST>> {
         debug!(?target, "handle send ping");
 
-        Vec::new()
+        vec![PeerDiscoveryCommand::PingPongCommand {
+            target,
+            name_record,
+            message: crate::message::PeerDiscoveryMessage::Ping(ping),
+        }]
     }
 
     fn handle_ping(
@@ -101,6 +113,7 @@ where
         ping: Ping<Self::SignatureType>,
     ) -> Vec<PeerDiscoveryCommand<ST>> {
         debug!(?from.id, ?ping, "handle ping");
+        self.received_pings.push((from.id, ping));
 
         Vec::new()
     }
