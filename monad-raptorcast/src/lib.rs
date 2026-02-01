@@ -1007,6 +1007,7 @@ where
             // Once we have enough (redundant) raptorcast chunks, recreate the
             // decoded (AKA parsed, original) message.
             // Stream the chunks to our dedicated full-nodes as we receive them.
+            let src_addr = message.src_addr;
             let decoded_app_messages = {
                 this.udp_state.handle_message(
                     &this.rebroadcast_map,
@@ -1048,11 +1049,10 @@ where
                                 "RaptorCastPrimary rx deserialized PeerDiscoveryMessage: {:?}",
                                 peer_disc_message
                             );
-                            // handle peer discovery message in driver
                             this.peer_discovery_driver
                                 .lock()
                                 .unwrap()
-                                .update(peer_disc_message.event(from));
+                                .update(peer_disc_message.event_with_source(from, src_addr));
                         }
                         InboundRouterMessage::FullNodesGroup(full_nodes_group_message) => {
                             trace!(
