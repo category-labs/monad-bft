@@ -13,7 +13,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{fmt::Debug, net::SocketAddrV4};
+use std::{
+    fmt::Debug,
+    net::{SocketAddr, SocketAddrV4},
+};
 
 use alloy_rlp::{encode_list, Decodable, Encodable, Header, RlpDecodable, RlpEncodable};
 use bytes::{BufMut, Bytes, BytesMut};
@@ -160,6 +163,14 @@ pub trait Message: Clone + Send + Sync {
 
     // TODO-3 NodeId -> &NodeId
     fn event(self, from: NodeId<Self::NodeIdPubKey>) -> Self::Event;
+
+    fn event_with_source(
+        self,
+        from: NodeId<Self::NodeIdPubKey>,
+        _src_addr: SocketAddr,
+    ) -> Self::Event {
+        self.event(from)
+    }
 }
 
 /// TimeoutVariant distinguishes the source of the timer scheduled

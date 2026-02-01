@@ -15,7 +15,7 @@
 
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
-    net::{Ipv4Addr, SocketAddrV4},
+    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
     time::Duration,
 };
 
@@ -41,6 +41,12 @@ pub mod message;
 pub mod mock;
 
 pub use message::PeerDiscoveryMessage;
+
+#[derive(Debug, Clone)]
+pub struct PeerSource<PK: monad_crypto::certificate_signature::PubKey> {
+    pub id: NodeId<PK>,
+    pub addr: SocketAddr,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PortTag {
@@ -607,11 +613,11 @@ pub enum PeerDiscoveryEvent<ST: CertificateSignatureRecoverable> {
         ping: Ping<ST>,
     },
     PingRequest {
-        from: NodeId<CertificateSignaturePubKey<ST>>,
+        from: PeerSource<CertificateSignaturePubKey<ST>>,
         ping: Ping<ST>,
     },
     PongResponse {
-        from: NodeId<CertificateSignaturePubKey<ST>>,
+        from: PeerSource<CertificateSignaturePubKey<ST>>,
         pong: Pong,
     },
     PingTimeout {
@@ -624,11 +630,11 @@ pub enum PeerDiscoveryEvent<ST: CertificateSignatureRecoverable> {
         open_discovery: bool,
     },
     PeerLookupRequest {
-        from: NodeId<CertificateSignaturePubKey<ST>>,
+        from: PeerSource<CertificateSignaturePubKey<ST>>,
         request: PeerLookupRequest<ST>,
     },
     PeerLookupResponse {
-        from: NodeId<CertificateSignaturePubKey<ST>>,
+        from: PeerSource<CertificateSignaturePubKey<ST>>,
         response: PeerLookupResponse<ST>,
     },
     PeerLookupTimeout {
@@ -640,10 +646,10 @@ pub enum PeerDiscoveryEvent<ST: CertificateSignatureRecoverable> {
         to: NodeId<CertificateSignaturePubKey<ST>>,
     },
     FullNodeRaptorcastRequest {
-        from: NodeId<CertificateSignaturePubKey<ST>>,
+        from: PeerSource<CertificateSignaturePubKey<ST>>,
     },
     FullNodeRaptorcastResponse {
-        from: NodeId<CertificateSignaturePubKey<ST>>,
+        from: PeerSource<CertificateSignaturePubKey<ST>>,
     },
     UpdateCurrentRound {
         round: Round,
@@ -720,13 +726,13 @@ pub trait PeerDiscoveryAlgo {
 
     fn handle_ping(
         &mut self,
-        from: NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
+        from: PeerSource<CertificateSignaturePubKey<Self::SignatureType>>,
         ping: Ping<Self::SignatureType>,
     ) -> Vec<PeerDiscoveryCommand<Self::SignatureType>>;
 
     fn handle_pong(
         &mut self,
-        from: NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
+        from: PeerSource<CertificateSignaturePubKey<Self::SignatureType>>,
         pong: Pong,
     ) -> Vec<PeerDiscoveryCommand<Self::SignatureType>>;
 
@@ -745,13 +751,13 @@ pub trait PeerDiscoveryAlgo {
 
     fn handle_peer_lookup_request(
         &mut self,
-        from: NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
+        from: PeerSource<CertificateSignaturePubKey<Self::SignatureType>>,
         request: PeerLookupRequest<Self::SignatureType>,
     ) -> Vec<PeerDiscoveryCommand<Self::SignatureType>>;
 
     fn handle_peer_lookup_response(
         &mut self,
-        from: NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
+        from: PeerSource<CertificateSignaturePubKey<Self::SignatureType>>,
         response: PeerLookupResponse<Self::SignatureType>,
     ) -> Vec<PeerDiscoveryCommand<Self::SignatureType>>;
 

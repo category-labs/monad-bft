@@ -15,7 +15,7 @@
 
 use std::{
     collections::{BTreeMap, VecDeque},
-    net::SocketAddrV4,
+    net::{SocketAddr, SocketAddrV4},
     time::Duration,
 };
 
@@ -129,6 +129,7 @@ where
 pub struct MockPeerDiscExecutor<S: PeerDiscSwarmRelation> {
     router: S::RouterSchedulerType,
     tick: Duration,
+    id_to_addr: BTreeMap<NodeId<SwarmPubKeyType<S>>, SocketAddrV4>,
 }
 
 enum MockPeerDiscExecutorEvent<E, PT: PubKey, TransportMessage> {
@@ -192,7 +193,15 @@ impl<S: PeerDiscSwarmRelation> MockPeerDiscExecutor<S> {
             let maybe_router_event = self.router.step_until(tick);
             let event = match maybe_router_event {
                 Some(RouterEvent::Rx(from, message)) => {
-                    MockPeerDiscExecutorEvent::Event(message.event(from))
+                    let src_addr = self
+                        .id_to_addr
+                        .get(&from)
+                        .map(|a| SocketAddr::V4(*a))
+                        .unwrap_or(SocketAddr::V4(SocketAddrV4::new(
+                            std::net::Ipv4Addr::UNSPECIFIED,
+                            0,
+                        )));
+                    MockPeerDiscExecutorEvent::Event(message.event_with_source(from, src_addr))
                 }
                 Some(RouterEvent::Tx(to, ser)) => MockPeerDiscExecutorEvent::Send(to, ser),
                 None => continue,
@@ -237,6 +246,7 @@ where
         let mut executor = MockPeerDiscExecutor::<S> {
             router: router_scheduler,
             tick: Default::default(),
+            id_to_addr: Default::default(),
         };
         executor.exec(init_cmds);
 
@@ -549,7 +559,13 @@ where
         let addr = node_builder.addr;
         let _node_span_entered = tracing::trace_span!("node", id = format!("{}", id)).entered();
         self.routing_table.register(addr, id);
-        let node = node_builder.build();
+        let mut node = node_builder.build();
+        for (existing_id, existing_node) in &mut self.states {
+            existing_node.executor.id_to_addr.insert(id, addr);
+            node.executor
+                .id_to_addr
+                .insert(*existing_id, self.routing_table.id_to_addr[existing_id]);
+        }
         self.states.insert(id, node);
     }
 
@@ -558,7 +574,11 @@ where
         node_id: &NodeId<CertificateSignaturePubKey<S::SignatureType>>,
     ) -> Option<Node<S>> {
         self.routing_table.unregister(node_id);
-        self.states.remove(node_id)
+        let removed = self.states.remove(node_id);
+        for existing_node in self.states.values_mut() {
+            existing_node.executor.id_to_addr.remove(node_id);
+        }
+        removed
     }
 
     pub fn insert_test_event(

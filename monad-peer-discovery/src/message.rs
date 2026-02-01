@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::net::SocketAddr;
+
 use alloy_rlp::{Decodable, Encodable, Header, RlpDecodable, RlpEncodable, encode_list};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -20,7 +22,7 @@ use monad_crypto::certificate_signature::{
 use monad_executor_glue::Message;
 use monad_types::NodeId;
 
-use crate::{MonadNameRecord, PeerDiscoveryEvent};
+use crate::{MonadNameRecord, PeerDiscoveryEvent, PeerSource};
 
 const PEER_DISCOVERY_VERSION: u16 = 1;
 
@@ -39,6 +41,24 @@ impl<ST: CertificateSignatureRecoverable> Message for PeerDiscoveryMessage<ST> {
     type Event = PeerDiscoveryEvent<ST>;
 
     fn event(self, from: NodeId<Self::NodeIdPubKey>) -> Self::Event {
+        self.event_with_source(
+            from,
+            SocketAddr::V4(std::net::SocketAddrV4::new(
+                std::net::Ipv4Addr::UNSPECIFIED,
+                0,
+            )),
+        )
+    }
+
+    fn event_with_source(
+        self,
+        from: NodeId<Self::NodeIdPubKey>,
+        src_addr: SocketAddr,
+    ) -> Self::Event {
+        let from = PeerSource {
+            id: from,
+            addr: src_addr,
+        };
         match self {
             PeerDiscoveryMessage::Ping(ping) => PeerDiscoveryEvent::PingRequest { from, ping },
             PeerDiscoveryMessage::Pong(pong) => PeerDiscoveryEvent::PongResponse { from, pong },
