@@ -17,8 +17,8 @@ use std::{
     collections::HashMap,
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},
     num::ParseIntError,
-    sync::Arc,
-    time::Duration,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
 };
 
 use alloy_rlp::{RlpDecodable, RlpEncodable};
@@ -30,7 +30,10 @@ use monad_crypto::certificate_signature::{
 };
 use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand};
-use monad_peer_discovery::{MonadNameRecord, NameRecord};
+use monad_peer_discovery::{
+    driver::PeerDiscoveryDriver, message::Ping, mock::NopDiscovery, MonadNameRecord, NameRecord,
+    PeerDiscoveryEvent,
+};
 use monad_raptorcast::{create_dataplane_for_tests, DataplaneHandles, RaptorCastEvent};
 use monad_secp::{KeyPair, SecpSignature};
 use monad_types::{Deserializable, Epoch, NodeId, Serializable, Stake};
@@ -112,11 +115,14 @@ where
     }
 }
 
+type SharedPdDriver = Arc<Mutex<PeerDiscoveryDriver<NopDiscovery<SecpSignature>>>>;
+
 struct ValidatorChannels {
     cmd_tx: tokio::sync::mpsc::UnboundedSender<RouterCommand<SecpSignature, MockMessage>>,
     event_rx:
         tokio::sync::mpsc::UnboundedReceiver<MockEvent<CertificateSignaturePubKey<SecpSignature>>>,
     ready_rx: tokio::sync::oneshot::Receiver<()>,
+    pd_driver: SharedPdDriver,
 }
 
 #[derive(Clone)]
@@ -226,8 +232,10 @@ fn spawn_noop_validator(
     let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
 
+    let shared_pd = create_peer_discovery(known_addresses, name_records);
+    let pd_driver = shared_pd.clone();
+
     tokio::task::spawn_local(async move {
-        let shared_pd = create_peer_discovery(known_addresses, name_records);
         let config = create_raptorcast_config(keypair, DEFAULT_SIG_VERIFICATION_RATE_LIMIT);
         let auth_protocol = monad_raptorcast::auth::NoopAuthProtocol::new();
 
@@ -271,6 +279,7 @@ fn spawn_noop_validator(
         cmd_tx,
         event_rx,
         ready_rx,
+        pd_driver,
     }
 }
 
@@ -289,8 +298,10 @@ fn spawn_wireauth_validator(
     let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
 
+    let shared_pd = create_peer_discovery(known_addresses, name_records);
+    let pd_driver = shared_pd.clone();
+
     tokio::task::spawn_local(async move {
-        let shared_pd = create_peer_discovery(known_addresses, name_records);
         let config = create_raptorcast_config(keypair.clone(), sig_verification_rate_limit);
         let wireauth_config = monad_wireauth::Config::default();
         let auth_protocol =
@@ -318,6 +329,11 @@ fn spawn_wireauth_validator(
         let mut cmd_rx = cmd_rx;
         let check_connections = !peers_to_check.is_empty();
         let mut ready_tx = Some(ready_tx);
+        if !check_connections {
+            if let Some(tx) = ready_tx.take() {
+                let _ = tx.send(());
+            }
+        }
         let mut check_interval = tokio::time::interval(Duration::from_millis(100));
 
         loop {
@@ -351,6 +367,7 @@ fn spawn_wireauth_validator(
         cmd_tx,
         event_rx,
         ready_rx,
+        pd_driver,
     }
 }
 
@@ -732,5 +749,208 @@ async fn test_wireauth_matrix(
             routing_type,
             message_size,
         ))
+        .await;
+}
+
+async fn run_send_with_record_uses_name_record_address() {
+    let alice_info = ValidatorInfo::new(1);
+    let bob_info = ValidatorInfo::new(2);
+
+    let alice_dp = create_dataplane_for_tests(true);
+    let bob1_dp = create_dataplane_for_tests(true);
+    let bob2_dp = create_dataplane_for_tests(true);
+
+    let alice_auth_addr = alice_dp.auth_addr.expect("auth enabled");
+    let bob1_auth_addr = bob1_dp.auth_addr.expect("auth enabled");
+    let bob2_auth_addr = bob2_dp.auth_addr.expect("auth enabled");
+    let bob2_non_auth_addr = bob2_dp.non_auth_addr;
+    let bob2_tcp_addr = bob2_dp.tcp_addr;
+    assert_ne!(bob1_auth_addr, bob2_auth_addr);
+
+    let name_records: HashMap<_, _> = [
+        (
+            alice_info.nodeid,
+            alice_info.create_name_record(
+                true,
+                alice_dp.tcp_addr,
+                alice_auth_addr,
+                alice_dp.non_auth_addr,
+            ),
+        ),
+        (
+            bob_info.nodeid,
+            bob_info.create_name_record(
+                true,
+                bob1_dp.tcp_addr,
+                bob1_auth_addr,
+                bob1_dp.non_auth_addr,
+            ),
+        ),
+    ]
+    .into();
+
+    let known_addresses: HashMap<_, _> = [
+        (alice_info.nodeid, alice_dp.non_auth_addr),
+        (bob_info.nodeid, bob1_dp.non_auth_addr),
+    ]
+    .into();
+
+    let alice = spawn_wireauth_validator(
+        alice_info.keypair.clone(),
+        alice_dp,
+        known_addresses.clone(),
+        name_records.clone(),
+        vec![(bob1_auth_addr, bob_info.pubkey)],
+        DEFAULT_SIG_VERIFICATION_RATE_LIMIT,
+    );
+
+    let bob1 = spawn_wireauth_validator(
+        bob_info.keypair.clone(),
+        bob1_dp,
+        known_addresses.clone(),
+        name_records.clone(),
+        vec![(alice_auth_addr, alice_info.pubkey)],
+        DEFAULT_SIG_VERIFICATION_RATE_LIMIT,
+    );
+
+    let epoch = Epoch(0);
+    let validator_set: Vec<_> = [
+        (alice_info.nodeid, Stake::ONE),
+        (bob_info.nodeid, Stake::ONE),
+    ]
+    .into();
+
+    let cmd_txs = [&alice.cmd_tx, &bob1.cmd_tx];
+    let mut event_rxs = [alice.event_rx, bob1.event_rx];
+    let mut event_rx_refs: Vec<_> = event_rxs.iter_mut().collect();
+
+    establish_connections(
+        &cmd_txs,
+        vec![alice.ready_rx, bob1.ready_rx],
+        epoch,
+        validator_set.clone(),
+        &mut event_rx_refs,
+    )
+    .await;
+
+    // Bob2: same keypair, different addresses, name records pointing to bob2's addresses
+    let bob2_name_records: HashMap<_, _> = [
+        (
+            alice_info.nodeid,
+            alice_info.create_name_record(
+                true,
+                SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 1),
+                SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 1),
+                SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 1),
+            ),
+        ),
+        (
+            bob_info.nodeid,
+            bob_info.create_name_record(
+                true,
+                bob2_dp.tcp_addr,
+                bob2_auth_addr,
+                bob2_dp.non_auth_addr,
+            ),
+        ),
+    ]
+    .into();
+
+    let bob2_known_addresses: HashMap<_, _> = [(bob_info.nodeid, bob2_dp.non_auth_addr)].into();
+
+    let bob2 = spawn_wireauth_validator(
+        bob_info.keypair.clone(),
+        bob2_dp,
+        bob2_known_addresses,
+        bob2_name_records,
+        vec![],
+        DEFAULT_SIG_VERIFICATION_RATE_LIMIT,
+    );
+
+    bob2.cmd_tx
+        .send(RouterCommand::AddEpochValidatorSet {
+            epoch,
+            validator_set,
+        })
+        .unwrap();
+
+    tokio::time::timeout(CONNECTION_TIMEOUT, bob2.ready_rx)
+        .await
+        .expect("bob2 ready timeout")
+        .expect("bob2 ready channel closed");
+
+    // Construct a name record pointing to bob2's addresses and trigger SendPing on alice
+    let bob2_name_record = NameRecord::new_with_authentication(
+        Ipv4Addr::new(127, 0, 0, 1),
+        bob2_tcp_addr.port(),
+        bob2_non_auth_addr.port(),
+        bob2_auth_addr.port(),
+        1,
+    );
+
+    let alice_local_name_record = alice_info.create_name_record(
+        true,
+        SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 1),
+        SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 1),
+        SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 1),
+    );
+
+    let ping = Ping {
+        id: 42,
+        local_name_record: alice_local_name_record,
+    };
+
+    alice
+        .pd_driver
+        .lock()
+        .unwrap()
+        .update(PeerDiscoveryEvent::SendPing {
+            to: bob_info.nodeid,
+            name_record: bob2_name_record,
+            ping,
+        });
+
+    let start = Instant::now();
+    let mut interval = tokio::time::interval(Duration::from_millis(10));
+    loop {
+        interval.tick().await;
+
+        assert!(
+            bob1.pd_driver
+                .lock()
+                .unwrap()
+                .inner()
+                .received_pings()
+                .is_empty(),
+            "bob1 should NOT have received the ping — it should go to bob2's address"
+        );
+
+        if !bob2
+            .pd_driver
+            .lock()
+            .unwrap()
+            .inner()
+            .received_pings()
+            .is_empty()
+        {
+            break;
+        }
+        assert!(
+            start.elapsed() < CONNECTION_TIMEOUT,
+            "bob2 should have received the ping at the name record address"
+        );
+    }
+
+    let bob2_guard = bob2.pd_driver.lock().unwrap();
+    assert_eq!(bob2_guard.inner().received_pings()[0].0, alice_info.nodeid);
+    drop(bob2_guard);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_send_with_record_uses_name_record_address() {
+    init_tracing();
+
+    tokio::task::LocalSet::new()
+        .run_until(run_send_with_record_uses_name_record_address())
         .await;
 }
