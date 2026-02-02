@@ -146,6 +146,12 @@ The algorithm guarantees that over time, each identity receives bandwidth propor
 
 When the priority pool cannot accept a transaction, promoted identities fall back to the regular pool rather than being rejected. This provides a safety mechanism if scoring is abused to block new identities.
 
+### Congestion Feedback (Future Extension)
+
+Transaction ingestion has two choke points: network delivery and mempool validation. The receiver could periodically report per-sender statistics — how many transactions were received and how many passed validation — allowing senders to compare against their sent volume and adjust their rate. Senders that consistently exceed their processed capacity would be penalized in the weighted fair queue, reducing their scheduling priority.
+
+This is not implemented in the current design. It is only relevant when demand significantly exceeds planned network capacity, and introduces noticeable complexity in both the feedback protocol and penalty logic. It may be considered as a future extension if observed traffic patterns warrant it.
+
 ## LeanUDP Fragmentation
 
 LeanUDP is a lightweight protocol for fragmenting and reassembling large messages over plain UDP. It operates over authenticated UDP sessions and is designed for fast, short-lived message delivery where all fragments arrive within a narrow time window. Unlike TCP, it provides no retransmission or flow control; incomplete messages are discarded after a brief timeout.
