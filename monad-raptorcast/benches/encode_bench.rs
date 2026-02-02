@@ -23,7 +23,7 @@ use monad_dataplane::udp::DEFAULT_SEGMENT_SIZE;
 use monad_raptorcast::{
     packet,
     udp::GroupId,
-    util::{BuildTarget, EpochValidators, Redundancy},
+    util::{BuildTarget, Redundancy},
 };
 use monad_secp::SecpSignature;
 use monad_testutil::signing::get_key;
@@ -67,7 +67,7 @@ pub fn bench_build_messages(c: &mut Criterion, name: &str, message_size: usize, 
                 Redundancy::from_u8(2),
                 GroupId::Primary(Epoch(0)), // epoch_no
                 0,                          // unix_ts_ms
-                build_target.clone(),
+                build_target,
                 &known_addrs,
             );
         });
@@ -92,9 +92,7 @@ fn setup_raptorcast() -> (
         .iter()
         .map(|key| (NodeId::new(key.pubkey()), Stake::ONE))
         .collect();
-    let validators = Box::leak(Box::new(EpochValidators {
-        validators: ValidatorSet::new_unchecked(valset),
-    }));
+    let validators = Box::leak(Box::new(ValidatorSet::new_unchecked(valset)));
 
     let addr = SocketAddr::from_str("127.0.0.1:9999").unwrap();
     let known_addresses = keys
@@ -103,13 +101,8 @@ fn setup_raptorcast() -> (
         .collect();
 
     let author = keys.pop().unwrap();
-    let epoch_validators = validators.view_without(vec![&NodeId::new(author.pubkey())]);
 
-    (
-        author,
-        BuildTarget::Raptorcast(epoch_validators),
-        known_addresses,
-    )
+    (author, BuildTarget::Raptorcast(validators), known_addresses)
 }
 
 fn setup_broadcast() -> (
@@ -124,9 +117,7 @@ fn setup_broadcast() -> (
         .iter()
         .map(|key| (NodeId::new(key.pubkey()), Stake::ONE))
         .collect();
-    let validators = Box::leak(Box::new(EpochValidators {
-        validators: ValidatorSet::new_unchecked(valset),
-    }));
+    let validators = Box::leak(Box::new(ValidatorSet::new_unchecked(valset)));
 
     let addr = SocketAddr::from_str("127.0.0.1:9999").unwrap();
     let known_addresses = keys
@@ -135,13 +126,8 @@ fn setup_broadcast() -> (
         .collect();
 
     let author = keys.pop().unwrap();
-    let epoch_validators = validators.view_without(vec![&NodeId::new(author.pubkey())]);
 
-    (
-        author,
-        BuildTarget::Broadcast(epoch_validators.into()),
-        known_addresses,
-    )
+    (author, BuildTarget::Broadcast(validators), known_addresses)
 }
 
 criterion_group!(benches, bench);

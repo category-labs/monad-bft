@@ -46,7 +46,7 @@ use crate::{
     config::{RaptorCastConfig, SecondaryRaptorCastMode},
     message::OutboundRouterMessage,
     udp::GroupId,
-    util::{FullNodes, Group},
+    util::{Group, SecondaryGroup},
     RaptorCastEvent,
 };
 
@@ -66,7 +66,7 @@ pub enum SecondaryOutboundMessage<PT: PubKey> {
     },
     SendToGroup {
         msg_bytes: bytes::Bytes,
-        group: Group<PT>,
+        group: SecondaryGroup<PT>,
         group_id: GroupId,
     },
 }
@@ -188,7 +188,7 @@ where
     fn send_group_msg(
         &self,
         group_msg: FullNodesGroupMessage<ST>,
-        dest_node_ids: FullNodes<CertificateSignaturePubKey<ST>>,
+        dest_node_ids: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
     ) {
         trace!(
             ?dest_node_ids,
@@ -196,7 +196,7 @@ where
             "RaptorCastSecondary send_group_msg"
         );
         let group_msg = self.try_fill_name_records(group_msg, &dest_node_ids);
-        for nid in dest_node_ids.list {
+        for nid in dest_node_ids {
             self.send_single_msg(group_msg.clone(), nid);
         }
     }
@@ -204,7 +204,7 @@ where
     fn try_fill_name_records(
         &self,
         group_msg: FullNodesGroupMessage<ST>,
-        dest_node_ids: &FullNodes<CertificateSignaturePubKey<ST>>,
+        dest_node_ids: &[NodeId<CertificateSignaturePubKey<ST>>],
     ) -> FullNodesGroupMessage<ST> {
         if let FullNodesGroupMessage::ConfirmGroup(confirm_msg) = &group_msg {
             let name_records = {
@@ -215,7 +215,7 @@ where
             };
             let mut filled_confirm_msg = confirm_msg.clone();
             filled_confirm_msg.name_records = Default::default();
-            for node_id in &dest_node_ids.list {
+            for node_id in dest_node_ids.iter() {
                 if let Some(name_record) = name_records.get(node_id) {
                     filled_confirm_msg.name_records.push(name_record.clone());
                 } else {
@@ -309,7 +309,7 @@ where
                             "RaptorCastSecondary updating {} full nodes from PeerDiscovery",
                             full_nodes.len()
                         );
-                        publisher.upsert_peer_disc_full_nodes(FullNodes::new(full_nodes));
+                        publisher.upsert_peer_disc_full_nodes(full_nodes);
 
                         if let Some((group_msg, full_nodes_set)) =
                             publisher.enter_round_and_step_until(round)
@@ -338,14 +338,14 @@ where
                     round,
                     message,
                 } => {
-                    let curr_group: Group<_> = match &mut self.role {
+                    let group = match &mut self.role {
                         Role::Client(_) => {
                             continue;
                         }
                         Role::Publisher(publisher) => {
                             match publisher.get_current_raptorcast_group() {
                                 Some(group) => {
-                                    trace!(?group, size_excl_self =? group.size_excl_self(),
+                                    trace!(?group, size =? group.len(),
                                         "RaptorCastSecondary PublishToFullNodes");
                                     group.clone()
                                 }
@@ -356,11 +356,6 @@ where
                             }
                         }
                     };
-
-                    if curr_group.size_excl_self() < 1 {
-                        trace!("RaptorCastSecondary PublishToFullNodes; Not sending anything because size_excl_self = 0");
-                        continue;
-                    }
 
                     let outbound_message = match OutboundRouterMessage::<OM, ST>::AppMessage(
                         message,
@@ -376,7 +371,7 @@ where
 
                     let outbound = SecondaryOutboundMessage::SendToGroup {
                         msg_bytes: outbound_message,
-                        group: curr_group,
+                        group,
                         group_id: GroupId::Secondary(round),
                     };
                     if let Err(err) = self.channel_to_primary_outbound.send(outbound) {

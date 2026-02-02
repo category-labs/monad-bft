@@ -41,7 +41,7 @@ use monad_raptorcast::{
         SecondaryRaptorCastModeConfig,
     },
     udp::{GroupId, MAX_REDUNDANCY},
-    util::{BuildTarget, EpochValidators, Group, Redundancy},
+    util::{BuildTarget, Group, Redundancy},
     DataplaneHandles, RaptorCast, RaptorCastEvent,
 };
 use monad_secp::{KeyPair, SecpSignature};
@@ -86,11 +86,7 @@ pub fn different_symbol_sizes() {
         };
 
         let valset = BTreeMap::from([(rx_nodeid, Stake::ONE), (tx_nodeid, Stake::ONE)]);
-        let validators = EpochValidators {
-            validators: ValidatorSet::new_unchecked(valset),
-        };
-
-        let epoch_validators = validators.view_without(vec![&tx_nodeid]);
+        let validators = ValidatorSet::new_unchecked(valset);
 
         let messages = build_messages::<SignatureType>(
             &tx_keypair,
@@ -99,7 +95,7 @@ pub fn different_symbol_sizes() {
             Redundancy::from_u8(2),
             GroupId::Primary(Epoch(0)), // epoch_no
             0,                          // unix_ts_ms
-            BuildTarget::Raptorcast(epoch_validators),
+            BuildTarget::Raptorcast(&validators),
             &known_addresses,
         );
 
@@ -144,11 +140,7 @@ pub fn buffer_count_overflow() {
     let tx_socket = UdpSocket::bind("127.0.0.1:0").unwrap();
 
     let valset = BTreeMap::from([(rx_nodeid, Stake::ONE), (tx_nodeid, Stake::ONE)]);
-    let validators = EpochValidators {
-        validators: ValidatorSet::new_unchecked(valset),
-    };
-
-    let epoch_validators = validators.view_without(vec![&tx_nodeid]);
+    let validators = ValidatorSet::new_unchecked(valset);
 
     let messages = build_messages::<SignatureType>(
         &tx_keypair,
@@ -157,7 +149,7 @@ pub fn buffer_count_overflow() {
         Redundancy::from_u8(2),
         GroupId::Primary(Epoch(0)), // epoch_no
         0,                          // unix_ts_ms
-        BuildTarget::Raptorcast(epoch_validators),
+        BuildTarget::Raptorcast(&validators),
         &known_addresses,
     );
 
@@ -218,11 +210,7 @@ pub fn valid_rebroadcast() {
         .unwrap();
 
     let valset = BTreeMap::from([(rx_nodeid, Stake::ONE), (tx_nodeid, Stake::ONE)]);
-    let validators = EpochValidators {
-        validators: ValidatorSet::new_unchecked(valset),
-    };
-
-    let epoch_validators = validators.view_without(vec![&tx_nodeid]);
+    let validators = ValidatorSet::new_unchecked(valset);
 
     let messages = build_messages::<SignatureType>(
         &tx_keypair,
@@ -231,7 +219,7 @@ pub fn valid_rebroadcast() {
         MAX_REDUNDANCY,             // redundancy,
         GroupId::Primary(Epoch(0)), // epoch_no
         0,                          // unix_ts_ms
-        BuildTarget::Raptorcast(epoch_validators),
+        BuildTarget::Raptorcast(&validators),
         &known_addresses,
     );
 

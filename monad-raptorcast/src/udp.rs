@@ -23,7 +23,7 @@ use monad_crypto::{
 use monad_dataplane::udp::{segment_size_for_mtu, ETHERNET_SEGMENT_SIZE};
 use monad_executor::ExecutorMetricsChain;
 use monad_types::{Epoch, NodeId, Round};
-use monad_validator::validator_set::ValidatorSetType as _;
+use monad_validator::validator_set::{ValidatorSet, ValidatorSetType as _};
 
 pub use crate::packet::build_messages;
 use crate::{
@@ -37,7 +37,7 @@ use crate::{
         signature_verifier::{SignatureVerifier, SignatureVerifierError},
     },
     util::{
-        compute_hash, unix_ts_ms_now, AppMessageHash, BroadcastMode, EpochValidators, NodeIdHash,
+        compute_hash, unix_ts_ms_now, AppMessageHash, BroadcastMode, NodeIdHash,
         ReBroadcastGroupMap, Redundancy,
     },
 };
@@ -151,7 +151,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
     pub fn handle_message(
         &mut self,
         group_map: &ReBroadcastGroupMap<CertificateSignaturePubKey<ST>>,
-        epoch_validators: &BTreeMap<Epoch, EpochValidators<CertificateSignaturePubKey<ST>>>,
+        epoch_validators: &BTreeMap<Epoch, ValidatorSet<CertificateSignaturePubKey<ST>>>,
         rebroadcast: impl FnMut(Vec<NodeId<CertificateSignaturePubKey<ST>>>, Bytes, u16),
         message: crate::auth::AuthRecvMsg<CertificateSignaturePubKey<ST>>,
     ) -> Vec<(NodeId<CertificateSignaturePubKey<ST>>, Bytes)> {
@@ -184,7 +184,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                         epoch_validators
                             .get(&epoch)
                             .iter()
-                            .any(|ev| ev.validators.is_member(&node_id))
+                            .any(|ev| ev.is_member(&node_id))
                     })
                 },
             ) {
@@ -281,7 +281,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
             };
 
             let validator_set = match parsed_message.group_id {
-                GroupId::Primary(epoch) => epoch_validators.get(&epoch).map(|ev| &ev.validators),
+                GroupId::Primary(epoch) => epoch_validators.get(&epoch),
                 GroupId::Secondary(_round) => None,
             };
 
@@ -603,7 +603,7 @@ mod tests {
     };
     use monad_dataplane::udp::DEFAULT_SEGMENT_SIZE;
     use monad_secp::{KeyPair, SecpSignature};
-    use monad_types::{Epoch, NodeId, Round, RoundSpan, Stake};
+    use monad_types::{Epoch, NodeId, Stake};
     use monad_validator::validator_set::{ValidatorSet, ValidatorSetType as _};
     use rstest::*;
 
@@ -612,9 +612,7 @@ mod tests {
         packet::{MessageBuilder, PacketLayout},
         parser::signature_verifier::SignatureVerifier,
         udp::{build_messages, parse_message, MAX_VALIDATOR_SET_SIZE, SIGNATURE_CACHE_SIZE},
-        util::{
-            BroadcastMode, BuildTarget, EpochValidators, Group, ReBroadcastGroupMap, Redundancy,
-        },
+        util::{BroadcastMode, BuildTarget, ReBroadcastGroupMap, Redundancy, SecondaryGroup},
     };
 
     type SignatureType = SecpSignature;
@@ -627,7 +625,7 @@ mod tests {
 
     fn validator_set() -> (
         KeyPairType,
-        EpochValidators<CertificateSignaturePubKey<SignatureType>>,
+        ValidatorSet<CertificateSignaturePubKey<SignatureType>>,
         HashMap<NodeId<CertificateSignaturePubKey<SignatureType>>, SocketAddr>,
     ) {
         const NUM_KEYS: u8 = 100;
@@ -644,9 +642,7 @@ mod tests {
             .iter()
             .map(|key| (NodeId::new(key.pubkey()), Stake::ONE))
             .collect();
-        let validators = EpochValidators {
-            validators: ValidatorSet::new_unchecked(valset),
-        };
+        let validators = ValidatorSet::new_unchecked(valset);
 
         let known_addresses = keys
             .iter()
@@ -669,7 +665,6 @@ mod tests {
     #[test]
     fn test_roundtrip() {
         let (key, validators, known_addresses) = validator_set();
-        let epoch_validators = validators.view_without(vec![&NodeId::new(key.pubkey())]);
 
         let app_message: Bytes = vec![1_u8; 1024 * 1024].into();
         let app_message_hash = {
@@ -685,7 +680,7 @@ mod tests {
             Redundancy::from_u8(2),
             GroupId::Primary(EPOCH), // epoch_no
             UNIX_TS_MS,
-            BuildTarget::Raptorcast(epoch_validators),
+            BuildTarget::Raptorcast(&validators),
             &known_addresses,
         );
 
@@ -717,7 +712,6 @@ mod tests {
     #[test]
     fn test_bit_flip_parse_failure_slow() {
         let (key, validators, known_addresses) = validator_set();
-        let epoch_validators = validators.view_without(vec![&NodeId::new(key.pubkey())]);
 
         let app_message: Bytes = vec![1_u8; 1024 * 2].into();
 
@@ -728,7 +722,7 @@ mod tests {
             Redundancy::from_u8(2),
             GroupId::Primary(EPOCH), // epoch_no
             UNIX_TS_MS,
-            BuildTarget::Raptorcast(epoch_validators),
+            BuildTarget::Raptorcast(&validators),
             &known_addresses,
         );
 
@@ -768,7 +762,6 @@ mod tests {
     #[test]
     fn test_raptorcast_chunk_ids() {
         let (key, validators, known_addresses) = validator_set();
-        let epoch_validators = validators.view_without(vec![&NodeId::new(key.pubkey())]);
 
         let app_message: Bytes = vec![1_u8; 1024 * 1024].into();
 
@@ -779,7 +772,7 @@ mod tests {
             Redundancy::from_u8(2),
             GroupId::Primary(EPOCH), // epoch_no
             UNIX_TS_MS,
-            BuildTarget::Raptorcast(epoch_validators),
+            BuildTarget::Raptorcast(&validators),
             &known_addresses,
         );
 
@@ -807,17 +800,18 @@ mod tests {
     fn test_broadcast_bit() {
         let (key, validators, known_addresses) = validator_set();
         let self_id = NodeId::new(key.pubkey());
-        let epoch_validators = validators.view_without(vec![&self_id]);
-        let full_nodes = Group::new_fullnode_group(
-            epoch_validators.iter_nodes().cloned().collect(),
-            &self_id,
-            self_id,
-            RoundSpan::new(Round(1), Round(100)).unwrap(),
+        let full_nodes = SecondaryGroup::new_unchecked(
+            validators
+                .get_members()
+                .keys()
+                .filter(|&n| n != &self_id)
+                .cloned()
+                .collect(),
         );
 
         let app_message: Bytes = vec![1_u8; 1024 * 1024].into();
         let build_targets = vec![
-            BuildTarget::Raptorcast(epoch_validators),
+            BuildTarget::Raptorcast(&validators),
             BuildTarget::FullNodeRaptorCast(&full_nodes),
         ];
 
@@ -829,7 +823,7 @@ mod tests {
                 Redundancy::from_u8(2),
                 GroupId::Primary(EPOCH), // epoch_no
                 UNIX_TS_MS,
-                build_target.clone(),
+                build_target,
                 &known_addresses,
             );
 
@@ -869,7 +863,6 @@ mod tests {
     #[test]
     fn test_broadcast_chunk_ids() {
         let (key, validators, known_addresses) = validator_set();
-        let epoch_validators = validators.view_without(vec![&NodeId::new(key.pubkey())]);
 
         let app_message: Bytes = vec![1_u8; 1024 * 8].into();
 
@@ -880,7 +873,7 @@ mod tests {
             Redundancy::from_u8(2),
             GroupId::Primary(EPOCH), // epoch_no
             UNIX_TS_MS,
-            BuildTarget::Broadcast(epoch_validators.into()),
+            BuildTarget::Broadcast(&validators),
             &known_addresses,
         );
 
@@ -917,7 +910,6 @@ mod tests {
         let self_id = NodeId::new(key.pubkey());
         let mut group_map = ReBroadcastGroupMap::new(self_id);
         let node_stake_pairs: Vec<_> = validators
-            .validators
             .get_members()
             .iter()
             .map(|(node_id, stake)| (*node_id, *stake))
@@ -961,7 +953,6 @@ mod tests {
         #[case] should_succeed: bool,
     ) {
         let (key, validators, known_addresses) = validator_set();
-        let epoch_validators = validators.view_without(vec![&NodeId::new(key.pubkey())]);
         let mut signature_verifier = signature_verifier();
 
         let current_time = std::time::UNIX_EPOCH.elapsed().unwrap().as_millis() as u64;
@@ -975,7 +966,7 @@ mod tests {
             Redundancy::from_u8(1),
             GroupId::Primary(EPOCH),
             test_timestamp,
-            BuildTarget::Broadcast(epoch_validators.into()),
+            BuildTarget::Broadcast(&validators),
             &known_addresses,
         );
         let message = messages.into_iter().next().unwrap().1;
@@ -1016,11 +1007,10 @@ mod tests {
         #[case] should_succeed: bool,
     ) {
         let (key, validators, _known_addresses) = validator_set();
-        let epoch_validators = validators.view_without(vec![&NodeId::new(key.pubkey())]);
         let target = if raptorcast {
-            BuildTarget::Raptorcast(epoch_validators)
+            BuildTarget::Raptorcast(&validators)
         } else {
-            BuildTarget::Broadcast(epoch_validators.into())
+            BuildTarget::Broadcast(&validators)
         };
         let app_msg = vec![0; app_msg_len];
         let messages = MessageBuilder::<SignatureType>::new(&key)
@@ -1107,7 +1097,6 @@ mod tests {
     #[test]
     fn test_parse_message_signature_verifier() {
         let (key, validators, known_addresses) = validator_set();
-        let epoch_validators = validators.view_without(vec![&NodeId::new(key.pubkey())]);
 
         let app_message: Bytes = vec![1_u8; 1024].into();
 
@@ -1118,7 +1107,7 @@ mod tests {
             Redundancy::from_u8(1),
             GroupId::Primary(EPOCH),
             UNIX_TS_MS,
-            BuildTarget::Raptorcast(epoch_validators),
+            BuildTarget::Raptorcast(&validators),
             &known_addresses,
         );
 
