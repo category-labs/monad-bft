@@ -16,9 +16,10 @@
 use std::{
     cell::OnceCell,
     cmp::Ordering,
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, BTreeSet},
     fmt,
     net::SocketAddr,
+    num::NonZero,
     rc::Rc,
 };
 
@@ -35,185 +36,57 @@ use tracing::{debug, warn};
 
 use crate::udp::GroupId;
 
-#[derive(Clone, Debug)]
-pub struct EpochValidators<PT: PubKey> {
-    pub validators: ValidatorSet<PT>,
+// Invariance: The group must be non-empty.
+#[derive(Debug, Clone, Default)]
+pub struct SecondaryGroup<PT: PubKey> {
+    full_nodes: BTreeSet<NodeId<PT>>,
 }
 
-impl<PT: PubKey> EpochValidators<PT> {
-    /// Returns a view of the validator set without a given node. On ValidatorsView being dropped,
-    /// the validator set is reverted back to normal.
-    pub fn view_without(&self, without: Vec<&NodeId<PT>>) -> ValidatorsView<'_, PT> {
-        ValidatorsView {
-            view: self.validators.get_members(),
-            without: without.into_iter().cloned().collect(),
+impl<PT: PubKey> SecondaryGroup<PT> {
+    // SAFETY: The caller must ensure that full_nodes set is non-empty.
+    pub fn new_unchecked(full_nodes: BTreeSet<NodeId<PT>>) -> Self {
+        Self { full_nodes }
+    }
+
+    pub fn new(full_nodes: BTreeSet<NodeId<PT>>) -> Option<Self> {
+        if full_nodes.is_empty() {
+            return None;
         }
+        Some(Self { full_nodes })
     }
 
-    pub fn get(&self, node_id: &NodeId<PT>) -> Option<Stake> {
-        self.validators.get_members().get(node_id).copied()
+    pub fn iter(&self) -> impl Iterator<Item = &NodeId<PT>> + '_ {
+        self.full_nodes.iter()
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.validators.get_members().is_empty()
-    }
-
-    pub fn len(&self) -> usize {
-        self.validators.get_members().len()
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct ValidatorsView<'a, PT: PubKey> {
-    view: &'a BTreeMap<NodeId<PT>, Stake>,
-    without: HashSet<NodeId<PT>>,
-}
-
-impl<PT: PubKey> ValidatorsView<'_, PT> {
-    pub fn iter(&self) -> impl Iterator<Item = (&NodeId<PT>, Stake)> + '_ {
-        self.view
-            .iter()
-            .filter(|(id, _)| !self.without.contains(id))
-            .map(|(id, stake)| (id, *stake))
-    }
-
-    pub fn iter_nodes(&self) -> impl Iterator<Item = &NodeId<PT>> + '_ {
-        self.view
-            .keys()
-            .filter(move |id| !self.without.contains(id))
-    }
-
-    pub fn len(&self) -> usize {
-        if self.without.is_empty() {
-            return self.view.len();
-        }
-        self.iter().count()
-    }
-
-    pub fn total_stake(&self) -> Stake {
-        self.iter().map(|(_, stake)| stake).sum()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.view.is_empty() || self.len() == 0
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct FullNodes<P: PubKey> {
-    pub list: Vec<NodeId<P>>,
-}
-
-impl<P: PubKey> Default for FullNodes<P> {
-    fn default() -> Self {
-        Self {
-            list: Default::default(),
-        }
-    }
-}
-
-impl<P: PubKey> FullNodes<P> {
-    pub fn new(nodes: Vec<NodeId<P>>) -> Self {
-        Self { list: nodes }
-    }
-
-    pub fn view(&self) -> FullNodesView<'_, P> {
-        FullNodesView(&self.list)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct FullNodesView<'a, P: PubKey>(&'a Vec<NodeId<P>>);
-
-impl<P: PubKey> FullNodesView<'_, P> {
-    fn len(&self) -> usize {
-        self.0.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = &NodeId<P>> + '_ {
-        self.0.iter()
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum NodesView<'a, PT: PubKey> {
-    Validators(ValidatorsView<'a, PT>),
-    FullNodes(FullNodesView<'a, PT>),
-}
-
-impl<'a, PT: PubKey> From<ValidatorsView<'a, PT>> for NodesView<'a, PT> {
-    fn from(view: ValidatorsView<'a, PT>) -> Self {
-        NodesView::Validators(view)
-    }
-}
-
-impl<'a, PT: PubKey> From<FullNodesView<'a, PT>> for NodesView<'a, PT> {
-    fn from(view: FullNodesView<'a, PT>) -> Self {
-        NodesView::FullNodes(view)
-    }
-}
-
-impl<'a, PT: PubKey> NodesView<'a, PT> {
-    pub fn len(&self) -> usize {
-        match self {
-            NodesView::Validators(view) => view.len(),
-            NodesView::FullNodes(view) => view.len(),
-        }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        match self {
-            NodesView::Validators(view) => view.is_empty(),
-            NodesView::FullNodes(view) => view.is_empty(),
-        }
-    }
-
-    pub fn iter(&self) -> Box<dyn Iterator<Item = &NodeId<PT>> + '_> {
-        match self {
-            NodesView::Validators(view) => Box::new(view.iter_nodes()),
-            NodesView::FullNodes(view) => Box::new(view.iter()),
-        }
+    pub fn len(&self) -> NonZero<usize> {
+        NonZero::new(self.full_nodes.len()).unwrap()
     }
 }
 
 // Argument for raptorcast send
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum BuildTarget<'a, PT: PubKey> {
-    // raptorcast to a set of nodes without stake-based distribution
-    // of chunks.
-    Broadcast(
-        // validator stakes for given epoch_no, not including self
-        // this MUST NOT BE EMPTY
-        NodesView<'a, PT>,
-    ),
-    // raptorcast to a set of validators, chunks distributed by their
+    // broadcast a message to the validators where each validator gets
+    // the full chunks of the raptor-coded message
+    Broadcast(&'a ValidatorSet<PT>),
+    // raptorcast to the validators, chunks distributed by their
     // proportion of stakes.
-    Raptorcast(
-        // validator stakes for given epoch_no, not including self
-        // this MUST NOT BE EMPTY
-        // Contains Stake information per validator node id
-        ValidatorsView<'a, PT>,
-    ),
-    // sharded raptor-aware broadcast
+    Raptorcast(&'a ValidatorSet<PT>),
+    // unicast message as raptor-coded chunks to a single recipient
     PointToPoint(&'a NodeId<PT>),
-    // Group should not be empty after excluding self node Id
-    FullNodeRaptorCast(&'a Group<PT>),
+    // raptorcast to a set of full nodes, assuming equal stake
+    // distribution
+    FullNodeRaptorCast(&'a SecondaryGroup<PT>),
 }
 
 impl<'a, PT: PubKey> BuildTarget<'a, PT> {
     pub fn iter(&self) -> Box<dyn Iterator<Item = &NodeId<PT>> + '_> {
         match self {
-            BuildTarget::Broadcast(nodes_view) => match nodes_view {
-                NodesView::Validators(validators_view) => Box::new(validators_view.iter_nodes()),
-                NodesView::FullNodes(fullnodes_view) => Box::new(fullnodes_view.iter()),
-            },
-            BuildTarget::Raptorcast(validators_view) => Box::new(validators_view.iter_nodes()),
+            BuildTarget::Broadcast(valset) => Box::new(valset.get_members().keys()),
+            BuildTarget::Raptorcast(valset) => Box::new(valset.get_members().keys()),
             BuildTarget::PointToPoint(node_id) => Box::new(std::iter::once(*node_id)),
-            BuildTarget::FullNodeRaptorCast(group) => Box::new(group.iter_peers()),
+            BuildTarget::FullNodeRaptorCast(group) => Box::new(group.iter()),
         }
     }
 }
@@ -312,17 +185,6 @@ impl<PT: PubKey> fmt::Debug for Group<PT> {
     }
 }
 
-// the trait `Default` is not implemented for `PT`
-impl<PT: PubKey> Default for Group<PT> {
-    fn default() -> Self {
-        Self {
-            validator_id: None,
-            round_span: RoundSpan::default(),
-            sorted_other_peers: Vec::new(),
-        }
-    }
-}
-
 impl<PT: PubKey> Group<PT> {
     // For the use case where we re-raptorcast to validators
     pub fn new_validator_group(all_peers: Vec<NodeId<PT>>, self_id: &NodeId<PT>) -> Self {
@@ -335,7 +197,7 @@ impl<PT: PubKey> Group<PT> {
             .collect();
         Self {
             validator_id: None,
-            round_span: RoundSpan::default(),
+            round_span: RoundSpan::empty(Round::MIN), // unused for validator group
             sorted_other_peers,
         }
     }
@@ -1096,7 +958,7 @@ mod tests {
         );
         assert_eq!(group.size_excl_self(), 2);
         assert_eq!(group.get_other_peers(), &vec![nid(0), nid(2)]);
-        assert_eq!(group.get_round_span(), &RoundSpan::default());
+        assert_eq!(group.get_round_span(), &RoundSpan::empty(Round::MIN));
         let empty_iter: Vec<_> = group.empty_iterator().collect();
         assert!(empty_iter.is_empty());
 
