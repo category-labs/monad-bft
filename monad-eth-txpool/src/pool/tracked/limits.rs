@@ -54,13 +54,15 @@ impl TrackedTxLimitsConfig {
         soft_tx_expiry: Duration,
         hard_tx_expiry: Duration,
     ) -> Self {
+        let max_addresses = max_addresses.unwrap_or(DEFAULT_MAX_ADDRESSES);
+
         Self {
-            max_addresses: max_addresses.unwrap_or(DEFAULT_MAX_ADDRESSES),
+            max_addresses,
             max_txs: max_txs.unwrap_or(DEFAULT_MAX_TXS),
             max_eip2718_bytes: max_eip2718_bytes.unwrap_or(DEFAULT_MAX_EIP2718_BYTES),
 
             soft_evict_addresses_watermark: soft_evict_addresses_watermark
-                .unwrap_or(DEFAULT_MAX_ADDRESSES - 512),
+                .unwrap_or_else(|| max_addresses.saturating_sub(512)),
 
             soft_tx_expiry,
             hard_tx_expiry,
