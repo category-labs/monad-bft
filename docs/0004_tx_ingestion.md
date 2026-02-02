@@ -70,13 +70,17 @@ An identity is a public key that owns a wireauth session. All reputation trackin
 ### Score Computation
 
 ```
-gas_contribution = min(total_gas_spent, max_gas_contribution)
+ema_gas(t) = α × gas_this_block + (1 - α) × ema_gas(t - 1)
+α = 1 - 0.5^(block_time / ema_half_life)
 time_weight = min((time_known / time_weight_unit)^2, max_time_weight)
-decay = 0.5^(idle_time / decay_half_life)
-score = gas_contribution × time_weight × decay
+score = ema_gas × time_weight
 ```
 
-Gas contribution measures useful work by summing gas spent on transactions included in blocks. Time weight grows quadratically from 0 to 1 over 1 hour, giving established identities a 3,600x advantage over 1-minute-old ones. Quadratic growth offsets attacks using short-term IP rental. Decay halves score every 30 minutes of inactivity, requiring consistent uptime to maintain priority. The gas contribution cap ensures that gaining more bandwidth requires acquiring more identities and IPs.
+Gas contribution is tracked as an exponential moving average (EMA) of gas spent per block. The EMA naturally decays toward the current contribution rate, so peers must continuously contribute to maintain their score. Unlike a cumulative model with idle-based decay, the EMA cannot be maintained cheaply by sending occasional minimal transactions — score always converges toward the actual recent gas rate.
+
+Time weight grows quadratically from 0 to 1 over 1 hour, giving established identities a 3,600x advantage over 1-minute-old ones. Quadratic growth offsets attacks using short-term IP rental.
+
+Peers receive bandwidth proportional to their gas contribution rate without any cap. A peer contributing 5x the gas rate of another gets 5x the bandwidth from a single identity, eliminating the incentive to split into multiple identities.
 
 Default parameters:
 
@@ -84,16 +88,15 @@ Default parameters:
 |-----------|-------|-------------|
 | time_weight_unit | 1 hour | Time for weight to reach 1.0 |
 | max_time_weight | 1.0 | Cap on time multiplier |
-| max_gas_contribution | 100M gas | Cap on gas that counts toward score |
-| decay_half_life | 30 minutes | Continuous decay; score halves every 30 minutes of inactivity |
-| promotion_threshold | 1M | Score required to enter promoted pool and priority queue (1% of max_gas_contribution) |
+| ema_half_life | 24 hours | EMA half-life; score halves after 24h of inactivity |
+| promotion_threshold | configurable | Score required to enter promoted pool and priority queue |
 | max_identities | 100,000 | Eviction threshold for least recently active |
 
 ### Contribution Recording
 
-Contributions are recorded as gas spent per identity per block. When a block includes transactions from an identity, the total gas used by those transactions is added to the identity's cumulative gas contribution, up to the cap.
+Contributions are recorded as gas spent per identity per block. When a block includes transactions from an identity, the total gas used by those transactions updates the identity's EMA.
 
-Gas-based counting ties attack cost directly to on-chain fees. The cap forces attackers to acquire more identities (IPs) rather than outspending honest users from a single identity.
+Gas-based counting ties attack cost directly to on-chain fees. The EMA ensures score reflects recent contribution rate rather than historical peak, preventing attackers from accumulating score cheaply and coasting on it.
 
 The scoring model intentionally avoids negative reputation (penalties for invalid transactions or spam). This keeps the model simple. Penalties may be introduced in future iterations if the positive-only approach proves insufficient against observed attack patterns.
 
@@ -215,18 +218,19 @@ Prevention: peer scoring and WFQ limit low-score peers to 10% of total bandwidth
 
 Attacker floods txpool to crowd out competitors.
 
-Prevention: quadratic time weight makes it infeasible to acquire sufficient score short-term. Instant attacks (1min prep) require 3,600x more IPs than prepared attacks (1h prep), forcing attackers to run continuous operations with ongoing IP and gas costs.
+Prevention: quadratic time weight and EMA ramp-up make it infeasible to acquire sufficient score short-term. Long-term attacks require sustained on-chain gas expenditure at a rate proportional to the target bandwidth share.
 
-Assuming 1000 honest relays at gas cap (100M gas each), AWS IP cost $3.60/month, $0.23 gas cost per identity to reach 100M cap:
+Assumptions: 200M gas per block at 2.5 blocks/s yields 500M gas/s chain throughput. 1000 honest relays sharing full block utilization at 500k gas/s each (2h established). Gas cost of $0.001 per 100k gas.
 
-| Target BW | Attacker Prep | IPs Needed | IP Cost | Gas Cost | Total |
-|-----------|---------------|------------|---------|----------|-------|
-| 50% | 1h | 1,000 | $3,600/mo | $230 | $3,830/mo |
-| 50% | 1min | 3,600,000 | ~0 | $828,000 | $828,000 |
-| 80% | 1h | 4,000 | $14,400/mo | $920 | $15,320/mo |
-| 80% | 1min | 14,400,000 | ~0 | $3,312,000 | $3,312,000 |
+At achievable chain utilization rates, the time required to reach a target bandwidth share:
 
-Due to quadratic time weight, instant attacks are 3,600x more expensive than prepared attacks.
+| Chain Share | 50% BW | 80% BW |
+|-------------|--------|--------|
+| 10% (50M gas/s) | 28.5h | >7 days |
+| 25% (125M gas/s) | 8.8h | 79h |
+| 50% (250M gas/s) | 4.1h | 20.6h |
+
+Chain throughput is the natural hard cap — the attacker must sustain the gas rate for the entire duration, competing with all other users for block space. Dominating block space drives up gas prices, making the attack self-limiting.
 
 ### Graceful Degradation
 
