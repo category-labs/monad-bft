@@ -27,7 +27,7 @@ use monad_eth_testutil::{
     generate_block_with_txs, make_eip7702_tx, make_legacy_tx, make_signed_authorization,
     recover_tx, secret_to_eth_address, S1, S2,
 };
-use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics, PoolTransactionKind};
+use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics, PoolTxKind};
 use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner, StateBackend};
 use monad_testutil::signing::MockSignatures;
 use monad_tfm::base_fee::MIN_BASE_FEE;
@@ -79,7 +79,7 @@ fn txpool_create_proposal_lookups_bound_by_tx_limit() {
                 recover_tx(make_legacy_tx(S2, MIN_BASE_FEE.into(), 100_000, 0, 0)),
             ]
             .into_iter()
-            .map(|tx| (tx, PoolTransactionKind::owned_default()))
+            .map(|tx| (tx, PoolTxKind::owned_default()))
             .collect(),
             |_| {},
         );
@@ -164,7 +164,7 @@ fn txpool_create_proposal_no_lookup_for_unknown_authorizations() {
                 0,
             ))]
             .into_iter()
-            .map(|tx| (tx, PoolTransactionKind::owned_default()))
+            .map(|tx| (tx, PoolTxKind::owned_default()))
             .collect(),
             |_| {},
         );

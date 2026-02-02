@@ -37,17 +37,17 @@ use tracing::{debug, error, trace};
 
 use crate::pool::{
     tracked::TrackedTxList,
-    transaction::{ValidEthRecoveredAuthorization, ValidEthTransaction},
+    transaction::{PoolTx, PoolTxRecoveredAuthorization},
 };
 
 #[derive(Debug, PartialEq, Eq)]
 struct OrderedTx<'a> {
-    tx: &'a ValidEthTransaction,
+    tx: &'a PoolTx,
     effective_tip_per_gas: u128,
 }
 
 impl<'a> OrderedTx<'a> {
-    fn new(tx: &'a ValidEthTransaction, base_fee: u64) -> Option<Self> {
+    fn new(tx: &'a PoolTx, base_fee: u64) -> Option<Self> {
         let effective_tip_per_gas = tx.raw().effective_tip_per_gas(base_fee)?;
 
         Some(Self {
@@ -237,7 +237,7 @@ impl<'a> ProposalSequencer<'a> {
                     self.push(address, next_tx, queued);
                 }
 
-                for ValidEthRecoveredAuthorization {
+                for PoolTxRecoveredAuthorization {
                     authority,
                     authorization,
                 } in tx.tx.iter_valid_recovered_authorizations()
@@ -272,7 +272,7 @@ impl<'a> ProposalSequencer<'a> {
         validator: &EthBlockPolicyBlockValidator<CRT>,
         proposal: &mut Proposal,
         address: &Address,
-        tx: &ValidEthTransaction,
+        tx: &PoolTx,
     ) -> bool {
         if proposal
             .total_gas

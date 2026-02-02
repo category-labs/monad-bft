@@ -40,7 +40,7 @@ use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
 use monad_eth_block_validator::EthBlockValidator;
 use monad_eth_testutil::{recover_tx, secret_to_eth_address, S1, S2};
 use monad_eth_txpool::{
-    EthTxPool, EthTxPoolConfig, EthTxPoolEventTracker, EthTxPoolMetrics, PoolTransactionKind,
+    EthTxPool, EthTxPoolConfig, EthTxPoolEventTracker, EthTxPoolMetrics, PoolTxKind,
     TrackedTxLimitsConfig,
 };
 use monad_eth_types::{EthBlockBody, EthExecutionProtocol, EthHeader, ProposedEthHeader};
@@ -485,7 +485,7 @@ fn check_txpool_coherency(
             chain_config,
             block_txs
                 .into_iter()
-                .map(|tx| (tx, PoolTransactionKind::Forwarded))
+                .map(|tx| (tx, PoolTxKind::Forwarded))
                 .collect(),
             |_tx| {},
         );

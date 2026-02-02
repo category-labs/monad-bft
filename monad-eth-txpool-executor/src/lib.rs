@@ -34,7 +34,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_txpool::{
-    EthTxPool, EthTxPoolConfig, EthTxPoolEventTracker, PoolTransactionKind, TrackedTxLimitsConfig,
+    EthTxPool, EthTxPoolConfig, EthTxPoolEventTracker, PoolTxKind, TrackedTxLimitsConfig,
 };
 use monad_eth_txpool_types::{
     EthTxPoolDropReason, EthTxPoolEventType, EthTxPoolIpcTx, EthTxPoolTxInputStream,
@@ -553,7 +553,7 @@ where
                             match tx.secp256k1_recover() {
                                 Ok(signer) => rayon::iter::Either::Left((
                                     Recovered::new_unchecked(tx, signer),
-                                    PoolTransactionKind::Owned {
+                                    PoolTxKind::Owned {
                                         priority,
                                         extra_data,
                                     },
@@ -623,7 +623,7 @@ where
                         match tx.secp256k1_recover() {
                             Ok(signer) => rayon::iter::Either::Left((
                                 Recovered::new_unchecked(tx, signer),
-                                PoolTransactionKind::Forwarded,
+                                PoolTxKind::Forwarded,
                             )),
                             Err(_) => rayon::iter::Either::Right((
                                 *tx.tx_hash(),

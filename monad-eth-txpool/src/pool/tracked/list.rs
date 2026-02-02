@@ -28,7 +28,7 @@ use monad_tfm::base_fee::MIN_BASE_FEE;
 use monad_types::Nonce;
 use tracing::error;
 
-use super::{limits::TrackedTxLimits, ValidEthTransaction};
+use super::{limits::TrackedTxLimits, PoolTx};
 use crate::{pool::tracked::priority::Priority, EthTxPoolEventTracker};
 
 /// Stores byte-validated transactions alongside the an account_nonce to enforce at the type level
@@ -38,7 +38,7 @@ use crate::{pool::tracked::priority::Priority, EthTxPoolEventTracker};
 #[derive(Clone, Debug, Default)]
 pub struct TrackedTxList {
     account_nonce: Nonce,
-    txs: BTreeMap<Nonce, (ValidEthTransaction, Instant)>,
+    txs: BTreeMap<Nonce, (PoolTx, Instant)>,
 }
 
 impl TrackedTxList {
@@ -46,9 +46,9 @@ impl TrackedTxList {
         this_entry: VacantEntry<'_, Address, Self>,
         event_tracker: &mut EthTxPoolEventTracker<'_>,
         limit_tracker: &mut TrackedTxLimits,
-        txs: Vec<ValidEthTransaction>,
+        txs: Vec<PoolTx>,
         account_nonce: u64,
-        on_insert: &mut impl FnMut(&ValidEthTransaction),
+        on_insert: &mut impl FnMut(&PoolTx),
         last_commit_base_fee: u64,
     ) {
         let mut this = TrackedTxList {
@@ -71,11 +71,11 @@ impl TrackedTxList {
         this_entry.insert(this);
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = &ValidEthTransaction> {
+    pub fn iter(&self) -> impl Iterator<Item = &PoolTx> {
         self.txs.values().map(|(tx, _)| tx)
     }
 
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut ValidEthTransaction> {
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut PoolTx> {
         self.txs.values_mut().map(|(tx, _)| tx)
     }
 
@@ -107,7 +107,7 @@ impl TrackedTxList {
     pub fn get_queued(
         &self,
         pending_nonce_usage: Option<NonceUsage>,
-    ) -> impl Iterator<Item = &ValidEthTransaction> {
+    ) -> impl Iterator<Item = &PoolTx> {
         let mut account_nonce = pending_nonce_usage
             .map_or(self.account_nonce, |pending_nonce_usage| {
                 pending_nonce_usage.apply_to_account_nonce(self.account_nonce)
@@ -131,9 +131,9 @@ impl TrackedTxList {
         &mut self,
         event_tracker: &mut EthTxPoolEventTracker<'_>,
         limit_tracker: &mut TrackedTxLimits,
-        tx: ValidEthTransaction,
+        tx: PoolTx,
         last_commit_base_fee: u64,
-    ) -> Option<&ValidEthTransaction> {
+    ) -> Option<&PoolTx> {
         if tx.nonce() < self.account_nonce {
             event_tracker.drop(tx.hash(), EthTxPoolDropReason::NonceTooLow);
             return None;
@@ -232,10 +232,7 @@ impl TrackedTxList {
         });
 
         limit_tracker.remove_txs(removed_txs.iter());
-        event_tracker.tracked_evict_expired(
-            txs.is_empty(),
-            removed_txs.iter().map(ValidEthTransaction::hash),
-        );
+        event_tracker.tracked_evict_expired(txs.is_empty(), removed_txs.iter().map(PoolTx::hash));
 
         if txs.is_empty() {
             this.swap_remove();

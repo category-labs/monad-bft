@@ -41,12 +41,12 @@ pub const fn max_eip2718_encoded_length(execution_params: &ExecutionChainParams)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum PoolTransactionKind {
+pub enum PoolTxKind {
     Owned { priority: U256, extra_data: Vec<u8> },
     Forwarded,
 }
 
-impl PoolTransactionKind {
+impl PoolTxKind {
     pub fn owned_default() -> Self {
         Self::Owned {
             priority: DEFAULT_TX_PRIORITY,
@@ -56,30 +56,30 @@ impl PoolTransactionKind {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ValidEthTransaction {
+pub struct PoolTx {
     tx: Recovered<TxEnvelope>,
-    kind: PoolTransactionKind,
+    kind: PoolTxKind,
     forward_last_seqnum: SeqNum,
     forward_retries: usize,
     max_value: Balance,
     max_gas_cost: Balance,
-    valid_recovered_authorizations: Box<[ValidEthRecoveredAuthorization]>,
+    valid_recovered_authorizations: Box<[PoolTxRecoveredAuthorization]>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ValidEthRecoveredAuthorization {
+pub struct PoolTxRecoveredAuthorization {
     pub authority: Address,
     pub authorization: Authorization,
 }
 
-impl ValidEthTransaction {
+impl PoolTx {
     pub fn validate<ST, SCT>(
         last_commit: &ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>,
         chain_id: u64,
         chain_params: &ChainParams,
         execution_params: &ExecutionChainParams,
         tx: Recovered<TxEnvelope>,
-        kind: PoolTransactionKind,
+        kind: PoolTxKind,
     ) -> Result<Self, (Recovered<TxEnvelope>, EthTxPoolDropReason)>
     where
         ST: CertificateSignatureRecoverable,
@@ -150,7 +150,7 @@ impl ValidEthTransaction {
                             return Some(Err(EthTxPoolDropReason::InvalidSignature));
                         }
 
-                        Some(Ok(ValidEthRecoveredAuthorization {
+                        Some(Ok(PoolTxRecoveredAuthorization {
                             authority,
                             authorization: signed_authorization.inner().clone(),
                         }))
@@ -249,25 +249,25 @@ impl ValidEthTransaction {
 
     pub fn tx_kind_priority(&self) -> U256 {
         match self.kind {
-            PoolTransactionKind::Owned { priority, .. } => priority,
-            PoolTransactionKind::Forwarded => DEFAULT_TX_PRIORITY,
+            PoolTxKind::Owned { priority, .. } => priority,
+            PoolTxKind::Forwarded => DEFAULT_TX_PRIORITY,
         }
     }
 
     pub fn is_owned(&self) -> bool {
         match self.kind {
-            PoolTransactionKind::Owned { .. } => true,
-            PoolTransactionKind::Forwarded => false,
+            PoolTxKind::Owned { .. } => true,
+            PoolTxKind::Forwarded => false,
         }
     }
 
     pub fn is_owned_and_forwardable(&self) -> bool {
         match &self.kind {
-            PoolTransactionKind::Owned {
+            PoolTxKind::Owned {
                 priority,
                 extra_data: _,
             } => priority <= &DEFAULT_TX_PRIORITY,
-            PoolTransactionKind::Forwarded => false,
+            PoolTxKind::Forwarded => false,
         }
     }
 
@@ -302,7 +302,7 @@ impl ValidEthTransaction {
 
     pub fn iter_valid_recovered_authorizations(
         &self,
-    ) -> impl Iterator<Item = &ValidEthRecoveredAuthorization> {
+    ) -> impl Iterator<Item = &PoolTxRecoveredAuthorization> {
         self.valid_recovered_authorizations.iter()
     }
 

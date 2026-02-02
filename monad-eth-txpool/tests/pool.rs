@@ -45,7 +45,7 @@ use monad_eth_testutil::{
 };
 use monad_eth_txpool::{
     max_eip2718_encoded_length, EthTxPool, EthTxPoolConfig, EthTxPoolEventTracker,
-    EthTxPoolMetrics, PoolTransactionKind, TrackedTxLimitsConfig,
+    EthTxPoolMetrics, PoolTxKind, TrackedTxLimitsConfig,
 };
 use monad_eth_txpool_types::EthTxPoolSnapshot;
 use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner};
@@ -206,9 +206,9 @@ fn run_custom_iter<const N: usize>(
                         vec![(
                             tx.clone(),
                             if owned {
-                                PoolTransactionKind::owned_default()
+                                PoolTxKind::owned_default()
                             } else {
-                                PoolTransactionKind::Forwarded
+                                PoolTxKind::Forwarded
                             },
                         )],
                         |inserted_tx| {
@@ -263,9 +263,9 @@ fn run_custom_iter<const N: usize>(
                             (
                                 tx,
                                 if owned {
-                                    PoolTransactionKind::owned_default()
+                                    PoolTxKind::owned_default()
                                 } else {
-                                    PoolTransactionKind::Forwarded
+                                    PoolTxKind::Forwarded
                                 },
                             )
                         })
