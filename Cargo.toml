@@ -202,7 +202,6 @@ sorted_vector_map = "0.2.0"
 sorted-vec = "0.8.3"
 strum = "0.26.3"
 syn = { version = "1.0.0", features = ["full"] }
-tai64 = "4.0"
 tempfile = "3.5"
 test-case = "3.0"
 thiserror = "1.0"

@@ -6399,7 +6399,6 @@ dependencies = [
  "rstest",
  "secp256k1",
  "serde",
- "tai64",
  "thiserror 1.0.69",
  "tikv-jemallocator",
  "tracing",
@@ -8979,12 +8978,6 @@ name = "tagptr"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7b2093cf4c8eb1e67749a6762251bc9cd836b6fc171623bd0a9d324d37af2417"
-
-[[package]]
-name = "tai64"
-version = "4.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "014639506e4f425c78e823eabf56e71c093f940ae55b43e58f682e7bc2f5887a"
 
 [[package]]
 name = "take_mut"

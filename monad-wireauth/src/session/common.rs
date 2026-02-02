@@ -15,12 +15,11 @@
 
 use std::{net::SocketAddr, time::Duration};
 
-use tai64::Tai64N;
 use tracing::debug;
 
 use crate::{
     config::RETRY_ALWAYS,
-    protocol::{common::*, cookies},
+    protocol::{common::*, cookies, tai64::Tai64N},
 };
 
 #[derive(Debug, Clone)]

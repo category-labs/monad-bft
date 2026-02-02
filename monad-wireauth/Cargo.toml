@@ -17,7 +17,6 @@ hex.workspace = true
 lru.workspace = true
 blake3.workspace = true
 aegis.workspace = true
-tai64.workspace = true
 zeroize = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]

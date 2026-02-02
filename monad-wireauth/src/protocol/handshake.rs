@@ -13,7 +13,6 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use tai64::Tai64N;
 use zeroize::Zeroizing;
 
 use super::{
@@ -24,6 +23,7 @@ use super::{
     },
     errors::{CryptoError, HandshakeError},
     messages::*,
+    tai64::Tai64N,
 };
 use crate::{hash, keyed_hash};
 
@@ -120,7 +120,7 @@ where
     let key = keyed_hash!(temp.as_ref(), inititiator.chaining_key.as_ref(), &[0x2]);
 
     let timestamp: Tai64N = timestamp.into();
-    msg.encrypted_timestamp = timestamp.to_bytes();
+    msg.encrypted_timestamp = timestamp.into();
     msg.encrypted_timestamp_tag = encrypt_in_place(
         &(&key).into(),
         &(0u64.into()),
@@ -217,11 +217,7 @@ pub fn accept_handshake_init(
     )
     .map_err(HandshakeError::TimestampDecryptionFailed)?;
 
-    let timestamp = Tai64N::from_slice(&msg.encrypted_timestamp).map_err(|_| {
-        HandshakeError::InvalidTimestamp {
-            size: msg.encrypted_timestamp.len(),
-        }
-    })?;
+    let timestamp = Tai64N::try_from(msg.encrypted_timestamp)?;
 
     Ok((state, timestamp))
 }
@@ -879,7 +875,7 @@ mod tests {
 
             prop_assert_eq!(decoded_timestamp, timestamp);
 
-            let normal_timestamp = Tai64N::now();
+            let normal_timestamp: Tai64N = SystemTime::now().into();
             let _ = decoded_timestamp.cmp(&normal_timestamp);
             let _ = decoded_timestamp <= normal_timestamp;
             let _ = decoded_timestamp >= normal_timestamp;

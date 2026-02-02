@@ -23,8 +23,8 @@ pub enum HandshakeError {
     #[error("timestamp decryption failed: {0}")]
     TimestampDecryptionFailed(#[source] CryptoError),
 
-    #[error("invalid timestamp format: unable to parse TAI64N from {size} bytes")]
-    InvalidTimestamp { size: usize },
+    #[error("invalid timestamp: {0}")]
+    InvalidTimestamp(#[from] super::tai64::Tai64NError),
 
     #[error("empty message decryption failed: {0}")]
     EmptyMessageDecryptionFailed(#[source] CryptoError),

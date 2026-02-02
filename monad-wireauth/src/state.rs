@@ -20,10 +20,10 @@ use std::{
 };
 
 use monad_executor::ExecutorMetrics;
-use tai64::Tai64N;
 
 use crate::{
     metrics::*,
+    protocol::tai64::Tai64N,
     session::{InitiatorState, ResponderState, SessionIndex, TransportState},
 };
 
@@ -740,7 +740,7 @@ mod tests {
         let validated_init = crate::session::responder::ValidatedHandshakeInit {
             handshake_state,
             remote_public_key: *remote_public_key,
-            timestamp: Tai64N::now(),
+            timestamp: SystemTime::now().into(),
         };
 
         let config = Config::default();

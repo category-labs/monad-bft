@@ -19,8 +19,6 @@ use std::{
     time::Duration,
 };
 
-use tai64::Tai64N;
-
 use super::{
     common::{add_jitter, RenewedTimer, SessionError, SessionState, SessionTimeoutResult},
     transport::TransportState,
@@ -31,6 +29,7 @@ use crate::{
         common::*,
         handshake::{self},
         messages::{DataPacket, HandshakeInitiation, HandshakeResponse, Plaintext},
+        tai64::Tai64N,
     },
 };
 

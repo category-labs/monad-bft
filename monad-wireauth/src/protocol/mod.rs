@@ -19,5 +19,6 @@ pub mod crypto;
 pub mod errors;
 pub mod handshake;
 pub mod messages;
+pub mod tai64;
 
 pub use common::SessionIndex;
