@@ -106,7 +106,7 @@ To prevent identity table eviction attacks, the scorer maintains two separate po
 | Promoted | 90,000 | score ≥ promotion_threshold | LRU within pool |
 | Newcomers | 10,000 | score < promotion_threshold | LRU within pool |
 
-New identities enter the newcomers pool. When score crosses the promotion threshold, the identity moves to the promoted pool. Flooding with new identities only evicts other newcomers; promoted peers remain protected.
+New identities enter the newcomers pool. Migration between pools happens on demand: when a newcomer's score crosses above the promotion threshold and the promoted pool is full, the LRU promoted identity with a lower score is evicted back to newcomers to make room. If no such identity exists, the newcomer stays in its current pool. When a promoted identity's score decays below the threshold, it moves back to the newcomers pool. Flooding with new identities only evicts other newcomers; promoted peers remain protected.
 
 Scores are not persisted across restarts. On node restart, all identities start fresh with zero score. Persistence may be considered in future iterations.
 
@@ -121,10 +121,11 @@ The fair queue maintains two separate pools with distinct policies:
 | Bandwidth share | 90% | 10% |
 | Scheduling | Weighted by score | Equal weights |
 | Max size | 100,000 | 100,000 |
+| On overflow | Drop incoming | Drop incoming |
 
 Incoming transactions are routed based on authentication status and score. Authenticated identities with scores at or above `promotion_threshold` enter the priority pool; all others enter the regular pool.
 
-The bandwidth split between pools defaults to 90/10. During dequeue, a counter cycles to probabilistically select which pool to serve, achieving the configured ratio over time.
+The bandwidth split between pools defaults to 90/10. During dequeue, a counter cycles to probabilistically select which pool to serve, achieving the configured ratio over time. The design is work-conserving: when the selected pool is empty, the other pool is served instead.
 
 ### Weighted Fair Queueing
 
@@ -194,7 +195,7 @@ The priority pool uses timeout-based eviction, assuming most peers complete reas
 
 ## Impact on Other Components
 
-Peer discovery: A new port tag `AuthTxIngestion = 3` with default port 8002. Nodes advertise this port in their name record to indicate support for authenticated transaction ingestion.
+Peer discovery: A new port tag `AuthTxIngestion = 3` with default port 8002. Nodes advertise this port in their name record to indicate support for authenticated transaction ingestion. The port accepts connections from any entity that can establish a wireauth session—it is not restricted to validators. The primary consumers are RPC nodes that relay user transactions to leaders.
 
 Transaction pool: The forwarding manager integrates the fair queue for ingress scheduling. Transactions are dequeued in timed chunks for processing as before.
 
