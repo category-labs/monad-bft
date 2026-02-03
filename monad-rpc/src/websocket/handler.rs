@@ -191,7 +191,7 @@ async fn handler(
                     Some(Ok(AggregatedMessage::Text(body))) => {
                         last_heartbeat = Instant::now();
 
-                        let request = to_request(body.as_bytes());
+                        let request = parse_request(body.as_bytes());
 
                         match request {
                             Ok(req) => {
@@ -212,7 +212,7 @@ async fn handler(
                     Some(Ok(AggregatedMessage::Binary(body))) => {
                         last_heartbeat = Instant::now();
 
-                        let request = to_request(&body);
+                        let request = parse_request(&body);
 
                         match request {
                             Ok(req) => {
@@ -665,7 +665,7 @@ fn to_response<S: Serialize + std::fmt::Debug>(resp: &S) -> String {
     }
 }
 
-fn to_request<'p>(body: &'p bytes::Bytes) -> Result<Request<'p>, JsonRpcError> {
+fn parse_request<'p>(body: &'p bytes::Bytes) -> Result<Request<'p>, JsonRpcError> {
     let request =
         RequestWrapper::from_body_bytes(body).map_err(|_| JsonRpcError::invalid_params())?;
 

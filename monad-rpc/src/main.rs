@@ -517,15 +517,14 @@ mod tests {
         .await
     }
 
-    async fn recover_response_body(resp: ServiceResponse<impl MessageBody>) -> serde_json::Value {
+    async fn recover_response_body(
+        resp: ServiceResponse<impl MessageBody>,
+    ) -> ResponseWrapper<Response> {
         let b = to_bytes(resp.into_body())
             .await
             .unwrap_or_else(|_| panic!("body to_bytes failed"));
-        serde_json::from_slice(&b)
-            .inspect_err(|_| {
-                println!("failed to serialize {:?}", &b);
-            })
-            .unwrap()
+
+        ResponseWrapper::from_body_bytes(b).unwrap()
     }
 
     #[actix_web::test]
@@ -546,11 +545,14 @@ mod tests {
             .set_payload(payload.to_string())
             .to_request();
         let resp = app.call(req).await.unwrap();
-        let resp: jsonrpc::Response =
-            serde_json::from_value(recover_response_body(resp).await).unwrap();
-        match resp.error {
-            Some(e) => assert_eq!(e.code, -32601),
-            None => panic!("expected error in response"),
+        let resp = recover_response_body(resp).await;
+
+        match resp {
+            ResponseWrapper::Batch(_) => panic!("expected single response"),
+            ResponseWrapper::Single(resp) => match resp.error {
+                Some(e) => assert_eq!(e.code, -32601),
+                None => panic!("expected error in response"),
+            },
         }
 
         // payload too large
@@ -588,18 +590,27 @@ mod tests {
             .to_request();
 
         let resp = app.call(req).await.unwrap();
-        let resp: jsonrpc::Response =
-            serde_json::from_value(recover_response_body(resp).await).unwrap();
 
-        match resp.error {
-            Some(e) => assert_eq!(e.code, -32601),
-            None => panic!("expected error in response"),
+        let resp = recover_response_body(resp).await;
+
+        match resp {
+            ResponseWrapper::Batch(_) => panic!("expected single response"),
+            ResponseWrapper::Single(resp) => match resp.error {
+                Some(e) => assert_eq!(e.code, -32601),
+                None => panic!("expected error in response"),
+            },
         }
     }
 
     #[allow(non_snake_case)]
     #[test_case(json!([]), ResponseWrapper::Single(Response::new(None, Some(JsonRpcError::custom("empty batch request".to_string())), RequestId::Null)); "empty batch")]
     #[test_case(json!([1]), ResponseWrapper::Batch(vec![Response::new(None, Some(JsonRpcError::invalid_request()), RequestId::Null)]); "invalid batch but not empty")]
+    #[test_case(json!([
+        {"jsonrpc": "2.0", "method": "eth_chainId", "params": [], "id": 1}
+    ]),
+    ResponseWrapper::Batch(
+        vec![Response::new(Some(serde_json::from_str("\"0x539\"").unwrap()), None, RequestId::Number(1))]
+    ); "valid batch request")]
     #[test_case(json!([1, 2, 3, 4]),
     ResponseWrapper::Batch(vec![
         Response::new(None, Some(JsonRpcError::invalid_request()), RequestId::Null),
@@ -643,8 +654,9 @@ mod tests {
             .to_request();
 
         let resp = app.call(req).await.unwrap();
-        let resp: jsonrpc::ResponseWrapper<Response> =
-            serde_json::from_value(recover_response_body(resp).await).unwrap();
+
+        let resp = recover_response_body(resp).await;
+
         assert_eq!(resp, expected);
     }
 

@@ -184,11 +184,24 @@ impl PartialEq for Response {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Serialize, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum ResponseWrapper<T> {
     Single(T),
     Batch(Vec<T>),
+}
+
+impl<T> ResponseWrapper<T>
+where
+    T: for<'de> Deserialize<'de>,
+{
+    pub fn from_body_bytes(body: bytes::Bytes) -> serde_json::Result<Self> {
+        if let Ok(batch) = serde_json::from_slice(body.as_ref()) {
+            return Ok(Self::Batch(batch));
+        }
+
+        serde_json::from_slice(body.as_ref()).map(Self::Single)
+    }
 }
 
 impl Response {
