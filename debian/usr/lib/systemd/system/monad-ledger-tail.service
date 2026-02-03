@@ -7,7 +7,7 @@ Type=simple
 ExecStart=/usr/local/bin/monad-ledger-tail 
 EnvironmentFile=-/home/monad/.env
 User=monad
-Restart=no
+Restart=always
 Group=monad
 LimitNOFILE=1048576
 # Hugemem configs below
