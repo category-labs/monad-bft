@@ -10,7 +10,7 @@ ExecStart=/usr/local/bin/monad-indexer \
     --archive-sink "${ARCHIVE_SINK}" \
     --otel-endpoint "http://127.0.0.1:4317"
 EnvironmentFile=-/home/monad/.env
-Restart=no
+Restart=always
 User=monad
 Group=monad
 DeviceAllow=/dev/triedb rw
