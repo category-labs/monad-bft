@@ -186,6 +186,7 @@ impl LogsIndexArchiver {
         let cursor = self
             .collection
             .find(query)
+            .sort(doc! { "block_number": 1 })
             // do not return index fields, only kv
             .projection(doc! { "_id": true, "value": true })
             .await

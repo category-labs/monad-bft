@@ -835,6 +835,7 @@ async fn try_collect_logs_stream_with_heuristic_response_limit<E>(
 
     let num_blocks_total = to_block + 1 - from_block;
 
+    let mut last_block_number_processed = None;
     let mut num_blocks_processed = 0u64;
     let mut heuristic_response_size = 0u64;
 
@@ -844,16 +845,21 @@ async fn try_collect_logs_stream_with_heuristic_response_limit<E>(
         match result {
             Err(err) => return Ok(Err(err)),
             Ok((block_number, logs)) => {
-                if block_number != from_block.saturating_add(num_blocks_processed) {
-                    error!(
-                        ?from_block,
-                        ?num_blocks_processed,
-                        ?block_number,
-                        "logs stream block numbers inconsistent"
-                    );
-                    return Err(JsonRpcError::internal_error(
-                        "Logs out of order".to_string(),
-                    ));
+                if let Some(last_block_number_processed) =
+                    last_block_number_processed.replace(block_number)
+                {
+                    if block_number <= last_block_number_processed {
+                        error!(
+                            ?from_block,
+                            ?num_blocks_processed,
+                            ?last_block_number_processed,
+                            ?block_number,
+                            "logs stream block numbers inconsistent"
+                        );
+                        return Err(JsonRpcError::internal_error(
+                            "Logs out of order".to_string(),
+                        ));
+                    }
                 }
 
                 num_blocks_processed += 1;
