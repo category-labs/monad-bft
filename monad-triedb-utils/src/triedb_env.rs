@@ -29,6 +29,7 @@ use alloy_consensus::{Header, ReceiptEnvelope, TxEnvelope};
 use alloy_primitives::{keccak256, Address, FixedBytes, U256};
 use alloy_rlp::{encode_list, BytesMut, Decodable, Encodable};
 use futures::{channel::oneshot, FutureExt};
+use monad_eth_types::AccountCodeOrHash;
 use monad_triedb::{TraverseEntry, TriedbHandle};
 use monad_types::{BlockId, Hash, SeqNum};
 use serde::{Deserialize, Serialize};
@@ -95,7 +96,7 @@ struct AsyncRequest {
 pub struct Account {
     pub nonce: u64,
     pub balance: U256,
-    pub code_hash: [u8; 32],
+    pub code_or_hash: AccountCodeOrHash,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -519,7 +520,7 @@ pub trait Triedb: Debug {
         addr: EthAddress,
         at: EthStorageKey,
     ) -> impl std::future::Future<Output = Result<String, String>> + Send;
-    fn get_code(
+    fn get_code_db(
         &self,
         key: BlockKey,
         code_hash: EthCodeHash,
@@ -971,7 +972,7 @@ impl Triedb for TriedbEnv {
             Some(account) => Ok(Account {
                 nonce: account.nonce,
                 balance: account.balance,
-                code_hash: account.code_hash.map_or([0u8; 32], |bytes| bytes.0),
+                code_or_hash: account.code_or_hash,
             }),
             None => Ok(Account::default()),
         }
@@ -999,7 +1000,7 @@ impl Triedb for TriedbEnv {
     }
 
     #[tracing::instrument(level = "debug")]
-    async fn get_code(
+    async fn get_code_db(
         &self,
         block_key: BlockKey,
         code_hash: EthCodeHash,
