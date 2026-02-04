@@ -128,8 +128,9 @@ async fn main() {
     > = FileBlockPersist::new(ledger_path.clone());
 
     let mut last_high_certificate = RoundCertificate::Qc(QuorumCertificate::genesis_qc());
+    let mut last_voted_head: Option<BlockId> = None;
     let mut tip_stream = Box::pin(latest_tip_stream(&forkpoint_path, &ledger_path));
-    while let Some((high_certificate, proposed_head)) = tip_stream.next().await {
+    while let Some((high_certificate, proposed_head, voted_head)) = tip_stream.next().await {
         let now_ts = std::time::UNIX_EPOCH.elapsed().unwrap();
 
         if last_high_certificate != high_certificate {
@@ -201,6 +202,23 @@ async fn main() {
             );
         }
 
+        // Emit voted_block when voted_head changes
+        let voted_block_id = voted_head.get_id();
+        if last_voted_head.as_ref() != Some(&voted_block_id) {
+            info!(
+                round =? voted_head.block_round.0,
+                parent_round =? voted_head.qc.get_round().0,
+                epoch =? voted_head.epoch.0,
+                seq_num =? voted_head.seq_num.0,
+                author =? voted_head.author,
+                block_ts_ms =? voted_head.timestamp_ns / 1_000_000,
+                now_ts_ms =? now_ts.as_millis(),
+                author_address = addresses.get(&voted_head.author.pubkey()).cloned().unwrap_or_default(),
+                "voted_block"
+            );
+            last_voted_head = Some(voted_block_id);
+        }
+
         if last_high_certificate != high_certificate {
             if let RoundCertificate::Qc(qc) = &high_certificate {
                 if let Some(parent_block) = visited_blocks.peek(&qc.get_block_id()) {
@@ -243,6 +261,7 @@ pub fn latest_tip_stream(
     Item = (
         RoundCertificate<SignatureType, SignatureCollectionType, ExecutionProtocolType>,
         BlockHeader,
+        BlockHeader,
     ),
 > {
     let inotify = Inotify::init().expect("error initializing inotify");
@@ -256,7 +275,7 @@ pub fn latest_tip_stream(
             },
             WatchMask::CLOSE_WRITE,
         )
-        .expect("failed to watch ledger path");
+        .expect("failed to watch ledger headers path");
     inotify
         .watches()
         .add(
@@ -268,6 +287,10 @@ pub fn latest_tip_stream(
             WatchMask::CLOSE_WRITE | WatchMask::MOVE,
         )
         .expect("failed to watch forkpoint path");
+    inotify
+        .watches()
+        .add(ledger_path, WatchMask::CLOSE_WRITE | WatchMask::CREATE)
+        .expect("failed to watch ledger path for voted_head");
 
     let inotify_buffer = [0; 1024];
     let inotify_events = inotify
@@ -291,7 +314,8 @@ pub fn latest_tip_stream(
                 )
                 .ok()?;
                 let proposed_head = block_persist.read_proposed_head_bft_header().ok()?;
-                Some((forkpoint_config.high_certificate, proposed_head))
+                let voted_head = block_persist.read_voted_head_bft_header().ok()?;
+                Some((forkpoint_config.high_certificate, proposed_head, voted_head))
             }
             Err(err) if err.kind() == ErrorKind::InvalidInput => {
                 warn!(

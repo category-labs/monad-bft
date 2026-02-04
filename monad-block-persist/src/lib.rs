@@ -154,6 +154,24 @@ where
 
         Ok(header)
     }
+
+    pub fn read_voted_head_bft_header(
+        &self,
+    ) -> std::io::Result<ConsensusBlockHeader<ST, SCT, EPT>> {
+        let mut file = File::open(&self.voted_head_path)?;
+        let size = file.metadata()?.len();
+        let mut buf = vec![0; size as usize];
+        file.read_exact(&mut buf)?;
+
+        let header = alloy_rlp::decode_exact(&buf).map_err(|err| {
+            std::io::Error::other(format!(
+                "failed to rlp decode ledger voted_head bft header, err={:?}",
+                err
+            ))
+        })?;
+
+        Ok(header)
+    }
 }
 
 impl<ST, SCT, EPT> BlockPersist<ST, SCT, EPT> for FileBlockPersist<ST, SCT, EPT>
