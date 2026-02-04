@@ -40,7 +40,7 @@ pub fn rpc(attr_args: TokenStream, decorated: TokenStream) -> TokenStream {
     let output = &input.sig.output;
     let output_info = extract_output_info(output.clone());
 
-    let docs = extract_docs(&input.attrs);
+    let docs = extract_docs(&input.attrs, attr_args.experimental);
 
     let name_ident: Ident = Ident::new(
         &to_upper_camel_case(format!("{}_NAME", fn_name).as_str()),
@@ -130,8 +130,8 @@ pub fn rpc(attr_args: TokenStream, decorated: TokenStream) -> TokenStream {
     })
 }
 
-fn extract_docs(attrs: &[Attribute]) -> String {
-    attrs
+fn extract_docs(attrs: &[Attribute], experimental: bool) -> String {
+    let docs = attrs
         .iter()
         .filter(|attr| attr.path.is_ident("doc"))
         .filter_map(|attr| {
@@ -146,34 +146,52 @@ fn extract_docs(attrs: &[Attribute]) -> String {
             }
         })
         .collect::<Vec<_>>()
-        .join("\n")
+        .join("\n");
+
+    if experimental {
+        format!(
+            "> **Warning:** This RPC method is experimental and may not be supported long-term.\n\n{}",
+            docs
+        )
+    } else {
+        docs
+    }
 }
 
 #[derive(Debug, Default)]
 struct Args {
     method_name: Option<String>,
     ignore_inputs: Vec<String>,
+    experimental: bool,
 }
 
 fn extract_attrs(attrs: &[NestedMeta]) -> Args {
     let mut args = Args::default();
 
     for attr in attrs {
-        if let NestedMeta::Meta(Meta::NameValue(nv)) = attr {
-            if nv.path.is_ident("method") {
-                if let Lit::Str(lit) = &nv.lit {
-                    args.method_name = Some(lit.value());
+        match attr {
+            NestedMeta::Meta(Meta::NameValue(nv)) => {
+                if nv.path.is_ident("method") {
+                    if let Lit::Str(lit) = &nv.lit {
+                        args.method_name = Some(lit.value());
+                    }
                 }
-            }
 
-            if nv.path.is_ident("ignore") {
-                if let Lit::Str(lit) = &nv.lit {
-                    let value = lit.value();
-                    for item in value.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
-                        args.ignore_inputs.push(item.to_string());
+                if nv.path.is_ident("ignore") {
+                    if let Lit::Str(lit) = &nv.lit {
+                        let value = lit.value();
+                        for item in value.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                            args.ignore_inputs.push(item.to_string());
+                        }
                     }
                 }
             }
+            NestedMeta::Meta(Meta::Path(path)) => {
+                if path.is_ident("experimental") {
+                    args.experimental = true;
+                }
+            }
+            _ => {}
         }
     }
 
