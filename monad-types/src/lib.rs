@@ -172,6 +172,12 @@ impl RoundSpan {
     }
 }
 
+impl From<RoundSpan> for std::ops::Range<Round> {
+    fn from(span: RoundSpan) -> Self {
+        span.start..span.end
+    }
+}
+
 /// Consensus epoch
 ///
 /// During an epoch, the validator set remain stable: no validator is allowed to
