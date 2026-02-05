@@ -309,6 +309,11 @@ impl<PD: PeerDiscoveryAlgo> PeerDiscoveryDriver<PD> {
         self.pd.get_name_records()
     }
 
+    #[doc(hidden)]
+    pub fn inner(&self) -> &PD {
+        &self.pd
+    }
+
     pub fn get_name_record(
         &self,
         id: &NodeId<CertificateSignaturePubKey<PD::SignatureType>>,

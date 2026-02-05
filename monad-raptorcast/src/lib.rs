@@ -1216,7 +1216,6 @@ where
                         Some(name_record) => {
                             send_with_record(
                                 &mut this.dual_socket,
-                                &this.peer_discovery_driver,
                                 &mut this.message_builder,
                                 &router_message,
                                 UdpPriority::Regular,
@@ -1392,9 +1391,8 @@ fn send<ST, PD, AP>(
     ensure_authenticated_sessions(dual_socket, peer_discovery_driver, build_target.iter());
 }
 
-fn send_with_record<ST, PD, AP>(
+fn send_with_record<ST, AP>(
     dual_socket: &mut auth::DualSocketHandle<AP>,
-    peer_discovery_driver: &Arc<Mutex<PeerDiscoveryDriver<PD>>>,
     message_builder: &mut OwnedMessageBuilder<ST>,
     message: &Bytes,
     priority: UdpPriority,
@@ -1402,12 +1400,10 @@ fn send_with_record<ST, PD, AP>(
     name_record: &NameRecord,
 ) where
     ST: CertificateSignatureRecoverable,
-    PD: PeerDiscoveryAlgo<SignatureType = ST>,
     AP: auth::AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
 {
     let build_target: BuildTarget<'_, CertificateSignaturePubKey<ST>> =
         BuildTarget::PointToPoint(target);
-    let should_authenticate = name_record.authenticated_udp_socket().is_some();
 
     {
         let dual_socket_cell = std::cell::RefCell::new(&mut *dual_socket);
@@ -1428,8 +1424,19 @@ fn send_with_record<ST, PD, AP>(
             .unwrap_log_on_error(message, &build_target);
     }
 
-    if should_authenticate {
-        ensure_authenticated_sessions(dual_socket, peer_discovery_driver, std::iter::once(target));
+    if let Some(auth_addr) = name_record.authenticated_udp_socket() {
+        let addr = SocketAddr::V4(auth_addr);
+        if !dual_socket.is_connected_socket_and_public_key(&addr, &target.pubkey()) {
+            if let Err(e) = dual_socket.connect(&target.pubkey(), addr, DEFAULT_RETRY_ATTEMPTS) {
+                warn!(
+                    target=?target,
+                    auth_addr=?auth_addr,
+                    error=?e,
+                    "failed to initiate connection to authenticated endpoint"
+                );
+            }
+            dual_socket.flush();
+        }
     }
 }
 
@@ -1565,12 +1572,15 @@ where
             return None;
         }
 
-        if let Some(auth_addr) = self
-            .dual_socket
-            .borrow()
-            .get_socket_by_public_key(&node_id.pubkey())
-        {
-            return Some(auth_addr);
+        if let Some(auth_addr) = self.name_record.authenticated_udp_socket() {
+            let addr = SocketAddr::V4(auth_addr);
+            if self
+                .dual_socket
+                .borrow()
+                .is_connected_socket_and_public_key(&addr, &node_id.pubkey())
+            {
+                return Some(addr);
+            }
         }
 
         Some(SocketAddr::V4(self.name_record.udp_socket()))
