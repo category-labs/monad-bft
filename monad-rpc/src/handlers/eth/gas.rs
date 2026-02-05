@@ -272,7 +272,6 @@ pub async fn monad_eth_estimateGas<T: Triedb>(
     };
 
     let gas_specified = params.tx.gas.is_some();
-    let provider_gas_limit = provider_gas_limit.min(header.header.gas_limit);
     let original_tx_gas = params.tx.gas.unwrap_or(U256::from(header.header.gas_limit));
     fill_gas_params(
         triedb_env,
