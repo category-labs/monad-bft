@@ -31,7 +31,7 @@ the filter operates in three modes based on load:
 | sessions >= `low_watermark_sessions` and cookie valid | apply per-ip rate limiting via lru cache |
 | sessions < `low_watermark_sessions` | no additional measures |
 
-defaults: `high_watermark_sessions`=100,000, `handshake_rate_limit`=2000/sec, `low_watermark_sessions`=10,000, `ip_rate_limit_window`=10s, `max_sessions_per_ip`=10, `ip_history_capacity`=1,000,000
+defaults: `high_watermark_sessions`=100,000, `handshake_rate_limit`=2000/sec, `connect_rate_limit`=1000/sec, `low_watermark_sessions`=10,000, `ip_rate_limit_window`=10s, `max_sessions_per_ip`=10, `ip_history_capacity`=1,000,000
 
 at 2000 handshakes/sec, approximately 400ms of cpu time per second is spent on handshake-related computation during such attack.
 
@@ -85,6 +85,7 @@ session_decrypt         time:   [166.11 ns 168.75 ns 171.20 ns]
 | `monad.wireauth.filter.pass` | handshake requests that passed all filters |
 | `monad.wireauth.filter.send_cookie` | cookie challenges sent (between low and high watermark) |
 | `monad.wireauth.filter.drop` | handshake requests rejected due to rate limits |
+| `monad.wireauth.rate_limit.connect` | outbound connect attempts rejected due to rate limits |
 
 ### api operations
 
@@ -152,6 +153,8 @@ session_decrypt         time:   [166.11 ns 168.75 ns 171.20 ns]
 | `max_session_duration` | Duration | 7h | absolute session lifetime regardless of activity (forces rekey) |
 | `handshake_rate_limit` | u64 | 2000 | max handshake requests processed per second (dos protection) |
 | `handshake_rate_reset_interval` | Duration | 1s | window for handshake rate limiting |
+| `connect_rate_limit` | u64 | 1000 | max outbound connect attempts per second (dos protection) |
+| `connect_rate_reset_interval` | Duration | 1s | window for outbound connect rate limiting |
 | `cookie_refresh_duration` | Duration | 120s | cookie validity period (responder rotates cookie key) |
 | `low_watermark_sessions` | usize | 10000 | below this threshold, accept all handshakes without cookie challenge |
 | `high_watermark_sessions` | usize | 100000 | at this threshold, drop all incoming handshake requests |

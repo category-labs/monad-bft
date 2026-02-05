@@ -53,6 +53,8 @@ pub struct API<C: Context, K: AsRef<monad_secp::KeyPair> = monad_secp::KeyPair> 
     context: C,
     metrics: ExecutorMetrics,
     last_tick: Option<Duration>,
+    connect_rate_counter: u64,
+    connect_rate_last_reset: Duration,
 }
 
 impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
@@ -88,6 +90,8 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
             context,
             metrics: ExecutorMetrics::default(),
             last_tick: None,
+            connect_rate_counter: 0,
+            connect_rate_last_reset: Duration::ZERO,
         }
     }
 
@@ -267,6 +271,8 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
         self.metrics[GAUGE_WIREAUTH_API_CONNECT] += 1;
         debug!(retry_attempts, "initiating connection");
 
+        self.check_connect_rate_limit()?;
+
         // Cookies are looked up from initiated sessions for simplicity.
         // In the future, this can be improved to look up from both initiated and accepted sessions.
         let cookie = self
@@ -283,6 +289,27 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
         self.enqueue_packet(remote_addr, message);
         self.insert_timer(timer, local_index);
 
+        Ok(())
+    }
+
+    fn check_connect_rate_limit(&mut self) -> Result<()> {
+        let duration_since_start = self.context.duration_since_start();
+        let reset_interval = self.config.connect_rate_reset_interval;
+        if duration_since_start.saturating_sub(self.connect_rate_last_reset) >= reset_interval {
+            self.connect_rate_counter = 0;
+            self.connect_rate_last_reset = duration_since_start;
+        }
+
+        if self.connect_rate_counter >= self.config.connect_rate_limit {
+            self.metrics[GAUGE_WIREAUTH_RATE_LIMIT_CONNECT] += 1;
+            self.metrics[GAUGE_WIREAUTH_ERROR_CONNECT] += 1;
+            return Err(Error::ConnectRateLimited {
+                limit: self.config.connect_rate_limit,
+                interval: self.config.connect_rate_reset_interval,
+            });
+        }
+
+        self.connect_rate_counter += 1;
         Ok(())
     }
 
