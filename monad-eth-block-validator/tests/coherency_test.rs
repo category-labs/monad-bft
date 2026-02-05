@@ -468,7 +468,7 @@ fn check_txpool_coherency(
             NopStateBackend,
             MonadChainConfig,
             MonadChainRevision,
-        >>::update_committed_block(&mut block_policy, extending_block, chain_config);
+        >>::update_committed_block(&mut block_policy, extending_block);
     }
 
     // insert transactions of the incoming block into txpool
@@ -720,7 +720,6 @@ fn create_test_block_helper(
         .compute_base_fee::<EthValidatedBlock<NopSignature, MockSignatures<NopSignature>>>(
             blocks,
             chain_config,
-            timestamp,
         )
         .unwrap();
     let header = create_block_header_helper(
