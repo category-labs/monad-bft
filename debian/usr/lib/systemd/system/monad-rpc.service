@@ -12,7 +12,7 @@ ExecStart=/usr/local/bin/monad-rpc \
     --node-config /home/monad/monad-bft/config/node.toml
 Environment="RUST_LOG=info,monad_ipc=debug"
 EnvironmentFile=-/home/monad/.env
-Restart=no
+Restart=always
 User=monad
 Group=monad
 DeviceAllow=/dev/triedb rw
