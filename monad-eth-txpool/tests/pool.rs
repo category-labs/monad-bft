@@ -1634,7 +1634,6 @@ fn test_eviction_policy() {
                             Duration::from_secs(60),
                             Duration::from_secs(60),
                         ),
-                        do_local_insert: true,
                     },
                     MockChainConfig::DEFAULT.chain_id(),
                     MockChainConfig::DEFAULT.get_chain_revision(GENESIS_ROUND),

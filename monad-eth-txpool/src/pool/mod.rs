@@ -75,8 +75,6 @@ where
     chain_id: u64,
     chain_revision: CRT,
     execution_revision: MonadExecutionRevision,
-
-    do_local_insert: bool,
 }
 
 impl<ST, SCT, SBT, CCT, CRT> EthTxPool<ST, SCT, SBT, CCT, CRT>
@@ -96,7 +94,6 @@ where
     ) -> Self {
         let EthTxPoolConfig {
             limits: config_limits,
-            do_local_insert,
         } = config;
 
         Self {
@@ -107,8 +104,6 @@ where
             chain_id,
             chain_revision,
             execution_revision,
-
-            do_local_insert,
         }
     }
 
@@ -133,14 +128,6 @@ where
         txs: Vec<(Recovered<TxEnvelope>, PoolTxKind)>,
         mut on_insert: impl FnMut(&PoolTx),
     ) {
-        if !self.do_local_insert {
-            event_tracker.drop_all(
-                txs.into_iter().map(|(tx, _)| tx),
-                EthTxPoolDropReason::PoolNotReady,
-            );
-            return;
-        }
-
         let Some(last_commit) = self.last_commit.as_ref() else {
             event_tracker.drop_all(
                 txs.into_iter().map(|(tx, _)| tx),
@@ -734,7 +721,6 @@ where
                     Duration::from_secs(60),
                     Duration::from_secs(60),
                 ),
-                do_local_insert: true,
             },
             MockChainConfig::DEFAULT.chain_id(),
             MockChainRevision::DEFAULT,
