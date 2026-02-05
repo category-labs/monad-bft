@@ -152,6 +152,19 @@ impl MongoDbStorage {
         Self::new(connection_string, database, "block_level", metrics).await
     }
 
+    pub async fn new_json_store(
+        connection_string: &str,
+        database: &str,
+        metrics: Metrics,
+    ) -> Result<Self> {
+        trace!(
+            "Creating MongoDB json store with connection: {}, database: {}",
+            redact_mongo_url(connection_string),
+            database
+        );
+        Self::new(connection_string, database, "block_json_data", metrics).await
+    }
+
     pub async fn new(
         connection_string: &str,
         database: &str,
