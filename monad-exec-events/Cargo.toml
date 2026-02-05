@@ -19,6 +19,7 @@ tracing = { workspace = true }
 bindgen = { workspace = true }
 
 [dev-dependencies]
+alloy-consensus = { workspace = true }
 alloy-primitives = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
@@ -27,6 +28,7 @@ hex = { workspace = true }
 ratatui = { workspace = true }
 serde_json = { workspace = true }
 strum = { workspace = true }
+zstd = { workspace = true }
 
 [features]
 default = []
@@ -35,3 +37,7 @@ alloy = ["dep:alloy-consensus", "dep:alloy-eips", "dep:alloy-primitives", "dep:a
 [[bench]]
 name = "snapshot_exec"
 harness = false
+
+[[example]]
+name = "event_cvt_cli"
+required-features = ["alloy"]
