@@ -228,6 +228,20 @@ impl KVReader for MongoDbStorage {
         }
     }
 
+    async fn exists(&self, key: &str) -> Result<bool> {
+        let start = Instant::now();
+        let found = self
+            .collection
+            .find_one(doc! { "_id": key })
+            .projection(doc! { "_id": 1 })
+            .max_time(self.max_time_get)
+            .await
+            .wrap_err("MongoDB exists check failed")
+            .write_get_metrics_on_err(start.elapsed(), KVStoreType::Mongo, &self.metrics)?;
+
+        Ok(found.is_some()).write_get_metrics(start.elapsed(), KVStoreType::Mongo, &self.metrics)
+    }
+
     async fn bulk_get(&self, keys: &[String]) -> Result<HashMap<String, Bytes>> {
         let start = Instant::now();
         let find_result = self

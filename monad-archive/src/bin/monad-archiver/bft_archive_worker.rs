@@ -41,7 +41,7 @@ const UPLOAD_CONCURRENCY: usize = 10;
 ///   - GC: remove any known-in-S3 keys that are no longer present locally.
 ///   - For each local (key, path):
 ///       - If key is in known set, skip.
-///       - Else do a poor-man's exists: scan_prefix(key) and check for exact match.
+///       - Else check if the key exists in the store.
 ///           - If exists: insert key into known set, skip.
 ///           - Else: read file and put(key, bytes). Do not insert into known set here; the next
 ///             iteration will observe existence via the exists check and add it then.
@@ -174,7 +174,7 @@ async fn process_single_file(
     metrics: &Metrics,
 ) -> Result<Option<String>> {
     // Check if file exists in S3
-    if s3_exists_key(&store, key).await? {
+    if store.exists(key).await? {
         metrics.inc_counter(MetricNames::BFT_BLOCK_FILES_ALREADY_IN_S3);
         // Already exists, mark as known and skip
         return Ok(Some(key.to_string()));
@@ -254,12 +254,6 @@ async fn add_dir_to_local_map(
     }
 
     Ok(())
-}
-
-/// Poor-man's exists: list with the exact key as prefix and look for an exact match.
-async fn s3_exists_key(store: &impl KVStore, key: &str) -> Result<bool> {
-    let objs = store.scan_prefix(key).await?;
-    Ok(objs.iter().any(|k| k == key))
 }
 
 #[cfg(test)]
@@ -534,7 +528,7 @@ mod tests {
             .unwrap();
 
         // Check existence
-        assert!(s3_exists_key(&store, &key).await.unwrap());
+        assert!(store.exists(&key).await.unwrap());
     }
 
     #[tokio::test]
@@ -549,7 +543,7 @@ mod tests {
 
         // Check non-existent key
         let key = format!("{BFT_BLOCK_PREFIX}missing{BFT_BLOCK_HEADER_EXTENSION}");
-        assert!(!s3_exists_key(&store, &key).await.unwrap());
+        assert!(!store.exists(&key).await.unwrap());
     }
 
     #[tokio::test]
@@ -575,8 +569,8 @@ mod tests {
             .unwrap();
 
         // Check for exact match only
-        assert!(s3_exists_key(&store, "bft_block/test").await.unwrap());
-        assert!(!s3_exists_key(&store, "bft_block/te").await.unwrap());
+        assert!(store.exists("bft_block/test").await.unwrap());
+        assert!(!store.exists("bft_block/te").await.unwrap());
     }
 
     #[tokio::test]
