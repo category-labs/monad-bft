@@ -56,6 +56,12 @@ pub enum Error {
 
     #[error("session index not found: {index}")]
     SessionIndexNotFound { index: SessionIndex },
+
+    #[error("connect rate limited: limit={limit} interval={interval:?}")]
+    ConnectRateLimited {
+        limit: u64,
+        interval: std::time::Duration,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

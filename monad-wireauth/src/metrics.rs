@@ -94,3 +94,4 @@ pub const GAUGE_WIREAUTH_ENQUEUED_COOKIE_REPLY: &str = "monad.wireauth.enqueued.
 pub const GAUGE_WIREAUTH_ENQUEUED_KEEPALIVE: &str = "monad.wireauth.enqueued.keepalive";
 
 pub const GAUGE_WIREAUTH_RATE_LIMIT_DROP: &str = "monad.wireauth.rate_limit.drop";
+pub const GAUGE_WIREAUTH_RATE_LIMIT_CONNECT: &str = "monad.wireauth.rate_limit.connect";
