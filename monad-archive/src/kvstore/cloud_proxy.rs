@@ -63,4 +63,12 @@ impl KVReader for CloudProxyReader {
 
         Ok(Some(bytes.into()))
     }
+
+    async fn scan_prefix_with_max_keys(
+        &self,
+        _prefix: &str,
+        _max_keys: usize,
+    ) -> Result<Vec<String>> {
+        unimplemented!()
+    }
 }
