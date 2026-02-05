@@ -18,7 +18,7 @@
 
 use std::{
     ffi::{CStr, CString},
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 pub(crate) use self::bindings::{
@@ -173,4 +173,24 @@ pub(crate) fn monad_check_path_supports_map_hugetlb(
     };
 
     get_last_ring_library_error(r).map(|()| supported)
+}
+
+pub(crate) fn monad_event_open_ring_dir_fd(path: impl AsRef<Path>) -> Result<PathBuf, String> {
+    let mut ring_dir_buf = vec![0u8; libc::PATH_MAX as usize];
+    let r = unsafe {
+        self::bindings::monad_event_open_ring_dir_fd(
+            std::ptr::null_mut(),
+            ring_dir_buf.as_mut_ptr() as *mut libc::c_char,
+            ring_dir_buf.len(),
+        )
+    };
+    get_last_ring_library_error(r)?;
+    let ring_dir_cstr = match CStr::from_bytes_until_nul(ring_dir_buf.as_slice()) {
+        Ok(cstr) => cstr,
+        Err(err) => return Err(err.to_string()),
+    };
+    let ring_dir_str = ring_dir_cstr
+        .to_str()
+        .map_err(|utf_err| utf_err.to_string())?;
+    Ok(PathBuf::from(ring_dir_str))
 }
