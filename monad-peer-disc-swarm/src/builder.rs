@@ -40,11 +40,17 @@ where
 
         let mut states = BTreeMap::new();
         let mut routing_table = RoutingTable::new();
+        let addrs: Vec<_> = self.builders.iter().map(|b| (b.id, b.addr)).collect();
         for builder in self.builders {
             let id = builder.id;
             let _node_span_entered = tracing::trace_span!("node", id = format!("{}", id)).entered();
             routing_table.register(builder.addr, id);
-            let node = builder.build();
+            let mut node = builder.build();
+            for &(other_id, other_addr) in &addrs {
+                if other_id != id {
+                    node.executor.id_to_addr.insert(other_id, other_addr);
+                }
+            }
             states.insert(id, node);
         }
 

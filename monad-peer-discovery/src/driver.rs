@@ -202,10 +202,10 @@ impl<PD: PeerDiscoveryAlgo> PeerDiscoveryDriver<PD> {
                 self.pd.send_full_node_raptorcast_request(to)
             }
             PeerDiscoveryEvent::FullNodeRaptorcastRequest { from } => {
-                self.pd.handle_full_node_raptorcast_request(from)
+                self.pd.handle_full_node_raptorcast_request(from.id)
             }
             PeerDiscoveryEvent::FullNodeRaptorcastResponse { from } => {
-                self.pd.handle_full_node_raptorcast_response(from)
+                self.pd.handle_full_node_raptorcast_response(from.id)
             }
             PeerDiscoveryEvent::UpdateCurrentRound { round, epoch } => {
                 self.pd.update_current_round(round, epoch)

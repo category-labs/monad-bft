@@ -29,7 +29,7 @@ use tracing::debug;
 
 use crate::{
     MonadNameRecord, PeerDiscoveryAlgo, PeerDiscoveryAlgoBuilder, PeerDiscoveryCommand,
-    PeerLookupRequest, PeerLookupResponse, Ping, Pong,
+    PeerLookupRequest, PeerLookupResponse, PeerSource, Ping, Pong,
 };
 
 pub struct NopDiscovery<ST: CertificateSignatureRecoverable> {
@@ -97,20 +97,20 @@ where
 
     fn handle_ping(
         &mut self,
-        from: NodeId<CertificateSignaturePubKey<ST>>,
+        from: PeerSource<CertificateSignaturePubKey<ST>>,
         ping: Ping<Self::SignatureType>,
     ) -> Vec<PeerDiscoveryCommand<ST>> {
-        debug!(?from, ?ping, "handle ping");
+        debug!(?from.id, ?ping, "handle ping");
 
         Vec::new()
     }
 
     fn handle_pong(
         &mut self,
-        from: NodeId<CertificateSignaturePubKey<ST>>,
+        from: PeerSource<CertificateSignaturePubKey<ST>>,
         pong: Pong,
     ) -> Vec<PeerDiscoveryCommand<ST>> {
-        debug!(?from, ?pong, "handle pong");
+        debug!(?from.id, ?pong, "handle pong");
 
         Vec::new()
     }
@@ -138,20 +138,20 @@ where
 
     fn handle_peer_lookup_request(
         &mut self,
-        from: NodeId<CertificateSignaturePubKey<ST>>,
+        from: PeerSource<CertificateSignaturePubKey<ST>>,
         request: PeerLookupRequest<ST>,
     ) -> Vec<PeerDiscoveryCommand<ST>> {
-        debug!(?from, ?request, "handling peer lookup request");
+        debug!(?from.id, ?request, "handling peer lookup request");
 
         Vec::new()
     }
 
     fn handle_peer_lookup_response(
         &mut self,
-        from: NodeId<CertificateSignaturePubKey<ST>>,
+        from: PeerSource<CertificateSignaturePubKey<ST>>,
         response: PeerLookupResponse<ST>,
     ) -> Vec<PeerDiscoveryCommand<ST>> {
-        debug!(?from, ?response, "handling peer lookup response");
+        debug!(?from.id, ?response, "handling peer lookup response");
 
         Vec::new()
     }

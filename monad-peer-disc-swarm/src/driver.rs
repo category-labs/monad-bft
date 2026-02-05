@@ -175,10 +175,10 @@ where
                 self.algo.send_full_node_raptorcast_request(to)
             }
             PeerDiscoveryEvent::FullNodeRaptorcastRequest { from } => {
-                self.algo.handle_full_node_raptorcast_request(from)
+                self.algo.handle_full_node_raptorcast_request(from.id)
             }
             PeerDiscoveryEvent::FullNodeRaptorcastResponse { from } => {
-                self.algo.handle_full_node_raptorcast_response(from)
+                self.algo.handle_full_node_raptorcast_response(from.id)
             }
             PeerDiscoveryEvent::UpdateCurrentRound { round, epoch } => {
                 self.algo.update_current_round(round, epoch)
