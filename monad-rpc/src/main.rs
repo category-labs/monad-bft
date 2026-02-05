@@ -342,6 +342,17 @@ async fn main() -> std::io::Result<()> {
             }
         });
 
+        // Wait until the buffer has at least one block.
+        let mut retry_timer = tokio::time::interval(Duration::from_secs(1));
+        loop {
+            info!("Waiting to populate ChainStateBuffer");
+            retry_timer.tick().await;
+            if event_buffer.get_latest_finalized_block_num() > 0 {
+                break;
+            }
+        }
+        info!("ChainStateBuffer populated");
+
         Some(event_buffer)
     } else {
         None
