@@ -118,7 +118,12 @@ where
             };
         }
 
-        self.waker = Some(cx.waker().clone());
+        if let Some(waker) = this.waker.as_mut() {
+            waker.clone_from(cx.waker());
+        } else {
+            this.waker = Some(cx.waker().clone());
+        }
+
         Poll::Pending
     }
 }
