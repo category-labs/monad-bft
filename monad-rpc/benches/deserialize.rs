@@ -13,10 +13,12 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::hint::black_box;
+
 use bytes::Bytes;
 use criterion::{
-    black_box, criterion_group, criterion_main, measurement::Measurement, BenchmarkGroup,
-    Criterion, Throughput,
+    criterion_group, criterion_main, measurement::Measurement, BenchmarkGroup, Criterion,
+    Throughput,
 };
 use monad_rpc::{
     handlers::eth::call::MonadEthCallParams,

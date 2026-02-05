@@ -13,7 +13,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use criterion::{black_box, BatchSize, Criterion};
+use std::hint::black_box;
+
+use criterion::{BatchSize, Criterion};
 use monad_chain_config::MockChainConfig;
 use monad_crypto::NopSignature;
 use monad_perf_util::PerfController;
