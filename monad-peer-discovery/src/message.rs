@@ -18,7 +18,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_executor_glue::Message;
-use monad_types::NodeId;
+use monad_types::{LimitedVec, NodeId};
 
 use crate::{MonadNameRecord, PeerDiscoveryEvent};
 
@@ -136,11 +136,14 @@ pub struct PeerLookupRequest<ST: CertificateSignatureRecoverable> {
     pub open_discovery: bool,
 }
 
-#[derive(Debug, Clone, RlpDecodable, RlpEncodable)]
+/// Maximum number of peers to be included in a PeerLookupResponse
+pub(crate) const MAX_PEER_IN_RESPONSE: usize = 16;
+
+#[derive(Debug, Clone, PartialEq, RlpEncodable, RlpDecodable)]
 pub struct PeerLookupResponse<ST: CertificateSignatureRecoverable> {
     pub lookup_id: u32,
     pub target: NodeId<CertificateSignaturePubKey<ST>>,
-    pub name_records: Vec<MonadNameRecord<ST>>,
+    pub name_records: LimitedVec<MonadNameRecord<ST>, MAX_PEER_IN_RESPONSE>,
 }
 
 #[cfg(test)]
@@ -262,13 +265,23 @@ mod test {
                     ),
                     &key3,
                 ),
-            ],
+            ]
+            .into(),
         };
-        let message = PeerDiscoveryMessage::PeerLookupResponse(response);
+        let message = PeerDiscoveryMessage::PeerLookupResponse(response.clone());
 
         let mut encoded = Vec::new();
         message.encode(&mut encoded);
-        insta::assert_debug_snapshot!(hex::encode(encoded));
+        insta::assert_debug_snapshot!(hex::encode(&encoded));
+
+        let decoded =
+            PeerDiscoveryMessage::<SignatureType>::decode(&mut encoded.as_slice()).unwrap();
+        match decoded {
+            PeerDiscoveryMessage::PeerLookupResponse(decoded_response) => {
+                assert_eq!(response, decoded_response);
+            }
+            _ => panic!("expected PeerLookupResponse"),
+        }
     }
 
     #[test]

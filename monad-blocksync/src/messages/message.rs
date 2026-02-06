@@ -21,9 +21,13 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_types::ExecutionProtocol;
+use monad_types::{ExecutionProtocol, LimitedVec};
 use monad_validator::signature_collection::SignatureCollection;
 use serde::Serialize;
+
+/// Maximum number of headers allowed in a BlockSyncHeadersResponse message.
+/// This bounds RLP deserialization memory usage for incoming messages.
+pub const BLOCKSYNC_MAX_NUM_HEADERS: usize = 800;
 
 const BLOCK_SYNC_REQUEST_MESSAGE_NAME: &str = "BlockSyncRequestMessage";
 const BLOCK_SYNC_RESPONSE_MESSAGE_NAME: &str = "BlockSyncResponseMessage";
@@ -136,10 +140,15 @@ where
             ));
         }
         match u8::decode(&mut payload)? {
-            1 => Ok(Self::Found((
-                BlockRange::decode(&mut payload)?,
-                Vec::<_>::decode(&mut payload)?,
-            ))),
+            1 => {
+                let block_range = BlockRange::decode(&mut payload)?;
+                let headers = LimitedVec::<
+                    ConsensusBlockHeader<ST, SCT, EPT>,
+                    BLOCKSYNC_MAX_NUM_HEADERS,
+                >::decode(&mut payload)?
+                .into_inner();
+                Ok(Self::Found((block_range, headers)))
+            }
             2 => Ok(Self::NotAvailable(BlockRange::decode(&mut payload)?)),
             _ => Err(alloy_rlp::Error::Custom(
                 "failed to decode unknown BlockSyncHeadersResponse",
