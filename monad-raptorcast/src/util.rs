@@ -15,54 +15,25 @@
 
 use std::{
     cell::OnceCell,
-    cmp::Ordering,
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     fmt,
     net::SocketAddr,
     num::NonZero,
+    ops::Range,
     rc::Rc,
 };
 
 use bytes::Bytes;
 use fixed::{types::extra::U11, FixedU16};
-use itertools::Itertools;
+use iset::IntervalMap;
 use monad_crypto::{
     certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey},
     hasher::{Hasher, HasherType},
 };
-use monad_types::{Epoch, NodeId, Round, RoundSpan, Stake};
+use monad_types::{Epoch, NodeId, Round, RoundSpan};
 use monad_validator::validator_set::{ValidatorSet, ValidatorSetType as _};
-use tracing::{debug, warn};
 
 use crate::udp::GroupId;
-
-// Invariance: The group must be non-empty.
-#[derive(Debug, Clone, Default)]
-pub struct SecondaryGroup<PT: PubKey> {
-    full_nodes: BTreeSet<NodeId<PT>>,
-}
-
-impl<PT: PubKey> SecondaryGroup<PT> {
-    // SAFETY: The caller must ensure that full_nodes set is non-empty.
-    pub fn new_unchecked(full_nodes: BTreeSet<NodeId<PT>>) -> Self {
-        Self { full_nodes }
-    }
-
-    pub fn new(full_nodes: BTreeSet<NodeId<PT>>) -> Option<Self> {
-        if full_nodes.is_empty() {
-            return None;
-        }
-        Some(Self { full_nodes })
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = &NodeId<PT>> + '_ {
-        self.full_nodes.iter()
-    }
-
-    pub fn len(&self) -> NonZero<usize> {
-        NonZero::new(self.full_nodes.len()).unwrap()
-    }
-}
 
 // Argument for raptorcast send
 #[derive(Debug, Clone, Copy)]
@@ -138,409 +109,300 @@ pub enum BroadcastMode {
     Unspecified,
 }
 
-// This represents a raptorcast group abstracted over the use cases below:
-// 1) Validator->Validator raptorcast recv & re-broadcast
-// 2) Validator->FullNode raptorcast recv & re-broadcast
-// 3) Validator->FullNode raptorcast send (when initiating proposals)
-// Validator->Validator send group is presented by EpochValidators instead, as
-// that contains stake info per validator.
-#[derive(Clone, PartialEq, Eq)] // For some reason Default doesn't work
-pub struct Group<PT: PubKey> {
-    // The node_id of the validator publishing to full-nodes.
-    validator_id: Option<NodeId<PT>>,
+// Invariance: The group must be non-empty.
+#[derive(Debug, Clone, Default)]
+pub struct SecondaryGroup<PT: PubKey> {
+    full_nodes: BTreeSet<NodeId<PT>>,
+}
+
+impl<PT: PubKey> SecondaryGroup<PT> {
+    // SAFETY: The caller must ensure that full_nodes set is non-empty.
+    pub fn new_unchecked(full_nodes: BTreeSet<NodeId<PT>>) -> Self {
+        Self { full_nodes }
+    }
+
+    pub fn new(full_nodes: BTreeSet<NodeId<PT>>) -> Option<Self> {
+        if full_nodes.is_empty() {
+            return None;
+        }
+        Some(Self { full_nodes })
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &NodeId<PT>> + '_ {
+        self.full_nodes.iter()
+    }
+
+    pub fn len(&self) -> NonZero<usize> {
+        NonZero::new(self.full_nodes.len()).unwrap()
+    }
+
+    pub fn is_member(&self, node_id: &NodeId<PT>) -> bool {
+        self.full_nodes.contains(node_id)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SecondaryGroupAssignment<PT: PubKey> {
+    publisher_id: NodeId<PT>,
     round_span: RoundSpan,
-    sorted_other_peers: Vec<NodeId<PT>>, // Excludes self
+    group: SecondaryGroup<PT>,
 }
 
-// Keyed by starting round
-type GroupQueue<PT> = BTreeMap<Round, Group<PT>>;
-
-// Groups in a GroupQueue should be sorted by start round, earliest round first
-impl<PT: PubKey> Ord for Group<PT> {
-    fn cmp(&self, other: &Self) -> Ordering {
-        // Compare fields other than round_span.start as well, to make the
-        // ordering more consistent and predictable
-        other
-            .round_span
-            .start
-            .cmp(&self.round_span.start)
-            .then_with(|| other.round_span.end.cmp(&self.round_span.end))
-            .then_with(|| other.validator_id.cmp(&self.validator_id))
-    }
-}
-
-impl<PT: PubKey> PartialOrd for Group<PT> {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl<PT: PubKey> fmt::Debug for Group<PT> {
-    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt.debug_struct("Group")
-            .field("start", &self.round_span.start.0)
-            .field("end", &self.round_span.end.0)
-            .field("other_peers", &self.sorted_other_peers.len())
-            .finish()
-    }
-}
-
-impl<PT: PubKey> Group<PT> {
-    // For the use case where we re-raptorcast to validators
-    pub fn new_validator_group(all_peers: Vec<NodeId<PT>>, self_id: &NodeId<PT>) -> Self {
-        // We will call `check_author_node_id()` often, so sorting here will
-        // allow us to use binary search instead of linear search.
-        let sorted_other_peers: Vec<_> = all_peers
-            .into_iter()
-            .filter(|peer| peer != self_id)
-            .sorted()
-            .collect();
+impl<PT: PubKey> SecondaryGroupAssignment<PT> {
+    pub fn new(publisher_id: NodeId<PT>, round_span: RoundSpan, group: SecondaryGroup<PT>) -> Self {
         Self {
-            validator_id: None,
-            round_span: RoundSpan::empty(Round::MIN), // unused for validator group
-            sorted_other_peers,
-        }
-    }
-
-    // For the use case where we re-raptorcast to full-nodes
-    // Validators Raptorcasting to full-nodes should set `self_id` == `validator_id`
-    // Note that the user is responsible for checking that self_id exists in `all_peers`.
-    // This is specially important when a client receives a `ConfirmGroup`
-    // message over the network from a (rogue?) validator.
-    pub fn new_fullnode_group(
-        all_peers: Vec<NodeId<PT>>,
-        self_id: &NodeId<PT>,
-        validator_id: NodeId<PT>,
-        round_span: RoundSpan,
-    ) -> Self {
-        // We will call `check_author_node_id()` often, so sorting here will
-        // allow us to use binary search instead of linear search.
-        let mut sorted_other_peers = all_peers;
-        if self_id != &validator_id {
-            // The validator won't find its own nodeid among the peers
-            // Swap self_id in `all_peers` with the last element, then pop.
-            let self_index = sorted_other_peers
-                .iter()
-                .position(|peer| peer == self_id)
-                .expect(
-                    "Could not find own node id when instantiating a \
-                        Raptorcast group for full-nodes",
-                );
-            sorted_other_peers.swap_remove(self_index);
-        }
-        sorted_other_peers.sort(); // Groups recv over network are already sorted, though
-        Self {
-            validator_id: Some(validator_id),
+            publisher_id,
             round_span,
-            sorted_other_peers,
+            group,
         }
     }
 
-    // For bandwidth calculation and for calculating number of packets when
-    // originator segments app messages into raptorcast chunks.
-    pub fn size_excl_self(&self) -> usize {
-        self.sorted_other_peers.len()
+    pub fn group(&self) -> &SecondaryGroup<PT> {
+        &self.group
     }
 
-    pub fn get_validator_id(&self) -> &NodeId<PT> {
-        // Only set when re-raptorcasting to full-nodes
-        self.validator_id.as_ref().expect("Validator ID is not set")
+    pub fn is_member(&self, node_id: &NodeId<PT>) -> bool {
+        self.group.is_member(node_id)
     }
 
-    pub fn iter_peers(&self) -> impl Iterator<Item = &NodeId<PT>> + '_ {
-        self.sorted_other_peers.iter()
+    pub fn publisher_id(&self) -> &NodeId<PT> {
+        &self.publisher_id
     }
 
-    #[cfg(test)]
-    pub fn get_other_peers(&self) -> &Vec<NodeId<PT>> {
-        &self.sorted_other_peers
-    }
-
-    pub fn get_round_span(&self) -> &RoundSpan {
+    pub fn round_span(&self) -> &RoundSpan {
         &self.round_span
     }
+}
 
-    fn empty_iterator(&self) -> GroupIterator<'_, PT> {
-        GroupIterator {
-            group: self,
-            num_consumed: usize::MAX,
-            author_id_ix: usize::MAX,
-            start_ix: 0,
-        }
-    }
+// An interval map from RoundSpan to SecondaryGroup.
+//
+// Invariance: Each group's round span must be non-overlapping.
+pub struct SecondaryGroupMap<PT: PubKey> {
+    group_map: IntervalMap<Round, SecondaryGroup<PT>>,
+}
 
-    // Returns a safe iterator suitable for (re-) raptorcasting to full-nodes.
-    // Argument `seed` is used for avoiding always assigning chunks for small
-    // proposals to the same node.
-    // The iteration will start from index `seed % self.sorted_other_peers.len()`.
-    // Yields NodeIds.
-    pub fn iter_skip_self_and_author(
-        &self,
-        author_id: &NodeId<PT>,
-        seed: usize,
-    ) -> GroupIterator<'_, PT> {
-        // Hint for the index of author_id within self.sorted_other_peers.
-        // We want to skip it when iterating the peers for broadcasting.
-        let author_id_ix = if let Some(root_vid) = self.validator_id {
-            // Case for full-node raptorcasting. Lets check that the author_id
-            // (in the inbound message) is the same as expected for this group.
-            // Note that AuthorID is a validator and we will not find it among
-            // the full-node ids in the group.
-            if author_id != &root_vid {
-                warn!(
-                    "Author {} does not match raptorcast group validator id {}",
-                    author_id, root_vid
-                );
-                return self.empty_iterator();
-            }
-            usize::MAX
-        } else {
-            // Case for validator-to-validator raptorcasting.
-            // We are a validator and we are re-raptorcasting to full-nodes.
-            // We do a scan for author ID upfront because we don't want to yield
-            // any nodeID before we know for sure the author_id is among them.
-            let maybe_pos_author_id = self.sorted_other_peers.binary_search(author_id);
-            if maybe_pos_author_id.is_err() {
-                warn!("Author {} is not a member of raptorcast group", author_id);
-                return self.empty_iterator();
-            }
-            maybe_pos_author_id.unwrap()
-        };
-        // Avoid div by zero and also overflow when adding `num_consumed` later`
-        let start_ix = if self.sorted_other_peers.is_empty() {
-            0
-        } else {
-            seed % self.sorted_other_peers.len()
-        };
-        GroupIterator {
-            group: self,
-            num_consumed: 0,
-            author_id_ix,
-            start_ix,
-        }
-    }
-
-    // There are cases where we need to check that the source node is valid
-    // before we get to call iter_skip_self_and_author()
-    pub fn check_author_node_id(&self, author_id: &NodeId<PT>) -> bool {
-        if let Some(root_vid) = self.validator_id {
-            // Case for full-node raptorcasting
-            let good = &root_vid == author_id;
-            if !good {
-                debug!(?author_id, ?root_vid, "check_author_node_id (fn) failed");
-            }
-            good
-        } else {
-            // Case for validator-to-validator
-            let good = self.sorted_other_peers.binary_search(author_id).is_ok();
-            if !good {
-                debug!(?author_id, ?self.sorted_other_peers, "check_author_node_id (v2v) failed");
-            }
-            good
+impl<PT: PubKey> Default for SecondaryGroupMap<PT> {
+    fn default() -> Self {
+        Self {
+            group_map: IntervalMap::new(),
         }
     }
 }
 
-// The responsibility of this class is to simply skip self and author node_id
-// without copying or rebuilding vectors.
-// Intended to be used in the recv leg of re-raptorcasting to validators, or for
-// both the recv & send leg of (re-) raptorcasting to fullnodes, as these do
-// not need Stake information for each validator.
-pub struct GroupIterator<'a, PT: PubKey> {
-    group: &'a Group<PT>,
-    num_consumed: usize,
-    author_id_ix: usize,
-    start_ix: usize,
-}
+impl<PT: PubKey> SecondaryGroupMap<PT> {
+    pub fn get(&self, round: Round) -> Option<&SecondaryGroup<PT>> {
+        let mut iter = self.group_map.overlap(round);
+        let (_range, v) = iter.next()?;
+        Some(v)
+    }
 
-impl<'a, PT: PubKey> Iterator for GroupIterator<'a, PT> {
-    type Item = &'a NodeId<PT>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        while self.num_consumed < self.group.sorted_other_peers.len() {
-            let index = (self.num_consumed + self.start_ix) % self.group.sorted_other_peers.len();
-            self.num_consumed += 1;
-            if index != self.author_id_ix {
-                return Some(&self.group.sorted_other_peers[index]);
-            }
+    pub fn get_current_or_next(&self, round: Round) -> Option<&SecondaryGroup<PT>> {
+        if let Some(group) = self.get(round) {
+            return Some(group);
+        }
+        let (span, group) = self.group_map.smallest()?;
+        if round < span.start {
+            return Some(group);
         }
         None
     }
-}
 
-// This is an abstraction of a peer list that interfaces receive-side of RaptorCast
-// The send side, i.e. initiating a RaptorCast proposal, is represented with
-// struct `EpochValidators` instead.
-#[derive(Debug)]
-pub struct ReBroadcastGroupMap<PT: PubKey> {
-    // When iterating nodeIds in a raptorcast group, this node id is always skipped
-    our_node_id: NodeId<PT>,
-
-    // For Validator->validator re-raptorcasting
-    validator_map: BTreeMap<Epoch, Group<PT>>,
-
-    // For Validator->fullnode re-raptorcasting: each entry is keyed by
-    // validator NodeId. GroupQueue is a BTreeMap keyed by starting round
-    fullnode_map: BTreeMap<NodeId<PT>, GroupQueue<PT>>,
-}
-
-impl<PT: PubKey> ReBroadcastGroupMap<PT> {
-    pub fn new(our_node_id: NodeId<PT>) -> Self {
-        Self {
-            our_node_id,
-            validator_map: BTreeMap::new(),
-            fullnode_map: BTreeMap::new(),
-        }
-    }
-
-    // For UdpState::handle_message() so it can drop inbound messages early,
-    // before calling iterate_rebroadcast_peers().
-    pub fn check_source(
-        &self,
-        msg_group_id: GroupId,
-        author_node_id: &NodeId<PT>,
-        src_addr: &SocketAddr,
-    ) -> bool {
-        match msg_group_id {
-            GroupId::Primary(msg_epoch) => {
-                // validator to validator raptorcast
-                if let Some(group) = self.validator_map.get(&msg_epoch) {
-                    let author_found = group.check_author_node_id(author_node_id);
-                    if !author_found {
-                        debug!(?author_node_id, ?self.validator_map, ?src_addr,
-                            "Validator author for v2v group not found in validator_map");
-                    }
-                    author_found
-                } else {
-                    debug!(?msg_epoch, ?self.validator_map, "Epoch not found in validator_map");
-                    false
-                }
-            }
-            GroupId::Secondary(msg_round) => {
-                // Source node id (validator) is already the key to the map, so
-                // we don't need to look into the group itself.
-                if let Some(groups) = self.fullnode_map.get(author_node_id) {
-                    if let Some((_start_round, group)) = groups.range(..=msg_round).next_back() {
-                        if group.get_round_span().contains(msg_round) {
-                            return true;
-                        }
-                    }
-                    debug!(
-                        ?msg_round,
-                        ?author_node_id,
-                        ?self.fullnode_map,
-                        ?src_addr,
-                        "msg_round not found for validator's round span");
-                    // FIXME: returning true for backward compatibility,
-                    // to be removed after upgrade
-                    return true;
-                } else {
-                    debug!(?author_node_id, ?self.fullnode_map, ?src_addr,
-                        "Validator author for v2fn group not found in fullnode_map");
-                }
-                false
-            }
-        }
-    }
-
-    // Intended to be used by UdpState::handle_message()
-    // When receiving a raptorcast chunk, this method will help determine which
-    // peers (validators or full-nodes) to re-broadcast chunks to, given the
-    // inbound chunk's epoch field (for validator-to-validator raptorcasting)
-    // and author field (for validator-to-fullnodes raptorcasting)
-    pub fn iterate_rebroadcast_peers(
-        &self,
-        msg_group_id: GroupId,
-        msg_author: &NodeId<PT>, // skipped when iterating RaptorCast group
-    ) -> Option<GroupIterator<'_, PT>> {
-        let rebroadcast_group = match msg_group_id {
-            GroupId::Primary(msg_epoch) => self.validator_map.get(&msg_epoch)?,
-            GroupId::Secondary(msg_round) => {
-                let group_queue = self.fullnode_map.get(msg_author)?;
-
-                // FIXME: or_else defaults to the old behavior, which can be hit
-                // if full node is upgraded before the validator. It'll be
-                // removed after the upgrade
-                group_queue
-                    .range(..=msg_round)
-                    .next_back()
-                    .filter(|(_start_round, group)| group.get_round_span().contains(msg_round))
-                    .or_else(|| group_queue.first_key_value())
-                    .map(|(_key, group)| group)?
-            }
-        };
-
-        if rebroadcast_group.size_excl_self() == 0 {
-            // If there's no other peers in the group, then there's no one to broadcast to
+    #[must_use]
+    // the caller should check the return value to ensure the group is successfully inserted.
+    // returns None if there is an overlap with existing groups.
+    pub fn try_insert(&mut self, round_span: RoundSpan, group: SecondaryGroup<PT>) -> Option<()> {
+        let round_span: Range<_> = round_span.into();
+        if self.group_map.has_overlap(round_span.clone()) {
             return None;
         }
-
-        // this validates author
-        Some(rebroadcast_group.iter_skip_self_and_author(msg_author, 0))
+        self.group_map.insert(round_span, group);
+        Some(())
     }
 
-    // As Validator: When we get an AddEpochValidatorSet.
-    pub fn push_group_validator_set(
-        &mut self,
-        validator_set: Vec<(NodeId<PT>, Stake)>,
-        epoch: Epoch,
-    ) {
-        let (all_peers, _validator_stakes): (Vec<_>, Vec<_>) = validator_set.into_iter().unzip();
-        let new_group = Group::new_validator_group(all_peers, &self.our_node_id);
-        if let Some(existing_group) = self.validator_map.get(&epoch) {
-            assert_eq!(existing_group, &new_group);
-            warn!("duplicate validator set update (this is safe but unexpected)")
-        } else {
-            let replaced = self.validator_map.insert(epoch, new_group);
-            assert!(replaced.is_none());
-        }
-    }
-
-    // As Full-node: When secondary RaptorCast instance (Client) sends us a Group<>
-    pub fn push_group_fullnodes(&mut self, group: Group<PT>) {
-        let vid = *group.get_validator_id();
-        let prev_group_queue_from_vid = format!("{:?}", self.fullnode_map.get(&vid));
-        self.fullnode_map
-            .entry(vid)
-            .or_default()
-            .insert(group.round_span.start, group);
-        debug!(?vid, ?prev_group_queue_from_vid, "RaptorCast Group insert",);
-    }
-
-    pub fn delete_expired_groups(&mut self, curr_epoch: Epoch, curr_round: Round) {
-        // Keep current and future* groups.
-        // Note: normally the client will only send as groups that are
-        // currently active, but it is possible for the client to send us a
-        // group scheduled for the future when we (the non-dedicated full-node)
-        // aren't received proposals yet and hence do not know what the current
-        // round is.
-        for (_vid, group_queue) in self.fullnode_map.iter_mut() {
-            group_queue.retain(|_start_round, group| curr_round < group.round_span.end);
-        }
-        self.fullnode_map
-            .retain(|_vid, group_queue| !group_queue.is_empty());
-
-        // clear old validator map
-        self.validator_map
-            .retain(|key, _| *key + Epoch(1) >= curr_epoch);
-
-        debug!(
-            epoch=?curr_epoch,
-            round=?curr_round,
-            validator_map_len=?self.validator_map.len(),
-            fullnode_map_len=?self.fullnode_map.len(),
-            "RaptorCast delete_expired_groups",
-        );
-    }
-
-    pub fn get_fullnode_map(&self) -> BTreeMap<NodeId<PT>, Group<PT>> {
-        let mut res: BTreeMap<_, _> = BTreeMap::new();
-        for (vid, group_queue) in &self.fullnode_map {
-            if let Some((_start_round, group)) = group_queue.first_key_value() {
-                res.insert(*vid, group.clone());
+    // cull groups that ends before or at round_cap
+    pub fn delete_expired(&mut self, round_cap: Round) {
+        while let Some((range, _)) = self.group_map.smallest() {
+            if range.end <= round_cap {
+                self.group_map.remove(range);
+            } else {
+                break;
             }
         }
-        res
+    }
+
+    fn is_empty(&self) -> bool {
+        self.group_map.is_empty()
+    }
+}
+
+// The membership of a full node in multiple SecondaryGroupMaps, each
+// lead by a validator.
+pub struct FullNodeGroupMap<PT: PubKey> {
+    map: HashMap<NodeId<PT>, SecondaryGroupMap<PT>>,
+}
+
+impl<PT: PubKey> Default for FullNodeGroupMap<PT> {
+    fn default() -> Self {
+        Self {
+            map: Default::default(),
+        }
+    }
+}
+
+impl<PT: PubKey> FullNodeGroupMap<PT> {
+    pub fn get_group_map(&self, publisher_id: &NodeId<PT>) -> Option<&SecondaryGroupMap<PT>> {
+        self.map.get(publisher_id)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    #[must_use]
+    pub fn try_insert(&mut self, assignment: SecondaryGroupAssignment<PT>) -> Option<()> {
+        let group_map = self.map.entry(assignment.publisher_id).or_default();
+        group_map.try_insert(assignment.round_span, assignment.group)
+    }
+
+    // cull groups that ends before or at round_cap
+    pub fn delete_expired(&mut self, round_cap: Round) {
+        self.map.retain(|_publisher_id, group_map| {
+            group_map.delete_expired(round_cap);
+            !group_map.is_empty()
+        });
+    }
+}
+
+// This type is definitionally an alias of the epoch-validators
+// map. The semantic of ValidatorGroupMap restricted to the context a
+// usage as a group map.
+pub type ValidatorGroupMap<PT> = BTreeMap<Epoch, ValidatorSet<PT>>;
+
+// The raptorcast group for a given group_id for the purpose of
+// checking the validity of sender and for rebroadcasting.
+pub enum BroadcastGroup<'a, PT: PubKey> {
+    ValidatorGroup {
+        self_id: &'a NodeId<PT>,
+        author: &'a NodeId<PT>,
+        group: &'a ValidatorSet<PT>,
+    },
+    FullNodeGroup {
+        self_id: &'a NodeId<PT>,
+        publisher: &'a NodeId<PT>,
+        group: &'a SecondaryGroup<PT>,
+    },
+}
+
+#[derive(Debug)]
+pub enum BroadcastGroupError {
+    // The specified group_id does not correspond to any known group.
+    GroupNotFound,
+    // The author is not a member of the specified group.
+    InvalidAuthor,
+}
+
+impl<'a, PT: PubKey> BroadcastGroup<'a, PT> {
+    // Return a known valid group of the given group_id.
+    //
+    // Note: the self_id is not required to be a member of the
+    // group. As a result, non-validator nodes can be allowed to
+    // receive/decode messages from a valid group. We can add this
+    // restriction in the future if needed.
+    pub fn from_group_id(
+        group_id: GroupId,
+        self_id: &'a NodeId<PT>,
+        // The signer the raptorcast message, not necessarily the sender.
+        author: &'a NodeId<PT>,
+        validator_group_map: &'a ValidatorGroupMap<PT>,
+        full_node_group_map: &'a FullNodeGroupMap<PT>,
+    ) -> Result<Self, BroadcastGroupError> {
+        match group_id {
+            GroupId::Primary(epoch) => {
+                let group = validator_group_map
+                    .get(&epoch)
+                    .ok_or(BroadcastGroupError::GroupNotFound)?;
+                if !group.is_member(author) {
+                    return Err(BroadcastGroupError::InvalidAuthor);
+                }
+                Ok(BroadcastGroup::ValidatorGroup {
+                    self_id,
+                    author,
+                    group,
+                })
+            }
+
+            GroupId::Secondary(round) => {
+                let publisher = author;
+                let group = full_node_group_map
+                    .get_group_map(publisher)
+                    .ok_or(BroadcastGroupError::GroupNotFound)?
+                    // FIXME: should use `get` method. `get_current_or_next`
+                    // implements the old behavior, which can be hit if full node is
+                    // upgraded before the validator. It'll be removed after the
+                    // upgrade
+                    .get_current_or_next(round)
+                    .ok_or(BroadcastGroupError::GroupNotFound)?;
+                Ok(BroadcastGroup::FullNodeGroup {
+                    self_id,
+                    publisher,
+                    group,
+                })
+            }
+        }
+    }
+
+    pub fn is_sender_valid(&self, sender: &NodeId<PT>) -> bool {
+        match self {
+            // For Primary RC, the sender can be any one of the validators.
+            BroadcastGroup::ValidatorGroup { group, .. } => group.is_member(sender),
+            // For Secondary RC, the sender must be either the
+            // publisher or someone in the group.
+            BroadcastGroup::FullNodeGroup {
+                group, publisher, ..
+            } => sender == *publisher || group.is_member(sender),
+        }
+    }
+
+    pub fn should_rebroadcast(&self, is_first_hop_recipient: bool) -> bool {
+        // In both primary and secondary raptorcast, each chunk's
+        // recipient is responsible for broadcast the chunk to all
+        // peers.
+        match self {
+            BroadcastGroup::ValidatorGroup { self_id, group, .. } => {
+                group.is_member(self_id) && is_first_hop_recipient
+            }
+            BroadcastGroup::FullNodeGroup { self_id, group, .. } => {
+                group.is_member(self_id) && is_first_hop_recipient
+            }
+        }
+    }
+
+    // The caller must ensure should_rebroadcast(recipient) returns
+    // true for the chunk.
+    pub fn rebroadcasting_peers(&self) -> Box<dyn Iterator<Item = &NodeId<PT>> + '_> {
+        match self {
+            BroadcastGroup::ValidatorGroup {
+                self_id,
+                group,
+                author,
+            } => {
+                let peers = group
+                    .get_members()
+                    .keys()
+                    .filter(|nid| *nid != *self_id && *nid != *author);
+                Box::new(peers)
+            }
+            BroadcastGroup::FullNodeGroup { self_id, group, .. } => {
+                // Note: publisher is expected to not belong to the
+                // group for secondary RC.
+                let peers = group.iter().filter(|nid| *nid != *self_id);
+                Box::new(peers)
+            }
+        }
     }
 }
 
@@ -831,13 +693,14 @@ pub fn unix_ts_ms_now() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
-
     use monad_crypto::certificate_signature::CertificateSignaturePubKey;
     use monad_secp::SecpSignature;
     use monad_testutil::signing::get_key;
+    use monad_types::Stake;
+    use monad_validator::validator_set::ValidatorSet;
 
     use super::*;
+    use crate::udp::GroupId;
     type ST = SecpSignature;
     type PT = CertificateSignaturePubKey<ST>;
 
@@ -848,175 +711,10 @@ mod tests {
         NodeId::new(pub_key)
     }
 
-    #[test]
-    fn test_fullnode_iterator_self_on() {
-        let group = Group::<PT>::new_fullnode_group(
-            vec![nid(0), nid(1), nid(2)],
-            &nid(1), // self_id
-            nid(3),  // validator
-            RoundSpan::new(Round(3), Round(8)).unwrap(),
-        );
-        assert_eq!(group.size_excl_self(), 2);
-        assert_eq!(group.get_validator_id(), &nid(3));
-        assert_eq!(group.get_other_peers(), &vec![nid(0), nid(2)]);
-        assert_eq!(
-            group.get_round_span(),
-            &RoundSpan::new(Round(3), Round(8)).unwrap()
-        );
-        let empty_iter: Vec<_> = group.empty_iterator().collect();
-        assert!(empty_iter.is_empty());
-
-        let it: Vec<_> = group
-            .iter_skip_self_and_author(&nid(3), 0)
-            .cloned()
-            .collect();
-        assert_eq!(&it, &vec![nid(0), nid(2)]);
-
-        // Calling a second time should not change anything
-        let it: Vec<_> = group
-            .iter_skip_self_and_author(&nid(3), 0)
-            .cloned()
-            .collect();
-        assert_eq!(&it, &vec![nid(0), nid(2)]);
-
-        // Invalid author id: should return empty iterator
-        let it: Vec<_> = group
-            .iter_skip_self_and_author(&nid(5), 0)
-            .cloned()
-            .collect();
-        assert!(it.is_empty());
-    }
-
-    #[test]
-    fn test_fullnode_iterator_self_off() {
-        let group = Group::<PT>::new_fullnode_group(
-            vec![nid(0), nid(1), nid(2)],
-            &nid(3), // self_id
-            nid(3),  // validator id
-            RoundSpan::new(Round(3), Round(8)).unwrap(),
-        );
-        assert_eq!(group.size_excl_self(), 3);
-        assert_eq!(group.get_validator_id(), &nid(3));
-        assert_eq!(group.get_other_peers(), &vec![nid(0), nid(1), nid(2)]);
-        assert_eq!(
-            group.get_round_span(),
-            &RoundSpan::new(Round(3), Round(8)).unwrap()
-        );
-        let empty_iter: Vec<_> = group.empty_iterator().collect();
-        assert!(empty_iter.is_empty());
-
-        let it: Vec<_> = group
-            .iter_skip_self_and_author(&nid(3), 0)
-            .cloned()
-            .collect();
-        assert_eq!(&it, &vec![nid(0), nid(1), nid(2)]);
-
-        // Invalid author id: should return empty iterator
-        let it: Vec<_> = group
-            .iter_skip_self_and_author(&nid(5), 0)
-            .cloned()
-            .collect();
-        assert!(it.is_empty());
-    }
-
-    #[test]
-    fn test_fullnode_iterator_only_self() {
-        let group = Group::<PT>::new_fullnode_group(
-            vec![nid(1)],
-            &nid(1), // self_id
-            nid(3),  // validator id
-            RoundSpan::new(Round(3), Round(8)).unwrap(),
-        );
-        assert_eq!(group.size_excl_self(), 0);
-        assert_eq!(group.get_validator_id(), &nid(3));
-        assert_eq!(group.get_other_peers(), &vec![]);
-        assert_eq!(
-            group.get_round_span(),
-            &RoundSpan::new(Round(3), Round(8)).unwrap()
-        );
-        let empty_iter: Vec<_> = group.empty_iterator().collect();
-        assert!(empty_iter.is_empty());
-
-        let it: Vec<_> = group
-            .iter_skip_self_and_author(&nid(3), 0)
-            .cloned()
-            .collect();
-        assert!(it.is_empty());
-        // Invalid author id: should return empty iterator
-        let it: Vec<_> = group
-            .iter_skip_self_and_author(&nid(5), 0)
-            .cloned()
-            .collect();
-        assert!(it.is_empty());
-    }
-
-    #[test]
-    fn test_validator_iterator_self_on() {
-        let group = Group::<PT>::new_validator_group(
-            vec![nid(0), nid(1), nid(2)],
-            &nid(1), // self_id
-        );
-        assert_eq!(group.size_excl_self(), 2);
-        assert_eq!(group.get_other_peers(), &vec![nid(0), nid(2)]);
-        assert_eq!(group.get_round_span(), &RoundSpan::empty(Round::MIN));
-        let empty_iter: Vec<_> = group.empty_iterator().collect();
-        assert!(empty_iter.is_empty());
-
-        // Invalid author id: should return empty iterator
-        let it: Vec<_> = group
-            .iter_skip_self_and_author(&nid(5), 0)
-            .cloned()
-            .collect();
-        assert!(it.is_empty());
-
-        let it: Vec<_> = group
-            .iter_skip_self_and_author(&nid(2), 0)
-            .cloned()
-            .collect();
-        assert_eq!(&it, &vec![nid(0)]);
-    }
-
-    #[test]
-    fn test_iterator_rand() {
-        let group = Group::<PT>::new_fullnode_group(
-            vec![nid(0), nid(1), nid(2), nid(3), nid(4)],
-            &nid(0),  // self_id
-            nid(100), // validator id
-            RoundSpan::new(Round(3), Round(8)).unwrap(),
-        );
-
-        // Non-"randomized" iteration (but sorted)
-        let it: Vec<_> = group
-            .iter_skip_self_and_author(&nid(100), 0)
-            .cloned()
-            .collect();
-        let mut org_nodes = vec![nid(1), nid(2), nid(3), nid(4)];
-        org_nodes.sort();
-        assert_eq!(&it, &org_nodes);
-
-        // "Randomized" iterations
-        let mut permutations_seen = HashSet::<Vec<NodeId<PT>>>::new();
-        for seed in 1..10 {
-            let it: Vec<_> = group
-                .iter_skip_self_and_author(&nid(100), seed)
-                .cloned()
-                .collect();
-            permutations_seen.insert(it);
-        }
-
-        // Verify that we have seen a few permutations, ensuring that we won't
-        // always assign chunks for small proposals to the same node.
-        assert!(permutations_seen.len() >= 4);
-    }
-
-    #[test]
-    #[should_panic]
-    fn test_no_validator_id_in_validator_group() {
-        let group = Group::<PT>::new_validator_group(
-            vec![nid(0), nid(1), nid(2)],
-            &nid(1), // self_id
-        );
-        group.get_validator_id(); // should panic
+    fn make_validator_set(node_ids: &[NodeId<PT>]) -> ValidatorSet<PT> {
+        assert!(!node_ids.is_empty());
+        let members = node_ids.iter().map(|id| (*id, Stake::ONE)).collect();
+        ValidatorSet::new_unchecked(members)
     }
 
     #[test]
@@ -1084,5 +782,490 @@ mod tests {
 
         assert_eq!(lookup_fn.lookup(&node1), Some(addr));
         assert_eq!(lookup_fn.lookup(&node2), None);
+    }
+
+    #[test]
+    fn test_secondary_group() {
+        // membership check
+        let group = SecondaryGroup::new([nid(1), nid(2), nid(3)].into_iter().collect()).unwrap();
+        assert!(group.is_member(&nid(1)));
+        assert!(group.is_member(&nid(2)));
+        assert!(group.is_member(&nid(3)));
+        assert!(!group.is_member(&nid(4)));
+        assert_eq!(group.len().get(), 3);
+
+        // invariance
+        let group = SecondaryGroup::<PT>::new([].into_iter().collect());
+        assert!(group.is_none());
+    }
+
+    #[test]
+    fn test_secondary_group_assignment_accessors() {
+        let self_id = nid(1);
+        let publisher_id = nid(10);
+        let round_span = RoundSpan::new(Round(5), Round(10)).unwrap();
+        let group = SecondaryGroup::new([self_id, nid(2), nid(3)].into_iter().collect()).unwrap();
+        let assignment = SecondaryGroupAssignment::new(publisher_id, round_span, group);
+
+        assert_eq!(assignment.publisher_id(), &publisher_id);
+        assert_eq!(assignment.round_span(), &round_span);
+        assert!(assignment.is_member(&self_id));
+        assert!(assignment.is_member(&nid(2)));
+        assert!(!assignment.is_member(&nid(10))); // publisher not in group
+    }
+
+    #[test]
+    fn test_secondary_group_map_insert_and_get() {
+        let mut map = SecondaryGroupMap::<PT>::default();
+
+        let group1 = SecondaryGroup::new([nid(1), nid(2)].into_iter().collect()).unwrap();
+        let round_span1 = RoundSpan::new(Round(1), Round(5)).unwrap();
+
+        let group2 = SecondaryGroup::new([nid(3), nid(4)].into_iter().collect()).unwrap();
+        let round_span2 = RoundSpan::new(Round(10), Round(15)).unwrap();
+
+        assert!(map.try_insert(round_span1, group1).is_some());
+        assert!(map.try_insert(round_span2, group2).is_some());
+
+        // get group at round 3 (within [1, 5))
+        let grp = map.get(Round(3)).unwrap();
+        assert!(grp.is_member(&nid(1)));
+
+        // get group at round 12 (within [10, 15))
+        let grp = map.get(Round(12)).unwrap();
+        assert!(grp.is_member(&nid(3)));
+
+        // no group at round 7 (gap between groups)
+        assert!(map.get(Round(7)).is_none());
+    }
+
+    #[test]
+    fn test_secondary_group_map_overlap() {
+        let mut map = SecondaryGroupMap::<PT>::default();
+
+        let group1 = SecondaryGroup::new([nid(1), nid(2)].into_iter().collect()).unwrap();
+        let round_span1 = RoundSpan::new(Round(1), Round(10)).unwrap();
+
+        let group2 = SecondaryGroup::new([nid(3), nid(4)].into_iter().collect()).unwrap();
+        let round_span2 = RoundSpan::new(Round(5), Round(15)).unwrap(); // overlaps
+
+        assert!(map.try_insert(round_span1, group1).is_some());
+        assert!(map.try_insert(round_span2, group2).is_none()); // rejected
+    }
+
+    #[test]
+    fn test_secondary_group_map_delete_expired() {
+        let mut map = SecondaryGroupMap::<PT>::default();
+
+        let group1 = SecondaryGroup::new([nid(1)].into_iter().collect()).unwrap();
+        let round_span1 = RoundSpan::new(Round(1), Round(5)).unwrap();
+
+        let group2 = SecondaryGroup::new([nid(2)].into_iter().collect()).unwrap();
+        let round_span2 = RoundSpan::new(Round(5), Round(10)).unwrap();
+
+        let group3 = SecondaryGroup::new([nid(3)].into_iter().collect()).unwrap();
+        let round_span3 = RoundSpan::new(Round(10), Round(15)).unwrap();
+
+        assert!(map.try_insert(round_span1, group1).is_some());
+        assert!(map.try_insert(round_span2, group2).is_some());
+        assert!(map.try_insert(round_span3, group3).is_some());
+
+        // Delete groups ending at or before Round(5)
+        map.delete_expired(Round(5));
+
+        // group [1, 5) should be deleted
+        assert!(map.get(Round(3)).is_none());
+        // group [5, 10) should still exist
+        assert!(map.get(Round(7)).is_some());
+        // group [10, 15) should still exist
+        assert!(map.get(Round(12)).is_some());
+
+        // delete groups ending at or before Round(10)
+        map.delete_expired(Round(10));
+        assert!(map.get(Round(7)).is_none());
+        assert!(map.get(Round(12)).is_some());
+    }
+
+    #[test]
+    fn test_full_node_group_map_insert_and_get() {
+        let mut map = FullNodeGroupMap::<PT>::default();
+
+        let publisher1 = nid(100);
+        let publisher2 = nid(200);
+
+        let assignment1 = SecondaryGroupAssignment::new(
+            publisher1,
+            RoundSpan::new(Round(1), Round(5)).unwrap(),
+            SecondaryGroup::new([nid(1), nid(2)].into_iter().collect()).unwrap(),
+        );
+
+        let assignment2 = SecondaryGroupAssignment::new(
+            publisher2,
+            RoundSpan::new(Round(1), Round(5)).unwrap(),
+            SecondaryGroup::new([nid(3), nid(4)].into_iter().collect()).unwrap(),
+        );
+
+        assert!(map.try_insert(assignment1).is_some());
+        assert!(map.try_insert(assignment2).is_some());
+
+        assert_eq!(map.len(), 2);
+        assert!(!map.is_empty());
+
+        // get group map for publisher1
+        let group_map = map.get_group_map(&publisher1).unwrap();
+        let grp = group_map.get(Round(3)).unwrap();
+        assert!(grp.is_member(&nid(1)));
+
+        // get group map for publisher2
+        let group_map = map.get_group_map(&publisher2).unwrap();
+        let grp = group_map.get(Round(3)).unwrap();
+        assert!(grp.is_member(&nid(3)));
+
+        // unknown publisher returns None
+        assert!(map.get_group_map(&nid(999)).is_none());
+    }
+
+    #[test]
+    fn test_full_node_group_map_delete_expired() {
+        let mut map = FullNodeGroupMap::<PT>::default();
+
+        let publisher = nid(100);
+
+        let assignment1 = SecondaryGroupAssignment::new(
+            publisher,
+            RoundSpan::new(Round(1), Round(5)).unwrap(),
+            SecondaryGroup::new([nid(1)].into_iter().collect()).unwrap(),
+        );
+
+        let assignment2 = SecondaryGroupAssignment::new(
+            publisher,
+            RoundSpan::new(Round(10), Round(15)).unwrap(),
+            SecondaryGroup::new([nid(2)].into_iter().collect()).unwrap(),
+        );
+
+        assert!(map.try_insert(assignment1).is_some());
+        assert!(map.try_insert(assignment2).is_some());
+
+        // delete expired at Round(5)
+        map.delete_expired(Round(5));
+
+        let group_map = map.get_group_map(&publisher).unwrap();
+        assert!(group_map.get(Round(3)).is_none());
+        assert!(group_map.get(Round(12)).is_some());
+
+        // delete expired at Round(15) - remove entire publisher entry
+        map.delete_expired(Round(15));
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn test_broadcast_group_from_primary_group_id() {
+        let self_id = nid(1);
+        let author = nid(2);
+        let validator_ids = [nid(1), nid(2), nid(3)];
+
+        let mut validator_group_map = ValidatorGroupMap::<PT>::new();
+        validator_group_map.insert(Epoch(1), make_validator_set(&validator_ids));
+        let full_node_group_map = FullNodeGroupMap::<PT>::default();
+
+        let group = BroadcastGroup::from_group_id(
+            GroupId::Primary(Epoch(1)),
+            &self_id,
+            &author,
+            &validator_group_map,
+            &full_node_group_map,
+        )
+        .unwrap();
+
+        assert!(matches!(group, BroadcastGroup::ValidatorGroup { .. }));
+    }
+
+    #[test]
+    fn test_broadcast_group_from_primary_group_not_found() {
+        let self_id = nid(1);
+        let author = nid(2);
+
+        let validator_group_map = ValidatorGroupMap::<PT>::new();
+        let full_node_group_map = FullNodeGroupMap::<PT>::default();
+
+        // Epoch not found
+        let result = BroadcastGroup::from_group_id(
+            GroupId::Primary(Epoch(99)),
+            &self_id,
+            &author,
+            &validator_group_map,
+            &full_node_group_map,
+        );
+
+        assert!(matches!(result, Err(BroadcastGroupError::GroupNotFound)));
+    }
+
+    #[test]
+    fn test_broadcast_group_from_primary_invalid_author() {
+        let self_id = nid(1);
+        let author = nid(99); // not in validator set
+        let validator_ids = [nid(1), nid(2), nid(3)];
+
+        let mut validator_group_map = ValidatorGroupMap::<PT>::new();
+        validator_group_map.insert(Epoch(1), make_validator_set(&validator_ids));
+
+        let full_node_group_map = FullNodeGroupMap::<PT>::default();
+
+        let result = BroadcastGroup::from_group_id(
+            GroupId::Primary(Epoch(1)),
+            &self_id,
+            &author,
+            &validator_group_map,
+            &full_node_group_map,
+        );
+
+        assert!(matches!(result, Err(BroadcastGroupError::InvalidAuthor)));
+    }
+
+    #[test]
+    fn test_broadcast_group_from_secondary_group_id() {
+        let self_id = nid(1);
+        let publisher = nid(100);
+
+        let validator_group_map = ValidatorGroupMap::<PT>::new();
+        let mut full_node_group_map = FullNodeGroupMap::<PT>::default();
+
+        let assignment = SecondaryGroupAssignment::new(
+            publisher,
+            RoundSpan::new(Round(1), Round(10)).unwrap(),
+            SecondaryGroup::new([self_id, nid(2), nid(3)].into_iter().collect()).unwrap(),
+        );
+        full_node_group_map
+            .try_insert(assignment)
+            .expect("no overlaps");
+
+        // Valid secondary group lookup
+        let group = BroadcastGroup::from_group_id(
+            GroupId::Secondary(Round(5)),
+            &self_id,
+            &publisher, // author is publisher for secondary
+            &validator_group_map,
+            &full_node_group_map,
+        )
+        .unwrap();
+
+        assert!(matches!(group, BroadcastGroup::FullNodeGroup { .. }));
+    }
+
+    #[test]
+    fn test_broadcast_group_from_secondary_publisher_not_found() {
+        let self_id = nid(1);
+        let unknown_publisher = nid(999);
+
+        let validator_group_map = ValidatorGroupMap::<PT>::new();
+        let full_node_group_map = FullNodeGroupMap::<PT>::default();
+
+        let result = BroadcastGroup::from_group_id(
+            GroupId::Secondary(Round(5)),
+            &self_id,
+            &unknown_publisher,
+            &validator_group_map,
+            &full_node_group_map,
+        );
+
+        assert!(matches!(result, Err(BroadcastGroupError::GroupNotFound)));
+    }
+
+    #[test]
+    fn test_broadcast_group_from_secondary_round_not_found() {
+        let self_id = nid(1);
+        let publisher = nid(100);
+
+        let validator_group_map = ValidatorGroupMap::<PT>::new();
+        let mut full_node_group_map = FullNodeGroupMap::<PT>::default();
+
+        let assignment = SecondaryGroupAssignment::new(
+            publisher,
+            RoundSpan::new(Round(1), Round(10)).unwrap(),
+            SecondaryGroup::new([self_id, nid(2)].into_iter().collect()).unwrap(),
+        );
+        full_node_group_map
+            .try_insert(assignment)
+            .expect("no overlaps");
+
+        // Round 50 is outside [1, 10)
+        let result = BroadcastGroup::from_group_id(
+            GroupId::Secondary(Round(50)),
+            &self_id,
+            &publisher,
+            &validator_group_map,
+            &full_node_group_map,
+        );
+
+        assert!(matches!(result, Err(BroadcastGroupError::GroupNotFound)));
+    }
+
+    #[test]
+    fn test_broadcast_group_is_sender_valid_validator() {
+        let self_id = nid(1);
+        let author = nid(2);
+        let validator_ids = [nid(1), nid(2), nid(3)];
+
+        let mut validator_group_map = ValidatorGroupMap::<PT>::new();
+        validator_group_map.insert(Epoch(1), make_validator_set(&validator_ids));
+
+        let full_node_group_map = FullNodeGroupMap::<PT>::default();
+
+        let group = BroadcastGroup::from_group_id(
+            GroupId::Primary(Epoch(1)),
+            &self_id,
+            &author,
+            &validator_group_map,
+            &full_node_group_map,
+        )
+        .unwrap();
+
+        // Any validator is a valid sender
+        assert!(group.is_sender_valid(&nid(1)));
+        assert!(group.is_sender_valid(&nid(2)));
+        assert!(group.is_sender_valid(&nid(3)));
+        // Non-validator is not a valid sender
+        assert!(!group.is_sender_valid(&nid(99)));
+    }
+
+    #[test]
+    fn test_broadcast_group_is_sender_valid_fullnode() {
+        let self_id = nid(1);
+        let publisher = nid(100);
+
+        let validator_group_map = ValidatorGroupMap::<PT>::new();
+        let mut full_node_group_map = FullNodeGroupMap::<PT>::default();
+
+        let assignment = SecondaryGroupAssignment::new(
+            publisher,
+            RoundSpan::new(Round(1), Round(10)).unwrap(),
+            SecondaryGroup::new([self_id, nid(2), nid(3)].into_iter().collect()).unwrap(),
+        );
+        full_node_group_map
+            .try_insert(assignment)
+            .expect("no overlaps");
+
+        let group = BroadcastGroup::from_group_id(
+            GroupId::Secondary(Round(5)),
+            &self_id,
+            &publisher,
+            &validator_group_map,
+            &full_node_group_map,
+        )
+        .unwrap();
+
+        // Publisher is valid sender
+        assert!(group.is_sender_valid(&publisher));
+        // Group members are valid senders
+        assert!(group.is_sender_valid(&self_id));
+        assert!(group.is_sender_valid(&nid(2)));
+        assert!(group.is_sender_valid(&nid(3)));
+        // Non-member, non-publisher is not valid
+        assert!(!group.is_sender_valid(&nid(99)));
+    }
+
+    #[test]
+    fn test_broadcast_group_should_rebroadcast() {
+        let self_id = nid(1);
+        let author = nid(2);
+        let validator_ids = [nid(1), nid(2), nid(3)];
+
+        let mut validator_group_map = ValidatorGroupMap::<PT>::new();
+        validator_group_map.insert(Epoch(1), make_validator_set(&validator_ids));
+
+        let full_node_group_map = FullNodeGroupMap::<PT>::default();
+
+        let group = BroadcastGroup::from_group_id(
+            GroupId::Primary(Epoch(1)),
+            &self_id,
+            &author,
+            &validator_group_map,
+            &full_node_group_map,
+        )
+        .unwrap();
+
+        // self_id is a member, first hop -> should rebroadcast
+        assert!(group.should_rebroadcast(true));
+        // self_id is a member, not first hop -> should not rebroadcast
+        assert!(!group.should_rebroadcast(false));
+
+        let self_id = nid(99); // not in validator set
+        let group = BroadcastGroup::from_group_id(
+            GroupId::Primary(Epoch(1)),
+            &self_id,
+            &author,
+            &validator_group_map,
+            &full_node_group_map,
+        )
+        .unwrap();
+
+        // self_id is not a member -> should not rebroadcast
+        assert!(!group.should_rebroadcast(true));
+        assert!(!group.should_rebroadcast(false));
+    }
+
+    #[test]
+    fn test_broadcast_group_rebroadcasting_peers_validator() {
+        let self_id = nid(1);
+        let author = nid(2);
+        let validator_ids = [nid(1), nid(2), nid(3), nid(4)];
+
+        let mut validator_group_map = ValidatorGroupMap::<PT>::new();
+        validator_group_map.insert(Epoch(1), make_validator_set(&validator_ids));
+
+        let full_node_group_map = FullNodeGroupMap::<PT>::default();
+
+        let group = BroadcastGroup::from_group_id(
+            GroupId::Primary(Epoch(1)),
+            &self_id,
+            &author,
+            &validator_group_map,
+            &full_node_group_map,
+        )
+        .unwrap();
+
+        let peers: Vec<_> = group.rebroadcasting_peers().cloned().collect();
+
+        // Should exclude self_id (nid(1)) and author (nid(2))
+        assert_eq!(peers.len(), 2);
+        assert!(peers.contains(&nid(3)));
+        assert!(peers.contains(&nid(4)));
+        assert!(!peers.contains(&self_id));
+        assert!(!peers.contains(&author));
+    }
+
+    #[test]
+    fn test_broadcast_group_rebroadcasting_peers_fullnode() {
+        let self_id = nid(1);
+        let publisher = nid(100);
+
+        let validator_group_map = ValidatorGroupMap::<PT>::new();
+        let mut full_node_group_map = FullNodeGroupMap::<PT>::default();
+
+        let assignment = SecondaryGroupAssignment::new(
+            publisher,
+            RoundSpan::new(Round(1), Round(10)).unwrap(),
+            SecondaryGroup::new([self_id, nid(2), nid(3)].into_iter().collect()).unwrap(),
+        );
+        full_node_group_map
+            .try_insert(assignment)
+            .expect("no overlaps");
+
+        let group = BroadcastGroup::from_group_id(
+            GroupId::Secondary(Round(5)),
+            &self_id,
+            &publisher,
+            &validator_group_map,
+            &full_node_group_map,
+        )
+        .unwrap();
+
+        let peers: Vec<_> = group.rebroadcasting_peers().cloned().collect();
+
+        // Should exclude self_id (nid(1)), publisher is not in group
+        assert_eq!(peers.len(), 2);
+        assert!(peers.contains(&nid(2)));
+        assert!(peers.contains(&nid(3)));
+        assert!(!peers.contains(&self_id));
     }
 }

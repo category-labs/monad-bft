@@ -45,7 +45,7 @@ use monad_raptorcast::{
         group_message::FullNodesGroupMessage, RaptorCastSecondary, SecondaryOutboundMessage,
         SecondaryRaptorCastModeConfig,
     },
-    util::Group,
+    util::SecondaryGroupAssignment,
     RaptorCast, RaptorCastEvent,
 };
 use monad_types::{Epoch, NodeId};
@@ -116,7 +116,7 @@ where
         let (send_net_messages, recv_net_messages) =
             unbounded_channel::<FullNodesGroupMessage<ST>>();
         let (send_group_infos, recv_group_infos) =
-            unbounded_channel::<Group<CertificateSignaturePubKey<ST>>>();
+            unbounded_channel::<SecondaryGroupAssignment<CertificateSignaturePubKey<ST>>>();
         let (send_outbound_to_primary, recv_outbound_from_secondary) =
             unbounded_channel::<SecondaryOutboundMessage<CertificateSignaturePubKey<ST>>>();
 
@@ -211,7 +211,7 @@ where
         mode: SecondaryRaptorCastModeConfig,
         shared_pdd: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
         recv_net_messages: UnboundedReceiver<FullNodesGroupMessage<ST>>,
-        send_group_infos: UnboundedSender<Group<CertificateSignaturePubKey<ST>>>,
+        send_group_infos: UnboundedSender<SecondaryGroupAssignment<CertificateSignaturePubKey<ST>>>,
         channel_to_primary_outbound: UnboundedSender<
             SecondaryOutboundMessage<CertificateSignaturePubKey<ST>>,
         >,
