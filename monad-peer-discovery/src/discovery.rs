@@ -38,6 +38,7 @@ use crate::{
     PeerDiscoveryMetricsCommand, PeerDiscoveryTimerCommand, PeerLookupRequest, PeerLookupResponse,
     PeerSource, Ping, Pong, TimerKind,
     ipv4_validation::{IpCheckError, validate_socket_ipv4_address},
+    message::MAX_PEER_IN_RESPONSE,
 };
 
 type RateLimiter<C> = governor::RateLimiter<
@@ -47,8 +48,6 @@ type RateLimiter<C> = governor::RateLimiter<
     governor::middleware::NoOpMiddleware<<C as governor::clock::Clock>::Instant>,
 >;
 
-/// Maximum number of peers to be included in a PeerLookupResponse
-const MAX_PEER_IN_RESPONSE: usize = 16;
 /// Rate limit for incoming peer lookup requests (per second)
 const PEER_LOOKUP_RATE_LIMIT_PER_SECOND: u32 = 10;
 /// Number of peers to send lookup request to
@@ -1101,7 +1100,7 @@ where
         let peer_lookup_response = PeerLookupResponse {
             lookup_id: request.lookup_id,
             target,
-            name_records,
+            name_records: name_records.into(),
         };
 
         cmds.push(PeerDiscoveryCommand::RouterCommand {
@@ -2294,7 +2293,7 @@ mod tests {
             PeerLookupResponse {
                 lookup_id: requests[0].lookup_id,
                 target: peer2_pubkey,
-                name_records: vec![record.clone()],
+                name_records: vec![record.clone()].into(),
             },
         );
 
@@ -2467,7 +2466,7 @@ mod tests {
             PeerLookupResponse {
                 lookup_id: 1,
                 target: peer1_pubkey,
-                name_records: vec![record],
+                name_records: vec![record].into(),
             },
         );
         assert!(cmds.is_empty());
@@ -2500,7 +2499,7 @@ mod tests {
             PeerLookupResponse {
                 lookup_id,
                 target: peer1_pubkey,
-                name_records: vec![record; MAX_PEER_IN_RESPONSE + 1],
+                name_records: vec![record; MAX_PEER_IN_RESPONSE + 1].into(),
             },
         );
         assert!(cmds.is_empty());

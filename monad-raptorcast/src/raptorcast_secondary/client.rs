@@ -368,7 +368,7 @@ where
         }
 
         let group = GroupAsClient::new_fullnode_group(
-            confirm_msg.peers,
+            confirm_msg.peers.into_inner(),
             &self.client_node_id,
             confirm_msg.prepare.validator_id,
             round_span,
