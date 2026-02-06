@@ -15,9 +15,9 @@
 
 use std::{
     fs::{File, OpenOptions},
-    io::{ErrorKind, Read, Write},
+    io::{self, ErrorKind, Read, Write},
     marker::PhantomData,
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::SystemTime,
 };
 
@@ -43,28 +43,56 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-    fn write_bft_header(
-        &mut self,
-        block: &ConsensusBlockHeader<ST, SCT, EPT>,
-    ) -> std::io::Result<()>;
-    fn write_bft_body(&mut self, payload: &ConsensusBlockBody<EPT>) -> std::io::Result<()>;
+    fn write_bft_header(&mut self, block: &ConsensusBlockHeader<ST, SCT, EPT>) -> io::Result<()>;
+    fn write_bft_body(&mut self, payload: &ConsensusBlockBody<EPT>) -> io::Result<()>;
 
-    fn update_proposed_head(&mut self, block_id: &BlockId) -> std::io::Result<()>;
-    fn update_voted_head(&mut self, block_id: &BlockId) -> std::io::Result<()>;
-    fn update_finalized_head(&mut self, block_id: &BlockId) -> std::io::Result<()>;
+    fn update_proposed_head(&mut self, block_id: &BlockId) -> io::Result<()>;
+    fn update_voted_head(&mut self, block_id: &BlockId) -> io::Result<()>;
+    fn update_finalized_head(&mut self, block_id: &BlockId) -> io::Result<()>;
 
-    fn read_bft_header(
-        &self,
-        block_id: &BlockId,
-    ) -> std::io::Result<ConsensusBlockHeader<ST, SCT, EPT>>;
+    fn read_proposed_head_bft_header(&self) -> io::Result<ConsensusBlockHeader<ST, SCT, EPT>>;
+    fn read_bft_header(&self, block_id: &BlockId)
+        -> io::Result<ConsensusBlockHeader<ST, SCT, EPT>>;
     fn read_bft_body(
         &self,
         payload_id: &ConsensusBlockBodyId,
-    ) -> std::io::Result<ConsensusBlockBody<EPT>>;
+    ) -> io::Result<ConsensusBlockBody<EPT>>;
 }
 
-fn block_id_to_hex_prefix(hash: &Hash) -> String {
+fn block_id_to_hex(hash: &Hash) -> String {
     hex::encode(hash.0)
+}
+
+fn create_dir_safe(base: &Path, name: &str) -> PathBuf {
+    let path = base.join(name);
+    match std::fs::create_dir(&path) {
+        Ok(()) => (),
+        Err(e) if e.kind() == ErrorKind::AlreadyExists => (),
+        Err(e) => panic!("{}", e),
+    }
+    path
+}
+
+fn atomic_symlink_update(target: &Path, link_path: &Path) -> io::Result<()> {
+    let mut wip = link_path.to_path_buf();
+    wip.set_extension(".wip");
+    std::os::unix::fs::symlink(target, &wip)?;
+    std::fs::rename(&wip, link_path)?;
+    Ok(())
+}
+
+fn read_and_decode<T: alloy_rlp::Decodable>(
+    path: &Path,
+    context: impl FnOnce() -> String,
+) -> io::Result<T> {
+    let mut file = File::open(path)?;
+    let size = file.metadata()?.len();
+    let mut buf = vec![0; size as usize];
+    file.read_exact(&mut buf)?;
+
+    alloy_rlp::decode_exact(&buf).map_err(|err| {
+        io::Error::other(format!("failed to rlp decode {}, err={:?}", context(), err))
+    })
 }
 
 #[derive(Clone)]
@@ -90,29 +118,12 @@ where
     EPT: ExecutionProtocol,
 {
     pub fn new(ledger_path: PathBuf) -> Self {
-        let headers_path = {
-            let headers_path = PathBuf::from(&ledger_path).join(BLOCKDB_HEADERS_PATH);
-            match std::fs::create_dir(&headers_path) {
-                Ok(_) => (),
-                Err(e) if e.kind() == ErrorKind::AlreadyExists => (),
-                Err(e) => panic!("{}", e),
-            }
-            headers_path
-        };
+        let headers_path = create_dir_safe(&ledger_path, BLOCKDB_HEADERS_PATH);
+        let bodies_path = create_dir_safe(&ledger_path, BLOCKDB_BODIES_PATH);
 
-        let bodies_path = {
-            let bodies_path = PathBuf::from(&ledger_path).join(BLOCKDB_BODIES_PATH);
-            match std::fs::create_dir(&bodies_path) {
-                Ok(_) => (),
-                Err(e) if e.kind() == ErrorKind::AlreadyExists => (),
-                Err(e) => panic!("{}", e),
-            }
-            bodies_path
-        };
-
-        let proposed_head_path = PathBuf::from(&headers_path).join(BLOCKDB_PROPOSED_HEAD_PATH);
-        let voted_head_path = PathBuf::from(&headers_path).join(BLOCKDB_VOTED_HEAD_PATH);
-        let finalized_head_path = PathBuf::from(&headers_path).join(BLOCKDB_FINALIZED_HEAD_PATH);
+        let proposed_head_path = headers_path.join(BLOCKDB_PROPOSED_HEAD_PATH);
+        let voted_head_path = headers_path.join(BLOCKDB_VOTED_HEAD_PATH);
+        let finalized_head_path = headers_path.join(BLOCKDB_FINALIZED_HEAD_PATH);
 
         Self {
             headers_path,
@@ -126,33 +137,11 @@ where
     }
 
     fn header_path(&self, block_id: &BlockId) -> PathBuf {
-        let mut file_path = PathBuf::from(&self.headers_path);
-        file_path.push(block_id_to_hex_prefix(&block_id.0));
-        file_path
+        self.headers_path.join(block_id_to_hex(&block_id.0))
     }
 
     fn body_path(&self, body_id: &ConsensusBlockBodyId) -> PathBuf {
-        let mut file_path = PathBuf::from(&self.bodies_path);
-        file_path.push(block_id_to_hex_prefix(&body_id.0));
-        file_path
-    }
-
-    pub fn read_proposed_head_bft_header(
-        &self,
-    ) -> std::io::Result<ConsensusBlockHeader<ST, SCT, EPT>> {
-        let mut file = File::open(&self.proposed_head_path)?;
-        let size = file.metadata()?.len();
-        let mut buf = vec![0; size as usize];
-        file.read_exact(&mut buf)?;
-
-        let header = alloy_rlp::decode_exact(&buf).map_err(|err| {
-            std::io::Error::other(format!(
-                "failed to rlp decode ledger proposed_head bft header, err={:?}",
-                err
-            ))
-        })?;
-
-        Ok(header)
+        self.bodies_path.join(block_id_to_hex(&body_id.0))
     }
 }
 
@@ -162,10 +151,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-    fn write_bft_header(
-        &mut self,
-        block: &ConsensusBlockHeader<ST, SCT, EPT>,
-    ) -> std::io::Result<()> {
+    fn write_bft_header(&mut self, block: &ConsensusBlockHeader<ST, SCT, EPT>) -> io::Result<()> {
         let file_path = self.header_path(&block.get_id());
 
         if let Ok(existing_header) = OpenOptions::new().write(true).open(&file_path) {
@@ -180,7 +166,7 @@ where
         Ok(())
     }
 
-    fn write_bft_body(&mut self, body: &ConsensusBlockBody<EPT>) -> std::io::Result<()> {
+    fn write_bft_body(&mut self, body: &ConsensusBlockBody<EPT>) -> io::Result<()> {
         let file_path = self.body_path(&body.get_id());
 
         if let Ok(existing_body) = OpenOptions::new().write(true).open(&file_path) {
@@ -195,68 +181,36 @@ where
         Ok(())
     }
 
-    fn update_proposed_head(&mut self, block_id: &BlockId) -> std::io::Result<()> {
-        let mut wip = PathBuf::from(&self.proposed_head_path);
-        wip.set_extension(".wip");
-        std::os::unix::fs::symlink(self.header_path(block_id), &wip)?;
-        std::fs::rename(&wip, &self.proposed_head_path)?;
-        Ok(())
+    fn update_proposed_head(&mut self, block_id: &BlockId) -> io::Result<()> {
+        atomic_symlink_update(&self.header_path(block_id), &self.proposed_head_path)
     }
 
-    fn update_voted_head(&mut self, block_id: &BlockId) -> std::io::Result<()> {
-        let mut wip = PathBuf::from(&self.voted_head_path);
-        wip.set_extension(".wip");
-        std::os::unix::fs::symlink(self.header_path(block_id), &wip)?;
-        std::fs::rename(&wip, &self.voted_head_path)?;
-        Ok(())
+    fn update_voted_head(&mut self, block_id: &BlockId) -> io::Result<()> {
+        atomic_symlink_update(&self.header_path(block_id), &self.voted_head_path)
     }
 
-    fn update_finalized_head(&mut self, block_id: &BlockId) -> std::io::Result<()> {
-        let mut wip = PathBuf::from(&self.finalized_head_path);
-        wip.set_extension(".wip");
-        std::os::unix::fs::symlink(self.header_path(block_id), &wip)?;
-        std::fs::rename(&wip, &self.finalized_head_path)?;
-        Ok(())
+    fn update_finalized_head(&mut self, block_id: &BlockId) -> io::Result<()> {
+        atomic_symlink_update(&self.header_path(block_id), &self.finalized_head_path)
+    }
+
+    fn read_proposed_head_bft_header(&self) -> io::Result<ConsensusBlockHeader<ST, SCT, EPT>> {
+        read_and_decode(&self.proposed_head_path, || {
+            "ledger proposed_head bft header".into()
+        })
     }
 
     fn read_bft_header(
         &self,
         block_id: &BlockId,
-    ) -> std::io::Result<ConsensusBlockHeader<ST, SCT, EPT>> {
-        let file_path = self.header_path(block_id);
-
-        let mut file = File::open(file_path)?;
-        let size = file.metadata()?.len();
-        let mut buf = vec![0; size as usize];
-        file.read_exact(&mut buf)?;
-
-        let header = alloy_rlp::decode_exact(&buf).map_err(|err| {
-            std::io::Error::other(format!(
-                "failed to rlp decode ledger bft header, block_id={:?}, err={:?}",
-                block_id, err
-            ))
-        })?;
-
-        Ok(header)
+    ) -> io::Result<ConsensusBlockHeader<ST, SCT, EPT>> {
+        read_and_decode(&self.header_path(block_id), || {
+            format!("ledger bft header, block_id={:?}", block_id)
+        })
     }
 
-    fn read_bft_body(
-        &self,
-        body_id: &ConsensusBlockBodyId,
-    ) -> std::io::Result<ConsensusBlockBody<EPT>> {
-        let file_path = self.body_path(body_id);
-        let mut file = File::open(file_path)?;
-        let size = file.metadata()?.len();
-        let mut buf = vec![0; size as usize];
-        file.read_exact(&mut buf)?;
-
-        let body = alloy_rlp::decode_exact(&buf).map_err(|err| {
-            std::io::Error::other(format!(
-                "failed to rlp decode ledger bft body, body_id={:?}, err={:?}",
-                body_id, err
-            ))
-        })?;
-
-        Ok(body)
+    fn read_bft_body(&self, body_id: &ConsensusBlockBodyId) -> io::Result<ConsensusBlockBody<EPT>> {
+        read_and_decode(&self.body_path(body_id), || {
+            format!("ledger bft body, body_id={:?}", body_id)
+        })
     }
 }
