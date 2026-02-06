@@ -214,7 +214,7 @@ where
                     .get_name_records()
             };
             let mut filled_confirm_msg = confirm_msg.clone();
-            filled_confirm_msg.name_records = Vec::default();
+            filled_confirm_msg.name_records = Default::default();
             for node_id in &dest_node_ids.list {
                 if let Some(name_record) = name_records.get(node_id) {
                     filled_confirm_msg.name_records.push(name_record.clone());
