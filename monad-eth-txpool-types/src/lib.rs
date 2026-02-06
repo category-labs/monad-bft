@@ -27,6 +27,7 @@ use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_TX_PRIORITY: U256 = U256::from_limbs([0xFFFFu64, 0, 0, 0]);
 
+#[cfg(test)]
 #[test]
 fn test_default_tx_priority() {
     assert_eq!(DEFAULT_TX_PRIORITY, U256::from(0xFFFFu64));
@@ -103,7 +104,7 @@ pub enum EthTxPoolInternalDropReason {
 }
 
 impl EthTxPoolDropReason {
-    pub fn as_user_string(&self) -> String {
+    pub fn as_user_string(&self) -> &'static str {
         match self {
             EthTxPoolDropReason::NotWellFormed(err) => match err {
                 StaticValidationError::InvalidChainId { .. } => "Invalid chain ID",
@@ -143,7 +144,6 @@ impl EthTxPoolDropReason {
             EthTxPoolDropReason::PoolNotReady => "Transaction pool is not ready",
             EthTxPoolDropReason::Internal(_) => "Internal error",
         }
-        .to_owned()
     }
 }
 

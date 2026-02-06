@@ -14,10 +14,12 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
+    future::Future,
     io::{self, ErrorKind},
     path::Path,
     pin::Pin,
     task::{Context, Poll},
+    time::Duration,
 };
 
 use futures::{FutureExt, Sink, SinkExt, Stream, StreamExt};
@@ -27,8 +29,8 @@ use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 use tracing::warn;
 
-const TX_CHANNEL_SEND_TIMEOUT_MS: u64 = 1_000;
-const SOCKET_SEND_TIMEOUT_MS: u64 = 1_000;
+const TX_CHANNEL_SEND_TIMEOUT: Duration = Duration::from_millis(1_000);
+const SOCKET_SEND_TIMEOUT: Duration = Duration::from_millis(1_000);
 
 fn build_length_delimited_codec() -> LengthDelimitedCodec {
     LengthDelimitedCodec::builder()
@@ -64,7 +66,8 @@ impl EthTxPoolIpcStream {
     ) -> io::Result<()> {
         let mut stream = Framed::new(stream, build_length_delimited_codec());
 
-        let snapshot_bytes = bincode::serialize(&snapshot).expect("snapshot is serializable");
+        let snapshot_bytes = bincode::serialize(&snapshot)
+            .map_err(|err| io::Error::new(ErrorKind::InvalidData, err))?;
 
         stream.send(snapshot_bytes.into()).await?;
 
@@ -84,19 +87,12 @@ impl EthTxPoolIpcStream {
                         ));
                     };
 
-                    match tokio::time::timeout(
-                        std::time::Duration::from_millis(TX_CHANNEL_SEND_TIMEOUT_MS),
-                        tx_sender.send(tx)
+                    if !Self::with_timeout(
+                        tx_sender.send(tx),
+                        TX_CHANNEL_SEND_TIMEOUT,
+                        "tx channel",
                     ).await {
-                        Ok(Ok(())) => continue,
-                        Ok(Err(err)) => {
-                            warn!(?err, "EthTxPoolIpcStream tx channel error, disconnecting");
-                            break;
-                        },
-                        Err(elapsed) => {
-                            warn!(?elapsed, "EthTxPoolIpcStream tx channel timed out, disconnecting");
-                            break;
-                        },
+                        break;
                     }
                 }
 
@@ -105,21 +101,15 @@ impl EthTxPoolIpcStream {
                         break;
                     };
 
-                    let events = bincode::serialize(&events).expect("txpool events are serializable");
+                    let events = bincode::serialize(&events)
+                        .map_err(|err| io::Error::new(ErrorKind::InvalidData, err))?;
 
-                    match tokio::time::timeout(
-                        std::time::Duration::from_millis(SOCKET_SEND_TIMEOUT_MS),
-                        stream.send(events.into())
+                    if !Self::with_timeout(
+                        stream.send(events.into()),
+                        SOCKET_SEND_TIMEOUT,
+                        "socket",
                     ).await {
-                        Ok(Ok(())) => continue,
-                        Ok(Err(err)) => {
-                            warn!(?err, "EthTxPoolIpcStream socket error, disconnecting");
-                            break;
-                        },
-                        Err(elapsed) => {
-                            warn!(?elapsed, "EthTxPoolIpcStream socket timed out, disconnecting");
-                            break;
-                        },
+                        break;
                     }
                 }
             }
@@ -128,13 +118,34 @@ impl EthTxPoolIpcStream {
         Ok(())
     }
 
+    async fn with_timeout<T, E: std::fmt::Debug>(
+        fut: impl Future<Output = Result<T, E>>,
+        timeout: Duration,
+        context: &'static str,
+    ) -> bool {
+        match tokio::time::timeout(timeout, fut).await {
+            Ok(Ok(_)) => true,
+            Ok(Err(err)) => {
+                warn!(?err, "EthTxPoolIpcStream {context} error, disconnecting");
+                false
+            }
+            Err(elapsed) => {
+                warn!(
+                    ?elapsed,
+                    "EthTxPoolIpcStream {context} timed out, disconnecting"
+                );
+                false
+            }
+        }
+    }
+
     pub fn send_tx_events(
         &self,
         events: Vec<EthTxPoolEvent>,
     ) -> Result<(), mpsc::error::TrySendError<Vec<EthTxPoolEvent>>> {
         if events.is_empty() {
             return Ok(());
-        };
+        }
 
         self.tx.try_send(events)
     }
@@ -183,7 +194,8 @@ impl EthTxPoolIpcClient {
             )
         })??;
 
-        let snapshot = bincode::deserialize::<EthTxPoolSnapshot>(&snapshot_bytes).unwrap();
+        let snapshot = bincode::deserialize::<EthTxPoolSnapshot>(&snapshot_bytes)
+            .map_err(|err| io::Error::new(ErrorKind::InvalidData, err))?;
 
         Ok((Self { stream }, snapshot))
     }
@@ -218,14 +230,21 @@ impl Stream for EthTxPoolIpcClient {
             return Poll::Pending;
         };
 
-        let Some(bytes) = result.transpose().ok().flatten() else {
-            return Poll::Ready(None);
+        let bytes = match result {
+            None => return Poll::Ready(None),
+            Some(Err(err)) => {
+                warn!(?err, "EthTxPoolIpcClient stream error");
+                return Poll::Ready(None);
+            }
+            Some(Ok(bytes)) => bytes,
         };
 
-        let Ok(event) = bincode::deserialize(bytes.as_ref()) else {
-            return Poll::Ready(None);
-        };
-
-        Poll::Ready(Some(event))
+        match bincode::deserialize(bytes.as_ref()) {
+            Ok(event) => Poll::Ready(Some(event)),
+            Err(err) => {
+                warn!(?err, "EthTxPoolIpcClient failed to deserialize event");
+                Poll::Ready(None)
+            }
+        }
     }
 }
