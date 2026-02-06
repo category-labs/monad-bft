@@ -18,6 +18,7 @@ use std::{collections::HashMap, ops::Range};
 use bytes::BytesMut;
 use monad_crypto::certificate_signature::PubKey;
 use monad_types::{NodeId, Stake};
+use monad_validator::validator_set::{ValidatorSet, ValidatorSetType};
 use rand::{rngs::StdRng, seq::SliceRandom as _, SeedableRng as _};
 
 use super::{BuildError, Chunk, PacketLayout, Result};
@@ -315,13 +316,7 @@ pub(crate) struct Replicated<PT: PubKey> {
 }
 
 impl<PT: PubKey> Replicated<PT> {
-    pub fn from_unicast(node_id: NodeId<PT>) -> Self {
-        Self {
-            recipients: vec![Recipient::new(node_id)],
-        }
-    }
-
-    pub fn from_broadcast(recipients: Vec<NodeId<PT>>) -> Self {
+    pub fn from_broadcast(recipients: impl IntoIterator<Item = NodeId<PT>>) -> Self {
         Self {
             recipients: recipients.into_iter().map(Recipient::new).collect(),
         }
@@ -472,12 +467,15 @@ impl<PT: PubKey> StakeBasedWithRC<PT> {
     // for easy implementation in other languages, e.g., using Mt19937
     // and Fisher Yates shuffle.
     pub fn shuffle_validators(
-        view: &crate::util::ValidatorsView<PT>,
+        validator_set: &ValidatorSet<PT>,
+        self_id: &NodeId<PT>,
         seed: [u8; 32],
     ) -> Vec<(NodeId<PT>, Stake)> {
-        let mut validator_set = view
+        let mut validator_set = validator_set
+            .get_members()
             .iter()
-            .map(|(node_id, stake)| (*node_id, stake))
+            .filter(|(node_id, _stake)| *node_id != self_id)
+            .map(|(node_id, stake)| (*node_id, *stake))
             .collect::<std::collections::BinaryHeap<_>>()
             .into_sorted_vec();
         let mut rng = StdRng::from_seed(seed);

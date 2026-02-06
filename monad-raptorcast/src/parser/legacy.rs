@@ -283,7 +283,7 @@ mod tests {
         packet::build_messages,
         parser::signature_verifier::SignatureVerifier,
         udp::{GroupId, SIGNATURE_CACHE_SIZE},
-        util::{BuildTarget, EpochValidators, Redundancy},
+        util::{BuildTarget, Redundancy},
     };
 
     type SignatureType = SecpSignature;
@@ -296,7 +296,7 @@ mod tests {
 
     fn validator_set() -> (
         KeyPairType,
-        EpochValidators<CertificateSignaturePubKey<SignatureType>>,
+        ValidatorSet<CertificateSignaturePubKey<SignatureType>>,
         HashMap<NodeId<CertificateSignaturePubKey<SignatureType>>, SocketAddr>,
     ) {
         const NUM_KEYS: u8 = 100;
@@ -313,9 +313,7 @@ mod tests {
             .iter()
             .map(|key| (NodeId::new(key.pubkey()), Stake::ONE))
             .collect();
-        let validators = EpochValidators {
-            validators: ValidatorSet::new_unchecked(valset),
-        };
+        let validators = ValidatorSet::new_unchecked(valset);
 
         let known_addresses = HashMap::new();
         (keys.pop().unwrap(), validators, known_addresses)
@@ -327,7 +325,6 @@ mod tests {
     #[test]
     fn test_legacy_vs_new_parser_equivalence() {
         let (key, validators, known_addresses) = validator_set();
-        let epoch_validators = validators.view_without(vec![&NodeId::new(key.pubkey())]);
 
         let app_message: Bytes = vec![1_u8; 1024 * 64].into();
 
@@ -338,7 +335,7 @@ mod tests {
             Redundancy::from_u8(2),
             GroupId::Primary(EPOCH),
             UNIX_TS_MS,
-            BuildTarget::Raptorcast(epoch_validators),
+            BuildTarget::Raptorcast(&validators),
             &known_addresses,
         );
 
