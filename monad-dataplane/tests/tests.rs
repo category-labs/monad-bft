@@ -438,11 +438,12 @@ fn tcp_exceed_queue_byte_limit() {
 
     let bind_addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
 
-    // Use 100KB messages so we hit the byte limit (4MB) before the message count limit (150).
-    // 4MB / 100KB = 40 messages can be queued at once.
-    let message_size = 100 * 1024;
+    // Use 32KB messages so we hit the byte limit (4MB) before the message count limit (150).
+    // 4MB / 32KB = 128 messages can be queued at once. Send 50x that amount (6400 messages)
+    // to ensure the queue fills and many messages are dropped due to the byte limit.
+    let message_size = 32 * 1024;
     let queue_byte_capacity = QUEUED_MESSAGE_BYTE_LIMIT / message_size;
-    let num_msgs = queue_byte_capacity * 10;
+    let num_msgs = queue_byte_capacity * 50;
 
     assert!(queue_byte_capacity < QUEUED_MESSAGE_LIMIT);
     assert!(message_size < QUEUED_MESSAGE_BYTE_LIMIT);
@@ -460,7 +461,7 @@ fn tcp_exceed_queue_byte_limit() {
     let rx_addr = rx_socket.local_addr();
     let tcp_socket = tx.tcp_sockets.take(TcpSocketId::Raptorcast).unwrap();
 
-    let payload: Vec<u8> = vec![0u8; message_size];
+    let payload = bytes::Bytes::from(vec![0u8; message_size]);
 
     let mut completions = Vec::with_capacity(num_msgs);
 
@@ -470,7 +471,7 @@ fn tcp_exceed_queue_byte_limit() {
         tcp_socket.write(
             rx_addr,
             TcpMsg {
-                msg: payload.clone().into(),
+                msg: payload.clone(),
                 completion: Some(sender),
             },
         );
