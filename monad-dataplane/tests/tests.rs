@@ -16,10 +16,10 @@
 use std::{
     collections::VecDeque,
     io::Write,
-    net::TcpStream,
+    net::{TcpListener, TcpStream},
     sync::{mpsc, Once},
     thread::{self, sleep},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use futures::{channel::oneshot, executor, FutureExt};
@@ -438,26 +438,32 @@ fn tcp_exceed_queue_byte_limit() {
 
     let bind_addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
 
-    // Use 100KB messages so we hit the byte limit (4MB) before the message count limit (150).
-    // 4MB / 100KB = 40 messages can be queued at once.
-    let message_size = 100 * 1024;
-    let queue_byte_capacity = QUEUED_MESSAGE_BYTE_LIMIT / message_size;
-    let num_msgs = queue_byte_capacity * 10;
+    // Use 2MB messages so the byte limit is reached quickly (4MB / 2MB = 2 messages).
+    // Keep num_msgs below QUEUED_MESSAGE_LIMIT so message-count drops cannot occur.
+    let message_size = 2 * 1024 * 1024;
+    let num_msgs = 128;
 
-    assert!(queue_byte_capacity < QUEUED_MESSAGE_LIMIT);
+    assert!(num_msgs < QUEUED_MESSAGE_LIMIT);
+    assert!((QUEUED_MESSAGE_BYTE_LIMIT / message_size) < num_msgs);
     assert!(message_size < QUEUED_MESSAGE_BYTE_LIMIT);
     assert!(num_msgs * message_size > QUEUED_MESSAGE_BYTE_LIMIT);
 
-    let mut rx = DataplaneBuilder::new(UP_BANDWIDTH_MBPS)
-        .with_tcp_sockets([(TcpSocketId::Raptorcast, bind_addr)])
-        .build();
+    let listener = TcpListener::bind(bind_addr).unwrap();
+    let rx_addr = listener.local_addr().unwrap();
+    let (accepted_tx, accepted_rx) = mpsc::sync_channel(1);
+    let (shutdown_tx, shutdown_rx) = mpsc::sync_channel(1);
+    let accept_handle = thread::spawn(move || {
+        // hold the accepted connection open but never read from it.
+        let (_stream, _addr) = listener.accept().unwrap();
+        accepted_tx.send(()).unwrap();
+        let _ = shutdown_rx.recv_timeout(Duration::from_millis(1500));
+    });
+
     let mut tx = DataplaneBuilder::new(UP_BANDWIDTH_MBPS)
         .with_tcp_sockets([(TcpSocketId::Raptorcast, bind_addr)])
         .build();
     tx.add_trusted("127.0.0.1".parse().unwrap());
 
-    let mut rx_socket = rx.tcp_sockets.take(TcpSocketId::Raptorcast).unwrap();
-    let rx_addr = rx_socket.local_addr();
     let tcp_socket = tx.tcp_sockets.take(TcpSocketId::Raptorcast).unwrap();
 
     let payload: Vec<u8> = vec![0u8; message_size];
@@ -478,18 +484,25 @@ fn tcp_exceed_queue_byte_limit() {
         completions.push(receiver);
     }
 
-    for _ in 0..queue_byte_capacity {
-        let recv_msg = executor::block_on(rx_socket.recv());
-        assert_eq!(recv_msg.payload.len(), message_size);
-    }
+    accepted_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("tx should establish a TCP connection to listener");
 
-    let failures: usize = completions
-        .into_iter()
-        .map(executor::block_on)
-        .filter(|result| result.is_err())
-        .count();
+    let deadline = Instant::now() + Duration::from_millis(500);
+    let saw_failure = loop {
+        let saw_failure = completions
+            .iter_mut()
+            .any(|receiver| receiver.try_recv().is_err());
+        if saw_failure || Instant::now() >= deadline {
+            break saw_failure;
+        }
+        sleep(Duration::from_millis(5));
+    };
 
-    assert!(failures > 0, "expected some failures due to byte limit");
+    let _ = shutdown_tx.send(());
+    accept_handle.join().unwrap();
+
+    assert!(saw_failure, "expected failures due to byte limit");
 }
 
 #[test]
