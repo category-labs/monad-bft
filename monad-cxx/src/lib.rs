@@ -34,15 +34,15 @@ type c_flush_fn = extern "C" fn(usize);
 // Called back by C++, sent to tracing framework via the event! macro
 extern "C" fn log_callback(plog: *const monad_log, _: usize) {
     let log = unsafe { &*plog };
-    let message = unsafe { ffi::CStr::from_ptr(log.message) }
-        .to_str()
-        .unwrap_or("UTF-8 decode error in log message");
+    let message_bytes =
+        unsafe { std::slice::from_raw_parts(log.message as *const u8, log.message_len) };
+    let message = String::from_utf8_lossy(message_bytes);
     match log.syslog_level {
-        0..=3 => event!(Level::ERROR, message),
-        4 => event!(Level::WARN, message),
-        5 => event!(Level::INFO, message),
-        6 => event!(Level::DEBUG, message),
-        _ => event!(Level::TRACE, message),
+        0..=3 => event!(Level::ERROR, %message),
+        4 => event!(Level::WARN, %message),
+        5 => event!(Level::INFO, %message),
+        6 => event!(Level::DEBUG, %message),
+        _ => event!(Level::TRACE, %message),
     };
 }
 
