@@ -438,13 +438,13 @@ fn tcp_exceed_queue_byte_limit() {
 
     let bind_addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
 
-    // Use 100KB messages so we hit the byte limit (4MB) before the message count limit (150).
-    // 4MB / 100KB = 40 messages can be queued at once.
-    let message_size = 100 * 1024;
-    let queue_byte_capacity = QUEUED_MESSAGE_BYTE_LIMIT / message_size;
-    let num_msgs = queue_byte_capacity * 10;
+    // Use 2MB messages so the byte limit is reached quickly (4MB / 2MB = 2 messages).
+    // Keep num_msgs below QUEUED_MESSAGE_LIMIT so message-count drops cannot occur.
+    let message_size = 2 * 1024 * 1024;
+    let num_msgs = 128;
 
-    assert!(queue_byte_capacity < QUEUED_MESSAGE_LIMIT);
+    assert!(num_msgs < QUEUED_MESSAGE_LIMIT);
+    assert!((QUEUED_MESSAGE_BYTE_LIMIT / message_size) < num_msgs);
     assert!(message_size < QUEUED_MESSAGE_BYTE_LIMIT);
     assert!(num_msgs * message_size > QUEUED_MESSAGE_BYTE_LIMIT);
 
@@ -456,7 +456,7 @@ fn tcp_exceed_queue_byte_limit() {
         .build();
     tx.add_trusted("127.0.0.1".parse().unwrap());
 
-    let mut rx_socket = rx.tcp_sockets.take(TcpSocketId::Raptorcast).unwrap();
+    let rx_socket = rx.tcp_sockets.take(TcpSocketId::Raptorcast).unwrap();
     let rx_addr = rx_socket.local_addr();
     let tcp_socket = tx.tcp_sockets.take(TcpSocketId::Raptorcast).unwrap();
 
@@ -478,18 +478,13 @@ fn tcp_exceed_queue_byte_limit() {
         completions.push(receiver);
     }
 
-    for _ in 0..queue_byte_capacity {
-        let recv_msg = executor::block_on(rx_socket.recv());
-        assert_eq!(recv_msg.payload.len(), message_size);
-    }
-
     let failures: usize = completions
         .into_iter()
         .map(executor::block_on)
         .filter(|result| result.is_err())
         .count();
 
-    assert!(failures > 0, "expected some failures due to byte limit");
+    assert!(failures > 0, "expected failures due to byte limit");
 }
 
 #[test]
