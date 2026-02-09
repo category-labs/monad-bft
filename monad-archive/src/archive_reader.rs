@@ -48,6 +48,21 @@ pub fn redact_mongo_url(url: &str) -> String {
     redacted.to_string()
 }
 
+/// Strips credentials from a MongoDB URL while preserving the protocol.
+/// Used for metrics/OTEL where we want clean identifiers without redaction markers.
+///
+/// Examples:
+/// - `mongodb://user:pass@host:27017` -> `mongodb://host:27017`
+/// - `mongodb+srv://user:pass@cluster.example.com` -> `mongodb+srv://cluster.example.com`
+/// - `mongodb://host:27017` -> `mongodb://host:27017`
+pub fn extract_mongo_host(url: &str) -> String {
+    // Strip credentials by replacing protocol://...@ with just protocol://
+    let stripped = regex::Regex::new(r"(mongodb(?:\+srv)?://)[^@]+@")
+        .unwrap()
+        .replace(url, "$1");
+    stripped.to_string()
+}
+
 impl ArchiveReader {
     pub fn get_circuit_breaker_metrics(
         &self,

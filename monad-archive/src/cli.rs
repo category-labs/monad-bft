@@ -27,7 +27,7 @@ use serde::{
 };
 use serde_json::{Map as JsonMap, Value as JsonValue};
 
-use crate::{archive_reader::redact_mongo_url, kvstore::mongo::MongoDbStorage, prelude::*};
+use crate::{archive_reader::extract_mongo_host, kvstore::mongo::MongoDbStorage, prelude::*};
 
 const DEFAULT_BUCKET_TIMEOUT: u64 = 10;
 const DEFAULT_CONCURRENCY: usize = 50;
@@ -713,11 +713,11 @@ impl MongoDbCliArgs {
     }
 
     /// Returns the replica name for this MongoDB connection.
-    /// Uses explicit replica_name if set, otherwise derives from redacted URL and db name.
+    /// Uses explicit replica_name if set, otherwise derives from host and db name.
     pub fn replica_name(&self) -> String {
         self.replica_name
             .clone()
-            .unwrap_or_else(|| format!("{}:{}", redact_mongo_url(&self.url), self.db))
+            .unwrap_or_else(|| format!("{}:{}", extract_mongo_host(&self.url), self.db))
     }
 }
 
@@ -984,9 +984,9 @@ mod tests {
         let aws = ArchiveArgs::from_str("aws my-bucket 10 us-west-1").unwrap();
         assert_eq!(aws.replica_name(), "my-bucket");
 
-        // MongoDB without explicit replica name derives from redacted URL and db
+        // MongoDB without explicit replica name derives from host and db
         let mongo = ArchiveArgs::from_str("mongodb mongodb://h:27017 mydb").unwrap();
-        assert_eq!(mongo.replica_name(), "mongodb://h:27017:mydb");
+        assert_eq!(mongo.replica_name(), "h:27017:mydb");
 
         let local = ArchiveArgs::from_str("fs /tmp/archive").unwrap();
         assert_eq!(local.replica_name(), "/tmp/archive");
@@ -1020,18 +1020,20 @@ mod tests {
     }
 
     #[test]
-    fn mongodb_replica_name_redacts_credentials() {
+    fn mongodb_replica_name_strips_credentials() {
         let mongo =
             ArchiveArgs::from_str("mongodb mongodb://user:password@host:27017 mydb").unwrap();
         let replica_name = mongo.replica_name();
 
-        // Should not contain credentials
+        // Should not contain credentials or redaction marker
         assert!(!replica_name.contains("user"));
         assert!(!replica_name.contains("password"));
-        // Should contain redacted marker and host
-        assert!(replica_name.contains("***"));
+        assert!(!replica_name.contains("***"));
+        // Should contain protocol, host, and db
+        assert!(replica_name.contains("mongodb://"));
         assert!(replica_name.contains("host:27017"));
         assert!(replica_name.contains("mydb"));
+        assert_eq!(replica_name, "mongodb://host:27017:mydb");
     }
 
     #[test]
