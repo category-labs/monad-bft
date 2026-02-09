@@ -631,25 +631,6 @@ pub struct BlockOverride {
     pub blob_base_fee: Option<U256>,
 }
 
-/// Formats bytes as a C++ hex string for easy copy-paste into C++ code.
-fn print_cpp_hex(var_name: &str, bytes: &[u8]) {
-    let hex = alloy_primitives::hex::encode(bytes);
-    let mut output = format!("    auto const {} =\n        evmc::from_hex(\n", var_name);
-    let chars_per_line = 64;
-    let mut first = true;
-    for chunk in hex.as_bytes().chunks(chars_per_line) {
-        let chunk_str = std::str::from_utf8(chunk).unwrap();
-        if first {
-            output.push_str(&format!("            \"0x{}\"\n", chunk_str));
-            first = false;
-        } else {
-            output.push_str(&format!("            \"{}\"\n", chunk_str));
-        }
-    }
-    output.push_str("            ).value();");
-    eprintln!("{}", output);
-}
-
 pub async fn eth_simulate_v1(
     chain_id: u64,
     senders: &Vec<Vec<Address>>,
@@ -664,18 +645,14 @@ pub async fn eth_simulate_v1(
 
     let mut rlp_encoded_senders = vec![];
     senders.encode(&mut rlp_encoded_senders);
-    print_cpp_hex("rlp_senders", &rlp_encoded_senders);
 
     let mut rlp_encoded_txns = vec![];
     calls.encode(&mut rlp_encoded_txns);
-    print_cpp_hex("rlp_calls", &rlp_encoded_txns);
 
     let mut rlp_encoded_block_header = vec![];
     block_header.encode(&mut rlp_encoded_block_header);
-    print_cpp_hex("rlp_header", &rlp_encoded_block_header);
 
     let rlp_encoded_block_id = alloy_rlp::encode(block_id.unwrap_or([0_u8; 32]));
-    print_cpp_hex("rlp_block_id", &rlp_encoded_block_id);
 
     let chain_config = match chain_id {
         ETHEREUM_MAINNET_CHAIN_ID => bindings::monad_chain_config_CHAIN_CONFIG_ETHEREUM_MAINNET,
@@ -714,7 +691,8 @@ pub async fn eth_simulate_v1(
             rlp_encoded_block_header.len(),
             rlp_encoded_block_id.as_ptr(),
             rlp_encoded_block_id.len(),
-            *state_overrides.as_ptr(),
+            state_overrides.as_ptr() as *const *const monad_state_override,
+            state_overrides.len(),
             Some(eth_call_submit_callback),
             sender_ctx_ptr as *mut std::ffi::c_void,
         );
@@ -723,6 +701,9 @@ pub async fn eth_simulate_v1(
     let result = match recv.await {
         Ok(r) => r,
         Err(e) => {
+            for &ptr in &state_overrides {
+                unsafe { bindings::monad_state_override_destroy(ptr) };
+            }
             warn!("callback from eth_simulate_v1 failed: {:?}", e);
 
             return SimulateResult::Failure(FailureSimulateResult {
@@ -763,6 +744,10 @@ pub async fn eth_simulate_v1(
         };
 
         bindings::monad_executor_result_release(result);
+
+        for &ptr in &state_overrides {
+            bindings::monad_state_override_destroy(ptr);
+        }
 
         sim_result
     }
