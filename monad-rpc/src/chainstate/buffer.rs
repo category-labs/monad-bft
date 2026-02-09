@@ -86,6 +86,7 @@ impl ChainStateBuffer {
                 commit_state,
                 header,
                 transactions,
+                ..
             } => (commit_state, header, transactions),
             EventServerEvent::Gap => return,
         };
@@ -817,6 +818,7 @@ mod tests {
             commit_state: BlockCommitState::Proposed,
             header: serialized_monad_header,
             transactions: Arc::new(txs.into_boxed_slice()),
+            storage_changes: Arc::new(Vec::new()),
         }
     }
 }

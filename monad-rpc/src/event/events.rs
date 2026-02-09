@@ -16,6 +16,7 @@
 use std::sync::Arc;
 
 use monad_exec_events::BlockCommitState;
+use monad_exec_events::ffi::{monad_c_address, monad_c_bytes32};
 
 use crate::types::{eth_json::MonadNotification, serialize::SharedJsonSerialized};
 
@@ -31,6 +32,16 @@ pub type TransactionReceipt = SharedJsonSerialized<alloy_rpc_types::TransactionR
 pub type LogNotification = SharedJsonSerialized<MonadNotification<Log>>;
 pub type Log = SharedJsonSerialized<alloy_rpc_types::eth::Log>;
 
+/// A storage change extracted from execution events.
+#[derive(Clone, Debug)]
+pub struct StorageChange {
+    pub address: monad_c_address,
+    pub key: monad_c_bytes32,
+    pub old_value: monad_c_bytes32,
+    pub new_value: monad_c_bytes32,
+    pub txn_index: usize,
+}
+
 #[derive(Clone, Debug)]
 pub enum EventServerEvent {
     Gap,
@@ -39,6 +50,7 @@ pub enum EventServerEvent {
         commit_state: BlockCommitState,
         header: HeaderNotification,
         transactions: BlockTransactions,
+        storage_changes: Arc<Vec<StorageChange>>,
     },
 }
 
@@ -48,6 +60,6 @@ mod test {
 
     #[test]
     fn size() {
-        assert_eq!(std::mem::size_of::<EventServerEvent>(), 24);
+        assert_eq!(std::mem::size_of::<EventServerEvent>(), 32);
     }
 }

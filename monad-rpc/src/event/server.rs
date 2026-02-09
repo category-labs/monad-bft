@@ -16,16 +16,16 @@
 use std::sync::Arc;
 
 use itertools::Itertools;
-use monad_event_ring::{DecodedEventRing, EventNextResult};
+use monad_event_ring::{DecodedEventRing, EventNextResult, EventPayloadResult};
 use monad_exec_events::{
     BlockBuilderError, BlockCommitState, CommitStateBlockBuilder, CommitStateBlockUpdate,
-    ExecEventRing, ExecutedBlock, ExecutedBlockBuilder,
+    ExecEventRef, ExecEventRing, ExecutedBlock, ExecutedBlockBuilder,
 };
 use monad_types::BlockId;
 use tokio::sync::broadcast;
 use tracing::{debug, warn};
 
-use super::{EventServerClient, EventServerEvent, BROADCAST_CHANNEL_SIZE};
+use super::{EventServerClient, EventServerEvent, StorageChange, BROADCAST_CHANNEL_SIZE};
 use crate::types::{eth_json::MonadNotification, serialize::JsonSerialized};
 
 pub struct EventServer<R>
@@ -60,6 +60,8 @@ impl EventServer<ExecEventRing> {
         } = self;
 
         let mut event_reader = event_ring.create_reader();
+        let mut pending_storage_changes: Vec<StorageChange> = Vec::new();
+        let mut current_txn_index: Option<usize> = None;
 
         loop {
             let event_descriptor = match event_reader.next_descriptor() {
@@ -69,6 +71,8 @@ impl EventServer<ExecEventRing> {
                     broadcast_event(&broadcast_tx, EventServerEvent::Gap);
                     event_reader.reset();
                     block_builder.reset();
+                    pending_storage_changes.clear();
+                    current_txn_index = None;
                     continue;
                 }
                 EventNextResult::NotReady => {
@@ -77,6 +81,22 @@ impl EventServer<ExecEventRing> {
                 }
                 EventNextResult::Ready(event_descriptor) => event_descriptor,
             };
+
+            if let EventPayloadResult::Ready(Some(storage_change)) =
+                event_descriptor.try_filter_map(extract_storage_access)
+            {
+                pending_storage_changes.push(StorageChange {
+                    txn_index: current_txn_index
+                        .expect("StorageAccess in transaction context has txn_index"),
+                    ..storage_change
+                });
+            }
+
+            if let EventPayloadResult::Ready(Some(txn_index)) =
+                event_descriptor.try_filter_map(extract_txn_index)
+            {
+                current_txn_index = Some(txn_index);
+            }
 
             let Some(result) = block_builder.process_event_descriptor(&event_descriptor) else {
                 continue;
@@ -92,6 +112,7 @@ impl EventServer<ExecEventRing> {
                     broadcast_event(&broadcast_tx, EventServerEvent::Gap);
                     event_reader.reset();
                     block_builder.reset();
+                    pending_storage_changes.clear();
                     continue;
                 }
                 Err(BlockBuilderError::ImplicitDrop {
@@ -104,7 +125,10 @@ impl EventServer<ExecEventRing> {
                     block,
                     state,
                     abandoned,
-                }) => handle_update(&broadcast_tx, block, state, abandoned),
+                }) => {
+                    let storage_changes = std::mem::take(&mut pending_storage_changes);
+                    handle_update(&broadcast_tx, block, state, abandoned, storage_changes);
+                }
             }
         }
     }
@@ -115,6 +139,7 @@ fn handle_update(
     block: Arc<ExecutedBlock>,
     commit_state: BlockCommitState,
     abandoned: Vec<Arc<ExecutedBlock>>,
+    storage_changes: Vec<StorageChange>,
 ) {
     for abandoned in abandoned {
         debug!(
@@ -123,7 +148,33 @@ fn handle_update(
         );
     }
 
-    broadcast_block_updates(broadcast_tx, block, commit_state);
+    broadcast_block_updates(broadcast_tx, block, commit_state, storage_changes);
+}
+
+fn extract_storage_access(event_ref: ExecEventRef<'_>) -> Option<StorageChange> {
+    match event_ref {
+        ExecEventRef::StorageAccess(storage_access)
+            if storage_access.modified
+                && !storage_access.transient
+                && storage_access.access_context == 1 /* MONAD_ACCT_ACCESS_TRANSACTION */ =>
+        {
+            Some(StorageChange {
+                address: storage_access.address,
+                key: storage_access.key,
+                old_value: storage_access.start_value,
+                new_value: storage_access.end_value,
+                txn_index: 0, // filled in by caller
+            })
+        }
+        _ => None,
+    }
+}
+
+fn extract_txn_index(event_ref: ExecEventRef<'_>) -> Option<usize> {
+    match event_ref {
+        ExecEventRef::TxnHeaderStart { txn_index, .. } => Some(txn_index),
+        _ => None,
+    }
 }
 
 fn broadcast_event(broadcast_tx: &broadcast::Sender<EventServerEvent>, event: EventServerEvent) {
@@ -137,6 +188,7 @@ fn broadcast_block_updates(
     broadcast_tx: &broadcast::Sender<EventServerEvent>,
     block: Arc<ExecutedBlock>,
     commit_state: BlockCommitState,
+    storage_changes: Vec<StorageChange>,
 ) {
     let block_id = BlockId(monad_types::Hash(block.start.block_tag.id.bytes));
 
@@ -182,6 +234,7 @@ fn broadcast_block_updates(
             commit_state,
             header: serialized_monad_header,
             transactions: Arc::new(transactions.into_boxed_slice()),
+            storage_changes: Arc::new(storage_changes),
         },
     );
 }
@@ -234,6 +287,8 @@ mod test {
             } = self;
 
             let mut event_reader = event_ring.create_reader();
+            let mut pending_storage_changes: Vec<StorageChange> = Vec::new();
+            let mut current_txn_index: Option<usize> = None;
 
             loop {
                 let event_descriptor = match event_reader.next_descriptor() {
@@ -243,6 +298,22 @@ mod test {
                         unreachable!("SnapshotEventDescriptor cannot gap")
                     }
                 };
+
+                if let EventPayloadResult::Ready(Some(storage_change)) =
+                    event_descriptor.try_filter_map(extract_storage_access)
+                {
+                    pending_storage_changes.push(StorageChange {
+                        txn_index: current_txn_index
+                            .expect("StorageAccess in transaction context has txn_index"),
+                        ..storage_change
+                    });
+                }
+
+                if let EventPayloadResult::Ready(Some(txn_index)) =
+                    event_descriptor.try_filter_map(extract_txn_index)
+                {
+                    current_txn_index = Some(txn_index);
+                }
 
                 let Some(result) = block_builder.process_event_descriptor(&event_descriptor) else {
                     continue;
@@ -265,7 +336,10 @@ mod test {
                         block,
                         state,
                         abandoned,
-                    }) => handle_update(&broadcast_tx, block, state, abandoned),
+                    }) => {
+                        let storage_changes = std::mem::take(&mut pending_storage_changes);
+                        handle_update(&broadcast_tx, block, state, abandoned, storage_changes);
+                    }
                 }
             }
         }
@@ -327,6 +401,7 @@ mod test {
                 commit_state,
                 header,
                 transactions,
+                storage_changes: _,
             } => (commit_state, header, transactions),
         };
 
