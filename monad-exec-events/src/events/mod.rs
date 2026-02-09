@@ -94,7 +94,10 @@ pub enum ExecEvent {
     TxnEnd,
     AccountAccessListHeader(monad_exec_account_access_list_header),
     AccountAccess(monad_exec_account_access),
-    StorageAccess(monad_exec_storage_access),
+    StorageAccess {
+        txn_index: Option<usize>,
+        storage_access: monad_exec_storage_access,
+    },
     EvmError(monad_exec_evm_error),
 }
 
@@ -157,7 +160,10 @@ pub enum ExecEventRef<'ring> {
     TxnEnd,
     AccountAccessListHeader(&'ring monad_exec_account_access_list_header),
     AccountAccess(&'ring monad_exec_account_access),
-    StorageAccess(&'ring monad_exec_storage_access),
+    StorageAccess {
+        txn_index: Option<usize>,
+        storage_access: &'ring monad_exec_storage_access,
+    },
     EvmError(&'ring monad_exec_evm_error),
 }
 
@@ -239,7 +245,10 @@ impl<'ring> ExecEventRef<'ring> {
                 ExecEvent::AccountAccessListHeader(*account_access_list_header)
             }
             Self::AccountAccess(account_access) => ExecEvent::AccountAccess(*account_access),
-            Self::StorageAccess(storage_access) => ExecEvent::StorageAccess(*storage_access),
+            Self::StorageAccess { txn_index, storage_access } => ExecEvent::StorageAccess {
+                txn_index,
+                storage_access: *storage_access,
+            },
             Self::EvmError(evm_error) => ExecEvent::EvmError(*evm_error),
         }
     }
@@ -453,9 +462,10 @@ impl EventDecoder for ExecEventDecoder {
             ffi::MONAD_EXEC_ACCOUNT_ACCESS => ExecEventRef::AccountAccess(
                 ref_from_bytes(bytes).expect("AccountAccess event valid"),
             ),
-            ffi::MONAD_EXEC_STORAGE_ACCESS => ExecEventRef::StorageAccess(
-                ref_from_bytes(bytes).expect("StorageAccess event valid"),
-            ),
+            ffi::MONAD_EXEC_STORAGE_ACCESS => ExecEventRef::StorageAccess {
+                txn_index: info.flow_info.txn_idx,
+                storage_access: ref_from_bytes(bytes).expect("StorageAccess event valid"),
+            },
             ffi::MONAD_EXEC_EVM_ERROR => {
                 ExecEventRef::EvmError(ref_from_bytes(bytes).expect("EvmError event valid"))
             }

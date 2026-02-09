@@ -24,6 +24,9 @@ use actix_http::ws;
 use actix_web::{web, HttpRequest, HttpResponse};
 use actix_ws::{AggregatedMessage, CloseCode, CloseReason, Closed};
 use alloy_rpc_types::eth::{pubsub::Params, Filter, FilteredParams};
+use crate::eth_json_types::{
+    StorageChangeNotification, StorageChangesFilter, MAX_STORAGE_SLOTS_PER_SUBSCRIPTION,
+};
 use futures::StreamExt;
 use itertools::Either;
 use monad_exec_events::BlockCommitState;
@@ -108,6 +111,7 @@ pub async fn ws_handler(
 
         let mut subscriptions: HashMap<SubscriptionKind, Vec<(SubscriptionId, Option<Filter>)>> =
             HashMap::default();
+        let mut storage_subscriptions: Vec<(SubscriptionId, StorageChangesFilter)> = Vec::new();
 
         let close_reason = handler(
             &mut session,
@@ -115,6 +119,7 @@ pub async fn ws_handler(
             &hostname,
             &peer_addr,
             &mut subscriptions,
+            &mut storage_subscriptions,
             rx,
             &app_state,
             sub_limit.0,
@@ -131,6 +136,7 @@ pub async fn ws_handler(
             subscriptions.into_iter().for_each(|(_, subs)| {
                 metrics.record_websocket_topic(-(subs.len() as i64));
             });
+            metrics.record_websocket_topic(-(storage_subscriptions.len() as i64));
         }
 
         drop(permit);
@@ -145,6 +151,7 @@ async fn handler(
     hostname: &String,
     peer_addr: &Option<String>,
     subscriptions: &mut HashMap<SubscriptionKind, Vec<(SubscriptionId, Option<Filter>)>>,
+    storage_subscriptions: &mut Vec<(SubscriptionId, StorageChangesFilter)>,
     rx: broadcast::Receiver<EventServerEvent>,
     app_state: &web::Data<MonadRpcResources>,
     subscription_limit: u16,
@@ -195,7 +202,7 @@ async fn handler(
 
                         match request {
                             Ok(req) => {
-                                if let Err(close_reason) = handle_request(session, subscriptions, subscription_limit, app_state, req).await {
+                                if let Err(close_reason) = handle_request(session, subscriptions, storage_subscriptions, subscription_limit, app_state, req).await {
                                     return Some(close_reason);
                                 }
                             }
@@ -216,7 +223,7 @@ async fn handler(
 
                         match request {
                             Ok(req) => {
-                                if let Err(close_reason) = handle_request(session,  subscriptions, subscription_limit, app_state, req).await {
+                                if let Err(close_reason) = handle_request(session, subscriptions, storage_subscriptions, subscription_limit, app_state, req).await {
                                     return Some(close_reason);
                                 }
                             }
@@ -253,6 +260,7 @@ async fn handler(
                         if let Err(close_reason) = handle_notification(
                             session,
                             subscriptions,
+                            storage_subscriptions,
                             msg,
                             app_state.max_response_size as usize,
                         ).await {
@@ -284,6 +292,7 @@ async fn handler(
 async fn handle_notification(
     session: &mut actix_ws::Session,
     subscriptions: &HashMap<SubscriptionKind, Vec<(SubscriptionId, Option<Filter>)>>,
+    storage_subscriptions: &[(SubscriptionId, StorageChangesFilter)],
     msg: EventServerEvent,
     max_response_size: usize,
 ) -> Result<(), CloseReason> {
@@ -298,6 +307,8 @@ async fn handle_notification(
             header,
             block: _,
             logs,
+            storage_changes,
+            tx_hashes,
         } => {
             for (id, _) in subscriptions
                 .get(&SubscriptionKind::MonadNewHeads)
@@ -346,6 +357,47 @@ async fn handle_notification(
                     for log in logs {
                         send_notification(session, id, log.data.as_ref(), max_response_size)
                             .await?;
+                    }
+                }
+            }
+
+            // Handle monad_storageChanges
+            if !storage_subscriptions.is_empty() && !storage_changes.is_empty() {
+                for storage_change in storage_changes.iter() {
+                    // Skip if old == new (no actual change)
+                    if storage_change.old_value.bytes == storage_change.new_value.bytes {
+                        continue;
+                    }
+
+                    let address = alloy_primitives::Address::from(storage_change.address.bytes);
+                    let key = alloy_primitives::B256::from(storage_change.key.bytes);
+
+                    for (id, filter) in storage_subscriptions.iter() {
+                        if filter.address != address {
+                            continue;
+                        }
+                        if !filter.storage_slots.contains(&key) {
+                            continue;
+                        }
+
+                        let notification = StorageChangeNotification {
+                            address,
+                            storage_slot: key,
+                            old_value: alloy_primitives::B256::from(
+                                storage_change.old_value.bytes,
+                            ),
+                            new_value: alloy_primitives::B256::from(
+                                storage_change.new_value.bytes,
+                            ),
+                            transaction_hash: tx_hashes[storage_change.txn_index],
+                            block_number: alloy_primitives::U64::from(header.data.number),
+                            block_hash: header.data.hash,
+                            commit_state: header.commit_state,
+                        };
+
+                        let raw = serde_json::value::to_raw_value(&notification)
+                            .expect("StorageChangeNotification serializes");
+                        send_notification(session, id, &raw, max_response_size).await?;
                     }
                 }
             }
@@ -403,6 +455,7 @@ fn apply_logs_filter<'a>(
 async fn handle_request(
     ctx: &mut actix_ws::Session,
     subscriptions: &mut HashMap<SubscriptionKind, Vec<(SubscriptionId, Option<Filter>)>>,
+    storage_subscriptions: &mut Vec<(SubscriptionId, StorageChangesFilter)>,
     subscription_limit: u16,
     app_state: &MonadRpcResources,
     request: Request<'_>,
@@ -431,7 +484,117 @@ async fn handle_request(
                 return Ok(());
             };
 
-            let filter = match req.params {
+            // For MonadStorageChanges, parse StorageChangesFilter and handle separately
+            if req.kind == SubscriptionKind::MonadStorageChanges {
+                let Ok(storage_filter) =
+                    serde_json::from_value::<StorageChangesFilter>(req.params)
+                else {
+                    if let Err(err) = ctx
+                        .text(to_response(&crate::jsonrpc::Response::new(
+                            None,
+                            Some(JsonRpcError::invalid_params()),
+                            request.id,
+                        )))
+                        .await
+                    {
+                        warn!(
+                            ?err,
+                            "ws handle_request eth_subscribe failed to send invalid_params error"
+                        );
+                        return Err(CloseReason {
+                            code: ws::CloseCode::Error,
+                            description: None,
+                        });
+                    }
+                    return Ok(());
+                };
+
+                // Validate: non-empty, max 8 slots
+                if storage_filter.storage_slots.is_empty()
+                    || storage_filter.storage_slots.len() > MAX_STORAGE_SLOTS_PER_SUBSCRIPTION
+                {
+                    if let Err(err) = ctx
+                        .text(to_response(&crate::jsonrpc::Response::new(
+                            None,
+                            Some(JsonRpcError::invalid_params()),
+                            request.id,
+                        )))
+                        .await
+                    {
+                        warn!(
+                            ?err,
+                            "ws handle_request eth_subscribe failed to send invalid_params error"
+                        );
+                        return Err(CloseReason {
+                            code: ws::CloseCode::Error,
+                            description: None,
+                        });
+                    }
+                    return Ok(());
+                }
+
+                let subscription_count = subscriptions
+                    .values()
+                    .map(|vec| vec.len() as u16)
+                    .sum::<u16>()
+                    + storage_subscriptions.len() as u16;
+
+                if (subscription_count + 1) > subscription_limit {
+                    if let Err(err) = ctx
+                        .text(to_response(&crate::jsonrpc::Response::new(
+                            None,
+                            Some(JsonRpcError::custom(
+                                "WebSocket subscription limit reached".to_string(),
+                            )),
+                            request.id,
+                        )))
+                        .await
+                    {
+                        warn!(
+                            ?err,
+                            "ws handle_request eth_subscribe failed to send subscription limit reached error"
+                        );
+                        return Err(CloseReason {
+                            code: ws::CloseCode::Error,
+                            description: None,
+                        });
+                    }
+                    return Ok(());
+                }
+
+                let mut rng = rand::thread_rng();
+                let random_bytes: [u8; 16] = rng.gen();
+                let id = SubscriptionId(FixedData(random_bytes));
+
+                if let Err(err) = ctx
+                    .text(to_response(&crate::jsonrpc::Response::from_result(
+                        request.id,
+                        serialize_result(id),
+                    )))
+                    .await
+                {
+                    warn!(
+                        ?err,
+                        "ws handle_request eth_subscribe failed to send subscription response"
+                    );
+                    return Err(CloseReason {
+                        code: ws::CloseCode::Error,
+                        description: None,
+                    });
+                }
+
+                storage_subscriptions.push((id, storage_filter));
+
+                if let Some(metrics) = &app_state.metrics {
+                    metrics.record_websocket_topic(1);
+                }
+
+                return Ok(());
+            }
+
+            // For all other subscription kinds, parse as alloy Params
+            let filter = match serde_json::from_value::<Params>(req.params).unwrap_or(Params::None)
+            {
                 Params::None => None,
                 Params::Logs(filter) => Some(*filter),
                 Params::Bool(_) => {
@@ -462,7 +625,8 @@ async fn handle_request(
             let subscription_count = subscriptions
                 .values()
                 .map(|vec| vec.len() as u16)
-                .sum::<u16>();
+                .sum::<u16>()
+                + storage_subscriptions.len() as u16;
 
             if (subscription_count + 1) > subscription_limit {
                 if let Err(err) = ctx
@@ -551,6 +715,14 @@ async fn handle_request(
                 if vec.len() < original_len {
                     exists = true;
                     break;
+                }
+            }
+
+            if !exists {
+                let original_len = storage_subscriptions.len();
+                storage_subscriptions.retain(|x| x.0 != SubscriptionId(req.id));
+                if storage_subscriptions.len() < original_len {
+                    exists = true;
                 }
             }
 
@@ -996,6 +1168,74 @@ mod tests {
                 }
                 _ => panic!("Unexpected frame type"),
             }
+        }
+    }
+
+    #[actix_rt::test]
+    async fn websocket_monad_storage_changes_subscribe() {
+        let mut server = create_test_server();
+        let mut framed = server.ws_at("/ws/").await.unwrap();
+
+        // Wait for initial ping
+        let _frame = framed.next().await.unwrap().unwrap();
+
+        let body = json!({
+            "jsonrpc": "2.0",
+            "method": "eth_subscribe",
+            "params": ["monadStorageChanges", {
+                "address": "0x0000000000000000000000000000000000000001",
+                "storageSlots": ["0x0000000000000000000000000000000000000000000000000000000000000000"]
+            }],
+            "id": 1
+        });
+
+        framed
+            .send(ws::Message::Text(body.to_string().into()))
+            .await
+            .unwrap();
+
+        let frame = framed.next().await.unwrap().unwrap();
+        assert!(matches!(frame, Frame::Text(_)));
+
+        if let Frame::Text(resp) = frame {
+            let resp: serde_json::Value = serde_json::from_slice(&resp).unwrap();
+            assert!(resp["result"].is_string(), "Expected subscription ID in result");
+            assert!(resp["error"].is_null(), "Expected no error");
+        }
+    }
+
+    #[actix_rt::test]
+    async fn websocket_monad_storage_changes_too_many_slots() {
+        let mut server = create_test_server();
+        let mut framed = server.ws_at("/ws/").await.unwrap();
+
+        let _frame = framed.next().await.unwrap().unwrap();
+
+        let slots: Vec<String> = (0..9)
+            .map(|i| format!("0x{:064x}", i))
+            .collect();
+
+        let body = json!({
+            "jsonrpc": "2.0",
+            "method": "eth_subscribe",
+            "params": ["monadStorageChanges", {
+                "address": "0x0000000000000000000000000000000000000001",
+                "storageSlots": slots
+            }],
+            "id": 1
+        });
+
+        framed
+            .send(ws::Message::Text(body.to_string().into()))
+            .await
+            .unwrap();
+
+        let frame = framed.next().await.unwrap().unwrap();
+        if let Frame::Text(resp) = frame {
+            let resp: serde_json::Value = serde_json::from_slice(&resp).unwrap();
+            assert!(resp["error"].is_object(), "Expected error for too many slots");
+        } else {
+            panic!("Expected text frame");
         }
     }
 }

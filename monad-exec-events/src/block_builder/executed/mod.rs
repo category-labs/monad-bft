@@ -96,7 +96,7 @@ impl ExecutedBlockBuilder {
             | ExecEventRef::TxnHeaderEnd
             | ExecEventRef::AccountAccessListHeader(_)
             | ExecEventRef::AccountAccess(_)
-            | ExecEventRef::StorageAccess(_)
+            | ExecEventRef::StorageAccess { .. }
             | ExecEventRef::TxnPerfEvmEnter
             | ExecEventRef::TxnPerfEvmExit => None,
 
@@ -121,7 +121,7 @@ impl ExecutedBlockBuilder {
             | ExecEvent::TxnHeaderEnd
             | ExecEvent::AccountAccessListHeader(_)
             | ExecEvent::AccountAccess(_)
-            | ExecEvent::StorageAccess(_)
+            | ExecEvent::StorageAccess { .. }
             | ExecEvent::TxnPerfEvmEnter
             | ExecEvent::TxnPerfEvmExit => unreachable!(),
 

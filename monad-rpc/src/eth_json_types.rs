@@ -17,9 +17,7 @@ use std::str::FromStr;
 
 use alloy_consensus::TxEnvelope;
 use alloy_primitives::{Address, FixedBytes, LogData, U256};
-use alloy_rpc_types::{
-    pubsub::Params, Block, FeeHistory, Header, Log, Transaction, TransactionReceipt,
-};
+use alloy_rpc_types::{Block, FeeHistory, Header, Log, Transaction, TransactionReceipt};
 use monad_exec_events::BlockCommitState;
 use monad_types::BlockId;
 use schemars::JsonSchema;
@@ -383,7 +381,7 @@ impl Default for BlockTagOrHash {
 pub struct EthSubscribeRequest {
     pub kind: SubscriptionKind,
     #[serde(default)]
-    pub params: Params,
+    pub params: serde_json::Value,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Hash)]
@@ -399,6 +397,30 @@ pub enum SubscriptionKind {
     MonadNewHeads,
     // Subscribes to all logs with their corresponding commit state.
     MonadLogs,
+    // Subscribes to storage slot changes for specified address/slots.
+    MonadStorageChanges,
+}
+
+pub const MAX_STORAGE_SLOTS_PER_SUBSCRIPTION: usize = 8;
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StorageChangesFilter {
+    pub address: alloy_primitives::Address,
+    pub storage_slots: Vec<alloy_primitives::B256>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StorageChangeNotification {
+    pub address: alloy_primitives::Address,
+    pub storage_slot: alloy_primitives::B256,
+    pub old_value: alloy_primitives::B256,
+    pub new_value: alloy_primitives::B256,
+    pub transaction_hash: alloy_primitives::B256,
+    pub block_number: alloy_primitives::U64,
+    pub block_hash: alloy_primitives::B256,
+    pub commit_state: BlockCommitState,
 }
 
 #[derive(Deserialize)]
