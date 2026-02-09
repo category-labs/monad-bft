@@ -173,166 +173,12 @@ impl<PT: PubKey> StateSync<PT> {
         let progress = Arc::new(Mutex::new(Progress::default()));
         let progress_clone = Arc::clone(&progress);
 
-        thread::Builder::new().name("monad-statesync".to_string()).spawn(move || {
-            let db_paths_ptrs: Vec<*const i8> = db_paths.iter().map(|s| s.as_ptr()).collect();
-            let db_paths_ptr = db_paths_ptrs.as_ptr();
-            let num_db_paths = db_paths_ptrs.len();
-
-            // callback function must be kept alive until statesync_client_context_destroy is
-            // called
-            let mut request_ctx: Box<StateSyncContext> = Box::new(Box::new({
-                let request_tx = request_tx.clone();
-                move |request| {
-                    let result = request_tx.send(SyncRequest::Request(StateSyncRequest {
-                        version: SELF_STATESYNC_VERSION,
-                        prefix: request.prefix,
-                        prefix_bytes: request.prefix_bytes,
-                        target: request.target,
-                        from: request.from,
-                        until: request.until,
-                        old_target: request.old_target,
-                    }));
-                    if result.is_err() {
-                        eprintln!("invariant broken: send_request called after destroy");
-                        // we can't panic because that's not safe in a C callback
-                        std::process::exit(1)
-                    }
-                }
-            }));
-
-            let mut sync_ctx = SyncCtx::new(
-                db_paths_ptr,
-                num_db_paths,
-                sq_thread_cpu.map(|n| n as ::std::os::raw::c_uint),
-                &mut *request_ctx as *mut _ as *mut bindings::monad_statesync_client,
-                Some(statesync_send_request),
-            );
-            let mut current_target = None;
-            let mut next_target = None;
-
-            while let Ok(response) = response_rx.recv() {
-                match response {
-                    SyncResponse::UpdateTarget(target) => {
-                        if current_target.is_none() {
-                            tracing::debug!(
-                                new_target =? target,
-                                "updating statesync target"
-                            );
-                            let mut buf = Vec::new();
-                            target.encode(&mut buf);
-                            unsafe {
-                                bindings::monad_statesync_client_handle_target(
-                                    // handle_target can be called on an active or inactive SyncCtx
-                                    sync_ctx.get_or_create_ctx(),
-                                    buf.as_ptr(),
-                                    buf.len() as u64,
-                                )
-                            };
-                            progress.lock().unwrap().update_target(&target);
-                            current_target = Some(target);
-                        } else {
-                            next_target.replace(target);
-                        }
-                    }
-                    SyncResponse::Response((from, response)) => {
-                        assert!(current_target.is_some());
-
-                        let _timer = DropTimer::start(Duration::ZERO, |elapsed| {
-                            tracing::debug!(
-                                ?elapsed,
-                                ?from,
-                                ?response,
-                                "statesync client thread applied response"
-                            );
-                        });
-
-                        // handle_response can only be called on an active SyncCtx
-                        let ctx = sync_ctx.ctx.expect("received response on inactive ctx");
-                        unsafe {
-                            for upsert in &response.response {
-                                let upsert_result = bindings::monad_statesync_client_handle_upsert(
-                                    ctx,
-                                    response.request.prefix,
-                                    match upsert.upsert_type {
-                                        StateSyncUpsertType::Code => {
-                                            bindings::monad_sync_type_SYNC_TYPE_UPSERT_CODE
-                                        }
-                                        StateSyncUpsertType::Account => {
-                                            bindings::monad_sync_type_SYNC_TYPE_UPSERT_ACCOUNT
-                                        }
-                                        StateSyncUpsertType::Storage => {
-                                            bindings::monad_sync_type_SYNC_TYPE_UPSERT_STORAGE
-                                        }
-                                        StateSyncUpsertType::AccountDelete => {
-                                            bindings::monad_sync_type_SYNC_TYPE_UPSERT_ACCOUNT_DELETE
-                                        }
-                                        StateSyncUpsertType::StorageDelete => {
-                                            bindings::monad_sync_type_SYNC_TYPE_UPSERT_STORAGE_DELETE
-                                        }
-                                        StateSyncUpsertType::Header => {
-                                            bindings::monad_sync_type_SYNC_TYPE_UPSERT_HEADER
-                                        }
-                                    },
-                                    upsert.data.as_ptr(),
-                                    upsert.data.len() as u64,
-                                );
-                                assert!(
-                                    upsert_result,
-                                    "failed upsert for response: {:?}",
-                                    &response
-                                );
-                            }
-                            request_tx
-                                .send(SyncRequest::Completion((from, SessionId(response.nonce))))
-                                .expect("request_rx dropped");
-                            if response.response_n != 0 {
-                                bindings::monad_statesync_client_handle_done(
-                                    sync_ctx.get_or_create_ctx(),
-                                    bindings::monad_sync_done {
-                                        success: true,
-                                        prefix: response.request.prefix,
-                                        n: response.response_n,
-                                    },
-                                );
-                                progress
-                                    .lock()
-                                    .unwrap()
-                                    .update_handled_request(&response.request)
-                            }
-                        }
-                    }
-                }
-                if sync_ctx.try_finalize() {
-                    let target = current_target.expect("target should be set").clone();
-                    current_target = next_target.take();
-                    if let Some(current_target) = &current_target {
-                        tracing::debug!(
-                            "statesync reached target {:?}, next target {:?}",
-                            target,
-                            current_target
-                        );
-                        let mut buf = Vec::new();
-                        current_target.encode(&mut buf);
-                        unsafe {
-                            bindings::monad_statesync_client_handle_target(
-                                sync_ctx.get_or_create_ctx(),
-                                buf.as_ptr(),
-                                buf.len() as u64,
-                            )
-                        };
-                        progress.lock().unwrap().update_target(current_target)
-                    } else {
-                        tracing::debug!(?target, "done statesync");
-                        progress.lock().unwrap().update_reached_target(&target);
-                        request_tx
-                            .send(SyncRequest::DoneSync(target))
-                            .expect("request_rx dropped mid DoneSync");
-                    }
-                }
-            }
-            // this loop exits when execution is about to start
-            assert!(sync_ctx.ctx.is_none());
-        }).expect("failed to spawn statesync thread");
+        thread::Builder::new()
+            .name("monad-statesync".to_string())
+            .spawn(move || {
+                Self::run_sync_task(db_paths, sq_thread_cpu, request_tx, response_rx, progress)
+            })
+            .expect("failed to spawn statesync thread");
 
         Self {
             outbound_requests: OutboundRequests::new(
@@ -349,6 +195,169 @@ impl<PT: PubKey> StateSync<PT> {
 
             sleep_future: None,
         }
+    }
+
+    fn run_sync_task(
+        db_paths: Vec<CString>,
+        sq_thread_cpu: Option<u32>,
+        request_tx: tokio::sync::mpsc::UnboundedSender<SyncRequest<StateSyncRequest, PT>>,
+        response_rx: std::sync::mpsc::Receiver<SyncResponse<PT>>,
+        progress: Arc<Mutex<Progress>>,
+    ) {
+        let db_paths_ptrs: Vec<*const i8> = db_paths.iter().map(|s| s.as_ptr()).collect();
+        let db_paths_ptr = db_paths_ptrs.as_ptr();
+        let num_db_paths = db_paths_ptrs.len();
+
+        // callback function must be kept alive until statesync_client_context_destroy is
+        // called
+        let mut request_ctx: Box<StateSyncContext> = Box::new(Box::new({
+            let request_tx = request_tx.clone();
+            move |request| {
+                let result = request_tx.send(SyncRequest::Request(StateSyncRequest {
+                    version: SELF_STATESYNC_VERSION,
+                    prefix: request.prefix,
+                    prefix_bytes: request.prefix_bytes,
+                    target: request.target,
+                    from: request.from,
+                    until: request.until,
+                    old_target: request.old_target,
+                }));
+                if result.is_err() {
+                    eprintln!("invariant broken: send_request called after destroy");
+                    // we can't panic because that's not safe in a C callback
+                    std::process::exit(1)
+                }
+            }
+        }));
+
+        let mut sync_ctx = SyncCtx::new(
+            db_paths_ptr,
+            num_db_paths,
+            sq_thread_cpu.map(|n| n as ::std::os::raw::c_uint),
+            &mut *request_ctx as *mut _ as *mut bindings::monad_statesync_client,
+            Some(statesync_send_request),
+        );
+        let mut current_target = None;
+        let mut next_target = None;
+
+        while let Ok(response) = response_rx.recv() {
+            match response {
+                SyncResponse::UpdateTarget(target) => {
+                    if current_target.is_none() {
+                        tracing::debug!(
+                            new_target =? target,
+                            "updating statesync target"
+                        );
+                        let mut buf = Vec::new();
+                        target.encode(&mut buf);
+                        unsafe {
+                            bindings::monad_statesync_client_handle_target(
+                                // handle_target can be called on an active or inactive SyncCtx
+                                sync_ctx.get_or_create_ctx(),
+                                buf.as_ptr(),
+                                buf.len() as u64,
+                            )
+                        };
+                        progress.lock().unwrap().update_target(&target);
+                        current_target = Some(target);
+                    } else {
+                        next_target.replace(target);
+                    }
+                }
+                SyncResponse::Response((from, response)) => {
+                    assert!(current_target.is_some());
+
+                    let _timer = DropTimer::start(Duration::ZERO, |elapsed| {
+                        tracing::debug!(
+                            ?elapsed,
+                            ?from,
+                            ?response,
+                            "statesync client thread applied response"
+                        );
+                    });
+
+                    // handle_response can only be called on an active SyncCtx
+                    let ctx = sync_ctx.ctx.expect("received response on inactive ctx");
+                    unsafe {
+                        for upsert in &response.response {
+                            let upsert_result = bindings::monad_statesync_client_handle_upsert(
+                                ctx,
+                                response.request.prefix,
+                                match upsert.upsert_type {
+                                    StateSyncUpsertType::Code => {
+                                        bindings::monad_sync_type_SYNC_TYPE_UPSERT_CODE
+                                    }
+                                    StateSyncUpsertType::Account => {
+                                        bindings::monad_sync_type_SYNC_TYPE_UPSERT_ACCOUNT
+                                    }
+                                    StateSyncUpsertType::Storage => {
+                                        bindings::monad_sync_type_SYNC_TYPE_UPSERT_STORAGE
+                                    }
+                                    StateSyncUpsertType::AccountDelete => {
+                                        bindings::monad_sync_type_SYNC_TYPE_UPSERT_ACCOUNT_DELETE
+                                    }
+                                    StateSyncUpsertType::StorageDelete => {
+                                        bindings::monad_sync_type_SYNC_TYPE_UPSERT_STORAGE_DELETE
+                                    }
+                                    StateSyncUpsertType::Header => {
+                                        bindings::monad_sync_type_SYNC_TYPE_UPSERT_HEADER
+                                    }
+                                },
+                                upsert.data.as_ptr(),
+                                upsert.data.len() as u64,
+                            );
+                            assert!(upsert_result, "failed upsert for response: {:?}", &response);
+                        }
+                        request_tx
+                            .send(SyncRequest::Completion((from, SessionId(response.nonce))))
+                            .expect("request_rx dropped");
+                        if response.response_n != 0 {
+                            bindings::monad_statesync_client_handle_done(
+                                sync_ctx.get_or_create_ctx(),
+                                bindings::monad_sync_done {
+                                    success: true,
+                                    prefix: response.request.prefix,
+                                    n: response.response_n,
+                                },
+                            );
+                            progress
+                                .lock()
+                                .unwrap()
+                                .update_handled_request(&response.request)
+                        }
+                    }
+                }
+            }
+            if sync_ctx.try_finalize() {
+                let target = current_target.expect("target should be set").clone();
+                current_target = next_target.take();
+                if let Some(current_target) = &current_target {
+                    tracing::debug!(
+                        "statesync reached target {:?}, next target {:?}",
+                        target,
+                        current_target
+                    );
+                    let mut buf = Vec::new();
+                    current_target.encode(&mut buf);
+                    unsafe {
+                        bindings::monad_statesync_client_handle_target(
+                            sync_ctx.get_or_create_ctx(),
+                            buf.as_ptr(),
+                            buf.len() as u64,
+                        )
+                    };
+                    progress.lock().unwrap().update_target(current_target)
+                } else {
+                    tracing::debug!(?target, "done statesync");
+                    progress.lock().unwrap().update_reached_target(&target);
+                    request_tx
+                        .send(SyncRequest::DoneSync(target))
+                        .expect("request_rx dropped mid DoneSync");
+                }
+            }
+        }
+        // this loop exits when execution is about to start
+        assert!(sync_ctx.ctx.is_none());
     }
 
     pub fn update_target(&mut self, target: Header) {
@@ -536,7 +545,10 @@ impl SyncCtx {
                 self.statesync_send_request,
             );
             let client_version = bindings::monad_statesync_version();
-            assert!(bindings::monad_statesync_client_compatible(client_version));
+            assert!(
+                bindings::monad_statesync_client_compatible(client_version),
+                "incompatible statesync client version: {client_version}",
+            );
             let num_prefixes = bindings::monad_statesync_client_prefixes();
             for prefix in 0..num_prefixes {
                 bindings::monad_statesync_client_handle_new_peer(
