@@ -518,12 +518,18 @@ impl<ST: CertificateSignatureRecoverable, C: governor::clock::Clock> PeerDiscove
             if let Some(auth_socket) = record.authenticated_udp_address() {
                 self.socket_to_id.remove(&auth_socket);
             }
+            if let Some(lean_socket) = record.lean_udp_p2p_address() {
+                self.socket_to_id.remove(&lean_socket);
+            }
         }
 
         // record socket addresses to node id
         self.socket_to_id.insert(name_record.udp_address(), peer);
         if let Some(auth_socket) = name_record.authenticated_udp_address() {
             self.socket_to_id.insert(auth_socket, peer);
+        }
+        if let Some(lean_socket) = name_record.lean_udp_p2p_address() {
+            self.socket_to_id.insert(lean_socket, peer);
         }
 
         if self.self_role == PeerDiscoveryRole::FullNodeClient {

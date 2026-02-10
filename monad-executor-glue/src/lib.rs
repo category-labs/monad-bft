@@ -57,6 +57,12 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
 const STATESYNC_NETWORK_MESSAGE_NAME: &str = "StateSyncNetworkMessage";
+/// Max sum of raw forwarded tx bytes in a single `MempoolEvent::ForwardTxs` batch.
+/// This cap is chosen to fit comfortably within LeanUDP message bounds after RLP list encoding.
+pub const TX_FORWARD_RAW_MAX_SIZE_BYTES: usize = 128 * 1024;
+/// LeanUDP max payload size for forwarded tx batches (RLP-encoded `Vec<Bytes>`).
+/// Slightly above raw tx cap to account for RLP list overhead.
+pub const TX_FORWARD_LEANUDP_MAX_MESSAGE_SIZE_BYTES: usize = 130 * 1024;
 
 pub enum RouterCommand<ST: CertificateSignatureRecoverable, OM> {
     // Publish should not be replayed
@@ -93,6 +99,12 @@ pub enum RouterCommand<ST: CertificateSignatureRecoverable, OM> {
     UpdateFullNodes {
         dedicated_full_nodes: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
         prioritized_full_nodes: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
+    },
+    /// Forward transactions via LeanUDP if connected, otherwise fall back to dual sender.
+    /// Used for tx forwarding to future leaders.
+    LeanForwardTxs {
+        target: NodeId<CertificateSignaturePubKey<ST>>,
+        txs: Vec<Bytes>,
     },
 }
 
@@ -153,6 +165,11 @@ impl<ST: CertificateSignatureRecoverable, OM> Debug for RouterCommand<ST, OM> {
                 .field("dedicated_full_nodes", dedicated_full_nodes)
                 .field("prioritized_full_nodes", prioritized_full_nodes)
                 .finish(),
+            Self::LeanForwardTxs { target, txs } => f
+                .debug_struct("LeanForwardTxs")
+                .field("target", target)
+                .field("txs_count", &txs.len())
+                .finish(),
         }
     }
 }
@@ -171,6 +188,12 @@ pub trait Message: Clone + Send + Sync {
     ) -> Self::Event {
         self.event(from)
     }
+}
+
+/// Trait for outbound messages that can carry forwarded transactions.
+/// Used by LeanForwardTxs command to create ForwardedTx messages for the fallback path.
+pub trait OutboundForwardTxs {
+    fn forward_txs(txs: Vec<Bytes>) -> Self;
 }
 
 /// TimeoutVariant distinguishes the source of the timer scheduled
@@ -284,27 +307,55 @@ pub struct PeerEntry<ST: CertificateSignatureRecoverable> {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auth_port: Option<u16>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth_tx_ingestion_port: Option<u16>,
 }
 
 impl<ST: CertificateSignatureRecoverable> Encodable for PeerEntry<ST> {
     fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
-        if let Some(auth_port) = self.auth_port {
-            let enc: [&dyn Encodable; 5] = [
-                &self.pubkey,
-                &self.addr.to_string(),
-                &self.signature,
-                &self.record_seq_num,
-                &auth_port,
-            ];
-            encode_list::<_, dyn Encodable>(&enc, out);
-        } else {
-            let enc: [&dyn Encodable; 4] = [
-                &self.pubkey,
-                &self.addr.to_string(),
-                &self.signature,
-                &self.record_seq_num,
-            ];
-            encode_list::<_, dyn Encodable>(&enc, out);
+        match (self.auth_port, self.auth_tx_ingestion_port) {
+            (Some(auth_port), Some(auth_tx_ingestion_port)) => {
+                let enc: [&dyn Encodable; 6] = [
+                    &self.pubkey,
+                    &self.addr.to_string(),
+                    &self.signature,
+                    &self.record_seq_num,
+                    &auth_port,
+                    &auth_tx_ingestion_port,
+                ];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            (Some(auth_port), None) => {
+                let enc: [&dyn Encodable; 5] = [
+                    &self.pubkey,
+                    &self.addr.to_string(),
+                    &self.signature,
+                    &self.record_seq_num,
+                    &auth_port,
+                ];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            (None, Some(auth_tx_ingestion_port)) => {
+                let enc: [&dyn Encodable; 6] = [
+                    &self.pubkey,
+                    &self.addr.to_string(),
+                    &self.signature,
+                    &self.record_seq_num,
+                    &0u16,
+                    &auth_tx_ingestion_port,
+                ];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            (None, None) => {
+                let enc: [&dyn Encodable; 4] = [
+                    &self.pubkey,
+                    &self.addr.to_string(),
+                    &self.signature,
+                    &self.record_seq_num,
+                ];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
         }
     }
 }
@@ -322,6 +373,17 @@ impl<ST: CertificateSignatureRecoverable> Decodable for PeerEntry<ST> {
         let record_seq_num = u64::decode(&mut payload)?;
 
         let auth_port = if !payload.is_empty() {
+            let port = u16::decode(&mut payload)?;
+            if port == 0 {
+                None
+            } else {
+                Some(port)
+            }
+        } else {
+            None
+        };
+
+        let auth_tx_ingestion_port = if !payload.is_empty() {
             Some(u16::decode(&mut payload)?)
         } else {
             None
@@ -333,6 +395,7 @@ impl<ST: CertificateSignatureRecoverable> Decodable for PeerEntry<ST> {
             signature,
             record_seq_num,
             auth_port,
+            auth_tx_ingestion_port,
         })
     }
 }
@@ -1097,6 +1160,14 @@ impl<SCT: SignatureCollection> Decodable for ValidatorEvent<SCT> {
 }
 
 #[serde_as]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, RlpEncodable, RlpDecodable)]
+#[serde(bound(serialize = "PT: PubKey"))]
+pub struct ProposalSenderScore<PT: PubKey> {
+    pub sender: NodeId<PT>,
+    pub gas: u64,
+}
+
+#[serde_as]
 #[derive(Clone, PartialEq, Eq, Serialize)]
 pub enum MempoolEvent<ST, SCT, EPT>
 where
@@ -1120,6 +1191,25 @@ where
         proposed_execution_inputs: ProposedExecutionInputs<EPT>,
         last_round_tc: Option<TimeoutCertificate<ST, SCT, EPT>>,
         fresh_proposal_certificate: Option<FreshProposalCertificate<SCT>>,
+    },
+
+    ProposalWithScores {
+        epoch: Epoch,
+        round: Round,
+        seq_num: SeqNum,
+        high_qc: QuorumCertificate<SCT>,
+        timestamp_ns: u128,
+        round_signature: RoundSignature<SCT::SignatureType>,
+        // base fee fields used to populate consensus block header
+        // they are set to None pre tfm activation
+        base_fee: Option<u64>,
+        base_fee_trend: Option<u64>,
+        base_fee_moment: Option<u64>,
+        delayed_execution_results: Vec<EPT::FinalizedHeader>,
+        proposed_execution_inputs: ProposedExecutionInputs<EPT>,
+        last_round_tc: Option<TimeoutCertificate<ST, SCT, EPT>>,
+        fresh_proposal_certificate: Option<FreshProposalCertificate<SCT>>,
+        forwarded_senders_with_gas: Vec<ProposalSenderScore<SCT::NodeIdPubKey>>,
     },
 
     /// Txs that are incoming via other nodes
@@ -1216,6 +1306,86 @@ where
                     proposed_execution_inputs,
                     &tc_buf,
                     &fc_buf,
+                ];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::ProposalWithScores {
+                epoch,
+                round,
+                seq_num,
+                high_qc,
+                timestamp_ns,
+                round_signature,
+                base_fee,
+                base_fee_trend,
+                base_fee_moment,
+                delayed_execution_results,
+                proposed_execution_inputs,
+                last_round_tc,
+                fresh_proposal_certificate,
+                forwarded_senders_with_gas,
+            } => {
+                let tc_buf: Vec<&dyn Encodable> = match last_round_tc {
+                    None => {
+                        vec![&1u8]
+                    }
+                    Some(tc) => {
+                        vec![&2u8, tc]
+                    }
+                };
+
+                let fc_buf: Vec<&dyn Encodable> = match fresh_proposal_certificate {
+                    None => {
+                        vec![&1u8]
+                    }
+                    Some(fec) => {
+                        vec![&2u8, fec]
+                    }
+                };
+
+                let base_fee_buf: Vec<&dyn Encodable> = match base_fee {
+                    None => {
+                        vec![&1u8]
+                    }
+                    Some(bf) => {
+                        vec![&2u8, bf]
+                    }
+                };
+
+                let base_fee_trend_buf: Vec<&dyn Encodable> = match base_fee_trend {
+                    None => {
+                        vec![&1u8]
+                    }
+                    Some(bft) => {
+                        vec![&2u8, bft]
+                    }
+                };
+
+                let base_fee_moment_buf: Vec<&dyn Encodable> = match base_fee_moment {
+                    None => {
+                        vec![&1u8]
+                    }
+                    Some(bfm) => {
+                        vec![&2u8, bfm]
+                    }
+                };
+
+                let enc: [&dyn Encodable; 15] = [
+                    &4u8,
+                    epoch,
+                    round,
+                    seq_num,
+                    high_qc,
+                    timestamp_ns,
+                    round_signature,
+                    &base_fee_buf,
+                    &base_fee_trend_buf,
+                    &base_fee_moment_buf,
+                    delayed_execution_results,
+                    proposed_execution_inputs,
+                    &tc_buf,
+                    &fc_buf,
+                    forwarded_senders_with_gas,
                 ];
                 encode_list::<_, dyn Encodable>(&enc, out);
             }
@@ -1326,6 +1496,85 @@ where
                 let txs = Vec::<Bytes>::decode(&mut payload)?;
                 Ok(Self::ForwardTxs(txs))
             }
+            4 => {
+                let epoch = Epoch::decode(&mut payload)?;
+                let round = Round::decode(&mut payload)?;
+                let seq_num = SeqNum::decode(&mut payload)?;
+                let high_qc = QuorumCertificate::<SCT>::decode(&mut payload)?;
+                let timestamp_ns = u128::decode(&mut payload)?;
+                let round_signature = RoundSignature::<SCT::SignatureType>::decode(&mut payload)?;
+                let mut base_fee_payload = Header::decode_bytes(&mut payload, true)?;
+                let base_fee = match u8::decode(&mut base_fee_payload)? {
+                    1 => None,
+                    2 => Some(u64::decode(&mut base_fee_payload)?),
+                    _ => {
+                        return Err(alloy_rlp::Error::Custom(
+                            "failed to decode unknown base_fee in mempool event",
+                        ))
+                    }
+                };
+                let mut base_fee_trend_payload = Header::decode_bytes(&mut payload, true)?;
+                let base_fee_trend = match u8::decode(&mut base_fee_trend_payload)? {
+                    1 => None,
+                    2 => Some(u64::decode(&mut base_fee_trend_payload)?),
+                    _ => {
+                        return Err(alloy_rlp::Error::Custom(
+                            "failed to decode unknown base_fee_trend in mempool event",
+                        ))
+                    }
+                };
+                let mut base_fee_moment_payload = Header::decode_bytes(&mut payload, true)?;
+                let base_fee_moment = match u8::decode(&mut base_fee_moment_payload)? {
+                    1 => None,
+                    2 => Some(u64::decode(&mut base_fee_moment_payload)?),
+                    _ => {
+                        return Err(alloy_rlp::Error::Custom(
+                            "failed to decode unknown base_fee_moment in mempool event",
+                        ))
+                    }
+                };
+                let delayed_execution_results = Vec::<EPT::FinalizedHeader>::decode(&mut payload)?;
+                let proposed_execution_inputs =
+                    ProposedExecutionInputs::<EPT>::decode(&mut payload)?;
+                let mut tc_payload = Header::decode_bytes(&mut payload, true)?;
+                let tc = match u8::decode(&mut tc_payload)? {
+                    1 => Ok(None),
+                    2 => Ok(Some(TimeoutCertificate::<ST, SCT, EPT>::decode(
+                        &mut tc_payload,
+                    )?)),
+                    _ => Err(alloy_rlp::Error::Custom(
+                        "failed to decode unknown tc in mempool event",
+                    )),
+                }?;
+                let mut fc_payload = Header::decode_bytes(&mut payload, true)?;
+                let fc = match u8::decode(&mut fc_payload)? {
+                    1 => Ok(None),
+                    2 => Ok(Some(FreshProposalCertificate::<SCT>::decode(
+                        &mut fc_payload,
+                    )?)),
+                    _ => Err(alloy_rlp::Error::Custom(
+                        "failed to decode unknown fc in mempool event",
+                    )),
+                }?;
+                let forwarded_senders_with_gas =
+                    Vec::<ProposalSenderScore<SCT::NodeIdPubKey>>::decode(&mut payload)?;
+                Ok(Self::ProposalWithScores {
+                    epoch,
+                    round,
+                    seq_num,
+                    high_qc,
+                    timestamp_ns,
+                    round_signature,
+                    base_fee,
+                    base_fee_trend,
+                    base_fee_moment,
+                    delayed_execution_results,
+                    proposed_execution_inputs,
+                    last_round_tc: tc,
+                    fresh_proposal_certificate: fc,
+                    forwarded_senders_with_gas,
+                })
+            }
             _ => Err(alloy_rlp::Error::Custom(
                 "failed to decode unknown mempool event",
             )),
@@ -1373,6 +1622,41 @@ where
                 .field("proposed_execution_inputs", proposed_execution_inputs)
                 .field("last_round_tc", last_round_tc)
                 .field("fresh_proposal_certificate", fresh_proposal_certificate)
+                .finish(),
+            Self::ProposalWithScores {
+                epoch,
+                round,
+                seq_num,
+                high_qc,
+                timestamp_ns,
+                round_signature,
+                base_fee,
+                base_fee_trend,
+                base_fee_moment,
+                delayed_execution_results,
+                proposed_execution_inputs,
+                last_round_tc,
+                fresh_proposal_certificate,
+                forwarded_senders_with_gas,
+            } => f
+                .debug_struct("ProposalWithScores")
+                .field("epoch", epoch)
+                .field("round", round)
+                .field("seq_num", seq_num)
+                .field("high_qc", high_qc)
+                .field("timestamp_ns", timestamp_ns)
+                .field("round_signature", round_signature)
+                .field("base_fee", &base_fee)
+                .field(
+                    "base_fee_trend",
+                    &base_fee_trend.map(|trend| trend.cast_signed()),
+                )
+                .field("base_fee_moment", &base_fee_moment)
+                .field("delayed_execution_results", delayed_execution_results)
+                .field("proposed_execution_inputs", proposed_execution_inputs)
+                .field("last_round_tc", last_round_tc)
+                .field("fresh_proposal_certificate", fresh_proposal_certificate)
+                .field("forwarded_senders_with_gas", forwarded_senders_with_gas)
                 .finish(),
             Self::ForwardedTxs { sender, txs } => f
                 .debug_struct("ForwardedTxs")
@@ -2056,6 +2340,20 @@ where
         expiry_round: Round,
         confirm_group_peers: Vec<NodeId<SCT::NodeIdPubKey>>,
     },
+    /// LeanUDP transaction received from a peer
+    LeanUdpTx {
+        #[serde(skip)]
+        sender: CertificateSignaturePubKey<ST>,
+        #[serde(skip)]
+        tx: alloy_consensus::TxEnvelope,
+    },
+    /// LeanUDP forwarded transactions received from a peer (batch)
+    LeanUdpForwardTxs {
+        #[serde(skip)]
+        sender: CertificateSignaturePubKey<ST>,
+        #[serde(skip)]
+        txs: Vec<bytes::Bytes>,
+    },
 }
 
 impl<ST, SCT, EPT> MonadEvent<ST, SCT, EPT>
@@ -2115,6 +2413,14 @@ where
                 expiry_round: *expiry_round,
                 confirm_group_peers: confirm_group_peers.clone(),
             },
+            MonadEvent::LeanUdpTx { sender, tx } => MonadEvent::LeanUdpTx {
+                sender: *sender,
+                tx: tx.clone(),
+            },
+            MonadEvent::LeanUdpForwardTxs { sender, txs } => MonadEvent::LeanUdpForwardTxs {
+                sender: *sender,
+                txs: txs.clone(),
+            },
         }
     }
 }
@@ -2166,6 +2472,14 @@ where
                 let enc: [&dyn Encodable; 3] = [&9u8, &expiry_round, &confirm_group_peers];
                 encode_list::<_, dyn Encodable>(&enc, out);
             }
+            Self::LeanUdpTx { sender, tx } => {
+                let enc: [&dyn Encodable; 3] = [&10u8, &sender, &tx];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::LeanUdpForwardTxs { sender, txs } => {
+                let enc: [&dyn Encodable; 3] = [&11u8, &sender, &txs];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
         }
     }
 }
@@ -2208,6 +2522,16 @@ where
                     expiry_round,
                     confirm_group_peers,
                 })
+            }
+            10 => {
+                let sender = CertificateSignaturePubKey::<ST>::decode(&mut payload)?;
+                let tx = alloy_consensus::TxEnvelope::decode(&mut payload)?;
+                Ok(Self::LeanUdpTx { sender, tx })
+            }
+            11 => {
+                let sender = CertificateSignaturePubKey::<ST>::decode(&mut payload)?;
+                let txs = Vec::<bytes::Bytes>::decode(&mut payload)?;
+                Ok(Self::LeanUdpForwardTxs { sender, txs })
             }
             _ => Err(alloy_rlp::Error::Custom(
                 "failed to decode unknown MonadEvent",
@@ -2266,6 +2590,11 @@ where
             MonadEvent::MempoolEvent(MempoolEvent::Proposal { round, seq_num, .. }) => {
                 format!("MempoolEvent::Proposal -- round {round:?}, seq_num {seq_num:?}")
             }
+            MonadEvent::MempoolEvent(MempoolEvent::ProposalWithScores {
+                round, seq_num, ..
+            }) => {
+                format!("MempoolEvent::ProposalWithScores -- round {round:?}, seq_num {seq_num:?}")
+            }
             MonadEvent::MempoolEvent(MempoolEvent::ForwardedTxs { sender, txs: txns }) => {
                 format!(
                     "MempoolEvent::ForwardedTxns -- from {sender} number of txns: {}",
@@ -2281,6 +2610,12 @@ where
             MonadEvent::ConfigEvent(_) => "CONFIGEVENT".to_string(),
             MonadEvent::SecondaryRaptorcastPeersUpdate { .. } => {
                 "SecondaryRaptorcastPeersUpdate".to_string()
+            }
+            MonadEvent::LeanUdpTx { sender, .. } => {
+                format!("LeanUdpTx -- from {sender}")
+            }
+            MonadEvent::LeanUdpForwardTxs { sender, txs } => {
+                format!("LeanUdpForwardTxs -- from {sender}, {} txs", txs.len())
             }
         };
 
@@ -2537,6 +2872,7 @@ mod tests {
             signature,
             record_seq_num,
             auth_port: None,
+            auth_tx_ingestion_port: None,
         };
         let encoded = alloy_rlp::encode(&entry);
         let decoded: PeerEntry<NopSignature> = alloy_rlp::decode_exact(&encoded).unwrap();
