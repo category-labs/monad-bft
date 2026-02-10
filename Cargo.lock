@@ -4953,10 +4953,12 @@ version = "0.1.0"
 dependencies = [
  "alloy-rlp",
  "hex",
+ "inotify",
  "monad-consensus-types",
  "monad-crypto",
  "monad-types",
  "monad-validator",
+ "tempfile",
 ]
 
 [[package]]

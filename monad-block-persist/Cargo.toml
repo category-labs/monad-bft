@@ -16,3 +16,7 @@ monad-validator = { workspace = true }
 
 alloy-rlp = {workspace = true }
 hex = { workspace = true }
+
+[dev-dependencies]
+inotify = { workspace = true }
+tempfile = { workspace = true }
