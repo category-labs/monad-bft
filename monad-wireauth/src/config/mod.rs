@@ -36,8 +36,13 @@ pub struct Config {
     pub rekey_jitter: Duration,
     /// absolute session lifetime regardless of activity (forces rekey)
     pub max_session_duration: Duration,
-    /// max handshake requests processed per second (dos protection)
-    pub handshake_rate_limit: u64,
+    /// global rate limit (per reset interval) for handshake initiations without a valid cookie.
+    /// this budget is intended for "unproven" sources and prevents them from starving cookie-valid
+    /// handshakes.
+    pub handshake_cookie_unverified_rate_limit: u64,
+    /// global rate limit (per reset interval) for handshake initiations with a valid cookie.
+    /// this budget is intended for "proven" sources.
+    pub handshake_cookie_verified_rate_limit: u64,
     /// window for handshake rate limiting
     pub handshake_rate_reset_interval: Duration,
     /// cookie validity period (responder rotates cookie key)
@@ -50,8 +55,6 @@ pub struct Config {
     pub max_sessions_per_ip: usize,
     /// time window for counting handshake requests per ip
     pub ip_rate_limit_window: Duration,
-    /// max handshake requests from single ip within rate limit window
-    pub max_requests_per_ip: usize,
     /// lru cache size for tracking handshake request timestamps per ip
     pub ip_history_capacity: usize,
     /// optional pre-shared key mixed into handshake for additional auth
@@ -68,14 +71,14 @@ impl Default for Config {
             rekey_interval: Duration::from_secs(6 * 60 * 60),
             rekey_jitter: Duration::from_secs(60),
             max_session_duration: Duration::from_secs(6 * 60 * 60 + 5 * 60),
-            handshake_rate_limit: 2000,
+            handshake_cookie_unverified_rate_limit: 1000,
+            handshake_cookie_verified_rate_limit: 1000,
             handshake_rate_reset_interval: Duration::from_secs(1),
             cookie_refresh_duration: Duration::from_secs(120),
             low_watermark_sessions: 10_000,
             high_watermark_sessions: 100_000,
             max_sessions_per_ip: 10,
             ip_rate_limit_window: Duration::from_secs(10),
-            max_requests_per_ip: 10,
             ip_history_capacity: 1_000_000,
             psk: Zeroizing::new([0u8; 32]),
         }
