@@ -1,0 +1,48 @@
+[package]
+name = "monad-tx-integration"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "monad-tx-integration"
+path = "src/main.rs"
+bench = false
+
+[dependencies]
+monad-chain-config = { workspace = true }
+monad-consensus-types = { workspace = true }
+monad-crypto = { workspace = true }
+monad-dataplane = { workspace = true }
+monad-eth-block-policy = { workspace = true }
+monad-eth-testutil = { workspace = true }
+monad-eth-txpool-executor = { workspace = true }
+monad-eth-txpool-types = { workspace = true }
+monad-eth-types = { workspace = true }
+monad-executor = { workspace = true }
+monad-executor-glue = { workspace = true }
+monad-leanudp = { workspace = true }
+monad-node-config = { workspace = true }
+monad-peer-discovery = { workspace = true }
+monad-peer-score = { workspace = true, features = ["test-utils"] }
+monad-raptorcast = { workspace = true }
+monad-secp = { workspace = true }
+monad-state-backend = { workspace = true }
+monad-testutil = { workspace = true }
+monad-tfm = { workspace = true }
+monad-types = { workspace = true }
+monad-validator = { workspace = true }
+monad-wireauth = { workspace = true }
+
+alloy-consensus = { workspace = true }
+alloy-eips = { workspace = true }
+alloy-primitives = { workspace = true }
+alloy-rlp = { workspace = true }
+bytes = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+futures = { workspace = true }
+pin-project = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time", "io-util", "fs"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
