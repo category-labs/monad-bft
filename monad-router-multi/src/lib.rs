@@ -27,9 +27,9 @@ use futures::{Stream, StreamExt};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_dataplane::{DataplaneBuilder, TcpSocketId, UdpSocketId};
+use monad_dataplane::{DataplaneBuilder, DataplaneControl, TcpSocketId, UdpSocketId};
 use monad_executor::{Executor, ExecutorMetricsChain};
-use monad_executor_glue::{Message, RouterCommand};
+use monad_executor_glue::{Message, OutboundForwardTxs, RouterCommand};
 use monad_node_config::{FullNodeConfig, FullNodeIdentityConfig};
 use monad_peer_discovery::{
     driver::PeerDiscoveryDriver, PeerDiscoveryAlgo, PeerDiscoveryAlgoBuilder,
@@ -57,7 +57,7 @@ pub struct MultiRouter<ST, M, OM, SE, PD, AP>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Decodable,
-    OM: Encodable + Into<M> + Clone,
+    OM: Encodable + Into<M> + Clone + OutboundForwardTxs,
     PD: PeerDiscoveryAlgo<SignatureType = ST>,
     AP: AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
 {
@@ -71,6 +71,7 @@ where
     epoch_validators: BTreeMap<Epoch, BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>>,
 
     shared_pdd: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
+    _lean_udp_dataplane_control: Option<DataplaneControl>,
 
     phantom: PhantomData<(OM, SE)>,
 }
@@ -79,7 +80,7 @@ impl<ST, M, OM, SE, PD, AP> MultiRouter<ST, M, OM, SE, PD, AP>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Decodable,
-    OM: Encodable + Into<M> + Clone,
+    OM: Encodable + Into<M> + Clone + OutboundForwardTxs,
     PD: PeerDiscoveryAlgo<SignatureType = ST>,
     AP: AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
 {
@@ -169,8 +170,17 @@ where
             epoch_validators,
             self_node_id,
             shared_pdd,
+            _lean_udp_dataplane_control: None,
             phantom: PhantomData,
         }
+    }
+
+    pub fn primary_mut(&mut self) -> &mut RaptorCast<ST, M, OM, SE, PD, AP> {
+        &mut self.rc_primary
+    }
+
+    pub fn set_lean_udp_dataplane_control(&mut self, control: DataplaneControl) {
+        self._lean_udp_dataplane_control = Some(control);
     }
 
     fn update_role(&mut self, current_epoch: Epoch, new_role: SecondaryRaptorCastModeConfig) {
@@ -293,7 +303,7 @@ impl<ST, M, OM, SE, PD, AP> Executor for MultiRouter<ST, M, OM, SE, PD, AP>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Decodable,
-    OM: Encodable + Into<M> + Clone,
+    OM: Encodable + Into<M> + Clone + OutboundForwardTxs,
     PD: PeerDiscoveryAlgo<SignatureType = ST>,
     AP: AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
     RaptorCast<ST, M, OM, SE, PD, AP>: Unpin,
@@ -430,6 +440,7 @@ where
                     validator_cmds.push(cmd);
                     fullnodes_cmds.push(cmd_cpy);
                 }
+                RouterCommand::LeanForwardTxs { .. } => validator_cmds.push(cmd),
             }
         }
         self.rc_primary.exec(validator_cmds);
@@ -455,7 +466,7 @@ impl<ST, M, OM, E, PD, AP> Stream for MultiRouter<ST, M, OM, E, PD, AP>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Decodable,
-    OM: Encodable + Into<M> + Clone,
+    OM: Encodable + Into<M> + Clone + OutboundForwardTxs,
     E: From<RaptorCastEvent<M::Event, ST>>,
     Self: Unpin,
     AP: AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,

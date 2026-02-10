@@ -88,6 +88,25 @@ impl std::hash::Hash for PubKey {
     }
 }
 
+impl serde::Serialize for PubKey {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let hex_str = "0x".to_string() + &hex::encode(self.bytes_compressed());
+        serializer.serialize_str(&hex_str)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for PubKey {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let buf = <String as serde::Deserialize>::deserialize(deserializer)?;
+        let hex_str = match buf.strip_prefix("0x") {
+            Some(hex_str) => hex_str,
+            None => &buf,
+        };
+        let bytes = hex::decode(hex_str).map_err(<D::Error as serde::de::Error>::custom)?;
+        Self::from_slice(&bytes).map_err(<D::Error as serde::de::Error>::custom)
+    }
+}
+
 fn msg_hash<SD: SigningDomain>(msg: &[u8]) -> secp256k1::Message {
     let mut hasher = HasherType::new();
     hasher.update(SD::PREFIX);

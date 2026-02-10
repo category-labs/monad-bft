@@ -22,6 +22,17 @@ use crate::util::unix_ts_ms_now;
 pub const GAUGE_RAPTORCAST_TOTAL_MESSAGES_RECEIVED: &str =
     "monad.raptorcast.total_messages_received";
 pub const GAUGE_RAPTORCAST_TOTAL_RECV_ERRORS: &str = "monad.raptorcast.total_recv_errors";
+pub const COUNTER_RAPTORCAST_LEANUDP_FORWARD_ATTEMPTS: &str =
+    "monad.raptorcast.leanudp.forward_attempts";
+pub const COUNTER_RAPTORCAST_LEANUDP_FORWARD_SENT: &str = "monad.raptorcast.leanudp.forward_sent";
+pub const COUNTER_RAPTORCAST_LEANUDP_FORWARD_FALLBACK: &str =
+    "monad.raptorcast.leanudp.forward_fallback";
+pub const COUNTER_RAPTORCAST_LEANUDP_FORWARD_OVERSIZE: &str =
+    "monad.raptorcast.leanudp.forward_oversize";
+pub const COUNTER_RAPTORCAST_LEANUDP_CONNECT_ATTEMPTS: &str =
+    "monad.raptorcast.leanudp.connect_attempts";
+pub const COUNTER_RAPTORCAST_LEANUDP_CONNECT_FAILURES: &str =
+    "monad.raptorcast.leanudp.connect_failures";
 
 pub const GAUGE_RAPTORCAST_DECODING_CACHE_SIGNATURE_VERIFICATIONS_RATE_LIMITED: &str =
     "monad.raptorcast.decoding_cache.signature_verifications_rate_limited";

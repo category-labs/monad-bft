@@ -31,7 +31,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_dataplane::udp::DEFAULT_SEGMENT_SIZE;
 use monad_executor::Executor;
-use monad_executor_glue::{Message, RouterCommand};
+use monad_executor_glue::{Message, OutboundForwardTxs, RouterCommand};
 use monad_peer_discovery::mock::NopDiscovery;
 use monad_raptorcast::{
     create_dataplane_for_tests, new_defaulted_raptorcast_for_tests,
@@ -422,6 +422,12 @@ impl Deserializable<Bytes> for MockMessage {
     }
 }
 
+impl OutboundForwardTxs for MockMessage {
+    fn forward_txs(_txs: Vec<Bytes>) -> Self {
+        MockMessage::new(0, 0)
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct MockEvent<P: PubKey>((NodeId<P>, u32));
 
@@ -437,6 +443,12 @@ where
                 unimplemented!()
             }
             RaptorCastEvent::SecondaryRaptorcastPeersUpdate { .. } => {
+                unimplemented!()
+            }
+            RaptorCastEvent::LeanUdpTx { .. } => {
+                unimplemented!()
+            }
+            RaptorCastEvent::LeanUdpForwardTxs { .. } => {
                 unimplemented!()
             }
         }
@@ -457,6 +469,7 @@ type MockRaptorCast = RaptorCast<
     MockEvent<CertificateSignaturePubKey<SignatureType>>,
     NopDiscovery<SignatureType>,
     monad_raptorcast::auth::NoopAuthProtocol<CertificateSignaturePubKey<SignatureType>>,
+    monad_raptorcast::auth::NopScore<NodeId<CertificateSignaturePubKey<SignatureType>>>,
 >;
 
 fn setup_raptorcast_service(

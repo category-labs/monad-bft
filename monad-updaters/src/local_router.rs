@@ -196,6 +196,7 @@ where
                 RouterCommand::UpdatePeers { .. } => {}
                 RouterCommand::GetFullNodes => {}
                 RouterCommand::UpdateFullNodes { .. } => {}
+                RouterCommand::LeanForwardTxs { .. } => {}
             }
         }
     }

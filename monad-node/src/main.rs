@@ -39,7 +39,10 @@ use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthBlockValidator;
 use monad_eth_txpool_executor::{EthTxPoolExecutor, EthTxPoolIpcConfig};
 use monad_executor::{Executor, ExecutorMetricsChain};
-use monad_executor_glue::{LogFriendlyMonadEvent, Message, MonadEvent};
+use monad_executor_glue::{
+    LogFriendlyMonadEvent, Message, MonadEvent, OutboundForwardTxs,
+    TX_FORWARD_LEANUDP_MAX_MESSAGE_SIZE_BYTES,
+};
 use monad_ledger::MonadBlockFileLedger;
 use monad_node_config::{
     ExecutionProtocolType, FullNodeIdentityConfig, NodeBootstrapConfig, NodeConfig,
@@ -49,8 +52,12 @@ use monad_peer_discovery::{
     discovery::{PeerDiscovery, PeerDiscoveryBuilder},
     MonadNameRecord, NameRecord,
 };
+use monad_peer_score::{ema, StdClock};
 use monad_pprof::start_pprof_server;
-use monad_raptorcast::config::{RaptorCastConfig, RaptorCastConfigPrimary};
+use monad_raptorcast::{
+    auth::{AuthenticatedSocketHandle, LeanUdpSocketHandle, WireAuthProtocol},
+    config::{RaptorCastConfig, RaptorCastConfigPrimary},
+};
 use monad_router_multi::MultiRouter;
 use monad_state::{MonadMessage, MonadStateBuilder, VerifiedMonadMessage};
 use monad_state_backend::StateBackendThreadClient;
@@ -155,6 +162,10 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         .qc()
         .get_round()
         + Round(1);
+    let (score_provider, score_reader) = ema::create::<
+        NodeId<CertificateSignaturePubKey<SignatureType>>,
+        StdClock,
+    >(ema::ScoreConfig::default(), StdClock);
     let router = build_raptorcast_router::<
         SignatureType,
         SignatureCollectionType,
@@ -170,6 +181,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         current_epoch,
         current_round,
         node_state.persisted_peers_path,
+        score_reader.clone(),
     );
 
     let statesync_threshold: usize = node_state.node_config.statesync_threshold.into();
@@ -507,6 +519,7 @@ fn build_raptorcast_router<ST, SCT, M, OM>(
     current_epoch: Epoch,
     current_round: Round,
     persisted_peers_path: PathBuf,
+    score_reader: ema::ScoreReader<NodeId<CertificateSignaturePubKey<ST>>, StdClock>,
 ) -> MultiRouter<
     ST,
     M,
@@ -524,7 +537,7 @@ where
         + Send
         + Sync
         + 'static,
-    OM: Encodable + Clone + Send + Sync + 'static,
+    OM: Encodable + Clone + Send + Sync + 'static + OutboundForwardTxs,
 {
     let bind_address = SocketAddr::new(
         IpAddr::V4(node_config.network.bind_address_host),
@@ -533,6 +546,10 @@ where
     let authenticated_bind_address = node_config
         .network
         .authenticated_bind_address_port
+        .map(|port| SocketAddr::new(IpAddr::V4(node_config.network.bind_address_host), port));
+    let authenticated_tx_ingestion_bind_address = node_config
+        .network
+        .authenticated_tx_ingestion_bind_address_port
         .map(|port| SocketAddr::new(IpAddr::V4(node_config.network.bind_address_host), port));
     let Some(SocketAddr::V4(name_record_address)) = resolve_domain_v4(
         &NodeId::new(identity.pubkey()),
@@ -547,6 +564,7 @@ where
     tracing::debug!(
         ?bind_address,
         ?authenticated_bind_address,
+        ?authenticated_tx_ingestion_bind_address,
         ?name_record_address,
         "Monad-node starting, pid: {}",
         process::id()
@@ -583,17 +601,48 @@ where
         peer_discovery_config.self_auth_port.is_some(),
         network_config.authenticated_bind_address_port.is_some()
     );
+    assert_eq!(
+        peer_discovery_config.self_auth_tx_ingestion_port.is_some(),
+        network_config
+            .authenticated_tx_ingestion_bind_address_port
+            .is_some()
+    );
+    assert!(
+        peer_discovery_config.self_auth_tx_ingestion_port.is_none()
+            || peer_discovery_config.self_auth_port.is_some(),
+        "self_auth_tx_ingestion_port requires self_auth_port"
+    );
+    if let (Some(auth_addr), Some(lean_addr)) = (
+        authenticated_bind_address,
+        authenticated_tx_ingestion_bind_address,
+    ) {
+        assert_ne!(
+            auth_addr, lean_addr,
+            "authenticated_bind_address_port and authenticated_tx_ingestion_bind_address_port must differ"
+        );
+    }
 
     let self_id = NodeId::new(identity.pubkey());
-    let self_record = match peer_discovery_config.self_auth_port {
-        Some(auth_port) => NameRecord::new_with_authentication(
+    let self_record = match (
+        peer_discovery_config.self_auth_port,
+        peer_discovery_config.self_auth_tx_ingestion_port,
+    ) {
+        (Some(auth_port), Some(auth_tx_ingestion_port)) => NameRecord::new_with_lean_udp_p2p(
+            *name_record_address.ip(),
+            name_record_address.port(),
+            name_record_address.port(),
+            auth_port,
+            auth_tx_ingestion_port,
+            peer_discovery_config.self_record_seq_num,
+        ),
+        (Some(auth_port), None) => NameRecord::new_with_authentication(
             *name_record_address.ip(),
             name_record_address.port(),
             name_record_address.port(),
             auth_port,
             peer_discovery_config.self_record_seq_num,
         ),
-        None => NameRecord::new(
+        _ => NameRecord::new(
             *name_record_address.ip(),
             name_record_address.port(),
             peer_discovery_config.self_record_seq_num,
@@ -629,6 +678,7 @@ where
                 signature: peer.name_record_sig,
                 record_seq_num: peer.record_seq_num,
                 auth_port: peer.auth_port,
+                auth_tx_ingestion_port: peer.auth_tx_ingestion_port,
             };
 
             match MonadNameRecord::try_from(&peer_entry) {
@@ -695,11 +745,11 @@ where
     };
 
     let shared_key = Arc::new(identity);
+    let lean_shared_key = shared_key.clone();
     let wireauth_config = monad_wireauth::Config::default();
-    let auth_protocol =
-        monad_raptorcast::auth::WireAuthProtocol::new(wireauth_config, shared_key.clone());
+    let auth_protocol = WireAuthProtocol::new(wireauth_config.clone(), shared_key.clone());
 
-    MultiRouter::new(
+    let mut router = MultiRouter::new(
         self_id,
         RaptorCastConfig {
             shared_key,
@@ -720,7 +770,38 @@ where
         current_epoch,
         epoch_validators,
         auth_protocol,
-    )
+    );
+
+    if let Some(lean_bind_address) = authenticated_tx_ingestion_bind_address {
+        let mut lean_dp_builder = DataplaneBuilder::new(network_config.max_mbps.into())
+            .with_udp_multishot(network_config.enable_udp_multishot);
+        if let Some(buffer_size) = network_config.buffer_size {
+            lean_dp_builder = lean_dp_builder.with_udp_buffer_size(buffer_size);
+        }
+
+        let mut lean_dp = lean_dp_builder
+            .with_udp_sockets([(UdpSocketId::AuthenticatedRaptorcast, lean_bind_address)])
+            .build();
+        assert!(lean_dp.block_until_ready(Duration::from_secs(1)));
+
+        let lean_udp_socket = lean_dp
+            .udp_sockets
+            .take(UdpSocketId::AuthenticatedRaptorcast)
+            .expect("lean udp socket");
+        let lean_dp_control = lean_dp.control;
+
+        let lean_auth_protocol = WireAuthProtocol::new(wireauth_config, lean_shared_key);
+        let lean_auth_socket = AuthenticatedSocketHandle::new(lean_udp_socket, lean_auth_protocol);
+
+        let mut leanudp_config = monad_leanudp::Config::default();
+        leanudp_config.max_message_size = TX_FORWARD_LEANUDP_MAX_MESSAGE_SIZE_BYTES;
+
+        let lean_socket = LeanUdpSocketHandle::new(lean_auth_socket, score_reader, leanudp_config);
+        router.primary_mut().set_lean_udp_socket(lean_socket);
+        router.set_lean_udp_dataplane_control(lean_dp_control);
+    }
+
+    router
 }
 
 fn resolve_domain_v4<P: PubKey>(node_id: &NodeId<P>, domain: &String) -> Option<SocketAddr> {

@@ -14,15 +14,18 @@ monad-crypto = { workspace = true }
 monad-dataplane = { workspace = true }
 monad-executor = { workspace = true }
 monad-executor-glue = { workspace = true }
+monad-leanudp = { workspace = true }
 monad-merkle = { workspace = true }
 monad-node-config = { workspace = true }
 monad-peer-discovery = { workspace = true }
+monad-peer-score = { workspace = true }
 monad-raptor = { workspace = true }
 monad-secp = { workspace = true }
 monad-types = { workspace = true }
 monad-validator = { workspace = true }
 monad-wireauth = { workspace = true }
 
+alloy-consensus = { workspace = true }
 alloy-rlp = { workspace = true }
 bitvec = { workspace = true }
 bytes = { workspace = true }
@@ -42,6 +45,7 @@ tokio = { workspace = true, features = ["macros"] }
 zerocopy = { workspace = true }
 
 [dev-dependencies]
+monad-eth-testutil = { workspace = true }
 monad-testutil = { workspace = true }
 alloy-primitives = { workspace = true }
 

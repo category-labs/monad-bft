@@ -22,9 +22,10 @@ use std::{
     pin::{pin, Pin},
     sync::{Arc, Mutex},
     task::{Context, Poll, Waker},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
+use alloy_consensus::TxEnvelope;
 use alloy_rlp::{Decodable, Encodable};
 use bytes::{Bytes, BytesMut};
 use futures::{channel::oneshot, FutureExt, Stream, StreamExt};
@@ -44,7 +45,8 @@ use monad_dataplane::{
 };
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{
-    ControlPanelEvent, GetFullNodes, GetPeers, Message, MonadEvent, PeerEntry, RouterCommand,
+    ControlPanelEvent, GetFullNodes, GetPeers, Message, MonadEvent, OutboundForwardTxs, PeerEntry,
+    RouterCommand,
 };
 use monad_node_config::{FullNodeConfig, FullNodeRaptorCastConfig};
 use monad_peer_discovery::{
@@ -53,6 +55,7 @@ use monad_peer_discovery::{
     mock::{NopDiscovery, NopDiscoveryBuilder},
     NameRecord, PeerDiscoveryAlgo, PeerDiscoveryEvent,
 };
+use monad_peer_score::{ema::ScoreReader, StdClock};
 use monad_types::{DropTimer, Epoch, ExecutionProtocol, NodeId, Round, RouterTarget, UdpPriority};
 use monad_validator::{
     signature_collection::SignatureCollection,
@@ -67,7 +70,12 @@ use util::{
 };
 
 use crate::{
-    metrics::{GAUGE_RAPTORCAST_TOTAL_MESSAGES_RECEIVED, GAUGE_RAPTORCAST_TOTAL_RECV_ERRORS},
+    metrics::{
+        COUNTER_RAPTORCAST_LEANUDP_CONNECT_ATTEMPTS, COUNTER_RAPTORCAST_LEANUDP_CONNECT_FAILURES,
+        COUNTER_RAPTORCAST_LEANUDP_FORWARD_ATTEMPTS, COUNTER_RAPTORCAST_LEANUDP_FORWARD_FALLBACK,
+        COUNTER_RAPTORCAST_LEANUDP_FORWARD_OVERSIZE, COUNTER_RAPTORCAST_LEANUDP_FORWARD_SENT,
+        GAUGE_RAPTORCAST_TOTAL_MESSAGES_RECEIVED, GAUGE_RAPTORCAST_TOTAL_RECV_ERRORS,
+    },
     packet::RetrofitResult as _,
     raptorcast_secondary::{
         group_message::FullNodesGroupMessage, SecondaryOutboundMessage,
@@ -93,13 +101,21 @@ pub const UNICAST_MSG_BATCH_SIZE: usize = 32;
 
 pub(crate) type OwnedMessageBuilder<ST> = packet::MessageBuilder<'static, ST>;
 
-pub struct RaptorCast<ST, M, OM, SE, PD, AP>
-where
+pub struct RaptorCast<
+    ST,
+    M,
+    OM,
+    SE,
+    PD,
+    AP,
+    PS = ScoreReader<NodeId<CertificateSignaturePubKey<ST>>, StdClock>,
+> where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Decodable,
-    OM: Encodable + Into<M> + Clone,
+    OM: Encodable + Into<M> + Clone + OutboundForwardTxs,
     PD: PeerDiscoveryAlgo<SignatureType = ST>,
     AP: auth::AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
+    PS: monad_peer_score::IdentityScore<Identity = NodeId<CertificateSignaturePubKey<ST>>>,
 {
     signing_key: Arc<ST::KeyPairType>,
     is_dynamic_fullnode: bool,
@@ -119,6 +135,8 @@ where
     tcp_reader: TcpSocketReader,
     tcp_writer: TcpSocketWriter,
     dual_socket: auth::DualSocketHandle<AP>,
+    lean_udp_socket:
+        Option<auth::LeanUdpSocketHandle<AP, NodeId<CertificateSignaturePubKey<ST>>, PS>>,
     dataplane_control: DataplaneControl,
     pending_events: VecDeque<RaptorCastEvent<M::Event, ST>>,
 
@@ -128,6 +146,7 @@ where
         Option<UnboundedReceiver<SecondaryOutboundMessage<CertificateSignaturePubKey<ST>>>>,
 
     waker: Option<Waker>,
+    start_instant: Instant,
     metrics: ExecutorMetrics,
     peer_discovery_metrics: ExecutorMetrics,
     _phantom: PhantomData<(OM, SE)>,
@@ -142,15 +161,24 @@ pub enum RaptorCastEvent<E, ST: CertificateSignatureRecoverable> {
     Message(E),
     PeerManagerResponse(PeerManagerResponse<ST>),
     SecondaryRaptorcastPeersUpdate(Round, Vec<NodeId<CertificateSignaturePubKey<ST>>>),
+    LeanUdpTx {
+        sender: CertificateSignaturePubKey<ST>,
+        tx: TxEnvelope,
+    },
+    LeanUdpForwardTxs {
+        sender: CertificateSignaturePubKey<ST>,
+        txs: Vec<Bytes>,
+    },
 }
 
-impl<ST, M, OM, SE, PD, AP> RaptorCast<ST, M, OM, SE, PD, AP>
+impl<ST, M, OM, SE, PD, AP, PS> RaptorCast<ST, M, OM, SE, PD, AP, PS>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Decodable,
-    OM: Encodable + Into<M> + Clone,
+    OM: Encodable + Into<M> + Clone + OutboundForwardTxs,
     PD: PeerDiscoveryAlgo<SignatureType = ST>,
     AP: auth::AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
+    PS: monad_peer_score::IdentityScore<Identity = NodeId<CertificateSignaturePubKey<ST>>>,
 {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -228,6 +256,7 @@ where
             tcp_reader,
             tcp_writer,
             dual_socket,
+            lean_udp_socket: None,
             dataplane_control: control,
             pending_events: Default::default(),
             channel_to_secondary: None,
@@ -235,6 +264,7 @@ where
             channel_from_secondary_outbound: None,
 
             waker: None,
+            start_instant: Instant::now(),
             metrics: Default::default(),
             peer_discovery_metrics: Default::default(),
             _phantom: PhantomData,
@@ -281,6 +311,28 @@ where
     ) -> bool {
         self.dual_socket
             .is_connected_socket_and_public_key(socket_addr, public_key)
+    }
+
+    pub fn set_lean_udp_socket(
+        &mut self,
+        socket: auth::LeanUdpSocketHandle<AP, NodeId<CertificateSignaturePubKey<ST>>, PS>,
+    ) {
+        self.lean_udp_socket = Some(socket);
+    }
+
+    pub fn lean_udp_socket_mut(
+        &mut self,
+    ) -> Option<&mut auth::LeanUdpSocketHandle<AP, NodeId<CertificateSignaturePubKey<ST>>, PS>>
+    {
+        self.lean_udp_socket.as_mut()
+    }
+
+    pub fn send_lean_udp_tx(&mut self, dst: SocketAddr, tx: &TxEnvelope, priority: UdpPriority) {
+        if let Some(lean_socket) = self.lean_udp_socket.as_mut() {
+            let mut buf = BytesMut::new();
+            tx.encode(&mut buf);
+            lean_socket.send(dst, buf.freeze(), priority);
+        }
     }
 
     fn enqueue_message_to_self(
@@ -601,11 +653,12 @@ pub fn new_defaulted_raptorcast_for_tests<ST, M, OM, SE>(
     SE,
     NopDiscovery<ST>,
     auth::NoopAuthProtocol<CertificateSignaturePubKey<ST>>,
+    auth::NopScore<NodeId<CertificateSignaturePubKey<ST>>>,
 >
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Decodable,
-    OM: Encodable + Into<M> + Clone,
+    OM: Encodable + Into<M> + Clone + OutboundForwardTxs,
 {
     let peer_discovery_builder = NopDiscoveryBuilder {
         known_addresses,
@@ -637,7 +690,15 @@ where
     let pd = PeerDiscoveryDriver::new(peer_discovery_builder);
     let shared_pd = Arc::new(Mutex::new(pd));
     let auth_protocol = auth::NoopAuthProtocol::new();
-    RaptorCast::<ST, M, OM, SE, NopDiscovery<ST>, _>::new(
+    RaptorCast::<
+        ST,
+        M,
+        OM,
+        SE,
+        NopDiscovery<ST>,
+        _,
+        auth::NopScore<NodeId<CertificateSignaturePubKey<ST>>>,
+    >::new(
         config,
         SecondaryRaptorCastModeConfig::None,
         dataplane.tcp_socket,
@@ -654,11 +715,19 @@ pub fn new_wireauth_raptorcast_for_tests<ST, M, OM, SE>(
     dataplane: DataplaneHandles,
     known_addresses: HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddrV4>,
     shared_key: Arc<ST::KeyPairType>,
-) -> RaptorCast<ST, M, OM, SE, NopDiscovery<ST>, auth::WireAuthProtocol>
+) -> RaptorCast<
+    ST,
+    M,
+    OM,
+    SE,
+    NopDiscovery<ST>,
+    auth::WireAuthProtocol,
+    auth::NopScore<NodeId<CertificateSignaturePubKey<ST>>>,
+>
 where
     ST: CertificateSignatureRecoverable<KeyPairType = monad_secp::KeyPair>,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Decodable,
-    OM: Encodable + Into<M> + Clone,
+    OM: Encodable + Into<M> + Clone + OutboundForwardTxs,
 {
     let peer_discovery_builder = NopDiscoveryBuilder {
         known_addresses,
@@ -691,7 +760,15 @@ where
     let shared_pd = Arc::new(Mutex::new(pd));
     let wireauth_config = monad_wireauth::Config::default();
     let auth_protocol = auth::WireAuthProtocol::new(wireauth_config, shared_key);
-    RaptorCast::<ST, M, OM, SE, NopDiscovery<ST>, _>::new(
+    RaptorCast::<
+        ST,
+        M,
+        OM,
+        SE,
+        NopDiscovery<ST>,
+        _,
+        auth::NopScore<NodeId<CertificateSignaturePubKey<ST>>>,
+    >::new(
         config,
         SecondaryRaptorCastModeConfig::None,
         dataplane.tcp_socket,
@@ -704,13 +781,14 @@ where
     )
 }
 
-impl<ST, M, OM, SE, PD, AP> Executor for RaptorCast<ST, M, OM, SE, PD, AP>
+impl<ST, M, OM, SE, PD, AP, PS> Executor for RaptorCast<ST, M, OM, SE, PD, AP, PS>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Decodable,
-    OM: Encodable + Into<M> + Clone,
+    OM: Encodable + Into<M> + Clone + OutboundForwardTxs,
     PD: PeerDiscoveryAlgo<SignatureType = ST>,
     AP: auth::AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
+    PS: monad_peer_score::IdentityScore<Identity = NodeId<CertificateSignaturePubKey<ST>>>,
 {
     type Command = RouterCommand<ST, OM>;
 
@@ -920,17 +998,95 @@ where
                 } => {
                     self.dedicated_full_nodes.list = dedicated_full_nodes;
                 }
+                RouterCommand::LeanForwardTxs { target, txs } => {
+                    self.metrics[COUNTER_RAPTORCAST_LEANUDP_FORWARD_ATTEMPTS] += 1;
+
+                    let sent_via_lean = if let Some(lean_socket) = self.lean_udp_socket.as_mut() {
+                        let target_pubkey = target.pubkey();
+
+                        let mut lean_addr = lean_socket.get_socket_by_public_key(&target_pubkey);
+                        if lean_addr.is_none() {
+                            let discovered_addr = self
+                                .peer_discovery_driver
+                                .lock()
+                                .ok()
+                                .and_then(|pd| pd.get_lean_udp_p2p_addr(&target));
+
+                            if let Some(discovered_addr) = discovered_addr {
+                                self.metrics[COUNTER_RAPTORCAST_LEANUDP_CONNECT_ATTEMPTS] += 1;
+                                if let Err(err) = lean_socket.connect(
+                                    &target_pubkey,
+                                    discovered_addr,
+                                    DEFAULT_RETRY_ATTEMPTS,
+                                ) {
+                                    self.metrics[COUNTER_RAPTORCAST_LEANUDP_CONNECT_FAILURES] += 1;
+                                    warn!(
+                                        ?target,
+                                        ?discovered_addr,
+                                        ?err,
+                                        "leanudp connect failed"
+                                    );
+                                }
+                                lean_socket.flush();
+                                lean_addr = lean_socket.get_socket_by_public_key(&target_pubkey);
+                            }
+                        }
+
+                        if let Some(addr) = lean_addr {
+                            let mut buf = BytesMut::new();
+                            txs.encode(&mut buf);
+                            let payload_len = buf.len();
+                            let max_message_size = lean_socket.config().max_message_size;
+
+                            if payload_len > max_message_size {
+                                self.metrics[COUNTER_RAPTORCAST_LEANUDP_FORWARD_OVERSIZE] += 1;
+                                error!(
+                                    ?target,
+                                    payload_len,
+                                    max_message_size,
+                                    tx_count = txs.len(),
+                                    "leanudp forward payload exceeds max message size, dropping"
+                                );
+                            } else {
+                                lean_socket.send(addr, buf.freeze(), UdpPriority::Regular);
+                                self.metrics[COUNTER_RAPTORCAST_LEANUDP_FORWARD_SENT] += 1;
+                            }
+                            true
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    };
+
+                    // Fallback to dual sender if LeanUDP not available
+                    if !sent_via_lean {
+                        self.metrics[COUNTER_RAPTORCAST_LEANUDP_FORWARD_FALLBACK] += 1;
+                        self.handle_publish(
+                            RouterTarget::PointToPoint(target),
+                            OM::forward_txs(txs),
+                            UdpPriority::Regular,
+                            self_id,
+                        );
+                    }
+                }
             }
         }
     }
 
     fn metrics(&self) -> ExecutorMetricsChain<'_> {
-        ExecutorMetricsChain::default()
+        let mut chain = ExecutorMetricsChain::default()
             .push(self.metrics.as_ref())
             .push(self.peer_discovery_metrics.as_ref())
             .push(self.udp_state.metrics().executor_metrics())
             .chain(self.udp_state.decoder_metrics())
-            .chain(self.dual_socket.metrics())
+            .chain(self.dual_socket.metrics());
+
+        if let Some(lean_socket) = &self.lean_udp_socket {
+            chain = chain.chain(lean_socket.metrics());
+        }
+
+        chain
     }
 }
 
@@ -946,14 +1102,15 @@ fn iter_ips<'a, ST: CertificateSignatureRecoverable, PD: PeerDiscoveryAlgo<Signa
         .map(|socket| socket.ip())
 }
 
-impl<ST, M, OM, E, PD, AP> Stream for RaptorCast<ST, M, OM, E, PD, AP>
+impl<ST, M, OM, E, PD, AP, PS> Stream for RaptorCast<ST, M, OM, E, PD, AP, PS>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Decodable,
-    OM: Encodable + Into<M> + Clone,
+    OM: Encodable + Into<M> + Clone + OutboundForwardTxs,
     E: From<RaptorCastEvent<M::Event, ST>>,
     PD: PeerDiscoveryAlgo<SignatureType = ST>,
     AP: auth::AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
+    PS: monad_peer_score::IdentityScore<Identity = NodeId<CertificateSignaturePubKey<ST>>>,
     PeerDiscoveryDriver<PD>: Unpin,
     Self: Unpin,
 {
@@ -1114,6 +1271,36 @@ where
             }
         }
 
+        if let Some(lean_socket) = this.lean_udp_socket.as_mut() {
+            loop {
+                let mut recv_fut = pin!(lean_socket.recv());
+                match recv_fut.poll_unpin(cx) {
+                    Poll::Ready(Ok(msg)) => {
+                        if let Ok(txs) = Vec::<Bytes>::decode(&mut msg.payload.as_ref()) {
+                            this.pending_events
+                                .push_back(RaptorCastEvent::LeanUdpForwardTxs {
+                                    sender: msg.public_key.clone(),
+                                    txs,
+                                });
+                        } else if let Ok(tx) = TxEnvelope::decode(&mut msg.payload.as_ref()) {
+                            this.pending_events.push_back(RaptorCastEvent::LeanUdpTx {
+                                sender: msg.public_key.clone(),
+                                tx,
+                            });
+                        }
+                        if let Some(event) = this.pending_events.pop_front() {
+                            return Poll::Ready(Some(event.into()));
+                        }
+                    }
+                    Poll::Ready(Err(e)) => {
+                        trace!(error=?e, "leanudp socket recv error");
+                        continue;
+                    }
+                    Poll::Pending => break,
+                }
+            }
+        }
+
         loop {
             let Poll::Ready(msg) = pin!(this.tcp_reader.recv()).poll_unpin(cx) else {
                 break;
@@ -1184,7 +1371,7 @@ where
 
         {
             let send_peer_disc_msg =
-                |this: &mut RaptorCast<ST, M, OM, E, PD, AP>,
+                |this: &mut RaptorCast<ST, M, OM, E, PD, AP, PS>,
                  target: NodeId<CertificateSignaturePubKey<ST>>,
                  target_name_record: Option<NameRecord>,
                  message: PeerDiscoveryMessage<ST>| {
@@ -1331,6 +1518,10 @@ where
                     expiry_round,
                     confirm_group_peers,
                 }
+            }
+            RaptorCastEvent::LeanUdpTx { sender, tx } => MonadEvent::LeanUdpTx { sender, tx },
+            RaptorCastEvent::LeanUdpForwardTxs { sender, txs } => {
+                MonadEvent::LeanUdpForwardTxs { sender, txs }
             }
         }
     }

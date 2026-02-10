@@ -262,6 +262,9 @@ where
                 Self::Command::GetFullNodes => {
                     panic!("Command routed to secondary RaptorCast: GetFullNodes")
                 }
+                Self::Command::LeanForwardTxs { .. } => {
+                    panic!("Command routed to secondary RaptorCast: LeanForwardTxs")
+                }
                 Self::Command::UpdateFullNodes {
                     dedicated_full_nodes: _,
                     prioritized_full_nodes,

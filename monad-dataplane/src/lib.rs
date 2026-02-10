@@ -399,6 +399,9 @@ impl UdpSocketHandle {
 }
 
 impl UdpSocketWriter {
+    pub fn local_addr(&self) -> SocketAddr {
+        self.socket_addr
+    }
     pub fn write(&self, dst: SocketAddr, payload: Bytes, stride: u16) {
         let msg_length = payload.len();
         let result = self.egress_tx.try_send(UdpMsg {
@@ -489,10 +492,6 @@ impl UdpSocketWriter {
                 "udp egress channel full, dropping unicast messages"
             );
         }
-    }
-
-    pub fn local_addr(&self) -> SocketAddr {
-        self.socket_addr
     }
 }
 

@@ -177,6 +177,7 @@ fn main() -> Result<(), Error> {
                         name_record_sig: peer.signature,
                         record_seq_num: peer.record_seq_num,
                         auth_port: peer.auth_port,
+                        auth_tx_ingestion_port: peer.auth_tx_ingestion_port,
                     };
                     peer_configs.push(peer_config);
                 }

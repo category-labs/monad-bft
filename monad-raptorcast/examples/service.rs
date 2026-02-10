@@ -30,7 +30,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignatureRecoverable, PubKey,
 };
 use monad_executor::Executor;
-use monad_executor_glue::{Message, RouterCommand};
+use monad_executor_glue::{Message, OutboundForwardTxs, RouterCommand};
 use monad_raptorcast::{new_defaulted_raptorcast_for_tests, RaptorCastEvent};
 use monad_secp::SecpSignature;
 use monad_types::{Deserializable, Epoch, NodeId, RouterTarget, Serializable, Stake};
@@ -243,6 +243,12 @@ impl Deserializable<Bytes> for MockMessage {
     }
 }
 
+impl OutboundForwardTxs for MockMessage {
+    fn forward_txs(_txs: Vec<Bytes>) -> Self {
+        MockMessage::new(0, 0)
+    }
+}
+
 #[derive(Clone, Copy)]
 struct MockEvent<P: PubKey>((NodeId<P>, u32));
 
@@ -258,6 +264,12 @@ where
                 unimplemented!()
             }
             RaptorCastEvent::SecondaryRaptorcastPeersUpdate(..) => {
+                unimplemented!()
+            }
+            RaptorCastEvent::LeanUdpTx { .. } => {
+                unimplemented!()
+            }
+            RaptorCastEvent::LeanUdpForwardTxs { .. } => {
                 unimplemented!()
             }
         }
