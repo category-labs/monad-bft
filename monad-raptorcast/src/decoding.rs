@@ -131,7 +131,8 @@ where
     PT: PubKey,
 {
     pending_messages: TieredCache<PT>,
-    recently_decoded: LruCache<CacheKey, RecentlyDecodedState>,
+    // cache for both successful and failed recent decodings
+    recently_decoded: LruCache<CacheKey, Result<RecentlyDecodedState, TryDecodeError>>,
     metrics: ExecutorMetrics,
 }
 
@@ -170,6 +171,12 @@ where
         // self.metrics.
         let cache_hit_metric;
         let decoder_state = match self.decoder_state_entry(&cache_key, message, context) {
+            Some(MessageCacheEntry::Error(error)) => {
+                // the app message was recently decoded but invalid (e.g. app
+                // message hash mismatch)
+                return Err(error.clone());
+            }
+
             Some(MessageCacheEntry::RecentlyDecoded(recently_decoded)) => {
                 // the app message was recently decoded
                 recently_decoded
@@ -234,15 +241,19 @@ where
             hasher.update(&decoded);
             hasher.hash().0[..20].try_into().unwrap()
         });
+
         if decoded_app_message_hash != message.app_message_hash {
-            return Err(TryDecodeError::AppMessageHashMismatch {
+            let error = TryDecodeError::AppMessageHashMismatch {
                 expected: message.app_message_hash,
                 actual: decoded_app_message_hash,
-            });
+            };
+
+            self.recently_decoded.put(cache_key, Err(error.clone()));
+            return Err(error);
         }
 
         self.recently_decoded
-            .put(cache_key, RecentlyDecodedState::from(decoder_state));
+            .put(cache_key, Ok(RecentlyDecodedState::from(decoder_state)));
         self.metrics[METRIC_DECODED] += 1;
 
         Ok(TryDecodeStatus::Decoded {
@@ -258,7 +269,10 @@ where
         context: &DecodingContext<'_, PT>,
     ) -> Option<MessageCacheEntry<'_>> {
         if let Some(recently_decoded) = self.recently_decoded.get_mut(cache_key) {
-            return Some(MessageCacheEntry::RecentlyDecoded(recently_decoded));
+            return match recently_decoded {
+                Err(error) => Some(MessageCacheEntry::Error(&*error)),
+                Ok(recently_decoded) => Some(MessageCacheEntry::RecentlyDecoded(recently_decoded)),
+            };
         }
 
         let cache = self.pending_messages.get_cache_tier(message, context);
@@ -1362,9 +1376,10 @@ impl<PT: PubKey> QuotaPolicy<PT> for QuotaByStake {
 enum MessageCacheEntry<'a> {
     Pending(&'a mut DecoderState),
     RecentlyDecoded(&'a mut RecentlyDecodedState),
+    Error(&'a TryDecodeError),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) enum TryDecodeError {
     InvalidSymbol(InvalidSymbol),
     UnableToReconstructSourceData,
@@ -1385,7 +1400,7 @@ pub(crate) enum TryDecodeStatus<PT: PubKey> {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[expect(clippy::enum_variant_names)]
 pub(crate) enum InvalidSymbol {
     /// The symbol length does not match the expected length.
@@ -1408,7 +1423,7 @@ pub(crate) enum InvalidSymbol {
     /// id.
     DuplicateSymbol { encoding_symbol_id: usize },
     /// Error when creating a `ManagedDecoder` with invalid parameters (e.g., too many source symbols).
-    InvalidDecoderParameter(std::io::Error),
+    InvalidDecoderParameter(String),
 }
 
 impl InvalidSymbol {
@@ -1527,7 +1542,7 @@ impl DecoderState {
         };
 
         let decoder = ManagedDecoder::new(num_source_symbols, encoded_symbol_capacity, symbol_len)
-            .map_err(InvalidSymbol::InvalidDecoderParameter)?;
+            .map_err(|e| InvalidSymbol::InvalidDecoderParameter(e.to_string()))?;
 
         let mut decoder_state = DecoderState {
             decoder,
@@ -2416,6 +2431,55 @@ mod test {
             (1800, 9) | // small=1,large=1 (evicted)
             (2000, 10) // large=1,small=0 (evicted)
         ));
+    }
+
+    #[test]
+    fn test_app_message_hash_mismatch_cached_error() {
+        // Mismatched app message hash after successful decode shouldn't simply
+        // evict the cache entry, making it susceptible to replay attack.
+
+        let app_message = Bytes::from(vec![1u8; APP_MESSAGE_LEN]);
+        let author = node_id(0);
+        let mut symbols = make_symbols(&app_message, author, UNIX_TS_MS);
+
+        // Modify the app_message_hash of each symbol to create a mismatch
+        let fake_hash = HexBytes([0xDE; 20]);
+        for symbol in &mut symbols {
+            symbol.app_message_hash = fake_hash;
+        }
+
+        let context = DecodingContext::new(None, UNIX_TS_MS);
+        let mut cache = make_cache(10, 10, 10);
+
+        // Feed symbols until we hit the app message hash mismatch error
+        let mut first_error = None;
+        for symbol in &symbols {
+            match cache.try_decode(symbol, &context) {
+                Ok(TryDecodeStatus::NeedsMoreSymbols) => continue,
+                Err(TryDecodeError::AppMessageHashMismatch { expected, actual }) => {
+                    first_error = Some((expected, actual));
+                    break;
+                }
+                _ => unreachable!(),
+            }
+        }
+
+        let (expected_hash, actual_hash) = first_error.expect("should hit an error");
+        assert_eq!(expected_hash, fake_hash);
+
+        // now replay the first chunk - should return the error immediately
+        let replay_result = cache.try_decode(&symbols[0], &context);
+
+        match replay_result {
+            Err(TryDecodeError::AppMessageHashMismatch { expected, actual }) => {
+                assert_eq!(expected, expected_hash);
+                assert_eq!(actual, actual_hash);
+            }
+            other => panic!(
+                "Expected cached AppMessageHashMismatch error, got: {:?}",
+                other
+            ),
+        }
     }
 
     fn try_decode_all<'a>(
