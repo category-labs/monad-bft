@@ -226,7 +226,8 @@ fn test_cookie_reply_on_init() {
     init_tracing();
     // 1. create managers with low_watermark_sessions=0 to trigger cookie immediate cookie reply under load
     let config = Config {
-        handshake_rate_limit: 10,
+        handshake_cookie_unverified_rate_limit: 10,
+        handshake_cookie_verified_rate_limit: 10,
         low_watermark_sessions: 0,
         session_timeout_jitter: Duration::ZERO, // to avoid randomness in tests
         ..Config::default()
@@ -429,7 +430,8 @@ fn test_filter_drop_rate_limit() {
     init_tracing();
     // 1. create manager with low handshake rate limit (3 per interval)
     let config = Config {
-        handshake_rate_limit: 3,
+        handshake_cookie_unverified_rate_limit: 3,
+        handshake_cookie_verified_rate_limit: 3,
         ..Config::default()
     };
 
@@ -465,12 +467,12 @@ fn test_filter_drop_rate_limit() {
         dispatch(&mut responder, &init, initiator_addr);
     }
 
-    // 3. verify only 2 responses (first consumed token, remaining 2 accepted)
+    // 3. verify 3 handshake responses + 1 cookie reply (4th init is challenged, not silently dropped)
     let mut pkts = vec![];
     while let Some(pkt) = responder.next_packet() {
         pkts.push(pkt);
     }
-    assert_eq!(pkts.len(), 2);
+    assert_eq!(pkts.len(), 4);
 }
 
 #[test]

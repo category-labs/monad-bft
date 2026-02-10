@@ -34,9 +34,11 @@ pub enum FilterAction {
 // Filter ...
 // NOTE that rate limiting for ipv6 is not properly supported
 pub struct Filter {
-    counter: u64,
+    cookie_unverified_counter: u64,
+    cookie_verified_counter: u64,
     last_reset: Duration,
-    handshake_rate_limit: u64,
+    handshake_cookie_unverified_rate_limit: u64,
+    handshake_cookie_verified_rate_limit: u64,
     handshake_rate_reset_interval: Duration,
     ip_request_history: LruCache<IpAddr, Duration>,
     ip_rate_limit_window: Duration,
@@ -48,9 +50,11 @@ pub struct Filter {
 }
 
 impl Filter {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         metric_names: &'static MetricNames,
-        handshake_rate_limit: u64,
+        handshake_cookie_unverified_rate_limit: u64,
+        handshake_cookie_verified_rate_limit: u64,
         handshake_rate_reset_interval: Duration,
         ip_rate_limit_window: Duration,
         ip_history_capacity: usize,
@@ -59,9 +63,11 @@ impl Filter {
         high_watermark_sessions: usize,
     ) -> Self {
         Self {
-            counter: 0,
+            cookie_unverified_counter: 0,
+            cookie_verified_counter: 0,
             last_reset: Duration::ZERO,
-            handshake_rate_limit,
+            handshake_cookie_unverified_rate_limit,
+            handshake_cookie_verified_rate_limit,
             handshake_rate_reset_interval,
             ip_request_history: LruCache::new(NonZeroUsize::new(ip_history_capacity).unwrap()),
             ip_rate_limit_window,
@@ -94,7 +100,8 @@ impl Filter {
                     );
                 }
             }
-            self.counter = 0;
+            self.cookie_unverified_counter = 0;
+            self.cookie_verified_counter = 0;
             self.last_reset = duration_since_start;
         }
     }
@@ -111,13 +118,12 @@ impl Filter {
         cookie_valid: bool,
     ) -> FilterAction {
         trace!(remote_addr = %remote_addr, cookie_valid = cookie_valid, "applying filter");
-        self.counter += 1;
         let total_sessions = state.total_sessions();
         let ip = remote_addr.ip();
 
         let action = self
             .check_high_watermark(total_sessions, remote_addr)
-            .or_else(|| self.check_rate_limit(remote_addr))
+            .or_else(|| self.check_cookie_rate_limit(remote_addr, cookie_valid))
             .or_else(|| self.check_low_watermark(total_sessions))
             .or_else(|| self.check_cookie_validity(cookie_valid))
             .or_else(|| self.check_ip_rate_limit(ip, duration_since_start))
@@ -144,16 +150,49 @@ impl Filter {
         })
     }
 
-    fn check_rate_limit(&self, remote_addr: SocketAddr) -> Option<FilterAction> {
-        (self.counter >= self.handshake_rate_limit).then(|| {
-            debug!(
-                remote_addr = %remote_addr,
-                counter = self.counter,
-                rate_limit = self.handshake_rate_limit,
-                "rate limit exceeded - dropping handshake"
-            );
-            FilterAction::Drop
-        })
+    fn check_cookie_rate_limit(
+        &mut self,
+        remote_addr: SocketAddr,
+        cookie_valid: bool,
+    ) -> Option<FilterAction> {
+        if cookie_valid {
+            if self.cookie_verified_counter >= self.handshake_cookie_verified_rate_limit {
+                debug!(
+                    remote_addr = %remote_addr,
+                    counter = self.cookie_verified_counter,
+                    verified_rate_limit = self.handshake_cookie_verified_rate_limit,
+                    "cookie-verified rate limit exceeded - dropping handshake"
+                );
+                return Some(FilterAction::Drop);
+            }
+            self.cookie_verified_counter += 1;
+        } else {
+            if self.cookie_unverified_counter >= self.handshake_cookie_unverified_rate_limit {
+                if self.cookie_verified_counter < self.handshake_cookie_verified_rate_limit {
+                    debug!(
+                        remote_addr = %remote_addr,
+                        unverified_counter = self.cookie_unverified_counter,
+                        unverified_rate_limit = self.handshake_cookie_unverified_rate_limit,
+                        verified_counter = self.cookie_verified_counter,
+                        verified_rate_limit = self.handshake_cookie_verified_rate_limit,
+                        "cookie-unverified budget exhausted - sending cookie reply"
+                    );
+                    return Some(FilterAction::SendCookie);
+                }
+                debug!(
+                    remote_addr = %remote_addr,
+                    counter = self.cookie_unverified_counter,
+                    unverified_rate_limit = self.handshake_cookie_unverified_rate_limit,
+                    verified_counter = self.cookie_verified_counter,
+                    verified_rate_limit = self.handshake_cookie_verified_rate_limit,
+                    "cookie-unverified rate limit exceeded - dropping handshake (no verified budget for cookie replies)"
+                );
+                return Some(FilterAction::Drop);
+            }
+            self.cookie_unverified_counter += 1;
+        }
+
+        None
     }
 
     fn check_low_watermark(&self, total_sessions: usize) -> Option<FilterAction> {
@@ -219,6 +258,7 @@ mod tests {
         Filter::new(
             DEFAULT_METRICS,
             100,
+            100,
             Duration::from_secs(60),
             Duration::from_secs(60),
             1000,
@@ -243,6 +283,7 @@ mod tests {
         let mut filter = Filter::new(
             DEFAULT_METRICS,
             100,
+            100,
             Duration::from_secs(60),
             Duration::from_secs(60),
             1000,
@@ -265,6 +306,7 @@ mod tests {
         let low_watermark = 5;
         let mut filter = Filter::new(
             DEFAULT_METRICS,
+            100,
             100,
             Duration::from_secs(60),
             Duration::from_secs(60),
@@ -289,6 +331,7 @@ mod tests {
         let mut filter = Filter::new(
             DEFAULT_METRICS,
             100,
+            100,
             Duration::from_secs(60),
             Duration::from_secs(60),
             1000,
@@ -309,9 +352,11 @@ mod tests {
     #[test]
     fn test_handshake_rate_limit_drops() {
         let handshake_rate_limit = 5;
+        let verified_rate_limit = 2;
         let mut filter = Filter::new(
             DEFAULT_METRICS,
             handshake_rate_limit,
+            verified_rate_limit,
             Duration::from_secs(60),
             Duration::from_secs(60),
             1000,
@@ -322,18 +367,29 @@ mod tests {
         let state = State::new(DEFAULT_METRICS);
         let addr = "127.0.0.1:8080".parse().unwrap();
         for _ in 0..handshake_rate_limit {
-            filter.apply(&state, addr, Duration::from_secs(1), false);
+            let action = filter.apply(&state, addr, Duration::from_secs(1), false);
+            assert_eq!(action, FilterAction::Pass);
         }
+
+        let action = filter.apply(&state, addr, Duration::from_secs(1), false);
+        assert_eq!(action, FilterAction::SendCookie);
+
+        for _ in 0..verified_rate_limit {
+            let action = filter.apply(&state, addr, Duration::from_secs(1), true);
+            assert_eq!(action, FilterAction::Pass);
+        }
+
         let action = filter.apply(&state, addr, Duration::from_secs(1), false);
         assert_eq!(action, FilterAction::Drop);
     }
 
     #[test]
-    fn test_handshake_rate_limit_drops_with_cookie() {
-        let handshake_rate_limit = 5;
+    fn test_handshake_cookie_verified_rate_limit_drops() {
+        let verified_rate_limit = 5;
         let mut filter = Filter::new(
             DEFAULT_METRICS,
-            handshake_rate_limit,
+            100,
+            verified_rate_limit,
             Duration::from_secs(60),
             Duration::from_secs(60),
             1000,
@@ -343,11 +399,57 @@ mod tests {
         );
         let state = State::new(DEFAULT_METRICS);
         let addr = "127.0.0.1:8080".parse().unwrap();
-        for _ in 0..handshake_rate_limit {
-            filter.apply(&state, addr, Duration::from_secs(1), false);
+        for _ in 0..verified_rate_limit {
+            let action = filter.apply(&state, addr, Duration::from_secs(1), true);
+            assert_eq!(action, FilterAction::Pass);
         }
         let action = filter.apply(&state, addr, Duration::from_secs(1), true);
         assert_eq!(action, FilterAction::Drop);
+    }
+
+    #[test]
+    fn test_unverified_rate_limit_does_not_starve_verified_rate_limit() {
+        let mut filter = Filter::new(
+            DEFAULT_METRICS,
+            2, // unverified
+            2, // verified
+            Duration::from_secs(60),
+            Duration::from_secs(60),
+            1000,
+            10,
+            50,
+            100,
+        );
+        let state = State::new(DEFAULT_METRICS);
+        let addr = "127.0.0.1:8080".parse().unwrap();
+
+        // Exhaust unverified budget.
+        assert_eq!(
+            filter.apply(&state, addr, Duration::from_secs(1), false),
+            FilterAction::Pass
+        );
+        assert_eq!(
+            filter.apply(&state, addr, Duration::from_secs(1), false),
+            FilterAction::Pass
+        );
+        assert_eq!(
+            filter.apply(&state, addr, Duration::from_secs(1), false),
+            FilterAction::SendCookie
+        );
+
+        // Verified budget is still available.
+        assert_eq!(
+            filter.apply(&state, addr, Duration::from_secs(1), true),
+            FilterAction::Pass
+        );
+        assert_eq!(
+            filter.apply(&state, addr, Duration::from_secs(1), true),
+            FilterAction::Pass
+        );
+        assert_eq!(
+            filter.apply(&state, addr, Duration::from_secs(1), true),
+            FilterAction::Drop
+        );
     }
 
     #[test]
@@ -355,6 +457,7 @@ mod tests {
         let handshake_rate_limit = 5;
         let mut filter = Filter::new(
             DEFAULT_METRICS,
+            handshake_rate_limit,
             handshake_rate_limit,
             Duration::from_secs(1),
             Duration::from_secs(60),
@@ -379,6 +482,7 @@ mod tests {
         let mut filter = Filter::new(
             DEFAULT_METRICS,
             handshake_rate_limit,
+            handshake_rate_limit,
             Duration::from_secs(10),
             Duration::from_secs(60),
             1000,
@@ -393,7 +497,7 @@ mod tests {
         }
         filter.tick(Duration::from_secs(5));
         let action = filter.apply(&state, addr, Duration::from_secs(5), false);
-        assert_eq!(action, FilterAction::Drop);
+        assert_eq!(action, FilterAction::SendCookie);
     }
 
     #[test]
@@ -401,6 +505,7 @@ mod tests {
         let low_watermark = 5;
         let mut filter = Filter::new(
             DEFAULT_METRICS,
+            100,
             100,
             Duration::from_secs(60),
             Duration::from_secs(5),
@@ -426,6 +531,7 @@ mod tests {
         let mut filter = Filter::new(
             DEFAULT_METRICS,
             100,
+            100,
             Duration::from_secs(60),
             Duration::from_secs(5),
             1000,
@@ -450,6 +556,7 @@ mod tests {
         let max_sessions_per_ip = 2;
         let mut filter = Filter::new(
             DEFAULT_METRICS,
+            100,
             100,
             Duration::from_secs(60),
             Duration::from_secs(60),
@@ -479,6 +586,7 @@ mod tests {
         let mut filter = Filter::new(
             DEFAULT_METRICS,
             100,
+            100,
             Duration::from_secs(60),
             Duration::from_secs(60),
             1000,
@@ -505,6 +613,7 @@ mod tests {
         let mut filter = Filter::new(
             DEFAULT_METRICS,
             handshake_rate_limit,
+            handshake_rate_limit,
             Duration::from_secs(60),
             Duration::from_secs(60),
             1000,
@@ -522,7 +631,7 @@ mod tests {
             filter.apply(&state, addr, Duration::from_secs(1), false);
         }
         let action = filter.apply(&state, addr, Duration::from_secs(1), false);
-        assert_eq!(action, FilterAction::Drop);
+        assert_eq!(action, FilterAction::SendCookie);
     }
 
     #[test]
@@ -530,6 +639,7 @@ mod tests {
         let low_watermark = 5;
         let mut filter = Filter::new(
             DEFAULT_METRICS,
+            100,
             100,
             Duration::from_secs(60),
             Duration::from_secs(5),
