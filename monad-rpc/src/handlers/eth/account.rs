@@ -14,6 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use alloy_primitives::B256;
+use monad_eth_types::AccountCodeOrHash;
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::Triedb;
 use serde::Deserialize;
@@ -77,10 +78,14 @@ pub async fn monad_eth_getCode<T: Triedb>(
         .await
         .map_err(JsonRpcError::internal_error)?;
 
-    let code = triedb_env
-        .get_code(block_key, account.code_hash)
-        .await
-        .map_err(JsonRpcError::internal_error)?;
+    let code = match account.code_or_hash {
+        AccountCodeOrHash::InlineCode(inline_code) => format!("0x{:x}", inline_code),
+        AccountCodeOrHash::CodeHash(hash) => triedb_env
+            .get_code_db(block_key, hash.into())
+            .await
+            .map_err(JsonRpcError::internal_error)?,
+        AccountCodeOrHash::IsEmpty => "0x".to_string(),
+    };
 
     match triedb_env
         .get_state_availability(block_key)

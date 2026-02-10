@@ -5457,6 +5457,7 @@ dependencies = [
  "serde",
  "serde_with",
  "toml",
+ "tracing",
 ]
 
 [[package]]
@@ -5944,6 +5945,7 @@ dependencies = [
  "monad-eth-testutil",
  "monad-eth-txpool-ipc",
  "monad-eth-txpool-types",
+ "monad-eth-types",
  "monad-ethcall",
  "monad-event-ring",
  "monad-exec-events",
