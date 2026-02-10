@@ -75,7 +75,7 @@ fn create_dir_safe(base: &Path, name: &str) -> PathBuf {
 
 fn atomic_symlink_update(target: &Path, link_path: &Path) -> io::Result<()> {
     let mut wip = link_path.to_path_buf();
-    wip.set_extension(".wip");
+    wip.set_extension("wip");
     std::os::unix::fs::symlink(target, &wip)?;
     std::fs::rename(&wip, link_path)?;
     Ok(())
@@ -212,5 +212,95 @@ where
         read_and_decode(&self.body_path(body_id), || {
             format!("ledger bft body, body_id={:?}", body_id)
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::*;
+
+    fn count_files_in_dir(dir: &Path) -> usize {
+        fs::read_dir(dir)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .count()
+    }
+
+    #[test]
+    fn test_atomic_symlink_update_single_file() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let target_path = temp_dir.path().join("target_file");
+        let link_path = temp_dir.path().join("my_link");
+
+        fs::write(&target_path, b"test content").unwrap();
+
+        assert!(!link_path.is_symlink());
+
+        atomic_symlink_update(&target_path, &link_path).unwrap();
+
+        assert!(link_path.is_symlink());
+        assert_eq!(count_files_in_dir(temp_dir.path()), 2);
+
+        let link_target = fs::read_link(&link_path).unwrap();
+        assert_eq!(link_target, target_path);
+    }
+
+    #[test]
+    fn test_atomic_symlink_update_with_inotify() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let target_path = temp_dir.path().join("target_file");
+        let link_path = temp_dir.path().join("my_link");
+
+        fs::write(&target_path, b"test content").unwrap();
+
+        let mut inotify = inotify::Inotify::init().unwrap();
+        inotify
+            .watches()
+            .add(
+                temp_dir.path(),
+                inotify::WatchMask::CREATE
+                    | inotify::WatchMask::MOVED_TO
+                    | inotify::WatchMask::DELETE,
+            )
+            .unwrap();
+
+        atomic_symlink_update(&target_path, &link_path).unwrap();
+
+        let mut buffer = [0u8; 4096];
+
+        let inotify_events = inotify
+            .read_events_blocking(&mut buffer)
+            .unwrap()
+            .collect::<Vec<_>>();
+
+        let mut events = Vec::new();
+
+        for event in inotify_events {
+            if let Some(name) = event.name {
+                events.push((event.mask, name.to_string_lossy().to_string()));
+            }
+        }
+
+        assert_eq!(events.len(), 2, "Expected exactly 2 events");
+        assert_eq!(count_files_in_dir(temp_dir.path()), 2);
+
+        // CREATE for my_link.wip
+        assert!(
+            events[0].0.eq(&inotify::EventMask::CREATE),
+            "First event should be CREATE"
+        );
+        assert_eq!(
+            events[0].1, "my_link.wip",
+            "First event should be for my_link.wip"
+        );
+
+        // MOVED_TO for my_link
+        assert!(
+            events[1].0.eq(&inotify::EventMask::MOVED_TO),
+            "Second event should be MOVED_TO"
+        );
+        assert_eq!(events[1].1, "my_link", "Second event should be for my_link");
     }
 }
