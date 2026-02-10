@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{future::Future, pin::Pin};
+use std::{future::Future, pin::Pin, task::Poll};
 
 use bytes::Bytes;
 use futures::Stream;
@@ -25,12 +25,16 @@ use monad_crypto::certificate_signature::{
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_types::EthExecutionProtocol;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
-use monad_executor_glue::{MonadEvent, TxPoolCommand};
+use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
+use monad_fair_queue::{FairQueue, FairQueueBuilder};
+use monad_peer_score::{
+    ema::{ScoreProvider, ScoreReader},
+    StdClock,
+};
 use monad_secp::ExtractEthAddress;
 use monad_state_backend::StateBackend;
 use monad_types::NodeId;
 use monad_validator::signature_collection::SignatureCollection;
-use tracing::warn;
 
 pub struct ForwardedTxs<SCT>
 where
@@ -41,8 +45,53 @@ where
 }
 
 const DEFAULT_COMMAND_BUFFER_SIZE: usize = 1024;
-const DEFAULT_FORWARDED_BUFFER_SIZE: usize = 1024;
+const DEFAULT_FORWARDED_BUFFER_SIZE: usize = 1;
 const DEFAULT_EVENT_BUFFER_SIZE: usize = 1024;
+const INGRESS_CHUNK_MAX_SIZE: usize = 128;
+const COUNTER_TXPOOL_FORWARDED_INGRESS_ENQUEUED_TXS: &str =
+    "monad.bft.txpool.forwarded_ingress_enqueued_txs";
+const COUNTER_TXPOOL_FORWARDED_INGRESS_DROPPED_TXS: &str =
+    "monad.bft.txpool.forwarded_ingress_dropped_txs";
+const COUNTER_TXPOOL_FORWARDED_INGRESS_DROP_EVENTS: &str =
+    "monad.bft.txpool.forwarded_ingress_drop_events";
+const COUNTER_TXPOOL_FORWARDED_INGRESS_SENT_BATCHES: &str =
+    "monad.bft.txpool.forwarded_ingress_sent_batches";
+const COUNTER_TXPOOL_FORWARDED_INGRESS_SENT_TXS: &str =
+    "monad.bft.txpool.forwarded_ingress_sent_txs";
+
+type ForwardedPermitFuture<SCT> = Pin<
+    Box<
+        dyn Future<
+                Output = Result<
+                    tokio::sync::mpsc::OwnedPermit<Vec<ForwardedTxs<SCT>>>,
+                    tokio::sync::mpsc::error::SendError<()>,
+                >,
+            > + 'static,
+    >,
+>;
+
+struct PendingForwardedSend<SCT>
+where
+    SCT: SignatureCollection,
+{
+    permit_fut: ForwardedPermitFuture<SCT>,
+    batch: Option<Vec<ForwardedTxs<SCT>>>,
+}
+
+impl<SCT> PendingForwardedSend<SCT>
+where
+    SCT: SignatureCollection,
+{
+    fn new(
+        sender: tokio::sync::mpsc::Sender<Vec<ForwardedTxs<SCT>>>,
+        batch: Vec<ForwardedTxs<SCT>>,
+    ) -> Self {
+        Self {
+            permit_fut: Box::pin(sender.reserve_owned()),
+            batch: Some(batch),
+        }
+    }
+}
 
 pub struct EthTxPoolExecutorClient<ST, SCT, SBT, CCT, CRT>
 where
@@ -71,6 +120,10 @@ where
         >,
     >,
     forwarded_tx: tokio::sync::mpsc::Sender<Vec<ForwardedTxs<SCT>>>,
+    score_provider: ScoreProvider<NodeId<CertificateSignaturePubKey<ST>>, StdClock>,
+    forwarded_ingress:
+        FairQueue<ScoreReader<NodeId<CertificateSignaturePubKey<ST>>, StdClock>, Bytes>,
+    pending_forwarded_send: Option<PendingForwardedSend<SCT>>,
     event_rx: tokio::sync::mpsc::Receiver<MonadEvent<ST, SCT, EthExecutionProtocol>>,
 }
 
@@ -104,6 +157,8 @@ where
             + Send
             + 'static,
         update_metrics: Box<dyn Fn(&mut ExecutorMetrics) + Send + 'static>,
+        score_provider: ScoreProvider<NodeId<CertificateSignaturePubKey<ST>>, StdClock>,
+        score_reader: ScoreReader<NodeId<CertificateSignaturePubKey<ST>>, StdClock>,
     ) -> Self
     where
         F: Future<Output = ()> + Send + 'static,
@@ -111,6 +166,8 @@ where
         Self::new_with_buffer_sizes(
             updater,
             update_metrics,
+            score_provider,
+            score_reader,
             DEFAULT_COMMAND_BUFFER_SIZE,
             DEFAULT_FORWARDED_BUFFER_SIZE,
             DEFAULT_EVENT_BUFFER_SIZE,
@@ -138,6 +195,8 @@ where
             + Send
             + 'static,
         update_metrics: Box<dyn Fn(&mut ExecutorMetrics) + Send + 'static>,
+        score_provider: ScoreProvider<NodeId<CertificateSignaturePubKey<ST>>, StdClock>,
+        score_reader: ScoreReader<NodeId<CertificateSignaturePubKey<ST>>, StdClock>,
         command_buffer_size: usize,
         forwarded_buffer_size: usize,
         event_buffer_size: usize,
@@ -158,6 +217,14 @@ where
 
             command_tx,
             forwarded_tx,
+            score_provider,
+            forwarded_ingress: FairQueueBuilder::new()
+                .per_id_limit(10_000)
+                .max_size(100_000)
+                .regular_max_size(100_000)
+                .regular_bandwidth_pct(10)
+                .build(score_reader),
+            pending_forwarded_send: None,
             event_rx,
         }
     }
@@ -177,6 +244,90 @@ where
 
         if self.event_rx.is_closed() {
             panic!("EthTxPoolExecutorClient event_tx dropped!");
+        }
+    }
+
+    fn enqueue_forwarded(&mut self, forwarded: Vec<ForwardedTxs<SCT>>) {
+        for ForwardedTxs { sender, txs } in forwarded {
+            let txs_len = txs.len();
+            for (index, tx) in txs.into_iter().enumerate() {
+                if let Err(err) = self.forwarded_ingress.push(sender, tx) {
+                    let total_dropped = (txs_len - index) as u64;
+                    self.metrics[COUNTER_TXPOOL_FORWARDED_INGRESS_DROPPED_TXS] += total_dropped;
+                    self.metrics[COUNTER_TXPOOL_FORWARDED_INGRESS_DROP_EVENTS] += 1;
+                    tracing::debug!(
+                        ?sender,
+                        error = %err,
+                        dropped_txs = total_dropped,
+                        "forwarded ingress queue full, dropping remaining txs for sender"
+                    );
+                    break;
+                }
+
+                self.metrics[COUNTER_TXPOOL_FORWARDED_INGRESS_ENQUEUED_TXS] += 1;
+            }
+        }
+    }
+
+    fn pop_forwarded_batch(&mut self) -> Vec<ForwardedTxs<SCT>> {
+        let mut batch = Vec::with_capacity(INGRESS_CHUNK_MAX_SIZE);
+        while batch.len() < INGRESS_CHUNK_MAX_SIZE {
+            let Some((sender, tx)) = self.forwarded_ingress.pop() else {
+                break;
+            };
+            batch.push(ForwardedTxs {
+                sender,
+                txs: vec![tx],
+            });
+        }
+        batch
+    }
+
+    fn poll_pending_forwarded_send(&mut self, cx: &mut std::task::Context<'_>) -> bool {
+        let Some(pending) = self.pending_forwarded_send.as_mut() else {
+            return false;
+        };
+
+        match pending.permit_fut.as_mut().poll(cx) {
+            Poll::Ready(Ok(permit)) => {
+                let batch = pending
+                    .batch
+                    .take()
+                    .expect("forwarded batch must be present");
+                self.metrics[COUNTER_TXPOOL_FORWARDED_INGRESS_SENT_BATCHES] += 1;
+                self.metrics[COUNTER_TXPOOL_FORWARDED_INGRESS_SENT_TXS] += batch.len() as u64;
+                permit.send(batch);
+                self.pending_forwarded_send = None;
+                true
+            }
+            Poll::Ready(Err(_)) => {
+                panic!("EthTxPoolExecutorClient forwarded_rx dropped!");
+            }
+            Poll::Pending => false,
+        }
+    }
+
+    fn poll_forwarded_send(&mut self, cx: &mut std::task::Context<'_>) {
+        if self.poll_pending_forwarded_send(cx) {
+            if !self.forwarded_ingress.is_empty() {
+                cx.waker().wake_by_ref();
+            }
+            return;
+        }
+
+        if self.pending_forwarded_send.is_some() || self.forwarded_ingress.is_empty() {
+            return;
+        }
+
+        let batch = self.pop_forwarded_batch();
+        if batch.is_empty() {
+            return;
+        }
+        self.pending_forwarded_send =
+            Some(PendingForwardedSend::new(self.forwarded_tx.clone(), batch));
+
+        if self.poll_pending_forwarded_send(cx) && !self.forwarded_ingress.is_empty() {
+            cx.waker().wake_by_ref();
         }
     }
 }
@@ -218,17 +369,12 @@ where
         }
 
         if !forwarded.is_empty() {
-            if let Err(err) = self.forwarded_tx.try_send(forwarded) {
-                warn!(
-                    ?err,
-                    "txpool executor client forwarded channel full, dropping forwarded txs"
-                );
-            }
+            self.enqueue_forwarded(forwarded);
         }
     }
 
     fn metrics(&self) -> ExecutorMetricsChain<'_> {
-        ExecutorMetricsChain::from(&self.metrics)
+        ExecutorMetricsChain::from(&self.metrics).push(self.forwarded_ingress.executor_metrics())
     }
 }
 
@@ -252,7 +398,47 @@ where
         this.verify_handle_liveness();
 
         (this.update_metrics)(&mut this.metrics);
+        this.poll_forwarded_send(cx);
 
-        this.event_rx.poll_recv(cx)
+        match this.event_rx.poll_recv(cx) {
+            Poll::Ready(Some(MonadEvent::MempoolEvent(MempoolEvent::ProposalWithScores {
+                epoch,
+                round,
+                seq_num,
+                high_qc,
+                timestamp_ns,
+                round_signature,
+                base_fee,
+                base_fee_trend,
+                base_fee_moment,
+                delayed_execution_results,
+                proposed_execution_inputs,
+                last_round_tc,
+                fresh_proposal_certificate,
+                forwarded_senders_with_gas,
+            }))) => {
+                for forwarded_sender in forwarded_senders_with_gas {
+                    this.score_provider
+                        .record_contribution(forwarded_sender.sender, forwarded_sender.gas);
+                }
+
+                Poll::Ready(Some(MonadEvent::MempoolEvent(MempoolEvent::Proposal {
+                    epoch,
+                    round,
+                    seq_num,
+                    high_qc,
+                    timestamp_ns,
+                    round_signature,
+                    base_fee,
+                    base_fee_trend,
+                    base_fee_moment,
+                    delayed_execution_results,
+                    proposed_execution_inputs,
+                    last_round_tc,
+                    fresh_proposal_certificate,
+                })))
+            }
+            other => other,
+        }
     }
 }

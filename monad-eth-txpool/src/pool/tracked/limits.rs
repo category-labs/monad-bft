@@ -19,7 +19,7 @@ use alloy_primitives::Address;
 use indexmap::IndexMap;
 use tracing::{error, info};
 
-use crate::pool::transaction::PoolTx;
+use crate::pool::transaction::ValidEthTransaction;
 
 // To produce 5k tx blocks, we need the tracked tx map to hold at least 15k addresses so that, after
 // pruning the txpool of up to 5k unique addresses in the last committed block update and up to 5k
@@ -54,15 +54,13 @@ impl TrackedTxLimitsConfig {
         soft_tx_expiry: Duration,
         hard_tx_expiry: Duration,
     ) -> Self {
-        let max_addresses = max_addresses.unwrap_or(DEFAULT_MAX_ADDRESSES);
-
         Self {
-            max_addresses,
+            max_addresses: max_addresses.unwrap_or(DEFAULT_MAX_ADDRESSES),
             max_txs: max_txs.unwrap_or(DEFAULT_MAX_TXS),
             max_eip2718_bytes: max_eip2718_bytes.unwrap_or(DEFAULT_MAX_EIP2718_BYTES),
 
             soft_evict_addresses_watermark: soft_evict_addresses_watermark
-                .unwrap_or_else(|| max_addresses.saturating_sub(512)),
+                .unwrap_or(DEFAULT_MAX_ADDRESSES - 512),
 
             soft_tx_expiry,
             hard_tx_expiry,
@@ -112,12 +110,12 @@ impl TrackedTxLimits {
             || self.eip2718_bytes > self.config.max_eip2718_bytes
     }
 
-    pub fn add_tx(&mut self, tx: &PoolTx) {
+    pub fn add_tx<N>(&mut self, tx: &ValidEthTransaction<N>) {
         self.txs += 1;
         self.eip2718_bytes += tx.raw().eip2718_encoded_length() as u64;
     }
 
-    pub fn remove_tx(&mut self, tx: &PoolTx) {
+    pub fn remove_tx<N>(&mut self, tx: &ValidEthTransaction<N>) {
         self.txs = self.txs.checked_sub(1).unwrap_or_else(|| {
             error!("txpool txs limit underflowed, detected during remove_tx");
             0
@@ -132,7 +130,7 @@ impl TrackedTxLimits {
             });
     }
 
-    pub fn remove_txs<'a>(&mut self, txs: impl Iterator<Item = &'a PoolTx>) {
+    pub fn remove_txs<'a, N: 'a>(&mut self, txs: impl Iterator<Item = &'a ValidEthTransaction<N>>) {
         for tx in txs {
             self.remove_tx(tx)
         }

@@ -37,11 +37,9 @@ use monad_consensus_types::{
     payload::{ConsensusBlockBody, ConsensusBlockBodyInner, RoundSignature},
     quorum_certificate::QuorumCertificate,
 };
-use monad_crypto::{
-    certificate_signature::{
-        CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
-    },
-    NopKeyPair, NopSignature,
+use monad_crypto::certificate_signature::{
+    CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
+    CertificateSignatureRecoverable,
 };
 use monad_eth_block_policy::{
     compute_txn_max_gas_cost,
@@ -354,13 +352,18 @@ pub fn compute_expected_nonce_usages(txs: &[Recovered<TxEnvelope>]) -> NonceUsag
     compute_expected_txn_fees_and_nonce_usages(txs).1
 }
 
-pub fn generate_consensus_test_block(
+pub fn generate_consensus_test_block<ST>(
     round: Round,
     seq_num: SeqNum,
     base_fee: u64,
     chain_config: &MockChainConfig,
     txs: Vec<Recovered<TxEnvelope>>,
-) -> ConsensusTestBlock<NopSignature, MockSignatures<NopSignature>> {
+) -> ConsensusTestBlock<ST, MockSignatures<ST>>
+where
+    ST: CertificateSignatureRecoverable,
+    MockSignatures<ST>:
+        SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>, SignatureType = ST>,
+{
     let chain_params = chain_config.get_chain_revision(round).chain_params();
 
     let body = ConsensusBlockBody::new(ConsensusBlockBodyInner {
@@ -371,7 +374,10 @@ pub fn generate_consensus_test_block(
         },
     });
 
-    let keypair = NopKeyPair::from_bytes(rand::random::<[u8; 32]>().as_mut_slice()).unwrap();
+    let keypair = <ST as CertificateSignature>::KeyPairType::from_bytes(
+        rand::random::<[u8; 32]>().as_mut_slice(),
+    )
+    .unwrap();
 
     let signature = RoundSignature::new(round, &keypair);
 
@@ -433,13 +439,18 @@ pub fn generate_consensus_test_block(
     }
 }
 
-pub fn generate_block_with_txs(
+pub fn generate_block_with_txs<ST>(
     round: Round,
     seq_num: SeqNum,
     base_fee: u64,
     chain_config: &MockChainConfig,
     txs: Vec<Recovered<TxEnvelope>>,
-) -> EthValidatedBlock<NopSignature, MockSignatures<NopSignature>> {
+) -> EthValidatedBlock<ST, MockSignatures<ST>>
+where
+    ST: CertificateSignatureRecoverable,
+    MockSignatures<ST>:
+        SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>, SignatureType = ST>,
+{
     let test_block = generate_consensus_test_block(round, seq_num, base_fee, chain_config, txs);
 
     EthValidatedBlock {

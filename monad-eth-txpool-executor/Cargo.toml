@@ -15,6 +15,8 @@ monad-crypto = { workspace = true }
 monad-eth-block-policy = { workspace = true }
 monad-eth-txpool = { workspace = true }
 monad-eth-txpool-ipc = { workspace = true }
+monad-fair-queue = { workspace = true }
+monad-peer-score = { workspace = true }
 monad-eth-txpool-types = { workspace = true }
 monad-eth-types = { workspace = true }
 monad-executor = { workspace = true }
@@ -40,6 +42,7 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 monad-eth-testutil = { workspace = true }
+monad-peer-score = { workspace = true, features = ["test-utils"] }
 monad-testutil = { workspace = true }
 
 alloy-primitives = { workspace = true }

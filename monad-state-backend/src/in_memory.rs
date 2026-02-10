@@ -81,6 +81,10 @@ impl InMemoryBlockState {
             nonces,
         }
     }
+
+    pub fn get_nonce(&self, address: &Address) -> Option<Nonce> {
+        self.nonces.get(address).copied()
+    }
 }
 
 impl<ST, SCT> InMemoryStateInner<ST, SCT>

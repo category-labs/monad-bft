@@ -28,7 +28,7 @@ use monad_tfm::base_fee::MIN_BASE_FEE;
 use monad_types::Nonce;
 use tracing::error;
 
-use super::{limits::TrackedTxLimits, PoolTx};
+use super::{limits::TrackedTxLimits, ValidEthTransaction};
 use crate::{pool::tracked::priority::Priority, EthTxPoolEventTracker};
 
 /// Stores byte-validated transactions alongside the an account_nonce to enforce at the type level
@@ -36,19 +36,19 @@ use crate::{pool::tracked::priority::Priority, EthTxPoolEventTracker};
 /// PendingTxList, this struct also enforces non-emptyness in the txs map to guarantee that
 /// TrackedTxMap has a transaction for every address.
 #[derive(Clone, Debug, Default)]
-pub struct TrackedTxList {
+pub struct TrackedTxList<N> {
     account_nonce: Nonce,
-    txs: BTreeMap<Nonce, (PoolTx, Instant)>,
+    txs: BTreeMap<Nonce, (ValidEthTransaction<N>, Instant)>,
 }
 
-impl TrackedTxList {
+impl<N> TrackedTxList<N> {
     pub fn try_new(
         this_entry: VacantEntry<'_, Address, Self>,
         event_tracker: &mut EthTxPoolEventTracker<'_>,
         limit_tracker: &mut TrackedTxLimits,
-        txs: Vec<PoolTx>,
+        txs: Vec<ValidEthTransaction<N>>,
         account_nonce: u64,
-        on_insert: &mut impl FnMut(&PoolTx),
+        on_insert: &mut impl FnMut(&ValidEthTransaction<N>),
         last_commit_base_fee: u64,
     ) {
         let mut this = TrackedTxList {
@@ -71,11 +71,11 @@ impl TrackedTxList {
         this_entry.insert(this);
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = &PoolTx> {
+    pub fn iter(&self) -> impl Iterator<Item = &ValidEthTransaction<N>> {
         self.txs.values().map(|(tx, _)| tx)
     }
 
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut PoolTx> {
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut ValidEthTransaction<N>> {
         self.txs.values_mut().map(|(tx, _)| tx)
     }
 
@@ -107,7 +107,7 @@ impl TrackedTxList {
     pub fn get_queued(
         &self,
         pending_nonce_usage: Option<NonceUsage>,
-    ) -> impl Iterator<Item = &PoolTx> {
+    ) -> impl Iterator<Item = &ValidEthTransaction<N>> {
         let mut account_nonce = pending_nonce_usage
             .map_or(self.account_nonce, |pending_nonce_usage| {
                 pending_nonce_usage.apply_to_account_nonce(self.account_nonce)
@@ -131,9 +131,9 @@ impl TrackedTxList {
         &mut self,
         event_tracker: &mut EthTxPoolEventTracker<'_>,
         limit_tracker: &mut TrackedTxLimits,
-        tx: PoolTx,
+        tx: ValidEthTransaction<N>,
         last_commit_base_fee: u64,
-    ) -> Option<&PoolTx> {
+    ) -> Option<&ValidEthTransaction<N>> {
         if tx.nonce() < self.account_nonce {
             event_tracker.drop(tx.hash(), EthTxPoolDropReason::NonceTooLow);
             return None;
@@ -175,7 +175,7 @@ impl TrackedTxList {
     pub fn update_committed_nonce_usage(
         event_tracker: &mut EthTxPoolEventTracker<'_>,
         limit_tracker: &mut TrackedTxLimits,
-        mut this: indexmap::map::OccupiedEntry<'_, Address, Self>,
+        mut this: indexmap::map::OccupiedEntry<'_, Address, TrackedTxList<N>>,
         nonce_usage: NonceUsage,
     ) -> bool {
         let account_nonce = nonce_usage.apply_to_account_nonce(this.get().account_nonce);
@@ -213,9 +213,12 @@ impl TrackedTxList {
     pub fn evict_expired_txs(
         event_tracker: &mut EthTxPoolEventTracker<'_>,
         limit_tracker: &mut TrackedTxLimits,
-        mut this: indexmap::map::IndexedEntry<'_, Address, Self>,
+        mut this: indexmap::map::IndexedEntry<'_, Address, TrackedTxList<N>>,
         tx_expiry: Duration,
-    ) -> bool {
+    ) -> bool
+    where
+        N: Clone,
+    {
         let now = Instant::now();
 
         let txs = &mut this.get_mut().txs;
@@ -232,7 +235,10 @@ impl TrackedTxList {
         });
 
         limit_tracker.remove_txs(removed_txs.iter());
-        event_tracker.tracked_evict_expired(txs.is_empty(), removed_txs.iter().map(PoolTx::hash));
+        event_tracker.tracked_evict_expired(
+            txs.is_empty(),
+            removed_txs.iter().map(ValidEthTransaction::hash),
+        );
 
         if txs.is_empty() {
             this.swap_remove();
@@ -274,7 +280,7 @@ impl TrackedTxList {
     pub(crate) fn evict_pool_full(
         event_tracker: &mut EthTxPoolEventTracker<'_>,
         limit_tracker: &mut TrackedTxLimits,
-        this: indexmap::map::OccupiedEntry<'_, Address, Self>,
+        this: indexmap::map::OccupiedEntry<'_, Address, TrackedTxList<N>>,
     ) {
         let this = this.swap_remove();
 

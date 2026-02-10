@@ -56,9 +56,9 @@ use monad_crypto::certificate_signature::{
 use monad_executor_glue::{
     BlockSyncEvent, ClearMetrics, Command, ConfigEvent, ConfigFileCommand, ConfigReloadCommand,
     ConsensusEvent, ControlPanelCommand, ControlPanelEvent, GetFullNodes, GetMetrics, GetPeers,
-    LedgerCommand, MempoolEvent, Message, MonadEvent, ReadCommand, ReloadConfig, RouterCommand,
-    StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage, StateSyncRequest, TxPoolCommand,
-    ValSetCommand, ValidatorEvent, WriteCommand,
+    LedgerCommand, MempoolEvent, Message, MonadEvent, OutboundForwardTxs, ReadCommand,
+    ReloadConfig, RouterCommand, StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage,
+    StateSyncRequest, TxPoolCommand, ValSetCommand, ValidatorEvent, WriteCommand,
 };
 use monad_state_backend::StateBackend;
 use monad_types::{
@@ -586,6 +586,17 @@ where
 {
     fn from(value: Verified<ST, Validated<ConsensusMessage<ST, SCT, EPT>>>) -> Self {
         Self::Consensus(value)
+    }
+}
+
+impl<ST, SCT, EPT> OutboundForwardTxs for VerifiedMonadMessage<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    fn forward_txs(txs: Vec<Bytes>) -> Self {
+        Self::ForwardedTx(txs)
     }
 }
 
@@ -1319,6 +1330,18 @@ where
                     ))
                 }
                 cmds
+            }
+            MonadEvent::LeanUdpTx { sender, tx } => {
+                vec![Command::TxPoolCommand(TxPoolCommand::InsertForwardedTxs {
+                    sender: NodeId::new(sender),
+                    txs: vec![alloy_rlp::encode(&tx).into()],
+                })]
+            }
+            MonadEvent::LeanUdpForwardTxs { sender, txs } => {
+                vec![Command::TxPoolCommand(TxPoolCommand::InsertForwardedTxs {
+                    sender: NodeId::new(sender),
+                    txs,
+                })]
             }
         }
     }

@@ -36,11 +36,11 @@ pub(super) struct PriorityMap {
 }
 
 impl PriorityMap {
-    pub fn update_priority(
+    pub fn update_priority<N>(
         &mut self,
         event_tracker: &EthTxPoolEventTracker<'_>,
         address: Address,
-        tx_list: &TrackedTxList,
+        tx_list: &TrackedTxList<N>,
     ) {
         let time = if let Some((stale_priority, time)) = self.by_address.remove(&address) {
             if !self.sorted.remove(&(stale_priority, time, address)) {

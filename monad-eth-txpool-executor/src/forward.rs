@@ -17,7 +17,6 @@ use std::{
     collections::VecDeque,
     pin::Pin,
     task::{Context, Poll, Waker},
-    time::Duration,
 };
 
 use alloy_consensus::TxEnvelope;
@@ -30,43 +29,35 @@ use monad_crypto::certificate_signature::{
 };
 use monad_eth_txpool::{max_eip2718_encoded_length, EthTxPool};
 use monad_eth_types::ExtractEthAddress;
+use monad_executor_glue::TX_FORWARD_RAW_MAX_SIZE_BYTES;
 use monad_state_backend::StateBackend;
 use monad_validator::signature_collection::SignatureCollection;
 use pin_project::pin_project;
-use tracing::{debug, error};
+use tracing::{error, warn};
 
 const EGRESS_MIN_COMMITTED_SEQ_NUM_DIFF: u64 = 5;
 const EGRESS_MAX_RETRIES: usize = 3;
 
 const INGRESS_CHUNK_MAX_SIZE: usize = 128;
-const INGRESS_CHUNK_INTERVAL_MS: u64 = 8;
-const INGRESS_MAX_SIZE: usize = 8 * 1024;
+const INGRESS_MAX_SIZE: usize = INGRESS_CHUNK_MAX_SIZE;
 
 pub fn egress_max_size_bytes(execution_params: &ExecutionChainParams) -> usize {
-    max_eip2718_encoded_length(execution_params)
+    max_eip2718_encoded_length(execution_params).min(TX_FORWARD_RAW_MAX_SIZE_BYTES)
 }
 
 #[pin_project(project = EthTxPoolForwardingManagerProjected)]
-pub struct EthTxPoolForwardingManager {
-    ingress: VecDeque<TxEnvelope>,
-    #[pin]
-    ingress_timer: tokio::time::Interval,
+pub struct EthTxPoolForwardingManager<N> {
+    ingress: VecDeque<(TxEnvelope, N)>,
     ingress_waker: Option<Waker>,
 
     egress: VecDeque<Bytes>,
     egress_waker: Option<Waker>,
 }
 
-impl Default for EthTxPoolForwardingManager {
+impl<N> Default for EthTxPoolForwardingManager<N> {
     fn default() -> Self {
-        let mut ingress_timer =
-            tokio::time::interval(Duration::from_millis(INGRESS_CHUNK_INTERVAL_MS));
-
-        ingress_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-
         Self {
             ingress: VecDeque::default(),
-            ingress_timer,
             ingress_waker: None,
 
             egress: VecDeque::default(),
@@ -75,11 +66,14 @@ impl Default for EthTxPoolForwardingManager {
     }
 }
 
-impl EthTxPoolForwardingManager {
-    pub fn poll_ingress(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Vec<TxEnvelope>> {
+impl<N> EthTxPoolForwardingManager<N> {
+    pub fn ingress_is_empty(&self) -> bool {
+        self.ingress.is_empty()
+    }
+
+    pub fn poll_ingress(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Vec<(TxEnvelope, N)>> {
         let EthTxPoolForwardingManagerProjected {
             ingress,
-            mut ingress_timer,
             ingress_waker,
             ..
         } = self.project();
@@ -91,10 +85,6 @@ impl EthTxPoolForwardingManager {
             }
             return Poll::Pending;
         }
-
-        let Poll::Ready(_) = ingress_timer.poll_tick(cx) else {
-            return Poll::Pending;
-        };
 
         Poll::Ready(
             ingress
@@ -161,12 +151,12 @@ impl EthTxPoolForwardingManager {
     }
 
     pub fn complete_ingress(self: Pin<&mut Self>) {
-        self.get_mut().ingress_timer.reset();
+        let _ = self;
     }
 }
 
-impl EthTxPoolForwardingManagerProjected<'_> {
-    pub fn add_ingress_txs(&mut self, txs: Vec<TxEnvelope>) {
+impl<'a, N: Clone> EthTxPoolForwardingManagerProjected<'a, N> {
+    pub fn add_ingress_txs(&mut self, sender: N, txs: Vec<TxEnvelope>) {
         let Self {
             ingress,
             ingress_waker,
@@ -174,11 +164,11 @@ impl EthTxPoolForwardingManagerProjected<'_> {
         } = self;
 
         let capacity_remaining = INGRESS_MAX_SIZE.saturating_sub(ingress.len());
-
         let dropped = txs.len().saturating_sub(capacity_remaining);
 
         if dropped > 0 {
-            debug!(
+            warn!(
+                ingress_len = ingress.len(),
                 capacity =? INGRESS_MAX_SIZE,
                 ?capacity_remaining,
                 ?dropped,
@@ -186,7 +176,11 @@ impl EthTxPoolForwardingManagerProjected<'_> {
             )
         }
 
-        ingress.extend(txs.into_iter().take(capacity_remaining));
+        ingress.extend(
+            txs.into_iter()
+                .take(capacity_remaining)
+                .map(|tx| (tx, sender.clone())),
+        );
 
         if ingress.is_empty() {
             return;
@@ -197,7 +191,7 @@ impl EthTxPoolForwardingManagerProjected<'_> {
         }
     }
 
-    pub fn add_egress_txs<'a>(&mut self, txs: impl Iterator<Item = &'a TxEnvelope>) {
+    pub fn add_egress_txs<'b>(&mut self, txs: impl Iterator<Item = &'b TxEnvelope>) {
         let Self {
             egress,
             egress_waker,
@@ -252,15 +246,16 @@ mod test {
     use monad_eth_testutil::{make_eip1559_tx, make_eip7702_tx, make_legacy_tx, S1};
 
     use crate::forward::{
-        egress_max_size_bytes, EthTxPoolForwardingManager, INGRESS_CHUNK_INTERVAL_MS,
-        INGRESS_CHUNK_MAX_SIZE,
+        egress_max_size_bytes, EthTxPoolForwardingManager, INGRESS_CHUNK_MAX_SIZE,
     };
 
     const EXECUTION_REVISION: MonadExecutionRevision = MonadExecutionRevision::LATEST;
 
     const BASE_FEE_PER_GAS: u128 = 100_000_000_000; // 100 Gwei
 
-    fn setup<'a>() -> (EthTxPoolForwardingManager, Context<'a>) {
+    type TestNodeId = u64;
+
+    fn setup<'a>() -> (EthTxPoolForwardingManager<TestNodeId>, Context<'a>) {
         (
             EthTxPoolForwardingManager::default(),
             Context::from_waker(noop_waker_ref()),
@@ -272,7 +267,7 @@ mod test {
     }
 
     async fn assert_pending_now_and_forever(
-        mut forwarding_manager: Pin<&mut EthTxPoolForwardingManager>,
+        mut forwarding_manager: Pin<&mut EthTxPoolForwardingManager<TestNodeId>>,
         mut cx: Context<'_>,
     ) {
         assert_eq!(
@@ -326,11 +321,12 @@ mod test {
             forwarding_manager
                 .as_mut()
                 .project()
-                .add_ingress_txs(txs.clone());
+                .add_ingress_txs(0, txs.clone());
 
+            let expected: Vec<_> = txs.into_iter().map(|tx| (tx, 0)).collect();
             assert_eq!(
                 forwarding_manager.as_mut().poll_ingress(&mut cx),
-                Poll::Ready(txs.clone())
+                Poll::Ready(expected)
             );
 
             assert_pending_now_and_forever(forwarding_manager, cx).await;
@@ -348,15 +344,16 @@ mod test {
         );
 
         let txs = vec![generate_tx(0)];
+        let expected: Vec<_> = txs.iter().cloned().map(|tx| (tx, 0)).collect();
 
         forwarding_manager
             .as_mut()
             .project()
-            .add_ingress_txs(txs.clone());
+            .add_ingress_txs(0, txs.clone());
 
         assert_eq!(
             forwarding_manager.as_mut().poll_ingress(&mut cx),
-            Poll::Ready(txs.clone())
+            Poll::Ready(expected.clone())
         );
         assert_eq!(
             forwarding_manager.as_mut().poll_ingress(&mut cx),
@@ -366,30 +363,11 @@ mod test {
         forwarding_manager
             .as_mut()
             .project()
-            .add_ingress_txs(txs.clone());
+            .add_ingress_txs(0, txs.clone());
 
-        // Since time is frozen and we just polled, the forwarding manager should wait its interval
-        // even though it should be "empty"
         assert_eq!(
             forwarding_manager.as_mut().poll_ingress(&mut cx),
-            Poll::Pending
-        );
-
-        tokio::time::advance(
-            Duration::from_millis(INGRESS_CHUNK_INTERVAL_MS)
-                .checked_sub(Duration::from_nanos(1))
-                .unwrap(),
-        )
-        .await;
-        assert_eq!(
-            forwarding_manager.as_mut().poll_ingress(&mut cx),
-            Poll::Pending
-        );
-
-        tokio::time::advance(Duration::from_nanos(1)).await;
-        assert_eq!(
-            forwarding_manager.as_mut().poll_ingress(&mut cx),
-            Poll::Ready(txs.clone())
+            Poll::Ready(expected)
         );
 
         assert_pending_now_and_forever(forwarding_manager, cx).await;
@@ -405,47 +383,32 @@ mod test {
             Poll::Pending
         );
 
-        const NUM_CHUNKS: usize = 16;
+        forwarding_manager.as_mut().project().add_ingress_txs(
+            0,
+            (0..2 * INGRESS_CHUNK_MAX_SIZE as u64)
+                .map(generate_tx)
+                .collect_vec(),
+        );
 
-        // We insert the last tx below to test adding to an existing chunk
-        const NUM_TXS: usize = INGRESS_CHUNK_MAX_SIZE * NUM_CHUNKS - 1;
+        let Poll::Ready(txs_with_senders) = forwarding_manager.as_mut().poll_ingress(&mut cx)
+        else {
+            panic!("forwarding manager should be ready");
+        };
 
-        forwarding_manager
-            .as_mut()
-            .project()
-            .add_ingress_txs((0..NUM_TXS as u64).map(generate_tx).collect_vec());
+        assert_eq!(txs_with_senders.len(), INGRESS_CHUNK_MAX_SIZE);
 
-        for chunk_num in 0..NUM_CHUNKS {
-            tokio::time::advance(Duration::from_millis(INGRESS_CHUNK_INTERVAL_MS)).await;
-
-            if chunk_num + 1 == NUM_CHUNKS {
-                forwarding_manager
-                    .as_mut()
-                    .project()
-                    .add_ingress_txs(vec![generate_tx(0)]);
-            }
-
-            let Poll::Ready(txs) = forwarding_manager.as_mut().poll_ingress(&mut cx) else {
-                panic!("forwarding manager should be ready after each iteration");
-            };
-
-            assert_eq!(txs.len(), INGRESS_CHUNK_MAX_SIZE);
-
-            // Check that txs are produced in the same order they are inserted
-            txs.into_iter().enumerate().for_each(|(idx, tx)| {
-                // By using % NUM_TXS, we can check that the last tx is the 0 nonce added above when
-                // we're at the last chunk
-                assert_eq!(
-                    tx.nonce(),
-                    ((idx + chunk_num * INGRESS_CHUNK_MAX_SIZE) as u64) % (NUM_TXS as u64)
-                );
+        // Only the first chunk is kept when overfilled.
+        txs_with_senders
+            .into_iter()
+            .enumerate()
+            .for_each(|(idx, (tx, _sender))| {
+                assert_eq!(tx.nonce(), idx as u64);
             });
 
-            assert_eq!(
-                forwarding_manager.as_mut().poll_ingress(&mut cx),
-                Poll::Pending
-            );
-        }
+        assert_eq!(
+            forwarding_manager.as_mut().poll_ingress(&mut cx),
+            Poll::Pending
+        );
 
         assert_pending_now_and_forever(forwarding_manager, cx).await;
     }
@@ -461,40 +424,33 @@ mod test {
         );
 
         forwarding_manager.as_mut().project().add_ingress_txs(
+            0,
             (0..2 * INGRESS_CHUNK_MAX_SIZE as u64)
                 .map(generate_tx)
                 .collect_vec(),
         );
 
-        let Poll::Ready(txs) = forwarding_manager.as_mut().poll_ingress(&mut cx) else {
+        let Poll::Ready(txs_with_senders) = forwarding_manager.as_mut().poll_ingress(&mut cx)
+        else {
             panic!("forwarding manager should be ready");
         };
-        assert_eq!(txs.len(), INGRESS_CHUNK_MAX_SIZE);
-
-        tokio::time::advance(Duration::from_millis(1)).await;
-
+        assert_eq!(txs_with_senders.len(), INGRESS_CHUNK_MAX_SIZE);
         forwarding_manager.as_mut().complete_ingress();
 
-        tokio::time::advance(
-            Duration::from_millis(INGRESS_CHUNK_INTERVAL_MS)
-                .checked_sub(Duration::from_millis(1))
-                .unwrap(),
-        )
-        .await;
-
-        // Even though we have advanced INGRESS_CHUNK_INTERVAL_MS, the forwarding manager should
-        // wait an additional 1ms since complete_ingress was called 1ms after the poll.
-        assert_eq!(
-            forwarding_manager.as_mut().poll_ingress(&mut cx),
-            Poll::Pending
+        // Ingress completion is a no-op with single-chunk no-buffer ingress.
+        forwarding_manager.as_mut().project().add_ingress_txs(
+            0,
+            (0..INGRESS_CHUNK_MAX_SIZE as u64)
+                .map(generate_tx)
+                .collect_vec(),
         );
-
-        tokio::time::advance(Duration::from_millis(1)).await;
-
-        let Poll::Ready(txs) = forwarding_manager.as_mut().poll_ingress(&mut cx) else {
-            panic!("forwarding manager should be ready");
-        };
-        assert_eq!(txs.len(), INGRESS_CHUNK_MAX_SIZE);
+        assert_eq!(
+            forwarding_manager
+                .as_mut()
+                .poll_ingress(&mut cx)
+                .map(|txs| txs.len()),
+            Poll::Ready(INGRESS_CHUNK_MAX_SIZE)
+        );
 
         assert_pending_now_and_forever(forwarding_manager, cx).await;
     }
@@ -527,31 +483,32 @@ mod test {
             .project()
             .add_egress_txs(egress_txs.iter());
 
-        let Poll::Ready(first_batch) = forwarding_manager
-            .as_mut()
-            .poll_egress(EXECUTION_REVISION.execution_chain_params(), &mut cx)
-        else {
-            panic!("first poll should be ready");
-        };
+        let mut total_batches = 0usize;
+        let mut total_txs = 0usize;
+        let mut total_size_forwarded = 0usize;
+        let egress_cap = egress_max_size_bytes(EXECUTION_REVISION.execution_chain_params());
 
-        let first_batch_size: usize = first_batch.iter().map(|b| b.len()).sum();
-        assert!(
-            first_batch_size <= egress_max_size_bytes(EXECUTION_REVISION.execution_chain_params())
-        );
-        assert!(!first_batch.is_empty());
+        loop {
+            match forwarding_manager
+                .as_mut()
+                .poll_egress(EXECUTION_REVISION.execution_chain_params(), &mut cx)
+            {
+                Poll::Ready(batch) => {
+                    let batch_size: usize = batch.iter().map(|b| b.len()).sum();
+                    assert!(batch_size <= egress_cap);
+                    assert!(!batch.is_empty());
 
-        let Poll::Ready(second_batch) = forwarding_manager
-            .as_mut()
-            .poll_egress(EXECUTION_REVISION.execution_chain_params(), &mut cx)
-        else {
-            panic!("second poll should be ready");
-        };
+                    total_batches += 1;
+                    total_txs += batch.len();
+                    total_size_forwarded += batch_size;
+                }
+                Poll::Pending => break,
+            }
+        }
 
-        let second_batch_size: usize = second_batch.iter().map(|b| b.len()).sum();
-        assert!(!second_batch.is_empty());
-
-        assert_eq!(first_batch.len() + second_batch.len(), egress_txs.len());
-        assert_eq!(first_batch_size + second_batch_size, actual_total_size);
+        assert!(total_batches >= 1);
+        assert_eq!(total_txs, egress_txs.len());
+        assert_eq!(total_size_forwarded, actual_total_size);
 
         assert_eq!(
             forwarding_manager

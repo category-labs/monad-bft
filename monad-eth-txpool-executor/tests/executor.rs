@@ -23,7 +23,7 @@ use bytes::Bytes;
 use futures::{task::noop_waker_ref, SinkExt, StreamExt};
 use monad_chain_config::{revision::MockChainRevision, ChainConfig, MockChainConfig};
 use monad_consensus_types::block::GENESIS_TIMESTAMP;
-use monad_crypto::NopSignature;
+use monad_crypto::{NopPubKey, NopSignature};
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_testutil::{generate_block_with_txs, make_legacy_tx, secret_to_eth_address, S1};
 use monad_eth_txpool_executor::{
@@ -33,10 +33,11 @@ use monad_eth_txpool_ipc::EthTxPoolIpcClient;
 use monad_eth_txpool_types::{EthTxPoolIpcTx, EthTxPoolSnapshot};
 use monad_executor::Executor;
 use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
+use monad_peer_score::{ema, StdClock};
 use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner};
 use monad_testutil::signing::MockSignatures;
 use monad_tfm::base_fee::MIN_BASE_FEE;
-use monad_types::{Balance, SeqNum, GENESIS_ROUND, GENESIS_SEQ_NUM};
+use monad_types::{Balance, NodeId, SeqNum, GENESIS_ROUND, GENESIS_SEQ_NUM};
 
 type SignatureType = NopSignature;
 type SignatureCollectionType = MockSignatures<SignatureType>;
@@ -63,6 +64,9 @@ async fn setup_txpool_executor_with_client() -> (
     let ipc_tempdir = tempfile::tempdir().unwrap();
     let bind_path = ipc_tempdir.path().join("txpool_executor_test.socket");
 
+    let (score_provider, score_reader) =
+        ema::create::<NodeId<NopPubKey>, StdClock>(ema::ScoreConfig::default(), StdClock);
+
     let mut txpool_executor = EthTxPoolExecutor::start(
         eth_block_policy,
         state_backend,
@@ -77,6 +81,9 @@ async fn setup_txpool_executor_with_client() -> (
         MockChainConfig::DEFAULT,
         GENESIS_ROUND,
         GENESIS_TIMESTAMP as u64,
+        true,
+        score_provider,
+        score_reader,
     )
     .unwrap();
 
@@ -186,7 +193,7 @@ async fn test_ipc_full() {
 
     assert!(txpool_executor.poll_next_unpin(&mut cx).is_pending());
 
-    const TX_BYTES: usize = 256 * 1024;
+    const TX_BYTES: usize = 64 * 1024;
 
     let handle = tokio::task::spawn(async move {
         for nonce in 0.. {
@@ -210,11 +217,11 @@ async fn test_ipc_full() {
     // Wait for executor to process some events
     tokio::time::sleep(std::time::Duration::from_millis(1_000)).await;
 
-    // IPC socket is full on send side
-    assert!(txpool_executor
-        .poll_next_unpin(&mut cx)
-        .map(|result| result.unwrap())
-        .is_ready());
+    // IPC socket is full on send side and executor emits events while draining.
+    let first_event = tokio::time::timeout(Duration::from_secs(1), txpool_executor.next())
+        .await
+        .unwrap();
+    assert!(first_event.is_some());
 
     while let Poll::Ready(result) = txpool_executor.poll_next_unpin(&mut cx) {
         assert!(result.is_some());
