@@ -672,9 +672,12 @@ where
 
         let mut ipc_events = BTreeMap::default();
 
+        let mut had_forwarded = false;
+
         while let Poll::Ready(forwarded_txs_with_senders) =
             forwarding_manager.as_mut().poll_ingress(cx)
         {
+            had_forwarded = true;
             let _span =
                 debug_span!("forwarded txs", len = forwarded_txs_with_senders.len()).entered();
 
@@ -714,6 +717,10 @@ where
             );
 
             preload_manager.add_requests(inserted_addresses.iter());
+        }
+
+        if had_forwarded {
+            cx.waker().wake_by_ref();
         }
 
         while let Poll::Ready((predicted_proposal_seqnum, addresses)) =
