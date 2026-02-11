@@ -293,7 +293,7 @@ mod test {
     async fn testing_server() {
         let snapshot_event_ring = SnapshotEventRing::new_from_zstd_bytes(
             include_bytes!(
-                "../../../monad-exec-events/test/data/exec-events-emn-30b-15m/snapshot.zst"
+                "../../../monad-cxx/monad-execution/rust/crates/monad-exec-events/test/data/exec-events-emn-30b-15m/snapshot.zst"
             ),
             "TEST",
         )
@@ -320,7 +320,7 @@ mod test {
     async fn json() {
         let snapshot_event_ring = SnapshotEventRing::new_from_zstd_bytes(
             include_bytes!(
-                "../../../monad-exec-events/test/data/exec-events-emn-30b-15m/snapshot.zst"
+                "../../../monad-cxx/monad-execution/rust/crates/monad-exec-events/test/data/exec-events-emn-30b-15m/snapshot.zst"
             ),
             "TEST",
         )
@@ -349,28 +349,28 @@ mod test {
         assert_json::<_, MonadNotification<alloy_rpc_types::Header>>(
             &[&monad_header],
             include_str!(
-                "../../../monad-exec-events/test/data/exec-events-emn-30b-15m/0.monad-header.json"
+                "../../../monad-cxx/monad-execution/rust/crates/monad-exec-events/test/data/exec-events-emn-30b-15m/0.monad-header.json"
             ),
         );
 
         assert_json::<_, alloy_rpc_types::Header>(
             &[&monad_header.data, &monad_block.data.header],
             include_str!(
-                "../../../monad-exec-events/test/data/exec-events-emn-30b-15m/0.header.json"
+                "../../../monad-cxx/monad-execution/rust/crates/monad-exec-events/test/data/exec-events-emn-30b-15m/0.header.json"
             ),
         );
 
         assert_json::<_, MonadNotification<alloy_rpc_types::Block>>(
             &[&monad_block],
             include_str!(
-                "../../../monad-exec-events/test/data/exec-events-emn-30b-15m/0.monad-block.json"
+                "../../../monad-cxx/monad-execution/rust/crates/monad-exec-events/test/data/exec-events-emn-30b-15m/0.monad-block.json"
             ),
         );
 
         assert_json::<_, alloy_rpc_types::Block>(
             &[&monad_block.data],
             include_str!(
-                "../../../monad-exec-events/test/data/exec-events-emn-30b-15m/0.block.json"
+                "../../../monad-cxx/monad-execution/rust/crates/monad-exec-events/test/data/exec-events-emn-30b-15m/0.block.json"
             ),
         );
 
@@ -379,14 +379,14 @@ mod test {
         assert_json::<_, MonadNotification<alloy_rpc_types::Log>>(
             &[&monad_log],
             include_str!(
-                "../../../monad-exec-events/test/data/exec-events-emn-30b-15m/0.monad-log.0.json"
+                "../../../monad-cxx/monad-execution/rust/crates/monad-exec-events/test/data/exec-events-emn-30b-15m/0.monad-log.0.json"
             ),
         );
 
         assert_json::<_, alloy_rpc_types::Log>(
             &[&monad_log.data],
             include_str!(
-                "../../../monad-exec-events/test/data/exec-events-emn-30b-15m/0.log.0.json"
+                "../../../monad-cxx/monad-execution/rust/crates/monad-exec-events/test/data/exec-events-emn-30b-15m/0.log.0.json"
             ),
         );
     }
