@@ -1,6 +1,8 @@
 #!/bin/bash
 
-TARGET_DIR="/home/monad/monad-bft/ledger/"
+source /home/monad/.env
+MONAD_RUN_DIR=${MONAD_RUN_DIR:-/home/monad/monad-bft}
+TARGET_DIR="$MONAD_RUN_DIR/ledger/"
 
 # Retention times in minutes
 RETENTION_FORKPOINT=${RETENTION_FORKPOINT:-300}      # 5 hours (forkpoint.rlp.* and forkpoint.toml.*)
@@ -13,12 +15,12 @@ echo "Cleanup script started: RETENTION_LEDGER=${RETENTION_LEDGER}min, RETENTION
 NEW_FILES=$(find "$TARGET_DIR" -type f -name "*" -mmin -20)
 if [ -n "$NEW_FILES" ]; then
     echo "New files detected in ledger, proceeding with cleanup"
-    find /home/monad/monad-bft/config/forkpoint/ -type f -name "forkpoint.rlp.*" -mmin +${RETENTION_FORKPOINT} -delete 2>/dev/null
-    find /home/monad/monad-bft/config/forkpoint/ -type f -name "forkpoint.toml.*" -mmin +${RETENTION_FORKPOINT} -delete 2>/dev/null
-    find /home/monad/monad-bft/config/validators/ -type f -name "validators.toml.*" -mmin +${RETENTION_VALIDATORS} -delete 2>/dev/null
-    find /home/monad/monad-bft/ledger/headers -type f -mmin +${RETENTION_LEDGER} -delete 2>/dev/null
-    find /home/monad/monad-bft/ledger/bodies -type f -mmin +${RETENTION_LEDGER} -delete 2>/dev/null
-    find /home/monad/monad-bft/ -type f -name "wal_*" -mmin +${RETENTION_WAL} -delete 2>/dev/null
+    find "$MONAD_RUN_DIR/config/forkpoint/" -type f -name "forkpoint.rlp.*" -mmin +${RETENTION_FORKPOINT} -delete 2>/dev/null
+    find "$MONAD_RUN_DIR/config/forkpoint/" -type f -name "forkpoint.toml.*" -mmin +${RETENTION_FORKPOINT} -delete 2>/dev/null
+    find "$MONAD_RUN_DIR/config/validators/" -type f -name "validators.toml.*" -mmin +${RETENTION_VALIDATORS} -delete 2>/dev/null
+    find "$MONAD_RUN_DIR/ledger/headers" -type f -mmin +${RETENTION_LEDGER} -delete 2>/dev/null
+    find "$MONAD_RUN_DIR/ledger/bodies" -type f -mmin +${RETENTION_LEDGER} -delete 2>/dev/null
+    find "$MONAD_RUN_DIR" -type f -name "wal_*" -mmin +${RETENTION_WAL} -delete 2>/dev/null
     echo "Cleanup completed successfully"
 else
     echo "No new files detected. Skipping deletion of ledger files."
