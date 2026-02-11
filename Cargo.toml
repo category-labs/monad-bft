@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["monad-*"]
-exclude = ["monad-scripts"]
+exclude = ["monad-cxx", "monad-scripts"]
 
 [profile.dev]
 opt-level = 1
@@ -31,7 +31,6 @@ monad-consensus-state = { path = "./monad-consensus-state" }
 monad-consensus-types = { path = "./monad-consensus-types" }
 monad-control-panel = { path = "./monad-control-panel" }
 monad-crypto = { path = "./monad-crypto" }
-monad-cxx = { path = "./monad-cxx" }
 monad-dataplane = { path = "./monad-dataplane" }
 monad-eth-block-policy = { path = "./monad-eth-block-policy" }
 monad-eth-block-validator = { path = "./monad-eth-block-validator" }
@@ -43,8 +42,6 @@ monad-eth-txpool-ipc = { path = "./monad-eth-txpool-ipc" }
 monad-eth-txpool-types = { path = "./monad-eth-txpool-types" }
 monad-eth-types = { path = "./monad-eth-types" }
 monad-ethcall = { path = "./monad-ethcall" }
-monad-event-ring = { path = "./monad-event-ring" }
-monad-exec-events = { path = "./monad-exec-events" }
 monad-executor = { path = "./monad-executor" }
 monad-executor-glue = { path = "./monad-executor-glue" }
 monad-keystore = { path = "./monad-keystore" }
@@ -82,6 +79,10 @@ monad-validator = { path = "./monad-validator" }
 monad-version = { path = "./monad-version" }
 monad-wal = { path = "./monad-wal" }
 monad-wireauth = { path = "./monad-wireauth" }
+
+monad-cxx = { path = "./monad-cxx/monad-execution/rust/crates/monad-cxx" }
+monad-event-ring = { path = "./monad-cxx/monad-execution/rust/crates/monad-event-ring" }
+monad-exec-events = { path = "./monad-cxx/monad-execution/rust/crates/monad-exec-events" }
 
 actix = "0.13"
 actix-http = "3.11.1"
@@ -129,7 +130,6 @@ blst = "0.3.15"
 brotli = "3.4"
 byte-unit = "5.1"
 bytes = "1.5"
-cc = "1.2.27"
 chrono = "0.4.34"
 clap = "4.2"
 cmake = "0.1"
@@ -182,7 +182,6 @@ quote = "1.0.36"
 rand = "0.8"
 rand_chacha = "0.3"
 rand_distr = "0.4"
-ratatui = "0.29.0"
 rayon = "1.7"
 regex = "1.10.2"
 reqwest = { version = "0.11", features = ["json"] }
