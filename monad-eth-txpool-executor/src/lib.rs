@@ -91,6 +91,7 @@ where
     forwarding_manager:
         Pin<Box<EthTxPoolForwardingManager<NodeId<CertificateSignaturePubKey<ST>>>>>,
     preload_manager: Pin<Box<EthTxPoolPreloadManager>>,
+    forwarded_progress_notify: Arc<tokio::sync::Notify>,
 
     metrics: Arc<EthTxPoolExecutorMetrics>,
     executor_metrics: ExecutorMetrics,
@@ -163,6 +164,7 @@ where
 
                         forwarding_manager: Box::pin(EthTxPoolForwardingManager::default()),
                         preload_manager: Box::pin(EthTxPoolPreloadManager::default()),
+                        forwarded_progress_notify: Arc::new(tokio::sync::Notify::new()),
 
                         metrics,
                         executor_metrics,
@@ -206,6 +208,7 @@ where
                 .as_ref()
                 .get_ref()
                 .ingress_is_empty();
+            let forwarded_progress_notify = self.forwarded_progress_notify.clone();
 
             tokio::select! {
                 biased;
@@ -239,6 +242,8 @@ where
 
                     self.process_forwarded_txs(forwarded_txs);
                 }
+
+                _ = forwarded_progress_notify.notified(), if !can_receive_forwarded => {}
             }
         }
     }
@@ -575,6 +580,7 @@ where
 
             forwarding_manager,
             preload_manager,
+            forwarded_progress_notify,
 
             metrics,
             executor_metrics,
@@ -720,7 +726,7 @@ where
         }
 
         if had_forwarded {
-            cx.waker().wake_by_ref();
+            forwarded_progress_notify.notify_one();
         }
 
         while let Poll::Ready((predicted_proposal_seqnum, addresses)) =
