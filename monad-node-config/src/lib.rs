@@ -55,6 +55,7 @@ pub struct NodeConfig<ST: CertificateSignatureRecoverable> {
     pub ipc_max_queued_batches: u8,
     // must be <= ipc_max_queued_batches
     pub ipc_queued_batches_watermark: u8,
+    pub tx_ingestion_metrics_log_interval_seconds: Option<u64>,
 
     pub statesync_threshold: u16,
     pub statesync_max_concurrent_requests: u8,

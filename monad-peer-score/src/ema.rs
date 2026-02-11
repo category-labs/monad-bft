@@ -231,6 +231,10 @@ impl<I: Hash + Eq + Clone, C: Clock> ScoreProvider<I, C> {
         ScoreProviderMetrics(&self.metrics)
     }
 
+    pub fn executor_metrics(&self) -> &ExecutorMetrics {
+        &self.metrics
+    }
+
     pub fn record_contribution(&mut self, identity: I, gas: u64) {
         let now = self.clock.now();
         let mut state = self.state.borrow_mut();

@@ -374,7 +374,9 @@ where
     }
 
     fn metrics(&self) -> ExecutorMetricsChain<'_> {
-        ExecutorMetricsChain::from(&self.metrics).push(self.forwarded_ingress.executor_metrics())
+        ExecutorMetricsChain::from(&self.metrics)
+            .push(self.forwarded_ingress.executor_metrics())
+            .push(self.score_provider.executor_metrics())
     }
 }
 

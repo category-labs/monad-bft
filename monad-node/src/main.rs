@@ -43,6 +43,7 @@ use monad_executor_glue::{
     LogFriendlyMonadEvent, Message, MonadEvent, OutboundForwardTxs,
     TX_FORWARD_LEANUDP_MAX_MESSAGE_SIZE_BYTES,
 };
+use monad_leanudp::metrics as leanudp_metrics;
 use monad_ledger::MonadBlockFileLedger;
 use monad_node_config::{
     ExecutionProtocolType, FullNodeIdentityConfig, NodeBootstrapConfig, NodeConfig,
@@ -52,11 +53,12 @@ use monad_peer_discovery::{
     discovery::{PeerDiscovery, PeerDiscoveryBuilder},
     MonadNameRecord, NameRecord,
 };
-use monad_peer_score::{ema, StdClock};
+use monad_peer_score::{ema, metrics as peer_score_metrics, StdClock};
 use monad_pprof::start_pprof_server;
 use monad_raptorcast::{
     auth::{AuthenticatedSocketHandle, LeanUdpSocketHandle, WireAuthProtocol},
     config::{RaptorCastConfig, RaptorCastConfigPrimary},
+    metrics as raptorcast_metrics,
 };
 use monad_router_multi::MultiRouter;
 use monad_state::{MonadMessage, MonadStateBuilder, VerifiedMonadMessage};
@@ -410,6 +412,22 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         .as_ref()
         .map(|provider| provider.meter("opentelemetry"));
 
+    let mut maybe_tx_ingestion_metrics_log_ticker = node_state
+        .node_config
+        .tx_ingestion_metrics_log_interval_seconds
+        .and_then(|seconds| {
+            if seconds == 0 {
+                warn!(
+                    "tx_ingestion_metrics_log_interval_seconds must be > 0; disabling tx ingestion logs"
+                );
+                return None;
+            }
+
+            let mut timer = tokio::time::interval(Duration::from_secs(seconds));
+            timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            Some(timer)
+        });
+
     let mut gauge_cache = HashMap::new();
     let process_start = Instant::now();
     let mut total_state_update_elapsed = Duration::ZERO;
@@ -437,6 +455,12 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
                 let state_metrics = state.metrics();
                 let executor_metrics = executor.metrics();
                 send_metrics(otel_meter, &mut gauge_cache, state_metrics, executor_metrics, &process_start, &total_state_update_elapsed);
+            }
+            _ = match &mut maybe_tx_ingestion_metrics_log_ticker {
+                Some(ticker) => ticker.tick().boxed(),
+                None => futures_util::future::pending().boxed(),
+            } => {
+                log_tx_ingestion_metrics(executor.metrics());
             }
             event = executor.next().instrument(ledger_span.clone()) => {
                 let Some(event) = event else {
@@ -830,6 +854,140 @@ fn resolve_domain_v4<P: PubKey>(node_id: &NodeId<P>, domain: &String) -> Option<
 const GAUGE_TOTAL_UPTIME_US: &str = "monad.total_uptime_us";
 const GAUGE_STATE_TOTAL_UPDATE_US: &str = "monad.state.total_update_us";
 const GAUGE_NODE_INFO: &str = "monad_node_info";
+const COUNTER_FAIR_QUEUE_PUSH_TOTAL: &str = "monad.fair_queue.push.total";
+const COUNTER_FAIR_QUEUE_PUSH_PRIORITY: &str = "monad.fair_queue.push.priority";
+const COUNTER_FAIR_QUEUE_PUSH_REGULAR: &str = "monad.fair_queue.push.regular";
+const COUNTER_FAIR_QUEUE_PUSH_ERROR_FULL: &str = "monad.fair_queue.push.error.full";
+const COUNTER_FAIR_QUEUE_PUSH_ERROR_PER_ID_LIMIT: &str = "monad.fair_queue.push.error.per_id_limit";
+const COUNTER_FAIR_QUEUE_POP_TOTAL: &str = "monad.fair_queue.pop.total";
+const COUNTER_FAIR_QUEUE_POP_PREFERRED: &str = "monad.fair_queue.pop.preferred";
+const COUNTER_FAIR_QUEUE_POP_FALLBACK: &str = "monad.fair_queue.pop.fallback";
+const COUNTER_FAIR_QUEUE_POP_EMPTY: &str = "monad.fair_queue.pop.empty";
+const GAUGE_FAIR_QUEUE_PRIORITY_ITEMS: &str = "monad.fair_queue.priority_items";
+const GAUGE_FAIR_QUEUE_REGULAR_ITEMS: &str = "monad.fair_queue.regular_items";
+const GAUGE_FAIR_QUEUE_TOTAL_ITEMS: &str = "monad.fair_queue.total_items";
+const COUNTER_TXPOOL_FORWARDED_INGRESS_ENQUEUED_TXS: &str =
+    "monad.bft.txpool.forwarded_ingress_enqueued_txs";
+const COUNTER_TXPOOL_FORWARDED_INGRESS_DROPPED_TXS: &str =
+    "monad.bft.txpool.forwarded_ingress_dropped_txs";
+const COUNTER_TXPOOL_FORWARDED_INGRESS_SENT_BATCHES: &str =
+    "monad.bft.txpool.forwarded_ingress_sent_batches";
+const COUNTER_TXPOOL_FORWARDED_INGRESS_SENT_TXS: &str =
+    "monad.bft.txpool.forwarded_ingress_sent_txs";
+
+fn metric(metrics: &HashMap<&'static str, u64>, key: &'static str) -> u64 {
+    metrics.get(key).copied().unwrap_or_default()
+}
+
+fn log_tx_ingestion_metrics(executor_metrics: ExecutorMetricsChain<'_>) {
+    let fq: HashMap<&'static str, u64> = executor_metrics.into_inner().into_iter().collect();
+
+    tracing::info!(
+        push_total = metric(&fq, COUNTER_FAIR_QUEUE_PUSH_TOTAL),
+        push_priority = metric(&fq, COUNTER_FAIR_QUEUE_PUSH_PRIORITY),
+        push_regular = metric(&fq, COUNTER_FAIR_QUEUE_PUSH_REGULAR),
+        push_error_full = metric(&fq, COUNTER_FAIR_QUEUE_PUSH_ERROR_FULL),
+        push_error_per_id_limit = metric(&fq, COUNTER_FAIR_QUEUE_PUSH_ERROR_PER_ID_LIMIT),
+        pop_total = metric(&fq, COUNTER_FAIR_QUEUE_POP_TOTAL),
+        pop_preferred = metric(&fq, COUNTER_FAIR_QUEUE_POP_PREFERRED),
+        pop_fallback = metric(&fq, COUNTER_FAIR_QUEUE_POP_FALLBACK),
+        pop_empty = metric(&fq, COUNTER_FAIR_QUEUE_POP_EMPTY),
+        priority_items = metric(&fq, GAUGE_FAIR_QUEUE_PRIORITY_ITEMS),
+        regular_items = metric(&fq, GAUGE_FAIR_QUEUE_REGULAR_ITEMS),
+        total_items = metric(&fq, GAUGE_FAIR_QUEUE_TOTAL_ITEMS),
+        ingress_enqueued = metric(&fq, COUNTER_TXPOOL_FORWARDED_INGRESS_ENQUEUED_TXS),
+        ingress_dropped = metric(&fq, COUNTER_TXPOOL_FORWARDED_INGRESS_DROPPED_TXS),
+        ingress_sent_batches = metric(&fq, COUNTER_TXPOOL_FORWARDED_INGRESS_SENT_BATCHES),
+        ingress_sent_txs = metric(&fq, COUNTER_TXPOOL_FORWARDED_INGRESS_SENT_TXS),
+        "fair_queue stats",
+    );
+
+    tracing::info!(
+        decode_fragments_received = metric(
+            &fq,
+            leanudp_metrics::COUNTER_LEANUDP_DECODE_FRAGMENTS_RECEIVED
+        ),
+        decode_fragments_priority = metric(
+            &fq,
+            leanudp_metrics::COUNTER_LEANUDP_DECODE_FRAGMENTS_PRIORITY
+        ),
+        decode_fragments_regular = metric(
+            &fq,
+            leanudp_metrics::COUNTER_LEANUDP_DECODE_FRAGMENTS_REGULAR
+        ),
+        decode_messages_completed = metric(
+            &fq,
+            leanudp_metrics::COUNTER_LEANUDP_DECODE_MESSAGES_COMPLETED
+        ),
+        pool_priority_messages = metric(&fq, leanudp_metrics::GAUGE_LEANUDP_POOL_PRIORITY_MESSAGES),
+        pool_regular_messages = metric(&fq, leanudp_metrics::GAUGE_LEANUDP_POOL_REGULAR_MESSAGES),
+        decode_evicted_timeout =
+            metric(&fq, leanudp_metrics::COUNTER_LEANUDP_DECODE_EVICTED_TIMEOUT),
+        decode_evicted_random = metric(&fq, leanudp_metrics::COUNTER_LEANUDP_DECODE_EVICTED_RANDOM),
+        error_pool_full = metric(&fq, leanudp_metrics::COUNTER_LEANUDP_ERROR_POOL_FULL),
+        error_identity_limit = metric(&fq, leanudp_metrics::COUNTER_LEANUDP_ERROR_IDENTITY_LIMIT),
+        error_message_too_large = metric(
+            &fq,
+            leanudp_metrics::COUNTER_LEANUDP_ERROR_MESSAGE_TOO_LARGE
+        ),
+        error_invalid_header = metric(&fq, leanudp_metrics::COUNTER_LEANUDP_ERROR_INVALID_HEADER),
+        encode_messages = metric(&fq, leanudp_metrics::COUNTER_LEANUDP_ENCODE_MESSAGES),
+        encode_fragments = metric(&fq, leanudp_metrics::COUNTER_LEANUDP_ENCODE_FRAGMENTS),
+        raptorcast_forward_attempts = metric(
+            &fq,
+            raptorcast_metrics::COUNTER_RAPTORCAST_LEANUDP_FORWARD_ATTEMPTS
+        ),
+        raptorcast_forward_sent = metric(
+            &fq,
+            raptorcast_metrics::COUNTER_RAPTORCAST_LEANUDP_FORWARD_SENT
+        ),
+        raptorcast_forward_fallback = metric(
+            &fq,
+            raptorcast_metrics::COUNTER_RAPTORCAST_LEANUDP_FORWARD_FALLBACK
+        ),
+        raptorcast_forward_oversize = metric(
+            &fq,
+            raptorcast_metrics::COUNTER_RAPTORCAST_LEANUDP_FORWARD_OVERSIZE
+        ),
+        raptorcast_connect_attempts = metric(
+            &fq,
+            raptorcast_metrics::COUNTER_RAPTORCAST_LEANUDP_CONNECT_ATTEMPTS
+        ),
+        raptorcast_connect_failures = metric(
+            &fq,
+            raptorcast_metrics::COUNTER_RAPTORCAST_LEANUDP_CONNECT_FAILURES
+        ),
+        "leanudp stats",
+    );
+
+    tracing::info!(
+        record_contribution_total = metric(
+            &fq,
+            peer_score_metrics::COUNTER_PEER_SCORE_RECORD_CONTRIBUTION_TOTAL
+        ),
+        newcomer_admitted = metric(
+            &fq,
+            peer_score_metrics::COUNTER_PEER_SCORE_NEWCOMER_ADMITTED
+        ),
+        newcomer_rejected = metric(
+            &fq,
+            peer_score_metrics::COUNTER_PEER_SCORE_NEWCOMER_REJECTED
+        ),
+        promotion_succeeded = metric(
+            &fq,
+            peer_score_metrics::COUNTER_PEER_SCORE_PROMOTION_SUCCEEDED
+        ),
+        promotion_rejected = metric(
+            &fq,
+            peer_score_metrics::COUNTER_PEER_SCORE_PROMOTION_REJECTED
+        ),
+        demotion = metric(&fq, peer_score_metrics::COUNTER_PEER_SCORE_DEMOTION),
+        promoted_size = metric(&fq, peer_score_metrics::GAUGE_PEER_SCORE_PROMOTED_SIZE),
+        newcomer_size = metric(&fq, peer_score_metrics::GAUGE_PEER_SCORE_NEWCOMER_SIZE),
+        total_size = metric(&fq, peer_score_metrics::GAUGE_PEER_SCORE_TOTAL_SIZE),
+        "peer_score stats",
+    );
+}
 
 fn send_metrics(
     meter: &opentelemetry::metrics::Meter,
