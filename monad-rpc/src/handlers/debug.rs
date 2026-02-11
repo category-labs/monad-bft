@@ -292,10 +292,11 @@ pub struct MonadCallFrameLog {
     topics: Vec<FixedData<32>>,
     data: UnformattedData,
     position: Quantity,
+    index: Quantity,
 }
 
-impl From<CallFrameLog> for MonadCallFrameLog {
-    fn from(value: CallFrameLog) -> Self {
+impl MonadCallFrameLog {
+    fn from_call_frame_log(value: CallFrameLog, index: usize) -> Self {
         Self {
             address: value.log.address.into(),
             topics: value
@@ -306,6 +307,7 @@ impl From<CallFrameLog> for MonadCallFrameLog {
                 .collect(),
             data: value.log.data.data.into(),
             position: Quantity(value.position.to()),
+            index: Quantity(index as u64),
         }
     }
 }
@@ -341,7 +343,7 @@ pub struct MonadCallFrame {
 
 impl From<CallFrame> for MonadCallFrame {
     fn from(value: CallFrame) -> Self {
-        // the “value” argument is not included for STATICALL
+        // the "value" argument is not included for STATICALL
         let frame_value = if matches!(value.typ, CallKind::StaticCall) {
             None
         } else {
@@ -387,8 +389,11 @@ impl From<CallFrame> for MonadCallFrame {
             calls: Vec::new(),
             logs: value
                 .logs
-                .map(|logs| logs.into_iter().map(Into::into).collect())
-                .unwrap_or_default(),
+                .unwrap_or_default()
+                .into_iter()
+                .enumerate()
+                .map(|(i, log)| MonadCallFrameLog::from_call_frame_log(log, i))
+                .collect(),
         }
     }
 }
@@ -736,6 +741,7 @@ async fn include_code_output<T: Triedb>(
     Ok(())
 }
 
+/// Build a call tree from a flat list of call frames.
 async fn build_call_tree(
     nodes: Vec<CallFrame>,
 ) -> JsonRpcResult<Option<Rc<RefCell<MonadCallFrame>>>> {
@@ -746,6 +752,8 @@ async fn build_call_tree(
     };
 
     let root = Rc::new(RefCell::new(MonadCallFrame::from(root)));
+
+    // First, build the tree structure from the flat frame list.
     let mut stack = vec![Rc::clone(&root)];
 
     for value in nodes {
@@ -773,7 +781,38 @@ async fn build_call_tree(
         stack.push(new_node);
     }
 
+    // Then, assign log indices
+    assign_log_indices(&root);
+
     Ok(Some(root))
+}
+
+/// Assigns log indices across all frames in execution order.
+fn assign_log_indices(root: &Rc<RefCell<MonadCallFrame>>) {
+    let mut counter = 0u64;
+
+    // Stack is (node, next_position_to_process)
+    // Position N means: process logs at position N, then recurse into child N (if exists)
+    let mut stack: Vec<(Rc<RefCell<MonadCallFrame>>, usize)> = vec![(Rc::clone(root), 0)];
+
+    while let Some((node, position)) = stack.pop() {
+        // Assign all logs at this position
+        {
+            let mut borrowed = node.borrow_mut();
+            for log in borrowed.logs.iter_mut() {
+                if log.position.0 == position as u64 {
+                    log.index = Quantity(counter);
+                    counter += 1;
+                }
+            }
+        }
+
+        // If there's a child at index position, we must process it before we can move to the next position
+        if let Some(child) = node.borrow().calls.get(position) {
+            stack.push((Rc::clone(&node), position + 1));
+            stack.push((Rc::clone(child), 0));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -787,6 +826,33 @@ mod tests {
 
     use super::*;
     use crate::hex;
+
+    fn make_frame_with_positions(depth: u64, positions: &[u64]) -> CallFrame {
+        let logs = Some(
+            positions
+                .iter()
+                .map(|&pos| CallFrameLog {
+                    log: Log::new_unchecked(Address::ZERO, vec![], Bytes::new()),
+                    position: U64::from(pos),
+                })
+                .collect(),
+        );
+
+        CallFrame {
+            typ: CallKind::Call,
+            flags: U64::ZERO,
+            from: Address::ZERO,
+            to: Some(Address::ZERO),
+            value: U256::ZERO,
+            gas: U64::from(100000u64),
+            gas_used: U64::from(21000u64),
+            input: Bytes::new(),
+            output: Bytes::new(),
+            status: U8::ZERO,
+            depth: U64::from(depth),
+            logs,
+        }
+    }
 
     #[tokio::test]
     async fn test_build_call_tree() {
@@ -1004,6 +1070,7 @@ mod tests {
         );
         assert_eq!(resp.logs[0].data.0, *hex::decode("0xeffe").unwrap());
         assert_eq!(resp.logs[0].position.0, 0);
+        assert_eq!(resp.logs[0].index.0, 0);
 
         assert_eq!(
             resp.logs[1].address.0,
@@ -1022,6 +1089,7 @@ mod tests {
         );
         assert_eq!(resp.logs[1].data.0, *hex::decode("0xabcd").unwrap());
         assert_eq!(resp.logs[1].position.0, 2);
+        assert_eq!(resp.logs[1].index.0, 1);
     }
 
     // Tests the backwards compatible case where historical blocks do not have
@@ -1147,5 +1215,244 @@ mod tests {
         assert_eq!(result.receipts.len(), 1);
         let expected_receipt = "0x02f9010801825208b9010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000c0";
         assert_eq!(result.receipts[0], expected_receipt);
+    }
+
+    #[tokio::test]
+    async fn test_global_log_index_across_nested_calls() {
+        // Test interleaved log indexing based on execution order
+        // Frame order: [root(d1, 2 logs), child1(d2, 3 logs), grandchild(d3, 1 log), child2(d2, 2 logs)]
+        //
+        // Execution order:
+        // 1. Root emits first log (index 0)
+        // 2. Root calls Child1
+        // 3. Child1 emits first log (index 1)
+        // 4. Child1 calls Grandchild
+        // 5. Grandchild emits log (index 2)
+        // 6. Grandchild returns
+        // 7. Child1 emits remaining logs (index 3, 4)
+        // 8. Child1 returns
+        // 9. Root calls Child2
+        // 10. Child2 emits all logs (index 5, 6)
+        // 11. Child2 returns
+        // 12. Root emits remaining log (index 7)
+        let frames = vec![
+            make_frame_with_positions(1, &[0, 2]), // root: 1 log before children, 1 after both
+            make_frame_with_positions(2, &[0, 1, 1]), // child1: 1 log before grandchild, 2 after
+            make_frame_with_positions(3, &[0]),    // grandchild: 1 log (no children)
+            make_frame_with_positions(2, &[0, 0]), // child2: 2 logs (no children)
+        ];
+
+        let result = build_call_tree(frames).await.unwrap();
+        assert!(result.is_some());
+
+        let root = result.unwrap();
+        let root_borrowed = root.borrow();
+
+        assert_eq!(root_borrowed.logs.len(), 2);
+        assert_eq!(root_borrowed.logs[0].index.0, 0);
+        assert_eq!(root_borrowed.logs[1].index.0, 7);
+
+        let first_child = root_borrowed.calls[0].borrow();
+        assert_eq!(first_child.logs.len(), 3);
+        assert_eq!(first_child.logs[0].index.0, 1);
+        assert_eq!(first_child.logs[1].index.0, 3);
+        assert_eq!(first_child.logs[2].index.0, 4);
+
+        let grandchild = first_child.calls[0].borrow();
+        assert_eq!(grandchild.logs.len(), 1);
+        assert_eq!(grandchild.logs[0].index.0, 2);
+
+        let second_child = root_borrowed.calls[1].borrow();
+        assert_eq!(second_child.logs.len(), 2);
+        assert_eq!(second_child.logs[0].index.0, 5);
+        assert_eq!(second_child.logs[1].index.0, 6);
+    }
+
+    #[tokio::test]
+    async fn test_contract_a_scenario() {
+        // Test the user's contract scenario:
+        // contract A { emit A0(); new B().b(); new C().c(); emit A1(); }
+        // contract B { new D().d(); }
+        // contract C { emit C0(); }
+        // contract D {}
+
+        let frames = vec![
+            make_frame_with_positions(1, &[0, 4]), // A: A0 at pos 0, A1 at pos 4
+            make_frame_with_positions(2, &[]),     // B_CREATE: no logs
+            make_frame_with_positions(2, &[]),     // B.b: no logs
+            make_frame_with_positions(3, &[]),     // D_CREATE: no logs
+            make_frame_with_positions(3, &[]),     // D.d: no logs
+            make_frame_with_positions(2, &[]),     // C_CREATE: no logs
+            make_frame_with_positions(2, &[0]),    // C.c: C0 at pos 0
+        ];
+
+        let result = build_call_tree(frames).await.unwrap();
+        assert!(result.is_some());
+
+        let root = result.unwrap();
+        let root_borrowed = root.borrow();
+
+        assert_eq!(root_borrowed.logs.len(), 2);
+        assert_eq!(root_borrowed.logs[0].index.0, 0); // A0
+        assert_eq!(root_borrowed.logs[1].index.0, 2); // A1
+
+        let mut found_c0 = false;
+        for child in root_borrowed.calls.iter() {
+            let child_borrowed = child.borrow();
+            if !child_borrowed.logs.is_empty() {
+                assert_eq!(child_borrowed.logs[0].index.0, 1); // C0
+                found_c0 = true;
+            }
+        }
+        assert!(found_c0, "Should have found C0 log");
+    }
+
+    #[tokio::test]
+    async fn test_log_index_single_frame() {
+        // Test that a single frame correctly indexes its logs from build_call_tree
+        fn make_log(position: u64) -> CallFrameLog {
+            CallFrameLog {
+                log: Log::new_unchecked(Address::ZERO, vec![], Bytes::new()),
+                position: U64::from(position),
+            }
+        }
+
+        let frame = CallFrame {
+            typ: CallKind::Call,
+            flags: U64::ZERO,
+            from: Address::ZERO,
+            to: Some(Address::ZERO),
+            value: U256::ZERO,
+            gas: U64::from(100000u64),
+            gas_used: U64::from(21000u64),
+            input: Bytes::new(),
+            output: Bytes::new(),
+            status: U8::ZERO,
+            depth: U64::from(1u64),
+            logs: Some(vec![make_log(0), make_log(0), make_log(0)]),
+        };
+
+        let result = build_call_tree(vec![frame]).await.unwrap();
+        assert!(result.is_some());
+
+        let root = result.unwrap();
+        let root_borrowed = root.borrow();
+
+        // Single frame with no children should have all logs assigned sequentially
+        assert_eq!(root_borrowed.logs.len(), 3);
+        assert_eq!(root_borrowed.logs[0].index.0, 0);
+        assert_eq!(root_borrowed.logs[1].index.0, 1);
+        assert_eq!(root_borrowed.logs[2].index.0, 2);
+    }
+
+    #[tokio::test]
+    async fn test_many_logs_single_frame_with_child() {
+        // Parent has 5 logs all at position 0 (before the 1 child call),
+        // child has 1 log at position 0 (no children in child).
+        // Parent logs should have indices 0-4, child log should have index 5.
+
+        let frames = vec![
+            make_frame_with_positions(1, &[0, 0, 0, 0, 0]), // parent: 5 logs at pos 0
+            make_frame_with_positions(2, &[0]),             // child: 1 log at pos 0
+        ];
+
+        let result = build_call_tree(frames).await.unwrap().unwrap();
+        let root = result.borrow();
+
+        assert_eq!(root.logs[0].index.0, 0);
+        assert_eq!(root.logs[1].index.0, 1);
+        assert_eq!(root.logs[2].index.0, 2);
+        assert_eq!(root.logs[3].index.0, 3);
+        assert_eq!(root.logs[4].index.0, 4);
+
+        let child = root.calls[0].borrow();
+        assert_eq!(child.logs[0].index.0, 5);
+    }
+
+    #[tokio::test]
+    async fn test_interleaved_parent_child_logs() {
+        // Simulates:
+        //   function a() {
+        //       emit A0();        // position 0 (before any of A's 2 children)
+        //       new B().b();      // child 0, B has no logs
+        //       new C().c();      // child 1, C emits log at position 0 (no children in C)
+        //       emit A1();        // position 2 (after both children)
+        //   }
+        //
+        // Expected indices: A0=0, C0=1, A1=2
+
+        let frames = vec![
+            make_frame_with_positions(1, &[0, 2]), // A: A0 at pos 0, A1 at pos 2
+            make_frame_with_positions(2, &[]),     // B: no logs
+            make_frame_with_positions(2, &[0]),    // C: C0 at pos 0
+        ];
+
+        let result = build_call_tree(frames).await.unwrap().unwrap();
+        let root = result.borrow();
+
+        // A0 (pos 0) → index 0
+        assert_eq!(root.logs[0].index.0, 0);
+        // A1 (pos 2) → index 2
+        assert_eq!(root.logs[1].index.0, 2);
+
+        // B has no logs
+        let child_b = root.calls[0].borrow();
+        assert!(child_b.logs.is_empty());
+
+        // C0 (pos 0) → index 1
+        let child_c = root.calls[1].borrow();
+        assert_eq!(child_c.logs[0].index.0, 1);
+    }
+
+    #[tokio::test]
+    async fn test_nested_calls_with_interleaved_logs() {
+        // Test the e_then_a() scenario with nested calls:
+        //
+        // Main.e_then_a():
+        //     emit A0        // position 0 (before calling E)
+        //     E.e()          // child call
+        //     emit A0        // position 1 (after E returns)
+        //
+        // E.e():
+        //     emit E0        // position 0 (before calling C)
+        //     C.c()          // child call
+        //     emit E0        // position 1 (after C returns)
+        //
+        // C.c():
+        //     emit C0        // position 0 (no children)
+        //
+        // Expected execution order:
+        //   Main A0 (pos 0) → index 0
+        //   E0 (pos 0)      → index 1
+        //   C0 (pos 0)      → index 2
+        //   E0 (pos 1)      → index 3
+        //   Main A0 (pos 1) → index 4
+
+        let frames = vec![
+            make_frame_with_positions(1, &[0, 1]), // Main: logs at pos 0 and 1
+            make_frame_with_positions(2, &[0, 1]), // E: logs at pos 0 and 1
+            make_frame_with_positions(3, &[0]),    // C: log at pos 0
+        ];
+
+        let result = build_call_tree(frames).await.unwrap().unwrap();
+        let main_frame = result.borrow();
+
+        // Main frame has 2 logs
+        assert_eq!(main_frame.logs.len(), 2);
+        assert_eq!(main_frame.logs[0].index.0, 0); // First A0
+        assert_eq!(main_frame.logs[1].index.0, 4); // Second A0
+
+        // E frame (child of Main)
+        assert_eq!(main_frame.calls.len(), 1);
+        let e_frame = main_frame.calls[0].borrow();
+        assert_eq!(e_frame.logs.len(), 2);
+        assert_eq!(e_frame.logs[0].index.0, 1); // First E0
+        assert_eq!(e_frame.logs[1].index.0, 3); // Second E0
+
+        // C frame (child of E)
+        assert_eq!(e_frame.calls.len(), 1);
+        let c_frame = e_frame.calls[0].borrow();
+        assert_eq!(c_frame.logs.len(), 1);
+        assert_eq!(c_frame.logs[0].index.0, 2); // C0
     }
 }
