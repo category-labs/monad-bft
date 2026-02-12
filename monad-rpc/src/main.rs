@@ -26,6 +26,7 @@ use monad_pprof::start_pprof_server;
 use monad_rpc::{
     chainstate::{buffer::ChainStateBuffer, ChainState},
     comparator::RpcComparator,
+    decompression_guard::DecompressionGuard,
     event::EventServer,
     handlers::{
         resources::{MonadJsonRootSpanBuilder, MonadRpcResources},
@@ -155,7 +156,9 @@ async fn main() -> std::io::Result<()> {
         };
         (Some(txpool_bridge_client), Some(_txpool_bridge_handle))
     } else {
-        warn!("--ipc-path is not set, tx pool will be disabled. This means that the node will not be able to send transactions.");
+        warn!(
+            "--ipc-path is not set, tx pool will be disabled. This means that the node will not be able to send transactions."
+        );
         (None, None)
     };
 
@@ -311,6 +314,8 @@ async fn main() -> std::io::Result<()> {
         .as_ref()
         .map(|provider| metrics::Metrics::new(provider.clone().meter("opentelemetry")));
 
+    let decompression_guard = DecompressionGuard::new(args.max_request_size);
+
     // Configure event ring, websocket server and event cache.
     let (events_client, events_for_cache) = if let Some(exec_event_path) = args.exec_event_path {
         let event_ring =
@@ -412,6 +417,7 @@ async fn main() -> std::io::Result<()> {
     let app = match with_metrics {
         Some(metrics) => HttpServer::new(move || {
             App::new()
+                .wrap(decompression_guard.clone())
                 .wrap(metrics.clone())
                 .wrap(TracingLogger::<MonadJsonRootSpanBuilder>::new())
                 .wrap(TimingMiddleware)
@@ -425,6 +431,7 @@ async fn main() -> std::io::Result<()> {
         .run(),
         None => HttpServer::new(move || {
             App::new()
+                .wrap(decompression_guard.clone())
                 .wrap(TracingLogger::<MonadJsonRootSpanBuilder>::new())
                 .wrap(TimingMiddleware)
                 .app_data(web::PayloadConfig::default().limit(args.max_request_size))
@@ -469,6 +476,7 @@ mod tests {
     };
     use jsonrpc::Response;
     use monad_rpc::{
+        decompression_guard::DecompressionGuard,
         handlers::eth::call::EthCallStatsTracker,
         jsonrpc::{self, JsonRpcError, RequestId, ResponseWrapper},
         txpool::EthTxPoolBridgeClient,
@@ -509,6 +517,7 @@ mod tests {
 
         test::init_service(
             App::new()
+                .wrap(DecompressionGuard::new(2_000_000))
                 .wrap(TracingLogger::<MonadJsonRootSpanBuilder>::new())
                 .app_data(web::PayloadConfig::default().limit(2_000_000))
                 .app_data(web::Data::new(app_state.clone()))

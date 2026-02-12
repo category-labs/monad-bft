@@ -5909,10 +5909,12 @@ dependencies = [
  "arbitrary",
  "async-stream",
  "awc",
+ "brotli 3.5.0",
  "bytes",
  "clap",
  "criterion",
  "dashmap",
+ "flate2",
  "flume",
  "futures",
  "futures-util",
@@ -5954,6 +5956,7 @@ dependencies = [
  "tracing-actix-web",
  "tracing-manytrace",
  "tracing-subscriber",
+ "zstd",
 ]
 
 [[package]]
