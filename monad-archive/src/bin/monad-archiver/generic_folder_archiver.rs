@@ -15,6 +15,7 @@
 
 use std::{collections::VecDeque, ffi::OsStr, fs::Metadata, path::Path, time::SystemTime};
 
+use eyre::Result;
 use futures::stream;
 use monad_archive::{kvstore::WritePolicy, prelude::*};
 

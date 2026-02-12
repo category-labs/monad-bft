@@ -15,7 +15,7 @@
 
 use std::collections::HashMap;
 
-use eyre::{eyre, Context, Result};
+use eyre::{eyre, Result};
 use futures::stream;
 use monad_archive::{kvstore::WritePolicy, prelude::*};
 use opentelemetry::KeyValue;
@@ -325,7 +325,7 @@ async fn fix_fault(
     faulty_replica_archiver
         .archive_block(block.clone(), WritePolicy::AllowOverwrite)
         .await
-        .with_context(|| {
+        .wrap_err_with(|| {
             format!(
                 "Failed to archive block {} for replica {}",
                 fault.block_num, fault.replica
@@ -340,7 +340,7 @@ async fn fix_fault(
             WritePolicy::AllowOverwrite,
         )
         .await
-        .with_context(|| {
+        .wrap_err_with(|| {
             format!(
                 "Failed to archive receipts for block {} for replica {}",
                 fault.block_num, fault.replica
@@ -351,7 +351,7 @@ async fn fix_fault(
     faulty_replica_archiver
         .archive_traces(traces.clone(), fault.block_num, WritePolicy::AllowOverwrite)
         .await
-        .with_context(|| {
+        .wrap_err_with(|| {
             format!(
                 "Failed to archive traces for block {} for replica {}",
                 fault.block_num, fault.replica

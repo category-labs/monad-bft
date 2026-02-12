@@ -23,13 +23,17 @@ use aws_sdk_s3::{
     Client,
 };
 use bytes::Bytes;
-use eyre::{Context, Result};
+use eyre::Context;
 use tracing::trace;
 
 use super::{
     kvstore_get_metrics, kvstore_put_metrics, KVStoreType, MetricsResultExt, PutResult, WritePolicy,
 };
-use crate::{metrics::Metrics, prelude::*};
+use crate::{
+    error::{ErrorKind, Result, ResultExt},
+    metrics::Metrics,
+    prelude::*,
+};
 
 #[derive(Clone)]
 pub struct Bucket {
@@ -63,11 +67,13 @@ impl Bucket {
             Err(SdkError::ServiceError(service_err)) => match service_err.err() {
                 CreateBucketError::BucketAlreadyExists(_)
                 | CreateBucketError::BucketAlreadyOwnedByYou(_) => Ok(()),
-                _ => {
-                    Err(SdkError::ServiceError(service_err)).wrap_err("Failed to create bucket")?
-                }
+                _ => Err(SdkError::ServiceError(service_err))
+                    .wrap_err("Failed to create bucket")
+                    .kind(ErrorKind::Network)?,
             },
-            Err(e) => Err(e.into()),
+            Err(e) => Err(e)
+                .wrap_err("Failed to create bucket")
+                .kind(ErrorKind::Network)?,
         }
     }
 }
@@ -94,15 +100,19 @@ impl KVReader for Bucket {
                     kvstore_get_metrics(duration, true, KVStoreType::AwsS3, &self.metrics);
                     return Ok(None);
                 }
-                _ => Err(SdkError::ServiceError(service_err)).wrap_err_with(|| {
+                _ => Err(SdkError::ServiceError(service_err))
+                    .wrap_err_with(|| {
+                        kvstore_get_metrics(duration, false, KVStoreType::AwsS3, &self.metrics);
+                        format!("Failed to read key from s3 {key}")
+                    })
+                    .kind(ErrorKind::Network)?,
+            },
+            _ => resp
+                .wrap_err_with(|| {
                     kvstore_get_metrics(duration, false, KVStoreType::AwsS3, &self.metrics);
                     format!("Failed to read key from s3 {key}")
-                })?,
-            },
-            _ => resp.wrap_err_with(|| {
-                kvstore_get_metrics(duration, false, KVStoreType::AwsS3, &self.metrics);
-                format!("Failed to read key from s3 {key}")
-            })?,
+                })
+                .kind(ErrorKind::Network)?,
         };
 
         let data = resp
@@ -110,7 +120,8 @@ impl KVReader for Bucket {
             .collect()
             .await
             .write_get_metrics(duration, KVStoreType::AwsS3, &self.metrics)
-            .wrap_err_with(|| "Unable to collect response data")?;
+            .wrap_err("Unable to collect response data")
+            .kind(ErrorKind::Network)?;
 
         let bytes = data.into_bytes();
         if bytes.is_empty() {
@@ -163,6 +174,7 @@ impl KVStore for Bucket {
                 kvstore_put_metrics(start.elapsed(), false, KVStoreType::AwsS3, &self.metrics);
                 Err(e)
                     .wrap_err_with(|| format!("Failed to upload, retries exhausted. Key: {}", key))
+                    .kind(ErrorKind::Network)
             }
         }
     }
@@ -187,7 +199,11 @@ impl KVStore for Bucket {
             if let Some(token) = token {
                 request = request.continuation_token(token);
             }
-            let response = request.send().await.wrap_err("Failed to list objects")?;
+            let response = request
+                .send()
+                .await
+                .wrap_err("Failed to list objects")
+                .kind(ErrorKind::Network)?;
 
             // Process objects
             if let Some(contents) = response.contents {
@@ -215,7 +231,8 @@ impl KVStore for Bucket {
             .request_payer(aws_sdk_s3::types::RequestPayer::Requester)
             .send()
             .await
-            .wrap_err_with(|| format!("Failed to delete, retries exhausted. Key: {}", key))?;
+            .wrap_err_with(|| format!("Failed to delete, retries exhausted. Key: {}", key))
+            .kind(ErrorKind::Network)?;
 
         Ok(())
     }

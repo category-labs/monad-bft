@@ -19,6 +19,7 @@ use std::{
     time::SystemTime,
 };
 
+use eyre::Result;
 use futures::stream::{self, StreamExt};
 use monad_archive::{kvstore::WritePolicy, prelude::*};
 
