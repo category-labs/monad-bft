@@ -540,40 +540,72 @@ where
         chain
     }
 
+    fn highest_round_coherent_child(
+        &self,
+        entry: &BlockTreeEntry<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
+    ) -> Option<BlockId> {
+        entry
+            .children_blocks
+            .iter()
+            .filter(|id| self.is_coherent(id))
+            .filter_map(|id| {
+                self.tree
+                    .get(id)
+                    .map(|e| (*id, e.validated_block.get_block_round()))
+            })
+            .max_by_key(|(_, round)| *round)
+            .map(|(id, _)| id)
+    }
+
+    /// Returns true if `descendant_id` is equal to or a descendant of `ancestor_id` in the tree.
+    fn is_on_subtree(&self, ancestor_id: &BlockId, descendant_id: &BlockId) -> bool {
+        let mut current = *descendant_id;
+        while let Some(entry) = self.tree.get(&current) {
+            if current == *ancestor_id {
+                return true;
+            }
+            current = entry.validated_block.get_parent_id();
+        }
+        false
+    }
+
     /// Find the highest coherent block on the canonical chain.
-    pub fn get_canonical_coherent_tip(&self, high_qc_block_id: &BlockId) -> Option<BlockId> {
-        if *high_qc_block_id == self.root.info.block_id {
+    ///
+    /// Starts from high_qc and extends forward through coherent children.
+    /// When multiple coherent children exist, `high_extend_tip_id` (from
+    /// TC.high_extend) is used to prefer the branch the network was building on.
+    pub fn get_canonical_coherent_tip(
+        &self,
+        high_qc_block_id: &BlockId,
+        high_extend_tip_id: Option<&BlockId>,
+    ) -> Option<BlockId> {
+        if *high_qc_block_id == self.root.info.block_id || !self.is_coherent(high_qc_block_id) {
             return None;
         }
-        let mut tip = self
-            .get_blocks_on_path_from_root(high_qc_block_id)
-            .and_then(|chain| {
-                chain
-                    .iter()
-                    .rev() // Start from high_qc, walk toward root
-                    .find(|block| self.is_coherent(&block.get_id()))
-                    .map(|block| block.get_id())
-            })?;
+        let mut tip = *high_qc_block_id;
 
-        // Extend beyond high_qc by following coherent children and return the highest round block
-        if tip == *high_qc_block_id {
-            loop {
-                let entry = self.tree.get(&tip)?;
-                let next = entry
+        // Use TC's high_extend tip to pick the right branch at the first fork
+        let entry = self.tree.get(&tip)?;
+        let first_child = high_extend_tip_id
+            .and_then(|hint| {
+                entry
                     .children_blocks
                     .iter()
-                    .filter(|id| self.is_coherent(id))
-                    .filter_map(|id| {
-                        self.tree
-                            .get(id)
-                            .map(|e| (id, e.validated_block.get_block_round()))
-                    })
-                    .max_by_key(|(_, round)| *round)
-                    .map(|(id, _)| *id);
-                match next {
-                    Some(child) => tip = child,
-                    None => break,
-                }
+                    .find(|id| self.is_coherent(id) && self.is_on_subtree(id, hint))
+                    .copied()
+            })
+            .or_else(|| self.highest_round_coherent_child(entry));
+        match first_child {
+            Some(child) => tip = child,
+            None => return Some(tip),
+        }
+
+        // Follow highest-round coherent children from here
+        loop {
+            let entry = self.tree.get(&tip)?;
+            match self.highest_round_coherent_child(entry) {
+                Some(child) => tip = child,
+                None => break,
             }
         }
 
@@ -2046,7 +2078,7 @@ mod test {
 
         // high_qc points to D (canonical chain tip)
         let high_qc_block_id = d.get_id();
-        let proposed_head = blocktree.get_canonical_coherent_tip(&high_qc_block_id);
+        let proposed_head = blocktree.get_canonical_coherent_tip(&high_qc_block_id, None);
         assert_eq!(proposed_head, Some(d.get_id()));
 
         // Now add B' on side branch and make it coherent
@@ -2061,7 +2093,7 @@ mod test {
         assert!(blocktree.is_coherent(&b_prime.get_id()));
 
         // proposed_head should still point to D (canonical chain), not B'
-        let proposed_head = blocktree.get_canonical_coherent_tip(&high_qc_block_id);
+        let proposed_head = blocktree.get_canonical_coherent_tip(&high_qc_block_id, None);
         assert_eq!(proposed_head, Some(d.get_id()));
     }
 
@@ -2117,11 +2149,11 @@ mod test {
         assert!(blocktree.is_coherent(&c_prime.get_id()));
 
         // When high_qc points to C, proposed_head is C
-        let proposed_head = blocktree.get_canonical_coherent_tip(&c.get_id());
+        let proposed_head = blocktree.get_canonical_coherent_tip(&c.get_id(), None);
         assert_eq!(proposed_head, Some(c.get_id()));
 
         // When high_qc changes to C', proposed_head should be C'
-        let proposed_head = blocktree.get_canonical_coherent_tip(&c_prime.get_id());
+        let proposed_head = blocktree.get_canonical_coherent_tip(&c_prime.get_id(), None);
         assert_eq!(proposed_head, Some(c_prime.get_id()));
     }
 
@@ -2148,7 +2180,7 @@ mod test {
         let mut block_policy = PassthruBlockPolicy;
 
         blocktree.add(g.into());
-        blocktree.add(a.into());
+        blocktree.add(a.clone().into());
         blocktree.add(b.clone().into());
         blocktree.add(c.clone().into());
         blocktree.add(d.clone().into());
@@ -2163,12 +2195,12 @@ mod test {
         assert!(blocktree.is_coherent(&c.get_id()));
         assert!(blocktree.is_coherent(&d.get_id()));
 
-        // high_qc points to B, C and D
+        // high_qc points to B, C and D are coherent beyond it
         // should return D (the deepest coherent descendant)
-        let proposed_head = blocktree.get_canonical_coherent_tip(&b.get_id());
+        let proposed_head = blocktree.get_canonical_coherent_tip(&b.get_id(), None);
         assert_eq!(proposed_head, Some(d.get_id()));
 
-        // Add a fork: C' at round 4 (sibling of C)
+        // Add a fork: C' at round 4 (sibling of C), extended by D' and E'
         // Tree: root <- A <- B (high_qc) <- C (round 4) <- D (round 5)
         //                                 <- C' (round 4) <- D' (round 5) <- E' (round 6)
         let c_prime = get_next_block(&b, Some(Round(4)), &[5]);
@@ -2188,9 +2220,55 @@ mod test {
         assert!(blocktree.is_coherent(&d_prime.get_id()));
         assert!(blocktree.is_coherent(&e_prime.get_id()));
 
-        // E' (round 6) is the deepest coherent descendant across both forks
-        let proposed_head = blocktree.get_canonical_coherent_tip(&b.get_id());
+        // With hint pointing to E' (TC.high_extend.tip), prefer the C' branch → returns E'
+        let proposed_head =
+            blocktree.get_canonical_coherent_tip(&b.get_id(), Some(&e_prime.get_id()));
         assert_eq!(proposed_head, Some(e_prime.get_id()));
+
+        // With hint pointing to D (TC.high_extend.tip), prefer the C branch → returns D
+        let proposed_head = blocktree.get_canonical_coherent_tip(&b.get_id(), Some(&d.get_id()));
+        assert_eq!(proposed_head, Some(d.get_id()));
+
+        // A(high_qc, round 2) <- B(round 3) <- C(round 4) <- D(round 5)
+        //                      <- F(round 4)
+        // B <- C <- D is the deeper chain, but high_extend.tip points to F.
+        // Pick F because the network was building on it.
+        let f = get_next_block(&a, Some(Round(4)), &[8]);
+        blocktree.add(f.clone().into());
+        blocktree.try_update_coherency(
+            &mut metrics,
+            f.get_id(),
+            &mut block_policy,
+            &state_backend,
+            &MockChainConfig::DEFAULT,
+        );
+        assert!(blocktree.is_coherent(&f.get_id()));
+
+        let proposed_head = blocktree.get_canonical_coherent_tip(&a.get_id(), Some(&f.get_id()));
+        assert_eq!(proposed_head, Some(f.get_id()));
+
+        // A(high_qc, round 2) <- B(round 3) (higher round)
+        //                      <- F(round 4) (even higher round)
+        //                      <- G(round 2) (lower round, but high_extend.tip)
+        // Without hint, F wins (highest round). With hint pointing to G, G wins.
+        let g2 = get_next_block(&a, Some(Round(2)), &[9]);
+        blocktree.add(g2.clone().into());
+        blocktree.try_update_coherency(
+            &mut metrics,
+            g2.get_id(),
+            &mut block_policy,
+            &state_backend,
+            &MockChainConfig::DEFAULT,
+        );
+        assert!(blocktree.is_coherent(&g2.get_id()));
+
+        // Without hint, F wins (highest round among A's children)
+        let proposed_head = blocktree.get_canonical_coherent_tip(&a.get_id(), None);
+        assert_eq!(proposed_head, Some(f.get_id()));
+
+        // With hint pointing to G, G wins despite lowest round
+        let proposed_head = blocktree.get_canonical_coherent_tip(&a.get_id(), Some(&g2.get_id()));
+        assert_eq!(proposed_head, Some(g2.get_id()));
     }
 
     #[test]
@@ -2205,7 +2283,7 @@ mod test {
         });
 
         // When high_qc points to root, should return None
-        let result = blocktree.get_canonical_coherent_tip(&genesis_qc.get_block_id());
+        let result = blocktree.get_canonical_coherent_tip(&genesis_qc.get_block_id(), None);
         assert_eq!(result, None);
     }
 }

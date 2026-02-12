@@ -1451,16 +1451,16 @@ where
 
     /// Returns a `Proposed` commit command for the canonical coherent tip.
     fn propose_canonical_head(&self) -> Option<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
-        let high_qc_block_id = self
-            .consensus
-            .pacemaker
-            .high_certificate()
-            .qc()
-            .get_block_id();
+        let high_cert = self.consensus.pacemaker.high_certificate();
+        let high_qc_block_id = high_cert.qc().get_block_id();
+        let high_extend_tip_id = high_cert.tc().and_then(|tc| match &tc.high_extend {
+            HighExtend::Tip(tip) => Some(tip.block_header.get_id()),
+            HighExtend::Qc(_) => None,
+        });
         let canonical_tip_id = self
             .consensus
             .pending_block_tree
-            .get_canonical_coherent_tip(&high_qc_block_id)?;
+            .get_canonical_coherent_tip(&high_qc_block_id, high_extend_tip_id.as_ref())?;
         let block = self
             .consensus
             .pending_block_tree
@@ -1490,16 +1490,16 @@ where
         );
 
         // Compute canonical coherent tip (highest coherent block on path to high_qc)
-        let high_qc_block_id = self
-            .consensus
-            .pacemaker
-            .high_certificate()
-            .qc()
-            .get_block_id();
+        let high_cert = self.consensus.pacemaker.high_certificate();
+        let high_qc_block_id = high_cert.qc().get_block_id();
+        let high_extend_tip_id = high_cert.tc().and_then(|tc| match &tc.high_extend {
+            HighExtend::Tip(tip) => Some(tip.block_header.get_id()),
+            HighExtend::Qc(_) => None,
+        });
         let canonical_tip = self
             .consensus
             .pending_block_tree
-            .get_canonical_coherent_tip(&high_qc_block_id);
+            .get_canonical_coherent_tip(&high_qc_block_id, high_extend_tip_id.as_ref());
 
         // Emit Proposed commits with is_canonical flag
         for newly_coherent_block in newly_coherent_blocks {
