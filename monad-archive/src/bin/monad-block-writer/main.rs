@@ -25,6 +25,46 @@ use tracing::Level;
 
 mod cli;
 
+struct BlockWriterWorker {
+    reader: BlockDataReaderErased,
+    fs: FsStorage,
+    max_retries: u32,
+    concurrency: usize,
+    flat_dir: bool,
+}
+
+impl BlockRangeWorker for BlockWriterWorker {
+    async fn get_checkpoint(&self) -> Result<u64> {
+        get_latest_block(&self.fs).await
+    }
+
+    async fn get_source_head(&self) -> Result<u64> {
+        self.reader
+            .get_latest(LatestKind::Uploaded)
+            .await?
+            .ok_or_else(|| eyre!("No latest block available from source"))
+    }
+
+    async fn process_range(&self, range: RangeInclusive<u64>) -> u64 {
+        let last_block = write_range(
+            self.concurrency,
+            self.reader.clone(),
+            self.fs.clone(),
+            self.max_retries,
+            *range.start(),
+            *range.end(),
+            self.flat_dir,
+        )
+        .await;
+
+        if let Err(e) = set_latest_block(&self.fs, last_block).await {
+            error!("Failed to set latest block: {e:?}");
+        }
+
+        last_block
+    }
+}
+
 async fn process_block(
     reader: &BlockDataReaderErased,
     current_block: u64,
@@ -117,61 +157,21 @@ async fn main() -> Result<()> {
             .await?;
         }
         cli::Mode::Stream(ref stream_args) => {
-            loop {
-                let Ok(mut start) = get_latest_block(&fs)
-                    .await
-                    .inspect_err(|e| error!("Failed to get latest block: {e:?}"))
-                else {
-                    tokio::time::sleep(Duration::from_millis(200)).await;
-                    continue;
-                };
-                if start != 0 {
-                    start += 1; // We already processed this block, so start from the next one
-                }
+            let worker = BlockWriterWorker {
+                reader,
+                fs,
+                max_retries,
+                concurrency: shared_args.concurrency,
+                flat_dir: shared_args.flat_dir,
+            };
 
-                let Ok(Some(mut stop)) = reader
-                    .get_latest(LatestKind::Uploaded)
-                    .await
-                    .inspect_err(|e| error!("Failed to get latest block: {e:?}"))
-                else {
-                    tokio::time::sleep(Duration::from_millis(200)).await;
-                    continue;
-                };
+            let config = WorkerLoopConfig {
+                max_blocks_per_iteration: stream_args.max_blocks_per_iter,
+                stop_block: None,
+                poll_interval: Duration::from_secs_f64(stream_args.sleep_secs),
+            };
 
-                if start >= stop {
-                    info!(
-                        "No new blocks to process, sleeping for {} seconds",
-                        stream_args.sleep_secs
-                    );
-                    tokio::time::sleep(Duration::from_secs_f64(stream_args.sleep_secs)).await;
-                    continue;
-                }
-                stop = stop.min(start + stream_args.max_blocks_per_iter);
-                let last_block = match tokio::spawn(write_range(
-                    shared_args.concurrency,
-                    reader.clone(),
-                    fs.clone(),
-                    max_retries,
-                    start,
-                    stop,
-                    shared_args.flat_dir,
-                ))
-                .await
-                {
-                    Ok(last_block) => last_block,
-                    Err(e) => {
-                        error!("Task panicked: {e:?}");
-                        tokio::time::sleep(Duration::from_millis(200)).await;
-                        continue;
-                    }
-                };
-
-                if let Err(e) = set_latest_block(&fs, last_block).await {
-                    error!("Failed to set latest block: {e:?}");
-                    tokio::time::sleep(Duration::from_millis(200)).await;
-                    continue;
-                }
-            }
+            run_worker_loop(worker, config).await;
         }
     }
 

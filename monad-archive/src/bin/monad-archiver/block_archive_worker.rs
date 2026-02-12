@@ -21,7 +21,6 @@ use std::{
 use eyre::Result;
 use futures::{join, StreamExt, TryStreamExt};
 use monad_archive::{kvstore::WritePolicy, prelude::*};
-use tokio::time::sleep;
 use tracing::{error, info, warn};
 
 pub struct ArchiveWorkerOpts {
@@ -47,6 +46,67 @@ pub struct ArchiveWorkerOpts {
     pub traces_write_policy: WritePolicy,
 }
 
+struct ArchiveBlockRangeWorker<S, F> {
+    block_data_source: S,
+    fallback_source: Option<F>,
+    archive_writer: BlockDataArchive,
+    metrics: Metrics,
+    max_concurrent_blocks: usize,
+    unsafe_skip_bad_blocks: bool,
+    require_traces: bool,
+    traces_only: bool,
+    latest_kind: LatestKind,
+    blocks_write_policy: WritePolicy,
+    receipts_write_policy: WritePolicy,
+    traces_write_policy: WritePolicy,
+}
+
+impl<S: BlockDataReader + Sync, F: BlockDataReader + Sync> BlockRangeWorker
+    for ArchiveBlockRangeWorker<S, F>
+{
+    async fn get_checkpoint(&self) -> Result<u64> {
+        Ok(self
+            .archive_writer
+            .get_latest(self.latest_kind)
+            .await?
+            .unwrap_or(0))
+    }
+
+    async fn get_source_head(&self) -> Result<u64> {
+        Ok(self
+            .block_data_source
+            .get_latest(LatestKind::Uploaded)
+            .await?
+            .unwrap_or(0))
+    }
+
+    async fn process_range(&self, range: RangeInclusive<u64>) -> u64 {
+        archive_blocks(
+            &self.block_data_source,
+            &self.fallback_source,
+            range,
+            &self.archive_writer,
+            &self.metrics,
+            self.max_concurrent_blocks,
+            self.unsafe_skip_bad_blocks,
+            self.require_traces,
+            self.traces_only,
+            self.latest_kind,
+            self.blocks_write_policy,
+            self.receipts_write_policy,
+            self.traces_write_policy,
+        )
+        .await
+    }
+
+    fn report_metrics(&self, start: u64, end: u64, source_head: u64) {
+        self.metrics
+            .gauge(MetricNames::SOURCE_LATEST_BLOCK_NUM, source_head);
+        self.metrics.gauge(MetricNames::END_BLOCK_NUMBER, end);
+        self.metrics.gauge(MetricNames::START_BLOCK_NUMBER, start);
+    }
+}
+
 /// Main worker that archives block data from the execution database to durable storage.
 /// Continuously polls for new blocks and archives their data.
 pub async fn archive_worker(
@@ -56,93 +116,34 @@ pub async fn archive_worker(
     opts: ArchiveWorkerOpts,
     metrics: Metrics,
 ) {
-    let ArchiveWorkerOpts {
-        max_blocks_per_iteration,
-        max_concurrent_blocks,
-        stop_block: stop_block_override,
-        unsafe_skip_bad_blocks,
-        require_traces,
-        traces_only,
-        async_backfill,
-        blocks_write_policy,
-        receipts_write_policy,
-        traces_write_policy,
-    } = opts;
-    let latest_kind = if async_backfill {
+    let latest_kind = if opts.async_backfill {
         LatestKind::UploadedAsyncBackfill
     } else {
         LatestKind::Uploaded
     };
-    // initialize starting block from stored latest marker
-    let latest_uploaded = archive_writer
-        .get_latest(latest_kind)
-        .await
-        .unwrap_or(Some(0))
-        .unwrap_or(0);
-    let mut start_block = if latest_uploaded == 0 {
-        0
-    } else {
-        latest_uploaded + 1
+
+    let worker = ArchiveBlockRangeWorker {
+        block_data_source,
+        fallback_source,
+        archive_writer,
+        metrics,
+        max_concurrent_blocks: opts.max_concurrent_blocks,
+        unsafe_skip_bad_blocks: opts.unsafe_skip_bad_blocks,
+        require_traces: opts.require_traces,
+        traces_only: opts.traces_only,
+        latest_kind,
+        blocks_write_policy: opts.blocks_write_policy,
+        receipts_write_policy: opts.receipts_write_policy,
+        traces_write_policy: opts.traces_write_policy,
     };
 
-    loop {
-        // query latest
-        let latest_source = match block_data_source.get_latest(LatestKind::Uploaded).await {
-            Ok(number) => number.unwrap_or(0),
-            Err(e) => {
-                warn!("Error getting latest source block: {e:?}");
-                continue;
-            }
-        };
+    let config = WorkerLoopConfig {
+        max_blocks_per_iteration: opts.max_blocks_per_iteration,
+        stop_block: opts.stop_block,
+        poll_interval: Duration::from_millis(500),
+    };
 
-        if let Some(stop_block_override) = stop_block_override {
-            if start_block > stop_block_override {
-                info!("Reached stop block override, stopping...");
-                return;
-            }
-        }
-
-        let end_block = latest_source.min(start_block + max_blocks_per_iteration - 1);
-        if end_block < start_block {
-            info!(start_block, end_block, "Nothing to process");
-            sleep(Duration::from_millis(500)).await;
-            continue;
-        }
-
-        metrics.gauge(MetricNames::SOURCE_LATEST_BLOCK_NUM, latest_source);
-        metrics.gauge(MetricNames::END_BLOCK_NUMBER, end_block);
-        metrics.gauge(MetricNames::START_BLOCK_NUMBER, start_block);
-
-        info!(
-            start = start_block,
-            end = end_block,
-            latest_source,
-            "Archiving group of blocks",
-        );
-
-        let latest_uploaded = archive_blocks(
-            &block_data_source,
-            &fallback_source,
-            start_block..=end_block,
-            &archive_writer,
-            &metrics,
-            max_concurrent_blocks,
-            unsafe_skip_bad_blocks,
-            require_traces,
-            traces_only,
-            latest_kind,
-            blocks_write_policy,
-            receipts_write_policy,
-            traces_write_policy,
-        )
-        .await;
-
-        start_block = if latest_uploaded == 0 {
-            0
-        } else {
-            latest_uploaded + 1
-        };
-    }
+    run_worker_loop(worker, config).await;
 }
 
 async fn archive_blocks(
