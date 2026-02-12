@@ -14,7 +14,7 @@ ExecStart=/usr/local/bin/monad-archive-checker \
     --recheck-freq-min 50 \
     --init-replicas "${INIT_REPLICAS}"
 EnvironmentFile=-/home/monad/.env
-Restart=no
+Restart=always
 User=monad
 Group=monad
 DeviceAllow=/dev/triedb rw
