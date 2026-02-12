@@ -13,7 +13,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use futures::StreamExt;
 use monad_archive::{
@@ -21,6 +25,7 @@ use monad_archive::{
     prelude::*,
 };
 use monad_types::BlockId;
+use opentelemetry::KeyValue;
 use tokio::{
     fs,
     sync::mpsc::{self, Receiver},
@@ -28,6 +33,7 @@ use tokio::{
 
 const UPLOAD_CONCURRENCY: usize = 10;
 const BFT_BLOCK_BODY_FILE_PATH: &str = "bodies/";
+const BFT_WORKER_NAME: &str = "bft_archive_worker";
 /// Threshold for keeping header bytes in memory during scan.
 /// Above this, we discard bytes to bound memory and re-read during upload.
 const HEADER_BYTES_MEMORY_THRESHOLD: usize = 10_000;
@@ -42,28 +48,83 @@ struct BftUploadItem {
     body_path: PathBuf,
 }
 
+fn worker_attrs(stage: &'static str, operation: &'static str) -> [KeyValue; 3] {
+    [
+        KeyValue::new("worker", BFT_WORKER_NAME),
+        KeyValue::new("stage", stage),
+        KeyValue::new("operation", operation),
+    ]
+}
+
+fn worker_health_attrs(stage: &'static str) -> Vec<KeyValue> {
+    vec![
+        KeyValue::new("worker", BFT_WORKER_NAME),
+        KeyValue::new("stage", stage),
+    ]
+}
+
+fn unix_now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 pub async fn bft_archive_worker(
     model: BftBlockModel,
     ledger_dir: PathBuf,
     poll_frequency: Duration,
-    _metrics: Metrics,
+    metrics: Metrics,
 ) -> Result<()> {
+    let now = unix_now_secs();
+    let last_liveness_unix_s = Arc::new(AtomicU64::new(now));
+    let last_progress_unix_s = Arc::new(AtomicU64::new(now));
+    let health_stage = "ledger_scan";
+    let health_attrs = worker_health_attrs(health_stage);
+    metrics.periodic_gauge_with_attrs(MetricNames::WORKER_HEALTH_STATUS, 1, health_attrs);
+
     let (tx, rx) = mpsc::channel(100);
     tokio::spawn({
         let model = model.clone();
-        upload_bft_blocks(model, rx)
+        let metrics = metrics.clone();
+        let last_progress_unix_s = last_progress_unix_s.clone();
+        upload_bft_blocks(model, rx, metrics, last_progress_unix_s)
     });
 
     let mut interval = tokio::time::interval(poll_frequency);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let stall_threshold_secs = poll_frequency.as_secs().saturating_mul(5).max(30);
 
     loop {
         interval.tick().await;
+        let now = unix_now_secs();
+        let last_liveness = last_liveness_unix_s.load(Ordering::Relaxed);
+        let liveness_stalled_secs = now.saturating_sub(last_liveness);
+        let last_progress = last_progress_unix_s.load(Ordering::Relaxed);
+        let progress_stalled_secs = now.saturating_sub(last_progress);
+        let health_attrs = worker_health_attrs(health_stage);
+        metrics.gauge_with_attrs(
+            MetricNames::WORKER_STALLED_SECONDS,
+            liveness_stalled_secs,
+            &worker_attrs(health_stage, "liveness_stalled"),
+        );
+        metrics.gauge_with_attrs(
+            MetricNames::WORKER_STALLED_SECONDS,
+            progress_stalled_secs,
+            &worker_attrs("upload_batch", "progress_stalled"),
+        );
+        metrics.periodic_gauge_with_attrs(
+            MetricNames::WORKER_HEALTH_STATUS,
+            u64::from(liveness_stalled_secs <= stall_threshold_secs),
+            health_attrs,
+        );
 
         let latest_uploaded = model.get_latest_uploaded().await?;
         let items = match index_ledger_dir(&ledger_dir, latest_uploaded).await {
             Ok(items) => items,
             Err(e) => {
+                let retry_attrs = worker_attrs(health_stage, "index_ledger_dir");
+                metrics.counter_with_attrs(MetricNames::WORKER_RETRY_ATTEMPTS, 1, &retry_attrs);
                 warn!("Failed to index ledger dir: {e:?}");
                 continue;
             }
@@ -72,6 +133,14 @@ pub async fn bft_archive_worker(
         for item in items {
             tx.send(item).await?;
         }
+
+        let now = unix_now_secs();
+        last_liveness_unix_s.store(now, Ordering::Relaxed);
+        metrics.gauge_with_attrs(
+            MetricNames::WORKER_LAST_SUCCESS_UNIX_S,
+            now,
+            &worker_attrs(health_stage, "liveness"),
+        );
     }
 }
 
@@ -164,6 +233,8 @@ async fn index_ledger_dir(
 async fn upload_bft_blocks(
     model: BftBlockModel,
     mut to_upload: Receiver<BftUploadItem>,
+    metrics: Metrics,
+    last_progress_unix_s: Arc<AtomicU64>,
 ) -> Result<()> {
     let mut items = Vec::new();
     while let Some(item) = to_upload.recv().await {
@@ -172,21 +243,59 @@ async fn upload_bft_blocks(
             items.push(item);
         }
 
-        let Some(new_latest) = upload_batch(&mut items, model.clone()).await? else {
+        let Some(new_latest) = upload_batch(&mut items, model.clone(), &metrics).await? else {
             warn!("Skipping latest_uploaded update due to empty or failed batch");
             continue;
         };
 
-        while let Err(e) = model.set_latest_uploaded(new_latest).await {
-            error!("Failed to set latest uploaded: {e:?}");
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
+        let retry_attrs = worker_attrs("upload_batch", "set_latest_uploaded");
+        let retry_metrics = metrics.clone();
+        retry_forever_with_observer(
+            || model.set_latest_uploaded(new_latest),
+            "set latest uploaded",
+            Duration::from_millis(100),
+            move |_attempt, _delay| {
+                retry_metrics.counter_with_attrs(
+                    MetricNames::WORKER_RETRY_ATTEMPTS,
+                    1,
+                    &retry_attrs,
+                );
+            },
+        )
+        .await;
+
+        let now = unix_now_secs();
+        last_progress_unix_s.store(now, Ordering::Relaxed);
+        metrics.gauge_with_attrs(
+            MetricNames::BFT_LATEST_UPLOADED_SEQ,
+            new_latest,
+            &worker_attrs("upload_batch", "checkpoint"),
+        );
+        metrics.gauge_with_attrs(
+            MetricNames::WORKER_LAST_SUCCESS_UNIX_S,
+            now,
+            &worker_attrs("upload_batch", "checkpoint"),
+        );
+        metrics.gauge_with_attrs(
+            MetricNames::WORKER_STALLED_SECONDS,
+            0,
+            &worker_attrs("upload_batch", "checkpoint"),
+        );
+        metrics.periodic_gauge_with_attrs(
+            MetricNames::WORKER_HEALTH_STATUS,
+            1,
+            worker_health_attrs("upload_batch"),
+        );
     }
 
     Ok(())
 }
 
-async fn upload_batch(items: &mut Vec<BftUploadItem>, model: BftBlockModel) -> Result<Option<u64>> {
+async fn upload_batch(
+    items: &mut Vec<BftUploadItem>,
+    model: BftBlockModel,
+    metrics: &Metrics,
+) -> Result<Option<u64>> {
     enum ReadOutcome {
         Ready(BftUploadItem, Vec<u8>, Vec<u8>),
         Failed(BftUploadItem),
@@ -246,16 +355,24 @@ async fn upload_batch(items: &mut Vec<BftUploadItem>, model: BftBlockModel) -> R
     let max_uploaded = futures::stream::iter(ready_items)
         .map(|(item, header_bytes, body_bytes)| {
             let model = model.clone();
+            let metrics = metrics.clone();
             async move {
-                loop {
-                    match upload(&model, &item, header_bytes.clone(), body_bytes.clone()).await {
-                        Ok(_) => break,
-                        Err(e) => {
-                            error!("Failed to upload bft block: {e:?}");
-                            tokio::time::sleep(Duration::from_millis(100)).await;
-                        }
-                    }
-                }
+                let retry_attrs = worker_attrs("upload_batch", "upload_block");
+                let retry_metrics = metrics.clone();
+                retry_forever_with_observer(
+                    || upload(&model, &item, header_bytes.clone(), body_bytes.clone()),
+                    "upload bft block",
+                    Duration::from_millis(100),
+                    move |_attempt, _delay| {
+                        retry_metrics.counter_with_attrs(
+                            MetricNames::WORKER_RETRY_ATTEMPTS,
+                            1,
+                            &retry_attrs,
+                        );
+                    },
+                )
+                .await;
+                metrics.inc_counter(MetricNames::BFT_BLOCKS_UPLOADED);
                 item.seq_num
             }
         })

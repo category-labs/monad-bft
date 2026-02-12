@@ -44,19 +44,23 @@ impl BftBlockModel {
     }
 
     pub async fn get_id_by_num(&self, num: u64) -> Result<BlockId> {
-        let key = format!("{}{}", BFT_BLOCK_NUM_PREFIX, num);
-        let value = self
-            .kv
-            .get(&key)
+        self.get_id_by_num_opt(num)
             .await?
-            .ok_or_eyre("Block number not found")?;
+            .ok_or_eyre("Block number not found")
+    }
+
+    pub async fn get_id_by_num_opt(&self, num: u64) -> Result<Option<BlockId>> {
+        let key = format!("{}{}", BFT_BLOCK_NUM_PREFIX, num);
+        let Some(value) = self.kv.get(&key).await? else {
+            return Ok(None);
+        };
         let id = hex::decode(&value)
             .wrap_err_with(|| format!("Failed to decode hex block id at key {key}"))?;
         let id_len = id.len();
         let id: [u8; 32] = id.try_into().map_err(|_| {
             eyre!("Invalid block id length at key {key}: expected 32, got {id_len}")
         })?;
-        Ok(BlockId(Hash(id)))
+        Ok(Some(BlockId(Hash(id))))
     }
 
     pub async fn put_index(&self, seq_num: u64, header_id: &BlockId) -> Result<()> {

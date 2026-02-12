@@ -24,6 +24,7 @@ use monad_archive::{kvstore::WritePolicy, prelude::*};
 use tokio::time::sleep;
 use tracing::{error, info, warn};
 
+#[derive(Clone)]
 pub struct ArchiveWorkerOpts {
     /// Maximum number of blocks to process in one iteration
     pub max_blocks_per_iteration: u64,
@@ -55,7 +56,7 @@ pub async fn archive_worker(
     archive_writer: BlockDataArchive,
     opts: ArchiveWorkerOpts,
     metrics: Metrics,
-) {
+) -> Result<()> {
     let ArchiveWorkerOpts {
         max_blocks_per_iteration,
         max_concurrent_blocks,
@@ -98,7 +99,7 @@ pub async fn archive_worker(
         if let Some(stop_block_override) = stop_block_override {
             if start_block > stop_block_override {
                 info!("Reached stop block override, stopping...");
-                return;
+                return Ok(());
             }
         }
 

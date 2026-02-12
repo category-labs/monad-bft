@@ -58,18 +58,94 @@ where
     rx.await.map_err(Into::into)
 }
 
-pub async fn retry_forever<T, F, Fut>(mut op: F, context: &str, retry_delay: Duration) -> T
+pub async fn retry_forever<T, F, Fut>(op: F, context: &str, retry_delay: Duration) -> T
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<T>>,
 {
+    retry_forever_with_observer(op, context, retry_delay, |_attempt, _delay| {}).await
+}
+
+pub async fn retry_forever_with_observer<T, F, Fut, Obs>(
+    mut op: F,
+    context: &str,
+    retry_delay: Duration,
+    mut on_retry: Obs,
+) -> T
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T>>,
+    Obs: FnMut(u64, Duration),
+{
+    const MAX_BACKOFF_DELAY: Duration = Duration::from_secs(10);
+    const LOG_EVERY: Duration = Duration::from_secs(30);
+    const INITIAL_VERBOSE_RETRY_ATTEMPTS: u64 = 3;
+
+    let mut attempts = 0_u64;
+    let mut first_retry = None::<Instant>;
+    let mut last_log_at = Instant::now()
+        .checked_sub(LOG_EVERY)
+        .unwrap_or_else(Instant::now);
+
     loop {
         match op().await {
-            Ok(result) => return result,
+            Ok(result) => {
+                if let Some(first_retry) = first_retry {
+                    info!(
+                        context,
+                        attempts,
+                        recovered_after_secs = first_retry.elapsed().as_secs(),
+                        "operation recovered after retries"
+                    );
+                }
+                return result;
+            }
             Err(e) => {
-                error!(?e, context, "retrying...");
-                tokio::time::sleep(retry_delay).await;
+                attempts = attempts.saturating_add(1);
+                let delay = jittered_backoff_delay(retry_delay, MAX_BACKOFF_DELAY, attempts);
+                on_retry(attempts, delay);
+
+                let should_log = attempts <= INITIAL_VERBOSE_RETRY_ATTEMPTS
+                    || attempts.is_power_of_two()
+                    || last_log_at.elapsed() >= LOG_EVERY;
+
+                if should_log {
+                    error!(
+                        ?e,
+                        context,
+                        attempts,
+                        delay_ms = delay.as_millis(),
+                        "retrying operation"
+                    );
+                    if first_retry.is_none() {
+                        first_retry = Some(Instant::now());
+                    }
+                    last_log_at = Instant::now();
+                }
+
+                tokio::time::sleep(delay).await;
             }
         }
     }
+}
+
+fn jittered_backoff_delay(base_delay: Duration, max_delay: Duration, attempts: u64) -> Duration {
+    let base_ms = base_delay.as_millis().max(1) as u64;
+    let max_ms = max_delay.as_millis().max(base_ms as u128) as u64;
+    let exponent = attempts.saturating_sub(1).min(16);
+    let exp_ms = base_ms.saturating_mul(1_u64 << exponent).min(max_ms);
+
+    // Keep jitter deterministic enough to avoid synchronized retries without adding RNG deps.
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
+    let jitter_pct = (nanos % 41) as i32 - 20; // [-20%, +20%]
+    let jittered_ms = if jitter_pct >= 0 {
+        exp_ms.saturating_add(exp_ms.saturating_mul(jitter_pct as u64) / 100)
+    } else {
+        exp_ms.saturating_sub(exp_ms.saturating_mul((-jitter_pct) as u64) / 100)
+    };
+
+    Duration::from_millis(jittered_ms.max(1))
 }
