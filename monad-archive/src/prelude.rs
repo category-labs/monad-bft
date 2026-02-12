@@ -43,7 +43,10 @@ pub use crate::{
         block_data_archive::*, tx_index_archive::*, BlockDataReader, BlockDataReaderErased,
         BlockDataWithOffsets, HeaderSubset, TxByteOffsets, TxIndexedData,
     },
-    worker_loop::{run_worker_loop, BlockRangeWorker, WorkerLoopConfig},
+    worker_loop::{
+        process_block_range, run_worker_loop, BlockRangeWorker, ProcessRangeConfig,
+        WorkerLoopConfig,
+    },
 };
 
 /// Spawn a rayon task and wait for it to complete.

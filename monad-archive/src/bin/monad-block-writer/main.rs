@@ -13,8 +13,6 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::vec::IntoIter;
-
 use alloy_consensus::Block as AlloyBlock;
 use alloy_rlp::Encodable;
 use clap::Parser;
@@ -28,8 +26,6 @@ mod cli;
 struct BlockWriterWorker {
     reader: BlockDataReaderErased,
     fs: FsStorage,
-    max_retries: u32,
-    concurrency: usize,
     flat_dir: bool,
 }
 
@@ -45,27 +41,24 @@ impl BlockRangeWorker for BlockWriterWorker {
             .ok_or_else(|| eyre!("No latest block available from source"))
     }
 
-    async fn process_range(&self, range: RangeInclusive<u64>) -> u64 {
-        let last_block = write_range(
-            self.concurrency,
-            self.reader.clone(),
-            self.fs.clone(),
-            self.max_retries,
-            *range.start(),
-            *range.end(),
-            self.flat_dir,
-        )
-        .await;
+    async fn process_block(&self, block_num: u64) -> Result<()> {
+        let mut fs = self.fs.clone();
+        if !self.flat_dir {
+            fs = fs
+                .with_prefix(format!("{}M/", block_num / 1_000_000))
+                .await?;
+        }
+        write_block(&self.reader, block_num, &fs).await
+    }
 
-        if let Err(e) = set_latest_block(&self.fs, last_block).await {
+    async fn checkpoint(&self, block_num: u64) {
+        if let Err(e) = set_latest_block(&self.fs, block_num).await {
             error!("Failed to set latest block: {e:?}");
         }
-
-        last_block
     }
 }
 
-async fn process_block(
+async fn write_block(
     reader: &BlockDataReaderErased,
     current_block: u64,
     fs: &FsStorage,
@@ -145,23 +138,23 @@ async fn main() -> Result<()> {
     match args.mode {
         cli::Mode::SetStartBlock { .. } => unreachable!(),
         cli::Mode::WriteRange(ref write_range_args) => {
-            tokio::spawn(write_range(
-                shared_args.concurrency,
+            let worker = BlockWriterWorker {
                 reader,
                 fs,
+                flat_dir: shared_args.flat_dir,
+            };
+            let config = ProcessRangeConfig {
+                concurrency: shared_args.concurrency,
                 max_retries,
-                write_range_args.start_block,
-                write_range_args.stop_block,
-                shared_args.flat_dir,
-            ))
-            .await?;
+                skip_failures: false,
+            };
+            let range = write_range_args.start_block..=write_range_args.stop_block;
+            tokio::spawn(async move { process_block_range(&worker, range, &config).await }).await?;
         }
         cli::Mode::Stream(ref stream_args) => {
             let worker = BlockWriterWorker {
                 reader,
                 fs,
-                max_retries,
-                concurrency: shared_args.concurrency,
                 flat_dir: shared_args.flat_dir,
             };
 
@@ -169,6 +162,11 @@ async fn main() -> Result<()> {
                 max_blocks_per_iteration: stream_args.max_blocks_per_iter,
                 stop_block: None,
                 poll_interval: Duration::from_secs_f64(stream_args.sleep_secs),
+                process: ProcessRangeConfig {
+                    concurrency: shared_args.concurrency,
+                    max_retries,
+                    skip_failures: false,
+                },
             };
 
             run_worker_loop(worker, config).await;
@@ -204,114 +202,6 @@ async fn set_latest_block(fs: &FsStorage, block: u64) -> Result<()> {
     .await
     .wrap_err("Failed to set latest block")?;
     Ok(())
-}
-
-async fn write_range(
-    concurrency: usize,
-    reader: BlockDataReaderErased,
-    fs: FsStorage,
-    max_retries: u32,
-    start_block: u64,
-    stop_block: u64,
-    flat_dir: bool,
-) -> u64 {
-    let mut failed_blocks: Vec<u64> = Vec::new();
-
-    for attempt in 0..=max_retries {
-        let blocks_to_process: TwoIters<RangeInclusive<u64>, IntoIter<u64>> = if attempt == 0 {
-            // First attempt: process all blocks
-            TwoIters::A(start_block..=stop_block)
-        } else {
-            // Retry: only process failed blocks
-            info!(
-                "Retry attempt {} for {} failed blocks",
-                attempt,
-                failed_blocks.len()
-            );
-            let iter = failed_blocks.into_iter();
-            failed_blocks = Vec::new();
-            TwoIters::B(iter)
-        };
-
-        futures::stream::iter(blocks_to_process)
-            .map(|current_block| {
-                let reader = reader.clone();
-                let mut fs = fs.clone();
-
-                async move {
-                    tokio::spawn(async move {
-                        if !flat_dir {
-                            fs = fs
-                                .with_prefix(format!("{}M/", current_block / 1_000_000))
-                                .await
-                                .wrap_err("Failed to create prefix for block")
-                                .map_err(|e| (current_block, eyre::Report::from(e)))?;
-                        }
-
-                        process_block(&reader, current_block, &fs)
-                            .await
-                            .map_err(|e| (current_block, e))
-                    })
-                    .await
-                    .map_err(|e| (current_block, e))
-                }
-            })
-            // Prefer buffered over unordered to lay down blocks in order to allow exeecution
-            // to begin processing before all blocks are laid down.
-            .buffered(concurrency)
-            // Collect failed blocks for retry
-            .for_each(|result| {
-                match result {
-                    Ok(Ok(())) => {
-                        // Success - no retry needed
-                    }
-                    Ok(Err((block_num, e))) => {
-                        error!("Failed to process block {}: {:?}", block_num, e);
-                        failed_blocks.push(block_num);
-                    }
-                    Err((block_num, e)) => {
-                        error!("Task panicked for block {}: {:?}", block_num, e);
-                        failed_blocks.push(block_num);
-                    }
-                }
-                futures::future::ready(())
-            })
-            .await;
-
-        if failed_blocks.is_empty() {
-            break;
-        }
-    }
-
-    if !failed_blocks.is_empty() {
-        let min_failed = *failed_blocks.iter().min().unwrap();
-        error!(
-            "Failed to process {} blocks after {} retries, earliest failure: {}",
-            failed_blocks.len(),
-            max_retries,
-            min_failed
-        );
-        // Return the block before the first failure so we don't skip any blocks
-        return min_failed.saturating_sub(1);
-    }
-
-    stop_block
-}
-
-enum TwoIters<A, B> {
-    A(A),
-    B(B),
-}
-
-impl<T, A: Iterator<Item = T>, B: Iterator<Item = T>> Iterator for TwoIters<A, B> {
-    type Item = T;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match self {
-            Self::A(a) => a.next(),
-            Self::B(b) => b.next(),
-        }
-    }
 }
 
 #[cfg(test)]
@@ -379,9 +269,19 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let fs = FsStorage::new(temp_dir.path(), Metrics::none()).unwrap();
 
-        let last_block = write_range(2, reader, fs.clone(), 3, 0, 4, true).await;
+        let worker = BlockWriterWorker {
+            reader,
+            fs: fs.clone(),
+            flat_dir: true,
+        };
+        let config = ProcessRangeConfig {
+            concurrency: 2,
+            max_retries: 3,
+            skip_failures: false,
+        };
+        let last_block = process_block_range(&worker, 0..=4, &config).await;
 
-        assert_eq!(last_block, 4);
+        assert_eq!(last_block, Some(4));
 
         // Verify all blocks were written
         for i in 0..5 {
@@ -417,9 +317,19 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let fs = FsStorage::new(temp_dir.path(), Metrics::none()).unwrap();
 
-        let last_block = write_range(2, reader, fs, 3, 999_999, 1_000_001, false).await;
+        let worker = BlockWriterWorker {
+            reader,
+            fs,
+            flat_dir: false,
+        };
+        let config = ProcessRangeConfig {
+            concurrency: 2,
+            max_retries: 3,
+            skip_failures: false,
+        };
+        let last_block = process_block_range(&worker, 999_999..=1_000_001, &config).await;
 
-        assert_eq!(last_block, 1_000_001);
+        assert_eq!(last_block, Some(1_000_001));
 
         // Verify blocks are in correct prefix directories
         let path_0 = temp_dir.path().join("0M/999999");
@@ -440,9 +350,19 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let fs = FsStorage::new(temp_dir.path(), Metrics::none()).unwrap();
 
-        let last_block = write_range(4, reader, fs, 0, 10, 14, true).await;
+        let worker = BlockWriterWorker {
+            reader,
+            fs,
+            flat_dir: true,
+        };
+        let config = ProcessRangeConfig {
+            concurrency: 4,
+            max_retries: 0,
+            skip_failures: false,
+        };
+        let last_block = process_block_range(&worker, 10..=14, &config).await;
 
-        assert_eq!(last_block, 14);
+        assert_eq!(last_block, Some(14));
     }
 
     #[tokio::test]
@@ -455,8 +375,18 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let fs = FsStorage::new(temp_dir.path(), Metrics::none()).unwrap();
 
-        let last_block = write_range(2, reader, fs, 0, 0, 4, true).await;
+        let worker = BlockWriterWorker {
+            reader,
+            fs,
+            flat_dir: true,
+        };
+        let config = ProcessRangeConfig {
+            concurrency: 2,
+            max_retries: 0,
+            skip_failures: false,
+        };
+        let last_block = process_block_range(&worker, 0..=4, &config).await;
 
-        assert_eq!(last_block, 4);
+        assert_eq!(last_block, Some(4));
     }
 }
