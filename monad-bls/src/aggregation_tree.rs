@@ -261,6 +261,9 @@ impl Decodable for SignerMap {
         }
         bitvec.reverse();
 
+        if !payload.is_empty() {
+            return Err(alloy_rlp::Error::UnexpectedLength);
+        }
         Ok(SignerMap(bitvec))
     }
 }
