@@ -179,7 +179,7 @@ impl CliArgs {
                     return Err(Self::missing_archive_sink_error());
                 }
             }
-            Commands::MigrateLogs { .. } => {}
+            Commands::MigrateLogs { .. } | Commands::MigrateBftIndex { .. } => {}
         }
         Ok(())
     }
@@ -228,6 +228,28 @@ pub enum Commands {
         /// Set the async-backfill marker instead of the primary marker
         #[arg(long, action = ArgAction::SetTrue)]
         async_backfill: bool,
+    },
+    /// Build seq_num -> block_id index from legacy bft_blocks/ archive data
+    MigrateBftIndex {
+        /// Source archive containing the legacy bft_blocks/ data
+        #[arg(long, value_parser = clap::value_parser!(ArchiveArgs))]
+        source: ArchiveArgs,
+
+        /// Sink archive to write index and markers to
+        #[arg(long, value_parser = clap::value_parser!(ArchiveArgs))]
+        sink: ArchiveArgs,
+
+        /// Number of sub-chains to index in parallel
+        #[arg(long, default_value_t = 4)]
+        concurrency: usize,
+
+        /// Max blocks to index before persisting progress marker
+        #[arg(long, default_value_t = 1000)]
+        batch_size: usize,
+
+        /// Skip copying header and body bytes to the new schema
+        #[arg(long)]
+        no_copy_data: bool,
     },
 }
 

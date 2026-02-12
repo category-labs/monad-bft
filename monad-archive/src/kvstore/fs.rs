@@ -113,6 +113,57 @@ impl KVReader for FsStorage {
                 .write_get_metrics_on_err(start.elapsed(), KVStoreType::FileSystem, &self.metrics),
         }
     }
+
+    async fn scan_prefix(&self, prefix: &str) -> Result<Vec<String>> {
+        self.scan_prefix_with_max_keys(prefix, usize::MAX).await
+    }
+
+    async fn scan_prefix_with_max_keys(
+        &self,
+        prefix: &str,
+        max_keys: usize,
+    ) -> Result<Vec<String>> {
+        let root = self.root.clone();
+        let prefix = prefix.to_owned();
+        let name = self.name.clone();
+
+        spawn_blocking(move || -> Result<Vec<String>> {
+            let mut matches = Vec::new();
+
+            if !root.exists() {
+                return Ok(matches);
+            }
+
+            let mut stack = vec![root.clone()];
+            while let Some(dir) = stack.pop() {
+                for entry in std::fs::read_dir(&dir)
+                    .wrap_err_with(|| format!("Failed to read directory {dir:?}"))?
+                {
+                    let entry = entry?;
+                    let path = entry.path();
+
+                    if path.is_dir() {
+                        stack.push(path);
+                        continue;
+                    }
+
+                    let key = Self::path_to_key(&root, &name, &path)?;
+
+                    if !key.starts_with(&prefix) {
+                        continue;
+                    }
+
+                    matches.push(key);
+                    if matches.len() >= max_keys {
+                        return Ok(matches);
+                    }
+                }
+            }
+
+            Ok(matches)
+        })
+        .await?
+    }
 }
 
 impl KVStore for FsStorage {
@@ -184,44 +235,6 @@ impl KVStore for FsStorage {
                 .wrap_err_with(|| format!("Failed to write key {key} to path {path:?}"))?;
             Ok(PutResult::Written)
         }
-    }
-
-    async fn scan_prefix(&self, prefix: &str) -> Result<Vec<String>> {
-        let root = self.root.clone();
-        let prefix = prefix.to_owned();
-        let name = self.name.clone();
-
-        spawn_blocking(move || -> Result<Vec<String>> {
-            let mut matches = Vec::new();
-
-            if !root.exists() {
-                return Ok(matches);
-            }
-
-            let mut stack = vec![root.clone()];
-            while let Some(dir) = stack.pop() {
-                for entry in std::fs::read_dir(&dir)
-                    .wrap_err_with(|| format!("Failed to read directory {dir:?}"))?
-                {
-                    let entry = entry?;
-                    let path = entry.path();
-
-                    if path.is_dir() {
-                        stack.push(path);
-                        continue;
-                    }
-
-                    let key = Self::path_to_key(&root, &name, &path)?;
-
-                    if key.starts_with(&prefix) {
-                        matches.push(key);
-                    }
-                }
-            }
-
-            Ok(matches)
-        })
-        .await?
     }
 
     async fn delete(&self, key: impl AsRef<str>) -> Result<()> {
