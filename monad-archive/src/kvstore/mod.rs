@@ -25,7 +25,6 @@ use std::collections::HashMap;
 
 use bytes::Bytes;
 use enum_dispatch::enum_dispatch;
-use eyre::Result;
 use futures::future::try_join_all;
 use tokio_retry::{
     strategy::{jitter, ExponentialBackoff},
@@ -35,7 +34,7 @@ use tokio_retry::{
 use self::{
     cloud_proxy::CloudProxyReader, fs::FsStorage, memory::MemoryStorage, mongo::MongoDbStorage,
 };
-use crate::prelude::*;
+use crate::{error::Result, prelude::*};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KVStoreType {

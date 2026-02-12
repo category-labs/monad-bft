@@ -19,12 +19,16 @@ use alloy_consensus::{Block as AlloyBlock, BlockBody, Header, ReceiptEnvelope, T
 use alloy_primitives::{Address, BlockHash, Bytes, Log, U8};
 use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable, EMPTY_LIST_CODE};
 use bytes::BufMut;
-use eyre::bail;
 use futures::try_join;
 use monad_triedb_utils::triedb_env::{ReceiptWithLogIndex, TxEnvelopeWithSender};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
-use crate::{kvstore::WritePolicy, prelude::*, rlp_offset_scanner::get_all_tx_offsets};
+use crate::{
+    error::{ErrorKind, Result, WrapErr},
+    kvstore::WritePolicy,
+    prelude::*,
+    rlp_offset_scanner::get_all_tx_offsets,
+};
 
 pub type Block = AlloyBlock<TxEnvelopeWithSender, Header>;
 pub type BlockReceipts = Vec<ReceiptWithLogIndex>;
@@ -80,7 +84,9 @@ impl BlockDataReader for BlockDataArchive {
             None => return Ok(None),
         };
 
-        let value_str = String::from_utf8(value.to_vec()).wrap_err("Invalid UTF-8 sequence")?;
+        let value_str = String::from_utf8(value.to_vec())
+            .wrap_err("Invalid UTF-8 sequence")
+            .kind(ErrorKind::Parse)?;
 
         // Parse the string as u64
         value_str
@@ -88,6 +94,7 @@ impl BlockDataReader for BlockDataArchive {
             .wrap_err_with(|| {
                 format!("Unable to convert block_number string to number (u64), value: {value_str}")
             })
+            .kind(ErrorKind::Parse)
             .map(Some)
     }
 
@@ -105,12 +112,18 @@ impl BlockDataReader for BlockDataArchive {
             return Ok(None);
         };
 
-        let block_num_str =
-            String::from_utf8(block_num_bytes.to_vec()).wrap_err("Invalid UTF-8 sequence")?;
+        let block_num_str = String::from_utf8(block_num_bytes.to_vec())
+            .wrap_err("Invalid UTF-8 sequence")
+            .kind(ErrorKind::Parse)?;
 
-        let block_num = block_num_str.parse::<u64>().wrap_err_with(|| {
-            format!("Unable to convert block_number string to number (u64), value: {block_num_str}")
-        })?;
+        let block_num = block_num_str
+            .parse::<u64>()
+            .wrap_err_with(|| {
+                format!(
+                    "Unable to convert block_number string to number (u64), value: {block_num_str}"
+                )
+            })
+            .kind(ErrorKind::Parse)?;
 
         self.try_get_block_by_number(block_num).await
     }
@@ -127,9 +140,15 @@ impl BlockDataReader for BlockDataArchive {
         .wrap_err("Error getting block data")?;
 
         let (block_rlp, mut traces_rlp, receipts_rlp): (&[u8], &[u8], &[u8]) = (
-            &block_rlp.wrap_err("No block found")?,
-            &traces_rlp.wrap_err("No trace found")?,
-            &receipts_rlp.wrap_err("No receipt found")?,
+            &block_rlp
+                .wrap_err("No block found")
+                .kind(ErrorKind::NotFound)?,
+            &traces_rlp
+                .wrap_err("No trace found")
+                .kind(ErrorKind::NotFound)?,
+            &receipts_rlp
+                .wrap_err("No receipt found")
+                .kind(ErrorKind::NotFound)?,
         );
 
         // WARN: extracting offsets is the same for all representations currently, but that may not always be the case
@@ -145,7 +164,9 @@ impl BlockDataReader for BlockDataArchive {
                 .wrap_err("Failed to decode block")?,
             receipts: ReceiptStorageRepr::decode_and_convert(receipts_rlp)
                 .wrap_err("Failed to decode receipts")?,
-            traces: Vec::<Vec<u8>>::decode(&mut traces_rlp).wrap_err("Failed to decode traces")?,
+            traces: Vec::<Vec<u8>>::decode(&mut traces_rlp)
+                .wrap_err("Failed to decode traces")
+                .kind(ErrorKind::Parse)?,
             offsets: Some(offsets),
         })
     }
@@ -205,6 +226,7 @@ impl BlockDataReader for BlockDataArchive {
 
         Vec::decode(&mut rlp_traces_slice)
             .wrap_err("Cannot decode block")
+            .kind(ErrorKind::Parse)
             .map(Some)
     }
 }
@@ -359,10 +381,11 @@ impl BlockStorageRepr {
 
     pub(crate) async fn decode_and_convert(buf: &[u8]) -> Result<Block> {
         if buf.len() < 2 {
-            bail!(
+            return Err(eyre!(
                 "Cannot decode block, len must be > 2: actual: {}",
                 buf.len()
-            );
+            ))
+            .kind(ErrorKind::Parse);
         }
 
         let marker_bytes = [buf[0], buf[1]];
@@ -387,9 +410,10 @@ impl BlockStorageRepr {
             Ok(decoded) => decoded.convert().await,
             Err(e) => {
                 info!(?e, "Failed to parse BlockStorageRepr despite sentinel bit being set. Falling back to raw InlineV0 decoding...");
-                let v0 =
-                    BlockStorageRepr::V0(AlloyBlock::<TxEnvelope, Header>::decode(&mut &buf[..])?);
-                v0.convert().await
+                let decoded = AlloyBlock::<TxEnvelope, Header>::decode(&mut &buf[..])
+                    .wrap_err("Failed to decode block as InlineV0 fallback")
+                    .kind(ErrorKind::Parse)?;
+                BlockStorageRepr::V0(decoded).convert().await
             }
         }
     }
@@ -406,13 +430,13 @@ impl BlockStorageRepr {
                             .body
                             .transactions
                             .into_par_iter()
-                            .map(|tx| -> Result<TxEnvelopeWithSender> {
+                            .map(|tx| -> eyre::Result<TxEnvelopeWithSender> {
                                 Ok(TxEnvelopeWithSender {
                                     sender: tx.recover_signer()?,
                                     tx,
                                 })
                             })
-                            .collect::<Result<Vec<TxEnvelopeWithSender>>>()
+                            .collect::<eyre::Result<Vec<TxEnvelopeWithSender>>>()
                     })
                     .await??
                 };
@@ -480,10 +504,11 @@ impl ReceiptStorageRepr {
         }
 
         if buf.len() < 2 {
-            bail!(
+            return Err(eyre!(
                 "Cannot decode receipt, len must be > 2: actual: {}",
                 buf.len()
-            );
+            ))
+            .kind(ErrorKind::Parse);
         }
 
         let marker_bytes = [buf[0], buf[1]];
@@ -505,8 +530,10 @@ impl ReceiptStorageRepr {
             Ok(decoded) => decoded.convert(),
             Err(e) => {
                 info!(?e, "Failed to parse ReceiptStorageRepr despite sentinel bit being set. Falling back to raw V0 decoding...");
-                let v0 = Vec::<ReceiptEnvelope>::decode(&mut &buf[..]) // fmt
-                    .map(ReceiptStorageRepr::V0)?;
+                let v0 = Vec::<ReceiptEnvelope>::decode(&mut &buf[..])
+                    .map(ReceiptStorageRepr::V0)
+                    .wrap_err("Failed to decode receipts as V0 fallback")
+                    .kind(ErrorKind::Parse)?;
                 v0.convert()
             }
         }
@@ -545,11 +572,13 @@ impl ReceiptStorageRepr {
     }
 }
 
-pub fn decode_traces(traces: &BlockTraces) -> Result<Vec<Vec<Vec<CallFrame>>>, alloy_rlp::Error> {
+pub fn decode_traces(
+    traces: &BlockTraces,
+) -> std::result::Result<Vec<Vec<Vec<CallFrame>>>, alloy_rlp::Error> {
     traces.iter().map(Vec::as_slice).map(decode_trace).collect()
 }
 
-pub fn decode_trace(trace: &[u8]) -> Result<Vec<Vec<CallFrame>>, alloy_rlp::Error> {
+pub fn decode_trace(trace: &[u8]) -> std::result::Result<Vec<Vec<CallFrame>>, alloy_rlp::Error> {
     Vec::<Vec<CallFrame>>::decode(&mut &trace[..])
 }
 

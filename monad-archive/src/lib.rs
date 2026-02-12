@@ -17,6 +17,7 @@
 
 pub mod archive_reader;
 pub mod cli;
+pub mod error;
 pub mod failover_circuit_breaker;
 pub mod kvstore;
 pub mod metrics;

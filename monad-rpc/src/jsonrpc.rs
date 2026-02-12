@@ -490,9 +490,9 @@ impl JsonRpcError {
 
 pub fn archive_to_jsonrpc_error<'a, A: Into<std::borrow::Cow<'a, str>>>(
     message: A,
-) -> impl FnOnce(monad_archive::prelude::Report) -> JsonRpcError {
+) -> impl FnOnce(monad_archive::prelude::ArchiveError) -> JsonRpcError {
     // Log with debug to get more details, but return a generic error for response
-    move |e: monad_archive::prelude::Report| {
+    move |e: monad_archive::prelude::ArchiveError| {
         let message = message.into();
         error!("Archive error: {message}. {e:?}");
         JsonRpcError::internal_error(format!("Archive error: {message}"))
@@ -515,8 +515,8 @@ impl<T> ArchiveErrorExt<T> for monad_archive::prelude::Result<T> {
     }
 }
 
-impl From<monad_archive::prelude::Report> for JsonRpcError {
-    fn from(e: monad_archive::prelude::Report) -> Self {
+impl From<monad_archive::prelude::ArchiveError> for JsonRpcError {
+    fn from(e: monad_archive::prelude::ArchiveError) -> Self {
         // Log with debug to get more details, but return a generic error for response
         error!("Archive error: {e:?}");
         Self::internal_error(format!("Archive error: {}", e))

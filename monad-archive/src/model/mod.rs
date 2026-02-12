@@ -22,11 +22,13 @@ pub mod tx_index_archive;
 use alloy_primitives::BlockHash;
 use alloy_rlp::{RlpDecodable, RlpEncodable};
 use enum_dispatch::enum_dispatch;
-use eyre::{OptionExt, Result};
 use monad_triedb_utils::triedb_env::{ReceiptWithLogIndex, TxEnvelopeWithSender};
 use serde::{Deserialize, Serialize};
 
-use crate::prelude::*;
+use crate::{
+    error::{ErrorKind, OptionExt as _, Result},
+    prelude::*,
+};
 
 /// Core trait for reading block data from any storage backend.
 /// Implementations must be able to retrieve blocks, receipts, and traces.
@@ -48,7 +50,7 @@ pub trait BlockDataReader: Clone {
     async fn get_block_by_hash(&self, block_hash: &BlockHash) -> Result<Block> {
         self.try_get_block_by_hash(block_hash)
             .await
-            .and_then(|opt| opt.ok_or_eyre("Block not found"))
+            .and_then(|opt| opt.ok_or_kind(ErrorKind::NotFound, "Block not found"))
     }
 
     /// Get a block by its number, or return None if not found
@@ -58,7 +60,7 @@ pub trait BlockDataReader: Clone {
     async fn get_block_by_number(&self, block_num: u64) -> Result<Block> {
         self.try_get_block_by_number(block_num)
             .await
-            .and_then(|opt| opt.ok_or_eyre("Block not found"))
+            .and_then(|opt| opt.ok_or_kind(ErrorKind::NotFound, "Block not found"))
     }
 
     /// Get receipts for a block, or return None if not found
@@ -68,7 +70,7 @@ pub trait BlockDataReader: Clone {
     async fn get_block_receipts(&self, block_number: u64) -> Result<BlockReceipts> {
         self.try_get_block_receipts(block_number)
             .await
-            .and_then(|opt| opt.ok_or_eyre("Receipt not found"))
+            .and_then(|opt| opt.ok_or_kind(ErrorKind::NotFound, "Receipt not found"))
     }
 
     /// Get execution traces for a block, or return None if not found
@@ -78,7 +80,7 @@ pub trait BlockDataReader: Clone {
     async fn get_block_traces(&self, block_number: u64) -> Result<BlockTraces> {
         self.try_get_block_traces(block_number)
             .await
-            .and_then(|opt| opt.ok_or_eyre("Traces not found"))
+            .and_then(|opt| opt.ok_or_kind(ErrorKind::NotFound, "Traces not found"))
     }
 }
 

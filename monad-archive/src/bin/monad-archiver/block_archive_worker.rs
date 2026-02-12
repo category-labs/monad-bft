@@ -302,7 +302,8 @@ async fn archive_block(
     if let Err(e) = traces {
         metrics.inc_counter(MetricNames::BLOCK_ARCHIVE_WORKER_TRACES_FAILED);
         if require_traces || traces_only {
-            return Err(e.wrap_err("Archiver requires traces to be present for all blocks"));
+            return Err(eyre::Report::from(e)
+                .wrap_err("Archiver requires traces to be present for all blocks"));
         }
         error!(
             block_num,

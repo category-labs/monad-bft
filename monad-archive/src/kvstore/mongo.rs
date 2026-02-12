@@ -14,10 +14,10 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use bytes::Bytes;
-use eyre::{Context, Result};
+use eyre::Context;
 use mongodb::{
     bson::{doc, Binary},
-    error::{ErrorKind, WriteFailure},
+    error::{ErrorKind as MongoErrorKind, WriteFailure},
     options::{ClientOptions, CollectionOptions, WriteConcern},
     Client, Collection,
 };
@@ -26,6 +26,7 @@ use tracing::trace;
 
 use crate::{
     archive_reader::redact_mongo_url,
+    error::{ErrorKind, Result, ResultExt, WrapErr},
     kvstore::{kvstore_put_metrics, KVStoreType, MetricsResultExt, PutResult, WritePolicy},
     prelude::*,
 };
@@ -67,7 +68,9 @@ impl KeyValueDocument {
 
                 let mut chunks = collection
                     .find(doc! { "_id": {"$in": &keys} })
-                    .await?
+                    .await
+                    .wrap_err("Failed to find chunks")
+                    .kind(ErrorKind::Storage)?
                     .map(|x| {
                         let doc = x.wrap_err("Failed to get chunk")?;
                         eyre::Ok((doc._id, doc.value.wrap_err("Chunk has no value")?.bytes))
@@ -84,7 +87,8 @@ impl KeyValueDocument {
                 let mut bytes = Vec::with_capacity(chunks.len() * CHUNK_SIZE);
                 for key in keys {
                     let Some(chunk) = chunks.remove(&key) else {
-                        return Err(eyre!("Chunk not found for key: {key}"));
+                        return Err(eyre!("Chunk not found for key: {key}"))
+                            .kind(ErrorKind::NotFound);
                     };
                     bytes.extend_from_slice(&chunk);
                 }
@@ -108,7 +112,7 @@ const DUPLICATE_KEY_ERROR_CODE: i32 = 11000;
 /// This occurs when attempting to insert a document with an _id that already exists.
 fn is_duplicate_key_error(error: &mongodb::error::Error) -> bool {
     match error.kind.as_ref() {
-        ErrorKind::Write(WriteFailure::WriteError(write_error)) => {
+        MongoErrorKind::Write(WriteFailure::WriteError(write_error)) => {
             write_error.code == DUPLICATE_KEY_ERROR_CODE
         }
         _ => false,
@@ -116,11 +120,16 @@ fn is_duplicate_key_error(error: &mongodb::error::Error) -> bool {
 }
 
 pub async fn new_client(connection_string: &str) -> Result<Client> {
-    let mut client_options = ClientOptions::parse(connection_string).await?;
+    let mut client_options = ClientOptions::parse(connection_string)
+        .await
+        .wrap_err("Failed to parse MongoDB connection string")
+        .kind(ErrorKind::Storage)?;
     client_options.max_pool_size = Some(MAX_CONNECTION_POOL_SIZE);
     client_options.connect_timeout = Some(Duration::from_secs(1));
 
-    let client = Client::with_options(client_options)?;
+    let client = Client::with_options(client_options)
+        .wrap_err("Failed to create MongoDB client")
+        .kind(ErrorKind::Storage)?;
     trace!("MongoDB client created successfully");
     Ok(client)
 }
@@ -170,14 +179,19 @@ impl MongoDbStorage {
 
         let collection_exists = db
             .list_collection_names()
-            .await?
+            .await
+            .wrap_err("Failed to list MongoDB collections")
+            .kind(ErrorKind::Storage)?
             .contains(&collection_name.to_string());
 
         if !collection_exists {
             info!("Collection '{}' not found, creating...", collection_name);
 
             // Create capped collection if it doesn't exist
-            db.create_collection(collection_name).await?;
+            db.create_collection(collection_name)
+                .await
+                .wrap_err("Failed to create MongoDB collection")
+                .kind(ErrorKind::Storage)?;
 
             info!("Collection '{}' created successfully", collection_name);
         } else {
@@ -216,7 +230,8 @@ impl KVReader for MongoDbStorage {
             .max_time(self.max_time_get)
             .await
             .wrap_err("MongoDB get operation failed")
-            .write_get_metrics_on_err(start.elapsed(), KVStoreType::Mongo, &self.metrics)?
+            .write_get_metrics_on_err(start.elapsed(), KVStoreType::Mongo, &self.metrics)
+            .kind(ErrorKind::Storage)?
         {
             Some(doc) => doc
                 .resolve(&self.collection)
@@ -236,15 +251,19 @@ impl KVReader for MongoDbStorage {
             .max_time(self.max_time_get)
             .await
             .write_get_metrics(start.elapsed(), KVStoreType::Mongo, &self.metrics)
-            .wrap_err("MongoDB get operation failed")?
-            .map(|x| x.wrap_err("MongoDB get operation failed"));
+            .wrap_err("MongoDB get operation failed")
+            .kind(ErrorKind::Storage)?
+            .map(|x| -> Result<_> {
+                x.wrap_err("MongoDB get operation failed")
+                    .kind(ErrorKind::Storage)
+            });
 
         find_result
             .and_then(|x| async { x.resolve(&self.collection).await })
             .try_collect::<HashMap<String, Bytes>>()
             .await
-            .wrap_err("MongoDB bulk_get operation failed")
             .write_get_metrics(start.elapsed(), KVStoreType::Mongo, &self.metrics)
+            .wrap_err("MongoDB bulk_get operation failed")
     }
 }
 
@@ -271,7 +290,8 @@ impl KVStore for MongoDbStorage {
                     .find_one(doc! { "_id": key_str })
                     .await
                     .wrap_err("MongoDB existence check failed")
-                    .write_put_metrics_on_err(start.elapsed(), KVStoreType::Mongo, &self.metrics)?
+                    .write_put_metrics_on_err(start.elapsed(), KVStoreType::Mongo, &self.metrics)
+                    .kind(ErrorKind::Storage)?
                     .is_some()
             {
                 warn!(
@@ -298,7 +318,8 @@ impl KVStore for MongoDbStorage {
                     .wrap_err_with(|| {
                         format!("MongoDB put operation failed for chunk {}", chunk_num)
                     })
-                    .write_put_metrics_on_err(start.elapsed(), KVStoreType::Mongo, &self.metrics)?;
+                    .write_put_metrics_on_err(start.elapsed(), KVStoreType::Mongo, &self.metrics)
+                    .kind(ErrorKind::Storage)?;
             }
 
             KeyValueDocument {
@@ -350,7 +371,9 @@ impl KVStore for MongoDbStorage {
                             KVStoreType::Mongo,
                             &self.metrics,
                         );
-                        Err(e).wrap_err("MongoDB put operation failed")
+                        Err(e)
+                            .wrap_err("MongoDB put operation failed")
+                            .kind(ErrorKind::Storage)
                     }
                 }
             }
@@ -360,7 +383,8 @@ impl KVStore for MongoDbStorage {
                     .upsert(true)
                     .await
                     .wrap_err("MongoDB put operation failed")
-                    .write_put_metrics(start.elapsed(), KVStoreType::Mongo, &self.metrics)?;
+                    .write_put_metrics(start.elapsed(), KVStoreType::Mongo, &self.metrics)
+                    .kind(ErrorKind::Storage)?;
                 Ok(PutResult::Written)
             }
         }
@@ -378,9 +402,15 @@ impl KVStore for MongoDbStorage {
             .collection
             .find(filter)
             .await
-            .wrap_err("MongoDB scan operation failed")?;
+            .wrap_err("MongoDB scan operation failed")
+            .kind(ErrorKind::Storage)?;
 
-        while let Some(doc) = cursor.try_next().await? {
+        while let Some(doc) = cursor
+            .try_next()
+            .await
+            .wrap_err("MongoDB scan cursor failed")
+            .kind(ErrorKind::Storage)?
+        {
             keys.push(doc._id);
         }
 
@@ -391,13 +421,16 @@ impl KVStore for MongoDbStorage {
         self.collection
             .delete_one(doc! { "_id": key.as_ref() })
             .await
-            .wrap_err_with(|| format!("Failed to delete key {}", key.as_ref()))?;
+            .wrap_err_with(|| format!("Failed to delete key {}", key.as_ref()))
+            .kind(ErrorKind::Storage)?;
         Ok(())
     }
 }
 
 #[cfg(test)]
 pub mod mongo_tests {
+    use eyre::Result;
+
     use super::*;
     use crate::{cli::get_aws_config, test_utils::TestMongoContainer};
 

@@ -30,7 +30,10 @@ use futures::{stream, Stream, StreamExt, TryStreamExt};
 use itertools::Either;
 use monad_archive::{
     model::{BlockDataReader, TxIndexedData},
-    prelude::{ArchiveReader, Context, ContextCompat, IndexReader, TxEnvelopeWithSender},
+    prelude::{
+        ArchiveReader, Context, ContextCompat, IndexReader, ResultExt, TxEnvelopeWithSender,
+        WrapErr,
+    },
 };
 use monad_triedb_utils::triedb_env::{
     BlockHeader, BlockKey, FinalizedBlockKey, TransactionLocation, Triedb,
@@ -65,8 +68,12 @@ pub enum ChainStateError {
     ResourceNotFound,
 }
 
-impl From<monad_archive::prelude::Report> for ChainStateError {
-    fn from(e: monad_archive::prelude::Report) -> Self {
+impl From<monad_archive::prelude::ArchiveError> for ChainStateError {
+    fn from(e: monad_archive::prelude::ArchiveError) -> Self {
+        use monad_archive::prelude::ErrorKind;
+        if e.kind() == ErrorKind::NotFound {
+            return ChainStateError::ResourceNotFound;
+        }
         // Log with debug to get error chain, but return only top level error in response
         error!("Archive Error: {e:?}");
         ChainStateError::Archive(e.to_string())
@@ -1018,8 +1025,10 @@ async fn check_dry_run_get_logs_index(
     if non_indexed_only.is_empty() && indexed_only.is_empty() {
         debug!("Indexed and non-indexed logs are identical");
     } else {
-        let non_indexed_only_json = serde_json::to_string(&non_indexed_only)?;
-        let indexed_only_json = serde_json::to_string(&indexed_only)?;
+        let non_indexed_only_json =
+            serde_json::to_string(&non_indexed_only).wrap_err("serialize non_indexed_only")?;
+        let indexed_only_json =
+            serde_json::to_string(&indexed_only).wrap_err("serialize indexed_only")?;
         warn!(
             non_indexed_only = non_indexed_only_json,
             indexed_only = indexed_only_json,
@@ -1049,11 +1058,12 @@ async fn get_receipts_stream_using_index<'a>(
         .wrap_err("Latest indexed tx not found")?;
 
     if latest_indexed_tx < to_block {
-        monad_archive::prelude::bail!(
+        return Err(monad_archive::prelude::eyre!(
             "Latest indexed tx is less than to_block. {}, {}",
             latest_indexed_tx,
             to_block
-        );
+        ))
+        .kind(monad_archive::prelude::ErrorKind::Validation);
     }
 
     let mut stream = log_index

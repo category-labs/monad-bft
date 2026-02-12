@@ -19,11 +19,10 @@ use std::{
 };
 
 use bytes::Bytes;
-use eyre::Result;
 use tokio::sync::Mutex;
 
 use super::{PutResult, WritePolicy};
-use crate::prelude::*;
+use crate::{error::Result, prelude::*};
 
 #[derive(Clone)]
 pub struct MemoryStorage {
@@ -48,7 +47,7 @@ impl KVReader for MemoryStorage {
 
         // Check if we should simulate a failure
         if self.should_fail.load(Ordering::SeqCst) {
-            return Err(eyre::eyre!("MemoryStorage simulated failure"));
+            return Err(eyre::eyre!("MemoryStorage simulated failure").into());
         }
 
         Ok(self.db.lock().await.get(key).map(ToOwned::to_owned))
@@ -70,7 +69,7 @@ impl KVStore for MemoryStorage {
 
         // Check if we should simulate a failure
         if self.should_fail.load(Ordering::SeqCst) {
-            return Err(eyre::eyre!("MemoryStorage simulated failure"));
+            return Err(eyre::eyre!("MemoryStorage simulated failure").into());
         }
 
         let key = key.as_ref();
@@ -93,7 +92,7 @@ impl KVStore for MemoryStorage {
 
         // Check if we should simulate a failure
         if self.should_fail.load(Ordering::SeqCst) {
-            return Err(eyre::eyre!("MemoryStorage simulated failure"));
+            return Err(eyre::eyre!("MemoryStorage simulated failure").into());
         }
 
         Ok(self
@@ -119,8 +118,8 @@ impl KVStore for MemoryStorage {
 
 #[cfg(test)]
 mod tests {
-
     use bytes::Bytes;
+    use eyre::Result;
 
     use super::*;
 

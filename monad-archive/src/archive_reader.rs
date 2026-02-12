@@ -14,12 +14,12 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use alloy_primitives::BlockHash;
-use eyre::Result;
 use monad_triedb_utils::triedb_env::ReceiptWithLogIndex;
 use tracing::trace;
 
 use crate::{
     cli::AwsCliArgs,
+    error::{ErrorKind, OptionExt as _, Result, ResultExt, WrapErr},
     failover_circuit_breaker::{CircuitBreaker, FallbackExecutor},
     kvstore::{cloud_proxy::CloudProxyReader, mongo::MongoDbStorage},
     model::logs_index::LogsIndexArchiver,
@@ -115,14 +115,18 @@ impl ArchiveReader {
             db
         );
         trace!("Creating MongoDB block store");
-        let mut block_store = MongoDbStorage::new_block_store(&url, &db, metrics.clone()).await?;
+        let mut block_store = MongoDbStorage::new_block_store(&url, &db, metrics.clone())
+            .await
+            .wrap_err("Failed to create MongoDB block store")?;
         if let Some(max_time_get) = max_time_get {
             block_store.max_time_get = max_time_get;
         }
         let block_data_reader = BlockDataArchive::new(block_store);
 
         trace!("Creating MongoDB index store");
-        let mut index_store = MongoDbStorage::new_index_store(&url, &db, metrics).await?;
+        let mut index_store = MongoDbStorage::new_index_store(&url, &db, metrics)
+            .await
+            .wrap_err("Failed to create MongoDB index store")?;
         if let Some(max_time_get) = max_time_get {
             index_store.max_time_get = max_time_get;
         }
@@ -131,7 +135,7 @@ impl ArchiveReader {
         trace!("Creating MongoDB log index store");
         let log_index = LogsIndexArchiver::from_tx_index_archiver(&index_reader, 50, true)
             .await
-            .wrap_err("Failed to create log index reader")?;
+            .ok_or_kind(ErrorKind::Storage, "Failed to create log index reader")?;
 
         debug!("MongoDB ArchiveReader initialization complete");
         Ok(ArchiveReader::new(
@@ -153,7 +157,9 @@ impl ArchiveReader {
             cloud_proxy_url = url,
             bucket, region, "Initializing AWS ArchiveReader"
         );
-        let url = url::Url::parse(url)?;
+        let url = url::Url::parse(url)
+            .wrap_err("Failed to parse cloud proxy URL")
+            .kind(ErrorKind::Validation)?;
 
         trace!("Creating AWS block data reader");
         let args = AwsCliArgs {
