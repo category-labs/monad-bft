@@ -13,12 +13,11 @@ use monad_consensus_types::block::GENESIS_TIMESTAMP;
 use monad_dataplane::{udp::DEFAULT_MTU, DataplaneBuilder, TcpSocketId, UdpSocketId};
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_testutil::{generate_block_with_txs, secret_to_eth_address};
-use monad_eth_txpool_executor::EthTxPoolExecutor;
+use monad_eth_txpool_executor::{EthTxPoolExecutor, ForwardedIngressFairQueueConfig};
 use monad_executor::Executor;
 use monad_executor_glue::{
     MempoolEvent, MonadEvent, OutboundForwardTxs, RouterCommand, TxPoolCommand,
 };
-use monad_leanudp;
 use monad_node_config::{fullnode_raptorcast::FullNodeRaptorCastConfig, FullNodeConfig};
 use monad_peer_discovery::{driver::PeerDiscoveryDriver, mock::NopDiscoveryBuilder};
 use monad_peer_score::{ema, StdClock};
@@ -188,6 +187,7 @@ pub async fn run(args: NodeArgs) {
         true,
         score_provider,
         score_reader.clone(),
+        ForwardedIngressFairQueueConfig::default(),
     );
 
     client.exec(vec![TxPoolCommand::Reset {
@@ -245,10 +245,12 @@ pub async fn run(args: NodeArgs) {
     let keypair_arc = Arc::new(keypair);
     let node_id = NodeId::new(keypair_arc.pubkey());
 
-    let mut wireauth_config = Config::default();
-    wireauth_config.max_sessions_per_ip = args.max_sessions_per_ip;
-    wireauth_config.low_watermark_sessions = args.low_watermark_sessions;
-    wireauth_config.ip_rate_limit_window = Duration::from_millis(args.ip_rate_limit_ms);
+    let wireauth_config = Config {
+        max_sessions_per_ip: args.max_sessions_per_ip,
+        low_watermark_sessions: args.low_watermark_sessions,
+        ip_rate_limit_window: Duration::from_millis(args.ip_rate_limit_ms),
+        ..Config::default()
+    };
     let raptorcast_auth_protocol =
         WireAuthProtocol::new(wireauth_config.clone(), keypair_arc.clone());
 
@@ -343,11 +345,11 @@ pub async fn run(args: NodeArgs) {
                     Some(NodeRaptorCastEvent(RaptorCastEvent::LeanUdpForwardTxs { sender, txs })) => {
                         let peer_id = router::pubkey_to_node_id(&sender);
                         let tx_count = txs.len();
-                        *per_peer_received.entry(peer_id.clone()).or_default() += tx_count as u64;
+                        *per_peer_received.entry(peer_id).or_default() += tx_count as u64;
 
                         for tx_bytes in &txs {
                             if let Ok(tx) = alloy_consensus::TxEnvelope::decode(&mut tx_bytes.as_ref()) {
-                                tx_peer_map.insert(*tx.tx_hash(), peer_id.clone());
+                                tx_peer_map.insert(*tx.tx_hash(), peer_id);
                             }
                         }
 
@@ -359,7 +361,7 @@ pub async fn run(args: NodeArgs) {
                     }
                     Some(NodeRaptorCastEvent(RaptorCastEvent::LeanUdpTx { sender, tx })) => {
                         let peer_id = router::pubkey_to_node_id(&sender);
-                        *per_peer_received.entry(peer_id.clone()).or_default() += 1;
+                        *per_peer_received.entry(peer_id).or_default() += 1;
                         tx_peer_map.insert(*tx.tx_hash(), peer_id);
                         let cmd = router::route_lean_udp_tx(&sender, &tx);
                         client.exec(vec![cmd]);

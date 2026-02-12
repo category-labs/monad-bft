@@ -26,12 +26,17 @@ pub use self::{
     network::NodeNetworkConfig,
     peers::PeerDiscoveryConfig,
     sync_peers::{BlockSyncPeersConfig, StateSyncPeersConfig, SyncPeerIdentityConfig},
+    tx_ingestion::{
+        TxIngestionConfig, TxIngestionFairQueueConfig, TxIngestionLeanUdpConfig,
+        TxIngestionPeerScoreConfig,
+    },
 };
 
 mod bootstrap;
 mod fullnode;
 mod network;
 mod peers;
+mod tx_ingestion;
 
 pub mod fullnode_raptorcast;
 pub use fullnode_raptorcast::FullNodeRaptorCastConfig;
@@ -56,6 +61,9 @@ pub struct NodeConfig<ST: CertificateSignatureRecoverable> {
     // must be <= ipc_max_queued_batches
     pub ipc_queued_batches_watermark: u8,
     pub tx_ingestion_metrics_log_interval_seconds: Option<u64>,
+
+    #[serde(default)]
+    pub tx_ingestion: TxIngestionConfig,
 
     pub statesync_threshold: u16,
     pub statesync_max_concurrent_requests: u8,

@@ -1,3 +1,5 @@
+#![allow(clippy::upper_case_acronyms)]
+
 use alloy_consensus::TxEnvelope;
 use alloy_rlp::Encodable;
 use bytes::Bytes;
@@ -35,7 +37,7 @@ pub fn route_lean_udp_tx(sender_pubkey: &monad_secp::PubKey, tx: &TxEnvelope) ->
     tx.encode(&mut buf);
     TxPoolCommand::InsertForwardedTxs {
         sender: node_id,
-        txs: vec![Bytes::from(buf.freeze())],
+        txs: vec![buf.freeze()],
     }
 }
 

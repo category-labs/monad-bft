@@ -54,11 +54,14 @@ use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tokio::{sync::mpsc, time::Instant};
 use tracing::{debug, debug_span, error, info, trace_span, warn};
 
-pub use self::{client::EthTxPoolExecutorClient, ipc::EthTxPoolIpcConfig};
 use self::{
     client::ForwardedTxs, forward::EthTxPoolForwardingManager, ipc::EthTxPoolIpcServer,
     metrics::EthTxPoolExecutorMetrics, preload::EthTxPoolPreloadManager,
     reset::EthTxPoolResetTrigger,
+};
+pub use self::{
+    client::{EthTxPoolExecutorClient, ForwardedIngressFairQueueConfig},
+    ipc::EthTxPoolIpcConfig,
 };
 
 mod client;
@@ -122,6 +125,7 @@ where
         do_local_insert: bool,
         score_provider: ScoreProvider<NodeId<CertificateSignaturePubKey<ST>>, StdClock>,
         score_reader: ScoreReader<NodeId<CertificateSignaturePubKey<ST>>, StdClock>,
+        forwarded_ingress_fair_queue_config: ForwardedIngressFairQueueConfig,
     ) -> EthTxPoolExecutorClient<ST, SCT, SBT, CCT, CRT> {
         let (events_tx, events) = mpsc::unbounded_channel();
 
@@ -179,6 +183,7 @@ where
             }),
             score_provider,
             score_reader,
+            forwarded_ingress_fair_queue_config,
         )
     }
 
@@ -222,6 +227,19 @@ where
                     self.exec(commands);
                 }
 
+                result = forwarded_rx.recv(), if can_receive_forwarded => {
+                    let Some(forwarded_txs) = result else {
+                        warn!("forwarded channel was dropped, shutting down txpool executor");
+                        break;
+                    };
+
+                    debug!(
+                        batch_items = forwarded_txs.len(),
+                        "txpool executor: received forwarded batch from channel"
+                    );
+                    self.process_forwarded_txs(forwarded_txs);
+                }
+
                 result = self.next() => {
                     let Some(event) = result else {
                         error!("txpool executor stream terminated, shutting down txpool executor");
@@ -234,16 +252,9 @@ where
                     }
                 }
 
-                result = forwarded_rx.recv(), if can_receive_forwarded => {
-                    let Some(forwarded_txs) = result else {
-                        warn!("forwarded channel was dropped, shutting down txpool executor");
-                        break;
-                    };
-
-                    self.process_forwarded_txs(forwarded_txs);
+                _ = forwarded_progress_notify.notified(), if !can_receive_forwarded => {
+                    debug!("txpool executor: forwarded_progress_notify fired (ingress may have drained)");
                 }
-
-                _ = forwarded_progress_notify.notified(), if !can_receive_forwarded => {}
             }
         }
     }
@@ -271,6 +282,7 @@ where
         do_local_insert: bool,
         score_provider: ScoreProvider<NodeId<CertificateSignaturePubKey<ST>>, StdClock>,
         score_reader: ScoreReader<NodeId<CertificateSignaturePubKey<ST>>, StdClock>,
+        forwarded_ingress_fair_queue_config: ForwardedIngressFairQueueConfig,
     ) -> io::Result<EthTxPoolExecutorClient<ST, SCT, SBT, CCT, CRT>> {
         let ipc = Box::pin(EthTxPoolIpcServer::new(ipc_config)?);
         Ok(Self::start_with_input_stream(
@@ -285,6 +297,7 @@ where
             do_local_insert,
             score_provider,
             score_reader,
+            forwarded_ingress_fair_queue_config,
         ))
     }
 }
@@ -300,15 +313,15 @@ where
     TIS: EthTxPoolTxInputStream,
 {
     fn process_forwarded_txs(&mut self, forwarded_txs: Vec<ForwardedTxs<SCT>>) {
-        for ForwardedTxs { sender, txs } in forwarded_txs {
-            let _span = debug_span!("processing forwarded txs").entered();
-            debug!(
-                ?sender,
-                num_txs = txs.len(),
-                "txpool executor received forwarded txs"
-            );
+        let mut unique_senders = HashSet::new();
+        let mut total_txs = 0usize;
+        let mut invalid_bytes_total = 0u64;
 
-            let mut num_invalid_bytes = 0;
+        for ForwardedTxs { sender, txs } in forwarded_txs {
+            unique_senders.insert(sender);
+            total_txs += txs.len();
+
+            let mut num_invalid_bytes = 0u64;
 
             let txs = txs
                 .into_iter()
@@ -322,11 +335,8 @@ where
                 })
                 .collect::<Vec<_>>();
 
-            self.metrics
-                .reject_forwarded_invalid_bytes
-                .fetch_add(num_invalid_bytes, Ordering::SeqCst);
-
             if num_invalid_bytes != 0 {
+                invalid_bytes_total += num_invalid_bytes;
                 tracing::warn!(?sender, ?num_invalid_bytes, "invalid forwarded txs");
             }
 
@@ -335,6 +345,19 @@ where
                 .project()
                 .add_ingress_txs(sender, txs);
         }
+
+        if invalid_bytes_total != 0 {
+            self.metrics
+                .reject_forwarded_invalid_bytes
+                .fetch_add(invalid_bytes_total, Ordering::SeqCst);
+        }
+
+        debug!(
+            total_txs,
+            unique_senders = unique_senders.len(),
+            invalid_bytes_total,
+            "txpool executor accepted forwarded batch into ingress"
+        );
     }
 }
 
@@ -679,6 +702,9 @@ where
         let mut ipc_events = BTreeMap::default();
 
         let mut had_forwarded = false;
+        let mut forwarded_ingress_items_total = 0usize;
+        let mut forwarded_recovered_total = 0usize;
+        let mut forwarded_dropped_invalid_sig_total = 0usize;
 
         while let Poll::Ready(forwarded_txs_with_senders) =
             forwarding_manager.as_mut().poll_ingress(cx)
@@ -686,6 +712,8 @@ where
             had_forwarded = true;
             let _span =
                 debug_span!("forwarded txs", len = forwarded_txs_with_senders.len()).entered();
+            let chunk_len = forwarded_txs_with_senders.len();
+            forwarded_ingress_items_total += chunk_len;
 
             let recovered_txs = {
                 let (recovered_txs, dropped_txs): (Vec<_>, Vec<_>) = forwarded_txs_with_senders
@@ -708,6 +736,9 @@ where
                 ipc_events.extend(dropped_txs);
                 recovered_txs
             };
+            let recovered_len = recovered_txs.len();
+            forwarded_recovered_total += recovered_len;
+            forwarded_dropped_invalid_sig_total += chunk_len.saturating_sub(recovered_len);
 
             let mut inserted_addresses = HashSet::<Address>::default();
 
@@ -726,6 +757,12 @@ where
         }
 
         if had_forwarded {
+            debug!(
+                forwarded_ingress_items_total,
+                forwarded_recovered_total,
+                forwarded_dropped_invalid_sig_total,
+                "txpool executor: drained forwarded ingress and began verification/insert"
+            );
             forwarded_progress_notify.notify_one();
         }
 

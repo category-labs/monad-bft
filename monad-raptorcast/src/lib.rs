@@ -1279,12 +1279,12 @@ where
                         if let Ok(txs) = Vec::<Bytes>::decode(&mut msg.payload.as_ref()) {
                             this.pending_events
                                 .push_back(RaptorCastEvent::LeanUdpForwardTxs {
-                                    sender: msg.public_key.clone(),
+                                    sender: msg.public_key,
                                     txs,
                                 });
                         } else if let Ok(tx) = TxEnvelope::decode(&mut msg.payload.as_ref()) {
                             this.pending_events.push_back(RaptorCastEvent::LeanUdpTx {
-                                sender: msg.public_key.clone(),
+                                sender: msg.public_key,
                                 tx,
                             });
                         }

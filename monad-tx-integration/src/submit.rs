@@ -14,7 +14,6 @@ use monad_dataplane::{udp::DEFAULT_MTU, DataplaneBuilder, TcpSocketId, UdpSocket
 use monad_eth_testutil::{make_eip1559_tx, secret_to_eth_address};
 use monad_executor::Executor;
 use monad_executor_glue::OutboundForwardTxs;
-use monad_leanudp;
 use monad_node_config::{fullnode_raptorcast::FullNodeRaptorCastConfig, FullNodeConfig};
 use monad_peer_discovery::{driver::PeerDiscoveryDriver, mock::NopDiscoveryBuilder};
 use monad_peer_score::{ema, StdClock};

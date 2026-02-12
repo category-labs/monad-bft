@@ -164,10 +164,54 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         .qc()
         .get_round()
         + Round(1);
+
+    let peer_score_config = ema::ScoreConfig {
+        promoted_capacity: node_state
+            .node_config
+            .tx_ingestion
+            .peer_score
+            .promoted_capacity,
+        newcomer_capacity: node_state
+            .node_config
+            .tx_ingestion
+            .peer_score
+            .newcomer_capacity,
+        max_time_weight: node_state
+            .node_config
+            .tx_ingestion
+            .peer_score
+            .max_time_weight,
+        time_weight_unit: Duration::from_secs(
+            node_state
+                .node_config
+                .tx_ingestion
+                .peer_score
+                .time_weight_unit_seconds,
+        ),
+        ema_half_life: Duration::from_secs(
+            node_state
+                .node_config
+                .tx_ingestion
+                .peer_score
+                .ema_half_life_seconds,
+        ),
+        block_time: Duration::from_millis(
+            node_state
+                .node_config
+                .tx_ingestion
+                .peer_score
+                .block_time_millis,
+        ),
+        promotion_threshold: node_state
+            .node_config
+            .tx_ingestion
+            .peer_score
+            .promotion_threshold,
+    };
     let (score_provider, score_reader) = ema::create::<
         NodeId<CertificateSignaturePubKey<SignatureType>>,
         StdClock,
-    >(ema::ScoreConfig::default(), StdClock);
+    >(peer_score_config, StdClock);
     let router = build_raptorcast_router::<
         SignatureType,
         SignatureCollectionType,
@@ -278,6 +322,25 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
             true,
             score_provider,
             score_reader.clone(),
+            monad_eth_txpool_executor::ForwardedIngressFairQueueConfig {
+                per_id_limit: node_state.node_config.tx_ingestion.fair_queue.per_id_limit,
+                max_size: node_state.node_config.tx_ingestion.fair_queue.max_size,
+                regular_per_id_limit: node_state
+                    .node_config
+                    .tx_ingestion
+                    .fair_queue
+                    .regular_per_id_limit,
+                regular_max_size: node_state
+                    .node_config
+                    .tx_ingestion
+                    .fair_queue
+                    .regular_max_size,
+                regular_bandwidth_pct: node_state
+                    .node_config
+                    .tx_ingestion
+                    .fair_queue
+                    .regular_bandwidth_pct,
+            },
         )
         .expect("txpool ipc succeeds"),
         control_panel: ControlPanelIpcReceiver::new(
@@ -799,7 +862,10 @@ where
         auth_protocol,
     );
 
-    if let Some(lean_bind_address) = authenticated_tx_ingestion_bind_address {
+    if node_config.tx_ingestion.leanudp.enabled {
+        let Some(lean_bind_address) = authenticated_tx_ingestion_bind_address else {
+            return router;
+        };
         let mut lean_dp_builder = DataplaneBuilder::new(network_config.max_mbps.into())
             .with_udp_multishot(network_config.enable_udp_multishot);
         if let Some(buffer_size) = network_config.buffer_size {
@@ -821,7 +887,26 @@ where
         let lean_auth_socket = AuthenticatedSocketHandle::new(lean_udp_socket, lean_auth_protocol);
 
         let mut leanudp_config = monad_leanudp::Config::default();
-        leanudp_config.max_message_size = TX_FORWARD_LEANUDP_MAX_MESSAGE_SIZE_BYTES;
+        let leanudp_overrides = &node_config.tx_ingestion.leanudp;
+
+        leanudp_config.max_message_size = leanudp_overrides
+            .max_message_size_bytes
+            .unwrap_or(TX_FORWARD_LEANUDP_MAX_MESSAGE_SIZE_BYTES);
+        if let Some(v) = leanudp_overrides.max_priority_messages {
+            leanudp_config.max_priority_messages = v;
+        }
+        if let Some(v) = leanudp_overrides.max_regular_messages {
+            leanudp_config.max_regular_messages = v;
+        }
+        if let Some(v) = leanudp_overrides.max_messages_per_identity {
+            leanudp_config.max_messages_per_identity = v;
+        }
+        if let Some(v) = leanudp_overrides.message_timeout_ms {
+            leanudp_config.message_timeout = Duration::from_millis(v);
+        }
+        if let Some(v) = leanudp_overrides.max_fragment_payload_bytes {
+            leanudp_config.max_fragment_payload = v;
+        }
 
         let lean_socket = LeanUdpSocketHandle::new(lean_auth_socket, score_reader, leanudp_config);
         router.primary_mut().set_lean_udp_socket(lean_socket);
@@ -907,18 +992,23 @@ fn log_tx_ingestion_metrics(executor_metrics: ExecutorMetricsChain<'_>) {
             &fq,
             leanudp_metrics::COUNTER_LEANUDP_DECODE_FRAGMENTS_RECEIVED
         ),
+        decode_bytes_received = metric(&fq, leanudp_metrics::COUNTER_LEANUDP_DECODE_BYTES_RECEIVED),
         decode_fragments_priority = metric(
             &fq,
             leanudp_metrics::COUNTER_LEANUDP_DECODE_FRAGMENTS_PRIORITY
         ),
+        decode_bytes_priority = metric(&fq, leanudp_metrics::COUNTER_LEANUDP_DECODE_BYTES_PRIORITY),
         decode_fragments_regular = metric(
             &fq,
             leanudp_metrics::COUNTER_LEANUDP_DECODE_FRAGMENTS_REGULAR
         ),
+        decode_bytes_regular = metric(&fq, leanudp_metrics::COUNTER_LEANUDP_DECODE_BYTES_REGULAR),
         decode_messages_completed = metric(
             &fq,
             leanudp_metrics::COUNTER_LEANUDP_DECODE_MESSAGES_COMPLETED
         ),
+        decode_bytes_completed =
+            metric(&fq, leanudp_metrics::COUNTER_LEANUDP_DECODE_BYTES_COMPLETED),
         pool_priority_messages = metric(&fq, leanudp_metrics::GAUGE_LEANUDP_POOL_PRIORITY_MESSAGES),
         pool_regular_messages = metric(&fq, leanudp_metrics::GAUGE_LEANUDP_POOL_REGULAR_MESSAGES),
         decode_evicted_timeout =
@@ -933,6 +1023,7 @@ fn log_tx_ingestion_metrics(executor_metrics: ExecutorMetricsChain<'_>) {
         error_invalid_header = metric(&fq, leanudp_metrics::COUNTER_LEANUDP_ERROR_INVALID_HEADER),
         encode_messages = metric(&fq, leanudp_metrics::COUNTER_LEANUDP_ENCODE_MESSAGES),
         encode_fragments = metric(&fq, leanudp_metrics::COUNTER_LEANUDP_ENCODE_FRAGMENTS),
+        encode_bytes = metric(&fq, leanudp_metrics::COUNTER_LEANUDP_ENCODE_BYTES),
         raptorcast_forward_attempts = metric(
             &fq,
             raptorcast_metrics::COUNTER_RAPTORCAST_LEANUDP_FORWARD_ATTEMPTS

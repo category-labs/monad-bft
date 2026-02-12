@@ -191,7 +191,7 @@ where
                 continue;
             };
 
-            let identity: N = public_key.clone().into();
+            let identity: N = public_key.into();
 
             match self.decoder.decode(identity, msg.payload) {
                 Ok(DecodeOutcome::Complete(payload)) => {

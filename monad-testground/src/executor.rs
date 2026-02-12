@@ -39,8 +39,10 @@ use monad_peer_discovery::{
     mock::{NopDiscovery, NopDiscoveryBuilder},
 };
 use monad_raptorcast::{
-    auth::NoopAuthProtocol, config::RaptorCastConfig,
-    raptorcast_secondary::SecondaryRaptorCastModeConfig, RaptorCast,
+    auth::{NoopAuthProtocol, NopScore},
+    config::RaptorCastConfig,
+    raptorcast_secondary::SecondaryRaptorCastModeConfig,
+    RaptorCast,
 };
 use monad_state::{Forkpoint, MonadMessage, MonadState, MonadStateBuilder, VerifiedMonadMessage};
 use monad_state_backend::InMemoryState;
@@ -188,6 +190,7 @@ where
                     MonadEvent<ST, SCT, MockExecutionProtocol>,
                     NopDiscovery<ST>,
                     NoopAuthProtocol<CertificateSignaturePubKey<ST>>,
+                    NopScore<NodeId<CertificateSignaturePubKey<ST>>>,
                 >::new(
                     cfg,
                     SecondaryRaptorCastModeConfig::None,
