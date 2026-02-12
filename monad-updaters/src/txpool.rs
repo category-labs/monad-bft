@@ -459,9 +459,7 @@ where
                                 let signer = tx.recover_signer().ok()?;
                                 Some((
                                     Recovered::new_unchecked(tx, signer),
-                                    PoolTransactionKind::Forwarded {
-                                        sender: sender.clone(),
-                                    },
+                                    PoolTransactionKind::Forwarded { sender },
                                 ))
                             })
                             .collect(),

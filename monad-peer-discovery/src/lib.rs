@@ -1216,6 +1216,63 @@ mod tests {
     }
 
     #[test]
+    fn test_name_record_with_lean_udp_p2p_roundtrip() {
+        let ip = Ipv4Addr::from_str("10.0.0.43").unwrap();
+        let tcp_port = 9100u16;
+        let udp_port = 9101u16;
+        let authenticated_udp_port = 9102u16;
+        let auth_tx_ingestion_port = 9103u16;
+        let seq = 101u64;
+
+        let record = NameRecord::new_with_lean_udp_p2p(
+            ip,
+            tcp_port,
+            udp_port,
+            authenticated_udp_port,
+            auth_tx_ingestion_port,
+            seq,
+        );
+
+        assert_eq!(record.ip(), ip);
+        assert_eq!(record.tcp_port(), tcp_port);
+        assert_eq!(record.udp_port(), udp_port);
+        assert_eq!(
+            record.authenticated_udp_port(),
+            Some(authenticated_udp_port)
+        );
+        assert_eq!(
+            record.auth_tx_ingestion_port(),
+            Some(auth_tx_ingestion_port)
+        );
+        assert_eq!(
+            record.lean_udp_p2p_socket(),
+            Some(SocketAddrV4::from_str("10.0.0.43:9103").unwrap())
+        );
+        assert_eq!(record.seq(), seq);
+
+        let mut encoded = Vec::new();
+        record.encode(&mut encoded);
+
+        let decoded = NameRecord::decode(&mut encoded.as_slice()).unwrap();
+        assert_eq!(decoded.ip(), ip);
+        assert_eq!(decoded.tcp_port(), tcp_port);
+        assert_eq!(decoded.udp_port(), udp_port);
+        assert_eq!(
+            decoded.authenticated_udp_port(),
+            Some(authenticated_udp_port)
+        );
+        assert_eq!(
+            decoded.auth_tx_ingestion_port(),
+            Some(auth_tx_ingestion_port)
+        );
+        assert_eq!(decoded.seq(), seq);
+
+        let mut reencoded = Vec::new();
+        decoded.encode(&mut reencoded);
+        assert_eq!(encoded, reencoded);
+    }
+
+    #[test]
     fn test_peer_entry_to_monad_name_record_invalid_signature() {
         let ip = Ipv4Addr::from_str("192.168.1.200").unwrap();
         let port = 9000u16;
@@ -1294,6 +1351,54 @@ mod tests {
         assert_eq!(
             converted_monad_record.signature,
             original_monad_record.signature
+        );
+    }
+
+    #[test]
+    fn test_peer_entry_monad_name_record_roundtrip_with_auth_tx_ingestion() {
+        let ip = Ipv4Addr::from_str("172.31.0.101").unwrap();
+        let port = 8890u16;
+        let auth_port = 8891u16;
+        let auth_tx_ingestion_port = 8892u16;
+        let seq = 100u64;
+
+        let keypair = KeyPair::from_ikm(b"test roundtrip auth tx ingestion").unwrap();
+        let name_record = NameRecord::new_with_lean_udp_p2p(
+            ip,
+            port,
+            port,
+            auth_port,
+            auth_tx_ingestion_port,
+            seq,
+        );
+        let original_monad_record = MonadNameRecord::<SecpSignature>::new(name_record, &keypair);
+
+        let pubkey = original_monad_record.recover_pubkey().unwrap().pubkey();
+        let peer_entry = PeerEntry::from(original_monad_record.with_pubkey(pubkey));
+        assert_eq!(peer_entry.auth_port, Some(auth_port));
+        assert_eq!(
+            peer_entry.auth_tx_ingestion_port,
+            Some(auth_tx_ingestion_port)
+        );
+
+        let converted_monad_record =
+            MonadNameRecord::<SecpSignature>::try_from(&peer_entry).unwrap();
+
+        assert_eq!(
+            converted_monad_record.name_record,
+            original_monad_record.name_record
+        );
+        assert_eq!(
+            converted_monad_record.signature,
+            original_monad_record.signature
+        );
+        assert_eq!(
+            converted_monad_record.name_record.authenticated_udp_port(),
+            Some(auth_port)
+        );
+        assert_eq!(
+            converted_monad_record.name_record.auth_tx_ingestion_port(),
+            Some(auth_tx_ingestion_port)
         );
     }
 }

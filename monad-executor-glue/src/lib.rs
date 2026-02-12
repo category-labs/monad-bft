@@ -2866,16 +2866,26 @@ mod tests {
         let addr: SocketAddrV4 = "127.0.0.1:8000".parse().unwrap();
         let signature = NopSignature { pubkey, id: 1234 };
         let record_seq_num = 0;
-        let entry = PeerEntry {
-            pubkey,
-            addr,
-            signature,
-            record_seq_num,
-            auth_port: None,
-            auth_tx_ingestion_port: None,
-        };
-        let encoded = alloy_rlp::encode(&entry);
-        let decoded: PeerEntry<NopSignature> = alloy_rlp::decode_exact(&encoded).unwrap();
-        assert_eq!(entry, decoded);
+
+        // Verify we roundtrip all optional-port combinations.
+        for (auth_port, auth_tx_ingestion_port) in [
+            (None, None),
+            (Some(9001), None),
+            (Some(9001), Some(9002)),
+            (None, Some(9002)),
+        ] {
+            let entry = PeerEntry {
+                pubkey,
+                addr,
+                signature,
+                record_seq_num,
+                auth_port,
+                auth_tx_ingestion_port,
+            };
+
+            let encoded = alloy_rlp::encode(&entry);
+            let decoded: PeerEntry<NopSignature> = alloy_rlp::decode_exact(&encoded).unwrap();
+            assert_eq!(entry, decoded);
+        }
     }
 }
