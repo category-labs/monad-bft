@@ -1452,15 +1452,10 @@ where
     /// Returns a `Proposed` commit command for the canonical coherent tip.
     fn propose_canonical_head(&self) -> Option<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
         let high_cert = self.consensus.pacemaker.high_certificate();
-        let high_qc_block_id = high_cert.qc().get_block_id();
-        let high_extend_tip_id = high_cert.tc().and_then(|tc| match &tc.high_extend {
-            HighExtend::Tip(tip) => Some(tip.block_header.get_id()),
-            HighExtend::Qc(_) => None,
-        });
         let canonical_tip_id = self
             .consensus
             .pending_block_tree
-            .get_canonical_coherent_tip(&high_qc_block_id, high_extend_tip_id.as_ref())?;
+            .get_canonical_coherent_tip(high_cert);
         let block = self
             .consensus
             .pending_block_tree
@@ -1491,19 +1486,14 @@ where
 
         // Compute canonical coherent tip (highest coherent block on path to high_qc)
         let high_cert = self.consensus.pacemaker.high_certificate();
-        let high_qc_block_id = high_cert.qc().get_block_id();
-        let high_extend_tip_id = high_cert.tc().and_then(|tc| match &tc.high_extend {
-            HighExtend::Tip(tip) => Some(tip.block_header.get_id()),
-            HighExtend::Qc(_) => None,
-        });
         let canonical_tip = self
             .consensus
             .pending_block_tree
-            .get_canonical_coherent_tip(&high_qc_block_id, high_extend_tip_id.as_ref());
+            .get_canonical_coherent_tip(high_cert);
 
         // Emit Proposed commits with is_canonical flag
         for newly_coherent_block in newly_coherent_blocks {
-            let is_canonical = canonical_tip == Some(newly_coherent_block.get_id());
+            let is_canonical = canonical_tip == newly_coherent_block.get_id();
             debug!(
                 seq_num =? newly_coherent_block.header().seq_num,
                 block_round =? newly_coherent_block.header().block_round,
@@ -3258,7 +3248,8 @@ mod test {
         let (author, _, verified_message) = p_fut.destructure();
         let cmds = wrapped_state.handle_proposal_message(author, verified_message);
         let rounds = extract_proposal_commit_rounds(cmds);
-        assert_eq!(rounds, vec![]);
+        // Round 2 is re-emitted as canonical coherent tip (gap fallback walks from root)
+        assert_eq!(rounds, vec![Round(2)]);
 
         // was in Round(2) and skipped over 5 proposals. Handling
         // p_fut should be at Round(3+5)
