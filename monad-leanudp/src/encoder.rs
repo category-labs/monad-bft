@@ -4,8 +4,8 @@ use thiserror::Error;
 
 use crate::{
     metrics::{
-        COUNTER_LEANUDP_ENCODE_ERROR_TOO_LARGE, COUNTER_LEANUDP_ENCODE_FRAGMENTS,
-        COUNTER_LEANUDP_ENCODE_MESSAGES,
+        COUNTER_LEANUDP_ENCODE_BYTES, COUNTER_LEANUDP_ENCODE_ERROR_TOO_LARGE,
+        COUNTER_LEANUDP_ENCODE_FRAGMENTS, COUNTER_LEANUDP_ENCODE_MESSAGES,
     },
     FragmentType, PacketHeader, LEANUDP_HEADER_SIZE,
 };
@@ -66,6 +66,7 @@ impl Encoder {
 
         self.metrics[COUNTER_LEANUDP_ENCODE_MESSAGES] += 1;
         self.metrics[COUNTER_LEANUDP_ENCODE_FRAGMENTS] += count as u64;
+        self.metrics[COUNTER_LEANUDP_ENCODE_BYTES] += payload_len as u64;
 
         Ok(FragmentIter {
             payload,
@@ -251,5 +252,17 @@ mod tests {
         let encoder = test_encoder(1000);
         assert_eq!(encoder.max_payload_size(), 1000 * MAX_FRAGMENTS);
         let _ = encoder.metrics();
+    }
+
+    #[test]
+    fn test_encoder_records_bytes() {
+        let mut encoder = test_encoder(1000);
+
+        let payload = Bytes::from(vec![0_u8; 2500]);
+        let _fragments: Vec<_> = encoder.fragment(payload).unwrap().collect();
+
+        assert_eq!(encoder.metrics().0[COUNTER_LEANUDP_ENCODE_MESSAGES], 1);
+        assert_eq!(encoder.metrics().0[COUNTER_LEANUDP_ENCODE_FRAGMENTS], 3);
+        assert_eq!(encoder.metrics().0[COUNTER_LEANUDP_ENCODE_BYTES], 2500);
     }
 }

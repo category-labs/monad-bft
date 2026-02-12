@@ -84,6 +84,7 @@ async fn setup_txpool_executor_with_client() -> (
         true,
         score_provider,
         score_reader,
+        monad_eth_txpool_executor::ForwardedIngressFairQueueConfig::default(),
     )
     .unwrap();
 

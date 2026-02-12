@@ -410,6 +410,13 @@ impl PoolSelection {
         }
     }
 
+    fn bytes_counter(self) -> &'static str {
+        match self {
+            PoolSelection::Priority => COUNTER_LEANUDP_DECODE_BYTES_PRIORITY,
+            PoolSelection::Regular => COUNTER_LEANUDP_DECODE_BYTES_REGULAR,
+        }
+    }
+
     fn evicted_counter(self) -> &'static str {
         match self {
             PoolSelection::Priority => COUNTER_LEANUDP_DECODE_EVICTED_TIMEOUT,
@@ -491,6 +498,8 @@ where
         self.metrics[COUNTER_LEANUDP_DECODE_FRAGMENTS_RECEIVED] += 1;
 
         let Packet { header, payload } = packet.try_into().map_err(Into::into)?;
+        let payload_bytes = payload.len() as u64;
+        self.metrics[COUNTER_LEANUDP_DECODE_BYTES_RECEIVED] += payload_bytes;
         ensure!(
             header.version() == LEANUDP_PROTOCOL_VERSION,
             DecodeError::UnsupportedVersion {
@@ -528,13 +537,15 @@ where
             }
         };
         self.metrics[selected_pool.fragments_counter()] += 1;
+        self.metrics[selected_pool.bytes_counter()] += payload_bytes;
         if evicted {
             self.metrics[selected_pool.evicted_counter()] += 1;
         }
 
         match &result {
-            Ok(DecodeOutcome::Complete(_)) => {
+            Ok(DecodeOutcome::Complete(msg)) => {
                 self.metrics[COUNTER_LEANUDP_DECODE_MESSAGES_COMPLETED] += 1;
+                self.metrics[COUNTER_LEANUDP_DECODE_BYTES_COMPLETED] += msg.len() as u64;
             }
             Ok(DecodeOutcome::Pending) => {}
             Err(e) => {
@@ -712,6 +723,27 @@ mod tests {
         let _ = d.decode(2001, pkt(0, 0, Start, b"r2"));
         assert_eq!(d.priority_messages(), 2);
         assert_eq!(d.regular_messages(), 2);
+    }
+
+    #[test]
+    fn test_decode_records_bytes_by_pool() {
+        let mut d = TestDecoder::priority(&[1000]);
+
+        let _ = d.decode(1000, pkt(0, 0, Complete, b"hello"));
+        let _ = d.decode(2000, pkt(0, 0, Complete, b"world!"));
+
+        assert_eq!(
+            d.inner.metrics()[COUNTER_LEANUDP_DECODE_FRAGMENTS_RECEIVED],
+            2
+        );
+        assert_eq!(d.inner.metrics()[COUNTER_LEANUDP_DECODE_BYTES_RECEIVED], 11);
+        assert_eq!(
+            d.inner.metrics()[COUNTER_LEANUDP_DECODE_BYTES_COMPLETED],
+            11
+        );
+
+        assert_eq!(d.inner.metrics()[COUNTER_LEANUDP_DECODE_BYTES_PRIORITY], 5);
+        assert_eq!(d.inner.metrics()[COUNTER_LEANUDP_DECODE_BYTES_REGULAR], 6);
     }
 
     #[test]

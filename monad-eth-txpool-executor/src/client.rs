@@ -44,6 +44,27 @@ where
     pub txs: Vec<Bytes>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct ForwardedIngressFairQueueConfig {
+    pub per_id_limit: usize,
+    pub max_size: usize,
+    pub regular_per_id_limit: usize,
+    pub regular_max_size: usize,
+    pub regular_bandwidth_pct: u8,
+}
+
+impl Default for ForwardedIngressFairQueueConfig {
+    fn default() -> Self {
+        Self {
+            per_id_limit: 10_000,
+            max_size: 100_000,
+            regular_per_id_limit: 1_000,
+            regular_max_size: 100_000,
+            regular_bandwidth_pct: 10,
+        }
+    }
+}
+
 const DEFAULT_COMMAND_BUFFER_SIZE: usize = 1024;
 const DEFAULT_FORWARDED_BUFFER_SIZE: usize = 1;
 const DEFAULT_EVENT_BUFFER_SIZE: usize = 1024;
@@ -86,6 +107,10 @@ where
         sender: tokio::sync::mpsc::Sender<Vec<ForwardedTxs<SCT>>>,
         batch: Vec<ForwardedTxs<SCT>>,
     ) -> Self {
+        tracing::debug!(
+            batch_items = batch.len(),
+            "txpool forwarded_ingress: reserving channel slot for batch"
+        );
         Self {
             permit_fut: Box::pin(sender.reserve_owned()),
             batch: Some(batch),
@@ -159,6 +184,7 @@ where
         update_metrics: Box<dyn Fn(&mut ExecutorMetrics) + Send + 'static>,
         score_provider: ScoreProvider<NodeId<CertificateSignaturePubKey<ST>>, StdClock>,
         score_reader: ScoreReader<NodeId<CertificateSignaturePubKey<ST>>, StdClock>,
+        forwarded_ingress_fair_queue_config: ForwardedIngressFairQueueConfig,
     ) -> Self
     where
         F: Future<Output = ()> + Send + 'static,
@@ -171,6 +197,7 @@ where
             DEFAULT_COMMAND_BUFFER_SIZE,
             DEFAULT_FORWARDED_BUFFER_SIZE,
             DEFAULT_EVENT_BUFFER_SIZE,
+            forwarded_ingress_fair_queue_config,
         )
     }
 
@@ -200,6 +227,7 @@ where
         command_buffer_size: usize,
         forwarded_buffer_size: usize,
         event_buffer_size: usize,
+        forwarded_ingress_fair_queue_config: ForwardedIngressFairQueueConfig,
     ) -> Self
     where
         F: Future<Output = ()> + Send + 'static,
@@ -219,10 +247,11 @@ where
             forwarded_tx,
             score_provider,
             forwarded_ingress: FairQueueBuilder::new()
-                .per_id_limit(10_000)
-                .max_size(100_000)
-                .regular_max_size(100_000)
-                .regular_bandwidth_pct(10)
+                .per_id_limit(forwarded_ingress_fair_queue_config.per_id_limit)
+                .max_size(forwarded_ingress_fair_queue_config.max_size)
+                .regular_per_id_limit(forwarded_ingress_fair_queue_config.regular_per_id_limit)
+                .regular_max_size(forwarded_ingress_fair_queue_config.regular_max_size)
+                .regular_bandwidth_pct(forwarded_ingress_fair_queue_config.regular_bandwidth_pct)
                 .build(score_reader),
             pending_forwarded_send: None,
             event_rx,
@@ -248,17 +277,23 @@ where
     }
 
     fn enqueue_forwarded(&mut self, forwarded: Vec<ForwardedTxs<SCT>>) {
+        let fq_len_before = self.forwarded_ingress.len();
+        let mut total_txs = 0usize;
+        let mut total_dropped = 0u64;
+
         for ForwardedTxs { sender, txs } in forwarded {
             let txs_len = txs.len();
+            total_txs += txs_len;
             for (index, tx) in txs.into_iter().enumerate() {
                 if let Err(err) = self.forwarded_ingress.push(sender, tx) {
-                    let total_dropped = (txs_len - index) as u64;
-                    self.metrics[COUNTER_TXPOOL_FORWARDED_INGRESS_DROPPED_TXS] += total_dropped;
+                    let dropped = (txs_len - index) as u64;
+                    total_dropped += dropped;
+                    self.metrics[COUNTER_TXPOOL_FORWARDED_INGRESS_DROPPED_TXS] += dropped;
                     self.metrics[COUNTER_TXPOOL_FORWARDED_INGRESS_DROP_EVENTS] += 1;
                     tracing::debug!(
                         ?sender,
                         error = %err,
-                        dropped_txs = total_dropped,
+                        dropped_txs = dropped,
                         "forwarded ingress queue full, dropping remaining txs for sender"
                     );
                     break;
@@ -267,9 +302,18 @@ where
                 self.metrics[COUNTER_TXPOOL_FORWARDED_INGRESS_ENQUEUED_TXS] += 1;
             }
         }
+
+        tracing::debug!(
+            fq_len_before,
+            fq_len_after = self.forwarded_ingress.len(),
+            total_txs,
+            total_dropped,
+            "txpool forwarded_ingress: enqueued"
+        );
     }
 
     fn pop_forwarded_batch(&mut self) -> Vec<ForwardedTxs<SCT>> {
+        let fq_len_before = self.forwarded_ingress.len();
         let mut batch = Vec::with_capacity(INGRESS_CHUNK_MAX_SIZE);
         while batch.len() < INGRESS_CHUNK_MAX_SIZE {
             let Some((sender, tx)) = self.forwarded_ingress.pop() else {
@@ -279,6 +323,15 @@ where
                 sender,
                 txs: vec![tx],
             });
+        }
+
+        if !batch.is_empty() {
+            tracing::debug!(
+                fq_len_before,
+                fq_len_after = self.forwarded_ingress.len(),
+                batch_items = batch.len(),
+                "txpool forwarded_ingress: popped batch for channel send"
+            );
         }
         batch
     }
@@ -296,6 +349,10 @@ where
                     .expect("forwarded batch must be present");
                 self.metrics[COUNTER_TXPOOL_FORWARDED_INGRESS_SENT_BATCHES] += 1;
                 self.metrics[COUNTER_TXPOOL_FORWARDED_INGRESS_SENT_TXS] += batch.len() as u64;
+                tracing::debug!(
+                    batch_items = batch.len(),
+                    "txpool forwarded_ingress: channel slot acquired, sending batch"
+                );
                 permit.send(batch);
                 self.pending_forwarded_send = None;
                 true

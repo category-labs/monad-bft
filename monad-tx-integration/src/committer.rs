@@ -77,7 +77,7 @@ impl BlockCommitter {
         let high_qc = QuorumCertificate::<SCT>::genesis_qc();
 
         client.exec(vec![TxPoolCommand::CreateProposal {
-            node_id: self.node_id.clone(),
+            node_id: self.node_id,
             epoch: self.epoch,
             round: self.round,
             seq_num: self.seq_num,

@@ -17,7 +17,15 @@ echo "=== Building ==="
 cargo build -p monad-tx-integration --release 2>&1 | tail -3
 
 echo "=== Starting node ==="
-RUST_LOG=monad_tx_integration=info "$BINARY" node \
+EXTRA_RUST_LOG="${EXTRA_RUST_LOG:-}"
+NODE_RUST_LOG="monad_tx_integration=info"
+SUBMIT_RUST_LOG="monad_tx_integration=info"
+if [ -n "$EXTRA_RUST_LOG" ]; then
+    NODE_RUST_LOG="$NODE_RUST_LOG,$EXTRA_RUST_LOG"
+    SUBMIT_RUST_LOG="$SUBMIT_RUST_LOG,$EXTRA_RUST_LOG"
+fi
+
+RUST_LOG="$NODE_RUST_LOG" "$BINARY" node \
     --listen 127.0.0.1:0 \
     --commit-interval-ms "$COMMIT_INTERVAL_MS" \
     --stats-file "$OUT_DIR/node-stats.jsonl" \
@@ -42,7 +50,7 @@ echo "Node listening on $ADDR"
 
 echo "=== Starting 5 identical peers ==="
 for i in $(seq 0 4); do
-    RUST_LOG=monad_tx_integration=info "$BINARY" submit \
+    RUST_LOG="$SUBMIT_RUST_LOG" "$BINARY" submit \
         --node-addr "$ADDR" \
         --tps 400 \
         --sender-index "$i" \
@@ -58,11 +66,12 @@ sleep 40
 wait $NODE_PID 2>/dev/null || true
 
 echo "=== Results ==="
-python3 << 'PYEOF'
+OUT_DIR="$OUT_DIR" python3 << 'PYEOF'
 import json
 import math
+import os
 
-out_dir = "/tmp/tx-experiment-equal-peers"
+out_dir = os.environ["OUT_DIR"]
 
 blocks = []
 with open(f"{out_dir}/node-stats.jsonl") as f:
