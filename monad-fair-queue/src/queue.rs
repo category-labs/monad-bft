@@ -266,10 +266,18 @@ where
 
         let result = if let Some(item) = self.pop_from_pool(preferred_pool) {
             self.metrics[COUNTER_FAIR_QUEUE_POP_PREFERRED] += 1;
+            match preferred_pool {
+                PoolKind::Priority => self.metrics[COUNTER_FAIR_QUEUE_POP_FROM_PRIORITY] += 1,
+                PoolKind::Regular => self.metrics[COUNTER_FAIR_QUEUE_POP_FROM_REGULAR] += 1,
+            }
             self.pop_counter = (self.pop_counter + 1) % POP_COUNTER_WINDOW;
             Some(item)
         } else if let Some(item) = self.pop_from_pool(fallback_pool) {
             self.metrics[COUNTER_FAIR_QUEUE_POP_FALLBACK] += 1;
+            match fallback_pool {
+                PoolKind::Priority => self.metrics[COUNTER_FAIR_QUEUE_POP_FROM_PRIORITY] += 1,
+                PoolKind::Regular => self.metrics[COUNTER_FAIR_QUEUE_POP_FROM_REGULAR] += 1,
+            }
             Some(item)
         } else {
             self.metrics[COUNTER_FAIR_QUEUE_POP_EMPTY] += 1;
@@ -896,8 +904,52 @@ mod tests {
             1
         );
         assert_eq!(
+            queue.metrics()[crate::metrics::COUNTER_FAIR_QUEUE_POP_PREFERRED],
+            1
+        );
+        assert_eq!(
+            queue.metrics()[crate::metrics::COUNTER_FAIR_QUEUE_POP_FROM_REGULAR],
+            1
+        );
+        assert_eq!(
+            queue.metrics()[crate::metrics::COUNTER_FAIR_QUEUE_POP_FROM_PRIORITY],
+            0
+        );
+        assert_eq!(
             queue.metrics()[crate::metrics::GAUGE_FAIR_QUEUE_TOTAL_ITEMS],
             1
+        );
+    }
+
+    #[test]
+    fn pop_fallback_is_counted_as_from_pool() {
+        let scorer = TestScorer {
+            scores: [(0, 1.0)].into_iter().collect(),
+            threshold: 0.5,
+        };
+        let mut queue: TestQueue = FairQueueBuilder::new()
+            .per_id_limit(100)
+            .max_size(100)
+            .regular_per_id_limit(100)
+            .regular_max_size(100)
+            .regular_bandwidth_pct(100) // always prefer regular
+            .build(scorer);
+
+        // id=0 is promoted -> priority pool, leaving regular empty.
+        queue.push(0, 10).unwrap();
+        let _ = queue.pop();
+
+        assert_eq!(
+            queue.metrics()[crate::metrics::COUNTER_FAIR_QUEUE_POP_FALLBACK],
+            1
+        );
+        assert_eq!(
+            queue.metrics()[crate::metrics::COUNTER_FAIR_QUEUE_POP_FROM_PRIORITY],
+            1
+        );
+        assert_eq!(
+            queue.metrics()[crate::metrics::COUNTER_FAIR_QUEUE_POP_FROM_REGULAR],
+            0
         );
     }
 

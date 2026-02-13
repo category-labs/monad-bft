@@ -948,6 +948,8 @@ const COUNTER_FAIR_QUEUE_POP_TOTAL: &str = "monad.fair_queue.pop.total";
 const COUNTER_FAIR_QUEUE_POP_PREFERRED: &str = "monad.fair_queue.pop.preferred";
 const COUNTER_FAIR_QUEUE_POP_FALLBACK: &str = "monad.fair_queue.pop.fallback";
 const COUNTER_FAIR_QUEUE_POP_EMPTY: &str = "monad.fair_queue.pop.empty";
+const COUNTER_FAIR_QUEUE_POP_FROM_PRIORITY: &str = "monad.fair_queue.pop.from_priority";
+const COUNTER_FAIR_QUEUE_POP_FROM_REGULAR: &str = "monad.fair_queue.pop.from_regular";
 const GAUGE_FAIR_QUEUE_PRIORITY_ITEMS: &str = "monad.fair_queue.priority_items";
 const GAUGE_FAIR_QUEUE_REGULAR_ITEMS: &str = "monad.fair_queue.regular_items";
 const GAUGE_FAIR_QUEUE_TOTAL_ITEMS: &str = "monad.fair_queue.total_items";
@@ -977,6 +979,8 @@ fn log_tx_ingestion_metrics(executor_metrics: ExecutorMetricsChain<'_>) {
         pop_preferred = metric(&fq, COUNTER_FAIR_QUEUE_POP_PREFERRED),
         pop_fallback = metric(&fq, COUNTER_FAIR_QUEUE_POP_FALLBACK),
         pop_empty = metric(&fq, COUNTER_FAIR_QUEUE_POP_EMPTY),
+        pop_from_priority = metric(&fq, COUNTER_FAIR_QUEUE_POP_FROM_PRIORITY),
+        pop_from_regular = metric(&fq, COUNTER_FAIR_QUEUE_POP_FROM_REGULAR),
         priority_items = metric(&fq, GAUGE_FAIR_QUEUE_PRIORITY_ITEMS),
         regular_items = metric(&fq, GAUGE_FAIR_QUEUE_REGULAR_ITEMS),
         total_items = metric(&fq, GAUGE_FAIR_QUEUE_TOTAL_ITEMS),

@@ -9,6 +9,8 @@ pub const COUNTER_FAIR_QUEUE_POP_TOTAL: &str = "monad.fair_queue.pop.total";
 pub const COUNTER_FAIR_QUEUE_POP_PREFERRED: &str = "monad.fair_queue.pop.preferred";
 pub const COUNTER_FAIR_QUEUE_POP_FALLBACK: &str = "monad.fair_queue.pop.fallback";
 pub const COUNTER_FAIR_QUEUE_POP_EMPTY: &str = "monad.fair_queue.pop.empty";
+pub const COUNTER_FAIR_QUEUE_POP_FROM_PRIORITY: &str = "monad.fair_queue.pop.from_priority";
+pub const COUNTER_FAIR_QUEUE_POP_FROM_REGULAR: &str = "monad.fair_queue.pop.from_regular";
 
 pub const GAUGE_FAIR_QUEUE_PRIORITY_ITEMS: &str = "monad.fair_queue.priority_items";
 pub const GAUGE_FAIR_QUEUE_REGULAR_ITEMS: &str = "monad.fair_queue.regular_items";
