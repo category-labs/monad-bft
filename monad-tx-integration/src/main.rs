@@ -4,6 +4,7 @@ use clap::{Args, Parser, Subcommand};
 
 mod channel_input;
 mod committer;
+mod message;
 mod multi_submit;
 mod node;
 mod router;

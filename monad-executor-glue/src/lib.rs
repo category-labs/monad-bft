@@ -100,11 +100,14 @@ pub enum RouterCommand<ST: CertificateSignatureRecoverable, OM> {
         dedicated_full_nodes: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
         prioritized_full_nodes: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
     },
-    /// Forward transactions via LeanUDP if connected, otherwise fall back to dual sender.
-    /// Used for tx forwarding to future leaders.
-    LeanForwardTxs {
+    /// Prefer LeanUDP for point-to-point delivery when available, otherwise fall back to the
+    /// normal point-to-point path.
+    ///
+    /// Intended for forwarded tx batches (future-leader forwarding).
+    LeanPointToPoint {
         target: NodeId<CertificateSignaturePubKey<ST>>,
-        txs: Vec<Bytes>,
+        message: OM,
+        priority: UdpPriority,
     },
 }
 
@@ -165,10 +168,14 @@ impl<ST: CertificateSignatureRecoverable, OM> Debug for RouterCommand<ST, OM> {
                 .field("dedicated_full_nodes", dedicated_full_nodes)
                 .field("prioritized_full_nodes", prioritized_full_nodes)
                 .finish(),
-            Self::LeanForwardTxs { target, txs } => f
-                .debug_struct("LeanForwardTxs")
+            Self::LeanPointToPoint {
+                target,
+                message: _,
+                priority,
+            } => f
+                .debug_struct("LeanPointToPoint")
                 .field("target", target)
-                .field("txs_count", &txs.len())
+                .field("priority", priority)
                 .finish(),
         }
     }
@@ -191,7 +198,6 @@ pub trait Message: Clone + Send + Sync {
 }
 
 /// Trait for outbound messages that can carry forwarded transactions.
-/// Used by LeanForwardTxs command to create ForwardedTx messages for the fallback path.
 pub trait OutboundForwardTxs {
     fn forward_txs(txs: Vec<Bytes>) -> Self;
 }

@@ -407,12 +407,15 @@ impl<S: SwarmRelation> Executor for MockExecutor<S> {
                 } => {
                     self.router.send_outbound(self.tick, target, message);
                 }
-                RouterCommand::LeanForwardTxs { target, txs } => {
-                    // In mock swarm, treat LeanForwardTxs as regular PointToPoint publish
+                RouterCommand::LeanPointToPoint {
+                    target,
+                    message,
+                    priority: _,
+                } => {
                     self.router.send_outbound(
                         self.tick,
                         RouterTarget::PointToPoint(target),
-                        VerifiedMonadMessage::ForwardedTx(txs),
+                        message,
                     );
                 }
             }

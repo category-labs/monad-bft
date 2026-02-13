@@ -196,7 +196,15 @@ where
                 RouterCommand::UpdatePeers { .. } => {}
                 RouterCommand::GetFullNodes => {}
                 RouterCommand::UpdateFullNodes { .. } => {}
-                RouterCommand::LeanForwardTxs { .. } => {}
+                RouterCommand::LeanPointToPoint {
+                    target, message, ..
+                } => {
+                    self.txs
+                        .get(&target)
+                        .unwrap()
+                        .send((now, self.me, message.into()))
+                        .unwrap();
+                }
             }
         }
     }

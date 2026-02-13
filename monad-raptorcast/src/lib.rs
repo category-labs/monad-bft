@@ -531,6 +531,7 @@ where
                             return;
                         }
                     };
+
                     let build_target = BuildTarget::PointToPoint(&to);
 
                     let _timer = DropTimer::start(Duration::from_millis(10), |elapsed| {
@@ -998,7 +999,11 @@ where
                 } => {
                     self.dedicated_full_nodes.list = dedicated_full_nodes;
                 }
-                RouterCommand::LeanForwardTxs { target, txs } => {
+                RouterCommand::LeanPointToPoint {
+                    target,
+                    message,
+                    priority,
+                } => {
                     self.metrics[COUNTER_RAPTORCAST_LEANUDP_FORWARD_ATTEMPTS] += 1;
 
                     let sent_via_lean = if let Some(lean_socket) = self.lean_udp_socket.as_mut() {
@@ -1033,9 +1038,22 @@ where
                         }
 
                         if let Some(addr) = lean_addr {
-                            let mut buf = BytesMut::new();
-                            txs.encode(&mut buf);
-                            let payload_len = buf.len();
+                            let outbound_message =
+                                match OutboundRouterMessage::<OM, ST>::AppMessage(message.clone())
+                                    .try_serialize()
+                                {
+                                    Ok(payload) => payload,
+                                    Err(err) => {
+                                        error!(
+                                            ?target,
+                                            ?err,
+                                            "failed to serialize leanudp point-to-point message"
+                                        );
+                                        return;
+                                    }
+                                };
+
+                            let payload_len = outbound_message.len();
                             let max_message_size = lean_socket.config().max_message_size;
 
                             if payload_len > max_message_size {
@@ -1044,14 +1062,14 @@ where
                                     ?target,
                                     payload_len,
                                     max_message_size,
-                                    tx_count = txs.len(),
-                                    "leanudp forward payload exceeds max message size, dropping"
+                                    "leanudp point-to-point payload exceeds max message size, falling back"
                                 );
+                                false
                             } else {
-                                lean_socket.send(addr, buf.freeze(), UdpPriority::Regular);
+                                lean_socket.send(addr, outbound_message, priority);
                                 self.metrics[COUNTER_RAPTORCAST_LEANUDP_FORWARD_SENT] += 1;
+                                true
                             }
-                            true
                         } else {
                             false
                         }
@@ -1064,8 +1082,8 @@ where
                         self.metrics[COUNTER_RAPTORCAST_LEANUDP_FORWARD_FALLBACK] += 1;
                         self.handle_publish(
                             RouterTarget::PointToPoint(target),
-                            OM::forward_txs(txs),
-                            UdpPriority::Regular,
+                            message,
+                            priority,
                             self_id,
                         );
                     }
@@ -1276,18 +1294,36 @@ where
                 let mut recv_fut = pin!(lean_socket.recv());
                 match recv_fut.poll_unpin(cx) {
                     Poll::Ready(Ok(msg)) => {
-                        if let Ok(txs) = Vec::<Bytes>::decode(&mut msg.payload.as_ref()) {
-                            this.pending_events
-                                .push_back(RaptorCastEvent::LeanUdpForwardTxs {
-                                    sender: msg.public_key,
-                                    txs,
-                                });
-                        } else {
-                            trace!(
-                                sender = ?msg.public_key,
-                                payload_len = msg.payload.len(),
-                                "leanudp recv payload failed to decode as Vec<Bytes>, dropping"
-                            );
+                        let from = NodeId::new(msg.public_key);
+                        match InboundRouterMessage::<M, ST>::try_deserialize(&msg.payload) {
+                            Ok(inbound) => match inbound {
+                                InboundRouterMessage::AppMessage(app_message) => {
+                                    this.pending_events.push_back(RaptorCastEvent::Message(
+                                        app_message.event(from),
+                                    ));
+                                }
+                                InboundRouterMessage::PeerDiscoveryMessage(peer_disc_message) => {
+                                    this.peer_discovery_driver
+                                        .lock()
+                                        .unwrap()
+                                        .update(peer_disc_message.event(from));
+                                }
+                                InboundRouterMessage::FullNodesGroup(full_nodes_group_message) => {
+                                    trace!(
+                                        ?from,
+                                        ?full_nodes_group_message,
+                                        "dropping full-nodes group message received over leanudp"
+                                    );
+                                }
+                            },
+                            Err(err) => {
+                                trace!(
+                                    ?from,
+                                    ?err,
+                                    payload_len = msg.payload.len(),
+                                    "leanudp recv payload failed to deserialize, dropping"
+                                );
+                            }
                         }
                         if let Some(event) = this.pending_events.pop_front() {
                             return Poll::Ready(Some(event.into()));
