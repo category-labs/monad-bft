@@ -28,10 +28,12 @@ use monad_eth_testutil::{
     recover_tx, secret_to_eth_address, S1, S2,
 };
 use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics, PoolTxKind};
-use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner, StateBackend};
+use monad_state_backend::{
+    AccountState, InMemoryBlockState, InMemoryState, InMemoryStateInner, StateBackend,
+};
 use monad_testutil::signing::MockSignatures;
 use monad_tfm::base_fee::MIN_BASE_FEE;
-use monad_types::{Balance, Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
+use monad_types::{Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
 
 type SignatureType = NopSignature;
 type SignatureCollectionType = MockSignatures<SignatureType>;
@@ -61,11 +63,10 @@ fn txpool_create_proposal_lookups_bound_by_tx_limit() {
         let eth_block_policy = EthBlockPolicy::new(GENESIS_SEQ_NUM, u64::MAX);
 
         let state_backend: StateBackendType = InMemoryStateInner::new(
-            Balance::MAX,
             SeqNum::MAX,
             InMemoryBlockState::genesis(BTreeMap::from_iter([
-                (secret_to_eth_address(S1), 0),
-                (secret_to_eth_address(S2), 0),
+                (secret_to_eth_address(S1), AccountState::max_balance()),
+                (secret_to_eth_address(S2), AccountState::max_balance()),
             ])),
         );
 
@@ -141,11 +142,10 @@ fn txpool_create_proposal_no_lookup_for_unknown_authorizations() {
         let eth_block_policy = EthBlockPolicy::new(GENESIS_SEQ_NUM, u64::MAX);
 
         let state_backend: StateBackendType = InMemoryStateInner::new(
-            Balance::MAX,
             SeqNum::MAX,
             InMemoryBlockState::genesis(BTreeMap::from_iter([
-                (secret_to_eth_address(S1), 0),
-                (secret_to_eth_address(S2), 0),
+                (secret_to_eth_address(S1), AccountState::max_balance()),
+                (secret_to_eth_address(S2), AccountState::max_balance()),
             ])),
         );
 

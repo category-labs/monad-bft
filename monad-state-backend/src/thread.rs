@@ -281,17 +281,14 @@ mod test {
 
     use monad_crypto::NopSignature;
     use monad_multi_sig::MultiSig;
-    use monad_types::{Balance, SeqNum, GENESIS_BLOCK_ID, GENESIS_SEQ_NUM};
+    use monad_types::{SeqNum, GENESIS_BLOCK_ID, GENESIS_SEQ_NUM};
 
     use crate::{InMemoryStateInner, StateBackend, StateBackendThreadClient};
 
     #[test]
     fn all_requests() {
         let client = StateBackendThreadClient::new(|| {
-            InMemoryStateInner::<NopSignature, MultiSig<NopSignature>>::genesis(
-                Balance::MAX,
-                SeqNum(4),
-            )
+            InMemoryStateInner::<NopSignature, MultiSig<NopSignature>>::genesis(SeqNum(4))
         });
 
         {
@@ -324,10 +321,7 @@ mod test {
     #[test]
     fn shutdown() {
         let client = StateBackendThreadClient::new(|| {
-            InMemoryStateInner::<NopSignature, MultiSig<NopSignature>>::genesis(
-                Balance::MAX,
-                SeqNum(4),
-            )
+            InMemoryStateInner::<NopSignature, MultiSig<NopSignature>>::genesis(SeqNum(4))
         });
 
         let handle = client.handle.clone();

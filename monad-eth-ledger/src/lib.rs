@@ -21,7 +21,6 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
-use alloy_consensus::Transaction as _;
 use futures::Stream;
 use monad_blocksync::messages::message::{
     BlockSyncBodyResponse, BlockSyncHeadersResponse, BlockSyncResponseMessage,
@@ -36,7 +35,7 @@ use monad_crypto::certificate_signature::{
 use monad_eth_types::EthExecutionProtocol;
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{BlockSyncEvent, LedgerCommand, MonadEvent};
-use monad_state_backend::{InMemoryState, StateBackendTest};
+use monad_state_backend::{InMemoryState, MockExecution};
 use monad_types::{BlockId, SeqNum};
 use monad_updaters::ledger::MockableLedger;
 use monad_validator::signature_collection::SignatureCollection;
@@ -128,30 +127,14 @@ where
             match command {
                 LedgerCommand::LedgerCommit(OptimisticCommit::Proposed(block)) => {
                     let _span = debug_span!("optimistic commit proposed").entered();
-                    // generate eth block and update the state backend with committed nonces
-                    let new_account_nonces = block
-                        .body()
-                        .execution_body
-                        .transactions
-                        .iter()
-                        .map(|tx| {
-                            (
-                                tx.recover_signer().expect("invalid eth tx in block"),
-                                tx.nonce() + 1,
-                            )
-                        })
-                        // collecting into a map will handle a sender sending multiple
-                        // transactions gracefully
-                        //
-                        // this is because nonces are always increasing per account
-                        .collect();
+
                     let mut state = self.state.lock().unwrap();
                     state.ledger_propose(
                         block.get_id(),
                         block.get_seq_num(),
                         block.get_block_round(),
                         block.get_parent_id(),
-                        new_account_nonces,
+                        block.body().execution_body.transactions.clone(),
                     );
 
                     self.blocks.insert(block.get_id(), block);
