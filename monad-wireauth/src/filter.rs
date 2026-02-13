@@ -21,7 +21,7 @@ use std::{
 
 use lru::LruCache;
 use monad_executor::ExecutorMetrics;
-use tracing::{debug, info, warn};
+use tracing::{debug, trace, warn};
 
 use crate::{metrics::*, state::State};
 
@@ -107,7 +107,7 @@ impl Filter {
         duration_since_start: Duration,
         cookie_valid: bool,
     ) -> FilterAction {
-        info!(remote_addr = %remote_addr, cookie_valid = cookie_valid, "applying filter");
+        trace!(remote_addr = %remote_addr, cookie_valid = cookie_valid, "applying filter");
         self.counter += 1;
         let total_sessions = state.total_sessions();
         let ip = remote_addr.ip();
