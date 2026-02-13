@@ -337,6 +337,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "afl"
+version = "0.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2027b09e36bf321ace7af43a23df3d46dae645b855be337b0b6582c79ad53769"
+dependencies = [
+ "home",
+ "libc",
+ "rustc_version 0.4.1",
+ "xdg",
+]
+
+[[package]]
 name = "agent"
 version = "0.1.1"
 source = "git+https://github.com/category-labs/manytrace.git?tag=v0.1.1#1598f5c4fb725b54c83c224c1d58c27dcda9b61f"
@@ -3915,6 +3927,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "home"
+version = "0.5.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cc627f471c528ff0c4a49e1d5e60450c8f6461dd6d10ba9dcd3a61d3dff7728d"
+dependencies = [
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "http"
 version = "0.2.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5524,6 +5545,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-fuzz"
+version = "0.0.0"
+dependencies = [
+ "afl",
+ "arbitrary",
+ "bytes",
+ "monad-bls",
+ "monad-crypto",
+ "monad-eth-types",
+ "monad-raptor",
+ "monad-raptorcast",
+ "monad-secp",
+ "monad-state",
+]
+
+[[package]]
 name = "monad-keystore"
 version = "0.1.0"
 dependencies = [
@@ -5997,6 +6034,7 @@ dependencies = [
  "rstest",
  "secp256k1",
  "serde",
+ "serde_with",
  "sha2",
  "tiny-keccak",
  "wycheproof",
@@ -10305,6 +10343,12 @@ checksum = "05f360fc0b24296329c78fda852a1e9ae82de9cf7b27dae4b7f62f118f77b9ed"
 dependencies = [
  "tap",
 ]
+
+[[package]]
+name = "xdg"
+version = "3.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2fb433233f2df9344722454bc7e96465c9d03bff9d77c248f9e7523fe79585b5"
 
 [[package]]
 name = "xmlparser"
