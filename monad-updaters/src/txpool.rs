@@ -41,6 +41,7 @@ use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
 use monad_state_backend::StateBackend;
 use monad_types::{ExecutionProtocol, SeqNum};
 use monad_validator::signature_collection::SignatureCollection;
+use tracing::info;
 
 pub trait MockableTxPool:
     Executor<
@@ -228,7 +229,8 @@ where
     fn exec(&mut self, commands: Vec<Self::Command>) {
         for command in commands {
             match command {
-                TxPoolCommand::CreateProposal {
+                TxPoolCommand::CreateProposalAhead { .. } => {}
+                TxPoolCommand::FetchProposal {
                     node_id: _,
                     epoch,
                     round,
@@ -323,7 +325,55 @@ where
 
         for command in commands {
             match command {
-                TxPoolCommand::CreateProposal {
+                TxPoolCommand::CreateProposalAhead {
+                    node_id,
+                    epoch,
+                    round,
+                    seq_num,
+                    tx_limit,
+                    proposal_gas_limit,
+                    proposal_byte_limit,
+                    timestamp_ns,
+                    extending_blocks,
+                } => {
+                    // Some() if tfm is enabled, else None
+                    let maybe_tfm_base_fees = block_policy.compute_base_fee(
+                        &extending_blocks,
+                        &self.chain_config,
+                        timestamp_ns,
+                    );
+
+                    let base_fee = maybe_tfm_base_fees
+                        .map(|(base_fee, _, _)| base_fee)
+                        .unwrap_or(monad_tfm::base_fee::PRE_TFM_BASE_FEE);
+
+                    match pool.create_proposal_ahead(
+                        &mut event_tracker,
+                        epoch,
+                        round,
+                        seq_num,
+                        base_fee,
+                        tx_limit,
+                        proposal_gas_limit,
+                        proposal_byte_limit,
+                        timestamp_ns,
+                        node_id,
+                        extending_blocks,
+                        block_policy,
+                        state_backend,
+                        &self.chain_config,
+                    ) {
+                        Ok(()) => {}
+                        Err(block_policy_err) => {
+                            info!(
+                                ?seq_num,
+                                ?block_policy_err,
+                                "failed to create proposal ahead"
+                            );
+                        }
+                    }
+                }
+                TxPoolCommand::FetchProposal {
                     node_id,
                     epoch,
                     round,
@@ -359,7 +409,7 @@ where
                         };
 
                     let proposed_execution_inputs = pool
-                        .create_proposal(
+                        .fetch_proposal(
                             &mut event_tracker,
                             epoch,
                             round,

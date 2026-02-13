@@ -71,8 +71,21 @@ where
     },
     /// Cancel scheduled (if exists) timeout event
     ScheduleReset,
+    CreateProposalAhead {
+        node_id: NodeId<CertificateSignaturePubKey<ST>>,
+        epoch: Epoch,
+        round: Round,
+        seq_num: SeqNum,
+
+        tx_limit: usize,
+        proposal_gas_limit: u64,
+        proposal_byte_limit: u64,
+        timestamp_ns: u128,
+
+        extending_blocks: Vec<BPT::ValidatedBlock>,
+    },
     /// Creates a proposal
-    CreateProposal {
+    FetchProposal {
         node_id: NodeId<CertificateSignaturePubKey<ST>>,
         epoch: Epoch,
         round: Round,

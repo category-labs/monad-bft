@@ -318,10 +318,10 @@ impl<S: SwarmRelation> MockSwarmVerifier<S> {
                 fetch_metric!(consensus_events.process_old_qc),
                 num_blocks_authored,
             );
-            // should create proposals for all blocks authored in ledger
+            // should broadcast proposals for all blocks authored in ledger
             self.metric_minimum(
                 &vec![*node_id],
-                fetch_metric!(consensus_events.creating_proposal),
+                fetch_metric!(consensus_events.broadcasting_proposal),
                 num_blocks_authored,
             );
         }

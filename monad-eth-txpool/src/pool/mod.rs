@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::time::Duration;
+use std::{collections::BTreeMap, time::Duration};
 
 use alloy_consensus::{
     constants::EMPTY_WITHDRAWALS, transaction::Recovered, TxEnvelope, EMPTY_OMMER_ROOT_HASH,
@@ -60,6 +60,16 @@ mod tracked;
 mod transaction;
 
 #[derive(Clone, Debug)]
+struct ReadyProposal<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
+    pub transactions: Vec<Recovered<TxEnvelope>>,
+    pub extending_blocks: Vec<EthValidatedBlock<ST, SCT>>,
+}
+
+#[derive(Clone, Debug)]
 pub struct EthTxPool<ST, SCT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
@@ -69,6 +79,7 @@ where
     CRT: ChainRevision,
 {
     tracked: TrackedTxMap<ST, SCT, SBT, CCT, CRT>,
+    ready_proposals: BTreeMap<SeqNum, ReadyProposal<ST, SCT>>,
 
     last_commit: Option<ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>>,
 
@@ -98,6 +109,7 @@ where
 
         Self {
             tracked: TrackedTxMap::new(config_limits),
+            ready_proposals: BTreeMap::new(),
 
             last_commit: None,
 
@@ -117,6 +129,48 @@ where
 
     pub fn current_revision(&self) -> (&CRT, &MonadExecutionRevision) {
         (&self.chain_revision, &self.execution_revision)
+    }
+
+    fn update_chain_params(
+        &mut self,
+        event_tracker: &mut EthTxPoolEventTracker<'_>,
+        round: Round,
+        timestamp_ns: u128,
+        chain_config: &CCT,
+    ) -> bool {
+        let timestamp_seconds = timestamp_ns_to_secs(timestamp_ns);
+        let chain_id = chain_config.chain_id();
+
+        if self.chain_id != chain_id {
+            panic!(
+                "txpool chain id changed from {} to {} in create_proposal",
+                self.chain_id, chain_id
+            );
+        }
+
+        let chain_revision = chain_config.get_chain_revision(round);
+        let execution_revision = chain_config.get_execution_chain_revision(timestamp_seconds);
+
+        if chain_revision.chain_params() != self.chain_revision.chain_params()
+            || self.execution_revision != execution_revision
+        {
+            self.chain_revision = chain_revision;
+            self.execution_revision = execution_revision;
+
+            info!(
+                chain_params =? chain_revision.chain_params(),
+                execution_revision =? execution_revision,
+                "updating chain params and execution revision"
+            );
+
+            self.static_validate_all_txs(event_tracker);
+
+            self.ready_proposals.clear();
+
+            return true;
+        }
+
+        false
     }
 
     pub fn insert_txs(
@@ -249,7 +303,78 @@ where
         self.update_aggregate_metrics(event_tracker);
     }
 
-    pub fn create_proposal(
+    pub fn create_proposal_ahead(
+        &mut self,
+        event_tracker: &mut EthTxPoolEventTracker<'_>,
+        epoch: Epoch,
+        round: Round,
+        proposed_seq_num: SeqNum,
+        base_fee: u64,
+        tx_limit: usize,
+        proposal_gas_limit: u64,
+        proposal_byte_limit: u64,
+        timestamp_ns: u128,
+        node_id: NodeId<CertificateSignaturePubKey<ST>>,
+        extending_blocks: Vec<EthValidatedBlock<ST, SCT>>,
+
+        block_policy: &EthBlockPolicy<ST, SCT, CCT, CRT>,
+        state_backend: &SBT,
+        chain_config: &CCT,
+    ) -> Result<(), BlockPolicyError> {
+        self.update_chain_params(event_tracker, round, timestamp_ns, chain_config);
+
+        if let Some(ready_proposal) = self.ready_proposals.get(&proposed_seq_num) {
+            if ready_proposal.extending_blocks == extending_blocks {
+                info!(
+                    ?proposed_seq_num,
+                    "txpool received duplicate create proposal ahead call"
+                );
+                return Ok(());
+            }
+        };
+
+        info!(
+            ?round,
+            ?proposed_seq_num,
+            "txpool creating proposal ahead for next round"
+        );
+
+        self.tracked.evict_expired_txs(event_tracker);
+
+        let transactions = self.sequence_transactions(
+            event_tracker,
+            epoch,
+            proposed_seq_num,
+            base_fee,
+            tx_limit,
+            proposal_gas_limit,
+            proposal_byte_limit,
+            node_id,
+            &extending_blocks,
+            block_policy,
+            state_backend,
+            chain_config,
+        )?;
+
+        info!(
+            ?round,
+            ?proposed_seq_num,
+            num_tx =? transactions.len(),
+            "txpool created proposal ahead for next round"
+        );
+
+        self.ready_proposals.insert(
+            proposed_seq_num,
+            ReadyProposal {
+                transactions,
+                extending_blocks,
+            },
+        );
+
+        Ok(())
+    }
+
+    pub fn fetch_proposal(
         &mut self,
         event_tracker: &mut EthTxPoolEventTracker<'_>,
         epoch: Epoch,
@@ -269,81 +394,46 @@ where
         state_backend: &SBT,
         chain_config: &CCT,
     ) -> Result<ProposedExecutionInputs<EthExecutionProtocol>, BlockPolicyError> {
-        info!(
-            ?proposed_seq_num,
-            ?tx_limit,
-            ?proposal_gas_limit,
-            ?proposal_byte_limit,
-            "txpool creating proposal"
-        );
+        self.update_chain_params(event_tracker, round, timestamp_ns, chain_config);
 
-        self.tracked.evict_expired_txs(event_tracker);
+        let maybe_ready_proposal = self.ready_proposals.remove(&proposed_seq_num);
+        let is_proposal_ready = maybe_ready_proposal
+            .as_ref()
+            .is_some_and(|ready_proposal| ready_proposal.extending_blocks == extending_blocks);
 
-        let timestamp_seconds = timestamp_ns_to_secs(timestamp_ns);
+        let transactions = if is_proposal_ready {
+            info!(?round, ?proposed_seq_num, "txpool fetching ready proposal");
 
-        {
-            let chain_id = chain_config.chain_id();
+            maybe_ready_proposal.unwrap().transactions
+        } else {
+            info!(
+                ?proposed_seq_num,
+                ?tx_limit,
+                ?proposal_gas_limit,
+                ?proposal_byte_limit,
+                "txpool creating proposal"
+            );
 
-            if self.chain_id != chain_id {
-                panic!(
-                    "txpool chain id changed from {} to {} in create_proposal",
-                    self.chain_id, chain_id
-                );
-            }
+            self.tracked.evict_expired_txs(event_tracker);
 
-            let chain_revision = chain_config.get_chain_revision(round);
-            let execution_revision = chain_config.get_execution_chain_revision(timestamp_seconds);
-
-            if chain_revision.chain_params() != self.chain_revision.chain_params()
-                || self.execution_revision != execution_revision
-            {
-                self.chain_revision = chain_revision;
-                self.execution_revision = execution_revision;
-
-                info!(
-                    chain_params =? chain_revision.chain_params(),
-                    execution_revision =? execution_revision,
-                    "updating chain params and execution revision in create_proposal"
-                );
-
-                self.static_validate_all_txs(event_tracker);
-            }
-        }
-
-        let self_eth_address = node_id.pubkey().get_eth_address();
-        let system_transactions = self.get_system_transactions(
-            epoch,
-            proposed_seq_num,
-            self_eth_address,
-            &extending_blocks.iter().collect(),
-            block_policy,
-            state_backend,
-            chain_config,
-        )?;
-        let system_txs_size: u64 = system_transactions
-            .iter()
-            .map(|tx| tx.length() as u64)
-            .sum();
-
-        let user_transactions = self.sequence_user_transactions(
-            event_tracker,
-            proposed_seq_num,
-            base_fee,
-            tx_limit - system_transactions.len(),
-            proposal_gas_limit,
-            proposal_byte_limit - system_txs_size,
-            extending_blocks.iter().collect(),
-            block_policy,
-            state_backend,
-            chain_config,
-        )?;
+            self.sequence_transactions(
+                event_tracker,
+                epoch,
+                proposed_seq_num,
+                base_fee,
+                tx_limit,
+                proposal_gas_limit,
+                proposal_byte_limit,
+                node_id,
+                &extending_blocks,
+                block_policy,
+                state_backend,
+                chain_config,
+            )?
+        };
 
         let body = EthBlockBody {
-            transactions: system_transactions
-                .into_iter()
-                .chain(user_transactions)
-                .map(|tx| tx.into_tx())
-                .collect(),
+            transactions: transactions.into_iter().map(|tx| tx.into_tx()).collect(),
             ommers: Vec::new(),
             withdrawals: Vec::new(),
         };
@@ -377,7 +467,7 @@ where
             difficulty: 0,
             number: proposed_seq_num.0,
             gas_limit: proposal_gas_limit,
-            timestamp: timestamp_seconds,
+            timestamp: timestamp_ns_to_secs(timestamp_ns),
             mix_hash: round_signature.get_hash().0,
             nonce: [0_u8; 8],
             extra_data: [0_u8; 32],
@@ -437,6 +527,8 @@ where
             );
         }
         self.last_commit = Some(committed_block.header().clone());
+        self.ready_proposals
+            .retain(|&seq_num, _| seq_num > committed_block.get_seq_num());
 
         let execution_revision = chain_config
             .get_execution_chain_revision(committed_block.header().execution_inputs.timestamp);
@@ -582,6 +674,56 @@ where
             .into_iter()
             .map(|sys_txn| sys_txn.into())
             .collect_vec())
+    }
+
+    pub fn sequence_transactions(
+        &mut self,
+        event_tracker: &mut EthTxPoolEventTracker<'_>,
+        epoch: Epoch,
+        proposed_seq_num: SeqNum,
+        base_fee: u64,
+        tx_limit: usize,
+        proposal_gas_limit: u64,
+        proposal_byte_limit: u64,
+        node_id: NodeId<CertificateSignaturePubKey<ST>>,
+        extending_blocks: &[EthValidatedBlock<ST, SCT>],
+
+        block_policy: &EthBlockPolicy<ST, SCT, CCT, CRT>,
+        state_backend: &SBT,
+        chain_config: &CCT,
+    ) -> Result<Vec<Recovered<TxEnvelope>>, BlockPolicyError> {
+        let self_eth_address = node_id.pubkey().get_eth_address();
+        let system_transactions = self.get_system_transactions(
+            epoch,
+            proposed_seq_num,
+            self_eth_address,
+            &extending_blocks.iter().collect(),
+            block_policy,
+            state_backend,
+            chain_config,
+        )?;
+        let system_txs_size: u64 = system_transactions
+            .iter()
+            .map(|tx| tx.length() as u64)
+            .sum();
+
+        let user_transactions = self.sequence_user_transactions(
+            event_tracker,
+            proposed_seq_num,
+            base_fee,
+            tx_limit - system_transactions.len(),
+            proposal_gas_limit,
+            proposal_byte_limit - system_txs_size,
+            extending_blocks.iter().collect(),
+            block_policy,
+            state_backend,
+            chain_config,
+        )?;
+
+        Ok(system_transactions
+            .into_iter()
+            .chain(user_transactions)
+            .collect())
     }
 
     pub fn sequence_user_transactions(

@@ -330,7 +330,48 @@ where
                         .project()
                         .schedule_egress_txs(&mut self.pool);
                 }
-                TxPoolCommand::CreateProposal {
+                TxPoolCommand::CreateProposalAhead {
+                    node_id,
+                    epoch,
+                    round,
+                    seq_num,
+                    tx_limit,
+                    proposal_gas_limit,
+                    proposal_byte_limit,
+                    timestamp_ns,
+                    extending_blocks,
+                } => {
+                    // Some() if tfm is enabled, else None
+                    let maybe_tfm_base_fees = self.block_policy.compute_base_fee(
+                        &extending_blocks,
+                        &self.chain_config,
+                        timestamp_ns,
+                    );
+
+                    let base_fee = maybe_tfm_base_fees
+                        .map(|(base_fee, _, _)| base_fee)
+                        .unwrap_or(monad_tfm::base_fee::PRE_TFM_BASE_FEE);
+
+                    if let Err(err) = self.pool.create_proposal_ahead(
+                        &mut event_tracker,
+                        epoch,
+                        round,
+                        seq_num,
+                        base_fee,
+                        tx_limit,
+                        proposal_gas_limit,
+                        proposal_byte_limit,
+                        timestamp_ns,
+                        node_id,
+                        extending_blocks,
+                        &self.block_policy,
+                        &self.state_backend,
+                        &self.chain_config,
+                    ) {
+                        info!(?err, "txpool executor create proposal ahead error")
+                    }
+                }
+                TxPoolCommand::FetchProposal {
                     node_id,
                     epoch,
                     round,
@@ -373,7 +414,7 @@ where
                             None => (monad_tfm::base_fee::PRE_TFM_BASE_FEE, None, None, None),
                         };
 
-                    match self.pool.create_proposal(
+                    match self.pool.fetch_proposal(
                         &mut event_tracker,
                         epoch,
                         round,

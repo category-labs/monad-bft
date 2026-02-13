@@ -89,7 +89,7 @@ fn txpool_create_proposal_lookups_bound_by_tx_limit() {
         let mock_keypair = NopKeyPair::from_bytes(&mut [5_u8; 32]).unwrap();
 
         let _ = pool
-            .create_proposal(
+            .fetch_proposal(
                 &mut event_tracker,
                 Epoch(1),
                 Round(1),
@@ -174,7 +174,7 @@ fn txpool_create_proposal_no_lookup_for_unknown_authorizations() {
         let mock_keypair = NopKeyPair::from_bytes(&mut [5_u8; 32]).unwrap();
 
         let _ = pool
-            .create_proposal(
+            .fetch_proposal(
                 &mut event_tracker,
                 Epoch(1),
                 Round(1),
