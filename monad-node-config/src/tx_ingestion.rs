@@ -52,10 +52,10 @@ fn default_max_time_weight() -> f64 {
     1.0
 }
 fn default_time_weight_unit_seconds() -> u64 {
-    3600
+    10 * 60
 }
 fn default_ema_half_life_seconds() -> u64 {
-    24 * 3600
+    12 * 3600
 }
 fn default_block_time_millis() -> u64 {
     400
@@ -104,13 +104,13 @@ impl Default for TxIngestionPeerScoreConfig {
 }
 
 fn default_fair_queue_per_id_limit() -> usize {
-    10_000
+    20_000
 }
 fn default_fair_queue_max_size() -> usize {
     100_000
 }
 fn default_fair_queue_regular_per_id_limit() -> usize {
-    1_000
+    2_000
 }
 fn default_fair_queue_regular_max_size() -> usize {
     100_000
