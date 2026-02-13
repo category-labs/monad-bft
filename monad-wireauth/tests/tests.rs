@@ -866,3 +866,139 @@ fn test_buffer_message_session_not_found() {
     let err = result.unwrap_err();
     assert!(matches!(err, monad_wireauth::Error::SessionNotFound));
 }
+
+#[test]
+fn test_gc_timer_reset_on_useful_data() {
+    init_tracing();
+    let config = Config {
+        gc_idle_timeout: Duration::from_secs(10),
+        session_timeout: Duration::from_secs(1000),
+        session_timeout_jitter: Duration::ZERO,
+        keepalive_interval: Duration::from_secs(3),
+        keepalive_jitter: Duration::ZERO,
+        ..Config::default()
+    };
+
+    let mut rng = rng();
+    let keypair1 = monad_secp::KeyPair::generate(&mut rng);
+    let peer1_pubkey = keypair1.pubkey();
+    let context1 = TestContext::new();
+    let mut peer1 = API::new(DEFAULT_METRICS, config.clone(), keypair1, context1.clone());
+
+    let keypair2 = monad_secp::KeyPair::generate(&mut rng);
+    let peer2_pubkey = keypair2.pubkey();
+    let context2 = TestContext::new();
+    let mut peer2 = API::new(DEFAULT_METRICS, config, keypair2, context2.clone());
+
+    let peer1_addr: SocketAddr = "127.0.0.1:8001".parse().unwrap();
+    let peer2_addr: SocketAddr = "127.0.0.1:8002".parse().unwrap();
+
+    peer1
+        .connect(peer2_pubkey, peer2_addr, DEFAULT_RETRY_ATTEMPTS)
+        .unwrap();
+    let init = collect::<HandshakeInitiation>(&mut peer1);
+    dispatch(&mut peer2, &init, peer1_addr);
+    let resp = collect::<HandshakeResponse>(&mut peer2);
+    dispatch(&mut peer1, &resp, peer2_addr);
+    let confirm = collect::<DataPacketHeader>(&mut peer1);
+    dispatch(&mut peer2, &confirm, peer1_addr);
+
+    // advance close to gc timeout, peer1 sends (resets peer1 gc), peer2 receives (resets peer2 gc)
+    context1.advance_time(Duration::from_secs(8));
+    context2.advance_time(Duration::from_secs(8));
+    peer1.tick();
+    peer2.tick();
+    let mut plaintext1 = b"from peer1".to_vec();
+    let packet1 = encrypt(&mut peer1, &peer2_pubkey, &mut plaintext1);
+    assert_eq!(decrypt(&mut peer2, &packet1, peer1_addr), b"from peer1");
+
+    // advance again, peer2 sends (resets peer2 gc), peer1 receives (resets peer1 gc)
+    context1.advance_time(Duration::from_secs(8));
+    context2.advance_time(Duration::from_secs(8));
+    peer1.tick();
+    peer2.tick();
+    let mut plaintext2 = b"from peer2".to_vec();
+    let packet2 = encrypt(&mut peer2, &peer1_pubkey, &mut plaintext2);
+    assert_eq!(decrypt(&mut peer1, &packet2, peer2_addr), b"from peer2");
+
+    // both sessions still alive after useful data exchange
+    assert!(peer1.is_connected_public_key(&peer2_pubkey));
+    assert!(peer2.is_connected_public_key(&peer1_pubkey));
+
+    // send keepalives multiple times - they should NOT reset gc timer
+    for _ in 0..3 {
+        context1.advance_time(Duration::from_secs(4));
+        context2.advance_time(Duration::from_secs(4));
+        peer1.tick();
+        peer2.tick();
+
+        // keepalives are triggered and exchanged
+        if let Some((addr, keepalive)) = peer1.next_packet() {
+            assert_eq!(addr, peer2_addr);
+            dispatch(&mut peer2, &keepalive, peer1_addr);
+        }
+        if let Some((addr, keepalive)) = peer2.next_packet() {
+            assert_eq!(addr, peer1_addr);
+            dispatch(&mut peer1, &keepalive, peer2_addr);
+        }
+    }
+
+    // sessions terminated by gc despite keepalives being exchanged
+    assert!(!peer1.is_connected_public_key(&peer2_pubkey));
+    assert!(!peer2.is_connected_public_key(&peer1_pubkey));
+}
+
+#[test]
+fn test_gc_terminate_has_no_side_effects() {
+    init_tracing();
+    let config = Config {
+        gc_idle_timeout: Duration::from_secs(5),
+        session_timeout: Duration::from_secs(1000),
+        session_timeout_jitter: Duration::ZERO,
+        keepalive_interval: Duration::from_secs(1),
+        keepalive_jitter: Duration::ZERO,
+        ..Config::default()
+    };
+
+    let mut rng = rng();
+    let keypair1 = monad_secp::KeyPair::generate(&mut rng);
+    let peer1_pubkey = keypair1.pubkey();
+    let context1 = TestContext::new();
+    let mut peer1 = API::new(DEFAULT_METRICS, config.clone(), keypair1, context1.clone());
+
+    let keypair2 = monad_secp::KeyPair::generate(&mut rng);
+    let peer2_pubkey = keypair2.pubkey();
+    let context2 = TestContext::new();
+    let mut peer2 = API::new(DEFAULT_METRICS, config, keypair2, context2.clone());
+
+    let peer1_addr: SocketAddr = "127.0.0.1:8001".parse().unwrap();
+    let peer2_addr: SocketAddr = "127.0.0.1:8002".parse().unwrap();
+
+    // Establish session without exchanging any useful data.
+    peer1
+        .connect(peer2_pubkey, peer2_addr, DEFAULT_RETRY_ATTEMPTS)
+        .unwrap();
+    let init = collect::<HandshakeInitiation>(&mut peer1);
+    dispatch(&mut peer2, &init, peer1_addr);
+    let resp = collect::<HandshakeResponse>(&mut peer2);
+    dispatch(&mut peer1, &resp, peer2_addr);
+    let confirm = collect::<DataPacketHeader>(&mut peer1);
+    dispatch(&mut peer2, &confirm, peer1_addr);
+
+    // Drain any leftover packets from handshake.
+    while peer1.next_packet().is_some() {}
+    while peer2.next_packet().is_some() {}
+
+    // Jump past GC and keepalive deadline; the tick should terminate sessions without
+    // enqueueing a keepalive (or other actions) in the same tick.
+    context1.advance_time(Duration::from_secs(6));
+    context2.advance_time(Duration::from_secs(6));
+    peer1.tick();
+    peer2.tick();
+
+    assert!(peer1.next_packet().is_none());
+    assert!(peer2.next_packet().is_none());
+
+    assert!(!peer1.is_connected_public_key(&peer2_pubkey));
+    assert!(!peer2.is_connected_public_key(&peer1_pubkey));
+}

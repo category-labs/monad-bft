@@ -48,6 +48,10 @@ pub struct Filter {
 }
 
 impl Filter {
+    // This is essentially a "configuration constructor" for `Filter`.
+    // Keeping it as a single constructor avoids proliferating ad-hoc config structs
+    // across call sites. Clippy's default threshold is 7 args; we intentionally exceed it.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         metric_names: &'static MetricNames,
         handshake_rate_limit: u64,
