@@ -126,7 +126,10 @@ where
     fn exec(&mut self, commands: Vec<Self::Command>) {
         for command in commands {
             match command {
-                LedgerCommand::LedgerCommit(OptimisticCommit::Proposed(block)) => {
+                LedgerCommand::LedgerCommit(OptimisticCommit::Proposed {
+                    block,
+                    is_canonical: _,
+                }) => {
                     let _span = debug_span!("optimistic commit proposed").entered();
                     // generate eth block and update the state backend with committed nonces
                     let new_account_nonces = block

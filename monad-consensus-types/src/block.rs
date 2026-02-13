@@ -675,7 +675,10 @@ where
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
-    Proposed(BPT::ValidatedBlock),
+    Proposed {
+        block: BPT::ValidatedBlock,
+        is_canonical: bool,
+    },
     Voted(BPT::ValidatedBlock),
     Finalized(BPT::ValidatedBlock),
 }
@@ -687,7 +690,10 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-    Proposed(ConsensusFullBlock<ST, SCT, EPT>),
+    Proposed {
+        block: ConsensusFullBlock<ST, SCT, EPT>,
+        is_canonical: bool,
+    },
     Voted(ConsensusFullBlock<ST, SCT, EPT>),
     Finalized(ConsensusFullBlock<ST, SCT, EPT>),
 }
@@ -705,7 +711,13 @@ where
 {
     fn from(value: &OptimisticPolicyCommit<ST, SCT, EPT, BPT, SBT, CCT, CRT>) -> Self {
         match value {
-            OptimisticPolicyCommit::Proposed(block) => Self::Proposed(block.deref().to_owned()),
+            OptimisticPolicyCommit::Proposed {
+                block,
+                is_canonical,
+            } => Self::Proposed {
+                block: block.deref().to_owned(),
+                is_canonical: *is_canonical,
+            },
             OptimisticPolicyCommit::Voted(block) => Self::Voted(block.deref().to_owned()),
             OptimisticPolicyCommit::Finalized(block) => Self::Finalized(block.deref().to_owned()),
         }
