@@ -1282,11 +1282,12 @@ where
                                     sender: msg.public_key,
                                     txs,
                                 });
-                        } else if let Ok(tx) = TxEnvelope::decode(&mut msg.payload.as_ref()) {
-                            this.pending_events.push_back(RaptorCastEvent::LeanUdpTx {
-                                sender: msg.public_key,
-                                tx,
-                            });
+                        } else {
+                            trace!(
+                                sender = ?msg.public_key,
+                                payload_len = msg.payload.len(),
+                                "leanudp recv payload failed to decode as Vec<Bytes>, dropping"
+                            );
                         }
                         if let Some(event) = this.pending_events.pop_front() {
                             return Poll::Ready(Some(event.into()));
