@@ -1,0 +1,100 @@
+name: Fuzz
+
+on:
+  merge_group:
+    branches: ["master"]
+  push:
+    branches: ["master"]
+  pull_request:
+    branches: "*"
+    types: [ opened, synchronize, reopened, edited ]
+
+concurrency:
+  group: >
+    ${{
+      github.event_name == 'merge_group'
+      && format('merge-group-{0}-fuzz', github.run_id)
+      ||
+        github.event_name == 'pull_request'
+        && format('pr-{0}-fuzz', github.event.pull_request.number)
+        || format('push-{0}-fuzz', github.ref)
+    }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+  ASMFLAGS: -march=haswell
+  CC: gcc-15
+  CFLAGS: -march=haswell
+  CXX: g++-15
+  CXXFLAGS: -march=haswell
+  TRIEDB_TARGET: triedb_driver
+
+  RUST_BACKTRACE: '1'
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-24.04-32
+
+    container:
+      image: peach10.devcore4.com/category-labs/builder
+      options: --privileged --security-opt seccomp=unconfined
+      credentials:
+        username: ${{ secrets.PRIVATE_REGISTRY_USERNAME }}
+        password: ${{ secrets.PRIVATE_REGISTRY_PASSWORD }}
+
+    steps:
+      - name: Generate a token
+        id: generate_token
+        uses: tibdex/github-app-token@v1
+        with:
+          app_id: ${{ secrets.REPO_READONLY_GITHUB_APP_ID }}
+          private_key: ${{ secrets.REPO_READONLY_GITHUB_APP_KEY }}
+          permissions: >-
+            {"contents": "read"}
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ steps.generate_token.outputs.token }}
+
+      - name: Install cargo-afl
+        run: |
+          # Bump the toolchain version because cargo-afl has
+          # dependencies that require rust 1.88+.
+          rustup toolchain install 1.88 --profile minimal
+          cargo +1.88 install cargo-afl
+
+      - name: Setup AFL
+        run: |
+          cargo afl config --build
+          env NO_SUDO=1 cargo afl system-config
+
+          # AFL's instrumentation runs before codegen, but LTO
+          # rewrites IR, which breaks the instrumentation.
+          mkdir -p .cargo
+          echo [profile.release] > .cargo/config.toml
+          echo lto=false >> .cargo/config.toml
+
+      - uses: Swatinem/rust-cache@v2
+      - name: Run fuzzing
+        id: fuzz
+        run: |
+          cd monad-fuzz
+          ./run-quick.sh
+
+      - name: Archive fuzz artifacts
+        if: ${{ failure() && steps.fuzz.outcome != 'success' }}
+        run: |
+          mkdir -p /tmp/fuzz-state
+          tar czvf /tmp/fuzz-state-archive.tar.gz -C /tmp fuzz-state
+
+      - name: Upload fuzz artifact archive
+        if: ${{ failure() && steps.fuzz.outcome != 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-state-archive
+          path: /tmp/fuzz-state-archive.tar.gz
+          if-no-files-found: warn

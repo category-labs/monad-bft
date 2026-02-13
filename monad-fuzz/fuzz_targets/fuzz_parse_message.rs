@@ -13,6 +13,25 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-pub mod legacy;
-pub mod packet_parser;
-pub mod signature_verifier;
+// Fuzz runner config:
+//
+// CORPUS_FILTER=*.parse_message.bin
+// TIMEOUT_QUICK=5m
+//
+// Environments:
+//
+// AFL_HANG_TMOUT=100
+// AFL_EXIT_ON_TIME=300000
+// AFL_INPUT_LEN_MAX=1500
+
+use bytes::Bytes;
+use monad_raptorcast::udp::{parse_message, ChunkSignatureVerifier};
+use monad_secp::mock::MockSecpSignature;
+
+fn main() {
+    afl::fuzz!(|data: &[u8]| {
+        let mut sig_cache = ChunkSignatureVerifier::<MockSecpSignature>::new().with_cache(1);
+        let payload = Bytes::copy_from_slice(data);
+        let _ = parse_message::<MockSecpSignature, _>(&mut sig_cache, payload, u64::MAX, |_| true);
+    });
+}
