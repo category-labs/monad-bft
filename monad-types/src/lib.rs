@@ -140,6 +140,13 @@ pub struct RoundSpan {
 }
 
 impl RoundSpan {
+    // TODO: The empty RoundSpan is only used in the Group struct
+    // representing a validator set. Remove this exception after we
+    // refactor out the Group struct.
+    pub fn empty(at: Round) -> Self {
+        Self { start: at, end: at }
+    }
+
     pub fn new(start: Round, end: Round) -> Option<Self> {
         if start >= end {
             return None;
@@ -162,15 +169,6 @@ impl RoundSpan {
     }
     pub fn overlaps(&self, other: &RoundSpan) -> bool {
         self.start < other.end && other.start < self.end
-    }
-}
-
-impl Default for RoundSpan {
-    fn default() -> Self {
-        Self {
-            start: Round::MIN,
-            end: Round::MIN,
-        }
     }
 }
 
