@@ -28,7 +28,7 @@ echo "Disabling block public access settings..."
 # Disable block public access
 aws s3api put-public-access-block \
     --bucket "$S3_BUCKET_NAME" \
-    --public-access-block-configuration "BlockPublicAcls=false,IgnorePublicAcls=false,BlockPublicPolicy=false,RestrictPublicBuckets=false"
+    --public-access-block-configuration "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"
 
 if [ $? -ne 0 ]; then
     echo "Failed to configure public access settings"
