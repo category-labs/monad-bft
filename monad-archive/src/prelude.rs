@@ -25,7 +25,7 @@ pub use std::{
 pub use alloy_consensus::{BlockBody, Header, ReceiptEnvelope, ReceiptWithBloom};
 pub use alloy_primitives::{U128, U256, U64};
 pub use bytes::Bytes;
-pub use eyre::{bail, eyre, Context, ContextCompat, OptionExt, Report, Result};
+pub use eyre::{bail, eyre, Context, ContextCompat, OptionExt, Report};
 pub use futures::{try_join, StreamExt, TryStream, TryStreamExt};
 pub use monad_triedb_utils::triedb_env::{ReceiptWithLogIndex, TxEnvelopeWithSender};
 pub use tokio::time::sleep;
@@ -33,6 +33,7 @@ pub use tracing::{debug, error, info, warn, Level};
 
 pub use crate::{
     archive_reader::{ArchiveReader, LatestKind},
+    error::{Error as ArchiveError, ErrorKind, Result, ResultExt, WrapErr},
     kvstore::{
         dynamodb::DynamoDBArchive, fs::FsStorage, s3::Bucket, triedb_reader::TriedbReader,
         KVReader, KVReaderErased, KVStore, KVStoreErased,
@@ -54,5 +55,5 @@ where
     rayon::spawn(|| {
         let _ = tx.send(func());
     });
-    rx.await.map_err(Into::into)
+    Ok(rx.await.map_err(|e| eyre::eyre!("{e}"))?)
 }

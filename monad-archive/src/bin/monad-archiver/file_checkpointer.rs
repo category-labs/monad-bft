@@ -15,6 +15,7 @@
 
 use std::path::PathBuf;
 
+use eyre::Result;
 use monad_archive::{kvstore::WritePolicy, prelude::*};
 
 /// Worker that periodically saves files to durable storage.

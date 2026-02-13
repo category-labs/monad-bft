@@ -15,6 +15,7 @@
 
 #![allow(async_fn_in_trait)]
 
+use eyre::Result;
 use monad_archive::{cli::set_source_and_sink_metrics, kvstore::WritePolicy, prelude::*};
 
 mod bft_archive_worker;

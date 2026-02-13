@@ -27,7 +27,12 @@ use serde::{
 };
 use serde_json::{Map as JsonMap, Value as JsonValue};
 
-use crate::{archive_reader::redact_mongo_url, kvstore::mongo::MongoDbStorage, prelude::*};
+use crate::{
+    archive_reader::redact_mongo_url,
+    error::{ErrorKind, OptionExt as _, Result},
+    kvstore::mongo::MongoDbStorage,
+    prelude::*,
+};
 
 const DEFAULT_BUCKET_TIMEOUT: u64 = 10;
 const DEFAULT_CONCURRENCY: usize = 50;
@@ -373,7 +378,9 @@ impl ArchiveArgs {
     }
 }
 
-fn parse_block_data_reader_args<E: de::Error>(value: JsonValue) -> Result<BlockDataReaderArgs, E> {
+fn parse_block_data_reader_args<E: de::Error>(
+    value: JsonValue,
+) -> std::result::Result<BlockDataReaderArgs, E> {
     let map = match value {
         JsonValue::Object(map) => map,
         other => {
@@ -415,7 +422,7 @@ fn parse_block_data_reader_args<E: de::Error>(value: JsonValue) -> Result<BlockD
     )
 }
 
-fn parse_archive_args<E: de::Error>(value: JsonValue) -> Result<ArchiveArgs, E> {
+fn parse_archive_args<E: de::Error>(value: JsonValue) -> std::result::Result<ArchiveArgs, E> {
     let map = match value {
         JsonValue::Object(map) => map,
         other => {
@@ -452,11 +459,11 @@ fn parse_type_or_legacy<E, FTyped, FLegacy, R>(
     context: &str,
     mut typed: FTyped,
     mut legacy: FLegacy,
-) -> Result<R, E>
+) -> std::result::Result<R, E>
 where
     E: de::Error,
-    FTyped: FnMut(String, JsonValue) -> Result<R, E>,
-    FLegacy: FnMut(String, JsonValue) -> Result<R, E>,
+    FTyped: FnMut(String, JsonValue) -> std::result::Result<R, E>,
+    FLegacy: FnMut(String, JsonValue) -> std::result::Result<R, E>,
 {
     if let Some(type_value) = map.remove("type") {
         let type_name = extract_type::<E>(type_value, context)?;
@@ -474,7 +481,7 @@ where
     legacy(variant, value)
 }
 
-fn extract_type<E: de::Error>(value: JsonValue, context: &str) -> Result<String, E> {
+fn extract_type<E: de::Error>(value: JsonValue, context: &str) -> std::result::Result<String, E> {
     value
         .as_str()
         .map(|s| s.to_lowercase())
@@ -484,7 +491,7 @@ fn extract_type<E: de::Error>(value: JsonValue, context: &str) -> Result<String,
 fn deserialize_variant<E: de::Error, T: DeserializeOwned>(
     value: JsonValue,
     label: &str,
-) -> Result<T, E> {
+) -> std::result::Result<T, E> {
     serde_json::from_value(value)
         .map_err(|err| E::custom(format!("failed to parse {label}: {err}")))
 }
@@ -552,7 +559,7 @@ impl AwsCliArgs {
                 .first_mut()
                 .map(std::mem::take)
                 .or_else(|| kv.remove("bucket"))
-                .ok_or_eyre("storage args missing bucket")?,
+                .ok_or_kind(ErrorKind::Validation, "storage args missing bucket")?,
             region: kv.remove("region"),
             endpoint: kv.remove("endpoint"),
             access_key_id: kv.remove("access-key-id"),
@@ -638,7 +645,7 @@ impl TrieDbCliArgs {
         let (positional, kv) = parse_str_positional_and_kv(s)?;
         let triedb_path = positional
             .first()
-            .ok_or_eyre("storage args missing db path")?
+            .ok_or_kind(ErrorKind::Validation, "storage args missing db path")?
             .to_string();
 
         // get a usize from kv or use default value
@@ -703,11 +710,11 @@ impl MongoDbCliArgs {
             url: kv
                 .remove("url")
                 .or_else(|| positional.first().cloned())
-                .ok_or_eyre("storage args missing mongo url")?,
+                .ok_or_kind(ErrorKind::Validation, "storage args missing mongo url")?,
             db: kv
                 .remove("db")
                 .or_else(|| positional.get(1).cloned())
-                .ok_or_eyre("storage args missing mongo db name")?,
+                .ok_or_kind(ErrorKind::Validation, "storage args missing mongo db name")?,
             replica_name: kv.remove("replica-name"),
         })
     }
@@ -734,7 +741,7 @@ impl FsCliArgs {
                 .remove("path")
                 .or_else(|| positional.first().cloned())
                 .map(PathBuf::from)
-                .ok_or_eyre("storage args missing path")?,
+                .ok_or_kind(ErrorKind::Validation, "storage args missing path")?,
         })
     }
 
@@ -764,15 +771,18 @@ fn parse_str_positional_and_kv(s: &str) -> Result<(Vec<String>, HashMap<String, 
             if let Some(next) = parts.peek() {
                 if !next.starts_with("--") {
                     // The next item is the value for this flag
-                    let value = parts.next().ok_or_eyre("Flag requires a value")?;
+                    let value = parts
+                        .next()
+                        .ok_or_kind(ErrorKind::Validation, "Flag requires a value")?;
                     kv_pairs.insert(key.to_string(), value.to_string());
                 } else {
                     // No value provided for this flag
-                    bail!("Flag --{} requires a value", key)
+                    return Err(eyre!("Flag --{} requires a value", key))
+                        .kind(ErrorKind::Validation);
                 }
             } else {
                 // Flag at the end with no value
-                bail!("Flag --{} requires a value", key);
+                return Err(eyre!("Flag --{} requires a value", key)).kind(ErrorKind::Validation);
             }
         } else {
             // This is a positional argument

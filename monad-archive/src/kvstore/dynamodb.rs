@@ -21,13 +21,16 @@ use aws_sdk_dynamodb::{
     Client,
 };
 use bytes::Bytes;
-use eyre::{bail, Context, Result};
+use eyre::Context;
 use futures::future::try_join_all;
 use tokio::sync::Semaphore;
 use tracing::error;
 
 use super::{KVStoreType, MetricsResultExt, PutResult, WritePolicy};
-use crate::prelude::*;
+use crate::{
+    error::{ErrorKind, Result, ResultExt},
+    prelude::*,
+};
 
 #[derive(Clone)]
 pub struct DynamoDBArchive {
@@ -104,7 +107,10 @@ impl KVStore for DynamoDBArchive {
                 })
             });
 
-        try_join_all(batch_writes).await?;
+        try_join_all(batch_writes)
+            .await
+            .wrap_err("DynamoDB batch write task failed")
+            .kind(ErrorKind::Network)?;
         Ok(PutResult::Written)
     }
 
@@ -118,7 +124,8 @@ impl KVStore for DynamoDBArchive {
         let put_request = PutRequest::builder()
             .item(key.as_ref(), AttributeValue::B(data.into()))
             .build()
-            .wrap_err_with(|| format!("Failed to build put request, key: {}", key.as_ref()))?;
+            .wrap_err_with(|| format!("Failed to build put request, key: {}", key.as_ref()))
+            .kind(ErrorKind::Network)?;
         let request = WriteRequest::builder().put_request(put_request).build();
 
         let start = Instant::now();
@@ -176,7 +183,9 @@ impl DynamoDBArchive {
                 self.table.clone(),
                 KeysAndAttributes::builder()
                     .set_keys(Some(key_maps))
-                    .build()?,
+                    .build()
+                    .wrap_err("Failed to build DynamoDB key request")
+                    .kind(ErrorKind::Network)?,
             );
 
             let response = self
@@ -185,7 +194,8 @@ impl DynamoDBArchive {
                 .set_request_items(Some(request_items.clone()))
                 .send()
                 .await
-                .wrap_err_with(|| format!("Request keys (0x stripped in req): {:?}", &batch))?;
+                .wrap_err_with(|| format!("Request keys (0x stripped in req): {:?}", &batch))
+                .kind(ErrorKind::Network)?;
 
             // Collect retrieved items
             if let Some(mut responses) = response.responses {
@@ -206,7 +216,8 @@ impl DynamoDBArchive {
                     .set_request_items(Some(unprocessed.clone()))
                     .send()
                     .await
-                    .wrap_err_with(|| "Failed to get unprocessed keys")?;
+                    .wrap_err("Failed to get unprocessed keys")
+                    .kind(ErrorKind::Network)?;
 
                 if let Some(mut responses_retry) = response_retry.responses {
                     if let Some(items) = responses_retry.remove(&self.table) {
@@ -235,16 +246,18 @@ impl DynamoDBArchive {
             .set_request_items(Some(batch_write.clone()))
             .send()
             .await
-            .wrap_err_with(|| format!("Failed to upload to table {}", self.table))?;
+            .wrap_err_with(|| format!("Failed to upload to table {}", self.table))
+            .kind(ErrorKind::Network)?;
 
         // Check for unprocessed items
         if let Some(unprocessed) = response.unprocessed_items() {
             if !unprocessed.is_empty() {
-                bail!(
+                return Err(eyre!(
                     "Unprocessed items detected for table {}: {:?}. Retrying...",
                     self.table,
                     unprocessed.get(&self.table).map(|v| v.len()).unwrap_or(0)
-                );
+                ))
+                .kind(ErrorKind::Network);
             }
         }
 

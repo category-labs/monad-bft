@@ -14,6 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use alloy_primitives::hex::ToHexExt;
+use eyre::Result;
 use monad_archive::{model::logs_index::LogsIndexArchiver, prelude::*};
 
 /// Main worker that indexes transaction data from blocks into a searchable format.
@@ -187,7 +188,7 @@ async fn handle_block(
                     )
                 )?
             }
-            None => return Err(e),
+            None => return Err(e.into()),
         },
     };
 

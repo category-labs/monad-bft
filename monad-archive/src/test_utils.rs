@@ -19,6 +19,7 @@ pub use alloy_consensus::{Receipt, SignableTransaction, TxEip1559};
 pub use alloy_primitives::{Bloom, Log, LogData, B256};
 pub use alloy_signer::SignerSync;
 pub use alloy_signer_local::PrivateKeySigner;
+use eyre::Result;
 use mongodb::{options::ClientOptions, Client};
 
 pub use crate::{kvstore::memory::MemoryStorage, prelude::*};

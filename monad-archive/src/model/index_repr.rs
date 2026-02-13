@@ -16,11 +16,13 @@
 use alloy_consensus::{ReceiptEnvelope, TxEnvelope};
 use alloy_primitives::BlockHash;
 use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
-use eyre::{bail, ensure};
 use monad_triedb_utils::triedb_env::{ReceiptWithLogIndex, TxEnvelopeWithSender};
 use serde::{Deserialize, Serialize};
 
-use crate::prelude::*;
+use crate::{
+    error::{ErrorKind, OptionExt as _, Result, ResultExt, WrapErr},
+    prelude::*,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, RlpEncodable, RlpDecodable)]
 #[rlp(trailing)]
@@ -111,10 +113,11 @@ impl IndexDataStorageRepr {
 
     pub fn decode(buf: &[u8]) -> Result<Self> {
         if buf.len() < 2 {
-            bail!(
+            return Err(eyre!(
                 "Cannot decode IndexStorageRepr len too small. Len: {}",
                 buf.len()
-            );
+            ))
+            .kind(ErrorKind::Parse);
         }
         let result = match Self::get_marker_bytes(buf) {
             [Self::SENTINEL, Self::INLINE_V0_MARKER] => {
@@ -139,7 +142,8 @@ impl IndexDataStorageRepr {
                 info!(?e, "Failed to parse IndexDataStorageRepr despite sentinel bit being set. Falling back to raw InlineV0 decoding...");
                 InlineV0::decode(&mut &buf[..])
                     .map(IndexDataStorageRepr::InlineV0)
-                    .map_err(Into::into)
+                    .wrap_err("Failed to decode InlineV0 fallback")
+                    .kind(ErrorKind::Parse)
             }
         }
     }
@@ -155,13 +159,17 @@ impl IndexDataStorageRepr {
 
                 TxIndexedData {
                     tx: TxEnvelopeWithSender {
-                        sender: inline_v0.tx.recover_signer()?,
+                        sender: inline_v0
+                            .tx
+                            .recover_signer()
+                            .wrap_err("Failed to recover signer")
+                            .kind(ErrorKind::Parse)?,
                         tx: inline_v0.tx,
                     },
                     trace: inline_v0.trace,
                     receipt: receipts
                         .get(inline_v0.header_subset.tx_index as usize)
-                        .ok_or_eyre("Failed to find receipt in block data")?
+                        .ok_or_kind(ErrorKind::NotFound, "Failed to find receipt in block data")?
                         .clone(),
                     header_subset: inline_v0.header_subset.convert(block.header.timestamp),
                 }
@@ -178,12 +186,18 @@ impl IndexDataStorageRepr {
 
                 let idx = reference_v0.header_subset.tx_index as usize;
                 // Should we just use `get()` and clone instead of asserting len then using swap_remove?
-                ensure!(
-                    block.body.transactions.len() > idx,
-                    "Block does not contain tx index"
-                );
-                ensure!(traces.len() > idx, "traces does not contain tx index");
-                ensure!(receipts.len() > idx, "receipts does not contain tx index");
+                if block.body.transactions.len() <= idx {
+                    return Err(eyre!("Block does not contain tx index"))
+                        .kind(ErrorKind::Validation);
+                }
+                if traces.len() <= idx {
+                    return Err(eyre!("traces does not contain tx index"))
+                        .kind(ErrorKind::Validation);
+                }
+                if receipts.len() <= idx {
+                    return Err(eyre!("receipts does not contain tx index"))
+                        .kind(ErrorKind::Validation);
+                }
                 TxIndexedData {
                     tx: block.body.transactions.swap_remove(idx),
                     trace: traces.swap_remove(idx),
@@ -216,7 +230,10 @@ impl IndexDataStorageRepr {
                     .get_block_traces(reference_v0.header_subset.block_number)
                     .await?;
                 let idx = reference_v0.header_subset.tx_index as usize;
-                ensure!(traces.len() > idx, "traces does not contain tx index");
+                if traces.len() <= idx {
+                    return Err(eyre!("traces does not contain tx index"))
+                        .kind(ErrorKind::Validation);
+                }
                 (traces.swap_remove(idx), reference_v0.header_subset)
             }
         })
@@ -247,10 +264,10 @@ impl IndexDataStorageRepr {
                     .get_block_by_number(reference_v0.header_subset.block_number)
                     .await?;
                 let idx = reference_v0.header_subset.tx_index as usize;
-                ensure!(
-                    block.body.transactions.len() > idx,
-                    "traces does not contain tx index"
-                );
+                if block.body.transactions.len() <= idx {
+                    return Err(eyre!("traces does not contain tx index"))
+                        .kind(ErrorKind::Validation);
+                }
                 (
                     block.body.transactions.swap_remove(idx),
                     reference_v0.header_subset,
@@ -279,7 +296,10 @@ impl IndexDataStorageRepr {
                     .get_block_receipts(reference_v0.header_subset.block_number)
                     .await?;
                 let idx = reference_v0.header_subset.tx_index as usize;
-                ensure!(receipts.len() > idx, "traces does not contain tx index");
+                if receipts.len() <= idx {
+                    return Err(eyre!("receipts does not contain tx index"))
+                        .kind(ErrorKind::Validation);
+                }
                 (receipts.swap_remove(idx), reference_v0.header_subset)
             }
         })

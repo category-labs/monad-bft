@@ -16,7 +16,6 @@
 use std::ops::Deref;
 
 use alloy_primitives::{hex::ToHexExt, TxHash};
-use eyre::bail;
 use monad_triedb_utils::triedb_env::{ReceiptWithLogIndex, TxEnvelopeWithSender};
 
 use super::{
@@ -24,6 +23,7 @@ use super::{
     index_repr::{IndexDataStorageRepr, ReferenceV0},
 };
 use crate::{
+    error::{ErrorKind, Result, WrapErr},
     kvstore::{KVReaderErased, WritePolicy},
     prelude::*,
 };
@@ -224,8 +224,8 @@ impl TxIndexArchiver {
             || traces.len() != receipts.len()
             || (offsets.is_some() && receipts.len() != offsets.as_ref().unwrap().len())
         {
-            bail!("Block must have same number of txs as traces and receipts. num_txs: {}, num_traces: {}, num_receipts: {}", 
-            block.body.transactions.len(), traces.len(), receipts.len());
+            return Err(eyre!("Block must have same number of txs as traces and receipts. num_txs: {}, num_traces: {}, num_receipts: {}",
+            block.body.transactions.len(), traces.len(), receipts.len())).kind(ErrorKind::Validation);
         }
 
         let mut prev_cumulative_gas_used = 0;
@@ -284,6 +284,7 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     use alloy_rlp::Encodable;
+    use eyre::Result;
 
     use super::*;
     use crate::{
@@ -321,7 +322,7 @@ mod tests {
         let mut receipts_rlp = Vec::new();
         receipts.encode(&mut receipts_rlp);
 
-        get_all_tx_offsets(&block_rlp, &receipts_rlp, &traces_rlp).map(Option::Some)
+        Ok(get_all_tx_offsets(&block_rlp, &receipts_rlp, &traces_rlp).map(Option::Some)?)
     }
 
     #[tokio::test]

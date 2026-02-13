@@ -18,8 +18,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use eyre::Result;
 use tracing::{debug, info, warn};
+
+use crate::error::Result;
 
 /// A circuit breaker that tracks failures and manages failover behavior
 ///

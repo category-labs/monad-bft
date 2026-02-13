@@ -370,7 +370,7 @@ impl CheckerModel {
     /// Retrieves faults object for a specific replica and block range
     pub async fn delete_faults_chunk(&self, replica: &str, starting_block_num: u64) -> Result<()> {
         let key = faults_chunk_key(replica, starting_block_num);
-        self.store.delete(&key).await
+        Ok(self.store.delete(&key).await?)
     }
 
     /// Stores faults for a specific replica and block range
