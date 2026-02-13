@@ -40,6 +40,10 @@ pub struct Config {
     pub handshake_rate_limit: u64,
     /// window for handshake rate limiting
     pub handshake_rate_reset_interval: Duration,
+    /// max outbound connect attempts per second (dos protection)
+    pub connect_rate_limit: u64,
+    /// window for outbound connect rate limiting
+    pub connect_rate_reset_interval: Duration,
     /// cookie validity period (responder rotates cookie key)
     pub cookie_refresh_duration: Duration,
     /// below this threshold, accept all handshakes without cookie challenge
@@ -70,6 +74,8 @@ impl Default for Config {
             max_session_duration: Duration::from_secs(6 * 60 * 60 + 5 * 60),
             handshake_rate_limit: 2000,
             handshake_rate_reset_interval: Duration::from_secs(1),
+            connect_rate_limit: 1000,
+            connect_rate_reset_interval: Duration::from_secs(1),
             cookie_refresh_duration: Duration::from_secs(120),
             low_watermark_sessions: 10_000,
             high_watermark_sessions: 100_000,

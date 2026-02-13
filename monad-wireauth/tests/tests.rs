@@ -300,6 +300,46 @@ fn test_connect_after_established() {
 }
 
 #[test]
+fn test_connect_rate_limit() {
+    init_tracing();
+    let mut rng = rng();
+    let keypair1 = monad_secp::KeyPair::generate(&mut rng);
+    let keypair2 = monad_secp::KeyPair::generate(&mut rng);
+    let peer2_pubkey = keypair2.pubkey();
+    let peer2_addr: SocketAddr = "127.0.0.1:8002".parse().unwrap();
+
+    let config = Config {
+        connect_rate_limit: 2,
+        connect_rate_reset_interval: Duration::from_secs(60),
+        ..Config::default()
+    };
+
+    let context = TestContext::new();
+    let context_clone = context.clone();
+    let mut peer1 = API::new(config, keypair1, context);
+
+    peer1
+        .connect(peer2_pubkey, peer2_addr, DEFAULT_RETRY_ATTEMPTS)
+        .unwrap();
+    peer1
+        .connect(peer2_pubkey, peer2_addr, DEFAULT_RETRY_ATTEMPTS)
+        .unwrap();
+
+    let err = peer1
+        .connect(peer2_pubkey, peer2_addr, DEFAULT_RETRY_ATTEMPTS)
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        monad_wireauth::Error::ConnectRateLimited { .. }
+    ));
+
+    context_clone.advance_time(Duration::from_secs(60));
+    peer1
+        .connect(peer2_pubkey, peer2_addr, DEFAULT_RETRY_ATTEMPTS)
+        .unwrap();
+}
+
+#[test]
 fn test_timestamp_replay() {
     init_tracing();
     let (mut peer1, _, _, _) = create_manager();
