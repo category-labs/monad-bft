@@ -440,7 +440,7 @@ where
                     validator_cmds.push(cmd);
                     fullnodes_cmds.push(cmd_cpy);
                 }
-                RouterCommand::LeanForwardTxs { .. } => validator_cmds.push(cmd),
+                RouterCommand::LeanPointToPoint { .. } => validator_cmds.push(cmd),
             }
         }
         self.rc_primary.exec(validator_cmds);

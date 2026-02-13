@@ -15,9 +15,7 @@ use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_testutil::{generate_block_with_txs, secret_to_eth_address};
 use monad_eth_txpool_executor::{EthTxPoolExecutor, ForwardedIngressFairQueueConfig};
 use monad_executor::Executor;
-use monad_executor_glue::{
-    MempoolEvent, MonadEvent, OutboundForwardTxs, RouterCommand, TxPoolCommand,
-};
+use monad_executor_glue::{MempoolEvent, MonadEvent, RouterCommand, TxPoolCommand};
 use monad_node_config::{fullnode_raptorcast::FullNodeRaptorCastConfig, FullNodeConfig};
 use monad_peer_discovery::{driver::PeerDiscoveryDriver, mock::NopDiscoveryBuilder};
 use monad_peer_score::{ema, StdClock};
@@ -35,58 +33,15 @@ use monad_types::{Balance, Epoch, NodeId, Round, SeqNum, Stake, GENESIS_ROUND, G
 use monad_wireauth::Config;
 
 use crate::{
-    channel_input::ChannelInputStream, committer::BlockCommitter, router, rpc,
-    stats::StatsCollector, NodeArgs,
+    channel_input::ChannelInputStream,
+    committer::BlockCommitter,
+    message::{TxIntegrationEvent, TxIntegrationMessage},
+    router, rpc,
+    stats::StatsCollector,
+    NodeArgs,
 };
 
 type SignatureType = SecpSignature;
-
-#[derive(Clone, Debug)]
-struct TxIntegrationMessage;
-
-impl monad_executor_glue::Message for TxIntegrationMessage {
-    type NodeIdPubKey = monad_secp::PubKey;
-    type Event = TxIntegrationEvent;
-
-    fn event(self, from: NodeId<Self::NodeIdPubKey>) -> Self::Event {
-        TxIntegrationEvent { _from: from }
-    }
-}
-
-impl monad_types::Serializable<bytes::Bytes> for TxIntegrationMessage {
-    fn serialize(&self) -> bytes::Bytes {
-        bytes::Bytes::new()
-    }
-}
-
-impl monad_types::Deserializable<bytes::Bytes> for TxIntegrationMessage {
-    type ReadError = std::io::Error;
-
-    fn deserialize(_message: &bytes::Bytes) -> Result<Self, Self::ReadError> {
-        Ok(TxIntegrationMessage)
-    }
-}
-
-impl alloy_rlp::Encodable for TxIntegrationMessage {
-    fn encode(&self, _out: &mut dyn alloy_rlp::BufMut) {}
-}
-
-impl alloy_rlp::Decodable for TxIntegrationMessage {
-    fn decode(_buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        Ok(TxIntegrationMessage)
-    }
-}
-
-impl OutboundForwardTxs for TxIntegrationMessage {
-    fn forward_txs(_txs: Vec<bytes::Bytes>) -> Self {
-        TxIntegrationMessage
-    }
-}
-
-#[derive(Clone, Debug)]
-struct TxIntegrationEvent {
-    _from: NodeId<monad_secp::PubKey>,
-}
 
 struct NodeRaptorCastEvent(RaptorCastEvent<TxIntegrationEvent, SignatureType>);
 
@@ -342,14 +297,16 @@ pub async fn run(args: NodeArgs) {
 
             raptorcast_event = raptorcast.next() => {
                 match raptorcast_event {
-                    Some(NodeRaptorCastEvent(RaptorCastEvent::LeanUdpForwardTxs { sender, txs })) => {
-                        let peer_id = router::pubkey_to_node_id(&sender);
+                    Some(NodeRaptorCastEvent(RaptorCastEvent::Message(TxIntegrationEvent { from, txs }))) => {
+                        let sender = from.pubkey();
                         let tx_count = txs.len();
-                        *per_peer_received.entry(peer_id).or_default() += tx_count as u64;
+                        *per_peer_received
+                            .entry(router::pubkey_to_node_id(&sender))
+                            .or_default() += tx_count as u64;
 
                         for tx_bytes in &txs {
                             if let Ok(tx) = alloy_consensus::TxEnvelope::decode(&mut tx_bytes.as_ref()) {
-                                tx_peer_map.insert(*tx.tx_hash(), peer_id);
+                                tx_peer_map.insert(*tx.tx_hash(), router::pubkey_to_node_id(&sender));
                             }
                         }
 
@@ -359,24 +316,17 @@ pub async fn run(args: NodeArgs) {
                         udp_recv_count += tx_count as u64;
                         tracing::debug!(tx_count, "received forward_txs via raptorcast");
                     }
-                    Some(NodeRaptorCastEvent(RaptorCastEvent::LeanUdpTx { sender, tx })) => {
-                        let peer_id = router::pubkey_to_node_id(&sender);
-                        *per_peer_received.entry(peer_id).or_default() += 1;
-                        tx_peer_map.insert(*tx.tx_hash(), peer_id);
-                        let cmd = router::route_lean_udp_tx(&sender, &tx);
-                        client.exec(vec![cmd]);
-                        stats.record_received(1);
-                        udp_recv_count += 1;
-                        tracing::debug!(tx_hash = %tx.tx_hash(), "received tx via raptorcast");
-                    }
-                    Some(NodeRaptorCastEvent(RaptorCastEvent::Message(_))) => {
-                        tracing::trace!("received raptorcast message (ignored)");
-                    }
                     Some(NodeRaptorCastEvent(RaptorCastEvent::PeerManagerResponse(_))) => {
                         tracing::trace!("received peer manager response (ignored)");
                     }
                     Some(NodeRaptorCastEvent(RaptorCastEvent::SecondaryRaptorcastPeersUpdate(_, _))) => {
                         tracing::trace!("received secondary raptorcast peers update (ignored)");
+                    }
+                    Some(NodeRaptorCastEvent(RaptorCastEvent::LeanUdpTx { .. })) => {
+                        tracing::trace!("received LeanUdpTx (ignored)");
+                    }
+                    Some(NodeRaptorCastEvent(RaptorCastEvent::LeanUdpForwardTxs { .. })) => {
+                        tracing::trace!("received LeanUdpForwardTxs (ignored)");
                     }
                     None => {
                         tracing::error!("raptorcast stream ended");

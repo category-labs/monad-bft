@@ -7,7 +7,6 @@ use std::{
 };
 
 use alloy_eips::eip2718::Encodable2718;
-use alloy_rlp::Encodable;
 use futures::StreamExt;
 use monad_dataplane::{udp::DEFAULT_MTU, DataplaneBuilder, TcpSocketId, UdpSocketId};
 use monad_eth_testutil::{make_eip1559_tx, secret_to_eth_address};
@@ -19,6 +18,7 @@ use monad_peer_score::{ema, StdClock};
 use monad_raptorcast::{
     auth::{AuthenticatedSocketHandle, LeanUdpSocketHandle, WireAuthProtocol},
     config::{RaptorCastConfig, RaptorCastConfigPrimary},
+    message::OutboundRouterMessage,
     raptorcast_secondary::SecondaryRaptorCastModeConfig,
     RaptorCast, RaptorCastEvent,
 };
@@ -27,76 +27,18 @@ use monad_tfm::base_fee::MIN_BASE_FEE;
 use monad_types::{Epoch, NodeId, Round, Stake, UdpPriority};
 use monad_wireauth::Config;
 
-use crate::MultiSubmitArgs;
+use crate::{
+    message::{TxIntegrationEvent, TxIntegrationMessage},
+    MultiSubmitArgs,
+};
 
 type SignatureType = SecpSignature;
 
-#[derive(Clone, Debug)]
-struct TxIntegrationMessage;
+struct MultiSubmitRaptorCastEvent(RaptorCastEvent<TxIntegrationEvent, SignatureType>);
 
-impl monad_executor_glue::Message for TxIntegrationMessage {
-    type NodeIdPubKey = monad_secp::PubKey;
-    type Event = TxIntegrationEvent;
-
-    fn event(self, from: NodeId<Self::NodeIdPubKey>) -> Self::Event {
-        TxIntegrationEvent { _from: from }
-    }
-}
-
-impl monad_types::Serializable<bytes::Bytes> for TxIntegrationMessage {
-    fn serialize(&self) -> bytes::Bytes {
-        bytes::Bytes::new()
-    }
-}
-
-impl monad_types::Deserializable<bytes::Bytes> for TxIntegrationMessage {
-    type ReadError = std::io::Error;
-
-    fn deserialize(_message: &bytes::Bytes) -> Result<Self, Self::ReadError> {
-        Ok(TxIntegrationMessage)
-    }
-}
-
-impl alloy_rlp::Encodable for TxIntegrationMessage {
-    fn encode(&self, _out: &mut dyn alloy_rlp::BufMut) {}
-}
-
-impl alloy_rlp::Decodable for TxIntegrationMessage {
-    fn decode(_buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        Ok(TxIntegrationMessage)
-    }
-}
-
-impl OutboundForwardTxs for TxIntegrationMessage {
-    fn forward_txs(_txs: Vec<bytes::Bytes>) -> Self {
-        TxIntegrationMessage
-    }
-}
-
-#[derive(Clone, Debug)]
-struct TxIntegrationEvent {
-    _from: NodeId<monad_secp::PubKey>,
-}
-
-impl<ST: monad_crypto::certificate_signature::CertificateSignatureRecoverable>
-    From<RaptorCastEvent<TxIntegrationEvent, ST>> for TxIntegrationEvent
-{
-    fn from(value: RaptorCastEvent<TxIntegrationEvent, ST>) -> Self {
-        match value {
-            RaptorCastEvent::Message(event) => event,
-            RaptorCastEvent::PeerManagerResponse(_) => {
-                panic!("unexpected PeerManagerResponse")
-            }
-            RaptorCastEvent::SecondaryRaptorcastPeersUpdate(_, _) => {
-                panic!("unexpected SecondaryRaptorcastPeersUpdate")
-            }
-            RaptorCastEvent::LeanUdpTx { .. } => {
-                panic!("unexpected LeanUdpTx")
-            }
-            RaptorCastEvent::LeanUdpForwardTxs { .. } => {
-                panic!("unexpected LeanUdpForwardTxs")
-            }
-        }
+impl From<RaptorCastEvent<TxIntegrationEvent, SignatureType>> for MultiSubmitRaptorCastEvent {
+    fn from(value: RaptorCastEvent<TxIntegrationEvent, SignatureType>) -> Self {
+        Self(value)
     }
 }
 
@@ -227,7 +169,7 @@ async fn run_identity(args: Arc<MultiSubmitArgs>, identity_index: usize) {
         SignatureType,
         TxIntegrationMessage,
         TxIntegrationMessage,
-        TxIntegrationEvent,
+        MultiSubmitRaptorCastEvent,
         monad_peer_discovery::mock::NopDiscovery<SignatureType>,
         WireAuthProtocol,
     >::new(
@@ -356,12 +298,16 @@ async fn run_identity(args: Arc<MultiSubmitArgs>, identity_index: usize) {
                 sent += 1;
 
                 if pending_batch.len() >= batch_size {
-                    let mut buf = bytes::BytesMut::new();
-                    pending_batch.encode(&mut buf);
+                    let txs = std::mem::take(&mut pending_batch);
+                    let payload =
+                        OutboundRouterMessage::<TxIntegrationMessage, SignatureType>::AppMessage(
+                            TxIntegrationMessage::forward_txs(txs),
+                        )
+                        .try_serialize()
+                        .expect("serialize tx integration message");
                     let lean_socket = raptorcast.lean_udp_socket_mut().expect("lean socket");
-                    lean_socket.send(args.node_addr, buf.freeze(), UdpPriority::Regular);
+                    lean_socket.send(args.node_addr, payload, UdpPriority::Regular);
                     lean_socket.flush();
-                    pending_batch.clear();
                 }
             }
 
@@ -374,10 +320,14 @@ async fn run_identity(args: Arc<MultiSubmitArgs>, identity_index: usize) {
     }
 
     if !pending_batch.is_empty() {
-        let mut buf = bytes::BytesMut::new();
-        pending_batch.encode(&mut buf);
+        let txs = std::mem::take(&mut pending_batch);
+        let payload = OutboundRouterMessage::<TxIntegrationMessage, SignatureType>::AppMessage(
+            TxIntegrationMessage::forward_txs(txs),
+        )
+        .try_serialize()
+        .expect("serialize tx integration message");
         let lean_socket = raptorcast.lean_udp_socket_mut().expect("lean socket");
-        lean_socket.send(args.node_addr, buf.freeze(), UdpPriority::Regular);
+        lean_socket.send(args.node_addr, payload, UdpPriority::Regular);
         lean_socket.flush();
     }
 

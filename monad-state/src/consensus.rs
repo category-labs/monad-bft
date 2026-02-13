@@ -444,18 +444,16 @@ where
                     txs,
                 })]
             }
-            MempoolEvent::ForwardTxs(txs) => {
-                consensus
-                    .iter_future_other_leaders()
-                    .map(|target| {
-                        // Use LeanForwardTxs: sends via LeanUDP if connected, falls back to dual sender
-                        Command::RouterCommand(RouterCommand::LeanForwardTxs {
-                            target,
-                            txs: txs.clone(),
-                        })
+            MempoolEvent::ForwardTxs(txs) => consensus
+                .iter_future_other_leaders()
+                .map(|target| {
+                    Command::RouterCommand(RouterCommand::LeanPointToPoint {
+                        target,
+                        message: VerifiedMonadMessage::ForwardedTx(txs.clone()),
+                        priority: monad_types::UdpPriority::Regular,
                     })
-                    .collect_vec()
-            }
+                })
+                .collect_vec(),
         }
     }
 
