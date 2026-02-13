@@ -338,7 +338,7 @@ impl<'a> ProposalSequencer<'a> {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Debug, Default)]
 pub(super) struct Proposal {
     pub txs: Vec<Recovered<TxEnvelope>>,
     pub total_gas: u64,

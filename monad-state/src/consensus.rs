@@ -355,7 +355,7 @@ where
                 fresh_proposal_certificate,
             } => {
                 let _span = debug_span!("mempool proposal").entered();
-                consensus.metrics.consensus_events.creating_proposal += 1;
+                consensus.metrics.consensus_events.broadcasting_proposal += 1;
                 let block_body = ConsensusBlockBody::new(ConsensusBlockBodyInner {
                     execution_body: proposed_execution_inputs.body,
                 });
@@ -574,8 +574,12 @@ where
                     ConsensusCommand::Publish { .. } => false,
                     // consensus state logic shouldn't trigger create proposal on a
                     // full node, but filtering it out to be safe
-                    ConsensusCommand::CreateProposal { .. } => {
-                        warn!("Full node emitting CreateProposal command");
+                    ConsensusCommand::CreateProposalAhead { .. } => {
+                        warn!("Full node emitting CreateProposalAhead command");
+                        false
+                    }
+                    ConsensusCommand::FetchProposal { .. } => {
+                        warn!("Full node emitting FetchProposal command");
                         false
                     }
                     ConsensusCommand::PublishToFullNodes { .. } => false,
@@ -683,7 +687,32 @@ where
             ConsensusCommand::ScheduleReset => parent_cmds.push(Command::TimerCommand(
                 TimerCommand::ScheduleReset(TimeoutVariant::Pacemaker),
             )),
-            ConsensusCommand::CreateProposal {
+            ConsensusCommand::CreateProposalAhead {
+                node_id,
+                epoch,
+                round,
+                seq_num,
+                tx_limit,
+                proposal_gas_limit,
+                proposal_byte_limit,
+                timestamp_ns,
+                extending_blocks,
+            } => {
+                parent_cmds.push(Command::TxPoolCommand(TxPoolCommand::CreateProposalAhead {
+                    node_id,
+                    epoch,
+                    round,
+                    seq_num,
+
+                    tx_limit,
+                    proposal_gas_limit,
+                    proposal_byte_limit,
+                    timestamp_ns,
+
+                    extending_blocks,
+                }));
+            }
+            ConsensusCommand::FetchProposal {
                 node_id,
                 epoch,
                 round,
@@ -702,7 +731,7 @@ where
                 extending_blocks,
                 delayed_execution_results,
             } => {
-                parent_cmds.push(Command::TxPoolCommand(TxPoolCommand::CreateProposal {
+                parent_cmds.push(Command::TxPoolCommand(TxPoolCommand::FetchProposal {
                     node_id,
                     epoch,
                     round,

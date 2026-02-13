@@ -53,7 +53,7 @@ fn criterion_benchmark(c: &mut Criterion) {
              proposal_gas_limit,
              proposal_byte_limit,
          }| {
-            pool.create_proposal(
+            pool.fetch_proposal(
                 &mut EthTxPoolEventTracker::new(metrics, &mut BTreeMap::default()),
                 Epoch(1),
                 Round(1),

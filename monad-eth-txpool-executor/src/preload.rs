@@ -128,7 +128,7 @@ impl EthTxPoolPreloadManager {
                 .entry(next_round_predicted_proposal_seqnum)
                 .and_modify(|entry| {
                     // We enable preload for the next round, which remains enabled until we receive a
-                    // CreateProposal event for that seqnum and it gets disabled or the entry is
+                    // FetchProposal event for that seqnum and it gets disabled or the entry is
                     // removed.
                     entry.preload = true;
                 })

@@ -501,7 +501,7 @@ fn check_txpool_coherency(
     let seq_num = block_under_test.header().seq_num;
     let round = block_under_test.header().block_round;
     let proposal = txpool
-        .create_proposal(
+        .fetch_proposal(
             &mut event_tracker,
             block_under_test.header().epoch,
             round,
