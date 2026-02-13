@@ -13,15 +13,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{
-    ops::RangeInclusive,
-    time::{Duration, Instant},
-};
+use std::time::Duration;
 
 use eyre::Result;
-use futures::{join, StreamExt, TryStreamExt};
+use futures::join;
 use monad_archive::{kvstore::WritePolicy, prelude::*};
-use tokio::time::sleep;
 use tracing::{error, info, warn};
 
 pub struct ArchiveWorkerOpts {
@@ -47,6 +43,73 @@ pub struct ArchiveWorkerOpts {
     pub traces_write_policy: WritePolicy,
 }
 
+struct ArchiveBlockRangeWorker<S, F> {
+    block_data_source: S,
+    fallback_source: Option<F>,
+    archive_writer: BlockDataArchive,
+    metrics: Metrics,
+    require_traces: bool,
+    traces_only: bool,
+    latest_kind: LatestKind,
+    blocks_write_policy: WritePolicy,
+    receipts_write_policy: WritePolicy,
+    traces_write_policy: WritePolicy,
+}
+
+impl<S: BlockDataReader + Sync, F: BlockDataReader + Sync> BlockRangeWorker
+    for ArchiveBlockRangeWorker<S, F>
+{
+    async fn get_checkpoint(&self) -> Result<u64> {
+        Ok(self
+            .archive_writer
+            .get_latest(self.latest_kind)
+            .await?
+            .unwrap_or(0))
+    }
+
+    async fn get_source_head(&self) -> Result<u64> {
+        Ok(self
+            .block_data_source
+            .get_latest(LatestKind::Uploaded)
+            .await?
+            .unwrap_or(0))
+    }
+
+    async fn process_block(&self, block_num: u64) -> Result<()> {
+        archive_block(
+            &self.block_data_source,
+            &self.fallback_source,
+            block_num,
+            &self.archive_writer,
+            self.require_traces,
+            self.traces_only,
+            &self.metrics,
+            self.blocks_write_policy,
+            self.receipts_write_policy,
+            self.traces_write_policy,
+        )
+        .await
+    }
+
+    async fn checkpoint(&self, block_num: u64) {
+        match self
+            .archive_writer
+            .update_latest(block_num, self.latest_kind)
+            .await
+        {
+            Ok(()) => info!(block_num, "Set latest uploaded checkpoint"),
+            Err(e) => error!(block_num, "Failed to set latest uploaded block: {e:?}"),
+        }
+    }
+
+    fn report_metrics(&self, start: u64, end: u64, source_head: u64) {
+        self.metrics
+            .gauge(MetricNames::SOURCE_LATEST_BLOCK_NUM, source_head);
+        self.metrics.gauge(MetricNames::END_BLOCK_NUMBER, end);
+        self.metrics.gauge(MetricNames::START_BLOCK_NUMBER, start);
+    }
+}
+
 /// Main worker that archives block data from the execution database to durable storage.
 /// Continuously polls for new blocks and archives their data.
 pub async fn archive_worker(
@@ -56,161 +119,37 @@ pub async fn archive_worker(
     opts: ArchiveWorkerOpts,
     metrics: Metrics,
 ) {
-    let ArchiveWorkerOpts {
-        max_blocks_per_iteration,
-        max_concurrent_blocks,
-        stop_block: stop_block_override,
-        unsafe_skip_bad_blocks,
-        require_traces,
-        traces_only,
-        async_backfill,
-        blocks_write_policy,
-        receipts_write_policy,
-        traces_write_policy,
-    } = opts;
-    let latest_kind = if async_backfill {
+    let latest_kind = if opts.async_backfill {
         LatestKind::UploadedAsyncBackfill
     } else {
         LatestKind::Uploaded
     };
-    // initialize starting block from stored latest marker
-    let latest_uploaded = archive_writer
-        .get_latest(latest_kind)
-        .await
-        .unwrap_or(Some(0))
-        .unwrap_or(0);
-    let mut start_block = if latest_uploaded == 0 {
-        0
-    } else {
-        latest_uploaded + 1
+
+    let worker = ArchiveBlockRangeWorker {
+        block_data_source,
+        fallback_source,
+        archive_writer,
+        metrics,
+        require_traces: opts.require_traces,
+        traces_only: opts.traces_only,
+        latest_kind,
+        blocks_write_policy: opts.blocks_write_policy,
+        receipts_write_policy: opts.receipts_write_policy,
+        traces_write_policy: opts.traces_write_policy,
     };
 
-    loop {
-        // query latest
-        let latest_source = match block_data_source.get_latest(LatestKind::Uploaded).await {
-            Ok(number) => number.unwrap_or(0),
-            Err(e) => {
-                warn!("Error getting latest source block: {e:?}");
-                continue;
-            }
-        };
-
-        if let Some(stop_block_override) = stop_block_override {
-            if start_block > stop_block_override {
-                info!("Reached stop block override, stopping...");
-                return;
-            }
-        }
-
-        let end_block = latest_source.min(start_block + max_blocks_per_iteration - 1);
-        if end_block < start_block {
-            info!(start_block, end_block, "Nothing to process");
-            sleep(Duration::from_millis(500)).await;
-            continue;
-        }
-
-        metrics.gauge(MetricNames::SOURCE_LATEST_BLOCK_NUM, latest_source);
-        metrics.gauge(MetricNames::END_BLOCK_NUMBER, end_block);
-        metrics.gauge(MetricNames::START_BLOCK_NUMBER, start_block);
-
-        info!(
-            start = start_block,
-            end = end_block,
-            latest_source,
-            "Archiving group of blocks",
-        );
-
-        let latest_uploaded = archive_blocks(
-            &block_data_source,
-            &fallback_source,
-            start_block..=end_block,
-            &archive_writer,
-            &metrics,
-            max_concurrent_blocks,
-            unsafe_skip_bad_blocks,
-            require_traces,
-            traces_only,
-            latest_kind,
-            blocks_write_policy,
-            receipts_write_policy,
-            traces_write_policy,
-        )
-        .await;
-
-        start_block = if latest_uploaded == 0 {
-            0
-        } else {
-            latest_uploaded + 1
-        };
-    }
-}
-
-async fn archive_blocks(
-    reader: &(impl BlockDataReader + Sync),
-    fallback_reader: &Option<impl BlockDataReader + Sync>,
-    range: RangeInclusive<u64>,
-    archiver: &BlockDataArchive,
-    metrics: &Metrics,
-    concurrency: usize,
-    unsafe_skip_bad_blocks: bool,
-    require_traces: bool,
-    traces_only: bool,
-    latest_kind: LatestKind,
-    blocks_write_policy: WritePolicy,
-    receipts_write_policy: WritePolicy,
-    traces_write_policy: WritePolicy,
-) -> u64 {
-    let start = Instant::now();
-
-    let res: Result<(), u64> = futures::stream::iter(range.clone())
-        .map(|block_num: u64| async move {
-            match archive_block(
-                reader,
-                fallback_reader,
-                block_num,
-                archiver,
-                require_traces,
-                traces_only,
-                metrics,
-                blocks_write_policy,
-                receipts_write_policy,
-                traces_write_policy,
-            )
-            .await
-            {
-                Ok(_) => Ok(()),
-                Err(e) => {
-                    if unsafe_skip_bad_blocks {
-                        error!("Failed to handle block {block_num}, skipping... Cause: {e:?}",);
-                        Ok(())
-                    } else {
-                        error!("Failed to handle block {block_num}: {e:?}");
-                        Err(block_num)
-                    }
-                }
-            }
-        })
-        .buffered(concurrency)
-        .try_collect()
-        .await;
-
-    info!(
-        elapsed = start.elapsed().as_millis(),
-        start = range.start(),
-        end = range.end(),
-        "Finished archiving range",
-    );
-
-    let new_latest_uploaded = match res {
-        Ok(()) => *range.end(),
-        Err(err_block) => err_block.saturating_sub(1),
+    let config = WorkerLoopConfig {
+        max_blocks_per_iteration: opts.max_blocks_per_iteration,
+        stop_block: opts.stop_block,
+        poll_interval: Duration::from_millis(500),
+        process: ProcessRangeConfig {
+            concurrency: opts.max_concurrent_blocks,
+            max_retries: 0,
+            skip_failures: opts.unsafe_skip_bad_blocks,
+        },
     };
 
-    if new_latest_uploaded != 0 {
-        checkpoint_latest(archiver, new_latest_uploaded, latest_kind).await;
-    }
-
-    new_latest_uploaded
+    run_worker_loop(worker, config).await;
 }
 
 async fn archive_block(
@@ -313,13 +252,6 @@ async fn archive_block(
 
     info!(block_num, num_txs, "Successfully archived block");
     Ok(())
-}
-
-async fn checkpoint_latest(archiver: &BlockDataArchive, block_num: u64, latest_kind: LatestKind) {
-    match archiver.update_latest(block_num, latest_kind).await {
-        Ok(()) => info!(block_num, "Set latest uploaded checkpoint"),
-        Err(e) => error!(block_num, "Failed to set latest uploaded block: {e:?}"),
-    }
 }
 
 #[cfg(test)]
@@ -437,6 +369,31 @@ mod tests {
         (reader, archiver)
     }
 
+    fn make_worker<S: BlockDataReader + Sync, F: BlockDataReader + Sync>(
+        reader: S,
+        fallback: Option<F>,
+        archiver: BlockDataArchive,
+        latest_kind: LatestKind,
+        require_traces: bool,
+        traces_only: bool,
+        blocks_wp: WritePolicy,
+        receipts_wp: WritePolicy,
+        traces_wp: WritePolicy,
+    ) -> ArchiveBlockRangeWorker<S, F> {
+        ArchiveBlockRangeWorker {
+            block_data_source: reader,
+            fallback_source: fallback,
+            archive_writer: archiver,
+            metrics: metrics::Metrics::none(),
+            require_traces,
+            traces_only,
+            latest_kind,
+            blocks_write_policy: blocks_wp,
+            receipts_write_policy: receipts_wp,
+            traces_write_policy: traces_wp,
+        }
+    }
+
     #[tokio::test]
     async fn archive_block_memory_fallback() {
         let (reader, _) = memory_sink_source();
@@ -532,24 +489,26 @@ mod tests {
             Some(10)
         );
 
-        let end_block = archive_blocks(
-            &reader,
-            &None::<BlockDataReaderErased>,
-            0..=10,
-            &archiver,
-            &metrics::Metrics::none(),
-            3,
-            false,
-            false,
-            false,
+        let worker = make_worker(
+            reader.clone(),
+            None::<BlockDataReaderErased>,
+            archiver.clone(),
             LatestKind::Uploaded,
+            false,
+            false,
             WritePolicy::NoClobber,
             WritePolicy::NoClobber,
             WritePolicy::NoClobber,
-        )
-        .await;
+        );
+        let config = ProcessRangeConfig {
+            concurrency: 3,
+            max_retries: 0,
+            skip_failures: false,
+        };
 
-        assert_eq!(end_block, 10);
+        let end_block = process_block_range(&worker, 0..=10, &config).await;
+
+        assert_eq!(end_block, Some(10));
         assert_eq!(
             archiver.get_latest(LatestKind::Uploaded).await.unwrap(),
             Some(10)
@@ -582,24 +541,26 @@ mod tests {
             Some(latest_source)
         );
 
-        let end_block = archive_blocks(
-            &reader,
-            &None::<BlockDataReaderErased>,
-            0..=latest_source,
-            &archiver,
-            &metrics::Metrics::none(),
-            3,
-            false,
-            false,
-            false,
+        let worker = make_worker(
+            reader.clone(),
+            None::<BlockDataReaderErased>,
+            archiver.clone(),
             LatestKind::Uploaded,
+            false,
+            false,
             WritePolicy::NoClobber,
             WritePolicy::NoClobber,
             WritePolicy::NoClobber,
-        )
-        .await;
+        );
+        let config = ProcessRangeConfig {
+            concurrency: 3,
+            max_retries: 0,
+            skip_failures: false,
+        };
 
-        assert_eq!(end_block, end_of_first_chunk);
+        let end_block = process_block_range(&worker, 0..=latest_source, &config).await;
+
+        assert_eq!(end_block, Some(end_of_first_chunk));
         assert_eq!(
             archiver.get_latest(LatestKind::Uploaded).await.unwrap(),
             Some(end_of_first_chunk)
@@ -725,24 +686,26 @@ mod tests {
         };
         mock_source(&reader, (0..=10).map(row)).await;
 
-        let end_block = archive_blocks(
-            &reader,
-            &None::<BlockDataReaderErased>,
-            0..=10,
-            &archiver,
-            &metrics::Metrics::none(),
-            3,
-            false,
+        let worker = make_worker(
+            reader.clone(),
+            None::<BlockDataReaderErased>,
+            archiver.clone(),
+            LatestKind::Uploaded,
             false,
             true,
-            LatestKind::Uploaded,
             WritePolicy::NoClobber,
             WritePolicy::NoClobber,
             WritePolicy::NoClobber,
-        )
-        .await;
+        );
+        let config = ProcessRangeConfig {
+            concurrency: 3,
+            max_retries: 0,
+            skip_failures: false,
+        };
 
-        assert_eq!(end_block, 10);
+        let end_block = process_block_range(&worker, 0..=10, &config).await;
+
+        assert_eq!(end_block, Some(10));
         assert_eq!(
             archiver.get_latest(LatestKind::Uploaded).await.unwrap(),
             Some(10)
@@ -785,24 +748,26 @@ mod tests {
         );
 
         // Simulate async_backfill archiving a subset (blocks 5-10)
-        let end_block = archive_blocks(
-            &reader,
-            &None::<BlockDataReaderErased>,
-            5..=10,
-            &archiver,
-            &metrics::Metrics::none(),
-            3,
-            false,
-            false,
-            false,
+        let worker = make_worker(
+            reader.clone(),
+            None::<BlockDataReaderErased>,
+            archiver.clone(),
             LatestKind::UploadedAsyncBackfill,
+            false,
+            false,
             WritePolicy::AllowOverwrite,
             WritePolicy::AllowOverwrite,
             WritePolicy::AllowOverwrite,
-        )
-        .await;
+        );
+        let config = ProcessRangeConfig {
+            concurrency: 3,
+            max_retries: 0,
+            skip_failures: false,
+        };
 
-        assert_eq!(end_block, 10);
+        let end_block = process_block_range(&worker, 5..=10, &config).await;
+
+        assert_eq!(end_block, Some(10));
         // Archiver should have UploadedAsyncBackfill marker set
         assert_eq!(
             archiver

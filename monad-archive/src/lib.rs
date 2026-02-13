@@ -24,6 +24,7 @@ pub mod metrics;
 pub mod model;
 pub mod prelude;
 pub mod rlp_offset_scanner;
+pub mod worker_loop;
 
 // not excluded via cfg(test) to enable import by binaries
 pub mod test_utils;

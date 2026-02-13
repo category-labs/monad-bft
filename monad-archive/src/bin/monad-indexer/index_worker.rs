@@ -17,6 +17,65 @@ use alloy_primitives::hex::ToHexExt;
 use eyre::Result;
 use monad_archive::{model::logs_index::LogsIndexArchiver, prelude::*};
 
+struct IndexBlockRangeWorker<S, F> {
+    block_data_reader: S,
+    fallback_block_data_source: Option<F>,
+    indexer: TxIndexArchiver,
+    log_index: Option<LogsIndexArchiver>,
+    metrics: Metrics,
+    async_backfill: bool,
+}
+
+impl<S: BlockDataReader + Sync + Send, F: BlockDataReader + Sync + Send> BlockRangeWorker
+    for IndexBlockRangeWorker<S, F>
+{
+    async fn get_checkpoint(&self) -> Result<u64> {
+        Ok(self
+            .indexer
+            .get_latest_indexed(self.async_backfill)
+            .await?
+            .unwrap_or(0))
+    }
+
+    async fn get_source_head(&self) -> Result<u64> {
+        Ok(self
+            .block_data_reader
+            .get_latest(LatestKind::Uploaded)
+            .await?
+            .unwrap_or(0))
+    }
+
+    async fn process_block(&self, block_num: u64) -> Result<()> {
+        handle_block(
+            &self.block_data_reader,
+            &self.fallback_block_data_source,
+            &self.indexer,
+            self.log_index.as_ref(),
+            block_num,
+        )
+        .await
+        .map(drop)
+    }
+
+    async fn checkpoint(&self, block_num: u64) {
+        match self
+            .indexer
+            .update_latest_indexed(block_num, self.async_backfill)
+            .await
+        {
+            Ok(()) => info!(block_num, "Set latest indexed checkpoint"),
+            Err(e) => error!(block_num, "Failed to set latest indexed block: {e:?}"),
+        }
+    }
+
+    fn report_metrics(&self, start: u64, end: u64, source_head: u64) {
+        self.metrics
+            .gauge(MetricNames::SOURCE_LATEST_BLOCK_NUM, source_head);
+        self.metrics.gauge(MetricNames::END_BLOCK_NUMBER, end);
+        self.metrics.gauge(MetricNames::START_BLOCK_NUMBER, start);
+    }
+}
+
 /// Main worker that indexes transaction data from blocks into a searchable format.
 /// Continuously polls for new blocks and indexes their transactions.
 ///
@@ -43,121 +102,27 @@ pub async fn index_worker(
     poll_frequency: Duration,
     async_backfill: bool,
 ) {
-    // initialize starting block from stored latest marker
-    let latest = indexer
-        .get_latest_indexed(async_backfill)
-        .await
-        .unwrap_or(Some(0))
-        .unwrap_or(0);
-    let mut start_block = if latest != 0 { latest + 1 } else { 0 };
-
-    loop {
-        // query latest
-        let latest_source = match block_data_reader.get_latest(LatestKind::Uploaded).await {
-            Ok(number) => number.unwrap(),
-            Err(e) => {
-                warn!("Error getting latest uploaded block: {e:?}");
-                continue;
-            }
-        };
-
-        if let Some(stop_block_override) = stop_block_override {
-            if start_block > stop_block_override {
-                info!("Reached stop block override, stopping...");
-                return;
-            }
-        }
-
-        let end_block = latest_source.min(start_block + max_blocks_per_iteration - 1);
-
-        if end_block < start_block {
-            info!(start_block, end_block, latest_source, "Nothing to process");
-            sleep(poll_frequency).await;
-            continue;
-        }
-        info!(
-            start_block,
-            end_block, latest_source, "Indexing group of blocks"
-        );
-        metrics.gauge(MetricNames::SOURCE_LATEST_BLOCK_NUM, latest_source);
-        metrics.gauge(MetricNames::END_BLOCK_NUMBER, end_block);
-        metrics.gauge(MetricNames::START_BLOCK_NUMBER, start_block);
-
-        let latest_indexed = index_blocks(
-            &block_data_reader,
-            &fallback_block_data_source,
-            &indexer,
-            log_index.as_ref(),
-            start_block..=end_block,
-            max_concurrent_blocks,
-            &metrics,
-            async_backfill,
-        )
-        .await;
-
-        start_block = if latest_indexed == 0 {
-            0
-        } else {
-            latest_indexed + 1
-        };
-    }
-}
-
-async fn index_blocks(
-    block_data_reader: &(impl BlockDataReader + Send),
-    fallback_block_data_source: &Option<impl BlockDataReader + Send>,
-    indexer: &TxIndexArchiver,
-    log_index: Option<&LogsIndexArchiver>,
-    block_range: RangeInclusive<u64>,
-    concurrency: usize,
-    metrics: &Metrics,
-    async_backfill: bool,
-) -> u64 {
-    let start = Instant::now();
-
-    let res: Result<usize, u64> = futures::stream::iter(block_range.clone())
-        .map(|block_num: u64| async move {
-            match handle_block(
-                block_data_reader,
-                fallback_block_data_source,
-                indexer,
-                log_index,
-                block_num,
-            )
-            .await
-            {
-                Ok(num_txs) => Ok(num_txs),
-                Err(e) => {
-                    error!("Failed to handle block: {e:?}");
-                    Err(block_num)
-                }
-            }
-        })
-        .buffered(concurrency)
-        .try_fold(0, |total_txs, block_txs| async move {
-            Ok(total_txs + block_txs)
-        })
-        .await;
-
-    let (num_txs_indexed, new_latest_indexed) = match res {
-        Ok(num_txs) => (num_txs, *block_range.end()),
-        Err(err_block) => (0, err_block - 1),
+    let worker = IndexBlockRangeWorker {
+        block_data_reader,
+        fallback_block_data_source,
+        indexer,
+        log_index,
+        metrics,
+        async_backfill,
     };
 
-    info!(
-        elapsed = start.elapsed().as_millis(),
-        start = block_range.start(),
-        end = block_range.end(),
-        num_txs_indexed,
-        "Finished indexing range",
-    );
-    metrics.counter(MetricNames::TXS_INDEXED, num_txs_indexed as u64);
+    let config = WorkerLoopConfig {
+        max_blocks_per_iteration,
+        stop_block: stop_block_override,
+        poll_interval: poll_frequency,
+        process: ProcessRangeConfig {
+            concurrency: max_concurrent_blocks,
+            max_retries: 0,
+            skip_failures: false,
+        },
+    };
 
-    if new_latest_indexed != 0 {
-        checkpoint_latest(indexer, new_latest_indexed, async_backfill).await;
-    }
-
-    new_latest_indexed
+    run_worker_loop(worker, config).await;
 }
 
 async fn handle_block(
@@ -256,16 +221,6 @@ async fn handle_block(
     Ok(num_txs)
 }
 
-async fn checkpoint_latest(archiver: &TxIndexArchiver, block_num: u64, async_backfill: bool) {
-    match archiver
-        .update_latest_indexed(block_num, async_backfill)
-        .await
-    {
-        Ok(()) => info!(block_num, "Set latest indexed checkpoint"),
-        Err(e) => error!(block_num, "Failed to set latest indexed block: {e:?}"),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use alloy_consensus::{
@@ -341,6 +296,23 @@ mod tests {
         let index_archiver = TxIndexArchiver::new(source, reader.clone(), 1000);
 
         (reader, index_archiver)
+    }
+
+    fn make_worker<S: BlockDataReader + Sync + Send, F: BlockDataReader + Sync + Send>(
+        reader: S,
+        fallback: Option<F>,
+        indexer: TxIndexArchiver,
+        log_index: Option<LogsIndexArchiver>,
+        async_backfill: bool,
+    ) -> IndexBlockRangeWorker<S, F> {
+        IndexBlockRangeWorker {
+            block_data_reader: reader,
+            fallback_block_data_source: fallback,
+            indexer,
+            log_index,
+            metrics: Metrics::none(),
+            async_backfill,
+        }
     }
 
     #[tokio::test]
@@ -617,7 +589,7 @@ mod tests {
     #[tokio::test]
     async fn test_index_blocks_with_checkpoint() {
         let (reader, index_archiver) = memory_sink_source();
-        let block_range = 0..=15; // Range that will trigger checkpoint
+        let block_range = 0..=15;
 
         // Prepare test data
         for block_num in block_range.clone() {
@@ -643,21 +615,24 @@ mod tests {
                 .unwrap();
         }
 
-        let result = index_blocks(
-            &reader,
-            &NO_FALLBACK,
-            &index_archiver,
+        let worker = make_worker(
+            reader.clone(),
+            NO_FALLBACK,
+            index_archiver.clone(),
             None,
-            block_range,
-            2, // concurrency
-            &Metrics::none(),
             false,
-        )
-        .await;
+        );
+        let config = ProcessRangeConfig {
+            concurrency: 2,
+            max_retries: 0,
+            skip_failures: false,
+        };
 
-        assert_eq!(result, 15);
+        let result = process_block_range(&worker, block_range, &config).await;
 
-        // Verify checkpoint was created at block 10
+        assert_eq!(result, Some(15));
+
+        // Verify checkpoint was created at block 15
         let checkpoint = index_archiver
             .get_latest_indexed(false)
             .await
@@ -706,19 +681,22 @@ mod tests {
                 .unwrap();
         }
 
-        let result = index_blocks(
-            &reader,
-            &NO_FALLBACK,
-            &index_archiver,
+        let worker = make_worker(
+            reader.clone(),
+            NO_FALLBACK,
+            index_archiver.clone(),
             None,
-            block_range,
-            2, // concurrency
-            &Metrics::none(),
             false,
-        )
-        .await;
+        );
+        let config = ProcessRangeConfig {
+            concurrency: 2,
+            max_retries: 0,
+            skip_failures: false,
+        };
+
+        let result = process_block_range(&worker, block_range, &config).await;
         // Should return the last successful block before error
-        assert_eq!(result, 1);
+        assert_eq!(result, Some(1));
 
         // Verify blocks before error were indexed
         for block_num in 0..=1 {
