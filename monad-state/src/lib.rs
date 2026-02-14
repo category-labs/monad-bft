@@ -688,25 +688,26 @@ where
         let mut payload = Header::decode_bytes(buf, true)?;
         let _monad_version = MonadVersion::decode(&mut payload)?;
 
-        match u8::decode(&mut payload)? {
-            1 => Ok(Self::Consensus(Unverified::<
-                ST,
-                Unvalidated<ConsensusMessage<ST, SCT, EPT>>,
-            >::decode(&mut payload)?)),
-            2 => Ok(Self::BlockSyncRequest(BlockSyncRequestMessage::decode(
-                &mut payload,
-            )?)),
-            3 => Ok(Self::BlockSyncResponse(BlockSyncResponseMessage::decode(
-                &mut payload,
-            )?)),
-            4 => Ok(Self::ForwardedTx(Vec::<Bytes>::decode(&mut payload)?)),
-            5 => Ok(Self::StateSyncMessage(StateSyncNetworkMessage::decode(
-                &mut payload,
-            )?)),
-            _ => Err(alloy_rlp::Error::Custom(
-                "failed to decode unknown MonadMessage",
-            )),
+        let result = match u8::decode(&mut payload)? {
+            1 => Self::Consensus(
+                Unverified::<ST, Unvalidated<ConsensusMessage<ST, SCT, EPT>>>::decode(
+                    &mut payload,
+                )?,
+            ),
+            2 => Self::BlockSyncRequest(BlockSyncRequestMessage::decode(&mut payload)?),
+            3 => Self::BlockSyncResponse(BlockSyncResponseMessage::decode(&mut payload)?),
+            4 => Self::ForwardedTx(Vec::<Bytes>::decode(&mut payload)?),
+            5 => Self::StateSyncMessage(StateSyncNetworkMessage::decode(&mut payload)?),
+            _ => {
+                return Err(alloy_rlp::Error::Custom(
+                    "failed to decode unknown MonadMessage",
+                ))
+            }
+        };
+        if !payload.is_empty() {
+            return Err(alloy_rlp::Error::UnexpectedLength);
         }
+        Ok(result)
     }
 }
 

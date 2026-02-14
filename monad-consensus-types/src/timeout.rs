@@ -180,19 +180,19 @@ where
 {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
         let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
-        match u8::decode(&mut payload)? {
-            1 => {
-                let tip = ConsensusTip::decode(&mut payload)?;
-                Ok(Self::Tip(tip))
+        let result = match u8::decode(&mut payload)? {
+            1 => Self::Tip(ConsensusTip::decode(&mut payload)?),
+            2 => Self::Qc(QuorumCertificate::decode(&mut payload)?),
+            _ => {
+                return Err(alloy_rlp::Error::Custom(
+                    "failed to decode unknown HighExtend",
+                ))
             }
-            2 => {
-                let qc = QuorumCertificate::decode(&mut payload)?;
-                Ok(Self::Qc(qc))
-            }
-            _ => Err(alloy_rlp::Error::Custom(
-                "failed to decode unknown HighExtend",
-            )),
+        };
+        if !payload.is_empty() {
+            return Err(alloy_rlp::Error::UnexpectedLength);
         }
+        Ok(result)
     }
 }
 
@@ -269,7 +269,7 @@ where
 {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
         let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
-        match u8::decode(&mut payload)? {
+        let result = match u8::decode(&mut payload)? {
             1 => {
                 let tip = ConsensusTip::decode(&mut payload)?;
                 let maybe_vote_signature = if !payload.is_empty() {
@@ -277,16 +277,19 @@ where
                 } else {
                     None
                 };
-                Ok(Self::Tip(tip, maybe_vote_signature))
+                Self::Tip(tip, maybe_vote_signature)
             }
-            2 => {
-                let qc = QuorumCertificate::decode(&mut payload)?;
-                Ok(Self::Qc(qc))
+            2 => Self::Qc(QuorumCertificate::decode(&mut payload)?),
+            _ => {
+                return Err(alloy_rlp::Error::Custom(
+                    "failed to decode unknown HighExtend",
+                ))
             }
-            _ => Err(alloy_rlp::Error::Custom(
-                "failed to decode unknown HighExtend",
-            )),
+        };
+        if !payload.is_empty() {
+            return Err(alloy_rlp::Error::UnexpectedLength);
         }
+        Ok(result)
     }
 }
 

@@ -41,7 +41,6 @@ pub struct PrepareGroupResponse<PT: PubKey> {
 const MAX_PEERS_IN_CONFIRM_GROUP: usize = 500;
 
 #[derive(Debug, Clone, RlpEncodable, RlpDecodable, Eq, PartialEq)]
-#[rlp(trailing)]
 pub struct ConfirmGroup<ST: CertificateSignatureRecoverable> {
     pub prepare: PrepareGroup<CertificateSignaturePubKey<ST>>,
     pub peers: LimitedVec<NodeId<CertificateSignaturePubKey<ST>>, MAX_PEERS_IN_CONFIRM_GROUP>,
@@ -88,16 +87,22 @@ impl<ST: CertificateSignatureRecoverable> Decodable for FullNodesGroupMessage<ST
         if version != GROUP_MSG_VERSION {
             return Err(alloy_rlp::Error::Custom("Unknown group message version"));
         }
-        match u8::decode(&mut payload)? {
-            MESSAGE_TYPE_PREP_REQ => Ok(Self::PrepareGroup(PrepareGroup::decode(&mut payload)?)),
-            MESSAGE_TYPE_PREP_RES => Ok(Self::PrepareGroupResponse(PrepareGroupResponse::decode(
-                &mut payload,
-            )?)),
-            MESSAGE_TYPE_CONF_GRP => Ok(Self::ConfirmGroup(ConfirmGroup::decode(&mut payload)?)),
-            _ => Err(alloy_rlp::Error::Custom(
-                "Unknown FullNodesGroupMessage enum variant",
-            )),
+        let result = match u8::decode(&mut payload)? {
+            MESSAGE_TYPE_PREP_REQ => Self::PrepareGroup(PrepareGroup::decode(&mut payload)?),
+            MESSAGE_TYPE_PREP_RES => {
+                Self::PrepareGroupResponse(PrepareGroupResponse::decode(&mut payload)?)
+            }
+            MESSAGE_TYPE_CONF_GRP => Self::ConfirmGroup(ConfirmGroup::decode(&mut payload)?),
+            _ => {
+                return Err(alloy_rlp::Error::Custom(
+                    "Unknown FullNodesGroupMessage enum variant",
+                ))
+            }
+        };
+        if !payload.is_empty() {
+            return Err(alloy_rlp::Error::UnexpectedLength);
         }
+        Ok(result)
     }
 }
 

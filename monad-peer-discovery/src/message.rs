@@ -116,26 +116,27 @@ impl<ST: CertificateSignatureRecoverable> Decodable for PeerDiscoveryMessage<ST>
         let mut payload = Header::decode_bytes(buf, true)?;
         let _peer_discovery_version = u16::decode(&mut payload)?;
 
-        match u8::decode(&mut payload)? {
-            1 => Ok(Self::Ping(Ping::decode(&mut payload)?)),
-            2 => Ok(Self::Pong(Pong::decode(&mut payload)?)),
-            3 => Ok(Self::PeerLookupRequest(PeerLookupRequest::decode(
-                &mut payload,
-            )?)),
-            4 => Ok(Self::PeerLookupResponse(PeerLookupResponse::decode(
-                &mut payload,
-            )?)),
-            5 => Ok(Self::FullNodeRaptorcastRequest),
-            6 => Ok(Self::FullNodeRaptorcastResponse),
-            _ => Err(alloy_rlp::Error::Custom(
-                "failed to decode unknown PeerDiscoveryMessage",
-            )),
+        let result = match u8::decode(&mut payload)? {
+            1 => Self::Ping(Ping::decode(&mut payload)?),
+            2 => Self::Pong(Pong::decode(&mut payload)?),
+            3 => Self::PeerLookupRequest(PeerLookupRequest::decode(&mut payload)?),
+            4 => Self::PeerLookupResponse(PeerLookupResponse::decode(&mut payload)?),
+            5 => Self::FullNodeRaptorcastRequest,
+            6 => Self::FullNodeRaptorcastResponse,
+            _ => {
+                return Err(alloy_rlp::Error::Custom(
+                    "failed to decode unknown PeerDiscoveryMessage",
+                ));
+            }
+        };
+        if !payload.is_empty() {
+            return Err(alloy_rlp::Error::UnexpectedLength);
         }
+        Ok(result)
     }
 }
 
 #[derive(Debug, Clone, PartialEq, RlpDecodable, RlpEncodable)]
-#[rlp(trailing)]
 pub struct Ping<ST: CertificateSignatureRecoverable> {
     pub id: u32,
     pub local_name_record: MonadNameRecord<ST>,
