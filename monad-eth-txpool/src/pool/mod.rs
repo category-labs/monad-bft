@@ -671,7 +671,6 @@ where
             block_policy.get_execution_delay(),
             base_fee,
             &self.chain_revision,
-            &self.execution_revision,
         )?;
 
         let proposal = sequencer.build_proposal(
