@@ -19,6 +19,7 @@ use std::{
     io::ErrorKind,
     net::{IpAddr, SocketAddr},
     rc::Rc,
+    sync::atomic::{AtomicUsize, Ordering},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -30,7 +31,7 @@ use monoio::{
     select, spawn,
     time::timeout,
 };
-use tokio::sync::mpsc;
+use tokio::sync::mpsc::{self, error::TrySendError};
 use tracing::{debug, enabled, trace, warn, Level};
 use zerocopy::FromBytes;
 
@@ -44,6 +45,7 @@ use crate::{
 };
 
 const HEADER_TIMEOUT: Duration = Duration::from_secs(10);
+static TCP_INGRESS_MSGS_DROPPED: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Clone)]
 pub(crate) struct RxState {
@@ -243,15 +245,27 @@ async fn task_connection(
                     src_addr: addr,
                     payload: message,
                 };
-                if let Err(err) = tcp_ingress_tx.send(recv_msg).await {
-                    warn!(
-                        conn_id,
-                        ?addr,
-                        message_id,
-                        ?err,
-                        "error queueing up received TCP message",
-                    );
-                    break;
+                match tcp_ingress_tx.try_send(recv_msg) {
+                    Ok(()) => {}
+                    Err(TrySendError::Full(_)) => {
+                        let total = TCP_INGRESS_MSGS_DROPPED.fetch_add(1, Ordering::Relaxed) + 1;
+                        debug!(
+                            conn_id,
+                            ?addr,
+                            message_id,
+                            total_msgs_dropped = total,
+                            "tcp ingress channel full, dropping received message"
+                        );
+                    }
+                    Err(TrySendError::Closed(_)) => {
+                        warn!(
+                            conn_id,
+                            ?addr,
+                            message_id,
+                            "tcp ingress channel closed",
+                        );
+                        break;
+                    }
                 }
                 message_id += 1;
             }
