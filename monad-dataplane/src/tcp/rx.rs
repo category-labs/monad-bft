@@ -19,8 +19,10 @@ use std::{
     io::ErrorKind,
     net::{IpAddr, SocketAddr},
     rc::Rc,
-    sync::atomic::{AtomicUsize, Ordering},
-    sync::Arc,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
     time::{Duration, Instant},
 };
 

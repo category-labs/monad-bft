@@ -49,7 +49,7 @@ use monad_raptorcast::{
     RaptorCast, RaptorCastEvent,
 };
 use monad_types::{Epoch, NodeId};
-use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::{channel, Receiver, Sender};
 pub use tracing::{debug, error, info, warn, Level};
 
 //==============================================================================
@@ -74,6 +74,8 @@ where
 
     phantom: PhantomData<(OM, SE)>,
 }
+
+const RAPTORCAST_BRIDGE_CHANNEL_CAPACITY: usize = 8 * 1024;
 
 impl<ST, M, OM, SE, PD, AP> MultiRouter<ST, M, OM, SE, PD, AP>
 where
@@ -114,11 +116,13 @@ where
         // Fundamentally this is needed because, while both can send, only the
         // primary can receive data from the network.
         let (send_net_messages, recv_net_messages) =
-            unbounded_channel::<FullNodesGroupMessage<ST>>();
+            channel::<FullNodesGroupMessage<ST>>(RAPTORCAST_BRIDGE_CHANNEL_CAPACITY);
         let (send_group_infos, recv_group_infos) =
-            unbounded_channel::<Group<CertificateSignaturePubKey<ST>>>();
+            channel::<Group<CertificateSignaturePubKey<ST>>>(RAPTORCAST_BRIDGE_CHANNEL_CAPACITY);
         let (send_outbound_to_primary, recv_outbound_from_secondary) =
-            unbounded_channel::<SecondaryOutboundMessage<CertificateSignaturePubKey<ST>>>();
+            channel::<SecondaryOutboundMessage<CertificateSignaturePubKey<ST>>>(
+                RAPTORCAST_BRIDGE_CHANNEL_CAPACITY,
+            );
 
         // Determine initial secondary raptorcast role
         let is_current_epoch_validator = epoch_validators
@@ -181,9 +185,10 @@ where
         );
 
         // create new channels
-        let (send_net_messages, recv_net_messages) = unbounded_channel();
-        let (send_group_infos, recv_group_infos) = unbounded_channel();
-        let (send_outbound_to_primary, recv_outbound_from_secondary) = unbounded_channel();
+        let (send_net_messages, recv_net_messages) = channel(RAPTORCAST_BRIDGE_CHANNEL_CAPACITY);
+        let (send_group_infos, recv_group_infos) = channel(RAPTORCAST_BRIDGE_CHANNEL_CAPACITY);
+        let (send_outbound_to_primary, recv_outbound_from_secondary) =
+            channel(RAPTORCAST_BRIDGE_CHANNEL_CAPACITY);
 
         let is_dynamic = matches!(new_role, SecondaryRaptorCastModeConfig::Client);
         // we first need to update is_dynamic_full_node before binding the channels
@@ -210,9 +215,9 @@ where
         cfg: RaptorCastConfig<ST>,
         mode: SecondaryRaptorCastModeConfig,
         shared_pdd: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
-        recv_net_messages: UnboundedReceiver<FullNodesGroupMessage<ST>>,
-        send_group_infos: UnboundedSender<Group<CertificateSignaturePubKey<ST>>>,
-        channel_to_primary_outbound: UnboundedSender<
+        recv_net_messages: Receiver<FullNodesGroupMessage<ST>>,
+        send_group_infos: Sender<Group<CertificateSignaturePubKey<ST>>>,
+        channel_to_primary_outbound: Sender<
             SecondaryOutboundMessage<CertificateSignaturePubKey<ST>>,
         >,
         current_epoch: Epoch,

@@ -1263,9 +1263,7 @@ mod test {
         ChaCha8Rng, SeedableRng,
     };
     use crate::{
-        blocksync::{
-            BLOCKSYNC_MAX_PAYLOAD_REQUESTS, BLOCKSYNC_MAX_PEER_REQUEST_TABLE_ENTRIES,
-        },
+        blocksync::{BLOCKSYNC_MAX_PAYLOAD_REQUESTS, BLOCKSYNC_MAX_PEER_REQUEST_TABLE_ENTRIES},
         messages::message::{BlockSyncRequestMessage, BlockSyncResponseMessage},
     };
 
@@ -2443,8 +2441,10 @@ mod test {
         );
 
         let payload_id = ConsensusBlockBodyId(Hash([0xAB; 32]));
-        let cmds =
-            context.handle_peer_request(non_validator_sender, BlockSyncRequestMessage::Payload(payload_id));
+        let cmds = context.handle_peer_request(
+            non_validator_sender,
+            BlockSyncRequestMessage::Payload(payload_id),
+        );
 
         assert_eq!(find_fetch_payload_commands(&cmds).len(), 0);
         assert_eq!(find_send_response_commands(&cmds).len(), 0);
@@ -2476,8 +2476,10 @@ mod test {
             last_block_id: BlockId(Hash([0xEE; 32])),
             num_blocks: SeqNum(2),
         };
-        let cmds =
-            context.handle_peer_request(non_validator_sender, BlockSyncRequestMessage::Headers(block_range));
+        let cmds = context.handle_peer_request(
+            non_validator_sender,
+            BlockSyncRequestMessage::Headers(block_range),
+        );
 
         assert_eq!(find_fetch_headers_commands(&cmds).len(), 0);
         assert_eq!(find_send_response_commands(&cmds).len(), 0);
@@ -2510,12 +2512,17 @@ mod test {
         // setup_fullnode() uses a validator peer_id.
         let validator_sender = context.peer_id;
         let payload_id = ConsensusBlockBodyId(Hash([0xCD; 32]));
-        let cmds =
-            context.handle_peer_request(validator_sender, BlockSyncRequestMessage::Payload(payload_id));
+        let cmds = context.handle_peer_request(
+            validator_sender,
+            BlockSyncRequestMessage::Payload(payload_id),
+        );
 
         assert_eq!(find_fetch_payload_commands(&cmds).len(), 1);
         assert_eq!(find_send_response_commands(&cmds).len(), 0);
-        assert!(context.block_sync.payload_requests.contains_key(&payload_id));
+        assert!(context
+            .block_sync
+            .payload_requests
+            .contains_key(&payload_id));
         assert_eq!(context.block_sync.payload_requests.len(), 1);
     }
 
@@ -2547,7 +2554,10 @@ mod test {
         let cmds = context.handle_self_request(requester, block_range);
 
         assert_eq!(find_fetch_headers_commands(&cmds).len(), 1);
-        assert!(context.block_sync.self_headers_requests.contains_key(&block_range));
+        assert!(context
+            .block_sync
+            .self_headers_requests
+            .contains_key(&block_range));
     }
 
     #[test_case(true; "all headers cached in blocktree")]
