@@ -23,23 +23,21 @@ use monad_raptorcast::{
     raptorcast_secondary::SecondaryRaptorCastModeConfig,
     RaptorCast, RaptorCastEvent,
 };
-use monad_secp::{KeyPair, SecpSignature};
+use monad_secp::KeyPair;
 use monad_tfm::base_fee::MIN_BASE_FEE;
 use monad_types::{Epoch, NodeId, Round, Stake, UdpPriority};
 use monad_wireauth::Config;
 use serde::Serialize;
 
 use crate::{
-    message::{TxIntegrationEvent, TxIntegrationMessage},
+    message::{InboundMessage, OutboundMessage, SignatureType, WireEvent},
     rpc, SubmitArgs,
 };
 
-type SignatureType = SecpSignature;
+struct SubmitRaptorCastEvent(RaptorCastEvent<WireEvent, SignatureType>);
 
-struct SubmitRaptorCastEvent(RaptorCastEvent<TxIntegrationEvent, SignatureType>);
-
-impl From<RaptorCastEvent<TxIntegrationEvent, SignatureType>> for SubmitRaptorCastEvent {
-    fn from(value: RaptorCastEvent<TxIntegrationEvent, SignatureType>) -> Self {
+impl From<RaptorCastEvent<WireEvent, SignatureType>> for SubmitRaptorCastEvent {
+    fn from(value: RaptorCastEvent<WireEvent, SignatureType>) -> Self {
         Self(value)
     }
 }
@@ -96,7 +94,7 @@ pub fn sender_secret(index: usize) -> alloy_primitives::B256 {
 }
 
 pub async fn run(args: SubmitArgs) {
-    let bind_addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let bind_addr: std::net::SocketAddr = "0.0.0.0:0".parse().unwrap();
 
     let mut dp = DataplaneBuilder::new(1000)
         .with_udp_multishot(true)
@@ -157,8 +155,8 @@ pub async fn run(args: SubmitArgs) {
 
     let mut raptorcast = RaptorCast::<
         SignatureType,
-        TxIntegrationMessage,
-        TxIntegrationMessage,
+        InboundMessage,
+        OutboundMessage,
         SubmitRaptorCastEvent,
         monad_peer_discovery::mock::NopDiscovery<SignatureType>,
         WireAuthProtocol,
@@ -374,8 +372,8 @@ pub async fn run(args: SubmitArgs) {
                 // Send when batch is full
                 if pending_batch.len() >= batch_size {
                     let txs = std::mem::take(&mut pending_batch);
-                    let payload = OutboundRouterMessage::<TxIntegrationMessage, SignatureType>::AppMessage(
-                        TxIntegrationMessage::forward_txs(txs),
+                    let payload = OutboundRouterMessage::<OutboundMessage, SignatureType>::AppMessage(
+                        OutboundMessage::forward_txs(txs),
                     )
                     .try_serialize()
                     .expect("serialize tx integration message");
@@ -409,8 +407,8 @@ pub async fn run(args: SubmitArgs) {
     // Flush any remaining transactions in the batch
     if !pending_batch.is_empty() {
         let txs = std::mem::take(&mut pending_batch);
-        let payload = OutboundRouterMessage::<TxIntegrationMessage, SignatureType>::AppMessage(
-            TxIntegrationMessage::forward_txs(txs),
+        let payload = OutboundRouterMessage::<OutboundMessage, SignatureType>::AppMessage(
+            OutboundMessage::forward_txs(txs),
         )
         .try_serialize()
         .expect("serialize tx integration message");

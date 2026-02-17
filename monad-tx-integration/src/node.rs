@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, HashMap},
     marker::PhantomData,
-    net::SocketAddrV4,
+    net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -35,18 +35,16 @@ use monad_wireauth::Config;
 use crate::{
     channel_input::ChannelInputStream,
     committer::BlockCommitter,
-    message::{TxIntegrationEvent, TxIntegrationMessage},
-    router, rpc,
+    message::{InboundMessage, OutboundMessage, SignatureType, WireEvent},
+    rpc,
     stats::StatsCollector,
     NodeArgs,
 };
 
-type SignatureType = SecpSignature;
+struct NodeRaptorCastEvent(RaptorCastEvent<WireEvent, SignatureType>);
 
-struct NodeRaptorCastEvent(RaptorCastEvent<TxIntegrationEvent, SignatureType>);
-
-impl From<RaptorCastEvent<TxIntegrationEvent, SignatureType>> for NodeRaptorCastEvent {
-    fn from(value: RaptorCastEvent<TxIntegrationEvent, SignatureType>) -> Self {
+impl From<RaptorCastEvent<WireEvent, SignatureType>> for NodeRaptorCastEvent {
+    fn from(value: RaptorCastEvent<WireEvent, SignatureType>) -> Self {
         NodeRaptorCastEvent(value)
     }
 }
@@ -193,8 +191,24 @@ pub async fn run(args: NodeArgs) {
         .expect("lean udp socket");
 
     let lean_bound_addr = lean_udp_socket.local_addr();
-    tracing::info!(%lean_bound_addr, "node listening");
+    // Binding to 0.0.0.0/:: is correct for listening, but it is not a
+    // connectable destination address. For convenience (local scripts), we
+    // also print a loopback address with the chosen ephemeral port.
+    let listen_addr_for_clients = match lean_bound_addr {
+        SocketAddr::V4(v4) if v4.ip().is_unspecified() => {
+            SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, v4.port()))
+        }
+        SocketAddr::V6(v6) if v6.ip().is_unspecified() => SocketAddr::V6(SocketAddrV6::new(
+            Ipv6Addr::LOCALHOST,
+            v6.port(),
+            v6.flowinfo(),
+            v6.scope_id(),
+        )),
+        _ => lean_bound_addr,
+    };
+    tracing::info!(%lean_bound_addr, %listen_addr_for_clients, "node listening");
     println!("LISTEN_ADDR={lean_bound_addr}");
+    println!("CONNECT_ADDR={listen_addr_for_clients}");
 
     let keypair = node_keypair();
     let keypair_arc = Arc::new(keypair);
@@ -219,8 +233,8 @@ pub async fn run(args: NodeArgs) {
 
     let mut raptorcast = RaptorCast::<
         SignatureType,
-        TxIntegrationMessage,
-        TxIntegrationMessage,
+        InboundMessage,
+        OutboundMessage,
         NodeRaptorCastEvent,
         monad_peer_discovery::mock::NopDiscovery<SignatureType>,
         WireAuthProtocol,
@@ -297,21 +311,21 @@ pub async fn run(args: NodeArgs) {
 
             raptorcast_event = raptorcast.next() => {
                 match raptorcast_event {
-                    Some(NodeRaptorCastEvent(RaptorCastEvent::Message(TxIntegrationEvent { from, txs }))) => {
-                        let sender = from.pubkey();
+                    Some(NodeRaptorCastEvent(RaptorCastEvent::Message(MonadEvent::MempoolEvent(
+                        MempoolEvent::ForwardedTxs { sender, txs }
+                    )))) => {
                         let tx_count = txs.len();
                         *per_peer_received
-                            .entry(router::pubkey_to_node_id(&sender))
+                            .entry(sender)
                             .or_default() += tx_count as u64;
 
                         for tx_bytes in &txs {
                             if let Ok(tx) = alloy_consensus::TxEnvelope::decode(&mut tx_bytes.as_ref()) {
-                                tx_peer_map.insert(*tx.tx_hash(), router::pubkey_to_node_id(&sender));
+                                tx_peer_map.insert(*tx.tx_hash(), sender);
                             }
                         }
 
-                        let cmd = router::route_forward_txs(&sender, txs);
-                        client.exec(vec![cmd]);
+                        client.exec(vec![TxPoolCommand::InsertForwardedTxs { sender, txs }]);
                         stats.record_received(tx_count as u64);
                         udp_recv_count += tx_count as u64;
                         tracing::debug!(tx_count, "received forward_txs via raptorcast");
@@ -327,6 +341,9 @@ pub async fn run(args: NodeArgs) {
                     }
                     Some(NodeRaptorCastEvent(RaptorCastEvent::LeanUdpForwardTxs { .. })) => {
                         tracing::trace!("received LeanUdpForwardTxs (ignored)");
+                    }
+                    Some(NodeRaptorCastEvent(RaptorCastEvent::Message(other))) => {
+                        tracing::trace!(?other, "ignoring non-forwarded-txs router message");
                     }
                     None => {
                         tracing::error!("raptorcast stream ended");

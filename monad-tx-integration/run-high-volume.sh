@@ -18,7 +18,7 @@ cargo build -p monad-tx-integration --release 2>&1 | tail -3
 
 echo "=== Starting node ==="
 RUST_LOG=monad_tx_integration=info "$BINARY" node \
-    --listen 127.0.0.1:0 \
+    --listen 0.0.0.0:0 \
     --rpc-listen 127.0.0.1:0 \
     --commit-interval-ms "$COMMIT_INTERVAL_MS" \
     --stats-file "$OUT_DIR/node-stats.jsonl" \
@@ -29,7 +29,7 @@ NODE_PID=$!
 
 ADDR=""
 for i in $(seq 1 50); do
-    ADDR=$(grep -oP 'LISTEN_ADDR=\K.*' "$OUT_DIR/node.log" 2>/dev/null || true)
+    ADDR=$(grep -oP 'CONNECT_ADDR=\K.*' "$OUT_DIR/node.log" 2>/dev/null || true)
     RPC_ADDR=$(grep -oP 'RPC_ADDR=\K.*' "$OUT_DIR/node.log" 2>/dev/null || true)
     [ -n "$ADDR" ] && [ -n "$RPC_ADDR" ] && break
     sleep 0.1

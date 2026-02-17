@@ -30,7 +30,12 @@ enum Command {
 
 #[derive(Args)]
 pub struct NodeArgs {
-    #[arg(long, default_value = "127.0.0.1:0")]
+    // Bind address for the node's LeanUDP dataplane listener.
+    //
+    // Default to 0.0.0.0 so the node is reachable from outside the local
+    // network namespace (e.g. containers). The node prints a separate
+    // connectable `LISTEN_ADDR` for local scripts.
+    #[arg(long, default_value = "0.0.0.0:0")]
     listen: SocketAddr,
 
     #[arg(long, default_value = "127.0.0.1:0")]

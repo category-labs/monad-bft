@@ -92,7 +92,7 @@ enum Cli {
 #[derive(Args)]
 struct NodeArgs {
     /// UDP listen address
-    #[arg(long, default_value = "127.0.0.1:0")]
+    #[arg(long, default_value = "0.0.0.0:0")]
     listen: SocketAddr,
     /// Block commit interval in milliseconds (0 = manual only)
     #[arg(long, default_value = "1000")]

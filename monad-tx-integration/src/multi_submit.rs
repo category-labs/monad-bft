@@ -22,22 +22,20 @@ use monad_raptorcast::{
     raptorcast_secondary::SecondaryRaptorCastModeConfig,
     RaptorCast, RaptorCastEvent,
 };
-use monad_secp::{KeyPair, SecpSignature};
+use monad_secp::KeyPair;
 use monad_tfm::base_fee::MIN_BASE_FEE;
 use monad_types::{Epoch, NodeId, Round, Stake, UdpPriority};
 use monad_wireauth::Config;
 
 use crate::{
-    message::{TxIntegrationEvent, TxIntegrationMessage},
+    message::{InboundMessage, OutboundMessage, SignatureType, WireEvent},
     MultiSubmitArgs,
 };
 
-type SignatureType = SecpSignature;
+struct MultiSubmitRaptorCastEvent(RaptorCastEvent<WireEvent, SignatureType>);
 
-struct MultiSubmitRaptorCastEvent(RaptorCastEvent<TxIntegrationEvent, SignatureType>);
-
-impl From<RaptorCastEvent<TxIntegrationEvent, SignatureType>> for MultiSubmitRaptorCastEvent {
-    fn from(value: RaptorCastEvent<TxIntegrationEvent, SignatureType>) -> Self {
+impl From<RaptorCastEvent<WireEvent, SignatureType>> for MultiSubmitRaptorCastEvent {
+    fn from(value: RaptorCastEvent<WireEvent, SignatureType>) -> Self {
         Self(value)
     }
 }
@@ -106,7 +104,7 @@ pub async fn run(args: MultiSubmitArgs) {
 }
 
 async fn run_identity(args: Arc<MultiSubmitArgs>, identity_index: usize) {
-    let bind_addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let bind_addr: std::net::SocketAddr = "0.0.0.0:0".parse().unwrap();
 
     let mut dp = DataplaneBuilder::new(1000)
         .with_udp_multishot(true)
@@ -167,8 +165,8 @@ async fn run_identity(args: Arc<MultiSubmitArgs>, identity_index: usize) {
 
     let mut raptorcast = RaptorCast::<
         SignatureType,
-        TxIntegrationMessage,
-        TxIntegrationMessage,
+        InboundMessage,
+        OutboundMessage,
         MultiSubmitRaptorCastEvent,
         monad_peer_discovery::mock::NopDiscovery<SignatureType>,
         WireAuthProtocol,
@@ -298,15 +296,15 @@ async fn run_identity(args: Arc<MultiSubmitArgs>, identity_index: usize) {
                 sent += 1;
 
                 if pending_batch.len() >= batch_size {
-                    let txs = std::mem::take(&mut pending_batch);
-                    let payload =
-                        OutboundRouterMessage::<TxIntegrationMessage, SignatureType>::AppMessage(
-                            TxIntegrationMessage::forward_txs(txs),
+                        let txs = std::mem::take(&mut pending_batch);
+                        let payload =
+                        OutboundRouterMessage::<OutboundMessage, SignatureType>::AppMessage(
+                            OutboundMessage::forward_txs(txs),
                         )
                         .try_serialize()
                         .expect("serialize tx integration message");
-                    let lean_socket = raptorcast.lean_udp_socket_mut().expect("lean socket");
-                    lean_socket.send(args.node_addr, payload, UdpPriority::Regular);
+                        let lean_socket = raptorcast.lean_udp_socket_mut().expect("lean socket");
+                        lean_socket.send(args.node_addr, payload, UdpPriority::Regular);
                     lean_socket.flush();
                 }
             }
@@ -321,8 +319,8 @@ async fn run_identity(args: Arc<MultiSubmitArgs>, identity_index: usize) {
 
     if !pending_batch.is_empty() {
         let txs = std::mem::take(&mut pending_batch);
-        let payload = OutboundRouterMessage::<TxIntegrationMessage, SignatureType>::AppMessage(
-            TxIntegrationMessage::forward_txs(txs),
+        let payload = OutboundRouterMessage::<OutboundMessage, SignatureType>::AppMessage(
+            OutboundMessage::forward_txs(txs),
         )
         .try_serialize()
         .expect("serialize tx integration message");

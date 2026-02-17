@@ -1,27 +1,21 @@
-use bytes::Bytes;
-use monad_executor_glue::{Message, OutboundForwardTxs};
-use monad_types::NodeId;
+use monad_eth_types::EthExecutionProtocol;
+use monad_executor_glue::MonadEvent;
+use monad_secp::SecpSignature;
+use monad_testutil::signing::MockSignatures;
 
-#[derive(Clone, Debug, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable)]
-pub struct TxIntegrationMessage(#[rlp(trailing)] pub Vec<Bytes>);
+pub type SignatureType = SecpSignature;
+pub type SignatureCollectionType = MockSignatures<SignatureType>;
+pub type ExecutionProtocolType = EthExecutionProtocol;
 
-#[derive(Clone, Debug)]
-pub struct TxIntegrationEvent {
-    pub from: NodeId<monad_secp::PubKey>,
-    pub txs: Vec<Bytes>,
-}
+// In production, the network sends `VerifiedMonadMessage` (outbound) which is
+// decoded as `MonadMessage` (inbound). Their RLP encoding is intentionally
+// compatible.
+pub type InboundMessage =
+    monad_state::MonadMessage<SignatureType, SignatureCollectionType, ExecutionProtocolType>;
+pub type OutboundMessage = monad_state::VerifiedMonadMessage<
+    SignatureType,
+    SignatureCollectionType,
+    ExecutionProtocolType,
+>;
 
-impl Message for TxIntegrationMessage {
-    type NodeIdPubKey = monad_secp::PubKey;
-    type Event = TxIntegrationEvent;
-
-    fn event(self, from: NodeId<Self::NodeIdPubKey>) -> Self::Event {
-        TxIntegrationEvent { from, txs: self.0 }
-    }
-}
-
-impl OutboundForwardTxs for TxIntegrationMessage {
-    fn forward_txs(txs: Vec<Bytes>) -> Self {
-        Self(txs)
-    }
-}
+pub type WireEvent = MonadEvent<SignatureType, SignatureCollectionType, ExecutionProtocolType>;
