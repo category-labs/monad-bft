@@ -171,10 +171,18 @@ impl MetricNames {
             MetricNames::AWS_DYNAMODB_ERRORS => "AWS DynamoDB errors",
             // Archive Workers
             MetricNames::TXS_INDEXED => "Transactions indexed",
-            MetricNames::BLOCK_ARCHIVE_WORKER_BLOCK_FALLBACK => "Block archive worker block fallbacks",
-            MetricNames::BLOCK_ARCHIVE_WORKER_RECEIPTS_FALLBACK => "Block archive worker receipts fallbacks",
-            MetricNames::BLOCK_ARCHIVE_WORKER_TRACES_FALLBACK => "Block archive worker traces fallbacks",
-            MetricNames::BLOCK_ARCHIVE_WORKER_TRACES_FAILED => "Block archive worker traces failures",
+            MetricNames::BLOCK_ARCHIVE_WORKER_BLOCK_FALLBACK => {
+                "Block archive worker block fallbacks"
+            }
+            MetricNames::BLOCK_ARCHIVE_WORKER_RECEIPTS_FALLBACK => {
+                "Block archive worker receipts fallbacks"
+            }
+            MetricNames::BLOCK_ARCHIVE_WORKER_TRACES_FALLBACK => {
+                "Block archive worker traces fallbacks"
+            }
+            MetricNames::BLOCK_ARCHIVE_WORKER_TRACES_FAILED => {
+                "Block archive worker traces failures"
+            }
             MetricNames::SOURCE_LATEST_BLOCK_NUM => "Latest block number from source",
             MetricNames::END_BLOCK_NUMBER => "End block number for archival",
             MetricNames::START_BLOCK_NUMBER => "Start block number for archival",
@@ -186,9 +194,13 @@ impl MetricNames {
             MetricNames::BFT_BLOCK_FILES_FAILED_TO_PROCESS => "BFT block files failed to process",
             // Generic Archive
             MetricNames::GENERIC_ARCHIVE_FILES_DISCOVERED => "Generic archive files discovered",
-            MetricNames::GENERIC_ARCHIVE_FILES_ALREADY_IN_S3 => "Generic archive files already in S3",
+            MetricNames::GENERIC_ARCHIVE_FILES_ALREADY_IN_S3 => {
+                "Generic archive files already in S3"
+            }
             MetricNames::GENERIC_ARCHIVE_FILES_UPLOADED => "Generic archive files uploaded",
-            MetricNames::GENERIC_ARCHIVE_FILES_FAILED_TO_PROCESS => "Generic archive files failed to process",
+            MetricNames::GENERIC_ARCHIVE_FILES_FAILED_TO_PROCESS => {
+                "Generic archive files failed to process"
+            }
             // Archive Checker
             MetricNames::LATEST_TO_CHECK => "Latest block number to check",
             MetricNames::NEXT_TO_CHECK => "Next block number to check",
@@ -280,16 +292,13 @@ impl Metrics {
 
     pub fn counter_with_attrs(&self, metric: MetricNames, val: u64, attributes: &[KeyValue]) {
         if let Some(inner) = &self.0 {
-            let counter = inner
-                .counters
-                .entry(metric)
-                .or_insert_with(|| {
-                    inner
-                        .meter
-                        .u64_counter(metric.as_str())
-                        .with_description(metric.description())
-                        .build()
-                });
+            let counter = inner.counters.entry(metric).or_insert_with(|| {
+                inner
+                    .meter
+                    .u64_counter(metric.as_str())
+                    .with_description(metric.description())
+                    .build()
+            });
 
             counter.add(val, attributes)
         }
@@ -305,16 +314,13 @@ impl Metrics {
 
     pub fn histogram_with_attrs(&self, metric: MetricNames, value: f64, attributes: &[KeyValue]) {
         if let Some(inner) = &self.0 {
-            let histogram = inner
-                .histograms
-                .entry(metric)
-                .or_insert_with(|| {
-                    inner
-                        .meter
-                        .f64_histogram(metric.as_str())
-                        .with_description(metric.description())
-                        .build()
-                });
+            let histogram = inner.histograms.entry(metric).or_insert_with(|| {
+                inner
+                    .meter
+                    .f64_histogram(metric.as_str())
+                    .with_description(metric.description())
+                    .build()
+            });
             histogram.record(value, attributes);
         }
     }
@@ -333,16 +339,13 @@ impl Metrics {
 
     pub fn gauge_with_attrs(&self, metric: MetricNames, value: u64, attributes: &[KeyValue]) {
         if let Some(inner) = &self.0 {
-            let gauge = inner
-                .gauges
-                .entry(metric)
-                .or_insert_with(|| {
-                    inner
-                        .meter
-                        .u64_gauge(metric.as_str())
-                        .with_description(metric.description())
-                        .build()
-                });
+            let gauge = inner.gauges.entry(metric).or_insert_with(|| {
+                inner
+                    .meter
+                    .u64_gauge(metric.as_str())
+                    .with_description(metric.description())
+                    .build()
+            });
             gauge.record(value, attributes);
         }
     }
