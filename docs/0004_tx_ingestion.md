@@ -183,6 +183,7 @@ Maximum message size is 128 KB (131,072 bytes), requiring at most 92 fragments (
 ### Fragment Reassembly
 
 The decoder maintains separate reassembly buffers for priority and regular traffic. Fragments from identities with scores at or above `promotion_threshold` are placed in priority buffers; others go to regular buffers with stricter limits.
+Fragments are always routed by the current score at decode time; the decoder does not migrate or pin in-flight messages across pools when score changes.
 
 Messages are keyed by `(identity, message_id)` tuple. The 3-byte message ID only needs to be unique per identity, not globally. This allows each identity to have up to 16M concurrent message IDs while keeping the header compact.
 
@@ -195,12 +196,13 @@ Default parameters:
 | max_fragments_per_message | 92 | Maximum fragments per message (128 KB / 1432) |
 | max_priority_messages | 10,000 | Concurrent priority reassemblies |
 | max_regular_messages | 1,000 | Concurrent regular reassemblies |
-| max_messages_per_identity | 10 | Concurrent messages per identity |
-| message_timeout | 100ms | After timeout, message is evicted when space is needed |
+| max_messages_per_identity | 10 | Concurrent messages per identity (hard-capped at 10) |
+| max_bytes_per_identity | 256 KB | Concurrent in-flight bytes per identity, per pool |
+| message_timeout | 100ms | Config field retained for compatibility; eviction is random-only |
 
 ### Reassembly Pool Eviction
 
-The priority pool uses timeout-based eviction, assuming most peers complete reassembly promptly—if malicious peers hold timers intentionally, the buffer fills and falls back to the regular pool. The regular pool uses random eviction, providing the same guarantees that exist without scoring.
+Both priority and regular pools use random eviction when full. This keeps behavior uniform across tiers and removes time-based eviction effects.
 
 ## Impact on Other Components
 

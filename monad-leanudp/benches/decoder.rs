@@ -2,7 +2,10 @@ use std::time::{Duration, Instant};
 
 use bytes::{BufMut, Bytes, BytesMut};
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use monad_leanudp::{Clock, Config, Decoder, Encoder, FragmentPolicy, IdentityScore, PacketHeader};
+use monad_leanudp::{
+    Clock, Config, Decoder, Encoder, FragmentPolicy, IdentityScore, PacketHeader,
+    MAX_CONCURRENT_MESSAGES_PER_IDENTITY,
+};
 
 #[derive(Clone, Copy)]
 struct FixedClock(Instant);
@@ -34,7 +37,7 @@ fn make_config(max_regular_messages: usize) -> Config {
         max_message_size: 128 * 1024,
         max_priority_messages: 100,
         max_regular_messages,
-        max_messages_per_identity: 10,
+        max_messages_per_identity: MAX_CONCURRENT_MESSAGES_PER_IDENTITY,
         message_timeout: Duration::from_secs(60),
         max_fragment_payload: 1440,
     }
