@@ -53,6 +53,8 @@ impl EthTxPoolMetrics {
 
         metrics["monad.bft.txpool.pool.drop_not_well_formed"] =
             self.drop_not_well_formed.load(Ordering::SeqCst);
+        metrics["monad.bft.txpool.pool.drop_invalid_signature"] =
+            self.drop_invalid_signature.load(Ordering::SeqCst);
         metrics["monad.bft.txpool.pool.drop_nonce_too_low"] =
             self.drop_nonce_too_low.load(Ordering::SeqCst);
         metrics["monad.bft.txpool.pool.drop_fee_too_low"] =
