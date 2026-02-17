@@ -1224,7 +1224,7 @@ where
             match result {
                 Some(authority) => {
                     trace!(?code_address, ?nonce, ?authority, "Authority");
-                    if auth_chain_id != 0_u64 && auth_chain_id != chain_id {
+                    if !auth_chain_id.is_zero() && *auth_chain_id != U256::from(chain_id) {
                         continue;
                     }
 
@@ -1472,9 +1472,9 @@ where
 mod test {
     use std::collections::HashMap;
 
-    use alloy_consensus::{SignableTransaction, TxEip1559};
+    use alloy_consensus::{transaction::SignerRecoverable, SignableTransaction, TxEip1559};
     use alloy_eips::eip7702::{Authorization, RecoveredAuthority};
-    use alloy_primitives::{Address, FixedBytes, PrimitiveSignature, TxKind, B256};
+    use alloy_primitives::{Address, FixedBytes, Signature, TxKind, B256, U256};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use monad_chain_config::{revision::MockChainRevision, MockChainConfig};
@@ -1516,7 +1516,7 @@ mod test {
         NonceCoherency,
     }
 
-    fn sign_tx(signature_hash: &FixedBytes<32>) -> PrimitiveSignature {
+    fn sign_tx(signature_hash: &FixedBytes<32>) -> Signature {
         let secret_key = B256::repeat_byte(0xAu8).to_string();
         let signer = &secret_key.parse::<PrivateKeySigner>().unwrap();
         signer.sign_hash_sync(signature_hash).unwrap()
@@ -2100,7 +2100,7 @@ mod test {
             HashMap::from([(
                 S1,
                 Authorization {
-                    chain_id: CHAIN_ID,
+                    chain_id: U256::from(CHAIN_ID),
                     nonce: 0,
                     address: Address(FixedBytes([0x11; 20])),
                 },
@@ -2140,7 +2140,7 @@ mod test {
             HashMap::from([(
                 S1,
                 Authorization {
-                    chain_id: CHAIN_ID,
+                    chain_id: U256::from(CHAIN_ID),
                     nonce: 0,
                     address: Address(FixedBytes([0x11; 20])),
                 },
@@ -2184,7 +2184,7 @@ mod test {
                 (
                     S1,
                     Authorization {
-                        chain_id: CHAIN_ID,
+                        chain_id: U256::from(CHAIN_ID),
                         nonce: 0,
                         address: Address(FixedBytes([0x11; 20])),
                     },
@@ -2192,7 +2192,7 @@ mod test {
                 (
                     S1,
                     Authorization {
-                        chain_id: CHAIN_ID,
+                        chain_id: U256::from(CHAIN_ID),
                         nonce: 1,
                         address: Address::ZERO,
                     },
@@ -2240,7 +2240,7 @@ mod test {
             HashMap::from([(
                 S1,
                 Authorization {
-                    chain_id: CHAIN_ID,
+                    chain_id: U256::from(CHAIN_ID),
                     nonce: 2,
                     address: Address(FixedBytes([0x11; 20])),
                 },
@@ -2291,7 +2291,7 @@ mod test {
             HashMap::from([(
                 S1,
                 Authorization {
-                    chain_id: CHAIN_ID,
+                    chain_id: U256::from(CHAIN_ID),
                     nonce: 1,
                     address: Address(FixedBytes([0x11; 20])),
                 },
@@ -2339,7 +2339,7 @@ mod test {
             HashMap::from([(
                 S2,
                 Authorization {
-                    chain_id: CHAIN_ID + 1, // invalid chain id
+                    chain_id: U256::from(CHAIN_ID + 1), // invalid chain id
                     nonce: 0,
                     address: Address(FixedBytes([0x11; 20])),
                 },
@@ -2391,7 +2391,7 @@ mod test {
             HashMap::from([(
                 S1,
                 Authorization {
-                    chain_id: CHAIN_ID,
+                    chain_id: U256::from(CHAIN_ID),
                     nonce: 0,
                     address: Address(FixedBytes([0x11; 20])),
                 },
@@ -2503,7 +2503,7 @@ mod test {
             HashMap::from([(
                 S1,
                 Authorization {
-                    chain_id: CHAIN_ID,
+                    chain_id: U256::from(CHAIN_ID),
                     nonce: 1,
                     address: Address(FixedBytes([0x11; 20])),
                 },
@@ -2539,7 +2539,7 @@ mod test {
             HashMap::from([(
                 S1,
                 Authorization {
-                    chain_id: CHAIN_ID,
+                    chain_id: U256::from(CHAIN_ID),
                     nonce: 1,
                     address: Address(FixedBytes([0x11; 20])),
                 },
@@ -2579,7 +2579,7 @@ mod test {
             HashMap::from([(
                 S1,
                 Authorization {
-                    chain_id: CHAIN_ID,
+                    chain_id: U256::from(CHAIN_ID),
                     nonce: 2,
                     address: Address(FixedBytes([0x11; 20])),
                 },
@@ -2618,7 +2618,7 @@ mod test {
             HashMap::from([(
                 S1,
                 Authorization {
-                    chain_id: CHAIN_ID,
+                    chain_id: U256::from(CHAIN_ID),
                     nonce: 1,
                     address: Address(FixedBytes([0x11; 20])),
                 },

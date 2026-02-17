@@ -15,7 +15,7 @@
 
 use std::{collections::HashMap, future::ready};
 
-use alloy_consensus::{Block, TxEnvelope};
+use alloy_consensus::{transaction::SignerRecoverable, Block, TxEnvelope};
 use monad_types::SeqNum;
 
 use crate::triedb_env::*;

@@ -582,7 +582,7 @@ where
                     inserted_addresses.insert(tx.signer());
 
                     if tx.is_owned_and_forwardable() {
-                        immediately_forwardable_txs.push(tx.raw().tx().clone());
+                        immediately_forwardable_txs.push(tx.raw().clone_inner());
                     }
                 },
             );

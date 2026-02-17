@@ -40,7 +40,9 @@ impl<PT: PubKey> Default for WeightedRoundRobin<PT> {
 pub fn randomize_256_with_rng(gen: &mut impl Rng, m: U256) -> U256 {
     let max = U256::MAX - (U256::MAX - m + U256::from(1)) % m;
     loop {
-        let r: U256 = gen.gen();
+        let mut bytes = [0u8; 32];
+        gen.fill_bytes(&mut bytes);
+        let r = U256::from_le_bytes(bytes);
         if r <= max {
             return r % m;
         }

@@ -26,7 +26,7 @@ zeroize = { workspace = true, features = ["derive"] }
 [dev-dependencies]
 monad-testutil = { workspace = true }
 
-alloy-consensus = { workspace = true }
+alloy-consensus = { workspace = true, features = ["k256"] }
 alloy-signer = { workspace = true }
 alloy-signer-local = { workspace = true }
 criterion = { workspace = true }

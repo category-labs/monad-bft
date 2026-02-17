@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use alloy_consensus::{ReceiptEnvelope, TxEnvelope};
+use alloy_consensus::{transaction::SignerRecoverable, ReceiptEnvelope, TxEnvelope};
 use alloy_primitives::BlockHash;
 use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
 use eyre::{bail, ensure};
@@ -47,7 +47,7 @@ pub struct HeaderSubsetV0 {
     pub block_hash: BlockHash,
     pub block_number: u64,
     pub tx_index: u64,
-    pub gas_used: u128,
+    pub gas_used: u64,
     pub base_fee_per_gas: Option<u64>,
 }
 

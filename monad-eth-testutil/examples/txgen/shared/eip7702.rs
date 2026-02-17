@@ -93,7 +93,7 @@ impl EIP7702 {
         chain_id: u64,
     ) -> Result<alloy_eips::eip7702::SignedAuthorization> {
         let authorization = Authorization {
-            chain_id,
+            chain_id: U256::from(chain_id),
             address: self.addr,
             nonce,
         };

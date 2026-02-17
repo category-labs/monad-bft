@@ -19,7 +19,9 @@ use std::{
 };
 
 use alloy_consensus::{
-    constants::EMPTY_WITHDRAWALS, proofs::calculate_transaction_root, transaction::Recovered,
+    constants::EMPTY_WITHDRAWALS,
+    proofs::calculate_transaction_root,
+    transaction::{Recovered, SignerRecoverable},
     Eip658Value, Receipt, ReceiptWithBloom, SignableTransaction, Transaction, TxEip1559, TxEip7702,
     TxEnvelope, TxLegacy, EMPTY_OMMER_ROOT_HASH,
 };
@@ -221,7 +223,7 @@ pub fn make_signed_authorization(
     nonce: u64,
 ) -> SignedAuthorization {
     let authorization = Authorization {
-        chain_id: 1337,
+        chain_id: U256::from(1337),
         address,
         nonce,
     };
@@ -365,7 +367,7 @@ pub fn generate_consensus_test_block(
 
     let body = ConsensusBlockBody::new(ConsensusBlockBodyInner {
         execution_body: EthBlockBody {
-            transactions: txs.iter().map(|tx| tx.tx().to_owned()).collect(),
+            transactions: txs.iter().map(|tx| tx.inner().to_owned()).collect(),
             ommers: Vec::default(),
             withdrawals: Vec::default(),
         },

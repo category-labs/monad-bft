@@ -188,7 +188,7 @@ pub fn map_block_receipts<R>(
         ))?;
     }
 
-    let mut cumulative_gas_used = 0u128;
+    let mut cumulative_gas_used = 0u64;
 
     Ok(transactions
         .into_iter()

@@ -25,7 +25,7 @@ use std::{
 
 use alloy_consensus::{Header, SignableTransaction, TxEip1559, TxEip7702, TxEnvelope, TxLegacy};
 use alloy_eips::eip7702::SignedAuthorization;
-use alloy_primitives::{Address, PrimitiveSignature, TxKind, Uint, B256, U256, U64, U8};
+use alloy_primitives::{Address, Signature, TxKind, Uint, B256, U256, U64, U8};
 use alloy_rpc_types::{AccessList, AccessListItem, AccessListResult};
 use monad_chain_config::execution_revision::MonadExecutionRevision;
 use monad_ethcall::{eth_call, CallResult, EthCallExecutor, MonadTracer, StateOverrideSet};
@@ -307,7 +307,7 @@ impl TryFrom<CallRequest> for TxEnvelope {
                 // Legacy
 
                 // default signature as eth_call doesn't require it
-                let signature = PrimitiveSignature::new(U256::from(0), U256::from(0), false);
+                let signature = Signature::new(U256::from(0), U256::from(0), false);
                 let transaction = TxLegacy {
                     chain_id: call_request
                         .chain_id
@@ -352,7 +352,7 @@ impl TryFrom<CallRequest> for TxEnvelope {
                 // EIP-7702
 
                 // default signature as eth_call doesn't require it
-                let signature = PrimitiveSignature::new(U256::from(0), U256::from(0), false);
+                let signature = Signature::new(U256::from(0), U256::from(0), false);
                 let transaction = TxEip7702 {
                     chain_id: call_request
                         .chain_id
@@ -397,7 +397,7 @@ impl TryFrom<CallRequest> for TxEnvelope {
                 // EIP-1559
 
                 // default signature as eth_call doesn't require it
-                let signature = PrimitiveSignature::new(U256::from(0), U256::from(0), false);
+                let signature = Signature::new(U256::from(0), U256::from(0), false);
                 let transaction = TxEip1559 {
                     chain_id: call_request
                         .chain_id

@@ -295,7 +295,7 @@ impl Uniswap {
             })
             .ok_or_else(|| eyre::eyre!("No pool created log found in receipt"))?;
 
-        let event = UniswapV3Factory::PoolCreated::decode_log(&pool_created_log.inner, true)?;
+        let event = UniswapV3Factory::PoolCreated::decode_log(&pool_created_log.inner)?;
         let pool_address = event.pool;
 
         Ok(pool_address)
@@ -471,10 +471,10 @@ impl Uniswap {
 
         let pool_bytes: Bytes = client.request("eth_call", (call_request, "latest")).await?;
 
-        let pool_return = UniswapV3Factory::getPoolCall::abi_decode_returns(&pool_bytes, true)
+        let pool_return = UniswapV3Factory::getPoolCall::abi_decode_returns(&pool_bytes)
             .map_err(|e| eyre::eyre!("Failed to decode getPool() return: {}", e))?;
 
-        Ok(pool_return._0)
+        Ok(pool_return)
     }
 
     pub async fn get_owner(client: &ReqwestClient, factory: Address) -> Result<Address> {
@@ -485,10 +485,10 @@ impl Uniswap {
 
         let owner_bytes: Bytes = client.request("eth_call", (call_request, "latest")).await?;
 
-        let owner_return = UniswapV3Factory::ownerCall::abi_decode_returns(&owner_bytes, true)
+        let owner_return = UniswapV3Factory::ownerCall::abi_decode_returns(&owner_bytes)
             .map_err(|e| eyre::eyre!("Failed to decode owner() return: {}", e))?;
 
-        Ok(owner_return._0)
+        Ok(owner_return)
     }
 }
 

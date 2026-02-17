@@ -40,7 +40,7 @@ pub fn mock_tx(salt: u64) -> TxEnvelopeWithSender {
     }
 }
 
-pub fn mock_rx(receipt_len: usize, cumulative_gas: u128) -> ReceiptWithLogIndex {
+pub fn mock_rx(receipt_len: usize, cumulative_gas: u64) -> ReceiptWithLogIndex {
     let receipt = ReceiptEnvelope::Eip1559(ReceiptWithBloom::new(
         Receipt::<Log> {
             logs: vec![Log {

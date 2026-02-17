@@ -21,7 +21,7 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
-use alloy_consensus::Transaction as _;
+use alloy_consensus::{transaction::SignerRecoverable as _, Transaction as _};
 use futures::Stream;
 use monad_blocksync::messages::message::{
     BlockSyncBodyResponse, BlockSyncHeadersResponse, BlockSyncResponseMessage,

@@ -342,7 +342,7 @@ where
             transactions: system_transactions
                 .into_iter()
                 .chain(user_transactions)
-                .map(|tx| tx.into_tx())
+                .map(|tx| tx.into_inner())
                 .collect(),
             ommers: Vec::new(),
             withdrawals: Vec::new(),
