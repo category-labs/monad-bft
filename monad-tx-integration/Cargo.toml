@@ -37,9 +37,12 @@ alloy-consensus = { workspace = true }
 alloy-eips = { workspace = true }
 alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
+alloy-signer = { workspace = true }
+alloy-signer-local = { workspace = true }
 bytes = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 futures = { workspace = true }
+hex = { workspace = true }
 pin-project = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

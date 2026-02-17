@@ -22,7 +22,7 @@ use std::{
 };
 
 use agent::AgentBuilder;
-use clap::{error::ErrorKind, FromArgMatches};
+use clap::{FromArgMatches, error::ErrorKind};
 use monad_bls::BlsKeyPair;
 use monad_chain_config::MonadChainConfig;
 use monad_consensus_types::validator_data::ValidatorsConfigFile;
@@ -31,13 +31,13 @@ use monad_keystore::keystore::Keystore;
 use monad_node_config::{ForkpointConfig, MonadNodeConfig, ValidatorsConfigType};
 use monad_secp::KeyPair;
 use monad_types::Round;
-use reqwest::{blocking::Client, Url};
+use reqwest::{Url, blocking::Client};
 use tracing::{info, warn};
 use tracing_manytrace::{ManytraceLayer, TracingExtension};
 use tracing_subscriber::{
-    fmt::{format::FmtSpan, Layer as FmtLayer},
-    layer::SubscriberExt,
     Layer,
+    fmt::{Layer as FmtLayer, format::FmtSpan},
+    layer::SubscriberExt,
 };
 
 use crate::{cli::Cli, error::NodeSetupError};

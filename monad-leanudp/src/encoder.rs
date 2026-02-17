@@ -3,11 +3,11 @@ use monad_executor::ExecutorMetrics;
 use thiserror::Error;
 
 use crate::{
+    FragmentType, LEANUDP_HEADER_SIZE, PacketHeader,
     metrics::{
         COUNTER_LEANUDP_ENCODE_BYTES, COUNTER_LEANUDP_ENCODE_ERROR_TOO_LARGE,
         COUNTER_LEANUDP_ENCODE_FRAGMENTS, COUNTER_LEANUDP_ENCODE_MESSAGES,
     },
-    FragmentType, PacketHeader, LEANUDP_HEADER_SIZE,
 };
 
 /// Maximum fragments per message.
@@ -25,7 +25,9 @@ pub fn max_payload_for_mtu(mtu: usize) -> usize {
 
 #[derive(Debug, Error)]
 pub enum EncodeError {
-    #[error("payload too large: {payload_len} bytes requires {fragment_count} fragments, max is {MAX_FRAGMENTS}")]
+    #[error(
+        "payload too large: {payload_len} bytes requires {fragment_count} fragments, max is {MAX_FRAGMENTS}"
+    )]
     PayloadTooLarge {
         payload_len: usize,
         fragment_count: usize,

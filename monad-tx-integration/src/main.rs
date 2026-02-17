@@ -9,6 +9,7 @@ mod multi_submit;
 mod node;
 mod router;
 mod rpc;
+mod scenario;
 mod stats;
 mod submit;
 
@@ -24,6 +25,7 @@ enum Command {
     Node(NodeArgs),
     Submit(SubmitArgs),
     MultiSubmit(MultiSubmitArgs),
+    Scenario(scenario::ScenarioArgs),
 }
 
 #[derive(Args)]
@@ -182,5 +184,6 @@ async fn main() {
         Command::Node(args) => node::run(args).await,
         Command::Submit(args) => submit::run(args).await,
         Command::MultiSubmit(args) => multi_submit::run(args).await,
+        Command::Scenario(args) => scenario::run(args).await,
     }
 }
