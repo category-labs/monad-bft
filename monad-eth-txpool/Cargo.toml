@@ -22,7 +22,7 @@ monad-tfm = { workspace = true }
 monad-types = { workspace = true }
 monad-validator = { workspace = true }
 
-alloy-consensus = { workspace = true, features = ["k256"] }
+alloy-consensus = { workspace = true }
 alloy-eips = { workspace = true }
 alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
@@ -41,6 +41,8 @@ monad-perf-util = { workspace = true }
 monad-testutil = { workspace = true }
 monad-types = { workspace = true }
 
+alloy-consensus = { workspace = true, features = ["k256"] }
+alloy-primitives = { workspace = true, features = ["getrandom"] }
 alloy-signer = { workspace = true }
 alloy-signer-local = { workspace = true }
 criterion = { workspace = true, features = ["html_reports"] }

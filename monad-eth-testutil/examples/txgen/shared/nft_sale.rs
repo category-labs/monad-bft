@@ -125,9 +125,9 @@ impl NftSale {
             .await?;
 
         let price_bytes = Bytes::from_hex(&result)?;
-        let current_price = NFTSale::getCurrentPriceCall::abi_decode_returns(&price_bytes, true)?;
+        let current_price = NFTSale::getCurrentPriceCall::abi_decode_returns(&price_bytes)?;
 
-        Ok(current_price._0)
+        Ok(current_price)
     }
 
     pub fn construct_buy_tx(
@@ -190,9 +190,9 @@ impl NftSale {
 
         // ABI decode the result
         let return_data = Bytes::from_hex(&result)?;
-        let decoded = NFTSale::ownerCall::abi_decode_returns(&return_data, true)?;
+        let decoded = NFTSale::ownerCall::abi_decode_returns(&return_data)?;
 
-        Ok(decoded._0)
+        Ok(decoded)
     }
 }
 

@@ -95,7 +95,7 @@ impl Simple7702Account {
         chain_id: u64,
     ) -> Result<SignedAuthorization> {
         let authorization = Authorization {
-            chain_id,
+            chain_id: U256::from(chain_id),
             address: self.addr,
             nonce,
         };

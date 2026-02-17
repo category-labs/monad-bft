@@ -112,10 +112,10 @@ impl EntryPoint {
             )
             .await?;
 
-        let nonce_return = IEntryPoint::getNonceCall::abi_decode_returns(&nonce_bytes, true)
+        let nonce_return = IEntryPoint::getNonceCall::abi_decode_returns(&nonce_bytes)
             .map_err(|e| eyre::eyre!("Failed to decode getNonce() return: {}", e))?;
 
-        Ok(nonce_return.nonce)
+        Ok(nonce_return)
     }
 
     /// Create a PackedUserOperation (ERC-4337 v0.9 format)

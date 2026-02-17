@@ -18,7 +18,7 @@ use std::{
     sync::Arc,
 };
 
-use alloy_consensus::{Header as RlpHeader, Transaction as _};
+use alloy_consensus::{transaction::Recovered, Header as RlpHeader, Transaction as _};
 use alloy_eips::BlockNumberOrTag;
 use alloy_primitives::{Bloom, FixedBytes, U256};
 use alloy_rlp::Encodable;
@@ -1224,8 +1224,7 @@ pub fn parse_tx_content(
     let effective_gas_price = tx.effective_gas_price(base_fee);
 
     Transaction {
-        inner: tx,
-        from: sender,
+        inner: Recovered::new_unchecked(tx, sender),
         block_hash: Some(block_hash),
         block_number: Some(block_number),
         effective_gas_price: Some(effective_gas_price),

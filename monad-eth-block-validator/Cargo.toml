@@ -34,6 +34,7 @@ monad-eth-txpool = { workspace = true }
 monad-testutil = { workspace = true }
 monad-types = { workspace = true }
 
+alloy-consensus = { workspace = true, features = ["k256"] }
 alloy-eips = { workspace = true }
 alloy-signer = { workspace = true }
 alloy-signer-local = { workspace = true }

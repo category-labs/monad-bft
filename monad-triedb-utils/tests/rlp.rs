@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use alloy_consensus::ReceiptEnvelope;
+use alloy_consensus::{transaction::SignerRecoverable, ReceiptEnvelope};
 use alloy_primitives::B256;
 use alloy_rlp::{Decodable, Encodable};
 use monad_eth_testutil::{make_eip1559_tx, make_legacy_tx, make_receipt};

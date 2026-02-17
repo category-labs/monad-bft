@@ -12,7 +12,7 @@ bench = false
 monad-crypto = { workspace = true }
 monad-types = { workspace = true }
 
-alloy-primitives = { workspace = true, features = ["rand"] }
+alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
 as-any = { workspace = true }
 auto_impl = { workspace = true }

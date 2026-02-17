@@ -150,6 +150,6 @@ pub struct HeaderSubset {
     pub block_timestamp: u64,
     /// Index of this transaction within the block
     pub tx_index: u64,
-    pub gas_used: u128,
+    pub gas_used: u64,
     pub base_fee_per_gas: Option<u64>,
 }

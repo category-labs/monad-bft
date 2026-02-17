@@ -43,7 +43,7 @@ pub fn parse_tx_receipt(
     tx_index: u64,
     tx: TxEnvelopeWithSender,
     receipt: ReceiptWithLogIndex,
-    gas_used: u128,
+    gas_used: u64,
 ) -> TransactionReceipt {
     let TxEnvelopeWithSender { tx, sender } = tx;
 
@@ -108,7 +108,6 @@ pub fn parse_tx_receipt(
         // TODO: EIP4844 fields
         blob_gas_used: None,
         blob_gas_price: None,
-        authorization_list: tx.authorization_list().map(|s| s.to_vec()),
     };
     tx_receipt
 }

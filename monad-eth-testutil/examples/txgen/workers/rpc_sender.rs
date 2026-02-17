@@ -282,11 +282,7 @@ impl RpcSender {
         self.round_robin_idx = (self.round_robin_idx + 1) % self.clients.len();
         let client = self.clients[self.round_robin_idx].clone();
 
-        trace!(
-            batch_size = batch.len(),
-            rpc_url = client.inner().transport().url(),
-            "Sending batch of txs..."
-        );
+        trace!(batch_size = batch.len(), "Sending batch of txs...");
 
         let metrics = self.metrics.clone();
         let sent_txs = self.sent_txs.clone();

@@ -28,6 +28,7 @@ tracing = { workspace = true, features = ["log"] }
 [dev-dependencies]
 monad-eth-testutil = { workspace = true }
 
+alloy-consensus = { workspace = true, features = ["k256"] }
 clap = { workspace = true, features = ["derive"] }
 hex = { workspace = true }
 rand = { workspace = true }

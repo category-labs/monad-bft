@@ -340,7 +340,7 @@ mod tests {
                 .transactions
                 .iter()
                 .enumerate()
-                .map(|(i, _)| mock_rx(10, (i + 1) as u128 * 21000))
+                .map(|(i, _)| mock_rx(10, (i + 1) as u64 * 21000))
                 .collect();
             archive
                 .archive_receipts(receipts, block.header.number, WritePolicy::NoClobber)

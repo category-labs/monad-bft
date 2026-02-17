@@ -561,11 +561,11 @@ fn calculate_fee_history_rewards(
         .collect::<Vec<_>>();
 
     let mut idx = 0;
-    let mut cumulative_gas_used: u128 = 0;
+    let mut cumulative_gas_used: u64 = 0;
     let mut rewards = Vec::new();
 
     for pct in percentiles {
-        let gas_threshold = (block_gas_used as f64 * pct / 100.0).round() as u128;
+        let gas_threshold = (block_gas_used as f64 * pct / 100.0).round() as u64;
         while cumulative_gas_used < gas_threshold && idx < transactions_len {
             cumulative_gas_used += gas_and_rewards[idx].0;
             idx += 1;
@@ -614,8 +614,8 @@ where
 #[cfg(test)]
 mod tests {
     use alloy_consensus::{
-        Block, Eip658Value, Receipt, ReceiptEnvelope, ReceiptWithBloom, SignableTransaction,
-        TxEip1559,
+        transaction::Recovered, Block, Eip658Value, Receipt, ReceiptEnvelope, ReceiptWithBloom,
+        SignableTransaction, TxEip1559,
     };
     use alloy_primitives::{Bloom, Bytes, FixedBytes, Log, LogData};
     use alloy_signer::SignerSync;
@@ -784,7 +784,7 @@ mod tests {
         transaction.into_signed(signature).into()
     }
 
-    fn make_receipt(gas_used: u128) -> TransactionReceipt {
+    fn make_receipt(gas_used: u64) -> TransactionReceipt {
         use alloy_rpc_types::Log as RpcLog;
 
         TransactionReceipt {
@@ -809,7 +809,6 @@ mod tests {
             from: Default::default(),
             to: None,
             contract_address: None,
-            authorization_list: None,
         }
     }
 
@@ -853,7 +852,7 @@ mod tests {
                         data: LogData::new(vec![], Bytes::default()).unwrap(),
                     }],
                     status: Eip658Value::Eip658(true),
-                    cumulative_gas_used: 21000 * i,
+                    cumulative_gas_used: 21000 * i as u64,
                 },
                 Bloom::repeat_byte(b'a'),
             );
@@ -952,12 +951,11 @@ mod tests {
         let transactions: Vec<alloy_rpc_types::Transaction> = txs
             .into_iter()
             .map(|tx| alloy_rpc_types::Transaction {
-                inner: tx,
+                inner: Recovered::new_unchecked(tx, from_addr),
                 block_hash: None,
                 block_number: None,
                 transaction_index: None,
                 effective_gas_price: None,
-                from: from_addr,
             })
             .collect();
 

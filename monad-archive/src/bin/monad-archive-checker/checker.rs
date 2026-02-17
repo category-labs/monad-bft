@@ -1016,7 +1016,7 @@ pub mod tests {
 
     fn create_test_receipts(count: usize) -> BlockReceipts {
         // Use the existing mock_rx utility
-        (0..count).map(|i| mock_rx(i, 1000 + i as u128)).collect()
+        (0..count).map(|i| mock_rx(i, 1000 + i as u64)).collect()
     }
 
     fn create_test_traces(count: usize) -> BlockTraces {

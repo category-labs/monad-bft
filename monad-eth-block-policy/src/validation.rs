@@ -312,7 +312,7 @@ mod test {
     use std::str::FromStr;
 
     use alloy_consensus::{SignableTransaction, TxEip1559, TxLegacy};
-    use alloy_primitives::{Address, Bytes, FixedBytes, PrimitiveSignature, TxKind, B256};
+    use alloy_primitives::{Address, Bytes, FixedBytes, Signature, TxKind, B256};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use monad_chain_config::{
@@ -337,7 +337,7 @@ mod test {
         }
     }
 
-    fn sign_tx(signature_hash: &FixedBytes<32>) -> PrimitiveSignature {
+    fn sign_tx(signature_hash: &FixedBytes<32>) -> Signature {
         let secret_key = B256::repeat_byte(0xAu8).to_string();
         let signer = &secret_key.parse::<PrivateKeySigner>().unwrap();
         signer.sign_hash_sync(signature_hash).unwrap()

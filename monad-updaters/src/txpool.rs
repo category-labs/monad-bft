@@ -18,7 +18,10 @@ use std::{
     task::{Poll, Waker},
 };
 
-use alloy_consensus::{transaction::Recovered, TxEnvelope};
+use alloy_consensus::{
+    transaction::{Recovered, SignerRecoverable},
+    TxEnvelope,
+};
 use alloy_rlp::Decodable;
 use bytes::Bytes;
 use futures::Stream;
