@@ -161,6 +161,7 @@ pub struct TxIngestionLeanUdpConfig {
     pub max_priority_messages: Option<usize>,
     pub max_regular_messages: Option<usize>,
     pub max_messages_per_identity: Option<usize>,
+    pub max_bytes_per_identity: Option<usize>,
     pub message_timeout_ms: Option<u64>,
     pub max_fragment_payload_bytes: Option<usize>,
 }
@@ -173,6 +174,7 @@ impl Default for TxIngestionLeanUdpConfig {
             max_priority_messages: None,
             max_regular_messages: None,
             max_messages_per_identity: None,
+            max_bytes_per_identity: None,
             message_timeout_ms: None,
             max_fragment_payload_bytes: None,
         }

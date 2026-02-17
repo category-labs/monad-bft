@@ -9,14 +9,14 @@ use std::{
 use bytes::{Bytes, BytesMut};
 use indexmap::IndexMap;
 use monad_executor::ExecutorMetrics;
-use rand::{rngs::StdRng, CryptoRng, Rng as _, RngCore, SeedableRng};
+use rand::{CryptoRng, Rng as _, RngCore, SeedableRng, rngs::StdRng};
 use thiserror::Error;
 use zerocopy::FromBytes;
 
 use crate::{
-    encoder::MAX_FRAGMENTS, metrics::*, Config, FragmentPolicy, FragmentType, IdentityScore,
-    PacketHeader, LEANUDP_HEADER_SIZE, LEANUDP_PROTOCOL_VERSION, MAX_CONCURRENT_BYTES_PER_IDENTITY,
-    MAX_CONCURRENT_MESSAGES_PER_IDENTITY,
+    Config, FragmentPolicy, FragmentType, IdentityScore, LEANUDP_HEADER_SIZE,
+    LEANUDP_PROTOCOL_VERSION, MAX_CONCURRENT_MESSAGES_PER_IDENTITY, PacketHeader,
+    encoder::MAX_FRAGMENTS, metrics::*,
 };
 
 macro_rules! ensure {
@@ -182,7 +182,7 @@ impl PoolConfig {
             max_messages_per_identity: config
                 .max_messages_per_identity
                 .min(MAX_CONCURRENT_MESSAGES_PER_IDENTITY),
-            max_bytes_per_identity: MAX_CONCURRENT_BYTES_PER_IDENTITY,
+            max_bytes_per_identity: config.max_bytes_per_identity,
         }
     }
 }
@@ -564,8 +564,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        encoder::MAX_FRAGMENTS, FragmentType, MAX_CONCURRENT_BYTES_PER_IDENTITY,
-        MAX_CONCURRENT_MESSAGES_PER_IDENTITY,
+        FragmentType, MAX_CONCURRENT_BYTES_PER_IDENTITY, MAX_CONCURRENT_MESSAGES_PER_IDENTITY,
+        encoder::MAX_FRAGMENTS,
     };
 
     #[derive(Clone)]
@@ -608,6 +608,7 @@ mod tests {
                 max_priority_messages: 10,
                 max_regular_messages: 5,
                 max_messages_per_identity: 10,
+                max_bytes_per_identity: MAX_CONCURRENT_BYTES_PER_IDENTITY,
                 message_timeout: Duration::from_millis(400),
                 max_fragment_payload: 1440,
             })
@@ -624,6 +625,7 @@ mod tests {
                     max_priority_messages: 10,
                     max_regular_messages: 5,
                     max_messages_per_identity: 10,
+                    max_bytes_per_identity: MAX_CONCURRENT_BYTES_PER_IDENTITY,
                     message_timeout: Duration::from_millis(400),
                     max_fragment_payload: 1440,
                 },
@@ -720,6 +722,7 @@ mod tests {
                 max_priority_messages: 5,
                 max_regular_messages: 5,
                 max_messages_per_identity: 10,
+                max_bytes_per_identity: MAX_CONCURRENT_BYTES_PER_IDENTITY,
                 message_timeout: Duration::from_millis(400),
                 max_fragment_payload: 1440,
             },
@@ -747,6 +750,7 @@ mod tests {
                 max_priority_messages: 0,
                 max_regular_messages: 5,
                 max_messages_per_identity: 10,
+                max_bytes_per_identity: MAX_CONCURRENT_BYTES_PER_IDENTITY,
                 message_timeout: Duration::from_millis(100),
                 max_fragment_payload: 1440,
             },
@@ -1125,6 +1129,7 @@ mod tests {
                 max_priority_messages: 10,
                 max_regular_messages: 10,
                 max_messages_per_identity: 2,
+                max_bytes_per_identity: MAX_CONCURRENT_BYTES_PER_IDENTITY,
                 message_timeout: Duration::from_millis(100),
                 max_fragment_payload: 1440,
             },
@@ -1155,6 +1160,7 @@ mod tests {
             max_priority_messages: 10,
             max_regular_messages: 2,
             max_messages_per_identity: 10,
+            max_bytes_per_identity: MAX_CONCURRENT_BYTES_PER_IDENTITY,
             message_timeout: Duration::from_millis(100),
             max_fragment_payload: 1440,
         });

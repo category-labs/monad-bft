@@ -7,14 +7,14 @@ use std::{hash::Hash, time::Duration};
 pub use decoder::{
     Clock, DecodeError, DecodeOutcome, Decoder, DecoderMetrics, Packet, SystemClock,
 };
-pub use encoder::{max_payload_for_mtu, EncodeError, Encoder, EncoderMetrics};
+pub use encoder::{EncodeError, Encoder, EncoderMetrics, max_payload_for_mtu};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, LE, U16, U32};
 
 pub const LEANUDP_HEADER_SIZE: usize = PacketHeader::SIZE;
 pub(crate) const LEANUDP_PROTOCOL_VERSION: u8 = 1;
 /// Hard upper bound enforced by the decoder for in-flight messages per identity, per pool.
 pub const MAX_CONCURRENT_MESSAGES_PER_IDENTITY: usize = 10;
-/// Hard upper bound enforced by the decoder for in-flight bytes per identity, per pool.
+/// Default in-flight bytes per identity, per pool.
 pub const MAX_CONCURRENT_BYTES_PER_IDENTITY: usize = 256 * 1024;
 
 const DEFAULT_MESSAGE_TIMEOUT: Duration = Duration::from_millis(100);
@@ -105,6 +105,7 @@ pub struct Config {
     pub max_regular_messages: usize,
     /// Effective limit is clamped to `MAX_CONCURRENT_MESSAGES_PER_IDENTITY`.
     pub max_messages_per_identity: usize,
+    pub max_bytes_per_identity: usize,
     pub message_timeout: Duration,
     /// Max fragment size on wire (excluding leanudp header). Defaults to 1432.
     pub max_fragment_payload: usize,
@@ -116,6 +117,10 @@ impl Config {
         assert!(
             self.max_messages_per_identity > 0,
             "max_messages_per_identity must be > 0"
+        );
+        assert!(
+            self.max_bytes_per_identity > 0,
+            "max_bytes_per_identity must be > 0"
         );
         assert!(
             !self.message_timeout.is_zero(),
@@ -159,6 +164,7 @@ impl Default for Config {
             max_priority_messages: 10_000,
             max_regular_messages: 1_000,
             max_messages_per_identity: MAX_CONCURRENT_MESSAGES_PER_IDENTITY,
+            max_bytes_per_identity: MAX_CONCURRENT_BYTES_PER_IDENTITY,
             message_timeout: DEFAULT_MESSAGE_TIMEOUT,
             max_fragment_payload: 1440, // MTU(1500) - IP(20) - UDP(8) - WireAuth(32)
         }
@@ -218,6 +224,10 @@ mod tests {
         assert_eq!(
             config.max_messages_per_identity,
             MAX_CONCURRENT_MESSAGES_PER_IDENTITY
+        );
+        assert_eq!(
+            config.max_bytes_per_identity,
+            MAX_CONCURRENT_BYTES_PER_IDENTITY
         );
         assert_eq!(config.message_timeout, Duration::from_millis(100));
     }
@@ -282,6 +292,16 @@ mod tests {
     fn test_invalid_message_timeout() {
         let config = Config {
             message_timeout: Duration::from_millis(0),
+            ..Config::default()
+        };
+        let _ = config.build(DummyScore);
+    }
+
+    #[test]
+    #[should_panic(expected = "max_bytes_per_identity must be > 0")]
+    fn test_invalid_max_bytes_per_identity() {
+        let config = Config {
+            max_bytes_per_identity: 0,
             ..Config::default()
         };
         let _ = config.build(DummyScore);

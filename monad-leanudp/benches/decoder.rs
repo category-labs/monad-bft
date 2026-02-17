@@ -1,10 +1,10 @@
 use std::time::{Duration, Instant};
 
 use bytes::{BufMut, Bytes, BytesMut};
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use monad_leanudp::{
-    Clock, Config, Decoder, Encoder, FragmentPolicy, IdentityScore, PacketHeader,
-    MAX_CONCURRENT_MESSAGES_PER_IDENTITY,
+    Clock, Config, Decoder, Encoder, FragmentPolicy, IdentityScore,
+    MAX_CONCURRENT_BYTES_PER_IDENTITY, MAX_CONCURRENT_MESSAGES_PER_IDENTITY, PacketHeader,
 };
 
 #[derive(Clone, Copy)]
@@ -38,6 +38,7 @@ fn make_config(max_regular_messages: usize) -> Config {
         max_priority_messages: 100,
         max_regular_messages,
         max_messages_per_identity: MAX_CONCURRENT_MESSAGES_PER_IDENTITY,
+        max_bytes_per_identity: MAX_CONCURRENT_BYTES_PER_IDENTITY,
         message_timeout: Duration::from_secs(60),
         max_fragment_payload: 1440,
     }
