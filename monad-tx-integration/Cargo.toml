@@ -45,6 +45,7 @@ clap = { workspace = true, features = ["derive"] }
 futures = { workspace = true }
 hex = { workspace = true }
 pin-project = { workspace = true }
+secp256k1 = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time", "io-util", "fs"] }

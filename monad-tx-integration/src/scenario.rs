@@ -32,6 +32,7 @@ use monad_secp::{KeyPair, PubKey};
 use monad_tfm::base_fee::MIN_BASE_FEE;
 use monad_types::{Epoch, NodeId, Round, Stake, UdpPriority};
 use monad_wireauth::Config;
+use secp256k1::rand::{rngs::OsRng, TryRngCore};
 use serde::Serialize;
 
 use crate::message::{InboundMessage, OutboundMessage, SignatureType, WireEvent};
@@ -42,8 +43,9 @@ pub struct ScenarioArgs {
     pub node_addr: SocketAddr,
 
     /// Sender's WireAuth private key (32-byte hex, with or without 0x prefix).
+    /// If omitted, a random key is generated (recommended for spam testing).
     #[arg(long)]
-    pub auth_key: String,
+    pub auth_key: Option<String>,
 
     /// Node public key in compressed secp256k1 form (33-byte hex). If omitted,
     /// defaults to the test node key used by `monad-tx-integration node`.
@@ -272,18 +274,26 @@ fn make_signed_eip1559_tx(
 }
 
 pub async fn run(args: ScenarioArgs) {
-    let mut auth_secret = match parse_secret_key(&args.auth_key) {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::error!(%e, "invalid --auth-key");
-            return;
+    let auth_keypair = match args.auth_key.as_deref() {
+        Some(key) => {
+            let mut auth_secret = match parse_secret_key(key) {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::error!(%e, "invalid --auth-key");
+                    return;
+                }
+            };
+            match KeyPair::from_bytes(&mut auth_secret) {
+                Ok(v) => Arc::new(v),
+                Err(e) => {
+                    tracing::error!(%e, "failed to build auth keypair from --auth-key");
+                    return;
+                }
+            }
         }
-    };
-    let auth_keypair = match KeyPair::from_bytes(&mut auth_secret) {
-        Ok(v) => Arc::new(v),
-        Err(e) => {
-            tracing::error!(%e, "failed to build auth keypair from --auth-key");
-            return;
+        None => {
+            let mut rng = OsRng.unwrap_err();
+            Arc::new(KeyPair::generate(&mut rng))
         }
     };
 
