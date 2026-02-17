@@ -198,7 +198,7 @@ async fn handle_block(
     let first_rx = receipts.first().cloned();
     let first_trace = traces.first().cloned();
 
-    // Note: Include tx_index_archiver in branch here to avoid clones when unecessary
+    // Note: Include tx_index_archiver in branch here to avoid clones when unnecessary
     if let Some(log_index) = log_index {
         // Index Txs
         tx_index_archiver

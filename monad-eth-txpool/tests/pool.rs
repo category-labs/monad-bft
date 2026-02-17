@@ -1129,7 +1129,7 @@ fn test_nonce_exists_in_pending_block() {
 #[test]
 #[traced_test]
 fn test_combine_nonces_of_blocks() {
-    // TxPool should combine the nonces of commited block and pending blocks to check nonce
+    // TxPool should combine the nonces of committed block and pending blocks to check nonce
 
     let tx1 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 0, 10);
     let tx2 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 1, 10);
