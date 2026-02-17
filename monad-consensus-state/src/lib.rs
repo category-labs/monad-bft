@@ -1451,11 +1451,11 @@ where
 
     /// Returns a `Proposed` commit command for the canonical coherent tip.
     fn propose_canonical_head(&self) -> Option<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
-        let high_cert = self.consensus.pacemaker.high_certificate();
+        let high_cert_qc = self.consensus.pacemaker.high_certificate().qc();
         let canonical_tip_id = self
             .consensus
             .pending_block_tree
-            .get_canonical_coherent_tip(high_cert);
+            .get_canonical_coherent_tip(high_cert_qc);
         let block = self
             .consensus
             .pending_block_tree
@@ -1485,11 +1485,11 @@ where
         );
 
         // Compute canonical coherent tip (highest coherent block on path to high_qc)
-        let high_cert = self.consensus.pacemaker.high_certificate();
+        let high_cert_qc = self.consensus.pacemaker.high_certificate().qc();
         let canonical_tip = self
             .consensus
             .pending_block_tree
-            .get_canonical_coherent_tip(high_cert);
+            .get_canonical_coherent_tip(high_cert_qc);
 
         // Emit Proposed commits with is_canonical flag
         for newly_coherent_block in newly_coherent_blocks {

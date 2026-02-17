@@ -25,8 +25,6 @@ use monad_consensus_types::{
     metrics::Metrics,
     payload::{ConsensusBlockBody, ConsensusBlockBodyId},
     quorum_certificate::QuorumCertificate,
-    timeout::HighExtend,
-    RoundCertificate,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -586,39 +584,34 @@ where
     }
 
     /// Find the highest coherent block on the canonical chain.
-    /// Uses highest QC or TC high extend tip and then finds the highest round coherent child from that tip.
-    /// If there's no coherent child, find the highest round coherent child from root. Or return root.
-    pub fn get_canonical_coherent_tip(
-        &self,
-        high_cert: &RoundCertificate<ST, SCT, EPT>,
-    ) -> BlockId {
-        // First, set an anchor that is either high cert qc block or the tc high extend tip
-        let canonical_anchor = high_cert
-            .tc()
-            .and_then(|tc| match &tc.high_extend {
-                HighExtend::Tip(tip) => Some(tip.block_header.get_id()),
-                HighExtend::Qc(_) => None,
-            })
-            .unwrap_or(high_cert.qc().get_block_id());
-
+    /// high_qc defines the canonical chain. We first inspect the path from root to high_qc:
+    ///   - If there's no such path, we return the highest round coherent child from root
+    ///   - If there's no coherent block on the path, we return root block id
+    ///   - If not all blocks on that path are coherent, return the highest one
+    ///   - Otherwise we find the highest round coherent child from the last coherent block on the path
+    pub fn get_canonical_coherent_tip(&self, high_cert_qc: &QuorumCertificate<SCT>) -> BlockId {
         let maybe_coherent_tip: Option<BlockId> =
-            if let Some(path) = self.get_blocks_on_path_from_root(&canonical_anchor) {
+            if let Some(path) = self.get_blocks_on_path_from_root(&high_cert_qc.get_block_id()) {
                 path.into_iter()
                     .rev()
                     .find(|block| self.is_coherent(&block.get_id()))
                     .map(|block| block.get_id())
             } else {
                 // find highest round coherent child from root
-                // this is to keep execution running when there's gap in blocktree
+                // this keeps execution running when there's a gap in blocktree
                 return self.highest_round_coherent_descendant(self.root.info.block_id);
             };
 
-        if let Some(coherent_tip) = maybe_coherent_tip {
+        let Some(coherent_tip) = maybe_coherent_tip else {
+            // hit this branch if there's a path from high_cert_qc to root,
+            // but no coherent blocks on the path. root is always coherent
+            return self.root.info.block_id;
+        };
+
+        if coherent_tip == high_cert_qc.get_block_id() {
             self.highest_round_coherent_descendant(coherent_tip)
         } else {
-            // hit this branch if there's a path from canonical_anchor to root,
-            // but no coherent blocks on the path. root is always coherent
-            self.root.info.block_id
+            coherent_tip
         }
     }
 }
@@ -636,7 +629,6 @@ mod test {
         payload::{ConsensusBlockBody, ConsensusBlockBodyInner, RoundSignature},
         quorum_certificate::QuorumCertificate,
         voting::Vote,
-        RoundCertificate,
     };
     use monad_crypto::{
         certificate_signature::{
@@ -689,40 +681,13 @@ mod test {
         NodeId::new(keypair.pubkey())
     }
 
-    pub fn mock_qc_for_block(block: &Block) -> QC {
+    fn mock_qc_for_block(block: &FullBlock) -> QC {
         let vote = Vote {
-            id: block.get_id(),
-            epoch: block.epoch,
-            round: block.block_round,
+            id: block.header().get_id(),
+            epoch: block.header().epoch,
+            round: block.header().block_round,
         };
         QC::new(vote, MockSignatures::with_pubkeys(&[]))
-    }
-
-    type RC = RoundCertificate<SignatureType, SignatureCollectionType, ExecutionProtocolType>;
-
-    fn mock_rc_for_block(block: &FullBlock) -> RC {
-        RoundCertificate::Qc(mock_qc_for_block(block.header()))
-    }
-
-    /// Build a RoundCertificate::Tc whose high_extend is Tip(tip_block) and whose
-    /// inner QC points to qc_block.
-    fn mock_rc_tc_with_tip(qc_block: &FullBlock, tip_block: &FullBlock) -> RC {
-        use monad_consensus_types::{
-            timeout::{HighExtend, HighTipRoundSigColTuple, TimeoutCertificate},
-            tip::ConsensusTip,
-        };
-        let keypair = NopKeyPair::from_bytes(&mut [1_u8; 32]).unwrap();
-        let tip = ConsensusTip::new(&keypair, tip_block.header().clone(), None);
-        RoundCertificate::Tc(TimeoutCertificate {
-            epoch: Epoch(0),
-            round: tip_block.header().block_round,
-            tip_rounds: vec![HighTipRoundSigColTuple {
-                high_qc_round: qc_block.header().block_round,
-                high_tip_round: tip_block.header().block_round,
-                sigs: MockSignatures::with_pubkeys(&[]),
-            }],
-            high_extend: HighExtend::Tip(tip),
-        })
     }
 
     fn get_genesis_block() -> FullBlock {
@@ -755,8 +720,8 @@ mod test {
         maybe_round: Option<Round>,
         tx_bytes: &[u8],
     ) -> FullBlock {
-        let parent = parent.header();
-        let round = maybe_round.unwrap_or(parent.block_round + Round(1));
+        let parent_header = parent.header();
+        let round = maybe_round.unwrap_or(parent_header.block_round + Round(1));
 
         let body = ConsensusBlockBody::new(ConsensusBlockBodyInner {
             execution_body: MockExecutionBody {
@@ -765,14 +730,14 @@ mod test {
         });
         let header = Block::new(
             node_id(),
-            parent.epoch,
+            parent_header.epoch,
             round,
             Vec::new(), // delayed_execution_results
             MockExecutionProposedHeader {},
             body.get_id(),
             mock_qc_for_block(parent),
-            parent.seq_num + SeqNum(1),
-            parent.timestamp_ns + 1,
+            parent_header.seq_num + SeqNum(1),
+            parent_header.timestamp_ns + 1,
             RoundSignature::new(round, &NopKeyPair::from_bytes(&mut [1_u8; 32]).unwrap()),
             Some(BASE_FEE),
             Some(BASE_FEE_TREND),
@@ -2103,7 +2068,7 @@ mod test {
         assert!(blocktree.is_coherent(&d.get_id()));
 
         // high_qc points to D (canonical chain tip)
-        let proposed_head = blocktree.get_canonical_coherent_tip(&mock_rc_for_block(&d));
+        let proposed_head = blocktree.get_canonical_coherent_tip(&mock_qc_for_block(&d));
         assert_eq!(proposed_head, d.get_id());
 
         // Now add B' on side branch and make it coherent
@@ -2118,7 +2083,7 @@ mod test {
         assert!(blocktree.is_coherent(&b_prime.get_id()));
 
         // proposed_head should still point to D (canonical chain), not B'
-        let proposed_head = blocktree.get_canonical_coherent_tip(&mock_rc_for_block(&d));
+        let proposed_head = blocktree.get_canonical_coherent_tip(&mock_qc_for_block(&d));
         assert_eq!(proposed_head, d.get_id());
     }
 
@@ -2174,11 +2139,11 @@ mod test {
         assert!(blocktree.is_coherent(&c_prime.get_id()));
 
         // When high_qc points to C, proposed_head is C
-        let proposed_head = blocktree.get_canonical_coherent_tip(&mock_rc_for_block(&c));
+        let proposed_head = blocktree.get_canonical_coherent_tip(&mock_qc_for_block(&c));
         assert_eq!(proposed_head, c.get_id());
 
         // When high_qc changes to C', proposed_head should be C'
-        let proposed_head = blocktree.get_canonical_coherent_tip(&mock_rc_for_block(&c_prime));
+        let proposed_head = blocktree.get_canonical_coherent_tip(&mock_qc_for_block(&c_prime));
         assert_eq!(proposed_head, c_prime.get_id());
     }
 
@@ -2222,7 +2187,7 @@ mod test {
 
         // high_qc points to B, C and D are coherent beyond it
         // should return D (the deepest coherent descendant)
-        let proposed_head = blocktree.get_canonical_coherent_tip(&mock_rc_for_block(&b));
+        let proposed_head = blocktree.get_canonical_coherent_tip(&mock_qc_for_block(&b));
         assert_eq!(proposed_head, d.get_id());
 
         // Add a fork: C' at round 4 (sibling of C), extended by D' and E'
@@ -2245,18 +2210,17 @@ mod test {
         assert!(blocktree.is_coherent(&d_prime.get_id()));
         assert!(blocktree.is_coherent(&e_prime.get_id()));
 
-        // With hint pointing to E' (TC.high_extend.tip), prefer the C' branch → returns E'
-        let proposed_head =
-            blocktree.get_canonical_coherent_tip(&mock_rc_tc_with_tip(&b, &e_prime));
+        // With high_qc pointing to E', prefer the C' branch → returns E'
+        let proposed_head = blocktree.get_canonical_coherent_tip(&mock_qc_for_block(&e_prime));
         assert_eq!(proposed_head, e_prime.get_id());
 
-        // With hint pointing to D (TC.high_extend.tip), prefer the C branch → returns D
-        let proposed_head = blocktree.get_canonical_coherent_tip(&mock_rc_tc_with_tip(&b, &d));
+        // With high_qc pointing to D, prefer the C branch → returns D
+        let proposed_head = blocktree.get_canonical_coherent_tip(&mock_qc_for_block(&d));
         assert_eq!(proposed_head, d.get_id());
 
         // A(high_qc, round 2) <- B(round 3) <- C(round 4) <- D(round 5)
         //                      <- F(round 4)
-        // B <- C <- D is the deeper chain, but high_extend.tip points to F.
+        // B <- C <- D is the deeper chain, but high_qc points to F.
         // Pick F because the network was building on it.
         let f = get_next_block(&a, Some(Round(4)), &[8]);
         blocktree.add(f.clone().into());
@@ -2269,14 +2233,14 @@ mod test {
         );
         assert!(blocktree.is_coherent(&f.get_id()));
 
-        let proposed_head = blocktree.get_canonical_coherent_tip(&mock_rc_tc_with_tip(&a, &f));
+        let proposed_head = blocktree.get_canonical_coherent_tip(&mock_qc_for_block(&f));
         assert_eq!(proposed_head, f.get_id());
 
         // A(high_qc, round 2) <- B(round 3) <- ... <- E'(round 6)
         //                      <- F(round 4)
         //                      <- G(round 2) (lower round, but high_extend.tip)
-        // Without hint, E' wins (highest coherent descendant in A's subtree).
-        // With hint pointing to G, G wins because anchor moves to G's subtree.
+        // Without high_qc, E' wins (highest coherent descendant in A's subtree).
+        // With high_qc pointing to G, G wins because anchor moves to G's subtree.
         let g2 = get_next_block(&a, Some(Round(2)), &[9]);
         blocktree.add(g2.clone().into());
         blocktree.try_update_coherency(
@@ -2288,12 +2252,12 @@ mod test {
         );
         assert!(blocktree.is_coherent(&g2.get_id()));
 
-        // Without hint, E' wins (highest round coherent descendant in A's subtree)
-        let proposed_head = blocktree.get_canonical_coherent_tip(&mock_rc_for_block(&a));
+        // Without high_qc, E' wins (highest round coherent descendant in A's subtree)
+        let proposed_head = blocktree.get_canonical_coherent_tip(&mock_qc_for_block(&a));
         assert_eq!(proposed_head, e_prime.get_id());
 
-        // With hint pointing to G, G wins despite lowest round
-        let proposed_head = blocktree.get_canonical_coherent_tip(&mock_rc_tc_with_tip(&a, &g2));
+        // With high_qc pointing to G, G wins despite lowest round
+        let proposed_head = blocktree.get_canonical_coherent_tip(&mock_qc_for_block(&g2));
         assert_eq!(proposed_head, g2.get_id());
 
         // Non-greedy descendant selection case:
@@ -2323,7 +2287,7 @@ mod test {
         assert!(blocktree.is_coherent(&c2.get_id()));
         assert!(blocktree.is_coherent(&d2.get_id()));
 
-        let proposed_head = blocktree.get_canonical_coherent_tip(&mock_rc_for_block(&a));
+        let proposed_head = blocktree.get_canonical_coherent_tip(&mock_qc_for_block(&a));
         assert_eq!(proposed_head, d2.get_id());
     }
 
@@ -2339,8 +2303,7 @@ mod test {
         });
 
         // When high_qc points to root with no children, returns root
-        let rc = RoundCertificate::Qc(genesis_qc.clone());
-        let result = blocktree.get_canonical_coherent_tip(&rc);
+        let result = blocktree.get_canonical_coherent_tip(&genesis_qc);
         assert_eq!(result, genesis_qc.get_block_id());
     }
 }
