@@ -73,8 +73,16 @@ where
         ring_offset: libc::off_t,
     ) -> Result<Self, String> {
         let mmap_prot = libc::PROT_READ;
+        let translated_path = if path.as_ref().components().count() == 1 {
+            // Interpreted as relative to the directory computed
+            // by monad_event_open_ring_dir_fd
+            let base_dir = crate::ffi::monad_event_open_ring_dir_fd(path.as_ref())?;
+            base_dir.join(path)
+        } else {
+            std::path::PathBuf::from(path.as_ref())
+        };
 
-        let supports_hugetlb = monad_check_path_supports_map_hugetlb(&path)
+        let supports_hugetlb = monad_check_path_supports_map_hugetlb(&translated_path)
             .expect("failed to determine if event ring file supports MAP_HUGETLB");
 
         let mmap_extra_flags = if supports_hugetlb {
@@ -83,7 +91,13 @@ where
             libc::MAP_POPULATE
         };
 
-        let ring_file = File::open(&path).map_err(|e| e.to_string())?;
+        let ring_file = File::open(&translated_path).map_err(|e| {
+            format!(
+                "error loading {}: {}",
+                translated_path.display(),
+                e.to_string()
+            )
+        })?;
 
         let ring_fd = ring_file.as_raw_fd();
 
@@ -92,7 +106,7 @@ where
             mmap_extra_flags,
             ring_fd,
             ring_offset,
-            path.as_ref().to_str().unwrap(),
+            translated_path.to_str().unwrap(),
         )?;
 
         Self::new(raw)
