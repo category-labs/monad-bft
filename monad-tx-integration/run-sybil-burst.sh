@@ -31,8 +31,12 @@ NODE_PID=$!
 # Wait for listen address
 ADDR=""
 for i in $(seq 1 50); do
-    ADDR=$(grep -oP 'CONNECT_ADDR=\K.*' "$OUT_DIR/node.log" 2>/dev/null || true)
-    [ -n "$ADDR" ] && break
+    RC_TCP_ADDR=$(grep -oP 'RC_TCP_ADDR=\K.*' "$OUT_DIR/node.log" 2>/dev/null || true)
+    RC_UDP_ADDR=$(grep -oP 'RC_UDP_ADDR=\K.*' "$OUT_DIR/node.log" 2>/dev/null || true)
+    RC_AUTH_UDP_ADDR=$(grep -oP 'RC_AUTH_UDP_ADDR=\K.*' "$OUT_DIR/node.log" 2>/dev/null || true)
+    LEANUDP_ADDR=$(grep -oP 'LEANUDP_ADDR=\K.*' "$OUT_DIR/node.log" 2>/dev/null || true)
+    ADDR="$LEANUDP_ADDR"
+    [ -n "$ADDR" ] && [ -n "$RC_TCP_ADDR" ] && [ -n "$RC_UDP_ADDR" ] && [ -n "$RC_AUTH_UDP_ADDR" ] && [ -n "$LEANUDP_ADDR" ] && break
     sleep 0.1
 done
 
@@ -51,7 +55,11 @@ echo "=== Phase 1: Starting 3 honest peers (run for full duration) ==="
 # Honest peers: high TPS, high fees, run for full duration
 for i in 0 1 2; do
     RUST_LOG=monad_tx_integration=info "$BINARY" submit \
-        --node-addr "$ADDR" \
+        --transport "${TRANSPORT:-leanudp}" \
+        --rc-tcp-addr "$RC_TCP_ADDR" \
+        --rc-udp-addr "$RC_UDP_ADDR" \
+        --rc-auth-udp-addr "$RC_AUTH_UDP_ADDR" \
+        --leanudp-addr "$LEANUDP_ADDR" \
         --tps 500 \
         --sender-index "$i" \
         --duration-secs "$TOTAL_DURATION" \
@@ -70,7 +78,11 @@ echo "=== Phase 2: Spawning 20 sybil identities ==="
 # Sybils: moderate TPS, low fees, start at t=15s, run for 20s
 for i in $(seq 10 29); do
     RUST_LOG=monad_tx_integration=info "$BINARY" submit \
-        --node-addr "$ADDR" \
+        --transport "${TRANSPORT:-leanudp}" \
+        --rc-tcp-addr "$RC_TCP_ADDR" \
+        --rc-udp-addr "$RC_UDP_ADDR" \
+        --rc-auth-udp-addr "$RC_AUTH_UDP_ADDR" \
+        --leanudp-addr "$LEANUDP_ADDR" \
         --tps 300 \
         --sender-index "$i" \
         --duration-secs 20 \

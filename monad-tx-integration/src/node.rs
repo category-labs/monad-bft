@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, HashMap},
     marker::PhantomData,
-    net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
+    net::SocketAddrV4,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -147,68 +147,83 @@ pub async fn run(args: NodeArgs) {
         last_delay_committed_blocks: vec![genesis_block],
     }]);
 
-    let bind_ip = std::net::Ipv4Addr::new(0, 0, 0, 0);
-    let tcp_addr = std::net::SocketAddr::V4(SocketAddrV4::new(bind_ip, 0));
-    let raptorcast_auth_addr = std::net::SocketAddr::V4(SocketAddrV4::new(bind_ip, 0));
-    let non_auth_udp_addr = std::net::SocketAddr::V4(SocketAddrV4::new(bind_ip, 0));
-    let lean_udp_addr = args.listen;
-
-    let mut dp = DataplaneBuilder::new(1000)
+    let mut dp_rc = DataplaneBuilder::new(1000)
         .with_udp_multishot(true)
-        .with_tcp_sockets([(TcpSocketId::Raptorcast, tcp_addr)])
+        .with_tcp_sockets([(TcpSocketId::Raptorcast, args.rc_tcp_listen)])
         .with_udp_sockets([
-            (UdpSocketId::AuthenticatedRaptorcast, lean_udp_addr),
-            (UdpSocketId::Raptorcast, non_auth_udp_addr),
+            (
+                UdpSocketId::AuthenticatedRaptorcast,
+                args.rc_auth_udp_listen,
+            ),
+            (UdpSocketId::Raptorcast, args.rc_udp_listen),
         ])
         .build();
 
-    let mut dp2 = DataplaneBuilder::new(1000)
+    let mut dp_lean = DataplaneBuilder::new(1000)
         .with_udp_multishot(true)
-        .with_udp_sockets([(UdpSocketId::AuthenticatedRaptorcast, raptorcast_auth_addr)])
+        .with_udp_sockets([(UdpSocketId::AuthenticatedRaptorcast, args.listen)])
         .build();
 
-    assert!(dp.block_until_ready(Duration::from_secs(5)));
-    assert!(dp2.block_until_ready(Duration::from_secs(5)));
+    assert!(dp_rc.block_until_ready(Duration::from_secs(5)));
+    assert!(dp_lean.block_until_ready(Duration::from_secs(5)));
 
-    let tcp_socket = dp
+    let tcp_socket = dp_rc
         .tcp_sockets
         .take(TcpSocketId::Raptorcast)
         .expect("tcp socket");
 
-    let raptorcast_auth_socket = dp2
+    let raptorcast_auth_socket = dp_rc
         .udp_sockets
         .take(UdpSocketId::AuthenticatedRaptorcast)
         .expect("raptorcast authenticated udp socket");
 
-    let non_auth_udp_socket = dp
+    let non_auth_udp_socket = dp_rc
         .udp_sockets
         .take(UdpSocketId::Raptorcast)
         .expect("non-authenticated udp socket");
 
-    let lean_udp_socket = dp
+    let lean_udp_socket = dp_lean
         .udp_sockets
         .take(UdpSocketId::AuthenticatedRaptorcast)
         .expect("lean udp socket");
 
-    let lean_bound_addr = lean_udp_socket.local_addr();
-    // Binding to 0.0.0.0/:: is correct for listening, but it is not a
-    // connectable destination address. For convenience (local scripts), we
-    // also print a loopback address with the chosen ephemeral port.
-    let listen_addr_for_clients = match lean_bound_addr {
-        SocketAddr::V4(v4) if v4.ip().is_unspecified() => {
-            SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, v4.port()))
-        }
-        SocketAddr::V6(v6) if v6.ip().is_unspecified() => SocketAddr::V6(SocketAddrV6::new(
-            Ipv6Addr::LOCALHOST,
-            v6.port(),
-            v6.flowinfo(),
-            v6.scope_id(),
-        )),
-        _ => lean_bound_addr,
-    };
-    tracing::info!(%lean_bound_addr, %listen_addr_for_clients, "node listening");
-    println!("LISTEN_ADDR={lean_bound_addr}");
-    println!("CONNECT_ADDR={listen_addr_for_clients}");
+    let rc_tcp_bind_addr = tcp_socket.local_addr();
+    let rc_udp_bind_addr = non_auth_udp_socket.local_addr();
+    let rc_auth_udp_bind_addr = raptorcast_auth_socket.local_addr();
+    let leanudp_bind_addr = lean_udp_socket.local_addr();
+
+    // Binding to 0.0.0.0/:: is correct for listening, but it is not a connectable
+    // destination address. Print connectable addresses using --advertise-ip.
+    let rc_tcp_addr_for_clients = SocketAddrV4::new(args.advertise_ip, rc_tcp_bind_addr.port());
+    let rc_udp_addr_for_clients = SocketAddrV4::new(args.advertise_ip, rc_udp_bind_addr.port());
+    let rc_auth_udp_addr_for_clients =
+        SocketAddrV4::new(args.advertise_ip, rc_auth_udp_bind_addr.port());
+    let leanudp_addr_for_clients = SocketAddrV4::new(args.advertise_ip, leanudp_bind_addr.port());
+
+    tracing::info!(
+        rc_tcp_bind = %rc_tcp_bind_addr,
+        rc_udp_bind = %rc_udp_bind_addr,
+        rc_auth_udp_bind = %rc_auth_udp_bind_addr,
+        leanudp_bind = %leanudp_bind_addr,
+        rc_tcp = %rc_tcp_addr_for_clients,
+        rc_udp = %rc_udp_addr_for_clients,
+        rc_auth_udp = %rc_auth_udp_addr_for_clients,
+        leanudp = %leanudp_addr_for_clients,
+        "node listening"
+    );
+
+    println!("RC_TCP_BIND_ADDR={rc_tcp_bind_addr}");
+    println!("RC_UDP_BIND_ADDR={rc_udp_bind_addr}");
+    println!("RC_AUTH_UDP_BIND_ADDR={rc_auth_udp_bind_addr}");
+    println!("LEANUDP_BIND_ADDR={leanudp_bind_addr}");
+    println!("RC_TCP_ADDR={rc_tcp_addr_for_clients}");
+    println!("RC_UDP_ADDR={rc_udp_addr_for_clients}");
+    println!("RC_AUTH_UDP_ADDR={rc_auth_udp_addr_for_clients}");
+    println!("LEANUDP_ADDR={leanudp_addr_for_clients}");
+    // Backwards compatibility for existing scripts: CONNECT_ADDR is the address
+    // submitters should connect to (LeanUDP).
+    println!("CONNECT_ADDR={leanudp_addr_for_clients}");
+    println!("LISTEN_ADDR={leanudp_bind_addr}");
 
     let keypair = node_keypair();
     let keypair_arc = Arc::new(keypair);
@@ -244,7 +259,7 @@ pub async fn run(args: NodeArgs) {
         tcp_socket,
         Some(raptorcast_auth_socket),
         non_auth_udp_socket,
-        dp.control.clone(),
+        dp_rc.control.clone(),
         Arc::new(Mutex::new(pd)),
         Epoch(0),
         raptorcast_auth_protocol,

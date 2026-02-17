@@ -28,8 +28,12 @@ NODE_PID=$!
 
 ADDR=""
 for i in $(seq 1 50); do
-    ADDR=$(grep -oP 'CONNECT_ADDR=\K.*' "$OUT_DIR/node.log" 2>/dev/null || true)
-    [ -n "$ADDR" ] && break
+    RC_TCP_ADDR=$(grep -oP 'RC_TCP_ADDR=\K.*' "$OUT_DIR/node.log" 2>/dev/null || true)
+    RC_UDP_ADDR=$(grep -oP 'RC_UDP_ADDR=\K.*' "$OUT_DIR/node.log" 2>/dev/null || true)
+    RC_AUTH_UDP_ADDR=$(grep -oP 'RC_AUTH_UDP_ADDR=\K.*' "$OUT_DIR/node.log" 2>/dev/null || true)
+    LEANUDP_ADDR=$(grep -oP 'LEANUDP_ADDR=\K.*' "$OUT_DIR/node.log" 2>/dev/null || true)
+    ADDR="$LEANUDP_ADDR"
+    [ -n "$ADDR" ] && [ -n "$RC_TCP_ADDR" ] && [ -n "$RC_UDP_ADDR" ] && [ -n "$RC_AUTH_UDP_ADDR" ] && [ -n "$LEANUDP_ADDR" ] && break
     sleep 0.1
 done
 
@@ -44,7 +48,11 @@ echo "=== Starting peers with varying contribution rates ==="
 
 # Very low rate (10 tps)
 RUST_LOG=monad_tx_integration=info "$BINARY" submit \
-    --node-addr "$ADDR" \
+    --transport "${TRANSPORT:-leanudp}" \
+    --rc-tcp-addr "$RC_TCP_ADDR" \
+    --rc-udp-addr "$RC_UDP_ADDR" \
+    --rc-auth-udp-addr "$RC_AUTH_UDP_ADDR" \
+    --leanudp-addr "$LEANUDP_ADDR" \
     --tps 10 \
     --sender-index 0 \
     --duration-secs 40 \
@@ -56,7 +64,11 @@ echo "  Very-low: 10 tps, 1x fee"
 
 # Low rate (50 tps)
 RUST_LOG=monad_tx_integration=info "$BINARY" submit \
-    --node-addr "$ADDR" \
+    --transport "${TRANSPORT:-leanudp}" \
+    --rc-tcp-addr "$RC_TCP_ADDR" \
+    --rc-udp-addr "$RC_UDP_ADDR" \
+    --rc-auth-udp-addr "$RC_AUTH_UDP_ADDR" \
+    --leanudp-addr "$LEANUDP_ADDR" \
     --tps 50 \
     --sender-index 1 \
     --duration-secs 40 \
@@ -68,7 +80,11 @@ echo "  Low: 50 tps, 1x fee"
 
 # Medium rate (100 tps)
 RUST_LOG=monad_tx_integration=info "$BINARY" submit \
-    --node-addr "$ADDR" \
+    --transport "${TRANSPORT:-leanudp}" \
+    --rc-tcp-addr "$RC_TCP_ADDR" \
+    --rc-udp-addr "$RC_UDP_ADDR" \
+    --rc-auth-udp-addr "$RC_AUTH_UDP_ADDR" \
+    --leanudp-addr "$LEANUDP_ADDR" \
     --tps 100 \
     --sender-index 2 \
     --duration-secs 40 \
@@ -80,7 +96,11 @@ echo "  Medium: 100 tps, 1x fee"
 
 # High rate (300 tps)
 RUST_LOG=monad_tx_integration=info "$BINARY" submit \
-    --node-addr "$ADDR" \
+    --transport "${TRANSPORT:-leanudp}" \
+    --rc-tcp-addr "$RC_TCP_ADDR" \
+    --rc-udp-addr "$RC_UDP_ADDR" \
+    --rc-auth-udp-addr "$RC_AUTH_UDP_ADDR" \
+    --leanudp-addr "$LEANUDP_ADDR" \
     --tps 300 \
     --sender-index 3 \
     --duration-secs 40 \
@@ -92,7 +112,11 @@ echo "  High: 300 tps, 1x fee"
 
 # Very high rate (500 tps)
 RUST_LOG=monad_tx_integration=info "$BINARY" submit \
-    --node-addr "$ADDR" \
+    --transport "${TRANSPORT:-leanudp}" \
+    --rc-tcp-addr "$RC_TCP_ADDR" \
+    --rc-udp-addr "$RC_UDP_ADDR" \
+    --rc-auth-udp-addr "$RC_AUTH_UDP_ADDR" \
+    --leanudp-addr "$LEANUDP_ADDR" \
     --tps 500 \
     --sender-index 4 \
     --duration-secs 40 \

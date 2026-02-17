@@ -31,8 +31,12 @@ NODE_PID=$!
 
 ADDR=""
 for i in $(seq 1 50); do
-    ADDR=$(grep -oP 'CONNECT_ADDR=\K.*' "$OUT_DIR/node.log" 2>/dev/null || true)
-    [ -n "$ADDR" ] && break
+    RC_TCP_ADDR=$(grep -oP 'RC_TCP_ADDR=\K.*' "$OUT_DIR/node.log" 2>/dev/null || true)
+    RC_UDP_ADDR=$(grep -oP 'RC_UDP_ADDR=\K.*' "$OUT_DIR/node.log" 2>/dev/null || true)
+    RC_AUTH_UDP_ADDR=$(grep -oP 'RC_AUTH_UDP_ADDR=\K.*' "$OUT_DIR/node.log" 2>/dev/null || true)
+    LEANUDP_ADDR=$(grep -oP 'LEANUDP_ADDR=\K.*' "$OUT_DIR/node.log" 2>/dev/null || true)
+    ADDR="$LEANUDP_ADDR"
+    [ -n "$ADDR" ] && [ -n "$RC_TCP_ADDR" ] && [ -n "$RC_UDP_ADDR" ] && [ -n "$RC_AUTH_UDP_ADDR" ] && [ -n "$LEANUDP_ADDR" ] && break
     sleep 0.1
 done
 
@@ -47,7 +51,11 @@ echo "=== Starting 5 peers at varying rates ==="
 # Peer 0-1: high rate (should eventually promote with enough score)
 for i in 0 1; do
     RUST_LOG=monad_tx_integration=info "$BINARY" submit \
-        --node-addr "$ADDR" \
+        --transport "${TRANSPORT:-leanudp}" \
+        --rc-tcp-addr "$RC_TCP_ADDR" \
+        --rc-udp-addr "$RC_UDP_ADDR" \
+        --rc-auth-udp-addr "$RC_AUTH_UDP_ADDR" \
+        --leanudp-addr "$LEANUDP_ADDR" \
         --tps 600 \
         --sender-index "$i" \
         --duration-secs $((DURATION - 5)) \
@@ -60,7 +68,11 @@ done
 
 # Peer 2: medium rate
 RUST_LOG=monad_tx_integration=info "$BINARY" submit \
-    --node-addr "$ADDR" \
+    --transport "${TRANSPORT:-leanudp}" \
+    --rc-tcp-addr "$RC_TCP_ADDR" \
+    --rc-udp-addr "$RC_UDP_ADDR" \
+    --rc-auth-udp-addr "$RC_AUTH_UDP_ADDR" \
+    --leanudp-addr "$LEANUDP_ADDR" \
     --tps 300 \
     --sender-index 2 \
     --duration-secs $((DURATION - 5)) \
@@ -73,7 +85,11 @@ echo "  Peer P2: 300 tps, 3x fee (medium)"
 # Peer 3-4: low rate (will stay unpromoted with high threshold)
 for i in 3 4; do
     RUST_LOG=monad_tx_integration=info "$BINARY" submit \
-        --node-addr "$ADDR" \
+        --transport "${TRANSPORT:-leanudp}" \
+        --rc-tcp-addr "$RC_TCP_ADDR" \
+        --rc-udp-addr "$RC_UDP_ADDR" \
+        --rc-auth-udp-addr "$RC_AUTH_UDP_ADDR" \
+        --leanudp-addr "$LEANUDP_ADDR" \
         --tps 100 \
         --sender-index "$i" \
         --duration-secs $((DURATION - 5)) \

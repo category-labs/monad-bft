@@ -1,6 +1,4 @@
 use std::{
-    collections::HashMap,
-    marker::PhantomData,
     net::{SocketAddr, SocketAddrV4},
     path::PathBuf,
     sync::{Arc, Mutex},
@@ -17,30 +15,49 @@ use futures::StreamExt;
 use monad_dataplane::{udp::DEFAULT_MTU, DataplaneBuilder, TcpSocketId, UdpSocketId};
 use monad_eth_testutil::secret_to_eth_address;
 use monad_executor::Executor;
-use monad_executor_glue::OutboundForwardTxs;
+use monad_executor_glue::{OutboundForwardTxs, RouterCommand};
 use monad_node_config::{fullnode_raptorcast::FullNodeRaptorCastConfig, FullNodeConfig};
-use monad_peer_discovery::{driver::PeerDiscoveryDriver, mock::NopDiscoveryBuilder};
+use monad_peer_discovery::driver::PeerDiscoveryDriver;
 use monad_peer_score::{ema, StdClock};
 use monad_raptorcast::{
     auth::{AuthenticatedSocketHandle, LeanUdpSocketHandle, WireAuthProtocol},
     config::{RaptorCastConfig, RaptorCastConfigPrimary},
-    message::OutboundRouterMessage,
     raptorcast_secondary::SecondaryRaptorCastModeConfig,
     RaptorCast, RaptorCastEvent,
 };
 use monad_secp::{KeyPair, PubKey};
 use monad_tfm::base_fee::MIN_BASE_FEE;
-use monad_types::{Epoch, NodeId, Round, Stake, UdpPriority};
+use monad_types::{Epoch, NodeId, Round, RouterTarget, Stake, UdpPriority};
 use monad_wireauth::Config;
 use secp256k1::rand::{rngs::OsRng, TryRngCore};
 use serde::Serialize;
 
-use crate::message::{InboundMessage, OutboundMessage, SignatureType, WireEvent};
+use crate::{
+    message::{InboundMessage, OutboundMessage, SignatureType, WireEvent},
+    transport::{NodeEndpointsV4, Transport},
+};
 
 #[derive(Args, Clone)]
 pub struct ScenarioArgs {
+    /// Which transport to use when sending forwarded tx batches.
+    #[arg(long, value_enum, default_value = "leanudp")]
+    pub transport: Transport,
+
+    /// Node RaptorCast TCP address (advertised).
     #[arg(long)]
-    pub node_addr: SocketAddr,
+    pub rc_tcp_addr: SocketAddrV4,
+
+    /// Node RaptorCast UDP address (advertised).
+    #[arg(long)]
+    pub rc_udp_addr: SocketAddrV4,
+
+    /// Node authenticated RaptorCast UDP address (advertised).
+    #[arg(long)]
+    pub rc_auth_udp_addr: SocketAddrV4,
+
+    /// Node LeanUDP tx-ingestion address (advertised).
+    #[arg(long)]
+    pub leanudp_addr: SocketAddrV4,
 
     /// Sender's WireAuth private key (32-byte hex, with or without 0x prefix).
     /// If omitted, a random key is generated (recommended for spam testing).
@@ -308,41 +325,14 @@ pub async fn run(args: ScenarioArgs) {
         None => crate::node::node_keypair().pubkey(),
     };
 
+    let endpoints = NodeEndpointsV4 {
+        rc_tcp_addr: args.rc_tcp_addr,
+        rc_udp_addr: args.rc_udp_addr,
+        rc_auth_udp_addr: args.rc_auth_udp_addr,
+        leanudp_addr: args.leanudp_addr,
+    };
+
     let bind_addr: SocketAddr = "0.0.0.0:0".parse().expect("valid bind address");
-    let mut dp = DataplaneBuilder::new(1000)
-        .with_udp_multishot(true)
-        .with_tcp_sockets([(TcpSocketId::Raptorcast, bind_addr)])
-        .with_udp_sockets([
-            (UdpSocketId::AuthenticatedRaptorcast, bind_addr),
-            (UdpSocketId::Raptorcast, bind_addr),
-        ])
-        .build();
-    let mut dp2 = DataplaneBuilder::new(1000)
-        .with_udp_multishot(true)
-        .with_udp_sockets([(UdpSocketId::AuthenticatedRaptorcast, bind_addr)])
-        .build();
-
-    assert!(dp.block_until_ready(Duration::from_secs(5)));
-    assert!(dp2.block_until_ready(Duration::from_secs(5)));
-
-    let tcp_socket = dp
-        .tcp_sockets
-        .take(TcpSocketId::Raptorcast)
-        .expect("tcp socket");
-    let raptorcast_auth_socket = dp
-        .udp_sockets
-        .take(UdpSocketId::AuthenticatedRaptorcast)
-        .expect("raptorcast authenticated socket");
-    let non_auth_socket = dp
-        .udp_sockets
-        .take(UdpSocketId::Raptorcast)
-        .expect("non-authenticated socket");
-    let lean_udp_socket = dp2
-        .udp_sockets
-        .take(UdpSocketId::AuthenticatedRaptorcast)
-        .expect("lean udp socket");
-
-    let local_addr = lean_udp_socket.local_addr();
     let self_node_id = NodeId::new(auth_keypair.pubkey());
     let wireauth_config = Config::default();
     let handshake_timeout = wireauth_config.session_timeout
@@ -351,13 +341,41 @@ pub async fn run(args: ScenarioArgs) {
     let raptorcast_auth_protocol =
         WireAuthProtocol::new(wireauth_config.clone(), auth_keypair.clone());
 
-    let known_addresses: HashMap<NodeId<monad_secp::PubKey>, SocketAddrV4> = HashMap::new();
-    let nop_builder = NopDiscoveryBuilder {
-        known_addresses,
-        name_records: HashMap::new(),
-        pd: PhantomData,
-    };
+    let node_id = NodeId::new(node_pubkey);
+    let nop_builder = endpoints.nop_discovery_builder_for_node(node_id, &auth_keypair);
     let pd = PeerDiscoveryDriver::new(nop_builder);
+
+    let mut rc_udp_sockets = vec![(UdpSocketId::Raptorcast, bind_addr)];
+    if args.transport == Transport::RaptorcastAuth {
+        rc_udp_sockets.push((UdpSocketId::AuthenticatedRaptorcast, bind_addr));
+    }
+
+    let mut dp_rc = DataplaneBuilder::new(1000)
+        .with_udp_multishot(true)
+        .with_tcp_sockets([(TcpSocketId::Raptorcast, bind_addr)])
+        .with_udp_sockets(rc_udp_sockets)
+        .build();
+
+    assert!(dp_rc.block_until_ready(Duration::from_secs(5)));
+
+    let tcp_socket = dp_rc
+        .tcp_sockets
+        .take(TcpSocketId::Raptorcast)
+        .expect("tcp socket");
+    let raptorcast_auth_socket = if args.transport == Transport::RaptorcastAuth {
+        Some(
+            dp_rc
+                .udp_sockets
+                .take(UdpSocketId::AuthenticatedRaptorcast)
+                .expect("raptorcast authenticated socket"),
+        )
+    } else {
+        None
+    };
+    let non_auth_socket = dp_rc
+        .udp_sockets
+        .take(UdpSocketId::Raptorcast)
+        .expect("non-authenticated socket");
 
     let mut raptorcast = RaptorCast::<
         SignatureType,
@@ -370,9 +388,9 @@ pub async fn run(args: ScenarioArgs) {
         create_raptorcast_config(auth_keypair.clone()),
         SecondaryRaptorCastModeConfig::None,
         tcp_socket,
-        Some(raptorcast_auth_socket),
+        raptorcast_auth_socket,
         non_auth_socket,
-        dp.control.clone(),
+        dp_rc.control.clone(),
         Arc::new(Mutex::new(pd)),
         Epoch(0),
         raptorcast_auth_protocol,
@@ -387,58 +405,82 @@ pub async fn run(args: ScenarioArgs) {
 
     let (_, score_reader) =
         ema::create::<NodeId<monad_secp::PubKey>, StdClock>(ema::ScoreConfig::default(), StdClock);
-    let lean_auth_protocol = WireAuthProtocol::new(wireauth_config, auth_keypair);
-    let lean_auth_socket = AuthenticatedSocketHandle::new(lean_udp_socket, lean_auth_protocol);
-    let lean_socket = LeanUdpSocketHandle::new(
-        lean_auth_socket,
-        score_reader,
-        monad_leanudp::Config::default(),
-    );
-    raptorcast.set_lean_udp_socket(lean_socket);
+    if args.transport == Transport::Leanudp {
+        let mut dp_lean = DataplaneBuilder::new(1000)
+            .with_udp_multishot(true)
+            .with_udp_sockets([(UdpSocketId::AuthenticatedRaptorcast, bind_addr)])
+            .build();
+        assert!(dp_lean.block_until_ready(Duration::from_secs(5)));
+        let lean_udp_socket = dp_lean
+            .udp_sockets
+            .take(UdpSocketId::AuthenticatedRaptorcast)
+            .expect("lean udp socket");
+        let local_addr = lean_udp_socket.local_addr();
+
+        let lean_auth_protocol = WireAuthProtocol::new(wireauth_config, auth_keypair.clone());
+        let lean_auth_socket = AuthenticatedSocketHandle::new(lean_udp_socket, lean_auth_protocol);
+        let lean_socket = LeanUdpSocketHandle::new(
+            lean_auth_socket,
+            score_reader,
+            monad_leanudp::Config::default(),
+        );
+        raptorcast.set_lean_udp_socket(lean_socket);
+        tracing::info!(%local_addr, "leanudp local socket");
+    }
 
     tracing::info!(
-        %local_addr,
-        node_addr = %args.node_addr,
+        transport = ?args.transport,
+        rc_tcp_addr = %endpoints.rc_tcp_addr,
+        rc_udp_addr = %endpoints.rc_udp_addr,
+        rc_auth_udp_addr = %endpoints.rc_auth_udp_addr,
+        leanudp_addr = %endpoints.leanudp_addr,
         tps = args.tps,
         count = args.count,
         duration_secs = args.duration_secs,
         "scenario sender starting"
     );
 
-    {
-        let lean_socket = raptorcast.lean_udp_socket_mut().expect("lean socket");
-        lean_socket
-            .connect(&node_pubkey, args.node_addr, 3)
-            .expect("connect failed");
-        lean_socket.flush();
-    }
-
-    let handshake_start = std::time::Instant::now();
-    while handshake_start.elapsed() < handshake_timeout {
-        tokio::select! {
-            _ = raptorcast.next() => {}
-            _ = tokio::time::sleep(Duration::from_millis(10)) => {
-                let lean_socket = raptorcast.lean_udp_socket_mut().expect("lean socket");
-                if lean_socket.is_connected_socket_and_public_key(&args.node_addr, &node_pubkey) {
-                    break;
-                }
-            }
-        }
-        if let Some(lean_socket) = raptorcast.lean_udp_socket_mut() {
+    let handshake_ms = if args.transport == Transport::Leanudp {
+        let node_leanudp_addr = SocketAddr::V4(args.leanudp_addr);
+        {
+            let lean_socket = raptorcast.lean_udp_socket_mut().expect("lean socket");
+            lean_socket
+                .connect(&node_pubkey, node_leanudp_addr, 3)
+                .expect("connect failed");
             lean_socket.flush();
         }
-    }
 
-    let connected = raptorcast
-        .lean_udp_socket_mut()
-        .expect("lean socket")
-        .is_connected_socket_and_public_key(&args.node_addr, &node_pubkey);
-    if !connected {
-        tracing::error!("handshake failed");
-        return;
-    }
-    let handshake_ms = handshake_start.elapsed().as_millis();
-    tracing::info!(handshake_ms, "handshake complete");
+        let handshake_start = std::time::Instant::now();
+        while handshake_start.elapsed() < handshake_timeout {
+            tokio::select! {
+                _ = raptorcast.next() => {}
+                _ = tokio::time::sleep(Duration::from_millis(10)) => {
+                    let lean_socket = raptorcast.lean_udp_socket_mut().expect("lean socket");
+                    if lean_socket.is_connected_socket_and_public_key(&node_leanudp_addr, &node_pubkey) {
+                        break;
+                    }
+                }
+            }
+            if let Some(lean_socket) = raptorcast.lean_udp_socket_mut() {
+                lean_socket.flush();
+            }
+        }
+
+        let connected = raptorcast
+            .lean_udp_socket_mut()
+            .expect("lean socket")
+            .is_connected_socket_and_public_key(&node_leanudp_addr, &node_pubkey);
+        if !connected {
+            tracing::error!("leanudp handshake failed");
+            return;
+        }
+
+        let ms = handshake_start.elapsed().as_millis();
+        tracing::info!(handshake_ms = ms, "leanudp handshake complete");
+        ms
+    } else {
+        0
+    };
 
     let mut sent: u64 = 0;
     let mut batches_sent: u64 = 0;
@@ -546,35 +588,58 @@ pub async fn run(args: ScenarioArgs) {
 
                 if pending_batch.len() >= batch_size {
                     let txs = std::mem::take(&mut pending_batch);
-                    let payload = OutboundRouterMessage::<OutboundMessage, SignatureType>::AppMessage(
-                        OutboundMessage::forward_txs(txs),
-                    )
-                    .try_serialize()
-                    .expect("serialize tx integration message");
-                    let lean_socket = raptorcast.lean_udp_socket_mut().expect("lean socket");
-                    lean_socket.send(args.node_addr, payload, UdpPriority::Regular);
-                    lean_socket.flush();
+                    let message = OutboundMessage::forward_txs(txs);
+                    let cmd = match args.transport {
+                        Transport::Leanudp => RouterCommand::LeanPointToPoint {
+                            target: node_id,
+                            message,
+                            priority: UdpPriority::Regular,
+                        },
+                        Transport::Raptorcast | Transport::RaptorcastAuth => {
+                            RouterCommand::PublishWithPriority {
+                                target: RouterTarget::PointToPoint(node_id),
+                                message,
+                                priority: UdpPriority::Regular,
+                            }
+                        }
+                    };
+                    raptorcast.exec(vec![cmd]);
                     batches_sent += 1;
                 }
             }
             _ = raptorcast.next() => {}
         }
 
-        if let Some(lean_socket) = raptorcast.lean_udp_socket_mut() {
-            lean_socket.flush();
+        if args.transport == Transport::Leanudp {
+            if let Some(lean_socket) = raptorcast.lean_udp_socket_mut() {
+                lean_socket.flush();
+            }
         }
     }
 
     if !pending_batch.is_empty() {
         let txs = std::mem::take(&mut pending_batch);
-        let payload = OutboundRouterMessage::<OutboundMessage, SignatureType>::AppMessage(
-            OutboundMessage::forward_txs(txs),
-        )
-        .try_serialize()
-        .expect("serialize tx integration message");
-        let lean_socket = raptorcast.lean_udp_socket_mut().expect("lean socket");
-        lean_socket.send(args.node_addr, payload, UdpPriority::Regular);
-        lean_socket.flush();
+        let message = OutboundMessage::forward_txs(txs);
+        let cmd = match args.transport {
+            Transport::Leanudp => RouterCommand::LeanPointToPoint {
+                target: node_id,
+                message,
+                priority: UdpPriority::Regular,
+            },
+            Transport::Raptorcast | Transport::RaptorcastAuth => {
+                RouterCommand::PublishWithPriority {
+                    target: RouterTarget::PointToPoint(node_id),
+                    message,
+                    priority: UdpPriority::Regular,
+                }
+            }
+        };
+        raptorcast.exec(vec![cmd]);
+        if args.transport == Transport::Leanudp {
+            if let Some(lean_socket) = raptorcast.lean_udp_socket_mut() {
+                lean_socket.flush();
+            }
+        }
         batches_sent += 1;
     }
 

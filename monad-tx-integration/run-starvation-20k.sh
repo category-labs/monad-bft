@@ -46,9 +46,13 @@ NODE_PID=$!
 ADDR=""
 RPC_ADDR=""
 for i in $(seq 1 50); do
-    ADDR=$(grep -oP 'CONNECT_ADDR=\K.*' "$OUT_DIR/node.log" 2>/dev/null || true)
+    RC_TCP_ADDR=$(grep -oP 'RC_TCP_ADDR=\K.*' "$OUT_DIR/node.log" 2>/dev/null || true)
+    RC_UDP_ADDR=$(grep -oP 'RC_UDP_ADDR=\K.*' "$OUT_DIR/node.log" 2>/dev/null || true)
+    RC_AUTH_UDP_ADDR=$(grep -oP 'RC_AUTH_UDP_ADDR=\K.*' "$OUT_DIR/node.log" 2>/dev/null || true)
+    LEANUDP_ADDR=$(grep -oP 'LEANUDP_ADDR=\K.*' "$OUT_DIR/node.log" 2>/dev/null || true)
+    ADDR="$LEANUDP_ADDR"
     RPC_ADDR=$(grep -oP 'RPC_ADDR=\K.*' "$OUT_DIR/node.log" 2>/dev/null || true)
-    [ -n "$ADDR" ] && [ -n "$RPC_ADDR" ] && break
+    [ -n "$ADDR" ] && [ -n "$RC_TCP_ADDR" ] && [ -n "$RC_UDP_ADDR" ] && [ -n "$RC_AUTH_UDP_ADDR" ] && [ -n "$LEANUDP_ADDR" ] && [ -n "$RPC_ADDR" ] && break
     sleep 0.1
 done
 
@@ -62,7 +66,11 @@ echo "Node listening on $ADDR, RPC on $RPC_ADDR"
 
 echo "=== Starting victim peer ==="
 RUST_LOG=monad_tx_integration=info "$BINARY" submit \
-    --node-addr "$ADDR" \
+    --transport "${TRANSPORT:-leanudp}" \
+    --rc-tcp-addr "$RC_TCP_ADDR" \
+    --rc-udp-addr "$RC_UDP_ADDR" \
+    --rc-auth-udp-addr "$RC_AUTH_UDP_ADDR" \
+    --leanudp-addr "$LEANUDP_ADDR" \
     --rpc-addr "$RPC_ADDR" \
     --tps "$VICTIM_TPS" \
     --sender-index 0 \
@@ -76,7 +84,11 @@ echo "  Victim: ${VICTIM_TPS} tps, 2x fee, 1x priority"
 echo "=== Starting $AGGRESSOR_PEERS aggressors ==="
 for i in $(seq 1 "$AGGRESSOR_PEERS"); do
     RUST_LOG=monad_tx_integration=info "$BINARY" submit \
-        --node-addr "$ADDR" \
+        --transport "${TRANSPORT:-leanudp}" \
+        --rc-tcp-addr "$RC_TCP_ADDR" \
+        --rc-udp-addr "$RC_UDP_ADDR" \
+        --rc-auth-udp-addr "$RC_AUTH_UDP_ADDR" \
+        --leanudp-addr "$LEANUDP_ADDR" \
         --rpc-addr "$RPC_ADDR" \
         --tps "$AGGRESSOR_TPS" \
         --sender-index "$i" \

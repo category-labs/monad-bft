@@ -1,4 +1,7 @@
-use std::{net::SocketAddr, path::PathBuf};
+use std::{
+    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
+    path::PathBuf,
+};
 
 use clap::{Args, Parser, Subcommand};
 
@@ -12,6 +15,7 @@ mod rpc;
 mod scenario;
 mod stats;
 mod submit;
+mod transport;
 
 #[derive(Parser)]
 #[command(name = "monad-tx-integration")]
@@ -37,6 +41,22 @@ pub struct NodeArgs {
     // connectable `LISTEN_ADDR` for local scripts.
     #[arg(long, default_value = "0.0.0.0:0")]
     listen: SocketAddr,
+
+    /// Non-authenticated RaptorCast UDP listen address.
+    #[arg(long, default_value = "0.0.0.0:0")]
+    rc_udp_listen: SocketAddr,
+
+    /// WireAuth-authenticated RaptorCast UDP listen address.
+    #[arg(long, default_value = "0.0.0.0:0")]
+    rc_auth_udp_listen: SocketAddr,
+
+    /// RaptorCast TCP listen address (mostly unused in this integration tool).
+    #[arg(long, default_value = "0.0.0.0:0")]
+    rc_tcp_listen: SocketAddr,
+
+    /// IPv4 address to print for client connection (used when binding to 0.0.0.0).
+    #[arg(long, default_value = "127.0.0.1")]
+    advertise_ip: Ipv4Addr,
 
     #[arg(long, default_value = "127.0.0.1:0")]
     rpc_listen: String,
@@ -89,8 +109,25 @@ pub struct NodeArgs {
 
 #[derive(Args)]
 pub struct SubmitArgs {
+    /// Which transport to use when sending forwarded tx batches.
+    #[arg(long, value_enum, default_value = "leanudp")]
+    transport: transport::Transport,
+
+    /// Node RaptorCast TCP address (advertised).
     #[arg(long)]
-    node_addr: SocketAddr,
+    rc_tcp_addr: SocketAddrV4,
+
+    /// Node RaptorCast UDP address (advertised).
+    #[arg(long)]
+    rc_udp_addr: SocketAddrV4,
+
+    /// Node authenticated RaptorCast UDP address (advertised).
+    #[arg(long)]
+    rc_auth_udp_addr: SocketAddrV4,
+
+    /// Node LeanUDP tx-ingestion address (advertised).
+    #[arg(long)]
+    leanudp_addr: SocketAddrV4,
 
     /// RPC address to query committed nonces (enables nonce gap recovery)
     #[arg(long)]
@@ -142,8 +179,25 @@ pub struct SubmitArgs {
 
 #[derive(Args)]
 pub struct MultiSubmitArgs {
+    /// Which transport to use when sending forwarded tx batches.
+    #[arg(long, value_enum, default_value = "leanudp")]
+    transport: transport::Transport,
+
+    /// Node RaptorCast TCP address (advertised).
     #[arg(long)]
-    node_addr: SocketAddr,
+    rc_tcp_addr: SocketAddrV4,
+
+    /// Node RaptorCast UDP address (advertised).
+    #[arg(long)]
+    rc_udp_addr: SocketAddrV4,
+
+    /// Node authenticated RaptorCast UDP address (advertised).
+    #[arg(long)]
+    rc_auth_udp_addr: SocketAddrV4,
+
+    /// Node LeanUDP tx-ingestion address (advertised).
+    #[arg(long)]
+    leanudp_addr: SocketAddrV4,
 
     /// RPC address to query committed nonces (enables nonce gap recovery)
     #[arg(long)]
