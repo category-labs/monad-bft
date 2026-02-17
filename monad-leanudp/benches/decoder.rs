@@ -1,10 +1,10 @@
 use std::time::{Duration, Instant};
 
 use bytes::{BufMut, Bytes, BytesMut};
-use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use monad_leanudp::{
-    Clock, Config, Decoder, Encoder, FragmentPolicy, IdentityScore,
-    MAX_CONCURRENT_BYTES_PER_IDENTITY, MAX_CONCURRENT_MESSAGES_PER_IDENTITY, PacketHeader,
+    Clock, Config, Decoder, Encoder, FragmentPolicy, IdentityScore, PacketHeader,
+    MAX_CONCURRENT_BYTES_PER_IDENTITY, MAX_CONCURRENT_MESSAGES_PER_IDENTITY,
 };
 
 #[derive(Clone, Copy)]

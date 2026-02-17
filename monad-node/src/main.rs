@@ -50,10 +50,10 @@ use monad_node_config::{
     PeerDiscoveryConfig, SignatureCollectionType, SignatureType,
 };
 use monad_peer_discovery::{
-    MonadNameRecord, NameRecord,
     discovery::{PeerDiscovery, PeerDiscoveryBuilder},
+    MonadNameRecord, NameRecord,
 };
-use monad_peer_score::{StdClock, ema, metrics as peer_score_metrics};
+use monad_peer_score::{ema, metrics as peer_score_metrics, StdClock};
 use monad_pprof::start_pprof_server;
 use monad_raptorcast::{
     auth::{AuthenticatedSocketHandle, LeanUdpSocketHandle, WireAuthProtocol},
@@ -66,7 +66,7 @@ use monad_state_backend::StateBackendThreadClient;
 use monad_state_backend_cache::StateBackendCache;
 use monad_statesync::StateSync;
 use monad_triedb_utils::TriedbReader;
-use monad_types::{DropTimer, Epoch, GENESIS_SEQ_NUM, NodeId, Round, SeqNum};
+use monad_types::{DropTimer, Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
 use monad_updaters::{
     config_file::ConfigFile, config_loader::ConfigLoader, loopback::LoopbackExecutor,
     parent::ParentExecutor, timer::TokioTimer, tokio_timestamp::TokioTimestamp,
@@ -79,9 +79,9 @@ use monad_validator::{
 use monad_wal::wal::WALoggerConfig;
 use opentelemetry::metrics::MeterProvider;
 use opentelemetry_otlp::{MetricExporter, WithExportConfig};
-use rand_chacha::{ChaCha8Rng, rand_core::SeedableRng};
-use tokio::signal::unix::{SignalKind, signal};
-use tracing::{Instrument, Level, error, event, info, warn};
+use rand_chacha::{rand_core::SeedableRng, ChaCha8Rng};
+use tokio::signal::unix::{signal, SignalKind};
+use tracing::{error, event, info, warn, Instrument, Level};
 
 use self::{cli::Cli, error::NodeSetupError, state::NodeState};
 

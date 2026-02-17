@@ -9,14 +9,13 @@ use std::{
 use bytes::{Bytes, BytesMut};
 use indexmap::IndexMap;
 use monad_executor::ExecutorMetrics;
-use rand::{CryptoRng, Rng as _, RngCore, SeedableRng, rngs::StdRng};
+use rand::{rngs::StdRng, CryptoRng, Rng as _, RngCore, SeedableRng};
 use thiserror::Error;
 use zerocopy::FromBytes;
 
 use crate::{
-    Config, FragmentPolicy, FragmentType, IdentityScore, LEANUDP_HEADER_SIZE,
-    LEANUDP_PROTOCOL_VERSION, MAX_CONCURRENT_MESSAGES_PER_IDENTITY, PacketHeader,
-    encoder::MAX_FRAGMENTS, metrics::*,
+    encoder::MAX_FRAGMENTS, metrics::*, Config, FragmentPolicy, FragmentType, IdentityScore,
+    PacketHeader, LEANUDP_HEADER_SIZE, LEANUDP_PROTOCOL_VERSION,
 };
 
 macro_rules! ensure {
@@ -170,8 +169,6 @@ impl MessageState {
 struct PoolConfig {
     max_messages: usize,
     max_message_size: usize,
-    max_messages_per_identity: usize,
-    max_bytes_per_identity: usize,
 }
 
 impl PoolConfig {
@@ -179,9 +176,29 @@ impl PoolConfig {
         Self {
             max_messages,
             max_message_size: config.max_message_size,
-            max_messages_per_identity: config
-                .max_messages_per_identity
-                .min(MAX_CONCURRENT_MESSAGES_PER_IDENTITY),
+        }
+    }
+}
+
+struct IdentityUsage<I>
+where
+    I: Eq + Hash + Clone + Ord,
+{
+    message_counts: HashMap<I, usize>,
+    message_bytes: HashMap<I, usize>,
+    max_messages_per_identity: usize,
+    max_bytes_per_identity: usize,
+}
+
+impl<I> IdentityUsage<I>
+where
+    I: Eq + Hash + Clone + Ord,
+{
+    fn from_config(config: &Config) -> Self {
+        Self {
+            message_counts: HashMap::new(),
+            message_bytes: HashMap::new(),
+            max_messages_per_identity: config.max_messages_per_identity,
             max_bytes_per_identity: config.max_bytes_per_identity,
         }
     }
@@ -193,8 +210,6 @@ where
     R: CryptoRng + RngCore,
 {
     messages: IndexMap<(I, u32), MessageState>,
-    identity_message_counts: HashMap<I, usize>,
-    identity_message_bytes: HashMap<I, usize>,
     cfg: PoolConfig,
     rng: R,
 }
@@ -203,14 +218,16 @@ impl<I: Eq + Hash + Clone + Ord, R: CryptoRng + RngCore> MessagePool<I, R> {
     fn new(cfg: PoolConfig, rng: R) -> Self {
         Self {
             messages: IndexMap::new(),
-            identity_message_counts: HashMap::new(),
-            identity_message_bytes: HashMap::new(),
             cfg,
             rng,
         }
     }
 
-    fn evict_before_admission(&mut self) -> bool {
+    fn has_message(&self, key: &(I, u32)) -> bool {
+        self.messages.contains_key(key)
+    }
+
+    fn evict_before_admission(&mut self, usage: &mut IdentityUsage<I>) -> Option<(I, u32)> {
         let key = if self.messages.len() >= self.cfg.max_messages && !self.messages.is_empty() {
             let random_index = self.rng.gen_range(0..self.messages.len());
             self.messages
@@ -219,17 +236,15 @@ impl<I: Eq + Hash + Clone + Ord, R: CryptoRng + RngCore> MessagePool<I, R> {
         } else {
             None
         };
-        if let Some(key) = key {
-            self.remove_message(&key);
-            true
-        } else {
-            false
-        }
+        key.inspect(|k| {
+            let _ = self.remove_message(k, usage);
+        })
     }
 
     /// Decode a fragment into the pool.
     fn decode(
         &mut self,
+        usage: &mut IdentityUsage<I>,
         identity: I,
         msg_id: u32,
         seq_num: u16,
@@ -240,15 +255,15 @@ impl<I: Eq + Hash + Clone + Ord, R: CryptoRng + RngCore> MessagePool<I, R> {
         let fragment_size = data.len();
 
         if !self.messages.contains_key(&key) {
-            let identity_count = self
-                .identity_message_counts
+            let identity_count = usage
+                .message_counts
                 .get(&identity)
                 .copied()
                 .unwrap_or_default();
             ensure!(
-                identity_count < self.cfg.max_messages_per_identity,
+                identity_count < usage.max_messages_per_identity,
                 DecodeError::IdentityLimitExceeded {
-                    max: self.cfg.max_messages_per_identity,
+                    max: usage.max_messages_per_identity,
                 }
             );
             ensure!(
@@ -256,14 +271,10 @@ impl<I: Eq + Hash + Clone + Ord, R: CryptoRng + RngCore> MessagePool<I, R> {
                 DecodeError::PoolFull
             );
             self.messages.insert(key.clone(), MessageState::new());
-            *self.identity_message_counts.entry(identity).or_insert(0) += 1;
+            *usage.message_counts.entry(identity).or_insert(0) += 1;
         }
 
-        let identity_bytes = self
-            .identity_message_bytes
-            .get(&key.0)
-            .copied()
-            .unwrap_or_default();
+        let identity_bytes = usage.message_bytes.get(&key.0).copied().unwrap_or_default();
 
         let is_complete = {
             let state = self
@@ -274,7 +285,7 @@ impl<I: Eq + Hash + Clone + Ord, R: CryptoRng + RngCore> MessagePool<I, R> {
             ensure!(
                 (seq_num as usize) < MAX_FRAGMENTS,
                 || {
-                    self.remove_message(&key);
+                    self.remove_message(&key, usage);
                 };
                 DecodeError::TooManyFragments {
                     count: MAX_FRAGMENTS + 1,
@@ -293,7 +304,7 @@ impl<I: Eq + Hash + Clone + Ord, R: CryptoRng + RngCore> MessagePool<I, R> {
                 ensure!(
                     existing_total_frags.is_none(),
                     || {
-                        self.remove_message(&key);
+                        self.remove_message(&key, usage);
                     };
                     DecodeError::ConflictingEndMarker {
                         expected: existing_total_frags.unwrap_or_default(),
@@ -307,7 +318,7 @@ impl<I: Eq + Hash + Clone + Ord, R: CryptoRng + RngCore> MessagePool<I, R> {
             ensure!(
                 total_size <= self.cfg.max_message_size,
                 || {
-                    self.remove_message(&key);
+                    self.remove_message(&key, usage);
                 };
                 DecodeError::MessageSizeExceeded {
                     size: total_size,
@@ -316,13 +327,13 @@ impl<I: Eq + Hash + Clone + Ord, R: CryptoRng + RngCore> MessagePool<I, R> {
             );
             let identity_total_size = identity_bytes + fragment_size;
             ensure!(
-                identity_total_size <= self.cfg.max_bytes_per_identity,
+                identity_total_size <= usage.max_bytes_per_identity,
                 || {
-                    self.remove_message(&key);
+                    self.remove_message(&key, usage);
                 };
                 DecodeError::IdentityBytesLimitExceeded {
                     size: identity_total_size,
-                    max: self.cfg.max_bytes_per_identity,
+                    max: usage.max_bytes_per_identity,
                 }
             );
             state.total_size = total_size;
@@ -330,36 +341,37 @@ impl<I: Eq + Hash + Clone + Ord, R: CryptoRng + RngCore> MessagePool<I, R> {
 
             state.total_frags == Some(state.fragments.len() as u16)
         };
-        *self
-            .identity_message_bytes
-            .entry(key.0.clone())
-            .or_insert(0) += fragment_size;
+        *usage.message_bytes.entry(key.0.clone()).or_insert(0) += fragment_size;
 
         if !is_complete {
             return Ok(DecodeOutcome::Pending);
         }
 
         let state = self
-            .remove_message(&key)
+            .remove_message(&key, usage)
             .expect("message must exist when extracting");
         Ok(DecodeOutcome::Complete(state.extract()))
     }
 
-    fn remove_message(&mut self, key: &(I, u32)) -> Option<MessageState> {
+    fn remove_message(
+        &mut self,
+        key: &(I, u32),
+        usage: &mut IdentityUsage<I>,
+    ) -> Option<MessageState> {
         let state = self.messages.swap_remove(key)?;
         let identity = &key.0;
-        let count = self
-            .identity_message_counts
+        let count = usage
+            .message_counts
             .get_mut(identity)
             .expect("identity count must exist for active message");
         *count -= 1;
         if *count == 0 {
-            self.identity_message_counts.remove(identity);
+            usage.message_counts.remove(identity);
         }
-        if let Some(bytes) = self.identity_message_bytes.get_mut(identity) {
+        if let Some(bytes) = usage.message_bytes.get_mut(identity) {
             *bytes = bytes.saturating_sub(state.total_size);
             if *bytes == 0 {
-                self.identity_message_bytes.remove(identity);
+                usage.message_bytes.remove(identity);
             }
         }
         Some(state)
@@ -433,6 +445,7 @@ where
 {
     priority_pool: MessagePool<I, R>,
     regular_pool: MessagePool<I, R>,
+    identity_usage: IdentityUsage<I>,
     identity_score: P,
     _clock: C,
     metrics: ExecutorMetrics,
@@ -471,10 +484,103 @@ where
                 PoolConfig::from_config(config, config.max_regular_messages),
                 regular_pool_rng,
             ),
+            identity_usage: IdentityUsage::from_config(config),
             identity_score,
             _clock: clock,
             metrics: ExecutorMetrics::default(),
         }
+    }
+
+    fn select_pool(&self, identity: &I, key: &(I, u32)) -> PoolSelection {
+        if self.priority_pool.has_message(key) {
+            PoolSelection::Priority
+        } else if self.regular_pool.has_message(key) {
+            PoolSelection::Regular
+        } else {
+            self.identity_score.score(identity).into()
+        }
+    }
+
+    fn decode_in_pool(
+        &mut self,
+        selected_pool: PoolSelection,
+        key: &(I, u32),
+        identity: I,
+        msg_id: u32,
+        seq_num: u16,
+        fragment_type: FragmentType,
+        payload: Bytes,
+    ) -> (Result<DecodeOutcome, DecodeError>, bool) {
+        match selected_pool {
+            PoolSelection::Priority => {
+                let evicted = if self.priority_pool.has_message(key) {
+                    false
+                } else {
+                    self.priority_pool
+                        .evict_before_admission(&mut self.identity_usage)
+                        .is_some()
+                };
+                let result = self.priority_pool.decode(
+                    &mut self.identity_usage,
+                    identity,
+                    msg_id,
+                    seq_num,
+                    fragment_type,
+                    payload,
+                );
+                (result, evicted)
+            }
+            PoolSelection::Regular => {
+                let evicted = if self.regular_pool.has_message(key) {
+                    false
+                } else {
+                    self.regular_pool
+                        .evict_before_admission(&mut self.identity_usage)
+                        .is_some()
+                };
+                let result = self.regular_pool.decode(
+                    &mut self.identity_usage,
+                    identity,
+                    msg_id,
+                    seq_num,
+                    fragment_type,
+                    payload,
+                );
+                (result, evicted)
+            }
+        }
+    }
+
+    fn record_decode_metrics(
+        &mut self,
+        selected_pool: PoolSelection,
+        payload_bytes: u64,
+        evicted: bool,
+        result: &Result<DecodeOutcome, DecodeError>,
+    ) {
+        self.metrics[selected_pool.fragments_counter()] += 1;
+        self.metrics[selected_pool.bytes_counter()] += payload_bytes;
+        if evicted {
+            self.metrics[selected_pool.evicted_counter()] += 1;
+        }
+
+        match result {
+            Ok(DecodeOutcome::Complete(msg)) => {
+                self.metrics[COUNTER_LEANUDP_DECODE_MESSAGES_COMPLETED] += 1;
+                self.metrics[COUNTER_LEANUDP_DECODE_BYTES_COMPLETED] += msg.len() as u64;
+            }
+            Ok(DecodeOutcome::Pending) => {}
+            Err(e) => {
+                self.metrics[e.metric_name()] += 1;
+            }
+        }
+    }
+
+    fn update_pool_gauges(&mut self) {
+        self.metrics[GAUGE_LEANUDP_POOL_PRIORITY_MESSAGES] =
+            self.priority_pool.message_count() as u64;
+        self.metrics[GAUGE_LEANUDP_POOL_REGULAR_MESSAGES] =
+            self.regular_pool.message_count() as u64;
     }
 
     pub fn decode<T>(&mut self, identity: I, packet: T) -> Result<DecodeOutcome, DecodeError>
@@ -495,53 +601,21 @@ where
             }
         );
 
-        let selected_pool: PoolSelection = self.identity_score.score(&identity).into();
         let msg_id = header.msg_id();
-        let (result, evicted) = match selected_pool {
-            PoolSelection::Priority => {
-                let evicted = self.priority_pool.evict_before_admission();
-                let result = self.priority_pool.decode(
-                    identity,
-                    msg_id,
-                    header.seq_num(),
-                    header.fragment_type(),
-                    payload,
-                );
-                (result, evicted)
-            }
-            PoolSelection::Regular => {
-                let evicted = self.regular_pool.evict_before_admission();
-                let result = self.regular_pool.decode(
-                    identity,
-                    msg_id,
-                    header.seq_num(),
-                    header.fragment_type(),
-                    payload,
-                );
-                (result, evicted)
-            }
-        };
-        self.metrics[selected_pool.fragments_counter()] += 1;
-        self.metrics[selected_pool.bytes_counter()] += payload_bytes;
-        if evicted {
-            self.metrics[selected_pool.evicted_counter()] += 1;
-        }
+        let key = (identity.clone(), msg_id);
+        let selected_pool = self.select_pool(&identity, &key);
 
-        match &result {
-            Ok(DecodeOutcome::Complete(msg)) => {
-                self.metrics[COUNTER_LEANUDP_DECODE_MESSAGES_COMPLETED] += 1;
-                self.metrics[COUNTER_LEANUDP_DECODE_BYTES_COMPLETED] += msg.len() as u64;
-            }
-            Ok(DecodeOutcome::Pending) => {}
-            Err(e) => {
-                self.metrics[e.metric_name()] += 1;
-            }
-        }
-
-        self.metrics[GAUGE_LEANUDP_POOL_PRIORITY_MESSAGES] =
-            self.priority_pool.message_count() as u64;
-        self.metrics[GAUGE_LEANUDP_POOL_REGULAR_MESSAGES] =
-            self.regular_pool.message_count() as u64;
+        let (result, evicted) = self.decode_in_pool(
+            selected_pool,
+            &key,
+            identity,
+            msg_id,
+            header.seq_num(),
+            header.fragment_type(),
+            payload,
+        );
+        self.record_decode_metrics(selected_pool, payload_bytes, evicted, &result);
+        self.update_pool_gauges();
 
         result
     }
@@ -563,10 +637,7 @@ mod tests {
     use zerocopy::IntoBytes;
 
     use super::*;
-    use crate::{
-        FragmentType, MAX_CONCURRENT_BYTES_PER_IDENTITY, MAX_CONCURRENT_MESSAGES_PER_IDENTITY,
-        encoder::MAX_FRAGMENTS,
-    };
+    use crate::{encoder::MAX_FRAGMENTS, FragmentType, MAX_CONCURRENT_BYTES_PER_IDENTITY};
 
     #[derive(Clone)]
     struct MockClock(std::rc::Rc<Cell<Instant>>);
@@ -764,6 +835,27 @@ mod tests {
     }
 
     #[test]
+    fn test_existing_message_fragment_does_not_trigger_eviction() {
+        let mut d = TestDecoder::with_config_and_priority(
+            Config {
+                max_priority_messages: 1,
+                max_regular_messages: 5,
+                ..Config::default()
+            },
+            &[1000],
+        );
+        assert_eq!(
+            d.decode(1000, pkt(0, 0, Start, b"A")),
+            Ok(DecodeOutcome::Pending)
+        );
+        assert_eq!(
+            d.decode(1000, pkt(0, 1, End, b"B")),
+            Ok(DecodeOutcome::Complete(Bytes::from_static(b"AB")))
+        );
+        assert_eq!(d.priority_messages(), 0);
+    }
+
+    #[test]
     fn test_regular_pool_full_evicts_random() {
         let mut d = TestDecoder::new();
         for i in 0..5 {
@@ -918,7 +1010,7 @@ mod tests {
     }
 
     #[test]
-    fn test_score_change_does_not_reuse_original_pool() {
+    fn test_score_change_keeps_existing_message_in_original_pool() {
         #[derive(Clone)]
         struct ToggleScore(std::rc::Rc<Cell<bool>>);
 
@@ -945,10 +1037,103 @@ mod tests {
         priority.set(false);
         assert_eq!(
             d.decode(1000, pkt(0, 1, End, b"B")),
+            Ok(DecodeOutcome::Complete(Bytes::from_static(b"AB")))
+        );
+        assert_eq!(d.metrics()[COUNTER_LEANUDP_DECODE_FRAGMENTS_PRIORITY], 2);
+        assert_eq!(d.metrics()[COUNTER_LEANUDP_DECODE_FRAGMENTS_REGULAR], 0);
+        assert_eq!(d.metrics()[GAUGE_LEANUDP_POOL_PRIORITY_MESSAGES], 0);
+        assert_eq!(d.metrics()[GAUGE_LEANUDP_POOL_REGULAR_MESSAGES], 0);
+    }
+
+    #[test]
+    fn test_per_identity_message_limit_is_combined_across_pools() {
+        #[derive(Clone)]
+        struct ToggleScore(std::rc::Rc<Cell<bool>>);
+
+        impl IdentityScore for ToggleScore {
+            type Identity = u64;
+
+            fn score(&self, _id: &u64) -> FragmentPolicy {
+                if self.0.get() {
+                    FragmentPolicy::Prioritized
+                } else {
+                    FragmentPolicy::Regular
+                }
+            }
+        }
+
+        let priority = std::rc::Rc::new(Cell::new(true));
+        let score = ToggleScore(priority.clone());
+        let clock = MockClock::new();
+        let mut d = Decoder::with_clock(
+            &Config {
+                max_messages_per_identity: 2,
+                ..Config::default()
+            },
+            score,
+            clock,
+        );
+
+        assert_eq!(
+            d.decode(1000, pkt(0, 0, Start, b"A")),
+            Ok(DecodeOutcome::Pending)
+        );
+        priority.set(false);
+        assert_eq!(
+            d.decode(1000, pkt(1, 0, Start, b"B")),
             Ok(DecodeOutcome::Pending)
         );
         assert_eq!(d.metrics()[GAUGE_LEANUDP_POOL_PRIORITY_MESSAGES], 1);
         assert_eq!(d.metrics()[GAUGE_LEANUDP_POOL_REGULAR_MESSAGES], 1);
+
+        assert_eq!(
+            d.decode(1000, pkt(2, 0, Start, b"C")),
+            Err(DecodeError::IdentityLimitExceeded { max: 2 })
+        );
+    }
+
+    #[test]
+    fn test_per_identity_bytes_limit_is_combined_across_pools() {
+        #[derive(Clone)]
+        struct ToggleScore(std::rc::Rc<Cell<bool>>);
+
+        impl IdentityScore for ToggleScore {
+            type Identity = u64;
+
+            fn score(&self, _id: &u64) -> FragmentPolicy {
+                if self.0.get() {
+                    FragmentPolicy::Prioritized
+                } else {
+                    FragmentPolicy::Regular
+                }
+            }
+        }
+
+        let priority = std::rc::Rc::new(Cell::new(true));
+        let score = ToggleScore(priority.clone());
+        let clock = MockClock::new();
+        let mut d = Decoder::with_clock(
+            &Config {
+                max_bytes_per_identity: 10,
+                ..Config::default()
+            },
+            score,
+            clock,
+        );
+
+        assert_eq!(
+            d.decode(1000, pkt(0, 0, Start, b"AAAAAA")),
+            Ok(DecodeOutcome::Pending)
+        );
+        priority.set(false);
+        assert_eq!(
+            d.decode(1000, pkt(1, 0, Start, b"BBBB")),
+            Ok(DecodeOutcome::Pending)
+        );
+        assert_eq!(
+            d.decode(1000, pkt(2, 0, Start, b"X")),
+            Err(DecodeError::IdentityBytesLimitExceeded { size: 11, max: 10 })
+        );
     }
 
     #[test]
@@ -1065,29 +1250,21 @@ mod tests {
     }
 
     #[test]
-    fn test_per_identity_message_limit_hard_capped_at_10() {
+    fn test_per_identity_message_limit_respects_configured_value_above_10() {
         let mut d = TestDecoder::with_config(Config {
-            max_messages_per_identity: 100,
+            max_messages_per_identity: 17,
             ..Config::default()
         });
-        for msg_id in 0..MAX_CONCURRENT_MESSAGES_PER_IDENTITY as u32 {
+        for msg_id in 0..17u32 {
             assert_eq!(
                 d.decode(1000, pkt(msg_id, 0, Start, b"A")),
                 Ok(DecodeOutcome::Pending)
             );
         }
+        assert_eq!(d.regular_messages(), 17);
         assert_eq!(
-            d.regular_messages(),
-            MAX_CONCURRENT_MESSAGES_PER_IDENTITY as u64
-        );
-        assert_eq!(
-            d.decode(
-                1000,
-                pkt(MAX_CONCURRENT_MESSAGES_PER_IDENTITY as u32, 0, Start, b"A")
-            ),
-            Err(DecodeError::IdentityLimitExceeded {
-                max: MAX_CONCURRENT_MESSAGES_PER_IDENTITY
-            })
+            d.decode(1000, pkt(17, 0, Start, b"A")),
+            Err(DecodeError::IdentityLimitExceeded { max: 17 })
         );
     }
 

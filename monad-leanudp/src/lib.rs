@@ -7,14 +7,14 @@ use std::{hash::Hash, time::Duration};
 pub use decoder::{
     Clock, DecodeError, DecodeOutcome, Decoder, DecoderMetrics, Packet, SystemClock,
 };
-pub use encoder::{EncodeError, Encoder, EncoderMetrics, max_payload_for_mtu};
+pub use encoder::{max_payload_for_mtu, EncodeError, Encoder, EncoderMetrics};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, LE, U16, U32};
 
 pub const LEANUDP_HEADER_SIZE: usize = PacketHeader::SIZE;
 pub(crate) const LEANUDP_PROTOCOL_VERSION: u8 = 1;
-/// Hard upper bound enforced by the decoder for in-flight messages per identity, per pool.
+/// Default in-flight messages per identity.
 pub const MAX_CONCURRENT_MESSAGES_PER_IDENTITY: usize = 10;
-/// Default in-flight bytes per identity, per pool.
+/// Default in-flight bytes per identity.
 pub const MAX_CONCURRENT_BYTES_PER_IDENTITY: usize = 256 * 1024;
 
 const DEFAULT_MESSAGE_TIMEOUT: Duration = Duration::from_millis(100);
@@ -103,7 +103,6 @@ pub struct Config {
     pub max_message_size: usize,
     pub max_priority_messages: usize,
     pub max_regular_messages: usize,
-    /// Effective limit is clamped to `MAX_CONCURRENT_MESSAGES_PER_IDENTITY`.
     pub max_messages_per_identity: usize,
     pub max_bytes_per_identity: usize,
     pub message_timeout: Duration,
