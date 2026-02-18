@@ -258,6 +258,8 @@ where
     messages: IndexMap<(I, u32), MessageState>,
     // Min-by-deadline eviction index.
     eviction_index: BTreeSet<(Instant, u64, (I, u32))>,
+    // Per-identity min-by-deadline eviction index.
+    eviction_index_by_identity: BTreeMap<I, BTreeSet<(Instant, u64, u32)>>,
     next_nonce: u64,
     pool_bytes: usize,
     cfg: PoolConfig,
@@ -269,6 +271,7 @@ impl<I: Eq + Hash + Clone + Ord, R: CryptoRng + RngCore> MessagePool<I, R> {
         Self {
             messages: IndexMap::new(),
             eviction_index: BTreeSet::new(),
+            eviction_index_by_identity: BTreeMap::new(),
             next_nonce: 0,
             pool_bytes: 0,
             cfg,
@@ -312,11 +315,56 @@ impl<I: Eq + Hash + Clone + Ord, R: CryptoRng + RngCore> MessagePool<I, R> {
     }
 
     fn find_stale_key(&self, now: Instant) -> Option<(I, u32)> {
-        let (deadline, _nonce, key) = self.eviction_index.iter().next()?.clone();
+        let (deadline, _nonce, key) = self.eviction_index.first()?.clone();
         if deadline <= now {
             Some(key)
         } else {
             None
+        }
+    }
+
+    fn find_stale_key_for_identity(&self, identity: &I, now: Instant) -> Option<(I, u32)> {
+        let identity_index = self.eviction_index_by_identity.get(identity)?;
+        let (deadline, _nonce, msg_id) = *identity_index.first()?;
+        if deadline <= now {
+            Some((identity.clone(), msg_id))
+        } else {
+            None
+        }
+    }
+
+    fn evict_stale_for_identity(
+        &mut self,
+        usage: &mut IdentityUsage<I>,
+        identity: &I,
+        now: Instant,
+    ) -> u64 {
+        let Some(stale_key) = self.find_stale_key_for_identity(identity, now) else {
+            return 0;
+        };
+        let _ = self.remove_message(&stale_key, usage);
+        1
+    }
+
+    fn insert_eviction_index_entry(&mut self, key: &(I, u32), deadline: Instant, nonce: u64) {
+        self.eviction_index.insert((deadline, nonce, key.clone()));
+        self.eviction_index_by_identity
+            .entry(key.0.clone())
+            .or_default()
+            .insert((deadline, nonce, key.1));
+    }
+
+    fn remove_eviction_index_entry(&mut self, key: &(I, u32), deadline: Instant, nonce: u64) {
+        let _ = self.eviction_index.remove(&(deadline, nonce, key.clone()));
+        let mut should_remove_identity = false;
+        if let Some(identity_index) = self.eviction_index_by_identity.get_mut(&key.0) {
+            let _ = identity_index.remove(&(deadline, nonce, key.1));
+            if identity_index.is_empty() {
+                should_remove_identity = true;
+            }
+        }
+        if should_remove_identity {
+            self.eviction_index_by_identity.remove(&key.0);
         }
     }
 
@@ -367,7 +415,7 @@ impl<I: Eq + Hash + Clone + Ord, R: CryptoRng + RngCore> MessagePool<I, R> {
             self.next_nonce = self.next_nonce.wrapping_add(1);
             self.messages
                 .insert(key.clone(), MessageState::new(deadline, nonce));
-            self.eviction_index.insert((deadline, nonce, key.clone()));
+            self.insert_eviction_index_entry(&key, deadline, nonce);
             *usage.message_counts.entry(identity).or_insert(0) += 1;
         }
 
@@ -377,18 +425,24 @@ impl<I: Eq + Hash + Clone + Ord, R: CryptoRng + RngCore> MessagePool<I, R> {
             let new_deadline = now + self.cfg.message_timeout;
             let new_nonce = self.next_nonce;
             self.next_nonce = self.next_nonce.wrapping_add(1);
-            let eviction_index = &mut self.eviction_index;
+            let (old_deadline, old_nonce) = {
+                let state = self
+                    .messages
+                    .get_mut(&key)
+                    .expect("message was just inserted or confirmed to exist");
+                let old_deadline = state.eviction_deadline;
+                let old_nonce = state.eviction_nonce;
+                state.eviction_deadline = new_deadline;
+                state.eviction_nonce = new_nonce;
+                (old_deadline, old_nonce)
+            };
+            self.remove_eviction_index_entry(&key, old_deadline, old_nonce);
+            self.insert_eviction_index_entry(&key, new_deadline, new_nonce);
 
             let state = self
                 .messages
                 .get_mut(&key)
                 .expect("message was just inserted or confirmed to exist");
-
-            let old = (state.eviction_deadline, state.eviction_nonce, key.clone());
-            state.eviction_deadline = new_deadline;
-            state.eviction_nonce = new_nonce;
-            let _ = eviction_index.remove(&old);
-            eviction_index.insert((new_deadline, new_nonce, key.clone()));
 
             ensure!(
                 (seq_num as usize) < MAX_FRAGMENTS,
@@ -469,11 +523,7 @@ impl<I: Eq + Hash + Clone + Ord, R: CryptoRng + RngCore> MessagePool<I, R> {
     ) -> Option<MessageState> {
         let state = self.messages.swap_remove(key)?;
         self.pool_bytes = self.pool_bytes.saturating_sub(state.total_size);
-        let _ = self.eviction_index.remove(&(
-            state.eviction_deadline,
-            state.eviction_nonce,
-            key.clone(),
-        ));
+        self.remove_eviction_index_entry(key, state.eviction_deadline, state.eviction_nonce);
         let identity = &key.0;
         let count = usage
             .message_counts
@@ -617,6 +667,51 @@ where
         }
     }
 
+    fn identity_over_limit_for_new_message(&self, identity: &I, additional_bytes: usize) -> bool {
+        let identity_count = self
+            .identity_usage
+            .message_counts
+            .get(identity)
+            .copied()
+            .unwrap_or_default();
+        if identity_count >= self.identity_usage.max_messages_per_identity {
+            return true;
+        }
+
+        let identity_bytes = self
+            .identity_usage
+            .message_bytes
+            .get(identity)
+            .copied()
+            .unwrap_or_default();
+        identity_bytes.saturating_add(additional_bytes) > self.identity_usage.max_bytes_per_identity
+    }
+
+    fn evict_stale_for_identity_until_recovered(
+        &mut self,
+        identity: &I,
+        now: Instant,
+        additional_bytes: usize,
+    ) -> u64 {
+        let mut evicted_timeout = 0;
+        while self.identity_over_limit_for_new_message(identity, additional_bytes) {
+            let evicted_from_priority = self.priority_pool.evict_stale_for_identity(
+                &mut self.identity_usage,
+                identity,
+                now,
+            );
+            let evicted_from_regular =
+                self.regular_pool
+                    .evict_stale_for_identity(&mut self.identity_usage, identity, now);
+            let evicted_now = evicted_from_priority + evicted_from_regular;
+            if evicted_now == 0 {
+                break;
+            }
+            evicted_timeout += evicted_now;
+        }
+        evicted_timeout
+    }
+
     fn decode_in_pool(
         &mut self,
         now: Instant,
@@ -628,14 +723,23 @@ where
             PoolSelection::Priority => {
                 let mut evicted = EvictionCounts::default();
                 if !self.priority_pool.has_message(key) {
-                    while self.priority_pool.admission_blocked(input.payload.len()) {
-                        let Some(kind) = self
-                            .priority_pool
-                            .evict_before_admission(&mut self.identity_usage, now)
-                        else {
-                            break;
-                        };
-                        evicted.add(kind);
+                    let payload_len = input.payload.len();
+                    evicted.timeout += self.evict_stale_for_identity_until_recovered(
+                        &input.identity,
+                        now,
+                        payload_len,
+                    );
+
+                    if !self.identity_over_limit_for_new_message(&input.identity, payload_len) {
+                        while self.priority_pool.admission_blocked(payload_len) {
+                            let Some(kind) = self
+                                .priority_pool
+                                .evict_before_admission(&mut self.identity_usage, now)
+                            else {
+                                break;
+                            };
+                            evicted.add(kind);
+                        }
                     }
                 }
                 let result = self
@@ -646,14 +750,23 @@ where
             PoolSelection::Regular => {
                 let mut evicted = EvictionCounts::default();
                 if !self.regular_pool.has_message(key) {
-                    while self.regular_pool.admission_blocked(input.payload.len()) {
-                        let Some(kind) = self
-                            .regular_pool
-                            .evict_before_admission(&mut self.identity_usage, now)
-                        else {
-                            break;
-                        };
-                        evicted.add(kind);
+                    let payload_len = input.payload.len();
+                    evicted.timeout += self.evict_stale_for_identity_until_recovered(
+                        &input.identity,
+                        now,
+                        payload_len,
+                    );
+
+                    if !self.identity_over_limit_for_new_message(&input.identity, payload_len) {
+                        while self.regular_pool.admission_blocked(payload_len) {
+                            let Some(kind) = self
+                                .regular_pool
+                                .evict_before_admission(&mut self.identity_usage, now)
+                            else {
+                                break;
+                            };
+                            evicted.add(kind);
+                        }
                     }
                 }
                 let result = self
@@ -1505,6 +1618,94 @@ mod tests {
             Ok(DecodeOutcome::Pending)
         );
         assert_eq!(d.priority_messages(), 2);
+    }
+
+    #[test]
+    fn test_per_identity_limit_evicts_own_stale_messages_first() {
+        let mut d = TestDecoder::with_config_and_priority(
+            Config {
+                max_message_size: 128 * 1024,
+                max_priority_messages: 10,
+                max_regular_messages: 10,
+                max_priority_bytes: 10 * 128 * 1024,
+                max_regular_bytes: 10 * 128 * 1024,
+                max_messages_per_identity: 2,
+                max_bytes_per_identity: MAX_CONCURRENT_BYTES_PER_IDENTITY,
+                message_timeout: Duration::from_millis(100),
+                max_fragment_payload: 1440,
+            },
+            &[1000],
+        );
+        let _ = d.decode(1000, pkt(0, 0, Start, b"A"));
+        let _ = d.decode(1000, pkt(1, 0, Start, b"B"));
+        assert_eq!(d.priority_messages(), 2);
+        d.advance_ms(200);
+
+        assert_eq!(
+            d.decode(1000, pkt(2, 0, Start, b"C")),
+            Ok(DecodeOutcome::Pending)
+        );
+        assert_eq!(d.priority_messages(), 2);
+        assert_eq!(d.inner.metrics()[COUNTER_LEANUDP_DECODE_EVICTED_TIMEOUT], 1);
+        assert_eq!(d.inner.metrics()[COUNTER_LEANUDP_DECODE_EVICTED_RANDOM], 0);
+    }
+
+    #[test]
+    fn test_identity_over_limit_without_stale_does_not_evict_global() {
+        let mut d = TestDecoder::with_config_and_priority(
+            Config {
+                max_message_size: 128 * 1024,
+                max_priority_messages: 2,
+                max_regular_messages: 10,
+                max_priority_bytes: 10 * 128 * 1024,
+                max_regular_bytes: 10 * 128 * 1024,
+                max_messages_per_identity: 1,
+                max_bytes_per_identity: MAX_CONCURRENT_BYTES_PER_IDENTITY,
+                message_timeout: Duration::from_secs(10),
+                max_fragment_payload: 1440,
+            },
+            &[1000, 2000],
+        );
+        let _ = d.decode(1000, pkt(0, 0, Start, b"A"));
+        let _ = d.decode(2000, pkt(1, 0, Start, b"B"));
+        assert_eq!(d.priority_messages(), 2);
+
+        assert_eq!(
+            d.decode(1000, pkt(2, 0, Start, b"C")),
+            Err(DecodeError::IdentityLimitExceeded { max: 1 })
+        );
+        assert_eq!(d.priority_messages(), 2);
+        assert_eq!(d.inner.metrics()[COUNTER_LEANUDP_DECODE_EVICTED_TIMEOUT], 0);
+        assert_eq!(d.inner.metrics()[COUNTER_LEANUDP_DECODE_EVICTED_RANDOM], 0);
+    }
+
+    #[test]
+    fn test_identity_bytes_limit_evicts_own_stale_messages_first() {
+        let mut d = TestDecoder::with_config_and_priority(
+            Config {
+                max_message_size: 128 * 1024,
+                max_priority_messages: 10,
+                max_regular_messages: 10,
+                max_priority_bytes: 10 * 128 * 1024,
+                max_regular_bytes: 10 * 128 * 1024,
+                max_messages_per_identity: 10,
+                max_bytes_per_identity: 5,
+                message_timeout: Duration::from_millis(100),
+                max_fragment_payload: 1440,
+            },
+            &[1000],
+        );
+        let _ = d.decode(1000, pkt(0, 0, Start, b"AAAAA"));
+        assert_eq!(d.priority_messages(), 1);
+        d.advance_ms(200);
+
+        assert_eq!(
+            d.decode(1000, pkt(1, 0, Start, b"B")),
+            Ok(DecodeOutcome::Pending)
+        );
+        assert_eq!(d.priority_messages(), 1);
+        assert_eq!(d.inner.metrics()[COUNTER_LEANUDP_DECODE_EVICTED_TIMEOUT], 1);
+        assert_eq!(d.inner.metrics()[COUNTER_LEANUDP_DECODE_EVICTED_RANDOM], 0);
     }
 
     #[test]
