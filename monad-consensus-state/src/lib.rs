@@ -1256,9 +1256,6 @@ where
                 }),
         );
 
-        // Update proposed_head after high_qc change
-        cmds.extend(self.propose_canonical_head());
-
         // retrieve missing blocks if processed QC is highest and points at an
         // unknown block
         cmds.extend(self.consensus.request_blocks_if_missing_ancestor());
@@ -1309,8 +1306,6 @@ where
                     )
                 }),
         );
-
-        cmds.extend(self.propose_canonical_head());
 
         let round = self.consensus.pacemaker.get_current_round();
         let round_leader = self.lookup_leader(round);
@@ -1447,25 +1442,6 @@ where
         cmds.extend(self.consensus.request_blocks_if_missing_ancestor());
 
         cmds
-    }
-
-    /// Returns a `Proposed` commit command for the canonical coherent tip.
-    fn propose_canonical_head(&self) -> Option<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
-        let high_cert_qc = self.consensus.pacemaker.high_certificate().qc();
-        let canonical_tip_id = self
-            .consensus
-            .pending_block_tree
-            .get_canonical_coherent_tip(high_cert_qc);
-        let block = self
-            .consensus
-            .pending_block_tree
-            .get_block(&canonical_tip_id)?;
-        Some(ConsensusCommand::CommitBlocks(
-            OptimisticPolicyCommit::Proposed {
-                block: block.to_owned(),
-                is_canonical: true,
-            },
-        ))
     }
 
     #[must_use]
@@ -3234,9 +3210,9 @@ mod test {
             matches!(wrapped_state.consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.round == Round(2))
         );
 
-        // Block 2 is newly coherent, and block 1 is re-emitted as canonical tip after high_qc advances
+        // Block 2 is newly coherent and is the canonical tip
         let rounds = extract_proposal_commit_rounds(cmds);
-        assert_eq!(rounds, vec![Round(1), Round(2)]);
+        assert_eq!(rounds, vec![Round(2)]);
 
         let mut missing_proposals = Vec::new();
         for _ in 0..5 {
@@ -3248,8 +3224,8 @@ mod test {
         let (author, _, verified_message) = p_fut.destructure();
         let cmds = wrapped_state.handle_proposal_message(author, verified_message);
         let rounds = extract_proposal_commit_rounds(cmds);
-        // Round 2 is re-emitted as canonical coherent tip (gap fallback walks from root)
-        assert_eq!(rounds, vec![Round(2)]);
+        // No newly coherent blocks (parent missing due to gap), so no Proposed emitted
+        assert_eq!(rounds, vec![]);
 
         // was in Round(2) and skipped over 5 proposals. Handling
         // p_fut should be at Round(3+5)
@@ -3339,7 +3315,7 @@ mod test {
         let block_2_round = verified_message.tip.block_header.block_round;
         let cmds = wrapped_state.handle_proposal_message(author, verified_message);
 
-        // Should have Proposed commit for block 2 (newly coherent) and block 1 (re-emitted as canonical tip)
+        // Should have Proposed commit for block 2 (newly coherent and canonical tip)
         let proposed_rounds: Vec<_> = cmds
             .iter()
             .filter_map(|c| match c {
@@ -3349,7 +3325,7 @@ mod test {
                 _ => None,
             })
             .collect();
-        assert_eq!(proposed_rounds, vec![block_1_round, block_2_round]);
+        assert_eq!(proposed_rounds, vec![block_2_round]);
 
         // Should have Voted commit for block 1 (QC observed via child proposal)
         let voted_rounds: Vec<_> = cmds

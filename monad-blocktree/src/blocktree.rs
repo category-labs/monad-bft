@@ -540,29 +540,27 @@ where
         chain
     }
 
-    /// Returns the highest-round coherent descendant in the subtree rooted at `block_id`
+    /// Returns the highest-round coherent descendant in the subtree rooted at `block_id`.
+    /// `block_id` must be coherent.
     fn highest_round_coherent_descendant(&self, block_id: BlockId) -> BlockId {
         let mut best_id = block_id;
-        let Some(mut best_round) = (if block_id == self.root.info.block_id {
-            Some(self.root.info.round)
+
+        let mut best_round = if block_id == self.root.info.block_id {
+            self.root.info.round
+        } else if let Some(entry) = self.tree.get(&block_id) {
+            entry.validated_block.get_block_round()
         } else {
-            self.tree
-                .get(&block_id)
-                .map(|entry| entry.validated_block.get_block_round())
-        }) else {
             return block_id;
         };
 
         // Traverse the coherent subtree rooted at `block_id`
         let mut queue = VecDeque::from([block_id]);
         while let Some(current_id) = queue.pop_front() {
-            let Some(children) = (if current_id == self.root.info.block_id {
-                Some(&self.root.children_blocks)
+            let children = if current_id == self.root.info.block_id {
+                &self.root.children_blocks
+            } else if let Some(entry) = self.tree.get(&current_id) {
+                &entry.children_blocks
             } else {
-                self.tree
-                    .get(&current_id)
-                    .map(|entry| &entry.children_blocks)
-            }) else {
                 continue;
             };
 
