@@ -51,6 +51,7 @@ use self::{
     },
     meta::{monad_net_version, monad_web3_client_version},
     resources::MonadRpcResources,
+    txpool::{monad_txpool_statusByAddress, monad_txpool_statusByHash},
 };
 use crate::{
     eth_json_types::serialize_result,
@@ -66,7 +67,6 @@ use crate::{
         RequestWrapper, Response, ResponseWrapper,
     },
     timing::RequestId,
-    vpool::{monad_txpool_statusByAddress, monad_txpool_statusByHash},
 };
 
 mod debug;
@@ -74,6 +74,7 @@ mod debug_replay;
 pub mod eth;
 mod meta;
 pub mod resources;
+mod txpool;
 
 pub async fn rpc_handler(
     root_span: RootSpan,
