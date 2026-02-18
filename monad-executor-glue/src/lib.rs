@@ -530,7 +530,20 @@ where
     /// Used to update the nonces of tracked txs
     BlockCommit(Vec<BPT::ValidatedBlock>),
 
-    CreateProposal {
+    CreateProposalAhead {
+        node_id: NodeId<CertificateSignaturePubKey<ST>>,
+        epoch: Epoch,
+        round: Round,
+        seq_num: SeqNum,
+
+        tx_limit: usize,
+        proposal_gas_limit: u64,
+        proposal_byte_limit: u64,
+        timestamp_ns: u128,
+
+        extending_blocks: Vec<BPT::ValidatedBlock>,
+    },
+    FetchProposal {
         node_id: NodeId<CertificateSignaturePubKey<ST>>,
         epoch: Epoch,
         round: Round,
@@ -580,7 +593,29 @@ where
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::BlockCommit(arg0) => f.debug_tuple("BlockCommit").field(arg0).finish(),
-            Self::CreateProposal {
+            Self::CreateProposalAhead {
+                node_id,
+                epoch,
+                round,
+                seq_num,
+                tx_limit,
+                proposal_gas_limit,
+                proposal_byte_limit,
+                timestamp_ns,
+                extending_blocks,
+            } => f
+                .debug_struct("CreateProposalAhead")
+                .field("node_id", node_id)
+                .field("epoch", epoch)
+                .field("round", round)
+                .field("seq_num", seq_num)
+                .field("tx_limit", tx_limit)
+                .field("proposal_gas_limit", proposal_gas_limit)
+                .field("proposal_byte_limit", proposal_byte_limit)
+                .field("timestamp_ns", timestamp_ns)
+                .field("extending_blocks", extending_blocks)
+                .finish(),
+            Self::FetchProposal {
                 node_id,
                 epoch,
                 round,

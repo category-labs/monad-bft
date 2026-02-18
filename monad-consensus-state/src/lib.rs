@@ -529,6 +529,8 @@ where
         if proposal_round != pacemaker_round {
             debug!(?pacemaker_round, ?proposal_round, "out-of-order proposal");
             self.metrics.consensus_events.out_of_order_proposals += 1;
+        } else {
+            cmds.extend(self.try_create_proposal_ahead(block_id));
         }
 
         cmds
@@ -1622,6 +1624,99 @@ where
         cmds
     }
 
+    #[must_use]
+    fn try_create_proposal_ahead(
+        &mut self,
+        extending_block_id: BlockId,
+    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
+        let mut cmds = Vec::new();
+
+        if !self
+            .consensus
+            .pending_block_tree
+            .is_coherent(&extending_block_id)
+        {
+            return cmds;
+        }
+
+        let current_round = self.consensus.get_current_round();
+        let next_round = current_round + Round(1);
+        let next_round_epoch = self
+            .epoch_manager
+            .get_epoch(next_round)
+            .expect("epoch of next round should be known");
+        let next_validator_set = self
+            .val_epoch_map
+            .get_val_set(&next_round_epoch)
+            .expect("validator set of next round should be available");
+        let next_leader = self
+            .election
+            .get_leader(next_round, next_validator_set.get_members());
+
+        // optimistically create next proposal if node is the leader of next round
+        if *self.nodeid == next_leader {
+            let extending_blocks = self
+                .consensus
+                .pending_block_tree
+                .get_blocks_on_path_from_root(&extending_block_id)
+                .expect("coherent block should have path to root");
+            let (next_seq_num, extending_block_id, next_timestamp_ns) =
+                if let Some(extending_block) = extending_blocks.last() {
+                    (
+                        extending_block.get_seq_num() + SeqNum(1),
+                        extending_block.get_id(),
+                        extending_block.get_timestamp() + 1,
+                    )
+                } else {
+                    let root = self.consensus.pending_block_tree.root();
+                    (
+                        root.seq_num + SeqNum(1),
+                        root.block_id,
+                        root.timestamp_ns + 1,
+                    )
+                };
+
+            debug!(
+                ?current_round,
+                ?next_round,
+                ?next_seq_num,
+                ?extending_block_id,
+                "consensus emitting creating proposal ahead for next round"
+            );
+            self.metrics.consensus_events.creating_proposal_ahead += 1;
+
+            cmds.push(ConsensusCommand::CreateProposalAhead {
+                node_id: *self.nodeid,
+                epoch: next_round_epoch,
+                round: next_round,
+                seq_num: next_seq_num,
+                tx_limit: self
+                    .config
+                    .chain_config
+                    .get_chain_revision(next_round)
+                    .chain_params()
+                    .tx_limit,
+                proposal_gas_limit: self
+                    .config
+                    .chain_config
+                    .get_chain_revision(next_round)
+                    .chain_params()
+                    .proposal_gas_limit,
+                proposal_byte_limit: self
+                    .config
+                    .chain_config
+                    .get_chain_revision(next_round)
+                    .chain_params()
+                    .proposal_byte_limit,
+                timestamp_ns: next_timestamp_ns,
+                // TODO remove clone. extending blocks are also cloned during FetchProposal
+                extending_blocks: extending_blocks.into_iter().cloned().collect(),
+            });
+        }
+
+        cmds
+    }
+
     /// This function is (and must be) idempotent
     #[must_use]
     fn try_propose(&mut self) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
@@ -1828,10 +1923,11 @@ where
                     ?round,
                     ?qc,
                     ?try_propose_seq_num,
-                    "emitting create proposal command to txpool"
+                    "consensus emitting fetch proposal command to txpool"
                 );
+                self.metrics.consensus_events.fetching_proposal += 1;
 
-                cmds.push(ConsensusCommand::CreateProposal {
+                cmds.push(ConsensusCommand::FetchProposal {
                     node_id: *self.nodeid,
                     epoch,
                     round,
@@ -1863,6 +1959,7 @@ where
                     beneficiary: *self.beneficiary,
                     timestamp_ns,
 
+                    // TODO remove clone. extending blocks are also cloned during CreateProposalAhead
                     extending_blocks: pending_blocktree_blocks.into_iter().cloned().collect(),
                     delayed_execution_results,
                 });
@@ -2612,7 +2709,21 @@ mod test {
             .collect::<Vec<_>>()
     }
 
-    fn extract_create_proposal_command_round<ST, SCT, BPT, SBT>(
+    fn find_create_proposal_ahead<ST, SCT, EPT, BPT, SBT>(
+        cmds: &[ConsensusCommand<ST, SCT, EPT, BPT, SBT, MockChainConfig, MockChainRevision>],
+    ) -> Option<&ConsensusCommand<ST, SCT, EPT, BPT, SBT, MockChainConfig, MockChainRevision>>
+    where
+        ST: CertificateSignatureRecoverable,
+        SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+        EPT: ExecutionProtocol,
+        BPT: BlockPolicy<ST, SCT, EPT, SBT, MockChainConfig, MockChainRevision>,
+        SBT: StateBackend<ST, SCT>,
+    {
+        cmds.iter()
+            .find(|c| matches!(c, ConsensusCommand::CreateProposalAhead { .. }))
+    }
+
+    fn extract_fetch_proposal_command_round<ST, SCT, BPT, SBT>(
         cmds: Vec<
             ConsensusCommand<
                 ST,
@@ -2634,7 +2745,7 @@ mod test {
     {
         cmds.iter()
             .find_map(|c| match c {
-                ConsensusCommand::CreateProposal { round, .. } => Some(*round),
+                ConsensusCommand::FetchProposal { round, .. } => Some(*round),
                 _ => None,
             })
             .unwrap_or_else(|| panic!("couldn't extract proposal: {:?}", cmds))
@@ -4068,7 +4179,7 @@ mod test {
             leader.consensus_state.pacemaker.get_current_round(),
             Round(missing_round + 1)
         );
-        let round = extract_create_proposal_command_round(cmds);
+        let round = extract_fetch_proposal_command_round(cmds);
         assert_eq!(Round(missing_round + 1), round);
     }
 
@@ -5426,8 +5537,6 @@ mod test {
         assert!(block_3_blocktree_entry.is_coherent);
     }
 
-    const EXPECTED_FUTURE_LEADER_IDXS: &[usize] = &[2, 3, 1];
-
     #[test]
     fn test_iter_upcoming_self_leader_rounds() {
         let num_states = 4;
@@ -5900,5 +6009,62 @@ mod test {
 
         assert_eq!(node0.consensus_state.get_current_round(), round + Round(1));
         assert_eq!(node1.consensus_state.get_current_round(), round + Round(1));
+    }
+
+    #[test]
+    fn test_create_proposal_ahead() {
+        let num_states = 2;
+        let execution_delay = SeqNum(4);
+        let (mut env, ctx) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            BlockPolicyType,
+            StateBackendType,
+            BlockValidatorType,
+            _,
+            _,
+        >(
+            num_states as u32,
+            ValidatorSetFactory::default(),
+            SimpleRoundRobin::default(),
+            || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0),
+            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
+            EthBlockValidator::default,
+            execution_delay,
+        );
+
+        let p1 = env.next_proposal_empty();
+        let (author, _, verified_message) = p1.destructure();
+        let proposal_round = verified_message.proposal_round;
+        let proposal_seq_num = verified_message.tip.block_header.seq_num;
+
+        let next_round = proposal_round + Round(1);
+        let next_epoch = env
+            .epoch_manager
+            .get_epoch(next_round)
+            .expect("epoch exists");
+        let next_leader = env.election.get_leader(
+            next_round,
+            env.val_epoch_map
+                .get_val_set(&next_epoch)
+                .unwrap()
+                .get_members(),
+        );
+        let next_seq_num = proposal_seq_num + SeqNum(1);
+
+        for mut node in ctx {
+            let cmds = node.handle_proposal_message(author, verified_message.clone());
+            let create_proposal_ahead_cmd = find_create_proposal_ahead(&cmds);
+            if node.nodeid == next_leader {
+                assert!(create_proposal_ahead_cmd.is_some_and(|cmd| match cmd {
+                    ConsensusCommand::CreateProposalAhead { round, seq_num, .. } => {
+                        *round == next_round && *seq_num == next_seq_num
+                    }
+                    _ => panic!("expected CreateProposalAhead command"),
+                }));
+            } else {
+                assert!(create_proposal_ahead_cmd.is_none());
+            }
+        }
     }
 }
