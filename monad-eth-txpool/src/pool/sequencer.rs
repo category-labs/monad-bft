@@ -122,6 +122,7 @@ impl<N> Ord for OrderedTxGroup<'_, N> {
 pub struct ProposalSequencer<'a, N> {
     heap: BinaryHeap<OrderedTxGroup<'a, N>>,
     virtual_time: u64,
+    base_fee: u64,
 }
 
 impl<'a, N> ProposalSequencer<'a, N> {
@@ -166,6 +167,7 @@ impl<'a, N> ProposalSequencer<'a, N> {
         Self {
             heap: BinaryHeap::from(heap_vec),
             virtual_time,
+            base_fee,
         }
     }
 
@@ -250,6 +252,7 @@ impl<'a, N> ProposalSequencer<'a, N> {
                 &mut account_balances,
                 &validator,
                 &mut proposal,
+                self.base_fee,
                 address,
                 tx.tx,
             ) {
@@ -291,6 +294,7 @@ impl<'a, N> ProposalSequencer<'a, N> {
         account_balances: &mut BTreeMap<&Address, AccountBalanceState>,
         validator: &EthBlockPolicyBlockValidator<CRT>,
         proposal: &mut Proposal<N>,
+        base_fee: u64,
         address: &Address,
         tx: &ValidEthTransaction<N>,
     ) -> bool
@@ -342,6 +346,12 @@ impl<'a, N> ProposalSequencer<'a, N> {
         proposal.total_size += tx_size;
         proposal.txs.push(tx.raw().to_owned());
 
+        if let Some(tip_per_gas) = tx.raw().effective_tip_per_gas(base_fee) {
+            proposal.expected_priority_fee_wei = proposal
+                .expected_priority_fee_wei
+                .saturating_add(tip_per_gas.saturating_mul(tx.gas_limit() as u128));
+        }
+
         if let Some(sender) = tx.forwarded_sender() {
             *proposal
                 .forwarded_sender_gas
@@ -377,6 +387,7 @@ pub(super) struct Proposal<N> {
     pub txs: Vec<Recovered<TxEnvelope>>,
     pub total_gas: u64,
     pub total_size: u64,
+    expected_priority_fee_wei: u128,
     forwarded_sender_gas: HashMap<N, u64>,
 }
 
@@ -386,6 +397,7 @@ impl<N> Default for Proposal<N> {
             txs: Vec::new(),
             total_gas: 0,
             total_size: 0,
+            expected_priority_fee_wei: 0,
             forwarded_sender_gas: HashMap::new(),
         }
     }
@@ -397,5 +409,11 @@ impl<N: Clone + Eq + Hash> Proposal<N> {
             .iter()
             .map(|(n, g)| (n.clone(), *g))
             .collect()
+    }
+
+    pub fn expected_priority_fee_gwei(&self) -> u64 {
+        const WEI_PER_GWEI: u128 = 1_000_000_000;
+        let gwei = self.expected_priority_fee_wei / WEI_PER_GWEI;
+        gwei.min(u64::MAX as u128) as u64
     }
 }

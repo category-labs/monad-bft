@@ -705,12 +705,14 @@ where
         );
 
         let proposal_num_txs = proposal.txs.len();
+        let proposal_expected_priority_fee_gwei = proposal.expected_priority_fee_gwei();
 
         event_tracker.record_create_proposal(
             self.tracked.num_addresses(),
             sequencer_len,
             state_backend_lookups,
             proposal_num_txs,
+            proposal_expected_priority_fee_gwei,
         );
 
         let forwarded_senders_with_gas = proposal.forwarded_senders_with_gas();
@@ -719,6 +721,7 @@ where
             ?proposed_seq_num,
             ?proposal_num_txs,
             proposal_total_gas = proposal.total_gas,
+            proposal_expected_priority_fee_gwei,
             forwarded_senders = forwarded_senders_with_gas.len(),
             "created proposal"
         );
