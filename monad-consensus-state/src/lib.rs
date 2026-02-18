@@ -1209,7 +1209,7 @@ where
             .get_highest_coherent_block_on_path_from_root(&qc_block_id)
         {
             cmds.push(ConsensusCommand::CommitBlocks(
-                OptimisticPolicyCommit::Voted(voted_block.to_owned()),
+                OptimisticPolicyCommit::UpdateVotedHead(voted_block.to_owned()),
             ));
         }
 
@@ -1397,7 +1397,7 @@ where
                 .schedule_epoch_start(block.header().seq_num, block.get_block_round());
 
             cmds.push(ConsensusCommand::CommitBlocks(
-                OptimisticPolicyCommit::Finalized(block.to_owned()),
+                OptimisticPolicyCommit::UpdateFinalizedHead(block.to_owned()),
             ));
         }
 
@@ -1467,7 +1467,6 @@ where
             .pending_block_tree
             .get_canonical_coherent_tip(high_cert_qc);
 
-        // Emit Proposed commits with is_canonical flag
         for newly_coherent_block in newly_coherent_blocks {
             let is_canonical = canonical_tip == newly_coherent_block.get_id();
             debug!(
@@ -1476,13 +1475,16 @@ where
                 ?is_canonical,
                 "committing block proposed"
             );
-            // optimistically commit any block that has been added to the blocktree and is coherent
-            cmds.push(ConsensusCommand::CommitBlocks(
-                OptimisticPolicyCommit::Proposed {
-                    block: newly_coherent_block.to_owned(),
-                    is_canonical,
-                },
-            ));
+
+            if is_canonical {
+                cmds.push(ConsensusCommand::CommitBlocks(
+                    OptimisticPolicyCommit::UpdateProposedHead(newly_coherent_block.to_owned()),
+                ));
+            } else {
+                cmds.push(ConsensusCommand::CommitBlocks(
+                    OptimisticPolicyCommit::Proposed(newly_coherent_block.to_owned()),
+                ));
+            }
         }
 
         let high_commit_qc = self.consensus.pending_block_tree.get_high_committable_qc();
@@ -2736,9 +2738,10 @@ mod test {
     {
         cmds.iter()
             .filter_map(|c| match c {
-                ConsensusCommand::CommitBlocks(OptimisticPolicyCommit::Proposed {
-                    block, ..
-                }) => Some(block.get_block_round()),
+                ConsensusCommand::CommitBlocks(OptimisticPolicyCommit::Proposed(block))
+                | ConsensusCommand::CommitBlocks(OptimisticPolicyCommit::UpdateProposedHead(
+                    block,
+                )) => Some(block.get_block_round()),
                 _ => None,
             })
             .collect()
@@ -2770,9 +2773,9 @@ mod test {
     {
         cmds.iter()
             .filter_map(|c| match c {
-                ConsensusCommand::CommitBlocks(OptimisticPolicyCommit::Finalized(committed)) => {
-                    Some(committed.to_owned())
-                }
+                ConsensusCommand::CommitBlocks(OptimisticPolicyCommit::UpdateFinalizedHead(
+                    committed,
+                )) => Some(committed.to_owned()),
                 _ => None,
             })
             .collect()
@@ -3250,6 +3253,123 @@ mod test {
         );
     }
 
+    #[test]
+    fn test_proposed_vs_update_proposed_head_variant() {
+        let num_state = 4;
+        let execution_delay = SeqNum::MAX;
+        let (mut env, mut ctx) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            BlockPolicyType,
+            StateBackendType,
+            BlockValidatorType,
+            _,
+            _,
+        >(
+            num_state,
+            ValidatorSetFactory::default(),
+            SimpleRoundRobin::default(),
+            || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0),
+            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
+            EthBlockValidator::default,
+            execution_delay,
+        );
+        let mut wrapped_state = ctx[0].wrapped_state();
+
+        let extract_update_proposed_head = |cmds: &[ConsensusCommand<
+            _,
+            _,
+            _,
+            BlockPolicyType,
+            StateBackendType,
+            _,
+            _,
+        >]|
+         -> Vec<Round> {
+            cmds.iter()
+                .filter_map(|c| match c {
+                    ConsensusCommand::CommitBlocks(OptimisticPolicyCommit::UpdateProposedHead(
+                        block,
+                    )) => Some(block.get_block_round()),
+                    _ => None,
+                })
+                .collect()
+        };
+        let extract_proposed = |cmds: &[ConsensusCommand<
+            _,
+            _,
+            _,
+            BlockPolicyType,
+            StateBackendType,
+            _,
+            _,
+        >]|
+         -> Vec<Round> {
+            cmds.iter()
+                .filter_map(|c| match c {
+                    ConsensusCommand::CommitBlocks(OptimisticPolicyCommit::Proposed(block)) => {
+                        Some(block.get_block_round())
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+
+        // First block after genesis is emitted as Proposed.
+        // The pacemaker's high_cert_qc still references the genesis block. The canonical
+        // tip computation falls back to the genesis root, which does not match block 1.
+        let p1 = env.next_proposal_empty();
+        let (author, _, verified_message) = p1.destructure();
+        let block_1_round = verified_message.tip.block_header.block_round;
+        let cmds = wrapped_state.handle_proposal_message(author, verified_message);
+
+        assert!(extract_update_proposed_head(&cmds).is_empty());
+        assert_eq!(extract_proposed(&cmds), vec![block_1_round]);
+
+        // Second block is emitted as UpdateProposedHead.
+        // p2 carries a QC for round 1, advancing high_cert_qc. The canonical tip now
+        // resolves to block 2, so it is emitted as UpdateProposedHead.
+        let p2 = env.next_proposal_empty();
+        let (author, _, verified_message) = p2.destructure();
+        let block_2_round = verified_message.tip.block_header.block_round;
+        let cmds = wrapped_state.handle_proposal_message(author, verified_message);
+
+        assert_eq!(extract_update_proposed_head(&cmds), vec![block_2_round]);
+        assert!(extract_proposed(&cmds).is_empty());
+
+        // Third block is emitted as UpdateProposedHead.
+        // Generate proposals for rounds 3-7 but withhold them. Then deliver the round 8
+        // proposal, which advances high_cert_qc to round 7 but cannot become coherent
+        // because its parent (block 7) is missing.
+        let mut missing_proposals = Vec::new();
+        for _ in 0..5 {
+            missing_proposals.push(env.next_proposal_empty());
+        }
+        let p_fut = env.next_proposal_empty();
+        let (author, _, verified_message) = p_fut.destructure();
+        let _ = wrapped_state.handle_proposal_message(author, verified_message);
+
+        // Deliver the withheld proposals (rounds 3-7) to fill the gap.
+        let mut cmds = Vec::new();
+        for p in missing_proposals {
+            let (author, _, verified_message) = p.clone().destructure();
+            cmds.extend(wrapped_state.handle_proposal_message(author, verified_message));
+        }
+
+        // Rounds 3-6: each proposal makes exactly one block coherent, and that block is
+        // the canonical tip at the time -> UpdateProposedHead.
+        //
+        // Round 7: delivering this proposal makes block 7 coherent, which in turn makes
+        // block 8 coherent (it was already in the tree, waiting on its parent). Two blocks
+        // become coherent simultaneously. Block 8 is the canonical tip ->
+        // UpdateProposedHead. Block 7 is not -> Proposed.
+        assert_eq!(
+            extract_update_proposed_head(&cmds),
+            vec![Round(3), Round(4), Round(5), Round(6), Round(8)],
+        );
+        assert_eq!(extract_proposed(&cmds), vec![Round(7)]);
+    }
+
     /// Test that `Voted` commits only occur when a QC is observed, not at proposal time.
     /// - First proposal: emits `Proposed` for block 1, no `Voted`
     /// - Second proposal (contains QC for block 1): emits `Proposed` for block 2, `Voted` for block 1
@@ -3282,13 +3402,14 @@ mod test {
         let block_1_round = verified_message.tip.block_header.block_round;
         let cmds = wrapped_state.handle_proposal_message(author, verified_message);
 
-        // Should have Proposed commit for block 1
+        // Should have Proposed commit for block 1 (canonical tip)
         let proposed_rounds: Vec<_> = cmds
             .iter()
             .filter_map(|c| match c {
-                ConsensusCommand::CommitBlocks(OptimisticPolicyCommit::Proposed {
-                    block, ..
-                }) => Some(block.get_block_round()),
+                ConsensusCommand::CommitBlocks(OptimisticPolicyCommit::Proposed(block))
+                | ConsensusCommand::CommitBlocks(OptimisticPolicyCommit::UpdateProposedHead(
+                    block,
+                )) => Some(block.get_block_round()),
                 _ => None,
             })
             .collect();
@@ -3298,7 +3419,7 @@ mod test {
         let voted_rounds: Vec<_> = cmds
             .iter()
             .filter_map(|c| match c {
-                ConsensusCommand::CommitBlocks(OptimisticPolicyCommit::Voted(block)) => {
+                ConsensusCommand::CommitBlocks(OptimisticPolicyCommit::UpdateVotedHead(block)) => {
                     Some(block.get_block_round())
                 }
                 _ => None,
@@ -3319,9 +3440,10 @@ mod test {
         let proposed_rounds: Vec<_> = cmds
             .iter()
             .filter_map(|c| match c {
-                ConsensusCommand::CommitBlocks(OptimisticPolicyCommit::Proposed {
-                    block, ..
-                }) => Some(block.get_block_round()),
+                ConsensusCommand::CommitBlocks(OptimisticPolicyCommit::Proposed(block))
+                | ConsensusCommand::CommitBlocks(OptimisticPolicyCommit::UpdateProposedHead(
+                    block,
+                )) => Some(block.get_block_round()),
                 _ => None,
             })
             .collect();
@@ -3331,7 +3453,7 @@ mod test {
         let voted_rounds: Vec<_> = cmds
             .iter()
             .filter_map(|c| match c {
-                ConsensusCommand::CommitBlocks(OptimisticPolicyCommit::Voted(block)) => {
+                ConsensusCommand::CommitBlocks(OptimisticPolicyCommit::UpdateVotedHead(block)) => {
                     Some(block.get_block_round())
                 }
                 _ => None,
@@ -3733,24 +3855,27 @@ mod test {
         assert_eq!(n0.metrics.consensus_events.rx_bad_state_root, 1);
 
         assert_eq!(n0.consensus_state.get_current_round(), Round(6));
-        // Filter out Proposed commits (re-emitted for canonical tip) for assertion check
+        // Filter out Proposed/UpdateProposedHead commits for assertion check
         let cmds_without_proposed: Vec<_> = cmds
             .iter()
             .filter(|cmd| {
                 !matches!(
                     cmd,
-                    ConsensusCommand::CommitBlocks(OptimisticPolicyCommit::Proposed { .. })
+                    ConsensusCommand::CommitBlocks(OptimisticPolicyCommit::Proposed(_))
+                        | ConsensusCommand::CommitBlocks(
+                            OptimisticPolicyCommit::UpdateProposedHead(_)
+                        )
                 )
             })
             .collect();
         assert_eq!(cmds_without_proposed.len(), 5);
         assert!(matches!(
             cmds_without_proposed[0],
-            ConsensusCommand::CommitBlocks(OptimisticPolicyCommit::Voted(_))
+            ConsensusCommand::CommitBlocks(OptimisticPolicyCommit::UpdateVotedHead(_))
         ));
         assert!(matches!(
             cmds_without_proposed[1],
-            ConsensusCommand::CommitBlocks(OptimisticPolicyCommit::Finalized(_))
+            ConsensusCommand::CommitBlocks(OptimisticPolicyCommit::UpdateFinalizedHead(_))
         ));
         assert!(matches!(
             cmds_without_proposed[2],

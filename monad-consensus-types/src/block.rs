@@ -675,12 +675,10 @@ where
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
-    Proposed {
-        block: BPT::ValidatedBlock,
-        is_canonical: bool,
-    },
-    Voted(BPT::ValidatedBlock),
-    Finalized(BPT::ValidatedBlock),
+    Proposed(BPT::ValidatedBlock),
+    UpdateProposedHead(BPT::ValidatedBlock),
+    UpdateVotedHead(BPT::ValidatedBlock),
+    UpdateFinalizedHead(BPT::ValidatedBlock),
 }
 
 #[derive(Debug)]
@@ -690,12 +688,10 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-    Proposed {
-        block: ConsensusFullBlock<ST, SCT, EPT>,
-        is_canonical: bool,
-    },
-    Voted(ConsensusFullBlock<ST, SCT, EPT>),
-    Finalized(ConsensusFullBlock<ST, SCT, EPT>),
+    Proposed(ConsensusFullBlock<ST, SCT, EPT>),
+    UpdateProposedHead(ConsensusFullBlock<ST, SCT, EPT>),
+    UpdateVotedHead(ConsensusFullBlock<ST, SCT, EPT>),
+    UpdateFinalizedHead(ConsensusFullBlock<ST, SCT, EPT>),
 }
 impl<ST, SCT, EPT, BPT, SBT, CCT, CRT>
     From<&OptimisticPolicyCommit<ST, SCT, EPT, BPT, SBT, CCT, CRT>>
@@ -711,15 +707,16 @@ where
 {
     fn from(value: &OptimisticPolicyCommit<ST, SCT, EPT, BPT, SBT, CCT, CRT>) -> Self {
         match value {
-            OptimisticPolicyCommit::Proposed {
-                block,
-                is_canonical,
-            } => Self::Proposed {
-                block: block.deref().to_owned(),
-                is_canonical: *is_canonical,
-            },
-            OptimisticPolicyCommit::Voted(block) => Self::Voted(block.deref().to_owned()),
-            OptimisticPolicyCommit::Finalized(block) => Self::Finalized(block.deref().to_owned()),
+            OptimisticPolicyCommit::Proposed(block) => Self::Proposed(block.deref().to_owned()),
+            OptimisticPolicyCommit::UpdateProposedHead(block) => {
+                Self::UpdateProposedHead(block.deref().to_owned())
+            }
+            OptimisticPolicyCommit::UpdateVotedHead(block) => {
+                Self::UpdateVotedHead(block.deref().to_owned())
+            }
+            OptimisticPolicyCommit::UpdateFinalizedHead(block) => {
+                Self::UpdateFinalizedHead(block.deref().to_owned())
+            }
         }
     }
 }
