@@ -37,6 +37,8 @@ fn make_config(max_regular_messages: usize) -> Config {
         max_message_size: 128 * 1024,
         max_priority_messages: 100,
         max_regular_messages,
+        max_priority_bytes: 100 * 128 * 1024,
+        max_regular_bytes: max_regular_messages * 128 * 1024,
         max_messages_per_identity: MAX_CONCURRENT_MESSAGES_PER_IDENTITY,
         max_bytes_per_identity: MAX_CONCURRENT_BYTES_PER_IDENTITY,
         message_timeout: Duration::from_secs(60),

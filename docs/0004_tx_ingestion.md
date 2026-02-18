@@ -193,16 +193,18 @@ Default parameters:
 |-----------|---------|-------------|
 | max_fragment_payload | 1432 | Bytes per fragment |
 | max_message_size | 128 KB | Maximum assembled message size |
-| max_fragments_per_message | 92 | Maximum fragments per message (128 KB / 1432) |
-| max_priority_messages | 10,000 | Concurrent priority reassemblies |
-| max_regular_messages | 1,000 | Concurrent regular reassemblies |
-| max_messages_per_identity | 10 | Concurrent messages per identity (hard-capped at 10) |
-| max_bytes_per_identity | 256 KB | Concurrent in-flight bytes per identity, per pool |
-| message_timeout | 100ms | Config field retained for compatibility; eviction is random-only |
+| max_fragments_per_message | 92 | Typical maximum fragments per message (128 KB / 1432); protocol hard limit is 128 fragments |
+| max_priority_messages | 8,192 | Concurrent priority reassemblies |
+| max_regular_messages | 4,096 | Concurrent regular reassemblies |
+| max_priority_bytes | 1 GiB | Total in-flight priority reassembly bytes |
+| max_regular_bytes | 512 MiB | Total in-flight regular reassembly bytes |
+| max_messages_per_identity | 20 | Concurrent messages per identity |
+| max_bytes_per_identity | 256 KB | Concurrent in-flight bytes per identity (combined across pools) |
+| message_timeout | 100ms | Evict timed-out messages first when full; otherwise evict random |
 
 ### Reassembly Pool Eviction
 
-Both priority and regular pools use random eviction when full. This keeps behavior uniform across tiers and removes time-based eviction effects.
+Both priority and regular pools evict timed-out messages first when full; if no message is timed out, eviction falls back to random.
 
 ## Impact on Other Components
 

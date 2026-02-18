@@ -13,7 +13,7 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, LE, U16, U32};
 pub const LEANUDP_HEADER_SIZE: usize = PacketHeader::SIZE;
 pub(crate) const LEANUDP_PROTOCOL_VERSION: u8 = 1;
 /// Default in-flight messages per identity.
-pub const MAX_CONCURRENT_MESSAGES_PER_IDENTITY: usize = 10;
+pub const MAX_CONCURRENT_MESSAGES_PER_IDENTITY: usize = 20;
 /// Default in-flight bytes per identity.
 pub const MAX_CONCURRENT_BYTES_PER_IDENTITY: usize = 256 * 1024;
 
@@ -103,6 +103,10 @@ pub struct Config {
     pub max_message_size: usize,
     pub max_priority_messages: usize,
     pub max_regular_messages: usize,
+    /// Max total in-flight payload bytes held in the priority pool.
+    pub max_priority_bytes: usize,
+    /// Max total in-flight payload bytes held in the regular pool.
+    pub max_regular_bytes: usize,
     pub max_messages_per_identity: usize,
     pub max_bytes_per_identity: usize,
     pub message_timeout: Duration,
@@ -160,8 +164,10 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             max_message_size: 128 * 1024,
-            max_priority_messages: 10_000,
-            max_regular_messages: 1_000,
+            max_priority_messages: 8_192,
+            max_regular_messages: 4_096,
+            max_priority_bytes: 1024 * 1024 * 1024, // 1 GiB
+            max_regular_bytes: 512 * 1024 * 1024,   // 512 MiB
             max_messages_per_identity: MAX_CONCURRENT_MESSAGES_PER_IDENTITY,
             max_bytes_per_identity: MAX_CONCURRENT_BYTES_PER_IDENTITY,
             message_timeout: DEFAULT_MESSAGE_TIMEOUT,
@@ -218,8 +224,10 @@ mod tests {
     fn test_default_config() {
         let config = Config::default();
         assert_eq!(config.max_message_size, 128 * 1024);
-        assert_eq!(config.max_priority_messages, 10_000);
-        assert_eq!(config.max_regular_messages, 1_000);
+        assert_eq!(config.max_priority_messages, 8_192);
+        assert_eq!(config.max_regular_messages, 4_096);
+        assert_eq!(config.max_priority_bytes, 1024 * 1024 * 1024);
+        assert_eq!(config.max_regular_bytes, 512 * 1024 * 1024);
         assert_eq!(
             config.max_messages_per_identity,
             MAX_CONCURRENT_MESSAGES_PER_IDENTITY

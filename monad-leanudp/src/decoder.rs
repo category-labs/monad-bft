@@ -1,9 +1,9 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     convert::Infallible,
     hash::Hash,
     ops::Deref,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use bytes::{Bytes, BytesMut};
@@ -116,6 +116,14 @@ pub struct Packet {
     pub payload: Bytes,
 }
 
+struct FragmentInput<I> {
+    identity: I,
+    msg_id: u32,
+    seq_num: u16,
+    fragment_type: FragmentType,
+    payload: Bytes,
+}
+
 impl TryFrom<Bytes> for Packet {
     type Error = DecodeError;
 
@@ -146,14 +154,18 @@ struct MessageState {
     fragments: BTreeMap<u16, Bytes>,
     total_size: usize,
     total_frags: Option<u16>,
+    eviction_deadline: Instant,
+    eviction_nonce: u64,
 }
 
 impl MessageState {
-    fn new() -> Self {
+    fn new(eviction_deadline: Instant, eviction_nonce: u64) -> Self {
         Self {
             fragments: BTreeMap::new(),
             total_size: 0,
             total_frags: None,
+            eviction_deadline,
+            eviction_nonce,
         }
     }
 
@@ -169,13 +181,47 @@ impl MessageState {
 struct PoolConfig {
     max_messages: usize,
     max_message_size: usize,
+    max_bytes: usize,
+    message_timeout: Duration,
 }
 
 impl PoolConfig {
-    fn from_config(config: &Config, max_messages: usize) -> Self {
+    fn from_config(config: &Config, max_messages: usize, max_bytes: usize) -> Self {
         Self {
             max_messages,
             max_message_size: config.max_message_size,
+            max_bytes,
+            message_timeout: config.message_timeout,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EvictionKind {
+    Timeout,
+    Random,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct EvictionCounts {
+    timeout: u64,
+    random: u64,
+}
+
+impl EvictionCounts {
+    fn add(&mut self, kind: EvictionKind) {
+        match kind {
+            EvictionKind::Timeout => self.timeout += 1,
+            EvictionKind::Random => self.random += 1,
+        }
+    }
+}
+
+impl EvictionKind {
+    fn metric_name(self) -> &'static str {
+        match self {
+            EvictionKind::Timeout => COUNTER_LEANUDP_DECODE_EVICTED_TIMEOUT,
+            EvictionKind::Random => COUNTER_LEANUDP_DECODE_EVICTED_RANDOM,
         }
     }
 }
@@ -210,6 +256,10 @@ where
     R: CryptoRng + RngCore,
 {
     messages: IndexMap<(I, u32), MessageState>,
+    // Min-by-deadline eviction index.
+    eviction_index: BTreeSet<(Instant, u64, (I, u32))>,
+    next_nonce: u64,
+    pool_bytes: usize,
     cfg: PoolConfig,
     rng: R,
 }
@@ -218,6 +268,9 @@ impl<I: Eq + Hash + Clone + Ord, R: CryptoRng + RngCore> MessagePool<I, R> {
     fn new(cfg: PoolConfig, rng: R) -> Self {
         Self {
             messages: IndexMap::new(),
+            eviction_index: BTreeSet::new(),
+            next_nonce: 0,
+            pool_bytes: 0,
             cfg,
             rng,
         }
@@ -227,32 +280,71 @@ impl<I: Eq + Hash + Clone + Ord, R: CryptoRng + RngCore> MessagePool<I, R> {
         self.messages.contains_key(key)
     }
 
-    fn evict_before_admission(&mut self, usage: &mut IdentityUsage<I>) -> Option<(I, u32)> {
-        let key = if self.messages.len() >= self.cfg.max_messages && !self.messages.is_empty() {
-            let random_index = self.rng.gen_range(0..self.messages.len());
-            self.messages
-                .get_index(random_index)
-                .map(|(key, _)| key.clone())
+    fn evict_before_admission(
+        &mut self,
+        usage: &mut IdentityUsage<I>,
+        now: Instant,
+    ) -> Option<EvictionKind> {
+        if self.messages.is_empty() {
+            return None;
+        }
+
+        if let Some(stale_key) = self.find_stale_key(now) {
+            let _ = self.remove_message(&stale_key, usage);
+            return Some(EvictionKind::Timeout);
+        }
+
+        let random_index = self.rng.gen_range(0..self.messages.len());
+        let random_key = self
+            .messages
+            .get_index(random_index)
+            .map(|(key, _)| key.clone());
+        random_key.map(|key| {
+            let _ = self.remove_message(&key, usage);
+            EvictionKind::Random
+        })
+    }
+
+    fn admission_blocked(&self, additional_bytes: usize) -> bool {
+        let by_messages = self.messages.len() >= self.cfg.max_messages;
+        let by_bytes = self.pool_bytes.saturating_add(additional_bytes) > self.cfg.max_bytes;
+        by_messages || by_bytes
+    }
+
+    fn find_stale_key(&self, now: Instant) -> Option<(I, u32)> {
+        let (deadline, _nonce, key) = self.eviction_index.iter().next()?.clone();
+        if deadline <= now {
+            Some(key)
         } else {
             None
-        };
-        key.inspect(|k| {
-            let _ = self.remove_message(k, usage);
-        })
+        }
     }
 
     /// Decode a fragment into the pool.
     fn decode(
         &mut self,
         usage: &mut IdentityUsage<I>,
-        identity: I,
-        msg_id: u32,
-        seq_num: u16,
-        fragment_type: FragmentType,
-        data: Bytes,
+        now: Instant,
+        input: FragmentInput<I>,
     ) -> Result<DecodeOutcome, DecodeError> {
+        let FragmentInput {
+            identity,
+            msg_id,
+            seq_num,
+            fragment_type,
+            payload: data,
+        } = input;
         let key = (identity.clone(), msg_id);
         let fragment_size = data.len();
+
+        // Enforce global pool byte budget. If an in-flight message can't grow, drop it to avoid
+        // a permanently-stuck entry that can never accept future fragments.
+        if self.pool_bytes.saturating_add(fragment_size) > self.cfg.max_bytes {
+            if self.messages.contains_key(&key) {
+                let _ = self.remove_message(&key, usage);
+            }
+            return Err(DecodeError::PoolFull);
+        }
 
         if !self.messages.contains_key(&key) {
             let identity_count = usage
@@ -270,17 +362,33 @@ impl<I: Eq + Hash + Clone + Ord, R: CryptoRng + RngCore> MessagePool<I, R> {
                 self.messages.len() < self.cfg.max_messages,
                 DecodeError::PoolFull
             );
-            self.messages.insert(key.clone(), MessageState::new());
+            let deadline = now + self.cfg.message_timeout;
+            let nonce = self.next_nonce;
+            self.next_nonce = self.next_nonce.wrapping_add(1);
+            self.messages
+                .insert(key.clone(), MessageState::new(deadline, nonce));
+            self.eviction_index.insert((deadline, nonce, key.clone()));
             *usage.message_counts.entry(identity).or_insert(0) += 1;
         }
 
         let identity_bytes = usage.message_bytes.get(&key.0).copied().unwrap_or_default();
 
         let is_complete = {
+            let new_deadline = now + self.cfg.message_timeout;
+            let new_nonce = self.next_nonce;
+            self.next_nonce = self.next_nonce.wrapping_add(1);
+            let eviction_index = &mut self.eviction_index;
+
             let state = self
                 .messages
                 .get_mut(&key)
                 .expect("message was just inserted or confirmed to exist");
+
+            let old = (state.eviction_deadline, state.eviction_nonce, key.clone());
+            state.eviction_deadline = new_deadline;
+            state.eviction_nonce = new_nonce;
+            let _ = eviction_index.remove(&old);
+            eviction_index.insert((new_deadline, new_nonce, key.clone()));
 
             ensure!(
                 (seq_num as usize) < MAX_FRAGMENTS,
@@ -342,6 +450,7 @@ impl<I: Eq + Hash + Clone + Ord, R: CryptoRng + RngCore> MessagePool<I, R> {
             state.total_frags == Some(state.fragments.len() as u16)
         };
         *usage.message_bytes.entry(key.0.clone()).or_insert(0) += fragment_size;
+        self.pool_bytes = self.pool_bytes.saturating_add(fragment_size);
 
         if !is_complete {
             return Ok(DecodeOutcome::Pending);
@@ -359,6 +468,12 @@ impl<I: Eq + Hash + Clone + Ord, R: CryptoRng + RngCore> MessagePool<I, R> {
         usage: &mut IdentityUsage<I>,
     ) -> Option<MessageState> {
         let state = self.messages.swap_remove(key)?;
+        self.pool_bytes = self.pool_bytes.saturating_sub(state.total_size);
+        let _ = self.eviction_index.remove(&(
+            state.eviction_deadline,
+            state.eviction_nonce,
+            key.clone(),
+        ));
         let identity = &key.0;
         let count = usage
             .message_counts
@@ -427,13 +542,6 @@ impl PoolSelection {
             PoolSelection::Regular => COUNTER_LEANUDP_DECODE_BYTES_REGULAR,
         }
     }
-
-    fn evicted_counter(self) -> &'static str {
-        match self {
-            PoolSelection::Priority => COUNTER_LEANUDP_DECODE_EVICTED_RANDOM,
-            PoolSelection::Regular => COUNTER_LEANUDP_DECODE_EVICTED_RANDOM,
-        }
-    }
 }
 
 pub struct Decoder<I, P, C, R = StdRng>
@@ -447,7 +555,7 @@ where
     regular_pool: MessagePool<I, R>,
     identity_usage: IdentityUsage<I>,
     identity_score: P,
-    _clock: C,
+    clock: C,
     metrics: ExecutorMetrics,
 }
 
@@ -477,16 +585,24 @@ where
     ) -> Self {
         Self {
             priority_pool: MessagePool::new(
-                PoolConfig::from_config(config, config.max_priority_messages),
+                PoolConfig::from_config(
+                    config,
+                    config.max_priority_messages,
+                    config.max_priority_bytes,
+                ),
                 regular_pool_rng.clone(),
             ),
             regular_pool: MessagePool::new(
-                PoolConfig::from_config(config, config.max_regular_messages),
+                PoolConfig::from_config(
+                    config,
+                    config.max_regular_messages,
+                    config.max_regular_bytes,
+                ),
                 regular_pool_rng,
             ),
             identity_usage: IdentityUsage::from_config(config),
             identity_score,
-            _clock: clock,
+            clock,
             metrics: ExecutorMetrics::default(),
         }
     }
@@ -503,49 +619,46 @@ where
 
     fn decode_in_pool(
         &mut self,
+        now: Instant,
         selected_pool: PoolSelection,
         key: &(I, u32),
-        identity: I,
-        msg_id: u32,
-        seq_num: u16,
-        fragment_type: FragmentType,
-        payload: Bytes,
-    ) -> (Result<DecodeOutcome, DecodeError>, bool) {
+        input: FragmentInput<I>,
+    ) -> (Result<DecodeOutcome, DecodeError>, EvictionCounts) {
         match selected_pool {
             PoolSelection::Priority => {
-                let evicted = if self.priority_pool.has_message(key) {
-                    false
-                } else {
-                    self.priority_pool
-                        .evict_before_admission(&mut self.identity_usage)
-                        .is_some()
-                };
-                let result = self.priority_pool.decode(
-                    &mut self.identity_usage,
-                    identity,
-                    msg_id,
-                    seq_num,
-                    fragment_type,
-                    payload,
-                );
+                let mut evicted = EvictionCounts::default();
+                if !self.priority_pool.has_message(key) {
+                    while self.priority_pool.admission_blocked(input.payload.len()) {
+                        let Some(kind) = self
+                            .priority_pool
+                            .evict_before_admission(&mut self.identity_usage, now)
+                        else {
+                            break;
+                        };
+                        evicted.add(kind);
+                    }
+                }
+                let result = self
+                    .priority_pool
+                    .decode(&mut self.identity_usage, now, input);
                 (result, evicted)
             }
             PoolSelection::Regular => {
-                let evicted = if self.regular_pool.has_message(key) {
-                    false
-                } else {
-                    self.regular_pool
-                        .evict_before_admission(&mut self.identity_usage)
-                        .is_some()
-                };
-                let result = self.regular_pool.decode(
-                    &mut self.identity_usage,
-                    identity,
-                    msg_id,
-                    seq_num,
-                    fragment_type,
-                    payload,
-                );
+                let mut evicted = EvictionCounts::default();
+                if !self.regular_pool.has_message(key) {
+                    while self.regular_pool.admission_blocked(input.payload.len()) {
+                        let Some(kind) = self
+                            .regular_pool
+                            .evict_before_admission(&mut self.identity_usage, now)
+                        else {
+                            break;
+                        };
+                        evicted.add(kind);
+                    }
+                }
+                let result = self
+                    .regular_pool
+                    .decode(&mut self.identity_usage, now, input);
                 (result, evicted)
             }
         }
@@ -555,14 +668,13 @@ where
         &mut self,
         selected_pool: PoolSelection,
         payload_bytes: u64,
-        evicted: bool,
+        evicted: EvictionCounts,
         result: &Result<DecodeOutcome, DecodeError>,
     ) {
         self.metrics[selected_pool.fragments_counter()] += 1;
         self.metrics[selected_pool.bytes_counter()] += payload_bytes;
-        if evicted {
-            self.metrics[selected_pool.evicted_counter()] += 1;
-        }
+        self.metrics[EvictionKind::Timeout.metric_name()] += evicted.timeout;
+        self.metrics[EvictionKind::Random.metric_name()] += evicted.random;
 
         match result {
             Ok(DecodeOutcome::Complete(msg)) => {
@@ -604,16 +716,16 @@ where
         let msg_id = header.msg_id();
         let key = (identity.clone(), msg_id);
         let selected_pool = self.select_pool(&identity, &key);
-
-        let (result, evicted) = self.decode_in_pool(
-            selected_pool,
-            &key,
+        let now = self.clock.now();
+        let input = FragmentInput {
             identity,
             msg_id,
-            header.seq_num(),
-            header.fragment_type(),
+            seq_num: header.seq_num(),
+            fragment_type: header.fragment_type(),
             payload,
-        );
+        };
+
+        let (result, evicted) = self.decode_in_pool(now, selected_pool, &key, input);
         self.record_decode_metrics(selected_pool, payload_bytes, evicted, &result);
         self.update_pool_gauges();
 
@@ -678,6 +790,8 @@ mod tests {
                 max_message_size: 128 * 1024,
                 max_priority_messages: 10,
                 max_regular_messages: 5,
+                max_priority_bytes: 10 * 128 * 1024,
+                max_regular_bytes: 5 * 128 * 1024,
                 max_messages_per_identity: 10,
                 max_bytes_per_identity: MAX_CONCURRENT_BYTES_PER_IDENTITY,
                 message_timeout: Duration::from_millis(400),
@@ -695,6 +809,8 @@ mod tests {
                     max_message_size: 128 * 1024,
                     max_priority_messages: 10,
                     max_regular_messages: 5,
+                    max_priority_bytes: 10 * 128 * 1024,
+                    max_regular_bytes: 5 * 128 * 1024,
                     max_messages_per_identity: 10,
                     max_bytes_per_identity: MAX_CONCURRENT_BYTES_PER_IDENTITY,
                     message_timeout: Duration::from_millis(400),
@@ -792,6 +908,8 @@ mod tests {
                 max_message_size: 128 * 1024,
                 max_priority_messages: 5,
                 max_regular_messages: 5,
+                max_priority_bytes: 5 * 128 * 1024,
+                max_regular_bytes: 5 * 128 * 1024,
                 max_messages_per_identity: 10,
                 max_bytes_per_identity: MAX_CONCURRENT_BYTES_PER_IDENTITY,
                 message_timeout: Duration::from_millis(400),
@@ -811,6 +929,8 @@ mod tests {
             Ok(DecodeOutcome::Pending)
         );
         assert_eq!(d.priority_messages(), 5);
+        assert_eq!(d.inner.metrics()[COUNTER_LEANUDP_DECODE_EVICTED_RANDOM], 1);
+        assert_eq!(d.inner.metrics()[COUNTER_LEANUDP_DECODE_EVICTED_TIMEOUT], 0);
     }
 
     #[test]
@@ -820,6 +940,8 @@ mod tests {
                 max_message_size: 128 * 1024,
                 max_priority_messages: 0,
                 max_regular_messages: 5,
+                max_priority_bytes: 0,
+                max_regular_bytes: 5 * 128 * 1024,
                 max_messages_per_identity: 10,
                 max_bytes_per_identity: MAX_CONCURRENT_BYTES_PER_IDENTITY,
                 message_timeout: Duration::from_millis(100),
@@ -870,6 +992,59 @@ mod tests {
             Ok(DecodeOutcome::Pending)
         );
         assert_eq!(d.regular_messages(), 5);
+        assert_eq!(d.inner.metrics()[COUNTER_LEANUDP_DECODE_EVICTED_RANDOM], 1);
+        assert_eq!(d.inner.metrics()[COUNTER_LEANUDP_DECODE_EVICTED_TIMEOUT], 0);
+    }
+
+    #[test]
+    fn test_regular_pool_full_by_bytes_evicts_random() {
+        let mut d = TestDecoder::with_config(Config {
+            max_message_size: 128 * 1024,
+            max_priority_messages: 10,
+            max_regular_messages: 100,
+            max_priority_bytes: 10 * 128 * 1024,
+            max_regular_bytes: 2,
+            max_messages_per_identity: 10,
+            max_bytes_per_identity: MAX_CONCURRENT_BYTES_PER_IDENTITY,
+            message_timeout: Duration::from_millis(400),
+            max_fragment_payload: 1440,
+        });
+        let _ = d.decode(1000, pkt(0, 0, Start, b"x"));
+        let _ = d.decode(2000, pkt(1, 0, Start, b"x"));
+        assert_eq!(d.regular_messages(), 2);
+        assert_eq!(
+            d.decode(3000, pkt(2, 0, Start, b"x")),
+            Ok(DecodeOutcome::Pending)
+        );
+        assert_eq!(d.regular_messages(), 2);
+        assert_eq!(d.inner.metrics()[COUNTER_LEANUDP_DECODE_EVICTED_RANDOM], 1);
+        assert_eq!(d.inner.metrics()[COUNTER_LEANUDP_DECODE_EVICTED_TIMEOUT], 0);
+    }
+
+    #[test]
+    fn test_regular_pool_full_by_bytes_evicts_stale_before_random() {
+        let mut d = TestDecoder::with_config(Config {
+            max_message_size: 128 * 1024,
+            max_priority_messages: 10,
+            max_regular_messages: 100,
+            max_priority_bytes: 10 * 128 * 1024,
+            max_regular_bytes: 2,
+            max_messages_per_identity: 10,
+            max_bytes_per_identity: MAX_CONCURRENT_BYTES_PER_IDENTITY,
+            message_timeout: Duration::from_millis(100),
+            max_fragment_payload: 1440,
+        });
+        let _ = d.decode(1000, pkt(0, 0, Start, b"x"));
+        let _ = d.decode(2000, pkt(1, 0, Start, b"x"));
+        assert_eq!(d.regular_messages(), 2);
+        d.advance_ms(200);
+        assert_eq!(
+            d.decode(3000, pkt(2, 0, Start, b"x")),
+            Ok(DecodeOutcome::Pending)
+        );
+        assert_eq!(d.regular_messages(), 2);
+        assert_eq!(d.inner.metrics()[COUNTER_LEANUDP_DECODE_EVICTED_TIMEOUT], 1);
+        assert_eq!(d.inner.metrics()[COUNTER_LEANUDP_DECODE_EVICTED_RANDOM], 0);
     }
 
     #[test]
@@ -1305,6 +1480,8 @@ mod tests {
                 max_message_size: 128 * 1024,
                 max_priority_messages: 10,
                 max_regular_messages: 10,
+                max_priority_bytes: 10 * 128 * 1024,
+                max_regular_bytes: 10 * 128 * 1024,
                 max_messages_per_identity: 2,
                 max_bytes_per_identity: MAX_CONCURRENT_BYTES_PER_IDENTITY,
                 message_timeout: Duration::from_millis(100),
@@ -1331,11 +1508,13 @@ mod tests {
     }
 
     #[test]
-    fn test_regular_pool_eviction_does_not_depend_on_time() {
+    fn test_regular_pool_full_evicts_stale_before_random() {
         let mut d = TestDecoder::with_config(Config {
             max_message_size: 128 * 1024,
             max_priority_messages: 10,
             max_regular_messages: 2,
+            max_priority_bytes: 10 * 128 * 1024,
+            max_regular_bytes: 2 * 128 * 1024,
             max_messages_per_identity: 10,
             max_bytes_per_identity: MAX_CONCURRENT_BYTES_PER_IDENTITY,
             message_timeout: Duration::from_millis(100),
@@ -1350,5 +1529,36 @@ mod tests {
             Ok(DecodeOutcome::Pending)
         );
         assert_eq!(d.regular_messages(), 2);
+        assert_eq!(d.inner.metrics()[COUNTER_LEANUDP_DECODE_EVICTED_TIMEOUT], 1);
+        assert_eq!(d.inner.metrics()[COUNTER_LEANUDP_DECODE_EVICTED_RANDOM], 0);
+    }
+
+    #[test]
+    fn test_priority_pool_full_evicts_stale_before_random() {
+        let mut d = TestDecoder::with_config_and_priority(
+            Config {
+                max_message_size: 128 * 1024,
+                max_priority_messages: 2,
+                max_regular_messages: 5,
+                max_priority_bytes: 2 * 128 * 1024,
+                max_regular_bytes: 5 * 128 * 1024,
+                max_messages_per_identity: 10,
+                max_bytes_per_identity: MAX_CONCURRENT_BYTES_PER_IDENTITY,
+                message_timeout: Duration::from_millis(100),
+                max_fragment_payload: 1440,
+            },
+            &[1000, 1001, 1002],
+        );
+        let _ = d.decode(1000, pkt(0, 0, Start, b"A"));
+        let _ = d.decode(1001, pkt(1, 0, Start, b"B"));
+        assert_eq!(d.priority_messages(), 2);
+        d.advance_ms(200);
+        assert_eq!(
+            d.decode(1002, pkt(2, 0, Start, b"C")),
+            Ok(DecodeOutcome::Pending)
+        );
+        assert_eq!(d.priority_messages(), 2);
+        assert_eq!(d.inner.metrics()[COUNTER_LEANUDP_DECODE_EVICTED_TIMEOUT], 1);
+        assert_eq!(d.inner.metrics()[COUNTER_LEANUDP_DECODE_EVICTED_RANDOM], 0);
     }
 }
