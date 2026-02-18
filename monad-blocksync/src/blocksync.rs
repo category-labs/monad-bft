@@ -1667,14 +1667,6 @@ mod test {
             .collect_vec()
     }
 
-    fn find_send_response_commands(
-        cmds: &[BlockSyncCommand<SignatureType, SignatureCollectionType, ExecutionProtocolType>],
-    ) -> Vec<&BlockSyncCommand<SignatureType, SignatureCollectionType, ExecutionProtocolType>> {
-        cmds.iter()
-            .filter(|cmd| matches!(cmd, BlockSyncCommand::SendResponse { .. }))
-            .collect_vec()
-    }
-
     fn find_schedule_timeout_commands(
         cmds: &[BlockSyncCommand<SignatureType, SignatureCollectionType, ExecutionProtocolType>],
     ) -> Vec<&BlockSyncCommand<SignatureType, SignatureCollectionType, ExecutionProtocolType>> {
@@ -1703,6 +1695,7 @@ mod test {
     fn initiate_headers_request() {
         // Handle self request should emit a fetch headers command
         // If not available in ledger, request from peer with a timeout
+        // Re-request on timeout
         let mut context = setup();
 
         let requester = BlockSyncSelfRequester::Consensus;
@@ -1716,16 +1709,16 @@ mod test {
         assert_eq!(cmds.len(), 1);
 
         let fetch_headers_cmds = find_fetch_headers_commands(&cmds);
-        assert_eq!(fetch_headers_cmds.len(), 1);
         assert_eq!(
-            fetch_headers_cmds[0],
-            &BlockSyncCommand::FetchHeaders(block_range)
+            fetch_headers_cmds,
+            vec![&BlockSyncCommand::FetchHeaders(block_range)]
         );
 
         // headers not available in self ledger, should request from a peer
         let cmds = context
             .handle_ledger_response(BlockSyncResponseMessage::headers_not_available(block_range));
         assert_eq!(cmds.len(), 2);
+
         let headers_request = BlockSyncRequestMessage::Headers(block_range);
         let expected_request_command = BlockSyncCommand::SendRequest {
             to: context.peer_id,
@@ -1734,57 +1727,25 @@ mod test {
         let expected_timeout_command = BlockSyncCommand::ScheduleTimeout(headers_request);
 
         let request_cmds = find_send_request_commands(&cmds);
-        assert_eq!(request_cmds.len(), 1);
-        assert_eq!(request_cmds[0], &expected_request_command);
+        assert_eq!(request_cmds, vec![&expected_request_command]);
 
         let timeout_cmds = find_schedule_timeout_commands(&cmds);
-        assert_eq!(timeout_cmds.len(), 1);
-        assert_eq!(timeout_cmds[0], &expected_timeout_command);
+        assert_eq!(timeout_cmds, vec![&expected_timeout_command]);
 
         // duplicate response from ledger should not emit more commands
         let cmds = context
             .handle_ledger_response(BlockSyncResponseMessage::headers_not_available(block_range));
         assert_eq!(cmds.len(), 0);
-    }
 
-    #[test]
-    fn timeout_headers_request_to_peer() {
-        // Handle self request should emit a fetch headers command
-        // If not available in ledger, request from peer with a timeout
-        // Re-request when timeout hits
-        let mut context = setup();
-
-        let requester = BlockSyncSelfRequester::Consensus;
-        let block_range = BlockRange {
-            last_block_id: BlockId(Hash([0x00_u8; 32])),
-            num_blocks: SeqNum(1),
-        };
-
-        // requesting a block range should initiate a headers request
-        let cmds = context.handle_self_request(requester, block_range);
-        assert_eq!(cmds.len(), 1);
-
-        // headers not available in self ledger, should request from a peer
-        let cmds = context
-            .handle_ledger_response(BlockSyncResponseMessage::headers_not_available(block_range));
-        assert_eq!(cmds.len(), 2);
-
+        // timeout should re-request from peer
         let cmds = context.handle_timeout(BlockSyncRequestMessage::Headers(block_range));
         assert_eq!(cmds.len(), 2);
-        let headers_request = BlockSyncRequestMessage::Headers(block_range);
-        let expected_request_command = BlockSyncCommand::SendRequest {
-            to: context.peer_id,
-            request: headers_request,
-        };
-        let expected_timeout_command = BlockSyncCommand::ScheduleTimeout(headers_request);
 
         let request_cmds = find_send_request_commands(&cmds);
-        assert_eq!(request_cmds.len(), 1);
-        assert_eq!(request_cmds[0], &expected_request_command);
+        assert_eq!(request_cmds, vec![&expected_request_command]);
 
         let timeout_cmds = find_schedule_timeout_commands(&cmds);
-        assert_eq!(timeout_cmds.len(), 1);
-        assert_eq!(timeout_cmds[0], &expected_timeout_command);
+        assert_eq!(timeout_cmds, vec![&expected_timeout_command]);
     }
 
     #[test]
@@ -1832,8 +1793,7 @@ mod test {
         let expected_reset_command = BlockSyncCommand::ResetTimeout(headers_request);
 
         let reset_timeout_cmds = find_reset_timeout_commands(&cmds);
-        assert_eq!(reset_timeout_cmds.len(), 1);
-        assert_eq!(reset_timeout_cmds[0], &expected_reset_command);
+        assert_eq!(reset_timeout_cmds, vec![&expected_reset_command]);
 
         let fetch_payload_cmds = find_fetch_payload_commands(&cmds);
         assert_eq!(fetch_payload_cmds.len(), num_blocks);
@@ -1856,12 +1816,10 @@ mod test {
             assert_eq!(cmds.len(), 2);
 
             let request_cmds = find_send_request_commands(&cmds);
-            assert_eq!(request_cmds.len(), 1);
-            assert_eq!(request_cmds[0], &expected_request_command);
+            assert_eq!(request_cmds, vec![&expected_request_command]);
 
             let timeout_cmds = find_schedule_timeout_commands(&cmds);
-            assert_eq!(timeout_cmds.len(), 1);
-            assert_eq!(timeout_cmds[0], &expected_timeout_command);
+            assert_eq!(timeout_cmds, vec![&expected_timeout_command]);
 
             // duplicate response from ledger should not emit more commands
             let cmds = context.handle_ledger_response(
@@ -1914,13 +1872,57 @@ mod test {
         let expected_timeout_command = BlockSyncCommand::ScheduleTimeout(payload_request);
 
         let request_cmds = find_send_request_commands(&cmds);
-        assert_eq!(request_cmds.len(), 1);
-        assert_eq!(request_cmds[0], &expected_request_command);
+        assert_eq!(request_cmds, vec![&expected_request_command]);
 
         let timeout_cmds = find_schedule_timeout_commands(&cmds);
+        assert_eq!(timeout_cmds, vec![&expected_timeout_command]);
+    }
 
-        assert_eq!(timeout_cmds.len(), 1);
-        assert_eq!(timeout_cmds[0], &expected_timeout_command);
+    #[test_case(true; "cancel request after receiving headers")]
+    #[test_case(false; "cancel request before receiving headers")]
+    fn cancel_request(headers_received: bool) {
+        // Handle self request should emit a fetch headers command
+        // Handle self cancel request should remove existing requests (not in flight payload requests)
+        let mut context = setup();
+        let full_block = context.get_blocks(1).pop().unwrap();
+        let payload = full_block.body().clone();
+
+        let requester = BlockSyncSelfRequester::Consensus;
+        let block_range = BlockRange {
+            last_block_id: full_block.get_id(),
+            num_blocks: SeqNum(1),
+        };
+
+        // requesting a block range should initiate a headers request
+        let cmds = context.handle_self_request(requester, block_range);
+        assert_eq!(cmds.len(), 1);
+
+        if headers_received {
+            let headers = vec![full_block.header().clone()];
+
+            context.handle_ledger_response(BlockSyncResponseMessage::found_headers(
+                block_range,
+                headers,
+            ));
+
+            // cancelling the request should remove the entry
+            context.handle_self_cancel_request(requester, block_range);
+            assert!(context
+                .block_sync
+                .self_completed_headers_requests
+                .is_empty());
+            assert!(context.block_sync.self_headers_requests.is_empty());
+
+            // receiving payload should remove payload entry but not emit anything
+            let cmds =
+                context.handle_ledger_response(BlockSyncResponseMessage::found_payload(payload));
+            assert!(find_emit_commands(&cmds).is_empty());
+        } else {
+            // cancelling the request should remove the entry
+            context.handle_self_cancel_request(requester, block_range);
+        }
+
+        context.assert_empty_block_sync_state();
     }
 
     #[test]
@@ -2034,13 +2036,12 @@ mod test {
 
         let cmds = context
             .handle_ledger_response(BlockSyncResponseMessage::found_payload(payloads[1].clone()));
-        assert_eq!(cmds.len(), 1);
-
-        let emit_cmds = find_emit_commands(&cmds);
-        assert_eq!(emit_cmds.len(), 1);
         assert_eq!(
-            emit_cmds[0],
-            &BlockSyncCommand::Emit(requester_2, (block_range_2, full_blocks_2))
+            cmds,
+            vec![BlockSyncCommand::Emit(
+                requester_2,
+                (block_range_2, full_blocks_2)
+            )]
         );
     }
 
@@ -2113,10 +2114,12 @@ mod test {
 
         // should emit the full blocks
         let emit_cmds = find_emit_commands(&cmds);
-        assert_eq!(emit_cmds.len(), 1);
         assert_eq!(
-            emit_cmds[0],
-            &BlockSyncCommand::Emit(requester_2, (block_range_2, full_blocks_2))
+            emit_cmds,
+            vec![&BlockSyncCommand::Emit(
+                requester_2,
+                (block_range_2, full_blocks_2)
+            )]
         );
     }
 
@@ -2355,10 +2358,12 @@ mod test {
 
                 // received last payload, should emit the full blocks
                 let emit_cmds = find_emit_commands(&cmds);
-                assert_eq!(emit_cmds.len(), 1);
                 assert_eq!(
-                    emit_cmds[0],
-                    &BlockSyncCommand::Emit(requester, (block_range, full_blocks.clone()))
+                    emit_cmds,
+                    vec![&BlockSyncCommand::Emit(
+                        requester,
+                        (block_range, full_blocks.clone())
+                    )]
                 );
             }
         }
@@ -2401,12 +2406,8 @@ mod test {
                 context.peer_id,
                 BlockSyncRequestMessage::Headers(block_range),
             );
-            assert_eq!(cmds.len(), 1);
             let expected_fetch_command = BlockSyncCommand::FetchHeaders(block_range);
-
-            let fetch_headers_cmds = find_fetch_headers_commands(&cmds);
-            assert_eq!(fetch_headers_cmds.len(), 1);
-            assert_eq!(fetch_headers_cmds[0], &expected_fetch_command);
+            assert_eq!(cmds, vec![expected_fetch_command]);
 
             // ledger response should emit response command with all the headers
             context.handle_ledger_response(BlockSyncResponseMessage::found_headers(
@@ -2414,16 +2415,12 @@ mod test {
                 headers.clone(),
             ))
         };
-        assert_eq!(cmds.len(), 1);
         let headers_response = BlockSyncResponseMessage::found_headers(block_range, headers);
         let expected_response_command = BlockSyncCommand::SendResponse {
             to: context.peer_id,
             response: headers_response,
         };
-
-        let response_cmds = find_send_response_commands(&cmds);
-        assert_eq!(response_cmds.len(), 1);
-        assert_eq!(response_cmds[0], &expected_response_command);
+        assert_eq!(cmds, vec![expected_response_command]);
 
         context.assert_empty_block_sync_state();
     }
@@ -2466,12 +2463,8 @@ mod test {
             context.peer_id,
             BlockSyncRequestMessage::Headers(full_block_range),
         );
-        assert_eq!(cmds.len(), 1);
         let expected_fetch_command = BlockSyncCommand::FetchHeaders(ledger_fetch_range);
-
-        let fetch_headers_cmds = find_fetch_headers_commands(&cmds);
-        assert_eq!(fetch_headers_cmds.len(), 1);
-        assert_eq!(fetch_headers_cmds[0], &expected_fetch_command);
+        assert_eq!(cmds, vec![expected_fetch_command]);
 
         let (cmds, expected_response) = if headers_in_ledger {
             // ledger response should emit response with all the headers
@@ -2494,15 +2487,11 @@ mod test {
                 BlockSyncResponseMessage::headers_not_available(full_block_range),
             )
         };
-        assert_eq!(cmds.len(), 1);
         let expected_response_command = BlockSyncCommand::SendResponse {
             to: context.peer_id,
             response: expected_response,
         };
-
-        let response_cmds = find_send_response_commands(&cmds);
-        assert_eq!(response_cmds.len(), 1);
-        assert_eq!(response_cmds[0], &expected_response_command);
+        assert_eq!(cmds, vec![expected_response_command]);
 
         context.assert_empty_block_sync_state();
     }
@@ -2524,27 +2513,18 @@ mod test {
             context.peer_id,
             BlockSyncRequestMessage::Headers(block_range),
         );
-        assert_eq!(cmds.len(), 1);
         let expected_fetch_command = BlockSyncCommand::FetchHeaders(block_range);
-
-        let fetch_headers_cmds = find_fetch_headers_commands(&cmds);
-        assert_eq!(fetch_headers_cmds.len(), 1);
-        assert_eq!(fetch_headers_cmds[0], &expected_fetch_command);
+        assert_eq!(cmds, vec![expected_fetch_command]);
 
         // ledger response should emit response command as headers not available
         let cmds = context
             .handle_ledger_response(BlockSyncResponseMessage::headers_not_available(block_range));
-
-        assert_eq!(cmds.len(), 1);
         let headers_response = BlockSyncResponseMessage::headers_not_available(block_range);
         let expected_response_command = BlockSyncCommand::SendResponse {
             to: context.peer_id,
             response: headers_response,
         };
-
-        let response_cmds = find_send_response_commands(&cmds);
-        assert_eq!(response_cmds.len(), 1);
-        assert_eq!(response_cmds[0], &expected_response_command);
+        assert_eq!(cmds, vec![expected_response_command]);
 
         context.assert_empty_block_sync_state();
     }
@@ -2589,16 +2569,12 @@ mod test {
             // ledger response should emit response command with requested payload
             context.handle_ledger_response(BlockSyncResponseMessage::found_payload(payload.clone()))
         };
-        assert_eq!(cmds.len(), 1);
         let payload_response = BlockSyncResponseMessage::found_payload(payload);
         let expected_response_command = BlockSyncCommand::SendResponse {
             to: context.peer_id,
             response: payload_response,
         };
-
-        let response_cmds = find_send_response_commands(&cmds);
-        assert_eq!(response_cmds.len(), 1);
-        assert_eq!(response_cmds[0], &expected_response_command);
+        assert_eq!(cmds, vec![expected_response_command]);
 
         context.assert_empty_block_sync_state();
     }
@@ -2619,26 +2595,18 @@ mod test {
             context.peer_id,
             BlockSyncRequestMessage::Payload(payload_id),
         );
-        assert_eq!(cmds.len(), 1);
         let expected_fetch_command = BlockSyncCommand::FetchPayload(payload_id);
-
-        let fetch_payload_cmds = find_fetch_payload_commands(&cmds);
-        assert_eq!(fetch_payload_cmds.len(), 1);
-        assert_eq!(fetch_payload_cmds[0], &expected_fetch_command);
+        assert_eq!(cmds, vec![expected_fetch_command]);
 
         // ledger response should emit response command as payload not available
         let cmds = context
             .handle_ledger_response(BlockSyncResponseMessage::payload_not_available(payload_id));
-        assert_eq!(cmds.len(), 1);
         let payload_response = BlockSyncResponseMessage::payload_not_available(payload_id);
         let expected_response_command = BlockSyncCommand::SendResponse {
             to: context.peer_id,
             response: payload_response,
         };
-
-        let response_cmds = find_send_response_commands(&cmds);
-        assert_eq!(response_cmds.len(), 1);
-        assert_eq!(response_cmds[0], &expected_response_command);
+        assert_eq!(cmds, vec![expected_response_command]);
 
         context.assert_empty_block_sync_state();
     }
