@@ -178,10 +178,9 @@ where
     fn exec(&mut self, cmds: Vec<Self::Command>) {
         for cmd in cmds {
             match cmd {
-                LedgerCommand::LedgerCommit(OptimisticCommit::Proposed {
-                    block,
-                    is_canonical: _,
-                }) => {
+                LedgerCommand::LedgerCommit(
+                    OptimisticCommit::Proposed(block) | OptimisticCommit::UpdateProposedHead(block),
+                ) => {
                     self.state_backend.lock().unwrap().ledger_propose(
                         block.get_id(),
                         block.get_seq_num(),
@@ -191,10 +190,10 @@ where
                     );
                     self.blocks.insert(block.get_id(), block);
                 }
-                LedgerCommand::LedgerCommit(OptimisticCommit::Voted(block)) => {
+                LedgerCommand::LedgerCommit(OptimisticCommit::UpdateVotedHead(block)) => {
                     self.blocks.insert(block.get_id(), block);
                 }
-                LedgerCommand::LedgerCommit(OptimisticCommit::Finalized(block)) => {
+                LedgerCommand::LedgerCommit(OptimisticCommit::UpdateFinalizedHead(block)) => {
                     if block.get_seq_num() <= self.finalization_delay {
                         continue;
                     }

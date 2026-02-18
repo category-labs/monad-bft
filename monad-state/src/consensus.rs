@@ -728,15 +728,16 @@ where
                 )));
 
                 match commit {
-                    OptimisticPolicyCommit::Proposed { block, .. } => {
-                        let block_id = block.get_id();
-                        let round = block.get_block_round();
-                        let seq_num = block.get_seq_num();
+                    OptimisticPolicyCommit::Proposed(block)
+                    | OptimisticPolicyCommit::UpdateProposedHead(block) => {
+                        let _block_id = block.get_id();
+                        let _round = block.get_block_round();
+                        let _seq_num = block.get_seq_num();
                     }
-                    OptimisticPolicyCommit::Voted(block) => {
+                    OptimisticPolicyCommit::UpdateVotedHead(block) => {
                         let _ = block.get_id();
                     }
-                    OptimisticPolicyCommit::Finalized(block) => {
+                    OptimisticPolicyCommit::UpdateFinalizedHead(block) => {
                         let finalized_seq_num = block.get_seq_num();
                         parent_cmds.push(Command::TxPoolCommand(TxPoolCommand::BlockCommit(vec![
                             block,

@@ -1015,7 +1015,7 @@ where
                             cmd.command,
                             ConsensusCommand::EnterRound(_, _)
                                 | ConsensusCommand::CommitBlocks(
-                                    OptimisticPolicyCommit::Finalized(_)
+                                    OptimisticPolicyCommit::UpdateFinalizedHead(_)
                                 )
                         )
                     })
@@ -1494,13 +1494,10 @@ where
         // commit blocks
         for block in last_two_delay_committed_blocks {
             commands.push(Command::LedgerCommand(LedgerCommand::LedgerCommit(
-                OptimisticCommit::Proposed {
-                    block: block.deref().to_owned(),
-                    is_canonical: true,
-                },
+                OptimisticCommit::UpdateProposedHead(block.deref().to_owned()),
             )));
             commands.push(Command::LedgerCommand(LedgerCommand::LedgerCommit(
-                OptimisticCommit::Finalized(block.deref().to_owned()),
+                OptimisticCommit::UpdateFinalizedHead(block.deref().to_owned()),
             )));
             commands.push(Command::ValSetCommand(ValSetCommand::NotifyFinalized(
                 block.get_seq_num(),
