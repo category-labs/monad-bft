@@ -26,7 +26,6 @@ pub mod metrics;
 pub mod serialize;
 pub mod timing;
 pub mod txpool;
-pub mod vpool;
 pub mod websocket;
 
 #[cfg(test)]
