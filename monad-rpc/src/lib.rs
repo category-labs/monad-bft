@@ -29,4 +29,7 @@ pub mod txpool;
 pub mod vpool;
 pub mod websocket;
 
+#[cfg(test)]
+pub mod tests;
+
 pub const MONAD_RPC_VERSION: Option<&str> = option_env!("MONAD_VERSION");
