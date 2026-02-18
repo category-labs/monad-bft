@@ -19,6 +19,7 @@ cargo build -p monad-tx-integration --release 2>&1 | tail -3
 echo "=== Starting node ==="
 RUST_LOG=monad_tx_integration=info "$BINARY" node \
     --listen 0.0.0.0:0 \
+    --rpc-listen 127.0.0.1:0 \
     --commit-interval-ms "$COMMIT_INTERVAL_MS" \
     --stats-file "$OUT_DIR/node-stats.jsonl" \
     --num-accounts "$NUM_ACCOUNTS" \
@@ -32,8 +33,9 @@ for i in $(seq 1 50); do
     RC_UDP_ADDR=$(grep -oP 'RC_UDP_ADDR=\K.*' "$OUT_DIR/node.log" 2>/dev/null || true)
     RC_AUTH_UDP_ADDR=$(grep -oP 'RC_AUTH_UDP_ADDR=\K.*' "$OUT_DIR/node.log" 2>/dev/null || true)
     LEANUDP_ADDR=$(grep -oP 'LEANUDP_ADDR=\K.*' "$OUT_DIR/node.log" 2>/dev/null || true)
+    RPC_ADDR=$(grep -oP 'RPC_ADDR=\K.*' "$OUT_DIR/node.log" 2>/dev/null || true)
     ADDR="$LEANUDP_ADDR"
-    [ -n "$ADDR" ] && [ -n "$RC_TCP_ADDR" ] && [ -n "$RC_UDP_ADDR" ] && [ -n "$RC_AUTH_UDP_ADDR" ] && [ -n "$LEANUDP_ADDR" ] && break
+    [ -n "$ADDR" ] && [ -n "$RC_TCP_ADDR" ] && [ -n "$RC_UDP_ADDR" ] && [ -n "$RC_AUTH_UDP_ADDR" ] && [ -n "$LEANUDP_ADDR" ] && [ -n "$RPC_ADDR" ] && break
     sleep 0.1
 done
 
@@ -42,7 +44,7 @@ if [ -z "$ADDR" ]; then
     kill $NODE_PID 2>/dev/null
     exit 1
 fi
-echo "Node listening on $ADDR"
+echo "Node listening on $ADDR, RPC on $RPC_ADDR"
 
 echo "=== Starting peers with varying contribution rates ==="
 
@@ -53,6 +55,7 @@ RUST_LOG=monad_tx_integration=info "$BINARY" submit \
     --rc-udp-addr "$RC_UDP_ADDR" \
     --rc-auth-udp-addr "$RC_AUTH_UDP_ADDR" \
     --leanudp-addr "$LEANUDP_ADDR" \
+    --rpc-addr "$RPC_ADDR" \
     --tps 10 \
     --sender-index 0 \
     --duration-secs 40 \
@@ -69,6 +72,7 @@ RUST_LOG=monad_tx_integration=info "$BINARY" submit \
     --rc-udp-addr "$RC_UDP_ADDR" \
     --rc-auth-udp-addr "$RC_AUTH_UDP_ADDR" \
     --leanudp-addr "$LEANUDP_ADDR" \
+    --rpc-addr "$RPC_ADDR" \
     --tps 50 \
     --sender-index 1 \
     --duration-secs 40 \
@@ -85,6 +89,7 @@ RUST_LOG=monad_tx_integration=info "$BINARY" submit \
     --rc-udp-addr "$RC_UDP_ADDR" \
     --rc-auth-udp-addr "$RC_AUTH_UDP_ADDR" \
     --leanudp-addr "$LEANUDP_ADDR" \
+    --rpc-addr "$RPC_ADDR" \
     --tps 100 \
     --sender-index 2 \
     --duration-secs 40 \
@@ -101,6 +106,7 @@ RUST_LOG=monad_tx_integration=info "$BINARY" submit \
     --rc-udp-addr "$RC_UDP_ADDR" \
     --rc-auth-udp-addr "$RC_AUTH_UDP_ADDR" \
     --leanudp-addr "$LEANUDP_ADDR" \
+    --rpc-addr "$RPC_ADDR" \
     --tps 300 \
     --sender-index 3 \
     --duration-secs 40 \
@@ -117,6 +123,7 @@ RUST_LOG=monad_tx_integration=info "$BINARY" submit \
     --rc-udp-addr "$RC_UDP_ADDR" \
     --rc-auth-udp-addr "$RC_AUTH_UDP_ADDR" \
     --leanudp-addr "$LEANUDP_ADDR" \
+    --rpc-addr "$RPC_ADDR" \
     --tps 500 \
     --sender-index 4 \
     --duration-secs 40 \

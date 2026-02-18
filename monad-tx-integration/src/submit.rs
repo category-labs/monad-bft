@@ -265,11 +265,7 @@ pub async fn run(args: SubmitArgs) {
     } else {
         MIN_BASE_FEE * 2
     };
-    let priority_fee = if args.priority_fee_multiplier > 0 {
-        MIN_BASE_FEE * args.priority_fee_multiplier
-    } else {
-        MIN_BASE_FEE / 2
-    };
+    let priority_fee = MIN_BASE_FEE.saturating_mul(args.priority_fee_multiplier);
     let batch_size = args.batch_size.max(1);
     tracing::info!(max_fee, priority_fee, batch_size, "gas price config");
 
@@ -303,6 +299,9 @@ pub async fn run(args: SubmitArgs) {
     // Nonce sync interval (only if RPC available)
     let nonce_sync_interval = Duration::from_millis(args.nonce_sync_ms);
     let mut last_nonce_sync = std::time::Instant::now();
+    let mut last_observed_committed_nonce: Option<u64> = None;
+    let mut last_committed_nonce_change_at = std::time::Instant::now();
+    let mut last_nonce_stall_warning_at: Option<std::time::Instant> = None;
 
     // Replacement mode state
     let mut current_priority_fee = priority_fee as u128;
@@ -310,6 +309,19 @@ pub async fn run(args: SubmitArgs) {
 
     // Batch accumulator for ForwardTxs
     let mut pending_batch: Vec<bytes::Bytes> = Vec::with_capacity(batch_size);
+
+    if let Some(ref rpc_addr) = args.rpc_addr {
+        match rpc::query_nonce(rpc_addr, &sender_addr).await {
+            Ok(committed_nonce) => {
+                nonce = committed_nonce;
+                last_observed_committed_nonce = Some(committed_nonce);
+                tracing::info!(committed_nonce, "initialized nonce from RPC");
+            }
+            Err(e) => {
+                tracing::warn!(?e, "failed to initialize nonce from RPC");
+            }
+        }
+    }
 
     while sent < max_count {
         if let Some(d) = run_duration {
@@ -324,6 +336,33 @@ pub async fn run(args: SubmitArgs) {
                 last_nonce_sync = std::time::Instant::now();
                 match rpc::query_nonce(rpc_addr, &sender_addr).await {
                     Ok(committed_nonce) => {
+                        let now = std::time::Instant::now();
+                        match last_observed_committed_nonce {
+                            Some(previous_nonce) if previous_nonce == committed_nonce => {
+                                let unchanged_for =
+                                    now.saturating_duration_since(last_committed_nonce_change_at);
+                                if unchanged_for >= Duration::from_secs(10)
+                                    && last_nonce_stall_warning_at.is_none_or(|last_warned| {
+                                        now.saturating_duration_since(last_warned)
+                                            >= Duration::from_secs(10)
+                                    })
+                                {
+                                    tracing::warn!(
+                                        committed_nonce,
+                                        local_next_nonce = nonce,
+                                        unchanged_for_secs = unchanged_for.as_secs(),
+                                        "committed account nonce unchanged for >=10s"
+                                    );
+                                    last_nonce_stall_warning_at = Some(now);
+                                }
+                            }
+                            _ => {
+                                last_observed_committed_nonce = Some(committed_nonce);
+                                last_committed_nonce_change_at = now;
+                                last_nonce_stall_warning_at = None;
+                            }
+                        }
+
                         if committed_nonce < nonce {
                             // Gap detected: we sent up to `nonce-1`, but only `committed_nonce-1` is committed
                             // Need to resend from committed_nonce
@@ -338,6 +377,13 @@ pub async fn run(args: SubmitArgs) {
                             }
                             nonce = committed_nonce;
                             resent += gap;
+                        } else if committed_nonce > nonce {
+                            tracing::info!(
+                                committed_nonce,
+                                local_next_nonce = nonce,
+                                "local nonce behind committed state, fast-forwarding"
+                            );
+                            nonce = committed_nonce;
                         }
                     }
                     Err(e) => {

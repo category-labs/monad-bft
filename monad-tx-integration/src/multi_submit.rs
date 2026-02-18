@@ -272,11 +272,9 @@ async fn run_identity(args: Arc<MultiSubmitArgs>, identity_index: usize) {
     } else {
         MIN_BASE_FEE * 2
     };
-    let priority_fee: u128 = if args.priority_fee_multiplier > 0 {
-        (MIN_BASE_FEE * args.priority_fee_multiplier).into()
-    } else {
-        (MIN_BASE_FEE / 2).into()
-    };
+    let priority_fee: u128 = MIN_BASE_FEE
+        .saturating_mul(args.priority_fee_multiplier)
+        .into();
     let batch_size = args.batch_size.max(1);
 
     let interval = if args.tps_per_identity > 0 {
