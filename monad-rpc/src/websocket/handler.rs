@@ -52,6 +52,7 @@ const RECV_MAX_FRAME_SIZE: usize = 256 * 1024;
 
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(20);
 const CLIENT_TIMEOUT_SECS: u64 = 60;
+const COMMIT_STATE_FILTER: BlockCommitState = BlockCommitState::Voted;
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy, Deserialize, Serialize)]
 pub struct SubscriptionId(pub FixedData<16>);
@@ -307,7 +308,7 @@ async fn handle_notification(
                 send_notification(session, id, header.as_ref(), max_response_size).await?;
             }
 
-            if header.commit_state == BlockCommitState::Finalized {
+            if header.commit_state == COMMIT_STATE_FILTER {
                 for (id, _) in subscriptions
                     .get(&SubscriptionKind::NewHeads)
                     .map(|x| x.iter())
@@ -332,7 +333,7 @@ async fn handle_notification(
                 }
             }
 
-            if header.commit_state == BlockCommitState::Finalized {
+            if header.commit_state == COMMIT_STATE_FILTER {
                 for (id, filter) in subscriptions
                     .get(&SubscriptionKind::Logs)
                     .map(|x| x.iter())
