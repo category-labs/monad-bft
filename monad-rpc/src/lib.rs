@@ -15,6 +15,7 @@
 
 pub mod chainstate;
 pub mod comparator;
+pub mod decompression_guard;
 pub mod docs;
 pub mod eth_json_types;
 pub mod event;

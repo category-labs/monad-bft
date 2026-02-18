@@ -28,6 +28,7 @@ use tokio::sync::Semaphore;
 use tracing_actix_web::TracingLogger;
 
 use crate::{
+    decompression_guard::DecompressionGuard,
     handlers::{
         eth::call::EthCallStatsTracker,
         resources::{MonadJsonRootSpanBuilder, MonadRpcResources},
@@ -68,6 +69,7 @@ pub async fn init_server(
 
     test::init_service(
         App::new()
+            .wrap(DecompressionGuard::new(2_000_000))
             .wrap(TracingLogger::<MonadJsonRootSpanBuilder>::new())
             .app_data(web::PayloadConfig::default().limit(2_000_000))
             .app_data(web::Data::new(app_state.clone()))
