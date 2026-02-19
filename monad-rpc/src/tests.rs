@@ -21,7 +21,6 @@ use actix_web::{
     dev::{Service, ServiceResponse},
     test, web, App, Error,
 };
-use jsonrpc::Response;
 use serde_json::{json, Value};
 use test_case::test_case;
 use tokio::sync::Semaphore;
@@ -34,8 +33,8 @@ use crate::{
         resources::{MonadJsonRootSpanBuilder, MonadRpcResources},
         rpc_handler,
     },
-    jsonrpc::{self, JsonRpcError, RequestId, ResponseWrapper},
     txpool::EthTxPoolBridgeClient,
+    types::jsonrpc::{JsonRpcError, RequestId, Response, ResponseWrapper},
 };
 
 pub async fn init_server(
@@ -243,7 +242,7 @@ async fn test_monad_eth_call_sha256_precompile() {
         .set_payload(payload.to_string())
         .to_request();
 
-    let resp: jsonrpc::Response = actix_test::call_and_read_body_json(&app, req).await;
+    let resp: Response = actix_test::call_and_read_body_json(&app, req).await;
     assert!(resp.result.is_none());
 }
 
@@ -273,6 +272,6 @@ async fn test_monad_eth_call() {
         .set_payload(payload.to_string())
         .to_request();
 
-    let resp: jsonrpc::Response = actix_test::call_and_read_body_json(&app, req).await;
+    let resp: Response = actix_test::call_and_read_body_json(&app, req).await;
     assert!(resp.result.is_none());
 }

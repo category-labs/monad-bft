@@ -30,8 +30,8 @@ use tokio::sync::Mutex;
 use tracing::{error, warn};
 
 use crate::{
-    eth_json_types::{BlockTags, FixedData},
     event::EventServerEvent,
+    types::eth_json::{BlockTags, FixedData},
 };
 
 struct TxLoc {
@@ -139,7 +139,11 @@ impl ChainStateBuffer {
         let voted_block_height = self.latest_voted.fetch_max(block_height, Ordering::SeqCst);
 
         if voted_block_height >= block_height {
-            warn!(?voted_block_height, event_block_height = block_height, "ChainStateBuffer received voted block event with lower height than existing voted block height");
+            warn!(
+                ?voted_block_height,
+                event_block_height = block_height,
+                "ChainStateBuffer received voted block event with lower height than existing voted block height"
+            );
             return;
         }
 

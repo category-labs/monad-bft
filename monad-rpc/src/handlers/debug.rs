@@ -31,12 +31,14 @@ use tracing::{error, trace};
 
 use crate::{
     chainstate::{get_block_key_from_tag, get_latest_block_key, ChainState},
-    eth_json_types::{
-        BlockTagOrHash, BlockTags, EthAddress, EthHash, FixedData, MonadU256, Quantity,
-        UnformattedData,
-    },
     hex,
-    jsonrpc::{JsonRpcError, JsonRpcResult},
+    types::{
+        eth_json::{
+            BlockTagOrHash, BlockTags, EthAddress, EthHash, FixedData, MonadU256, Quantity,
+            UnformattedData,
+        },
+        jsonrpc::{JsonRpcError, JsonRpcResult},
+    },
 };
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]

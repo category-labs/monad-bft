@@ -20,9 +20,11 @@ use serde::Deserialize;
 use tracing::trace;
 
 use crate::{
-    eth_json_types::{BlockTagOrHash, EthAddress, MonadU256},
     handlers::eth::block::get_block_key_from_tag_or_hash,
-    jsonrpc::{JsonRpcError, JsonRpcResult},
+    types::{
+        eth_json::{BlockTagOrHash, EthAddress, MonadU256},
+        jsonrpc::{JsonRpcError, JsonRpcResult},
+    },
 };
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
@@ -167,7 +169,7 @@ pub async fn monad_eth_syncing() -> JsonRpcResult<bool> {
 #[cfg(test)]
 mod tests {
     use super::MonadEthGetStorageAtParams;
-    use crate::eth_json_types::{BlockTags, Quantity};
+    use crate::types::eth_json::{BlockTags, Quantity};
 
     #[test]
     fn params_without_eip_1898() {

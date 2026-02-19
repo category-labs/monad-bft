@@ -22,7 +22,7 @@ use criterion::{
 };
 use monad_rpc::{
     handlers::eth::call::MonadEthCallParams,
-    jsonrpc::{JsonRpcError, JsonRpcResultExt, Request, RequestWrapper, ResponseWrapper},
+    types::jsonrpc::{JsonRpcError, JsonRpcResultExt, Request, RequestWrapper, ResponseWrapper},
 };
 use serde::de::DeserializeOwned;
 use serde_json::Value;

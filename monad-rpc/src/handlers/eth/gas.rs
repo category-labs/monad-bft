@@ -32,12 +32,14 @@ use tracing::trace;
 
 use crate::{
     chainstate::ChainState,
-    eth_json_types::{BlockTagOrHash, BlockTags, MonadFeeHistory, Quantity},
     handlers::eth::{
         block::get_block_key_from_tag_or_hash,
         call::{fill_gas_params, CallRequest},
     },
-    jsonrpc::{JsonRpcError, JsonRpcResult},
+    types::{
+        eth_json::{BlockTagOrHash, BlockTags, MonadFeeHistory, Quantity},
+        jsonrpc::{JsonRpcError, JsonRpcResult},
+    },
 };
 
 /// Additional gas added during a CALL.

@@ -40,13 +40,15 @@ use tracing::{debug, error, trace, warn};
 
 use crate::{
     chainstate::buffer::{block_height_from_tag, ChainStateBuffer},
-    eth_json_types::{BlockTagOrHash, BlockTags, FixedData, MonadLog, Quantity},
     handlers::eth::{
         block::{block_receipts, get_block_key_from_tag_or_hash},
         txn::{parse_tx_receipt, FilterError},
     },
-    heuristic_size::HeuristicSize,
-    jsonrpc::{ArchiveErrorExt, JsonRpcError, JsonRpcResult},
+    types::{
+        eth_json::{BlockTagOrHash, BlockTags, FixedData, MonadLog, Quantity},
+        heuristic_size::HeuristicSize,
+        jsonrpc::{ArchiveErrorExt, JsonRpcError, JsonRpcResult},
+    },
 };
 
 pub mod buffer;
@@ -505,7 +507,7 @@ impl<T: Triedb> ChainState<T> {
     pub async fn get_block_receipts(
         &self,
         block: BlockTagOrHash,
-    ) -> Result<Vec<crate::eth_json_types::MonadTransactionReceipt>, ChainStateError> {
+    ) -> Result<Vec<crate::types::eth_json::MonadTransactionReceipt>, ChainStateError> {
         if let Ok(block_key) = get_block_key_from_tag_or_hash(&self.triedb_env, block.clone()).await
         {
             if let Some(header) = self
@@ -522,7 +524,7 @@ impl<T: Triedb> ChainState<T> {
                             receipts,
                             &header.header,
                             header.hash,
-                            crate::eth_json_types::MonadTransactionReceipt,
+                            crate::types::eth_json::MonadTransactionReceipt,
                         )
                         .map_err(|_| ChainStateError::ResourceNotFound)?;
                         return Ok(block_receipts);
@@ -557,7 +559,7 @@ impl<T: Triedb> ChainState<T> {
                         receipts_with_log_index,
                         &block.header,
                         block.header.hash_slow(),
-                        crate::eth_json_types::MonadTransactionReceipt,
+                        crate::types::eth_json::MonadTransactionReceipt,
                     )
                     .map_err(|_| ChainStateError::ResourceNotFound)?;
                     return Ok(block_receipts);
@@ -689,7 +691,10 @@ impl<T: Triedb> ChainState<T> {
                 {
                     Ok(logs) => return Ok(logs),
                     Err(err) => {
-                        debug!(?err, "Error getting logs from log stream with index. Falling back to unindexed method.");
+                        debug!(
+                            ?err,
+                            "Error getting logs from log stream with index. Falling back to unindexed method."
+                        );
                     }
                 },
                 Err(err) => {
@@ -1344,7 +1349,7 @@ mod tests {
 
     use crate::{
         chainstate::{calculate_block_size, ChainState},
-        eth_json_types::{BlockTagOrHash, BlockTags, FixedData, Quantity},
+        types::eth_json::{BlockTagOrHash, BlockTags, FixedData, Quantity},
     };
 
     #[test]
@@ -1492,7 +1497,7 @@ mod tests {
 
         chain_state
             .get_transaction_with_block_and_index(
-                BlockTagOrHash::Hash(crate::eth_json_types::FixedData(block_hash)),
+                BlockTagOrHash::Hash(crate::types::eth_json::FixedData(block_hash)),
                 0,
             )
             .await

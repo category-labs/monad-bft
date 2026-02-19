@@ -22,7 +22,6 @@ use serde_json::value::RawValue;
 
 use crate::{
     chainstate::get_block_key_from_tag,
-    eth_json_types::{BlockTagOrHash, BlockTags, EthHash},
     handlers::{
         debug::{
             MonadDebugTraceBlockByHashParams, MonadDebugTraceBlockByNumberParams,
@@ -30,8 +29,11 @@ use crate::{
         },
         MonadRpcResources,
     },
-    jsonrpc::{JsonRpcError, JsonRpcResult},
     timing::RequestId,
+    types::{
+        eth_json::{BlockTagOrHash, BlockTags, EthHash},
+        jsonrpc::{JsonRpcError, JsonRpcResult},
+    },
 };
 
 impl From<TracerObject> for MonadTracer {

@@ -29,7 +29,7 @@ use tracing::debug;
 
 use crate::{
     hex::{self, decode, decode_quantity, DecodeHexError},
-    jsonrpc::JsonRpcError,
+    types::jsonrpc::JsonRpcError,
 };
 
 pub type EthAddress = FixedData<20>;

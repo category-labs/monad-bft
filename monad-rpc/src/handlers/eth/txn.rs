@@ -27,12 +27,14 @@ use tracing::{debug, error, trace, warn};
 
 use crate::{
     chainstate::{ChainState, ChainStateError},
-    eth_json_types::{
-        BlockTagOrHash, BlockTags, EthHash, MonadLog, MonadTransaction, MonadTransactionReceipt,
-        Quantity, UnformattedData,
-    },
-    jsonrpc::{ChainStateResultMap, JsonRpcError, JsonRpcResult},
     txpool::{EthTxPoolBridgeClient, TxStatus},
+    types::{
+        eth_json::{
+            BlockTagOrHash, BlockTags, EthHash, MonadLog, MonadTransaction,
+            MonadTransactionReceipt, Quantity, UnformattedData,
+        },
+        jsonrpc::{ChainStateResultMap, JsonRpcError, JsonRpcResult},
+    },
 };
 
 pub fn parse_tx_receipt(
@@ -476,7 +478,7 @@ pub async fn monad_eth_getTransactionByBlockNumberAndIndex<T: Triedb>(
 
     chain_state
         .get_transaction_with_block_and_index(
-            crate::eth_json_types::BlockTagOrHash::BlockTags(params.block_tag),
+            crate::types::eth_json::BlockTagOrHash::BlockTags(params.block_tag),
             params.index.0,
         )
         .await
@@ -498,7 +500,7 @@ mod tests {
         MonadEthSendRawTransactionParams, MonadEthSendRawTransactionSyncParams,
     };
     use crate::{
-        chainstate::ChainState, eth_json_types::UnformattedData, txpool::EthTxPoolBridgeClient,
+        chainstate::ChainState, txpool::EthTxPoolBridgeClient, types::eth_json::UnformattedData,
     };
 
     fn serialize_tx(tx: impl Encodable + Encodable2718) -> UnformattedData {
