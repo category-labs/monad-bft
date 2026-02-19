@@ -5384,6 +5384,8 @@ dependencies = [
  "monad-eth-types",
  "monad-executor",
  "monad-executor-glue",
+ "monad-fair-queue",
+ "monad-peer-score",
  "monad-secp",
  "monad-state-backend",
  "monad-testutil",
@@ -5505,6 +5507,7 @@ dependencies = [
 name = "monad-executor-glue"
 version = "0.1.0"
 dependencies = [
+ "alloy-consensus",
  "alloy-rlp",
  "bincode",
  "bytes",
@@ -5521,6 +5524,17 @@ dependencies = [
  "monad-validator",
  "serde",
  "serde_with",
+]
+
+[[package]]
+name = "monad-fair-queue"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "monad-executor",
+ "monad-peer-score",
+ "proptest",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -5545,6 +5559,21 @@ dependencies = [
  "tempfile",
  "unicode-normalization",
  "zeroize",
+]
+
+[[package]]
+name = "monad-leanudp"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "criterion",
+ "indexmap 2.12.1",
+ "monad-executor",
+ "monad-peer-score",
+ "rand 0.8.5",
+ "thiserror 1.0.69",
+ "tracing",
+ "zerocopy",
 ]
 
 [[package]]
@@ -5661,9 +5690,11 @@ dependencies = [
  "monad-executor",
  "monad-executor-glue",
  "monad-keystore",
+ "monad-leanudp",
  "monad-ledger",
  "monad-node-config",
  "monad-peer-discovery",
+ "monad-peer-score",
  "monad-pprof",
  "monad-raptorcast",
  "monad-router-multi",
@@ -5764,6 +5795,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-peer-score"
+version = "0.1.0"
+dependencies = [
+ "lru 0.16.3",
+ "monad-executor",
+ "proptest",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "monad-perf-util"
 version = "0.1.0"
 
@@ -5808,6 +5850,7 @@ dependencies = [
 name = "monad-raptorcast"
 version = "0.1.0"
 dependencies = [
+ "alloy-consensus",
  "alloy-primitives",
  "alloy-rlp",
  "bitvec",
@@ -5830,11 +5873,14 @@ dependencies = [
  "monad-compress",
  "monad-crypto",
  "monad-dataplane",
+ "monad-eth-testutil",
  "monad-executor",
  "monad-executor-glue",
+ "monad-leanudp",
  "monad-merkle",
  "monad-node-config",
  "monad-peer-discovery",
+ "monad-peer-score",
  "monad-raptor",
  "monad-secp",
  "monad-testutil",
