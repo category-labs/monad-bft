@@ -40,9 +40,13 @@ use serde_json::value::RawValue;
 use tokio::sync::Mutex;
 use tracing::{debug, trace};
 
-use super::block::get_block_key_from_tag_or_hash;
+use super::{
+    block::get_block_key_from_tag_or_hash,
+    gas::{estimate_gas, suggested_priority_fee, GasEstimator},
+};
 use crate::{
-    eth_json_types::BlockTagOrHash,
+    chainstate::{get_block_key_from_tag, ChainState},
+    eth_json_types::{BlockTagOrHash, BlockTags, FillTransactionResult, Quantity, UnformattedData},
     handlers::debug::{decode_call_frame, Tracer, TracerObject},
     hex,
     jsonrpc::{JsonRpcError, JsonRpcResult},
@@ -1003,6 +1007,226 @@ pub async fn monad_admin_ethCallStatistics(
     })
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct MonadEthFillTransactionParams {
+    pub tx: CallRequest,
+}
+
+#[rpc(
+    method = "eth_fillTransaction",
+    ignore = "chain_id,provider_gas_limit,eth_call_executor"
+)]
+#[allow(non_snake_case)]
+pub async fn monad_eth_fillTransaction<T: Triedb>(
+    chain_state: &ChainState<T>,
+    eth_call_executor: Arc<EthCallExecutor>,
+    chain_id: u64,
+    provider_gas_limit: u64,
+    params: MonadEthFillTransactionParams,
+) -> JsonRpcResult<FillTransactionResult> {
+    trace!("monad_eth_fillTransaction: {params:?}");
+
+    let mut tx = params.tx;
+
+    tx.input.input = match (tx.input.input.take(), tx.input.data.take()) {
+        (Some(input), Some(data)) => {
+            if input != data {
+                return Err(JsonRpcError::invalid_params());
+            }
+            Some(input)
+        }
+        (None, data) | (data, None) => data,
+    };
+
+    let from = tx.from.ok_or_else(JsonRpcError::invalid_params)?;
+
+    if tx.value.is_none() {
+        tx.value = Some(U256::from(0));
+    }
+
+    tx.chain_id = Some(U64::from(chain_id));
+
+    // Get header from chain_state (uses buffer cache if available)
+    let header = chain_state
+        .get_block_header(BlockTagOrHash::BlockTags(BlockTags::Latest))
+        .await
+        .map_err(|_| JsonRpcError::block_not_found())?;
+
+    // Get block_key for account lookup and gas estimation (no cache for accounts)
+    let block_key = get_block_key_from_tag(&chain_state.triedb_env, BlockTags::Latest)
+        .ok_or(JsonRpcError::block_not_found())?;
+
+    if tx.nonce.is_none() {
+        let account = chain_state
+            .triedb_env
+            .get_account(block_key, from.into())
+            .await
+            .map_err(JsonRpcError::internal_error)?;
+        tx.nonce = Some(U64::from(account.nonce));
+    }
+
+    // Fill max_priority_fee_per_gas with suggested fee if not specified (EIP-1559 only)
+    if let GasPriceDetails::Eip1559 {
+        max_fee_per_gas,
+        max_priority_fee_per_gas: None,
+    } = &tx.gas_price_details
+    {
+        let priority_fee = suggested_priority_fee().await.unwrap_or_default();
+        tx.gas_price_details = GasPriceDetails::Eip1559 {
+            max_fee_per_gas: *max_fee_per_gas,
+            max_priority_fee_per_gas: Some(U256::from(priority_fee)),
+        };
+    }
+
+    // Fill gas prices (max_fee_per_gas, max_priority_fee_per_gas, or gas_price)
+    let base_fee = U256::from(header.base_fee_per_gas.unwrap_or_default());
+    let fill_base_fee = match &tx.gas_price_details {
+        GasPriceDetails::Eip1559 { .. } => base_fee.saturating_mul(U256::from(3)) / U256::from(2),
+        _ => base_fee,
+    };
+    tx.fill_gas_prices(fill_base_fee)?;
+
+    // Estimate gas if not specified
+    let gas_specified = tx.gas.is_some();
+    if !gas_specified {
+        let protocol_gas_limit = header.gas_limit;
+        let eth_call_provider_gas_limit = provider_gas_limit.min(protocol_gas_limit);
+        let original_tx_gas = U256::from(protocol_gas_limit);
+
+        // Set initial gas for estimation
+        tx.gas = Some(U256::from(eth_call_provider_gas_limit));
+
+        let gas_estimator = GasEstimator::new(
+            chain_id,
+            header.clone(),
+            from,
+            block_key,
+            StateOverrideSet::default(),
+            false, // gas not specified by user
+        );
+
+        let Quantity(estimated_gas) = estimate_gas(
+            &gas_estimator,
+            Some(eth_call_executor),
+            &mut tx,
+            original_tx_gas,
+            eth_call_provider_gas_limit,
+            protocol_gas_limit,
+        )
+        .await?;
+
+        tx.gas = Some(U256::from(estimated_gas));
+    }
+
+    let (raw, filled_tx) = build_unsigned_transaction(&tx, chain_id)?;
+
+    Ok(FillTransactionResult { raw, tx: filled_tx })
+}
+
+fn build_unsigned_transaction(
+    tx: &CallRequest,
+    chain_id: u64,
+) -> Result<(UnformattedData, CallRequest), JsonRpcError> {
+    let from = tx.from.unwrap_or_default();
+    let nonce: u64 = tx
+        .nonce
+        .unwrap_or_default()
+        .try_into()
+        .map_err(|_| JsonRpcError::invalid_params())?;
+    let gas_limit: u64 = tx
+        .gas
+        .unwrap_or_default()
+        .try_into()
+        .map_err(|_| JsonRpcError::invalid_params())?;
+    let value = tx.value.unwrap_or_default();
+    let input = tx.input.input.clone().unwrap_or_default();
+    let to = tx.to;
+
+    let raw_bytes = match &tx.gas_price_details {
+        GasPriceDetails::Legacy { gas_price } => {
+            let unsigned = TxLegacy {
+                chain_id: Some(chain_id),
+                nonce,
+                gas_price: (*gas_price)
+                    .try_into()
+                    .map_err(|_| JsonRpcError::invalid_params())?,
+                gas_limit,
+                to: to.map(TxKind::Call).unwrap_or(TxKind::Create),
+                value,
+                input,
+            };
+            let mut buf = Vec::new();
+            unsigned.encode_for_signing(&mut buf);
+            buf
+        }
+        GasPriceDetails::Eip1559 {
+            max_fee_per_gas,
+            max_priority_fee_per_gas,
+        } => {
+            if let Some(auth_list) = &tx.authorization_list {
+                // EIP-7702
+                let unsigned = TxEip7702 {
+                    chain_id,
+                    nonce,
+                    max_fee_per_gas: max_fee_per_gas
+                        .unwrap_or_default()
+                        .try_into()
+                        .map_err(|_| JsonRpcError::invalid_params())?,
+                    max_priority_fee_per_gas: max_priority_fee_per_gas
+                        .unwrap_or_default()
+                        .try_into()
+                        .map_err(|_| JsonRpcError::invalid_params())?,
+                    gas_limit,
+                    to: to.ok_or(JsonRpcError::invalid_params())?,
+                    value,
+                    input,
+                    access_list: tx.access_list.clone().unwrap_or_default(),
+                    authorization_list: auth_list.clone(),
+                };
+                let mut buf = Vec::new();
+                unsigned.encode_for_signing(&mut buf);
+                buf
+            } else {
+                // EIP-1559
+                let unsigned = TxEip1559 {
+                    chain_id,
+                    nonce,
+                    max_fee_per_gas: max_fee_per_gas
+                        .unwrap_or_default()
+                        .try_into()
+                        .map_err(|_| JsonRpcError::invalid_params())?,
+                    max_priority_fee_per_gas: max_priority_fee_per_gas
+                        .unwrap_or_default()
+                        .try_into()
+                        .map_err(|_| JsonRpcError::invalid_params())?,
+                    gas_limit,
+                    to: to.map(TxKind::Call).unwrap_or(TxKind::Create),
+                    value,
+                    input,
+                    access_list: tx.access_list.clone().unwrap_or_default(),
+                };
+                let mut buf = Vec::new();
+                unsigned.encode_for_signing(&mut buf);
+                buf
+            }
+        }
+    };
+
+    let filled = CallRequest {
+        from: Some(from),
+        to,
+        gas: Some(tx.gas.unwrap_or_default()),
+        gas_price_details: tx.gas_price_details.clone(),
+        value: Some(value),
+        input: tx.input.clone(),
+        nonce: Some(tx.nonce.unwrap_or_default()),
+        chain_id: Some(tx.chain_id.unwrap_or(U64::from(chain_id))),
+        ..tx.clone()
+    };
+
+    Ok((UnformattedData(raw_bytes), filled))
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -1294,5 +1518,152 @@ mod tests {
 
         let result: Result<TxEnvelope, _> = call_request.try_into();
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_build_unsigned_transaction_eip1559() {
+        use alloy_primitives::U64;
+
+        use super::build_unsigned_transaction;
+
+        let chain_id = 12345u64;
+        let from_addr = Address::repeat_byte(0x11);
+        let to_addr = Address::repeat_byte(0x22);
+
+        let call_request = CallRequest {
+            from: Some(from_addr),
+            to: Some(to_addr),
+            gas: Some(U256::from(21000)),
+            gas_price_details: GasPriceDetails::Eip1559 {
+                max_fee_per_gas: Some(U256::from(100_000_000_000u64)), // 100 gwei
+                max_priority_fee_per_gas: Some(U256::from(2_000_000_000u64)), // 2 gwei
+            },
+            value: Some(U256::from(1_000_000_000_000_000_000u64)), // 1 ETH
+            input: CallInput {
+                input: Some(Bytes::from(vec![0xde, 0xad, 0xbe, 0xef])),
+                data: None,
+            },
+            nonce: Some(U64::from(42)),
+            chain_id: Some(U64::from(chain_id)),
+            access_list: None,
+            authorization_list: None,
+            max_fee_per_blob_gas: None,
+            blob_versioned_hashes: None,
+            transaction_type: None,
+        };
+
+        let (raw, filled_tx) = build_unsigned_transaction(&call_request, chain_id).unwrap();
+
+        // Verify raw bytes are not empty
+        assert!(!raw.0.is_empty(), "raw bytes should not be empty");
+
+        // Verify filled transaction has all expected fields
+        assert_eq!(filled_tx.from, Some(from_addr));
+        assert_eq!(filled_tx.to, Some(to_addr));
+        assert_eq!(filled_tx.gas, Some(U256::from(21000)));
+        assert_eq!(
+            filled_tx.value,
+            Some(U256::from(1_000_000_000_000_000_000u64))
+        );
+        assert_eq!(filled_tx.nonce, Some(U64::from(42)));
+        assert_eq!(filled_tx.chain_id, Some(U64::from(chain_id)));
+
+        // Verify gas price details preserved
+        match filled_tx.gas_price_details {
+            GasPriceDetails::Eip1559 {
+                max_fee_per_gas,
+                max_priority_fee_per_gas,
+            } => {
+                assert_eq!(max_fee_per_gas, Some(U256::from(100_000_000_000u64)));
+                assert_eq!(max_priority_fee_per_gas, Some(U256::from(2_000_000_000u64)));
+            }
+            _ => panic!("Expected EIP-1559 gas price details"),
+        }
+    }
+
+    #[test]
+    fn test_build_unsigned_transaction_legacy() {
+        use alloy_primitives::U64;
+
+        use super::build_unsigned_transaction;
+
+        let chain_id = 12345u64;
+        let from_addr = Address::repeat_byte(0x11);
+        let to_addr = Address::repeat_byte(0x22);
+
+        let call_request = CallRequest {
+            from: Some(from_addr),
+            to: Some(to_addr),
+            gas: Some(U256::from(21000)),
+            gas_price_details: GasPriceDetails::Legacy {
+                gas_price: U256::from(50_000_000_000u64), // 50 gwei
+            },
+            value: Some(U256::from(500_000_000_000_000_000u64)), // 0.5 ETH
+            input: CallInput {
+                input: None,
+                data: None,
+            },
+            nonce: Some(U64::from(0)),
+            chain_id: Some(U64::from(chain_id)),
+            access_list: None,
+            authorization_list: None,
+            max_fee_per_blob_gas: None,
+            blob_versioned_hashes: None,
+            transaction_type: None,
+        };
+
+        let (raw, filled_tx) = build_unsigned_transaction(&call_request, chain_id).unwrap();
+
+        // Verify raw bytes are not empty
+        assert!(!raw.0.is_empty(), "raw bytes should not be empty");
+
+        // Verify gas price details preserved as legacy
+        match filled_tx.gas_price_details {
+            GasPriceDetails::Legacy { gas_price } => {
+                assert_eq!(gas_price, U256::from(50_000_000_000u64));
+            }
+            _ => panic!("Expected Legacy gas price details"),
+        }
+    }
+
+    #[test]
+    fn test_build_unsigned_transaction_contract_creation() {
+        use alloy_primitives::U64;
+
+        use super::build_unsigned_transaction;
+
+        let chain_id = 12345u64;
+        let from_addr = Address::repeat_byte(0x11);
+
+        // Contract creation: to is None, input contains bytecode
+        let call_request = CallRequest {
+            from: Some(from_addr),
+            to: None, // Contract creation
+            gas: Some(U256::from(100_000)),
+            gas_price_details: GasPriceDetails::Eip1559 {
+                max_fee_per_gas: Some(U256::from(100_000_000_000u64)),
+                max_priority_fee_per_gas: Some(U256::from(2_000_000_000u64)),
+            },
+            value: Some(U256::ZERO),
+            input: CallInput {
+                input: Some(Bytes::from(vec![0x60, 0x80, 0x60, 0x40])), // Sample bytecode
+                data: None,
+            },
+            nonce: Some(U64::from(0)),
+            chain_id: Some(U64::from(chain_id)),
+            access_list: None,
+            authorization_list: None,
+            max_fee_per_blob_gas: None,
+            blob_versioned_hashes: None,
+            transaction_type: None,
+        };
+
+        let (raw, filled_tx) = build_unsigned_transaction(&call_request, chain_id).unwrap();
+
+        // Verify raw bytes are not empty
+        assert!(!raw.0.is_empty(), "raw bytes should not be empty");
+
+        // Verify to is still None (contract creation)
+        assert_eq!(filled_tx.to, None);
     }
 }
