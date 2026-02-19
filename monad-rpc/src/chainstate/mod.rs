@@ -22,7 +22,6 @@ use alloy_consensus::{
     transaction::Recovered, Header as RlpHeader, ReceiptEnvelope, ReceiptWithBloom,
     Transaction as _,
 };
-use alloy_eips::BlockNumberOrTag;
 use alloy_primitives::{Bloom, FixedBytes, TxHash, TxKind, U256};
 use alloy_rlp::Encodable;
 use alloy_rpc_types::{
@@ -46,9 +45,7 @@ use crate::{
     chainstate::buffer::{block_height_from_tag, ChainStateBuffer},
     handlers::eth::txn::FilterError,
     types::{
-        eth_json::{
-            BlockTagOrHash, BlockTags, FixedData, MonadLog, MonadTransactionReceipt, Quantity,
-        },
+        eth_json::{BlockTagOrHash, BlockTags, FixedData, MonadLog, MonadTransactionReceipt},
         heuristic_size::HeuristicSize,
         jsonrpc::{ArchiveErrorExt, JsonRpcError, JsonRpcResult},
     },
@@ -594,17 +591,8 @@ impl<T: Triedb> ChainState<T> {
                 from_block,
                 to_block,
             } => {
-                let into_block_tag = |block: Option<BlockNumberOrTag>| -> BlockTags {
-                    match block {
-                        None => BlockTags::default(),
-                        Some(b) => match b {
-                            BlockNumberOrTag::Number(q) => BlockTags::Number(Quantity(q)),
-                            _ => BlockTags::Latest,
-                        },
-                    }
-                };
-                let from_block_tag = into_block_tag(from_block);
-                let to_block_tag = into_block_tag(to_block);
+                let from_block_tag = from_block.map(Into::into).unwrap_or_default();
+                let to_block_tag = to_block.map(Into::into).unwrap_or_default();
 
                 let from_block = get_block_key_from_tag(&self.triedb_env, from_block_tag)
                     .ok_or_else(JsonRpcError::block_not_found)?
