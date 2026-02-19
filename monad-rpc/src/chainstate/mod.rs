@@ -589,7 +589,11 @@ impl<T: Triedb> ChainState<T> {
                         None => BlockTags::default(),
                         Some(b) => match b {
                             BlockNumberOrTag::Number(q) => BlockTags::Number(Quantity(q)),
-                            _ => BlockTags::Latest,
+                            BlockNumberOrTag::Earliest => BlockTags::Number(Quantity(0)),
+                            BlockNumberOrTag::Safe => BlockTags::Safe,
+                            BlockNumberOrTag::Finalized => BlockTags::Finalized,
+                            BlockNumberOrTag::Pending => BlockTags::Latest,
+                            BlockNumberOrTag::Latest => BlockTags::Latest,
                         },
                     }
                 };
