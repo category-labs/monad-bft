@@ -15,7 +15,7 @@
 
 use monad_rpc_docs::rpc;
 
-use crate::{jsonrpc::JsonRpcResult, MONAD_RPC_VERSION};
+use crate::{types::jsonrpc::JsonRpcResult, MONAD_RPC_VERSION};
 
 #[rpc(method = "net_version", ignore = "chain_id")]
 pub fn monad_net_version(chain_id: u64) -> JsonRpcResult<String> {

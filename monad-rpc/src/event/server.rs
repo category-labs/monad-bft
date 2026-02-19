@@ -26,7 +26,7 @@ use tokio::sync::broadcast;
 use tracing::{debug, warn};
 
 use super::{EventServerClient, EventServerEvent, BROADCAST_CHANNEL_SIZE};
-use crate::{eth_json_types::MonadNotification, serialize::JsonSerialized};
+use crate::types::{eth_json::MonadNotification, serialize::JsonSerialized};
 
 pub struct EventServer<R>
 where
@@ -214,8 +214,8 @@ mod test {
 
     use super::*;
     use crate::{
-        eth_json_types::MonadNotification,
         event::{EventServer, EventServerEvent},
+        types::eth_json::MonadNotification,
     };
 
     impl EventServer<SnapshotEventRing<ExecEventDecoder>> {

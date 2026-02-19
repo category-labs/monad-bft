@@ -301,8 +301,8 @@ mod tests {
     use serde_json::json;
 
     use crate::{
-        jsonrpc::ResponseWrapper,
         tests::{init_server, recover_response_body},
+        types::jsonrpc::ResponseWrapper,
     };
 
     fn compress_json(json: &str, encoding: &str) -> Vec<u8> {

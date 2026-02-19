@@ -23,8 +23,8 @@ use criterion::{
     Throughput,
 };
 use itertools::Itertools;
-use monad_rpc::{
-    eth_json_types::{serialize_result, MonadBlock, MonadLog, MonadTransactionReceipt},
+use monad_rpc::types::{
+    eth_json::{serialize_result, MonadBlock, MonadLog, MonadTransactionReceipt},
     jsonrpc::{RequestId, Response, ResponseWrapper},
 };
 use serde::Serialize;

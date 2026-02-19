@@ -525,8 +525,7 @@ impl From<monad_archive::prelude::Report> for JsonRpcError {
 
 #[cfg(test)]
 mod test {
-    use super::Request;
-    use crate::jsonrpc::RequestId;
+    use super::{Request, RequestId};
 
     #[test]
     fn test_request() {

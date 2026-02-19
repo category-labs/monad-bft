@@ -42,11 +42,13 @@ use tracing::{debug, trace};
 
 use super::block::get_block_key_from_tag_or_hash;
 use crate::{
-    eth_json_types::BlockTagOrHash,
     handlers::debug::{decode_call_frame, Tracer, TracerObject},
     hex,
-    jsonrpc::{JsonRpcError, JsonRpcResult},
     timing::RequestId,
+    types::{
+        eth_json::BlockTagOrHash,
+        jsonrpc::{JsonRpcError, JsonRpcResult},
+    },
 };
 
 #[derive(Debug)]
@@ -1024,7 +1026,7 @@ mod tests {
             debug::Tracer,
             eth::call::{sender_gas_allowance, CallInput, MonadDebugTraceCallParams},
         },
-        jsonrpc::JsonRpcError,
+        types::jsonrpc::JsonRpcError,
     };
 
     #[test]

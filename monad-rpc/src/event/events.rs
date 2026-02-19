@@ -15,7 +15,7 @@
 
 use std::sync::Arc;
 
-use crate::{eth_json_types::MonadNotification, serialize::SharedJsonSerialized};
+use crate::types::{eth_json::MonadNotification, serialize::SharedJsonSerialized};
 
 type Header = SharedJsonSerialized<alloy_rpc_types::eth::Header>;
 type Log = SharedJsonSerialized<alloy_rpc_types::eth::Log>;

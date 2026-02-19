@@ -21,9 +21,11 @@ use monad_rpc_docs::rpc;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    eth_json_types::{EthAddress, EthHash},
-    jsonrpc::{JsonRpcError, JsonRpcResult},
     txpool::{EthTxPoolBridgeClient, TxStatus},
+    types::{
+        eth_json::{EthAddress, EthHash},
+        jsonrpc::{JsonRpcError, JsonRpcResult},
+    },
 };
 
 #[derive(Serialize, Debug, schemars::JsonSchema)]
