@@ -196,10 +196,7 @@ Default parameters:
 | max_fragments_per_message | 92 | Typical maximum fragments per message (128 KB / 1432); protocol hard limit is 128 fragments |
 | max_priority_messages | 8,192 | Concurrent priority reassemblies |
 | max_regular_messages | 4,096 | Concurrent regular reassemblies |
-| max_priority_bytes | 1 GiB | Total in-flight priority reassembly bytes |
-| max_regular_bytes | 512 MiB | Total in-flight regular reassembly bytes |
 | max_messages_per_identity | 20 | Concurrent messages per identity |
-| max_bytes_per_identity | 256 KB | Concurrent in-flight bytes per identity (combined across pools) |
 | message_timeout | 100ms | Evict timed-out messages first when full; otherwise evict random |
 
 ### Reassembly Pool Eviction

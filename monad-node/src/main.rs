@@ -901,9 +901,6 @@ where
         if let Some(v) = leanudp_overrides.max_messages_per_identity {
             leanudp_config.max_messages_per_identity = v;
         }
-        if let Some(v) = leanudp_overrides.max_bytes_per_identity {
-            leanudp_config.max_bytes_per_identity = v;
-        }
         if let Some(v) = leanudp_overrides.message_timeout_ms {
             leanudp_config.message_timeout = Duration::from_millis(v);
         }
