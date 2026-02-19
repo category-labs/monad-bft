@@ -16,6 +16,7 @@
 use std::str::FromStr;
 
 use alloy_consensus::TxEnvelope;
+use alloy_eips::BlockNumberOrTag;
 use alloy_primitives::{Address, FixedBytes, LogData, U256};
 use alloy_rpc_types::{
     pubsub::Params, Block, FeeHistory, Header, Log, Transaction, TransactionReceipt,
@@ -344,6 +345,18 @@ impl FromStr for BlockTags {
     }
 }
 
+impl From<BlockNumberOrTag> for BlockTags {
+    fn from(value: BlockNumberOrTag) -> Self {
+        match value {
+            BlockNumberOrTag::Number(number) => Self::Number(Quantity(number)),
+            BlockNumberOrTag::Earliest => Self::Number(Quantity(0)),
+            BlockNumberOrTag::Latest | BlockNumberOrTag::Pending => Self::Latest,
+            BlockNumberOrTag::Safe => Self::Safe,
+            BlockNumberOrTag::Finalized => Self::Finalized,
+        }
+    }
+}
+
 impl<'de> Deserialize<'de> for BlockTags {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -493,6 +506,7 @@ pub fn serialize_result<T: Serialize>(value: T) -> Result<Box<RawValue>, JsonRpc
 
 #[cfg(test)]
 mod tests {
+    use alloy_eips::BlockNumberOrTag;
     use alloy_primitives::U256;
     use serde::Deserialize;
     use serde_json::json;
@@ -586,6 +600,28 @@ mod tests {
 
         let x: OneBlockParam = serde_json::from_value(json!(["0xffacb0"])).unwrap();
         assert_eq!(BlockTags::Number(Quantity(16755888)), x.a);
+    }
+
+    #[test]
+    fn test_block_number_or_tag_into_block_tags() {
+        assert_eq!(
+            BlockTags::Number(Quantity(7)),
+            BlockTags::from(BlockNumberOrTag::Number(7))
+        );
+        assert_eq!(
+            BlockTags::Number(Quantity(0)),
+            BlockTags::from(BlockNumberOrTag::Earliest)
+        );
+        assert_eq!(BlockTags::Latest, BlockTags::from(BlockNumberOrTag::Latest));
+        assert_eq!(
+            BlockTags::Latest,
+            BlockTags::from(BlockNumberOrTag::Pending)
+        );
+        assert_eq!(BlockTags::Safe, BlockTags::from(BlockNumberOrTag::Safe));
+        assert_eq!(
+            BlockTags::Finalized,
+            BlockTags::from(BlockNumberOrTag::Finalized)
+        );
     }
 
     #[derive(Deserialize, Debug)]
