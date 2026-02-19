@@ -19,6 +19,7 @@ mod eth_swarm_common;
 mod test {
     use std::collections::HashSet;
 
+    use alloy_eips::eip2718::Encodable2718;
     use alloy_primitives::B256;
     use itertools::Itertools;
     use monad_consensus_types::{timeout::HighExtend, RoundCertificate};
@@ -62,7 +63,7 @@ mod test {
         for nonce in 0..10 {
             let eth_txn = make_legacy_tx(sender_1_key, BASE_FEE, GAS_LIMIT, nonce, 10);
 
-            swarm.send_transaction(node_1_id, alloy_rlp::encode(&eth_txn).into());
+            swarm.send_transaction(node_1_id, eth_txn.encoded_2718().into());
 
             expected_txns.push(eth_txn);
         }
@@ -70,7 +71,7 @@ mod test {
         for nonce in 20..30 {
             let eth_txn = make_legacy_tx(sender_1_key, BASE_FEE, GAS_LIMIT, nonce, 10);
 
-            swarm.send_transaction(node_1_id, alloy_rlp::encode(&eth_txn).into());
+            swarm.send_transaction(node_1_id, eth_txn.encoded_2718().into());
         }
 
         while swarm
@@ -117,7 +118,7 @@ mod test {
 
         let mut expected_txns = Vec::new();
         let txn1 = make_legacy_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 0, 10);
-        swarm.send_transaction(node_1_id, alloy_rlp::encode(&txn1).into());
+        swarm.send_transaction(node_1_id, txn1.encoded_2718().into());
         expected_txns.push(txn1);
 
         let auth_list = vec![
@@ -133,11 +134,11 @@ mod test {
             ),
         ];
         let txn2 = make_eip7702_tx(sender_1_key, BASE_FEE, 1, 1_000_000, 1, auth_list, 0);
-        swarm.send_transaction(node_1_id, alloy_rlp::encode(&txn2).into());
+        swarm.send_transaction(node_1_id, txn2.encoded_2718().into());
         expected_txns.push(txn2);
 
         let txn3 = make_legacy_tx(sender_2_key, BASE_FEE, GAS_LIMIT, 1, 10);
-        swarm.send_transaction(node_1_id, alloy_rlp::encode(&txn3).into());
+        swarm.send_transaction(node_1_id, txn3.encoded_2718().into());
         expected_txns.push(txn3);
 
         while swarm
@@ -209,10 +210,10 @@ mod test {
         }
 
         let txn1 = make_legacy_tx(test_sender, BASE_FEE, GAS_LIMIT, 0, 10);
-        swarm.send_transaction(node_1_id, alloy_rlp::encode(&txn1).into());
+        swarm.send_transaction(node_1_id, txn1.encoded_2718().into());
 
         let txn2 = make_eip7702_tx(sender_7702, BASE_FEE, 1, 1_000_000, 1, auths, 0);
-        swarm.send_transaction(node_1_id, alloy_rlp::encode(&txn2).into());
+        swarm.send_transaction(node_1_id, txn2.encoded_2718().into());
 
         while swarm
             .step_until(&mut UntilTerminator::new().until_block(10))
@@ -251,7 +252,7 @@ mod test {
         for nonce in 0..10 {
             let eth_txn = make_legacy_tx(sender_1_key, BASE_FEE, GAS_LIMIT, nonce, 10);
 
-            swarm.send_transaction(node_1_id, alloy_rlp::encode(&eth_txn).into());
+            swarm.send_transaction(node_1_id, eth_txn.encoded_2718().into());
 
             expected_txns.push(eth_txn);
         }
@@ -272,7 +273,7 @@ mod test {
         for nonce in 0..10 {
             let eth_txn = make_legacy_tx(sender_1_key, BASE_FEE, GAS_LIMIT, nonce, 1000);
 
-            swarm.send_transaction(node_2_id, alloy_rlp::encode(&eth_txn).into());
+            swarm.send_transaction(node_2_id, eth_txn.encoded_2718().into());
         }
 
         while swarm
@@ -426,8 +427,8 @@ mod test {
             let eth_txn_sender_1 = make_legacy_tx(sender_1_key, BASE_FEE, GAS_LIMIT, nonce, 10);
             let eth_txn_sender_2 = make_legacy_tx(sender_2_key, BASE_FEE, GAS_LIMIT, nonce, 10);
 
-            swarm.send_transaction(node_1_id, alloy_rlp::encode(&eth_txn_sender_1).into());
-            swarm.send_transaction(node_1_id, alloy_rlp::encode(&eth_txn_sender_2).into());
+            swarm.send_transaction(node_1_id, eth_txn_sender_1.encoded_2718().into());
+            swarm.send_transaction(node_1_id, eth_txn_sender_2.encoded_2718().into());
 
             expected_txns.push(eth_txn_sender_1);
             expected_txns.push(eth_txn_sender_2);
@@ -460,8 +461,8 @@ mod test {
             let eth_txn_sender_1 = make_legacy_tx(sender_1_key, BASE_FEE, GAS_LIMIT, nonce, 10);
             let eth_txn_sender_2 = make_legacy_tx(sender_2_key, BASE_FEE, GAS_LIMIT, nonce, 10);
 
-            swarm.send_transaction(node_2_id, alloy_rlp::encode(&eth_txn_sender_1).into());
-            swarm.send_transaction(node_2_id, alloy_rlp::encode(&eth_txn_sender_2).into());
+            swarm.send_transaction(node_2_id, eth_txn_sender_1.encoded_2718().into());
+            swarm.send_transaction(node_2_id, eth_txn_sender_2.encoded_2718().into());
         }
 
         // Send transactions with nonces 10..20 to Node 2
@@ -469,8 +470,8 @@ mod test {
             let eth_txn_sender_1 = make_legacy_tx(sender_1_key, BASE_FEE, GAS_LIMIT, nonce, 10);
             let eth_txn_sender_2 = make_legacy_tx(sender_2_key, BASE_FEE, GAS_LIMIT, nonce, 10);
 
-            swarm.send_transaction(node_2_id, alloy_rlp::encode(&eth_txn_sender_1).into());
-            swarm.send_transaction(node_2_id, alloy_rlp::encode(&eth_txn_sender_2).into());
+            swarm.send_transaction(node_2_id, eth_txn_sender_1.encoded_2718().into());
+            swarm.send_transaction(node_2_id, eth_txn_sender_2.encoded_2718().into());
 
             expected_txns.push(eth_txn_sender_1);
             expected_txns.push(eth_txn_sender_2);
@@ -531,7 +532,7 @@ mod test {
         for nonce in 0..10 {
             let eth_txn = make_legacy_tx(sender_1_key, BASE_FEE, GAS_LIMIT, nonce, 10);
 
-            swarm.send_transaction(other_nodes[0], alloy_rlp::encode(&eth_txn).into());
+            swarm.send_transaction(other_nodes[0], eth_txn.encoded_2718().into());
 
             expected_txns.push(eth_txn);
         }
@@ -571,7 +572,7 @@ mod test {
         for nonce in 10..20 {
             let eth_txn = make_legacy_tx(sender_1_key, BASE_FEE, GAS_LIMIT, nonce, 10);
 
-            swarm.send_transaction(node_1_id, alloy_rlp::encode(&eth_txn).into());
+            swarm.send_transaction(node_1_id, eth_txn.encoded_2718().into());
 
             expected_txns.push(eth_txn);
         }

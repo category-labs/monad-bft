@@ -19,6 +19,7 @@ mod eth_swarm_common;
 mod test {
     use std::collections::BTreeMap;
 
+    use alloy_eips::eip2718::Encodable2718;
     use alloy_primitives::B256;
     use itertools::Itertools;
     use monad_eth_testutil::{
@@ -148,7 +149,7 @@ mod test {
                 };
 
                 sender_nonces[sender_idx] += 1;
-                swarm.send_transaction(node_1_id, alloy_rlp::encode(&txn).into());
+                swarm.send_transaction(node_1_id, txn.encoded_2718().into());
 
                 // randomly advance a block with 10% probability
                 if rng.gen_bool(0.1) {

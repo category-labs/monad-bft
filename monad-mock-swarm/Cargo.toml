@@ -46,6 +46,7 @@ monad-testutil = { workspace = true }
 
 alloy-consensus = { workspace = true }
 alloy-primitives = { workspace = true }
+alloy-eips = { workspace = true }
 alloy-rlp = { workspace = true }
 criterion = { workspace = true }
 seq-macro = { workspace = true }
