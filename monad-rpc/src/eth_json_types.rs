@@ -28,6 +28,7 @@ use serde_json::value::RawValue;
 use tracing::debug;
 
 use crate::{
+    handlers::eth::call::CallRequest,
     hex::{self, decode, decode_quantity, DecodeHexError},
     jsonrpc::JsonRpcError,
 };
@@ -101,6 +102,30 @@ fn schema_for_block(_: &mut schemars::gen::SchemaGenerator) -> schemars::schema:
     schemars::schema_for_value!(Block::<Transaction<TxEnvelope>, Header>::default())
         .schema
         .into()
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FillTransactionResult {
+    /// RLP-encoded unsigned transaction
+    pub raw: UnformattedData,
+    /// The filled transaction object
+    pub tx: CallRequest,
+}
+
+impl schemars::JsonSchema for FillTransactionResult {
+    fn schema_name() -> String {
+        "FillTransactionResult".to_string()
+    }
+
+    fn json_schema(_gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+        schemars::schema_for_value!(FillTransactionResult {
+            raw: UnformattedData(vec![]),
+            tx: CallRequest::default(),
+        })
+        .schema
+        .into()
+    }
 }
 
 #[derive(Serialize, Debug, JsonSchema)]
