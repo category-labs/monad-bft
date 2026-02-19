@@ -228,6 +228,9 @@ impl Decodable for WireNameRecordV2 {
         let capabilities = u64::decode(buf)?;
         let seq = u64::decode(buf)?;
 
+        if !buf.is_empty() {
+            return Err(alloy_rlp::Error::UnexpectedLength);
+        }
         Ok(Self {
             ip,
             ports,
