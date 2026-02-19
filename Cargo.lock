@@ -5452,6 +5452,7 @@ name = "monad-eth-txpool-executor"
 version = "0.1.0"
 dependencies = [
  "alloy-consensus",
+ "alloy-eips",
  "alloy-primitives",
  "alloy-rlp",
  "bytes",
@@ -6375,6 +6376,7 @@ name = "monad-updaters"
 version = "0.1.0"
 dependencies = [
  "alloy-consensus",
+ "alloy-eips",
  "alloy-rlp",
  "bytes",
  "futures",
