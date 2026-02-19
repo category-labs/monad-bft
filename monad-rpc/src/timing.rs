@@ -47,11 +47,11 @@ where
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
-pub struct RequestId {
+pub struct TimingRequestId {
     id: u64,
 }
 
-impl RequestId {
+impl TimingRequestId {
     pub fn random() -> Self {
         Self {
             id: rand::random::<u64>(),
@@ -59,14 +59,14 @@ impl RequestId {
     }
 }
 
-impl FromRequest for RequestId {
+impl FromRequest for TimingRequestId {
     type Error = actix_web::Error;
     type Future = Ready<Result<Self, Self::Error>>;
 
     fn from_request(req: &HttpRequest, _: &mut Payload) -> Self::Future {
-        match req.extensions().get::<RequestId>() {
+        match req.extensions().get::<TimingRequestId>() {
             Some(request_id) => ready(Ok(*request_id)),
-            None => ready(Ok(RequestId::random())),
+            None => ready(Ok(TimingRequestId::random())),
         }
     }
 }
@@ -89,7 +89,7 @@ where
     fn call(&self, req: ServiceRequest) -> Self::Future {
         let start_time = Instant::now();
 
-        let request_id = RequestId::random();
+        let request_id = TimingRequestId::random();
         let (request, payload) = req.into_parts();
         let id_int = request_id.id;
         request.extensions_mut().insert(request_id);

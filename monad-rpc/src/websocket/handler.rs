@@ -36,7 +36,7 @@ use tracing::{debug, error, warn};
 use crate::{
     event::{EventServerClient, EventServerClientError, EventServerEvent},
     handlers::{resources::MonadRpcResources, rpc_select},
-    timing::RequestId,
+    timing::TimingRequestId,
     types::{
         eth_json::{
             serialize_result, EthSubscribeRequest, EthSubscribeResult, EthUnsubscribeRequest,
@@ -581,7 +581,8 @@ async fn handle_request(
             }
         }
         method => {
-            let result = rpc_select(app_state, method, request.params, RequestId::random()).await;
+            let result =
+                rpc_select(app_state, method, request.params, TimingRequestId::random()).await;
             let response = Response::from_result(request.id.clone(), result);
             let result =
                 match serialize_with_size_limit(&response, app_state.max_response_size as usize) {
