@@ -415,9 +415,7 @@ where
                             MockChainConfig,
                             MockChainRevision,
                         >::update_committed_block(
-                            block_policy,
-                            &committed_block,
-                            &self.chain_config,
+                            block_policy, &committed_block
                         );
                         pool.update_committed_block(
                             &mut event_tracker,
@@ -437,9 +435,7 @@ where
                         MockChainConfig,
                         MockChainRevision,
                     >::reset(
-                        block_policy,
-                        last_delay_committed_blocks.iter().collect(),
-                        &self.chain_config,
+                        block_policy, last_delay_committed_blocks.iter().collect()
                     );
                     pool.reset(
                         &mut event_tracker,

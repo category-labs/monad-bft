@@ -38,6 +38,7 @@ use serde_with::{serde_as, DisplayFromStr};
 
 use crate::{
     checkpoint::RootInfo,
+    metrics::Metrics,
     payload::{ConsensusBlockBody, ConsensusBlockBodyId, RoundSignature},
     quorum_certificate::QuorumCertificate,
 };
@@ -310,24 +311,6 @@ where
     }
 }
 
-#[derive(Debug, PartialEq)]
-pub enum BlockPolicyError {
-    BlockNotCoherent,
-    StateBackendError(StateBackendError),
-    TimestampError,
-    ExecutionResultMismatch,
-    BaseFeeError,
-    BlockPolicyBlockValidatorError(BlockPolicyBlockValidatorError),
-    Eip7702Error,
-    SystemTransactionError,
-}
-
-impl From<StateBackendError> for BlockPolicyError {
-    fn from(err: StateBackendError) -> Self {
-        Self::StateBackendError(err)
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct AccountBalanceState {
     pub balance: Balance,
@@ -347,15 +330,6 @@ impl AccountBalanceState {
             is_delegated: false,
         }
     }
-}
-
-pub type AccountBalanceStates = BTreeMap<Address, AccountBalanceState>;
-
-#[derive(Debug, PartialEq)]
-pub enum BlockPolicyBlockValidatorError {
-    AccountBalanceMissing,
-    InsufficientBalance,
-    InsufficientReserveBalance,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -388,6 +362,7 @@ where
         + Debug
         + Send
         + Deref<Target = ConsensusFullBlock<ST, SCT, EPT>>;
+    type BlockPolicyError: Debug;
 
     fn check_coherency(
         &self,
@@ -395,8 +370,9 @@ where
         extending_blocks: Vec<&Self::ValidatedBlock>,
         blocktree_root: RootInfo,
         state_backend: &SBT,
-        chain_cnfig: &CCT,
-    ) -> Result<(), BlockPolicyError>;
+        chain_config: &CCT,
+        metrics: &mut Metrics,
+    ) -> Result<(), Self::BlockPolicyError>;
 
     fn get_expected_execution_results(
         &self,
@@ -407,15 +383,11 @@ where
 
     // TODO delete this function, pass recently committed blocks to check_coherency instead
     // This way, BlockPolicy doesn't need to be mutated
-    fn update_committed_block(&mut self, block: &Self::ValidatedBlock, chain_config: &CCT);
+    fn update_committed_block(&mut self, block: &Self::ValidatedBlock);
 
     // TODO delete this function, pass recently committed blocks to check_coherency instead
     // This way, BlockPolicy doesn't need to be mutated
-    fn reset(
-        &mut self,
-        last_delay_committed_blocks: Vec<&Self::ValidatedBlock>,
-        chain_config: &CCT,
-    );
+    fn reset(&mut self, last_delay_committed_blocks: Vec<&Self::ValidatedBlock>);
 }
 
 /// A block policy which does not validate the inner contents of the block
@@ -452,6 +424,20 @@ where
     }
 }
 
+#[derive(Debug)]
+pub enum PassthruBlockPolicyError {
+    InvalidSeqNum,
+    TimestampError,
+    ExecutionResultMismatch,
+    StateBackendError(StateBackendError),
+}
+
+impl From<StateBackendError> for PassthruBlockPolicyError {
+    fn from(err: StateBackendError) -> Self {
+        Self::StateBackendError(err)
+    }
+}
+
 impl<ST, SCT, EPT>
     BlockPolicy<ST, SCT, EPT, InMemoryState<ST, SCT>, MockChainConfig, MockChainRevision>
     for PassthruBlockPolicy
@@ -461,6 +447,7 @@ where
     EPT: ExecutionProtocol,
 {
     type ValidatedBlock = PassthruWrappedBlock<ST, SCT, EPT>;
+    type BlockPolicyError = PassthruBlockPolicyError;
 
     fn check_coherency(
         &self,
@@ -468,8 +455,9 @@ where
         extending_blocks: Vec<&Self::ValidatedBlock>,
         blocktree_root: RootInfo,
         state_backend: &InMemoryState<ST, SCT>,
-        chain_config: &MockChainConfig,
-    ) -> Result<(), BlockPolicyError> {
+        _: &MockChainConfig,
+        _: &mut Metrics,
+    ) -> Result<(), PassthruBlockPolicyError> {
         // check coherency against the block being extended or against the root of the blocktree if
         // there is no extending branch
         let (extending_seq_num, extending_timestamp) =
@@ -480,12 +468,12 @@ where
             };
 
         if block.get_seq_num() != extending_seq_num + SeqNum(1) {
-            return Err(BlockPolicyError::BlockNotCoherent);
+            return Err(PassthruBlockPolicyError::InvalidSeqNum);
         }
 
         if block.get_timestamp() <= extending_timestamp {
             // timestamps must be monotonically increasing
-            return Err(BlockPolicyError::TimestampError);
+            return Err(PassthruBlockPolicyError::TimestampError);
         }
 
         let expected_execution_results = self.get_expected_execution_results(
@@ -494,7 +482,7 @@ where
             state_backend,
         )?;
         if block.get_execution_results() != &expected_execution_results {
-            return Err(BlockPolicyError::ExecutionResultMismatch);
+            return Err(PassthruBlockPolicyError::ExecutionResultMismatch);
         }
 
         Ok(())
@@ -509,8 +497,8 @@ where
         Ok(Vec::new())
     }
 
-    fn update_committed_block(&mut self, _: &Self::ValidatedBlock, _: &MockChainConfig) {}
-    fn reset(&mut self, _: Vec<&Self::ValidatedBlock>, _: &MockChainConfig) {}
+    fn update_committed_block(&mut self, _: &Self::ValidatedBlock) {}
+    fn reset(&mut self, _: Vec<&Self::ValidatedBlock>) {}
 }
 
 #[derive(Debug, Clone, RlpEncodable, RlpDecodable, Serialize)]

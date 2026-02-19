@@ -16,6 +16,8 @@ monad-state-backend = { workspace = true }
 monad-types = { workspace = true }
 monad-validator = { workspace = true }
 
+tracing = { workspace = true }
+
 [dev-dependencies]
 monad-crypto = { workspace = true }
 monad-eth-types = { workspace = true }
