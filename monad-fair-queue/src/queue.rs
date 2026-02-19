@@ -79,6 +79,14 @@ struct PopCandidate<Id, T> {
     current_score: Score,
 }
 
+enum PostPopAction {
+    Requeue {
+        target_pool: PoolKind,
+        target_score: Score,
+    },
+    DropRemaining,
+}
+
 impl<Id: Eq> PartialEq for HeapEntry<Id> {
     fn eq(&self, other: &Self) -> bool {
         self.finish_time == other.finish_time && self.id == other.id
@@ -333,6 +341,14 @@ where
             return Ok(pool_kind);
         }
 
+        self.push_new_identity(id, item)
+    }
+
+    fn push_new_identity(
+        &mut self,
+        id: S::Identity,
+        item: T,
+    ) -> Result<PoolKind, PushError<S::Identity>> {
         let (desired_pool, desired_score) =
             QueueStatus::from(self.scorer.score(&id)).into_pool_and_score();
 
@@ -409,66 +425,68 @@ where
             return Some((entry.id, item));
         }
 
-        let (target_pool, target_score) = self.select_target_after_pop(
+        let action = self.select_target_after_pop(
             status,
             current_pool,
             current_score,
             remaining_len,
             &entry.id,
         );
-        self.migrate_remaining_items(current_pool, target_pool, remaining_len);
+        match action {
+            PostPopAction::DropRemaining => {
+                self.remove_identity_items(&entry.id, current_pool, remaining_len);
+            }
+            PostPopAction::Requeue {
+                target_pool,
+                target_score,
+            } => {
+                self.migrate_remaining_items(current_pool, target_pool, remaining_len);
 
-        let next_finish =
-            self.reschedule_after_pop(&entry.id, current_pool, target_pool, target_score);
+                let next_finish =
+                    self.reschedule_after_pop(&entry.id, current_pool, target_pool, target_score);
 
-        self.pool_mut(target_pool).heap.push(HeapEntry {
-            finish_time: next_finish,
-            id: entry.id.clone(),
-        });
+                self.pool_mut(target_pool).heap.push(HeapEntry {
+                    finish_time: next_finish,
+                    id: entry.id.clone(),
+                });
+            }
+        }
 
         Some((entry.id, item))
     }
 
     fn pop_candidate(&mut self, pool_kind: PoolKind) -> Option<PopCandidate<S::Identity, T>> {
-        let entry = {
-            let pool = self.pool_mut(pool_kind);
-            pool.heap.pop()
-        }?;
+        loop {
+            let entry = {
+                let pool = self.pool_mut(pool_kind);
+                pool.heap.pop()
+            }?;
 
-        let id = entry.id.clone();
-        let status = self.scorer.score(&id);
+            let id = entry.id.clone();
 
-        let state = self
-            .identities
-            .get_mut(&id)
-            .expect("heap entry must have a corresponding identity");
-        assert_eq!(
-            state.pool, pool_kind,
-            "heap entry pool must match identity pool"
-        );
-        assert_eq!(
-            entry.finish_time, state.finish_time,
-            "heap entry finish_time must match identity finish_time"
-        );
-        assert!(
-            !state.queue.is_empty(),
-            "identity queue must be non-empty while scheduled in heap"
-        );
+            let Some(state) = self.identities.get_mut(&id) else {
+                continue;
+            };
+            if state.pool != pool_kind || entry.finish_time != state.finish_time {
+                continue;
+            }
 
-        let item = state
-            .queue
-            .pop_front()
-            .expect("queue checked non-empty above");
-        let remaining_len = state.queue.len();
+            let Some(item) = state.queue.pop_front() else {
+                self.identities.remove(&id);
+                continue;
+            };
+            let remaining_len = state.queue.len();
+            let status = self.scorer.score(&id);
 
-        Some(PopCandidate {
-            entry,
-            status,
-            item,
-            remaining_len,
-            current_pool: state.pool,
-            current_score: state.score,
-        })
+            return Some(PopCandidate {
+                entry,
+                status,
+                item,
+                remaining_len,
+                current_pool: state.pool,
+                current_score: state.score,
+            });
+        }
     }
 
     fn apply_popped_entry(&mut self, pool_kind: PoolKind, finish_time: f64) {
@@ -484,10 +502,13 @@ where
         current_score: Score,
         remaining_len: usize,
         id: &S::Identity,
-    ) -> (PoolKind, Score) {
+    ) -> PostPopAction {
         let (desired_pool, desired_score) = QueueStatus::from(status).into_pool_and_score();
         if desired_pool == current_pool {
-            return (current_pool, desired_score);
+            return PostPopAction::Requeue {
+                target_pool: current_pool,
+                target_score: desired_score,
+            };
         }
 
         let can_move = {
@@ -508,13 +529,23 @@ where
         };
 
         match (desired_pool, can_move) {
-            (PoolKind::Priority, Ok(())) => (PoolKind::Priority, desired_score),
-            (PoolKind::Priority, Err(PushError::Full { .. })) => {
-                (PoolKind::Regular, DEFAULT_REGULAR_SCORE)
-            }
-            (PoolKind::Priority, Err(_)) => (current_pool, current_score),
-            (PoolKind::Regular, Ok(())) => (PoolKind::Regular, DEFAULT_REGULAR_SCORE),
-            (PoolKind::Regular, Err(_)) => (current_pool, current_score),
+            (PoolKind::Priority, Ok(())) => PostPopAction::Requeue {
+                target_pool: PoolKind::Priority,
+                target_score: desired_score,
+            },
+            (PoolKind::Priority, Err(PushError::Full { .. })) => PostPopAction::Requeue {
+                target_pool: PoolKind::Regular,
+                target_score: DEFAULT_REGULAR_SCORE,
+            },
+            (PoolKind::Priority, Err(_)) => PostPopAction::Requeue {
+                target_pool: current_pool,
+                target_score: current_score,
+            },
+            (PoolKind::Regular, Ok(())) => PostPopAction::Requeue {
+                target_pool: PoolKind::Regular,
+                target_score: DEFAULT_REGULAR_SCORE,
+            },
+            (PoolKind::Regular, Err(_)) => PostPopAction::DropRemaining,
         }
     }
 
@@ -530,7 +561,11 @@ where
 
         {
             let pool = self.pool_mut(current_pool);
-            pool.total_items = pool.total_items.saturating_sub(remaining_len);
+            assert!(
+                pool.total_items >= remaining_len,
+                "pool total_items underflow while migrating between pools"
+            );
+            pool.total_items -= remaining_len;
         }
         self.pool_mut(target_pool).total_items += remaining_len;
     }
@@ -566,6 +601,21 @@ where
             PoolKind::Priority => &mut self.priority_pool,
             PoolKind::Regular => &mut self.regular_pool,
         }
+    }
+
+    fn remove_identity_items(&mut self, id: &S::Identity, pool_kind: PoolKind, item_count: usize) {
+        let Some(state) = self.identities.remove(id) else {
+            return;
+        };
+        debug_assert_eq!(state.pool, pool_kind);
+        debug_assert_eq!(state.queue.len(), item_count);
+
+        let pool = self.pool_mut(pool_kind);
+        assert!(
+            pool.total_items >= item_count,
+            "pool total_items underflow while removing identity"
+        );
+        pool.total_items -= item_count;
     }
 }
 
@@ -811,6 +861,71 @@ mod tests {
 
         let state = queue.identities.get(&0).unwrap();
         assert_eq!(state.pool, PoolKind::Priority);
+    }
+
+    #[test]
+    fn demotion_over_regular_per_id_limit_drops_remaining_items() {
+        let scores = std::sync::Arc::new(std::sync::Mutex::new(HashMap::from([(0, 10.0)])));
+        let scorer = MutableScorer {
+            scores: scores.clone(),
+            threshold: 0.5,
+        };
+        let mut queue: FairQueue<MutableScorer, u32> = FairQueueBuilder::new()
+            .per_id_limit(100)
+            .max_size(1000)
+            .regular_per_id_limit(2)
+            .regular_max_size(1000)
+            .regular_bandwidth_pct(0)
+            .build(scorer);
+
+        for i in 0..5 {
+            queue.push(0, i).unwrap();
+        }
+        {
+            let mut scores = scores.lock().unwrap();
+            scores.insert(0, 0.1);
+        }
+
+        let (id, _) = queue.pop().unwrap();
+        assert_eq!(id, 0);
+        assert!(queue.pop().is_none());
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn demotion_when_regular_full_drops_remaining_items() {
+        let scores =
+            std::sync::Arc::new(std::sync::Mutex::new(HashMap::from([(0, 10.0), (1, 0.1)])));
+        let scorer = MutableScorer {
+            scores: scores.clone(),
+            threshold: 0.5,
+        };
+        let mut queue: FairQueue<MutableScorer, u32> = FairQueueBuilder::new()
+            .per_id_limit(100)
+            .max_size(1000)
+            .regular_per_id_limit(10)
+            .regular_max_size(3)
+            .regular_bandwidth_pct(0)
+            .build(scorer);
+
+        queue.push(0, 10).unwrap();
+        queue.push(0, 11).unwrap();
+        queue.push(0, 12).unwrap();
+        queue.push(1, 20).unwrap();
+        queue.push(1, 21).unwrap();
+        queue.push(1, 22).unwrap();
+
+        {
+            let mut scores = scores.lock().unwrap();
+            scores.insert(0, 0.1);
+        }
+
+        let (first, _) = queue.pop().unwrap();
+        assert_eq!(first, 0);
+        assert_eq!(queue.pop().unwrap().0, 1);
+        assert_eq!(queue.pop().unwrap().0, 1);
+        assert_eq!(queue.pop().unwrap().0, 1);
+        assert!(queue.pop().is_none());
     }
 
     #[test]
