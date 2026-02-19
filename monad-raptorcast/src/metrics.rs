@@ -22,6 +22,8 @@ use crate::util::unix_ts_ms_now;
 pub const GAUGE_RAPTORCAST_TOTAL_MESSAGES_RECEIVED: &str =
     "monad.raptorcast.total_messages_received";
 pub const GAUGE_RAPTORCAST_TOTAL_RECV_ERRORS: &str = "monad.raptorcast.total_recv_errors";
+pub const GAUGE_RAPTORCAST_TOTAL_DESERIALIZE_ERRORS: &str =
+    "monad.raptorcast.total_deserialize_errors";
 
 pub const GAUGE_RAPTORCAST_DECODING_CACHE_SIGNATURE_VERIFICATIONS_RATE_LIMITED: &str =
     "monad.raptorcast.decoding_cache.signature_verifications_rate_limited";
