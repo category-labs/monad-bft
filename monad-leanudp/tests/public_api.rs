@@ -10,6 +10,7 @@ use monad_leanudp::{
     metrics::{
         COUNTER_LEANUDP_DECODE_EVICTED_RANDOM, COUNTER_LEANUDP_DECODE_EVICTED_TIMEOUT,
         COUNTER_LEANUDP_DECODE_FRAGMENTS_PRIORITY, COUNTER_LEANUDP_DECODE_FRAGMENTS_REGULAR,
+        COUNTER_LEANUDP_ERROR_INVALID_HEADER, COUNTER_LEANUDP_ERROR_UNSUPPORTED_VERSION,
         GAUGE_LEANUDP_POOL_PRIORITY_MESSAGES, GAUGE_LEANUDP_POOL_REGULAR_MESSAGES,
     },
     Clock, Config, DecodeError, DecodeOutcome, Decoder, EncodeError, Encoder, FragmentPolicy,
@@ -246,7 +247,9 @@ fn test_duplicate_fragment_is_rejected() {
 fn test_too_many_fragments_error_path() {
     let (mut encoder, mut decoder, _clock) = build_regular(Config::default());
     let packet = fragment_packets(&mut encoder, Bytes::from_static(b"A"))[0].clone();
-    let out_of_range = packet_with_seq(&packet, 128);
+    let mut out_of_range = packet_with_seq(&packet, 128).to_vec();
+    out_of_range[7] = 0; // Middle fragment with out-of-range sequence number.
+    let out_of_range = Bytes::from(out_of_range);
     assert_eq!(
         decoder.decode(1, out_of_range),
         Err(DecodeError::TooManyFragments {
@@ -296,7 +299,7 @@ fn test_message_size_limit_is_enforced() {
 
 #[test]
 fn test_header_errors() {
-    let (_encoder, mut decoder, _clock) = build_regular(Config::default());
+    let (mut encoder, mut decoder, _clock) = build_regular(Config::default());
 
     assert_eq!(
         decoder.decode(1, Bytes::from_static(b"short")),
@@ -305,8 +308,8 @@ fn test_header_errors() {
             required: LEANUDP_HEADER_SIZE,
         })
     );
+    assert_eq!(decoder.metrics()[COUNTER_LEANUDP_ERROR_INVALID_HEADER], 1);
 
-    let (mut encoder, mut decoder, _clock) = build_regular(Config::default());
     let mut packet = fragment_packets(&mut encoder, Bytes::from_static(b"ok"))[0].to_vec();
     packet[0] = 99;
     assert_eq!(
@@ -316,6 +319,27 @@ fn test_header_errors() {
             expected: 1,
         })
     );
+    assert_eq!(
+        decoder.metrics()[COUNTER_LEANUDP_ERROR_UNSUPPORTED_VERSION],
+        1
+    );
+
+    let mut invalid_flags =
+        fragment_packets(&mut encoder, Bytes::from_static(b"flags"))[0].to_vec();
+    invalid_flags[7] |= 0x80;
+    assert_eq!(
+        decoder.decode(2, Bytes::from(invalid_flags)),
+        Err(DecodeError::InvalidHeader)
+    );
+    assert_eq!(decoder.metrics()[COUNTER_LEANUDP_ERROR_INVALID_HEADER], 2);
+
+    let packet = fragment_packets(&mut encoder, Bytes::from_static(b"layout"))[0].clone();
+    let invalid_layout = packet_with_seq(&packet, 1);
+    assert_eq!(
+        decoder.decode(3, invalid_layout),
+        Err(DecodeError::InvalidHeader)
+    );
+    assert_eq!(decoder.metrics()[COUNTER_LEANUDP_ERROR_INVALID_HEADER], 3);
 }
 
 #[test]

@@ -163,10 +163,10 @@ pub struct FairQueueBuilder {
 impl Default for FairQueueBuilder {
     fn default() -> Self {
         Self {
-            per_id_limit: 10_000,
-            max_size: 100_000,
-            regular_per_id_limit: 1_000,
-            regular_max_size: 100_000,
+            per_id_limit: 2_000,
+            max_size: 40_000,
+            regular_per_id_limit: 2_000,
+            regular_max_size: 40_000,
             regular_bandwidth_pct: 10,
         }
     }
@@ -463,19 +463,20 @@ where
             }?;
 
             let id = entry.id.clone();
+            let (item, remaining_len, current_pool, current_score) = {
+                let Some(state) = self.identities.get_mut(&id) else {
+                    continue;
+                };
+                if state.pool != pool_kind || entry.finish_time != state.finish_time {
+                    continue;
+                }
 
-            let Some(state) = self.identities.get_mut(&id) else {
-                continue;
+                let Some(item) = state.queue.pop_front() else {
+                    self.identities.remove(&id);
+                    continue;
+                };
+                (item, state.queue.len(), state.pool, state.score)
             };
-            if state.pool != pool_kind || entry.finish_time != state.finish_time {
-                continue;
-            }
-
-            let Some(item) = state.queue.pop_front() else {
-                self.identities.remove(&id);
-                continue;
-            };
-            let remaining_len = state.queue.len();
             let status = self.scorer.score(&id);
 
             return Some(PopCandidate {
@@ -483,8 +484,8 @@ where
                 status,
                 item,
                 remaining_len,
-                current_pool: state.pool,
-                current_score: state.score,
+                current_pool,
+                current_score,
             });
         }
     }

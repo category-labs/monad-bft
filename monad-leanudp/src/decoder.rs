@@ -436,18 +436,18 @@ impl<I: Eq + Hash + Clone + Ord, R: CryptoRng + RngCore> MessagePool<I, R> {
                 state.total_frags = Some(new_total);
             }
 
-            let total_size = state.total_size + fragment_size;
+            let total_size = state.total_size.checked_add(fragment_size);
             ensure!(
-                total_size <= self.cfg.max_message_size,
+                matches!(total_size, Some(size) if size <= self.cfg.max_message_size),
                 || {
                     self.remove_message(&key, usage);
                 };
                 DecodeError::MessageSizeExceeded {
-                    size: total_size,
+                    size: total_size.unwrap_or(usize::MAX),
                     max: self.cfg.max_message_size,
                 }
             );
-            state.total_size = total_size;
+            state.total_size = total_size.expect("total_size validated above");
             state.fragments.insert(seq_num, data);
 
             state.total_frags == Some(state.fragments.len() as u16)
@@ -740,6 +740,12 @@ where
             self.regular_pool.message_count() as u64;
     }
 
+    fn reject_decode(&mut self, error: DecodeError) -> DecodeError {
+        self.metrics[error.metric_name()] += 1;
+        self.update_pool_gauges();
+        error
+    }
+
     pub fn decode<T>(&mut self, identity: I, packet: T) -> Result<DecodeOutcome, DecodeError>
     where
         T: TryInto<Packet>,
@@ -747,18 +753,23 @@ where
     {
         self.metrics[COUNTER_LEANUDP_DECODE_FRAGMENTS_RECEIVED] += 1;
 
-        let Packet { header, payload } = packet.try_into().map_err(Into::into)?;
+        let Packet { header, payload } = match packet.try_into().map_err(Into::into) {
+            Ok(packet) => packet,
+            Err(error) => return Err(self.reject_decode(error)),
+        };
         let payload_bytes = payload.len() as u64;
         if payload_bytes > 0 {
             self.metrics[COUNTER_LEANUDP_DECODE_BYTES_RECEIVED] += payload_bytes;
         }
-        ensure!(
-            header.version() == LEANUDP_PROTOCOL_VERSION,
-            DecodeError::UnsupportedVersion {
+        if header.version() != LEANUDP_PROTOCOL_VERSION {
+            return Err(self.reject_decode(DecodeError::UnsupportedVersion {
                 version: header.version(),
                 expected: LEANUDP_PROTOCOL_VERSION,
-            }
-        );
+            }));
+        }
+        if !header.has_known_flags() || !header.has_valid_fragment_layout() {
+            return Err(self.reject_decode(DecodeError::InvalidHeader));
+        }
 
         let msg_id = header.msg_id();
         let key = (identity.clone(), msg_id);

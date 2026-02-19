@@ -14,6 +14,9 @@ use tracing::debug;
 
 use crate::{metrics::*, Clock, IdentityScore, PeerStatus, Score};
 
+const MAX_EMA_GAS: f64 = u64::MAX as f64;
+const MAX_TIME_WEIGHT_BOUND: f64 = f64::MAX / MAX_EMA_GAS;
+
 #[derive(Debug, Clone)]
 pub struct ScoreConfig {
     pub promoted_capacity: usize,
@@ -90,8 +93,10 @@ pub fn create<I: Hash + Eq, C: Clock + Clone>(
     assert!(!config.ema_half_life.is_zero(), "ema_half_life must be > 0");
     assert!(!config.block_time.is_zero(), "block_time must be > 0");
     assert!(
-        config.max_time_weight.is_finite() && config.max_time_weight >= 0.0,
-        "max_time_weight must be finite and >= 0"
+        config.max_time_weight.is_finite()
+            && config.max_time_weight >= 0.0
+            && config.max_time_weight <= MAX_TIME_WEIGHT_BOUND,
+        "max_time_weight must be finite, >= 0, and <= {MAX_TIME_WEIGHT_BOUND}"
     );
     assert!(
         config.promotion_threshold.is_finite() && config.promotion_threshold > 0.0,
@@ -131,24 +136,65 @@ impl Deref for ScoreProviderMetrics<'_> {
 
 fn apply_ema_decay(ema_gas: f64, elapsed: Duration, half_life: &Duration) -> f64 {
     if elapsed.is_zero() {
-        return ema_gas;
+        return clamp_ema(ema_gas);
     }
     let decay = 0.5_f64.powf(elapsed.as_secs_f64() / half_life.as_secs_f64());
-    let decayed = ema_gas * decay;
+    let decayed = clamp_ema(ema_gas) * decay;
+    let decayed = clamp_ema(decayed);
     debug_assert!(decayed.is_finite());
     debug_assert!(decayed >= 0.0);
     decayed
 }
 
 fn ema_alpha(block_time: Duration, half_life: &Duration) -> f64 {
-    1.0 - 0.5_f64.powf(block_time.as_secs_f64() / half_life.as_secs_f64())
+    let alpha = 1.0 - 0.5_f64.powf(block_time.as_secs_f64() / half_life.as_secs_f64());
+    if alpha.is_finite() {
+        alpha.clamp(0.0, 1.0)
+    } else {
+        1.0
+    }
 }
 
 fn ema_update(alpha: f64, gas: u64, decayed: f64) -> f64 {
-    let value = alpha * gas as f64 + (1.0 - alpha) * decayed;
+    let alpha = if alpha.is_finite() {
+        alpha.clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    let value = alpha * gas as f64 + (1.0 - alpha) * clamp_ema(decayed);
+    let value = clamp_ema(value);
     debug_assert!(value.is_finite());
     debug_assert!(value >= 0.0);
     value
+}
+
+fn elapsed_since(now: Instant, then: Instant) -> Duration {
+    now.checked_duration_since(then).unwrap_or_default()
+}
+
+fn clamp_ema(value: f64) -> f64 {
+    if !value.is_finite() {
+        return MAX_EMA_GAS;
+    }
+    value.clamp(0.0, MAX_EMA_GAS)
+}
+
+fn clamp_score(value: f64) -> f64 {
+    if !value.is_finite() {
+        return f64::MAX;
+    }
+    if value <= 0.0 {
+        return 0.0;
+    }
+    value
+}
+
+fn saturating_metric_add(metrics: &mut ExecutorMetrics, metric: &'static str, delta: u64) {
+    if delta == 0 {
+        return;
+    }
+    let slot = &mut metrics[metric];
+    *slot = slot.saturating_add(delta);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -202,24 +248,32 @@ impl ContributionMetrics {
     }
 
     fn emit(self, metrics: &mut ExecutorMetrics, promoted: usize, newcomers: usize) {
-        if self.contributions > 0 {
-            metrics[COUNTER_PEER_SCORE_RECORD_CONTRIBUTION_TOTAL] += self.contributions;
-        }
-        if self.newcomer_admitted > 0 {
-            metrics[COUNTER_PEER_SCORE_NEWCOMER_ADMITTED] += self.newcomer_admitted;
-        }
-        if self.newcomer_rejected > 0 {
-            metrics[COUNTER_PEER_SCORE_NEWCOMER_REJECTED] += self.newcomer_rejected;
-        }
-        if self.promotion_succeeded > 0 {
-            metrics[COUNTER_PEER_SCORE_PROMOTION_SUCCEEDED] += self.promotion_succeeded;
-        }
-        if self.promotion_rejected > 0 {
-            metrics[COUNTER_PEER_SCORE_PROMOTION_REJECTED] += self.promotion_rejected;
-        }
-        if self.demotions > 0 {
-            metrics[COUNTER_PEER_SCORE_DEMOTION] += self.demotions;
-        }
+        saturating_metric_add(
+            metrics,
+            COUNTER_PEER_SCORE_RECORD_CONTRIBUTION_TOTAL,
+            self.contributions,
+        );
+        saturating_metric_add(
+            metrics,
+            COUNTER_PEER_SCORE_NEWCOMER_ADMITTED,
+            self.newcomer_admitted,
+        );
+        saturating_metric_add(
+            metrics,
+            COUNTER_PEER_SCORE_NEWCOMER_REJECTED,
+            self.newcomer_rejected,
+        );
+        saturating_metric_add(
+            metrics,
+            COUNTER_PEER_SCORE_PROMOTION_SUCCEEDED,
+            self.promotion_succeeded,
+        );
+        saturating_metric_add(
+            metrics,
+            COUNTER_PEER_SCORE_PROMOTION_REJECTED,
+            self.promotion_rejected,
+        );
+        saturating_metric_add(metrics, COUNTER_PEER_SCORE_DEMOTION, self.demotions);
         metrics[GAUGE_PEER_SCORE_PROMOTED_SIZE] = promoted as u64;
         metrics[GAUGE_PEER_SCORE_NEWCOMER_SIZE] = newcomers as u64;
         metrics[GAUGE_PEER_SCORE_TOTAL_SIZE] = (promoted + newcomers) as u64;
@@ -245,19 +299,26 @@ impl<I: Hash + Eq + Clone, C: Clock> ScoreProvider<I, C> {
         let half_life = state.config.ema_half_life;
         let threshold = state.config.promotion_threshold;
         let alpha = ema_alpha(state.config.block_time, &half_life);
+        let config = state.config.clone();
 
-        if let Some(id_state) = state.promoted.get_mut(&identity) {
-            let elapsed = now.duration_since(id_state.last_update);
-            let decayed = apply_ema_decay(id_state.ema_gas, elapsed, &half_life);
-            id_state.ema_gas = ema_update(alpha, gas, decayed);
-            id_state.last_update = now;
+        if state.promoted.peek(&identity).is_some() {
+            let should_demote = {
+                let id_state = state
+                    .promoted
+                    .get_mut(&identity)
+                    .expect("promoted identity exists");
+                let elapsed = elapsed_since(now, id_state.last_update);
+                let decayed = apply_ema_decay(id_state.ema_gas, elapsed, &half_life);
+                id_state.ema_gas = ema_update(alpha, gas, decayed);
+                id_state.last_update = now;
+                compute_score(id_state, &config, now) < threshold
+            };
 
-            let config = state.config.clone();
-            let id_state_ref = state.promoted.peek(&identity).unwrap();
-            let score = compute_score(id_state_ref, &config, now);
-            if score < threshold {
-                let id_state = state.promoted.pop(&identity).unwrap();
-                let config = state.config.clone();
+            if should_demote {
+                let id_state = state
+                    .promoted
+                    .pop(&identity)
+                    .expect("promoted identity exists");
                 let demotion = try_newcomer(&mut state.newcomers, identity, id_state, &config, now);
                 contribution_metrics.demotions += 1;
                 contribution_metrics.observe_newcomer(demotion);
@@ -268,26 +329,30 @@ impl<I: Hash + Eq + Clone, C: Clock> ScoreProvider<I, C> {
             return;
         }
 
-        if state.newcomers.contains(&identity) {
-            let id_state = state.newcomers.get_mut(&identity).unwrap();
-            let elapsed = now.duration_since(id_state.last_update);
-            let decayed = apply_ema_decay(id_state.ema_gas, elapsed, &half_life);
-            id_state.ema_gas = ema_update(alpha, gas, decayed);
-            id_state.last_update = now;
-
+        if state.newcomers.peek(&identity).is_some() {
             let should_promote = {
-                let id_state = state.newcomers.peek(&identity).unwrap();
-                compute_score(id_state, &state.config, now) >= threshold
+                let id_state = state
+                    .newcomers
+                    .get_mut(&identity)
+                    .expect("newcomer identity exists");
+                let elapsed = elapsed_since(now, id_state.last_update);
+                let decayed = apply_ema_decay(id_state.ema_gas, elapsed, &half_life);
+                id_state.ema_gas = ema_update(alpha, gas, decayed);
+                id_state.last_update = now;
+                compute_score(id_state, &config, now) >= threshold
             };
 
             if should_promote {
-                let id_state = state.newcomers.pop(&identity).unwrap();
+                let id_state = state
+                    .newcomers
+                    .pop(&identity)
+                    .expect("newcomer identity exists");
                 let SharedState {
                     ref mut promoted,
                     ref mut newcomers,
-                    ref config,
+                    ..
                 } = *state;
-                let decision = try_promote(promoted, newcomers, identity, id_state, config, now);
+                let decision = try_promote(promoted, newcomers, identity, id_state, &config, now);
                 contribution_metrics.observe_promotion(decision);
             }
             let pool_sizes = (state.promoted.len(), state.newcomers.len());
@@ -301,7 +366,6 @@ impl<I: Hash + Eq + Clone, C: Clock> ScoreProvider<I, C> {
             first_seen: now,
             last_update: now,
         };
-        let config = state.config.clone();
         let decision = try_newcomer(&mut state.newcomers, identity, id_state, &config, now);
         contribution_metrics.observe_newcomer(decision);
         let pool_sizes = (state.promoted.len(), state.newcomers.len());
@@ -335,7 +399,7 @@ fn try_newcomer<I: Hash + Eq>(
             newcomers.len(),
             newcomers.cap().get()
         );
-        unreachable!("newcomer pool full but missing LRU entry");
+        return NewcomerDecision::Rejected;
     };
 
     if lru_score < new_score {
@@ -379,11 +443,15 @@ fn try_promote<I: Hash + Eq + Clone>(
             promoted.len(),
             promoted.cap().get()
         );
-        unreachable!("promoted pool full but missing LRU entry");
+        let newcomer = try_newcomer(newcomers, identity, id_state, config, now);
+        return PromoteDecision::Rejected { newcomer };
     };
 
     if lru_s < new_score {
-        let (evicted_id, evicted_state) = promoted.pop_lru().unwrap();
+        let Some((evicted_id, evicted_state)) = promoted.pop_lru() else {
+            let newcomer = try_newcomer(newcomers, identity, id_state, config, now);
+            return PromoteDecision::Rejected { newcomer };
+        };
         let evicted_demotion = try_newcomer(newcomers, evicted_id, evicted_state, config, now);
         promoted.push(identity, id_state);
         PromoteDecision::Promoted {
@@ -419,14 +487,14 @@ impl<I: Hash + Eq, C: Clock> ScoreReader<I, C> {
 }
 
 fn compute_score(id_state: &IdentityState, config: &ScoreConfig, now: Instant) -> f64 {
-    let time_known = now.duration_since(id_state.first_seen);
+    let time_known = elapsed_since(now, id_state.first_seen);
     let ratio = time_known.as_secs_f64() / config.time_weight_unit.as_secs_f64();
-    let time_weight = (ratio * ratio).min(config.max_time_weight);
+    let time_weight = (ratio * ratio).min(config.max_time_weight).max(0.0);
 
-    let elapsed = now.duration_since(id_state.last_update);
+    let elapsed = elapsed_since(now, id_state.last_update);
     let current_ema = apply_ema_decay(id_state.ema_gas, elapsed, &config.ema_half_life);
 
-    let score = current_ema * time_weight;
+    let score = clamp_score(current_ema * time_weight);
     debug_assert!(score.is_finite());
     debug_assert!(score >= 0.0);
     score
@@ -442,6 +510,8 @@ impl<I: Hash + Eq, C: Clock> IdentityScore for ScoreReader<I, C> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
     use proptest::prelude::*;
     use tracing::Level;
     use tracing_subscriber::FmtSubscriber;
@@ -462,6 +532,25 @@ mod tests {
         tracing::subscriber::with_default(subscriber, f)
     }
 
+    #[derive(Clone)]
+    struct SkewClock(Arc<Mutex<Instant>>);
+
+    impl SkewClock {
+        fn new(base: Instant) -> Self {
+            Self(Arc::new(Mutex::new(base)))
+        }
+
+        fn set(&self, now: Instant) {
+            *self.0.lock().expect("clock lock poisoned") = now;
+        }
+    }
+
+    impl Clock for SkewClock {
+        fn now(&self) -> Instant {
+            *self.0.lock().expect("clock lock poisoned")
+        }
+    }
+
     #[test]
     fn new_identity_has_zero_score() {
         let clock = MockClock::new();
@@ -477,6 +566,49 @@ mod tests {
         provider.record_contribution(1, 1_000_000);
         clock.advance(Duration::from_secs(3600));
         assert!(matches!(reader.score(&1), PeerStatus::Newcomer(_)));
+    }
+
+    #[test]
+    fn non_monotonic_clock_does_not_panic() {
+        let base = Instant::now();
+        let clock = SkewClock::new(base);
+        let (mut provider, reader) = create::<u32, _>(ScoreConfig::default(), clock.clone());
+
+        clock.set(base + Duration::from_secs(10));
+        provider.record_contribution(1, 1000);
+        clock.set(base + Duration::from_secs(5));
+        provider.record_contribution(1, 1000);
+        let _ = reader.score(&1);
+    }
+
+    #[test]
+    fn counters_saturate_instead_of_wrapping() {
+        let mut metrics = ExecutorMetrics::default();
+        metrics[COUNTER_PEER_SCORE_RECORD_CONTRIBUTION_TOTAL] = u64::MAX - 1;
+        metrics[COUNTER_PEER_SCORE_NEWCOMER_ADMITTED] = u64::MAX;
+
+        ContributionMetrics {
+            contributions: 10,
+            newcomer_admitted: 1,
+            ..ContributionMetrics::default()
+        }
+        .emit(&mut metrics, 0, 0);
+
+        assert_eq!(
+            metrics[COUNTER_PEER_SCORE_RECORD_CONTRIBUTION_TOTAL],
+            u64::MAX
+        );
+        assert_eq!(metrics[COUNTER_PEER_SCORE_NEWCOMER_ADMITTED], u64::MAX);
+    }
+
+    #[test]
+    #[should_panic(expected = "max_time_weight must be finite, >= 0")]
+    fn rejects_unsafe_time_weight() {
+        let config = ScoreConfig {
+            max_time_weight: f64::MAX,
+            ..Default::default()
+        };
+        let _ = create::<u32, _>(config, MockClock::new());
     }
 
     #[test]

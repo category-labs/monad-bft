@@ -85,8 +85,12 @@ pub mod mock {
         }
 
         pub fn advance(&self, duration: Duration) {
-            self.offset_nanos
-                .fetch_add(duration.as_nanos() as u64, Ordering::SeqCst);
+            let increment = u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX);
+            let _ = self
+                .offset_nanos
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+                    Some(current.saturating_add(increment))
+                });
         }
     }
 

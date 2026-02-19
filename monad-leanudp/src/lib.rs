@@ -64,6 +64,7 @@ impl PacketHeader {
     pub const SIZE: usize = 8;
     const START_FLAG: u8 = 0x01;
     const END_FLAG: u8 = 0x02;
+    const KNOWN_FLAGS_MASK: u8 = Self::START_FLAG | Self::END_FLAG;
 
     #[inline]
     pub(crate) fn new(msg_id: u32, seq_num: u16, fragment_type: FragmentType) -> Self {
@@ -94,6 +95,21 @@ impl PacketHeader {
     pub(crate) fn fragment_type(&self) -> FragmentType {
         self.flags.into()
     }
+
+    #[inline]
+    pub(crate) fn has_known_flags(&self) -> bool {
+        self.flags & !Self::KNOWN_FLAGS_MASK == 0
+    }
+
+    #[inline]
+    pub(crate) fn has_valid_fragment_layout(&self) -> bool {
+        match (self.seq_num(), self.fragment_type()) {
+            (0, FragmentType::Start | FragmentType::Complete) => true,
+            (0, FragmentType::Middle | FragmentType::End) => false,
+            (_, FragmentType::Middle | FragmentType::End) => true,
+            (_, FragmentType::Start | FragmentType::Complete) => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -103,7 +119,7 @@ pub struct Config {
     pub max_regular_messages: usize,
     pub max_messages_per_identity: usize,
     pub message_timeout: Duration,
-    /// Max fragment size on wire (excluding leanudp header). Defaults to 1432.
+    /// Max fragment size on wire (including LeanUDP header). Defaults to 1440.
     pub max_fragment_payload: usize,
 }
 
