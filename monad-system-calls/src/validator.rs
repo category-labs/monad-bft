@@ -37,7 +37,7 @@ use tracing::{debug, info, warn};
 
 use crate::{SYSTEM_SENDER_ETH_ADDRESS, SystemCall, generate_system_calls};
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum SystemTransactionError {
     UnexpectedSenderAddress,
     InvalidTxType,
@@ -60,7 +60,7 @@ pub enum SystemTransactionError {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum SystemTransactionValidationError {
     MissingSystemTransaction,
     UnexpectedSystemTransaction,
@@ -249,6 +249,7 @@ impl SystemTransactionValidator {
             {
                 debug!(
                     ?expected_sys_call,
+                    ?sys_txn,
                     ?sys_txn_error,
                     "system transaction error"
                 );

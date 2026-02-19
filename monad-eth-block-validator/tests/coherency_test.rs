@@ -467,7 +467,7 @@ fn check_txpool_coherency(
             NopStateBackend,
             MonadChainConfig,
             MonadChainRevision,
-        >>::update_committed_block(&mut block_policy, extending_block, chain_config);
+        >>::update_committed_block(&mut block_policy, extending_block);
     }
 
     // insert transactions of the incoming block into txpool
@@ -551,6 +551,7 @@ fn check_txpool_coherency(
             root_info,
             state_backend,
             chain_config,
+            &mut Metrics::default(),
         )
         .expect("Txpool created proposal that failed coherency check");
 }
@@ -579,6 +580,7 @@ fn test_runner(
             root_info,
             &state_backend,
             &chain_config,
+            &mut Metrics::default(),
         );
 
         if expect_coherent {
