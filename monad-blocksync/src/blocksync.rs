@@ -50,6 +50,10 @@ use crate::messages::message::{
 // TODO configurable
 // determines the max number of parallel payload requests self can make
 const BLOCKSYNC_MAX_PAYLOAD_REQUESTS: usize = 10;
+// TODO configurable
+// caps total outstanding peer request table entries across headers + payload maps.
+// validator senders bypass this cap.
+const BLOCKSYNC_MAX_PEER_REQUEST_TABLE_ENTRIES: usize = 4096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum BlockSyncSelfRequester {
@@ -239,6 +243,14 @@ where
                 .self_completed_headers_requests
                 .contains_key(&block_range)
     }
+
+    fn peer_request_table_len(&self) -> usize {
+        self.headers_requests.len() + self.payload_requests.len()
+    }
+
+    fn peer_request_table_is_full(&self) -> bool {
+        self.peer_request_table_len() >= BLOCKSYNC_MAX_PEER_REQUEST_TABLE_ENTRIES
+    }
 }
 
 pub enum BlockCache<'a, ST, SCT, EPT, BPT, SBT, CCT, CRT>
@@ -289,6 +301,12 @@ where
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
+    fn is_validator_sender(&self, sender: &NodeId<SCT::NodeIdPubKey>) -> bool {
+        self.val_epoch_map
+            .get_val_set(&self.current_epoch)
+            .is_some_and(|validators| validators.get_members().contains_key(sender))
+    }
+
     #[must_use]
     pub fn handle_self_request(
         &mut self,
@@ -360,6 +378,7 @@ where
         request: BlockSyncRequestMessage,
     ) -> Vec<BlockSyncCommand<ST, SCT, EPT>> {
         let mut cmds = Vec::new();
+        let sender_is_validator = self.is_validator_sender(&sender);
 
         match request {
             BlockSyncRequestMessage::Headers(block_range) => {
@@ -410,6 +429,24 @@ where
                         last_block_id: last_block_id_to_fetch,
                         num_blocks: block_range.num_blocks - SeqNum(cached_blocks.len() as u64),
                     };
+                    let is_new_entry = !self
+                        .block_sync
+                        .headers_requests
+                        .contains_key(&ledger_fetch_range);
+                    if !sender_is_validator
+                        && is_new_entry
+                        && self.block_sync.peer_request_table_is_full()
+                    {
+                        self.metrics.blocksync_events.peer_headers_request_failed += 1;
+                        debug!(
+                            ?sender,
+                            ?ledger_fetch_range,
+                            table_len = self.block_sync.peer_request_table_len(),
+                            table_cap = BLOCKSYNC_MAX_PEER_REQUEST_TABLE_ENTRIES,
+                            "blocksync: dropping non-validator headers request due to peer request table cap"
+                        );
+                        return cmds;
+                    }
 
                     let entry = self
                         .block_sync
@@ -432,6 +469,22 @@ where
                         ),
                     });
 
+                    return cmds;
+                }
+
+                let is_new_entry = !self.block_sync.payload_requests.contains_key(&payload_id);
+                if !sender_is_validator
+                    && is_new_entry
+                    && self.block_sync.peer_request_table_is_full()
+                {
+                    self.metrics.blocksync_events.peer_payload_request_failed += 1;
+                    debug!(
+                        ?sender,
+                        ?payload_id,
+                        table_len = self.block_sync.peer_request_table_len(),
+                        table_cap = BLOCKSYNC_MAX_PEER_REQUEST_TABLE_ENTRIES,
+                        "blocksync: dropping non-validator payload request due to peer request table cap"
+                    );
                     return cmds;
                 }
 
@@ -1210,7 +1263,7 @@ mod test {
         ChaCha8Rng, SeedableRng,
     };
     use crate::{
-        blocksync::BLOCKSYNC_MAX_PAYLOAD_REQUESTS,
+        blocksync::{BLOCKSYNC_MAX_PAYLOAD_REQUESTS, BLOCKSYNC_MAX_PEER_REQUEST_TABLE_ENTRIES},
         messages::message::{BlockSyncRequestMessage, BlockSyncResponseMessage},
     };
 
@@ -2364,6 +2417,147 @@ mod test {
         }
 
         context.assert_empty_block_sync_state();
+    }
+
+    #[test]
+    fn peer_request_cap_drops_non_validator_payload_request_without_response() {
+        let mut context = setup_fullnode();
+        let non_validator_sender = NodeId::new(create_keys::<SignatureType>(10)[9].pubkey());
+
+        for i in 0..BLOCKSYNC_MAX_PEER_REQUEST_TABLE_ENTRIES {
+            let mut hash_bytes = [0_u8; 32];
+            hash_bytes[..8].copy_from_slice(&(i as u64).to_le_bytes());
+            context.block_sync.headers_requests.insert(
+                BlockRange {
+                    last_block_id: BlockId(Hash(hash_bytes)),
+                    num_blocks: SeqNum(1),
+                },
+                BTreeMap::new(),
+            );
+        }
+        assert_eq!(
+            context.block_sync.headers_requests.len(),
+            BLOCKSYNC_MAX_PEER_REQUEST_TABLE_ENTRIES
+        );
+
+        let payload_id = ConsensusBlockBodyId(Hash([0xAB; 32]));
+        let cmds = context.handle_peer_request(
+            non_validator_sender,
+            BlockSyncRequestMessage::Payload(payload_id),
+        );
+
+        assert_eq!(find_fetch_payload_commands(&cmds).len(), 0);
+        assert_eq!(find_send_response_commands(&cmds).len(), 0);
+        assert_eq!(context.block_sync.payload_requests.len(), 0);
+    }
+
+    #[test]
+    fn peer_request_cap_drops_non_validator_headers_request_without_response() {
+        let mut context = setup_fullnode();
+        let non_validator_sender = NodeId::new(create_keys::<SignatureType>(10)[9].pubkey());
+
+        for i in 0..BLOCKSYNC_MAX_PEER_REQUEST_TABLE_ENTRIES {
+            let mut hash_bytes = [0_u8; 32];
+            hash_bytes[..8].copy_from_slice(&(i as u64).to_le_bytes());
+            context.block_sync.headers_requests.insert(
+                BlockRange {
+                    last_block_id: BlockId(Hash(hash_bytes)),
+                    num_blocks: SeqNum(1),
+                },
+                BTreeMap::new(),
+            );
+        }
+        assert_eq!(
+            context.block_sync.headers_requests.len(),
+            BLOCKSYNC_MAX_PEER_REQUEST_TABLE_ENTRIES
+        );
+
+        let block_range = BlockRange {
+            last_block_id: BlockId(Hash([0xEE; 32])),
+            num_blocks: SeqNum(2),
+        };
+        let cmds = context.handle_peer_request(
+            non_validator_sender,
+            BlockSyncRequestMessage::Headers(block_range),
+        );
+
+        assert_eq!(find_fetch_headers_commands(&cmds).len(), 0);
+        assert_eq!(find_send_response_commands(&cmds).len(), 0);
+        assert_eq!(
+            context.block_sync.headers_requests.len(),
+            BLOCKSYNC_MAX_PEER_REQUEST_TABLE_ENTRIES
+        );
+    }
+
+    #[test]
+    fn peer_request_cap_bypass_for_validator_sender() {
+        let mut context = setup_fullnode();
+
+        for i in 0..BLOCKSYNC_MAX_PEER_REQUEST_TABLE_ENTRIES {
+            let mut hash_bytes = [0_u8; 32];
+            hash_bytes[..8].copy_from_slice(&(i as u64).to_le_bytes());
+            context.block_sync.headers_requests.insert(
+                BlockRange {
+                    last_block_id: BlockId(Hash(hash_bytes)),
+                    num_blocks: SeqNum(1),
+                },
+                BTreeMap::new(),
+            );
+        }
+        assert_eq!(
+            context.block_sync.headers_requests.len(),
+            BLOCKSYNC_MAX_PEER_REQUEST_TABLE_ENTRIES
+        );
+
+        // setup_fullnode() uses a validator peer_id.
+        let validator_sender = context.peer_id;
+        let payload_id = ConsensusBlockBodyId(Hash([0xCD; 32]));
+        let cmds = context.handle_peer_request(
+            validator_sender,
+            BlockSyncRequestMessage::Payload(payload_id),
+        );
+
+        assert_eq!(find_fetch_payload_commands(&cmds).len(), 1);
+        assert_eq!(find_send_response_commands(&cmds).len(), 0);
+        assert!(context
+            .block_sync
+            .payload_requests
+            .contains_key(&payload_id));
+        assert_eq!(context.block_sync.payload_requests.len(), 1);
+    }
+
+    #[test]
+    fn self_request_not_limited_by_peer_request_cap() {
+        let mut context = setup();
+
+        for i in 0..BLOCKSYNC_MAX_PEER_REQUEST_TABLE_ENTRIES {
+            let mut hash_bytes = [0_u8; 32];
+            hash_bytes[..8].copy_from_slice(&(i as u64).to_le_bytes());
+            context.block_sync.headers_requests.insert(
+                BlockRange {
+                    last_block_id: BlockId(Hash(hash_bytes)),
+                    num_blocks: SeqNum(1),
+                },
+                BTreeMap::new(),
+            );
+        }
+        assert_eq!(
+            context.block_sync.headers_requests.len(),
+            BLOCKSYNC_MAX_PEER_REQUEST_TABLE_ENTRIES
+        );
+
+        let requester = BlockSyncSelfRequester::Consensus;
+        let block_range = BlockRange {
+            last_block_id: BlockId(Hash([0xEF; 32])),
+            num_blocks: SeqNum(1),
+        };
+        let cmds = context.handle_self_request(requester, block_range);
+
+        assert_eq!(find_fetch_headers_commands(&cmds).len(), 1);
+        assert!(context
+            .block_sync
+            .self_headers_requests
+            .contains_key(&block_range));
     }
 
     #[test_case(true; "all headers cached in blocktree")]

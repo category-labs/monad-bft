@@ -18,6 +18,7 @@ use std::{
     io::{Error, ErrorKind},
     net::SocketAddr,
     os::fd::{AsRawFd, FromRawFd},
+    sync::atomic::{AtomicUsize, Ordering},
     time::{Duration, Instant},
 };
 
@@ -30,13 +31,14 @@ use monoio::{
     spawn, time,
 };
 use thiserror::Error;
-use tokio::sync::mpsc;
+use tokio::sync::mpsc::{self, error::TrySendError};
 use tracing::{debug, error, trace, warn};
 
 use super::{RecvUdpMsg, UdpMsg, UdpSocketId};
 use crate::buffer_ext::SocketBufferExt;
 
 const PRIORITY_QUEUE_BYTES_CAPACITY: usize = 100 * 1024 * 1024;
+static UDP_INGRESS_MSGS_DROPPED: AtomicUsize = AtomicUsize::new(0);
 
 const DEFAULT_RINGBUF_COUNT: u32 = 2048;
 const DEFAULT_RINGBUF_SIZE: u32 = ETHERNET_SEGMENT_SIZE as u32;
@@ -218,9 +220,20 @@ async fn rx_single_socket(socket: UdpSocket, udp_ingress_tx: mpsc::Sender<RecvUd
                     stride: len.max(1).try_into().unwrap(),
                 };
 
-                if let Err(err) = udp_ingress_tx.send(msg).await {
-                    warn!(?src_addr, ?err, "error queueing up received UDP message");
-                    break;
+                match udp_ingress_tx.try_send(msg) {
+                    Ok(()) => {}
+                    Err(TrySendError::Full(_)) => {
+                        let total = UDP_INGRESS_MSGS_DROPPED.fetch_add(1, Ordering::Relaxed) + 1;
+                        debug!(
+                            ?src_addr,
+                            total_msgs_dropped = total,
+                            "udp ingress channel full, dropping received message"
+                        );
+                    }
+                    Err(TrySendError::Closed(_)) => {
+                        warn!(?src_addr, "udp ingress channel closed");
+                        break;
+                    }
                 }
             }
             (Err(err), _buf) => {
@@ -258,9 +271,20 @@ async fn run_multishot_stream(
                     stride: len.max(1).try_into().unwrap(),
                 };
 
-                if let Err(err) = udp_ingress_tx.send(msg).await {
-                    warn!(?err, "error queueing up received UDP message (multishot)");
-                    return MultishotResult::ChannelClosed;
+                match udp_ingress_tx.try_send(msg) {
+                    Ok(()) => {}
+                    Err(TrySendError::Full(_)) => {
+                        let total = UDP_INGRESS_MSGS_DROPPED.fetch_add(1, Ordering::Relaxed) + 1;
+                        debug!(
+                            ?src_addr,
+                            total_msgs_dropped = total,
+                            "udp ingress channel full, dropping received message (multishot)"
+                        );
+                    }
+                    Err(TrySendError::Closed(_)) => {
+                        warn!("udp ingress channel closed");
+                        return MultishotResult::ChannelClosed;
+                    }
                 }
             }
             Err(e) if e.raw_os_error() == Some(libc::ENOBUFS) => {

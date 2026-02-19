@@ -58,7 +58,7 @@ use monad_validator::{
     signature_collection::SignatureCollection,
     validator_set::{ValidatorSet, ValidatorSetType as _},
 };
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::{error::TrySendError, Receiver, Sender};
 use tracing::{debug, debug_span, error, trace, warn};
 use udp::GroupId;
 use util::{
@@ -67,7 +67,10 @@ use util::{
 };
 
 use crate::{
-    metrics::{GAUGE_RAPTORCAST_TOTAL_MESSAGES_RECEIVED, GAUGE_RAPTORCAST_TOTAL_RECV_ERRORS},
+    metrics::{
+        GAUGE_RAPTORCAST_BRIDGE_PRIMARY_TO_SECONDARY_DROPPED,
+        GAUGE_RAPTORCAST_TOTAL_MESSAGES_RECEIVED, GAUGE_RAPTORCAST_TOTAL_RECV_ERRORS,
+    },
     packet::RetrofitResult as _,
     raptorcast_secondary::{
         group_message::FullNodesGroupMessage, SecondaryOutboundMessage,
@@ -122,10 +125,10 @@ where
     dataplane_control: DataplaneControl,
     pending_events: VecDeque<RaptorCastEvent<M::Event, ST>>,
 
-    channel_to_secondary: Option<UnboundedSender<FullNodesGroupMessage<ST>>>,
-    channel_from_secondary: Option<UnboundedReceiver<Group<CertificateSignaturePubKey<ST>>>>,
+    channel_to_secondary: Option<Sender<FullNodesGroupMessage<ST>>>,
+    channel_from_secondary: Option<Receiver<Group<CertificateSignaturePubKey<ST>>>>,
     channel_from_secondary_outbound:
-        Option<UnboundedReceiver<SecondaryOutboundMessage<CertificateSignaturePubKey<ST>>>>,
+        Option<Receiver<SecondaryOutboundMessage<CertificateSignaturePubKey<ST>>>>,
 
     waker: Option<Waker>,
     metrics: ExecutorMetrics,
@@ -246,9 +249,9 @@ where
     // If we are a full-node, then we need both channels.
     pub fn bind_channel_to_secondary_raptorcast(
         &mut self,
-        channel_to_secondary: UnboundedSender<FullNodesGroupMessage<ST>>,
-        channel_from_secondary: UnboundedReceiver<Group<CertificateSignaturePubKey<ST>>>,
-        channel_from_secondary_outbound: UnboundedReceiver<
+        channel_to_secondary: Sender<FullNodesGroupMessage<ST>>,
+        channel_from_secondary: Receiver<Group<CertificateSignaturePubKey<ST>>>,
+        channel_from_secondary_outbound: Receiver<
             SecondaryOutboundMessage<CertificateSignaturePubKey<ST>>,
         >,
     ) {
@@ -1080,11 +1083,21 @@ where
                                         continue;
                                     }
 
-                                    if channel.send(full_nodes_group_message).is_err() {
-                                        error!(
-                                            "Could not send InboundRouterMessage to \
-                                    secondary Raptorcast instance: channel closed",
-                                        );
+                                    match channel.try_send(full_nodes_group_message) {
+                                        Ok(()) => {}
+                                        Err(TrySendError::Full(_)) => {
+                                            this.metrics[GAUGE_RAPTORCAST_BRIDGE_PRIMARY_TO_SECONDARY_DROPPED] += 1;
+                                            debug!(
+                                                ?from,
+                                                dropped = this.metrics[GAUGE_RAPTORCAST_BRIDGE_PRIMARY_TO_SECONDARY_DROPPED],
+                                                "dropping FullNodesGroup message: primary->secondary channel full"
+                                            );
+                                        }
+                                        Err(TrySendError::Closed(_)) => {
+                                            error!(
+                                                "Could not send InboundRouterMessage to secondary Raptorcast instance: channel closed",
+                                            );
+                                        }
                                     }
                                 }
                                 None => {

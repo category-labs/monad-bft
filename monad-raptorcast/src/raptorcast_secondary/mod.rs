@@ -39,12 +39,13 @@ use monad_types::{Epoch, NodeId};
 use publisher::Publisher;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::{error::TrySendError, Receiver, Sender};
 use tracing::{debug, error, trace, warn};
 
 use crate::{
     config::{RaptorCastConfig, SecondaryRaptorCastMode},
     message::OutboundRouterMessage,
+    metrics::GAUGE_RAPTORCAST_BRIDGE_SECONDARY_TO_PRIMARY_OUTBOUND_DROPPED,
     udp::GroupId,
     util::{FullNodes, Group},
     RaptorCastEvent,
@@ -96,11 +97,9 @@ where
 
     peer_discovery_driver: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
 
-    channel_from_primary: UnboundedReceiver<FullNodesGroupMessage<ST>>,
-    channel_to_primary_outbound:
-        UnboundedSender<SecondaryOutboundMessage<CertificateSignaturePubKey<ST>>>,
+    channel_from_primary: Receiver<FullNodesGroupMessage<ST>>,
+    channel_to_primary_outbound: Sender<SecondaryOutboundMessage<CertificateSignaturePubKey<ST>>>,
 
-    #[expect(unused)]
     metrics: ExecutorMetrics,
     _phantom: PhantomData<(OM, SE, M)>,
 }
@@ -116,9 +115,9 @@ where
         config: RaptorCastConfig<ST>,
         secondary_mode: SecondaryRaptorCastMode<CertificateSignaturePubKey<ST>>,
         peer_discovery_driver: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
-        channel_from_primary: UnboundedReceiver<FullNodesGroupMessage<ST>>,
-        channel_to_primary: UnboundedSender<Group<CertificateSignaturePubKey<ST>>>,
-        channel_to_primary_outbound: UnboundedSender<
+        channel_from_primary: Receiver<FullNodesGroupMessage<ST>>,
+        channel_to_primary: Sender<Group<CertificateSignaturePubKey<ST>>>,
+        channel_to_primary_outbound: Sender<
             SecondaryOutboundMessage<CertificateSignaturePubKey<ST>>,
         >,
         current_epoch: Epoch,
@@ -156,7 +155,7 @@ where
     }
 
     fn send_single_msg(
-        &self,
+        &mut self,
         group_msg: FullNodesGroupMessage<ST>,
         dest_node: NodeId<CertificateSignaturePubKey<ST>>,
     ) {
@@ -180,13 +179,24 @@ where
             dest: dest_node,
             group_id: GroupId::Primary(self.curr_epoch),
         };
-        if let Err(err) = self.channel_to_primary_outbound.send(outbound) {
-            error!(?err, "failed to send message to primary");
+        match self.channel_to_primary_outbound.try_send(outbound) {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => {
+                self.metrics[GAUGE_RAPTORCAST_BRIDGE_SECONDARY_TO_PRIMARY_OUTBOUND_DROPPED] += 1;
+                debug!(
+                    dropped =
+                        self.metrics[GAUGE_RAPTORCAST_BRIDGE_SECONDARY_TO_PRIMARY_OUTBOUND_DROPPED],
+                    "dropping message: secondary->primary outbound channel full"
+                );
+            }
+            Err(TrySendError::Closed(_)) => {
+                error!("failed to send message to primary: channel closed");
+            }
         }
     }
 
     fn send_group_msg(
-        &self,
+        &mut self,
         group_msg: FullNodesGroupMessage<ST>,
         dest_node_ids: FullNodes<CertificateSignaturePubKey<ST>>,
     ) {
@@ -221,7 +231,9 @@ where
                 } else {
                     // Maybe can happen if peer discovery gets pruned just
                     // before sending a ConfirmGroup message.
-                    warn!( ?node_id, ?group_msg,
+                    warn!(
+                        ?node_id,
+                        ?group_msg,
                         "RaptorCastSecondary: No name record found for node_id when sending out ConfirmGroup message",
                     );
                 }
@@ -358,7 +370,9 @@ where
                     };
 
                     if curr_group.size_excl_self() < 1 {
-                        trace!("RaptorCastSecondary PublishToFullNodes; Not sending anything because size_excl_self = 0");
+                        trace!(
+                            "RaptorCastSecondary PublishToFullNodes; Not sending anything because size_excl_self = 0"
+                        );
                         continue;
                     }
 
@@ -379,8 +393,21 @@ where
                         group: curr_group,
                         group_id: GroupId::Secondary(round),
                     };
-                    if let Err(err) = self.channel_to_primary_outbound.send(outbound) {
-                        error!(?err, "failed to send message to primary");
+                    match self.channel_to_primary_outbound.try_send(outbound) {
+                        Ok(()) => {}
+                        Err(TrySendError::Full(_)) => {
+                            self.metrics
+                                [GAUGE_RAPTORCAST_BRIDGE_SECONDARY_TO_PRIMARY_OUTBOUND_DROPPED] +=
+                                1;
+                            debug!(
+                                dropped = self.metrics
+                                    [GAUGE_RAPTORCAST_BRIDGE_SECONDARY_TO_PRIMARY_OUTBOUND_DROPPED],
+                                "dropping message: secondary->primary outbound channel full"
+                            );
+                        }
+                        Err(TrySendError::Closed(_)) => {
+                            error!("failed to send message to primary: channel closed");
+                        }
                     }
                 }
             }
@@ -389,8 +416,12 @@ where
 
     fn metrics(&self) -> ExecutorMetricsChain<'_> {
         match &self.role {
-            Role::Publisher(publisher) => publisher.metrics().into(),
-            Role::Client(client) => client.metrics().into(),
+            Role::Publisher(publisher) => ExecutorMetricsChain::default()
+                .push(&self.metrics)
+                .push(publisher.metrics()),
+            Role::Client(client) => ExecutorMetricsChain::default()
+                .push(&self.metrics)
+                .push(client.metrics()),
         }
     }
 }
