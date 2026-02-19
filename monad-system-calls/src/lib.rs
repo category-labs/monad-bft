@@ -149,7 +149,7 @@ where
 
     // If staking activates in Epoch N, generate snapshot transactions
     // starting at the boundary of Epoch N-1
-    let generate_snapshot_txn = proposed_seq_num.is_epoch_end(epoch_length)
+    let generate_snapshot_txn = proposed_seq_num.is_boundary_block(epoch_length)
         && proposed_seq_num.get_locked_epoch(epoch_length) >= staking_activation;
     if generate_snapshot_txn {
         system_calls.push(SystemCall::StakingContractCall(

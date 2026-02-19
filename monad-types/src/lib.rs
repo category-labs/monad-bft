@@ -374,7 +374,7 @@ impl SeqNum {
 
     /// This tells us what the boundary block of the epoch is. Note that this only indicates when
     /// the next epoch's round is scheduled.
-    pub fn is_epoch_end(&self, epoch_length: SeqNum) -> bool {
+    pub fn is_boundary_block(&self, epoch_length: SeqNum) -> bool {
         *self % epoch_length == epoch_length - SeqNum(1)
     }
 
@@ -384,7 +384,7 @@ impl SeqNum {
     /// Current design locks the info for epoch n + 1 by the end of epoch n. The
     /// validators have epoch_start_delay to prepare themselves for any duties
     pub fn get_locked_epoch(&self, epoch_length: SeqNum) -> Epoch {
-        assert!(self.is_epoch_end(epoch_length));
+        assert!(self.is_boundary_block(epoch_length));
         (*self).to_epoch(epoch_length) + Epoch(1)
     }
 

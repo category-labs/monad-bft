@@ -68,7 +68,7 @@ impl EpochManager {
 
     /// Schedule next epoch start if the committed block is the last one in the current epoch
     pub fn schedule_epoch_start(&mut self, block_num: SeqNum, block_round: Round) {
-        if block_num.is_epoch_end(self.epoch_length) {
+        if block_num.is_boundary_block(self.epoch_length) {
             let next_epoch = block_num.to_epoch(self.epoch_length) + Epoch(1);
             let epoch_start_round = block_round + self.epoch_start_delay;
             self.insert_epoch_start(next_epoch, epoch_start_round);

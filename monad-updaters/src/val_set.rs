@@ -104,7 +104,7 @@ where
     }
 
     fn jank_update_valset(&mut self, seq_num: SeqNum) {
-        if seq_num.is_epoch_end(self.epoch_length) {
+        if seq_num.is_boundary_block(self.epoch_length) {
             if self.next_val_data.is_some() {
                 error!("Validator set data is not consumed");
             }
@@ -248,7 +248,7 @@ where
     }
 
     fn jank_update_valset(&mut self, seq_num: SeqNum) {
-        if seq_num.is_epoch_end(self.epoch_length) {
+        if seq_num.is_boundary_block(self.epoch_length) {
             if self.next_val_data.is_some() {
                 error!("Validator set data is not consumed");
             }
