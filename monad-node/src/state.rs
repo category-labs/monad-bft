@@ -67,6 +67,9 @@ pub struct NodeState {
     pub triedb_path: PathBuf,
     pub persisted_peers_path: PathBuf,
 
+    #[cfg(feature = "test-scripted-blocks")]
+    pub scripted_blocks_socket: Option<PathBuf>,
+
     pub otel_endpoint_interval: Option<(String, Duration)>,
     pub pprof: String,
     pub reload_handle: Box<dyn TracingReload>,
@@ -97,6 +100,8 @@ impl NodeState {
             pprof,
             manytrace_socket,
             persisted_peers_path,
+            #[cfg(feature = "test-scripted-blocks")]
+                txpool_scripted_blocks_socket: scripted_blocks_socket,
         } = Cli::from_arg_matches_mut(&mut cmd.get_matches_mut())?;
 
         let (reload_handle, agent) = NodeState::setup_tracing(manytrace_socket)?;
@@ -197,6 +202,9 @@ impl NodeState {
             control_panel_ipc_path,
             statesync_ipc_path,
             statesync_sq_thread_cpu,
+
+            #[cfg(feature = "test-scripted-blocks")]
+            scripted_blocks_socket,
 
             otel_endpoint_interval,
             pprof,

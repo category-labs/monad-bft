@@ -8,6 +8,9 @@ edition = "2021"
 [lib]
 bench = false
 
+[features]
+test-scripted-blocks = ["alloy-rlp", "dep:tokio-util", "monad-system-calls", "tokio/io-util", "tokio/net"]
+
 [dependencies]
 monad-chain-config = { workspace = true }
 monad-consensus-types = { workspace = true }
@@ -23,12 +26,14 @@ monad-fair-queue = { workspace = true }
 monad-peer-score = { workspace = true }
 monad-secp = { workspace = true }
 monad-state-backend = { workspace = true }
+monad-system-calls = { workspace = true, optional = true }
 monad-types = { workspace = true }
 monad-validator = { workspace = true }
 
 alloy-consensus = { workspace = true }
 alloy-eips = { workspace = true }
 alloy-primitives = { workspace = true }
+alloy-rlp = { workspace = true, optional = true }
 bytes = { workspace = true }
 futures = { workspace = true }
 indexmap = { workspace = true }
@@ -37,14 +42,17 @@ pin-project = { workspace = true }
 rayon = { workspace = true }
 serde = { workspace = true }
 tokio = { workspace = true }
+tokio-util = { workspace = true, features = ["codec"], optional = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+monad-eth-block-validator = { workspace = true }
 monad-eth-testutil = { workspace = true }
 monad-testutil = { workspace = true }
 monad-tfm = { workspace = true }
 
 alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
+rand = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }

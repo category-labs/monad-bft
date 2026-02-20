@@ -14,7 +14,6 @@ bench = false
 name = "monad-rpc-docs"
 bench = false
 path = "./bin/docs.rs"
-
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]
