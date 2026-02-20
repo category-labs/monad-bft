@@ -36,7 +36,10 @@ use monad_peer_discovery::mock::NopDiscovery;
 use monad_raptorcast::{
     create_dataplane_for_tests, new_defaulted_raptorcast_for_tests,
     packet::build_messages,
-    raptorcast_secondary::{group_message::FullNodesGroupMessage, SecondaryOutboundMessage},
+    raptorcast_secondary::{
+        group_message::FullNodesGroupMessage, SecondaryOutboundMessage,
+        SecondaryRaptorCastModeConfig,
+    },
     udp::{GroupId, MAX_REDUNDANCY},
     util::{BuildTarget, EpochValidators, Group, Redundancy},
     DataplaneHandles, RaptorCast, RaptorCastEvent,
@@ -584,13 +587,13 @@ async fn delete_expired_groups() {
     raptorcast.exec(vec![RouterCommand::UpdateCurrentRound(Epoch(1), Round(1))]);
 
     // setup
-    let (send_net_messages, _) = unbounded_channel::<FullNodesGroupMessage<SignatureType>>();
+    let (send_group_messages, _) = unbounded_channel::<FullNodesGroupMessage<SignatureType>>();
     let (send_group_infos, recv_group_infos) = unbounded_channel::<Group<PubKeyType>>();
     let (_, recv_outbound_from_secondary) =
         unbounded_channel::<SecondaryOutboundMessage<PubKeyType>>();
-    raptorcast.set_is_dynamic_full_node(true);
     raptorcast.bind_channel_to_secondary_raptorcast(
-        send_net_messages,
+        SecondaryRaptorCastModeConfig::Client,
+        send_group_messages,
         recv_group_infos,
         recv_outbound_from_secondary,
     );

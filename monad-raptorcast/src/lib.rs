@@ -241,29 +241,42 @@ where
         }
     }
 
-    // If we are a validator, then we don't need `channel_from_secondary`, since
-    // we won't be receiving groups from secondary.
-    // If we are a full-node, then we need both channels.
+    /// Initializes the channels needed between primary and secondary raptorcast
+    /// A Publisher needs:
+    ///     - `channel_to_secondary` to send group messages to update secondary raptorcast state
+    ///     - `channel_from_secondary_outbound` to send outbound group messages i.e. PrepareGroup and ConfirmGroup
+    /// A Client needs:
+    ///     - `channel_to_secondary` to send group messages to update secondary raptorcast state
+    ///     - `channel_from_secondary` to receive group info from secondary raptorcast to update primary raptorcast rebroadcasting state
+    ///     - `channel_from_secondary_outbound` to send outbound group messages i.e. PrepareGroupResponse
+    /// Otherwise no channels are needed
     pub fn bind_channel_to_secondary_raptorcast(
         &mut self,
+        role: SecondaryRaptorCastModeConfig,
         channel_to_secondary: UnboundedSender<FullNodesGroupMessage<ST>>,
         channel_from_secondary: UnboundedReceiver<Group<CertificateSignaturePubKey<ST>>>,
         channel_from_secondary_outbound: UnboundedReceiver<
             SecondaryOutboundMessage<CertificateSignaturePubKey<ST>>,
         >,
     ) {
-        self.channel_to_secondary = Some(channel_to_secondary);
-        self.channel_from_secondary_outbound = Some(channel_from_secondary_outbound);
-        if self.is_dynamic_fullnode {
-            self.channel_from_secondary = Some(channel_from_secondary);
-        } else {
-            self.channel_from_secondary = None;
+        self.is_dynamic_fullnode = matches!(role, SecondaryRaptorCastModeConfig::Client);
+        match role {
+            SecondaryRaptorCastModeConfig::Publisher => {
+                self.channel_to_secondary = Some(channel_to_secondary);
+                self.channel_from_secondary = None;
+                self.channel_from_secondary_outbound = Some(channel_from_secondary_outbound);
+            }
+            SecondaryRaptorCastModeConfig::Client => {
+                self.channel_to_secondary = Some(channel_to_secondary);
+                self.channel_from_secondary = Some(channel_from_secondary);
+                self.channel_from_secondary_outbound = Some(channel_from_secondary_outbound);
+            }
+            SecondaryRaptorCastModeConfig::None => {
+                self.channel_to_secondary = None;
+                self.channel_from_secondary = None;
+                self.channel_from_secondary_outbound = None;
+            }
         }
-    }
-
-    pub fn set_is_dynamic_full_node(&mut self, is_dynamic: bool) {
-        debug!(?is_dynamic, "updating primary raptorcast");
-        self.is_dynamic_fullnode = is_dynamic;
     }
 
     pub fn set_dedicated_full_nodes(&mut self, nodes: Vec<NodeId<CertificateSignaturePubKey<ST>>>) {

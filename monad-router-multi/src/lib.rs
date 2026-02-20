@@ -113,10 +113,14 @@ where
         // Create channels between primary and secondary raptorcast instances.
         // Fundamentally this is needed because, while both can send, only the
         // primary can receive data from the network.
-        let (send_net_messages, recv_net_messages) =
+
+        // Channel for primary raptorcast to send group messages (network messages) to secondary raptorcast
+        let (send_group_messages, recv_group_messages) =
             unbounded_channel::<FullNodesGroupMessage<ST>>();
+        // Channel for secondary raptorcast to send group infos for primary raptorcast to update its broadcasting state
         let (send_group_infos, recv_group_infos) =
             unbounded_channel::<Group<CertificateSignaturePubKey<ST>>>();
+        // Channel for secondary raptorcast to send outbound messages since it does not have access to dataplane
         let (send_outbound_to_primary, recv_outbound_from_secondary) =
             unbounded_channel::<SecondaryOutboundMessage<CertificateSignaturePubKey<ST>>>();
 
@@ -133,12 +137,12 @@ where
                 SecondaryRaptorCastModeConfig::None
             };
 
-        // Instantiate secondary raptorcast instance
+        // Instantiate secondary raptorcast instance, returns None if role is SecondaryRaptorCastModeConfig::None
         let rc_secondary = Self::build_secondary(
             cfg.clone(),
             secondary_mode,
             shared_pdd.clone(),
-            recv_net_messages,
+            recv_group_messages,
             send_group_infos,
             send_outbound_to_primary,
             current_epoch,
@@ -156,7 +160,8 @@ where
             auth_protocol,
         );
         rc_primary.bind_channel_to_secondary_raptorcast(
-            send_net_messages,
+            secondary_mode,
+            send_group_messages,
             recv_group_infos,
             recv_outbound_from_secondary,
         );
@@ -181,15 +186,13 @@ where
         );
 
         // create new channels
-        let (send_net_messages, recv_net_messages) = unbounded_channel();
+        let (send_group_messages, recv_group_messages) = unbounded_channel();
         let (send_group_infos, recv_group_infos) = unbounded_channel();
         let (send_outbound_to_primary, recv_outbound_from_secondary) = unbounded_channel();
 
-        let is_dynamic = matches!(new_role, SecondaryRaptorCastModeConfig::Client);
-        // we first need to update is_dynamic_full_node before binding the channels
-        self.rc_primary.set_is_dynamic_full_node(is_dynamic);
         self.rc_primary.bind_channel_to_secondary_raptorcast(
-            send_net_messages,
+            new_role,
+            send_group_messages,
             recv_group_infos,
             recv_outbound_from_secondary,
         );
@@ -198,7 +201,7 @@ where
             self.rc_config.clone(),
             new_role,
             self.shared_pdd.clone(),
-            recv_net_messages,
+            recv_group_messages,
             send_group_infos,
             send_outbound_to_primary,
             current_epoch,
@@ -210,7 +213,7 @@ where
         cfg: RaptorCastConfig<ST>,
         mode: SecondaryRaptorCastModeConfig,
         shared_pdd: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
-        recv_net_messages: UnboundedReceiver<FullNodesGroupMessage<ST>>,
+        recv_group_messages: UnboundedReceiver<FullNodesGroupMessage<ST>>,
         send_group_infos: UnboundedSender<Group<CertificateSignaturePubKey<ST>>>,
         channel_to_primary_outbound: UnboundedSender<
             SecondaryOutboundMessage<CertificateSignaturePubKey<ST>>,
@@ -279,7 +282,7 @@ where
                 cfg,
                 secondary_instance.mode,
                 shared_pdd,
-                recv_net_messages,
+                recv_group_messages,
                 send_group_infos,
                 channel_to_primary_outbound,
                 current_epoch,
@@ -433,15 +436,15 @@ where
             }
         }
         self.rc_primary.exec(validator_cmds);
-        if self.rc_secondary.is_some() {
-            self.rc_secondary.as_mut().unwrap().exec(fullnodes_cmds);
+        if let Some(rc_secondary) = self.rc_secondary.as_mut() {
+            rc_secondary.exec(fullnodes_cmds);
         }
     }
 
     fn metrics(&self) -> ExecutorMetricsChain<'_> {
         let m1 = self.rc_primary.metrics();
-        let res: ExecutorMetricsChain = if self.rc_secondary.is_some() {
-            let m2 = self.rc_secondary.as_ref().unwrap().metrics();
+        let res: ExecutorMetricsChain = if let Some(rc) = self.rc_secondary.as_ref() {
+            let m2 = rc.metrics();
             m1.chain(m2)
         } else {
             m1
@@ -484,8 +487,7 @@ where
 
         // Secondary RC instance polls for FullNodesGroupMessage coming in from
         // the Channel Primary->Secondary.
-        if self.rc_secondary.is_some() {
-            let fn_stream = self.rc_secondary.as_mut().unwrap();
+        if let Some(fn_stream) = self.rc_secondary.as_mut() {
             match fn_stream.poll_next_unpin(cx) {
                 Poll::Ready(Some(event)) => return Poll::Ready(Some(event)),
                 Poll::Ready(None) => {
