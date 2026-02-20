@@ -43,10 +43,10 @@ use tracing::{debug, trace};
 use super::block::get_block_key_from_tag_or_hash;
 use crate::{
     handlers::debug::{decode_call_frame, Tracer, TracerObject},
-    hex,
     middleware::TimingRequestId,
     types::{
         eth_json::BlockTagOrHash,
+        ethhex,
         jsonrpc::{JsonRpcError, JsonRpcResult},
     },
 };
@@ -795,7 +795,7 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
     .await?
     {
         CallResult::Success(monad_ethcall::SuccessCallResult { output_data, .. }) => {
-            Ok(hex::encode(&output_data))
+            Ok(ethhex::encode_bytes(&output_data))
         }
         CallResult::Failure(error) => Err(JsonRpcError::eth_call_error(error.message, error.data)),
         _ => Err(JsonRpcError::internal_error(

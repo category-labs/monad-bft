@@ -18,7 +18,6 @@ pub mod comparator;
 pub mod docs;
 pub mod event;
 pub mod handlers;
-pub mod hex;
 pub mod middleware;
 pub mod txpool;
 pub mod types;

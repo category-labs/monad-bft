@@ -14,6 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 pub mod eth_json;
+pub mod ethhex;
 pub mod heuristic_size;
 pub mod jsonrpc;
 pub mod serialize;
