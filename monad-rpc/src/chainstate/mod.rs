@@ -88,6 +88,7 @@ pub fn get_block_key_from_tag(triedb_env: &impl Triedb, tag: BlockTags) -> Optio
         BlockTags::Finalized => Some(BlockKey::Finalized(
             triedb_env.get_latest_finalized_block_key(),
         )),
+        BlockTags::Proposed => Some(triedb_env.get_latest_proposed_block_key()),
     }
 }
 
