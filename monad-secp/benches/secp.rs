@@ -13,8 +13,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use alloy_consensus::{SignableTransaction, Signed, TxEnvelope, TxLegacy};
-use alloy_primitives::{Address, Bytes, PrimitiveSignature, U256};
+use alloy_consensus::{
+    transaction::SignerRecoverable, SignableTransaction, Signed, TxEnvelope, TxLegacy,
+};
+use alloy_primitives::{Address, Bytes, Signature, U256};
 use alloy_signer::{k256::ecdsa::SigningKey, SignerSync};
 use alloy_signer_local::PrivateKeySigner;
 use criterion::{criterion_group, criterion_main, Criterion};
@@ -102,7 +104,7 @@ fn create_legacy_tx() -> TxLegacy {
     }
 }
 
-fn create_invalid_signature() -> PrimitiveSignature {
+fn create_invalid_signature() -> Signature {
     let invalid_r = U256::from_be_bytes([
         0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
         0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
@@ -113,7 +115,7 @@ fn create_invalid_signature() -> PrimitiveSignature {
         0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
         0xff, 0xff,
     ]);
-    PrimitiveSignature::new(invalid_r, invalid_s, false)
+    Signature::new(invalid_r, invalid_s, false)
 }
 
 fn benchmark_tx_signature_verification(c: &mut Criterion) {

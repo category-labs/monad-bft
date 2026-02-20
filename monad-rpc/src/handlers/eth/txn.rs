@@ -27,12 +27,14 @@ use tracing::{debug, error, trace, warn};
 
 use crate::{
     chainstate::{ChainState, ChainStateError},
-    eth_json_types::{
-        BlockTagOrHash, BlockTags, EthHash, MonadLog, MonadTransaction, MonadTransactionReceipt,
-        Quantity, UnformattedData,
-    },
-    jsonrpc::{ChainStateResultMap, JsonRpcError, JsonRpcResult},
     txpool::{EthTxPoolBridgeClient, TxStatus},
+    types::{
+        eth_json::{
+            BlockTagOrHash, BlockTags, EthHash, MonadLog, MonadTransaction,
+            MonadTransactionReceipt, Quantity, UnformattedData,
+        },
+        jsonrpc::{ChainStateResultMap, JsonRpcError, JsonRpcResult},
+    },
 };
 
 pub fn parse_tx_receipt(
@@ -43,7 +45,7 @@ pub fn parse_tx_receipt(
     tx_index: u64,
     tx: TxEnvelopeWithSender,
     receipt: ReceiptWithLogIndex,
-    gas_used: u128,
+    gas_used: u64,
 ) -> TransactionReceipt {
     let TxEnvelopeWithSender { tx, sender } = tx;
 
@@ -108,7 +110,6 @@ pub fn parse_tx_receipt(
         // TODO: EIP4844 fields
         blob_gas_used: None,
         blob_gas_price: None,
-        authorization_list: tx.authorization_list().map(|s| s.to_vec()),
     };
     tx_receipt
 }
@@ -477,7 +478,7 @@ pub async fn monad_eth_getTransactionByBlockNumberAndIndex<T: Triedb>(
 
     chain_state
         .get_transaction_with_block_and_index(
-            crate::eth_json_types::BlockTagOrHash::BlockTags(params.block_tag),
+            crate::types::eth_json::BlockTagOrHash::BlockTags(params.block_tag),
             params.index.0,
         )
         .await
@@ -499,7 +500,7 @@ mod tests {
         MonadEthSendRawTransactionParams, MonadEthSendRawTransactionSyncParams,
     };
     use crate::{
-        chainstate::ChainState, eth_json_types::UnformattedData, txpool::EthTxPoolBridgeClient,
+        chainstate::ChainState, txpool::EthTxPoolBridgeClient, types::eth_json::UnformattedData,
     };
 
     fn serialize_tx(tx: impl Encodable + Encodable2718) -> UnformattedData {

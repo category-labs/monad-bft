@@ -16,7 +16,7 @@
 use std::str::FromStr;
 
 use alloy_consensus::SignableTransaction;
-use alloy_primitives::{keccak256, Address, PrimitiveSignature, B256};
+use alloy_primitives::{keccak256, Address, Signature, B256};
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
 use monad_secp::KeyPair;
@@ -58,16 +58,13 @@ impl PrivateKey {
         )
     }
 
-    pub fn sign_transaction(
-        &self,
-        transaction: &impl SignableTransaction<PrimitiveSignature>,
-    ) -> PrimitiveSignature {
+    pub fn sign_transaction(&self, transaction: &impl SignableTransaction<Signature>) -> Signature {
         self.priv_key
             .sign_hash_sync(&transaction.signature_hash())
             .expect("signature works")
     }
 
-    pub fn sign_hash(&self, hash: &B256) -> PrimitiveSignature {
+    pub fn sign_hash(&self, hash: &B256) -> Signature {
         self.priv_key.sign_hash_sync(hash).expect("signature works")
     }
 }

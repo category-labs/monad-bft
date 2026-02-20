@@ -94,12 +94,12 @@ impl SystemTransactionValidator {
             return Err(SystemTransactionError::UnexpectedSenderAddress);
         }
 
-        if !txn.tx().is_legacy() {
+        if !txn.inner().is_legacy() {
             return Err(SystemTransactionError::InvalidTxType);
         }
 
         // EIP-155
-        if txn.tx().chain_id() != Some(chain_config.chain_id()) {
+        if txn.inner().chain_id() != Some(chain_config.chain_id()) {
             return Err(SystemTransactionError::InvalidChainId);
         }
 
@@ -108,15 +108,15 @@ impl SystemTransactionValidator {
             return Err(SystemTransactionError::InvalidTxSignature);
         }
 
-        if txn.tx().gas_price() != Some(0) {
+        if txn.inner().gas_price() != Some(0) {
             return Err(SystemTransactionError::NonZeroGasPrice);
         }
 
-        if txn.tx().gas_limit() != 0 {
+        if txn.inner().gas_limit() != 0 {
             return Err(SystemTransactionError::NonZeroGasLimit);
         }
 
-        if !matches!(txn.tx().kind(), TxKind::Call(_)) {
+        if !matches!(txn.inner().kind(), TxKind::Call(_)) {
             return Err(SystemTransactionError::InvalidTxKind);
         }
 
@@ -264,7 +264,10 @@ impl SystemTransactionValidator {
 
 #[cfg(test)]
 mod test {
-    use alloy_consensus::{SignableTransaction, TxEip1559, TxEnvelope, transaction::Recovered};
+    use alloy_consensus::{
+        SignableTransaction, TxEip1559, TxEnvelope,
+        transaction::{Recovered, SignerRecoverable},
+    };
     use alloy_eips::eip2930::AccessList;
     use alloy_primitives::{Address, B256, Bytes, TxKind};
     use alloy_signer::SignerSync;

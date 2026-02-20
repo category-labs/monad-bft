@@ -21,9 +21,9 @@ use std::{
 
 use lru::LruCache;
 use monad_executor::ExecutorMetrics;
-use tracing::{debug, info, warn};
+use tracing::{debug, trace, warn};
 
-use crate::{metrics::*, state::State};
+use crate::{metrics::MetricNames, state::State};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FilterAction {
@@ -44,10 +44,12 @@ pub struct Filter {
     low_watermark_sessions: usize,
     high_watermark_sessions: usize,
     metrics: ExecutorMetrics,
+    metric_names: &'static MetricNames,
 }
 
 impl Filter {
     pub fn new(
+        metric_names: &'static MetricNames,
         handshake_rate_limit: u64,
         handshake_rate_reset_interval: Duration,
         ip_rate_limit_window: Duration,
@@ -67,6 +69,7 @@ impl Filter {
             low_watermark_sessions,
             high_watermark_sessions,
             metrics: ExecutorMetrics::default(),
+            metric_names,
         }
     }
 
@@ -107,7 +110,7 @@ impl Filter {
         duration_since_start: Duration,
         cookie_valid: bool,
     ) -> FilterAction {
-        info!(remote_addr = %remote_addr, cookie_valid = cookie_valid, "applying filter");
+        trace!(remote_addr = %remote_addr, cookie_valid = cookie_valid, "applying filter");
         self.counter += 1;
         let total_sessions = state.total_sessions();
         let ip = remote_addr.ip();
@@ -179,7 +182,7 @@ impl Filter {
             }
             None => {
                 self.ip_request_history.put(ip, duration_since_start);
-                self.metrics[GAUGE_WIREAUTH_FILTER_IP_REQUEST_HISTORY_SIZE] =
+                self.metrics[self.metric_names.filter_ip_request_history_size] =
                     self.ip_request_history.len() as u64;
                 None
             }
@@ -199,9 +202,9 @@ impl Filter {
 
     fn record_metric(&mut self, action: FilterAction) {
         let metric = match action {
-            FilterAction::Pass => GAUGE_WIREAUTH_FILTER_PASS,
-            FilterAction::SendCookie => GAUGE_WIREAUTH_FILTER_SEND_COOKIE,
-            FilterAction::Drop => GAUGE_WIREAUTH_FILTER_DROP,
+            FilterAction::Pass => self.metric_names.filter_pass,
+            FilterAction::SendCookie => self.metric_names.filter_send_cookie,
+            FilterAction::Drop => self.metric_names.filter_drop,
         };
         self.metrics[metric] += 1;
     }
@@ -210,10 +213,11 @@ impl Filter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::insert_test_initiator_session;
+    use crate::{metrics::DEFAULT_METRICS, state::insert_test_initiator_session};
 
     fn default_filter() -> Filter {
         Filter::new(
+            DEFAULT_METRICS,
             100,
             Duration::from_secs(60),
             Duration::from_secs(60),
@@ -227,7 +231,7 @@ mod tests {
     #[test]
     fn test_basic_pass_no_limits() {
         let mut filter = default_filter();
-        let state = State::new();
+        let state = State::new(DEFAULT_METRICS);
         let addr = "127.0.0.1:8080".parse().unwrap();
         let action = filter.apply(&state, addr, Duration::from_secs(1), false);
         assert_eq!(action, FilterAction::Pass);
@@ -237,6 +241,7 @@ mod tests {
     fn test_high_watermark_drops() {
         let high_watermark = 10;
         let mut filter = Filter::new(
+            DEFAULT_METRICS,
             100,
             Duration::from_secs(60),
             Duration::from_secs(60),
@@ -245,7 +250,7 @@ mod tests {
             5,
             high_watermark,
         );
-        let mut state = State::new();
+        let mut state = State::new(DEFAULT_METRICS);
         for i in 0..high_watermark {
             let ip: IpAddr = format!("10.0.0.{}", i).parse().unwrap();
             insert_test_initiator_session(&mut state, SocketAddr::new(ip, 51820));
@@ -259,6 +264,7 @@ mod tests {
     fn test_between_watermarks_requires_cookie() {
         let low_watermark = 5;
         let mut filter = Filter::new(
+            DEFAULT_METRICS,
             100,
             Duration::from_secs(60),
             Duration::from_secs(60),
@@ -267,7 +273,7 @@ mod tests {
             low_watermark,
             10,
         );
-        let mut state = State::new();
+        let mut state = State::new(DEFAULT_METRICS);
         for i in 0..low_watermark {
             let ip: IpAddr = format!("10.0.0.{}", i).parse().unwrap();
             insert_test_initiator_session(&mut state, SocketAddr::new(ip, 51820));
@@ -281,6 +287,7 @@ mod tests {
     fn test_between_watermarks_passes_with_cookie() {
         let low_watermark = 5;
         let mut filter = Filter::new(
+            DEFAULT_METRICS,
             100,
             Duration::from_secs(60),
             Duration::from_secs(60),
@@ -289,7 +296,7 @@ mod tests {
             low_watermark,
             10,
         );
-        let mut state = State::new();
+        let mut state = State::new(DEFAULT_METRICS);
         for i in 0..low_watermark {
             let ip: IpAddr = format!("10.0.0.{}", i).parse().unwrap();
             insert_test_initiator_session(&mut state, SocketAddr::new(ip, 51820));
@@ -303,6 +310,7 @@ mod tests {
     fn test_handshake_rate_limit_drops() {
         let handshake_rate_limit = 5;
         let mut filter = Filter::new(
+            DEFAULT_METRICS,
             handshake_rate_limit,
             Duration::from_secs(60),
             Duration::from_secs(60),
@@ -311,7 +319,7 @@ mod tests {
             50,
             100,
         );
-        let state = State::new();
+        let state = State::new(DEFAULT_METRICS);
         let addr = "127.0.0.1:8080".parse().unwrap();
         for _ in 0..handshake_rate_limit {
             filter.apply(&state, addr, Duration::from_secs(1), false);
@@ -324,6 +332,7 @@ mod tests {
     fn test_handshake_rate_limit_drops_with_cookie() {
         let handshake_rate_limit = 5;
         let mut filter = Filter::new(
+            DEFAULT_METRICS,
             handshake_rate_limit,
             Duration::from_secs(60),
             Duration::from_secs(60),
@@ -332,7 +341,7 @@ mod tests {
             50,
             100,
         );
-        let state = State::new();
+        let state = State::new(DEFAULT_METRICS);
         let addr = "127.0.0.1:8080".parse().unwrap();
         for _ in 0..handshake_rate_limit {
             filter.apply(&state, addr, Duration::from_secs(1), false);
@@ -345,6 +354,7 @@ mod tests {
     fn test_tick_resets_counter() {
         let handshake_rate_limit = 5;
         let mut filter = Filter::new(
+            DEFAULT_METRICS,
             handshake_rate_limit,
             Duration::from_secs(1),
             Duration::from_secs(60),
@@ -353,7 +363,7 @@ mod tests {
             50,
             100,
         );
-        let state = State::new();
+        let state = State::new(DEFAULT_METRICS);
         let addr = "127.0.0.1:8080".parse().unwrap();
         for _ in 0..handshake_rate_limit {
             filter.apply(&state, addr, Duration::from_secs(0), false);
@@ -367,6 +377,7 @@ mod tests {
     fn test_tick_does_not_reset_before_interval() {
         let handshake_rate_limit = 5;
         let mut filter = Filter::new(
+            DEFAULT_METRICS,
             handshake_rate_limit,
             Duration::from_secs(10),
             Duration::from_secs(60),
@@ -375,7 +386,7 @@ mod tests {
             50,
             100,
         );
-        let state = State::new();
+        let state = State::new(DEFAULT_METRICS);
         let addr = "127.0.0.1:8080".parse().unwrap();
         for _ in 0..handshake_rate_limit {
             filter.apply(&state, addr, Duration::from_secs(0), false);
@@ -389,6 +400,7 @@ mod tests {
     fn test_ip_rate_limit_within_window() {
         let low_watermark = 5;
         let mut filter = Filter::new(
+            DEFAULT_METRICS,
             100,
             Duration::from_secs(60),
             Duration::from_secs(5),
@@ -397,7 +409,7 @@ mod tests {
             low_watermark,
             10,
         );
-        let mut state = State::new();
+        let mut state = State::new(DEFAULT_METRICS);
         for i in 0..low_watermark {
             let ip: IpAddr = format!("10.0.0.{}", i).parse().unwrap();
             insert_test_initiator_session(&mut state, SocketAddr::new(ip, 51820));
@@ -412,6 +424,7 @@ mod tests {
     fn test_ip_rate_limit_after_window() {
         let low_watermark = 5;
         let mut filter = Filter::new(
+            DEFAULT_METRICS,
             100,
             Duration::from_secs(60),
             Duration::from_secs(5),
@@ -420,7 +433,7 @@ mod tests {
             low_watermark,
             10,
         );
-        let mut state = State::new();
+        let mut state = State::new(DEFAULT_METRICS);
         for i in 0..low_watermark {
             let ip: IpAddr = format!("10.0.0.{}", i).parse().unwrap();
             insert_test_initiator_session(&mut state, SocketAddr::new(ip, 51820));
@@ -436,6 +449,7 @@ mod tests {
         let low_watermark = 5;
         let max_sessions_per_ip = 2;
         let mut filter = Filter::new(
+            DEFAULT_METRICS,
             100,
             Duration::from_secs(60),
             Duration::from_secs(60),
@@ -444,7 +458,7 @@ mod tests {
             low_watermark,
             10,
         );
-        let mut state = State::new();
+        let mut state = State::new(DEFAULT_METRICS);
         for i in 0..low_watermark {
             let ip: IpAddr = format!("10.0.0.{}", i).parse().unwrap();
             insert_test_initiator_session(&mut state, SocketAddr::new(ip, 51820));
@@ -463,6 +477,7 @@ mod tests {
         let low_watermark = 5;
         let max_sessions_per_ip = 2;
         let mut filter = Filter::new(
+            DEFAULT_METRICS,
             100,
             Duration::from_secs(60),
             Duration::from_secs(60),
@@ -471,7 +486,7 @@ mod tests {
             low_watermark,
             10,
         );
-        let mut state = State::new();
+        let mut state = State::new(DEFAULT_METRICS);
         for i in 0..low_watermark {
             let ip: IpAddr = format!("10.0.0.{}", i).parse().unwrap();
             insert_test_initiator_session(&mut state, SocketAddr::new(ip, 51820));
@@ -488,6 +503,7 @@ mod tests {
         let handshake_rate_limit = 5;
         let low_watermark = 5;
         let mut filter = Filter::new(
+            DEFAULT_METRICS,
             handshake_rate_limit,
             Duration::from_secs(60),
             Duration::from_secs(60),
@@ -496,7 +512,7 @@ mod tests {
             low_watermark,
             10,
         );
-        let mut state = State::new();
+        let mut state = State::new(DEFAULT_METRICS);
         for i in 0..low_watermark {
             let ip: IpAddr = format!("10.0.0.{}", i).parse().unwrap();
             insert_test_initiator_session(&mut state, SocketAddr::new(ip, 51820));
@@ -513,6 +529,7 @@ mod tests {
     fn test_lru_cache_eviction() {
         let low_watermark = 5;
         let mut filter = Filter::new(
+            DEFAULT_METRICS,
             100,
             Duration::from_secs(60),
             Duration::from_secs(5),
@@ -521,7 +538,7 @@ mod tests {
             low_watermark,
             10,
         );
-        let mut state = State::new();
+        let mut state = State::new(DEFAULT_METRICS);
         for i in 0..low_watermark {
             let ip: IpAddr = format!("10.0.0.{}", i).parse().unwrap();
             insert_test_initiator_session(&mut state, SocketAddr::new(ip, 51820));

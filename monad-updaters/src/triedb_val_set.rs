@@ -81,7 +81,7 @@ impl ValSetUpdater<SecpSignature, BlsSignatureCollection<PubKey>> {
         std::thread::spawn(move || loop {
             let (seq_num_to_read, requested_epoch): (SeqNum, Epoch) =
                 valset_request_recv.recv().expect("channel never closed");
-            assert!(seq_num_to_read.is_epoch_end(epoch_length));
+            assert!(seq_num_to_read.is_boundary_block(epoch_length));
 
             // wait until the block is finalized in DB before trying to
             // read the validator set
@@ -163,7 +163,7 @@ where
                 let (validator_set_data, boundary_block, locked_epoch) =
                     maybe_next_valset.expect("channel never closed");
 
-                assert!(boundary_block.is_epoch_end(this.epoch_length));
+                assert!(boundary_block.is_boundary_block(this.epoch_length));
                 assert_eq!(
                     locked_epoch,
                     boundary_block.get_locked_epoch(this.epoch_length)
@@ -195,7 +195,7 @@ impl Executor for ValSetUpdater<SecpSignature, BlsSignatureCollection<PubKey>> {
         for command in commands {
             match command {
                 ValSetCommand::NotifyFinalized(seq_num) => {
-                    if seq_num.is_epoch_end(self.epoch_length) {
+                    if seq_num.is_boundary_block(self.epoch_length) {
                         if !self.valset_recv.is_empty() {
                             error!("Validator set data is not consumed");
                         }

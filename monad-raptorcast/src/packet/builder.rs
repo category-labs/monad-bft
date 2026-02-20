@@ -195,28 +195,6 @@ where
             group_id: None,
         }
     }
-
-    // ----- Delegated build methods -----
-    pub fn build_into<C>(
-        &self,
-        app_message: &[u8],
-        build_target: &BuildTarget<CertificateSignaturePubKey<ST>>,
-        collector: &mut C,
-    ) -> Result<()>
-    where
-        C: Collector<UdpMessage<CertificateSignaturePubKey<ST>>>,
-    {
-        self.prepare()
-            .build_into(app_message, build_target, collector)
-    }
-
-    pub fn build_vec(
-        &self,
-        app_message: &[u8],
-        build_target: &BuildTarget<CertificateSignaturePubKey<ST>>,
-    ) -> Result<Vec<UdpMessage<CertificateSignaturePubKey<ST>>>> {
-        self.prepare().build_vec(app_message, build_target)
-    }
 }
 
 pub struct PreparedMessageBuilder<'base, 'key, ST>

@@ -13,13 +13,4 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-pub const GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_WRITTEN: &str =
-    "monad.raptorcast.auth.authenticated_udp_bytes_written";
-pub const GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_WRITTEN: &str =
-    "monad.raptorcast.auth.non_authenticated_udp_bytes_written";
-pub const GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_READ: &str =
-    "monad.raptorcast.auth.authenticated_udp_bytes_read";
-pub const GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_READ: &str =
-    "monad.raptorcast.auth.non_authenticated_udp_bytes_read";
-
-monad_wireauth::define_metric_names!(UDP_METRICS, "udp");
+pub mod signature_verifier;

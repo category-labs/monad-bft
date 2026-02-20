@@ -74,7 +74,6 @@ impl ExecutedBlock {
             excess_blob_gas: Some(0),
             parent_beacon_block_root: Some(alloy_primitives::B256::ZERO),
             requests_hash: Some(alloy_primitives::B256::ZERO),
-            target_blobs_per_block: None,
         }
     }
 
@@ -101,17 +100,17 @@ impl ExecutedBlock {
             .iter()
             .enumerate()
             .map(|(tx_idx, tx)| {
-                use alloy_consensus::Transaction;
+                use alloy_consensus::{transaction::Recovered, Transaction};
 
                 let inner = tx.to_alloy();
                 let effective_gas_price = inner.effective_gas_price(header.base_fee_per_gas);
+                let sender = alloy_primitives::Address::from(tx.sender.bytes);
                 alloy_rpc_types::Transaction {
-                    inner,
+                    inner: Recovered::new_unchecked(inner, sender),
                     block_hash: Some(header.hash),
                     block_number: Some(header.number),
                     transaction_index: Some(tx_idx as u64),
                     effective_gas_price: Some(effective_gas_price),
-                    from: alloy_primitives::Address::from(tx.sender.bytes),
                 }
             })
             .collect();
@@ -177,7 +176,7 @@ impl ExecutedTxn {
             alloy_primitives::TxKind::Call(alloy_primitives::Address::from(self.header.to.bytes))
         };
 
-        let txn_signature = alloy_primitives::PrimitiveSignature::from_scalars_and_parity(
+        let txn_signature = alloy_primitives::Signature::from_scalars_and_parity(
             alloy_primitives::B256::from(alloy_primitives::U256::from_limbs(self.header.r.limbs)),
             alloy_primitives::B256::from(alloy_primitives::U256::from_limbs(self.header.s.limbs)),
             self.header.y_parity,
@@ -229,9 +228,7 @@ impl ExecutedTxn {
                  }| {
                     alloy_eips::eip7702::SignedAuthorization::new_unchecked(
                         alloy_eips::eip7702::Authorization {
-                            chain_id: alloy_primitives::U256::from_limbs(chain_id.limbs)
-                                .try_into()
-                                .unwrap(),
+                            chain_id: alloy_primitives::U256::from_limbs(chain_id.limbs),
                             address: alloy_primitives::Address(alloy_primitives::FixedBytes(
                                 address.bytes,
                             )),

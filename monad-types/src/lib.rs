@@ -374,7 +374,7 @@ impl SeqNum {
 
     /// This tells us what the boundary block of the epoch is. Note that this only indicates when
     /// the next epoch's round is scheduled.
-    pub fn is_epoch_end(&self, epoch_length: SeqNum) -> bool {
+    pub fn is_boundary_block(&self, epoch_length: SeqNum) -> bool {
         *self % epoch_length == epoch_length - SeqNum(1)
     }
 
@@ -384,7 +384,7 @@ impl SeqNum {
     /// Current design locks the info for epoch n + 1 by the end of epoch n. The
     /// validators have epoch_start_delay to prepare themselves for any duties
     pub fn get_locked_epoch(&self, epoch_length: SeqNum) -> Epoch {
-        assert!(self.is_epoch_end(epoch_length));
+        assert!(self.is_boundary_block(epoch_length));
         (*self).to_epoch(epoch_length) + Epoch(1)
     }
 
@@ -804,9 +804,78 @@ impl MonadVersion {
     }
 }
 
+/// A `Vec<T>` that enforces a maximum length during RLP deserialization.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LimitedVec<T, const N: usize>(pub Vec<T>);
+
+impl<T, const N: usize> Default for LimitedVec<T, N> {
+    fn default() -> Self {
+        Self(Vec::new())
+    }
+}
+
+impl<T, const N: usize> LimitedVec<T, N> {
+    pub fn into_inner(self) -> Vec<T> {
+        self.0
+    }
+}
+
+impl<T: Encodable, const N: usize> Encodable for LimitedVec<T, N> {
+    fn length(&self) -> usize {
+        alloy_rlp::list_length(&self.0)
+    }
+
+    fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
+        alloy_rlp::encode_list(&self.0, out);
+    }
+}
+
+impl<T: Decodable, const N: usize> Decodable for LimitedVec<T, N> {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let payload = &mut alloy_rlp::Header::decode_bytes(buf, true)?;
+        let mut vec = Vec::new();
+        while !payload.is_empty() {
+            if vec.len() >= N {
+                return Err(alloy_rlp::Error::Custom("list exceeds maximum length"));
+            }
+            vec.push(T::decode(payload)?);
+        }
+        Ok(Self(vec))
+    }
+}
+
+impl<T, const N: usize> std::ops::Deref for LimitedVec<T, N> {
+    type Target = Vec<T>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<T, const N: usize> std::ops::DerefMut for LimitedVec<T, N> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl<T, const N: usize> From<Vec<T>> for LimitedVec<T, N> {
+    fn from(vec: Vec<T>) -> Self {
+        Self(vec)
+    }
+}
+
+impl<T, const N: usize> IntoIterator for LimitedVec<T, N> {
+    type Item = T;
+    type IntoIter = std::vec::IntoIter<T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
 #[cfg(test)]
 mod test {
-    use alloy_rlp::Encodable;
+    use alloy_rlp::{Decodable, Encodable};
     use serde::de::{
         value::{Error as SerdeError, StrDeserializer, U64Deserializer},
         IntoDeserializer,
@@ -893,5 +962,40 @@ mod test {
 
         let deserializer: StrDeserializer<SerdeError> = "0x10".into_deserializer();
         assert_eq!(deserialize_u256(deserializer), Ok(U256::from(16)));
+    }
+
+    #[test]
+    fn test_limited_vec_roundtrip() {
+        let original: LimitedVec<u32, 5> = vec![1u32, 2, 3].into();
+        let mut buf = Vec::new();
+        original.encode(&mut buf);
+
+        let decoded = LimitedVec::<u32, 5>::decode(&mut buf.as_slice()).unwrap();
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn test_limited_vec_rejects_overflow() {
+        let exact: LimitedVec<u32, 100> = vec![1u32, 2, 3].into();
+        let mut buf = Vec::new();
+        exact.encode(&mut buf);
+        let decoded = LimitedVec::<u32, 3>::decode(&mut buf.as_slice()).unwrap();
+        assert_eq!(decoded.len(), 3);
+
+        // N+1 elements should fail
+        let over: LimitedVec<u32, 100> = vec![1u32, 2, 3, 4].into();
+        let mut buf = Vec::new();
+        over.encode(&mut buf);
+        assert!(LimitedVec::<u32, 3>::decode(&mut buf.as_slice()).is_err());
+    }
+
+    #[test]
+    fn test_limited_vec_empty() {
+        let empty: LimitedVec<u32, 0> = Vec::new().into();
+        let mut buf = Vec::new();
+        empty.encode(&mut buf);
+
+        let decoded = LimitedVec::<u32, 0>::decode(&mut buf.as_slice()).unwrap();
+        assert!(decoded.is_empty());
     }
 }

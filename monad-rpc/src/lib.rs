@@ -15,18 +15,18 @@
 
 pub mod chainstate;
 pub mod comparator;
+pub mod decompression_guard;
 pub mod docs;
-pub mod eth_json_types;
 pub mod event;
 pub mod handlers;
-pub mod heuristic_size;
 pub mod hex;
-pub mod jsonrpc;
 pub mod metrics;
-pub mod serialize;
 pub mod timing;
 pub mod txpool;
-pub mod vpool;
+pub mod types;
 pub mod websocket;
+
+#[cfg(test)]
+pub mod tests;
 
 pub const MONAD_RPC_VERSION: Option<&str> = option_env!("MONAD_VERSION");

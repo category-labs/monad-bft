@@ -31,6 +31,7 @@ tracing = { workspace = true }
 monad-eth-testutil = { workspace = true }
 monad-testutil = { workspace = true }
 
+alloy-consensus = { workspace = true, features = ["k256"] }
 alloy-signer = { workspace = true }
 alloy-signer-local = { workspace = true }
 proptest = { workspace = true }

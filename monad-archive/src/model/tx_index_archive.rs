@@ -228,7 +228,7 @@ impl TxIndexArchiver {
             block.body.transactions.len(), traces.len(), receipts.len());
         }
 
-        let mut prev_cumulative_gas_used = 0;
+        let mut prev_cumulative_gas_used: u64 = 0;
 
         let requests = block
             .body

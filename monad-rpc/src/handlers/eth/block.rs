@@ -24,11 +24,13 @@ use tracing::trace;
 
 use crate::{
     chainstate::{get_block_key_from_tag, ChainState},
-    eth_json_types::{
-        BlockTagOrHash, BlockTags, EthHash, MonadBlock, MonadTransactionReceipt, Quantity,
-    },
     handlers::eth::txn::parse_tx_receipt,
-    jsonrpc::{ChainStateResultMap, JsonRpcError, JsonRpcResult},
+    types::{
+        eth_json::{
+            BlockTagOrHash, BlockTags, EthHash, MonadBlock, MonadTransactionReceipt, Quantity,
+        },
+        jsonrpc::{ChainStateResultMap, JsonRpcError, JsonRpcResult},
+    },
 };
 
 pub async fn get_block_key_from_tag_or_hash<T: Triedb>(
@@ -188,7 +190,7 @@ pub fn map_block_receipts<R>(
         ))?;
     }
 
-    let mut cumulative_gas_used = 0u128;
+    let mut cumulative_gas_used = 0u64;
 
     Ok(transactions
         .into_iter()

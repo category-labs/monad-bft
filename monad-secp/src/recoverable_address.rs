@@ -54,7 +54,7 @@ mod tests {
         SignableTransaction, Signed, TxEip1559, TxEip2930, TxEip4844, TxEip4844Variant, TxEip7702,
         TxLegacy,
     };
-    use alloy_primitives::{Bytes, PrimitiveSignature, U256};
+    use alloy_primitives::{Bytes, Signature, U256};
     use alloy_signer::{k256::ecdsa::SigningKey, SignerSync};
     use alloy_signer_local::PrivateKeySigner;
     use rand::{thread_rng, Rng};
@@ -154,10 +154,10 @@ mod tests {
 
     impl TestTransaction {
         fn sign(self, signer: &PrivateKeySigner) -> TxEnvelope {
-            fn sign_tx<T: SignableTransaction<PrimitiveSignature>>(
+            fn sign_tx<T: SignableTransaction<Signature>>(
                 tx: T,
                 signer: &PrivateKeySigner,
-            ) -> (T, PrimitiveSignature, alloy_primitives::FixedBytes<32>) {
+            ) -> (T, Signature, alloy_primitives::FixedBytes<32>) {
                 let signature_hash = tx.signature_hash();
                 let signature = signer.sign_hash_sync(&signature_hash).unwrap();
                 (tx, signature, signature_hash)
@@ -178,7 +178,8 @@ mod tests {
                 }
                 TestTransaction::Eip4844(tx) => {
                     let (tx, sig, hash) = sign_tx(tx, signer);
-                    Signed::new_unchecked(TxEip4844Variant::TxEip4844(tx), sig, hash).into()
+                    let variant: TxEip4844Variant = TxEip4844Variant::TxEip4844(tx);
+                    Signed::new_unchecked(variant, sig, hash).into()
                 }
                 TestTransaction::Eip7702(tx) => {
                     let (tx, sig, hash) = sign_tx(tx, signer);
@@ -221,7 +222,7 @@ mod tests {
             0xff, 0xff, 0xff, 0xff,
         ]);
 
-        let invalid_sig = PrimitiveSignature::new(invalid_r, invalid_s, false);
+        let invalid_sig = Signature::new(invalid_r, invalid_s, false);
         let signed_tx: TxEnvelope = Signed::new_unchecked(tx, invalid_sig, signature_hash).into();
         assert!(signed_tx.secp256k1_recover().is_err());
     }

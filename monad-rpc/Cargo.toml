@@ -44,7 +44,7 @@ actix-test = { workspace = true }
 actix-web = { workspace = true }
 actix-ws = { workspace = true }
 agent = { workspace = true }
-alloy-consensus = { workspace = true, features = ["k256"] }
+alloy-consensus = { workspace = true }
 alloy-eips = { workspace = true }
 alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
@@ -92,19 +92,22 @@ monad-version = { workspace = true }
 [dev-dependencies]
 monad-eth-testutil = { workspace = true }
 
-alloy-consensus = { workspace = true, features = ["arbitrary"] }
+alloy-consensus = { workspace = true, features = ["arbitrary", "k256"] }
 alloy-rpc-client = { workspace = true }
 alloy-rpc-types = { workspace = true, features = ["arbitrary", "k256"] }
 alloy-signer = { workspace = true }
 alloy-signer-local = { workspace = true }
 arbitrary = { workspace = true }
 awc = { workspace = true }
+brotli = { workspace = true }
 criterion = { workspace = true }
+flate2 = { workspace = true }
 proptest = { workspace = true }
 reqwest = { workspace = true }
 tempfile = { workspace = true }
 test-case = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
+zstd = { workspace = true }
 
 [[bench]]
 name = "serialize"

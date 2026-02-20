@@ -13,14 +13,16 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::net::SocketAddr;
+
 use alloy_rlp::{Decodable, Encodable, Header, RlpDecodable, RlpEncodable, encode_list};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_executor_glue::Message;
-use monad_types::NodeId;
+use monad_types::{LimitedVec, NodeId};
 
-use crate::{MonadNameRecord, PeerDiscoveryEvent};
+use crate::{MonadNameRecord, PeerDiscoveryEvent, PeerSource};
 
 const PEER_DISCOVERY_VERSION: u16 = 1;
 
@@ -39,6 +41,24 @@ impl<ST: CertificateSignatureRecoverable> Message for PeerDiscoveryMessage<ST> {
     type Event = PeerDiscoveryEvent<ST>;
 
     fn event(self, from: NodeId<Self::NodeIdPubKey>) -> Self::Event {
+        self.event_with_source(
+            from,
+            SocketAddr::V4(std::net::SocketAddrV4::new(
+                std::net::Ipv4Addr::UNSPECIFIED,
+                0,
+            )),
+        )
+    }
+
+    fn event_with_source(
+        self,
+        from: NodeId<Self::NodeIdPubKey>,
+        src_addr: SocketAddr,
+    ) -> Self::Event {
+        let from = PeerSource {
+            id: from,
+            addr: src_addr,
+        };
         match self {
             PeerDiscoveryMessage::Ping(ping) => PeerDiscoveryEvent::PingRequest { from, ping },
             PeerDiscoveryMessage::Pong(pong) => PeerDiscoveryEvent::PongResponse { from, pong },
@@ -136,11 +156,14 @@ pub struct PeerLookupRequest<ST: CertificateSignatureRecoverable> {
     pub open_discovery: bool,
 }
 
-#[derive(Debug, Clone, RlpDecodable, RlpEncodable)]
+/// Maximum number of peers to be included in a PeerLookupResponse
+pub(crate) const MAX_PEER_IN_RESPONSE: usize = 16;
+
+#[derive(Debug, Clone, PartialEq, RlpEncodable, RlpDecodable)]
 pub struct PeerLookupResponse<ST: CertificateSignatureRecoverable> {
     pub lookup_id: u32,
     pub target: NodeId<CertificateSignaturePubKey<ST>>,
-    pub name_records: Vec<MonadNameRecord<ST>>,
+    pub name_records: LimitedVec<MonadNameRecord<ST>, MAX_PEER_IN_RESPONSE>,
 }
 
 #[cfg(test)]
@@ -262,13 +285,23 @@ mod test {
                     ),
                     &key3,
                 ),
-            ],
+            ]
+            .into(),
         };
-        let message = PeerDiscoveryMessage::PeerLookupResponse(response);
+        let message = PeerDiscoveryMessage::PeerLookupResponse(response.clone());
 
         let mut encoded = Vec::new();
         message.encode(&mut encoded);
-        insta::assert_debug_snapshot!(hex::encode(encoded));
+        insta::assert_debug_snapshot!(hex::encode(&encoded));
+
+        let decoded =
+            PeerDiscoveryMessage::<SignatureType>::decode(&mut encoded.as_slice()).unwrap();
+        match decoded {
+            PeerDiscoveryMessage::PeerLookupResponse(decoded_response) => {
+                assert_eq!(response, decoded_response);
+            }
+            _ => panic!("expected PeerLookupResponse"),
+        }
     }
 
     #[test]

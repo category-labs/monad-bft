@@ -15,7 +15,10 @@
 
 use core::str;
 
-use alloy_consensus::{Block as AlloyBlock, BlockBody, Header, ReceiptEnvelope, TxEnvelope};
+use alloy_consensus::{
+    transaction::SignerRecoverable, Block as AlloyBlock, BlockBody, Header, ReceiptEnvelope,
+    TxEnvelope,
+};
 use alloy_primitives::{Address, BlockHash, Bytes, Log, U8};
 use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable, EMPTY_LIST_CODE};
 use bytes::BufMut;

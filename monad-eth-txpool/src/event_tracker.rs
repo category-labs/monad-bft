@@ -57,7 +57,7 @@ impl<'a> EthTxPoolEventTracker<'a> {
             EthTxPoolEventType::Insert {
                 address: tx.signer(),
                 owned,
-                tx: tx.clone_tx(),
+                tx: tx.clone_inner(),
             },
         );
     }

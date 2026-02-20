@@ -51,9 +51,9 @@ use self::{
     },
     meta::{monad_net_version, monad_web3_client_version},
     resources::MonadRpcResources,
+    txpool::{monad_txpool_statusByAddress, monad_txpool_statusByHash},
 };
 use crate::{
-    eth_json_types::serialize_result,
     handlers::{
         debug::{
             MonadDebugTraceBlockByHashParams, MonadDebugTraceBlockByNumberParams,
@@ -61,12 +61,14 @@ use crate::{
         },
         eth::call::monad_createAccessList,
     },
-    jsonrpc::{
-        serialize_with_size_limit, JsonRpcError, JsonRpcResultExt, Request, RequestParams,
-        RequestWrapper, Response, ResponseWrapper,
-    },
     timing::RequestId,
-    vpool::{monad_txpool_statusByAddress, monad_txpool_statusByHash},
+    types::{
+        eth_json::serialize_result,
+        jsonrpc::{
+            serialize_with_size_limit, JsonRpcError, JsonRpcResultExt, Request, RequestParams,
+            RequestWrapper, Response, ResponseWrapper,
+        },
+    },
 };
 
 mod debug;
@@ -74,6 +76,7 @@ mod debug_replay;
 pub mod eth;
 mod meta;
 pub mod resources;
+mod txpool;
 
 pub async fn rpc_handler(
     root_span: RootSpan,
@@ -140,7 +143,7 @@ pub async fn rpc_handler(
                     async move {
                         let Ok(request) = Request::from_raw_value(json_request) else {
                             return (
-                                crate::jsonrpc::RequestId::Null,
+                                crate::types::jsonrpc::RequestId::Null,
                                 Err(JsonRpcError::invalid_request()),
                             );
                         };

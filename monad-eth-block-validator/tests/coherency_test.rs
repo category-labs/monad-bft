@@ -436,7 +436,6 @@ fn create_test_txpool(chain_config: &MonadChainConfig) -> TestTxPool {
                 std::time::Duration::from_secs(60),
                 std::time::Duration::from_secs(60),
             ),
-            do_local_insert: true,
         },
         chain_config.chain_id(),
         chain_config.get_chain_revision(GENESIS_ROUND),
@@ -648,7 +647,7 @@ fn create_block_body_helper(
 ) -> ConsensusBlockBody<EthExecutionProtocol> {
     ConsensusBlockBody::new(ConsensusBlockBodyInner {
         execution_body: EthBlockBody {
-            transactions: txs.iter().map(|tx| tx.tx().to_owned()).collect(),
+            transactions: txs.iter().map(|tx| tx.inner().to_owned()).collect(),
             ommers: Vec::default(),
             withdrawals: Vec::default(),
         },
@@ -816,7 +815,7 @@ pub fn make_signed_authorization(
     nonce: u64,
 ) -> SignedAuthorization {
     let authorization = Authorization {
-        chain_id: MONAD_DEVNET_CHAIN_ID,
+        chain_id: U256::from(MONAD_DEVNET_CHAIN_ID),
         address,
         nonce,
     };
@@ -1279,7 +1278,7 @@ fn invalid_delegation_non_emptying_same_block_inputs() -> (
 
     // Invalid delegation with wrong chain id
     let invalid_auth = Authorization {
-        chain_id: MONAD_DEVNET_CHAIN_ID + 999,
+        chain_id: U256::from(MONAD_DEVNET_CHAIN_ID + 999),
         address: Address::default(),
         nonce: 0,
     };
@@ -1430,7 +1429,7 @@ fn invalid_delegation_non_emptying_different_blocks_inputs() -> (
 
     // Invalid delegation with wrong chain id
     let invalid_auth = Authorization {
-        chain_id: MONAD_DEVNET_CHAIN_ID + 999,
+        chain_id: U256::from(MONAD_DEVNET_CHAIN_ID + 999),
         address: Address::default(),
         nonce: 0,
     };
@@ -1479,7 +1478,7 @@ fn invalid_delegation_non_emptying_different_blocks_inputs_2() -> (
 
     // Invalid delegation with wrong chain id
     let invalid_auth = Authorization {
-        chain_id: MONAD_DEVNET_CHAIN_ID + 999,
+        chain_id: U256::from(MONAD_DEVNET_CHAIN_ID + 999),
         address: Address::default(),
         nonce: 0,
     };
@@ -2210,7 +2209,7 @@ fn invalid_delegation_non_emptying_sufficient_inputs() -> (
 
     // Invalid delegation with wrong chain id
     let invalid_auth = Authorization {
-        chain_id: MONAD_DEVNET_CHAIN_ID + 999,
+        chain_id: U256::from(MONAD_DEVNET_CHAIN_ID + 999),
         address: Address::default(),
         nonce: 0,
     };
@@ -2258,7 +2257,7 @@ fn invalid_delegation_non_emptying_insufficient_inputs() -> (
 
     // Invalid delegation with wrong chain id
     let invalid_auth = Authorization {
-        chain_id: MONAD_DEVNET_CHAIN_ID + 999,
+        chain_id: U256::from(MONAD_DEVNET_CHAIN_ID + 999),
         address: Address::default(),
         nonce: 0,
     };

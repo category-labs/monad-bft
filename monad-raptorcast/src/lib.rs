@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    collections::{BTreeMap, HashMap, VecDeque},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
     future::Future as _,
     marker::PhantomData,
     net::{IpAddr, SocketAddr, SocketAddrV4},
@@ -33,7 +33,7 @@ use message::{InboundRouterMessage, OutboundRouterMessage};
 use monad_crypto::{
     certificate_signature::{
         CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
-        CertificateSignatureRecoverable,
+        CertificateSignatureRecoverable, PubKey,
     },
     signing_domain,
 };
@@ -62,7 +62,8 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tracing::{debug, debug_span, error, trace, warn};
 use udp::GroupId;
 use util::{
-    BuildTarget, EpochValidators, FullNodes, Group, PeerAddrLookup, ReBroadcastGroupMap, Redundancy,
+    BuildTarget, Collector, EpochValidators, FullNodes, Group, PeerAddrLookup, ReBroadcastGroupMap,
+    Recipient, Redundancy, UdpMessage,
 };
 
 use crate::{
@@ -80,6 +81,7 @@ pub mod decoding;
 pub mod message;
 pub mod metrics;
 pub mod packet;
+pub mod parser;
 pub mod raptorcast_secondary;
 pub mod udp;
 pub mod util;
@@ -336,10 +338,12 @@ where
         &mut self,
         outbound_msg: SecondaryOutboundMessage<CertificateSignaturePubKey<ST>>,
     ) {
-        let Some(secondary_mb) = self.secondary_message_builder.as_mut() else {
+        let Some(builder) = self.secondary_message_builder.as_mut() else {
             error!("secondary_message_builder not configured");
             return;
         };
+
+        let mut sink = DualUdpPacketSender::new(&mut self.dual_socket, &self.peer_discovery_driver);
 
         match outbound_msg {
             SecondaryOutboundMessage::SendSingle {
@@ -353,15 +357,11 @@ where
                     "raptorcastprimary handling single message from secondary"
                 );
                 let build_target = BuildTarget::PointToPoint(&dest);
-                send(
-                    &mut self.dual_socket,
-                    &self.peer_discovery_driver,
-                    secondary_mb,
-                    &msg_bytes,
-                    &build_target,
-                    UdpPriority::Regular,
-                    group_id,
-                );
+                builder
+                    .prepare()
+                    .group_id(group_id)
+                    .build_into(&msg_bytes, &build_target, &mut sink)
+                    .unwrap_log_on_error(&msg_bytes, &build_target)
             }
             SecondaryOutboundMessage::SendToGroup {
                 msg_bytes,
@@ -377,17 +377,13 @@ where
                     return;
                 }
                 let build_target = BuildTarget::FullNodeRaptorCast(&group);
-                send(
-                    &mut self.dual_socket,
-                    &self.peer_discovery_driver,
-                    secondary_mb,
-                    &msg_bytes,
-                    &build_target,
-                    UdpPriority::Regular,
-                    group_id,
-                );
+                builder
+                    .prepare()
+                    .group_id(group_id)
+                    .build_into(&msg_bytes, &build_target, &mut sink)
+                    .unwrap_log_on_error(&msg_bytes, &build_target)
             }
-        }
+        };
     }
 
     fn handle_publish(
@@ -453,15 +449,14 @@ where
                     )
                 });
 
-                send(
-                    &mut self.dual_socket,
-                    &self.peer_discovery_driver,
-                    &mut self.message_builder,
-                    &outbound_message,
-                    &build_target,
-                    priority,
-                    GroupId::Primary(epoch),
-                );
+                let mut sink =
+                    DualUdpPacketSender::new(&mut self.dual_socket, &self.peer_discovery_driver)
+                        .with_priority(priority);
+                self.message_builder
+                    .prepare()
+                    .group_id(GroupId::Primary(epoch))
+                    .build_into(&outbound_message, &build_target, &mut sink)
+                    .unwrap_log_on_error(&outbound_message, &build_target);
             }
 
             RouterTarget::PointToPoint(to) => {
@@ -494,15 +489,16 @@ where
                         )
                     });
 
-                    send(
+                    let mut sink = DualUdpPacketSender::new(
                         &mut self.dual_socket,
                         &self.peer_discovery_driver,
-                        &mut self.message_builder,
-                        &outbound_message,
-                        &build_target,
-                        priority,
-                        GroupId::Primary(self.current_epoch),
-                    );
+                    )
+                    .with_priority(priority);
+                    self.message_builder
+                        .prepare()
+                        .group_id(GroupId::Primary(self.current_epoch))
+                        .build_into(&outbound_message, &build_target, &mut sink)
+                        .unwrap_log_on_error(&outbound_message, &build_target);
                 }
             }
 
@@ -694,7 +690,8 @@ where
     let pd = PeerDiscoveryDriver::new(peer_discovery_builder);
     let shared_pd = Arc::new(Mutex::new(pd));
     let wireauth_config = monad_wireauth::Config::default();
-    let auth_protocol = auth::WireAuthProtocol::new(wireauth_config, shared_key);
+    let auth_protocol =
+        auth::WireAuthProtocol::new(&auth::metrics::UDP_METRICS, wireauth_config, shared_key);
     RaptorCast::<ST, M, OM, SE, NopDiscovery<ST>, _>::new(
         config,
         SecondaryRaptorCastModeConfig::None,
@@ -860,15 +857,15 @@ where
                         }
 
                         let build_target = BuildTarget::PointToPoint(node);
-                        send(
+                        let mut sink = DualUdpPacketSender::new(
                             &mut self.dual_socket,
                             &self.peer_discovery_driver,
-                            &mut self.message_builder,
-                            &outbound_message,
-                            &build_target,
-                            UdpPriority::Regular,
-                            GroupId::Primary(epoch),
                         );
+                        self.message_builder
+                            .prepare()
+                            .group_id(GroupId::Primary(epoch))
+                            .build_into(&outbound_message, &build_target, &mut sink)
+                            .unwrap_log_on_error(&outbound_message, &build_target);
                     }
                 }
                 RouterCommand::GetPeers => {
@@ -1007,6 +1004,7 @@ where
             // Once we have enough (redundant) raptorcast chunks, recreate the
             // decoded (AKA parsed, original) message.
             // Stream the chunks to our dedicated full-nodes as we receive them.
+            let src_addr = message.src_addr;
             let decoded_app_messages = {
                 this.udp_state.handle_message(
                     &this.rebroadcast_map,
@@ -1048,11 +1046,10 @@ where
                                 "RaptorCastPrimary rx deserialized PeerDiscoveryMessage: {:?}",
                                 peer_disc_message
                             );
-                            // handle peer discovery message in driver
                             this.peer_discovery_driver
                                 .lock()
                                 .unwrap()
-                                .update(peer_disc_message.event(from));
+                                .update(peer_disc_message.event_with_source(from, src_addr));
                         }
                         InboundRouterMessage::FullNodesGroup(full_nodes_group_message) => {
                             trace!(
@@ -1214,26 +1211,27 @@ where
 
                     match target_name_record {
                         Some(name_record) => {
-                            send_with_record(
+                            let mut sink = DualUdpPacketSender::new(
                                 &mut this.dual_socket,
                                 &this.peer_discovery_driver,
-                                &mut this.message_builder,
-                                &router_message,
-                                UdpPriority::Regular,
-                                &target,
-                                &name_record,
-                            );
+                            )
+                            .with_target_name_record(&target, &name_record);
+                            this.message_builder
+                                .prepare()
+                                .group_id(GroupId::Primary(this.current_epoch))
+                                .build_into(&router_message, &build_target, &mut sink)
+                                .unwrap_log_on_error(&router_message, &build_target);
                         }
                         None => {
-                            send(
+                            let mut sink = DualUdpPacketSender::new(
                                 &mut this.dual_socket,
                                 &this.peer_discovery_driver,
-                                &mut this.message_builder,
-                                &router_message,
-                                &build_target,
-                                UdpPriority::Regular,
-                                GroupId::Primary(this.current_epoch),
                             );
+                            this.message_builder
+                                .prepare()
+                                .group_id(GroupId::Primary(this.current_epoch))
+                                .build_into(&router_message, &build_target, &mut sink)
+                                .unwrap_log_on_error(&router_message, &build_target);
                         }
                     }
                 };
@@ -1357,79 +1355,153 @@ where
     }
 }
 
-fn send<ST, PD, AP>(
-    dual_socket: &mut auth::DualSocketHandle<AP>,
-    peer_discovery_driver: &Arc<Mutex<PeerDiscoveryDriver<PD>>>,
-    message_builder: &mut OwnedMessageBuilder<ST>,
-    message: &Bytes,
-    build_target: &BuildTarget<CertificateSignaturePubKey<ST>>,
-    priority: UdpPriority,
-    group_id: GroupId,
-) where
+struct DualUdpPacketSender<'a, ST, PD, AP>
+where
     ST: CertificateSignatureRecoverable,
-    PD: PeerDiscoveryAlgo<SignatureType = ST>,
     AP: auth::AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
+    PD: PeerDiscoveryAlgo<SignatureType = ST>,
 {
-    {
-        let dual_socket_cell = std::cell::RefCell::new(&mut *dual_socket);
-        let mut sink = packet::UdpMessageBatcher::new(
-            UNICAST_MSG_BATCH_SIZE,
-            (peer_discovery_driver, &dual_socket_cell),
-            |rc_chunks| {
-                dual_socket_cell
-                    .borrow_mut()
-                    .write_unicast_with_priority(rc_chunks, priority);
-            },
-        );
-
-        message_builder
-            .prepare()
-            .group_id(group_id)
-            .build_into(message, build_target, &mut sink)
-            .unwrap_log_on_error(message, build_target);
-    }
-
-    ensure_authenticated_sessions(dual_socket, peer_discovery_driver, build_target.iter());
+    dual_socket: &'a mut auth::DualSocketHandle<AP>,
+    peer_disc_driver: &'a Arc<Mutex<PeerDiscoveryDriver<PD>>>,
+    target_name_record: Option<TargetNameRecord<'a, ST>>,
+    targets: HashSet<Recipient<CertificateSignaturePubKey<ST>>>,
+    priority: UdpPriority,
+    _signature_type: PhantomData<ST>,
 }
 
-fn send_with_record<ST, PD, AP>(
-    dual_socket: &mut auth::DualSocketHandle<AP>,
-    peer_discovery_driver: &Arc<Mutex<PeerDiscoveryDriver<PD>>>,
-    message_builder: &mut OwnedMessageBuilder<ST>,
-    message: &Bytes,
-    priority: UdpPriority,
-    target: &NodeId<CertificateSignaturePubKey<ST>>,
-    name_record: &NameRecord,
-) where
+#[derive(Clone, Copy)]
+struct TargetNameRecord<'a, ST: CertificateSignatureRecoverable> {
+    target: &'a NodeId<CertificateSignaturePubKey<ST>>,
+    name_record: &'a NameRecord,
+}
+
+impl<'a, ST, PD, AP> DualUdpPacketSender<'a, ST, PD, AP>
+where
     ST: CertificateSignatureRecoverable,
-    PD: PeerDiscoveryAlgo<SignatureType = ST>,
     AP: auth::AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
+    PD: PeerDiscoveryAlgo<SignatureType = ST>,
 {
-    let build_target: BuildTarget<'_, CertificateSignaturePubKey<ST>> =
-        BuildTarget::PointToPoint(target);
-    let should_authenticate = name_record.authenticated_udp_socket().is_some();
-
-    {
-        let dual_socket_cell = std::cell::RefCell::new(&mut *dual_socket);
-        let lookup = NameRecordLookup::<ST, AP> {
-            target: *target,
-            name_record,
-            dual_socket: &dual_socket_cell,
-        };
-        let mut sink =
-            packet::UdpMessageBatcher::new(UNICAST_MSG_BATCH_SIZE, lookup, |rc_chunks| {
-                dual_socket_cell
-                    .borrow_mut()
-                    .write_unicast_with_priority(rc_chunks, priority);
-            });
-
-        message_builder
-            .build_into(message, &build_target, &mut sink)
-            .unwrap_log_on_error(message, &build_target);
+    fn new(
+        dual_socket: &'a mut auth::DualSocketHandle<AP>,
+        peer_disc_driver: &'a Arc<Mutex<PeerDiscoveryDriver<PD>>>,
+    ) -> Self {
+        Self {
+            dual_socket,
+            peer_disc_driver,
+            target_name_record: None,
+            targets: Default::default(),
+            priority: UdpPriority::Regular,
+            _signature_type: PhantomData,
+        }
     }
 
-    if should_authenticate {
-        ensure_authenticated_sessions(dual_socket, peer_discovery_driver, std::iter::once(target));
+    fn with_priority(mut self, priority: UdpPriority) -> DualUdpPacketSender<'a, ST, PD, AP> {
+        self.priority = priority;
+        self
+    }
+
+    fn with_target_name_record(
+        mut self,
+        target: &'a NodeId<CertificateSignaturePubKey<ST>>,
+        name_record: &'a NameRecord,
+    ) -> DualUdpPacketSender<'a, ST, PD, AP> {
+        // currently we have no use for multiple target name records
+        debug_assert!(self.target_name_record.is_none());
+        self.target_name_record = Some(TargetNameRecord {
+            target,
+            name_record,
+        });
+        self
+    }
+
+    fn lookup_addr(
+        &self,
+        recipient: &Recipient<CertificateSignaturePubKey<ST>>,
+    ) -> Option<SocketAddr> {
+        if let Some(target_name_record) = self.target_name_record {
+            if recipient.node_id() != target_name_record.target {
+                return None;
+            }
+
+            if let Some(auth_addr) = target_name_record.name_record.authenticated_udp_socket() {
+                let addr = SocketAddr::V4(auth_addr);
+                if self
+                    .dual_socket
+                    .is_connected_socket_and_public_key(&addr, &recipient.node_id().pubkey())
+                {
+                    return Some(addr);
+                }
+            }
+
+            Some(SocketAddr::V4(target_name_record.name_record.udp_socket()))
+        } else {
+            // otherwise lookup address using peer-discovery
+            let peer_lookup = (&*self.dual_socket, self.peer_disc_driver);
+            *recipient.lookup(&peer_lookup)
+        }
+    }
+}
+
+impl<'a, ST, PD, AP> Drop for DualUdpPacketSender<'a, ST, PD, AP>
+where
+    ST: CertificateSignatureRecoverable,
+    AP: auth::AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
+    PD: PeerDiscoveryAlgo<SignatureType = ST>,
+{
+    fn drop(&mut self) {
+        if let Some(target_name_record) = self.target_name_record {
+            if let Some(auth_addr) = target_name_record.name_record.authenticated_udp_socket() {
+                let addr = SocketAddr::V4(auth_addr);
+                if !self
+                    .dual_socket
+                    .is_connected_socket_and_public_key(&addr, &target_name_record.target.pubkey())
+                {
+                    if let Err(e) = self.dual_socket.connect(
+                        &target_name_record.target.pubkey(),
+                        addr,
+                        DEFAULT_RETRY_ATTEMPTS,
+                    ) {
+                        warn!(
+                            target = ?target_name_record.target,
+                            auth_addr = ?auth_addr,
+                            error = ?e,
+                            "failed to initiate connection to authenticated endpoint"
+                        );
+                    }
+                    self.dual_socket.flush();
+                }
+            }
+        } else {
+            let targets = self.targets.iter().map(|recipient| recipient.node_id());
+            ensure_authenticated_sessions(self.dual_socket, self.peer_disc_driver, targets);
+        }
+    }
+}
+
+impl<'a, ST, PD, AP> Collector<UdpMessage<CertificateSignaturePubKey<ST>>>
+    for DualUdpPacketSender<'a, ST, PD, AP>
+where
+    ST: CertificateSignatureRecoverable,
+    AP: auth::AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
+    PD: PeerDiscoveryAlgo<SignatureType = ST>,
+{
+    fn push(&mut self, item: UdpMessage<CertificateSignaturePubKey<ST>>) {
+        let Some(dest) = self.lookup_addr(&item.recipient) else {
+            return;
+        };
+
+        if !self.targets.contains(&item.recipient) {
+            // used to initiate auth udp session
+            self.targets.insert(item.recipient.clone());
+        }
+
+        let msg = UnicastMsg {
+            stride: item.stride as u16,
+            msgs: vec![(dest, item.payload)],
+        };
+
+        self.dual_socket
+            .write_unicast_with_priority(msg, self.priority);
     }
 }
 
@@ -1521,58 +1593,12 @@ fn ensure_authenticated_sessions<'a, ST, PD, AP>(
     dual_socket.flush();
 }
 
-impl<ST, PD, AP> PeerAddrLookup<CertificateSignaturePubKey<ST>>
-    for (
-        &Arc<Mutex<PeerDiscoveryDriver<PD>>>,
-        &std::cell::RefCell<&mut auth::DualSocketHandle<AP>>,
-    )
+impl<PT, AP> PeerAddrLookup<PT> for auth::DualSocketHandle<AP>
 where
-    ST: CertificateSignatureRecoverable,
-    PD: PeerDiscoveryAlgo<SignatureType = ST>,
-    AP: auth::AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
+    PT: PubKey,
+    AP: auth::AuthenticationProtocol<PublicKey = PT>,
 {
-    fn lookup(&self, node_id: &NodeId<CertificateSignaturePubKey<ST>>) -> Option<SocketAddr> {
-        let (discovery, auth_socket) = self;
-
-        if let Some(auth_addr) = auth_socket
-            .borrow()
-            .get_socket_by_public_key(&node_id.pubkey())
-        {
-            return Some(auth_addr);
-        }
-
-        discovery.lock().ok()?.get_addr(node_id)
-    }
-}
-
-struct NameRecordLookup<'a, ST, AP>
-where
-    ST: CertificateSignatureRecoverable,
-    AP: auth::AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
-{
-    pub target: NodeId<CertificateSignaturePubKey<ST>>,
-    pub name_record: &'a NameRecord,
-    pub dual_socket: &'a std::cell::RefCell<&'a mut auth::DualSocketHandle<AP>>,
-}
-
-impl<ST, AP> PeerAddrLookup<CertificateSignaturePubKey<ST>> for NameRecordLookup<'_, ST, AP>
-where
-    ST: CertificateSignatureRecoverable,
-    AP: auth::AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
-{
-    fn lookup(&self, node_id: &NodeId<CertificateSignaturePubKey<ST>>) -> Option<SocketAddr> {
-        if *node_id != self.target {
-            return None;
-        }
-
-        if let Some(auth_addr) = self
-            .dual_socket
-            .borrow()
-            .get_socket_by_public_key(&node_id.pubkey())
-        {
-            return Some(auth_addr);
-        }
-
-        Some(SocketAddr::V4(self.name_record.udp_socket()))
+    fn lookup(&self, node_id: &NodeId<PT>) -> Option<SocketAddr> {
+        self.get_socket_by_public_key(&node_id.pubkey())
     }
 }

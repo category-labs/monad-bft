@@ -18,7 +18,10 @@ use std::{
     task::{Poll, Waker},
 };
 
-use alloy_consensus::{transaction::Recovered, TxEnvelope};
+use alloy_consensus::{
+    transaction::{Recovered, SignerRecoverable},
+    TxEnvelope,
+};
 use alloy_rlp::Decodable;
 use bytes::Bytes;
 use futures::Stream;
@@ -500,7 +503,12 @@ where
             return Poll::Ready(Some(MonadEvent::MempoolEvent(event)));
         }
 
-        self.waker = Some(cx.waker().clone());
+        if let Some(waker) = self.waker.as_mut() {
+            waker.clone_from(cx.waker());
+        } else {
+            self.waker = Some(cx.waker().clone());
+        }
+
         Poll::Pending
     }
 }

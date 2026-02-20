@@ -20,7 +20,8 @@ use std::{
 };
 
 use alloy_consensus::{
-    transaction::Recovered, SignableTransaction, Transaction, TxEnvelope, TxLegacy,
+    transaction::{Recovered, SignerRecoverable},
+    SignableTransaction, Transaction, TxEnvelope, TxLegacy,
 };
 use alloy_primitives::{Address, TxKind, B256, U256};
 use alloy_signer::SignerSync;
@@ -1634,7 +1635,6 @@ fn test_eviction_policy() {
                             Duration::from_secs(60),
                             Duration::from_secs(60),
                         ),
-                        do_local_insert: true,
                     },
                     MockChainConfig::DEFAULT.chain_id(),
                     MockChainConfig::DEFAULT.get_chain_revision(GENESIS_ROUND),

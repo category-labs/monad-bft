@@ -15,7 +15,10 @@
 
 use std::collections::BTreeMap;
 
-use alloy_consensus::{transaction::Recovered, Transaction, TxEnvelope};
+use alloy_consensus::{
+    transaction::{Recovered, SignerRecoverable},
+    Transaction, TxEnvelope,
+};
 use alloy_primitives::{Uint, B256};
 use alloy_rlp::Encodable;
 use itertools::Itertools;

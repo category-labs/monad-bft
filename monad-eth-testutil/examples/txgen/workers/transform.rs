@@ -291,7 +291,7 @@ fn mutate_eip7702_transaction(tx: &TxEnvelope, original_key: &PrivateKey) -> TxE
                     let chain_id = rng.gen_range(0..=u64::MAX);
                     let nonce = rng.gen_range(0..=u64::MAX);
                     let auth = Authorization {
-                        chain_id,
+                        chain_id: U256::from(chain_id),
                         address: sender_address,
                         nonce,
                     };

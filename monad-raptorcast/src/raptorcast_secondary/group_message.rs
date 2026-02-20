@@ -19,7 +19,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
 use monad_peer_discovery::MonadNameRecord;
-use monad_types::{NodeId, Round};
+use monad_types::{LimitedVec, NodeId, Round};
 
 #[derive(RlpEncodable, RlpDecodable, Debug, Eq, PartialEq, Clone)]
 pub struct PrepareGroup<PT: PubKey> {
@@ -36,12 +36,16 @@ pub struct PrepareGroupResponse<PT: PubKey> {
     pub accept: bool,
 }
 
+/// Maximum number of peers/name records allowed in a ConfirmGroup message.
+/// This is to set an upper bound on RLP deserialization memory usage.
+const MAX_PEERS_IN_CONFIRM_GROUP: usize = 500;
+
 #[derive(Debug, Clone, RlpEncodable, RlpDecodable, Eq, PartialEq)]
 #[rlp(trailing)]
 pub struct ConfirmGroup<ST: CertificateSignatureRecoverable> {
     pub prepare: PrepareGroup<CertificateSignaturePubKey<ST>>,
-    pub peers: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
-    pub name_records: Vec<MonadNameRecord<ST>>,
+    pub peers: LimitedVec<NodeId<CertificateSignaturePubKey<ST>>, MAX_PEERS_IN_CONFIRM_GROUP>,
+    pub name_records: LimitedVec<MonadNameRecord<ST>, MAX_PEERS_IN_CONFIRM_GROUP>,
 }
 
 const GROUP_MSG_VERSION: u8 = 1;
@@ -190,8 +194,8 @@ mod tests {
     fn serialize_roundtrip_group_conf() {
         let org_msg = ConfirmGroup {
             prepare: make_prep_group(7),
-            peers: [nid(8), nid(9), nid(10)].to_vec(),
-            name_records: make_name_records(11, 3),
+            peers: [nid(8), nid(9), nid(10)].to_vec().into(),
+            name_records: make_name_records(11, 3).into(),
         };
         let org_enum = FullNodesGroupMessage::ConfirmGroup(org_msg);
 

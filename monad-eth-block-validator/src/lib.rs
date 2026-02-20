@@ -25,6 +25,7 @@ use alloy_consensus::{
     TxEnvelope, EMPTY_OMMER_ROOT_HASH,
 };
 use alloy_eips::eip7702::{RecoveredAuthority, RecoveredAuthorization};
+use alloy_primitives::U256;
 use alloy_rlp::Encodable;
 use error::{EthBlockValidationError, HeaderError, PayloadError, TxnError};
 use monad_chain_config::{
@@ -443,7 +444,7 @@ where
                             return Err(TxnError::NonceOverflow.into());
                         };
 
-                        if expected_nonce != sys_txn.tx().nonce() {
+                        if expected_nonce != sys_txn.nonce() {
                             debug!(
                                 expected_nonce,
                                 ?sys_txn,
@@ -565,8 +566,8 @@ where
                         });
 
                     // authorizations with invalid chain id are skipped for nonce tracking
-                    if recovered_auth.chain_id() != 0_u64
-                        && recovered_auth.chain_id() != chain_config.chain_id()
+                    if !recovered_auth.chain_id().is_zero()
+                        && *recovered_auth.chain_id() != U256::from(chain_config.chain_id())
                     {
                         continue;
                     }
@@ -633,9 +634,9 @@ where
 mod test {
     use std::{collections::BTreeMap, time::Duration};
 
-    use alloy_consensus::Signed;
+    use alloy_consensus::{transaction::SignerRecoverable, Signed};
     use alloy_eips::eip7702::SignedAuthorization;
-    use alloy_primitives::{Address, FixedBytes, PrimitiveSignature, B256, U256};
+    use alloy_primitives::{Address, FixedBytes, Signature, B256, U256};
     use itertools::{FoldWhile, Itertools};
     use monad_chain_config::{
         revision::{ChainParams, MockChainRevision},
@@ -1034,7 +1035,7 @@ mod test {
         let new_s = secp256k1_n.saturating_sub(original_signature.s());
 
         // form the new signature and transaction
-        let invalid_signature = PrimitiveSignature::from_scalars_and_parity(
+        let invalid_signature = Signature::from_scalars_and_parity(
             original_signature.r().into(),
             new_s.into(),
             !original_signature.v(),
@@ -1045,8 +1046,8 @@ mod test {
 
         // both transactions recover to the same signer
         assert_eq!(
-            valid_txn.recover_signer().unwrap(),
-            invalid_txn.recover_signer().unwrap()
+            valid_txn.recover_signer_unchecked().unwrap(),
+            invalid_txn.recover_signer_unchecked().unwrap()
         );
 
         // create a block with the above transaction

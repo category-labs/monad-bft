@@ -256,7 +256,7 @@ impl EthTxPoolBridgeState {
 mod test {
     use std::{collections::HashSet, time::Duration};
 
-    use alloy_consensus::TxEnvelope;
+    use alloy_consensus::{transaction::SignerRecoverable, TxEnvelope};
     use monad_eth_testutil::{make_legacy_tx, S1};
     use monad_eth_txpool_types::{
         EthTxPoolDropReason, EthTxPoolEvent, EthTxPoolEventType, EthTxPoolEvictReason,
