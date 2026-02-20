@@ -41,7 +41,7 @@ const UPLOAD_CONCURRENCY: usize = 10;
 ///   - GC: remove any known-in-S3 keys that are no longer present locally.
 ///   - For each local (key, path):
 ///       - If key is in known set, skip.
-///       - Else do a poor-man's exists: scan_prefix(key) and check for exact match.
+///       - Else check existence via direct key read (GetObject, O(1)).
 ///           - If exists: insert key into known set, skip.
 ///           - Else: read file and put(key, bytes). Do not insert into known set here; the next
 ///             iteration will observe existence via the exists check and add it then.
@@ -256,10 +256,11 @@ async fn add_dir_to_local_map(
     Ok(())
 }
 
-/// Poor-man's exists: list with the exact key as prefix and look for an exact match.
+/// Check if a key exists in the store by reading it directly.
+/// This uses GetObject (O(1) key lookup) instead of ListObjectsV2 (scan_prefix),
+/// which avoids timeouts on large buckets where listing is slow.
 async fn s3_exists_key(store: &impl KVStore, key: &str) -> Result<bool> {
-    let objs = store.scan_prefix(key).await?;
-    Ok(objs.iter().any(|k| k == key))
+    Ok(store.get(key).await?.is_some())
 }
 
 #[cfg(test)]
