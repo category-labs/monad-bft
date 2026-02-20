@@ -6003,6 +6003,7 @@ dependencies = [
  "flume",
  "futures",
  "futures-util",
+ "hex",
  "inotify",
  "itertools 0.10.5",
  "monad-archive",

@@ -27,10 +27,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::value::RawValue;
 use tracing::debug;
 
-use crate::{
-    hex::{self, decode, decode_quantity, DecodeHexError},
-    types::jsonrpc::JsonRpcError,
-};
+use crate::types::{ethhex, jsonrpc::JsonRpcError};
 
 pub type EthAddress = FixedData<20>;
 pub type EthHash = FixedData<32>;
@@ -124,10 +121,10 @@ impl UnformattedData {
 }
 
 impl FromStr for UnformattedData {
-    type Err = DecodeHexError;
+    type Err = ethhex::EthHexDecodeError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        decode(s).map(UnformattedData)
+        ethhex::decode_bytes(s).map(UnformattedData)
     }
 }
 impl From<alloy_primitives::Bytes> for UnformattedData {
@@ -141,7 +138,7 @@ impl Serialize for UnformattedData {
     where
         S: Serializer,
     {
-        serializer.serialize_str(&hex::encode(&self.0))
+        serializer.serialize_str(&ethhex::encode_bytes(&self.0))
     }
 }
 
@@ -202,17 +199,17 @@ pub struct FixedData<const N: usize>(#[schemars(with = "String")] pub [u8; N]);
 
 impl<const N: usize> std::fmt::Display for FixedData<N> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "0x{}", hex::encode(&self.0))
+        f.write_str(&ethhex::encode_bytes(&self.0))
     }
 }
 
 impl<const N: usize> FromStr for FixedData<N> {
-    type Err = DecodeHexError;
+    type Err = ethhex::EthHexDecodeError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        decode(s).map(|d| match d.try_into() {
+        ethhex::decode_bytes(s).map(|d| match d.try_into() {
             Ok(a) => Ok(FixedData(a)),
-            Err(_) => Err(DecodeHexError::InvalidLen),
+            Err(_) => Err(ethhex::EthHexDecodeError::InvalidLen),
         })?
     }
 }
@@ -222,7 +219,7 @@ impl<const N: usize> Serialize for FixedData<N> {
     where
         S: Serializer,
     {
-        serializer.serialize_str(&hex::encode(&self.0))
+        serializer.serialize_str(&ethhex::encode_bytes(&self.0))
     }
 }
 
@@ -306,7 +303,7 @@ fn block_tags_schema(gen: &mut schemars::gen::SchemaGenerator) -> schemars::sche
 }
 
 impl FromStr for BlockTags {
-    type Err = DecodeHexError;
+    type Err = ethhex::EthHexDecodeError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
@@ -315,7 +312,7 @@ impl FromStr for BlockTags {
             "safe" => Ok(Self::Safe),
             "finalized" => Ok(Self::Finalized),
             "pending" => Ok(Self::Latest),
-            _ => decode_quantity(s).map(|q| Self::Number(Quantity(q))),
+            _ => ethhex::decode_quantity(s).map(|q| Self::Number(Quantity(q))),
         }
     }
 }

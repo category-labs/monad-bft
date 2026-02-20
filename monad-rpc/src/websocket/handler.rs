@@ -701,9 +701,11 @@ mod tests {
     use crate::{
         event::EventServer,
         handlers::{eth::call::EthCallStatsTracker, resources::MonadRpcResources},
-        hex,
         txpool::EthTxPoolBridgeClient,
-        types::eth_json::{EthSubscribeResult, FixedData},
+        types::{
+            eth_json::{EthSubscribeResult, FixedData},
+            ethhex,
+        },
         websocket::handler::{ConnectionLimit, SubscriptionLimit},
     };
 
@@ -827,7 +829,7 @@ mod tests {
                 let body = json!({
                     "jsonrpc": "2.0",
                     "method": "eth_unsubscribe",
-                    "params": [hex::encode(&subscription_id.0)],
+                    "params": [ethhex::encode_bytes(&subscription_id.0)],
                     "id": 1
                 });
 
