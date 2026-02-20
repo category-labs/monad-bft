@@ -44,7 +44,7 @@ use super::block::get_block_key_from_tag_or_hash;
 use crate::{
     handlers::debug::{decode_call_frame, Tracer, TracerObject},
     hex,
-    timing::TimingRequestId,
+    middleware::TimingRequestId,
     types::{
         eth_json::BlockTagOrHash,
         jsonrpc::{JsonRpcError, JsonRpcResult},

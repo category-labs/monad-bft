@@ -29,7 +29,7 @@ use crate::{
         },
         MonadRpcResources,
     },
-    timing::TimingRequestId,
+    middleware::TimingRequestId,
     types::{
         eth_json::{BlockTagOrHash, BlockTags, EthHash},
         jsonrpc::{JsonRpcError, JsonRpcResult},
