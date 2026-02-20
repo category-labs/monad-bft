@@ -312,7 +312,6 @@ where
                         BlockPolicy::<ST, SCT, EthExecutionProtocol, SBT, CCT, CRT>::update_committed_block(
                             &mut self.block_policy,
                             &committed_block,
-                            &self.chain_config,
                         );
 
                         self.preload_manager
@@ -356,11 +355,9 @@ where
                     let create_proposal_start = Instant::now();
 
                     // Some() if tfm is enabled, else None
-                    let maybe_tfm_base_fees = self.block_policy.compute_base_fee(
-                        &extending_blocks,
-                        &self.chain_config,
-                        timestamp_ns,
-                    );
+                    let maybe_tfm_base_fees = self
+                        .block_policy
+                        .compute_base_fee(&extending_blocks, &self.chain_config);
 
                     let (base_fee, base_fee_field, base_fee_trend_field, base_fee_moment_field) =
                         match maybe_tfm_base_fees {
@@ -451,7 +448,6 @@ where
                     BlockPolicy::<ST, SCT, EthExecutionProtocol, SBT, CCT, CRT>::reset(
                         &mut self.block_policy,
                         last_delay_committed_blocks.iter().collect(),
-                        &self.chain_config,
                     );
 
                     self.pool.reset(

@@ -393,7 +393,6 @@ fn run_custom_iter<const N: usize>(
                     BlockPolicy::<_, _, _, StateBackendType, _, _>::update_committed_block(
                         &mut eth_block_policy,
                         &block,
-                        &MockChainConfig::DEFAULT,
                     );
 
                     pool.update_committed_block(

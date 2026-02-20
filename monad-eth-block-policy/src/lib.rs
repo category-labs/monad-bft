@@ -26,9 +26,7 @@ use alloy_consensus::{
 use alloy_eips::eip7702::RecoveredAuthorization;
 use alloy_primitives::{Address, TxHash, U256};
 use itertools::Itertools;
-use monad_chain_config::{
-    execution_revision::MonadExecutionRevision, revision::ChainRevision, ChainConfig,
-};
+use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_consensus_types::{
     block::{
         AccountBalanceState, BlockPolicy, BlockPolicyBlockValidatorError, BlockPolicyError,
@@ -60,14 +58,6 @@ pub enum ReserveBalanceCheck {
     Insert,
     Propose,
     Validate,
-}
-
-pub fn pre_tfm_compute_max_txn_cost(txn: &TxEnvelope) -> U256 {
-    let txn_value = txn.value();
-    let gas_limit = U256::from(txn.gas_limit());
-    let max_fee = U256::from(txn.max_fee_per_gas());
-    let max_gas_cost = gas_limit.checked_mul(max_fee).expect("no overflow");
-    txn_value.saturating_add(max_gas_cost)
 }
 
 pub fn compute_txn_max_value(txn: &TxEnvelope, base_fee: u64) -> U256 {
@@ -270,8 +260,6 @@ where
                         .base_fee
                         .unwrap_or(monad_tfm::base_fee::PRE_TFM_BASE_FEE),
                     &chain_config.get_chain_revision(block.round),
-                    &chain_config
-                        .get_execution_chain_revision(timestamp_ns_to_secs(block.timestamp_ns)),
                 )?;
                 trace!(
                     "applying fees for block {:?}, curr acc balance: {:?}",
@@ -350,7 +338,6 @@ where
     execution_delay: SeqNum,
     base_fee: u64,
     chain_revision: CRT,
-    execution_chain_revision: MonadExecutionRevision,
     _phantom: PhantomData<CRT>,
 }
 
@@ -383,14 +370,12 @@ where
         execution_delay: SeqNum,
         base_fee: u64,
         chain_revision: &CRT,
-        execution_chain_revision: &MonadExecutionRevision,
     ) -> Result<Self, BlockPolicyError> {
         Ok(Self {
             block_seq_num,
             execution_delay,
             base_fee,
             chain_revision: *chain_revision,
-            execution_chain_revision: *execution_chain_revision,
             _phantom: PhantomData,
         })
     }
@@ -401,45 +386,8 @@ where
         block_txn_fees: &TxnFee,
         eth_address: &Address,
     ) -> Result<(), BlockPolicyError> {
-        let tfm_enabled = self
-            .execution_chain_revision
-            .execution_chain_params()
-            .tfm_enabled;
         let max_reserve_balance =
             Balance::from(self.chain_revision.chain_params().max_reserve_balance);
-
-        if !tfm_enabled {
-            if account_balance.balance < block_txn_fees.max_txn_cost {
-                trace!(
-                    seq_num =?self.block_seq_num,
-                    ?account_balance,
-                    block_txn_cost =?block_txn_fees.max_txn_cost,
-                    "TFM disabled. block can not be accepted insufficient balance"
-                );
-                return Err(BlockPolicyError::BlockPolicyBlockValidatorError(
-                    BlockPolicyBlockValidatorError::InsufficientBalance,
-                ));
-            }
-
-            let estimated_balance = account_balance
-                .balance
-                .saturating_sub(block_txn_fees.max_txn_cost);
-            account_balance.remaining_reserve_balance = estimated_balance.min(max_reserve_balance);
-            account_balance.balance = estimated_balance;
-            account_balance.block_seqnum_of_latest_txn = self.block_seq_num;
-
-            trace!(
-                "TFM disabled updated balance: {:?} \
-                        txn max cost {:?} \
-                        block seq_num {:?} \
-                        address: {:?}",
-                account_balance,
-                block_txn_fees.max_txn_cost,
-                self.block_seq_num,
-                eth_address,
-            );
-            return Ok(());
-        }
 
         let is_possibly_emptying_transaction = is_possibly_emptying_transaction(
             self.block_seq_num,
@@ -543,44 +491,6 @@ where
                 BlockPolicyBlockValidatorError::AccountBalanceMissing,
             ));
         };
-
-        if !self
-            .execution_chain_revision
-            .execution_chain_params()
-            .tfm_enabled
-        {
-            let txn_cost = pre_tfm_compute_max_txn_cost(txn);
-            if account_balance.balance < txn_cost {
-                trace!(
-                    seq_num =?self.block_seq_num,
-                    ?account_balance,
-                    ?txn_cost,
-                    ?txn,
-                    "TFM disabled. txn can not be accepted insufficient balance"
-                );
-                return Err(BlockPolicyError::BlockPolicyBlockValidatorError(
-                    BlockPolicyBlockValidatorError::InsufficientBalance,
-                ));
-            }
-
-            let estimated_balance = account_balance.balance.saturating_sub(txn_cost);
-            account_balance.remaining_reserve_balance =
-                estimated_balance.min(account_balance.max_reserve_balance);
-            account_balance.balance = estimated_balance;
-            account_balance.block_seqnum_of_latest_txn = self.block_seq_num;
-
-            trace!(
-                "TFM disabled. updated balance: {:?} \
-                        txn cost {:?} \
-                        block seq_num {:?} \
-                        address: {:?}",
-                account_balance,
-                txn_cost,
-                self.block_seq_num,
-                eth_address,
-            );
-            return Ok(());
-        }
 
         let is_emptying_transaction = is_possibly_emptying_transaction(
             self.block_seq_num,
@@ -981,9 +891,6 @@ where
                                             .unwrap_or(monad_tfm::base_fee::PRE_TFM_BASE_FEE),
                                         &chain_config
                                             .get_chain_revision(extending_block.get_block_round()),
-                                        &chain_config.get_execution_chain_revision(
-                                            timestamp_ns_to_secs(extending_block.get_timestamp()),
-                                        ),
                                     )?;
 
                                     validator.try_apply_block_fees(
@@ -1093,38 +1000,24 @@ where
         &self,
         extending_blocks: &[B],
         chain_config: &CCT,
-        timestamp_ns: u128,
     ) -> Option<(u64, u64, u64)>
     where
         B: AsRef<EthValidatedBlock<ST, SCT>>,
     {
-        let tfm_enabled = chain_config
-            .get_execution_chain_revision(timestamp_ns_to_secs(timestamp_ns))
-            .execution_chain_params()
-            .tfm_enabled;
-        if tfm_enabled {
-            let (
-                parent_block_round,
-                parent_base_fee,
-                parent_trend,
-                parent_moment,
-                parent_gas_usage,
-            ) = self.get_parent_base_fee_fields(extending_blocks);
-            let parent_block_gas_limit = chain_config
-                .get_chain_revision(parent_block_round)
-                .chain_params()
-                .proposal_gas_limit;
+        let (parent_block_round, parent_base_fee, parent_trend, parent_moment, parent_gas_usage) =
+            self.get_parent_base_fee_fields(extending_blocks);
+        let parent_block_gas_limit = chain_config
+            .get_chain_revision(parent_block_round)
+            .chain_params()
+            .proposal_gas_limit;
 
-            Some(monad_tfm::base_fee::compute_base_fee(
-                parent_block_gas_limit,
-                parent_gas_usage,
-                parent_base_fee,
-                parent_trend,
-                parent_moment,
-            ))
-        } else {
-            None
-        }
+        Some(monad_tfm::base_fee::compute_base_fee(
+            parent_block_gas_limit,
+            parent_gas_usage,
+            parent_base_fee,
+            parent_trend,
+            parent_moment,
+        ))
     }
 
     pub fn get_execution_delay(&self) -> SeqNum {
@@ -1255,7 +1148,7 @@ where
         &self,
         validated_txns: &[ValidatedTx],
         system_txns: &[ValidatedTx],
-    ) -> Result<(HashSet<Address>, HashSet<Address>), BlockPolicyError> {
+    ) -> Result<HashSet<Address>, BlockPolicyError> {
         // TODO fix this unnecessary copy into a new vec to generate an owned Address
         let mut tx_signers: HashSet<Address> =
             validated_txns.iter().map(|txn| txn.signer()).collect();
@@ -1274,7 +1167,7 @@ where
         let mut system_tx_signers = system_txns.iter().map(|txn| txn.signer());
         tx_signers.extend(&mut system_tx_signers);
 
-        Ok((tx_signers, authority_addresses))
+        Ok(tx_signers)
     }
 }
 
@@ -1346,8 +1239,7 @@ where
         }
 
         // verify base_fee fields
-        let maybe_tfm_base_fees =
-            self.compute_base_fee(&extending_blocks, chain_config, block.get_timestamp());
+        let maybe_tfm_base_fees = self.compute_base_fee(&extending_blocks, chain_config);
 
         let (base_fee, base_fee_trend, base_fee_moment) = match maybe_tfm_base_fees {
             Some((base_fee, base_fee_trend, base_fee_moment)) => {
@@ -1370,7 +1262,7 @@ where
             return Err(BlockPolicyError::BaseFeeError);
         }
 
-        let (tx_signers, _) = self.extract_signers(&block.validated_txns, &block.system_txns)?;
+        let tx_signers = self.extract_signers(&block.validated_txns, &block.system_txns)?;
 
         // these must be updated as we go through txs in the block
         let mut account_nonces = self.get_account_base_nonces(
@@ -1395,7 +1287,6 @@ where
                 .get_base_fee()
                 .unwrap_or(monad_tfm::base_fee::PRE_TFM_BASE_FEE),
             &chain_config.get_chain_revision(block.get_block_round()),
-            &chain_config.get_execution_chain_revision(timestamp_ns_to_secs(block.get_timestamp())),
         )?;
 
         if let Err(system_txn_error) =
@@ -1449,17 +1340,13 @@ where
         Ok(vec![expected_execution_result])
     }
 
-    fn update_committed_block(&mut self, block: &Self::ValidatedBlock, chain_config: &CCT) {
+    fn update_committed_block(&mut self, block: &Self::ValidatedBlock) {
         assert_eq!(block.get_seq_num(), self.last_commit + SeqNum(1));
         self.last_commit = block.get_seq_num();
         self.committed_cache.update_committed_block(block);
     }
 
-    fn reset(
-        &mut self,
-        last_delay_committed_blocks: Vec<&Self::ValidatedBlock>,
-        chain_config: &CCT,
-    ) {
+    fn reset(&mut self, last_delay_committed_blocks: Vec<&Self::ValidatedBlock>) {
         self.committed_cache = CommittedBlkBuffer::new(self.committed_cache.min_buffer_size);
         for block in last_delay_committed_blocks {
             self.last_commit = block.get_seq_num();
@@ -1633,7 +1520,6 @@ mod test {
             block_policy.execution_delay,
             BASE_FEE,
             &MockChainRevision::DEFAULT,
-            &MonadExecutionRevision::LATEST,
         )?;
 
         for txn in incoming_block.validated_txns.iter() {
@@ -1705,7 +1591,6 @@ mod test {
             BlockPolicy::<_, _, _, StateBackendType, _, _>::update_committed_block(
                 &mut block_policy,
                 block,
-                &MockChainConfig::DEFAULT,
             );
         }
 
@@ -2710,7 +2595,6 @@ mod test {
                             first_txn_value: Balance::from(100),
                             first_txn_gas: Balance::from(10),
                             max_gas_cost: Balance::from(90),
-                            max_txn_cost: Balance::ZERO,
                             is_delegated: false,
                             delegation_before_first_txn: false,
                         },
@@ -2721,7 +2605,6 @@ mod test {
                             first_txn_value: Balance::from(200),
                             first_txn_gas: Balance::from(10),
                             max_gas_cost: Balance::from(190),
-                            max_txn_cost: Balance::ZERO,
                             is_delegated: false,
                             delegation_before_first_txn: false,
                         },
@@ -2754,7 +2637,6 @@ mod test {
                             first_txn_value: Balance::from(150),
                             first_txn_gas: Balance::from(10),
                             max_gas_cost: Balance::from(140),
-                            max_txn_cost: Balance::ZERO,
                             is_delegated: false,
                             delegation_before_first_txn: false,
                         },
@@ -2765,7 +2647,6 @@ mod test {
                             first_txn_value: Balance::from(300),
                             first_txn_gas: Balance::from(10),
                             max_gas_cost: Balance::from(290),
-                            max_txn_cost: Balance::ZERO,
                             is_delegated: false,
                             delegation_before_first_txn: false,
                         },
@@ -2798,7 +2679,6 @@ mod test {
                             first_txn_value: Balance::from(250),
                             first_txn_gas: Balance::from(10),
                             max_gas_cost: Balance::from(240),
-                            max_txn_cost: Balance::ZERO,
                             is_delegated: false,
                             delegation_before_first_txn: false,
                         },
@@ -2809,7 +2689,6 @@ mod test {
                             first_txn_value: Balance::from(350),
                             first_txn_gas: Balance::from(10),
                             max_gas_cost: Balance::from(0),
-                            max_txn_cost: Balance::ZERO,
                             is_delegated: false,
                             delegation_before_first_txn: false,
                         },
@@ -2957,7 +2836,6 @@ mod test {
             EXEC_DELAY,
             BASE_FEE,
             &MockChainRevision::DEFAULT,
-            &MonadExecutionRevision::LATEST,
         )
         .unwrap();
 
@@ -2984,7 +2862,6 @@ mod test {
             EXEC_DELAY,
             BASE_FEE,
             &MockChainRevision::DEFAULT,
-            &MonadExecutionRevision::LATEST,
         )
         .unwrap();
 
@@ -3028,7 +2905,6 @@ mod test {
             EXEC_DELAY,
             BASE_FEE,
             &MockChainRevision::DEFAULT,
-            &MonadExecutionRevision::LATEST,
         )
         .unwrap();
 
@@ -3055,7 +2931,6 @@ mod test {
             EXEC_DELAY,
             BASE_FEE,
             &MockChainRevision::DEFAULT,
-            &MonadExecutionRevision::LATEST,
         )
         .unwrap();
 
@@ -3100,7 +2975,6 @@ mod test {
             EXEC_DELAY,
             BASE_FEE,
             &MockChainRevision::DEFAULT,
-            &MonadExecutionRevision::LATEST,
         )
         .unwrap();
 
@@ -3145,7 +3019,6 @@ mod test {
             EXEC_DELAY,
             BASE_FEE,
             &MockChainRevision::DEFAULT,
-            &MonadExecutionRevision::LATEST,
         )
         .unwrap();
 
@@ -3175,7 +3048,6 @@ mod test {
             EXEC_DELAY,
             BASE_FEE,
             &MockChainRevision::DEFAULT,
-            &MonadExecutionRevision::LATEST,
         )
         .unwrap();
 
@@ -3220,7 +3092,6 @@ mod test {
             EXEC_DELAY,
             BASE_FEE,
             &MockChainRevision::DEFAULT,
-            &MonadExecutionRevision::LATEST,
         )
         .unwrap();
 
@@ -3250,7 +3121,6 @@ mod test {
             EXEC_DELAY,
             BASE_FEE,
             &MockChainRevision::DEFAULT,
-            &MonadExecutionRevision::LATEST,
         )
         .unwrap();
 
@@ -3332,7 +3202,6 @@ mod test {
             EXEC_DELAY,
             BASE_FEE,
             &MockChainRevision::DEFAULT,
-            &MonadExecutionRevision::LATEST,
         )
         .unwrap();
 
@@ -3577,7 +3446,6 @@ mod test {
             EXEC_DELAY,
             BASE_FEE,
             &MockChainRevision::DEFAULT,
-            &MonadExecutionRevision::LATEST,
         )
         .unwrap();
 
@@ -3611,7 +3479,6 @@ mod test {
             first_txn_value: Balance::from(first_txn_value),
             first_txn_gas: Balance::from(first_txn_gas),
             max_gas_cost: Balance::from(max_gas_cost),
-            max_txn_cost: Balance::ZERO,
             is_delegated,
             delegation_before_first_txn,
         }
@@ -3631,7 +3498,6 @@ mod test {
             EXEC_DELAY,
             BASE_FEE,
             &MockChainRevision::DEFAULT,
-            &MonadExecutionRevision::LATEST,
         )
         .unwrap();
 

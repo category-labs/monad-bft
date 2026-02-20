@@ -363,7 +363,6 @@ pub struct TxnFee {
     pub first_txn_value: Balance,
     pub first_txn_gas: Balance,
     pub max_gas_cost: Balance,
-    pub max_txn_cost: Balance, // Used for pre TFM validation
     pub is_delegated: bool,
     pub delegation_before_first_txn: bool,
 }
@@ -407,15 +406,11 @@ where
 
     // TODO delete this function, pass recently committed blocks to check_coherency instead
     // This way, BlockPolicy doesn't need to be mutated
-    fn update_committed_block(&mut self, block: &Self::ValidatedBlock, chain_config: &CCT);
+    fn update_committed_block(&mut self, block: &Self::ValidatedBlock);
 
     // TODO delete this function, pass recently committed blocks to check_coherency instead
     // This way, BlockPolicy doesn't need to be mutated
-    fn reset(
-        &mut self,
-        last_delay_committed_blocks: Vec<&Self::ValidatedBlock>,
-        chain_config: &CCT,
-    );
+    fn reset(&mut self, last_delay_committed_blocks: Vec<&Self::ValidatedBlock>);
 }
 
 /// A block policy which does not validate the inner contents of the block
@@ -468,7 +463,7 @@ where
         extending_blocks: Vec<&Self::ValidatedBlock>,
         blocktree_root: RootInfo,
         state_backend: &InMemoryState<ST, SCT>,
-        chain_config: &MockChainConfig,
+        _chain_config: &MockChainConfig,
     ) -> Result<(), BlockPolicyError> {
         // check coherency against the block being extended or against the root of the blocktree if
         // there is no extending branch
@@ -509,8 +504,8 @@ where
         Ok(Vec::new())
     }
 
-    fn update_committed_block(&mut self, _: &Self::ValidatedBlock, _: &MockChainConfig) {}
-    fn reset(&mut self, _: Vec<&Self::ValidatedBlock>, _: &MockChainConfig) {}
+    fn update_committed_block(&mut self, _: &Self::ValidatedBlock) {}
+    fn reset(&mut self, _: Vec<&Self::ValidatedBlock>) {}
 }
 
 #[derive(Debug, Clone, RlpEncodable, RlpDecodable, Serialize)]
