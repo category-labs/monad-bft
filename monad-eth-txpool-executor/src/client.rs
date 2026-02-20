@@ -56,9 +56,9 @@ pub struct ForwardedIngressFairQueueConfig {
 impl Default for ForwardedIngressFairQueueConfig {
     fn default() -> Self {
         Self {
-            per_id_limit: 2_000,
+            per_id_limit: 4_000,
             max_size: 40_000,
-            regular_per_id_limit: 2_000,
+            regular_per_id_limit: 4_000,
             regular_max_size: 40_000,
             regular_bandwidth_pct: 10,
         }

@@ -104,13 +104,13 @@ impl Default for TxIngestionPeerScoreConfig {
 }
 
 fn default_fair_queue_per_id_limit() -> usize {
-    2_000
+    4_000
 }
 fn default_fair_queue_max_size() -> usize {
     40_000
 }
 fn default_fair_queue_regular_per_id_limit() -> usize {
-    2_000
+    4_000
 }
 fn default_fair_queue_regular_max_size() -> usize {
     40_000
