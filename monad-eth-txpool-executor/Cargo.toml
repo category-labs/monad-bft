@@ -21,6 +21,7 @@ monad-executor = { workspace = true }
 monad-executor-glue = { workspace = true }
 monad-secp = { workspace = true }
 monad-state-backend = { workspace = true }
+monad-system-calls = { workspace = true }
 monad-tfm = { workspace = true }
 monad-types = { workspace = true }
 monad-validator = { workspace = true }
@@ -35,13 +36,20 @@ itertools = { workspace = true }
 pin-project = { workspace = true }
 rayon = { workspace = true }
 serde = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "net"] }
 tracing = { workspace = true }
 
+[features]
+test-scripted-blocks = []
+
 [dev-dependencies]
+monad-eth-block-validator = { workspace = true }
 monad-eth-testutil = { workspace = true }
 monad-testutil = { workspace = true }
 
 alloy-primitives = { workspace = true }
+rand = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

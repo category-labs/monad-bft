@@ -22,6 +22,8 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
+#[cfg(feature = "test-scripted-blocks")]
+use std::{pin::Pin, task::Poll};
 
 use alloy_rlp::{Decodable, Encodable};
 use chrono::Utc;
@@ -38,8 +40,12 @@ use monad_dataplane::{DataplaneBuilder, TcpSocketId, UdpSocketId};
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthBlockValidator;
 use monad_eth_txpool_executor::{EthTxPoolExecutor, EthTxPoolIpcConfig};
+#[cfg(feature = "test-scripted-blocks")]
+use monad_eth_txpool_executor::ScriptedTxPoolExecutorClient;
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{LogFriendlyMonadEvent, Message, MonadEvent};
+#[cfg(feature = "test-scripted-blocks")]
+use monad_executor_glue::TxPoolCommand;
 use monad_ledger::MonadBlockFileLedger;
 use monad_node_config::{
     ExecutionProtocolType, FullNodeIdentityConfig, NodeBootstrapConfig, NodeConfig,
@@ -79,6 +85,64 @@ use self::{cli::Cli, error::NodeSetupError, state::NodeState};
 mod cli;
 mod error;
 mod state;
+
+#[cfg(feature = "test-scripted-blocks")]
+use monad_chain_config::MonadChainConfig;
+#[cfg(feature = "test-scripted-blocks")]
+use monad_chain_config::revision::MonadChainRevision;
+#[cfg(feature = "test-scripted-blocks")]
+use monad_eth_txpool_executor::EthTxPoolExecutorClient;
+
+#[cfg(feature = "test-scripted-blocks")]
+type SBT = StateBackendThreadClient<SignatureType, SignatureCollectionType>;
+
+#[cfg(feature = "test-scripted-blocks")]
+enum TxPoolExecutor {
+    Standard(EthTxPoolExecutorClient<SignatureType, SignatureCollectionType, SBT, MonadChainConfig, MonadChainRevision>),
+    Scripted(ScriptedTxPoolExecutorClient<SignatureType, SignatureCollectionType, SBT, MonadChainConfig, MonadChainRevision>),
+}
+
+#[cfg(feature = "test-scripted-blocks")]
+impl Executor for TxPoolExecutor {
+    type Command = TxPoolCommand<
+        SignatureType,
+        SignatureCollectionType,
+        ExecutionProtocolType,
+        EthBlockPolicy<SignatureType, SignatureCollectionType, MonadChainConfig, MonadChainRevision>,
+        SBT,
+        MonadChainConfig,
+        MonadChainRevision,
+    >;
+
+    fn exec(&mut self, commands: Vec<Self::Command>) {
+        match self {
+            TxPoolExecutor::Standard(client) => client.exec(commands),
+            TxPoolExecutor::Scripted(client) => client.exec(commands),
+        }
+    }
+
+    fn metrics(&self) -> ExecutorMetricsChain<'_> {
+        match self {
+            TxPoolExecutor::Standard(client) => client.metrics(),
+            TxPoolExecutor::Scripted(client) => client.metrics(),
+        }
+    }
+}
+
+#[cfg(feature = "test-scripted-blocks")]
+impl futures::Stream for TxPoolExecutor {
+    type Item = MonadEvent<SignatureType, SignatureCollectionType, ExecutionProtocolType>;
+
+    fn poll_next(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        match self.get_mut() {
+            TxPoolExecutor::Standard(client) => Pin::new(client).poll_next(cx),
+            TxPoolExecutor::Scripted(client) => Pin::new(client).poll_next(cx),
+        }
+    }
+}
 
 #[cfg(all(not(target_env = "msvc"), feature = "jemallocator"))]
 #[global_allocator]
@@ -240,29 +304,75 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
             state_backend.clone(),
         ),
         timestamp: TokioTimestamp::new(Duration::from_millis(5), 100, 10001),
-        txpool: EthTxPoolExecutor::start(
-            create_block_policy(),
-            state_backend.clone(),
-            EthTxPoolIpcConfig {
-                bind_path: node_state.mempool_ipc_path,
-                tx_batch_size: node_state.node_config.ipc_tx_batch_size as usize,
-                max_queued_batches: node_state.node_config.ipc_max_queued_batches as usize,
-                queued_batches_watermark: node_state.node_config.ipc_queued_batches_watermark
-                    as usize,
-            },
-            // TODO(andr-dev): Add tx_expiry to node config
-            Duration::from_secs(15),
-            Duration::from_secs(5 * 60),
-            node_state.chain_config,
-            node_state
-                .forkpoint_config
-                .high_certificate
-                .qc()
-                .get_round(),
-            // TODO(andr-dev): Use timestamp from last commit in ledger
-            0,
-        )
-        .expect("txpool ipc succeeds"),
+        txpool: {
+            #[cfg(feature = "test-scripted-blocks")]
+            {
+                if let Some(socket_path) = node_state.scripted_blocks_socket {
+                    info!(?socket_path, "starting in scripted block mode");
+                    TxPoolExecutor::Scripted(
+                        ScriptedTxPoolExecutorClient::start(
+                            socket_path,
+                            create_block_policy(),
+                            state_backend.clone(),
+                            node_state.chain_config,
+                        )
+                        .expect("scripted txpool ipc succeeds"),
+                    )
+                } else {
+                    TxPoolExecutor::Standard(
+                        EthTxPoolExecutor::start(
+                            create_block_policy(),
+                            state_backend.clone(),
+                            EthTxPoolIpcConfig {
+                                bind_path: node_state.mempool_ipc_path,
+                                tx_batch_size: node_state.node_config.ipc_tx_batch_size as usize,
+                                max_queued_batches: node_state.node_config.ipc_max_queued_batches as usize,
+                                queued_batches_watermark: node_state.node_config.ipc_queued_batches_watermark
+                                    as usize,
+                            },
+                            // TODO(andr-dev): Add tx_expiry to node config
+                            Duration::from_secs(15),
+                            Duration::from_secs(5 * 60),
+                            node_state.chain_config,
+                            node_state
+                                .forkpoint_config
+                                .high_certificate
+                                .qc()
+                                .get_round(),
+                            // TODO(andr-dev): Use timestamp from last commit in ledger
+                            0,
+                        )
+                        .expect("txpool ipc succeeds"),
+                    )
+                }
+            }
+            #[cfg(not(feature = "test-scripted-blocks"))]
+            {
+                EthTxPoolExecutor::start(
+                    create_block_policy(),
+                    state_backend.clone(),
+                    EthTxPoolIpcConfig {
+                        bind_path: node_state.mempool_ipc_path,
+                        tx_batch_size: node_state.node_config.ipc_tx_batch_size as usize,
+                        max_queued_batches: node_state.node_config.ipc_max_queued_batches as usize,
+                        queued_batches_watermark: node_state.node_config.ipc_queued_batches_watermark
+                            as usize,
+                    },
+                    // TODO(andr-dev): Add tx_expiry to node config
+                    Duration::from_secs(15),
+                    Duration::from_secs(5 * 60),
+                    node_state.chain_config,
+                    node_state
+                        .forkpoint_config
+                        .high_certificate
+                        .qc()
+                        .get_round(),
+                    // TODO(andr-dev): Use timestamp from last commit in ledger
+                    0,
+                )
+                .expect("txpool ipc succeeds")
+            }
+        },
         control_panel: ControlPanelIpcReceiver::new(
             node_state.control_panel_ipc_path,
             node_state.reload_handle,

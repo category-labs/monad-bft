@@ -99,4 +99,9 @@ pub struct Cli {
     /// Set the path for the file that will persist peer discovery records across restarts
     #[arg(long)]
     pub persisted_peers_path: PathBuf,
+
+    /// Enable scripted block mode: external process feeds blocks via this Unix socket path
+    #[cfg(feature = "test-scripted-blocks")]
+    #[arg(long)]
+    pub scripted_blocks_socket: Option<PathBuf>,
 }

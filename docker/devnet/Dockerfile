@@ -69,6 +69,7 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | bash -s -- -y
 ENV PATH="${CARGO_ROOT}/bin:$PATH"
 RUN rustup toolchain install 1.91.1-x86_64-unknown-linux-gnu
 ARG TRIEDB_TARGET=triedb_driver
+ARG EXTRA_CARGO_FEATURES=""
 
 ARG GIT_TAG_VERSION
 RUN test -n "$GIT_TAG_VERSION"
@@ -87,7 +88,7 @@ ENV GIT_MODIFIED=$GIT_MODIFIED
 # Builder
 COPY . .
 RUN ASMFLAGS="-march=haswell" CFLAGS="-march=haswell -fno-omit-frame-pointer" CXXFLAGS="-march=haswell -fno-omit-frame-pointer" \
-    RUSTFLAGS="-C force-frame-pointers=yes" CC=gcc-15 CXX=g++-15 cargo build --release --bin monad-node --bin monad-keystore --bin monad-debug-node --example ledger-tail --example wal2json --example triedb-bench --example sign-name-record && \
+    RUSTFLAGS="-C force-frame-pointers=yes" CC=gcc-15 CXX=g++-15 cargo build --release --bin monad-node --bin monad-keystore --bin monad-debug-node --example ledger-tail --example wal2json --example triedb-bench --example sign-name-record ${EXTRA_CARGO_FEATURES:+--features $EXTRA_CARGO_FEATURES} && \
     mv target/release/monad-node monad-node && \
     mv target/release/monad-keystore keystore && \
     mv target/release/monad-debug-node monad-debug-node && \

@@ -45,6 +45,7 @@ agent = { workspace = true }
 alloy-rlp = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
+futures = { workspace = true }
 futures-util = { workspace = true }
 hex = { workspace = true }
 opentelemetry = { workspace = true }
@@ -77,3 +78,4 @@ lru = { workspace = true }
 [features]
 default = ["jemallocator"]
 jemallocator = ["tikv-jemallocator", "monad-pprof/jemallocator"]
+test-scripted-blocks = ["monad-eth-txpool-executor/test-scripted-blocks"]
