@@ -13,18 +13,12 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-pub mod chainstate;
-pub mod comparator;
-pub mod docs;
-pub mod event;
-pub mod handlers;
-pub mod hex;
-pub mod middleware;
-pub mod txpool;
-pub mod types;
-pub mod websocket;
+pub use self::{
+    decompression_guard::DecompressionGuard,
+    metrics::{Metrics, MetricsMiddleware},
+    timing::{TimingMiddleware, TimingRequestId},
+};
 
-#[cfg(test)]
-pub mod tests;
-
-pub const MONAD_RPC_VERSION: Option<&str> = option_env!("MONAD_VERSION");
+mod decompression_guard;
+mod metrics;
+mod timing;

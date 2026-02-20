@@ -27,12 +27,12 @@ use tokio::sync::Semaphore;
 use tracing_actix_web::TracingLogger;
 
 use crate::{
-    decompression_guard::DecompressionGuard,
     handlers::{
         eth::call::EthCallStatsTracker,
         resources::{MonadJsonRootSpanBuilder, MonadRpcResources},
         rpc_handler,
     },
+    middleware::DecompressionGuard,
     txpool::EthTxPoolBridgeClient,
     types::jsonrpc::{JsonRpcError, RequestId, Response, ResponseWrapper},
 };

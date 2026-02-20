@@ -36,7 +36,7 @@ use tracing::{debug, error, warn};
 use crate::{
     event::{EventServerClient, EventServerClientError, EventServerEvent},
     handlers::{resources::MonadRpcResources, rpc_select},
-    timing::TimingRequestId,
+    middleware::TimingRequestId,
     types::{
         eth_json::{
             serialize_result, EthSubscribeRequest, EthSubscribeResult, EthUnsubscribeRequest,
