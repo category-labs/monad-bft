@@ -750,6 +750,393 @@ const GAUGE_TOTAL_UPTIME_US: &str = "monad.total_uptime_us";
 const GAUGE_STATE_TOTAL_UPDATE_US: &str = "monad.state.total_update_us";
 const GAUGE_NODE_INFO: &str = "monad_node_info";
 
+/// Returns the HELP description for a metric, used for Prometheus/OTEL.
+fn get_metric_description(name: &str) -> &'static str {
+    match name {
+        // Node metrics
+        "monad.total_uptime_us" => "Total node uptime in microseconds",
+        "monad.state.total_update_us" => "Total time spent updating state in microseconds",
+        "monad_node_info" => "Node info indicator (always 1)",
+        // Ledger metrics
+        "monad.execution_ledger.num_commits" => "Blocks committed to the execution ledger",
+        "monad.execution_ledger.num_tx_commits" => "Transactions committed to the execution ledger",
+        "monad.execution_ledger.block_num" => "Current block number in the execution ledger",
+        // StateSync metrics
+        "monad.statesync.syncing" => "Whether state sync is active (1) or not (0)",
+        "monad.statesync.progress_estimate" => "Estimated progress of state sync operation",
+        "monad.statesync.last_target" => "Last target block number for state sync",
+        "monad.statesync.server_pending_requests" => "Pending state sync server requests",
+        "monad.statesync.server_num_syncdone_success" => "Successful sync completions",
+        "monad.statesync.server_num_syncdone_failed" => "Failed sync completions",
+        "monad.statesync.server_total_service_time_us" => {
+            "Total state sync service time in microseconds"
+        }
+        // TxPool metrics
+        "monad.bft.txpool.pool.insert_owned_txs" => "Owned transactions inserted into the pool",
+        "monad.bft.txpool.pool.insert_forwarded_txs" => {
+            "Forwarded transactions inserted into the pool"
+        }
+        "monad.bft.txpool.pool.drop_not_well_formed" => {
+            "Transactions dropped due to malformed data"
+        }
+        "monad.bft.txpool.pool.drop_invalid_signature" => {
+            "Transactions dropped due to invalid signature"
+        }
+        "monad.bft.txpool.pool.drop_nonce_too_low" => "Transactions dropped due to nonce too low",
+        "monad.bft.txpool.pool.drop_fee_too_low" => "Transactions dropped due to fee too low",
+        "monad.bft.txpool.pool.drop_insufficient_balance" => {
+            "Transactions dropped due to insufficient balance"
+        }
+        "monad.bft.txpool.pool.drop_existing_higher_priority" => {
+            "Transactions dropped - existing tx has higher priority"
+        }
+        "monad.bft.txpool.pool.drop_replaced_by_higher_priority" => {
+            "Transactions replaced by higher priority"
+        }
+        "monad.bft.txpool.pool.drop_pool_full" => "Transactions dropped because pool is full",
+        "monad.bft.txpool.pool.drop_pool_not_ready" => {
+            "Transactions dropped because pool is not ready"
+        }
+        "monad.bft.txpool.pool.drop_internal_state_backend_error" => {
+            "Transactions dropped due to backend error"
+        }
+        "monad.bft.txpool.pool.drop_internal_not_ready" => {
+            "Transactions dropped due to internal not ready"
+        }
+        "monad.bft.txpool.pool.create_proposal" => "Proposals created from txpool",
+        "monad.bft.txpool.pool.create_proposal_txs" => "Transactions included in proposals",
+        "monad.bft.txpool.pool.create_proposal_tracked_addresses" => {
+            "Tracked addresses during proposal creation"
+        }
+        "monad.bft.txpool.pool.create_proposal_available_addresses" => {
+            "Available addresses during proposal creation"
+        }
+        "monad.bft.txpool.pool.create_proposal_backend_lookups" => {
+            "Backend lookups during proposal creation"
+        }
+        "monad.bft.txpool.pool.tracked.addresses" => "Addresses being tracked in the pool",
+        "monad.bft.txpool.pool.tracked.txs" => "Transactions being tracked in the pool",
+        "monad.bft.txpool.pool.tracked.evict_expired_addresses" => {
+            "Addresses evicted due to expiration"
+        }
+        "monad.bft.txpool.pool.tracked.evict_expired_txs" => {
+            "Transactions evicted due to expiration"
+        }
+        "monad.bft.txpool.pool.tracked.remove_committed_addresses" => {
+            "Addresses removed after commitment"
+        }
+        "monad.bft.txpool.pool.tracked.remove_committed_txs" => {
+            "Transactions removed after commitment"
+        }
+        "monad.bft.txpool.reject_forwarded_invalid_bytes" => {
+            "Forwarded txs rejected due to invalid bytes"
+        }
+        "monad.bft.txpool.create_proposal_elapsed_ns" => {
+            "Time spent creating proposals in nanoseconds"
+        }
+        "monad.bft.txpool.preload_backend_lookups" => "Preload backend lookups",
+        "monad.bft.txpool.preload_backend_requests" => "Preload backend requests",
+        // RaptorCast metrics
+        "monad.raptorcast.total_messages_received" => "Total raptorcast messages received",
+        "monad.raptorcast.total_recv_errors" => "Total raptorcast receive errors",
+        "monad.raptorcast.decoding_cache.signature_verifications_rate_limited" => {
+            "Signature verifications rate limited"
+        }
+        "monad.raptorcast.decoding_cache.decoded_hit" => "Hits on recently decoded messages",
+        "monad.raptorcast.decoding_cache.pending_hit" => "Hits on pending messages in cache",
+        "monad.raptorcast.decoding_cache.new_entry" => "New entries added to decoding cache",
+        "monad.raptorcast.decoding_cache.decoded" => "Messages successfully decoded",
+        "monad.bft.raptorcast.udp.primary_broadcast_latency_p99_ms" => {
+            "P99 primary UDP broadcast latency in ms (30s rolling window)"
+        }
+        "monad.bft.raptorcast.udp.primary_broadcast_latency_count" => {
+            "Primary broadcast latency measurement count (30s rolling window)"
+        }
+        "monad.bft.raptorcast.udp.secondary_broadcast_latency_p99_ms" => {
+            "P99 secondary UDP broadcast latency in ms (30s rolling window)"
+        }
+        "monad.bft.raptorcast.udp.secondary_broadcast_latency_count" => {
+            "Secondary broadcast latency measurement count (30s rolling window)"
+        }
+        "monad.raptorcast.auth.authenticated_udp_bytes_written" => {
+            "Bytes written via authenticated UDP"
+        }
+        "monad.raptorcast.auth.non_authenticated_udp_bytes_written" => {
+            "Bytes written via non-authenticated UDP"
+        }
+        "monad.raptorcast.auth.authenticated_udp_bytes_read" => "Bytes read via authenticated UDP",
+        "monad.raptorcast.auth.non_authenticated_udp_bytes_read" => {
+            "Bytes read via non-authenticated UDP"
+        }
+        // Peer Discovery metrics
+        "monad.peer_disc.send_ping" => "Ping messages sent",
+        "monad.peer_disc.recv_ping" => "Ping messages received",
+        "monad.peer_disc.drop_ping" => "Ping messages dropped",
+        "monad.peer_disc.ping_timeout" => "Ping timeouts",
+        "monad.peer_disc.send_pong" => "Pong messages sent",
+        "monad.peer_disc.recv_pong" => "Pong messages received",
+        "monad.peer_disc.drop_pong" => "Pong messages dropped",
+        "monad.peer_disc.rate_limited" => "Peer discovery operations rate limited",
+        "monad.peer_disc.send_lookup_request" => "Lookup requests sent",
+        "monad.peer_disc.recv_lookup_request" => "Lookup requests received",
+        "monad.peer_disc.recv_open_lookup_request" => "Open lookup requests received",
+        "monad.peer_disc.recv_targeted_lookup_request" => "Targeted lookup requests received",
+        "monad.peer_disc.retry_lookup_request" => "Lookup request retries",
+        "monad.peer_disc.send_lookup_response" => "Lookup responses sent",
+        "monad.peer_disc.recv_lookup_response" => "Lookup responses received",
+        "monad.peer_disc.drop_lookup_response" => "Lookup responses dropped",
+        "monad.peer_disc.lookup_timeout" => "Lookup timeouts",
+        "monad.peer_disc.send_raptorcast_request" => "Raptorcast requests sent",
+        "monad.peer_disc.recv_raptorcast_request" => "Raptorcast requests received",
+        "monad.peer_disc.send_raptorcast_response" => "Raptorcast responses sent",
+        "monad.peer_disc.recv_raptorcast_response" => "Raptorcast responses received",
+        "monad.peer_disc.refresh" => "Peer discovery refresh operations",
+        "monad.peer_disc.num_peers" => "Current number of known peers",
+        "monad.peer_disc.num_pending_peers" => "Current number of pending peers",
+        "monad.peer_disc.num_upstream_validators" => "Current number of upstream validators",
+        "monad.peer_disc.num_downstream_fullnodes" => "Current number of downstream full nodes",
+        "monad.peer_disc.socket_collisions" => "Socket address collisions",
+        // WireAuth state metrics
+        "monad.wireauth.state.initiating_sessions" => "Sessions in initiating state",
+        "monad.wireauth.state.responding_sessions" => "Sessions in responding state",
+        "monad.wireauth.state.transport_sessions" => "Sessions in transport state",
+        "monad.wireauth.state.total_sessions" => "Current total wireauth sessions",
+        "monad.wireauth.state.allocated_indices" => "Allocated session indices",
+        "monad.wireauth.state.sessions_by_public_key" => "Sessions indexed by public key",
+        "monad.wireauth.state.sessions_by_socket" => "Sessions indexed by socket",
+        "monad.wireauth.state.session_index_allocated" => "Session indices allocated",
+        "monad.wireauth.state.session_established_initiator" => "Sessions established as initiator",
+        "monad.wireauth.state.session_established_responder" => "Sessions established as responder",
+        "monad.wireauth.state.session_terminated" => "Sessions terminated",
+        "monad.wireauth.state.timers_size" => "Active timers count",
+        "monad.wireauth.state.packet_queue_size" => "Packet queue size",
+        "monad.wireauth.state.initiated_session_by_peer_size" => "Initiated sessions by peer",
+        "monad.wireauth.state.accepted_sessions_by_peer_size" => "Accepted sessions by peer",
+        "monad.wireauth.state.ip_session_counts_size" => "IP session counts map size",
+        // WireAuth filter metrics
+        "monad.wireauth.filter.ip_request_history_size" => "IP request history size",
+        "monad.wireauth.filter.pass" => "Packets that passed the filter",
+        "monad.wireauth.filter.send_cookie" => "Cookie replies sent by filter",
+        "monad.wireauth.filter.drop" => "Packets dropped by filter",
+        // WireAuth API metrics
+        "monad.wireauth.api.connect" => "Connect API calls",
+        "monad.wireauth.api.decrypt" => "Decrypt API calls",
+        "monad.wireauth.api.encrypt_by_public_key" => "Encrypt by public key API calls",
+        "monad.wireauth.api.encrypt_by_socket" => "Encrypt by socket API calls",
+        "monad.wireauth.api.disconnect" => "Disconnect API calls",
+        "monad.wireauth.api.dispatch_control" => "Dispatch control API calls",
+        "monad.wireauth.api.next_packet" => "Next packet API calls",
+        "monad.wireauth.api.tick" => "Tick API calls",
+        // WireAuth dispatch metrics
+        "monad.wireauth.dispatch.handshake_initiation" => {
+            "Handshake initiation messages dispatched"
+        }
+        "monad.wireauth.dispatch.handshake_response" => "Handshake response messages dispatched",
+        "monad.wireauth.dispatch.cookie_reply" => "Cookie reply messages dispatched",
+        "monad.wireauth.dispatch.keepalive" => "Keepalive messages dispatched",
+        // WireAuth error metrics
+        "monad.wireauth.error.connect" => "Connect errors",
+        "monad.wireauth.error.decrypt" => "Decrypt errors",
+        "monad.wireauth.error.decrypt.nonce_outside_window" => {
+            "Decrypt errors - nonce outside window"
+        }
+        "monad.wireauth.error.decrypt.nonce_duplicate" => "Decrypt errors - duplicate nonce",
+        "monad.wireauth.error.decrypt.mac" => "Decrypt errors - MAC verification failed",
+        "monad.wireauth.error.encrypt_by_public_key" => "Encrypt by public key errors",
+        "monad.wireauth.error.encrypt_by_socket" => "Encrypt by socket errors",
+        "monad.wireauth.error.dispatch_control" => "Dispatch control errors",
+        "monad.wireauth.error.session_exhausted" => "Session exhausted errors",
+        "monad.wireauth.error.mac1_verification_failed" => "MAC1 verification failures",
+        "monad.wireauth.error.timestamp_replay" => "Timestamp replay errors",
+        "monad.wireauth.error.session_not_found" => "Session not found errors",
+        "monad.wireauth.error.session_index_not_found" => "Session index not found errors",
+        "monad.wireauth.error.handshake_init_validation" => "Handshake init validation errors",
+        "monad.wireauth.error.cookie_reply" => "Cookie reply errors",
+        "monad.wireauth.error.handshake_response_validation" => {
+            "Handshake response validation errors"
+        }
+        // WireAuth enqueued metrics
+        "monad.wireauth.enqueued.handshake_init" => "Handshake init messages enqueued",
+        "monad.wireauth.enqueued.handshake_response" => "Handshake response messages enqueued",
+        "monad.wireauth.enqueued.cookie_reply" => "Cookie reply messages enqueued",
+        "monad.wireauth.enqueued.keepalive" => "Keepalive messages enqueued",
+        "monad.wireauth.rate_limit.drop" => "Packets dropped due to rate limiting",
+        // Executor exec metrics
+        "monad.executor.parent.total_exec_us" => {
+            "Total parent executor execution time in microseconds"
+        }
+        "monad.executor.ledger.total_exec_us" => {
+            "Total ledger executor execution time in microseconds"
+        }
+        "monad.executor.config_file.total_exec_us" => {
+            "Total config file executor execution time in microseconds"
+        }
+        "monad.executor.txpool.total_exec_us" => {
+            "Total TxPool executor execution time in microseconds"
+        }
+        "monad.executor.router.total_exec_us" => {
+            "Total router executor execution time in microseconds"
+        }
+        "monad.executor.statesync.total_exec_us" => {
+            "Total StateSync executor execution time in microseconds"
+        }
+        // Executor poll metrics
+        "monad.executor.parent.total_poll_us" => "Total parent executor poll time in microseconds",
+        "monad.executor.ledger.total_poll_us" => "Total ledger executor poll time in microseconds",
+        "monad.executor.txpool.total_poll_us" => "Total TxPool executor poll time in microseconds",
+        "monad.executor.router.total_poll_us" => "Total router executor poll time in microseconds",
+        "monad.executor.statesync.total_poll_us" => {
+            "Total StateSync executor poll time in microseconds"
+        }
+        // Consensus - NodeState
+        "monad.state.node_state.self_stake_bps" => "Self stake in basis points",
+        // Consensus - ValidationErrors
+        "monad.state.validation_errors.invalid_author" => "Validation errors - invalid author",
+        "monad.state.validation_errors.not_well_formed_sig" => {
+            "Validation errors - malformed signature"
+        }
+        "monad.state.validation_errors.invalid_signature" => {
+            "Validation errors - invalid signature"
+        }
+        "monad.state.validation_errors.invalid_tc_round" => "Validation errors - invalid TC round",
+        "monad.state.validation_errors.duplicate_tc_tip_round" => {
+            "Validation errors - duplicate TC tip round"
+        }
+        "monad.state.validation_errors.empty_signers_tc_tip_round" => {
+            "Validation errors - empty signers TC tip"
+        }
+        "monad.state.validation_errors.too_many_tc_tip_round" => {
+            "Validation errors - too many TC tip round"
+        }
+        "monad.state.validation_errors.insufficient_stake" => {
+            "Validation errors - insufficient stake"
+        }
+        "monad.state.validation_errors.invalid_seq_num" => {
+            "Validation errors - invalid sequence number"
+        }
+        "monad.state.validation_errors.val_data_unavailable" => {
+            "Validation errors - validator data unavailable"
+        }
+        "monad.state.validation_errors.signatures_duplicate_node" => {
+            "Validation errors - duplicate node signatures"
+        }
+        "monad.state.validation_errors.invalid_vote_message" => {
+            "Validation errors - invalid vote message"
+        }
+        "monad.state.validation_errors.invalid_version" => "Validation errors - invalid version",
+        "monad.state.validation_errors.invalid_epoch" => "Validation errors - invalid epoch",
+        // Consensus - ConsensusEvents
+        "monad.state.consensus_events.local_timeout" => "Local timeout events",
+        "monad.state.consensus_events.handle_proposal" => "Proposal handling events",
+        "monad.state.consensus_events.failed_txn_validation" => "Failed transaction validation",
+        "monad.state.consensus_events.failed_ts_validation" => "Failed timestamp validation",
+        "monad.state.consensus_events.invalid_proposal_round_leader" => {
+            "Invalid proposal round leader"
+        }
+        "monad.state.consensus_events.out_of_order_proposals" => "Out of order proposals",
+        "monad.state.consensus_events.created_vote" => "Votes created",
+        "monad.state.consensus_events.old_vote_received" => "Old votes received",
+        "monad.state.consensus_events.future_vote_received" => "Future votes received",
+        "monad.state.consensus_events.vote_received" => "Votes received",
+        "monad.state.consensus_events.created_qc" => "Quorum certificates created",
+        "monad.state.consensus_events.old_remote_timeout" => "Old remote timeout events",
+        "monad.state.consensus_events.remote_timeout_msg" => "Remote timeout messages received",
+        "monad.state.consensus_events.remote_timeout_msg_with_tc" => {
+            "Remote timeout messages with TC"
+        }
+        "monad.state.consensus_events.remote_timeout_msg_with_future_tc" => {
+            "Remote timeout messages with future TC"
+        }
+        "monad.state.consensus_events.created_tc" => "Timeout certificates created",
+        "monad.state.consensus_events.process_old_qc" => "Old QC processing events",
+        "monad.state.consensus_events.process_qc" => "QC processing events",
+        "monad.state.consensus_events.process_old_tc" => "Old TC processing events",
+        "monad.state.consensus_events.process_tc" => "TC processing events",
+        "monad.state.consensus_events.creating_proposal" => "Proposal creation events",
+        "monad.state.consensus_events.rx_execution_lagging" => "Execution lagging events",
+        "monad.state.consensus_events.rx_bad_state_root" => "Bad state root events",
+        "monad.state.consensus_events.rx_base_fee_error" => "Base fee error events",
+        "monad.state.consensus_events.proposal_with_tc" => "Proposals with TC",
+        "monad.state.consensus_events.failed_verify_randao_reveal_sig" => {
+            "Failed RANDAO reveal signature verifications"
+        }
+        "monad.state.consensus_events.commit_block" => "Block commit events",
+        "monad.state.consensus_events.enter_new_round_qc" => "New round entries via QC",
+        "monad.state.consensus_events.enter_new_round_tc" => "New round entries via TC",
+        "monad.state.consensus_events.trigger_state_sync" => "State sync trigger events",
+        "monad.state.consensus_events.handle_round_recovery" => "Round recovery handling events",
+        "monad.state.consensus_events.invalid_round_recovery_leader" => {
+            "Invalid round recovery leader"
+        }
+        "monad.state.consensus_events.handle_no_endorsement" => "No endorsement handling events",
+        "monad.state.consensus_events.old_no_endorsement_received" => {
+            "Old no endorsement messages received"
+        }
+        "monad.state.consensus_events.future_no_endorsement_received" => {
+            "Future no endorsement messages received"
+        }
+        "monad.state.consensus_events.created_nec" => "No endorsement certificates created",
+        "monad.state.consensus_events.handle_advance_round" => "Advance round handling events",
+        // Consensus - BlocktreeEvents
+        "monad.state.blocktree_events.prune_success" => "Successful blocktree prune operations",
+        "monad.state.blocktree_events.add_success" => "Successful blocktree add operations",
+        "monad.state.blocktree_events.add_dup" => "Duplicate blocktree add operations",
+        // Consensus - BlocksyncEvents
+        "monad.state.blocksync_events.self_headers_request" => "Self headers requests",
+        "monad.state.blocksync_events.self_payload_request" => "Self payload requests",
+        "monad.state.blocksync_events.self_payload_requests_in_flight" => {
+            "Self payload requests in flight"
+        }
+        "monad.state.blocksync_events.headers_response_successful" => {
+            "Successful headers responses"
+        }
+        "monad.state.blocksync_events.headers_response_failed" => "Failed headers responses",
+        "monad.state.blocksync_events.headers_response_unexpected" => {
+            "Unexpected headers responses"
+        }
+        "monad.state.blocksync_events.headers_validation_failed" => "Failed headers validations",
+        "monad.state.blocksync_events.self_headers_response_successful" => {
+            "Successful self headers responses"
+        }
+        "monad.state.blocksync_events.self_headers_response_failed" => {
+            "Failed self headers responses"
+        }
+        "monad.state.blocksync_events.num_headers_received" => "Headers received",
+        "monad.state.blocksync_events.payload_response_successful" => {
+            "Successful payload responses"
+        }
+        "monad.state.blocksync_events.payload_response_failed" => "Failed payload responses",
+        "monad.state.blocksync_events.payload_response_unexpected" => {
+            "Unexpected payload responses"
+        }
+        "monad.state.blocksync_events.self_payload_response_successful" => {
+            "Successful self payload responses"
+        }
+        "monad.state.blocksync_events.self_payload_response_failed" => {
+            "Failed self payload responses"
+        }
+        "monad.state.blocksync_events.request_timeout" => "Block sync request timeouts",
+        "monad.state.blocksync_events.request_failed_no_peers" => {
+            "Block sync requests failed - no peers"
+        }
+        "monad.state.blocksync_events.peer_headers_request" => "Peer headers requests",
+        "monad.state.blocksync_events.peer_headers_request_successful" => {
+            "Successful peer headers requests"
+        }
+        "monad.state.blocksync_events.peer_headers_request_failed" => {
+            "Failed peer headers requests"
+        }
+        "monad.state.blocksync_events.peer_payload_request" => "Peer payload requests",
+        "monad.state.blocksync_events.peer_payload_request_successful" => {
+            "Successful peer payload requests"
+        }
+        "monad.state.blocksync_events.peer_payload_request_failed" => {
+            "Failed peer payload requests"
+        }
+        _ => "",
+    }
+}
+
 fn send_metrics(
     meter: &opentelemetry::metrics::Meter,
     gauge_cache: &mut HashMap<&'static str, opentelemetry::metrics::Gauge<u64>>,
@@ -758,9 +1145,17 @@ fn send_metrics(
     process_start: &Instant,
     total_state_update_elapsed: &Duration,
 ) {
-    let node_info_gauge = gauge_cache
-        .entry(GAUGE_NODE_INFO)
-        .or_insert_with(|| meter.u64_gauge(GAUGE_NODE_INFO).build());
+    let node_info_gauge = gauge_cache.entry(GAUGE_NODE_INFO).or_insert_with(|| {
+        let desc = get_metric_description(GAUGE_NODE_INFO);
+        if desc.is_empty() {
+            meter.u64_gauge(GAUGE_NODE_INFO).build()
+        } else {
+            meter
+                .u64_gauge(GAUGE_NODE_INFO)
+                .with_description(desc)
+                .build()
+        }
+    });
     node_info_gauge.record(1, &[]);
 
     for (k, v) in state_metrics
@@ -776,9 +1171,14 @@ fn send_metrics(
             total_state_update_elapsed.as_micros() as u64,
         )))
     {
-        let gauge = gauge_cache
-            .entry(k)
-            .or_insert_with(|| meter.u64_gauge(k).build());
+        let gauge = gauge_cache.entry(k).or_insert_with(|| {
+            let desc = get_metric_description(k);
+            if desc.is_empty() {
+                meter.u64_gauge(k).build()
+            } else {
+                meter.u64_gauge(k).with_description(desc).build()
+            }
+        });
         gauge.record(v, &[]);
     }
 }

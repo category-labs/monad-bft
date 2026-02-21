@@ -148,6 +148,76 @@ impl MetricNames {
             }
         }
     }
+
+    /// Returns the HELP description for Prometheus/OTEL.
+    pub fn description(&self) -> &'static str {
+        match self {
+            // Store Type
+            MetricNames::SINK_STORE_TYPE => "Type of sink store being used",
+            MetricNames::SOURCE_STORE_TYPE => "Type of source store being used",
+            // KV Store
+            MetricNames::KV_STORE_PUT_DURATION_MS => "KV store put operation duration in ms",
+            MetricNames::KV_STORE_PUT_SUCCESS => "Successful KV store put operations",
+            MetricNames::KV_STORE_PUT_FAILURE => "Failed KV store put operations",
+            MetricNames::KV_STORE_GET_DURATION_MS => "KV store get operation duration in ms",
+            MetricNames::KV_STORE_GET_SUCCESS => "Successful KV store get operations",
+            MetricNames::KV_STORE_GET_FAILURE => "Failed KV store get operations",
+            // AWS
+            MetricNames::AWS_S3_READS => "AWS S3 read operations",
+            MetricNames::AWS_S3_WRITES => "AWS S3 write operations",
+            MetricNames::AWS_S3_ERRORS => "AWS S3 errors",
+            MetricNames::AWS_DYNAMODB_READS => "AWS DynamoDB read operations",
+            MetricNames::AWS_DYNAMODB_WRITES => "AWS DynamoDB write operations",
+            MetricNames::AWS_DYNAMODB_ERRORS => "AWS DynamoDB errors",
+            // Archive Workers
+            MetricNames::TXS_INDEXED => "Transactions indexed",
+            MetricNames::BLOCK_ARCHIVE_WORKER_BLOCK_FALLBACK => {
+                "Block archive worker block fallbacks"
+            }
+            MetricNames::BLOCK_ARCHIVE_WORKER_RECEIPTS_FALLBACK => {
+                "Block archive worker receipts fallbacks"
+            }
+            MetricNames::BLOCK_ARCHIVE_WORKER_TRACES_FALLBACK => {
+                "Block archive worker traces fallbacks"
+            }
+            MetricNames::BLOCK_ARCHIVE_WORKER_TRACES_FAILED => {
+                "Block archive worker traces failures"
+            }
+            MetricNames::SOURCE_LATEST_BLOCK_NUM => "Latest block number from source",
+            MetricNames::END_BLOCK_NUMBER => "End block number for archival",
+            MetricNames::START_BLOCK_NUMBER => "Start block number for archival",
+            // BFT Block Files
+            MetricNames::BFT_BLOCKS_UPLOADED => "BFT blocks uploaded",
+            MetricNames::BFT_BLOCK_FILES_DISCOVERED => "BFT block files discovered",
+            MetricNames::BFT_BLOCK_FILES_ALREADY_IN_S3 => "BFT block files already in S3",
+            MetricNames::BFT_BLOCK_FILES_UPLOADED => "BFT block files uploaded",
+            MetricNames::BFT_BLOCK_FILES_FAILED_TO_PROCESS => "BFT block files failed to process",
+            // Generic Archive
+            MetricNames::GENERIC_ARCHIVE_FILES_DISCOVERED => "Generic archive files discovered",
+            MetricNames::GENERIC_ARCHIVE_FILES_ALREADY_IN_S3 => {
+                "Generic archive files already in S3"
+            }
+            MetricNames::GENERIC_ARCHIVE_FILES_UPLOADED => "Generic archive files uploaded",
+            MetricNames::GENERIC_ARCHIVE_FILES_FAILED_TO_PROCESS => {
+                "Generic archive files failed to process"
+            }
+            // Archive Checker
+            MetricNames::LATEST_TO_CHECK => "Latest block number to check",
+            MetricNames::NEXT_TO_CHECK => "Next block number to check",
+            MetricNames::REPLICA_FAULTS_FIXED => "Replica faults fixed",
+            MetricNames::REPLICA_FAULTS_FIX_FAILED => "Replica fault fix failures",
+            MetricNames::REPLICA_FAULTS_FIX_SUCCESS => "Successful replica fault fixes",
+            MetricNames::REPLICA_FAULTS_BY_KIND => "Current replica faults by kind (snapshot)",
+            MetricNames::REPLICA_FAULTS_TOTAL => "Current total replica faults (snapshot)",
+            // Index Checker
+            MetricNames::FAULTS_BLOCKS_WITH_FAULTS => "Blocks with faults",
+            MetricNames::FAULTS_ERROR_CHECKING => "Errors during fault checking",
+            MetricNames::FAULTS_CORRUPTED_BLOCKS => "Corrupted blocks found",
+            MetricNames::FAULTS_MISSING_TXHASH => "Missing transaction hashes",
+            MetricNames::FAULTS_INCORRECT_TX_DATA => "Incorrect transaction data entries",
+            MetricNames::FAULTS_MISSING_ALL_TXHASH => "Blocks missing all transaction hashes",
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -222,10 +292,13 @@ impl Metrics {
 
     pub fn counter_with_attrs(&self, metric: MetricNames, val: u64, attributes: &[KeyValue]) {
         if let Some(inner) = &self.0 {
-            let counter = inner
-                .counters
-                .entry(metric)
-                .or_insert_with(|| inner.meter.u64_counter(metric.as_str()).build());
+            let counter = inner.counters.entry(metric).or_insert_with(|| {
+                inner
+                    .meter
+                    .u64_counter(metric.as_str())
+                    .with_description(metric.description())
+                    .build()
+            });
 
             counter.add(val, attributes)
         }
@@ -241,10 +314,13 @@ impl Metrics {
 
     pub fn histogram_with_attrs(&self, metric: MetricNames, value: f64, attributes: &[KeyValue]) {
         if let Some(inner) = &self.0 {
-            let histogram = inner
-                .histograms
-                .entry(metric)
-                .or_insert_with(|| inner.meter.f64_histogram(metric.as_str()).build());
+            let histogram = inner.histograms.entry(metric).or_insert_with(|| {
+                inner
+                    .meter
+                    .f64_histogram(metric.as_str())
+                    .with_description(metric.description())
+                    .build()
+            });
             histogram.record(value, attributes);
         }
     }
@@ -263,10 +339,13 @@ impl Metrics {
 
     pub fn gauge_with_attrs(&self, metric: MetricNames, value: u64, attributes: &[KeyValue]) {
         if let Some(inner) = &self.0 {
-            let gauge = inner
-                .gauges
-                .entry(metric)
-                .or_insert_with(|| inner.meter.u64_gauge(metric.as_str()).build());
+            let gauge = inner.gauges.entry(metric).or_insert_with(|| {
+                inner
+                    .meter
+                    .u64_gauge(metric.as_str())
+                    .with_description(metric.description())
+                    .build()
+            });
             gauge.record(value, attributes);
         }
     }
