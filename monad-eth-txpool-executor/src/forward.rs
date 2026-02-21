@@ -21,6 +21,7 @@ use std::{
 };
 
 use alloy_consensus::TxEnvelope;
+use alloy_eips::eip2718::Encodable2718;
 use bytes::Bytes;
 use monad_chain_config::{
     execution_revision::ExecutionChainParams, revision::ChainRevision, ChainConfig,
@@ -204,7 +205,11 @@ impl EthTxPoolForwardingManagerProjected<'_> {
             ..
         } = self;
 
-        egress.extend(txs.map(alloy_rlp::encode).map(Into::into));
+        egress.extend(txs.map(|tx| {
+            let mut rlp_encoded_tx = Vec::new();
+            tx.encode_2718(&mut rlp_encoded_tx);
+            rlp_encoded_tx.into()
+        }));
 
         if egress.is_empty() {
             return;
@@ -626,7 +631,7 @@ mod test {
             assert_eq!(first_batch.len(), 2);
             assert_eq!(
                 first_batch.iter().map(Bytes::len).sum::<usize>(),
-                alloy_rlp::encode(tx1).len() + alloy_rlp::encode(tx3).len(),
+                tx1.eip2718_encoded_length() + tx3.eip2718_encoded_length(),
             );
 
             assert_eq!(

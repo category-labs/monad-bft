@@ -16,8 +16,8 @@
 use std::time::Duration;
 
 use alloy_consensus::{ReceiptEnvelope, ReceiptWithBloom, Transaction as _, TxEnvelope};
+use alloy_eips::Decodable2718;
 use alloy_primitives::{Address, FixedBytes, TxKind};
-use alloy_rlp::Decodable;
 use alloy_rpc_types::{Filter, Log, Receipt, TransactionReceipt};
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{ReceiptWithLogIndex, Triedb, TxEnvelopeWithSender};
@@ -227,7 +227,7 @@ fn validate_and_decode_tx(
     allow_unprotected_txs: bool,
     decode_error_fn: impl FnOnce() -> JsonRpcError,
 ) -> Result<TxEnvelope, JsonRpcError> {
-    let tx = TxEnvelope::decode(&mut &hex_tx[..]).map_err(|err| {
+    let tx = TxEnvelope::decode_2718_exact(hex_tx).map_err(|err| {
         debug!(?err, "eth txn decode failed");
         decode_error_fn()
     })?;
