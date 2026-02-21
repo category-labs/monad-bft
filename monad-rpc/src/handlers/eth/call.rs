@@ -44,7 +44,7 @@ use super::block::get_block_key_from_tag_or_hash;
 use crate::{
     handlers::debug::{decode_call_frame, Tracer, TracerObject},
     hex,
-    timing::RequestId,
+    middleware::TimingRequestId,
     types::{
         eth_json::BlockTagOrHash,
         jsonrpc::{JsonRpcError, JsonRpcResult},
@@ -85,12 +85,12 @@ impl Clone for CumulativeStats {
 
 #[derive(Debug, Default)]
 pub struct EthCallStatsTracker {
-    active_requests: Arc<Mutex<HashMap<RequestId, EthCallRequestStats>>>,
+    active_requests: Arc<Mutex<HashMap<TimingRequestId, EthCallRequestStats>>>,
     stats: CumulativeStats,
 }
 
 impl EthCallStatsTracker {
-    pub async fn record_request_start(&self, request_id: RequestId) {
+    pub async fn record_request_start(&self, request_id: TimingRequestId) {
         let mut requests = self.active_requests.lock().await;
         requests.insert(
             request_id,
@@ -102,7 +102,7 @@ impl EthCallStatsTracker {
         self.stats.total_requests.fetch_add(1, Ordering::Relaxed);
     }
 
-    pub async fn record_request_complete(&self, request_id: &RequestId, is_error: bool) {
+    pub async fn record_request_complete(&self, request_id: &TimingRequestId, is_error: bool) {
         let mut requests = self.active_requests.lock().await;
         requests.remove(request_id);
 

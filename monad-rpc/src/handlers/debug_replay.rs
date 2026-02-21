@@ -29,7 +29,7 @@ use crate::{
         },
         MonadRpcResources,
     },
-    timing::RequestId,
+    middleware::TimingRequestId,
     types::{
         eth_json::{BlockTagOrHash, BlockTags, EthHash},
         jsonrpc::{JsonRpcError, JsonRpcResult},
@@ -251,7 +251,7 @@ pub async fn monad_debug_trace_replay<T: Triedb>(
 }
 
 pub async fn collect_debug_trace_via_replay(
-    request_id: RequestId,
+    request_id: TimingRequestId,
     triedb_env: &impl Triedb,
     app_state: &MonadRpcResources,
     params: &impl DebugTraceParams,
