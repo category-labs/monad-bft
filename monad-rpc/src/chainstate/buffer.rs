@@ -76,28 +76,37 @@ impl ChainStateBuffer {
     }
 
     pub async fn insert(&self, block_event: EventServerEvent) {
-        let block_event = match block_event {
-            EventServerEvent::Block { block, .. } => block,
-            _ => return,
+        let (commit_state, header, transactions) = match block_event {
+            EventServerEvent::Block {
+                commit_state,
+                header,
+                transactions,
+            } => (commit_state, header, transactions),
+            EventServerEvent::Gap => return,
         };
 
-        if block_event.commit_state != BlockCommitState::Voted {
-            if block_event.commit_state == BlockCommitState::Finalized {
-                let height = block_event.data.header.number;
-                self.latest_finalized.fetch_max(height, Ordering::SeqCst);
+        let block_height = header.data.number;
+        let block_hash = header.data.hash;
+
+        if commit_state != BlockCommitState::Voted {
+            if commit_state == BlockCommitState::Finalized {
+                self.latest_finalized
+                    .fetch_max(block_height, Ordering::SeqCst);
             }
             return;
         }
 
         let block: Block<Transaction, alloy_rpc_types::Header> = Block {
-            header: (**block_event.data.header).clone(),
-            transactions: block_event.data.transactions.clone(),
-            ..Default::default()
+            header: header.data.value().clone(),
+            transactions: alloy_rpc_types::BlockTransactions::Full(
+                transactions
+                    .iter()
+                    .map(|(tx, _, _)| tx.value().clone())
+                    .collect_vec(),
+            ),
+            uncles: Vec::default(),
+            withdrawals: None,
         };
-
-        let block_height = block.header.number;
-        let block_hash = block.header.hash;
-        let block_tx_hashes = block.transactions.hashes().collect_vec();
 
         if self.block_by_height.insert(block_height, block).is_some() {
             warn!(
@@ -117,7 +126,13 @@ impl ChainStateBuffer {
             );
         }
 
-        for (tx_idx, tx_hash) in block_tx_hashes.into_iter().enumerate() {
+        for (tx_idx, tx_receipt) in transactions
+            .iter()
+            .map(|(_, tx_receipt, _)| tx_receipt)
+            .enumerate()
+        {
+            let tx_hash = tx_receipt.transaction_hash;
+
             if self
                 .tx_loc_by_hash
                 .insert(
