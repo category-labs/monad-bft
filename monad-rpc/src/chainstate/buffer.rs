@@ -22,7 +22,7 @@ use std::{
 };
 
 use alloy_consensus::TxEnvelope;
-use alloy_rpc_types::{Block, Transaction};
+use alloy_rpc_types::{Block, Transaction, TransactionReceipt};
 use dashmap::DashMap;
 use itertools::Itertools;
 use monad_exec_events::BlockCommitState;
@@ -51,8 +51,8 @@ pub struct ChainStateBuffer {
     block_by_height: Arc<DashMap<u64, Block>>,
     // Maps a block by its blockhash
     block_height_by_hash: Arc<DashMap<FixedData<32>, u64>>,
-    // Maps a transaction by its hash to a block's height and its index in that block
-    tx_loc_by_hash: Arc<DashMap<FixedData<32>, TxLoc>>,
+    // Maps a transaction hash to its block location and receipt
+    tx_by_hash: Arc<DashMap<FixedData<32>, (TxLoc, TransactionReceipt)>>,
 
     // The latest voted block's SeqNum
     latest_voted: Arc<AtomicU64>,
@@ -68,7 +68,7 @@ impl ChainStateBuffer {
 
             block_by_height: Arc::new(DashMap::new()),
             block_height_by_hash: Arc::new(DashMap::new()),
-            tx_loc_by_hash: Arc::new(DashMap::new()),
+            tx_by_hash: Arc::new(DashMap::new()),
 
             latest_voted: Arc::new(AtomicU64::new(0)),
             latest_finalized: Arc::new(AtomicU64::new(0)),
@@ -134,13 +134,16 @@ impl ChainStateBuffer {
             let tx_hash = tx_receipt.transaction_hash;
 
             if self
-                .tx_loc_by_hash
+                .tx_by_hash
                 .insert(
-                    FixedData(tx_hash.0),
-                    TxLoc {
-                        block_height,
-                        tx_idx: tx_idx as u64,
-                    },
+                    FixedData(tx_receipt.transaction_hash.0),
+                    (
+                        TxLoc {
+                            block_height,
+                            tx_idx: tx_idx as u64,
+                        },
+                        tx_receipt.value().clone(),
+                    ),
                 )
                 .is_some()
             {
@@ -175,7 +178,7 @@ impl ChainStateBuffer {
                     alloy_rpc_types::BlockTransactions::Full(v) => {
                         v.into_iter().for_each(|tx| {
                             let id = tx.inner.tx_hash();
-                            self.tx_loc_by_hash.remove(&FixedData(id.0));
+                            self.tx_by_hash.remove(&FixedData(id.0));
                         });
                     }
                     alloy_rpc_types::BlockTransactions::Hashes(_) => {
@@ -208,8 +211,12 @@ impl ChainStateBuffer {
         Some(self.block_by_height.get(&finalized_block_height)?.clone())
     }
 
+    pub fn get_receipt_by_tx_hash(&self, hash: &FixedData<32>) -> Option<TransactionReceipt> {
+        Some(self.tx_by_hash.get(hash)?.1.clone())
+    }
+
     pub fn get_transaction_by_hash(&self, hash: &FixedData<32>) -> Option<Transaction<TxEnvelope>> {
-        let tx_loc = &*self.tx_loc_by_hash.get(hash)?;
+        let tx_loc = &self.tx_by_hash.get(hash)?.0;
 
         self.get_transaction_by_location(tx_loc.block_height, tx_loc.tx_idx)
     }
