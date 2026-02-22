@@ -15,21 +15,30 @@
 
 use std::sync::Arc;
 
+use monad_exec_events::BlockCommitState;
+
 use crate::types::{eth_json::MonadNotification, serialize::SharedJsonSerialized};
 
-type Header = SharedJsonSerialized<alloy_rpc_types::eth::Header>;
-type Log = SharedJsonSerialized<alloy_rpc_types::eth::Log>;
-type Block =
-    SharedJsonSerialized<alloy_rpc_types::eth::Block<alloy_rpc_types::Transaction, Header>>;
+pub type HeaderNotification = SharedJsonSerialized<MonadNotification<Header>>;
+pub type Header = SharedJsonSerialized<alloy_rpc_types::eth::Header>;
+
+pub type BlockTransactions = Arc<Box<[BlockTransaction]>>;
+pub type BlockTransaction = (Transaction, TransactionReceipt, Box<[LogNotification]>);
+
+pub type Transaction = SharedJsonSerialized<alloy_rpc_types::Transaction>;
+pub type TransactionReceipt = SharedJsonSerialized<alloy_rpc_types::TransactionReceipt>;
+
+pub type LogNotification = SharedJsonSerialized<MonadNotification<Log>>;
+pub type Log = SharedJsonSerialized<alloy_rpc_types::eth::Log>;
 
 #[derive(Clone, Debug)]
 pub enum EventServerEvent {
     Gap,
 
     Block {
-        header: SharedJsonSerialized<MonadNotification<Header>>,
-        block: SharedJsonSerialized<MonadNotification<Block>>,
-        logs: Arc<Vec<SharedJsonSerialized<MonadNotification<Log>>>>,
+        commit_state: BlockCommitState,
+        header: HeaderNotification,
+        transactions: BlockTransactions,
     },
 }
 

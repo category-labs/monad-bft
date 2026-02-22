@@ -299,9 +299,9 @@ async fn handle_notification(
             )));
         }
         EventServerEvent::Block {
+            commit_state,
             header,
-            block: _,
-            logs,
+            transactions,
         } => {
             for (id, _) in subscriptions
                 .get(&SubscriptionKind::MonadNewHeads)
@@ -311,7 +311,7 @@ async fn handle_notification(
                 send_notification(session, id, header.as_ref(), max_response_size).await?;
             }
 
-            if header.commit_state == COMMIT_STATE_FILTER {
+            if commit_state == COMMIT_STATE_FILTER {
                 for (id, _) in subscriptions
                     .get(&SubscriptionKind::NewHeads)
                     .map(|x| x.iter())
@@ -321,12 +321,14 @@ async fn handle_notification(
                 }
             }
 
+            let iter_logs = || transactions.iter().flat_map(|(_, _, logs)| logs.iter());
+
             for (id, filter) in subscriptions
                 .get(&SubscriptionKind::MonadLogs)
                 .map(|x| x.iter())
                 .unwrap_or_default()
             {
-                let Some(logs) = apply_logs_filter(filter, header.data.as_ref(), logs.iter())
+                let Some(logs) = apply_logs_filter(filter, header.data.as_ref(), iter_logs())
                 else {
                     continue;
                 };
@@ -342,7 +344,7 @@ async fn handle_notification(
                     .map(|x| x.iter())
                     .unwrap_or_default()
                 {
-                    let Some(logs) = apply_logs_filter(filter, header.data.as_ref(), logs.iter())
+                    let Some(logs) = apply_logs_filter(filter, header.data.as_ref(), iter_logs())
                     else {
                         continue;
                     };

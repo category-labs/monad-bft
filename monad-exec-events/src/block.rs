@@ -123,6 +123,168 @@ impl ExecutedBlock {
         }
     }
 
+    /// Iterate over alloy transactions.
+    pub fn iter_alloy_tx_envelopes(
+        &self,
+    ) -> impl Iterator<Item = alloy_consensus::TxEnvelope> + '_ {
+        self.txns.iter().map(|tx| tx.to_alloy())
+    }
+
+    /// Iterate over alloy rpc transactions.
+    pub fn iter_alloy_rpc_txs(&self) -> impl Iterator<Item = alloy_rpc_types::Transaction> + '_ {
+        let block_hash = alloy_primitives::FixedBytes::from(self.end.eth_block_hash.bytes);
+        let block_number = self.start.eth_block_input.number;
+
+        let base_fee = Some(
+            TryInto::<u64>::try_into(alloy_primitives::U256::from_limbs(
+                self.start.eth_block_input.base_fee_per_gas.limbs,
+            ))
+            .expect("base fee fits in u64"),
+        );
+
+        self.txns.iter().enumerate().map(move |(tx_idx, tx)| {
+            let transaction_index = Some(tx_idx as u64);
+
+            let max_fee_per_gas = TryInto::<u128>::try_into(alloy_primitives::U256::from_limbs(
+                tx.header.max_fee_per_gas.limbs,
+            ))
+            .expect("tx max_fee_per_gas fits in u128");
+
+            let max_priority_fee_per_gas = TryInto::<u128>::try_into(
+                alloy_primitives::U256::from_limbs(tx.header.max_priority_fee_per_gas.limbs),
+            )
+            .expect("tx max_priority_fee_per_gas fits in u128");
+
+            alloy_rpc_types::Transaction {
+                inner: tx.to_alloy_recovered(),
+                block_hash: Some(block_hash),
+                block_number: Some(block_number),
+                transaction_index,
+                effective_gas_price: Some(alloy_eips::eip1559::calc_effective_gas_price(
+                    max_fee_per_gas,
+                    max_priority_fee_per_gas,
+                    base_fee,
+                )),
+            }
+        })
+    }
+
+    /// Iterate over alloy rpc transaction receipts.
+    pub fn iter_alloy_rpc_tx_receipts(
+        &self,
+    ) -> impl Iterator<Item = alloy_rpc_types::TransactionReceipt> + '_ {
+        let block_hash = Some(alloy_primitives::FixedBytes::from(
+            self.end.eth_block_hash.bytes,
+        ));
+        let block_number = Some(self.start.eth_block_input.number);
+        let block_timestamp = Some(self.start.eth_block_input.timestamp);
+
+        let base_fee = Some(
+            TryInto::<u64>::try_into(alloy_primitives::U256::from_limbs(
+                self.start.eth_block_input.base_fee_per_gas.limbs,
+            ))
+            .expect("base fee fits in u64"),
+        );
+
+        let mut cumulative_gas_used = 0u64;
+        let mut log_index = 0u64;
+
+        self.txns.iter().enumerate().map(move |(tx_idx, tx)| {
+            cumulative_gas_used += tx.receipt.gas_used;
+
+            let transaction_hash = alloy_primitives::FixedBytes(tx.hash.bytes);
+            let transaction_index = Some(tx_idx as u64);
+
+            let logs = tx
+                .iter_alloy_logs()
+                .map(|log| {
+                    let log = alloy_rpc_types::Log {
+                        inner: log,
+                        block_hash,
+                        block_number,
+                        block_timestamp,
+                        transaction_hash: Some(transaction_hash),
+                        transaction_index,
+                        log_index: Some(log_index),
+                        removed: false,
+                    };
+
+                    log_index += 1;
+
+                    log
+                })
+                .collect_vec();
+
+            let logs_bloom = alloy_primitives::logs_bloom(logs.iter().map(|log| &log.inner));
+
+            let receipt_with_bloom = alloy_consensus::ReceiptWithBloom {
+                receipt: alloy_consensus::Receipt {
+                    status: alloy_consensus::Eip658Value::Eip658(tx.receipt.status),
+                    cumulative_gas_used,
+                    logs,
+                },
+                logs_bloom,
+            };
+
+            let receipt = match tx.header.txn_type {
+                ffi::MONAD_TXN_LEGACY => {
+                    alloy_consensus::ReceiptEnvelope::Legacy(receipt_with_bloom)
+                }
+                ffi::MONAD_TXN_EIP2930 => {
+                    alloy_consensus::ReceiptEnvelope::Eip2930(receipt_with_bloom)
+                }
+                ffi::MONAD_TXN_EIP1559 => {
+                    alloy_consensus::ReceiptEnvelope::Eip1559(receipt_with_bloom)
+                }
+                ffi::MONAD_TXN_EIP4844 => {
+                    unreachable!("ExecutedTxn encountered unsupported EIP4844 tx type");
+                }
+                ffi::MONAD_TXN_EIP7702 => {
+                    alloy_consensus::ReceiptEnvelope::Eip7702(receipt_with_bloom)
+                }
+                _ => panic!(
+                    "ExecutedTxn encountered unknown tx type {}",
+                    tx.header.txn_type
+                ),
+            };
+
+            let max_fee_per_gas = TryInto::<u128>::try_into(alloy_primitives::U256::from_limbs(
+                tx.header.max_fee_per_gas.limbs,
+            ))
+            .expect("tx max_fee_per_gas fits in u128");
+
+            let max_priority_fee_per_gas = TryInto::<u128>::try_into(
+                alloy_primitives::U256::from_limbs(tx.header.max_priority_fee_per_gas.limbs),
+            )
+            .expect("tx max_priority_fee_per_gas fits in u128");
+
+            alloy_rpc_types::TransactionReceipt {
+                inner: receipt,
+                transaction_hash,
+                transaction_index,
+                block_hash,
+                block_number,
+                gas_used: tx.receipt.gas_used,
+                effective_gas_price: alloy_eips::eip1559::calc_effective_gas_price(
+                    max_fee_per_gas,
+                    max_priority_fee_per_gas,
+                    base_fee,
+                ),
+                blob_gas_used: None,
+                blob_gas_price: None,
+                from: alloy_primitives::Address::from(tx.sender.bytes),
+
+                // TODO: Should to be considered None if == 0?
+                to: (!tx.header.is_contract_creation)
+                    .then(|| alloy_primitives::Address::from(tx.header.to.bytes)),
+                contract_address: tx
+                    .header
+                    .is_contract_creation
+                    .then(|| alloy_primitives::Address::from(tx.header.to.bytes)),
+            }
+        })
+    }
+
     /// Creates a flat list of alloy logs including all logs in the block's transactions.
     pub fn get_alloy_rpc_logs(&self) -> Vec<alloy_rpc_types::Log> {
         self.txns
@@ -341,9 +503,14 @@ impl ExecutedTxn {
         )
     }
 
+    /// Iterate over alloy logs.
+    pub fn iter_alloy_logs(&self) -> impl Iterator<Item = alloy_primitives::Log> + '_ {
+        self.logs.iter().map(ExecutedTxnLog::to_alloy)
+    }
+
     /// Creates a list of alloy logs.
     pub fn to_alloy_logs(&self) -> Vec<alloy_primitives::Log> {
-        self.logs.iter().map(ExecutedTxnLog::to_alloy).collect_vec()
+        self.iter_alloy_logs().collect_vec()
     }
 }
 

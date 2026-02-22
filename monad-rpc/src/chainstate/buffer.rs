@@ -22,7 +22,7 @@ use std::{
 };
 
 use alloy_consensus::TxEnvelope;
-use alloy_rpc_types::{Block, Transaction};
+use alloy_rpc_types::{Block, BlockTransactions, Transaction, TransactionReceipt};
 use dashmap::DashMap;
 use itertools::Itertools;
 use monad_exec_events::BlockCommitState;
@@ -51,8 +51,8 @@ pub struct ChainStateBuffer {
     block_by_height: Arc<DashMap<u64, Block>>,
     // Maps a block by its blockhash
     block_height_by_hash: Arc<DashMap<FixedData<32>, u64>>,
-    // Maps a transaction by its hash to a block's height and its index in that block
-    tx_loc_by_hash: Arc<DashMap<FixedData<32>, TxLoc>>,
+    // Maps a transaction hash to its block location and receipt
+    tx_by_hash: Arc<DashMap<FixedData<32>, (TxLoc, TransactionReceipt)>>,
 
     // The latest voted block's SeqNum
     latest_voted: Arc<AtomicU64>,
@@ -68,7 +68,7 @@ impl ChainStateBuffer {
 
             block_by_height: Arc::new(DashMap::new()),
             block_height_by_hash: Arc::new(DashMap::new()),
-            tx_loc_by_hash: Arc::new(DashMap::new()),
+            tx_by_hash: Arc::new(DashMap::new()),
 
             latest_voted: Arc::new(AtomicU64::new(0)),
             latest_finalized: Arc::new(AtomicU64::new(0)),
@@ -76,28 +76,37 @@ impl ChainStateBuffer {
     }
 
     pub async fn insert(&self, block_event: EventServerEvent) {
-        let block_event = match block_event {
-            EventServerEvent::Block { block, .. } => block,
-            _ => return,
+        let (commit_state, header, transactions) = match block_event {
+            EventServerEvent::Block {
+                commit_state,
+                header,
+                transactions,
+            } => (commit_state, header, transactions),
+            EventServerEvent::Gap => return,
         };
 
-        if block_event.commit_state != BlockCommitState::Voted {
-            if block_event.commit_state == BlockCommitState::Finalized {
-                let height = block_event.data.header.number;
-                self.latest_finalized.fetch_max(height, Ordering::SeqCst);
+        let block_height = header.data.number;
+        let block_hash = header.data.hash;
+
+        if commit_state != BlockCommitState::Voted {
+            if commit_state == BlockCommitState::Finalized {
+                self.latest_finalized
+                    .fetch_max(block_height, Ordering::SeqCst);
             }
             return;
         }
 
         let block: Block<Transaction, alloy_rpc_types::Header> = Block {
-            header: (**block_event.data.header).clone(),
-            transactions: block_event.data.transactions.clone(),
-            ..Default::default()
+            header: header.data.value().clone(),
+            transactions: alloy_rpc_types::BlockTransactions::Full(
+                transactions
+                    .iter()
+                    .map(|(tx, _, _)| tx.value().clone())
+                    .collect_vec(),
+            ),
+            uncles: Vec::default(),
+            withdrawals: None,
         };
-
-        let block_height = block.header.number;
-        let block_hash = block.header.hash;
-        let block_tx_hashes = block.transactions.hashes().collect_vec();
 
         if self.block_by_height.insert(block_height, block).is_some() {
             warn!(
@@ -117,15 +126,24 @@ impl ChainStateBuffer {
             );
         }
 
-        for (tx_idx, tx_hash) in block_tx_hashes.into_iter().enumerate() {
+        for (tx_idx, tx_receipt) in transactions
+            .iter()
+            .map(|(_, tx_receipt, _)| tx_receipt)
+            .enumerate()
+        {
+            let tx_hash = tx_receipt.transaction_hash;
+
             if self
-                .tx_loc_by_hash
+                .tx_by_hash
                 .insert(
-                    FixedData(tx_hash.0),
-                    TxLoc {
-                        block_height,
-                        tx_idx: tx_idx as u64,
-                    },
+                    FixedData(tx_receipt.transaction_hash.0),
+                    (
+                        TxLoc {
+                            block_height,
+                            tx_idx: tx_idx as u64,
+                        },
+                        tx_receipt.value().clone(),
+                    ),
                 )
                 .is_some()
             {
@@ -160,7 +178,7 @@ impl ChainStateBuffer {
                     alloy_rpc_types::BlockTransactions::Full(v) => {
                         v.into_iter().for_each(|tx| {
                             let id = tx.inner.tx_hash();
-                            self.tx_loc_by_hash.remove(&FixedData(id.0));
+                            self.tx_by_hash.remove(&FixedData(id.0));
                         });
                     }
                     alloy_rpc_types::BlockTransactions::Hashes(_) => {
@@ -193,8 +211,32 @@ impl ChainStateBuffer {
         Some(self.block_by_height.get(&finalized_block_height)?.clone())
     }
 
+    pub fn get_receipt_by_tx_hash(&self, hash: &FixedData<32>) -> Option<TransactionReceipt> {
+        Some(self.tx_by_hash.get(hash)?.1.clone())
+    }
+
+    pub fn get_receipts_by_block_height(&self, height: u64) -> Option<Vec<TransactionReceipt>> {
+        let block = self.block_by_height.get(&height)?;
+
+        let tx_hashes = match &block.transactions {
+            BlockTransactions::Full(txs) => {
+                txs.iter().map(|tx| tx.inner.tx_hash()).collect::<Vec<_>>()
+            }
+            _ => return None,
+        };
+
+        let mut receipts = Vec::with_capacity(tx_hashes.len());
+
+        for tx_hash in tx_hashes {
+            let receipt = self.tx_by_hash.get(&FixedData(tx_hash.0))?.1.clone();
+            receipts.push(receipt);
+        }
+
+        Some(receipts)
+    }
+
     pub fn get_transaction_by_hash(&self, hash: &FixedData<32>) -> Option<Transaction<TxEnvelope>> {
-        let tx_loc = &*self.tx_loc_by_hash.get(hash)?;
+        let tx_loc = &self.tx_by_hash.get(hash)?.0;
 
         self.get_transaction_by_location(tx_loc.block_height, tx_loc.tx_idx)
     }
