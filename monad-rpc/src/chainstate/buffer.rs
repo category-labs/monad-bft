@@ -22,7 +22,7 @@ use std::{
 };
 
 use alloy_consensus::TxEnvelope;
-use alloy_rpc_types::{Block, Transaction, TransactionReceipt};
+use alloy_rpc_types::{Block, BlockTransactions, Transaction, TransactionReceipt};
 use dashmap::DashMap;
 use itertools::Itertools;
 use monad_exec_events::BlockCommitState;
@@ -213,6 +213,26 @@ impl ChainStateBuffer {
 
     pub fn get_receipt_by_tx_hash(&self, hash: &FixedData<32>) -> Option<TransactionReceipt> {
         Some(self.tx_by_hash.get(hash)?.1.clone())
+    }
+
+    pub fn get_receipts_by_block_height(&self, height: u64) -> Option<Vec<TransactionReceipt>> {
+        let block = self.block_by_height.get(&height)?;
+
+        let tx_hashes = match &block.transactions {
+            BlockTransactions::Full(txs) => {
+                txs.iter().map(|tx| tx.inner.tx_hash()).collect::<Vec<_>>()
+            }
+            _ => return None,
+        };
+
+        let mut receipts = Vec::with_capacity(tx_hashes.len());
+
+        for tx_hash in tx_hashes {
+            let receipt = self.tx_by_hash.get(&FixedData(tx_hash.0))?.1.clone();
+            receipts.push(receipt);
+        }
+
+        Some(receipts)
     }
 
     pub fn get_transaction_by_hash(&self, hash: &FixedData<32>) -> Option<Transaction<TxEnvelope>> {

@@ -45,7 +45,9 @@ use crate::{
         txn::{parse_tx_receipt, FilterError},
     },
     types::{
-        eth_json::{BlockTagOrHash, BlockTags, FixedData, MonadLog, Quantity},
+        eth_json::{
+            BlockTagOrHash, BlockTags, FixedData, MonadLog, MonadTransactionReceipt, Quantity,
+        },
         heuristic_size::HeuristicSize,
         jsonrpc::{ArchiveErrorExt, JsonRpcError, JsonRpcResult},
     },
@@ -484,6 +486,16 @@ impl<T: Triedb> ChainState<T> {
         &self,
         block: BlockTags,
     ) -> Result<Vec<alloy_consensus::ReceiptEnvelope>, ChainStateError> {
+        if let Some(buffer) = &self.buffer {
+            let height = block_height_from_tag(buffer, &block);
+            if let Some(receipts) = buffer.get_receipts_by_block_height(height) {
+                return Ok(receipts
+                    .into_iter()
+                    .map(|r| r.inner.into_primitives_receipt())
+                    .collect());
+            }
+        }
+
         let block_key = get_block_key_from_tag(&self.triedb_env, block)
             .ok_or(ChainStateError::ResourceNotFound)?;
         if let Ok(receipts) = self.triedb_env.get_receipts(block_key).await {
@@ -513,7 +525,22 @@ impl<T: Triedb> ChainState<T> {
     pub async fn get_block_receipts(
         &self,
         block: BlockTagOrHash,
-    ) -> Result<Vec<crate::types::eth_json::MonadTransactionReceipt>, ChainStateError> {
+    ) -> Result<Vec<MonadTransactionReceipt>, ChainStateError> {
+        if let Some(buffer) = &self.buffer {
+            let height = match &block {
+                BlockTagOrHash::BlockTags(tag) => Some(block_height_from_tag(buffer, tag)),
+                BlockTagOrHash::Hash(hash) => {
+                    buffer.get_block_by_hash(hash).map(|blk| blk.header.number)
+                }
+            };
+
+            if let Some(height) = height {
+                if let Some(receipts) = buffer.get_receipts_by_block_height(height) {
+                    return Ok(receipts.into_iter().map(MonadTransactionReceipt).collect());
+                }
+            }
+        }
+
         if let Ok(block_key) = get_block_key_from_tag_or_hash(&self.triedb_env, block.clone()).await
         {
             if let Some(header) = self
