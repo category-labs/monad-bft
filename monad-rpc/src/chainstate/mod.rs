@@ -93,6 +93,18 @@ pub fn get_block_key_from_tag(triedb_env: &impl Triedb, tag: BlockTags) -> Optio
     }
 }
 
+fn resolve_block_height_from_buffer(
+    buffer: &ChainStateBuffer,
+    block: &BlockTagOrHash,
+) -> Option<u64> {
+    match block {
+        BlockTagOrHash::BlockTags(tag) => Some(block_height_from_tag(buffer, tag)),
+        BlockTagOrHash::Hash(hash) => buffer
+            .get_block_by_hash(hash)
+            .map(|block| block.header.number),
+    }
+}
+
 impl<T: Triedb> ChainState<T> {
     pub fn new(
         buffer: Option<Arc<ChainStateBuffer>>,
@@ -175,15 +187,16 @@ impl<T: Triedb> ChainState<T> {
         block: BlockTagOrHash,
         index: u64,
     ) -> Result<Transaction, ChainStateError> {
+        if let Some(buffer) = &self.buffer {
+            if let Some(height) = resolve_block_height_from_buffer(buffer, &block) {
+                if let Some(tx) = buffer.get_transaction_by_location(height, index) {
+                    return Ok(tx);
+                }
+            }
+        }
+
         match block {
             BlockTagOrHash::BlockTags(block) => {
-                if let Some(buffer) = &self.buffer {
-                    let height = block_height_from_tag(buffer, &block);
-                    if let Some(tx) = buffer.get_transaction_by_location(height, index) {
-                        return Ok(tx);
-                    }
-                }
-
                 let block_key = get_block_key_from_tag(&self.triedb_env, block)
                     .ok_or(ChainStateError::ResourceNotFound)?;
                 if let Some(tx) =
@@ -211,16 +224,6 @@ impl<T: Triedb> ChainState<T> {
                 }
             }
             BlockTagOrHash::Hash(hash) => {
-                if let Some(buffer) = &self.buffer {
-                    if let Some(blk) = buffer.get_block_by_hash(&hash) {
-                        if let Some(tx) =
-                            buffer.get_transaction_by_location(blk.header.number, index)
-                        {
-                            return Ok(tx);
-                        }
-                    }
-                }
-
                 let latest_block_key = get_latest_block_key(&self.triedb_env);
                 if let Some(block_num) = self
                     .triedb_env
@@ -309,23 +312,13 @@ impl<T: Triedb> ChainState<T> {
         &self,
         block: BlockTagOrHash,
     ) -> Result<alloy_consensus::Header, ChainStateError> {
-        match &block {
-            BlockTagOrHash::BlockTags(tag) => {
-                if let Some(buffer) = &self.buffer {
-                    let height = block_height_from_tag(buffer, tag);
-                    if let Some(block) = buffer.get_block_by_height(height) {
-                        return Ok(block.header.inner);
-                    }
+        if let Some(buffer) = &self.buffer {
+            if let Some(height) = resolve_block_height_from_buffer(buffer, &block) {
+                if let Some(block) = buffer.get_block_by_height(height) {
+                    return Ok(block.header.inner);
                 }
             }
-            BlockTagOrHash::Hash(hash) => {
-                if let Some(buffer) = &self.buffer {
-                    if let Some(block) = buffer.get_block_by_hash(hash) {
-                        return Ok(block.header.inner);
-                    }
-                }
-            }
-        };
+        }
 
         let block_key = match &block {
             BlockTagOrHash::BlockTags(tag) => get_block_key_from_tag(&self.triedb_env, *tag),
@@ -388,23 +381,12 @@ impl<T: Triedb> ChainState<T> {
         return_full_txns: bool,
     ) -> Result<Block, ChainStateError> {
         if let Some(buffer) = &self.buffer {
-            match &block {
-                BlockTagOrHash::BlockTags(tag) => {
-                    let height = block_height_from_tag(buffer, tag);
-                    if let Some(mut block) = buffer.get_block_by_height(height) {
-                        if !return_full_txns {
-                            block.transactions = block.transactions.into_hashes();
-                        }
-                        return Ok(block);
+            if let Some(height) = resolve_block_height_from_buffer(buffer, &block) {
+                if let Some(mut block) = buffer.get_block_by_height(height) {
+                    if !return_full_txns {
+                        block.transactions = block.transactions.into_hashes();
                     }
-                }
-                BlockTagOrHash::Hash(hash) => {
-                    if let Some(mut block) = buffer.get_block_by_hash(hash) {
-                        if !return_full_txns {
-                            block.transactions = block.transactions.into_hashes();
-                        }
-                        return Ok(block);
-                    }
+                    return Ok(block);
                 }
             }
         }
@@ -527,14 +509,7 @@ impl<T: Triedb> ChainState<T> {
         block: BlockTagOrHash,
     ) -> Result<Vec<MonadTransactionReceipt>, ChainStateError> {
         if let Some(buffer) = &self.buffer {
-            let height = match &block {
-                BlockTagOrHash::BlockTags(tag) => Some(block_height_from_tag(buffer, tag)),
-                BlockTagOrHash::Hash(hash) => {
-                    buffer.get_block_by_hash(hash).map(|blk| blk.header.number)
-                }
-            };
-
-            if let Some(height) = height {
+            if let Some(height) = resolve_block_height_from_buffer(buffer, &block) {
                 if let Some(receipts) = buffer.get_receipts_by_block_height(height) {
                     return Ok(receipts.into_iter().map(MonadTransactionReceipt).collect());
                 }
