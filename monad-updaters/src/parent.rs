@@ -37,18 +37,18 @@ use monad_state_backend::StateBackend;
 use monad_types::ExecutionProtocol;
 use monad_validator::signature_collection::SignatureCollection;
 
-const GAUGE_PARENT_TOTAL_EXEC_US: &str = "monad.executor.parent.total_exec_us";
-const GAUGE_LEDGER_TOTAL_EXEC_US: &str = "monad.executor.ledger.total_exec_us";
-const GAUGE_CONFIG_FILE_TOTAL_EXEC_US: &str = "monad.executor.config_file.total_exec_us";
-const GAUGE_TXPOOL_TOTAL_EXEC_US: &str = "monad.executor.txpool.total_exec_us";
-const GAUGE_ROUTER_TOTAL_EXEC_US: &str = "monad.executor.router.total_exec_us";
-const GAUGE_STATESYNC_TOTAL_EXEC_US: &str = "monad.executor.statesync.total_exec_us";
+monad_executor::define_metric!(GAUGE_PARENT_TOTAL_EXEC_US, "monad.executor.parent.total_exec_us", "Total parent executor execution time in microseconds");
+monad_executor::define_metric!(GAUGE_LEDGER_TOTAL_EXEC_US, "monad.executor.ledger.total_exec_us", "Total ledger executor execution time in microseconds");
+monad_executor::define_metric!(GAUGE_CONFIG_FILE_TOTAL_EXEC_US, "monad.executor.config_file.total_exec_us", "Total config file executor execution time in microseconds");
+monad_executor::define_metric!(GAUGE_TXPOOL_TOTAL_EXEC_US, "monad.executor.txpool.total_exec_us", "Total TxPool executor execution time in microseconds");
+monad_executor::define_metric!(GAUGE_ROUTER_TOTAL_EXEC_US, "monad.executor.router.total_exec_us", "Total router executor execution time in microseconds");
+monad_executor::define_metric!(GAUGE_STATESYNC_TOTAL_EXEC_US, "monad.executor.statesync.total_exec_us", "Total StateSync executor execution time in microseconds");
 
-const GAUGE_PARENT_TOTAL_POLL_US: &str = "monad.executor.parent.total_poll_us";
-const GAUGE_LEDGER_TOTAL_POLL_US: &str = "monad.executor.ledger.total_poll_us";
-const GAUGE_TXPOOL_TOTAL_POLL_US: &str = "monad.executor.txpool.total_poll_us";
-const GAUGE_ROUTER_TOTAL_POLL_US: &str = "monad.executor.router.total_poll_us";
-const GAUGE_STATESYNC_TOTAL_POLL_US: &str = "monad.executor.statesync.total_poll_us";
+monad_executor::define_metric!(GAUGE_PARENT_TOTAL_POLL_US, "monad.executor.parent.total_poll_us", "Total parent executor poll time in microseconds");
+monad_executor::define_metric!(GAUGE_LEDGER_TOTAL_POLL_US, "monad.executor.ledger.total_poll_us", "Total ledger executor poll time in microseconds");
+monad_executor::define_metric!(GAUGE_TXPOOL_TOTAL_POLL_US, "monad.executor.txpool.total_poll_us", "Total TxPool executor poll time in microseconds");
+monad_executor::define_metric!(GAUGE_ROUTER_TOTAL_POLL_US, "monad.executor.router.total_poll_us", "Total router executor poll time in microseconds");
+monad_executor::define_metric!(GAUGE_STATESYNC_TOTAL_POLL_US, "monad.executor.statesync.total_poll_us", "Total StateSync executor poll time in microseconds");
 
 /// Single top-level executor for all other required by a node.
 /// This executor will distribute commands to the appropriate sub-executor
@@ -98,7 +98,7 @@ where
 
     fn exec(&mut self, commands: Vec<Command<E, OM, ST, SCT, EPT, BPT, SBT, CCT, CRT>>) {
         let _exec_span = tracing::trace_span!("exec_span", num_cmds = commands.len()).entered();
-        let guard = ParentExecutorMetricsGuard::new(&mut self.metrics, GAUGE_PARENT_TOTAL_EXEC_US);
+        let guard = ParentExecutorMetricsGuard::new(&mut self.metrics, &GAUGE_PARENT_TOTAL_EXEC_US);
         let (
             router_cmds,
             timer_cmds,
@@ -115,22 +115,22 @@ where
 
         guard
             .metrics
-            .record(GAUGE_ROUTER_TOTAL_EXEC_US, || self.router.exec(router_cmds));
+            .record(&GAUGE_ROUTER_TOTAL_EXEC_US, || self.router.exec(router_cmds));
         self.timer.exec(timer_cmds);
         guard
             .metrics
-            .record(GAUGE_LEDGER_TOTAL_EXEC_US, || self.ledger.exec(ledger_cmds));
-        guard.metrics.record(GAUGE_CONFIG_FILE_TOTAL_EXEC_US, || {
+            .record(&GAUGE_LEDGER_TOTAL_EXEC_US, || self.ledger.exec(ledger_cmds));
+        guard.metrics.record(&GAUGE_CONFIG_FILE_TOTAL_EXEC_US, || {
             self.config_file.exec(config_file_cmds)
         });
         self.val_set.exec(val_set_cmds);
         self.timestamp.exec(timestamp_cmds);
         guard
             .metrics
-            .record(GAUGE_TXPOOL_TOTAL_EXEC_US, || self.txpool.exec(txpool_cmds));
+            .record(&GAUGE_TXPOOL_TOTAL_EXEC_US, || self.txpool.exec(txpool_cmds));
         self.control_panel.exec(control_panel_cmds);
         self.loopback.exec(loopback_cmds);
-        guard.metrics.record(GAUGE_STATESYNC_TOTAL_EXEC_US, || {
+        guard.metrics.record(&GAUGE_STATESYNC_TOTAL_EXEC_US, || {
             self.state_sync.exec(state_sync_cmds)
         });
         self.config_loader.exec(config_reload_cmds);
@@ -175,7 +175,7 @@ where
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.deref_mut();
-        let guard = ParentExecutorMetricsGuard::new(&mut this.metrics, GAUGE_PARENT_TOTAL_POLL_US);
+        let guard = ParentExecutorMetricsGuard::new(&mut this.metrics, &GAUGE_PARENT_TOTAL_POLL_US);
 
         if let Poll::Ready(Some(e)) = this.timer.next().poll_unpin(cx) {
             return Poll::Ready(Some(e));
@@ -183,13 +183,13 @@ where
         if let Poll::Ready(Some(e)) = this.control_panel.next().poll_unpin(cx) {
             return Poll::Ready(Some(e));
         }
-        if let Poll::Ready(Some(e)) = guard.metrics.record(GAUGE_LEDGER_TOTAL_POLL_US, || {
+        if let Poll::Ready(Some(e)) = guard.metrics.record(&GAUGE_LEDGER_TOTAL_POLL_US, || {
             this.ledger.next().poll_unpin(cx)
         }) {
             return Poll::Ready(Some(e));
         }
         // TODO: ingesting txs should be deprioritized
-        if let Poll::Ready(Some(e)) = guard.metrics.record(GAUGE_TXPOOL_TOTAL_POLL_US, || {
+        if let Poll::Ready(Some(e)) = guard.metrics.record(&GAUGE_TXPOOL_TOTAL_POLL_US, || {
             this.txpool.next().poll_unpin(cx)
         }) {
             return Poll::Ready(Some(e));
@@ -204,12 +204,12 @@ where
             return Poll::Ready(Some(e));
         }
         // TODO: consensus msgs should be prioritized
-        if let Poll::Ready(Some(e)) = guard.metrics.record(GAUGE_ROUTER_TOTAL_POLL_US, || {
+        if let Poll::Ready(Some(e)) = guard.metrics.record(&GAUGE_ROUTER_TOTAL_POLL_US, || {
             this.router.next().poll_unpin(cx)
         }) {
             return Poll::Ready(Some(e));
         }
-        if let Poll::Ready(Some(e)) = guard.metrics.record(GAUGE_STATESYNC_TOTAL_POLL_US, || {
+        if let Poll::Ready(Some(e)) = guard.metrics.record(&GAUGE_STATESYNC_TOTAL_POLL_US, || {
             this.state_sync.next().poll_unpin(cx)
         }) {
             return Poll::Ready(Some(e));
@@ -232,22 +232,22 @@ impl<R, T, L, C, S, TS, TP, CP, LO, SS, CL> ParentExecutor<R, T, L, C, S, TS, TP
 pub struct ParentExecutorMetrics(ExecutorMetrics);
 
 impl ParentExecutorMetrics {
-    fn record<T>(&mut self, executor_name: &'static str, f: impl FnOnce() -> T) -> T {
+    fn record<T>(&mut self, metric: &monad_executor::MetricDef, f: impl FnOnce() -> T) -> T {
         let start = Instant::now();
         let e = f();
-        self.0[executor_name] += start.elapsed().as_micros() as u64;
+        self.0[metric] += start.elapsed().as_micros() as u64;
         e
     }
 }
 
 pub struct ParentExecutorMetricsGuard<'a> {
     metrics: &'a mut ParentExecutorMetrics,
-    guard_metric: &'static str,
+    guard_metric: &'a monad_executor::MetricDef,
     start: Instant,
 }
 
 impl<'a> ParentExecutorMetricsGuard<'a> {
-    fn new(metrics: &'a mut ParentExecutorMetrics, guard_metric: &'static str) -> Self {
+    fn new(metrics: &'a mut ParentExecutorMetrics, guard_metric: &'a monad_executor::MetricDef) -> Self {
         Self {
             metrics,
             guard_metric,

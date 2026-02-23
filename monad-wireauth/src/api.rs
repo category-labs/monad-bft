@@ -85,6 +85,8 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
         );
         let local_serialized_public = CompressedPublicKey::from(&local_static_public);
         debug!(local_public_key=?local_serialized_public, "initialized manager");
+        let mut metrics = ExecutorMetrics::default();
+        metric_names.register_descriptions(&mut metrics);
         Self {
             state: State::new(metric_names),
             timers: BTreeSet::new(),
@@ -95,7 +97,7 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
             cookies,
             filter,
             context,
-            metrics: ExecutorMetrics::default(),
+            metrics,
             metric_names,
             last_tick: None,
             connect_rate_counter: 0,

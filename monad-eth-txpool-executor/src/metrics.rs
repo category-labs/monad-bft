@@ -19,6 +19,12 @@ use monad_eth_txpool::EthTxPoolMetrics;
 use monad_executor::ExecutorMetrics;
 use serde::{Deserialize, Serialize};
 
+monad_executor::define_metric!(REJECT_FORWARDED_INVALID_BYTES, "monad.bft.txpool.reject_forwarded_invalid_bytes", "Forwarded txs rejected due to invalid bytes");
+monad_executor::define_metric!(CREATE_PROPOSAL, "monad.bft.txpool.create_proposal", "Proposals created from txpool");
+monad_executor::define_metric!(CREATE_PROPOSAL_ELAPSED_NS, "monad.bft.txpool.create_proposal_elapsed_ns", "Time spent creating proposals in nanoseconds");
+monad_executor::define_metric!(PRELOAD_BACKEND_LOOKUPS, "monad.bft.txpool.preload_backend_lookups", "Preload backend lookups");
+monad_executor::define_metric!(PRELOAD_BACKEND_REQUESTS, "monad.bft.txpool.preload_backend_requests", "Preload backend requests");
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct EthTxPoolExecutorMetrics {
     pub reject_forwarded_invalid_bytes: AtomicU64,
@@ -34,17 +40,15 @@ pub struct EthTxPoolExecutorMetrics {
 
 impl EthTxPoolExecutorMetrics {
     pub fn update(&self, metrics: &mut ExecutorMetrics) {
-        metrics["monad.bft.txpool.reject_forwarded_invalid_bytes"] =
+        metrics[&REJECT_FORWARDED_INVALID_BYTES] =
             self.reject_forwarded_invalid_bytes.load(Ordering::SeqCst);
 
-        metrics["monad.bft.txpool.create_proposal"] = self.create_proposal.load(Ordering::SeqCst);
-        metrics["monad.bft.txpool.create_proposal_elapsed_ns"] =
+        metrics[&CREATE_PROPOSAL] = self.create_proposal.load(Ordering::SeqCst);
+        metrics[&CREATE_PROPOSAL_ELAPSED_NS] =
             self.create_proposal_elapsed_ns.load(Ordering::SeqCst);
 
-        metrics["monad.bft.txpool.preload_backend_lookups"] =
-            self.preload_backend_lookups.load(Ordering::SeqCst);
-        metrics["monad.bft.txpool.preload_backend_requests"] =
-            self.preload_backend_requests.load(Ordering::SeqCst);
+        metrics[&PRELOAD_BACKEND_LOOKUPS] = self.preload_backend_lookups.load(Ordering::SeqCst);
+        metrics[&PRELOAD_BACKEND_REQUESTS] = self.preload_backend_requests.load(Ordering::SeqCst);
 
         self.pool.update(metrics);
     }
