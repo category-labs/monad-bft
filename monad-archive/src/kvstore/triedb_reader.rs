@@ -15,12 +15,16 @@
 
 use alloy_consensus::BlockBody;
 use alloy_primitives::BlockHash;
-use eyre::{eyre, OptionExt, Result};
+use eyre::OptionExt;
 use monad_triedb_utils::triedb_env::{BlockKey, FinalizedBlockKey, Triedb, TriedbEnv};
 use monad_types::SeqNum;
 
 use super::BlockDataWithOffsets;
-use crate::{cli::TrieDbCliArgs, prelude::*};
+use crate::{
+    cli::TrieDbCliArgs,
+    error::{ErrorKind, Result, ResultExt},
+    prelude::*,
+};
 
 #[derive(Clone)]
 pub struct TriedbReader {
@@ -55,14 +59,17 @@ impl BlockDataReader for TriedbReader {
             .db
             .get_block_header(BlockKey::Finalized(FinalizedBlockKey(SeqNum(block_num))))
             .await
-            .map_err(|e| eyre!("{e}"))?
-            .ok_or_eyre("Can't find block in triedb")?;
+            .map_err(|e| eyre!("{e}"))
+            .kind(ErrorKind::Storage)?
+            .ok_or_eyre("Can't find block in triedb")
+            .kind(ErrorKind::NotFound)?;
 
         let transactions = self
             .db
             .get_transactions(BlockKey::Finalized(FinalizedBlockKey(SeqNum(block_num))))
             .await
-            .map_err(|e| eyre!("Header exists but not transactions, block {block_num} might be statesynced: {e:?}"))?;
+            .map_err(|e| eyre!("Header exists but not transactions, block {block_num} might be statesynced: {e:?}"))
+            .kind(ErrorKind::Storage)?;
 
         Ok(Block {
             header: header.header,
@@ -79,6 +86,7 @@ impl BlockDataReader for TriedbReader {
             .get_receipts(BlockKey::Finalized(FinalizedBlockKey(SeqNum(block_number))))
             .await
             .map_err(|e| eyre!("{e}"))
+            .kind(ErrorKind::Storage)
     }
 
     async fn get_block_traces(&self, block_number: u64) -> Result<BlockTraces> {
@@ -86,6 +94,7 @@ impl BlockDataReader for TriedbReader {
             .get_call_frames(BlockKey::Finalized(FinalizedBlockKey(SeqNum(block_number))))
             .await
             .map_err(|e| eyre!("{e}"))
+            .kind(ErrorKind::Storage)
     }
 
     fn get_bucket(&self) -> &str {
@@ -98,8 +107,10 @@ impl BlockDataReader for TriedbReader {
             .db
             .get_block_number_by_hash(BlockKey::Finalized(latest_finalized_block), block_hash.0)
             .await
-            .map_err(|e| eyre!("{e:?}"))?
-            .ok_or_eyre("Block number for hash not found in triedb")?;
+            .map_err(|e| eyre!("{e:?}"))
+            .kind(ErrorKind::Storage)?
+            .ok_or_eyre("Block number for hash not found in triedb")
+            .kind(ErrorKind::NotFound)?;
         self.get_block_by_number(block_num).await
     }
 

@@ -19,6 +19,7 @@
 //! Call it as many times as you like; it is crash-resumable and
 //! no-op after reaching Phase::Done.
 
+use eyre::Result;
 use monad_archive::prelude::*;
 use mongodb::{
     bson::{doc, Bson, Document},

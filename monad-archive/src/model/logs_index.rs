@@ -23,6 +23,7 @@ use mongodb::{
 use tracing::info;
 
 use crate::{
+    error::{ErrorKind, Result, ResultExt, WrapErr},
     kvstore::{mongo::KeyValueDocument, retry},
     prelude::*,
 };
@@ -137,6 +138,7 @@ impl LogsIndexArchiver {
             .boxed()
             .await
             .wrap_err("Failed to insert logs after retries")
+            .kind(ErrorKind::Storage)
     }
 
     /// Query the logs index for a given range of blocks and filter criteria
@@ -190,12 +192,15 @@ impl LogsIndexArchiver {
             // do not return index fields, only kv
             .projection(doc! { "_id": true, "value": true })
             .await
-            .wrap_err_with(|| err_msg)?;
+            .wrap_err_with(|| err_msg)
+            .kind(ErrorKind::Storage)?;
 
         // Decode kv document and potentially resolve references to produce a TxIndexData
         Ok(cursor
             .then(move |doc| async move {
-                let doc = doc.wrap_err("Failed to get logs index")?;
+                let doc = doc
+                    .wrap_err("Failed to get logs index")
+                    .kind(ErrorKind::Storage)?;
                 let (_id, bytes) = doc
                     .resolve(&self.collection)
                     .await
@@ -265,6 +270,7 @@ mod tests {
     use std::{collections::HashSet, str::FromStr};
 
     use alloy_rpc_types::FilterSet;
+    use eyre::Result;
     use serde::Serialize;
 
     use super::*;

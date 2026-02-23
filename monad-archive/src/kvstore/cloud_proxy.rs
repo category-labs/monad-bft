@@ -18,11 +18,14 @@ use std::time::Duration;
 use alloy_primitives::TxHash;
 use base64::Engine;
 use bytes::Bytes;
-use eyre::Result;
+use eyre::Context;
 use reqwest::header::HeaderValue;
 use url::Url;
 
-use crate::prelude::*;
+use crate::{
+    error::{ErrorKind, Result, ResultExt},
+    prelude::*,
+};
 
 #[derive(Clone)]
 pub struct CloudProxyReader(Arc<CloudProxyReaderInner>);
@@ -36,11 +39,18 @@ struct CloudProxyReaderInner {
 impl CloudProxyReader {
     pub fn new(api_key: &str, url: Url, table: String) -> Result<Self> {
         let mut headers = reqwest::header::HeaderMap::with_capacity(1);
-        headers.insert("x-api-key", HeaderValue::from_str(api_key)?);
+        headers.insert(
+            "x-api-key",
+            HeaderValue::from_str(api_key)
+                .wrap_err("Invalid API key header value")
+                .kind(ErrorKind::Validation)?,
+        );
         let client = reqwest::ClientBuilder::new()
             .default_headers(headers)
             .timeout(Duration::from_secs(2))
-            .build()?;
+            .build()
+            .wrap_err("Failed to build reqwest client")
+            .kind(ErrorKind::Network)?;
         Ok(Self(Arc::new(CloudProxyReaderInner { client, url, table })))
     }
 }
@@ -54,12 +64,26 @@ struct ProxyResponse {
 impl KVReader for CloudProxyReader {
     async fn get(&self, key: &str) -> Result<Option<Bytes>> {
         let url = format!("{}?txhash={}&table={}", self.0.url, key, self.0.table);
-        let resp = self.0.client.get(url).send().await?;
+        let resp = self
+            .0
+            .client
+            .get(url)
+            .send()
+            .await
+            .wrap_err("Cloud proxy request failed")
+            .kind(ErrorKind::Network)?;
         if resp.status() == 404 {
             return Ok(None);
         }
-        let resp: ProxyResponse = resp.json().await?;
-        let bytes = base64::prelude::BASE64_STANDARD.decode(resp.data)?;
+        let resp: ProxyResponse = resp
+            .json()
+            .await
+            .wrap_err("Cloud proxy response parse failed")
+            .kind(ErrorKind::Network)?;
+        let bytes = base64::prelude::BASE64_STANDARD
+            .decode(resp.data)
+            .wrap_err("Cloud proxy base64 decode failed")
+            .kind(ErrorKind::Parse)?;
 
         Ok(Some(bytes.into()))
     }

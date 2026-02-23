@@ -19,13 +19,17 @@ use std::{
 };
 
 use bytes::Bytes;
-use eyre::{Context, Result};
+use eyre::Context;
 use tokio::{fs, io::AsyncWriteExt, task::spawn_blocking};
 
 use super::{
     kvstore_get_metrics, kvstore_put_metrics, KVStoreType, MetricsResultExt, PutResult, WritePolicy,
 };
-use crate::{metrics::Metrics, prelude::*};
+use crate::{
+    error::{ErrorKind, Result, ResultExt},
+    metrics::Metrics,
+    prelude::*,
+};
 
 #[derive(Clone)]
 pub struct FsStorage {
@@ -37,7 +41,9 @@ pub struct FsStorage {
 impl FsStorage {
     pub fn new(root: impl Into<PathBuf>, metrics: Metrics) -> Result<Self> {
         let root = root.into();
-        std::fs::create_dir_all(&root).wrap_err_with(|| format!("Failed to create {root:?}"))?;
+        std::fs::create_dir_all(&root)
+            .wrap_err_with(|| format!("Failed to create {root:?}"))
+            .kind(ErrorKind::Storage)?;
 
         let name = root.to_string_lossy().into_owned();
         Ok(Self {
@@ -51,7 +57,8 @@ impl FsStorage {
         let root = self.root.join(prefix.as_ref());
         fs::create_dir_all(&root)
             .await
-            .wrap_err_with(|| format!("Failed to create {root:?}"))?;
+            .wrap_err_with(|| format!("Failed to create {root:?}"))
+            .kind(ErrorKind::Storage)?;
         Ok(Self {
             root,
             metrics: self.metrics,
@@ -62,14 +69,18 @@ impl FsStorage {
     pub fn key_path(&self, key: &str) -> Result<PathBuf> {
         let relative = Path::new(key);
         if relative.is_absolute() {
-            bail!("Absolute paths are not allowed for keys: {key}");
+            return Err(eyre!("Absolute paths are not allowed for keys: {key}"))
+                .kind(ErrorKind::Validation);
         }
 
         if relative
             .components()
             .any(|component| matches!(component, Component::ParentDir))
         {
-            bail!("Parent directory segments are not allowed in keys: {key}");
+            return Err(eyre!(
+                "Parent directory segments are not allowed in keys: {key}"
+            ))
+            .kind(ErrorKind::Validation);
         }
 
         Ok(self.root.join(relative))
@@ -78,7 +89,8 @@ impl FsStorage {
     pub fn path_to_key(root: &Path, name: &str, path: &Path) -> Result<String> {
         let relative = path
             .strip_prefix(root)
-            .wrap_err_with(|| format!("Failed to strip prefix {name} from {path:?}"))?;
+            .wrap_err_with(|| format!("Failed to strip prefix {name} from {path:?}"))
+            .kind(ErrorKind::Validation)?;
 
         Ok(relative
             .components()
@@ -110,7 +122,8 @@ impl KVReader for FsStorage {
             }
             Err(err) => Err(err)
                 .wrap_err_with(|| format!("Failed to read key {key} from path {path:?}"))
-                .write_get_metrics_on_err(start.elapsed(), KVStoreType::FileSystem, &self.metrics),
+                .write_get_metrics_on_err(start.elapsed(), KVStoreType::FileSystem, &self.metrics)
+                .kind(ErrorKind::Storage),
         }
     }
 }
@@ -132,7 +145,8 @@ impl KVStore for FsStorage {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
                 .await
-                .wrap_err_with(|| format!("Failed to create directory {parent:?}"))?;
+                .wrap_err_with(|| format!("Failed to create directory {parent:?}"))
+                .kind(ErrorKind::Storage)?;
         }
 
         let start = Instant::now();
@@ -148,7 +162,8 @@ impl KVStore for FsStorage {
                 Ok(mut file) => {
                     file.write_all(&data)
                         .await
-                        .wrap_err_with(|| format!("Failed to write key {key} to path {path:?}"))?;
+                        .wrap_err_with(|| format!("Failed to write key {key} to path {path:?}"))
+                        .kind(ErrorKind::Storage)?;
                     kvstore_put_metrics(
                         start.elapsed(),
                         true,
@@ -174,14 +189,17 @@ impl KVStore for FsStorage {
                         KVStoreType::FileSystem,
                         &self.metrics,
                     );
-                    Err(err).wrap_err_with(|| format!("Failed to write key {key} to path {path:?}"))
+                    Err(err)
+                        .wrap_err_with(|| format!("Failed to write key {key} to path {path:?}"))
+                        .kind(ErrorKind::Storage)
                 }
             }
         } else {
             fs::write(&path, &data)
                 .await
                 .write_put_metrics(start.elapsed(), KVStoreType::FileSystem, &self.metrics)
-                .wrap_err_with(|| format!("Failed to write key {key} to path {path:?}"))?;
+                .wrap_err_with(|| format!("Failed to write key {key} to path {path:?}"))
+                .kind(ErrorKind::Storage)?;
             Ok(PutResult::Written)
         }
     }
@@ -201,9 +219,12 @@ impl KVStore for FsStorage {
             let mut stack = vec![root.clone()];
             while let Some(dir) = stack.pop() {
                 for entry in std::fs::read_dir(&dir)
-                    .wrap_err_with(|| format!("Failed to read directory {dir:?}"))?
+                    .wrap_err_with(|| format!("Failed to read directory {dir:?}"))
+                    .kind(ErrorKind::Storage)?
                 {
-                    let entry = entry?;
+                    let entry = entry
+                        .wrap_err("Failed to read directory entry")
+                        .kind(ErrorKind::Storage)?;
                     let path = entry.path();
 
                     if path.is_dir() {
@@ -221,7 +242,9 @@ impl KVStore for FsStorage {
 
             Ok(matches)
         })
-        .await?
+        .await
+        .wrap_err("scan_prefix spawn_blocking failed")
+        .kind(ErrorKind::Storage)?
     }
 
     async fn delete(&self, key: impl AsRef<str>) -> Result<()> {
@@ -231,9 +254,9 @@ impl KVStore for FsStorage {
         match fs::remove_file(&path).await {
             Ok(_) => Ok(()),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(err) => {
-                Err(err).wrap_err_with(|| format!("Failed to delete key {key} at path {path:?}"))
-            }
+            Err(err) => Err(err)
+                .wrap_err_with(|| format!("Failed to delete key {key} at path {path:?}"))
+                .kind(ErrorKind::Storage),
         }
     }
 }
@@ -241,6 +264,7 @@ impl KVStore for FsStorage {
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
+    use eyre::Result;
 
     use super::*;
 

@@ -18,6 +18,7 @@ use std::vec::IntoIter;
 use alloy_consensus::Block as AlloyBlock;
 use alloy_rlp::Encodable;
 use clap::Parser;
+use eyre::Result;
 use monad_archive::{kvstore::WritePolicy, prelude::*};
 use monad_compress::{brotli::BrotliCompression, CompressionAlgo};
 use tracing::Level;
@@ -244,7 +245,7 @@ async fn write_range(
                                 .with_prefix(format!("{}M/", current_block / 1_000_000))
                                 .await
                                 .wrap_err("Failed to create prefix for block")
-                                .map_err(|e| (current_block, e))?;
+                                .map_err(|e| (current_block, eyre::Report::from(e)))?;
                         }
 
                         process_block(&reader, current_block, &fs)

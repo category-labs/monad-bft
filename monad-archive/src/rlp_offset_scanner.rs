@@ -13,7 +13,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use crate::{model::RangeRlp, prelude::*};
+use crate::{
+    error::{ErrorKind, Result, ResultExt},
+    model::RangeRlp,
+    prelude::*,
+};
 
 struct RlpScanner<'a> {
     data: &'a [u8],
@@ -29,7 +33,7 @@ impl<'a> RlpScanner<'a> {
     fn decode_length(&self) -> Result<(usize, usize)> {
         let remaining = &self.data[self.position..];
         if remaining.is_empty() {
-            return Err(eyre!("unexpected end of input"));
+            return Err(eyre!("unexpected end of input")).kind(ErrorKind::Parse);
         }
 
         let first_byte = remaining[0];
@@ -44,7 +48,7 @@ impl<'a> RlpScanner<'a> {
                 // Long string: length of length is first byte - 0xb7
                 let length_of_length = (first_byte - 0xb7) as usize;
                 if remaining.len() < 1 + length_of_length {
-                    return Err(eyre!("input too short for string length"));
+                    return Err(eyre!("input too short for string length")).kind(ErrorKind::Parse);
                 }
                 let length = self.decode_uint(&remaining[1..=length_of_length])?;
                 Ok((length, 1 + length_of_length + length))
@@ -58,7 +62,7 @@ impl<'a> RlpScanner<'a> {
                 // Long list: length of length is first byte - 0xf7
                 let length_of_length = (first_byte - 0xf7) as usize;
                 if remaining.len() < 1 + length_of_length {
-                    return Err(eyre!("input too short for list length"));
+                    return Err(eyre!("input too short for list length")).kind(ErrorKind::Parse);
                 }
                 let length = self.decode_uint(&remaining[1..=length_of_length])?;
                 Ok((length, 1 + length_of_length + length))
@@ -69,21 +73,23 @@ impl<'a> RlpScanner<'a> {
     /// Helper to decode a big-endian unsigned integer
     fn decode_uint(&self, bytes: &[u8]) -> Result<usize> {
         if bytes.is_empty() {
-            return Err(eyre!("empty bytes for uint"));
+            return Err(eyre!("empty bytes for uint")).kind(ErrorKind::Parse);
         }
         // Reject leading zeros
         if bytes[0] == 0 && bytes.len() > 1 {
-            return Err(eyre!("leading zero in uint"));
+            return Err(eyre!("leading zero in uint")).kind(ErrorKind::Parse);
         }
 
         let mut result = 0usize;
         for &byte in bytes {
             result = result
                 .checked_mul(256)
-                .ok_or_else(|| eyre!("uint overflow"))?;
+                .ok_or_else(|| eyre!("uint overflow"))
+                .kind(ErrorKind::Parse)?;
             result = result
                 .checked_add(byte as usize)
-                .ok_or_else(|| eyre!("uint overflow"))?;
+                .ok_or_else(|| eyre!("uint overflow"))
+                .kind(ErrorKind::Parse)?;
         }
         Ok(result)
     }
@@ -196,7 +202,8 @@ pub fn get_all_tx_offsets(
             tx_ranges.len(),
             receipt_ranges.len(),
             trace_ranges.len()
-        ));
+        ))
+        .kind(ErrorKind::Validation);
     }
 
     // Combine into TxByteOffsets structs
@@ -218,6 +225,7 @@ mod tests {
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use base64::Engine;
+    use eyre::Result;
     use monad_triedb_utils::triedb_env::TxEnvelopeWithSender;
 
     use super::*;
