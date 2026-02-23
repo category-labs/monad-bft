@@ -37,8 +37,11 @@ impl Report {
     ) -> Self {
         let txs_sent = metrics.total_txs_sent.load(Ordering::Relaxed);
         let txs_committed = metrics.total_committed_txs.load(Ordering::Relaxed);
-        let txs_dropped = txs_sent - txs_committed;
-        let target_tps = config.workload_groups[workload_idx].traffic_gens[0].tps as usize;
+        let txs_dropped = txs_sent.saturating_sub(txs_committed);
+        let target_tps = config.workload_groups[workload_idx]
+            .traffic_gens
+            .first()
+            .map(|traffic_gen| traffic_gen.tps as usize);
         let end_time = Utc::now();
 
         // Grab client version from node
@@ -103,7 +106,7 @@ pub struct Report {
     txs_sent: usize,
     txs_committed: usize,
     txs_dropped: usize,
-    target_tps: usize,
+    target_tps: Option<usize>,
     stats: HashMap<String, CounterStatsReport>,
     stats_str: String,
     client_version: Option<String>,
