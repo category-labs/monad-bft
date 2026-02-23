@@ -24,8 +24,8 @@ use std::{
 };
 
 use alloy_consensus::{transaction::Recovered, TxEnvelope};
+use alloy_eips::Decodable2718;
 use alloy_primitives::Address;
-use alloy_rlp::Decodable;
 use bytes::Bytes;
 use futures::Stream;
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
@@ -369,7 +369,7 @@ where
             let mut num_invalid_bytes = 0;
 
             ingress_batch.extend(txs.into_iter().filter_map(|raw_tx| {
-                if let Ok(tx) = TxEnvelope::decode(&mut raw_tx.as_ref()) {
+                if let Ok(tx) = TxEnvelope::decode_2718_exact(raw_tx.as_ref()) {
                     Some((sender, tx))
                 } else {
                     num_invalid_bytes += 1;
