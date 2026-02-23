@@ -91,7 +91,7 @@ where
 
         if !auth_msgs.is_empty() {
             if let Some(authenticated) = &mut self.authenticated {
-                self.metrics[GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_WRITTEN] += auth_bytes;
+                self.metrics[&GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_WRITTEN] += auth_bytes;
                 authenticated.write_unicast_with_priority(
                     UnicastMsg {
                         msgs: auth_msgs,
@@ -103,7 +103,7 @@ where
         }
 
         if !non_auth_msgs.is_empty() {
-            self.metrics[GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_WRITTEN] +=
+            self.metrics[&GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_WRITTEN] +=
                 non_auth_bytes;
             self.non_authenticated.write_unicast_with_priority(
                 UnicastMsg {
@@ -145,12 +145,12 @@ where
             tokio::select! {
                 result = authenticated.recv() => {
                     if let Ok(ref msg) = result {
-                        self.metrics[GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_READ] += msg.payload.len() as u64;
+                        self.metrics[&GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_READ] += msg.payload.len() as u64;
                     }
                     result
                 },
                 msg = self.non_authenticated.recv() => {
-                    self.metrics[GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_READ] += msg.payload.len() as u64;
+                    self.metrics[&GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_READ] += msg.payload.len() as u64;
                     Ok(AuthRecvMsg {
                         src_addr: msg.src_addr,
                         payload: msg.payload,
@@ -161,7 +161,7 @@ where
             }
         } else {
             let msg = self.non_authenticated.recv().await;
-            self.metrics[GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_READ] +=
+            self.metrics[&GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_READ] +=
                 msg.payload.len() as u64;
             Ok(AuthRecvMsg {
                 src_addr: msg.src_addr,

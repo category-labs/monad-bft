@@ -128,6 +128,9 @@ pub struct State {
 
 impl State {
     pub fn new(metric_names: &'static MetricNames) -> Self {
+        let mut metrics = ExecutorMetrics::default();
+        metric_names.register_descriptions(&mut metrics);
+
         Self {
             initiating_sessions: HashMap::new(),
             responding_sessions: HashMap::new(),
@@ -140,7 +143,7 @@ impl State {
             accepted_sessions_by_peer: BTreeSet::new(),
             ip_session_counts: HashMap::new(),
             total_sessions: 0,
-            metrics: ExecutorMetrics::default(),
+            metrics,
             metric_names,
         }
     }

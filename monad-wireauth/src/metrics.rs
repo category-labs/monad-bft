@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use monad_executor::ExecutorMetrics;
+
 pub struct MetricNames {
     pub state_initiating_sessions: &'static str,
     pub state_responding_sessions: &'static str,
@@ -75,6 +77,113 @@ pub struct MetricNames {
 
     pub rate_limit_drop: &'static str,
     pub rate_limit_connect: &'static str,
+}
+
+impl MetricNames {
+    pub fn register_descriptions(&self, metrics: &mut ExecutorMetrics) {
+        metrics.set_description(self.state_initiating_sessions, "Sessions in initiating state");
+        metrics.set_description(self.state_responding_sessions, "Sessions in responding state");
+        metrics.set_description(self.state_transport_sessions, "Sessions in transport state");
+        metrics.set_description(self.state_total_sessions, "Current total wireauth sessions");
+        metrics.set_description(self.state_allocated_indices, "Allocated session indices");
+        metrics.set_description(self.state_sessions_by_public_key, "Sessions indexed by public key");
+        metrics.set_description(self.state_sessions_by_socket, "Sessions indexed by socket");
+        metrics.set_description(self.state_session_index_allocated, "Session indices allocated");
+        metrics.set_description(
+            self.state_session_established_initiator,
+            "Sessions established as initiator",
+        );
+        metrics.set_description(
+            self.state_session_established_responder,
+            "Sessions established as responder",
+        );
+        metrics.set_description(self.state_session_terminated, "Sessions terminated");
+        metrics.set_description(self.state_timers_size, "Active timers count");
+        metrics.set_description(self.state_packet_queue_size, "Packet queue size");
+        metrics.set_description(
+            self.state_initiated_session_by_peer_size,
+            "Initiated sessions by peer",
+        );
+        metrics.set_description(
+            self.state_accepted_sessions_by_peer_size,
+            "Accepted sessions by peer",
+        );
+        metrics.set_description(self.state_ip_session_counts_size, "IP session counts map size");
+
+        metrics.set_description(self.filter_ip_request_history_size, "IP request history size");
+        metrics.set_description(self.filter_pass, "Packets that passed the filter");
+        metrics.set_description(self.filter_send_cookie, "Cookie replies sent by filter");
+        metrics.set_description(self.filter_drop, "Packets dropped by filter");
+
+        metrics.set_description(self.api_connect, "Connect API calls");
+        metrics.set_description(self.api_decrypt, "Decrypt API calls");
+        metrics.set_description(self.api_encrypt_by_public_key, "Encrypt by public key API calls");
+        metrics.set_description(self.api_encrypt_by_socket, "Encrypt by socket API calls");
+        metrics.set_description(self.api_disconnect, "Disconnect API calls");
+        metrics.set_description(self.api_dispatch_control, "Dispatch control API calls");
+        metrics.set_description(self.api_next_packet, "Next packet API calls");
+        metrics.set_description(self.api_tick, "Tick API calls");
+
+        metrics.set_description(
+            self.dispatch_handshake_init,
+            "Handshake initiation messages dispatched",
+        );
+        metrics.set_description(
+            self.dispatch_handshake_response,
+            "Handshake response messages dispatched",
+        );
+        metrics.set_description(self.dispatch_cookie_reply, "Cookie reply messages dispatched");
+        metrics.set_description(self.dispatch_keepalive, "Keepalive messages dispatched");
+
+        metrics.set_description(self.error_connect, "Connect errors");
+        metrics.set_description(self.error_decrypt, "Decrypt errors");
+        metrics.set_description(
+            self.error_decrypt_nonce_outside_window,
+            "Decrypt errors - nonce outside window",
+        );
+        metrics.set_description(
+            self.error_decrypt_nonce_duplicate,
+            "Decrypt errors - duplicate nonce",
+        );
+        metrics.set_description(self.error_decrypt_mac, "Decrypt errors - MAC verification failed");
+        metrics.set_description(
+            self.error_encrypt_by_public_key,
+            "Encrypt by public key errors",
+        );
+        metrics.set_description(self.error_encrypt_by_socket, "Encrypt by socket errors");
+        metrics.set_description(self.error_dispatch_control, "Dispatch control errors");
+        metrics.set_description(self.error_session_exhausted, "Session exhausted errors");
+        metrics.set_description(self.error_mac1_verification_failed, "MAC1 verification failures");
+        metrics.set_description(self.error_timestamp_replay, "Timestamp replay errors");
+        metrics.set_description(self.error_session_not_found, "Session not found errors");
+        metrics.set_description(
+            self.error_session_index_not_found,
+            "Session index not found errors",
+        );
+        metrics.set_description(
+            self.error_handshake_init_validation,
+            "Handshake init validation errors",
+        );
+        metrics.set_description(self.error_cookie_reply, "Cookie reply errors");
+        metrics.set_description(
+            self.error_handshake_response_validation,
+            "Handshake response validation errors",
+        );
+
+        metrics.set_description(self.enqueued_handshake_init, "Handshake init messages enqueued");
+        metrics.set_description(
+            self.enqueued_handshake_response,
+            "Handshake response messages enqueued",
+        );
+        metrics.set_description(self.enqueued_cookie_reply, "Cookie reply messages enqueued");
+        metrics.set_description(self.enqueued_keepalive, "Keepalive messages enqueued");
+
+        metrics.set_description(self.rate_limit_drop, "Packets dropped due to rate limiting");
+        metrics.set_description(
+            self.rate_limit_connect,
+            "Connect API calls dropped due to rate limiting",
+        );
+    }
 }
 
 #[macro_export]
@@ -282,3 +391,25 @@ macro_rules! define_metric_names {
 define_metric_names!(pub(crate) DEFAULT_METRIC_NAMES, "udp");
 
 pub static DEFAULT_METRICS: &MetricNames = &DEFAULT_METRIC_NAMES;
+
+#[cfg(test)]
+mod tests {
+    use monad_executor::ExecutorMetrics;
+
+    use super::DEFAULT_METRICS;
+
+    #[test]
+    fn register_descriptions_populates_help_texts() {
+        let mut metrics = ExecutorMetrics::default();
+        DEFAULT_METRICS.register_descriptions(&mut metrics);
+
+        assert_eq!(
+            metrics.description(DEFAULT_METRICS.api_connect),
+            "Connect API calls"
+        );
+        assert_eq!(
+            metrics.description(DEFAULT_METRICS.rate_limit_connect),
+            "Connect API calls dropped due to rate limiting"
+        );
+    }
+}

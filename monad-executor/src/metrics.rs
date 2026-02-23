@@ -20,20 +20,78 @@ use std::{
 
 use hdrhistogram::Histogram as HdrHistogram;
 
+pub struct MetricDef {
+    pub name: &'static str,
+    pub help: &'static str,
+}
+
+impl MetricDef {
+    pub const fn new(name: &'static str, help: &'static str) -> Self {
+        Self { name, help }
+    }
+}
+
+#[macro_export]
+macro_rules! define_metric {
+    ($vis:vis $ident:ident, $name:expr, $help:expr) => {
+        $vis const $ident: $crate::MetricDef = $crate::MetricDef::new($name, $help);
+    };
+}
+
 #[derive(Default, Debug, Clone)]
-pub struct ExecutorMetrics(HashMap<&'static str, u64>);
+pub struct ExecutorMetrics {
+    values: HashMap<&'static str, u64>,
+    descriptions: HashMap<&'static str, &'static str>,
+}
+
+impl ExecutorMetrics {
+    pub fn set(&mut self, metric: &MetricDef, value: u64) {
+        self.values.insert(metric.name, value);
+        self.descriptions.insert(metric.name, metric.help);
+    }
+
+    pub fn set_description(&mut self, name: &'static str, help: &'static str) {
+        self.descriptions.insert(name, help);
+    }
+
+    pub fn description(&self, name: &str) -> &'static str {
+        self.descriptions.get(name).copied().unwrap_or("")
+    }
+
+    pub fn iter_with_descriptions(&self) -> impl Iterator<Item = (&'static str, u64, &'static str)> + '_ {
+        self.values.iter().map(|(&k, &v)| {
+            let desc = self.descriptions.get(k).copied().unwrap_or("");
+            (k, v, desc)
+        })
+    }
+}
 
 impl Index<&'static str> for ExecutorMetrics {
     type Output = u64;
 
     fn index(&self, index: &'static str) -> &Self::Output {
-        self.0.get(index).unwrap_or(&0)
+        self.values.get(index).unwrap_or(&0)
     }
 }
 
 impl IndexMut<&'static str> for ExecutorMetrics {
     fn index_mut(&mut self, index: &'static str) -> &mut Self::Output {
-        self.0.entry(index).or_default()
+        self.values.entry(index).or_default()
+    }
+}
+
+impl Index<&MetricDef> for ExecutorMetrics {
+    type Output = u64;
+
+    fn index(&self, metric: &MetricDef) -> &Self::Output {
+        self.values.get(metric.name).unwrap_or(&0)
+    }
+}
+
+impl IndexMut<&MetricDef> for ExecutorMetrics {
+    fn index_mut(&mut self, metric: &MetricDef) -> &mut Self::Output {
+        self.descriptions.insert(metric.name, metric.help);
+        self.values.entry(metric.name).or_default()
     }
 }
 
@@ -63,10 +121,15 @@ impl<'a> ExecutorMetricsChain<'a> {
         self
     }
 
-    pub fn into_inner(self) -> Vec<(&'static str, u64)> {
+    pub fn into_inner(self) -> Vec<(&'static str, u64, &'static str)> {
         self.0
             .into_iter()
-            .flat_map(|metrics| metrics.0.clone().into_iter())
+            .flat_map(|metrics| {
+                metrics.values.iter().map(|(&k, &v)| {
+                    let desc = metrics.descriptions.get(k).copied().unwrap_or("");
+                    (k, v, desc)
+                })
+            })
             .collect()
     }
 }

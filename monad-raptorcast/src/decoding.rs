@@ -43,10 +43,10 @@ use crate::{
 };
 
 pub const DECODING_CACHE_METRIC_PREFIX: &str = "monad.raptorcast.decoding_cache";
-pub const METRIC_RECENTLY_DECODED_HIT: &str = "monad.raptorcast.decoding_cache.decoded_hit";
-pub const METRIC_PENDING_HIT: &str = "monad.raptorcast.decoding_cache.pending_hit";
-pub const METRIC_NEW_ENTRY: &str = "monad.raptorcast.decoding_cache.new_entry";
-pub const METRIC_DECODED: &str = "monad.raptorcast.decoding_cache.decoded";
+monad_executor::define_metric!(pub METRIC_RECENTLY_DECODED_HIT, "monad.raptorcast.decoding_cache.decoded_hit", "Hits on recently decoded messages");
+monad_executor::define_metric!(pub METRIC_PENDING_HIT, "monad.raptorcast.decoding_cache.pending_hit", "Hits on pending messages in cache");
+monad_executor::define_metric!(pub METRIC_NEW_ENTRY, "monad.raptorcast.decoding_cache.new_entry", "New entries added to decoding cache");
+monad_executor::define_metric!(pub METRIC_DECODED, "monad.raptorcast.decoding_cache.decoded", "Messages successfully decoded");
 
 pub(crate) const RECENTLY_DECODED_CACHE_SIZE: usize = 10000;
 
@@ -175,7 +175,7 @@ where
                 recently_decoded
                     .handle_message(message)
                     .map_err(TryDecodeError::InvalidSymbol)?;
-                self.metrics[METRIC_RECENTLY_DECODED_HIT] += 1;
+                self.metrics[&METRIC_RECENTLY_DECODED_HIT] += 1;
                 return Ok(TryDecodeStatus::RecentlyDecoded);
             }
 
@@ -184,7 +184,7 @@ where
                 decoder_state
                     .handle_message(message)
                     .map_err(TryDecodeError::InvalidSymbol)?;
-                cache_hit_metric = METRIC_PENDING_HIT;
+                cache_hit_metric = &METRIC_PENDING_HIT;
                 decoder_state
             }
 
@@ -197,10 +197,10 @@ where
                     self.insert_decoder_state(&cache_key, message, decoder_state, context)
                 else {
                     // the cache rejected the new entry
-                    self.metrics[METRIC_NEW_ENTRY] += 1;
+                    self.metrics[&METRIC_NEW_ENTRY] += 1;
                     return Ok(TryDecodeStatus::RejectedByCache);
                 };
-                cache_hit_metric = METRIC_NEW_ENTRY;
+                cache_hit_metric = &METRIC_NEW_ENTRY;
                 decoder_state
             }
         };
@@ -243,7 +243,7 @@ where
 
         self.recently_decoded
             .put(cache_key, RecentlyDecodedState::from(decoder_state));
-        self.metrics[METRIC_DECODED] += 1;
+        self.metrics[&METRIC_DECODED] += 1;
 
         Ok(TryDecodeStatus::Decoded {
             author: message.author,

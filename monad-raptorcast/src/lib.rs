@@ -980,11 +980,11 @@ where
 
                 match sock.poll_unpin(cx) {
                     Poll::Ready(Ok(msg)) => {
-                        this.metrics[GAUGE_RAPTORCAST_TOTAL_MESSAGES_RECEIVED] += 1;
+                        this.metrics[&GAUGE_RAPTORCAST_TOTAL_MESSAGES_RECEIVED] += 1;
                         msg
                     }
                     Poll::Ready(Err(e)) => {
-                        this.metrics[GAUGE_RAPTORCAST_TOTAL_RECV_ERRORS] += 1;
+                        this.metrics[&GAUGE_RAPTORCAST_TOTAL_RECV_ERRORS] += 1;
                         trace!(error=?e, "socket recv error");
                         continue;
                     }

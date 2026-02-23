@@ -58,6 +58,9 @@ impl Filter {
         low_watermark_sessions: usize,
         high_watermark_sessions: usize,
     ) -> Self {
+        let mut metrics = ExecutorMetrics::default();
+        metric_names.register_descriptions(&mut metrics);
+
         Self {
             counter: 0,
             last_reset: Duration::ZERO,
@@ -68,7 +71,7 @@ impl Filter {
             max_sessions_per_ip,
             low_watermark_sessions,
             high_watermark_sessions,
-            metrics: ExecutorMetrics::default(),
+            metrics,
             metric_names,
         }
     }
