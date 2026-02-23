@@ -169,7 +169,10 @@ impl IndexDataStorageRepr {
                     trace: inline_v0.trace,
                     receipt: receipts
                         .get(inline_v0.header_subset.tx_index as usize)
-                        .ok_or_kind(ErrorKind::NotFound, "Failed to find receipt in block data")?
+                        .ok_or_kind(
+                            ErrorKind::Validation,
+                            "Failed to find receipt in block data",
+                        )?
                         .clone(),
                     header_subset: inline_v0.header_subset.convert(block.header.timestamp),
                 }

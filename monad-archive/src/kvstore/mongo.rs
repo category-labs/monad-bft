@@ -88,7 +88,8 @@ impl KeyValueDocument {
                 for key in keys {
                     let Some(chunk) = chunks.remove(&key) else {
                         return Err(eyre!("Chunk not found for key: {key}"))
-                            .kind(ErrorKind::NotFound);
+                            .wrap_err("Corrupt chunked MongoDB value")
+                            .kind(ErrorKind::Storage);
                     };
                     bytes.extend_from_slice(&chunk);
                 }
