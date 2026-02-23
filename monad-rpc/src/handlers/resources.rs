@@ -28,7 +28,7 @@ use tracing_actix_web::RootSpanBuilder;
 
 use super::eth::call::EthCallStatsTracker;
 use crate::{
-    chainstate::ChainState, comparator::RpcComparator, metrics::Metrics,
+    chainstate::ChainState, comparator::RpcComparator, middleware::Metrics,
     txpool::EthTxPoolBridgeClient,
 };
 

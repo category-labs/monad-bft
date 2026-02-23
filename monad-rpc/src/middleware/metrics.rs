@@ -21,10 +21,11 @@ use actix_web::{
 };
 use futures_util::future::{FutureExt as _, LocalBoxFuture};
 use opentelemetry::{
-    metrics::{Histogram, Meter, UpDownCounter},
+    metrics::{Histogram, MeterProvider, UpDownCounter},
     KeyValue,
 };
 use opentelemetry_otlp::{MetricExporter, WithExportConfig};
+use opentelemetry_sdk::metrics::SdkMeterProvider;
 
 pub struct MetricsMiddleware<S> {
     service: S,
@@ -110,6 +111,8 @@ fn attributes_from_request(req: &ServiceRequest) -> Vec<KeyValue> {
 
 #[derive(Clone)]
 pub struct Metrics {
+    provider: SdkMeterProvider,
+
     request_duration: Histogram<f64>,
     active_requests: UpDownCounter<i64>,
     active_websocket_connections: UpDownCounter<i64>,
@@ -118,7 +121,45 @@ pub struct Metrics {
 }
 
 impl Metrics {
-    pub fn new(meter: Meter) -> Self {
+    pub fn new_with_otel_endpoint(
+        otel_endpoint: String,
+        service_name: String,
+        interval: Duration,
+    ) -> Self {
+        let exporter = MetricExporter::builder()
+            .with_tonic()
+            .with_endpoint(otel_endpoint)
+            .with_timeout(interval * 2)
+            .build()
+            .unwrap();
+
+        let reader = opentelemetry_sdk::metrics::PeriodicReader::builder(exporter)
+            .with_interval(interval / 2)
+            .build();
+
+        let provider = opentelemetry_sdk::metrics::SdkMeterProvider::builder()
+            .with_reader(reader)
+            .with_resource(
+                opentelemetry_sdk::Resource::builder_empty()
+                    .with_attributes(vec![opentelemetry::KeyValue::new(
+                        "service.name".to_string(),
+                        service_name,
+                    )])
+                    .build(),
+            )
+            .build();
+
+        Self::new_with_otel_provider(provider)
+    }
+
+    pub fn new_with_otel_provider(provider: SdkMeterProvider) -> Self {
+        const LOW_US_TO_S: &[f64] = &[
+            0.000_001, 0.000_002, 0.000_005, 0.000_01, 0.000_02, 0.000_05, 0.000_1, 0.000_2,
+            0.000_5, 0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0,
+        ];
+
+        let meter = provider.meter("opentelemetry");
+
         let request_duration = meter
             .f64_histogram("monad.rpc.request_duration")
             .with_description("Duration of inbound http requests")
@@ -149,6 +190,8 @@ impl Metrics {
             .build();
 
         Self {
+            provider,
+
             request_duration,
             active_requests,
             active_websocket_connections,
@@ -165,38 +208,3 @@ impl Metrics {
         self.active_websocket_topics.add(increment, &[]);
     }
 }
-
-pub fn build_otel_meter_provider(
-    otel_endpoint: &str,
-    service_name: String,
-    interval: Duration,
-) -> Result<opentelemetry_sdk::metrics::SdkMeterProvider, std::io::Error> {
-    let exporter = MetricExporter::builder()
-        .with_tonic()
-        .with_endpoint(otel_endpoint)
-        .with_timeout(interval * 2)
-        .build()
-        .unwrap();
-
-    let reader = opentelemetry_sdk::metrics::PeriodicReader::builder(exporter)
-        .with_interval(interval / 2)
-        .build();
-
-    let provider_builder = opentelemetry_sdk::metrics::SdkMeterProvider::builder()
-        .with_reader(reader)
-        .with_resource(
-            opentelemetry_sdk::Resource::builder_empty()
-                .with_attributes(vec![opentelemetry::KeyValue::new(
-                    "service.name".to_string(),
-                    service_name,
-                )])
-                .build(),
-        );
-
-    Ok(provider_builder.build())
-}
-
-const LOW_US_TO_S: &[f64] = &[
-    0.000_001, 0.000_002, 0.000_005, 0.000_01, 0.000_02, 0.000_05, 0.000_1, 0.000_2, 0.000_5,
-    0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0,
-];

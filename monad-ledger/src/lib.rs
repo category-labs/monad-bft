@@ -254,17 +254,20 @@ where
     fn exec(&mut self, commands: Vec<Self::Command>) {
         for command in commands {
             match command {
-                LedgerCommand::LedgerCommit(OptimisticCommit::Proposed(block)) => {
-                    let block_id = block.get_id();
-
+                LedgerCommand::LedgerCommit(OptimisticCommit::Proposed {
+                    block,
+                    is_canonical,
+                }) => {
                     // this can panic because failure to persist a block is fatal error
                     self.write_bft_block(&block);
 
-                    self.update_cache(block);
+                    if is_canonical {
+                        self.bft_block_persist
+                            .update_proposed_head(&block.get_id())
+                            .unwrap();
+                    }
 
-                    self.bft_block_persist
-                        .update_proposed_head(&block_id)
-                        .unwrap();
+                    self.update_cache(block);
                 }
                 LedgerCommand::LedgerCommit(OptimisticCommit::Voted(block)) => {
                     let block_id = block.get_id();

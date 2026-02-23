@@ -26,20 +26,17 @@ use monad_pprof::start_pprof_server;
 use monad_rpc::{
     chainstate::{buffer::ChainStateBuffer, ChainState},
     comparator::RpcComparator,
-    decompression_guard::DecompressionGuard,
     event::EventServer,
     handlers::{
         resources::{MonadJsonRootSpanBuilder, MonadRpcResources},
         rpc_handler,
     },
-    metrics,
-    timing::TimingMiddleware,
+    middleware::{DecompressionGuard, Metrics, TimingMiddleware},
     txpool::EthTxPoolBridge,
     websocket, MONAD_RPC_VERSION,
 };
 use monad_tracing_timing::TimingsLayer;
 use monad_triedb_utils::triedb_env::TriedbEnv;
-use opentelemetry::metrics::MeterProvider;
 use tokio::sync::Semaphore;
 use tracing::{debug, error, info, warn};
 use tracing_actix_web::TracingLogger;
@@ -298,21 +295,13 @@ async fn main() -> std::io::Result<()> {
         ))
     });
 
-    let meter_provider: Option<opentelemetry_sdk::metrics::SdkMeterProvider> =
-        args.otel_endpoint.as_ref().map(|endpoint| {
-            let provider = metrics::build_otel_meter_provider(
-                endpoint,
-                node_config.node_name.clone(),
-                std::time::Duration::from_secs(5),
-            )
-            .expect("failed to build otel meter");
-            opentelemetry::global::set_meter_provider(provider.clone());
-            provider
-        });
-
-    let with_metrics = meter_provider
-        .as_ref()
-        .map(|provider| metrics::Metrics::new(provider.clone().meter("opentelemetry")));
+    let with_metrics = args.otel_endpoint.map(|otel_endpoint| {
+        Metrics::new_with_otel_endpoint(
+            otel_endpoint,
+            node_config.node_name.clone(),
+            std::time::Duration::from_secs(5),
+        )
+    });
 
     let decompression_guard = DecompressionGuard::new(args.max_request_size);
 
