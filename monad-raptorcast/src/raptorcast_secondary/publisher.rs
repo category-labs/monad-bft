@@ -603,7 +603,7 @@ mod tests {
     use monad_testutil::signing::get_key;
     use monad_types::{Epoch, Round};
     use rand::SeedableRng;
-    use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+    use tokio::sync::mpsc::{channel, Receiver, Sender};
     use tracing_subscriber::fmt::format::FmtSpan;
 
     use super::{
@@ -620,10 +620,7 @@ mod tests {
 
     type ST = SecpSignature;
     type PubKeyType = CertificateSignaturePubKey<ST>;
-    type RcToRcChannelGrp = (
-        UnboundedSender<Group<PubKeyType>>,
-        UnboundedReceiver<Group<PubKeyType>>,
-    );
+    type RcToRcChannelGrp = (Sender<Group<PubKeyType>>, Receiver<Group<PubKeyType>>);
     type NodeIdST<ST> = NodeId<CertificateSignaturePubKey<ST>>;
 
     // Creates a node id that we can refer to just from its seed
@@ -983,13 +980,13 @@ mod tests {
     // This is a mock of how the primary raptorcast instance would represent
     // the rebroadcast group map.
     struct MockGroupMap {
-        rx_from_client: UnboundedReceiver<Group<PubKeyType>>,
+        rx_from_client: Receiver<Group<PubKeyType>>,
         group_map: ReBroadcastGroupMap<PubKeyType>,
     }
     impl MockGroupMap {
         fn new(
             clt_node_id: NodeId<PubKeyType>,
-            rx_from_client: UnboundedReceiver<Group<PubKeyType>>,
+            rx_from_client: Receiver<Group<PubKeyType>>,
         ) -> Self {
             Self {
                 group_map: ReBroadcastGroupMap::new(clt_node_id),
@@ -1391,7 +1388,7 @@ mod tests {
     #[test]
     fn client_avoid_one_round_gap() {
         enable_tracer();
-        let (clt_tx, clt_rx): RcToRcChannelGrp = unbounded_channel();
+        let (clt_tx, clt_rx): RcToRcChannelGrp = channel(8);
         let mut clt =
             Client::<ST>::new(nid(10), clt_tx, RaptorCastConfigSecondaryClient::default());
         let mut group_map = MockGroupMap::new(nid(10), clt_rx);
@@ -1491,7 +1488,7 @@ mod tests {
     #[test]
     fn standalone_client_single_group() {
         enable_tracer();
-        let (clt_tx, clt_rx): RcToRcChannelGrp = unbounded_channel();
+        let (clt_tx, clt_rx): RcToRcChannelGrp = channel(8);
         let mut clt = Client::<ST>::new(
             nid(10),
             clt_tx,
@@ -1607,7 +1604,7 @@ mod tests {
     #[test]
     fn mid_round_client_start() {
         enable_tracer();
-        let (clt_tx, clt_rx): RcToRcChannelGrp = unbounded_channel();
+        let (clt_tx, clt_rx): RcToRcChannelGrp = channel(8);
         let mut clt = Client::<ST>::new(
             nid(10),
             clt_tx,
@@ -1738,7 +1735,7 @@ mod tests {
         // 16       | v0.2  v1.1  v2.1
 
         let me = 10;
-        let (clt_tx, clt_rx): RcToRcChannelGrp = unbounded_channel();
+        let (clt_tx, clt_rx): RcToRcChannelGrp = channel(8);
         let mut clt = Client::<ST>::new(
             nid(me),
             clt_tx,

@@ -46,7 +46,7 @@ use monad_types::{
     Deserializable, Epoch, NodeId, Round, RoundSpan, Serializable, Stake, UdpPriority,
 };
 use monad_validator::validator_set::ValidatorSet;
-use tokio::sync::mpsc::unbounded_channel;
+use tokio::sync::mpsc::channel;
 use tracing_subscriber::fmt::format::FmtSpan;
 
 type SignatureType = SecpSignature;
@@ -584,10 +584,9 @@ async fn delete_expired_groups() {
     raptorcast.exec(vec![RouterCommand::UpdateCurrentRound(Epoch(1), Round(1))]);
 
     // setup
-    let (send_net_messages, _) = unbounded_channel::<FullNodesGroupMessage<SignatureType>>();
-    let (send_group_infos, recv_group_infos) = unbounded_channel::<Group<PubKeyType>>();
-    let (_, recv_outbound_from_secondary) =
-        unbounded_channel::<SecondaryOutboundMessage<PubKeyType>>();
+    let (send_net_messages, _) = channel::<FullNodesGroupMessage<SignatureType>>(8);
+    let (send_group_infos, recv_group_infos) = channel::<Group<PubKeyType>>(8);
+    let (_, recv_outbound_from_secondary) = channel::<SecondaryOutboundMessage<PubKeyType>>(8);
     raptorcast.set_is_dynamic_full_node(true);
     raptorcast.bind_channel_to_secondary_raptorcast(
         send_net_messages,
@@ -605,7 +604,7 @@ async fn delete_expired_groups() {
             end: Round(10),
         },
     );
-    send_group_infos.send(group).unwrap();
+    send_group_infos.try_send(group).unwrap();
 
     loop {
         tokio::select! {

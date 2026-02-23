@@ -21,13 +21,14 @@ use monad_crypto::certificate_signature::{
 };
 use monad_executor::ExecutorMetrics;
 use monad_types::{NodeId, Round, RoundSpan, GENESIS_ROUND};
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::{error::TrySendError, Sender};
 use tracing::{debug, error, warn};
 
 use super::{
     super::{config::RaptorCastConfigSecondaryClient, util::Group},
     group_message::{ConfirmGroup, PrepareGroup, PrepareGroupResponse},
 };
+use crate::metrics::GAUGE_RAPTORCAST_BRIDGE_SECONDARY_TO_PRIMARY_GROUP_DROPPED;
 
 /// Metrics constant
 pub const CLIENT_NUM_CURRENT_GROUPS: &str =
@@ -67,7 +68,7 @@ where
     >,
 
     // Once a group is confirmed, it is sent to this channel
-    group_sink_channel: UnboundedSender<GroupAsClient<CertificateSignaturePubKey<ST>>>,
+    group_sink_channel: Sender<GroupAsClient<CertificateSignaturePubKey<ST>>>,
 
     // For avoiding accepting invites/confirms for rounds we've already started
     curr_round: Round,
@@ -87,7 +88,7 @@ where
 {
     pub fn new(
         client_node_id: NodeId<CertificateSignaturePubKey<ST>>,
-        group_sink_channel: UnboundedSender<GroupAsClient<CertificateSignaturePubKey<ST>>>,
+        group_sink_channel: Sender<GroupAsClient<CertificateSignaturePubKey<ST>>>,
         config: RaptorCastConfigSecondaryClient,
     ) -> Self {
         assert!(
@@ -378,12 +379,21 @@ where
         // Doing so helps resolve activation of groups for full-nodes experiencing
         // round gaps, as they aren't receiving proposals and hence can't advance
         // (enter) rounds.
-        if let Err(error) = self.group_sink_channel.send(group.clone()) {
-            tracing::error!(
-                "RaptorCastSecondary failed to send group to primary \
-                                    Raptorcast instance: {}",
-                error
-            );
+        match self.group_sink_channel.try_send(group.clone()) {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => {
+                self.metrics[GAUGE_RAPTORCAST_BRIDGE_SECONDARY_TO_PRIMARY_GROUP_DROPPED] += 1;
+                debug!(
+                    dropped =
+                        self.metrics[GAUGE_RAPTORCAST_BRIDGE_SECONDARY_TO_PRIMARY_GROUP_DROPPED],
+                    "dropping group update: secondary->primary group channel full"
+                );
+            }
+            Err(TrySendError::Closed(_)) => {
+                tracing::error!(
+                    "RaptorCastSecondary failed to send group to primary Raptorcast instance: channel closed"
+                );
+            }
         }
 
         self.metrics[CLIENT_RECEIVED_CONFIRMS] += 1;
@@ -448,7 +458,7 @@ mod tests {
 
     use monad_secp::SecpSignature;
     use monad_testutil::signing::get_key;
-    use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
+    use tokio::sync::mpsc::{channel, Receiver, Sender};
 
     use super::{
         super::{
@@ -460,14 +470,11 @@ mod tests {
 
     type ST = SecpSignature;
     type PubKeyType = CertificateSignaturePubKey<ST>;
-    type RcToRcChannelGrp = (
-        UnboundedSender<Group<PubKeyType>>,
-        UnboundedReceiver<Group<PubKeyType>>,
-    );
+    type RcToRcChannelGrp = (Sender<Group<PubKeyType>>, Receiver<Group<PubKeyType>>);
 
     #[test]
     fn malformed_prepare_messages() {
-        let (clt_tx, _clt_rx): RcToRcChannelGrp = unbounded_channel();
+        let (clt_tx, _clt_rx): RcToRcChannelGrp = channel(8);
         let self_id = nid(1);
         let mut clt = Client::<ST>::new(
             self_id,
@@ -517,7 +524,7 @@ mod tests {
 
     #[test]
     fn exceed_max_num_group() {
-        let (clt_tx, _clt_rx): RcToRcChannelGrp = unbounded_channel();
+        let (clt_tx, _clt_rx): RcToRcChannelGrp = channel(8);
         let self_id = nid(1);
         let mut clt = Client::<ST>::new(
             self_id,
@@ -566,7 +573,7 @@ mod tests {
 
     #[test]
     fn test_get_current_group_count() {
-        let (clt_tx, _clt_rx): RcToRcChannelGrp = unbounded_channel();
+        let (clt_tx, _clt_rx): RcToRcChannelGrp = channel(8);
         let self_id = nid(1);
         let mut clt = Client::<ST>::new(
             self_id,

@@ -22,6 +22,12 @@ use crate::util::unix_ts_ms_now;
 pub const GAUGE_RAPTORCAST_TOTAL_MESSAGES_RECEIVED: &str =
     "monad.raptorcast.total_messages_received";
 pub const GAUGE_RAPTORCAST_TOTAL_RECV_ERRORS: &str = "monad.raptorcast.total_recv_errors";
+pub const GAUGE_RAPTORCAST_BRIDGE_PRIMARY_TO_SECONDARY_DROPPED: &str =
+    "monad.raptorcast.bridge.primary_to_secondary.dropped";
+pub const GAUGE_RAPTORCAST_BRIDGE_SECONDARY_TO_PRIMARY_GROUP_DROPPED: &str =
+    "monad.raptorcast.bridge.secondary_to_primary_group.dropped";
+pub const GAUGE_RAPTORCAST_BRIDGE_SECONDARY_TO_PRIMARY_OUTBOUND_DROPPED: &str =
+    "monad.raptorcast.bridge.secondary_to_primary_outbound.dropped";
 
 pub const GAUGE_RAPTORCAST_DECODING_CACHE_SIGNATURE_VERIFICATIONS_RATE_LIMITED: &str =
     "monad.raptorcast.decoding_cache.signature_verifications_rate_limited";
