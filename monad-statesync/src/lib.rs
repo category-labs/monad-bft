@@ -42,13 +42,36 @@ mod ffi;
 mod ipc;
 mod outbound_requests;
 
-monad_executor::define_metric!(GAUGE_STATESYNC_SYNCING, "monad.statesync.syncing", "Whether state sync is active (1) or not (0)");
-monad_executor::define_metric!(GAUGE_STATESYNC_PROGRESS_ESTIMATE, "monad.statesync.progress_estimate", "Estimated progress of state sync operation");
-monad_executor::define_metric!(GAUGE_STATESYNC_LAST_TARGET, "monad.statesync.last_target", "Last target block number for state sync");
-monad_executor::define_metric!(GAUGE_STATESYNC_SERVER_PENDING_REQUESTS, "monad.statesync.server_pending_requests", "Pending state sync server requests");
-monad_executor::define_metric!(GAUGE_STATESYNC_SERVER_NUM_SYNCDONE_SUCCESS, "monad.statesync.server_num_syncdone_success", "Successful sync completions");
-monad_executor::define_metric!(GAUGE_STATESYNC_SERVER_NUM_SYNCDONE_FAILED, "monad.statesync.server_num_syncdone_failed", "Failed sync completions");
-monad_executor::define_metric!(GAUGE_STATESYNC_SERVER_TOTAL_SERVICE_TIME_US, "monad.statesync.server_total_service_time_us", "Total state sync service time in microseconds");
+monad_executor::metric_consts! {
+    GAUGE_STATESYNC_SYNCING {
+        name: "monad.statesync.syncing",
+        help: "Whether state sync is active (1) or not (0)",
+    }
+    GAUGE_STATESYNC_PROGRESS_ESTIMATE {
+        name: "monad.statesync.progress_estimate",
+        help: "Estimated progress of state sync operation",
+    }
+    GAUGE_STATESYNC_LAST_TARGET {
+        name: "monad.statesync.last_target",
+        help: "Last target block number for state sync",
+    }
+    GAUGE_STATESYNC_SERVER_PENDING_REQUESTS {
+        name: "monad.statesync.server_pending_requests",
+        help: "Pending state sync server requests",
+    }
+    GAUGE_STATESYNC_SERVER_NUM_SYNCDONE_SUCCESS {
+        name: "monad.statesync.server_num_syncdone_success",
+        help: "Successful sync completions",
+    }
+    GAUGE_STATESYNC_SERVER_NUM_SYNCDONE_FAILED {
+        name: "monad.statesync.server_num_syncdone_failed",
+        help: "Failed sync completions",
+    }
+    GAUGE_STATESYNC_SERVER_TOTAL_SERVICE_TIME_US {
+        name: "monad.statesync.server_total_service_time_us",
+        help: "Total state sync service time in microseconds",
+    }
+}
 
 pub struct StateSync<ST, SCT>
 where

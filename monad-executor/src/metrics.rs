@@ -20,6 +20,7 @@ use std::{
 
 use hdrhistogram::Histogram as HdrHistogram;
 
+#[derive(Copy, Clone, Debug)]
 pub struct MetricDef {
     pub name: &'static str,
     pub help: &'static str,
@@ -31,67 +32,73 @@ impl MetricDef {
     }
 }
 
+impl std::hash::Hash for MetricDef {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.name.hash(state);
+    }
+}
+
+impl PartialEq for MetricDef {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+    }
+}
+
+impl Eq for MetricDef {}
+
+/// Defines one or more `MetricDef` constants with co-located name and help text.
+///
+/// # Example
+///
+/// ```ignore
+/// monad_executor::metric_consts! {
+///     pub GAUGE_TOTAL_EXEC_US {
+///         name: "monad.executor.total_exec_us",
+///         help: "Total executor execution time in microseconds",
+///     }
+///     GAUGE_POLL_US {
+///         name: "monad.executor.poll_us",
+///         help: "Total executor poll time in microseconds",
+///     }
+/// }
+/// ```
 #[macro_export]
-macro_rules! define_metric {
-    ($vis:vis $ident:ident, $name:expr, $help:expr) => {
-        $vis const $ident: $crate::MetricDef = $crate::MetricDef::new($name, $help);
+macro_rules! metric_consts {
+    ($( $vis:vis $ident:ident { name: $name:expr, help: $help:expr $(,)? } )+) => {
+        $(
+            $vis const $ident: $crate::MetricDef = $crate::MetricDef::new($name, $help);
+        )+
     };
 }
 
 #[derive(Default, Debug, Clone)]
 pub struct ExecutorMetrics {
-    values: HashMap<&'static str, u64>,
-    descriptions: HashMap<&'static str, &'static str>,
+    values: HashMap<&'static MetricDef, u64>,
 }
 
 impl ExecutorMetrics {
-    pub fn set(&mut self, metric: &MetricDef, value: u64) {
-        self.values.insert(metric.name, value);
-        self.descriptions.insert(metric.name, metric.help);
+    pub fn set(&mut self, metric: &'static MetricDef, value: u64) {
+        self.values.insert(metric, value);
     }
 
-    pub fn set_description(&mut self, name: &'static str, help: &'static str) {
-        self.descriptions.insert(name, help);
-    }
-
-    pub fn description(&self, name: &str) -> &'static str {
-        self.descriptions.get(name).copied().unwrap_or("")
-    }
-
-    pub fn iter_with_descriptions(&self) -> impl Iterator<Item = (&'static str, u64, &'static str)> + '_ {
-        self.values.iter().map(|(&k, &v)| {
-            let desc = self.descriptions.get(k).copied().unwrap_or("");
-            (k, v, desc)
-        })
+    pub fn iter_with_descriptions(
+        &self,
+    ) -> impl Iterator<Item = (&'static str, u64, &'static str)> + '_ {
+        self.values.iter().map(|(k, &v)| (k.name, v, k.help))
     }
 }
 
-impl Index<&'static str> for ExecutorMetrics {
+impl Index<&'static MetricDef> for ExecutorMetrics {
     type Output = u64;
 
-    fn index(&self, index: &'static str) -> &Self::Output {
-        self.values.get(index).unwrap_or(&0)
+    fn index(&self, metric: &'static MetricDef) -> &Self::Output {
+        self.values.get(metric).unwrap_or(&0)
     }
 }
 
-impl IndexMut<&'static str> for ExecutorMetrics {
-    fn index_mut(&mut self, index: &'static str) -> &mut Self::Output {
-        self.values.entry(index).or_default()
-    }
-}
-
-impl Index<&MetricDef> for ExecutorMetrics {
-    type Output = u64;
-
-    fn index(&self, metric: &MetricDef) -> &Self::Output {
-        self.values.get(metric.name).unwrap_or(&0)
-    }
-}
-
-impl IndexMut<&MetricDef> for ExecutorMetrics {
-    fn index_mut(&mut self, metric: &MetricDef) -> &mut Self::Output {
-        self.descriptions.insert(metric.name, metric.help);
-        self.values.entry(metric.name).or_default()
+impl IndexMut<&'static MetricDef> for ExecutorMetrics {
+    fn index_mut(&mut self, metric: &'static MetricDef) -> &mut Self::Output {
+        self.values.entry(metric).or_default()
     }
 }
 
@@ -124,12 +131,7 @@ impl<'a> ExecutorMetricsChain<'a> {
     pub fn into_inner(self) -> Vec<(&'static str, u64, &'static str)> {
         self.0
             .into_iter()
-            .flat_map(|metrics| {
-                metrics.values.iter().map(|(&k, &v)| {
-                    let desc = metrics.descriptions.get(k).copied().unwrap_or("");
-                    (k, v, desc)
-                })
-            })
+            .flat_map(|metrics| metrics.values.iter().map(|(k, &v)| (k.name, v, k.help)))
             .collect()
     }
 }

@@ -29,12 +29,20 @@ use super::{
     group_message::{ConfirmGroup, PrepareGroup, PrepareGroupResponse},
 };
 
-/// Metrics constant
-pub const CLIENT_NUM_CURRENT_GROUPS: &str =
-    "monad.bft.raptorcast.secondary.client.num_current_groups";
-pub const CLIENT_RECEIVED_INVITES: &str = "monad.bft.raptorcast.secondary.client.received_invites";
-pub const CLIENT_RECEIVED_CONFIRMS: &str =
-    "monad.bft.raptorcast.secondary.client.received_confirms";
+monad_executor::metric_consts! {
+    pub CLIENT_NUM_CURRENT_GROUPS {
+        name: "monad.bft.raptorcast.secondary.client.num_current_groups",
+        help: "Current number of raptorcast secondary groups as client",
+    }
+    pub CLIENT_RECEIVED_INVITES {
+        name: "monad.bft.raptorcast.secondary.client.received_invites",
+        help: "Group invites received as raptorcast secondary client",
+    }
+    pub CLIENT_RECEIVED_CONFIRMS {
+        name: "monad.bft.raptorcast.secondary.client.received_confirms",
+        help: "Group confirmations received as raptorcast secondary client",
+    }
+}
 
 type GroupAsClient<PT> = Group<PT>;
 
@@ -143,7 +151,7 @@ where
         for interval_key in keys_to_remove {
             self.confirmed_groups.remove(interval_key);
         }
-        self.metrics[CLIENT_NUM_CURRENT_GROUPS] = self.get_current_group_count();
+        self.metrics[&CLIENT_NUM_CURRENT_GROUPS] = self.get_current_group_count();
     }
 
     // If we are not receiving proposals, then we don't know what the current
@@ -271,7 +279,7 @@ where
             ?invite_msg,
             "RaptorCastSecondary Client received group invite"
         );
-        self.metrics[CLIENT_RECEIVED_INVITES] += 1;
+        self.metrics[&CLIENT_RECEIVED_INVITES] += 1;
 
         // Check the invite for duplicates & bandwidth requirements
         let accept = self.validate_prepare_group_message(&invite_msg);
@@ -386,7 +394,7 @@ where
             );
         }
 
-        self.metrics[CLIENT_RECEIVED_CONFIRMS] += 1;
+        self.metrics[&CLIENT_RECEIVED_CONFIRMS] += 1;
         debug!(
             "RaptorCastSecondary Client confirmed group for \
              rounds [{:?}, {:?}) from validator {:?}, group size {}",
@@ -401,7 +409,7 @@ where
 
         invites.remove(&confirm_msg.prepare.validator_id);
 
-        self.metrics[CLIENT_NUM_CURRENT_GROUPS] = self.get_current_group_count();
+        self.metrics[&CLIENT_NUM_CURRENT_GROUPS] = self.get_current_group_count();
 
         true
     }

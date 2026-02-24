@@ -35,10 +35,16 @@ use super::{
     group_message::{ConfirmGroup, FullNodesGroupMessage, PrepareGroup},
 };
 
-/// Metrics constant
-pub const PUBLISHER_CURRENT_GROUP_SIZE: &str =
-    "monad.bft.raptorcast.secondary.publisher.current_group_size";
-pub const PUBLISHER_SENT_INVITES: &str = "monad.bft.raptorcast.secondary.publisher.sent_invites";
+monad_executor::metric_consts! {
+    pub PUBLISHER_CURRENT_GROUP_SIZE {
+        name: "monad.bft.raptorcast.secondary.publisher.current_group_size",
+        help: "Current raptorcast secondary group size as publisher",
+    }
+    pub PUBLISHER_SENT_INVITES {
+        name: "monad.bft.raptorcast.secondary.publisher.sent_invites",
+        help: "Group invites sent as raptorcast secondary publisher",
+    }
+}
 
 type FullNodesST<ST> = FullNodes<CertificateSignaturePubKey<ST>>;
 type TimePoint = Round;
@@ -195,7 +201,7 @@ where
                     round nor any other future round yet.",
             );
             // Not serving any full nodes in current round
-            self.metrics[PUBLISHER_CURRENT_GROUP_SIZE] = 0;
+            self.metrics[&PUBLISHER_CURRENT_GROUP_SIZE] = 0;
             self.curr_group = self.new_empty_group(new_round);
             return;
         };
@@ -224,7 +230,7 @@ where
                     round, next group is",
             );
             // Not serving any full nodes in current round
-            self.metrics[PUBLISHER_CURRENT_GROUP_SIZE] = 0;
+            self.metrics[&PUBLISHER_CURRENT_GROUP_SIZE] = 0;
             self.curr_group = self.new_empty_group(new_round);
             return;
         }
@@ -233,7 +239,7 @@ where
         self.curr_group = next_group
             .remove()
             .to_finalized_group(self.validator_node_id);
-        self.metrics[PUBLISHER_CURRENT_GROUP_SIZE] = self.curr_group.size_excl_self() as u64;
+        self.metrics[&PUBLISHER_CURRENT_GROUP_SIZE] = self.curr_group.size_excl_self() as u64;
     }
 
     // Advances the state machine to the given "time point".
@@ -262,7 +268,7 @@ where
 
                 // record number of invites
                 if let FullNodesGroupMessage::PrepareGroup(_) = &out_msg.0 {
-                    self.metrics[PUBLISHER_SENT_INVITES] += out_msg.1.list.len() as u64;
+                    self.metrics[&PUBLISHER_SENT_INVITES] += out_msg.1.list.len() as u64;
                 }
 
                 return Some(out_msg);
@@ -287,7 +293,7 @@ where
             self.group_schedule.insert(new_group.start_round, new_group);
 
             // record number of invites for new group
-            self.metrics[PUBLISHER_SENT_INVITES] += maybe_invites
+            self.metrics[&PUBLISHER_SENT_INVITES] += maybe_invites
                 .as_ref()
                 .map_or(0, |(_, full_nodes)| full_nodes.list.len() as u64);
 
