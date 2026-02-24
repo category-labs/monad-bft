@@ -43,10 +43,24 @@ use crate::{
 };
 
 pub const DECODING_CACHE_METRIC_PREFIX: &str = "monad.raptorcast.decoding_cache";
-monad_executor::define_metric!(pub METRIC_RECENTLY_DECODED_HIT, "monad.raptorcast.decoding_cache.decoded_hit", "Hits on recently decoded messages");
-monad_executor::define_metric!(pub METRIC_PENDING_HIT, "monad.raptorcast.decoding_cache.pending_hit", "Hits on pending messages in cache");
-monad_executor::define_metric!(pub METRIC_NEW_ENTRY, "monad.raptorcast.decoding_cache.new_entry", "New entries added to decoding cache");
-monad_executor::define_metric!(pub METRIC_DECODED, "monad.raptorcast.decoding_cache.decoded", "Messages successfully decoded");
+monad_executor::metric_consts! {
+    pub METRIC_RECENTLY_DECODED_HIT {
+        name: "monad.raptorcast.decoding_cache.decoded_hit",
+        help: "Hits on recently decoded messages",
+    }
+    pub METRIC_PENDING_HIT {
+        name: "monad.raptorcast.decoding_cache.pending_hit",
+        help: "Hits on pending messages in cache",
+    }
+    pub METRIC_NEW_ENTRY {
+        name: "monad.raptorcast.decoding_cache.new_entry",
+        help: "New entries added to decoding cache",
+    }
+    pub METRIC_DECODED {
+        name: "monad.raptorcast.decoding_cache.decoded",
+        help: "Messages successfully decoded",
+    }
+}
 
 pub(crate) const RECENTLY_DECODED_CACHE_SIZE: usize = 10000;
 

@@ -58,8 +58,7 @@ impl Filter {
         low_watermark_sessions: usize,
         high_watermark_sessions: usize,
     ) -> Self {
-        let mut metrics = ExecutorMetrics::default();
-        metric_names.register_descriptions(&mut metrics);
+        let metrics = ExecutorMetrics::default();
 
         Self {
             counter: 0,

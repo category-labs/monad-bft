@@ -37,18 +37,52 @@ use monad_state_backend::StateBackend;
 use monad_types::ExecutionProtocol;
 use monad_validator::signature_collection::SignatureCollection;
 
-monad_executor::define_metric!(GAUGE_PARENT_TOTAL_EXEC_US, "monad.executor.parent.total_exec_us", "Total parent executor execution time in microseconds");
-monad_executor::define_metric!(GAUGE_LEDGER_TOTAL_EXEC_US, "monad.executor.ledger.total_exec_us", "Total ledger executor execution time in microseconds");
-monad_executor::define_metric!(GAUGE_CONFIG_FILE_TOTAL_EXEC_US, "monad.executor.config_file.total_exec_us", "Total config file executor execution time in microseconds");
-monad_executor::define_metric!(GAUGE_TXPOOL_TOTAL_EXEC_US, "monad.executor.txpool.total_exec_us", "Total TxPool executor execution time in microseconds");
-monad_executor::define_metric!(GAUGE_ROUTER_TOTAL_EXEC_US, "monad.executor.router.total_exec_us", "Total router executor execution time in microseconds");
-monad_executor::define_metric!(GAUGE_STATESYNC_TOTAL_EXEC_US, "monad.executor.statesync.total_exec_us", "Total StateSync executor execution time in microseconds");
-
-monad_executor::define_metric!(GAUGE_PARENT_TOTAL_POLL_US, "monad.executor.parent.total_poll_us", "Total parent executor poll time in microseconds");
-monad_executor::define_metric!(GAUGE_LEDGER_TOTAL_POLL_US, "monad.executor.ledger.total_poll_us", "Total ledger executor poll time in microseconds");
-monad_executor::define_metric!(GAUGE_TXPOOL_TOTAL_POLL_US, "monad.executor.txpool.total_poll_us", "Total TxPool executor poll time in microseconds");
-monad_executor::define_metric!(GAUGE_ROUTER_TOTAL_POLL_US, "monad.executor.router.total_poll_us", "Total router executor poll time in microseconds");
-monad_executor::define_metric!(GAUGE_STATESYNC_TOTAL_POLL_US, "monad.executor.statesync.total_poll_us", "Total StateSync executor poll time in microseconds");
+monad_executor::metric_consts! {
+    GAUGE_PARENT_TOTAL_EXEC_US {
+        name: "monad.executor.parent.total_exec_us",
+        help: "Total parent executor execution time in microseconds",
+    }
+    GAUGE_LEDGER_TOTAL_EXEC_US {
+        name: "monad.executor.ledger.total_exec_us",
+        help: "Total ledger executor execution time in microseconds",
+    }
+    GAUGE_CONFIG_FILE_TOTAL_EXEC_US {
+        name: "monad.executor.config_file.total_exec_us",
+        help: "Total config file executor execution time in microseconds",
+    }
+    GAUGE_TXPOOL_TOTAL_EXEC_US {
+        name: "monad.executor.txpool.total_exec_us",
+        help: "Total TxPool executor execution time in microseconds",
+    }
+    GAUGE_ROUTER_TOTAL_EXEC_US {
+        name: "monad.executor.router.total_exec_us",
+        help: "Total router executor execution time in microseconds",
+    }
+    GAUGE_STATESYNC_TOTAL_EXEC_US {
+        name: "monad.executor.statesync.total_exec_us",
+        help: "Total StateSync executor execution time in microseconds",
+    }
+    GAUGE_PARENT_TOTAL_POLL_US {
+        name: "monad.executor.parent.total_poll_us",
+        help: "Total parent executor poll time in microseconds",
+    }
+    GAUGE_LEDGER_TOTAL_POLL_US {
+        name: "monad.executor.ledger.total_poll_us",
+        help: "Total ledger executor poll time in microseconds",
+    }
+    GAUGE_TXPOOL_TOTAL_POLL_US {
+        name: "monad.executor.txpool.total_poll_us",
+        help: "Total TxPool executor poll time in microseconds",
+    }
+    GAUGE_ROUTER_TOTAL_POLL_US {
+        name: "monad.executor.router.total_poll_us",
+        help: "Total router executor poll time in microseconds",
+    }
+    GAUGE_STATESYNC_TOTAL_POLL_US {
+        name: "monad.executor.statesync.total_poll_us",
+        help: "Total StateSync executor poll time in microseconds",
+    }
+}
 
 /// Single top-level executor for all other required by a node.
 /// This executor will distribute commands to the appropriate sub-executor

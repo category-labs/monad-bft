@@ -85,8 +85,7 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
         );
         let local_serialized_public = CompressedPublicKey::from(&local_static_public);
         debug!(local_public_key=?local_serialized_public, "initialized manager");
-        let mut metrics = ExecutorMetrics::default();
-        metric_names.register_descriptions(&mut metrics);
+        let metrics = ExecutorMetrics::default();
         Self {
             state: State::new(metric_names),
             timers: BTreeSet::new(),

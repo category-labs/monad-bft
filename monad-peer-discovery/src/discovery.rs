@@ -56,34 +56,117 @@ const NUM_LOOKUP_PEERS: usize = 3;
 // TODO: this should be configurable
 const NUM_UPSTREAM_VALIDATORS: usize = 3;
 
-/// Metrics constant
-monad_executor::define_metric!(pub GAUGE_PEER_DISC_SEND_PING, "monad.peer_disc.send_ping", "Ping messages sent");
-monad_executor::define_metric!(pub GAUGE_PEER_DISC_RECV_PING, "monad.peer_disc.recv_ping", "Ping messages received");
-monad_executor::define_metric!(pub GAUGE_PEER_DISC_DROP_PING, "monad.peer_disc.drop_ping", "Ping messages dropped");
-monad_executor::define_metric!(pub GAUGE_PEER_DISC_PING_TIMEOUT, "monad.peer_disc.ping_timeout", "Ping timeouts");
-monad_executor::define_metric!(pub GAUGE_PEER_DISC_SEND_PONG, "monad.peer_disc.send_pong", "Pong messages sent");
-monad_executor::define_metric!(pub GAUGE_PEER_DISC_RECV_PONG, "monad.peer_disc.recv_pong", "Pong messages received");
-monad_executor::define_metric!(pub GAUGE_PEER_DISC_DROP_PONG, "monad.peer_disc.drop_pong", "Pong messages dropped");
-monad_executor::define_metric!(pub GAUGE_PEER_DISC_RATE_LIMITED, "monad.peer_disc.rate_limited", "Peer discovery operations rate limited");
-monad_executor::define_metric!(pub GAUGE_PEER_DISC_SEND_LOOKUP_REQUEST, "monad.peer_disc.send_lookup_request", "Lookup requests sent");
-monad_executor::define_metric!(pub GAUGE_PEER_DISC_RECV_LOOKUP_REQUEST, "monad.peer_disc.recv_lookup_request", "Lookup requests received");
-monad_executor::define_metric!(pub GAUGE_PEER_DISC_RECV_OPEN_LOOKUP_REQUEST, "monad.peer_disc.recv_open_lookup_request", "Open lookup requests received");
-monad_executor::define_metric!(pub GAUGE_PEER_DISC_RECV_TARGETED_LOOKUP_REQUEST, "monad.peer_disc.recv_targeted_lookup_request", "Targeted lookup requests received");
-monad_executor::define_metric!(pub GAUGE_PEER_DISC_RETRY_LOOKUP_REQUEST, "monad.peer_disc.retry_lookup_request", "Lookup request retries");
-monad_executor::define_metric!(pub GAUGE_PEER_DISC_SEND_LOOKUP_RESPONSE, "monad.peer_disc.send_lookup_response", "Lookup responses sent");
-monad_executor::define_metric!(pub GAUGE_PEER_DISC_RECV_LOOKUP_RESPONSE, "monad.peer_disc.recv_lookup_response", "Lookup responses received");
-monad_executor::define_metric!(pub GAUGE_PEER_DISC_DROP_LOOKUP_RESPONSE, "monad.peer_disc.drop_lookup_response", "Lookup responses dropped");
-monad_executor::define_metric!(pub GAUGE_PEER_DISC_LOOKUP_TIMEOUT, "monad.peer_disc.lookup_timeout", "Lookup timeouts");
-monad_executor::define_metric!(pub GAUGE_PEER_DISC_SEND_RAPTORCAST_REQUEST, "monad.peer_disc.send_raptorcast_request", "Raptorcast requests sent");
-monad_executor::define_metric!(pub GAUGE_PEER_DISC_RECV_RAPTORCAST_REQUEST, "monad.peer_disc.recv_raptorcast_request", "Raptorcast requests received");
-monad_executor::define_metric!(pub GAUGE_PEER_DISC_SEND_RAPTORCAST_RESPONSE, "monad.peer_disc.send_raptorcast_response", "Raptorcast responses sent");
-monad_executor::define_metric!(pub GAUGE_PEER_DISC_RECV_RAPTORCAST_RESPONSE, "monad.peer_disc.recv_raptorcast_response", "Raptorcast responses received");
-monad_executor::define_metric!(pub GAUGE_PEER_DISC_REFRESH, "monad.peer_disc.refresh", "Peer discovery refresh operations");
-monad_executor::define_metric!(pub GAUGE_PEER_DISC_NUM_PEERS, "monad.peer_disc.num_peers", "Current number of known peers");
-monad_executor::define_metric!(pub GAUGE_PEER_DISC_NUM_PENDING_PEERS, "monad.peer_disc.num_pending_peers", "Current number of pending peers");
-monad_executor::define_metric!(pub GAUGE_PEER_DISC_NUM_UPSTREAM_VALIDATORS, "monad.peer_disc.num_upstream_validators", "Current number of upstream validators");
-monad_executor::define_metric!(pub GAUGE_PEER_DISC_NUM_DOWNSTREAM_FULLNODES, "monad.peer_disc.num_downstream_fullnodes", "Current number of downstream full nodes");
-monad_executor::define_metric!(pub GAUGE_PEER_DISC_SOCKET_COLLISIONS, "monad.peer_disc.socket_collisions", "Socket address collisions");
+/// Metrics constants
+monad_executor::metric_consts! {
+    pub GAUGE_PEER_DISC_SEND_PING {
+        name: "monad.peer_disc.send_ping",
+        help: "Ping messages sent",
+    }
+    pub GAUGE_PEER_DISC_RECV_PING {
+        name: "monad.peer_disc.recv_ping",
+        help: "Ping messages received",
+    }
+    pub GAUGE_PEER_DISC_DROP_PING {
+        name: "monad.peer_disc.drop_ping",
+        help: "Ping messages dropped",
+    }
+    pub GAUGE_PEER_DISC_PING_TIMEOUT {
+        name: "monad.peer_disc.ping_timeout",
+        help: "Ping timeouts",
+    }
+    pub GAUGE_PEER_DISC_SEND_PONG {
+        name: "monad.peer_disc.send_pong",
+        help: "Pong messages sent",
+    }
+    pub GAUGE_PEER_DISC_RECV_PONG {
+        name: "monad.peer_disc.recv_pong",
+        help: "Pong messages received",
+    }
+    pub GAUGE_PEER_DISC_DROP_PONG {
+        name: "monad.peer_disc.drop_pong",
+        help: "Pong messages dropped",
+    }
+    pub GAUGE_PEER_DISC_RATE_LIMITED {
+        name: "monad.peer_disc.rate_limited",
+        help: "Peer discovery operations rate limited",
+    }
+    pub GAUGE_PEER_DISC_SEND_LOOKUP_REQUEST {
+        name: "monad.peer_disc.send_lookup_request",
+        help: "Lookup requests sent",
+    }
+    pub GAUGE_PEER_DISC_RECV_LOOKUP_REQUEST {
+        name: "monad.peer_disc.recv_lookup_request",
+        help: "Lookup requests received",
+    }
+    pub GAUGE_PEER_DISC_RECV_OPEN_LOOKUP_REQUEST {
+        name: "monad.peer_disc.recv_open_lookup_request",
+        help: "Open lookup requests received",
+    }
+    pub GAUGE_PEER_DISC_RECV_TARGETED_LOOKUP_REQUEST {
+        name: "monad.peer_disc.recv_targeted_lookup_request",
+        help: "Targeted lookup requests received",
+    }
+    pub GAUGE_PEER_DISC_RETRY_LOOKUP_REQUEST {
+        name: "monad.peer_disc.retry_lookup_request",
+        help: "Lookup request retries",
+    }
+    pub GAUGE_PEER_DISC_SEND_LOOKUP_RESPONSE {
+        name: "monad.peer_disc.send_lookup_response",
+        help: "Lookup responses sent",
+    }
+    pub GAUGE_PEER_DISC_RECV_LOOKUP_RESPONSE {
+        name: "monad.peer_disc.recv_lookup_response",
+        help: "Lookup responses received",
+    }
+    pub GAUGE_PEER_DISC_DROP_LOOKUP_RESPONSE {
+        name: "monad.peer_disc.drop_lookup_response",
+        help: "Lookup responses dropped",
+    }
+    pub GAUGE_PEER_DISC_LOOKUP_TIMEOUT {
+        name: "monad.peer_disc.lookup_timeout",
+        help: "Lookup timeouts",
+    }
+    pub GAUGE_PEER_DISC_SEND_RAPTORCAST_REQUEST {
+        name: "monad.peer_disc.send_raptorcast_request",
+        help: "Raptorcast requests sent",
+    }
+    pub GAUGE_PEER_DISC_RECV_RAPTORCAST_REQUEST {
+        name: "monad.peer_disc.recv_raptorcast_request",
+        help: "Raptorcast requests received",
+    }
+    pub GAUGE_PEER_DISC_SEND_RAPTORCAST_RESPONSE {
+        name: "monad.peer_disc.send_raptorcast_response",
+        help: "Raptorcast responses sent",
+    }
+    pub GAUGE_PEER_DISC_RECV_RAPTORCAST_RESPONSE {
+        name: "monad.peer_disc.recv_raptorcast_response",
+        help: "Raptorcast responses received",
+    }
+    pub GAUGE_PEER_DISC_REFRESH {
+        name: "monad.peer_disc.refresh",
+        help: "Peer discovery refresh operations",
+    }
+    pub GAUGE_PEER_DISC_NUM_PEERS {
+        name: "monad.peer_disc.num_peers",
+        help: "Current number of known peers",
+    }
+    pub GAUGE_PEER_DISC_NUM_PENDING_PEERS {
+        name: "monad.peer_disc.num_pending_peers",
+        help: "Current number of pending peers",
+    }
+    pub GAUGE_PEER_DISC_NUM_UPSTREAM_VALIDATORS {
+        name: "monad.peer_disc.num_upstream_validators",
+        help: "Current number of upstream validators",
+    }
+    pub GAUGE_PEER_DISC_NUM_DOWNSTREAM_FULLNODES {
+        name: "monad.peer_disc.num_downstream_fullnodes",
+        help: "Current number of downstream full nodes",
+    }
+    pub GAUGE_PEER_DISC_SOCKET_COLLISIONS {
+        name: "monad.peer_disc.socket_collisions",
+        help: "Socket address collisions",
+    }
+}
 
 /// validator role is given if the node is a validator in the current or next epoch.
 /// this is to ensure the node starts connecting to other validators even if joining
