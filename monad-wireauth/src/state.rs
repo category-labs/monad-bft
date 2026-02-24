@@ -128,8 +128,7 @@ pub struct State {
 
 impl State {
     pub fn new(metric_names: &'static MetricNames) -> Self {
-        let mut metrics = ExecutorMetrics::default();
-        metric_names.register_descriptions(&mut metrics);
+        let metrics = ExecutorMetrics::default();
 
         Self {
             initiating_sessions: HashMap::new(),

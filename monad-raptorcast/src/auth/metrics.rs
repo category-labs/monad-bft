@@ -13,9 +13,23 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-monad_executor::define_metric!(pub GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_WRITTEN, "monad.raptorcast.auth.authenticated_udp_bytes_written", "Bytes written via authenticated UDP");
-monad_executor::define_metric!(pub GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_WRITTEN, "monad.raptorcast.auth.non_authenticated_udp_bytes_written", "Bytes written via non-authenticated UDP");
-monad_executor::define_metric!(pub GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_READ, "monad.raptorcast.auth.authenticated_udp_bytes_read", "Bytes read via authenticated UDP");
-monad_executor::define_metric!(pub GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_READ, "monad.raptorcast.auth.non_authenticated_udp_bytes_read", "Bytes read via non-authenticated UDP");
+monad_executor::metric_consts! {
+    pub GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_WRITTEN {
+        name: "monad.raptorcast.auth.authenticated_udp_bytes_written",
+        help: "Bytes written via authenticated UDP",
+    }
+    pub GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_WRITTEN {
+        name: "monad.raptorcast.auth.non_authenticated_udp_bytes_written",
+        help: "Bytes written via non-authenticated UDP",
+    }
+    pub GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_READ {
+        name: "monad.raptorcast.auth.authenticated_udp_bytes_read",
+        help: "Bytes read via authenticated UDP",
+    }
+    pub GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_READ {
+        name: "monad.raptorcast.auth.non_authenticated_udp_bytes_read",
+        help: "Bytes read via non-authenticated UDP",
+    }
+}
 
 monad_wireauth::define_metric_names!(UDP_METRICS, "udp");

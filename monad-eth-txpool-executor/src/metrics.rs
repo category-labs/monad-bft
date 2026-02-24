@@ -19,11 +19,28 @@ use monad_eth_txpool::EthTxPoolMetrics;
 use monad_executor::ExecutorMetrics;
 use serde::{Deserialize, Serialize};
 
-monad_executor::define_metric!(REJECT_FORWARDED_INVALID_BYTES, "monad.bft.txpool.reject_forwarded_invalid_bytes", "Forwarded txs rejected due to invalid bytes");
-monad_executor::define_metric!(CREATE_PROPOSAL, "monad.bft.txpool.create_proposal", "Proposals created from txpool");
-monad_executor::define_metric!(CREATE_PROPOSAL_ELAPSED_NS, "monad.bft.txpool.create_proposal_elapsed_ns", "Time spent creating proposals in nanoseconds");
-monad_executor::define_metric!(PRELOAD_BACKEND_LOOKUPS, "monad.bft.txpool.preload_backend_lookups", "Preload backend lookups");
-monad_executor::define_metric!(PRELOAD_BACKEND_REQUESTS, "monad.bft.txpool.preload_backend_requests", "Preload backend requests");
+monad_executor::metric_consts! {
+    REJECT_FORWARDED_INVALID_BYTES {
+        name: "monad.bft.txpool.reject_forwarded_invalid_bytes",
+        help: "Forwarded txs rejected due to invalid bytes",
+    }
+    CREATE_PROPOSAL {
+        name: "monad.bft.txpool.create_proposal",
+        help: "Proposals created from txpool",
+    }
+    CREATE_PROPOSAL_ELAPSED_NS {
+        name: "monad.bft.txpool.create_proposal_elapsed_ns",
+        help: "Time spent creating proposals in nanoseconds",
+    }
+    PRELOAD_BACKEND_LOOKUPS {
+        name: "monad.bft.txpool.preload_backend_lookups",
+        help: "Preload backend lookups",
+    }
+    PRELOAD_BACKEND_REQUESTS {
+        name: "monad.bft.txpool.preload_backend_requests",
+        help: "Preload backend requests",
+    }
+}
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct EthTxPoolExecutorMetrics {

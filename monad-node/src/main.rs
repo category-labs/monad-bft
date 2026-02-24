@@ -746,9 +746,20 @@ fn resolve_domain_v4<P: PubKey>(node_id: &NodeId<P>, domain: &String) -> Option<
     None
 }
 
-monad_executor::define_metric!(GAUGE_TOTAL_UPTIME_US, "monad.total_uptime_us", "Total node uptime in microseconds");
-monad_executor::define_metric!(GAUGE_STATE_TOTAL_UPDATE_US, "monad.state.total_update_us", "Total time spent updating state in microseconds");
-monad_executor::define_metric!(GAUGE_NODE_INFO, "monad_node_info", "Node info indicator (always 1)");
+monad_executor::metric_consts! {
+    GAUGE_TOTAL_UPTIME_US {
+        name: "monad.total_uptime_us",
+        help: "Total node uptime in microseconds",
+    }
+    GAUGE_STATE_TOTAL_UPDATE_US {
+        name: "monad.state.total_update_us",
+        help: "Total time spent updating state in microseconds",
+    }
+    GAUGE_NODE_INFO {
+        name: "monad_node_info",
+        help: "Node info indicator (always 1)",
+    }
+}
 
 fn send_metrics(
     meter: &opentelemetry::metrics::Meter,

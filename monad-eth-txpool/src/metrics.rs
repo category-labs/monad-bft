@@ -18,30 +18,104 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use monad_executor::ExecutorMetrics;
 use serde::{Deserialize, Serialize};
 
-monad_executor::define_metric!(POOL_INSERT_OWNED_TXS, "monad.bft.txpool.pool.insert_owned_txs", "Owned transactions inserted into the pool");
-monad_executor::define_metric!(POOL_INSERT_FORWARDED_TXS, "monad.bft.txpool.pool.insert_forwarded_txs", "Forwarded transactions inserted into the pool");
-monad_executor::define_metric!(POOL_DROP_NOT_WELL_FORMED, "monad.bft.txpool.pool.drop_not_well_formed", "Transactions dropped due to malformed data");
-monad_executor::define_metric!(POOL_DROP_INVALID_SIGNATURE, "monad.bft.txpool.pool.drop_invalid_signature", "Transactions dropped due to invalid signature");
-monad_executor::define_metric!(POOL_DROP_NONCE_TOO_LOW, "monad.bft.txpool.pool.drop_nonce_too_low", "Transactions dropped due to nonce too low");
-monad_executor::define_metric!(POOL_DROP_FEE_TOO_LOW, "monad.bft.txpool.pool.drop_fee_too_low", "Transactions dropped due to fee too low");
-monad_executor::define_metric!(POOL_DROP_INSUFFICIENT_BALANCE, "monad.bft.txpool.pool.drop_insufficient_balance", "Transactions dropped due to insufficient balance");
-monad_executor::define_metric!(POOL_DROP_EXISTING_HIGHER_PRIORITY, "monad.bft.txpool.pool.drop_existing_higher_priority", "Transactions dropped - existing tx has higher priority");
-monad_executor::define_metric!(POOL_DROP_REPLACED_BY_HIGHER_PRIORITY, "monad.bft.txpool.pool.drop_replaced_by_higher_priority", "Transactions replaced by higher priority");
-monad_executor::define_metric!(POOL_DROP_POOL_FULL, "monad.bft.txpool.pool.drop_pool_full", "Transactions dropped because pool is full");
-monad_executor::define_metric!(POOL_DROP_POOL_NOT_READY, "monad.bft.txpool.pool.drop_pool_not_ready", "Transactions dropped because pool is not ready");
-monad_executor::define_metric!(POOL_DROP_INTERNAL_STATE_BACKEND_ERROR, "monad.bft.txpool.pool.drop_internal_state_backend_error", "Transactions dropped due to backend error");
-monad_executor::define_metric!(POOL_DROP_INTERNAL_NOT_READY, "monad.bft.txpool.pool.drop_internal_not_ready", "Transactions dropped due to internal not ready");
-monad_executor::define_metric!(POOL_CREATE_PROPOSAL, "monad.bft.txpool.pool.create_proposal", "Proposals created from txpool");
-monad_executor::define_metric!(POOL_CREATE_PROPOSAL_TXS, "monad.bft.txpool.pool.create_proposal_txs", "Transactions included in proposals");
-monad_executor::define_metric!(POOL_CREATE_PROPOSAL_TRACKED_ADDRESSES, "monad.bft.txpool.pool.create_proposal_tracked_addresses", "Tracked addresses during proposal creation");
-monad_executor::define_metric!(POOL_CREATE_PROPOSAL_AVAILABLE_ADDRESSES, "monad.bft.txpool.pool.create_proposal_available_addresses", "Available addresses during proposal creation");
-monad_executor::define_metric!(POOL_CREATE_PROPOSAL_BACKEND_LOOKUPS, "monad.bft.txpool.pool.create_proposal_backend_lookups", "Backend lookups during proposal creation");
-monad_executor::define_metric!(TRACKED_ADDRESSES, "monad.bft.txpool.pool.tracked.addresses", "Addresses being tracked in the pool");
-monad_executor::define_metric!(TRACKED_TXS, "monad.bft.txpool.pool.tracked.txs", "Transactions being tracked in the pool");
-monad_executor::define_metric!(TRACKED_EVICT_EXPIRED_ADDRESSES, "monad.bft.txpool.pool.tracked.evict_expired_addresses", "Addresses evicted due to expiration");
-monad_executor::define_metric!(TRACKED_EVICT_EXPIRED_TXS, "monad.bft.txpool.pool.tracked.evict_expired_txs", "Transactions evicted due to expiration");
-monad_executor::define_metric!(TRACKED_REMOVE_COMMITTED_ADDRESSES, "monad.bft.txpool.pool.tracked.remove_committed_addresses", "Addresses removed after commitment");
-monad_executor::define_metric!(TRACKED_REMOVE_COMMITTED_TXS, "monad.bft.txpool.pool.tracked.remove_committed_txs", "Transactions removed after commitment");
+monad_executor::metric_consts! {
+    POOL_INSERT_OWNED_TXS {
+        name: "monad.bft.txpool.pool.insert_owned_txs",
+        help: "Owned transactions inserted into the pool",
+    }
+    POOL_INSERT_FORWARDED_TXS {
+        name: "monad.bft.txpool.pool.insert_forwarded_txs",
+        help: "Forwarded transactions inserted into the pool",
+    }
+    POOL_DROP_NOT_WELL_FORMED {
+        name: "monad.bft.txpool.pool.drop_not_well_formed",
+        help: "Transactions dropped due to malformed data",
+    }
+    POOL_DROP_INVALID_SIGNATURE {
+        name: "monad.bft.txpool.pool.drop_invalid_signature",
+        help: "Transactions dropped due to invalid signature",
+    }
+    POOL_DROP_NONCE_TOO_LOW {
+        name: "monad.bft.txpool.pool.drop_nonce_too_low",
+        help: "Transactions dropped due to nonce too low",
+    }
+    POOL_DROP_FEE_TOO_LOW {
+        name: "monad.bft.txpool.pool.drop_fee_too_low",
+        help: "Transactions dropped due to fee too low",
+    }
+    POOL_DROP_INSUFFICIENT_BALANCE {
+        name: "monad.bft.txpool.pool.drop_insufficient_balance",
+        help: "Transactions dropped due to insufficient balance",
+    }
+    POOL_DROP_EXISTING_HIGHER_PRIORITY {
+        name: "monad.bft.txpool.pool.drop_existing_higher_priority",
+        help: "Transactions dropped - existing tx has higher priority",
+    }
+    POOL_DROP_REPLACED_BY_HIGHER_PRIORITY {
+        name: "monad.bft.txpool.pool.drop_replaced_by_higher_priority",
+        help: "Transactions replaced by higher priority",
+    }
+    POOL_DROP_POOL_FULL {
+        name: "monad.bft.txpool.pool.drop_pool_full",
+        help: "Transactions dropped because pool is full",
+    }
+    POOL_DROP_POOL_NOT_READY {
+        name: "monad.bft.txpool.pool.drop_pool_not_ready",
+        help: "Transactions dropped because pool is not ready",
+    }
+    POOL_DROP_INTERNAL_STATE_BACKEND_ERROR {
+        name: "monad.bft.txpool.pool.drop_internal_state_backend_error",
+        help: "Transactions dropped due to backend error",
+    }
+    POOL_DROP_INTERNAL_NOT_READY {
+        name: "monad.bft.txpool.pool.drop_internal_not_ready",
+        help: "Transactions dropped due to internal not ready",
+    }
+    POOL_CREATE_PROPOSAL {
+        name: "monad.bft.txpool.pool.create_proposal",
+        help: "Proposals created from txpool",
+    }
+    POOL_CREATE_PROPOSAL_TXS {
+        name: "monad.bft.txpool.pool.create_proposal_txs",
+        help: "Transactions included in proposals",
+    }
+    POOL_CREATE_PROPOSAL_TRACKED_ADDRESSES {
+        name: "monad.bft.txpool.pool.create_proposal_tracked_addresses",
+        help: "Tracked addresses during proposal creation",
+    }
+    POOL_CREATE_PROPOSAL_AVAILABLE_ADDRESSES {
+        name: "monad.bft.txpool.pool.create_proposal_available_addresses",
+        help: "Available addresses during proposal creation",
+    }
+    POOL_CREATE_PROPOSAL_BACKEND_LOOKUPS {
+        name: "monad.bft.txpool.pool.create_proposal_backend_lookups",
+        help: "Backend lookups during proposal creation",
+    }
+    TRACKED_ADDRESSES {
+        name: "monad.bft.txpool.pool.tracked.addresses",
+        help: "Addresses being tracked in the pool",
+    }
+    TRACKED_TXS {
+        name: "monad.bft.txpool.pool.tracked.txs",
+        help: "Transactions being tracked in the pool",
+    }
+    TRACKED_EVICT_EXPIRED_ADDRESSES {
+        name: "monad.bft.txpool.pool.tracked.evict_expired_addresses",
+        help: "Addresses evicted due to expiration",
+    }
+    TRACKED_EVICT_EXPIRED_TXS {
+        name: "monad.bft.txpool.pool.tracked.evict_expired_txs",
+        help: "Transactions evicted due to expiration",
+    }
+    TRACKED_REMOVE_COMMITTED_ADDRESSES {
+        name: "monad.bft.txpool.pool.tracked.remove_committed_addresses",
+        help: "Addresses removed after commitment",
+    }
+    TRACKED_REMOVE_COMMITTED_TXS {
+        name: "monad.bft.txpool.pool.tracked.remove_committed_txs",
+        help: "Transactions removed after commitment",
+    }
+}
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct EthTxPoolMetrics {

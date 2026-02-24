@@ -19,16 +19,38 @@ use monad_executor::{ExecutorMetrics, Histogram, MetricDef};
 
 use crate::util::unix_ts_ms_now;
 
-monad_executor::define_metric!(pub GAUGE_RAPTORCAST_TOTAL_MESSAGES_RECEIVED, "monad.raptorcast.total_messages_received", "Total raptorcast messages received");
-monad_executor::define_metric!(pub GAUGE_RAPTORCAST_TOTAL_RECV_ERRORS, "monad.raptorcast.total_recv_errors", "Total raptorcast receive errors");
-monad_executor::define_metric!(pub GAUGE_RAPTORCAST_DECODING_CACHE_SIGNATURE_VERIFICATIONS_RATE_LIMITED, "monad.raptorcast.decoding_cache.signature_verifications_rate_limited", "Signature verifications rate limited");
+monad_executor::metric_consts! {
+    pub GAUGE_RAPTORCAST_TOTAL_MESSAGES_RECEIVED {
+        name: "monad.raptorcast.total_messages_received",
+        help: "Total raptorcast messages received",
+    }
+    pub GAUGE_RAPTORCAST_TOTAL_RECV_ERRORS {
+        name: "monad.raptorcast.total_recv_errors",
+        help: "Total raptorcast receive errors",
+    }
+    pub GAUGE_RAPTORCAST_DECODING_CACHE_SIGNATURE_VERIFICATIONS_RATE_LIMITED {
+        name: "monad.raptorcast.decoding_cache.signature_verifications_rate_limited",
+        help: "Signature verifications rate limited",
+    }
+    pub PRIMARY_BROADCAST_LATENCY_P99_MS {
+        name: "monad.bft.raptorcast.udp.primary_broadcast_latency_p99_ms",
+        help: "P99 primary UDP broadcast latency in ms (30s rolling window)",
+    }
+    pub PRIMARY_BROADCAST_LATENCY_COUNT {
+        name: "monad.bft.raptorcast.udp.primary_broadcast_latency_count",
+        help: "Primary broadcast latency measurement count (30s rolling window)",
+    }
+    pub SECONDARY_BROADCAST_LATENCY_P99_MS {
+        name: "monad.bft.raptorcast.udp.secondary_broadcast_latency_p99_ms",
+        help: "P99 secondary UDP broadcast latency in ms (30s rolling window)",
+    }
+    pub SECONDARY_BROADCAST_LATENCY_COUNT {
+        name: "monad.bft.raptorcast.udp.secondary_broadcast_latency_count",
+        help: "Secondary broadcast latency measurement count (30s rolling window)",
+    }
+}
 
 const HISTOGRAM_CLEAR_INTERVAL: Duration = Duration::from_secs(30);
-
-monad_executor::define_metric!(pub PRIMARY_BROADCAST_LATENCY_P99_MS, "monad.bft.raptorcast.udp.primary_broadcast_latency_p99_ms", "P99 primary UDP broadcast latency in ms (30s rolling window)");
-monad_executor::define_metric!(pub PRIMARY_BROADCAST_LATENCY_COUNT, "monad.bft.raptorcast.udp.primary_broadcast_latency_count", "Primary broadcast latency measurement count (30s rolling window)");
-monad_executor::define_metric!(pub SECONDARY_BROADCAST_LATENCY_P99_MS, "monad.bft.raptorcast.udp.secondary_broadcast_latency_p99_ms", "P99 secondary UDP broadcast latency in ms (30s rolling window)");
-monad_executor::define_metric!(pub SECONDARY_BROADCAST_LATENCY_COUNT, "monad.bft.raptorcast.udp.secondary_broadcast_latency_count", "Secondary broadcast latency measurement count (30s rolling window)");
 
 pub(crate) struct LatencyHistogram {
     histogram: Histogram,
