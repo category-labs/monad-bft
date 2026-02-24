@@ -229,7 +229,7 @@ mod test {
             snapshot_event_ring: SnapshotEventRing<ExecEventDecoder>,
             delay: Duration,
         ) -> EventServerClient {
-            let (broadcast_tx, _) = tokio::sync::broadcast::channel(BROADCAST_CHANNEL_SIZE);
+            let (broadcast_tx, _) = tokio::sync::broadcast::channel(1024);
 
             let this = Self {
                 event_ring: snapshot_event_ring,

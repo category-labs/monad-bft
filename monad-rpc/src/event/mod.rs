@@ -19,7 +19,7 @@ pub use self::{
     server::EventServer,
 };
 
-const BROADCAST_CHANNEL_SIZE: usize = 1024 * 10;
+const BROADCAST_CHANNEL_SIZE: usize = 32;
 
 mod client;
 mod events;

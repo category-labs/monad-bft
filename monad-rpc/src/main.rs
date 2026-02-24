@@ -331,8 +331,20 @@ async fn main() -> std::io::Result<()> {
 
         let event_buffer2 = event_buffer.clone();
         tokio::spawn(async move {
-            while let Ok(event) = events_for_cache.recv().await {
-                event_buffer2.insert(event).await;
+            loop {
+                match events_for_cache.recv().await {
+                    Ok(event) => event_buffer2.insert(event).await,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(lag_count)) => {
+                        warn!(
+                            ?lag_count,
+                            "event server channel lagged, events will be missing"
+                        );
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        error!("event server closed");
+                        break;
+                    }
+                }
             }
         });
 
