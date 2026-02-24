@@ -32,7 +32,8 @@ use monad_consensus_types::{
     RoundCertificate,
 };
 use monad_node_config::{
-    ExecutionProtocolType, ForkpointConfig, MonadNodeConfig, SignatureCollectionType, SignatureType,
+    ExecutionProtocolType, ForkpointConfig, NodeBootstrapConfig, SignatureCollectionType,
+    SignatureType,
 };
 use monad_types::{BlockId, Round};
 use monad_validator::{leader_election::LeaderElection, weighted_round_robin::WeightedRoundRobin};
@@ -103,21 +104,25 @@ async fn main() {
     let Cli {
         forkpoint_path,
         ledger_path,
-        node_config_path,
+        peers_path,
         validators_path,
     } = Cli::from_arg_matches_mut(&mut cmd.get_matches_mut()).expect("unable to parse CLI");
 
     let mut visited_blocks: CachedBlocks = LruCache::new(NonZero::new(100).unwrap());
 
-    let node_config: MonadNodeConfig =
-        toml::from_str(&std::fs::read_to_string(&node_config_path).expect("node.toml not found"))
-            .unwrap();
-    let addresses: HashMap<_, _> = node_config
-        .bootstrap
-        .peers
-        .iter()
-        .map(|peer| (peer.secp256k1_pubkey, peer.address.clone()))
-        .collect();
+    let addresses: HashMap<_, _> = std::fs::read_to_string(&peers_path)
+        .ok()
+        .and_then(|s| toml::from_str::<NodeBootstrapConfig<SignatureType>>(&s).ok())
+        .map(|config| {
+            config
+                .peers
+                .into_iter()
+                .map(|peer| (peer.secp256k1_pubkey, peer.address))
+                .collect()
+        })
+        .unwrap_or_default();
+    let get_author_address =
+        |pubkey: &_| -> String { addresses.get(pubkey).cloned().unwrap_or_default() };
 
     let mut epoch_validators = BTreeMap::default();
 
@@ -154,7 +159,7 @@ async fn main() {
                     round =? skipped_round,
                     author =? skipped_leader,
                     now_ts_ms =? now_ts.as_millis(),
-                    author_address = addresses.get(&skipped_leader.pubkey()).cloned().unwrap_or_default(),
+                    author_address = %get_author_address(&skipped_leader.pubkey()),
                     "timeout"
                 );
             }
@@ -196,7 +201,7 @@ async fn main() {
                 author =? block.header().author,
                 block_ts_ms =? block.header().timestamp_ns / 1_000_000,
                 now_ts_ms =? now_ts.as_millis(),
-                author_address = addresses.get(&block.header().author.pubkey()).cloned().unwrap_or_default(),
+                author_address = %get_author_address(&block.header().author.pubkey()),
                 "proposed_block"
             );
         }
@@ -219,7 +224,7 @@ async fn main() {
                                     author =? finalized_block_header.author,
                                     block_ts_ms =? finalized_block_header.timestamp_ns / 1_000_000,
                                     now_ts_ms =? now_ts.as_millis(),
-                                    author_address = addresses.get(&finalized_block_header.author.pubkey()).cloned().unwrap_or_default(),
+                                    author_address = %get_author_address(&finalized_block_header.author.pubkey()),
                                     "finalized_block"
                                 )
                             },
@@ -318,8 +323,8 @@ pub struct Cli {
     #[arg(long, default_value = "/monad/config/forkpoint/forkpoint.toml")]
     pub forkpoint_path: PathBuf,
 
-    #[arg(long, default_value = "/monad/config/node.toml")]
-    pub node_config_path: PathBuf,
+    #[arg(long, default_value = "/monad/config/peers.toml")]
+    pub peers_path: PathBuf,
 
     #[arg(long, default_value = "/monad/config/validators/validators.toml")]
     pub validators_path: PathBuf,
