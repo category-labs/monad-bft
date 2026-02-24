@@ -116,6 +116,12 @@ impl<T: Triedb> ChainState<T> {
         &self,
         hash: [u8; 32],
     ) -> Result<TransactionReceipt, ChainStateError> {
+        if let Some(buffer) = &self.buffer {
+            if let Some(receipt) = buffer.get_receipt_by_tx_hash(&FixedData(hash)) {
+                return Ok(receipt);
+            }
+        }
+
         let latest_block_key = get_latest_block_key(&self.triedb_env);
         if let Some(TransactionLocation {
             tx_index,
