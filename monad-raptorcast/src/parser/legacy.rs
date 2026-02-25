@@ -143,7 +143,7 @@ where
             .expect("Hash is 20 bytes"),
     );
 
-    let cursor_merkle_idx = split_off(1)?[0];
+    let cursor_merkle_idx = split_off(1)?[0] as u16;
     let merkle_proof = MerkleProof::new_from_leaf_idx(merkle_proof, cursor_merkle_idx)
         .ok_or(MessageValidationError::InvalidMerkleProof)?;
 
