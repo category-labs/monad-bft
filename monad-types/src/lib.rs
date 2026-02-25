@@ -440,6 +440,12 @@ impl<P: PubKey> Debug for NodeId<P> {
     }
 }
 
+impl<P: PubKey> From<P> for NodeId<P> {
+    fn from(pubkey: P) -> Self {
+        Self::new(pubkey)
+    }
+}
+
 pub fn serialize_pubkey<S, P>(pubkey: &P, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
