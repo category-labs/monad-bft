@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 pub struct PeerDiscoveryConfig<ST: CertificateSignatureRecoverable> {
     pub self_address: String,
     pub self_auth_port: Option<u16>,
+    pub self_auth_tx_ingestion_port: Option<u16>,
     pub self_record_seq_num: u64,
 
     pub self_name_record_sig: ST,
