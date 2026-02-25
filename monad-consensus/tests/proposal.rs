@@ -229,7 +229,7 @@ fn define_proposal_with_tc(
     let tc = TimeoutCertificate {
         epoch: tc_epoch, // wrong epoch here
         round: tc_round,
-        tip_rounds: vec![tip_round],
+        tip_rounds: vec![tip_round].into(),
         high_extend: HighExtend::Qc(qc.clone()),
     };
 
@@ -1217,7 +1217,8 @@ fn test_validate_tc_invalid_tc_signature() {
             high_qc_round: GENESIS_ROUND,
             high_tip_round: GENESIS_ROUND,
             sigs: sigcol,
-        }],
+        }]
+        .into(),
         high_extend: HighExtend::Qc(QuorumCertificate::genesis_qc()),
     };
 

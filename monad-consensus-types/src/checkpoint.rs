@@ -17,11 +17,13 @@ use alloy_rlp::{RlpDecodable, RlpEncodable};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_types::{BlockId, Epoch, ExecutionProtocol, Round, SeqNum};
+use monad_types::{BlockId, Epoch, ExecutionProtocol, LimitedVec, Round, SeqNum};
 use monad_validator::signature_collection::SignatureCollection;
 use serde::{Deserialize, Serialize};
 
 use crate::RoundCertificate;
+
+const MAX_VALIDATOR_SETS: usize = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RootInfo {
@@ -45,7 +47,7 @@ where
     pub high_certificate: RoundCertificate<ST, SCT, EPT>,
 
     // TODO can we get rid of this by including an epoch_start_block_id in every block?
-    pub validator_sets: Vec<LockedEpoch>,
+    pub validator_sets: LimitedVec<LockedEpoch, MAX_VALIDATOR_SETS>,
 }
 
 impl<ST, SCT, EPT> Checkpoint<ST, SCT, EPT>

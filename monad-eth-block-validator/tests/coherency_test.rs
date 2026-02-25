@@ -648,8 +648,8 @@ fn create_block_body_helper(
     ConsensusBlockBody::new(ConsensusBlockBodyInner {
         execution_body: EthBlockBody {
             transactions: txs.iter().map(|tx| tx.inner().to_owned()).collect(),
-            ommers: Vec::default(),
-            withdrawals: Vec::default(),
+            ommers: Default::default(),
+            withdrawals: Default::default(),
         },
     })
 }

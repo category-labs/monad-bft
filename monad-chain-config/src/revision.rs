@@ -15,6 +15,30 @@
 
 use std::{fmt::Debug, time::Duration};
 
+use monad_eth_types::MAX_TRANSACTIONS_PER_BLOCK;
+
+macro_rules! chain_params {
+    (
+        tx_limit: $tx_limit:expr,
+        proposal_gas_limit: $proposal_gas_limit:expr,
+        proposal_byte_limit: $proposal_byte_limit:expr,
+        max_reserve_balance: $max_reserve_balance:expr,
+        vote_pace: $vote_pace:expr $(,)?
+    ) => {{
+        const _: () = assert!(
+            $tx_limit <= MAX_TRANSACTIONS_PER_BLOCK,
+            "tx_limit must not exceed MAX_TRANSACTIONS_PER_BLOCK"
+        );
+        ChainParams {
+            tx_limit: $tx_limit,
+            proposal_gas_limit: $proposal_gas_limit,
+            proposal_byte_limit: $proposal_byte_limit,
+            max_reserve_balance: $max_reserve_balance,
+            vote_pace: $vote_pace,
+        }
+    }};
+}
+
 pub const CHAIN_PARAMS_LATEST: ChainParams = CHAIN_PARAMS_V_0_11_0;
 
 pub trait ChainRevision: Copy + Clone {
@@ -68,7 +92,7 @@ pub struct ChainParams {
     pub vote_pace: Duration,
 }
 
-const CHAIN_PARAMS_V_0_7_0: ChainParams = ChainParams {
+const CHAIN_PARAMS_V_0_7_0: ChainParams = chain_params! {
     tx_limit: 10_000,
     proposal_gas_limit: 300_000_000,
     proposal_byte_limit: 4_000_000,
@@ -76,7 +100,7 @@ const CHAIN_PARAMS_V_0_7_0: ChainParams = ChainParams {
     vote_pace: Duration::from_millis(1000),
 };
 
-const CHAIN_PARAMS_V_0_8_0: ChainParams = ChainParams {
+const CHAIN_PARAMS_V_0_8_0: ChainParams = chain_params! {
     tx_limit: 5_000,
     proposal_gas_limit: 150_000_000,
     proposal_byte_limit: 2_000_000,
@@ -84,7 +108,7 @@ const CHAIN_PARAMS_V_0_8_0: ChainParams = ChainParams {
     vote_pace: Duration::from_millis(500),
 };
 
-const CHAIN_PARAMS_V_0_10_0: ChainParams = ChainParams {
+const CHAIN_PARAMS_V_0_10_0: ChainParams = chain_params! {
     tx_limit: 5_000,
     proposal_gas_limit: 150_000_000,
     proposal_byte_limit: 2_000_000,
@@ -92,13 +116,15 @@ const CHAIN_PARAMS_V_0_10_0: ChainParams = ChainParams {
     vote_pace: Duration::from_millis(400),
 };
 
-const CHAIN_PARAMS_V_0_11_0: ChainParams = ChainParams {
+const CHAIN_PARAMS_V_0_11_0: ChainParams = chain_params! {
     tx_limit: 5_000,
     proposal_gas_limit: 200_000_000,
     proposal_byte_limit: 2_000_000,
     max_reserve_balance: 10_000_000_000_000_000_000, // 10 MON
     vote_pace: Duration::from_millis(400),
 };
+
+// NOTE: when adding a new revision, chain_params! asserts that tx_limit is <= MAX_TRANSACTIONS_PER_BLOCK
 
 #[cfg(test)]
 mod test {

@@ -24,12 +24,15 @@ use alloy_rlp::{
     RlpEncodableWrapper,
 };
 use monad_crypto::NopPubKey;
-use monad_types::{Balance, ExecutionProtocol, FinalizedHeader, Nonce, SeqNum};
+use monad_types::{Balance, ExecutionProtocol, FinalizedHeader, LimitedVec, Nonce, SeqNum};
 use serde_with::{serde_as, DisplayFromStr};
 
 pub mod serde;
 
 pub const EMPTY_RLP_TX_LIST: u8 = 0xc0;
+pub const MAX_TRANSACTIONS_PER_BLOCK: usize = 10000;
+const MAX_OMMERS: usize = 0;
+const MAX_WITHDRAWALS: usize = 0;
 
 pub type EthAddress = [u8; 20];
 pub type EthStorageKey = [u8; 32];
@@ -212,9 +215,9 @@ impl FinalizedHeader for EthHeader {
 #[derive(Clone, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize, Deserialize, Default)]
 pub struct EthBlockBody {
     // TODO consider storing recovered txs inline here
-    pub transactions: Vec<TxEnvelope>,
-    pub ommers: Vec<Ommer>,
-    pub withdrawals: Vec<Withdrawal>,
+    pub transactions: LimitedVec<TxEnvelope, MAX_TRANSACTIONS_PER_BLOCK>,
+    pub ommers: LimitedVec<Ommer, MAX_OMMERS>,
+    pub withdrawals: LimitedVec<Withdrawal, MAX_WITHDRAWALS>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize, Deserialize)]

@@ -49,14 +49,18 @@ use monad_crypto::certificate_signature::{
 };
 use monad_state_backend::StateBackend;
 use monad_types::{
-    deserialize_pubkey, serialize_pubkey, Epoch, ExecutionProtocol, NodeId, Round, RouterTarget,
-    SeqNum, Stake, UdpPriority,
+    deserialize_pubkey, serialize_pubkey, Epoch, ExecutionProtocol, LimitedVec, NodeId, Round,
+    RouterTarget, SeqNum, Stake, UdpPriority,
 };
 use monad_validator::signature_collection::SignatureCollection;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
 const STATESYNC_NETWORK_MESSAGE_NAME: &str = "StateSyncNetworkMessage";
+
+/// maximum number of upserts we can send in a single response
+/// at 75 bytes per upsert, approx 1.5MB
+pub const MAX_UPSERTS_PER_RESPONSE: usize = 20_000;
 
 pub enum RouterCommand<ST: CertificateSignatureRecoverable, OM> {
     // Publish should not be replayed
@@ -1608,9 +1612,12 @@ impl Decodable for StateSyncResponse {
         let request = StateSyncRequest::decode(&mut payload)?;
         // check if server version is past V1: upsert fork
         let response: Vec<StateSyncUpsertV1> = if version >= STATESYNC_VERSION_V1 {
-            Vec::<StateSyncUpsertV1>::decode(&mut payload)?
+            LimitedVec::<StateSyncUpsertV1, MAX_UPSERTS_PER_RESPONSE>::decode(&mut payload)?
+                .into_inner()
         } else {
-            let v0_response = Vec::<StateSyncUpsertV0>::decode(&mut payload)?;
+            let v0_response =
+                LimitedVec::<StateSyncUpsertV0, MAX_UPSERTS_PER_RESPONSE>::decode(&mut payload)?
+                    .into_inner();
             v0_response.iter().map(StateSyncUpsertV0::as_v1).collect()
         };
         let response_n = u64::decode(&mut payload)?;

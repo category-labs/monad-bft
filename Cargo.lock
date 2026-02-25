@@ -5012,6 +5012,7 @@ dependencies = [
 name = "monad-chain-config"
 version = "0.1.0"
 dependencies = [
+ "monad-eth-types",
  "monad-types",
  "serde",
  "thiserror 1.0.69",

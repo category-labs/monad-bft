@@ -194,7 +194,8 @@ where
             validator_sets: vec![LockedEpoch {
                 epoch: Epoch(1),
                 round: GENESIS_ROUND,
-            }],
+            }]
+            .into(),
         }
         .into()
     }
@@ -1680,7 +1681,8 @@ mod test {
                     epoch: Epoch(4),
                     round: Round(4050),
                 },
-            ],
+            ]
+            .into(),
         }
         .into();
 
@@ -1832,11 +1834,14 @@ mod test {
         >(1, ValidatorSetFactory::default());
 
         let make_val_set_data = |stake: Stake| {
-            ValidatorSetData(vec![ValidatorData {
-                node_id: NodeId::new(keys[0].pubkey()),
-                cert_pubkey: cert_keys[0].pubkey(),
-                stake,
-            }])
+            ValidatorSetData(
+                vec![ValidatorData {
+                    node_id: NodeId::new(keys[0].pubkey()),
+                    cert_pubkey: cert_keys[0].pubkey(),
+                    stake,
+                }]
+                .into(),
+            )
         };
 
         let validators_config: ValidatorsConfig<SignatureCollectionType> = ValidatorsConfig {

@@ -862,6 +862,33 @@ impl<T, const N: usize> From<Vec<T>> for LimitedVec<T, N> {
     }
 }
 
+impl<T: Serialize, const N: usize> Serialize for LimitedVec<T, N> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize(serializer)
+    }
+}
+
+impl<'de, T: Deserialize<'de>, const N: usize> Deserialize<'de> for LimitedVec<T, N> {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Vec::<T>::deserialize(deserializer).map(Self)
+    }
+}
+
+impl<T, const N: usize> FromIterator<T> for LimitedVec<T, N> {
+    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
+        Self(iter.into_iter().collect())
+    }
+}
+
+impl<'a, T, const N: usize> IntoIterator for &'a LimitedVec<T, N> {
+    type Item = &'a T;
+    type IntoIter = std::slice::Iter<'a, T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+
 impl<T, const N: usize> IntoIterator for LimitedVec<T, N> {
     type Item = T;
     type IntoIter = std::vec::IntoIter<T>;

@@ -137,7 +137,7 @@ where
                         block.get_seq_num(),
                         block.get_block_round(),
                         block.get_parent_id(),
-                        block.body().execution_body.transactions.clone(),
+                        block.body().execution_body.transactions.to_vec(),
                     );
 
                     self.blocks.insert(block.get_id(), block);

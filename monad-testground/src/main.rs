@@ -287,7 +287,7 @@ where
                 stake: Stake::ONE,
                 cert_pubkey: cert_keypair.pubkey(),
             })
-            .collect::<Vec<_>>(),
+            .collect(),
     );
 
     let all_peers: Vec<NodeId<_>> = validators.0.iter().map(|data| data.node_id).collect();

@@ -278,7 +278,8 @@ where
                 high_qc_round: self.high_qc.get_round(),
                 high_tip_round: GENESIS_ROUND,
                 sigs: tmo_sig_col,
-            }],
+            }]
+            .into(),
             high_extend: HighExtend::Qc(self.high_qc.clone()),
         };
 

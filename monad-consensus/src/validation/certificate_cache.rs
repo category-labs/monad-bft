@@ -145,7 +145,7 @@ mod test {
         TimeoutCertificate {
             round: Round(id as u64),
             epoch: Epoch(1),
-            tip_rounds: Vec::new(),
+            tip_rounds: Default::default(),
             high_extend: HighExtend::Qc(QuorumCertificate::genesis_qc()),
         }
     }

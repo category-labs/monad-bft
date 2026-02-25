@@ -1618,7 +1618,8 @@ mod test {
                     high_qc_round: GENESIS_ROUND,
                     high_tip_round: GENESIS_ROUND,
                     sigs: sigcol,
-                }],
+                }]
+                .into(),
                 high_extend: HighExtend::Qc(QuorumCertificate::genesis_qc()),
             };
 
@@ -1650,7 +1651,7 @@ mod test {
             TimeoutCertificate {
                 epoch: Epoch(1),
                 round: Round(3),
-                tip_rounds: vec![],
+                tip_rounds: Default::default(),
                 high_extend: HighExtend::Qc(QuorumCertificate::genesis_qc()),
             };
 
@@ -1746,7 +1747,8 @@ mod test {
                     high_qc_round: GENESIS_ROUND,
                     high_tip_round: GENESIS_ROUND,
                     sigs: sigcol,
-                }],
+                }]
+                .into(),
                 high_extend: HighExtend::Qc(QuorumCertificate::genesis_qc()),
             };
 
@@ -2202,7 +2204,7 @@ mod test {
             TimeoutCertificate {
                 epoch: Epoch(2), // wrong epoch here
                 round: Round(11),
-                tip_rounds: vec![high_qc_sig_tuple],
+                tip_rounds: vec![high_qc_sig_tuple].into(),
                 high_extend: HighExtend::Qc(qc.clone()),
             };
 

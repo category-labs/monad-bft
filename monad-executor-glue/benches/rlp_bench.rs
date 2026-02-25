@@ -24,7 +24,7 @@ use monad_executor_glue::{
 pub struct Wrapped<T>(T);
 
 pub fn criterion_benchmark(c: &mut Criterion) {
-    let num_upserts = 1_000_000;
+    let num_upserts = 20_000;
     let upsert_size = 100_usize;
 
     let statesync_response: Wrapped<_> = Wrapped(Wrapped(Wrapped(Wrapped(Wrapped(Wrapped(

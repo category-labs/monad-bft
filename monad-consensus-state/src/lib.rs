@@ -2524,9 +2524,9 @@ mod test {
 
     fn generate_block_body(eth_tx_list: Vec<TxEnvelope>) -> EthBlockBody {
         EthBlockBody {
-            transactions: eth_tx_list,
-            ommers: Vec::new(),
-            withdrawals: Vec::new(),
+            transactions: eth_tx_list.into(),
+            ommers: Default::default(),
+            withdrawals: Default::default(),
         }
     }
 

@@ -317,11 +317,11 @@ fn run_custom_iter<const N: usize>(
 
                 let decoded_txns = encoded_txns.body.transactions;
 
-                let expected_txs = expected_txs.into_iter().cloned().collect_vec();
+                let expected_txs: Vec<_> = expected_txs.into_iter().cloned().collect();
 
                 assert_eq!(
-                    decoded_txns,
-                    expected_txs,
+                    decoded_txns[..],
+                    expected_txs[..],
                     "create_proposal decoded txns do not match expected txs!\n{:#?}",
                     decoded_txns
                         .iter()
