@@ -37,6 +37,7 @@ pub struct EthTxPoolMetrics {
 
     pub create_proposal: AtomicU64,
     pub create_proposal_txs: AtomicU64,
+    pub create_proposal_expected_priority_fee_gwei: AtomicU64,
     pub create_proposal_tracked_addresses: AtomicU64,
     pub create_proposal_available_addresses: AtomicU64,
     pub create_proposal_backend_lookups: AtomicU64,
@@ -77,6 +78,9 @@ impl EthTxPoolMetrics {
             self.create_proposal.load(Ordering::SeqCst);
         metrics["monad.bft.txpool.pool.create_proposal_txs"] =
             self.create_proposal_txs.load(Ordering::SeqCst);
+        metrics["monad.bft.txpool.pool.create_proposal_expected_priority_fee_gwei"] = self
+            .create_proposal_expected_priority_fee_gwei
+            .load(Ordering::SeqCst);
         metrics["monad.bft.txpool.pool.create_proposal_tracked_addresses"] = self
             .create_proposal_tracked_addresses
             .load(Ordering::SeqCst);

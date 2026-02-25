@@ -39,7 +39,11 @@ use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthBlockValidator;
 use monad_eth_txpool_executor::{EthTxPoolExecutor, EthTxPoolIpcConfig};
 use monad_executor::{Executor, ExecutorMetricsChain};
-use monad_executor_glue::{LogFriendlyMonadEvent, Message, MonadEvent};
+use monad_executor_glue::{
+    LogFriendlyMonadEvent, Message, MonadEvent, OutboundForwardTxs,
+    TX_FORWARD_LEANUDP_MAX_MESSAGE_SIZE_BYTES,
+};
+use monad_leanudp::metrics as leanudp_metrics;
 use monad_ledger::MonadBlockFileLedger;
 use monad_node_config::{
     ExecutionProtocolType, FullNodeIdentityConfig, NodeBootstrapConfig, NodeConfig,
@@ -49,8 +53,13 @@ use monad_peer_discovery::{
     discovery::{PeerDiscovery, PeerDiscoveryBuilder},
     MonadNameRecord, NameRecord,
 };
+use monad_peer_score::{ema, metrics as peer_score_metrics, StdClock};
 use monad_pprof::start_pprof_server;
-use monad_raptorcast::config::{RaptorCastConfig, RaptorCastConfigPrimary};
+use monad_raptorcast::{
+    auth::{AuthenticatedSocketHandle, LeanUdpSocketHandle, WireAuthProtocol},
+    config::{RaptorCastConfig, RaptorCastConfigPrimary},
+    metrics as raptorcast_metrics,
+};
 use monad_router_multi::MultiRouter;
 use monad_state::{MonadMessage, MonadStateBuilder, VerifiedMonadMessage};
 use monad_state_backend::StateBackendThreadClient;
@@ -155,6 +164,54 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         .qc()
         .get_round()
         + Round(1);
+
+    let peer_score_config = ema::ScoreConfig {
+        promoted_capacity: node_state
+            .node_config
+            .tx_ingestion
+            .peer_score
+            .promoted_capacity,
+        newcomer_capacity: node_state
+            .node_config
+            .tx_ingestion
+            .peer_score
+            .newcomer_capacity,
+        max_time_weight: node_state
+            .node_config
+            .tx_ingestion
+            .peer_score
+            .max_time_weight,
+        time_weight_unit: Duration::from_secs(
+            node_state
+                .node_config
+                .tx_ingestion
+                .peer_score
+                .time_weight_unit_seconds,
+        ),
+        ema_half_life: Duration::from_secs(
+            node_state
+                .node_config
+                .tx_ingestion
+                .peer_score
+                .ema_half_life_seconds,
+        ),
+        block_time: Duration::from_millis(
+            node_state
+                .node_config
+                .tx_ingestion
+                .peer_score
+                .block_time_millis,
+        ),
+        promotion_threshold: node_state
+            .node_config
+            .tx_ingestion
+            .peer_score
+            .promotion_threshold,
+    };
+    let (score_provider, score_reader) = ema::create::<
+        NodeId<CertificateSignaturePubKey<SignatureType>>,
+        StdClock,
+    >(peer_score_config, StdClock);
     let router = build_raptorcast_router::<
         SignatureType,
         SignatureCollectionType,
@@ -170,6 +227,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         current_epoch,
         current_round,
         node_state.persisted_peers_path,
+        score_reader.clone(),
     );
 
     let statesync_threshold: usize = node_state.node_config.statesync_threshold.into();
@@ -261,6 +319,28 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
                 .get_round(),
             // TODO(andr-dev): Use timestamp from last commit in ledger
             0,
+            true,
+            score_provider,
+            score_reader.clone(),
+            monad_eth_txpool_executor::ForwardedIngressFairQueueConfig {
+                per_id_limit: node_state.node_config.tx_ingestion.fair_queue.per_id_limit,
+                max_size: node_state.node_config.tx_ingestion.fair_queue.max_size,
+                regular_per_id_limit: node_state
+                    .node_config
+                    .tx_ingestion
+                    .fair_queue
+                    .regular_per_id_limit,
+                regular_max_size: node_state
+                    .node_config
+                    .tx_ingestion
+                    .fair_queue
+                    .regular_max_size,
+                regular_bandwidth_pct: node_state
+                    .node_config
+                    .tx_ingestion
+                    .fair_queue
+                    .regular_bandwidth_pct,
+            },
         )
         .expect("txpool ipc succeeds"),
         control_panel: ControlPanelIpcReceiver::new(
@@ -395,6 +475,22 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         .as_ref()
         .map(|provider| provider.meter("opentelemetry"));
 
+    let mut maybe_tx_ingestion_metrics_log_ticker = node_state
+        .node_config
+        .tx_ingestion_metrics_log_interval_seconds
+        .and_then(|seconds| {
+            if seconds == 0 {
+                warn!(
+                    "tx_ingestion_metrics_log_interval_seconds must be > 0; disabling tx ingestion logs"
+                );
+                return None;
+            }
+
+            let mut timer = tokio::time::interval(Duration::from_secs(seconds));
+            timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            Some(timer)
+        });
+
     let mut gauge_cache = HashMap::new();
     let process_start = Instant::now();
     let mut total_state_update_elapsed = Duration::ZERO;
@@ -422,6 +518,12 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
                 let state_metrics = state.metrics();
                 let executor_metrics = executor.metrics();
                 send_metrics(otel_meter, &mut gauge_cache, state_metrics, executor_metrics, &process_start, &total_state_update_elapsed);
+            }
+            _ = match &mut maybe_tx_ingestion_metrics_log_ticker {
+                Some(ticker) => ticker.tick().boxed(),
+                None => futures_util::future::pending().boxed(),
+            } => {
+                log_tx_ingestion_metrics(executor.metrics());
             }
             event = executor.next().instrument(ledger_span.clone()) => {
                 let Some(event) = event else {
@@ -507,6 +609,7 @@ fn build_raptorcast_router<ST, SCT, M, OM>(
     current_epoch: Epoch,
     current_round: Round,
     persisted_peers_path: PathBuf,
+    score_reader: ema::ScoreReader<NodeId<CertificateSignaturePubKey<ST>>, StdClock>,
 ) -> MultiRouter<
     ST,
     M,
@@ -524,7 +627,7 @@ where
         + Send
         + Sync
         + 'static,
-    OM: Encodable + Clone + Send + Sync + 'static,
+    OM: Encodable + Clone + Send + Sync + 'static + OutboundForwardTxs,
 {
     let bind_address = SocketAddr::new(
         IpAddr::V4(node_config.network.bind_address_host),
@@ -533,6 +636,10 @@ where
     let authenticated_bind_address = node_config
         .network
         .authenticated_bind_address_port
+        .map(|port| SocketAddr::new(IpAddr::V4(node_config.network.bind_address_host), port));
+    let authenticated_tx_ingestion_bind_address = node_config
+        .network
+        .authenticated_tx_ingestion_bind_address_port
         .map(|port| SocketAddr::new(IpAddr::V4(node_config.network.bind_address_host), port));
     let Some(SocketAddr::V4(name_record_address)) = resolve_domain_v4(
         &NodeId::new(identity.pubkey()),
@@ -547,6 +654,7 @@ where
     tracing::debug!(
         ?bind_address,
         ?authenticated_bind_address,
+        ?authenticated_tx_ingestion_bind_address,
         ?name_record_address,
         "Monad-node starting, pid: {}",
         process::id()
@@ -583,17 +691,48 @@ where
         peer_discovery_config.self_auth_port.is_some(),
         network_config.authenticated_bind_address_port.is_some()
     );
+    assert_eq!(
+        peer_discovery_config.self_auth_tx_ingestion_port.is_some(),
+        network_config
+            .authenticated_tx_ingestion_bind_address_port
+            .is_some()
+    );
+    assert!(
+        peer_discovery_config.self_auth_tx_ingestion_port.is_none()
+            || peer_discovery_config.self_auth_port.is_some(),
+        "self_auth_tx_ingestion_port requires self_auth_port"
+    );
+    if let (Some(auth_addr), Some(lean_addr)) = (
+        authenticated_bind_address,
+        authenticated_tx_ingestion_bind_address,
+    ) {
+        assert_ne!(
+            auth_addr, lean_addr,
+            "authenticated_bind_address_port and authenticated_tx_ingestion_bind_address_port must differ"
+        );
+    }
 
     let self_id = NodeId::new(identity.pubkey());
-    let self_record = match peer_discovery_config.self_auth_port {
-        Some(auth_port) => NameRecord::new_with_authentication(
+    let self_record = match (
+        peer_discovery_config.self_auth_port,
+        peer_discovery_config.self_auth_tx_ingestion_port,
+    ) {
+        (Some(auth_port), Some(auth_tx_ingestion_port)) => NameRecord::new_with_lean_udp_p2p(
+            *name_record_address.ip(),
+            name_record_address.port(),
+            name_record_address.port(),
+            auth_port,
+            auth_tx_ingestion_port,
+            peer_discovery_config.self_record_seq_num,
+        ),
+        (Some(auth_port), None) => NameRecord::new_with_authentication(
             *name_record_address.ip(),
             name_record_address.port(),
             name_record_address.port(),
             auth_port,
             peer_discovery_config.self_record_seq_num,
         ),
-        None => NameRecord::new(
+        _ => NameRecord::new(
             *name_record_address.ip(),
             name_record_address.port(),
             peer_discovery_config.self_record_seq_num,
@@ -629,6 +768,7 @@ where
                 signature: peer.name_record_sig,
                 record_seq_num: peer.record_seq_num,
                 auth_port: peer.auth_port,
+                auth_tx_ingestion_port: peer.auth_tx_ingestion_port,
             };
 
             match MonadNameRecord::try_from(&peer_entry) {
@@ -695,14 +835,15 @@ where
     };
 
     let shared_key = Arc::new(identity);
+    let lean_shared_key = shared_key.clone();
     let wireauth_config = monad_wireauth::Config::default();
-    let auth_protocol = monad_raptorcast::auth::WireAuthProtocol::new(
+    let auth_protocol = WireAuthProtocol::new(
         &monad_raptorcast::auth::metrics::UDP_METRICS,
-        wireauth_config,
+        wireauth_config.clone(),
         shared_key.clone(),
     );
 
-    MultiRouter::new(
+    let mut router = MultiRouter::new(
         self_id,
         RaptorCastConfig {
             shared_key,
@@ -723,7 +864,64 @@ where
         current_epoch,
         epoch_validators,
         auth_protocol,
-    )
+    );
+
+    if node_config.tx_ingestion.leanudp.enabled {
+        let Some(lean_bind_address) = authenticated_tx_ingestion_bind_address else {
+            return router;
+        };
+        let mut lean_dp_builder = DataplaneBuilder::new(network_config.max_mbps.into())
+            .with_udp_multishot(network_config.enable_udp_multishot);
+        if let Some(buffer_size) = network_config.buffer_size {
+            lean_dp_builder = lean_dp_builder.with_udp_buffer_size(buffer_size);
+        }
+
+        let mut lean_dp = lean_dp_builder
+            .with_udp_sockets([(UdpSocketId::AuthenticatedRaptorcast, lean_bind_address)])
+            .build();
+        assert!(lean_dp.block_until_ready(Duration::from_secs(1)));
+
+        let lean_udp_socket = lean_dp
+            .udp_sockets
+            .take(UdpSocketId::AuthenticatedRaptorcast)
+            .expect("lean udp socket");
+        let lean_dp_control = lean_dp.control;
+
+        let lean_auth_protocol = WireAuthProtocol::new(
+            &monad_raptorcast::auth::metrics::UDP_METRICS,
+            wireauth_config,
+            lean_shared_key,
+        );
+        let lean_auth_socket = AuthenticatedSocketHandle::new(lean_udp_socket, lean_auth_protocol);
+
+        let mut leanudp_config = monad_leanudp::Config::default();
+        let leanudp_overrides = &node_config.tx_ingestion.leanudp;
+
+        leanudp_config.max_message_size = leanudp_overrides
+            .max_message_size_bytes
+            .unwrap_or(TX_FORWARD_LEANUDP_MAX_MESSAGE_SIZE_BYTES);
+        if let Some(v) = leanudp_overrides.max_priority_messages {
+            leanudp_config.max_priority_messages = v;
+        }
+        if let Some(v) = leanudp_overrides.max_regular_messages {
+            leanudp_config.max_regular_messages = v;
+        }
+        if let Some(v) = leanudp_overrides.max_messages_per_identity {
+            leanudp_config.max_messages_per_identity = v;
+        }
+        if let Some(v) = leanudp_overrides.message_timeout_ms {
+            leanudp_config.message_timeout = Duration::from_millis(v);
+        }
+        if let Some(v) = leanudp_overrides.max_fragment_payload_bytes {
+            leanudp_config.max_fragment_payload = v;
+        }
+
+        let lean_socket = LeanUdpSocketHandle::new(lean_auth_socket, score_reader, leanudp_config);
+        router.primary_mut().set_lean_udp_socket(lean_socket);
+        router.set_lean_udp_dataplane_control(lean_dp_control);
+    }
+
+    router
 }
 
 fn resolve_domain_v4<P: PubKey>(node_id: &NodeId<P>, domain: &String) -> Option<SocketAddr> {
@@ -749,6 +947,144 @@ fn resolve_domain_v4<P: PubKey>(node_id: &NodeId<P>, domain: &String) -> Option<
 const GAUGE_TOTAL_UPTIME_US: &str = "monad.total_uptime_us";
 const GAUGE_STATE_TOTAL_UPDATE_US: &str = "monad.state.total_update_us";
 const GAUGE_NODE_INFO: &str = "monad_node_info";
+const COUNTER_FAIR_QUEUE_PUSH_TOTAL: &str = "monad.fair_queue.push.total";
+const COUNTER_FAIR_QUEUE_PUSH_PRIORITY: &str = "monad.fair_queue.push.priority";
+const COUNTER_FAIR_QUEUE_PUSH_REGULAR: &str = "monad.fair_queue.push.regular";
+const COUNTER_FAIR_QUEUE_PUSH_ERROR_FULL: &str = "monad.fair_queue.push.error.full";
+const COUNTER_FAIR_QUEUE_PUSH_ERROR_PER_ID_LIMIT: &str = "monad.fair_queue.push.error.per_id_limit";
+const COUNTER_FAIR_QUEUE_POP_TOTAL: &str = "monad.fair_queue.pop.total";
+const COUNTER_FAIR_QUEUE_POP_EMPTY: &str = "monad.fair_queue.pop.empty";
+const COUNTER_FAIR_QUEUE_POP_FROM_PRIORITY: &str = "monad.fair_queue.pop.from_priority";
+const COUNTER_FAIR_QUEUE_POP_FROM_REGULAR: &str = "monad.fair_queue.pop.from_regular";
+const GAUGE_FAIR_QUEUE_PRIORITY_ITEMS: &str = "monad.fair_queue.priority_items";
+const GAUGE_FAIR_QUEUE_REGULAR_ITEMS: &str = "monad.fair_queue.regular_items";
+const COUNTER_TXPOOL_FORWARDED_INGRESS_ENQUEUED_TXS: &str =
+    "monad.bft.txpool.forwarded_ingress_enqueued_txs";
+const COUNTER_TXPOOL_FORWARDED_INGRESS_DROPPED_TXS: &str =
+    "monad.bft.txpool.forwarded_ingress_dropped_txs";
+const COUNTER_TXPOOL_FORWARDED_INGRESS_SENT_BATCHES: &str =
+    "monad.bft.txpool.forwarded_ingress_sent_batches";
+const COUNTER_TXPOOL_FORWARDED_INGRESS_SENT_TXS: &str =
+    "monad.bft.txpool.forwarded_ingress_sent_txs";
+
+fn metric(metrics: &HashMap<&'static str, u64>, key: &'static str) -> u64 {
+    metrics.get(key).copied().unwrap_or_default()
+}
+
+fn log_tx_ingestion_metrics(executor_metrics: ExecutorMetricsChain<'_>) {
+    let fq: HashMap<&'static str, u64> = executor_metrics.into_inner().into_iter().collect();
+
+    tracing::info!(
+        push_total = metric(&fq, COUNTER_FAIR_QUEUE_PUSH_TOTAL),
+        push_priority = metric(&fq, COUNTER_FAIR_QUEUE_PUSH_PRIORITY),
+        push_regular = metric(&fq, COUNTER_FAIR_QUEUE_PUSH_REGULAR),
+        push_error_full = metric(&fq, COUNTER_FAIR_QUEUE_PUSH_ERROR_FULL),
+        push_error_per_id_limit = metric(&fq, COUNTER_FAIR_QUEUE_PUSH_ERROR_PER_ID_LIMIT),
+        pop_total = metric(&fq, COUNTER_FAIR_QUEUE_POP_TOTAL),
+        pop_empty = metric(&fq, COUNTER_FAIR_QUEUE_POP_EMPTY),
+        pop_from_priority = metric(&fq, COUNTER_FAIR_QUEUE_POP_FROM_PRIORITY),
+        pop_from_regular = metric(&fq, COUNTER_FAIR_QUEUE_POP_FROM_REGULAR),
+        priority_items = metric(&fq, GAUGE_FAIR_QUEUE_PRIORITY_ITEMS),
+        regular_items = metric(&fq, GAUGE_FAIR_QUEUE_REGULAR_ITEMS),
+        ingress_enqueued = metric(&fq, COUNTER_TXPOOL_FORWARDED_INGRESS_ENQUEUED_TXS),
+        ingress_dropped = metric(&fq, COUNTER_TXPOOL_FORWARDED_INGRESS_DROPPED_TXS),
+        ingress_sent_batches = metric(&fq, COUNTER_TXPOOL_FORWARDED_INGRESS_SENT_BATCHES),
+        ingress_sent_txs = metric(&fq, COUNTER_TXPOOL_FORWARDED_INGRESS_SENT_TXS),
+        "fair_queue stats",
+    );
+
+    tracing::info!(
+        decode_fragments_received = metric(
+            &fq,
+            leanudp_metrics::COUNTER_LEANUDP_DECODE_FRAGMENTS_RECEIVED
+        ),
+        decode_bytes_received = metric(&fq, leanudp_metrics::COUNTER_LEANUDP_DECODE_BYTES_RECEIVED),
+        decode_fragments_priority = metric(
+            &fq,
+            leanudp_metrics::COUNTER_LEANUDP_DECODE_FRAGMENTS_PRIORITY
+        ),
+        decode_bytes_priority = metric(&fq, leanudp_metrics::COUNTER_LEANUDP_DECODE_BYTES_PRIORITY),
+        decode_fragments_regular = metric(
+            &fq,
+            leanudp_metrics::COUNTER_LEANUDP_DECODE_FRAGMENTS_REGULAR
+        ),
+        decode_bytes_regular = metric(&fq, leanudp_metrics::COUNTER_LEANUDP_DECODE_BYTES_REGULAR),
+        decode_messages_completed = metric(
+            &fq,
+            leanudp_metrics::COUNTER_LEANUDP_DECODE_MESSAGES_COMPLETED
+        ),
+        decode_bytes_completed =
+            metric(&fq, leanudp_metrics::COUNTER_LEANUDP_DECODE_BYTES_COMPLETED),
+        pool_priority_messages = metric(&fq, leanudp_metrics::GAUGE_LEANUDP_POOL_PRIORITY_MESSAGES),
+        pool_regular_messages = metric(&fq, leanudp_metrics::GAUGE_LEANUDP_POOL_REGULAR_MESSAGES),
+        decode_evicted_timeout =
+            metric(&fq, leanudp_metrics::COUNTER_LEANUDP_DECODE_EVICTED_TIMEOUT),
+        decode_evicted_random = metric(&fq, leanudp_metrics::COUNTER_LEANUDP_DECODE_EVICTED_RANDOM),
+        error_pool_full = metric(&fq, leanudp_metrics::COUNTER_LEANUDP_ERROR_POOL_FULL),
+        error_identity_limit = metric(&fq, leanudp_metrics::COUNTER_LEANUDP_ERROR_IDENTITY_LIMIT),
+        error_message_too_large = metric(
+            &fq,
+            leanudp_metrics::COUNTER_LEANUDP_ERROR_MESSAGE_TOO_LARGE
+        ),
+        error_invalid_header = metric(&fq, leanudp_metrics::COUNTER_LEANUDP_ERROR_INVALID_HEADER),
+        encode_messages = metric(&fq, leanudp_metrics::COUNTER_LEANUDP_ENCODE_MESSAGES),
+        encode_fragments = metric(&fq, leanudp_metrics::COUNTER_LEANUDP_ENCODE_FRAGMENTS),
+        encode_bytes = metric(&fq, leanudp_metrics::COUNTER_LEANUDP_ENCODE_BYTES),
+        raptorcast_forward_attempts = metric(
+            &fq,
+            raptorcast_metrics::COUNTER_RAPTORCAST_LEANUDP_FORWARD_ATTEMPTS
+        ),
+        raptorcast_forward_sent = metric(
+            &fq,
+            raptorcast_metrics::COUNTER_RAPTORCAST_LEANUDP_FORWARD_SENT
+        ),
+        raptorcast_forward_fallback = metric(
+            &fq,
+            raptorcast_metrics::COUNTER_RAPTORCAST_LEANUDP_FORWARD_FALLBACK
+        ),
+        raptorcast_forward_oversize = metric(
+            &fq,
+            raptorcast_metrics::COUNTER_RAPTORCAST_LEANUDP_FORWARD_OVERSIZE
+        ),
+        raptorcast_connect_attempts = metric(
+            &fq,
+            raptorcast_metrics::COUNTER_RAPTORCAST_LEANUDP_CONNECT_ATTEMPTS
+        ),
+        raptorcast_connect_failures = metric(
+            &fq,
+            raptorcast_metrics::COUNTER_RAPTORCAST_LEANUDP_CONNECT_FAILURES
+        ),
+        "leanudp stats",
+    );
+
+    tracing::info!(
+        record_contribution_total = metric(
+            &fq,
+            peer_score_metrics::COUNTER_PEER_SCORE_RECORD_CONTRIBUTION_TOTAL
+        ),
+        newcomer_admitted = metric(
+            &fq,
+            peer_score_metrics::COUNTER_PEER_SCORE_NEWCOMER_ADMITTED
+        ),
+        newcomer_rejected = metric(
+            &fq,
+            peer_score_metrics::COUNTER_PEER_SCORE_NEWCOMER_REJECTED
+        ),
+        promotion_succeeded = metric(
+            &fq,
+            peer_score_metrics::COUNTER_PEER_SCORE_PROMOTION_SUCCEEDED
+        ),
+        promotion_rejected = metric(
+            &fq,
+            peer_score_metrics::COUNTER_PEER_SCORE_PROMOTION_REJECTED
+        ),
+        demotion = metric(&fq, peer_score_metrics::COUNTER_PEER_SCORE_DEMOTION),
+        promoted_size = metric(&fq, peer_score_metrics::GAUGE_PEER_SCORE_PROMOTED_SIZE),
+        newcomer_size = metric(&fq, peer_score_metrics::GAUGE_PEER_SCORE_NEWCOMER_SIZE),
+        total_size = metric(&fq, peer_score_metrics::GAUGE_PEER_SCORE_TOTAL_SIZE),
+        "peer_score stats",
+    );
+}
 
 fn send_metrics(
     meter: &opentelemetry::metrics::Meter,

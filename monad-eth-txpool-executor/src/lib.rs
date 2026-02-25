@@ -34,27 +34,34 @@ use monad_crypto::certificate_signature::{
 };
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_txpool::{
-    EthTxPool, EthTxPoolConfig, EthTxPoolEventTracker, PoolTxKind, TrackedTxLimitsConfig,
+    EthTxPool, EthTxPoolConfig, EthTxPoolEventTracker, PoolTransactionKind, TrackedTxLimitsConfig,
 };
 use monad_eth_txpool_types::{
     EthTxPoolDropReason, EthTxPoolEventType, EthTxPoolIpcTx, EthTxPoolTxInputStream,
 };
 use monad_eth_types::{EthExecutionProtocol, ExtractEthAddress};
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
-use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
+use monad_executor_glue::{MempoolEvent, MonadEvent, ProposalSenderScore, TxPoolCommand};
+use monad_peer_score::{
+    ema::{ScoreProvider, ScoreReader},
+    StdClock,
+};
 use monad_secp::RecoverableAddress;
 use monad_state_backend::StateBackend;
-use monad_types::{DropTimer, Round};
+use monad_types::{DropTimer, NodeId, Round};
 use monad_validator::signature_collection::SignatureCollection;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tokio::{sync::mpsc, time::Instant};
 use tracing::{debug, debug_span, error, info, trace_span, warn};
 
-pub use self::{client::EthTxPoolExecutorClient, ipc::EthTxPoolIpcConfig};
 use self::{
     client::ForwardedTxs, forward::EthTxPoolForwardingManager, ipc::EthTxPoolIpcServer,
     metrics::EthTxPoolExecutorMetrics, preload::EthTxPoolPreloadManager,
     reset::EthTxPoolResetTrigger,
+};
+pub use self::{
+    client::{EthTxPoolExecutorClient, ForwardedIngressFairQueueConfig},
+    ipc::EthTxPoolIpcConfig,
 };
 
 mod client;
@@ -84,7 +91,8 @@ where
     events_tx: mpsc::UnboundedSender<MempoolEvent<ST, SCT, EthExecutionProtocol>>,
     events: mpsc::UnboundedReceiver<MempoolEvent<ST, SCT, EthExecutionProtocol>>,
 
-    forwarding_manager: Pin<Box<EthTxPoolForwardingManager>>,
+    forwarding_manager:
+        Pin<Box<EthTxPoolForwardingManager<NodeId<CertificateSignaturePubKey<ST>>>>>,
     preload_manager: Pin<Box<EthTxPoolPreloadManager>>,
 
     metrics: Arc<EthTxPoolExecutorMetrics>,
@@ -93,7 +101,7 @@ where
     _phantom: PhantomData<CRT>,
 }
 
-impl<ST, SCT, SBT, CCT, CRT> EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT, EthTxPoolIpcServer>
+impl<ST, SCT, SBT, CCT, CRT, TIS> EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT, TIS>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -101,20 +109,23 @@ where
     SBT: StateBackend<ST, SCT> + Send + 'static,
     CCT: ChainConfig<CRT> + Send + 'static,
     CRT: ChainRevision + Send + 'static,
+    TIS: EthTxPoolTxInputStream + Send + 'static,
     Self: Unpin,
 {
-    pub fn start(
+    pub fn start_with_input_stream(
+        tx_input_stream: Pin<Box<TIS>>,
         block_policy: EthBlockPolicy<ST, SCT, CCT, CRT>,
         state_backend: SBT,
-        ipc_config: EthTxPoolIpcConfig,
         soft_tx_expiry: Duration,
         hard_tx_expiry: Duration,
         chain_config: CCT,
         round: Round,
         execution_timestamp_s: u64,
-    ) -> io::Result<EthTxPoolExecutorClient<ST, SCT, SBT, CCT, CRT>> {
-        let ipc = Box::pin(EthTxPoolIpcServer::new(ipc_config)?);
-
+        do_local_insert: bool,
+        score_provider: ScoreProvider<NodeId<CertificateSignaturePubKey<ST>>, StdClock>,
+        score_reader: ScoreReader<NodeId<CertificateSignaturePubKey<ST>>, StdClock>,
+        forwarded_ingress_fair_queue_config: ForwardedIngressFairQueueConfig,
+    ) -> EthTxPoolExecutorClient<ST, SCT, SBT, CCT, CRT> {
         let (events_tx, events) = mpsc::unbounded_channel();
 
         let metrics = Arc::new(EthTxPoolExecutorMetrics::default());
@@ -122,7 +133,7 @@ where
 
         metrics.update(&mut executor_metrics);
 
-        Ok(EthTxPoolExecutorClient::new(
+        EthTxPoolExecutorClient::new(
             {
                 let metrics = metrics.clone();
 
@@ -145,7 +156,7 @@ where
 
                     Self {
                         pool,
-                        tx_input_stream: ipc,
+                        tx_input_stream,
                         block_policy,
                         reset: EthTxPoolResetTrigger::default(),
                         state_backend,
@@ -168,7 +179,10 @@ where
             Box::new(move |executor_metrics: &mut ExecutorMetrics| {
                 metrics.update(executor_metrics)
             }),
-        ))
+            score_provider,
+            score_reader,
+            forwarded_ingress_fair_queue_config,
+        )
     }
 
     async fn run(
@@ -190,6 +204,14 @@ where
         event_tx: mpsc::Sender<MonadEvent<ST, SCT, EthExecutionProtocol>>,
     ) {
         use futures::StreamExt;
+        const FORWARDED_CHANNEL_POLL_INTERVAL_MS: u64 = 8;
+
+        let mut forwarded_channel_poll = tokio::time::interval_at(
+            tokio::time::Instant::now()
+                + Duration::from_millis(FORWARDED_CHANNEL_POLL_INTERVAL_MS),
+            Duration::from_millis(FORWARDED_CHANNEL_POLL_INTERVAL_MS),
+        );
+        forwarded_channel_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Burst);
 
         loop {
             tokio::select! {
@@ -204,6 +226,27 @@ where
                     self.exec(commands);
                 }
 
+                _ = forwarded_channel_poll.tick() => {
+                    if !self.forwarding_manager.as_ref().get_ref().ingress_is_empty() {
+                        continue;
+                    }
+
+                    match forwarded_rx.try_recv() {
+                        Ok(forwarded_txs) => {
+                            debug!(
+                                batch_items = forwarded_txs.len(),
+                                "txpool executor: received forwarded batch from channel on timeout"
+                            );
+                            self.process_forwarded_txs(forwarded_txs);
+                        }
+                        Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
+                        Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                            warn!("forwarded channel was dropped, shutting down txpool executor");
+                            break;
+                        }
+                    }
+                }
+
                 result = self.next() => {
                     let Some(event) = result else {
                         error!("txpool executor stream terminated, shutting down txpool executor");
@@ -215,17 +258,50 @@ where
                         break;
                     }
                 }
-
-                result = forwarded_rx.recv() => {
-                    let Some(forwarded_txs) = result else {
-                        warn!("forwarded channel was dropped, shutting down txpool executor");
-                        break;
-                    };
-
-                    self.process_forwarded_txs(forwarded_txs);
-                }
             }
         }
+    }
+}
+
+impl<ST, SCT, SBT, CCT, CRT> EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT, EthTxPoolIpcServer>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    CertificateSignaturePubKey<ST>: ExtractEthAddress,
+    SBT: StateBackend<ST, SCT> + Send + 'static,
+    CCT: ChainConfig<CRT> + Send + 'static,
+    CRT: ChainRevision + Send + 'static,
+    Self: Unpin,
+{
+    pub fn start(
+        block_policy: EthBlockPolicy<ST, SCT, CCT, CRT>,
+        state_backend: SBT,
+        ipc_config: EthTxPoolIpcConfig,
+        soft_tx_expiry: Duration,
+        hard_tx_expiry: Duration,
+        chain_config: CCT,
+        round: Round,
+        execution_timestamp_s: u64,
+        do_local_insert: bool,
+        score_provider: ScoreProvider<NodeId<CertificateSignaturePubKey<ST>>, StdClock>,
+        score_reader: ScoreReader<NodeId<CertificateSignaturePubKey<ST>>, StdClock>,
+        forwarded_ingress_fair_queue_config: ForwardedIngressFairQueueConfig,
+    ) -> io::Result<EthTxPoolExecutorClient<ST, SCT, SBT, CCT, CRT>> {
+        let ipc = Box::pin(EthTxPoolIpcServer::new(ipc_config)?);
+        Ok(Self::start_with_input_stream(
+            ipc,
+            block_policy,
+            state_backend,
+            soft_tx_expiry,
+            hard_tx_expiry,
+            chain_config,
+            round,
+            execution_timestamp_s,
+            do_local_insert,
+            score_provider,
+            score_reader,
+            forwarded_ingress_fair_queue_config,
+        ))
     }
 }
 
@@ -240,15 +316,15 @@ where
     TIS: EthTxPoolTxInputStream,
 {
     fn process_forwarded_txs(&mut self, forwarded_txs: Vec<ForwardedTxs<SCT>>) {
-        for ForwardedTxs { sender, txs } in forwarded_txs {
-            let _span = debug_span!("processing forwarded txs").entered();
-            debug!(
-                ?sender,
-                num_txs = txs.len(),
-                "txpool executor received forwarded txs"
-            );
+        let mut unique_senders = HashSet::new();
+        let mut total_txs = 0usize;
+        let mut invalid_bytes_total = 0u64;
 
-            let mut num_invalid_bytes = 0;
+        for ForwardedTxs { sender, txs } in forwarded_txs {
+            unique_senders.insert(sender);
+            total_txs += txs.len();
+
+            let mut num_invalid_bytes = 0u64;
 
             let txs = txs
                 .into_iter()
@@ -262,19 +338,29 @@ where
                 })
                 .collect::<Vec<_>>();
 
-            self.metrics
-                .reject_forwarded_invalid_bytes
-                .fetch_add(num_invalid_bytes, Ordering::SeqCst);
-
             if num_invalid_bytes != 0 {
+                invalid_bytes_total += num_invalid_bytes;
                 tracing::warn!(?sender, ?num_invalid_bytes, "invalid forwarded txs");
             }
 
             self.forwarding_manager
                 .as_mut()
                 .project()
-                .add_ingress_txs(txs);
+                .add_ingress_txs(sender, txs);
         }
+
+        if invalid_bytes_total != 0 {
+            self.metrics
+                .reject_forwarded_invalid_bytes
+                .fetch_add(invalid_bytes_total, Ordering::SeqCst);
+        }
+
+        debug!(
+            total_txs,
+            unique_senders = unique_senders.len(),
+            invalid_bytes_total,
+            "txpool executor accepted forwarded batch into ingress"
+        );
     }
 }
 
@@ -376,7 +462,12 @@ where
                         &self.state_backend,
                         &self.chain_config,
                     ) {
-                        Ok(proposed_execution_inputs) => {
+                        Ok((proposed_execution_inputs, forwarded_senders_with_gas)) => {
+                            let forwarded_senders_with_gas = forwarded_senders_with_gas
+                                .into_iter()
+                                .map(|(sender, gas)| ProposalSenderScore { sender, gas })
+                                .collect();
+
                             let elapsed = create_proposal_start.elapsed();
 
                             self.metrics.create_proposal.fetch_add(1, Ordering::SeqCst);
@@ -385,7 +476,7 @@ where
                                 .fetch_add(elapsed.as_nanos() as u64, Ordering::SeqCst);
 
                             self.events_tx
-                                .send(MempoolEvent::Proposal {
+                                .send(MempoolEvent::ProposalWithScores {
                                     epoch,
                                     round,
                                     seq_num,
@@ -399,6 +490,7 @@ where
                                     proposed_execution_inputs,
                                     last_round_tc,
                                     fresh_proposal_certificate,
+                                    forwarded_senders_with_gas,
                                 })
                                 .expect("events never dropped");
                         }
@@ -407,7 +499,7 @@ where
                         }
                     }
                 }
-                TxPoolCommand::InsertForwardedTxs { sender, txs } => {
+                TxPoolCommand::InsertForwardedTxs { sender: _, txs: _ } => {
                     // This will never happen because we separate out these commands in `EthTxPoolExecutorClient`.
                     error!("txpool executor received InsertForwardedTxs command over command rx");
                 }
@@ -535,7 +627,7 @@ where
                             match tx.secp256k1_recover() {
                                 Ok(signer) => rayon::iter::Either::Left((
                                     Recovered::new_unchecked(tx, signer),
-                                    PoolTxKind::Owned {
+                                    PoolTransactionKind::Owned {
                                         priority,
                                         extra_data,
                                     },
@@ -595,17 +687,27 @@ where
 
         let mut ipc_events = BTreeMap::default();
 
-        while let Poll::Ready(forwarded_txs) = forwarding_manager.as_mut().poll_ingress(cx) {
-            let _span = debug_span!("forwarded txs", len = forwarded_txs.len()).entered();
+        let mut forwarded_ingress_items_total = 0usize;
+        let mut forwarded_recovered_total = 0usize;
+        let mut forwarded_dropped_invalid_sig_total = 0usize;
+
+        while let Poll::Ready(forwarded_txs_with_senders) =
+            forwarding_manager.as_mut().poll_ingress(cx)
+        {
+            let _span =
+                debug_span!("forwarded txs", len = forwarded_txs_with_senders.len()).entered();
+            let chunk_len = forwarded_txs_with_senders.len();
+            forwarded_ingress_items_total += chunk_len;
 
             let recovered_txs = {
-                let (recovered_txs, dropped_txs): (Vec<_>, Vec<_>) =
-                    forwarded_txs.into_par_iter().partition_map(|tx| {
+                let (recovered_txs, dropped_txs): (Vec<_>, Vec<_>) = forwarded_txs_with_senders
+                    .into_par_iter()
+                    .partition_map(|(tx, sender)| {
                         let _span = trace_span!("txpool: forwarded tx recover signer").entered();
                         match tx.secp256k1_recover() {
                             Ok(signer) => rayon::iter::Either::Left((
                                 Recovered::new_unchecked(tx, signer),
-                                PoolTxKind::Forwarded,
+                                PoolTransactionKind::Forwarded { sender },
                             )),
                             Err(_) => rayon::iter::Either::Right((
                                 *tx.tx_hash(),
@@ -618,6 +720,9 @@ where
                 ipc_events.extend(dropped_txs);
                 recovered_txs
             };
+            let recovered_len = recovered_txs.len();
+            forwarded_recovered_total += recovered_len;
+            forwarded_dropped_invalid_sig_total += chunk_len.saturating_sub(recovered_len);
 
             let mut inserted_addresses = HashSet::<Address>::default();
 
@@ -633,8 +738,15 @@ where
             );
 
             preload_manager.add_requests(inserted_addresses.iter());
+        }
 
-            forwarding_manager.as_mut().complete_ingress();
+        if forwarded_ingress_items_total != 0 {
+            debug!(
+                forwarded_ingress_items_total,
+                forwarded_recovered_total,
+                forwarded_dropped_invalid_sig_total,
+                "txpool executor: drained forwarded ingress and began verification/insert"
+            );
         }
 
         while let Poll::Ready((predicted_proposal_seqnum, addresses)) =

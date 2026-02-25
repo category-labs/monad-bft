@@ -18,6 +18,7 @@ monad-state-backend = { workspace = true }
 monad-types = { workspace = true }
 monad-validator = { workspace = true }
 
+alloy-consensus = { workspace = true }
 alloy-rlp = { workspace = true }
 bincode = { workspace = true }
 bytes = { workspace = true }

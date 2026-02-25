@@ -15,7 +15,8 @@
 
 use std::{
     cmp::Ordering,
-    collections::{BTreeMap, BinaryHeap, VecDeque},
+    collections::{BTreeMap, BinaryHeap, HashMap, VecDeque},
+    hash::Hash,
 };
 
 use alloy_consensus::{transaction::Recovered, Transaction, TxEnvelope};
@@ -37,17 +38,27 @@ use tracing::{debug, error, trace};
 
 use crate::pool::{
     tracked::TrackedTxList,
-    transaction::{PoolTx, PoolTxRecoveredAuthorization},
+    transaction::{ValidEthRecoveredAuthorization, ValidEthTransaction},
 };
 
-#[derive(Debug, PartialEq, Eq)]
-struct OrderedTx<'a> {
-    tx: &'a PoolTx,
+#[derive(Debug)]
+struct OrderedTx<'a, N> {
+    tx: &'a ValidEthTransaction<N>,
     effective_tip_per_gas: u128,
 }
 
-impl<'a> OrderedTx<'a> {
-    fn new(tx: &'a PoolTx, base_fee: u64) -> Option<Self> {
+impl<N> PartialEq for OrderedTx<'_, N> {
+    fn eq(&self, other: &Self) -> bool {
+        self.effective_tip_per_gas == other.effective_tip_per_gas
+            && self.tx.tx_kind_priority() == other.tx.tx_kind_priority()
+            && self.tx.gas_limit() == other.tx.gas_limit()
+    }
+}
+
+impl<N> Eq for OrderedTx<'_, N> {}
+
+impl<'a, N> OrderedTx<'a, N> {
+    fn new(tx: &'a ValidEthTransaction<N>, base_fee: u64) -> Option<Self> {
         let effective_tip_per_gas = tx.raw().effective_tip_per_gas(base_fee)?;
 
         Some(Self {
@@ -57,13 +68,13 @@ impl<'a> OrderedTx<'a> {
     }
 }
 
-impl<'a> PartialOrd for OrderedTx<'a> {
+impl<N> PartialOrd for OrderedTx<'_, N> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl<'a> Ord for OrderedTx<'a> {
+impl<N> Ord for OrderedTx<'_, N> {
     fn cmp(&self, other: &Self) -> Ordering {
         (
             self.tx.tx_kind_priority(),
@@ -78,21 +89,29 @@ impl<'a> Ord for OrderedTx<'a> {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
-struct OrderedTxGroup<'a> {
-    tx: OrderedTx<'a>,
+#[derive(Debug)]
+struct OrderedTxGroup<'a, N> {
+    tx: OrderedTx<'a, N>,
     virtual_time: u64,
     address: &'a Address,
-    queued: VecDeque<OrderedTx<'a>>,
+    queued: VecDeque<OrderedTx<'a, N>>,
 }
 
-impl PartialOrd for OrderedTxGroup<'_> {
+impl<N> PartialEq for OrderedTxGroup<'_, N> {
+    fn eq(&self, other: &Self) -> bool {
+        self.tx == other.tx && self.virtual_time == other.virtual_time
+    }
+}
+
+impl<N> Eq for OrderedTxGroup<'_, N> {}
+
+impl<N> PartialOrd for OrderedTxGroup<'_, N> {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl Ord for OrderedTxGroup<'_> {
+impl<N> Ord for OrderedTxGroup<'_, N> {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.tx
             .cmp(&other.tx)
@@ -100,14 +119,15 @@ impl Ord for OrderedTxGroup<'_> {
     }
 }
 
-pub struct ProposalSequencer<'a> {
-    heap: BinaryHeap<OrderedTxGroup<'a>>,
+pub struct ProposalSequencer<'a, N> {
+    heap: BinaryHeap<OrderedTxGroup<'a, N>>,
     virtual_time: u64,
+    base_fee: u64,
 }
 
-impl<'a> ProposalSequencer<'a> {
+impl<'a, N> ProposalSequencer<'a, N> {
     pub fn new<ST, SCT>(
-        tracked_txs: impl Iterator<Item = (&'a Address, &'a TrackedTxList)>,
+        tracked_txs: impl Iterator<Item = (&'a Address, &'a TrackedTxList<N>)>,
         extending_blocks: &Vec<&EthValidatedBlock<ST, SCT>>,
         base_fee: u64,
         tx_limit: usize,
@@ -147,6 +167,7 @@ impl<'a> ProposalSequencer<'a> {
         Self {
             heap: BinaryHeap::from(heap_vec),
             virtual_time,
+            base_fee,
         }
     }
 
@@ -177,10 +198,11 @@ impl<'a> ProposalSequencer<'a> {
         chain_config: &CCT,
         mut account_balances: BTreeMap<&Address, AccountBalanceState>,
         validator: EthBlockPolicyBlockValidator<CRT>,
-    ) -> Proposal
+    ) -> Proposal<N>
     where
         CCT: ChainConfig<CRT>,
         CRT: ChainRevision,
+        N: Clone + Eq + Hash,
     {
         let mut proposal = Proposal::default();
 
@@ -230,6 +252,7 @@ impl<'a> ProposalSequencer<'a> {
                 &mut account_balances,
                 &validator,
                 &mut proposal,
+                self.base_fee,
                 address,
                 tx.tx,
             ) {
@@ -237,7 +260,7 @@ impl<'a> ProposalSequencer<'a> {
                     self.push(address, next_tx, queued);
                 }
 
-                for PoolTxRecoveredAuthorization {
+                for ValidEthRecoveredAuthorization {
                     authority,
                     authorization,
                 } in tx.tx.iter_valid_recovered_authorizations()
@@ -270,10 +293,14 @@ impl<'a> ProposalSequencer<'a> {
         proposal_byte_limit: u64,
         account_balances: &mut BTreeMap<&Address, AccountBalanceState>,
         validator: &EthBlockPolicyBlockValidator<CRT>,
-        proposal: &mut Proposal,
+        proposal: &mut Proposal<N>,
+        base_fee: u64,
         address: &Address,
-        tx: &PoolTx,
-    ) -> bool {
+        tx: &ValidEthTransaction<N>,
+    ) -> bool
+    where
+        N: Clone + Eq + Hash,
+    {
         if proposal
             .total_gas
             .checked_add(tx.gas_limit())
@@ -319,13 +346,31 @@ impl<'a> ProposalSequencer<'a> {
         proposal.total_size += tx_size;
         proposal.txs.push(tx.raw().to_owned());
 
+        if let Some(tip_per_gas) = tx.raw().effective_tip_per_gas(base_fee) {
+            proposal.expected_priority_fee_wei = proposal
+                .expected_priority_fee_wei
+                .saturating_add(tip_per_gas.saturating_mul(tx.gas_limit() as u128));
+        }
+
+        if let Some(sender) = tx.forwarded_sender() {
+            *proposal
+                .forwarded_sender_gas
+                .entry(sender.clone())
+                .or_insert(0) += tx.gas_limit();
+        }
+
         trace!(txn_hash = ?tx.hash(), "txn included in proposal");
 
         true
     }
 
     #[inline]
-    fn push(&mut self, address: &'a Address, tx: OrderedTx<'a>, queued: VecDeque<OrderedTx<'a>>) {
+    fn push(
+        &mut self,
+        address: &'a Address,
+        tx: OrderedTx<'a, N>,
+        queued: VecDeque<OrderedTx<'a, N>>,
+    ) {
         assert_eq!(address, tx.tx.signer_ref());
 
         self.heap.push(OrderedTxGroup {
@@ -338,9 +383,37 @@ impl<'a> ProposalSequencer<'a> {
     }
 }
 
-#[derive(Default)]
-pub(super) struct Proposal {
+pub(super) struct Proposal<N> {
     pub txs: Vec<Recovered<TxEnvelope>>,
     pub total_gas: u64,
     pub total_size: u64,
+    expected_priority_fee_wei: u128,
+    forwarded_sender_gas: HashMap<N, u64>,
+}
+
+impl<N> Default for Proposal<N> {
+    fn default() -> Self {
+        Self {
+            txs: Vec::new(),
+            total_gas: 0,
+            total_size: 0,
+            expected_priority_fee_wei: 0,
+            forwarded_sender_gas: HashMap::new(),
+        }
+    }
+}
+
+impl<N: Clone + Eq + Hash> Proposal<N> {
+    pub fn forwarded_senders_with_gas(&self) -> Vec<(N, u64)> {
+        self.forwarded_sender_gas
+            .iter()
+            .map(|(n, g)| (n.clone(), *g))
+            .collect()
+    }
+
+    pub fn expected_priority_fee_gwei(&self) -> u64 {
+        const WEI_PER_GWEI: u128 = 1_000_000_000;
+        let gwei = self.expected_priority_fee_wei / WEI_PER_GWEI;
+        gwei.min(u64::MAX as u128) as u64
+    }
 }

@@ -327,9 +327,46 @@ where
             CRT,
         >,
     > {
+        let event = match event {
+            MempoolEvent::ProposalWithScores {
+                epoch,
+                round,
+                high_qc,
+                seq_num,
+                timestamp_ns,
+                round_signature,
+                base_fee,
+                base_fee_trend,
+                base_fee_moment,
+                delayed_execution_results,
+                proposed_execution_inputs,
+                last_round_tc,
+                fresh_proposal_certificate,
+                forwarded_senders_with_gas: _,
+            } => MempoolEvent::Proposal {
+                epoch,
+                round,
+                high_qc,
+                seq_num,
+                timestamp_ns,
+                round_signature,
+                base_fee,
+                base_fee_trend,
+                base_fee_moment,
+                delayed_execution_results,
+                proposed_execution_inputs,
+                last_round_tc,
+                fresh_proposal_certificate,
+            },
+            event => event,
+        };
+
         let Some(consensus) = self.try_build_state_wrapper() else {
             match event {
                 MempoolEvent::Proposal { .. } => {
+                    unreachable!("txpool should never emit proposal while not live!")
+                }
+                MempoolEvent::ProposalWithScores { .. } => {
                     unreachable!("txpool should never emit proposal while not live!")
                 }
                 MempoolEvent::ForwardedTxs { .. } | MempoolEvent::ForwardTxs(_) => {
@@ -398,29 +435,25 @@ where
                     message: VerifiedMonadMessage::Consensus(msg),
                 })]
             }
+            MempoolEvent::ProposalWithScores { .. } => {
+                unreachable!("proposal with scores should be normalized before handling")
+            }
             MempoolEvent::ForwardedTxs { sender, txs } => {
                 vec![Command::TxPoolCommand(TxPoolCommand::InsertForwardedTxs {
                     sender,
                     txs,
                 })]
             }
-            MempoolEvent::ForwardTxs(txs) => {
-                consensus
-                    .iter_future_other_leaders()
-                    .map(|target| {
-                        // TODO ideally we could batch these all as one RouterCommand(PointToPoint) so
-                        // that we can:
-                        // 1. avoid cloning txns
-                        // 2. avoid serializing multiple times
-                        // 3. avoid raptor coding multiple times
-                        // 4. use 1 sendmmsg in the router
-                        Command::RouterCommand(RouterCommand::Publish {
-                            target: RouterTarget::PointToPoint(target),
-                            message: VerifiedMonadMessage::ForwardedTx(txs.clone()),
-                        })
+            MempoolEvent::ForwardTxs(txs) => consensus
+                .iter_future_other_leaders()
+                .map(|target| {
+                    Command::RouterCommand(RouterCommand::LeanPointToPoint {
+                        target,
+                        message: VerifiedMonadMessage::ForwardedTx(txs.clone()),
+                        priority: monad_types::UdpPriority::Regular,
                     })
-                    .collect_vec()
-            }
+                })
+                .collect_vec(),
         }
     }
 

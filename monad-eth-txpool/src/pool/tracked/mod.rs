@@ -28,13 +28,14 @@ use monad_crypto::certificate_signature::{
 use monad_eth_block_policy::nonce_usage::NonceUsageMap;
 use monad_eth_types::{EthExecutionProtocol, ExtractEthAddress};
 use monad_state_backend::StateBackend;
+use monad_types::NodeId;
 use monad_validator::signature_collection::SignatureCollection;
 use tracing::error;
 
 use self::limits::TrackedTxLimits;
 pub use self::limits::TrackedTxLimitsConfig;
 pub(super) use self::list::TrackedTxList;
-use super::transaction::PoolTx;
+use super::transaction::ValidEthTransaction;
 use crate::{pool::tracked::priority::PriorityMap, EthTxPoolEventTracker};
 
 mod limits;
@@ -53,7 +54,7 @@ where
 {
     // By using IndexMap, we can iterate through the map with Vec-like performance and are able to
     // evict expired txs through the entry API.
-    txs: IndexMap<Address, TrackedTxList>,
+    txs: IndexMap<Address, TrackedTxList<NodeId<CertificateSignaturePubKey<ST>>>>,
     priority: PriorityMap,
     limits: TrackedTxLimits,
 
@@ -93,15 +94,27 @@ where
         self.txs.values().map(TrackedTxList::num_txs).sum()
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (&Address, &TrackedTxList)> {
+    pub fn iter(
+        &self,
+    ) -> impl Iterator<
+        Item = (
+            &Address,
+            &TrackedTxList<NodeId<CertificateSignaturePubKey<ST>>>,
+        ),
+    > {
         self.txs.iter()
     }
 
-    pub fn iter_txs(&self) -> impl Iterator<Item = &PoolTx> {
+    pub fn iter_txs(
+        &self,
+    ) -> impl Iterator<Item = &ValidEthTransaction<NodeId<CertificateSignaturePubKey<ST>>>> {
         self.txs.values().flat_map(TrackedTxList::iter)
     }
 
-    pub fn iter_mut_txs(&mut self) -> impl Iterator<Item = &mut PoolTx> {
+    pub fn iter_mut_txs(
+        &mut self,
+    ) -> impl Iterator<Item = &mut ValidEthTransaction<NodeId<CertificateSignaturePubKey<ST>>>>
+    {
         self.txs.values_mut().flat_map(TrackedTxList::iter_mut)
     }
 
@@ -123,9 +136,9 @@ where
         event_tracker: &mut EthTxPoolEventTracker<'_>,
         last_commit: &ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>,
         address: Address,
-        txs: Vec<PoolTx>,
+        txs: Vec<ValidEthTransaction<NodeId<CertificateSignaturePubKey<ST>>>>,
         account_nonce: u64,
-        on_insert: &mut impl FnMut(&PoolTx),
+        on_insert: &mut impl FnMut(&ValidEthTransaction<NodeId<CertificateSignaturePubKey<ST>>>),
     ) {
         let mut inserted = false;
 

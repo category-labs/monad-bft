@@ -209,11 +209,15 @@ impl<'a> EthTxPoolEventTracker<'a> {
         available_addresses: usize,
         backend_lookups: u64,
         proposal_txs: usize,
+        expected_priority_fee_gwei: u64,
     ) {
         self.metrics.create_proposal.fetch_add(1, Ordering::SeqCst);
         self.metrics
             .create_proposal_txs
             .fetch_add(proposal_txs as u64, Ordering::SeqCst);
+        self.metrics
+            .create_proposal_expected_priority_fee_gwei
+            .fetch_add(expected_priority_fee_gwei, Ordering::SeqCst);
         self.metrics
             .create_proposal_tracked_addresses
             .fetch_add(tracked_addresses as u64, Ordering::SeqCst);
