@@ -25,9 +25,10 @@ use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, error, warn};
 
 use super::{
-    super::{config::RaptorCastConfigSecondaryClient, util::Group},
+    super::config::RaptorCastConfigSecondaryClient,
     group_message::{ConfirmGroup, PrepareGroup, PrepareGroupResponse},
 };
+use crate::util::{SecondaryGroup, SecondaryGroupAssignment};
 
 /// Metrics constant
 pub const CLIENT_NUM_CURRENT_GROUPS: &str =
@@ -35,8 +36,6 @@ pub const CLIENT_NUM_CURRENT_GROUPS: &str =
 pub const CLIENT_RECEIVED_INVITES: &str = "monad.bft.raptorcast.secondary.client.received_invites";
 pub const CLIENT_RECEIVED_CONFIRMS: &str =
     "monad.bft.raptorcast.secondary.client.received_confirms";
-
-type GroupAsClient<PT> = Group<PT>;
 
 // This is for when the router is playing the role of a client
 // That is, we are a full-node receiving group invites from a validator
@@ -50,10 +49,10 @@ where
     // upload bandwidth to broadcast chunk to a large group.
     config: RaptorCastConfigSecondaryClient,
 
-    // [start_round, end_round) -> GroupAsClient
+    // [start_round, end_round) -> SecondaryGroupAssignment
     // Represents all raptorcast groups that we have accepted and haven't expired
     // yet. The groups may overlap.
-    confirmed_groups: IntervalMap<Round, GroupAsClient<CertificateSignaturePubKey<ST>>>,
+    confirmed_groups: IntervalMap<Round, SecondaryGroupAssignment<CertificateSignaturePubKey<ST>>>,
 
     // start_round -> validator_id -> group invite
     // Once we receive an invite, we remember how the invite looked like, so
@@ -67,7 +66,7 @@ where
     >,
 
     // Once a group is confirmed, it is sent to this channel
-    group_sink_channel: UnboundedSender<GroupAsClient<CertificateSignaturePubKey<ST>>>,
+    group_sink_channel: UnboundedSender<SecondaryGroupAssignment<CertificateSignaturePubKey<ST>>>,
 
     // For avoiding accepting invites/confirms for rounds we've already started
     curr_round: Round,
@@ -87,7 +86,9 @@ where
 {
     pub fn new(
         client_node_id: NodeId<CertificateSignaturePubKey<ST>>,
-        group_sink_channel: UnboundedSender<GroupAsClient<CertificateSignaturePubKey<ST>>>,
+        group_sink_channel: UnboundedSender<
+            SecondaryGroupAssignment<CertificateSignaturePubKey<ST>>,
+        >,
         config: RaptorCastConfigSecondaryClient,
     ) -> Self {
         assert!(
@@ -223,7 +224,7 @@ where
             // have [25, 35)->validator3
             // Note that we accept overlaps across different validators,
             // e.g. [30, 40)->validator3 + [25, 35)->validator4
-            if group.get_validator_id() == &invite_msg.validator_id {
+            if group.publisher_id() == &invite_msg.validator_id {
                 warn!(
                     "RaptorCastSecondary received self-overlapping \
                             invite for rounds [{:?}, {:?}) from validator {:?}",
@@ -367,11 +368,13 @@ where
             return false;
         }
 
-        let group = GroupAsClient::new_fullnode_group(
-            confirm_msg.peers.into_inner(),
-            &self.client_node_id,
+        let members = confirm_msg.peers.into_inner().into_iter().collect();
+        let group = SecondaryGroupAssignment::new(
             confirm_msg.prepare.validator_id,
             round_span,
+            // SAFETY: `members` includes self_id in a previous check,
+            // so it must not be empty.
+            SecondaryGroup::new_unchecked(members),
         );
 
         // Send the group to primary instance right away.
@@ -432,11 +435,6 @@ where
     }
 
     #[cfg(test)]
-    pub fn get_client_node_id(&self) -> NodeId<CertificateSignaturePubKey<ST>> {
-        self.client_node_id
-    }
-
-    #[cfg(test)]
     pub fn num_pending_confirms(&self) -> usize {
         self.pending_confirms.len()
     }
@@ -452,7 +450,10 @@ mod tests {
 
     use super::{
         super::{
-            super::{config::RaptorCastConfigSecondaryClient, util::Group},
+            super::{
+                config::RaptorCastConfigSecondaryClient,
+                util::{SecondaryGroup, SecondaryGroupAssignment},
+            },
             Client,
         },
         *,
@@ -461,8 +462,8 @@ mod tests {
     type ST = SecpSignature;
     type PubKeyType = CertificateSignaturePubKey<ST>;
     type RcToRcChannelGrp = (
-        UnboundedSender<Group<PubKeyType>>,
-        UnboundedReceiver<Group<PubKeyType>>,
+        UnboundedSender<SecondaryGroupAssignment<PubKeyType>>,
+        UnboundedReceiver<SecondaryGroupAssignment<PubKeyType>>,
     );
 
     #[test]
@@ -481,15 +482,14 @@ mod tests {
             },
         );
 
-        clt.confirmed_groups.insert(
-            Round(1)..Round(5),
-            GroupAsClient::new_fullnode_group(
-                vec![self_id, nid(3), nid(4), nid(5)],
-                &self_id,
-                nid(2),
-                RoundSpan::new(Round(1), Round(5)).unwrap(),
-            ),
+        let grp = SecondaryGroupAssignment::new(
+            nid(2),
+            RoundSpan::new(Round(1), Round(5)).unwrap(),
+            SecondaryGroup::new([self_id, nid(3), nid(4), nid(5)].into_iter().collect()).unwrap(),
         );
+        assert!(grp.is_member(&self_id));
+
+        clt.confirmed_groups.insert(Round(1)..Round(5), grp);
 
         let malformed_messages = [
             // group size overflow
@@ -531,15 +531,14 @@ mod tests {
             },
         );
 
-        clt.confirmed_groups.insert(
-            Round(1)..Round(5),
-            GroupAsClient::new_fullnode_group(
-                vec![self_id, nid(3), nid(4), nid(5)],
-                &self_id,
-                nid(2),
-                RoundSpan::new(Round(1), Round(5)).unwrap(),
-            ),
+        let grp = SecondaryGroupAssignment::new(
+            nid(2),
+            RoundSpan::new(Round(1), Round(5)).unwrap(),
+            SecondaryGroup::new([self_id, nid(3), nid(4), nid(5)].into_iter().collect()).unwrap(),
         );
+        assert!(grp.is_member(&self_id));
+
+        clt.confirmed_groups.insert(Round(1)..Round(5), grp);
 
         clt.pending_confirms.insert(
             Round(4),
@@ -581,15 +580,14 @@ mod tests {
         );
 
         clt.curr_round = Round(2);
-        clt.confirmed_groups.insert(
-            Round(1)..Round(5),
-            GroupAsClient::new_fullnode_group(
-                vec![self_id, nid(3), nid(4), nid(5)],
-                &self_id,
-                nid(2),
-                RoundSpan::new(Round(1), Round(5)).unwrap(),
-            ),
+        let grp = SecondaryGroupAssignment::new(
+            nid(2),
+            RoundSpan::new(Round(1), Round(5)).unwrap(),
+            SecondaryGroup::new([self_id, nid(3), nid(4), nid(5)].into_iter().collect()).unwrap(),
         );
+        assert!(grp.is_member(&self_id));
+
+        clt.confirmed_groups.insert(Round(1)..Round(5), grp);
 
         clt.enter_round(Round(3));
         assert_eq!(clt.get_current_group_count(), 1);

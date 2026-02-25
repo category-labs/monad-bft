@@ -640,7 +640,7 @@ mod tests {
     use iset::{interval_map, IntervalMap};
     use monad_secp::SecpSignature;
     use monad_testutil::signing::get_key;
-    use monad_types::{Epoch, Round};
+    use monad_types::Round;
     use rand::SeedableRng;
     use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
     use tracing_subscriber::fmt::format::FmtSpan;
@@ -649,7 +649,7 @@ mod tests {
         super::{
             super::{
                 config::RaptorCastConfigSecondaryClient,
-                util::{Group, ReBroadcastGroupMap},
+                util::{FullNodeGroupMap, SecondaryGroupAssignment},
             },
             group_message::PrepareGroupResponse,
             Client,
@@ -660,8 +660,8 @@ mod tests {
     type ST = SecpSignature;
     type PubKeyType = CertificateSignaturePubKey<ST>;
     type RcToRcChannelGrp = (
-        UnboundedSender<Group<PubKeyType>>,
-        UnboundedReceiver<Group<PubKeyType>>,
+        UnboundedSender<SecondaryGroupAssignment<PubKeyType>>,
+        UnboundedReceiver<SecondaryGroupAssignment<PubKeyType>>,
     );
     type NodeIdST<ST> = NodeId<CertificateSignaturePubKey<ST>>;
 
@@ -1035,37 +1035,39 @@ mod tests {
     // This is a mock of how the primary raptorcast instance would represent
     // the rebroadcast group map.
     struct MockGroupMap {
-        rx_from_client: UnboundedReceiver<Group<PubKeyType>>,
-        group_map: ReBroadcastGroupMap<PubKeyType>,
+        rx_from_client: UnboundedReceiver<SecondaryGroupAssignment<PubKeyType>>,
+        group_map: FullNodeGroupMap<PubKeyType>,
     }
     impl MockGroupMap {
         fn new(
-            clt_node_id: NodeId<PubKeyType>,
-            rx_from_client: UnboundedReceiver<Group<PubKeyType>>,
+            _clt_node_id: NodeId<PubKeyType>,
+            rx_from_client: UnboundedReceiver<SecondaryGroupAssignment<PubKeyType>>,
         ) -> Self {
             Self {
-                group_map: ReBroadcastGroupMap::new(clt_node_id),
+                group_map: FullNodeGroupMap::default(),
                 rx_from_client,
             }
         }
 
         fn update(&mut self, clt: &Client<ST>) {
             let curr_round = clt.get_curr_round();
-            self.group_map.delete_expired_groups(Epoch(0), curr_round);
+            self.group_map.delete_expired(curr_round);
             while let Ok(group) = self.rx_from_client.try_recv() {
                 println!("Received group: {:?}", group);
                 println!(
-                    "   Other Peers: {:?}",
-                    nid_list_str(group.get_other_peers())
+                    "   Peers: {:?}",
+                    nid_list_str(&group.group().iter().cloned().collect())
                 );
-                self.group_map.push_group_fullnodes(group);
+                self.group_map
+                    .try_insert(group)
+                    .expect("non-overlapping round span");
             }
-            self.group_map.delete_expired_groups(Epoch(0), curr_round);
+            self.group_map.delete_expired(curr_round);
         }
 
         fn is_empty(&mut self, clt: &Client<ST>) -> bool {
             self.update(clt);
-            self.group_map.get_fullnode_map().is_empty()
+            self.group_map.is_empty()
         }
 
         fn get_rc_group_peers(
@@ -1074,13 +1076,14 @@ mod tests {
             validator_id: &NodeIdST<ST>,
         ) -> Vec<NodeIdST<ST>> {
             self.update(clt);
-            let fn_group_map = self.group_map.get_fullnode_map();
-            let Some(group) = fn_group_map.get(validator_id) else {
+            let Some(group_map) = self.group_map.get_group_map(validator_id) else {
                 return Vec::new();
             };
-            let mut group_incl_self = group.get_other_peers().clone();
-            group_incl_self.push(clt.get_client_node_id());
-            group_incl_self
+            let curr_round = clt.get_curr_round();
+            let Some(group) = group_map.get_current_or_next(curr_round) else {
+                return Vec::new();
+            };
+            group.iter().cloned().collect()
         }
     }
 
