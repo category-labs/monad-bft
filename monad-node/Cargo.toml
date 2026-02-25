@@ -23,8 +23,10 @@ monad-executor = { workspace = true }
 monad-executor-glue = { workspace = true }
 monad-keystore = { workspace = true }
 monad-ledger = { workspace = true }
+monad-leanudp = { workspace = true }
 monad-node-config = { workspace = true, features = ["crypto"] }
 monad-peer-discovery = { workspace = true }
+monad-peer-score = { workspace = true }
 monad-pprof = { workspace = true }
 monad-raptorcast = { workspace = true }
 monad-router-multi = { workspace = true}

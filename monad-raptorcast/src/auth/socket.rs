@@ -323,6 +323,19 @@ where
         }
     }
 
+    pub fn is_connected_socket_and_public_key(
+        &self,
+        socket_addr: &SocketAddr,
+        public_key: &AP::PublicKey,
+    ) -> bool {
+        self.auth_protocol
+            .is_connected_socket_and_public_key(socket_addr, public_key)
+    }
+
+    pub fn get_socket_by_public_key(&self, public_key: &AP::PublicKey) -> Option<SocketAddr> {
+        self.auth_protocol.get_socket_by_public_key(public_key)
+    }
+
     fn encrypt_packet(
         &mut self,
         addr: SocketAddr,

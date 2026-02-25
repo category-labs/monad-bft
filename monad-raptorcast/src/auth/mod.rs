@@ -13,10 +13,12 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+pub mod lean_socket;
 pub mod metrics;
 pub mod protocol;
 pub mod socket;
 
+pub use lean_socket::{LeanRecvMsg, LeanUdpSocketHandle, NopScore, PeerScoreAdapter};
 pub use metrics::{
     GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_READ,
     GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_WRITTEN,
