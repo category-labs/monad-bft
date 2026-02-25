@@ -1,0 +1,22 @@
+[package]
+name = "monad-leanudp"
+version = "0.1.0"
+edition = "2021"
+description = "Lightweight UDP protocol with fragmentation and ordered reassembly"
+
+[dependencies]
+bytes = { workspace = true }
+indexmap = { workspace = true }
+monad-executor = { workspace = true }
+monad-peer-score = { workspace = true }
+rand = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+zerocopy = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "decoder"
+harness = false
