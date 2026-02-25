@@ -255,7 +255,7 @@ impl<'a> RaptorcastPacketV0<'a> {
     pub fn compute_merkle_root(&self) -> Result<MerkleHash, MessageValidationError> {
         let proof = MerkleProof::new_from_leaf_idx(
             self.merkle_proof.to_vec(),
-            self.chunk_header.merkle_leaf_idx,
+            self.chunk_header.merkle_leaf_idx as u16,
         )
         .ok_or(MessageValidationError::InvalidMerkleProof)?;
 
