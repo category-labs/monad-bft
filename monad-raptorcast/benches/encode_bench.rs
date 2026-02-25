@@ -22,8 +22,7 @@ use monad_crypto::certificate_signature::{CertificateSignature, CertificateSigna
 use monad_dataplane::udp::DEFAULT_SEGMENT_SIZE;
 use monad_raptorcast::{
     packet,
-    udp::GroupId,
-    util::{BuildTarget, Redundancy},
+    util::{BuildTarget, PrimaryBroadcastGroup, Redundancy, ValidatorGroupMap},
 };
 use monad_secp::SecpSignature;
 use monad_testutil::signing::get_key;
@@ -65,8 +64,7 @@ pub fn bench_build_messages(c: &mut Criterion, name: &str, message_size: usize, 
                 DEFAULT_SEGMENT_SIZE, // segment_size
                 message.clone(),
                 Redundancy::from_u8(2),
-                GroupId::Primary(Epoch(0)), // epoch_no
-                0,                          // unix_ts_ms
+                0, // unix_ts_ms
                 build_target,
                 &known_addrs,
             );
@@ -92,7 +90,9 @@ fn setup_raptorcast() -> (
         .iter()
         .map(|key| (NodeId::new(key.pubkey()), Stake::ONE))
         .collect();
-    let validators = Box::leak(Box::new(ValidatorSet::new_unchecked(valset)));
+    let validators = ValidatorSet::new_unchecked(valset);
+    let group_map: ValidatorGroupMap<PT> = [(Epoch(0), validators)].into();
+    let group_map = Box::leak(Box::new(group_map));
 
     let addr = SocketAddr::from_str("127.0.0.1:9999").unwrap();
     let known_addresses = keys
@@ -101,8 +101,12 @@ fn setup_raptorcast() -> (
         .collect();
 
     let author = keys.pop().unwrap();
+    let author_id = NodeId::new(author.pubkey());
+    // leak author_id to get 'static reference
+    let author_id = Box::leak(Box::new(author_id));
+    let group = PrimaryBroadcastGroup::of_epoch(Epoch(0), author_id, author_id, group_map).unwrap();
 
-    (author, BuildTarget::Raptorcast(validators), known_addresses)
+    (author, BuildTarget::Raptorcast(group), known_addresses)
 }
 
 fn setup_broadcast() -> (
@@ -117,7 +121,9 @@ fn setup_broadcast() -> (
         .iter()
         .map(|key| (NodeId::new(key.pubkey()), Stake::ONE))
         .collect();
-    let validators = Box::leak(Box::new(ValidatorSet::new_unchecked(valset)));
+    let validators = ValidatorSet::new_unchecked(valset);
+    let group_map: ValidatorGroupMap<PT> = [(Epoch(0), validators)].into();
+    let group_map = Box::leak(Box::new(group_map));
 
     let addr = SocketAddr::from_str("127.0.0.1:9999").unwrap();
     let known_addresses = keys
@@ -126,8 +132,11 @@ fn setup_broadcast() -> (
         .collect();
 
     let author = keys.pop().unwrap();
+    let author_id = NodeId::new(author.pubkey());
+    let author_id = Box::leak(Box::new(author_id));
+    let group = PrimaryBroadcastGroup::of_epoch(Epoch(0), author_id, author_id, group_map).unwrap();
 
-    (author, BuildTarget::Broadcast(validators), known_addresses)
+    (author, BuildTarget::Broadcast(group), known_addresses)
 }
 
 criterion_group!(benches, bench);

@@ -21,20 +21,17 @@ use monad_crypto::certificate_signature::{
 };
 use monad_dataplane::udp::DEFAULT_SEGMENT_SIZE;
 use monad_types::NodeId;
-use monad_validator::validator_set::ValidatorSetType as _;
 use rand::{CryptoRng, Rng};
 
 use super::{
-    assembler::{self, build_header, AssembleMode, PacketLayout},
     assigner::{self, ChunkAssignment},
+    regular::{self, build_header, AssembleMode, PacketLayout},
     BuildError, ChunkAssigner,
 };
 use crate::{
     message::MAX_MESSAGE_SIZE,
-    udp::{
-        GroupId, MAX_MERKLE_TREE_DEPTH, MAX_NUM_PACKETS, MAX_REDUNDANCY, MAX_SEGMENT_LENGTH,
-        MIN_CHUNK_LENGTH, MIN_MERKLE_TREE_DEPTH,
-    },
+    packet::{assigner::StakeBasedWithRC, deterministic},
+    udp::{GroupId, MAX_NUM_PACKETS},
     util::{
         compute_app_message_hash, unix_ts_ms_now, BroadcastMode, BuildTarget, Collector,
         Redundancy, UdpMessage,
@@ -94,7 +91,6 @@ where
     key: MaybeArc<'key, ST::KeyPairType>,
 
     // required fields
-    group_id: Option<GroupId>,
     redundancy: Option<Redundancy>,
 
     // optional fields
@@ -111,7 +107,6 @@ where
     fn clone(&self) -> Self {
         Self {
             key: self.key.clone(),
-            group_id: self.group_id,
             redundancy: self.redundancy,
             unix_ts_ms: self.unix_ts_ms,
             segment_size: self.segment_size,
@@ -139,7 +134,6 @@ where
 
             // default fields
             redundancy: None,
-            group_id: None,
             unix_ts_ms: TimestampMode::RealTime,
 
             // optional fields
@@ -157,11 +151,6 @@ where
 
     pub fn redundancy(mut self, redundancy: Redundancy) -> Self {
         self.redundancy = Some(redundancy);
-        self
-    }
-
-    pub fn group_id(mut self, group_id: GroupId) -> Self {
-        self.group_id = Some(group_id);
         self
     }
 
@@ -184,16 +173,11 @@ where
         self
     }
 
-    // ----- Convenience methods for modifying the builder -----
-    pub fn set_group_id(&mut self, group_id: GroupId) {
-        self.group_id = Some(group_id);
-    }
-
     // ----- Prepare override builder -----
     pub fn prepare(&self) -> PreparedMessageBuilder<'_, 'key, ST> {
         PreparedMessageBuilder {
             base: self,
-            group_id: None,
+            broadcast_mode: None,
         }
     }
 }
@@ -205,7 +189,7 @@ where
     base: &'base MessageBuilder<'key, ST>,
 
     // Add extra override fields as needed
-    group_id: Option<GroupId>,
+    broadcast_mode: Option<BroadcastMode>,
 }
 
 impl<'base, 'key, ST> PreparedMessageBuilder<'base, 'key, ST>
@@ -213,22 +197,13 @@ where
     ST: CertificateSignatureRecoverable,
 {
     // ----- Setters for overrides -----
-    pub fn group_id(mut self, group_id: GroupId) -> Self {
-        self.group_id = Some(group_id);
+    #[cfg_attr(not(test), expect(unused))]
+    pub fn set_broadcast_mode(mut self, broadcast_mode: BroadcastMode) -> Self {
+        self.broadcast_mode = Some(broadcast_mode);
         self
     }
 
     // ----- Parameter validation methods -----
-    fn unwrap_group_id(&self) -> Result<GroupId> {
-        if let Some(group_id) = self.group_id {
-            return Ok(group_id);
-        }
-        let group_id = self
-            .base
-            .group_id
-            .expect("group_id must be set before building");
-        Ok(group_id)
-    }
     fn unwrap_unix_ts_ms(&self) -> Result<u64> {
         let unix_ts_ms = match self.base.unix_ts_ms {
             TimestampMode::Fixed(ts) => ts,
@@ -237,12 +212,16 @@ where
         Ok(unix_ts_ms)
     }
     fn unwrap_redundancy(&self) -> Result<Redundancy> {
+        // TODO: refactor the validations on the parameters to be
+        // dependent on the packet layout corresponding to the
+        // broadcast mode. e.g. Deterministic RC has a fixed
+        // redundancy, auto-calculated tree depth.
         let redundancy = self
             .base
             .redundancy
             .expect("redundancy must be set before building");
 
-        if redundancy > MAX_REDUNDANCY {
+        if redundancy > regular::MAX_REDUNDANCY {
             return Err(BuildError::RedundancyTooHigh);
         }
         Ok(redundancy)
@@ -250,9 +229,9 @@ where
 
     fn unwrap_merkle_tree_depth(&self) -> Result<u8> {
         let depth = self.base.merkle_tree_depth;
-        if depth < MIN_MERKLE_TREE_DEPTH {
+        if depth < regular::MIN_MERKLE_TREE_DEPTH {
             return Err(BuildError::MerkleTreeTooShallow);
-        } else if depth > MAX_MERKLE_TREE_DEPTH {
+        } else if depth > regular::MAX_MERKLE_TREE_DEPTH {
             return Err(BuildError::MerkleTreeTooDeep);
         }
 
@@ -261,9 +240,9 @@ where
 
     fn unwrap_segment_size(&self) -> Result<usize> {
         let segment_size = self.base.segment_size;
-        debug_assert!(segment_size <= MAX_SEGMENT_LENGTH);
+        debug_assert!(segment_size <= regular::MAX_SEGMENT_LENGTH);
         let min_segment_size_for_depth =
-            PacketLayout::calc_segment_len(MIN_CHUNK_LENGTH, self.base.merkle_tree_depth);
+            PacketLayout::calc_segment_len(regular::MIN_CHUNK_LENGTH, self.base.merkle_tree_depth);
         debug_assert!(segment_size >= min_segment_size_for_depth);
 
         Ok(segment_size)
@@ -311,14 +290,13 @@ where
         merkle_tree_depth: u8,
         layout: PacketLayout,
         broadcast_mode: BroadcastMode,
+        group_id: GroupId,
         app_message_hash: &[u8; 20],
         app_message_len: usize,
     ) -> Result<Bytes> {
-        let group_id = self.unwrap_group_id()?;
         let unix_ts_ms = self.unwrap_unix_ts_ms()?;
 
         let header_buf = build_header(
-            0, // version
             broadcast_mode,
             merkle_tree_depth,
             group_id,
@@ -333,7 +311,7 @@ where
     }
 
     fn make_assigner<PT: PubKey>(
-        build_target: &BuildTarget<PT>,
+        build_target: &BuildTarget<'_, PT>,
         self_node_id: &NodeId<PT>,
         app_message_hash: &[u8; 20],
         rng: &mut (impl Rng + CryptoRng),
@@ -343,9 +321,10 @@ where
     {
         use assigner::{Partitioned, Replicated, StakeBasedWithRC};
         match build_target {
-            BuildTarget::PointToPoint(to) => {
+            BuildTarget::PointToPoint { recipient, .. } => {
                 let assigner = Replicated::from_broadcast(
-                    std::iter::once(*to)
+                    [*recipient]
+                        .into_iter()
                         .filter(|node_id| *node_id != self_node_id)
                         .cloned(),
                 );
@@ -354,27 +333,30 @@ where
             BuildTarget::Broadcast(nodes) => {
                 let assigner = Replicated::from_broadcast(
                     nodes
-                        .get_members()
-                        .keys()
+                        .iter()
+                        .map(|(n, _)| n)
                         .filter(|node_id| *node_id != self_node_id)
                         .cloned(),
                 );
                 Box::new(assigner)
             }
             BuildTarget::Raptorcast(validators) => {
-                let seed =
-                    StakeBasedWithRC::<CertificateSignaturePubKey<ST>>::seed_from_app_message_hash(
-                        app_message_hash,
-                    );
-                let sorted_validators =
-                    StakeBasedWithRC::shuffle_validators(*validators, self_node_id, seed);
-                let assigner = StakeBasedWithRC::from_validator_set(sorted_validators);
+                let mut validators = validators
+                    .iter()
+                    .filter(|(node_id, _stake)| *node_id != self_node_id)
+                    .map(|(node_id, stake)| (*node_id, *stake))
+                    .collect::<Vec<_>>();
+
+                let seed = derive_seed_regular(app_message_hash);
+                StakeBasedWithRC::shuffle_validators(&mut validators, seed);
+                let assigner = StakeBasedWithRC::from_validator_set(validators);
                 Box::new(assigner)
             }
             BuildTarget::FullNodeRaptorCast(group) => {
                 let seed = rng.gen::<usize>();
-                let shifted_nodes = randomize_secondary_group_nodes(group, seed);
-                Box::new(Partitioned::from_homogeneous_peers(shifted_nodes))
+                let mut members: Vec<_> = group.iter().cloned().collect();
+                randomize_secondary_group_nodes(&mut members, seed);
+                Box::new(Partitioned::from_homogeneous_peers(members))
             }
         }
     }
@@ -383,7 +365,86 @@ where
     pub fn build_into<C>(
         &self,
         app_message: &[u8],
-        build_target: &BuildTarget<CertificateSignaturePubKey<ST>>,
+        build_target: &BuildTarget<'_, CertificateSignaturePubKey<ST>>,
+        collector: &mut C,
+    ) -> Result<()>
+    where
+        C: Collector<UdpMessage<CertificateSignaturePubKey<ST>>>,
+    {
+        let broadcast_mode = self
+            .broadcast_mode
+            .unwrap_or_else(|| broadcast_mode_from_build_target(build_target));
+
+        match broadcast_mode {
+            BroadcastMode::DeterministicPrimary(_) => {
+                self.build_deterministic_into(app_message, build_target, broadcast_mode, collector)
+            }
+            BroadcastMode::Primary | BroadcastMode::Secondary | BroadcastMode::Unspecified => {
+                self.build_regular_into(app_message, build_target, broadcast_mode, collector)
+            }
+        }
+    }
+
+    pub fn build_deterministic_into<C>(
+        &self,
+        app_message: &[u8],
+        build_target: &BuildTarget<'_, CertificateSignaturePubKey<ST>>,
+        broadcast_mode: BroadcastMode,
+        collector: &mut C,
+    ) -> Result<()>
+    where
+        C: Collector<UdpMessage<CertificateSignaturePubKey<ST>>>,
+    {
+        let BroadcastMode::DeterministicPrimary(round) = broadcast_mode else {
+            panic!("deterministic raptorcast requires BroadcastMode::DeterministicPrimary");
+        };
+        let BuildTarget::Raptorcast(group) = build_target else {
+            panic!("deterministic raptorcast requires Raptorcast as BuildTarget");
+        };
+        if app_message.len() > MAX_MESSAGE_SIZE {
+            return Err(BuildError::AppMessageTooLarge);
+        }
+
+        // deterministic chunk assignment
+        let app_message_hash = compute_app_message_hash(app_message).0;
+        let seed = derive_seed_deterministic(&app_message_hash, round);
+        let mut validators = group
+            .iter()
+            .map(|(node_id, stake)| (*node_id, *stake))
+            .collect::<Vec<_>>();
+        StakeBasedWithRC::shuffle_validators(&mut validators, seed);
+
+        let layout = deterministic::PacketLayout::new(app_message.len(), validators.len());
+
+        let assigner = StakeBasedWithRC::from_validator_set(validators);
+        let num_base_symbols = layout.calc_num_symbols();
+        let assignment = assigner.assign_chunks(num_base_symbols, None)?;
+        self.check_assignment(&assignment, app_message.len())?;
+
+        // header fields
+        let group_id = build_target.group_id();
+        let unix_ts_ms = self.unwrap_unix_ts_ms()?;
+
+        // build header & assemble the chunks
+        deterministic::build::<ST>(
+            self.base.key.as_ref(),
+            layout,
+            broadcast_mode,
+            group_id,
+            unix_ts_ms,
+            app_message,
+            assignment,
+            collector,
+        )?;
+
+        Ok(())
+    }
+
+    pub fn build_regular_into<C>(
+        &self,
+        app_message: &[u8],
+        build_target: &BuildTarget<'_, CertificateSignaturePubKey<ST>>,
+        broadcast_mode: BroadcastMode,
         collector: &mut C,
     ) -> Result<()>
     where
@@ -413,22 +474,18 @@ where
         assignment.ensure_order(order);
         self.check_assignment(&assignment, app_message_len)?;
 
-        if assignment.is_empty() {
-            tracing::debug!(app_msg_len = app_message.len(), "no chunk generated");
-            return Ok(());
-        }
-
         // build the shared header
         let header = self.build_header(
             depth,
             layout,
-            broadcast_mode_from_build_target(build_target),
+            broadcast_mode,
+            build_target.group_id(),
             &app_message_hash,
             app_message.len(),
         )?;
 
         // assemble the chunks's headers and content
-        assembler::assemble::<ST>(
+        regular::assemble::<ST>(
             self.base.key.as_ref(),
             layout,
             app_message,
@@ -444,7 +501,7 @@ where
     pub fn build_vec(
         &self,
         app_message: &[u8],
-        build_target: &BuildTarget<CertificateSignaturePubKey<ST>>,
+        build_target: &BuildTarget<'_, CertificateSignaturePubKey<ST>>,
     ) -> Result<Vec<UdpMessage<CertificateSignaturePubKey<ST>>>> {
         let mut packets = Vec::new();
         self.build_into(app_message, build_target, &mut packets)?;
@@ -459,17 +516,30 @@ where
     match build_target {
         BuildTarget::Raptorcast { .. } => BroadcastMode::Primary,
         BuildTarget::FullNodeRaptorCast { .. } => BroadcastMode::Secondary,
-        BuildTarget::Broadcast(_) | BuildTarget::PointToPoint(_) => BroadcastMode::Unspecified,
+        BuildTarget::Broadcast(_) | BuildTarget::PointToPoint { .. } => BroadcastMode::Unspecified,
     }
 }
 
 // introduce variation in the group member ordering
-fn randomize_secondary_group_nodes<PT: PubKey>(
-    group: &crate::util::SecondaryGroup<PT>,
-    seed: usize,
-) -> Vec<NodeId<PT>> {
+fn randomize_secondary_group_nodes<PT: PubKey>(group: &mut [NodeId<PT>], seed: usize) {
     let n = seed % group.len();
-    let mut shifted_group: Vec<_> = group.iter().cloned().collect();
-    shifted_group.rotate_left(n);
-    shifted_group
+    group.rotate_left(n);
+}
+
+// Derive the seed used to shuffling validator set for deterministic raptorcast
+pub fn derive_seed_deterministic(
+    app_message_hash: &[u8; 20],
+    round: monad_types::Round,
+) -> [u8; 32] {
+    let mut padded_seed = [0u8; 32];
+    padded_seed[..20].copy_from_slice(app_message_hash);
+    padded_seed[20..28].copy_from_slice(&round.0.to_le_bytes());
+    padded_seed
+}
+
+// Derive the seed used to shuffling validator set for regular raptorcast
+pub fn derive_seed_regular(app_message_hash: &[u8; 20]) -> [u8; 32] {
+    let mut padded_seed = [0u8; 32];
+    padded_seed[..20].copy_from_slice(app_message_hash);
+    padded_seed
 }

@@ -27,10 +27,7 @@ use bitvec::prelude::*;
 use bytes::Bytes;
 use indexmap::IndexMap;
 use lru::LruCache;
-use monad_crypto::{
-    certificate_signature::PubKey,
-    hasher::{Hasher as _, HasherType},
-};
+use monad_crypto::certificate_signature::PubKey;
 use monad_executor::{ExecutorMetrics, ExecutorMetricsChain};
 use monad_raptor::{ManagedDecoder, SOURCE_SYMBOLS_MIN};
 use monad_types::{NodeId, Stake};
@@ -38,8 +35,9 @@ use monad_validator::validator_set::{ValidatorSet, ValidatorSetType as _};
 use rand::Rng as _;
 
 use crate::{
-    udp::{ValidatedMessage, MAX_REDUNDANCY},
-    util::{compute_hash, AppMessageHash, BroadcastMode, HexBytes, NodeIdHash},
+    packet::{deterministic, regular},
+    udp::{MessageIdentifier, ValidatedMessage, MAX_VALIDATOR_SET_SIZE},
+    util::{compute_app_message_hash, compute_hash, AppMessageHash, BroadcastMode, NodeIdHash},
 };
 
 pub const DECODING_CACHE_METRIC_PREFIX: &str = "monad.raptorcast.decoding_cache";
@@ -229,16 +227,15 @@ where
             .remove_decoder_state(&cache_key, message, context)
             .expect("decoder state must exist");
 
-        let decoded_app_message_hash = HexBytes({
-            let mut hasher = HasherType::new();
-            hasher.update(&decoded);
-            hasher.hash().0[..20].try_into().unwrap()
-        });
-        if decoded_app_message_hash != message.app_message_hash {
-            return Err(TryDecodeError::AppMessageHashMismatch {
-                expected: message.app_message_hash,
-                actual: decoded_app_message_hash,
-            });
+        match message.message_id {
+            MessageIdentifier::AppMessageHash(expected) => {
+                let actual = compute_app_message_hash(&decoded);
+                if actual != expected {
+                    return Err(TryDecodeError::AppMessageHashMismatch { expected, actual });
+                }
+            }
+            // The merkle proof is already validated in the parser.
+            MessageIdentifier::GlobalMerkleRoot(_) => {}
         }
 
         self.recently_decoded
@@ -429,7 +426,7 @@ impl CacheKey {
     fn from_message<PT: PubKey>(message: &ValidatedMessage<PT>) -> Self {
         let inner = CacheKeyInner {
             author_hash: compute_hash(&message.author),
-            app_message_hash: message.app_message_hash,
+            message_id: message.message_id,
             unix_ts_ms: message.unix_ts_ms,
         };
         Self {
@@ -443,7 +440,7 @@ type UnixTimestamp = u64;
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 struct CacheKeyInner {
     author_hash: NodeIdHash,
-    app_message_hash: AppMessageHash,
+    message_id: MessageIdentifier,
     unix_ts_ms: UnixTimestamp,
 }
 
@@ -1422,7 +1419,7 @@ impl InvalidSymbol {
                     ?self_id,
                     author =? symbol.author,
                     unix_ts_ms = symbol.unix_ts_ms,
-                    app_message_hash =? symbol.app_message_hash,
+                    message_id =? symbol.message_id,
                     encoding_symbol_id = symbol.chunk_id,
                     expected_len,
                     received_len,
@@ -1438,7 +1435,7 @@ impl InvalidSymbol {
                     ?self_id,
                     author =? symbol.author,
                     unix_ts_ms = symbol.unix_ts_ms,
-                    app_message_hash =? symbol.app_message_hash,
+                    message_id =? symbol.message_id,
                     encoded_symbol_capacity,
                     encoding_symbol_id,
                     "received invalid symbol id"
@@ -1453,7 +1450,7 @@ impl InvalidSymbol {
                     ?self_id,
                     author =? symbol.author,
                     unix_ts_ms = symbol.unix_ts_ms,
-                    app_message_hash =? symbol.app_message_hash,
+                    message_id =? symbol.message_id,
                     encoding_symbol_id = symbol.chunk_id,
                     expected_len,
                     received_len,
@@ -1466,7 +1463,7 @@ impl InvalidSymbol {
                     ?self_id,
                     author =? symbol.author,
                     unix_ts_ms = symbol.unix_ts_ms,
-                    app_message_hash =? symbol.app_message_hash,
+                    message_id =? symbol.message_id,
                     encoding_symbol_id,
                     "received duplicate symbol"
                 );
@@ -1477,7 +1474,7 @@ impl InvalidSymbol {
                     ?self_id,
                     author =? symbol.author,
                     unix_ts_ms = symbol.unix_ts_ms,
-                    app_message_hash =? symbol.app_message_hash,
+                    message_id =? symbol.message_id,
                     encoding_symbol_id = symbol.chunk_id,
                     ?err,
                     "invalid parameter for ManagedDecoder::new"
@@ -1508,9 +1505,18 @@ impl DecoderState {
             .try_into()
             .expect("usize smaller than u32");
 
+        // TODO: move the hard-coded calculation logic to individual broadcast modes.
+
         // symbol_len is always greater than zero, so this division is safe
         let num_source_symbols = app_message_len.div_ceil(symbol_len).max(SOURCE_SYMBOLS_MIN);
-        let mut encoded_symbol_capacity = MAX_REDUNDANCY
+        let max_redundancy = match message.broadcast_mode {
+            BroadcastMode::Primary | BroadcastMode::Secondary | BroadcastMode::Unspecified => {
+                regular::MAX_REDUNDANCY
+            }
+            BroadcastMode::DeterministicPrimary(_) => deterministic::REDUNDANCY,
+        };
+
+        let mut encoded_symbol_capacity = max_redundancy
             .scale(num_source_symbols)
             .expect("redundancy-scaled num_source_symbols doesn't fit in usize");
 
@@ -1524,6 +1530,13 @@ impl DecoderState {
                 );
                 0
             });
+        } else if matches!(
+            message.broadcast_mode,
+            BroadcastMode::DeterministicPrimary(_)
+        ) {
+            encoded_symbol_capacity =
+                deterministic::PacketLayout::new(app_message_len, MAX_VALIDATOR_SET_SIZE)
+                    .encoded_symbol_capacity();
         };
 
         let decoder = ManagedDecoder::new(num_source_symbols, encoded_symbol_capacity, symbol_len)
@@ -1693,7 +1706,10 @@ mod test {
     use rand::seq::SliceRandom as _;
 
     use super::*;
-    use crate::{udp::GroupId, util::BroadcastMode};
+    use crate::{
+        udp::GroupId,
+        util::{BroadcastMode, HexBytes},
+    };
     type PT = monad_crypto::NopPubKey;
 
     const EPOCH: Epoch = Epoch(1);
@@ -1741,11 +1757,7 @@ mod test {
         let num_symbols = app_message.len().div_ceil(data_size) * REDUNDANCY;
 
         assert!(num_symbols >= app_message.len() / data_size);
-        let app_message_hash = {
-            let mut hasher = HasherType::new();
-            hasher.update(app_message);
-            HexBytes((hasher.hash().0[..20]).try_into().unwrap())
-        };
+        let app_message_hash = compute_app_message_hash(app_message);
         let encoder = monad_raptor::Encoder::new(app_message, data_size).unwrap();
 
         let mut messages = Vec::with_capacity(num_symbols);
@@ -1755,7 +1767,7 @@ mod test {
             let message = ValidatedMessage {
                 chunk_id: symbol_id as u16,
                 author,
-                app_message_hash,
+                message_id: MessageIdentifier::AppMessageHash(app_message_hash),
                 app_message_len: app_message.len() as u32,
                 broadcast_mode: BroadcastMode::Unspecified,
                 chunk: chunk.freeze(),
