@@ -4,6 +4,9 @@
 MONAD_BFT_ROOT=$(git rev-parse --show-toplevel)
 export MONAD_BFT_ROOT
 export MONAD_EXECUTION_ROOT="${MONAD_BFT_ROOT}/monad-cxx/monad-execution"
+export HOST_UID="${HOST_UID:-$(id -u)}"
+export HOST_GID="${HOST_GID:-$(id -g)}"
+DOCKER_USER="${HOST_UID}:${HOST_GID}"
 
 # clean up environment
 cd $MONAD_BFT_ROOT/docker/devnet
@@ -35,24 +38,27 @@ docker build -t monad-rpc:latest \
 mkdir -p $MONAD_BFT_ROOT/docker/devnet/monad/triedb
 truncate -s 4GB $MONAD_BFT_ROOT/docker/devnet/monad/triedb/test.db
 docker run \
+    --user "$DOCKER_USER" \
     --security-opt seccomp:$MONAD_BFT_ROOT/docker/devnet/monad/config/profile.json \
     --volume $MONAD_BFT_ROOT/docker/devnet/monad:/monad \
     monad-execution:latest monad_mpt --storage /monad/triedb/test.db --create
 echo "TrieDB has been initialized correctly."
 
 EXECUTION_CONTAINER_ID=$(docker run \
-    -d --security-opt seccomp:$MONAD_BFT_ROOT/docker/devnet/monad/config/profile.json \
+    -d --user "$DOCKER_USER" \
+    --security-opt seccomp:$MONAD_BFT_ROOT/docker/devnet/monad/config/profile.json \
     --volume $MONAD_BFT_ROOT/docker/devnet/monad:/monad \
     monad-execution:latest monad --chain monad_devnet --db /monad/triedb/test.db --block_db /monad/ledger)
 echo "Execution node has been started."
 
 CONSENSUS_CONTAINER_ID=$(docker run \
-    -d --volume $MONAD_BFT_ROOT/docker/devnet/monad:/monad \
+    -d --user "$DOCKER_USER" --volume $MONAD_BFT_ROOT/docker/devnet/monad:/monad \
     monad-node:latest)
 echo "Consensus node has been started."
 
 RPC_CONTAINER_ID=$(docker run \
-    -d --security-opt seccomp:$MONAD_BFT_ROOT/docker/devnet/monad/config/profile.json \
+    -d --user "$DOCKER_USER" \
+    --security-opt seccomp:$MONAD_BFT_ROOT/docker/devnet/monad/config/profile.json \
     -p 8080:8080 --volume $MONAD_BFT_ROOT/docker/devnet/monad:/monad \
     monad-rpc:latest)
 echo "RPC server has been started."
@@ -83,7 +89,8 @@ sleep 15
 
 # restart the RPC server container
 RPC_CONTAINER_ID=$(docker run \
-    -d --security-opt seccomp:$MONAD_BFT_ROOT/docker/devnet/monad/config/profile.json \
+    -d --user "$DOCKER_USER" \
+    --security-opt seccomp:$MONAD_BFT_ROOT/docker/devnet/monad/config/profile.json \
     -p 8080:8080 --volume $MONAD_BFT_ROOT/docker/devnet/monad:/monad \
     monad-rpc:latest)
 echo "RPC server has been restarted."
