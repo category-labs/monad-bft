@@ -79,47 +79,64 @@ impl ChainStateBuffer {
     }
 
     pub async fn insert(&self, block_event: EventServerEvent) {
-        let block_event = match block_event {
-            EventServerEvent::Block { block, .. } => block,
-            _ => return,
+        let (commit_state, header, transactions) = match block_event {
+            EventServerEvent::Block {
+                commit_state,
+                header,
+                transactions,
+            } => (commit_state, header, transactions),
+            EventServerEvent::Gap => return,
         };
 
-        let height = block_event.data.header.number;
-        let block_hash_key = FixedData(block_event.data.header.hash.0);
-        match block_event.commit_state {
+        let block_height = header.data.number;
+        let block_hash = header.data.hash;
+        let block_hash_key = FixedData(block_hash.0);
+
+        match commit_state {
+            BlockCommitState::Verified => {
+                return;
+            }
             BlockCommitState::Finalized => {
-                self.latest_finalized.fetch_max(height, Ordering::SeqCst);
+                self.latest_finalized
+                    .fetch_max(block_height, Ordering::SeqCst);
+
                 if self.block_height_by_hash.contains_key(&block_hash_key) {
                     return;
                 }
             }
             BlockCommitState::Voted => {
-                let voted_block_height = self.latest_voted.fetch_max(height, Ordering::SeqCst);
+                let voted_block_height =
+                    self.latest_voted.fetch_max(block_height, Ordering::SeqCst);
 
-                if voted_block_height >= height {
-                    warn!(?voted_block_height, event_block_height = height, "ChainStateBuffer received voted block event with lower height than existing voted block height");
+                if block_height < voted_block_height {
+                    warn!(
+                        ?voted_block_height,
+                        event_block_height = block_height,
+                        "ChainStateBuffer received voted block event with lower height than existing voted block height"
+                    );
                 }
+
                 if self.block_height_by_hash.contains_key(&block_hash_key) {
                     return;
                 }
             }
             BlockCommitState::Proposed => {
-                self.latest_proposed.fetch_max(height, Ordering::SeqCst);
-            }
-            BlockCommitState::Verified => {
-                return;
+                self.latest_proposed
+                    .fetch_max(block_height, Ordering::SeqCst);
             }
         }
 
         let block: Block<Transaction, alloy_rpc_types::Header> = Block {
-            header: (**block_event.data.header).clone(),
-            transactions: block_event.data.transactions.clone(),
-            ..Default::default()
+            header: header.data.value().clone(),
+            transactions: alloy_rpc_types::BlockTransactions::Full(
+                transactions
+                    .iter()
+                    .map(|(tx, _, _)| tx.value().clone())
+                    .collect_vec(),
+            ),
+            uncles: Vec::default(),
+            withdrawals: None,
         };
-
-        let block_height = block.header.number;
-        let block_hash = block.header.hash;
-        let block_tx_hashes = block.transactions.hashes().collect_vec();
 
         // Check if there's already a block at this height and clean it up
         if let Some(old_block) = self.block_by_height.insert(block_height, block) {
@@ -153,7 +170,13 @@ impl ChainStateBuffer {
             );
         }
 
-        for (tx_idx, tx_hash) in block_tx_hashes.into_iter().enumerate() {
+        for (tx_idx, tx_receipt) in transactions
+            .iter()
+            .map(|(_, tx_receipt, _)| tx_receipt)
+            .enumerate()
+        {
+            let tx_hash = tx_receipt.transaction_hash;
+
             if self
                 .tx_loc_by_hash
                 .insert(
@@ -264,8 +287,12 @@ pub(super) fn block_height_from_tag(buffer: &ChainStateBuffer, tag: &BlockTags) 
 mod tests {
     use std::sync::Arc;
 
-    use alloy_consensus::{transaction::Recovered, SignableTransaction, TxEip1559};
-    use alloy_primitives::{Address, TxKind, B256};
+    use alloy_consensus::{
+        transaction::Recovered, Eip658Value, Receipt, ReceiptEnvelope, ReceiptWithBloom,
+        SignableTransaction, TxEip1559,
+    };
+    use alloy_primitives::{Address, Bloom, TxKind, B256};
+    use alloy_rpc_types::TransactionReceipt;
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use monad_types::BlockId;
@@ -286,72 +313,7 @@ mod tests {
             let height = (i + 1) as u64;
             let block_hash = B256::from([i as u8; 32]);
 
-            // Create a simple transaction
-            let tx_inner = TxEip1559 {
-                chain_id: 1,
-                nonce: 0,
-                gas_limit: 21000,
-                max_fee_per_gas: 1000,
-                max_priority_fee_per_gas: 100,
-                to: TxKind::Call(Address::default()),
-                value: Default::default(),
-                access_list: Default::default(),
-                input: vec![].into(),
-            };
-            let signer = PrivateKeySigner::random();
-            let signature = signer.sign_hash_sync(&tx_inner.signature_hash()).unwrap();
-            let tx_envelope: TxEnvelope = tx_inner.into_signed(signature).into();
-            let recovered = Recovered::new_unchecked(tx_envelope, signer.address());
-
-            let tx = Transaction {
-                inner: recovered,
-                block_hash: Some(block_hash),
-                block_number: Some(height),
-                transaction_index: Some(0),
-                effective_gas_price: None,
-            };
-
-            // Create an alloy Header with inner field
-            let inner_header = alloy_consensus::Header {
-                number: height,
-                ..Default::default()
-            };
-            let rpc_header = alloy_rpc_types::Header {
-                inner: inner_header,
-                hash: block_hash,
-                total_difficulty: None,
-                size: None,
-            };
-
-            // Wrap the header in the event type system
-            let serialized_header = JsonSerialized::new_shared(rpc_header);
-            let monad_header = MonadNotification {
-                block_id: BlockId(monad_types::Hash(block_hash.0)),
-                commit_state: BlockCommitState::Proposed,
-                data: serialized_header.clone(),
-            };
-            let serialized_monad_header = JsonSerialized::new_shared(monad_header);
-
-            // Create the block
-            let rpc_block = alloy_rpc_types::Block {
-                header: serialized_header,
-                transactions: alloy_rpc_types::BlockTransactions::Full(vec![tx]),
-                uncles: Vec::new(),
-                withdrawals: None,
-            };
-            let serialized_block = JsonSerialized::new_shared(rpc_block);
-            let monad_block = MonadNotification {
-                block_id: BlockId(monad_types::Hash(block_hash.0)),
-                commit_state: BlockCommitState::Proposed,
-                data: serialized_block,
-            };
-            let serialized_monad_block = JsonSerialized::new_shared(monad_block);
-
-            let event = EventServerEvent::Block {
-                header: serialized_monad_header,
-                block: serialized_monad_block,
-                logs: Arc::new(Vec::new()),
-            };
+            let event = create_test_block_event(height, block_hash);
 
             // Propose the block.
             buffer.insert(event).await;
@@ -554,31 +516,6 @@ mod tests {
 
     // Helper function to create a test block event
     fn create_test_block_event(height: u64, block_hash: B256) -> EventServerEvent {
-        // Create a simple transaction
-        let tx_inner = TxEip1559 {
-            chain_id: 1,
-            nonce: 0,
-            gas_limit: 21000,
-            max_fee_per_gas: 1000,
-            max_priority_fee_per_gas: 100,
-            to: TxKind::Call(Address::default()),
-            value: Default::default(),
-            access_list: Default::default(),
-            input: vec![].into(),
-        };
-        let signer = PrivateKeySigner::random();
-        let signature = signer.sign_hash_sync(&tx_inner.signature_hash()).unwrap();
-        let tx_envelope: TxEnvelope = tx_inner.into_signed(signature).into();
-        let recovered = Recovered::new_unchecked(tx_envelope, signer.address());
-
-        let tx = Transaction {
-            inner: recovered,
-            block_hash: Some(block_hash),
-            block_number: Some(height),
-            transaction_index: Some(0),
-            effective_gas_price: None,
-        };
-
         // Create an alloy Header with inner field
         let inner_header = alloy_consensus::Header {
             number: height,
@@ -596,29 +533,69 @@ mod tests {
         let monad_header = MonadNotification {
             block_id: BlockId(monad_types::Hash(block_hash.0)),
             commit_state: BlockCommitState::Proposed,
-            data: serialized_header.clone(),
+            data: serialized_header,
         };
         let serialized_monad_header = JsonSerialized::new_shared(monad_header);
 
-        // Create the block
-        let rpc_block = alloy_rpc_types::Block {
-            header: serialized_header,
-            transactions: alloy_rpc_types::BlockTransactions::Full(vec![tx]),
-            uncles: Vec::new(),
-            withdrawals: None,
+        // Create a simple transaction
+        let tx_inner = TxEip1559 {
+            chain_id: 1,
+            nonce: 0,
+            gas_limit: 21000,
+            max_fee_per_gas: 1000,
+            max_priority_fee_per_gas: 100,
+            to: TxKind::Call(Address::default()),
+            value: Default::default(),
+            access_list: Default::default(),
+            input: vec![].into(),
         };
-        let serialized_block = JsonSerialized::new_shared(rpc_block);
-        let monad_block = MonadNotification {
-            block_id: BlockId(monad_types::Hash(block_hash.0)),
-            commit_state: BlockCommitState::Proposed,
-            data: serialized_block,
+        let signer = PrivateKeySigner::random();
+        let signature = signer.sign_hash_sync(&tx_inner.signature_hash()).unwrap();
+        let tx_envelope: TxEnvelope = tx_inner.into_signed(signature).into();
+
+        let transaction_hash = *tx_envelope.tx_hash();
+        let tx_recovered = Recovered::new_unchecked(tx_envelope, signer.address());
+
+        let tx = Transaction {
+            inner: tx_recovered,
+            block_hash: Some(block_hash),
+            block_number: Some(height),
+            transaction_index: Some(0),
+            effective_gas_price: None,
         };
-        let serialized_monad_block = JsonSerialized::new_shared(monad_block);
+        let serialized_tx = JsonSerialized::new_shared(tx);
+
+        let tx_receipt = TransactionReceipt {
+            inner: ReceiptEnvelope::Eip1559(ReceiptWithBloom {
+                receipt: Receipt {
+                    status: Eip658Value::Eip658(true),
+                    cumulative_gas_used: 21000,
+                    logs: Vec::default(),
+                },
+                logs_bloom: Bloom::default(),
+            }),
+            transaction_hash,
+            transaction_index: Some(0),
+            block_hash: Some(block_hash),
+            block_number: Some(height),
+            gas_used: 21000,
+            effective_gas_price: 0,
+            blob_gas_used: None,
+            blob_gas_price: None,
+            from: signer.address(),
+            to: Some(Address::default()),
+            contract_address: None,
+        };
+        let serialized_tx_receipt = JsonSerialized::new_shared(tx_receipt);
 
         EventServerEvent::Block {
+            commit_state: BlockCommitState::Proposed,
             header: serialized_monad_header,
-            block: serialized_monad_block,
-            logs: Arc::new(Vec::new()),
+            transactions: Arc::new(Box::new([(
+                serialized_tx,
+                serialized_tx_receipt,
+                vec![].into_boxed_slice(),
+            )])),
         }
     }
 }
