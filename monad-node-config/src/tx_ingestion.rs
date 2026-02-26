@@ -52,7 +52,7 @@ fn default_max_time_weight() -> f64 {
     1.0
 }
 fn default_time_weight_unit_seconds() -> u64 {
-    10 * 60
+    20 * 60
 }
 fn default_ema_half_life_seconds() -> u64 {
     12 * 3600
@@ -61,7 +61,7 @@ fn default_block_time_millis() -> u64 {
     400
 }
 fn default_promotion_threshold() -> f64 {
-    1_000_000.0
+    150_000.0
 }
 
 #[derive(Debug, Clone, Deserialize)]
