@@ -37,18 +37,52 @@ use monad_state_backend::StateBackend;
 use monad_types::ExecutionProtocol;
 use monad_validator::signature_collection::SignatureCollection;
 
-const GAUGE_PARENT_TOTAL_EXEC_US: &str = "monad.executor.parent.total_exec_us";
-const GAUGE_LEDGER_TOTAL_EXEC_US: &str = "monad.executor.ledger.total_exec_us";
-const GAUGE_CONFIG_FILE_TOTAL_EXEC_US: &str = "monad.executor.config_file.total_exec_us";
-const GAUGE_TXPOOL_TOTAL_EXEC_US: &str = "monad.executor.txpool.total_exec_us";
-const GAUGE_ROUTER_TOTAL_EXEC_US: &str = "monad.executor.router.total_exec_us";
-const GAUGE_STATESYNC_TOTAL_EXEC_US: &str = "monad.executor.statesync.total_exec_us";
-
-const GAUGE_PARENT_TOTAL_POLL_US: &str = "monad.executor.parent.total_poll_us";
-const GAUGE_LEDGER_TOTAL_POLL_US: &str = "monad.executor.ledger.total_poll_us";
-const GAUGE_TXPOOL_TOTAL_POLL_US: &str = "monad.executor.txpool.total_poll_us";
-const GAUGE_ROUTER_TOTAL_POLL_US: &str = "monad.executor.router.total_poll_us";
-const GAUGE_STATESYNC_TOTAL_POLL_US: &str = "monad.executor.statesync.total_poll_us";
+monad_executor::metric_consts! {
+    GAUGE_PARENT_TOTAL_EXEC_US {
+        name: "monad.executor.parent.total_exec_us",
+        help: "Total parent executor execution time in microseconds",
+    }
+    GAUGE_LEDGER_TOTAL_EXEC_US {
+        name: "monad.executor.ledger.total_exec_us",
+        help: "Total ledger executor execution time in microseconds",
+    }
+    GAUGE_CONFIG_FILE_TOTAL_EXEC_US {
+        name: "monad.executor.config_file.total_exec_us",
+        help: "Total config file executor execution time in microseconds",
+    }
+    GAUGE_TXPOOL_TOTAL_EXEC_US {
+        name: "monad.executor.txpool.total_exec_us",
+        help: "Total TxPool executor execution time in microseconds",
+    }
+    GAUGE_ROUTER_TOTAL_EXEC_US {
+        name: "monad.executor.router.total_exec_us",
+        help: "Total router executor execution time in microseconds",
+    }
+    GAUGE_STATESYNC_TOTAL_EXEC_US {
+        name: "monad.executor.statesync.total_exec_us",
+        help: "Total StateSync executor execution time in microseconds",
+    }
+    GAUGE_PARENT_TOTAL_POLL_US {
+        name: "monad.executor.parent.total_poll_us",
+        help: "Total parent executor poll time in microseconds",
+    }
+    GAUGE_LEDGER_TOTAL_POLL_US {
+        name: "monad.executor.ledger.total_poll_us",
+        help: "Total ledger executor poll time in microseconds",
+    }
+    GAUGE_TXPOOL_TOTAL_POLL_US {
+        name: "monad.executor.txpool.total_poll_us",
+        help: "Total TxPool executor poll time in microseconds",
+    }
+    GAUGE_ROUTER_TOTAL_POLL_US {
+        name: "monad.executor.router.total_poll_us",
+        help: "Total router executor poll time in microseconds",
+    }
+    GAUGE_STATESYNC_TOTAL_POLL_US {
+        name: "monad.executor.statesync.total_poll_us",
+        help: "Total StateSync executor poll time in microseconds",
+    }
+}
 
 /// Single top-level executor for all other required by a node.
 /// This executor will distribute commands to the appropriate sub-executor
@@ -232,22 +266,29 @@ impl<R, T, L, C, S, TS, TP, CP, LO, SS, CL> ParentExecutor<R, T, L, C, S, TS, TP
 pub struct ParentExecutorMetrics(ExecutorMetrics);
 
 impl ParentExecutorMetrics {
-    fn record<T>(&mut self, executor_name: &'static str, f: impl FnOnce() -> T) -> T {
+    fn record<T>(
+        &mut self,
+        metric: &'static monad_executor::MetricDef,
+        f: impl FnOnce() -> T,
+    ) -> T {
         let start = Instant::now();
         let e = f();
-        self.0[executor_name] += start.elapsed().as_micros() as u64;
+        self.0[metric] += start.elapsed().as_micros() as u64;
         e
     }
 }
 
 pub struct ParentExecutorMetricsGuard<'a> {
     metrics: &'a mut ParentExecutorMetrics,
-    guard_metric: &'static str,
+    guard_metric: &'static monad_executor::MetricDef,
     start: Instant,
 }
 
 impl<'a> ParentExecutorMetricsGuard<'a> {
-    fn new(metrics: &'a mut ParentExecutorMetrics, guard_metric: &'static str) -> Self {
+    fn new(
+        metrics: &'a mut ParentExecutorMetrics,
+        guard_metric: &'static monad_executor::MetricDef,
+    ) -> Self {
         Self {
             metrics,
             guard_metric,

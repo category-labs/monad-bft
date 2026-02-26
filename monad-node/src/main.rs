@@ -746,9 +746,20 @@ fn resolve_domain_v4<P: PubKey>(node_id: &NodeId<P>, domain: &String) -> Option<
     None
 }
 
-const GAUGE_TOTAL_UPTIME_US: &str = "monad.total_uptime_us";
-const GAUGE_STATE_TOTAL_UPDATE_US: &str = "monad.state.total_update_us";
-const GAUGE_NODE_INFO: &str = "monad_node_info";
+monad_executor::metric_consts! {
+    GAUGE_TOTAL_UPTIME_US {
+        name: "monad.total_uptime_us",
+        help: "Total node uptime in microseconds",
+    }
+    GAUGE_STATE_TOTAL_UPDATE_US {
+        name: "monad.state.total_update_us",
+        help: "Total time spent updating state in microseconds",
+    }
+    GAUGE_NODE_INFO {
+        name: "monad_node_info",
+        help: "Node info indicator (always 1)",
+    }
+}
 
 fn send_metrics(
     meter: &opentelemetry::metrics::Meter,
@@ -758,27 +769,36 @@ fn send_metrics(
     process_start: &Instant,
     total_state_update_elapsed: &Duration,
 ) {
-    let node_info_gauge = gauge_cache
-        .entry(GAUGE_NODE_INFO)
-        .or_insert_with(|| meter.u64_gauge(GAUGE_NODE_INFO).build());
+    let node_info_gauge = gauge_cache.entry(GAUGE_NODE_INFO.name).or_insert_with(|| {
+        meter
+            .u64_gauge(GAUGE_NODE_INFO.name)
+            .with_description(GAUGE_NODE_INFO.help)
+            .build()
+    });
     node_info_gauge.record(1, &[]);
 
-    for (k, v) in state_metrics
+    for (k, v, desc) in state_metrics
         .metrics()
         .into_iter()
         .chain(executor_metrics.into_inner())
         .chain(std::iter::once((
-            GAUGE_TOTAL_UPTIME_US,
+            GAUGE_TOTAL_UPTIME_US.name,
             process_start.elapsed().as_micros() as u64,
+            GAUGE_TOTAL_UPTIME_US.help,
         )))
         .chain(std::iter::once((
-            GAUGE_STATE_TOTAL_UPDATE_US,
+            GAUGE_STATE_TOTAL_UPDATE_US.name,
             total_state_update_elapsed.as_micros() as u64,
+            GAUGE_STATE_TOTAL_UPDATE_US.help,
         )))
     {
-        let gauge = gauge_cache
-            .entry(k)
-            .or_insert_with(|| meter.u64_gauge(k).build());
+        let gauge = gauge_cache.entry(k).or_insert_with(|| {
+            if desc.is_empty() {
+                meter.u64_gauge(k).build()
+            } else {
+                meter.u64_gauge(k).with_description(desc).build()
+            }
+        });
         gauge.record(v, &[]);
     }
 }

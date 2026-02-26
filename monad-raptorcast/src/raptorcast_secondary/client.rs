@@ -29,12 +29,20 @@ use super::{
     group_message::{ConfirmGroup, PrepareGroup, PrepareGroupResponse},
 };
 
-/// Metrics constant
-pub const CLIENT_NUM_CURRENT_GROUPS: &str =
-    "monad.bft.raptorcast.secondary.client.num_current_groups";
-pub const CLIENT_RECEIVED_INVITES: &str = "monad.bft.raptorcast.secondary.client.received_invites";
-pub const CLIENT_RECEIVED_CONFIRMS: &str =
-    "monad.bft.raptorcast.secondary.client.received_confirms";
+monad_executor::metric_consts! {
+    pub CLIENT_NUM_CURRENT_GROUPS {
+        name: "monad.bft.raptorcast.secondary.client.num_current_groups",
+        help: "Current number of raptorcast secondary groups as client",
+    }
+    pub CLIENT_RECEIVED_INVITES {
+        name: "monad.bft.raptorcast.secondary.client.received_invites",
+        help: "Group invites received as raptorcast secondary client",
+    }
+    pub CLIENT_RECEIVED_CONFIRMS {
+        name: "monad.bft.raptorcast.secondary.client.received_confirms",
+        help: "Group confirmations received as raptorcast secondary client",
+    }
+}
 
 type GroupAsClient<PT> = Group<PT>;
 

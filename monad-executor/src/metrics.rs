@@ -20,20 +20,85 @@ use std::{
 
 use hdrhistogram::Histogram as HdrHistogram;
 
-#[derive(Default, Debug, Clone)]
-pub struct ExecutorMetrics(HashMap<&'static str, u64>);
+#[derive(Copy, Clone, Debug)]
+pub struct MetricDef {
+    pub name: &'static str,
+    pub help: &'static str,
+}
 
-impl Index<&'static str> for ExecutorMetrics {
-    type Output = u64;
-
-    fn index(&self, index: &'static str) -> &Self::Output {
-        self.0.get(index).unwrap_or(&0)
+impl MetricDef {
+    pub const fn new(name: &'static str, help: &'static str) -> Self {
+        Self { name, help }
     }
 }
 
-impl IndexMut<&'static str> for ExecutorMetrics {
-    fn index_mut(&mut self, index: &'static str) -> &mut Self::Output {
-        self.0.entry(index).or_default()
+impl std::hash::Hash for MetricDef {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.name.hash(state);
+    }
+}
+
+impl PartialEq for MetricDef {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+    }
+}
+
+impl Eq for MetricDef {}
+
+/// Defines one or more `MetricDef` constants with co-located name and help text.
+///
+/// # Example
+///
+/// ```ignore
+/// monad_executor::metric_consts! {
+///     pub GAUGE_TOTAL_EXEC_US {
+///         name: "monad.executor.total_exec_us",
+///         help: "Total executor execution time in microseconds",
+///     }
+///     GAUGE_POLL_US {
+///         name: "monad.executor.poll_us",
+///         help: "Total executor poll time in microseconds",
+///     }
+/// }
+/// ```
+#[macro_export]
+macro_rules! metric_consts {
+    ($( $vis:vis $ident:ident { name: $name:expr, help: $help:expr $(,)? } )+) => {
+        $(
+            $vis const $ident: &'static $crate::MetricDef = &$crate::MetricDef::new($name, $help);
+        )+
+    };
+}
+
+#[derive(Default, Debug, Clone)]
+pub struct ExecutorMetrics {
+    values: HashMap<&'static MetricDef, u64>,
+}
+
+impl ExecutorMetrics {
+    pub fn set(&mut self, metric: &'static MetricDef, value: u64) {
+        self.values.insert(metric, value);
+    }
+
+    pub fn iter_with_descriptions(
+        &self,
+    ) -> impl Iterator<Item = (&'static str, u64, &'static str)> + '_ {
+        self.values.iter().map(|(k, &v)| (k.name, v, k.help))
+    }
+}
+
+impl Index<&'static MetricDef> for ExecutorMetrics {
+    type Output = u64;
+
+    fn index(&self, metric: &'static MetricDef) -> &Self::Output {
+        self.values.get(metric).unwrap_or(&0)
+    }
+}
+
+impl IndexMut<&'static MetricDef> for ExecutorMetrics {
+    fn index_mut(&mut self, metric: &'static MetricDef) -> &mut Self::Output {
+        self.values.entry(metric).or_default()
     }
 }
 
@@ -63,10 +128,10 @@ impl<'a> ExecutorMetricsChain<'a> {
         self
     }
 
-    pub fn into_inner(self) -> Vec<(&'static str, u64)> {
+    pub fn into_inner(self) -> Vec<(&'static str, u64, &'static str)> {
         self.0
             .into_iter()
-            .flat_map(|metrics| metrics.0.clone().into_iter())
+            .flat_map(|metrics| metrics.values.iter().map(|(k, &v)| (k.name, v, k.help)))
             .collect()
     }
 }

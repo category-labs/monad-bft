@@ -69,9 +69,20 @@ where
     phantom: PhantomData<ST>,
 }
 
-const GAUGE_EXECUTION_LEDGER_NUM_COMMITS: &str = "monad.execution_ledger.num_commits";
-const GAUGE_EXECUTION_LEDGER_NUM_TX_COMMITS: &str = "monad.execution_ledger.num_tx_commits";
-const GAUGE_EXECUTION_LEDGER_BLOCK_NUM: &str = "monad.execution_ledger.block_num";
+monad_executor::metric_consts! {
+    GAUGE_EXECUTION_LEDGER_NUM_COMMITS {
+        name: "monad.execution_ledger.num_commits",
+        help: "Blocks committed to the execution ledger",
+    }
+    GAUGE_EXECUTION_LEDGER_NUM_TX_COMMITS {
+        name: "monad.execution_ledger.num_tx_commits",
+        help: "Transactions committed to the execution ledger",
+    }
+    GAUGE_EXECUTION_LEDGER_BLOCK_NUM {
+        name: "monad.execution_ledger.block_num",
+        help: "Current block number in the execution ledger",
+    }
+}
 
 impl<ST, SCT> MonadBlockFileLedger<ST, SCT>
 where

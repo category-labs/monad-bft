@@ -378,18 +378,24 @@ fn send_metrics(
     raptorcast_metrics: ExecutorMetricsChain,
     process_start: &Instant,
 ) {
-    for (k, v) in latency_metrics
+    for (k, v, desc) in latency_metrics
         .metrics()
         .into_iter()
+        .map(|(k, v)| (k, v, ""))
         .chain(raptorcast_metrics.into_inner())
         .chain(std::iter::once((
             GAUGE_UPTIME_US,
             process_start.elapsed().as_micros() as u64,
+            "",
         )))
     {
-        let gauge = gauge_cache
-            .entry(k)
-            .or_insert_with(|| meter.u64_gauge(k).build());
+        let gauge = gauge_cache.entry(k).or_insert_with(|| {
+            if desc.is_empty() {
+                meter.u64_gauge(k).build()
+            } else {
+                meter.u64_gauge(k).with_description(desc).build()
+            }
+        });
         gauge.record(v, &[]);
     }
 }

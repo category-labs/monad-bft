@@ -35,10 +35,16 @@ use super::{
     group_message::{ConfirmGroup, FullNodesGroupMessage, PrepareGroup},
 };
 
-/// Metrics constant
-pub const PUBLISHER_CURRENT_GROUP_SIZE: &str =
-    "monad.bft.raptorcast.secondary.publisher.current_group_size";
-pub const PUBLISHER_SENT_INVITES: &str = "monad.bft.raptorcast.secondary.publisher.sent_invites";
+monad_executor::metric_consts! {
+    pub PUBLISHER_CURRENT_GROUP_SIZE {
+        name: "monad.bft.raptorcast.secondary.publisher.current_group_size",
+        help: "Current raptorcast secondary group size as publisher",
+    }
+    pub PUBLISHER_SENT_INVITES {
+        name: "monad.bft.raptorcast.secondary.publisher.sent_invites",
+        help: "Group invites sent as raptorcast secondary publisher",
+    }
+}
 
 type FullNodesST<ST> = FullNodes<CertificateSignaturePubKey<ST>>;
 type TimePoint = Round;
