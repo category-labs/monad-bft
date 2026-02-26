@@ -3,7 +3,7 @@
 # set environment variables
 MONAD_BFT_ROOT=$(git rev-parse --show-toplevel)
 export MONAD_BFT_ROOT
-export MONAD_EXECUTION_ROOT="${MONAD_BFT_ROOT}/monad-cxx/monad-execution"
+export MONAD_EXECUTION_ROOT="${MONAD_BFT_ROOT}/monad-execution"
 export HOST_UID="${HOST_UID:-$(id -u)}"
 export HOST_GID="${HOST_GID:-$(id -g)}"
 DOCKER_USER="${HOST_UID}:${HOST_GID}"

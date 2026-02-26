@@ -17,11 +17,11 @@ use std::path::PathBuf;
 
 const INCLUDES: &[(&str, &[&str])] = &[
     (
-        "../monad-cxx/monad-execution/",
+        "../monad-execution/",
         &["category/core/event/event_metadata.h"],
     ),
     (
-        "../monad-cxx/monad-execution/",
+        "../monad-execution/",
         &[
             "category/execution/ethereum/core/base_ctypes.h",
             "category/execution/ethereum/core/eth_ctypes.h",
@@ -33,7 +33,7 @@ const INCLUDES: &[(&str, &[&str])] = &[
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-changed=../monad-cxx/monad-execution");
+    println!("cargo:rerun-if-changed=../monad-execution");
 
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
 

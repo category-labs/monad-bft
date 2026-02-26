@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["monad-*"]
-exclude = ["monad-scripts"]
+exclude = ["monad-execution", "monad-scripts"]
 
 [profile.dev]
 opt-level = 1
@@ -31,7 +31,6 @@ monad-consensus-state = { path = "./monad-consensus-state" }
 monad-consensus-types = { path = "./monad-consensus-types" }
 monad-control-panel = { path = "./monad-control-panel" }
 monad-crypto = { path = "./monad-crypto" }
-monad-cxx = { path = "./monad-cxx" }
 monad-dataplane = { path = "./monad-dataplane" }
 monad-eth-block-policy = { path = "./monad-eth-block-policy" }
 monad-eth-block-validator = { path = "./monad-eth-block-validator" }
@@ -82,6 +81,8 @@ monad-validator = { path = "./monad-validator" }
 monad-version = { path = "./monad-version" }
 monad-wal = { path = "./monad-wal" }
 monad-wireauth = { path = "./monad-wireauth" }
+
+monad-cxx = { path = "./monad-execution/rust/crates/monad-cxx" }
 
 actix = "0.13"
 actix-http = "3.11.1"
