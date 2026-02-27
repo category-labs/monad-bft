@@ -1021,85 +1021,81 @@ where
                 } => {
                     self.metrics[COUNTER_RAPTORCAST_LEANUDP_FORWARD_ATTEMPTS] += 1;
 
-                    let sent_via_lean = if let Some(lean_socket) = self.lean_udp_socket.as_mut() {
-                        let target_pubkey = target.pubkey();
-
-                        let mut lean_addr = lean_socket.get_socket_by_public_key(&target_pubkey);
-                        if lean_addr.is_none() {
-                            let discovered_addr = self
-                                .peer_discovery_driver
-                                .lock()
-                                .ok()
-                                .and_then(|pd| pd.get_lean_udp_p2p_addr(&target));
-
-                            if let Some(discovered_addr) = discovered_addr {
-                                self.metrics[COUNTER_RAPTORCAST_LEANUDP_CONNECT_ATTEMPTS] += 1;
-                                if let Err(err) = lean_socket.connect(
-                                    &target_pubkey,
-                                    discovered_addr,
-                                    DEFAULT_RETRY_ATTEMPTS,
-                                ) {
-                                    self.metrics[COUNTER_RAPTORCAST_LEANUDP_CONNECT_FAILURES] += 1;
-                                    warn!(
-                                        ?target,
-                                        ?discovered_addr,
-                                        ?err,
-                                        "leanudp connect failed"
-                                    );
-                                }
-                                lean_socket.flush();
-                                lean_addr = lean_socket.get_socket_by_public_key(&target_pubkey);
-                            }
-                        }
-
-                        if let Some(addr) = lean_addr {
-                            let outbound_message =
-                                match OutboundRouterMessage::<OM, ST>::AppMessage(message.clone())
-                                    .try_serialize()
-                                {
-                                    Ok(payload) => payload,
-                                    Err(err) => {
-                                        error!(
-                                            ?target,
-                                            ?err,
-                                            "failed to serialize leanudp point-to-point message"
-                                        );
-                                        return;
-                                    }
-                                };
-
-                            let payload_len = outbound_message.len();
-                            let max_message_size = lean_socket.config().max_message_size;
-
-                            if payload_len > max_message_size {
-                                self.metrics[COUNTER_RAPTORCAST_LEANUDP_FORWARD_OVERSIZE] += 1;
-                                error!(
-                                    ?target,
-                                    payload_len,
-                                    max_message_size,
-                                    "leanudp point-to-point payload exceeds max message size, falling back"
-                                );
-                                false
-                            } else {
-                                lean_socket.send(addr, outbound_message, priority);
-                                self.metrics[COUNTER_RAPTORCAST_LEANUDP_FORWARD_SENT] += 1;
-                                true
-                            }
-                        } else {
-                            false
-                        }
-                    } else {
-                        false
+                    let Some(lean_socket) = self.lean_udp_socket.as_mut() else {
+                        warn!(?target, "leanudp socket is not configured");
+                        continue;
                     };
 
-                    // Fallback to dual sender if LeanUDP not available
-                    if !sent_via_lean {
-                        self.metrics[COUNTER_RAPTORCAST_LEANUDP_FORWARD_FALLBACK] += 1;
-                        self.handle_publish(
-                            RouterTarget::PointToPoint(target),
-                            message,
-                            priority,
-                            self_id,
+                    let target_pubkey = target.pubkey();
+                    if !lean_socket.has_any_session_by_public_key(&target_pubkey) {
+                        let discovered_addr = self
+                            .peer_discovery_driver
+                            .lock()
+                            .ok()
+                            .and_then(|pd| pd.get_lean_udp_p2p_addr(&target));
+
+                        let Some(discovered_addr) = discovered_addr else {
+                            // Fallback only when no LeanUDP endpoint is configured for the peer.
+                            self.metrics[COUNTER_RAPTORCAST_LEANUDP_FORWARD_FALLBACK] += 1;
+                            self.handle_publish(
+                                RouterTarget::PointToPoint(target),
+                                message,
+                                priority,
+                                self_id,
+                            );
+                            continue;
+                        };
+
+                        self.metrics[COUNTER_RAPTORCAST_LEANUDP_CONNECT_ATTEMPTS] += 1;
+                        if let Err(err) =
+                            lean_socket.connect(&target_pubkey, discovered_addr, DEFAULT_RETRY_ATTEMPTS)
+                        {
+                            self.metrics[COUNTER_RAPTORCAST_LEANUDP_CONNECT_FAILURES] += 1;
+                            warn!(
+                                ?target,
+                                ?discovered_addr,
+                                ?err,
+                                "leanudp connect failed"
+                            );
+                        }
+                        lean_socket.flush();
+                    }
+
+                    let outbound_message =
+                        match OutboundRouterMessage::<OM, ST>::AppMessage(message.clone())
+                            .try_serialize()
+                        {
+                            Ok(payload) => payload,
+                            Err(err) => {
+                                error!(
+                                    ?target,
+                                    ?err,
+                                    "failed to serialize leanudp point-to-point message"
+                                );
+                                continue;
+                            }
+                        };
+
+                    let payload_len = outbound_message.len();
+                    let max_message_size = lean_socket.config().max_message_size;
+
+                    if payload_len > max_message_size {
+                        self.metrics[COUNTER_RAPTORCAST_LEANUDP_FORWARD_OVERSIZE] += 1;
+                        error!(
+                            ?target,
+                            payload_len,
+                            max_message_size,
+                            "leanudp point-to-point payload exceeds max message size"
+                        );
+                        continue;
+                    }
+
+                    if lean_socket.send_by_public_key(&target_pubkey, outbound_message, priority) {
+                        self.metrics[COUNTER_RAPTORCAST_LEANUDP_FORWARD_SENT] += 1;
+                    } else {
+                        warn!(
+                            ?target,
+                            "leanudp send_by_public_key failed while session is not yet established"
                         );
                     }
                 }

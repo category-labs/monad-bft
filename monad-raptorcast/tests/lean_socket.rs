@@ -78,7 +78,11 @@ impl LeanPeerNode {
         let keypair = keypair(seed);
         let public_key = keypair.pubkey();
         let config = Config::default();
-        let auth_protocol = WireAuthProtocol::new(config, Arc::new(keypair));
+        let auth_protocol = WireAuthProtocol::new(
+            &monad_raptorcast::auth::metrics::UDP_METRICS,
+            config,
+            Arc::new(keypair),
+        );
         let auth_socket = AuthenticatedSocketHandle::new(udp_socket, auth_protocol);
 
         let (_, score_reader) = ema::create::<NodeId<monad_secp::PubKey>, StdClock>(
@@ -190,4 +194,51 @@ async fn test_lean_udp_tx_exchange() {
     assert_eq!(received2.public_key, bob_pubkey);
     let decoded_tx2 = decode_tx(&received2.payload);
     assert_eq!(decoded_tx2.tx_hash(), tx2_hash);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_lean_udp_tx_buffered_while_handshake_in_progress() {
+    init_tracing();
+
+    let mut alice = LeanPeerNode::new(11);
+    let mut bob = LeanPeerNode::new(12);
+
+    let bob_addr = bob.addr;
+    let bob_pubkey = bob.public_key;
+    let alice_pubkey = alice.public_key;
+
+    let tx = create_test_tx();
+    let tx_hash = tx.tx_hash();
+
+    alice.connect(&bob_pubkey, bob_addr);
+
+    let accepted =
+        alice
+            .socket
+            .send_by_public_key(&bob_pubkey, encode_tx(&tx), UdpPriority::Regular);
+    assert!(accepted, "message should be accepted for sending/buffering");
+    alice.socket.flush();
+
+    let received = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            tokio::select! {
+                _ = tokio::time::timeout(Duration::from_millis(50), alice.socket.recv()) => {}
+                result = tokio::time::timeout(Duration::from_millis(50), bob.socket.recv()) => {
+                    if let Ok(Ok(msg)) = result {
+                        break msg;
+                    }
+                }
+                _ = tokio::time::sleep(Duration::from_millis(10)) => {}
+            }
+
+            alice.socket.flush();
+            bob.socket.flush();
+        }
+    })
+    .await
+    .expect("timeout waiting for buffered message to be delivered");
+
+    assert_eq!(received.public_key, alice_pubkey);
+    let decoded_tx = decode_tx(&received.payload);
+    assert_eq!(decoded_tx.tx_hash(), tx_hash);
 }

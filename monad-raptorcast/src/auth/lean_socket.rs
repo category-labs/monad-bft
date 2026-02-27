@@ -146,6 +146,10 @@ where
         self.auth_socket.get_socket_by_public_key(public_key)
     }
 
+    pub fn has_any_session_by_public_key(&self, public_key: &AP::PublicKey) -> bool {
+        self.auth_socket.has_any_session_by_public_key(public_key)
+    }
+
     pub fn metrics(&self) -> ExecutorMetricsChain<'_> {
         ExecutorMetricsChain::default()
             .push(self.encoder.executor_metrics())
@@ -181,6 +185,33 @@ where
                 priority,
             );
         }
+    }
+
+    pub fn send_by_public_key(
+        &mut self,
+        public_key: &AP::PublicKey,
+        payload: Bytes,
+        priority: UdpPriority,
+    ) -> bool {
+        let Ok(fragments) = self.encoder.fragment(payload) else {
+            return false;
+        };
+
+        let mut buf =
+            BytesMut::with_capacity(PacketHeader::SIZE + self.config.max_fragment_payload);
+        for (header, data) in fragments {
+            buf.clear();
+            buf.put_slice(header.as_bytes());
+            buf.put_slice(&data);
+            let packet = buf.clone().freeze();
+            if !self
+                .auth_socket
+                .write_by_public_key_with_priority(public_key, packet, priority)
+            {
+                return false;
+            }
+        }
+        true
     }
 
     pub async fn recv(&mut self) -> Result<LeanRecvMsg<AP::PublicKey>, AP::Error> {
