@@ -11,8 +11,6 @@ use crate::{metrics::*, pool::Pool, IdentityScore, PeerStatus, PushError, Score}
 
 const DEFAULT_REGULAR_SCORE: Score = Score::ONE;
 const POP_COUNTER_WINDOW: u8 = 100;
-#[cfg(test)]
-const DEFAULT_DYNAMIC_CAP_BOOTSTRAP_LIMIT: usize = DynamicCapConfig::DEFAULT_BOOTSTRAP_LIMIT;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PoolKind {
@@ -114,15 +112,23 @@ impl FairQueueBuilder {
             "regular_per_id_limit must be > 0"
         );
         assert!(self.regular_max_size > 0, "regular_max_size must be > 0");
-        let dynamic_cap_cfg = DynamicCapConfig::default();
-        dynamic_cap_cfg.validate();
+        let priority_dynamic_cap_cfg = DynamicCapConfig {
+            bootstrap_limit: self.per_id_limit,
+            ..DynamicCapConfig::default()
+        };
+        priority_dynamic_cap_cfg.validate();
+        let regular_dynamic_cap_cfg = DynamicCapConfig {
+            bootstrap_limit: self.regular_per_id_limit,
+            ..DynamicCapConfig::default()
+        };
+        regular_dynamic_cap_cfg.validate();
 
         FairQueue {
-            priority_pool: Pool::new(self.per_id_limit, self.max_size, dynamic_cap_cfg),
+            priority_pool: Pool::new(self.per_id_limit, self.max_size, priority_dynamic_cap_cfg),
             regular_pool: Pool::new(
                 self.regular_per_id_limit,
                 self.regular_max_size,
-                dynamic_cap_cfg,
+                regular_dynamic_cap_cfg,
             ),
             scorer,
             regular_bandwidth_pct: self.regular_bandwidth_pct,
@@ -716,15 +722,17 @@ mod tests {
     }
 
     #[test]
-    fn pressure_mode_gives_new_identity_bootstrap_budget() {
+    fn pressure_mode_clamps_to_configured_per_id_limit() {
         let scorer = make_test_scorer([]);
-        let mut queue: TestQueue = make_queue_with_limits(scorer, 200, 320, 200, 320, 100);
+        let per_id_limit = 200;
+        let mut queue: TestQueue =
+            make_queue_with_limits(scorer, per_id_limit, 1000, per_id_limit, 1000, 100);
 
-        for i in 0..256u32 {
+        for i in 0..800u32 {
             queue.push(i + 1, i).unwrap();
         }
 
-        for i in 0..DEFAULT_DYNAMIC_CAP_BOOTSTRAP_LIMIT as u32 {
+        for i in 0..per_id_limit as u32 {
             queue.push(999, i).unwrap();
         }
         let err = queue.push(999, 9999).unwrap_err();
@@ -732,46 +740,47 @@ mod tests {
             matches!(
                 err,
                 PushError::PerIdLimitExceeded {
-                    limit: DEFAULT_DYNAMIC_CAP_BOOTSTRAP_LIMIT,
+                    limit,
                     ..
-                }
+                } if limit == per_id_limit
             ),
-            "expected bootstrap dynamic cap for new identity, got {err:?}"
+            "expected configured per-id limit under pressure, got {err:?}"
         );
     }
 
     #[test]
-    fn recently_served_identity_gets_larger_dynamic_cap_under_pressure() {
+    fn recently_served_identity_is_still_capped_by_configured_per_id_limit() {
         let scorer = make_test_scorer([]);
-        let mut queue: TestQueue = make_queue_with_limits(scorer, 200, 400, 200, 400, 100);
+        let per_id_limit = 200;
+        let mut queue: TestQueue =
+            make_queue_with_limits(scorer, per_id_limit, 1000, per_id_limit, 1000, 100);
 
-        for i in 0..130u32 {
+        for i in 0..per_id_limit as u32 {
             queue.push(0, i).unwrap();
         }
-        for _ in 0..80 {
+        for _ in 0..140 {
             assert_eq!(queue.pop().unwrap().0, 0);
         }
-        for i in 1..=270u32 {
+        for i in 1..=740u32 {
             queue.push(i, 10_000 + i).unwrap();
         }
 
-        for i in 0..15u32 {
+        let existing_items_for_id0 = 60u32;
+        let remaining_budget = per_id_limit as u32 - existing_items_for_id0;
+        for i in 0..remaining_budget {
             queue.push(0, 20_000 + i).unwrap();
         }
 
-        for i in 0..DEFAULT_DYNAMIC_CAP_BOOTSTRAP_LIMIT as u32 {
-            queue.push(777, 30_000 + i).unwrap();
-        }
-        let err = queue.push(777, 39_999).unwrap_err();
+        let err = queue.push(0, 39_999).unwrap_err();
         assert!(
             matches!(
                 err,
                 PushError::PerIdLimitExceeded {
-                    limit: DEFAULT_DYNAMIC_CAP_BOOTSTRAP_LIMIT,
+                    limit,
                     ..
-                }
+                } if limit == per_id_limit
             ),
-            "expected bootstrap cap for non-served identity under pressure, got {err:?}"
+            "expected configured per-id limit for recently served identity under pressure, got {err:?}"
         );
     }
 
