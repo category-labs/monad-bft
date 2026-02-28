@@ -14,7 +14,9 @@ rm -f /home/monad/monad-bft/controlpanel.sock
 rm -f /home/monad/monad-bft/wal_*
 rm -f /home/monad/monad-bft/config/peers.toml
 rm -rf /home/monad/monad-bft/blockdb
+set +x  # Disable command echoing so that keystore password is not displayed
 source /home/monad/.env
+set -x  # Re-enable command echoing
 monad-mpt --storage /dev/triedb --truncate --yes
 if [ -f "/home/monad/.config/forkpoint.genesis.toml" ]; then
   yes | cp -rf /home/monad/.config/forkpoint.genesis.toml /home/monad/monad-bft/config/forkpoint/forkpoint.toml
