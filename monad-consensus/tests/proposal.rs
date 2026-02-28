@@ -292,7 +292,7 @@ fn define_proposal_with_tc(
     )
 }
 
-// test_verify tests hit all error messages in order of appearence
+// test_verify tests hit all error messages in order of appearance
 // in the verify function. The error messages and their
 // related tests are the following:
 //  - test_verify_incorrect_block_epoch - Error::InvalidEpoch
@@ -499,7 +499,7 @@ fn test_verify_proposal_happy() {
     );
 }
 
-// The test_validate set hits all error messages in order appearence
+// The test_validate set hits all error messages in order appearance
 // in the validate function in the case there exists no TC.
 //
 // The error messages and their related tests are the following:
