@@ -30,13 +30,89 @@ use monad_validator::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{bls::BlsAggregatePubKey, BlsAggregateSignature, BlsKeyPair, BlsSignature};
+use crate::{
+    bls::BlsAggregatePubKey, BlsAggregateSignature, BlsKeyPair, BlsSignature, LazyBlsSignature,
+};
 
 const MAX_SIGNERS_LEN: usize = 1024 * 16;
 
+fn verify_aggregate_sig<PT: PubKey, SD: SigningDomain>(
+    signers_map: &SignerMap,
+    sig: &BlsAggregateSignature,
+    validator_mapping: &ValidatorMapping<PT, BlsKeyPair>,
+    msg: &[u8],
+) -> Result<Vec<NodeId<PT>>, SignatureCollectionError<PT, BlsSignature>> {
+    if signers_map.0.len() != validator_mapping.map.len() {
+        return Err(SignatureCollectionError::InvalidSignaturesVerify);
+    }
+
+    if signers_map.0.len() > MAX_SIGNERS_LEN {
+        return Err(SignatureCollectionError::InvalidSignaturesVerify);
+    }
+
+    let mut aggpk = BlsAggregatePubKey::infinity();
+    let mut signers = Vec::new();
+
+    for (bit, (node_id, pubkey)) in signers_map.0.iter().zip(validator_mapping.map.iter()) {
+        if *bit {
+            aggpk.add_assign(pubkey);
+            signers.push(*node_id);
+        }
+    }
+
+    // infinity signature is invalid unless validator set is empty (signers
+    // bitmap length is zero) and signers are empty
+    if signers.is_empty() && signers_map.0.is_empty() && *sig == BlsAggregateSignature::infinity() {
+        return Ok(signers);
+    }
+
+    if sig.fast_verify::<SD>(msg, &aggpk).is_err() {
+        return Err(SignatureCollectionError::InvalidSignaturesVerify);
+    }
+
+    Ok(signers)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AggregationTreeNode<PT: PubKey> {
+    signers: SignerMap,
+    sig: BlsAggregateSignature,
+    _phantom: PhantomData<PT>,
+}
+
+impl<PT: PubKey> AggregationTreeNode<PT> {
+    fn with_capacity(n: usize) -> Self {
+        Self {
+            signers: SignerMap(bitvec![u8, Lsb0; 0; n]),
+            sig: BlsAggregateSignature::infinity(),
+            _phantom: PhantomData,
+        }
+    }
+
+    fn num_signatures(&self) -> usize {
+        self.signers.0.count_ones()
+    }
+
+    fn verify<SD: SigningDomain>(
+        &self,
+        validator_mapping: &ValidatorMapping<PT, BlsKeyPair>,
+        msg: &[u8],
+    ) -> Result<Vec<NodeId<PT>>, SignatureCollectionError<PT, BlsSignature>> {
+        verify_aggregate_sig::<PT, SD>(&self.signers, &self.sig, validator_mapping, msg)
+    }
+
+    fn into_collection(self) -> BlsSignatureCollection<PT> {
+        BlsSignatureCollection {
+            signers: self.signers,
+            sig: LazyBlsSignature::from_decoded(self.sig),
+            _phantom: PhantomData,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct AggregationTree<PT: PubKey> {
-    nodes: Vec<BlsSignatureCollection<PT>>,
+    nodes: Vec<AggregationTreeNode<PT>>,
 }
 
 impl<PT: PubKey> AggregationTree<PT> {
@@ -48,7 +124,7 @@ impl<PT: PubKey> AggregationTree<PT> {
         // build the binary heap represented as vector
         if sigs.is_empty() {
             return Self {
-                nodes: vec![BlsSignatureCollection::with_capacity(
+                nodes: vec![AggregationTreeNode::with_capacity(
                     validator_mapping.map.len(),
                 )],
             };
@@ -57,7 +133,7 @@ impl<PT: PubKey> AggregationTree<PT> {
         let n = sigs.len();
         let total_nodes = n * 2 - 1;
         let mut nodes =
-            vec![BlsSignatureCollection::with_capacity(validator_mapping.map.len()); total_nodes];
+            vec![AggregationTreeNode::with_capacity(validator_mapping.map.len()); total_nodes];
 
         // copy all the signature as leaves
         for (i, (node_id, sig)) in sigs.iter().enumerate() {
@@ -120,7 +196,7 @@ impl<PT: PubKey> AggregationTree<PT> {
         }
 
         if invalid_sig.is_empty() {
-            Ok(self.nodes[0].clone())
+            Ok(self.nodes[0].clone().into_collection())
         } else {
             Err(invalid_sig)
         }
@@ -128,15 +204,15 @@ impl<PT: PubKey> AggregationTree<PT> {
 }
 
 fn merge_nodes<PT: PubKey>(
-    n1: &BlsSignatureCollection<PT>,
-    n2: &BlsSignatureCollection<PT>,
-) -> BlsSignatureCollection<PT> {
+    n1: &AggregationTreeNode<PT>,
+    n2: &AggregationTreeNode<PT>,
+) -> AggregationTreeNode<PT> {
     assert_eq!(n1.signers.0.len(), n2.signers.0.len());
 
     let signers = n1.signers.0.clone() | n2.signers.0.clone();
     let mut sig = n1.sig;
     sig.add_assign_aggregate(&n2.sig);
-    let cert = BlsSignatureCollection {
+    let cert = AggregationTreeNode {
         signers: SignerMap(signers),
         sig,
         _phantom: PhantomData,
@@ -153,11 +229,11 @@ fn merge_nodes<PT: PubKey>(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignerMap(pub BitVec<u8, Lsb0>);
 
-#[derive(Clone, PartialEq, Eq, RlpDecodable, RlpEncodable)]
+#[derive(Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 pub struct BlsSignatureCollection<PT: PubKey> {
     pub signers: SignerMap,
 
-    pub sig: BlsAggregateSignature,
+    pub sig: LazyBlsSignature,
 
     pub(crate) _phantom: PhantomData<PT>,
 }
@@ -168,18 +244,6 @@ impl<PT: PubKey> std::fmt::Debug for BlsSignatureCollection<PT> {
             .field("signers", &format_args!("{:?}", &self.signers))
             .field("sig", &self.sig)
             .finish()
-    }
-}
-
-impl<PT: PubKey> BlsSignatureCollection<PT> {
-    fn with_capacity(n: usize) -> Self {
-        let signers = SignerMap(bitvec![u8, Lsb0; 0; n]);
-        let sig = BlsAggregateSignature::infinity();
-        Self {
-            signers,
-            sig,
-            _phantom: PhantomData,
-        }
     }
 }
 
@@ -316,38 +380,12 @@ impl<PT: PubKey> SignatureCollection for BlsSignatureCollection<PT> {
         validator_mapping: &ValidatorMapping<PT, SignatureCollectionKeyPairType<Self>>,
         msg: &[u8],
     ) -> Result<Vec<NodeId<PT>>, SignatureCollectionError<PT, Self::SignatureType>> {
-        if self.signers.0.len() != validator_mapping.map.len() {
-            return Err(SignatureCollectionError::InvalidSignaturesVerify);
-        }
+        let agg_sig = self
+            .sig
+            .decompress()
+            .map_err(|_| SignatureCollectionError::InvalidSignaturesVerify)?;
 
-        if self.signers.0.len() > MAX_SIGNERS_LEN {
-            return Err(SignatureCollectionError::InvalidSignaturesVerify);
-        }
-
-        let mut aggpk = BlsAggregatePubKey::infinity();
-        let mut signers = Vec::new();
-
-        for (bit, (node_id, pubkey)) in self.signers.0.iter().zip(validator_mapping.map.iter()) {
-            if *bit {
-                aggpk.add_assign(pubkey);
-                signers.push(*node_id);
-            }
-        }
-
-        // infinity signature is invalid unless validator set is empty (signers
-        // bitmap length is zero) and signers are empty
-        if signers.is_empty()
-            && self.signers.0.is_empty()
-            && self.sig == BlsAggregateSignature::infinity()
-        {
-            return Ok(signers);
-        }
-
-        if self.sig.fast_verify::<SD>(msg, &aggpk).is_err() {
-            return Err(SignatureCollectionError::InvalidSignaturesVerify);
-        }
-
-        Ok(signers)
+        verify_aggregate_sig::<PT, SD>(&self.signers, &agg_sig, validator_mapping, msg)
     }
 
     fn num_signatures(&self) -> usize {
@@ -370,7 +408,7 @@ impl<PT: PubKey> SignatureCollection for BlsSignatureCollection<PT> {
 mod test {
     use std::collections::{HashMap, HashSet};
 
-    use alloy_rlp::Decodable;
+    use alloy_rlp::{Decodable, Encodable};
     use bitvec::prelude::*;
     use monad_crypto::{
         certificate_signature::{
@@ -394,7 +432,7 @@ mod test {
     use test_case::test_case;
 
     use super::{merge_nodes, AggregationTree, BlsSignatureCollection, SignerMap};
-    use crate::BlsAggregateSignature;
+    use crate::{BlsAggregateSignature, LazyBlsSignature};
 
     type SigningDomainType = signing_domain::Vote;
     type SignatureType = NopSignature;
@@ -758,7 +796,12 @@ mod test {
             expected_n12,
         ];
 
-        assert_eq!(tree.nodes, expected);
+        let actual: Vec<_> = tree
+            .nodes
+            .into_iter()
+            .map(|n| n.into_collection())
+            .collect();
+        assert_eq!(actual, expected);
     }
 
     #[test_case(5,1; "5 signatures, 1-4 split")]
@@ -781,18 +824,22 @@ mod test {
 
         let msg = b"hello world";
 
+        let mut validator_index = HashMap::new();
+        for (i, node_id) in valmap.map.keys().enumerate() {
+            validator_index.insert(*node_id, i);
+        }
+
         let sigs1 = get_sigs(msg, voting_keys.iter().take(first));
         let sigs2 = get_sigs(msg, voting_keys.iter().skip(first));
 
-        let sc1 = SignatureCollectionType::new::<SigningDomainType>(sigs1, &valmap, msg).unwrap();
-        let sc2 = SignatureCollectionType::new::<SigningDomainType>(sigs2, &valmap, msg).unwrap();
+        let tree1 = AggregationTree::new(&sigs1, &valmap, &validator_index);
+        let tree2 = AggregationTree::new(&sigs2, &valmap, &validator_index);
 
         let sigs_all = get_sigs(msg, voting_keys.iter());
-
         let sc_all =
             SignatureCollectionType::new::<SigningDomainType>(sigs_all, &valmap, msg).unwrap();
 
-        let sc_merged = merge_nodes(&sc1, &sc2);
+        let sc_merged = merge_nodes(&tree1.nodes[0], &tree2.nodes[0]).into_collection();
         assert_eq!(sc_all, sc_merged);
     }
 
@@ -1034,14 +1081,112 @@ mod test {
             _,
         >(5, ValidatorSetFactory::default());
 
-        let sigs = SignatureCollectionType {
+        let sigs = BlsSignatureCollection {
             signers: SignerMap(bitvector),
-            sig: BlsAggregateSignature::infinity(),
-            _phantom: Default::default(),
+            sig: LazyBlsSignature::from_decoded(BlsAggregateSignature::infinity()),
+            _phantom: std::marker::PhantomData::<PubKey>,
         };
 
         assert!(sigs.verify::<SigningDomainType>(&valmap, &[]).is_err());
         assert!(sigs.verify::<SigningDomainType>(&valmap, &[0x12]).is_err());
         assert!(sigs.verify::<SigningDomainType>(&valmap, &[0x34]).is_err());
+    }
+
+    #[test_case(1; "1 sig")]
+    #[test_case(5; "5 sigs")]
+    #[test_case(100; "100 sigs")]
+    fn test_signature_collection_rlp_roundtrip(num_keys: u32) {
+        let (keys, voting_keys, _, valmap) = create_keys_w_validators::<
+            SignatureType,
+            SignatureCollectionType,
+            _,
+        >(num_keys, ValidatorSetFactory::default());
+        let voting_keys: Vec<_> = keys
+            .iter()
+            .map(CertificateKeyPair::pubkey)
+            .map(NodeId::new)
+            .zip(voting_keys)
+            .collect();
+
+        let msg = b"hello world";
+        let sigs = get_sigs(msg, voting_keys.iter());
+
+        let sigcol = SignatureCollectionType::new::<SigningDomainType>(sigs, &valmap, msg).unwrap();
+        let encoded = alloy_rlp::encode(&sigcol);
+
+        // decode to raw signature
+        let decoded: SignatureCollectionType = alloy_rlp::decode_exact(&encoded).unwrap();
+
+        // re-encode and check equality
+        let re_encoded = alloy_rlp::encode(&decoded);
+        assert_eq!(encoded, re_encoded);
+    }
+
+    /// Verify signatures after RLP roundtrip of the lazy collection
+    #[test_case(1; "1 sig")]
+    #[test_case(5; "5 sigs")]
+    #[test_case(100; "100 sigs")]
+    fn test_signature_collection_verify_after_rlp_roundtrip(num_keys: u32) {
+        let (keys, voting_keys, _, valmap) = create_keys_w_validators::<
+            SignatureType,
+            SignatureCollectionType,
+            _,
+        >(num_keys, ValidatorSetFactory::default());
+        let voting_keys: Vec<_> = keys
+            .iter()
+            .map(CertificateKeyPair::pubkey)
+            .map(NodeId::new)
+            .zip(voting_keys)
+            .collect();
+
+        let msg = b"hello world";
+        let sigs = get_sigs(msg, voting_keys.iter());
+
+        let sigcol = SignatureCollectionType::new::<SigningDomainType>(sigs, &valmap, msg).unwrap();
+
+        let encoded = alloy_rlp::encode(&sigcol);
+        let decoded: SignatureCollectionType = alloy_rlp::decode_exact(&encoded).unwrap();
+
+        // check that it works on lazy decoded signature collection
+        let verified_signers = decoded.verify::<SigningDomainType>(&valmap, msg).unwrap();
+        assert_eq!(verified_signers.len(), num_keys as usize);
+    }
+
+    #[test]
+    fn test_decode_wrong_signature_size() {
+        // Build a valid encoded BlsSignatureCollection, then tamper the
+        // signature payload to be 97 bytes instead of 96. RLP decode should
+        // fail immediately (before any decompression).
+        let (keys, voting_keys, _, valmap) = create_keys_w_validators::<
+            SignatureType,
+            SignatureCollectionType,
+            _,
+        >(5, ValidatorSetFactory::default());
+        let voting_keys: Vec<_> = keys
+            .iter()
+            .map(CertificateKeyPair::pubkey)
+            .map(NodeId::new)
+            .zip(voting_keys)
+            .collect();
+
+        let msg = b"hello world";
+        let sigs = get_sigs(msg, voting_keys.iter());
+        let sigcol = SignatureCollectionType::new::<SigningDomainType>(sigs, &valmap, msg).unwrap();
+
+        // replace the 96-byte signature with a 97-byte one
+        // the signers + a wrong-length byte string.
+        let wrong_sig = [0u8; 97];
+        let mut tampered = alloy_rlp::BytesMut::new();
+        sigcol.signers.encode(&mut tampered);
+        wrong_sig.as_slice().encode(&mut tampered);
+        let mut out = alloy_rlp::BytesMut::new();
+        alloy_rlp::Header {
+            list: true,
+            payload_length: tampered.len(),
+        }
+        .encode(&mut out);
+        out.extend_from_slice(&tampered);
+
+        assert!(SignatureCollectionType::decode(&mut out.as_ref()).is_err());
     }
 }

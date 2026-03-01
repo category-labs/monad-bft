@@ -599,7 +599,7 @@ impl BlsAggregateSignature {
         self.0.to_signature().into()
     }
 
-    fn from_signature(sig: &BlsSignature) -> Self {
+    pub fn from_signature(sig: &BlsSignature) -> Self {
         blst_core::AggregateSignature::from_signature(&sig.0).into()
     }
 
@@ -685,6 +685,83 @@ impl<'de> Deserialize<'de> for BlsAggregateSignature {
     }
 }
 
+/// A BLS signature that defers point decompression until needed
+#[derive(Clone, Copy)]
+pub enum LazyBlsSignature {
+    Decoded(BlsAggregateSignature),
+    Raw([u8; SIGNATURE_COMPRESSED_LEN]),
+}
+
+impl LazyBlsSignature {
+    pub fn decompress(&self) -> Result<BlsAggregateSignature, BlsError> {
+        match self {
+            Self::Decoded(sig) => Ok(*sig),
+            Self::Raw(bytes) => BlsAggregateSignature::uncompress(bytes),
+        }
+    }
+
+    pub fn from_decoded(sig: BlsAggregateSignature) -> Self {
+        Self::Decoded(sig)
+    }
+
+    fn compressed_bytes(&self) -> [u8; SIGNATURE_COMPRESSED_LEN] {
+        match self {
+            Self::Raw(bytes) => *bytes,
+            Self::Decoded(sig) => sig
+                .compress()
+                .try_into()
+                .expect("bls aggregate signature compressed to 96 bytes"),
+        }
+    }
+}
+
+impl PartialEq for LazyBlsSignature {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Raw(a), Self::Raw(b)) => a == b,
+            (Self::Decoded(a), Self::Decoded(b)) => a == b,
+            _ => self.compressed_bytes() == other.compressed_bytes(),
+        }
+    }
+}
+
+impl Eq for LazyBlsSignature {}
+
+impl std::fmt::Debug for LazyBlsSignature {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Decoded(sig) => f
+                .debug_tuple("LazyBlsSignature")
+                .field(&hex::encode(sig.serialize()))
+                .finish(),
+            Self::Raw(bytes) => f
+                .debug_tuple("LazyBlsSignature")
+                .field(&hex::encode(bytes))
+                .finish(),
+        }
+    }
+}
+
+impl Encodable for LazyBlsSignature {
+    fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
+        match self {
+            Self::Decoded(sig) => sig.encode(out),
+            Self::Raw(bytes) => bytes.encode(out),
+        }
+    }
+
+    fn length(&self) -> usize {
+        SIGNATURE_COMPRESSED_LEN + alloy_rlp::length_of_length(SIGNATURE_COMPRESSED_LEN)
+    }
+}
+
+impl Decodable for LazyBlsSignature {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let raw_bytes = <[u8; SIGNATURE_COMPRESSED_LEN]>::decode(buf)?;
+        Ok(Self::Raw(raw_bytes))
+    }
+}
+
 #[cfg(test)]
 mod test {
     use std::{
@@ -696,8 +773,8 @@ mod test {
 
     use super::{
         blst_core, BlsAggregatePubKey, BlsAggregateSignature, BlsError, BlsKeyPair, BlsPubKey,
-        BlsSecretKey, BlsSignature, BLST_BAD_ENCODING, INFINITY_PUBKEY, INFINITY_SIGNATURE,
-        SIGNATURE_COMPRESSED_LEN,
+        BlsSecretKey, BlsSignature, LazyBlsSignature, BLST_BAD_ENCODING, INFINITY_PUBKEY,
+        INFINITY_SIGNATURE, SIGNATURE_COMPRESSED_LEN,
     };
 
     type SigningDomainType = signing_domain::Vote;
@@ -3084,5 +3161,47 @@ mod test {
             let ok = BlsSignature::uncompress(&signature_bytes).is_ok();
             assert_eq!(ok, expected);
         }
+    }
+
+    #[test]
+    fn test_lazy_bls_signature_rlp_roundtrip() {
+        let keypair = keygen(7);
+        let msg = b"hello world";
+        let sig = keypair.sign::<SigningDomainType>(msg);
+
+        let encoded = alloy_rlp::encode(sig);
+
+        // lazy decode bls signature
+        let lazy: LazyBlsSignature = alloy_rlp::decode_exact(&encoded).unwrap();
+        assert!(matches!(lazy, LazyBlsSignature::Raw(_)));
+
+        // decode the lazy signature and verify it matches original
+        let decoded = lazy.decompress().unwrap();
+        assert_eq!(decoded.as_signature(), sig);
+
+        // re-encode and verify bytes are identical
+        let reencoded = alloy_rlp::encode(decoded);
+        assert_eq!(encoded, reencoded);
+    }
+
+    #[test]
+    fn test_lazy_bls_signature_equality() {
+        let keypair = keygen(7);
+        let msg = b"hello world";
+        let sig = keypair.sign::<SigningDomainType>(msg);
+
+        let decoded_variant =
+            LazyBlsSignature::from_decoded(BlsAggregateSignature::from_signature(&sig));
+        let raw_bytes: [u8; SIGNATURE_COMPRESSED_LEN] = sig.compress().try_into().unwrap();
+        let raw_variant = LazyBlsSignature::Raw(raw_bytes);
+
+        assert_eq!(decoded_variant, raw_variant);
+    }
+
+    #[test]
+    fn test_decompress_invalid_raw_bytes() {
+        let invalid_bytes = [0xff; 96];
+        let lazy = LazyBlsSignature::Raw(invalid_bytes);
+        assert!(lazy.decompress().is_err());
     }
 }
