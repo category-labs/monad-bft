@@ -10,6 +10,10 @@ cd "$(dirname "$0")"
 
 build() {
     echo "Building fuzz targets"
+    local fuzz_target_cpu="${MONAD_FUZZ_TARGET_CPU:-haswell}"
+    export RUSTFLAGS="${RUSTFLAGS:+${RUSTFLAGS} }-C target-cpu=${fuzz_target_cpu}"
+    echo "Using fuzz target CPU: ${fuzz_target_cpu}"
+
     cargo afl build --release
 }
 
