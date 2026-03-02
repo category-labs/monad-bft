@@ -139,7 +139,7 @@ async fn test_ipc_tx_forwarding_pacing() {
     let mut forwarded_txs = 0;
 
     while forwarded_txs < NUM_TXS {
-        let event = tokio::time::timeout(Duration::from_secs(1), txpool_executor.next())
+        let event = tokio::time::timeout(Duration::from_secs(15), txpool_executor.next())
             .await
             .expect("TxpoolExecutor does not timeout")
             .unwrap();
@@ -207,14 +207,13 @@ async fn test_ipc_full() {
         ipc_client
     });
 
-    // Wait for executor to process some events
-    tokio::time::sleep(std::time::Duration::from_millis(1_000)).await;
-
-    // IPC socket is full on send side
-    assert!(txpool_executor
-        .poll_next_unpin(&mut cx)
-        .map(|result| result.unwrap())
-        .is_ready());
+    // Wait until the executor yields at least one event.
+    // Under coverage instrumentation this can take longer than fixed sleeps.
+    let event = tokio::time::timeout(std::time::Duration::from_secs(15), txpool_executor.next())
+        .await
+        .expect("TxpoolExecutor did not produce any events while IPC should be full")
+        .unwrap();
+    assert!(matches!(event, MonadEvent::MempoolEvent(_)));
 
     while let Poll::Ready(result) = txpool_executor.poll_next_unpin(&mut cx) {
         assert!(result.is_some());
