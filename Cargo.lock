@@ -5686,6 +5686,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-leanudp"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "criterion",
+ "indexmap 2.12.1",
+ "monad-dynamic-cap",
+ "monad-executor",
+ "rand 0.8.5",
+ "thiserror 1.0.69",
+ "zerocopy",
+]
+
+[[package]]
 name = "monad-ledger"
 version = "0.1.0"
 dependencies = [
