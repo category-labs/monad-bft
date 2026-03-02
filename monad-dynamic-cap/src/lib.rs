@@ -35,12 +35,12 @@ impl DynamicCapConfig {
         // panic is acceptable for cfg validation: these invariants are expected
         // to be checked once at startup, and invalid config should fail fast.
         assert!(
-            self.enter_pressure.is_finite() && self.enter_pressure >= 0.0,
-            "enter_pressure must be finite and >= 0"
+            self.enter_pressure.is_finite() && (0.0..=1.0).contains(&self.enter_pressure),
+            "enter_pressure must be finite and in [0, 1]"
         );
         assert!(
-            self.exit_pressure.is_finite() && self.exit_pressure >= 0.0,
-            "exit_pressure must be finite and >= 0"
+            self.exit_pressure.is_finite() && (0.0..=1.0).contains(&self.exit_pressure),
+            "exit_pressure must be finite and in [0, 1]"
         );
         assert!(
             self.exit_pressure <= self.enter_pressure,
@@ -182,5 +182,39 @@ mod tests {
         };
 
         assert_eq!(state.decayed_share(1, &cfg), 0.0);
+    }
+
+    #[test]
+    fn validate_rejects_enter_pressure_above_one() {
+        let cfg = DynamicCapConfig {
+            enter_pressure: 1.01,
+            ..DynamicCapConfig::default()
+        };
+
+        let panic = std::panic::catch_unwind(|| cfg.validate())
+            .expect_err("validate should reject enter_pressure > 1");
+        let message = panic
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| panic.downcast_ref::<&'static str>().copied())
+            .expect("panic payload should be a string");
+        assert!(message.contains("enter_pressure must be finite and in [0, 1]"));
+    }
+
+    #[test]
+    fn validate_rejects_exit_pressure_above_one() {
+        let cfg = DynamicCapConfig {
+            exit_pressure: 1.01,
+            ..DynamicCapConfig::default()
+        };
+
+        let panic = std::panic::catch_unwind(|| cfg.validate())
+            .expect_err("validate should reject exit_pressure > 1");
+        let message = panic
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| panic.downcast_ref::<&'static str>().copied())
+            .expect("panic payload should be a string");
+        assert!(message.contains("exit_pressure must be finite and in [0, 1]"));
     }
 }
