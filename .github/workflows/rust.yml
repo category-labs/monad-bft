@@ -40,19 +40,10 @@ jobs:
       options: --privileged -u 1000:1000
 
     steps:
-      - name: Generate a token
-        id: generate_token
-        uses: tibdex/github-app-token@v1
-        with:
-          app_id: ${{ secrets.REPO_READONLY_GITHUB_APP_ID }}
-          private_key: ${{ secrets.REPO_READONLY_GITHUB_APP_KEY }}
-          permissions: >-
-            {"contents": "read"}
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           submodules: recursive
-          token: ${{ steps.generate_token.outputs.token }}
       - run: rustup toolchain install nightly-2025-12-09 --profile minimal --component rustfmt
       - run: rustup toolchain install 1.91.1-x86_64-unknown-linux-gnu --profile minimal --component clippy
       - name: Install cargo-binstall
