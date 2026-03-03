@@ -29,14 +29,10 @@ use tracing::debug;
 
 use crate::{metrics::*, Clock, IdentityScore, PeerStatus, Score};
 
-const MAX_EMA_GAS: f64 = u64::MAX as f64;
-const MAX_TIME_WEIGHT_BOUND: f64 = f64::MAX / MAX_EMA_GAS;
-
 #[derive(Debug, Clone)]
 pub struct ScoreConfig {
     pub promoted_capacity: usize,
     pub newcomer_capacity: usize,
-    pub max_time_weight: f64,
     pub time_weight_unit: Duration,
     pub ema_half_life: Duration,
     pub block_time: Duration,
@@ -48,7 +44,6 @@ impl Default for ScoreConfig {
         Self {
             promoted_capacity: 90_000,
             newcomer_capacity: 10_000,
-            max_time_weight: 1.0,
             time_weight_unit: Duration::from_secs(3600),
             ema_half_life: Duration::from_secs(24 * 3600),
             block_time: Duration::from_millis(400),
@@ -110,12 +105,6 @@ pub fn create<I: Hash + Eq, C: Clock + Clone>(
     );
     assert!(!config.ema_half_life.is_zero(), "ema_half_life must be > 0");
     assert!(!config.block_time.is_zero(), "block_time must be > 0");
-    assert!(
-        config.max_time_weight.is_finite()
-            && config.max_time_weight > 0.0
-            && config.max_time_weight <= MAX_TIME_WEIGHT_BOUND,
-        "max_time_weight must be finite, > 0, and <= {MAX_TIME_WEIGHT_BOUND}"
-    );
     assert!(
         config.promotion_threshold.is_finite() && config.promotion_threshold > 0.0,
         "promotion_threshold must be finite and > 0"
@@ -218,9 +207,9 @@ fn update_and_score(
 
 fn clamp_ema(value: f64) -> f64 {
     if !value.is_finite() {
-        return MAX_EMA_GAS;
+        return f64::MAX;
     }
-    value.clamp(0.0, MAX_EMA_GAS)
+    value.max(0.0)
 }
 
 fn clamp_score(value: f64) -> f64 {
@@ -235,7 +224,7 @@ fn clamp_score(value: f64) -> f64 {
 
 fn min_initial_time_weight(config: &ScoreConfig) -> f64 {
     let ratio = config.block_time.as_secs_f64() / config.time_weight_unit.as_secs_f64();
-    (ratio * ratio).min(config.max_time_weight)
+    (ratio * ratio).min(1.0)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -550,7 +539,7 @@ impl<I: Hash + Eq, C: Clock> ScoreReader<I, C> {
 fn compute_score(id_state: &IdentityState, config: &ScoreConfig, now: Instant) -> f64 {
     let time_known = elapsed_since(now, id_state.first_seen);
     let ratio = time_known.as_secs_f64() / config.time_weight_unit.as_secs_f64();
-    let base_time_weight = (ratio * ratio).min(config.max_time_weight);
+    let base_time_weight = (ratio * ratio).min(1.0);
     let time_weight = base_time_weight.max(min_initial_time_weight(config));
 
     let elapsed = elapsed_since(now, id_state.last_update);
@@ -670,21 +659,10 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "max_time_weight must be finite")]
-    fn rejects_unsafe_time_weight() {
-        let config = ScoreConfig {
-            max_time_weight: f64::MAX,
-            ..Default::default()
-        };
-        let _ = create::<u32, _>(config, MockClock::new());
-    }
-
-    #[test]
     fn ema_converges_to_rate() {
         let config = ScoreConfig {
             ema_half_life: Duration::from_secs(10),
             time_weight_unit: Duration::from_secs(1),
-            max_time_weight: 1.0,
             block_time: Duration::from_secs(1),
             ..Default::default()
         };
@@ -720,7 +698,6 @@ mod tests {
     fn no_gas_cap() {
         let config = ScoreConfig {
             time_weight_unit: Duration::from_secs(1),
-            max_time_weight: 1.0,
             ema_half_life: Duration::from_secs(3600),
             block_time: Duration::from_secs(1),
             ..Default::default()
@@ -748,7 +725,6 @@ mod tests {
     #[test]
     fn time_weight_caps() {
         let config = ScoreConfig {
-            max_time_weight: 5.0,
             ema_half_life: Duration::from_secs(365 * 24 * 3600),
             ..Default::default()
         };
@@ -784,7 +760,6 @@ mod tests {
     #[test]
     fn score_decays_with_inactivity() {
         let config = ScoreConfig {
-            max_time_weight: 1.0,
             time_weight_unit: Duration::from_secs(1),
             ema_half_life: Duration::from_secs(1800),
             block_time: Duration::from_secs(1),
@@ -926,7 +901,6 @@ mod tests {
             newcomer_capacity: 1,
             promoted_capacity: 1,
             time_weight_unit: Duration::from_secs(1),
-            max_time_weight: 1.0,
             ema_half_life: Duration::from_secs(3600),
             block_time: Duration::from_secs(1),
             promotion_threshold: 10.0,
@@ -961,7 +935,6 @@ mod tests {
             newcomer_capacity: 1,
             promoted_capacity: 1,
             time_weight_unit: Duration::from_secs(1),
-            max_time_weight: 1.0,
             ema_half_life: Duration::from_secs(3600),
             block_time: Duration::from_secs(1),
             promotion_threshold: f64::MAX,
@@ -1073,7 +1046,6 @@ mod tests {
             newcomer_capacity: 4,
             promoted_capacity: 1,
             time_weight_unit: Duration::from_secs(1),
-            max_time_weight: 1.0,
             ema_half_life: Duration::from_secs(3600),
             block_time: Duration::from_secs(1),
             promotion_threshold: 1.0,
