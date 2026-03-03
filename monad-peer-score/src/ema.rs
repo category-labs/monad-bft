@@ -25,7 +25,7 @@ use std::{
 
 use lru::LruCache;
 use monad_executor::ExecutorMetrics;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::{metrics::*, Clock, IdentityScore, PeerStatus, Score};
 
@@ -253,6 +253,11 @@ impl<I: Hash + Eq + Clone, C: Clock> ScoreProvider<I, C> {
     }
 
     pub fn record_contribution(&mut self, identity: I, gas: u64) {
+        if gas == 0 {
+            warn!("ignoring contribution: contribution must be positive");
+            return;
+        }
+
         let now = self.clock.now();
         self.metrics[COUNTER_PEER_SCORE_RECORD_CONTRIBUTION_TOTAL] += 1;
         let mut state = self.state.borrow_mut();
@@ -617,6 +622,15 @@ mod tests {
         provider.record_contribution(1, 1_000_000);
         clock.advance(Duration::from_secs(3600));
         assert!(matches!(reader.score(&1), PeerStatus::Newcomer(_)));
+    }
+
+    #[test]
+    fn zero_gas_contribution_returns_unknown() {
+        let clock = MockClock::new();
+        let (mut provider, reader) = create::<u32, _>(ScoreConfig::default(), clock);
+
+        provider.record_contribution(1, 0);
+        assert_eq!(reader.score(&1), PeerStatus::Unknown);
     }
 
     #[test]
