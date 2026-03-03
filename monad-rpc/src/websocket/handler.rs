@@ -55,7 +55,7 @@ const RECV_MAX_FRAME_SIZE: usize = 256 * 1024;
 
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(20);
 const CLIENT_TIMEOUT_SECS: u64 = 60;
-const COMMIT_STATE_FILTER: BlockCommitState = BlockCommitState::Voted;
+const COMMIT_STATE_FILTER: BlockCommitState = BlockCommitState::Proposed;
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy, Deserialize, Serialize)]
 pub struct SubscriptionId(pub FixedData<16>);
