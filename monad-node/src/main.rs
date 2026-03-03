@@ -353,6 +353,8 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
             start_execution_threshold: SeqNum(statesync_threshold as u64 / 2),
             chain_config: node_state.chain_config,
             timestamp_latency_estimate_ns: 20_000_000,
+            // TODO: make this configurable
+            create_proposal_ahead: true,
             _phantom: Default::default(),
         },
         whitelisted_statesync_nodes,

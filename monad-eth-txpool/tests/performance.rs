@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 
 use alloy_primitives::FixedBytes;
 use monad_chain_config::MockChainConfig;
-use monad_consensus_types::{block::GENESIS_TIMESTAMP, payload::RoundSignature};
+use monad_consensus_types::block::GENESIS_TIMESTAMP;
 use monad_crypto::{
     certificate_signature::{CertificateKeyPair, PubKey},
     NopKeyPair, NopPubKey, NopSignature,
@@ -86,8 +86,6 @@ fn txpool_create_proposal_lookups_bound_by_tx_limit() {
 
         assert_eq!(pool.num_txs(), 2);
 
-        let mock_keypair = NopKeyPair::from_bytes(&mut [5_u8; 32]).unwrap();
-
         let _ = pool
             .create_proposal(
                 &mut event_tracker,
@@ -98,11 +96,9 @@ fn txpool_create_proposal_lookups_bound_by_tx_limit() {
                 tx_limit,
                 1_000_000,
                 1024 * 1024,
-                [0_u8; 20],
                 GENESIS_TIMESTAMP,
                 NodeId::new(NopPubKey::from_bytes(&[0_u8; 32]).unwrap()),
-                RoundSignature::new(Round(0), &mock_keypair),
-                vec![],
+                &[],
                 &eth_block_policy,
                 &state_backend,
                 &MockChainConfig::DEFAULT,
@@ -183,11 +179,9 @@ fn txpool_create_proposal_no_lookup_for_unknown_authorizations() {
                 usize::MAX,
                 1_000_000,
                 1024 * 1024,
-                [0_u8; 20],
                 GENESIS_TIMESTAMP,
                 NodeId::new(NopPubKey::from_bytes(&[0_u8; 32]).unwrap()),
-                RoundSignature::new(Round(0), &mock_keypair),
-                vec![],
+                &[],
                 &eth_block_policy,
                 &state_backend,
                 &MockChainConfig::DEFAULT,

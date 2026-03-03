@@ -23,28 +23,30 @@ use std::{
     time::Duration,
 };
 
-use alloy_consensus::{transaction::Recovered, TxEnvelope};
+use alloy_consensus::{
+    constants::EMPTY_WITHDRAWALS, transaction::Recovered, TxEnvelope, EMPTY_OMMER_ROOT_HASH,
+};
 use alloy_primitives::Address;
 use alloy_rlp::Decodable;
 use futures::Stream;
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
-use monad_consensus_types::block::BlockPolicy;
+use monad_consensus_types::block::{BlockPolicy, ProposedExecutionInputs};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_block_policy::EthBlockPolicy;
+use monad_eth_block_policy::{timestamp_ns_to_secs, EthBlockPolicy, EthValidatedBlock};
 use monad_eth_txpool::{
     EthTxPool, EthTxPoolConfig, EthTxPoolEventTracker, PoolTxKind, TrackedTxLimitsConfig,
 };
 use monad_eth_txpool_types::{
     EthTxPoolDropReason, EthTxPoolEventType, EthTxPoolIpcTx, EthTxPoolTxInputStream,
 };
-use monad_eth_types::{EthExecutionProtocol, ExtractEthAddress};
+use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ExtractEthAddress, ProposedEthHeader};
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
 use monad_secp::RecoverableAddress;
 use monad_state_backend::StateBackend;
-use monad_types::{DropTimer, Round};
+use monad_types::{DropTimer, Round, SeqNum};
 use monad_validator::signature_collection::SignatureCollection;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tokio::{sync::mpsc, time::Instant};
@@ -64,6 +66,16 @@ mod metrics;
 mod preload;
 mod reset;
 
+#[derive(Clone, Debug)]
+struct ReadyProposal<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
+    pub transactions: Vec<TxEnvelope>,
+    pub extending_blocks: Vec<EthValidatedBlock<ST, SCT>>,
+}
+
 pub struct EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT, TIS>
 where
     ST: CertificateSignatureRecoverable,
@@ -74,6 +86,7 @@ where
     TIS: EthTxPoolTxInputStream,
 {
     pool: EthTxPool<ST, SCT, SBT, CCT, CRT>,
+    ready_proposals: BTreeMap<SeqNum, ReadyProposal<ST, SCT>>,
     tx_input_stream: Pin<Box<TIS>>,
 
     reset: EthTxPoolResetTrigger,
@@ -145,6 +158,7 @@ where
 
                     Self {
                         pool,
+                        ready_proposals: BTreeMap::new(),
                         tx_input_stream: ipc,
                         block_policy,
                         reset: EthTxPoolResetTrigger::default(),
@@ -329,7 +343,78 @@ where
                         .project()
                         .schedule_egress_txs(&mut self.pool);
                 }
-                TxPoolCommand::CreateProposal {
+                TxPoolCommand::CreateProposalAhead {
+                    node_id,
+                    epoch,
+                    round,
+                    seq_num,
+                    tx_limit,
+                    proposal_gas_limit,
+                    proposal_byte_limit,
+                    timestamp_ns,
+                    extending_blocks,
+                } => {
+                    let _span =
+                        debug_span!("create proposal ahead", seq_num = seq_num.as_u64(),).entered();
+                    self.preload_manager.update_on_create_proposal(seq_num);
+
+                    if let Some(ready_proposal) = self.ready_proposals.get(&seq_num) {
+                        if ready_proposal.extending_blocks == extending_blocks {
+                            info!(
+                                ?seq_num,
+                                "txpool executor received duplicate create proposal ahead call"
+                            );
+                            continue;
+                        }
+                    };
+
+                    let (base_fee, _, _) = self
+                        .block_policy
+                        .compute_base_fee(&extending_blocks, &self.chain_config);
+
+                    let create_proposal_start = Instant::now();
+                    match self.pool.create_proposal(
+                        &mut event_tracker,
+                        epoch,
+                        round,
+                        seq_num,
+                        base_fee,
+                        tx_limit,
+                        proposal_gas_limit,
+                        proposal_byte_limit,
+                        timestamp_ns,
+                        node_id,
+                        extending_blocks.as_slice(),
+                        &self.block_policy,
+                        &self.state_backend,
+                        &self.chain_config,
+                    ) {
+                        Ok(transactions) => {
+                            let elapsed = create_proposal_start.elapsed();
+
+                            self.metrics.create_proposal.fetch_add(1, Ordering::SeqCst);
+                            self.metrics
+                                .create_proposal_elapsed_ns
+                                .fetch_add(elapsed.as_nanos() as u64, Ordering::SeqCst);
+
+                            info!(
+                                ?seq_num,
+                                "txpool executor created proposal for round {}", round.0,
+                            );
+                            self.ready_proposals.insert(
+                                seq_num,
+                                ReadyProposal {
+                                    transactions,
+                                    extending_blocks,
+                                },
+                            );
+                        }
+                        Err(err) => {
+                            info!(?err, "txpool executor create proposal ahead error");
+                        }
+                    }
+                }
+                TxPoolCommand::FetchProposal {
                     node_id,
                     epoch,
                     round,
@@ -349,63 +434,126 @@ where
                     delayed_execution_results,
                 } => {
                     let _span =
-                        debug_span!("create proposal", seq_num = seq_num.as_u64(),).entered();
-                    self.preload_manager.update_on_create_proposal(seq_num);
+                        debug_span!("fetch proposal", seq_num = seq_num.as_u64(),).entered();
 
-                    let create_proposal_start = Instant::now();
+                    let maybe_ready_proposal = self.ready_proposals.remove(&seq_num);
+
+                    let is_proposal_ready =
+                        maybe_ready_proposal.as_ref().is_some_and(|ready_proposal| {
+                            ready_proposal.extending_blocks == extending_blocks
+                        });
 
                     let (base_fee, base_fee_trend, base_fee_moment) = self
                         .block_policy
                         .compute_base_fee(&extending_blocks, &self.chain_config);
 
-                    match self.pool.create_proposal(
-                        &mut event_tracker,
-                        epoch,
-                        round,
-                        seq_num,
-                        base_fee,
-                        tx_limit,
-                        proposal_gas_limit,
-                        proposal_byte_limit,
-                        beneficiary,
-                        timestamp_ns,
-                        node_id,
-                        round_signature.clone(),
-                        extending_blocks,
-                        &self.block_policy,
-                        &self.state_backend,
-                        &self.chain_config,
-                    ) {
-                        Ok(proposed_execution_inputs) => {
-                            let elapsed = create_proposal_start.elapsed();
+                    let transactions = if is_proposal_ready {
+                        info!(?round, ?seq_num, "txpool fetching ready proposal");
 
-                            self.metrics.create_proposal.fetch_add(1, Ordering::SeqCst);
-                            self.metrics
-                                .create_proposal_elapsed_ns
-                                .fetch_add(elapsed.as_nanos() as u64, Ordering::SeqCst);
+                        maybe_ready_proposal.unwrap().transactions
+                    } else {
+                        self.preload_manager.update_on_create_proposal(seq_num);
 
-                            self.events_tx
-                                .send(MempoolEvent::Proposal {
-                                    epoch,
-                                    round,
-                                    seq_num,
-                                    high_qc,
-                                    timestamp_ns,
-                                    round_signature,
-                                    base_fee,
-                                    base_fee_trend,
-                                    base_fee_moment,
-                                    delayed_execution_results,
-                                    proposed_execution_inputs,
-                                    last_round_tc,
-                                    fresh_proposal_certificate,
-                                })
-                                .expect("events never dropped");
+                        let create_proposal_start = Instant::now();
+                        match self.pool.create_proposal(
+                            &mut event_tracker,
+                            epoch,
+                            round,
+                            seq_num,
+                            base_fee,
+                            tx_limit,
+                            proposal_gas_limit,
+                            proposal_byte_limit,
+                            timestamp_ns,
+                            node_id,
+                            extending_blocks.as_slice(),
+                            &self.block_policy,
+                            &self.state_backend,
+                            &self.chain_config,
+                        ) {
+                            Ok(transactions) => {
+                                let elapsed = create_proposal_start.elapsed();
+
+                                self.metrics.create_proposal.fetch_add(1, Ordering::SeqCst);
+                                self.metrics
+                                    .create_proposal_elapsed_ns
+                                    .fetch_add(elapsed.as_nanos() as u64, Ordering::SeqCst);
+
+                                transactions
+                            }
+                            Err(err) => {
+                                error!(?err, "txpool executor failed to create proposal");
+                                continue;
+                            }
                         }
-                        Err(err) => {
-                            error!(?err, "txpool executor failed to create proposal");
-                        }
-                    }
+                    };
+
+                    let body = EthBlockBody {
+                        transactions,
+                        ommers: Vec::new(),
+                        withdrawals: Vec::new(),
+                    };
+
+                    // Monad does not use request hashes yet
+                    // It is hardcoded to zero hash for prague compatibility
+                    let maybe_request_hash = if self
+                        .chain_config
+                        .get_execution_chain_revision(timestamp_ns_to_secs(timestamp_ns))
+                        .execution_chain_params()
+                        .prague_enabled
+                    {
+                        Some([0_u8; 32])
+                    } else {
+                        None
+                    };
+
+                    let header = ProposedEthHeader {
+                        transactions_root: *alloy_consensus::proofs::calculate_transaction_root(
+                            &body.transactions,
+                        ),
+                        ommers_hash: {
+                            assert_eq!(body.ommers.len(), 0);
+                            *EMPTY_OMMER_ROOT_HASH
+                        },
+                        withdrawals_root: {
+                            assert_eq!(body.withdrawals.len(), 0);
+                            *EMPTY_WITHDRAWALS
+                        },
+
+                        beneficiary: beneficiary.into(),
+                        difficulty: 0,
+                        number: seq_num.0,
+                        gas_limit: proposal_gas_limit,
+                        timestamp: timestamp_ns_to_secs(timestamp_ns),
+                        mix_hash: round_signature.get_hash().0,
+                        nonce: [0_u8; 8],
+                        extra_data: [0_u8; 32],
+                        base_fee_per_gas: base_fee,
+                        blob_gas_used: 0,
+                        excess_blob_gas: 0,
+                        parent_beacon_block_root: [0_u8; 32],
+                        requests_hash: maybe_request_hash,
+                    };
+
+                    let proposed_execution_inputs = ProposedExecutionInputs { header, body };
+
+                    self.events_tx
+                        .send(MempoolEvent::Proposal {
+                            epoch,
+                            round,
+                            seq_num,
+                            high_qc,
+                            timestamp_ns,
+                            round_signature,
+                            base_fee,
+                            base_fee_trend,
+                            base_fee_moment,
+                            delayed_execution_results,
+                            proposed_execution_inputs,
+                            last_round_tc,
+                            fresh_proposal_certificate,
+                        })
+                        .expect("events never dropped");
                 }
                 TxPoolCommand::InsertForwardedTxs { sender, txs } => {
                     // This will never happen because we separate out these commands in `EthTxPoolExecutorClient`.
@@ -486,6 +634,7 @@ where
 
         let Self {
             pool,
+            ready_proposals: _,
             tx_input_stream,
 
             reset,

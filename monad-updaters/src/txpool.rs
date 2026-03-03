@@ -19,8 +19,9 @@ use std::{
 };
 
 use alloy_consensus::{
+    constants::EMPTY_WITHDRAWALS,
     transaction::{Recovered, SignerRecoverable},
-    TxEnvelope,
+    TxEnvelope, EMPTY_OMMER_ROOT_HASH,
 };
 use alloy_rlp::Decodable;
 use bytes::Bytes;
@@ -36,14 +37,15 @@ use monad_consensus_types::block::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_block_policy::EthBlockPolicy;
+use monad_eth_block_policy::{timestamp_ns_to_secs, EthBlockPolicy};
 use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics, PoolTxKind};
-use monad_eth_types::{EthExecutionProtocol, ExtractEthAddress};
+use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ExtractEthAddress, ProposedEthHeader};
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
 use monad_state_backend::StateBackend;
 use monad_types::{ExecutionProtocol, SeqNum};
 use monad_validator::signature_collection::SignatureCollection;
+use tracing::info;
 
 pub trait MockableTxPool:
     Executor<
@@ -231,7 +233,8 @@ where
     fn exec(&mut self, commands: Vec<Self::Command>) {
         for command in commands {
             match command {
-                TxPoolCommand::CreateProposal {
+                TxPoolCommand::CreateProposalAhead { .. } => {}
+                TxPoolCommand::FetchProposal {
                     node_id: _,
                     epoch,
                     round,
@@ -326,7 +329,47 @@ where
 
         for command in commands {
             match command {
-                TxPoolCommand::CreateProposal {
+                TxPoolCommand::CreateProposalAhead {
+                    node_id,
+                    epoch,
+                    round,
+                    seq_num,
+                    tx_limit,
+                    proposal_gas_limit,
+                    proposal_byte_limit,
+                    timestamp_ns,
+                    extending_blocks,
+                } => {
+                    let (base_fee, _, _) =
+                        block_policy.compute_base_fee(&extending_blocks, &self.chain_config);
+
+                    match pool.create_proposal(
+                        &mut event_tracker,
+                        epoch,
+                        round,
+                        seq_num,
+                        base_fee,
+                        tx_limit,
+                        proposal_gas_limit,
+                        proposal_byte_limit,
+                        timestamp_ns,
+                        node_id,
+                        extending_blocks.as_slice(),
+                        block_policy,
+                        state_backend,
+                        &self.chain_config,
+                    ) {
+                        Ok(_) => {}
+                        Err(block_policy_err) => {
+                            info!(
+                                ?seq_num,
+                                ?block_policy_err,
+                                "failed to create proposal ahead"
+                            );
+                        }
+                    }
+                }
+                TxPoolCommand::FetchProposal {
                     node_id,
                     epoch,
                     round,
@@ -346,7 +389,7 @@ where
                     let (base_fee, base_fee_trend, base_fee_moment) =
                         block_policy.compute_base_fee(&extending_blocks, &self.chain_config);
 
-                    let proposed_execution_inputs = pool
+                    let transactions = pool
                         .create_proposal(
                             &mut event_tracker,
                             epoch,
@@ -356,11 +399,9 @@ where
                             tx_limit,
                             proposal_gas_limit,
                             proposal_byte_limit,
-                            beneficiary,
                             timestamp_ns,
                             node_id,
-                            round_signature.clone(),
-                            extending_blocks,
+                            extending_blocks.as_slice(),
                             block_policy,
                             state_backend,
                             &self.chain_config,
@@ -372,6 +413,55 @@ where
                     } else {
                         seq_num
                     };
+
+                    let body = EthBlockBody {
+                        transactions,
+                        ommers: Vec::new(),
+                        withdrawals: Vec::new(),
+                    };
+
+                    // Monad does not use request hashes yet
+                    // It is hardcoded to zero hash for prague compatibility
+                    let maybe_request_hash = if self
+                        .chain_config
+                        .get_execution_chain_revision(timestamp_ns_to_secs(timestamp_ns))
+                        .execution_chain_params()
+                        .prague_enabled
+                    {
+                        Some([0_u8; 32])
+                    } else {
+                        None
+                    };
+
+                    let header = ProposedEthHeader {
+                        transactions_root: *alloy_consensus::proofs::calculate_transaction_root(
+                            &body.transactions,
+                        ),
+                        ommers_hash: {
+                            assert_eq!(body.ommers.len(), 0);
+                            *EMPTY_OMMER_ROOT_HASH
+                        },
+                        withdrawals_root: {
+                            assert_eq!(body.withdrawals.len(), 0);
+                            *EMPTY_WITHDRAWALS
+                        },
+
+                        beneficiary: beneficiary.into(),
+                        difficulty: 0,
+                        number: seq_num.0,
+                        gas_limit: proposal_gas_limit,
+                        timestamp: timestamp_ns_to_secs(timestamp_ns),
+                        mix_hash: round_signature.get_hash().0,
+                        nonce: [0_u8; 8],
+                        extra_data: [0_u8; 32],
+                        base_fee_per_gas: base_fee,
+                        blob_gas_used: 0,
+                        excess_blob_gas: 0,
+                        parent_beacon_block_root: [0_u8; 32],
+                        requests_hash: maybe_request_hash,
+                    };
+
+                    let proposed_execution_inputs = ProposedExecutionInputs { header, body };
 
                     self.events.push_back(MempoolEvent::Proposal {
                         epoch,

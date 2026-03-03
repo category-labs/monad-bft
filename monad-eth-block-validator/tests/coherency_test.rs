@@ -500,7 +500,7 @@ fn check_txpool_coherency(
         .into();
     let seq_num = block_under_test.header().seq_num;
     let round = block_under_test.header().block_round;
-    let proposal = txpool
+    let transactions = txpool
         .create_proposal(
             &mut event_tracker,
             block_under_test.header().epoch,
@@ -510,11 +510,9 @@ fn check_txpool_coherency(
             5000,
             200_000_000,
             2_000_000,
-            beneficiary,
             timestamp_ns,
             block_under_test.header().author,
-            block_under_test.header().round_signature.clone(),
-            extending_blocks.to_vec(),
+            extending_blocks,
             &block_policy,
             state_backend,
             chain_config,
@@ -523,13 +521,11 @@ fn check_txpool_coherency(
 
     info!(
         "Txpool created proposal with {} txs for seq_num {:?}",
-        proposal.body.transactions.len(),
+        transactions.len(),
         block_under_test.header().seq_num
     );
 
-    let txs = proposal
-        .body
-        .transactions
+    let txs = transactions
         .iter()
         .cloned()
         .map(recover_tx)
