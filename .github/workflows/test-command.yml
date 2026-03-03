@@ -61,15 +61,6 @@ jobs:
       image: peach10.devcore4.com/category-labs/builder
       options: --privileged -u 1000:1000
     steps:
-      - name: Generate token
-        id: generate_token
-        uses: tibdex/github-app-token@v1
-        with:
-          app_id: ${{ secrets.REPO_READONLY_GITHUB_APP_ID }}
-          private_key: ${{ secrets.REPO_READONLY_GITHUB_APP_KEY }}
-          permissions: >-
-            {"contents": "read"}
-
       - name: Get PR info
         id: pr-info
         uses: actions/github-script@v7
@@ -88,7 +79,7 @@ jobs:
         with:
           ref: ${{ steps.pr-info.outputs.ref }}
           submodules: recursive
-          token: ${{ steps.generate_token.outputs.token }}
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - run: rustup toolchain install nightly-2025-12-09 --profile minimal --component rustfmt
       - run: rustup toolchain install 1.91.1-x86_64-unknown-linux-gnu --profile minimal --component clippy
