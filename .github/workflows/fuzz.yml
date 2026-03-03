@@ -45,20 +45,10 @@ jobs:
         password: ${{ secrets.PRIVATE_REGISTRY_PASSWORD }}
 
     steps:
-      - name: Generate a token
-        id: generate_token
-        uses: tibdex/github-app-token@v1
-        with:
-          app_id: ${{ secrets.REPO_READONLY_GITHUB_APP_ID }}
-          private_key: ${{ secrets.REPO_READONLY_GITHUB_APP_KEY }}
-          permissions: >-
-            {"contents": "read"}
-
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           submodules: recursive
-          token: ${{ steps.generate_token.outputs.token }}
 
       - name: Install cargo-afl
         run: cargo install cargo-afl
