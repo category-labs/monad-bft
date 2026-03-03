@@ -23,10 +23,11 @@ pub struct Score(f64);
 
 impl Score {
     pub const ONE: Self = Self(1.0);
+    const MIN_POSITIVE: f64 = 1.0;
 
     pub fn reciprocal(self) -> f64 {
         debug_assert!(self.0.is_finite() && self.0 > 0.0);
-        1.0 / self.0
+        1.0 / self.0.max(Self::MIN_POSITIVE)
     }
 }
 

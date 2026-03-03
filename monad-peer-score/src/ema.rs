@@ -1176,6 +1176,26 @@ mod tests {
         assert!(Score::try_from(1.0).is_ok());
     }
 
+    #[test]
+    fn reciprocal_does_not_overflow_after_long_idle_decay_e2e() {
+        let clock = MockClock::new();
+        let (mut provider, reader) = create::<u32, _>(ScoreConfig::default(), clock.clone());
+
+        provider.record_contribution(1, 1);
+        clock.advance(Duration::from_secs(1_030 * 24 * 3600));
+
+        let status = reader.score(&1);
+        let score = match status {
+            PeerStatus::Newcomer(score) | PeerStatus::Promoted(score) => score,
+            PeerStatus::Unknown => panic!("identity should still be scored after idle decay"),
+        };
+        let reciprocal = score.reciprocal();
+        assert!(
+            reciprocal.is_finite(),
+            "reciprocal overflowed after decay: reciprocal={reciprocal}"
+        );
+    }
+
     proptest! {
         #[test]
         fn score_domain_invariant(
