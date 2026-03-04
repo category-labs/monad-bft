@@ -23,7 +23,7 @@ use alloy_consensus::{
     Transaction as _,
 };
 use alloy_eips::BlockNumberOrTag;
-use alloy_primitives::{Bloom, FixedBytes, TxKind, U256};
+use alloy_primitives::{Bloom, FixedBytes, TxHash, TxKind, U256};
 use alloy_rlp::Encodable;
 use alloy_rpc_types::{
     Block, BlockTransactions, Filter, FilterBlockOption, FilteredParams, Header, Log, Receipt,
@@ -169,7 +169,7 @@ impl<T: Triedb> ChainState<T> {
                 return Ok(parse_tx_receipt(
                     header_subset.block_hash,
                     header_subset.block_number,
-                    Some(header_subset.block_timestamp),
+                    header_subset.block_timestamp,
                     header_subset.base_fee_per_gas,
                     header_subset.tx_index,
                     tx,
@@ -467,7 +467,7 @@ impl<T: Triedb> ChainState<T> {
     pub async fn get_raw_receipts(
         &self,
         block: BlockTags,
-    ) -> Result<Vec<alloy_consensus::ReceiptEnvelope>, ChainStateError> {
+    ) -> Result<Vec<ReceiptEnvelope>, ChainStateError> {
         if let Some(buffer) = &self.buffer {
             let height = block_height_from_tag(buffer, &block);
             if let Some(receipts) = buffer.get_receipts_by_block_height(height) {
@@ -481,7 +481,7 @@ impl<T: Triedb> ChainState<T> {
         let block_key = get_block_key_from_tag(&self.triedb_env, block)
             .ok_or(ChainStateError::ResourceNotFound)?;
         if let Ok(receipts) = self.triedb_env.get_receipts(block_key).await {
-            let receipts: Vec<alloy_consensus::ReceiptEnvelope> = receipts
+            let receipts: Vec<ReceiptEnvelope> = receipts
                 .into_iter()
                 .map(|receipt_with_log_index| receipt_with_log_index.receipt)
                 .collect();
@@ -492,7 +492,7 @@ impl<T: Triedb> ChainState<T> {
             (&self.archive_reader, block_key)
         {
             if let Some(receipts) = archive_reader.try_get_block_receipts(block_num.0).await? {
-                let receipts: Vec<alloy_consensus::ReceiptEnvelope> = receipts
+                let receipts: Vec<ReceiptEnvelope> = receipts
                     .into_iter()
                     .map(|receipt_with_log_index| receipt_with_log_index.receipt)
                     .collect();
@@ -532,7 +532,7 @@ impl<T: Triedb> ChainState<T> {
                             receipts,
                             &header.header,
                             header.hash,
-                            crate::types::eth_json::MonadTransactionReceipt,
+                            MonadTransactionReceipt,
                         )
                         .map_err(|_| ChainStateError::ResourceNotFound)?;
                         return Ok(block_receipts);
@@ -567,7 +567,7 @@ impl<T: Triedb> ChainState<T> {
                         receipts_with_log_index,
                         &block.header,
                         block.header.hash_slow(),
-                        crate::types::eth_json::MonadTransactionReceipt,
+                        MonadTransactionReceipt,
                     )
                     .map_err(|_| ChainStateError::ResourceNotFound)?;
                     return Ok(block_receipts);
@@ -723,42 +723,40 @@ impl<T: Triedb> ChainState<T> {
         };
 
         let stream_with_triedb = stream::iter(from_block..=to_block)
-            .map(|block_num| {
-                async move {
-                    let block_key = self.triedb_env.get_block_key(SeqNum(block_num)).ok_or(
-                        JsonRpcError::internal_error("missing block in db in range".to_owned()),
-                    )?;
+            .map(|block_num| async move {
+                let block_key = self.triedb_env.get_block_key(SeqNum(block_num)).ok_or(
+                    JsonRpcError::internal_error("missing block in db in range".to_owned()),
+                )?;
 
-                    let Some(header) = self
-                        .triedb_env
-                        .get_block_header(block_key)
-                        .await
-                        .map_err(JsonRpcError::internal_error)?
-                    else {
-                        // pass block number to try for archive
-                        return Ok(Either::Right(block_num));
-                    };
+                let Some(header) = self
+                    .triedb_env
+                    .get_block_header(block_key)
+                    .await
+                    .map_err(JsonRpcError::internal_error)?
+                else {
+                    // pass block number to try for archive
+                    return Ok(Either::Right(block_num));
+                };
 
-                    if !filter_match(header.header.logs_bloom) {
-                        return Ok(Either::Left((header, vec![], vec![])));
-                    }
-
-                    // try fetching from triedb
-                    let Ok(transactions) = self.triedb_env.get_transactions(block_key).await else {
-                        // header exists but not transactions, block is statesynced
-                        // pass block number to try for archive
-                        return Ok(Either::Right(block_num));
-                    };
-
-                    let receipts = self
-                        .triedb_env
-                        .get_receipts(block_key)
-                        .await
-                        .map_err(JsonRpcError::internal_error)?;
-
-                    // successfully fetched from triedb
-                    Ok(Either::Left((header, transactions, receipts)))
+                if !filter_match(header.header.logs_bloom) {
+                    return Ok(Either::Left((header, vec![], vec![])));
                 }
+
+                // try fetching from triedb
+                let Ok(transactions) = self.triedb_env.get_transactions(block_key).await else {
+                    // header exists but not transactions, block is statesynced
+                    // pass block number to try for archive
+                    return Ok(Either::Right(block_num));
+                };
+
+                let receipts = self
+                    .triedb_env
+                    .get_receipts(block_key)
+                    .await
+                    .map_err(JsonRpcError::internal_error)?;
+
+                // successfully fetched from triedb
+                Ok(Either::Left((header, transactions, receipts)))
             })
             .buffered(10);
 
@@ -767,10 +765,15 @@ impl<T: Triedb> ChainState<T> {
                 async move {
                     match result {
                         Ok(Either::Left(data)) => Ok(data), // successfully fetched from triedb
-                        Ok(Either::Right(block_num)) => {
+                        Ok(Either::Right(block_number)) => {
                             // fallback and try fetching from archive
                             if let Some(archive_reader) = &self.archive_reader {
-                                fetch_from_archive(archive_reader, block_num, filter_match).await
+                                fetch_bloom_filtered_header_transactions_receipts_from_archive(
+                                    archive_reader,
+                                    block_number,
+                                    filter_match,
+                                )
+                                .await
                             } else {
                                 Err(JsonRpcError::internal_error(
                                     "error getting block header from triedb and archive".into(),
@@ -783,19 +786,19 @@ impl<T: Triedb> ChainState<T> {
             })
             .buffered(100);
 
-        let logs_stream = stream_with_archive.map(|result| {
-            result.and_then(|(header, transactions, receipts)| {
-                block_receipts(transactions, receipts, &header.header, header.hash).map(
-                    |receipts| {
-                        (
-                            header.header.number,
-                            receipts.into_iter().flat_map(|receipt| {
-                                transaction_receipt_to_logs_iter(receipt, &filtered_params)
-                            }),
-                        )
-                    },
-                )
-            })
+        let logs_stream = stream_with_archive.map({
+            let filtered_params = &filtered_params;
+
+            move |result| {
+                result.and_then(|(header, transactions, receipts)| {
+                    header_transactions_receipts_to_block_number_logs(
+                        header,
+                        transactions,
+                        receipts,
+                        filtered_params,
+                    )
+                })
+            }
         });
 
         let logs = try_collect_logs_stream_with_heuristic_response_limit(
@@ -922,11 +925,11 @@ async fn try_collect_logs_stream_with_heuristic_response_limit<E>(
     Ok(Ok(response_logs))
 }
 
-fn transaction_receipt_to_logs_iter<'a>(
-    receipt: TransactionReceipt,
+fn receipt_envelope_to_logs_iter<'a>(
+    receipt: ReceiptEnvelope<Log>,
     filtered_params: &'a FilteredParams,
 ) -> impl Iterator<Item = Log> + 'a {
-    let logs = match receipt.inner {
+    let logs = match receipt {
         alloy_consensus::ReceiptEnvelope::Legacy(receipt_with_bloom)
         | alloy_consensus::ReceiptEnvelope::Eip2930(receipt_with_bloom)
         | alloy_consensus::ReceiptEnvelope::Eip1559(receipt_with_bloom)
@@ -944,43 +947,43 @@ fn transaction_receipt_to_logs_iter<'a>(
     })
 }
 
-async fn fetch_from_archive(
+async fn fetch_bloom_filtered_header_transactions_receipts_from_archive(
     archive_reader: &ArchiveReader,
-    block_num: u64,
+    block_number: u64,
     filter_match: impl Fn(Bloom) -> bool,
 ) -> JsonRpcResult<(
     BlockHeader,
     Vec<TxEnvelopeWithSender>,
-    Vec<monad_archive::prelude::ReceiptWithLogIndex>,
+    Vec<ReceiptWithLogIndex>,
 )> {
-    let block = archive_reader
-        .get_block_by_number(block_num)
+    let alloy_consensus::Block::<TxEnvelopeWithSender> {
+        header,
+        body:
+            alloy_consensus::BlockBody {
+                transactions,
+                ommers,
+                withdrawals,
+            },
+    } = archive_reader
+        .get_block_by_number(block_number)
         .await
         .to_jsonrpc_error("Error getting block by number")?;
 
-    if !filter_match(block.header.logs_bloom) {
-        return Ok((
-            BlockHeader {
-                hash: block.header.hash_slow(),
-                header: block.header,
-            },
-            vec![],
-            vec![],
-        ));
+    let header = BlockHeader {
+        hash: header.hash_slow(),
+        header,
+    };
+
+    if !filter_match(header.header.logs_bloom) {
+        return Ok((header, vec![], vec![]));
     }
 
     let bloom_receipts = archive_reader
-        .get_block_receipts(block_num)
+        .get_block_receipts(block_number)
         .await
         .to_jsonrpc_error("Error getting block receipts")?;
-    Ok((
-        BlockHeader {
-            hash: block.header.hash_slow(),
-            header: block.header,
-        },
-        block.body.transactions,
-        bloom_receipts,
-    ))
+
+    Ok((header, transactions, bloom_receipts))
 }
 
 async fn check_dry_run_get_logs_index(
@@ -1049,7 +1052,7 @@ async fn get_receipts_stream_using_index<'a>(
     to_block: u64,
     filter: &'a Filter,
 ) -> monad_archive::prelude::Result<
-    impl Stream<Item = monad_archive::prelude::Result<(u64, Vec<TransactionReceipt>)>> + 'a,
+    impl Stream<Item = monad_archive::prelude::Result<(u64, Vec<ReceiptEnvelope<Log>>)>> + 'a,
 > {
     let log_index = reader
         .log_index
@@ -1081,15 +1084,13 @@ async fn get_receipts_stream_using_index<'a>(
              }| {
                 (
                     header_subset.block_number,
-                    parse_tx_receipt(
+                    parse_receipt_envelope(
                         header_subset.block_hash,
                         header_subset.block_number,
-                        Some(header_subset.block_timestamp),
-                        header_subset.base_fee_per_gas,
+                        header_subset.block_timestamp,
                         header_subset.tx_index,
-                        tx,
+                        *tx.tx.tx_hash(),
                         receipt,
-                        header_subset.gas_used,
                     ),
                 )
             },
@@ -1152,7 +1153,7 @@ async fn try_create_logs_stream_using_index<'a>(
                 (
                     block_number,
                     receipts.into_iter().flat_map(move |receipt| {
-                        transaction_receipt_to_logs_iter(receipt, filtered_params)
+                        receipt_envelope_to_logs_iter(receipt, filtered_params)
                     }),
                 )
             }),
@@ -1229,9 +1230,7 @@ pub fn parse_tx_content(
     tx: TxEnvelopeWithSender,
     tx_index: u64,
 ) -> Transaction {
-    // unpack transaction
-    let sender = tx.sender;
-    let tx = tx.tx;
+    let TxEnvelopeWithSender { tx, sender } = tx;
 
     // effective gas price is calculated according to eth json rpc specification
     let effective_gas_price = tx.effective_gas_price(base_fee);
@@ -1245,25 +1244,18 @@ pub fn parse_tx_content(
     }
 }
 
-pub fn parse_tx_receipt(
+pub fn parse_receipt_envelope(
     block_hash: FixedBytes<32>,
-    block_num: u64,
-    block_timestamp: Option<u64>,
-    base_fee_per_gas: Option<u64>,
+    block_number: u64,
+    block_timestamp: u64,
     tx_index: u64,
-    tx: TxEnvelopeWithSender,
+    tx_hash: TxHash,
     receipt: ReceiptWithLogIndex,
-    gas_used: u64,
-) -> TransactionReceipt {
-    let TxEnvelopeWithSender { tx, sender } = tx;
-
+) -> ReceiptEnvelope<Log> {
     let ReceiptWithLogIndex {
         receipt,
         starting_log_index,
     } = receipt;
-
-    let block_hash = Some(block_hash);
-    let block_number = Some(block_num);
 
     let logs: Vec<Log> = receipt
         .logs()
@@ -1271,20 +1263,15 @@ pub fn parse_tx_receipt(
         .enumerate()
         .map(|(log_index, log)| Log {
             inner: log.clone(),
-            block_hash,
-            block_number,
-            block_timestamp,
-            transaction_hash: Some(*tx.tx_hash()),
+            block_hash: Some(block_hash),
+            block_number: Some(block_number),
+            block_timestamp: Some(block_timestamp),
+            transaction_hash: Some(tx_hash),
             transaction_index: Some(tx_index),
             log_index: Some(starting_log_index + log_index as u64),
             removed: Default::default(),
         })
         .collect();
-
-    let contract_address = match tx.kind() {
-        TxKind::Create => Some(sender.create(tx.nonce())),
-        _ => None,
-    };
 
     let receipt_with_bloom = ReceiptWithBloom {
         receipt: Receipt {
@@ -1295,31 +1282,59 @@ pub fn parse_tx_receipt(
         logs_bloom: *receipt.logs_bloom(),
     };
 
-    let inner_receipt: ReceiptEnvelope<Log> = match receipt {
+    match receipt {
         ReceiptEnvelope::Legacy(_) => ReceiptEnvelope::Legacy(receipt_with_bloom),
         ReceiptEnvelope::Eip2930(_) => ReceiptEnvelope::Eip2930(receipt_with_bloom),
         ReceiptEnvelope::Eip1559(_) => ReceiptEnvelope::Eip1559(receipt_with_bloom),
         ReceiptEnvelope::Eip7702(_) => ReceiptEnvelope::Eip7702(receipt_with_bloom),
         _ => ReceiptEnvelope::Eip1559(receipt_with_bloom),
-    };
+    }
+}
 
-    let tx_receipt = TransactionReceipt {
-        inner: inner_receipt,
-        transaction_hash: *tx.tx_hash(),
-        transaction_index: Some(tx_index),
+pub fn parse_tx_receipt(
+    block_hash: FixedBytes<32>,
+    block_number: u64,
+    block_timestamp: u64,
+    block_base_fee_per_gas: Option<u64>,
+    tx_index: u64,
+    tx: TxEnvelopeWithSender,
+    receipt: ReceiptWithLogIndex,
+    gas_used: u64,
+) -> TransactionReceipt {
+    let TxEnvelopeWithSender { tx, sender } = tx;
+
+    let tx_hash = *tx.hash();
+
+    let inner = parse_receipt_envelope(
         block_hash,
         block_number,
+        block_timestamp,
+        tx_index,
+        tx_hash,
+        receipt,
+    );
+
+    let contract_address = match tx.kind() {
+        TxKind::Create => Some(sender.create(tx.nonce())),
+        _ => None,
+    };
+
+    TransactionReceipt {
+        inner,
+        transaction_hash: tx_hash,
+        transaction_index: Some(tx_index),
+        block_hash: Some(block_hash),
+        block_number: Some(block_number),
         from: sender,
         to: tx.to(),
         contract_address,
         gas_used,
         // effective gas price is calculated according to eth json rpc specification
-        effective_gas_price: tx.effective_gas_price(base_fee_per_gas),
+        effective_gas_price: tx.effective_gas_price(block_base_fee_per_gas),
         // TODO: EIP4844 fields
         blob_gas_used: None,
         blob_gas_price: None,
-    };
-    tx_receipt
+    }
 }
 
 pub fn map_block_receipts<R>(
@@ -1352,7 +1367,7 @@ pub fn map_block_receipts<R>(
             let parsed_receipt = parse_tx_receipt(
                 block_hash,
                 block_num,
-                Some(block_header.timestamp),
+                block_header.timestamp,
                 block_header.base_fee_per_gas,
                 tx_index as u64,
                 tx,
@@ -1365,19 +1380,36 @@ pub fn map_block_receipts<R>(
         .collect())
 }
 
-pub fn block_receipts(
+fn header_transactions_receipts_to_block_number_logs<'a>(
+    header: BlockHeader,
     transactions: Vec<TxEnvelopeWithSender>,
     receipts: Vec<ReceiptWithLogIndex>,
-    block_header: &RlpHeader,
-    block_hash: FixedBytes<32>,
-) -> Result<Vec<TransactionReceipt>, JsonRpcError> {
-    map_block_receipts(
-        transactions,
-        receipts,
-        block_header,
-        block_hash,
-        |receipt| receipt,
-    )
+    filtered_params: &'a FilteredParams,
+) -> JsonRpcResult<(u64, impl Iterator<Item = Log> + 'a)> {
+    if transactions.len() != receipts.len() {
+        return Err(JsonRpcError::internal_error(
+            "transactions and receipts length does not match".to_owned(),
+        ));
+    }
+
+    Ok((
+        header.header.number,
+        transactions.into_iter().zip(receipts).enumerate().flat_map(
+            move |(tx_index, (transaction, receipt))| {
+                receipt_envelope_to_logs_iter(
+                    parse_receipt_envelope(
+                        header.hash,
+                        header.header.number,
+                        header.header.timestamp,
+                        tx_index as u64,
+                        *transaction.tx.tx_hash(),
+                        receipt,
+                    ),
+                    filtered_params,
+                )
+            },
+        ),
+    ))
 }
 
 #[tracing::instrument(level = "debug")]
@@ -1461,7 +1493,7 @@ async fn get_receipt_from_triedb<T: Triedb>(
             let receipt = parse_tx_receipt(
                 header.hash,
                 block_key.seq_num().0,
-                Some(header.header.timestamp),
+                header.header.timestamp,
                 header.header.base_fee_per_gas,
                 tx_index,
                 tx,
