@@ -1,5 +1,7 @@
 # Monad BFT
 
+[![Claude Review](https://img.shields.io/badge/review-claude--code-blue)](https://github.com/anthropics/claude-code-action)
+
 ## Overview
 
 This repository contains implementation for the Monad consensus client and JsonRpc server. Monad consensus collects transactions and produces blocks which are written to a ledger filestream. These blocks are consumed by Monad execution, which then updates the state of the blockchain. The [triedb](monad-triedb/README.md) is a database which stores block information and the blockchain state.
