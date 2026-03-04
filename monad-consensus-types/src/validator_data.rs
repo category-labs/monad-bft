@@ -26,7 +26,6 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use crate::checkpoint::Checkpoint;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, RlpEncodable, RlpDecodable)]
-#[rlp(trailing)]
 pub struct ValidatorSetDataWithEpoch<SCT: SignatureCollection> {
     /// Validator set are active for this epoch
     pub epoch: Epoch,

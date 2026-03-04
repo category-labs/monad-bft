@@ -104,18 +104,18 @@ where
 {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
         let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
-        match u8::decode(&mut payload)? {
-            1 => {
-                let qc = QuorumCertificate::decode(&mut payload)?;
-                Ok(Self::Qc(qc))
+        let result = match u8::decode(&mut payload)? {
+            1 => Self::Qc(QuorumCertificate::decode(&mut payload)?),
+            2 => Self::Tc(TimeoutCertificate::decode(&mut payload)?),
+            _ => {
+                return Err(alloy_rlp::Error::Custom(
+                    "failed to decode unknown RoundCertificate",
+                ))
             }
-            2 => {
-                let tc = TimeoutCertificate::decode(&mut payload)?;
-                Ok(Self::Tc(tc))
-            }
-            _ => Err(alloy_rlp::Error::Custom(
-                "failed to decode unknown RoundCertificate",
-            )),
+        };
+        if !payload.is_empty() {
+            return Err(alloy_rlp::Error::UnexpectedLength);
         }
+        Ok(result)
     }
 }

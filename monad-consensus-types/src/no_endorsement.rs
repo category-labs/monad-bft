@@ -70,18 +70,18 @@ where
 {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
         let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
-        match u8::decode(&mut payload)? {
-            1 => {
-                let nec = NoEndorsementCertificate::decode(&mut payload)?;
-                Ok(Self::Nec(nec))
+        let result = match u8::decode(&mut payload)? {
+            1 => Self::Nec(NoEndorsementCertificate::decode(&mut payload)?),
+            2 => Self::NoTip(NoTipCertificate::decode(&mut payload)?),
+            _ => {
+                return Err(alloy_rlp::Error::Custom(
+                    "failed to decode unknown FreshProposalCertificate",
+                ))
             }
-            2 => {
-                let no_tip = NoTipCertificate::decode(&mut payload)?;
-                Ok(Self::NoTip(no_tip))
-            }
-            _ => Err(alloy_rlp::Error::Custom(
-                "failed to decode unknown FreshProposalCertificate",
-            )),
+        };
+        if !payload.is_empty() {
+            return Err(alloy_rlp::Error::UnexpectedLength);
         }
+        Ok(result)
     }
 }
