@@ -18,32 +18,85 @@ use std::ops::Range;
 
 use bytes::{Bytes, BytesMut};
 use monad_crypto::{
-    certificate_signature::{CertificateSignature, CertificateSignaturePubKey, PubKey},
+    certificate_signature::{
+        CertificateKeyPair as _, CertificateSignature, CertificateSignaturePubKey,
+        CertificateSignatureRecoverable, PubKey,
+    },
     hasher::{Hash, Hasher as _, HasherType},
     signing_domain,
 };
+use monad_dataplane::udp::{segment_size_for_mtu, ETHERNET_SEGMENT_SIZE};
 use monad_merkle::{MerkleHash, MerkleTree};
 use monad_raptor::Encoder;
+use monad_types::NodeId;
+use monad_validator::validator_set::ValidatorSetType as _;
+use rand::{CryptoRng, Rng};
 
 use super::{
-    assigner::{ChunkAssignment, ChunkOrder},
-    BuildError, Result,
+    assigner::{ChunkAssignment, ChunkOrder, Partitioned, Replicated, StakeBasedWithRC},
+    chunk::{AggregatedChunk, Chunk},
+    BuildError, ChunkAssigner, Result,
 };
 use crate::{
-    udp::GroupId,
-    util::{BroadcastMode, Collector, Recipient, Redundancy, UdpMessage},
+    udp::{GroupId, MAX_NUM_PACKETS},
+    util::{
+        compute_app_message_hash, BroadcastMode, BuildTarget, Collector, Redundancy,
+        SecondaryGroup, UdpMessage,
+    },
     SIGNATURE_SIZE,
 };
+
+// For a message with K source symbols, we accept up to the first MAX_REDUNDANCY * K
+// encoded symbols.
+//
+// Any received encoded symbol with an ESI equal to or greater than MAX_REDUNDANCY * K
+// will be discarded, as a protection against DoS and algorithmic complexity attacks.
+//
+// We pick 7 because that is the largest value that works for all values of K, as K
+// can be at most 8192, and there can be at most 65521 encoding symbol IDs.
+pub const MAX_REDUNDANCY: Redundancy = Redundancy::from_u8(7);
+
+// For a tree depth of 1, every encoded symbol is its own Merkle tree, and there will be no
+// Merkle proof section in the constructed RaptorCast packets.
+//
+// For a tree depth of 9, the index of the rightmost Merkle tree leaf will be 0xff, and the
+// Merkle leaf index field is 8 bits wide.
+pub const MIN_MERKLE_TREE_DEPTH: u8 = 1;
+pub const MAX_MERKLE_TREE_DEPTH: u8 = 9;
+
+const _: () = assert!(
+    MAX_MERKLE_TREE_DEPTH <= 0b1111,
+    "merkle tree depth must be <= 4 bits"
+);
+
+// We assume an MTU of at least 1280 (the IPv6 minimum MTU), which for the maximum Merkle tree
+// depth of 9 gives a symbol size of 960 bytes, which we will use as the minimum chunk length for
+// received packets, and we'll drop received chunks that are smaller than this to mitigate attacks
+// involving a peer sending us a message as a very large set of very small chunks.
+pub const MIN_CHUNK_LENGTH: usize = 960;
+
+/// The min segment length should be large enough to hold at least
+/// MAX_CHUNK_LENGTH of payload plus all headers with the smallest
+/// merkle tree depth.
+pub const MIN_SEGMENT_LENGTH: usize =
+    PacketLayout::calc_segment_len(MIN_CHUNK_LENGTH, MAX_MERKLE_TREE_DEPTH);
+
+const _: () = assert!(
+    MIN_SEGMENT_LENGTH == segment_size_for_mtu(1280) as usize,
+    "MIN_SEGMENT_LENGTH should be the segment size for the IPv6 minimum MTU of 1280 bytes"
+);
+
+/// The max segment length should not exceed the standard MTU for
+/// Ethernet to avoid fragmentation when routed across the internet.
+pub const MAX_SEGMENT_LENGTH: usize = ETHERNET_SEGMENT_SIZE as usize;
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 pub enum AssembleMode {
     // Compatible with existing build_messages logic, does not support
     // streaming per merkle batch
-    #[expect(unused)]
     GsoFull,
 
     // Gso concatenated chunks only within a merkle batch.
-    #[expect(unused)]
     GsoBestEffort,
 
     // Each recipient gets its own packet in round-robin order.
@@ -65,7 +118,7 @@ where
     ST: CertificateSignature,
 {
     // step 1. generate the chunks
-    let mut chunks = assignment.generate(layout);
+    let mut chunks = assignment.generate(layout.segment_len());
 
     // step 2. encode and write raptor symbols to each chunk
     if assignment.unique_chunk_id() {
@@ -94,32 +147,6 @@ where
     }
 
     Ok(())
-}
-
-pub(crate) struct Chunk<PT: PubKey> {
-    chunk_id: usize,
-    recipient: Recipient<PT>,
-    payload: BytesMut,
-}
-
-impl<PT: PubKey> From<Chunk<PT>> for UdpMessage<PT> {
-    fn from(chunk: Chunk<PT>) -> Self {
-        Self {
-            recipient: chunk.recipient,
-            stride: chunk.payload.len(),
-            payload: chunk.payload.freeze(),
-        }
-    }
-}
-
-impl<PT: PubKey> Chunk<PT> {
-    pub fn new(chunk_id: usize, recipient: Recipient<PT>, payload: BytesMut) -> Self {
-        Self {
-            chunk_id,
-            recipient,
-            payload,
-        }
-    }
 }
 
 /// Stuff to include:
@@ -167,24 +194,6 @@ impl<PT: PubKey> Chunk<PT> {
 //
 //     data: Bytes,
 // }
-pub const HEADER_LEN: usize = 0
-    + SIGNATURE_SIZE // Sender signature (65 bytes)
-    + 2  // Version
-    + 1  // Broadcast bit, Secondary Broadcast bit, 2 unused bits, 4 bits for Merkle Tree Depth
-    + 8  // Epoch #
-    + 8  // Unix timestamp
-    + 20 // AppMessage hash
-    + 4; // AppMessage length
-
-pub const CHUNK_HEADER_LEN: usize = 0
-    + 20 // Chunk recipient hash
-    + 1  // Chunk's merkle leaf idx
-    + 1  // reserved
-    + 2; // Chunk idx
-
-// the size of individual merkle hash
-const MERKLE_HASH_LEN: usize = 20;
-
 #[derive(Clone, Copy)]
 pub(crate) struct PacketLayout {
     chunk_header_start: usize,
@@ -192,9 +201,27 @@ pub(crate) struct PacketLayout {
 }
 
 impl PacketLayout {
+    pub const HEADER_LEN: usize = 0
+        + SIGNATURE_SIZE // Sender signature (65 bytes)
+        + 2  // Version
+        + 1  // Broadcast bit, Secondary Broadcast bit, 2 unused bits, 4 bits for Merkle Tree Depth
+        + 8  // Epoch #
+        + 8  // Unix timestamp
+        + 20 // AppMessage hash
+        + 4; // AppMessage length
+
+    pub const CHUNK_HEADER_LEN: usize = 0
+        + 20 // Chunk recipient hash
+        + 1  // Chunk's merkle leaf idx
+        + 1  // reserved
+        + 2; // Chunk idx
+
+    // the size of individual merkle hash
+    pub const MERKLE_HASH_LEN: usize = 20;
+
     pub const fn new(segment_len: usize, merkle_tree_depth: u8) -> Self {
         let merkle_proof_len = Self::calc_merkle_proof_len(merkle_tree_depth);
-        let chunk_header_start = HEADER_LEN + merkle_proof_len;
+        let chunk_header_start = Self::HEADER_LEN + merkle_proof_len;
 
         Self {
             chunk_header_start,
@@ -204,12 +231,12 @@ impl PacketLayout {
 
     pub const fn calc_segment_len(chunk_len: usize, merkle_tree_depth: u8) -> usize {
         let merkle_proof_len = Self::calc_merkle_proof_len(merkle_tree_depth);
-        HEADER_LEN + merkle_proof_len + CHUNK_HEADER_LEN + chunk_len
+        Self::HEADER_LEN + merkle_proof_len + Self::CHUNK_HEADER_LEN + chunk_len
     }
 
     pub const fn calc_merkle_proof_len(merkle_tree_depth: u8) -> usize {
         let merkle_hash_count = merkle_tree_depth as usize - 1;
-        merkle_hash_count * MERKLE_HASH_LEN
+        merkle_hash_count * Self::MERKLE_HASH_LEN
     }
 
     pub const fn calc_num_symbols(
@@ -226,11 +253,11 @@ impl PacketLayout {
     }
 
     pub const fn header_sans_signature_range(&self) -> Range<usize> {
-        SIGNATURE_SIZE..HEADER_LEN
+        SIGNATURE_SIZE..Self::HEADER_LEN
     }
 
     pub const fn merkle_proof_range(&self) -> Range<usize> {
-        HEADER_LEN..self.chunk_header_start
+        Self::HEADER_LEN..self.chunk_header_start
     }
 
     pub const fn merkle_hashed_range(&self) -> Range<usize> {
@@ -238,16 +265,16 @@ impl PacketLayout {
     }
 
     pub const fn chunk_header_range(&self) -> Range<usize> {
-        self.chunk_header_start..(self.chunk_header_start + CHUNK_HEADER_LEN)
+        self.chunk_header_start..(self.chunk_header_start + Self::CHUNK_HEADER_LEN)
     }
 
     pub const fn symbol_range(&self) -> Range<usize> {
-        let symbol_start = self.chunk_header_start + CHUNK_HEADER_LEN;
+        let symbol_start = self.chunk_header_start + Self::CHUNK_HEADER_LEN;
         symbol_start..self.segment_len
     }
 
     pub const fn symbol_len(&self) -> usize {
-        let symbol_start = self.chunk_header_start + CHUNK_HEADER_LEN;
+        let symbol_start = self.chunk_header_start + Self::CHUNK_HEADER_LEN;
         self.segment_len - symbol_start
     }
 
@@ -256,10 +283,10 @@ impl PacketLayout {
     }
 
     pub const fn merkle_tree_depth(&self) -> u8 {
-        let proof_len = self.chunk_header_start - HEADER_LEN;
-        debug_assert!(proof_len < u8::MAX as usize * MERKLE_HASH_LEN);
-        debug_assert!(proof_len.is_multiple_of(MERKLE_HASH_LEN));
-        (proof_len / MERKLE_HASH_LEN) as u8 + 1
+        let proof_len = self.chunk_header_start - Self::HEADER_LEN;
+        debug_assert!(proof_len < u8::MAX as usize * Self::MERKLE_HASH_LEN);
+        debug_assert!(proof_len.is_multiple_of(Self::MERKLE_HASH_LEN));
+        (proof_len / Self::MERKLE_HASH_LEN) as u8 + 1
     }
 
     pub const fn merkle_batch_len(&self) -> usize {
@@ -267,40 +294,37 @@ impl PacketLayout {
             .checked_pow((self.merkle_tree_depth() - 1) as u32)
             .expect("merkle tree depth too large")
     }
-}
 
-impl<PT: PubKey> Chunk<PT> {
-    fn chunk_hash(&self, layout: PacketLayout) -> Hash {
-        let mut hasher = HasherType::new();
-        hasher.update(&self.payload[layout.merkle_hashed_range()]);
-        hasher.hash()
+    pub fn symbol<'a, PT: PubKey>(&self, chunk: &'a Chunk<PT>) -> &'a [u8] {
+        &chunk.payload()[self.symbol_range()]
     }
 
-    fn symbol(&self, layout: PacketLayout) -> &[u8] {
-        &self.payload[layout.symbol_range()]
+    pub fn symbol_mut<'a, PT: PubKey>(&self, chunk: &'a mut Chunk<PT>) -> &'a mut [u8] {
+        &mut chunk.payload_mut()[self.symbol_range()]
     }
 
-    fn symbol_mut(&mut self, layout: PacketLayout) -> &mut [u8] {
-        &mut self.payload[layout.symbol_range()]
+    pub fn write_header<PT: PubKey>(
+        &self,
+        chunk: &mut Chunk<PT>,
+        signature: &[u8; SIGNATURE_SIZE],
+        header: &[u8], // excluding signature
+    ) {
+        chunk.payload_mut()[self.signature_range()].copy_from_slice(signature);
+        chunk.payload_mut()[self.header_sans_signature_range()].copy_from_slice(header);
     }
 
-    fn chunk_header_mut(&mut self, layout: PacketLayout) -> &mut [u8] {
-        &mut self.payload[layout.chunk_header_range()]
-    }
-
-    fn merkle_proof_mut(&mut self, layout: PacketLayout) -> &mut [u8] {
-        &mut self.payload[layout.merkle_proof_range()]
-    }
-
-    #[inline]
-    fn write_chunk_header(&mut self, layout: PacketLayout, merkle_leaf_index: u8) -> Result<()> {
-        let recipient_hash = *self.recipient.node_hash();
-        let chunk_id: [u8; 2] = u16::try_from(self.chunk_id)
+    pub fn write_chunk_header<PT: PubKey>(
+        &self,
+        chunk: &mut Chunk<PT>,
+        merkle_leaf_index: u8,
+    ) -> Result<()> {
+        let recipient_hash = *chunk.recipient().node_hash();
+        let chunk_id: [u8; 2] = u16::try_from(chunk.chunk_id())
             .map_err(|_| BuildError::ChunkIdOverflow)?
             .to_le_bytes();
 
-        let buffer = self.chunk_header_mut(layout);
-        debug_assert_eq!(buffer.len(), CHUNK_HEADER_LEN);
+        let buffer = &mut chunk.payload_mut()[self.chunk_header_range()];
+        debug_assert_eq!(buffer.len(), Self::CHUNK_HEADER_LEN);
 
         buffer[0..20].copy_from_slice(&recipient_hash); // node_id hash
         buffer[20] = merkle_leaf_index;
@@ -310,25 +334,21 @@ impl<PT: PubKey> Chunk<PT> {
         Ok(())
     }
 
-    fn write_merkle_proof(&mut self, layout: PacketLayout, proof: &[MerkleHash]) {
-        let buffer = &mut self.merkle_proof_mut(layout);
-        debug_assert_eq!(buffer.len() % MERKLE_HASH_LEN, 0);
+    pub fn write_merkle_proof<PT: PubKey>(&self, chunk: &mut Chunk<PT>, proof: &[MerkleHash]) {
+        let buffer = &mut chunk.payload_mut()[self.merkle_proof_range()];
+        debug_assert_eq!(buffer.len() % Self::MERKLE_HASH_LEN, 0);
 
         for (idx, hash) in proof.iter().enumerate() {
-            let start = idx * MERKLE_HASH_LEN;
-            let end = (idx + 1) * MERKLE_HASH_LEN;
+            let start = idx * Self::MERKLE_HASH_LEN;
+            let end = (idx + 1) * Self::MERKLE_HASH_LEN;
             buffer[start..end].copy_from_slice(hash);
         }
     }
 
-    fn write_header(
-        &mut self,
-        layout: PacketLayout,
-        signature: &[u8; SIGNATURE_SIZE],
-        header: &[u8],
-    ) {
-        self.payload[layout.signature_range()].copy_from_slice(signature);
-        self.payload[layout.header_sans_signature_range()].copy_from_slice(header);
+    pub fn chunk_hash<PT: PubKey>(&self, chunk: &Chunk<PT>) -> Hash {
+        let mut hasher = HasherType::new();
+        hasher.update(&chunk.payload()[self.merkle_hashed_range()]);
+        hasher.hash()
     }
 }
 
@@ -396,12 +416,12 @@ impl<'a, PT: PubKey> MerkleBatch<'a, PT> {
 
         for (leaf_index, chunk) in self.chunks.iter_mut().enumerate() {
             // write signature and the rest of the header
-            chunk.write_header(layout, &signature, header);
+            layout.write_header(chunk, &signature, header);
 
             // write merkle proof
             debug_assert!(leaf_index < num_chunks);
             let proof = merkle_tree.proof(leaf_index as u16);
-            chunk.write_merkle_proof(layout, proof.siblings());
+            layout.write_merkle_proof(chunk, proof.siblings());
         }
 
         Ok(())
@@ -414,8 +434,9 @@ impl<'a, PT: PubKey> MerkleBatch<'a, PT> {
 
         for (leaf_index, chunk) in self.chunks.iter_mut().enumerate() {
             let leaf_index = leaf_index as u8;
-            chunk.write_chunk_header(layout, leaf_index)?;
-            hashes.push(chunk.chunk_hash(layout));
+            layout.write_chunk_header(chunk, leaf_index)?;
+            let hash = layout.chunk_hash(chunk);
+            hashes.push(hash);
         }
 
         Ok(MerkleTree::new_with_depth(&hashes, depth))
@@ -425,12 +446,12 @@ impl<'a, PT: PubKey> MerkleBatch<'a, PT> {
         &self,
         key: &ST::KeyPairType,
         header: &[u8],
-        merkle_root: &[u8; MERKLE_HASH_LEN],
+        merkle_root: &[u8; PacketLayout::MERKLE_HASH_LEN],
     ) -> [u8; SIGNATURE_SIZE]
     where
         ST: CertificateSignature,
     {
-        let mut buffer = BytesMut::with_capacity(header.len() + MERKLE_HASH_LEN);
+        let mut buffer = BytesMut::with_capacity(header.len() + PacketLayout::MERKLE_HASH_LEN);
         buffer.extend_from_slice(header);
         buffer.extend_from_slice(merkle_root);
 
@@ -450,8 +471,8 @@ fn encode_unique_symbols<PT: PubKey>(
     let encoder =
         Encoder::new(app_message, symbol_len).map_err(|_| BuildError::EncoderCreationFailed)?;
     for chunk in chunks.iter_mut() {
-        let chunk_id = chunk.chunk_id;
-        let symbol_buffer = chunk.symbol_mut(layout);
+        let chunk_id = chunk.chunk_id();
+        let symbol_buffer = layout.symbol_mut(chunk);
         encoder.encode_symbol(symbol_buffer, chunk_id);
     }
     Ok(())
@@ -475,7 +496,7 @@ fn encode_symbols<PT: PubKey>(
     let mut symbol_chunks = vec![0; chunks.len()];
 
     for i in 0..chunks.len() {
-        let chunk_id = chunks[i].chunk_id;
+        let chunk_id = chunks[i].chunk_id();
 
         debug_assert!(chunk_id < usize::MAX); // or 1+index will overflow.
         debug_assert!(chunk_id < chunks.len()); // or symbol_chunks access is OOB.
@@ -483,7 +504,7 @@ fn encode_symbols<PT: PubKey>(
         match symbol_chunks[chunk_id] {
             0 => {
                 // This is the first encounter of symbol `chunk_id`.
-                let symbol_buffer = chunks[i].symbol_mut(layout);
+                let symbol_buffer = layout.symbol_mut(&mut chunks[i]);
                 encoder.encode_symbol(symbol_buffer, chunk_id);
                 symbol_chunks[chunk_id] = i + 1;
             }
@@ -494,8 +515,8 @@ fn encode_symbols<PT: PubKey>(
                     .get_disjoint_mut([j - 1, i])
                     .expect("the two chunk index never overlap");
 
-                let dst_buffer = dst_chunk.symbol_mut(layout);
-                let src_buffer = src_chunk.symbol(layout);
+                let dst_buffer = layout.symbol_mut(dst_chunk);
+                let src_buffer = layout.symbol(src_chunk);
                 dst_buffer.copy_from_slice(src_buffer);
             }
         }
@@ -504,9 +525,10 @@ fn encode_symbols<PT: PubKey>(
     Ok(())
 }
 
+const VERSION: u16 = 0x0;
+
 // return the shared header for all chunks sans the signature.
 pub(crate) fn build_header(
-    version: u16,
     broadcast_mode: BroadcastMode,
     merkle_tree_depth: u8,
     group_id: GroupId,
@@ -523,11 +545,11 @@ pub(crate) fn build_header(
     // 8  // Unix timestamp
     // 20 // AppMessage hash
     // 4  // AppMessage length
-    let mut buffer = BytesMut::zeroed(HEADER_LEN - SIGNATURE_SIZE);
+    let mut buffer = BytesMut::zeroed(PacketLayout::HEADER_LEN - SIGNATURE_SIZE);
     let cursor = &mut buffer;
 
     let (cursor_version, cursor) = cursor.split_at_mut_checked(2).expect("header to short");
-    cursor_version.copy_from_slice(&version.to_le_bytes());
+    cursor_version.copy_from_slice(&VERSION.to_le_bytes());
 
     let (cursor_broadcast_merkle_depth, cursor) =
         cursor.split_at_mut_checked(1).expect("header to short");
@@ -565,6 +587,152 @@ pub(crate) fn build_header(
     debug_assert_eq!(cursor.len(), 0);
 
     Ok(buffer.freeze())
+}
+
+// Derive the seed used to shuffling validator set for regular raptorcast
+pub fn derive_seed(app_message_hash: &[u8; 20]) -> [u8; 32] {
+    let mut padded_seed = [0u8; 32];
+    padded_seed[..20].copy_from_slice(app_message_hash);
+    padded_seed
+}
+
+/// Build regular raptorcast packets from validated parameters.
+///
+/// The caller is responsible for validating inputs (segment size bounds,
+/// merkle tree depth bounds, redundancy bounds, message size).
+pub(crate) fn build_into<ST, C>(
+    key: &ST::KeyPairType,
+    layout: PacketLayout,
+    redundancy: Redundancy,
+    group_id: GroupId,
+    unix_ts_ms: u64,
+    app_message: &[u8],
+    build_target: &BuildTarget<'_, CertificateSignaturePubKey<ST>>,
+    collector: &mut C,
+) -> Result<()>
+where
+    ST: CertificateSignatureRecoverable,
+    C: Collector<UdpMessage<CertificateSignaturePubKey<ST>>>,
+{
+    // compute app message hash
+    let app_message_hash = compute_app_message_hash(app_message).0;
+
+    // select chunk assignment algorithm based on build target
+    let rng = &mut rand::thread_rng();
+    let self_node_id = NodeId::new(key.pubkey());
+    let assigner = make_assigner(build_target, &self_node_id, &app_message_hash, rng);
+
+    // calculate the number of symbols needed for assignment
+    let num_symbols = layout
+        .calc_num_symbols(app_message.len(), redundancy)
+        .ok_or(BuildError::TooManyChunks)?;
+    if num_symbols > MAX_NUM_PACKETS {
+        return Err(BuildError::TooManyChunks);
+    }
+
+    // assign the chunks to recipients
+    let assemble_mode = AssembleMode::default();
+    let order = assemble_mode.expected_chunk_order();
+    let mut assignment = assigner.assign_chunks(num_symbols, order)?;
+    assignment.ensure_order(order);
+
+    if assignment.is_empty() {
+        tracing::warn!(app_msg_len = app_message.len(), "no chunk generated");
+        return Ok(());
+    }
+
+    if assignment.total_chunks() > MAX_NUM_PACKETS {
+        return Err(BuildError::TooManyChunks);
+    }
+
+    // build the shared header
+    let header = build_header(
+        broadcast_mode_from_build_target(build_target),
+        layout.merkle_tree_depth(),
+        group_id,
+        unix_ts_ms,
+        &app_message_hash,
+        app_message.len(),
+    )?;
+
+    // assemble the chunks's headers and content
+    assemble::<ST>(
+        key,
+        layout,
+        app_message,
+        &header,
+        assignment,
+        assemble_mode,
+        collector,
+    )?;
+
+    Ok(())
+}
+
+fn make_assigner<PT: PubKey>(
+    build_target: &BuildTarget<PT>,
+    self_node_id: &NodeId<PT>,
+    app_message_hash: &[u8; 20],
+    rng: &mut (impl Rng + CryptoRng),
+) -> Box<dyn ChunkAssigner<PT>> {
+    match build_target {
+        BuildTarget::PointToPoint(to) => {
+            let assigner = Replicated::from_broadcast(
+                std::iter::once(*to)
+                    .filter(|node_id| *node_id != self_node_id)
+                    .cloned(),
+            );
+            Box::new(assigner)
+        }
+        BuildTarget::Broadcast(nodes) => {
+            let assigner = Replicated::from_broadcast(
+                nodes
+                    .get_members()
+                    .keys()
+                    .filter(|node_id| *node_id != self_node_id)
+                    .cloned(),
+            );
+            Box::new(assigner)
+        }
+        BuildTarget::Raptorcast(validators) => {
+            let seed = derive_seed(app_message_hash);
+            let mut validators: Vec<_> = validators
+                .get_members()
+                .iter()
+                .filter(|(node_id, _)| *node_id != self_node_id)
+                .map(|(node_id, stake)| (*node_id, *stake))
+                .collect();
+            StakeBasedWithRC::shuffle_validators(&mut validators, seed);
+            let assigner = StakeBasedWithRC::from_validator_set(validators);
+            Box::new(assigner)
+        }
+        BuildTarget::FullNodeRaptorCast(group) => {
+            let seed = rng.gen::<usize>();
+            let shifted_nodes = randomize_secondary_group_nodes(group, seed);
+            Box::new(Partitioned::from_homogeneous_peers(shifted_nodes))
+        }
+    }
+}
+
+fn broadcast_mode_from_build_target<PT: PubKey>(
+    build_target: &BuildTarget<'_, PT>,
+) -> BroadcastMode {
+    match build_target {
+        BuildTarget::Raptorcast { .. } => BroadcastMode::Primary,
+        BuildTarget::FullNodeRaptorCast { .. } => BroadcastMode::Secondary,
+        BuildTarget::Broadcast(_) | BuildTarget::PointToPoint(_) => BroadcastMode::Unspecified,
+    }
+}
+
+// introduce variation in the group member ordering
+fn randomize_secondary_group_nodes<PT: PubKey>(
+    group: &SecondaryGroup<PT>,
+    seed: usize,
+) -> Vec<NodeId<PT>> {
+    let n = seed % group.len();
+    let mut shifted_group: Vec<_> = group.iter().cloned().collect();
+    shifted_group.rotate_left(n);
+    shifted_group
 }
 
 impl AssembleMode {
@@ -629,48 +797,6 @@ impl AssembleMode {
 
         if let Some(agg) = agg_chunk.take() {
             collector.push(agg.into());
-        }
-    }
-}
-
-// used in gso grouping
-struct AggregatedChunk<PT: PubKey> {
-    recipient: Recipient<PT>,
-    payload: BytesMut,
-    stride: usize,
-}
-
-impl<PT: PubKey> AggregatedChunk<PT> {
-    #[must_use]
-    fn aggregate(&mut self, chunk: Chunk<PT>) -> Option<Self> {
-        if self.recipient == chunk.recipient && chunk.payload.len() == self.stride {
-            // same recipient, merge the payload. BytesMut::unsplit is
-            // O(1) when the chunk payload are consecutive.
-            self.payload.unsplit(chunk.payload);
-            return None;
-        }
-
-        let new_agg = chunk.into();
-        Some(std::mem::replace(self, new_agg))
-    }
-}
-
-impl<PT: PubKey> From<Chunk<PT>> for AggregatedChunk<PT> {
-    fn from(chunk: Chunk<PT>) -> Self {
-        Self {
-            recipient: chunk.recipient,
-            stride: chunk.payload.len(),
-            payload: chunk.payload,
-        }
-    }
-}
-
-impl<PT: PubKey> From<AggregatedChunk<PT>> for UdpMessage<PT> {
-    fn from(agg_chunk: AggregatedChunk<PT>) -> Self {
-        UdpMessage {
-            recipient: agg_chunk.recipient,
-            stride: agg_chunk.stride,
-            payload: agg_chunk.payload.freeze(),
         }
     }
 }
