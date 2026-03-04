@@ -27,10 +27,10 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Ref, LE, U16, U32, 
 
 use crate::{
     message::MAX_MESSAGE_SIZE,
+    packet::regular,
     udp::{
         ChunkSignatureVerifier, GroupId, MessageValidationError, SignatureCacheKey,
-        ValidatedMessage, MAX_MERKLE_TREE_DEPTH, MAX_REDUNDANCY, MAX_VALIDATOR_SET_SIZE,
-        MIN_MERKLE_TREE_DEPTH,
+        ValidatedMessage, MAX_VALIDATOR_SET_SIZE,
     },
     util::{BroadcastMode, HexBytes, Redundancy},
     SIGNATURE_SIZE,
@@ -115,7 +115,7 @@ impl RaptorcastHeaderV0 {
 const RAPTORCAST_HEADER_V0_SIZE: usize = RaptorcastHeader::SIZE + RaptorcastHeaderV0::SIZE;
 
 const _: () = assert!(
-    RAPTORCAST_HEADER_V0_SIZE == crate::packet::assembler::HEADER_LEN,
+    RAPTORCAST_HEADER_V0_SIZE == crate::packet::regular::PacketLayout::HEADER_LEN,
     "RaptorcastHeader size must match HEADER_LEN"
 );
 
@@ -143,7 +143,7 @@ impl RaptorcastChunkHeaderV0 {
 }
 
 const _: () = assert!(
-    RaptorcastChunkHeaderV0::SIZE == crate::packet::assembler::CHUNK_HEADER_LEN,
+    RaptorcastChunkHeaderV0::SIZE == crate::packet::regular::PacketLayout::CHUNK_HEADER_LEN,
     "RaptorcastChunkHeader size must match CHUNK_HEADER_LEN"
 );
 
@@ -204,7 +204,8 @@ impl<'a> RaptorcastPacketV0<'a> {
             Ref::from_bytes(header_bytes).map_err(|_| MessageValidationError::TooShort)?;
 
         let tree_depth = header.tree_depth();
-        if !(MIN_MERKLE_TREE_DEPTH..=MAX_MERKLE_TREE_DEPTH).contains(&tree_depth) {
+        if !(regular::MIN_MERKLE_TREE_DEPTH..=regular::MAX_MERKLE_TREE_DEPTH).contains(&tree_depth)
+        {
             return Err(MessageValidationError::InvalidTreeDepth);
         }
 
@@ -338,10 +339,10 @@ where
 
     match broadcast_mode {
         BroadcastMode::Unspecified | BroadcastMode::Secondary => {
-            validate_chunk_id(packet, MAX_REDUNDANCY, 0)?
+            validate_chunk_id(packet, regular::MAX_REDUNDANCY, 0)?
         }
         BroadcastMode::Primary => {
-            validate_chunk_id(packet, MAX_REDUNDANCY, MAX_VALIDATOR_SET_SIZE)?
+            validate_chunk_id(packet, regular::MAX_REDUNDANCY, MAX_VALIDATOR_SET_SIZE)?
         }
     };
 
