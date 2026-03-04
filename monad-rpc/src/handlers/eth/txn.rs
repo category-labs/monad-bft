@@ -15,12 +15,12 @@
 
 use std::time::Duration;
 
-use alloy_consensus::{ReceiptEnvelope, ReceiptWithBloom, Transaction as _, TxEnvelope};
-use alloy_primitives::{Address, FixedBytes, TxKind};
+use alloy_consensus::{Transaction as _, TxEnvelope};
+use alloy_primitives::{Address, FixedBytes};
 use alloy_rlp::Decodable;
-use alloy_rpc_types::{Filter, Log, Receipt, TransactionReceipt};
+use alloy_rpc_types::{Filter, TransactionReceipt};
 use monad_rpc_docs::rpc;
-use monad_triedb_utils::triedb_env::{ReceiptWithLogIndex, Triedb, TxEnvelopeWithSender};
+use monad_triedb_utils::triedb_env::Triedb;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, trace, warn};
@@ -36,83 +36,6 @@ use crate::{
         jsonrpc::{ChainStateResultMap, JsonRpcError, JsonRpcResult},
     },
 };
-
-pub fn parse_tx_receipt(
-    block_hash: FixedBytes<32>,
-    block_num: u64,
-    block_timestamp: Option<u64>,
-    base_fee_per_gas: Option<u64>,
-    tx_index: u64,
-    tx: TxEnvelopeWithSender,
-    receipt: ReceiptWithLogIndex,
-    gas_used: u64,
-) -> TransactionReceipt {
-    let TxEnvelopeWithSender { tx, sender } = tx;
-
-    let ReceiptWithLogIndex {
-        receipt,
-        starting_log_index,
-    } = receipt;
-
-    let block_hash = Some(block_hash);
-    let block_number = Some(block_num);
-
-    let logs: Vec<Log> = receipt
-        .logs()
-        .iter()
-        .enumerate()
-        .map(|(log_index, log)| Log {
-            inner: log.clone(),
-            block_hash,
-            block_number,
-            block_timestamp,
-            transaction_hash: Some(*tx.tx_hash()),
-            transaction_index: Some(tx_index),
-            log_index: Some(starting_log_index + log_index as u64),
-            removed: Default::default(),
-        })
-        .collect();
-
-    let contract_address = match tx.kind() {
-        TxKind::Create => Some(sender.create(tx.nonce())),
-        _ => None,
-    };
-
-    let receipt_with_bloom = ReceiptWithBloom {
-        receipt: Receipt {
-            status: receipt.status().into(),
-            cumulative_gas_used: receipt.cumulative_gas_used(),
-            logs,
-        },
-        logs_bloom: *receipt.logs_bloom(),
-    };
-
-    let inner_receipt: ReceiptEnvelope<Log> = match receipt {
-        ReceiptEnvelope::Legacy(_) => ReceiptEnvelope::Legacy(receipt_with_bloom),
-        ReceiptEnvelope::Eip2930(_) => ReceiptEnvelope::Eip2930(receipt_with_bloom),
-        ReceiptEnvelope::Eip1559(_) => ReceiptEnvelope::Eip1559(receipt_with_bloom),
-        ReceiptEnvelope::Eip7702(_) => ReceiptEnvelope::Eip7702(receipt_with_bloom),
-        _ => ReceiptEnvelope::Eip1559(receipt_with_bloom),
-    };
-
-    let tx_receipt = TransactionReceipt {
-        inner: inner_receipt,
-        transaction_hash: *tx.tx_hash(),
-        transaction_index: Some(tx_index),
-        block_hash,
-        block_number,
-        from: sender,
-        to: tx.to(),
-        contract_address,
-        gas_used,
-        // effective gas price is calculated according to eth json rpc specification
-        effective_gas_price: tx.effective_gas_price(base_fee_per_gas),
-        // TODO: EIP4844 fields
-        blob_gas_used: None,
-        blob_gas_price: None,
-    };
-    tx_receipt
-}
 
 pub enum FilterError {
     InvalidBlockRange,

@@ -18,13 +18,16 @@ use std::{
     sync::Arc,
 };
 
-use alloy_consensus::{transaction::Recovered, Header as RlpHeader, Transaction as _};
+use alloy_consensus::{
+    transaction::Recovered, Header as RlpHeader, ReceiptEnvelope, ReceiptWithBloom,
+    Transaction as _,
+};
 use alloy_eips::BlockNumberOrTag;
-use alloy_primitives::{Bloom, FixedBytes, U256};
+use alloy_primitives::{Bloom, FixedBytes, TxKind, U256};
 use alloy_rlp::Encodable;
 use alloy_rpc_types::{
-    Block, BlockTransactions, Filter, FilterBlockOption, FilteredParams, Header, Log, Transaction,
-    TransactionReceipt,
+    Block, BlockTransactions, Filter, FilterBlockOption, FilteredParams, Header, Log, Receipt,
+    Transaction, TransactionReceipt,
 };
 use futures::{stream, Stream, StreamExt, TryStreamExt};
 use itertools::Either;
@@ -33,17 +36,14 @@ use monad_archive::{
     prelude::{ArchiveReader, Context, ContextCompat, IndexReader, TxEnvelopeWithSender},
 };
 use monad_triedb_utils::triedb_env::{
-    BlockHeader, BlockKey, FinalizedBlockKey, TransactionLocation, Triedb,
+    BlockHeader, BlockKey, FinalizedBlockKey, ReceiptWithLogIndex, TransactionLocation, Triedb,
 };
 use monad_types::SeqNum;
 use tracing::{debug, error, trace, warn};
 
 use crate::{
     chainstate::buffer::{block_height_from_tag, ChainStateBuffer},
-    handlers::eth::{
-        block::{block_receipts, get_block_key_from_tag_or_hash},
-        txn::{parse_tx_receipt, FilterError},
-    },
+    handlers::eth::{block::get_block_key_from_tag_or_hash, txn::FilterError},
     types::{
         eth_json::{
             BlockTagOrHash, BlockTags, FixedData, MonadLog, MonadTransactionReceipt, Quantity,
@@ -527,7 +527,7 @@ impl<T: Triedb> ChainState<T> {
                 // if block header is present but transactions are not, the block is statesynced
                 if let Ok(transactions) = self.triedb_env.get_transactions(block_key).await {
                     if let Ok(receipts) = self.triedb_env.get_receipts(block_key).await {
-                        let block_receipts = crate::handlers::eth::block::map_block_receipts(
+                        let block_receipts = map_block_receipts(
                             transactions,
                             receipts,
                             &header.header,
@@ -562,7 +562,7 @@ impl<T: Triedb> ChainState<T> {
                     .try_get_block_receipts(block.header.number)
                     .await?
                 {
-                    let block_receipts = crate::handlers::eth::block::map_block_receipts(
+                    let block_receipts = map_block_receipts(
                         block.body.transactions,
                         receipts_with_log_index,
                         &block.header,
@@ -1243,6 +1243,141 @@ pub fn parse_tx_content(
         effective_gas_price: Some(effective_gas_price),
         transaction_index: Some(tx_index),
     }
+}
+
+pub fn parse_tx_receipt(
+    block_hash: FixedBytes<32>,
+    block_num: u64,
+    block_timestamp: Option<u64>,
+    base_fee_per_gas: Option<u64>,
+    tx_index: u64,
+    tx: TxEnvelopeWithSender,
+    receipt: ReceiptWithLogIndex,
+    gas_used: u64,
+) -> TransactionReceipt {
+    let TxEnvelopeWithSender { tx, sender } = tx;
+
+    let ReceiptWithLogIndex {
+        receipt,
+        starting_log_index,
+    } = receipt;
+
+    let block_hash = Some(block_hash);
+    let block_number = Some(block_num);
+
+    let logs: Vec<Log> = receipt
+        .logs()
+        .iter()
+        .enumerate()
+        .map(|(log_index, log)| Log {
+            inner: log.clone(),
+            block_hash,
+            block_number,
+            block_timestamp,
+            transaction_hash: Some(*tx.tx_hash()),
+            transaction_index: Some(tx_index),
+            log_index: Some(starting_log_index + log_index as u64),
+            removed: Default::default(),
+        })
+        .collect();
+
+    let contract_address = match tx.kind() {
+        TxKind::Create => Some(sender.create(tx.nonce())),
+        _ => None,
+    };
+
+    let receipt_with_bloom = ReceiptWithBloom {
+        receipt: Receipt {
+            status: receipt.status().into(),
+            cumulative_gas_used: receipt.cumulative_gas_used(),
+            logs,
+        },
+        logs_bloom: *receipt.logs_bloom(),
+    };
+
+    let inner_receipt: ReceiptEnvelope<Log> = match receipt {
+        ReceiptEnvelope::Legacy(_) => ReceiptEnvelope::Legacy(receipt_with_bloom),
+        ReceiptEnvelope::Eip2930(_) => ReceiptEnvelope::Eip2930(receipt_with_bloom),
+        ReceiptEnvelope::Eip1559(_) => ReceiptEnvelope::Eip1559(receipt_with_bloom),
+        ReceiptEnvelope::Eip7702(_) => ReceiptEnvelope::Eip7702(receipt_with_bloom),
+        _ => ReceiptEnvelope::Eip1559(receipt_with_bloom),
+    };
+
+    let tx_receipt = TransactionReceipt {
+        inner: inner_receipt,
+        transaction_hash: *tx.tx_hash(),
+        transaction_index: Some(tx_index),
+        block_hash,
+        block_number,
+        from: sender,
+        to: tx.to(),
+        contract_address,
+        gas_used,
+        // effective gas price is calculated according to eth json rpc specification
+        effective_gas_price: tx.effective_gas_price(base_fee_per_gas),
+        // TODO: EIP4844 fields
+        blob_gas_used: None,
+        blob_gas_price: None,
+    };
+    tx_receipt
+}
+
+pub fn map_block_receipts<R>(
+    transactions: Vec<TxEnvelopeWithSender>,
+    receipts: Vec<ReceiptWithLogIndex>,
+    block_header: &RlpHeader,
+    block_hash: FixedBytes<32>,
+    f: impl Fn(TransactionReceipt) -> R,
+) -> Result<Vec<R>, JsonRpcError> {
+    let block_num: u64 = block_header.number;
+
+    if transactions.len() != receipts.len() {
+        Err(JsonRpcError::internal_error(
+            "number of receipts and txs mismatch".into(),
+        ))?;
+    }
+
+    let mut cumulative_gas_used = 0u64;
+
+    Ok(transactions
+        .into_iter()
+        .zip(receipts)
+        .enumerate()
+        .map(|(tx_index, (tx, receipt))| {
+            let new_cumulative_gas_used = receipt.receipt.cumulative_gas_used();
+
+            let tx_gas_used = new_cumulative_gas_used - cumulative_gas_used;
+            cumulative_gas_used = new_cumulative_gas_used;
+
+            let parsed_receipt = parse_tx_receipt(
+                block_hash,
+                block_num,
+                Some(block_header.timestamp),
+                block_header.base_fee_per_gas,
+                tx_index as u64,
+                tx,
+                receipt,
+                tx_gas_used,
+            );
+
+            f(parsed_receipt)
+        })
+        .collect())
+}
+
+pub fn block_receipts(
+    transactions: Vec<TxEnvelopeWithSender>,
+    receipts: Vec<ReceiptWithLogIndex>,
+    block_header: &RlpHeader,
+    block_hash: FixedBytes<32>,
+) -> Result<Vec<TransactionReceipt>, JsonRpcError> {
+    map_block_receipts(
+        transactions,
+        receipts,
+        block_header,
+        block_hash,
+        |receipt| receipt,
+    )
 }
 
 #[tracing::instrument(level = "debug")]
