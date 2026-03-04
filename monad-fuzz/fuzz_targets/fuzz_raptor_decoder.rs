@@ -28,7 +28,7 @@ use arbitrary::{Arbitrary, Unstructured};
 use monad_raptor::ManagedDecoder;
 use monad_raptorcast::{
     message::MAX_MESSAGE_SIZE,
-    udp::{MAX_REDUNDANCY, MIN_CHUNK_LENGTH},
+    packet::{MAX_REDUNDANCY, MIN_CHUNK_LENGTH},
 };
 
 struct ManagedDecoderInput {

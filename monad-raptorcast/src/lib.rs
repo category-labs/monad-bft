@@ -62,7 +62,8 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tracing::{debug, debug_span, error, trace, warn};
 use udp::GroupId;
 use util::{
-    BuildTarget, Collector, FullNodeGroupMap, PeerAddrLookup, Recipient, Redundancy,
+    BroadcastGroup, BuildTarget, Collector, FullNodeGroupMap, PeerAddrLookup,
+    PrimaryBroadcastGroup, Recipient, Redundancy, SecondaryBroadcastGroup,
     SecondaryGroupAssignment, UdpMessage,
 };
 
@@ -194,7 +195,6 @@ where
         let segment_size = dual_socket.segment_size(config.mtu);
         let message_builder = OwnedMessageBuilder::new(config.shared_key.clone())
             .segment_size(segment_size)
-            .group_id(GroupId::Primary(current_epoch))
             .redundancy(redundancy);
 
         let secondary_redundancy = Redundancy::from_f32(
@@ -205,7 +205,6 @@ where
         .expect("secondary raptor10_redundancy doesn't fit");
         let secondary_message_builder = OwnedMessageBuilder::new(config.shared_key.clone())
             .segment_size(segment_size)
-            .group_id(GroupId::Primary(current_epoch))
             .redundancy(secondary_redundancy);
 
         Self {
@@ -375,24 +374,39 @@ where
                     msg_len = msg_bytes.len(),
                     "raptorcastprimary handling single message from secondary"
                 );
-                let build_target = BuildTarget::PointToPoint(&dest);
+                let build_target = BuildTarget::PointToPoint {
+                    group_id,
+                    recipient: &dest,
+                };
                 builder
                     .prepare()
-                    .group_id(group_id)
                     .build_into(&msg_bytes, &build_target, &mut sink)
                     .unwrap_log_on_error(&msg_bytes, &build_target)
             }
             SecondaryOutboundMessage::SendToGroup {
                 msg_bytes,
-                group,
+                group: _,
                 group_id,
             } => {
                 // Invariance: message from publisher, where the group
                 // of full nodes must not contain self as validator.
-                let build_target = BuildTarget::FullNodeRaptorCast(&group);
+                let self_id = NodeId::new(self.signing_key.pubkey());
+                let GroupId::Secondary(round) = group_id else {
+                    error!("unexpected group_id for secondary outbound group message");
+                    return;
+                };
+                let Ok(broadcast_group) = SecondaryBroadcastGroup::of_round(
+                    round,
+                    &self_id,
+                    &self_id, // publisher is self
+                    &self.full_node_groups,
+                ) else {
+                    error!(?group_id, "secondary group not found in full_node_groups");
+                    return;
+                };
+                let build_target = BuildTarget::FullNodeRaptorCast(broadcast_group);
                 builder
                     .prepare()
-                    .group_id(group_id)
                     .build_into(&msg_bytes, &build_target, &mut sink)
                     .unwrap_log_on_error(&msg_bytes, &build_target)
             }
@@ -413,15 +427,20 @@ where
 
         match target {
             RouterTarget::Broadcast(epoch) | RouterTarget::Raptorcast(epoch) => {
-                let Some(valset) = self.epoch_validators.get(&epoch) else {
-                    error!(
-                        "don't have epoch validators populated for epoch: {:?}",
-                        epoch
-                    );
-                    return;
+                let group = match PrimaryBroadcastGroup::of_epoch(
+                    epoch,
+                    &self_id, // self_id
+                    &self_id, // author
+                    &self.epoch_validators,
+                ) {
+                    Ok(group) => group,
+                    Err(_) => {
+                        error!(?epoch, "trying to publish to an unknown primary group");
+                        return;
+                    }
                 };
 
-                if valset.is_member(&self_id) {
+                if group.should_loopback() {
                     Self::enqueue_message_to_self(
                         message.clone(),
                         &mut self.pending_events,
@@ -437,8 +456,8 @@ where
                 }
 
                 let build_target = match &target {
-                    RouterTarget::Broadcast(_) => BuildTarget::Broadcast(valset),
-                    RouterTarget::Raptorcast(_) => BuildTarget::Raptorcast(valset),
+                    RouterTarget::Broadcast(_) => BuildTarget::Broadcast(group),
+                    RouterTarget::Raptorcast(_) => BuildTarget::Raptorcast(group),
                     _ => unreachable!(),
                 };
                 let outbound_message =
@@ -460,10 +479,10 @@ where
 
                 let mut sink =
                     DualUdpPacketSender::new(&mut self.dual_socket, &self.peer_discovery_driver)
-                        .with_priority(priority);
+                        .with_priority(priority)
+                        .auto_rebroadcast(group);
                 self.message_builder
                     .prepare()
-                    .group_id(GroupId::Primary(epoch))
                     .build_into(&outbound_message, &build_target, &mut sink)
                     .unwrap_log_on_error(&outbound_message, &build_target);
             }
@@ -486,7 +505,11 @@ where
                             return;
                         }
                     };
-                let build_target = BuildTarget::PointToPoint(&to);
+                let group_id = GroupId::Primary(self.current_epoch);
+                let build_target = BuildTarget::PointToPoint {
+                    group_id,
+                    recipient: &to,
+                };
 
                 let _timer = DropTimer::start(Duration::from_millis(10), |elapsed| {
                     warn!(
@@ -501,7 +524,6 @@ where
                         .with_priority(priority);
                 self.message_builder
                     .prepare()
-                    .group_id(GroupId::Primary(self.current_epoch))
                     .build_into(&outbound_message, &build_target, &mut sink)
                     .unwrap_log_on_error(&outbound_message, &build_target);
             }
@@ -747,10 +769,6 @@ where
                         }
 
                         self.current_epoch = epoch;
-                        self.message_builder.set_group_id(GroupId::Primary(epoch));
-                        if let Some(secondary_mb) = self.secondary_message_builder.as_mut() {
-                            secondary_mb.set_group_id(GroupId::Primary(epoch));
-                        }
 
                         self.epoch_validators.retain(|e, _| *e + Epoch(1) >= epoch);
                     }
@@ -851,14 +869,17 @@ where
                             continue;
                         }
 
-                        let build_target = BuildTarget::PointToPoint(node);
+                        let group_id = GroupId::Primary(epoch);
+                        let build_target = BuildTarget::PointToPoint {
+                            group_id,
+                            recipient: node,
+                        };
                         let mut sink = DualUdpPacketSender::new(
                             &mut self.dual_socket,
                             &self.peer_discovery_driver,
                         );
                         self.message_builder
                             .prepare()
-                            .group_id(GroupId::Primary(epoch))
                             .build_into(&outbound_message, &build_target, &mut sink)
                             .unwrap_log_on_error(&outbound_message, &build_target);
                     }
@@ -1189,8 +1210,11 @@ where
                         return;
                     };
 
-                    let build_target =
-                        BuildTarget::<CertificateSignaturePubKey<ST>>::PointToPoint(&target);
+                    let group_id = GroupId::Primary(this.current_epoch);
+                    let build_target = BuildTarget::PointToPoint {
+                        group_id,
+                        recipient: &target,
+                    };
 
                     let _timer = DropTimer::start(Duration::from_millis(10), |elapsed| {
                         warn!(
@@ -1209,7 +1233,6 @@ where
                             .with_target_name_record(&target, &name_record);
                             this.message_builder
                                 .prepare()
-                                .group_id(GroupId::Primary(this.current_epoch))
                                 .build_into(&router_message, &build_target, &mut sink)
                                 .unwrap_log_on_error(&router_message, &build_target);
                         }
@@ -1220,7 +1243,6 @@ where
                             );
                             this.message_builder
                                 .prepare()
-                                .group_id(GroupId::Primary(this.current_epoch))
                                 .build_into(&router_message, &build_target, &mut sink)
                                 .unwrap_log_on_error(&router_message, &build_target);
                         }
@@ -1366,6 +1388,7 @@ where
     target_name_record: Option<TargetNameRecord<'a, ST>>,
     targets: HashSet<Recipient<CertificateSignaturePubKey<ST>>>,
     priority: UdpPriority,
+    auto_rebroadcast: Option<BroadcastGroup<'a, CertificateSignaturePubKey<ST>>>,
     _signature_type: PhantomData<ST>,
 }
 
@@ -1391,6 +1414,7 @@ where
             target_name_record: None,
             targets: Default::default(),
             priority: UdpPriority::Regular,
+            auto_rebroadcast: None,
             _signature_type: PhantomData,
         }
     }
@@ -1411,6 +1435,14 @@ where
             target,
             name_record,
         });
+        self
+    }
+
+    fn auto_rebroadcast(
+        mut self,
+        group: impl Into<BroadcastGroup<'a, CertificateSignaturePubKey<ST>>>,
+    ) -> Self {
+        self.auto_rebroadcast = Some(group.into());
         self
     }
 
@@ -1439,6 +1471,25 @@ where
             let peer_lookup = (&*self.dual_socket, self.peer_disc_driver);
             *recipient.lookup(&peer_lookup)
         }
+    }
+
+    pub fn send(&mut self, item: UdpMessage<CertificateSignaturePubKey<ST>>) {
+        let Some(dest) = self.lookup_addr(&item.recipient) else {
+            return;
+        };
+
+        if !self.targets.contains(&item.recipient) {
+            // used to initiate auth udp session
+            self.targets.insert(item.recipient.clone());
+        }
+
+        let msg = UnicastMsg {
+            stride: item.stride as u16,
+            msgs: vec![(dest, item.payload)],
+        };
+
+        self.dual_socket
+            .write_unicast_with_priority(msg, self.priority);
     }
 }
 
@@ -1486,22 +1537,19 @@ where
     PD: PeerDiscoveryAlgo<SignatureType = ST>,
 {
     fn push(&mut self, item: UdpMessage<CertificateSignaturePubKey<ST>>) {
-        let Some(dest) = self.lookup_addr(&item.recipient) else {
-            return;
+        if let Some(group) = &self.auto_rebroadcast {
+            let is_recipient = item.recipient.node_id() == group.self_id();
+            if group.should_rebroadcast(is_recipient) {
+                let peers: Vec<_> = group.rebroadcasting_peers().cloned().collect();
+                for peer in &peers {
+                    let item = item.tee(peer);
+                    self.send(item);
+                }
+                return;
+            }
         };
 
-        if !self.targets.contains(&item.recipient) {
-            // used to initiate auth udp session
-            self.targets.insert(item.recipient.clone());
-        }
-
-        let msg = UnicastMsg {
-            stride: item.stride as u16,
-            msgs: vec![(dest, item.payload)],
-        };
-
-        self.dual_socket
-            .write_unicast_with_priority(msg, self.priority);
+        self.send(item);
     }
 }
 
