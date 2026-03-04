@@ -166,10 +166,10 @@ mod tests {
     use monad_secp::{KeyPair, SecpSignature};
 
     use super::*;
-    use crate::packet::assembler::HEADER_LEN;
+    use crate::packet::regular;
 
     type SignatureType = SecpSignature;
-    type CacheKey = [u8; HEADER_LEN + 20];
+    type CacheKey = [u8; regular::PacketLayout::HEADER_LEN + 20];
     type TestSignatureVerifier =
         SignatureVerifier<SignatureType, CacheKey, signing_domain::RaptorcastChunk>;
 

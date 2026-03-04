@@ -58,6 +58,7 @@ use monad_validator::{
     signature_collection::SignatureCollection,
     validator_set::{ValidatorSet, ValidatorSetType as _},
 };
+use packet::regular;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tracing::{debug, debug_span, error, trace, warn};
 use udp::GroupId;
@@ -192,12 +193,12 @@ where
         if config
             .secondary_instance
             .raptor10_fullnode_redundancy_factor
-            > udp::MAX_REDUNDANCY.to_f32()
+            > regular::MAX_REDUNDANCY.to_f32()
         {
             panic!(
                 "Configuration value raptor10_fullnode_redundancy_factor must be at most {}, \
                 but got {}.",
-                udp::MAX_REDUNDANCY.to_f32(),
+                regular::MAX_REDUNDANCY.to_f32(),
                 config
                     .secondary_instance
                     .raptor10_fullnode_redundancy_factor
