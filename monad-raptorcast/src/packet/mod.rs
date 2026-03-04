@@ -13,9 +13,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-pub(crate) mod assembler;
 pub(crate) mod assigner;
 mod builder;
+mod chunk;
+pub mod regular;
 
 use std::{collections::HashMap, net::SocketAddr};
 
@@ -25,11 +26,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_types::NodeId;
 
-pub(crate) use self::{
-    assembler::{Chunk, PacketLayout},
-    assigner::ChunkAssigner,
-    builder::MessageBuilder,
-};
+pub(crate) use self::{assigner::ChunkAssigner, builder::MessageBuilder, chunk::Chunk};
 use crate::{
     udp::GroupId,
     util::{BuildTarget, Redundancy},
@@ -67,7 +64,7 @@ pub fn build_messages<ST>(
     redundancy: Redundancy,
     group_id: GroupId,
     unix_ts_ms: u64,
-    build_target: BuildTarget<CertificateSignaturePubKey<ST>>,
+    build_target: BuildTarget<'_, CertificateSignaturePubKey<ST>>,
     known_addresses: &HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
 ) -> Vec<(SocketAddr, Bytes)>
 where
@@ -96,7 +93,11 @@ where
 
 // retrofit original error handling
 pub trait RetrofitResult<T> {
-    fn unwrap_log_on_error<PT>(self, ctx_app_msg: &[u8], ctx_build_target: &BuildTarget<PT>) -> T
+    fn unwrap_log_on_error<PT>(
+        self,
+        ctx_app_msg: &[u8],
+        ctx_build_target: &BuildTarget<'_, PT>,
+    ) -> T
     where
         PT: PubKey;
 }
@@ -105,7 +106,11 @@ impl<T> RetrofitResult<T> for Result<T>
 where
     T: Default,
 {
-    fn unwrap_log_on_error<PT>(self, ctx_app_msg: &[u8], ctx_build_target: &BuildTarget<PT>) -> T
+    fn unwrap_log_on_error<PT>(
+        self,
+        ctx_app_msg: &[u8],
+        ctx_build_target: &BuildTarget<'_, PT>,
+    ) -> T
     where
         PT: PubKey,
     {

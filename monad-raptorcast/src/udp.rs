@@ -20,7 +20,6 @@ use monad_crypto::{
     certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey},
     signing_domain,
 };
-use monad_dataplane::udp::{segment_size_for_mtu, ETHERNET_SEGMENT_SIZE};
 use monad_executor::ExecutorMetricsChain;
 use monad_types::{Epoch, NodeId, Round};
 use monad_validator::validator_set::{ValidatorSet, ValidatorSetType as _};
@@ -31,69 +30,22 @@ use crate::{
     metrics::{
         UdpStateMetrics, GAUGE_RAPTORCAST_DECODING_CACHE_SIGNATURE_VERIFICATIONS_RATE_LIMITED,
     },
-    packet::PacketLayout,
+    packet::regular,
     parser::{
         packet_parser::SignedOverData,
         signature_verifier::{SignatureVerifier, SignatureVerifierError},
     },
     util::{
-        compute_hash, unix_ts_ms_now, AppMessageHash, BroadcastGroup, BroadcastMode,
-        FullNodeGroupMap, NodeIdHash, Redundancy,
+        compute_hash, unix_ts_ms_now, AppMessageHash, BroadcastGroup, BroadcastMode, FullNodeGroupMap, NodeIdHash,
     },
 };
 
-const _: () = assert!(
-    MAX_MERKLE_TREE_DEPTH <= 0xF,
-    "merkle tree depth must be <= 4 bits"
-);
-
-const _: () = assert!(
-    MIN_SEGMENT_LENGTH == segment_size_for_mtu(1280) as usize,
-    "MIN_SEGMENT_LENGTH should be the segment size for the IPv6 minimum MTU of 1280 bytes"
-);
-
 pub const SIGNATURE_CACHE_SIZE: usize = 10_000;
-
-// We assume an MTU of at least 1280 (the IPv6 minimum MTU), which for the maximum Merkle tree
-// depth of 9 gives a symbol size of 960 bytes, which we will use as the minimum chunk length for
-// received packets, and we'll drop received chunks that are smaller than this to mitigate attacks
-// involving a peer sending us a message as a very large set of very small chunks.
-pub const MIN_CHUNK_LENGTH: usize = 960;
 
 // Drop a message to be transmitted if it would lead to more than this number of packets
 // to be transmitted.  This can happen in Broadcast mode when the message is large or
 // if we have many peers to transmit the message to.
 pub const MAX_NUM_PACKETS: usize = 65535;
-
-// For a message with K source symbols, we accept up to the first MAX_REDUNDANCY * K
-// encoded symbols.
-//
-// Any received encoded symbol with an ESI equal to or greater than MAX_REDUNDANCY * K
-// will be discarded, as a protection against DoS and algorithmic complexity attacks.
-//
-// 7 is the largest value that works for all values of K, as K
-// can be at most 8192, and there can be at most 65521 encoding symbol IDs.
-//
-// We set this to 3 as a more reasonable upper bound.
-pub const MAX_REDUNDANCY: Redundancy = Redundancy::from_u8(3);
-
-// For a tree depth of 1, every encoded symbol is its own Merkle tree, and there will be no
-// Merkle proof section in the constructed RaptorCast packets.
-//
-// For a tree depth of 9, the index of the rightmost Merkle tree leaf will be 0xff, and the
-// Merkle leaf index field is 8 bits wide.
-pub const MIN_MERKLE_TREE_DEPTH: u8 = 1;
-pub const MAX_MERKLE_TREE_DEPTH: u8 = 9;
-
-/// The min segment length should be large enough to hold at least
-/// MAX_CHUNK_LENGTH of payload plus all headers with the smallest
-/// merkle tree depth.
-pub const MIN_SEGMENT_LENGTH: usize =
-    PacketLayout::calc_segment_len(MIN_CHUNK_LENGTH, MAX_MERKLE_TREE_DEPTH);
-
-/// The max segment length should not exceed the standard MTU for
-/// Ethernet to avoid fragmentation when routed across the internet.
-pub const MAX_SEGMENT_LENGTH: usize = ETHERNET_SEGMENT_SIZE as usize;
 
 /// The maximum sane validator set size. Defined in
 /// <execution>/monad/staking/util/constants.hpp.
@@ -356,14 +308,14 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
             }
 
             // Enforce a minimum chunk size for messages consisting of multiple source chunks.
-            if parsed_message.chunk.len() < MIN_CHUNK_LENGTH
+            if parsed_message.chunk.len() < regular::MIN_CHUNK_LENGTH
                 && usize::try_from(parsed_message.app_message_len).unwrap()
                     > parsed_message.chunk.len()
             {
                 tracing::debug!(
                     src_addr = ?message.src_addr,
                     chunk_length = parsed_message.chunk.len(),
-                    MIN_CHUNK_LENGTH,
+                    min_chunk_length = regular::MIN_CHUNK_LENGTH,
                     "dropping undersized received message",
                 );
                 continue;
@@ -676,7 +628,7 @@ mod tests {
 
     use super::{ChunkSignatureVerifier, GroupId, MessageValidationError, UdpState};
     use crate::{
-        packet::{MessageBuilder, PacketLayout},
+        packet::{regular, MessageBuilder},
         parser::signature_verifier::SignatureVerifier,
         udp::{build_messages, parse_message, MAX_VALIDATOR_SET_SIZE, SIGNATURE_CACHE_SIZE},
         util::{BroadcastMode, BuildTarget, FullNodeGroupMap, Redundancy, SecondaryGroup},
@@ -1051,7 +1003,7 @@ mod tests {
 
     pub const MERKLE_TREE_DEPTH: u8 = 6;
     pub const SYMBOL_LEN: usize =
-        PacketLayout::new(DEFAULT_SEGMENT_SIZE as usize, MERKLE_TREE_DEPTH).symbol_len();
+        regular::PacketLayout::new(DEFAULT_SEGMENT_SIZE as usize, MERKLE_TREE_DEPTH).symbol_len();
     pub const MAX_REDUNDANCY: u16 = 3;
 
     #[rstest]
@@ -1084,7 +1036,7 @@ mod tests {
         let message = messages.unwrap().into_iter().next().unwrap();
         let mut payload = BytesMut::from(&message.payload[..message.stride]);
 
-        let layout = PacketLayout::new(DEFAULT_SEGMENT_SIZE as usize, MERKLE_TREE_DEPTH);
+        let layout = regular::PacketLayout::new(DEFAULT_SEGMENT_SIZE as usize, MERKLE_TREE_DEPTH);
         let chunk_header = &mut payload[layout.chunk_header_range()];
         let chunk_id_buf: &mut [u8] = &mut chunk_header[22..24];
         chunk_id_buf.copy_from_slice(&chunk_id.to_le_bytes()); // override chunk id
