@@ -404,23 +404,16 @@ where
                     txs,
                 })]
             }
-            MempoolEvent::ForwardTxs(txs) => {
-                consensus
-                    .iter_future_other_leaders()
-                    .map(|target| {
-                        // TODO ideally we could batch these all as one RouterCommand(PointToPoint) so
-                        // that we can:
-                        // 1. avoid cloning txns
-                        // 2. avoid serializing multiple times
-                        // 3. avoid raptor coding multiple times
-                        // 4. use 1 sendmmsg in the router
-                        Command::RouterCommand(RouterCommand::Publish {
-                            target: RouterTarget::PointToPoint(target),
-                            message: VerifiedMonadMessage::ForwardedTx(txs.clone()),
-                        })
+            MempoolEvent::ForwardTxs(txs) => consensus
+                .iter_future_other_leaders()
+                .map(|target| {
+                    Command::RouterCommand(RouterCommand::LeanPointToPoint {
+                        target,
+                        message: VerifiedMonadMessage::ForwardedTx(txs.clone()),
+                        priority: monad_types::UdpPriority::Regular,
                     })
-                    .collect_vec()
-            }
+                })
+                .collect_vec(),
             MempoolEvent::Contribution { sender_gas } => {
                 vec![Command::TxPoolCommand(TxPoolCommand::Contribution {
                     sender_gas,

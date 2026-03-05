@@ -57,6 +57,10 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
 const STATESYNC_NETWORK_MESSAGE_NAME: &str = "StateSyncNetworkMessage";
+/// LeanUDP max payload size for forwarded tx batches (RLP-encoded `Vec<Bytes>`).
+/// TODO(tx-ingestion): Revisit this limit (or tighten LeanUDP message-count limits)
+/// to reduce likelihood of OOM under bursty forwarding.
+pub const TX_FORWARD_LEANUDP_MAX_MESSAGE_SIZE_BYTES: usize = 512 * 1024;
 
 pub enum RouterCommand<ST: CertificateSignatureRecoverable, OM> {
     // Publish should not be replayed
@@ -93,6 +97,13 @@ pub enum RouterCommand<ST: CertificateSignatureRecoverable, OM> {
     UpdateFullNodes {
         dedicated_full_nodes: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
         prioritized_full_nodes: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
+    },
+    /// Prefer direct LeanUDP delivery when available; otherwise fallback to the
+    /// standard point-to-point raptorcast path.
+    LeanPointToPoint {
+        target: NodeId<CertificateSignaturePubKey<ST>>,
+        message: OM,
+        priority: UdpPriority,
     },
 }
 
@@ -152,6 +163,15 @@ impl<ST: CertificateSignatureRecoverable, OM> Debug for RouterCommand<ST, OM> {
                 .debug_struct("UpdateFullNodes")
                 .field("dedicated_full_nodes", dedicated_full_nodes)
                 .field("prioritized_full_nodes", prioritized_full_nodes)
+                .finish(),
+            Self::LeanPointToPoint {
+                target,
+                message: _,
+                priority,
+            } => f
+                .debug_struct("LeanPointToPoint")
+                .field("target", target)
+                .field("priority", priority)
                 .finish(),
         }
     }

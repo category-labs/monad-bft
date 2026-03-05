@@ -48,6 +48,7 @@ monad-exec-events = { path = "./monad-exec-events" }
 monad-executor = { path = "./monad-executor" }
 monad-executor-glue = { path = "./monad-executor-glue" }
 monad-keystore = { path = "./monad-keystore" }
+monad-leanudp = { path = "./monad-leanudp" }
 monad-ledger = { path = "./monad-ledger" }
 monad-merkle = { path = "./monad-merkle" }
 monad-mock-swarm = { path = "./monad-mock-swarm" }
@@ -55,6 +56,7 @@ monad-multi-sig = { path = "./monad-multi-sig" }
 monad-node-config = { path = "./monad-node-config" }
 monad-peer-disc-swarm = { path = "./monad-peer-disc-swarm" }
 monad-peer-discovery = { path = "./monad-peer-discovery" }
+monad-peer-score = { path = "./monad-peer-score" }
 monad-perf-util = { path = "./monad-perf-util" }
 monad-pprof = { path = "./monad-pprof" }
 monad-raptor = { path = "./monad-raptor" }
