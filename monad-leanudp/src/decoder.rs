@@ -16,7 +16,7 @@
 use std::{convert::Infallible, hash::Hash, time::Instant};
 
 use bytes::Bytes;
-use monad_executor::ExecutorMetrics;
+use monad_executor::{ExecutorMetrics, MetricDef};
 use rand::{rngs::StdRng, CryptoRng, RngCore, SeedableRng};
 use thiserror::Error;
 use zerocopy::FromBytes;
@@ -92,7 +92,7 @@ pub enum DecodeError {
 }
 
 impl DecodeError {
-    fn metric_name(&self) -> &'static str {
+    fn metric_name(&self) -> &'static MetricDef {
         match self {
             DecodeError::InvalidHeaderSize { .. } | DecodeError::InvalidHeader => {
                 COUNTER_LEANUDP_ERROR_INVALID_HEADER
@@ -162,14 +162,14 @@ impl From<FragmentPolicy> for PoolSelection {
 }
 
 impl PoolSelection {
-    fn fragments_counter(self) -> &'static str {
+    fn fragments_counter(self) -> &'static MetricDef {
         match self {
             PoolSelection::Priority => COUNTER_LEANUDP_DECODE_FRAGMENTS_PRIORITY,
             PoolSelection::Regular => COUNTER_LEANUDP_DECODE_FRAGMENTS_REGULAR,
         }
     }
 
-    fn bytes_counter(self) -> &'static str {
+    fn bytes_counter(self) -> &'static MetricDef {
         match self {
             PoolSelection::Priority => COUNTER_LEANUDP_DECODE_BYTES_PRIORITY,
             PoolSelection::Regular => COUNTER_LEANUDP_DECODE_BYTES_REGULAR,

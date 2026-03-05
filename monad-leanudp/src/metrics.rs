@@ -13,39 +13,101 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-pub const GAUGE_LEANUDP_POOL_PRIORITY_MESSAGES: &str = "monad.leanudp.pool.priority_messages";
-pub const GAUGE_LEANUDP_POOL_REGULAR_MESSAGES: &str = "monad.leanudp.pool.regular_messages";
-
-pub const COUNTER_LEANUDP_DECODE_FRAGMENTS_RECEIVED: &str =
-    "monad.leanudp.decode.fragments_received";
-/// Total fragment payload bytes received (does not include the LeanUDP header).
-pub const COUNTER_LEANUDP_DECODE_BYTES_RECEIVED: &str = "monad.leanudp.decode.bytes_received";
-pub const COUNTER_LEANUDP_DECODE_FRAGMENTS_PRIORITY: &str =
-    "monad.leanudp.decode.fragments_priority";
-/// Total fragment payload bytes attributed to the priority pool (does not include the LeanUDP header).
-pub const COUNTER_LEANUDP_DECODE_BYTES_PRIORITY: &str = "monad.leanudp.decode.bytes_priority";
-pub const COUNTER_LEANUDP_DECODE_FRAGMENTS_REGULAR: &str = "monad.leanudp.decode.fragments_regular";
-/// Total fragment payload bytes attributed to the regular pool (does not include the LeanUDP header).
-pub const COUNTER_LEANUDP_DECODE_BYTES_REGULAR: &str = "monad.leanudp.decode.bytes_regular";
-pub const COUNTER_LEANUDP_DECODE_MESSAGES_COMPLETED: &str =
-    "monad.leanudp.decode.messages_completed";
-/// Total message payload bytes completed (reassembled) by the decoder.
-pub const COUNTER_LEANUDP_DECODE_BYTES_COMPLETED: &str = "monad.leanudp.decode.bytes_completed";
-pub const COUNTER_LEANUDP_DECODE_EVICTED_TIMEOUT: &str = "monad.leanudp.decode.evicted_timeout";
-pub const COUNTER_LEANUDP_DECODE_EVICTED_RANDOM: &str = "monad.leanudp.decode.evicted_random";
-
-pub const COUNTER_LEANUDP_ERROR_INVALID_HEADER: &str = "monad.leanudp.error.invalid_header";
-pub const COUNTER_LEANUDP_ERROR_UNSUPPORTED_VERSION: &str =
-    "monad.leanudp.error.unsupported_version";
-pub const COUNTER_LEANUDP_ERROR_IDENTITY_LIMIT: &str = "monad.leanudp.error.identity_limit";
-pub const COUNTER_LEANUDP_ERROR_DUPLICATE_FRAGMENT: &str = "monad.leanudp.error.duplicate_fragment";
-pub const COUNTER_LEANUDP_ERROR_TOO_MANY_FRAGMENTS: &str = "monad.leanudp.error.too_many_fragments";
-pub const COUNTER_LEANUDP_ERROR_CONFLICTING_END: &str = "monad.leanudp.error.conflicting_end";
-pub const COUNTER_LEANUDP_ERROR_MESSAGE_TOO_LARGE: &str = "monad.leanudp.error.message_too_large";
-pub const COUNTER_LEANUDP_ERROR_POOL_FULL: &str = "monad.leanudp.error.pool_full";
-
-pub const COUNTER_LEANUDP_ENCODE_MESSAGES: &str = "monad.leanudp.encode.messages";
-pub const COUNTER_LEANUDP_ENCODE_FRAGMENTS: &str = "monad.leanudp.encode.fragments";
-/// Total message payload bytes submitted to the encoder (does not include the LeanUDP header).
-pub const COUNTER_LEANUDP_ENCODE_BYTES: &str = "monad.leanudp.encode.bytes";
-pub const COUNTER_LEANUDP_ENCODE_ERROR_TOO_LARGE: &str = "monad.leanudp.encode.error.too_large";
+monad_executor::metric_consts! {
+    pub GAUGE_LEANUDP_POOL_PRIORITY_MESSAGES {
+        name: "monad.leanudp.pool.priority_messages",
+        help: "Current number of in-flight priority pool messages",
+    }
+    pub GAUGE_LEANUDP_POOL_REGULAR_MESSAGES {
+        name: "monad.leanudp.pool.regular_messages",
+        help: "Current number of in-flight regular pool messages",
+    }
+    pub COUNTER_LEANUDP_DECODE_FRAGMENTS_RECEIVED {
+        name: "monad.leanudp.decode.fragments_received",
+        help: "Total LeanUDP fragments received",
+    }
+    pub COUNTER_LEANUDP_DECODE_BYTES_RECEIVED {
+        name: "monad.leanudp.decode.bytes_received",
+        help: "Total fragment payload bytes received (excluding LeanUDP header)",
+    }
+    pub COUNTER_LEANUDP_DECODE_FRAGMENTS_PRIORITY {
+        name: "monad.leanudp.decode.fragments_priority",
+        help: "Total fragments admitted to the priority pool",
+    }
+    pub COUNTER_LEANUDP_DECODE_BYTES_PRIORITY {
+        name: "monad.leanudp.decode.bytes_priority",
+        help: "Total payload bytes admitted to the priority pool",
+    }
+    pub COUNTER_LEANUDP_DECODE_FRAGMENTS_REGULAR {
+        name: "monad.leanudp.decode.fragments_regular",
+        help: "Total fragments admitted to the regular pool",
+    }
+    pub COUNTER_LEANUDP_DECODE_BYTES_REGULAR {
+        name: "monad.leanudp.decode.bytes_regular",
+        help: "Total payload bytes admitted to the regular pool",
+    }
+    pub COUNTER_LEANUDP_DECODE_MESSAGES_COMPLETED {
+        name: "monad.leanudp.decode.messages_completed",
+        help: "Total reassembled LeanUDP messages completed",
+    }
+    pub COUNTER_LEANUDP_DECODE_BYTES_COMPLETED {
+        name: "monad.leanudp.decode.bytes_completed",
+        help: "Total payload bytes of completed reassembled messages",
+    }
+    pub COUNTER_LEANUDP_DECODE_EVICTED_TIMEOUT {
+        name: "monad.leanudp.decode.evicted_timeout",
+        help: "Total in-flight messages evicted due to timeout",
+    }
+    pub COUNTER_LEANUDP_DECODE_EVICTED_RANDOM {
+        name: "monad.leanudp.decode.evicted_random",
+        help: "Total in-flight messages evicted due to capacity pressure",
+    }
+    pub COUNTER_LEANUDP_ERROR_INVALID_HEADER {
+        name: "monad.leanudp.error.invalid_header",
+        help: "Total LeanUDP packets rejected due to invalid header",
+    }
+    pub COUNTER_LEANUDP_ERROR_UNSUPPORTED_VERSION {
+        name: "monad.leanudp.error.unsupported_version",
+        help: "Total LeanUDP packets rejected due to unsupported protocol version",
+    }
+    pub COUNTER_LEANUDP_ERROR_IDENTITY_LIMIT {
+        name: "monad.leanudp.error.identity_limit",
+        help: "Total fragments rejected due to per-identity in-flight limit",
+    }
+    pub COUNTER_LEANUDP_ERROR_DUPLICATE_FRAGMENT {
+        name: "monad.leanudp.error.duplicate_fragment",
+        help: "Total duplicate fragments rejected by decoder",
+    }
+    pub COUNTER_LEANUDP_ERROR_TOO_MANY_FRAGMENTS {
+        name: "monad.leanudp.error.too_many_fragments",
+        help: "Total fragments rejected because message exceeded fragment count limit",
+    }
+    pub COUNTER_LEANUDP_ERROR_CONFLICTING_END {
+        name: "monad.leanudp.error.conflicting_end",
+        help: "Total fragments rejected due to conflicting end marker",
+    }
+    pub COUNTER_LEANUDP_ERROR_MESSAGE_TOO_LARGE {
+        name: "monad.leanudp.error.message_too_large",
+        help: "Total messages rejected because reassembled size exceeded max_message_size",
+    }
+    pub COUNTER_LEANUDP_ERROR_POOL_FULL {
+        name: "monad.leanudp.error.pool_full",
+        help: "Total fragments rejected because the selected pool was full",
+    }
+    pub COUNTER_LEANUDP_ENCODE_MESSAGES {
+        name: "monad.leanudp.encode.messages",
+        help: "Total messages submitted to LeanUDP encoder",
+    }
+    pub COUNTER_LEANUDP_ENCODE_FRAGMENTS {
+        name: "monad.leanudp.encode.fragments",
+        help: "Total fragments emitted by LeanUDP encoder",
+    }
+    pub COUNTER_LEANUDP_ENCODE_BYTES {
+        name: "monad.leanudp.encode.bytes",
+        help: "Total message payload bytes submitted to LeanUDP encoder",
+    }
+    pub COUNTER_LEANUDP_ENCODE_ERROR_TOO_LARGE {
+        name: "monad.leanudp.encode.error.too_large",
+        help: "Total messages rejected by encoder because fragment count exceeded MAX_FRAGMENTS",
+    }
+}

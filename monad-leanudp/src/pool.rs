@@ -25,6 +25,7 @@ use monad_dynamic_cap::{
     effective_limit as dynamic_cap_effective_limit, update_pressure_mode, DynamicCapConfig,
     DynamicCapIdentity,
 };
+use monad_executor::MetricDef;
 use rand::{CryptoRng, Rng as _, RngCore};
 
 use crate::{
@@ -108,7 +109,7 @@ pub(crate) enum EvictionKind {
 }
 
 impl EvictionKind {
-    pub(crate) fn metric_name(self) -> &'static str {
+    pub(crate) fn metric_name(self) -> &'static MetricDef {
         match self {
             EvictionKind::Timeout => COUNTER_LEANUDP_DECODE_EVICTED_TIMEOUT,
             EvictionKind::Random => COUNTER_LEANUDP_DECODE_EVICTED_RANDOM,
