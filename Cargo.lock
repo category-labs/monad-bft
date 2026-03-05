@@ -5492,6 +5492,8 @@ dependencies = [
  "monad-eth-types",
  "monad-executor",
  "monad-executor-glue",
+ "monad-fair-queue",
+ "monad-peer-score",
  "monad-secp",
  "monad-state-backend",
  "monad-testutil",

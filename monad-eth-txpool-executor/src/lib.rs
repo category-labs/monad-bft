@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     io,
     marker::PhantomData,
     pin::Pin,
@@ -23,8 +23,8 @@ use std::{
     time::Duration,
 };
 
-use alloy_consensus::{transaction::Recovered, TxEnvelope};
-use alloy_primitives::Address;
+use alloy_consensus::{transaction::Recovered, Transaction, TxEnvelope};
+use alloy_primitives::{Address, TxHash};
 use alloy_rlp::Decodable;
 use futures::Stream;
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
@@ -88,8 +88,10 @@ where
     events_tx: mpsc::UnboundedSender<MempoolEvent<ST, SCT, EthExecutionProtocol>>,
     events: mpsc::UnboundedReceiver<MempoolEvent<ST, SCT, EthExecutionProtocol>>,
 
-    forwarding_manager: Pin<Box<EthTxPoolForwardingManager>>,
+    forwarding_manager:
+        Pin<Box<EthTxPoolForwardingManager<NodeId<CertificateSignaturePubKey<ST>>>>>,
     preload_manager: Pin<Box<EthTxPoolPreloadManager>>,
+    validated_forwarded_tx_senders: HashMap<TxHash, NodeId<CertificateSignaturePubKey<ST>>>,
 
     metrics: Arc<EthTxPoolExecutorMetrics>,
     executor_metrics: ExecutorMetrics,
@@ -123,7 +125,7 @@ where
 
         let metrics = Arc::new(EthTxPoolExecutorMetrics::default());
         let mut executor_metrics = ExecutorMetrics::default();
-        let (_score_provider, score_reader) = ema::create::<
+        let (score_provider, score_reader) = ema::create::<
             NodeId<CertificateSignaturePubKey<ST>>,
             StdClock,
         >(ema::ScoreConfig::default(), StdClock);
@@ -164,6 +166,7 @@ where
 
                         forwarding_manager: Box::pin(EthTxPoolForwardingManager::default()),
                         preload_manager: Box::pin(EthTxPoolPreloadManager::default()),
+                        validated_forwarded_tx_senders: HashMap::default(),
 
                         metrics,
                         executor_metrics,
@@ -176,6 +179,7 @@ where
             Box::new(move |executor_metrics: &mut ExecutorMetrics| {
                 metrics.update(executor_metrics)
             }),
+            score_provider,
             score_reader,
             ForwardedIngressFairQueueConfig::default(),
         ))
@@ -283,7 +287,7 @@ where
                 .into_iter()
                 .filter_map(|raw_tx| {
                     if let Ok(tx) = TxEnvelope::decode(&mut raw_tx.as_ref()) {
-                        Some(tx)
+                        Some((sender, tx))
                     } else {
                         num_invalid_bytes += 1;
                         None
@@ -304,6 +308,60 @@ where
                 .project()
                 .add_ingress_txs(txs);
         }
+    }
+
+    fn update_validated_forwarded_sender_mappings(
+        validated_forwarded_tx_senders: &mut HashMap<
+            TxHash,
+            NodeId<CertificateSignaturePubKey<ST>>,
+        >,
+        events: &BTreeMap<TxHash, EthTxPoolEventType>,
+        newly_validated_forwarded_tx_senders: &HashMap<
+            TxHash,
+            NodeId<CertificateSignaturePubKey<ST>>,
+        >,
+    ) {
+        for (tx_hash, event) in events {
+            match event {
+                EthTxPoolEventType::Insert { owned, .. } => {
+                    if *owned {
+                        validated_forwarded_tx_senders.remove(tx_hash);
+                    } else if let Some(sender) = newly_validated_forwarded_tx_senders.get(tx_hash) {
+                        validated_forwarded_tx_senders.insert(*tx_hash, *sender);
+                    }
+                }
+                EthTxPoolEventType::Commit
+                | EthTxPoolEventType::Drop { .. }
+                | EthTxPoolEventType::Evict { .. } => {
+                    validated_forwarded_tx_senders.remove(tx_hash);
+                }
+            }
+        }
+    }
+
+    fn build_sender_gas_contributions(
+        &self,
+        txs: &[TxEnvelope],
+    ) -> Vec<(NodeId<CertificateSignaturePubKey<ST>>, u64)> {
+        Self::build_sender_gas_contributions_from_validated_map(
+            &self.validated_forwarded_tx_senders,
+            txs,
+        )
+    }
+
+    fn build_sender_gas_contributions_from_validated_map(
+        validated_forwarded_tx_senders: &HashMap<TxHash, NodeId<CertificateSignaturePubKey<ST>>>,
+        txs: &[TxEnvelope],
+    ) -> Vec<(NodeId<CertificateSignaturePubKey<ST>>, u64)> {
+        let mut sender_gas = BTreeMap::<NodeId<CertificateSignaturePubKey<ST>>, u64>::new();
+
+        for tx in txs {
+            if let Some(sender) = validated_forwarded_tx_senders.get(tx.tx_hash()) {
+                *sender_gas.entry(*sender).or_default() += tx.gas_limit();
+            }
+        }
+
+        sender_gas.into_iter().collect()
     }
 }
 
@@ -407,6 +465,9 @@ where
                     ) {
                         Ok(proposed_execution_inputs) => {
                             let elapsed = create_proposal_start.elapsed();
+                            let sender_gas = self.build_sender_gas_contributions(
+                                &proposed_execution_inputs.body.transactions,
+                            );
 
                             self.metrics.create_proposal.fetch_add(1, Ordering::SeqCst);
                             self.metrics
@@ -430,15 +491,25 @@ where
                                     fresh_proposal_certificate,
                                 })
                                 .expect("events never dropped");
+                            self.events_tx
+                                .send(MempoolEvent::Contribution { sender_gas })
+                                .expect("events never dropped");
                         }
                         Err(err) => {
                             error!(?err, "txpool executor failed to create proposal");
                         }
                     }
                 }
-                TxPoolCommand::InsertForwardedTxs { sender, txs } => {
+                TxPoolCommand::InsertForwardedTxs { .. } => {
                     // This will never happen because we separate out these commands in `EthTxPoolExecutorClient`.
                     error!("txpool executor received InsertForwardedTxs command over command rx");
+                }
+                TxPoolCommand::Contribution { sender_gas } => {
+                    // This will never happen because we separate out these commands in `EthTxPoolExecutorClient`.
+                    error!(
+                        sender_count = sender_gas.len(),
+                        "txpool executor received Contribution command over command rx"
+                    );
                 }
                 TxPoolCommand::EnterRound {
                     epoch: _,
@@ -477,6 +548,13 @@ where
                 }
             }
         }
+
+        let empty_newly_validated_forwarded_tx_senders = HashMap::default();
+        Self::update_validated_forwarded_sender_mappings(
+            &mut self.validated_forwarded_tx_senders,
+            &ipc_events,
+            &empty_newly_validated_forwarded_tx_senders,
+        );
 
         self.metrics.update(&mut self.executor_metrics);
 
@@ -527,6 +605,7 @@ where
 
             forwarding_manager,
             preload_manager,
+            validated_forwarded_tx_senders,
 
             metrics,
             executor_metrics,
@@ -607,6 +686,13 @@ where
                 .project()
                 .add_egress_txs(immediately_forwardable_txs.iter());
 
+            let empty_newly_validated_forwarded_tx_senders = HashMap::default();
+            Self::update_validated_forwarded_sender_mappings(
+                validated_forwarded_tx_senders,
+                &ipc_events,
+                &empty_newly_validated_forwarded_tx_senders,
+            );
+
             metrics.update(executor_metrics);
             tx_input_stream.as_mut().broadcast_tx_events(ipc_events);
 
@@ -623,21 +709,25 @@ where
         }
 
         let mut ipc_events = BTreeMap::default();
+        let mut newly_validated_forwarded_tx_senders = HashMap::default();
 
         while let Poll::Ready(forwarded_txs) = forwarding_manager.as_mut().poll_ingress(cx) {
             let _span = debug_span!("forwarded txs", len = forwarded_txs.len()).entered();
 
             let recovered_txs = {
                 let (recovered_txs, dropped_txs): (Vec<_>, Vec<_>) =
-                    forwarded_txs.into_par_iter().partition_map(|tx| {
+                    forwarded_txs.into_par_iter().partition_map(|(sender, tx)| {
                         let _span = trace_span!("txpool: forwarded tx recover signer").entered();
+                        let tx_hash = *tx.tx_hash();
                         match tx.secp256k1_recover() {
                             Ok(signer) => rayon::iter::Either::Left((
+                                sender,
+                                tx_hash,
                                 Recovered::new_unchecked(tx, signer),
                                 PoolTxKind::Forwarded,
                             )),
                             Err(_) => rayon::iter::Either::Right((
-                                *tx.tx_hash(),
+                                tx_hash,
                                 EthTxPoolEventType::Drop {
                                     reason: EthTxPoolDropReason::InvalidSignature,
                                 },
@@ -646,6 +736,14 @@ where
                     });
                 ipc_events.extend(dropped_txs);
                 recovered_txs
+                    .into_iter()
+                    .map(|(sender, tx_hash, tx, kind)| {
+                        newly_validated_forwarded_tx_senders
+                            .entry(tx_hash)
+                            .or_insert(sender);
+                        (tx, kind)
+                    })
+                    .collect::<Vec<_>>()
             };
 
             let mut inserted_addresses = HashSet::<Address>::default();
@@ -699,9 +797,116 @@ where
                 .complete_polled_requests(predicted_proposal_seqnum, addresses.into_iter());
         }
 
+        Self::update_validated_forwarded_sender_mappings(
+            validated_forwarded_tx_senders,
+            &ipc_events,
+            &newly_validated_forwarded_tx_senders,
+        );
+
         metrics.update(executor_metrics);
         tx_input_stream.as_mut().broadcast_tx_events(ipc_events);
 
         Poll::Pending
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::collections::{BTreeMap, HashMap};
+
+    use alloy_consensus::Transaction;
+    use alloy_primitives::Address;
+    use monad_chain_config::{revision::MockChainRevision, MockChainConfig};
+    use monad_crypto::{certificate_signature::CertificateKeyPair, NopSignature};
+    use monad_eth_testutil::{make_legacy_tx, S1};
+    use monad_eth_txpool_types::{EthTxPoolEventType, EthTxPoolEvictReason};
+    use monad_state_backend::InMemoryState;
+    use monad_testutil::signing::{get_key, node_id, MockSignatures};
+    use monad_types::NodeId;
+
+    use crate::{EthTxPoolExecutor, EthTxPoolIpcServer};
+
+    type SignatureType = NopSignature;
+    type SignatureCollectionType = MockSignatures<SignatureType>;
+    type StateBackendType = InMemoryState<SignatureType, SignatureCollectionType>;
+    type ExecutorType = EthTxPoolExecutor<
+        SignatureType,
+        SignatureCollectionType,
+        StateBackendType,
+        MockChainConfig,
+        MockChainRevision,
+        EthTxPoolIpcServer,
+    >;
+
+    fn make_insert_event(tx: alloy_consensus::TxEnvelope, owned: bool) -> EthTxPoolEventType {
+        EthTxPoolEventType::Insert {
+            address: Address::ZERO,
+            owned,
+            tx,
+        }
+    }
+
+    #[test]
+    fn test_update_validated_forwarded_sender_mappings_insert_and_evict() {
+        let sender = node_id::<SignatureType>();
+        let tx = make_legacy_tx(S1, 10_000_000_000, 100_000, 1, 0);
+        let tx_hash = *tx.tx_hash();
+
+        let mut validated_forwarded_tx_senders = HashMap::default();
+        let mut newly_validated_forwarded_tx_senders = HashMap::default();
+        newly_validated_forwarded_tx_senders.insert(tx_hash, sender);
+
+        ExecutorType::update_validated_forwarded_sender_mappings(
+            &mut validated_forwarded_tx_senders,
+            &BTreeMap::from([(tx_hash, make_insert_event(tx, false))]),
+            &newly_validated_forwarded_tx_senders,
+        );
+
+        assert_eq!(validated_forwarded_tx_senders.get(&tx_hash), Some(&sender));
+
+        let empty_newly_validated_forwarded_tx_senders = HashMap::default();
+        ExecutorType::update_validated_forwarded_sender_mappings(
+            &mut validated_forwarded_tx_senders,
+            &BTreeMap::from([(
+                tx_hash,
+                EthTxPoolEventType::Evict {
+                    reason: EthTxPoolEvictReason::Expired,
+                },
+            )]),
+            &empty_newly_validated_forwarded_tx_senders,
+        );
+
+        assert!(!validated_forwarded_tx_senders.contains_key(&tx_hash));
+    }
+
+    #[test]
+    fn test_build_sender_gas_contributions_from_validated_map() {
+        let sender1 = node_id::<SignatureType>();
+        let sender2 = NodeId::new(get_key::<SignatureType>(123).pubkey());
+        assert_ne!(sender1, sender2);
+
+        let tx1 = make_legacy_tx(S1, 10_000_000_000, 100_000, 11, 0);
+        let tx2 = make_legacy_tx(S1, 10_000_000_000, 200_000, 12, 0);
+        let tx3 = make_legacy_tx(S1, 10_000_000_000, 300_000, 13, 0);
+        let tx_untracked = make_legacy_tx(S1, 10_000_000_000, 400_000, 14, 0);
+
+        let validated_forwarded_tx_senders = HashMap::from([
+            (*tx1.tx_hash(), sender1),
+            (*tx2.tx_hash(), sender2),
+            (*tx3.tx_hash(), sender1),
+        ]);
+
+        let sender_gas = ExecutorType::build_sender_gas_contributions_from_validated_map(
+            &validated_forwarded_tx_senders,
+            &[tx1.clone(), tx2.clone(), tx3.clone(), tx_untracked],
+        );
+        let sender_gas = sender_gas.into_iter().collect::<BTreeMap<_, _>>();
+
+        assert_eq!(
+            sender_gas.get(&sender1),
+            Some(&(tx1.gas_limit() + tx3.gas_limit()))
+        );
+        assert_eq!(sender_gas.get(&sender2), Some(&tx2.gas_limit()));
+        assert_eq!(sender_gas.len(), 2);
     }
 }

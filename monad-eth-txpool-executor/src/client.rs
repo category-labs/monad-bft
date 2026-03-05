@@ -17,7 +17,6 @@ use std::{future::Future, pin::Pin, task::Poll};
 
 use bytes::Bytes;
 use futures::Stream;
-use itertools::{Either, Itertools};
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -27,7 +26,10 @@ use monad_eth_types::EthExecutionProtocol;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MonadEvent, TxPoolCommand};
 use monad_fair_queue::{FairQueue, FairQueueBuilder};
-use monad_peer_score::{ema::ScoreReader, StdClock};
+use monad_peer_score::{
+    ema::{ScoreProvider, ScoreReader},
+    StdClock,
+};
 use monad_secp::ExtractEthAddress;
 use monad_state_backend::StateBackend;
 use monad_types::NodeId;
@@ -147,6 +149,7 @@ where
         >,
     >,
     forwarded_tx: tokio::sync::mpsc::Sender<Vec<ForwardedTxs<SCT>>>,
+    score_provider: ScoreProvider<NodeId<CertificateSignaturePubKey<ST>>, StdClock>,
     forwarded_ingress:
         FairQueue<ScoreReader<NodeId<CertificateSignaturePubKey<ST>>, StdClock>, Bytes>,
     pending_forwarded_send: Option<PendingForwardedSend<SCT>>,
@@ -183,6 +186,7 @@ where
             + Send
             + 'static,
         update_metrics: Box<dyn Fn(&mut ExecutorMetrics) + Send + 'static>,
+        score_provider: ScoreProvider<NodeId<CertificateSignaturePubKey<ST>>, StdClock>,
         score_reader: ScoreReader<NodeId<CertificateSignaturePubKey<ST>>, StdClock>,
         forwarded_ingress_fair_queue_config: ForwardedIngressFairQueueConfig,
     ) -> Self
@@ -192,6 +196,7 @@ where
         Self::new_with_buffer_sizes(
             updater,
             update_metrics,
+            score_provider,
             score_reader,
             DEFAULT_COMMAND_BUFFER_SIZE,
             DEFAULT_FORWARDED_BUFFER_SIZE,
@@ -221,6 +226,7 @@ where
             + Send
             + 'static,
         update_metrics: Box<dyn Fn(&mut ExecutorMetrics) + Send + 'static>,
+        score_provider: ScoreProvider<NodeId<CertificateSignaturePubKey<ST>>, StdClock>,
         score_reader: ScoreReader<NodeId<CertificateSignaturePubKey<ST>>, StdClock>,
         command_buffer_size: usize,
         forwarded_buffer_size: usize,
@@ -243,6 +249,7 @@ where
 
             command_tx,
             forwarded_tx,
+            score_provider,
             forwarded_ingress: FairQueueBuilder::new()
                 .per_id_limit(forwarded_ingress_fair_queue_config.per_id_limit)
                 .max_size(forwarded_ingress_fair_queue_config.max_size)
@@ -410,17 +417,29 @@ where
     fn exec(&mut self, commands: Vec<Self::Command>) {
         self.verify_handle_liveness();
 
-        let (commands, forwarded): (Vec<Self::Command>, Vec<ForwardedTxs<SCT>>) =
-            commands.into_iter().partition_map(|command| match command {
-                TxPoolCommand::InsertForwardedTxs { sender, txs } => {
-                    Either::Right(ForwardedTxs { sender, txs })
-                }
-                command => Either::Left(command),
-            });
+        let mut forwarded = Vec::default();
+        let mut contributions = Vec::default();
+        let mut remaining_commands = Vec::default();
 
-        if !commands.is_empty() {
+        for command in commands {
+            match command {
+                TxPoolCommand::InsertForwardedTxs { sender, txs } => {
+                    forwarded.push(ForwardedTxs { sender, txs });
+                }
+                TxPoolCommand::Contribution { sender_gas } => {
+                    contributions.extend(sender_gas);
+                }
+                command => remaining_commands.push(command),
+            }
+        }
+
+        for (sender, gas) in contributions {
+            self.score_provider.record_contribution(sender, gas);
+        }
+
+        if !remaining_commands.is_empty() {
             self.command_tx
-                .try_send(commands)
+                .try_send(remaining_commands)
                 .expect("EthTxPoolExecutorClient executor is lagging")
         }
 
@@ -430,7 +449,9 @@ where
     }
 
     fn metrics(&self) -> ExecutorMetricsChain<'_> {
-        ExecutorMetricsChain::from(&self.metrics).push(self.forwarded_ingress.executor_metrics())
+        ExecutorMetricsChain::from(&self.metrics)
+            .push(self.forwarded_ingress.metrics())
+            .push(self.score_provider.executor_metrics())
     }
 }
 
