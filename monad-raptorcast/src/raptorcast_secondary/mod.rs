@@ -46,7 +46,7 @@ use crate::{
     config::{RaptorCastConfig, SecondaryRaptorCastMode},
     message::OutboundRouterMessage,
     udp::GroupId,
-    util::{Group, SecondaryGroup},
+    util::{SecondaryGroup, SecondaryGroupAssignment},
     RaptorCastEvent,
 };
 
@@ -117,7 +117,9 @@ where
         secondary_mode: SecondaryRaptorCastMode<CertificateSignaturePubKey<ST>>,
         peer_discovery_driver: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
         channel_from_primary: UnboundedReceiver<FullNodesGroupMessage<ST>>,
-        channel_to_primary: UnboundedSender<Group<CertificateSignaturePubKey<ST>>>,
+        channel_to_primary: UnboundedSender<
+            SecondaryGroupAssignment<CertificateSignaturePubKey<ST>>,
+        >,
         channel_to_primary_outbound: UnboundedSender<
             SecondaryOutboundMessage<CertificateSignaturePubKey<ST>>,
         >,
