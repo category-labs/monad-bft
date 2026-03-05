@@ -284,27 +284,48 @@ pub struct PeerEntry<ST: CertificateSignatureRecoverable> {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auth_port: Option<u16>,
+
+    #[serde(
+        alias = "direct_udp_auth_port",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub direct_udp_port: Option<u16>,
 }
 
 impl<ST: CertificateSignatureRecoverable> Encodable for PeerEntry<ST> {
     fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
-        if let Some(auth_port) = self.auth_port {
-            let enc: [&dyn Encodable; 5] = [
-                &self.pubkey,
-                &self.addr.to_string(),
-                &self.signature,
-                &self.record_seq_num,
-                &auth_port,
-            ];
-            encode_list::<_, dyn Encodable>(&enc, out);
-        } else {
-            let enc: [&dyn Encodable; 4] = [
-                &self.pubkey,
-                &self.addr.to_string(),
-                &self.signature,
-                &self.record_seq_num,
-            ];
-            encode_list::<_, dyn Encodable>(&enc, out);
+        let addr = self.addr.to_string();
+        let base = [
+            &self.pubkey as &dyn Encodable,
+            &addr as &dyn Encodable,
+            &self.signature as &dyn Encodable,
+            &self.record_seq_num as &dyn Encodable,
+        ];
+
+        match (self.auth_port, self.direct_udp_port) {
+            (None, None) => encode_list::<_, dyn Encodable>(&base, out),
+            (Some(auth_port), None) => {
+                let enc = [
+                    base[0],
+                    base[1],
+                    base[2],
+                    base[3],
+                    &auth_port as &dyn Encodable,
+                ];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            (auth_port, Some(direct_udp_port)) => {
+                let auth_port = auth_port.unwrap_or_default();
+                let enc = [
+                    base[0],
+                    base[1],
+                    base[2],
+                    base[3],
+                    &auth_port as &dyn Encodable,
+                    &direct_udp_port as &dyn Encodable,
+                ];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
         }
     }
 }
@@ -322,10 +343,30 @@ impl<ST: CertificateSignatureRecoverable> Decodable for PeerEntry<ST> {
         let record_seq_num = u64::decode(&mut payload)?;
 
         let auth_port = if !payload.is_empty() {
-            Some(u16::decode(&mut payload)?)
+            let port = u16::decode(&mut payload)?;
+            if port == 0 {
+                None
+            } else {
+                Some(port)
+            }
         } else {
             None
         };
+
+        let direct_udp_port = if !payload.is_empty() {
+            let port = u16::decode(&mut payload)?;
+            if port == 0 {
+                None
+            } else {
+                Some(port)
+            }
+        } else {
+            None
+        };
+
+        if !payload.is_empty() {
+            return Err(alloy_rlp::Error::Custom("extra bytes in peer entry"));
+        }
 
         Ok(Self {
             pubkey,
@@ -333,6 +374,7 @@ impl<ST: CertificateSignatureRecoverable> Decodable for PeerEntry<ST> {
             signature,
             record_seq_num,
             auth_port,
+            direct_udp_port,
         })
     }
 }
@@ -2314,6 +2356,7 @@ where
 mod tests {
     use std::net::SocketAddrV4;
 
+    use alloy_rlp::{encode_list, Encodable};
     use monad_crypto::{
         certificate_signature::{CertificateSignaturePubKey, PubKey},
         NopSignature,
@@ -2479,9 +2522,76 @@ mod tests {
             signature,
             record_seq_num,
             auth_port: None,
+            direct_udp_port: None,
         };
         let encoded = alloy_rlp::encode(&entry);
         let decoded: PeerEntry<NopSignature> = alloy_rlp::decode_exact(&encoded).unwrap();
         assert_eq!(entry, decoded);
+    }
+
+    #[test]
+    fn peer_entry_rlp_encode_decode_with_direct_udp_only() {
+        let pubkey = CertificateSignaturePubKey::<NopSignature>::from_bytes(&[2u8; 32]).unwrap();
+        let addr: SocketAddrV4 = "127.0.0.1:8001".parse().unwrap();
+        let signature = NopSignature { pubkey, id: 4321 };
+        let entry = PeerEntry {
+            pubkey,
+            addr,
+            signature,
+            record_seq_num: 7,
+            auth_port: None,
+            direct_udp_port: Some(9001),
+        };
+
+        let encoded = alloy_rlp::encode(&entry);
+        let decoded: PeerEntry<NopSignature> = alloy_rlp::decode_exact(&encoded).unwrap();
+        assert_eq!(entry, decoded);
+    }
+
+    #[test]
+    fn peer_entry_rlp_decode_legacy_auth_only_form() {
+        let pubkey = CertificateSignaturePubKey::<NopSignature>::from_bytes(&[3u8; 32]).unwrap();
+        let addr: SocketAddrV4 = "127.0.0.1:8002".parse().unwrap();
+        let signature = NopSignature { pubkey, id: 99 };
+        let record_seq_num = 11u64;
+        let auth_port = 9002u16;
+        let enc: [&dyn Encodable; 5] = [
+            &pubkey,
+            &addr.to_string(),
+            &signature,
+            &record_seq_num,
+            &auth_port,
+        ];
+        let mut encoded = Vec::new();
+        encode_list::<_, dyn Encodable>(&enc, &mut encoded);
+
+        let decoded: PeerEntry<NopSignature> = alloy_rlp::decode_exact(&encoded).unwrap();
+        assert_eq!(decoded.auth_port, Some(auth_port));
+        assert_eq!(decoded.direct_udp_port, None);
+    }
+
+    #[test]
+    fn peer_entry_rlp_decode_rejects_extra_fields() {
+        let pubkey = CertificateSignaturePubKey::<NopSignature>::from_bytes(&[4u8; 32]).unwrap();
+        let addr: SocketAddrV4 = "127.0.0.1:8003".parse().unwrap();
+        let signature = NopSignature { pubkey, id: 7 };
+        let record_seq_num = 12u64;
+        let auth_port = 9003u16;
+        let direct_udp_port = 9004u16;
+        let extra_port = 9005u16;
+        let enc: [&dyn Encodable; 7] = [
+            &pubkey,
+            &addr.to_string(),
+            &signature,
+            &record_seq_num,
+            &auth_port,
+            &direct_udp_port,
+            &extra_port,
+        ];
+        let mut encoded = Vec::new();
+        encode_list::<_, dyn Encodable>(&enc, &mut encoded);
+
+        let decoded = alloy_rlp::decode_exact::<PeerEntry<NopSignature>>(&encoded);
+        assert!(decoded.is_err());
     }
 }
