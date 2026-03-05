@@ -22,8 +22,8 @@ use monad_crypto::hasher::{Hasher, HasherType};
 use monad_dataplane::udp::DEFAULT_SEGMENT_SIZE;
 use monad_raptor::ManagedDecoder;
 use monad_raptorcast::{
-    packet::build_messages,
-    udp::{parse_message, ChunkSignatureVerifier, GroupId, MAX_REDUNDANCY, SIGNATURE_CACHE_SIZE},
+    packet::{build_messages, regular::MAX_REDUNDANCY},
+    udp::{parse_message, ChunkSignatureVerifier, GroupId, SIGNATURE_CACHE_SIZE},
     util::{BuildTarget, Redundancy},
 };
 use monad_secp::{KeyPair, SecpSignature};
