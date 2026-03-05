@@ -45,6 +45,7 @@ use monad_dataplane::{
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{
     ControlPanelEvent, GetFullNodes, GetPeers, Message, MonadEvent, PeerEntry, RouterCommand,
+    TX_FORWARD_LEANUDP_MAX_MESSAGE_SIZE_BYTES,
 };
 use monad_node_config::{FullNodeConfig, FullNodeRaptorCastConfig};
 use monad_peer_discovery::{
@@ -68,6 +69,9 @@ use util::{
 
 use crate::{
     metrics::{
+        COUNTER_RAPTORCAST_LEANUDP_CONNECT_ATTEMPTS, COUNTER_RAPTORCAST_LEANUDP_CONNECT_FAILURES,
+        COUNTER_RAPTORCAST_LEANUDP_FORWARD_ATTEMPTS, COUNTER_RAPTORCAST_LEANUDP_FORWARD_FALLBACK,
+        COUNTER_RAPTORCAST_LEANUDP_FORWARD_OVERSIZE, COUNTER_RAPTORCAST_LEANUDP_FORWARD_SENT,
         GAUGE_RAPTORCAST_TOTAL_DESERIALIZE_ERRORS, GAUGE_RAPTORCAST_TOTAL_MESSAGES_RECEIVED,
         GAUGE_RAPTORCAST_TOTAL_RECV_ERRORS,
     },
@@ -122,6 +126,13 @@ where
     tcp_reader: TcpSocketReader,
     tcp_writer: TcpSocketWriter,
     dual_socket: auth::DualSocketHandle<AP>,
+    lean_udp_socket: Option<
+        auth::LeanUdpSocketHandle<
+            AP,
+            CertificateSignaturePubKey<ST>,
+            auth::NopScore<CertificateSignaturePubKey<ST>>,
+        >,
+    >,
     dataplane_control: DataplaneControl,
     pending_events: VecDeque<RaptorCastEvent<M::Event, ST>>,
 
@@ -162,11 +173,13 @@ where
         secondary_mode: SecondaryRaptorCastModeConfig,
         tcp_socket: TcpSocketHandle,
         authenticated_socket: Option<UdpSocketHandle>,
+        direct_udp_socket: Option<UdpSocketHandle>,
         non_authenticated_socket: UdpSocketHandle,
         control: DataplaneControl,
         peer_discovery_driver: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
         current_epoch: Epoch,
         auth_protocol: AP,
+        direct_udp_auth_protocol: Option<AP>,
     ) -> Self {
         let (tcp_reader, tcp_writer) = tcp_socket.split();
 
@@ -188,6 +201,24 @@ where
                 .map(|socket| auth::AuthenticatedSocketHandle::new(socket, auth_protocol)),
             non_authenticated_socket,
         );
+        let lean_udp_socket = match (direct_udp_socket, direct_udp_auth_protocol) {
+            (Some(socket), Some(protocol)) => {
+                let direct_auth_socket = auth::AuthenticatedSocketHandle::new(socket, protocol);
+                let mut leanudp_config = monad_leanudp::Config::default();
+                leanudp_config.max_message_size = TX_FORWARD_LEANUDP_MAX_MESSAGE_SIZE_BYTES;
+                Some(auth::LeanUdpSocketHandle::new(
+                    direct_auth_socket,
+                    auth::NopScore::new(),
+                    leanudp_config,
+                ))
+            }
+            (None, None) => None,
+            (Some(_), None) | (None, Some(_)) => {
+                panic!(
+                    "direct_udp_socket and direct_udp_auth_protocol must be set or unset together"
+                );
+            }
+        };
 
         let redundancy = Redundancy::from_f32(config.primary_instance.raptor10_redundancy)
             .expect("primary raptor10_redundancy doesn't fit");
@@ -231,6 +262,7 @@ where
             tcp_reader,
             tcp_writer,
             dual_socket,
+            lean_udp_socket,
             dataplane_control: control,
             pending_events: Default::default(),
             channel_to_secondary: None,
@@ -646,11 +678,13 @@ where
         SecondaryRaptorCastModeConfig::None,
         dataplane.tcp_socket,
         dataplane.authenticated_socket,
+        None,
         dataplane.non_authenticated_socket,
         dataplane.control,
         shared_pd,
         Epoch(0),
         auth_protocol,
+        None,
     )
 }
 
@@ -701,11 +735,13 @@ where
         SecondaryRaptorCastModeConfig::None,
         dataplane.tcp_socket,
         dataplane.authenticated_socket,
+        None,
         dataplane.non_authenticated_socket,
         dataplane.control,
         shared_pd,
         Epoch(0),
         auth_protocol,
+        None,
     )
 }
 
@@ -916,17 +952,110 @@ where
                 } => {
                     self.dedicated_full_nodes = dedicated_full_nodes;
                 }
+                RouterCommand::LeanPointToPoint {
+                    target,
+                    message,
+                    priority,
+                } => {
+                    self.metrics[COUNTER_RAPTORCAST_LEANUDP_FORWARD_ATTEMPTS] += 1;
+
+                    let Some(lean_socket) = self.lean_udp_socket.as_mut() else {
+                        self.metrics[COUNTER_RAPTORCAST_LEANUDP_FORWARD_FALLBACK] += 1;
+                        self.handle_publish(
+                            RouterTarget::PointToPoint(target),
+                            message,
+                            priority,
+                            self_id,
+                        );
+                        continue;
+                    };
+
+                    let target_pubkey = target.pubkey();
+                    if !lean_socket.has_any_session_by_public_key(&target_pubkey) {
+                        let discovered_addr = self
+                            .peer_discovery_driver
+                            .lock()
+                            .ok()
+                            .and_then(|pd| pd.get_direct_udp_addr(&target));
+
+                        let Some(discovered_addr) = discovered_addr else {
+                            self.metrics[COUNTER_RAPTORCAST_LEANUDP_FORWARD_FALLBACK] += 1;
+                            self.handle_publish(
+                                RouterTarget::PointToPoint(target),
+                                message,
+                                priority,
+                                self_id,
+                            );
+                            continue;
+                        };
+
+                        self.metrics[COUNTER_RAPTORCAST_LEANUDP_CONNECT_ATTEMPTS] += 1;
+                        if let Err(err) = lean_socket.connect(
+                            &target_pubkey,
+                            discovered_addr,
+                            DEFAULT_RETRY_ATTEMPTS,
+                        ) {
+                            self.metrics[COUNTER_RAPTORCAST_LEANUDP_CONNECT_FAILURES] += 1;
+                            warn!(?target, ?discovered_addr, ?err, "leanudp connect failed");
+                        }
+                        lean_socket.flush();
+                    }
+
+                    let outbound_message =
+                        match OutboundRouterMessage::<OM, ST>::AppMessage(message.clone())
+                            .try_serialize()
+                        {
+                            Ok(payload) => payload,
+                            Err(err) => {
+                                error!(
+                                    ?target,
+                                    ?err,
+                                    "failed to serialize leanudp point-to-point message"
+                                );
+                                continue;
+                            }
+                        };
+
+                    let payload_len = outbound_message.len();
+                    let max_message_size = lean_socket.config().max_message_size;
+
+                    if payload_len > max_message_size {
+                        self.metrics[COUNTER_RAPTORCAST_LEANUDP_FORWARD_OVERSIZE] += 1;
+                        error!(
+                            ?target,
+                            payload_len,
+                            max_message_size,
+                            "leanudp point-to-point payload exceeds max message size"
+                        );
+                        continue;
+                    }
+
+                    if lean_socket.send_by_public_key(&target_pubkey, outbound_message, priority) {
+                        self.metrics[COUNTER_RAPTORCAST_LEANUDP_FORWARD_SENT] += 1;
+                    } else {
+                        warn!(
+                            ?target,
+                            "leanudp send_by_public_key failed while session is not yet established"
+                        );
+                    }
+                }
             }
         }
     }
 
     fn metrics(&self) -> ExecutorMetricsChain<'_> {
-        ExecutorMetricsChain::default()
+        let mut chain = ExecutorMetricsChain::default()
             .push(self.metrics.as_ref())
             .push(self.peer_discovery_metrics.as_ref())
             .push(self.udp_state.metrics().executor_metrics())
             .chain(self.udp_state.decoder_metrics())
-            .chain(self.dual_socket.metrics())
+            .chain(self.dual_socket.metrics());
+
+        if let Some(lean_socket) = &self.lean_udp_socket {
+            chain = chain.chain(lean_socket.metrics());
+        }
+
+        chain
     }
 }
 
@@ -1102,6 +1231,54 @@ where
 
             if let Some(event) = this.pending_events.pop_front() {
                 return Poll::Ready(Some(event.into()));
+            }
+        }
+
+        if let Some(lean_socket) = this.lean_udp_socket.as_mut() {
+            loop {
+                let mut recv_fut = pin!(lean_socket.recv());
+                match recv_fut.poll_unpin(cx) {
+                    Poll::Ready(Ok(msg)) => {
+                        let from = NodeId::new(msg.public_key);
+                        match InboundRouterMessage::<M, ST>::try_deserialize(&msg.payload) {
+                            Ok(inbound) => match inbound {
+                                InboundRouterMessage::AppMessage(app_message) => {
+                                    this.pending_events.push_back(RaptorCastEvent::Message(
+                                        app_message.event(from),
+                                    ));
+                                }
+                                InboundRouterMessage::PeerDiscoveryMessage(peer_disc_message) => {
+                                    this.peer_discovery_driver.lock().unwrap().update(
+                                        peer_disc_message.event_with_source(from, msg.src_addr),
+                                    );
+                                }
+                                InboundRouterMessage::FullNodesGroup(full_nodes_group_message) => {
+                                    trace!(
+                                        ?from,
+                                        ?full_nodes_group_message,
+                                        "dropping full-nodes group message received over leanudp"
+                                    );
+                                }
+                            },
+                            Err(err) => {
+                                trace!(
+                                    ?from,
+                                    ?err,
+                                    payload_len = msg.payload.len(),
+                                    "leanudp recv payload failed to deserialize, dropping"
+                                );
+                            }
+                        }
+                        if let Some(event) = this.pending_events.pop_front() {
+                            return Poll::Ready(Some(event.into()));
+                        }
+                    }
+                    Poll::Ready(Err(e)) => {
+                        trace!(error=?e, "leanudp socket recv error");
+                        continue;
+                    }
+                    Poll::Pending => break,
+                }
             }
         }
 

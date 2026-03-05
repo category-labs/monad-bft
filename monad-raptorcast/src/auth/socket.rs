@@ -296,6 +296,63 @@ where
         }
     }
 
+    pub fn is_connected_socket_and_public_key(
+        &self,
+        socket_addr: &SocketAddr,
+        public_key: &AP::PublicKey,
+    ) -> bool {
+        self.auth_protocol
+            .is_connected_socket_and_public_key(socket_addr, public_key)
+    }
+
+    pub fn get_socket_by_public_key(&self, public_key: &AP::PublicKey) -> Option<SocketAddr> {
+        self.auth_protocol.get_socket_by_public_key(public_key)
+    }
+
+    pub fn has_any_session_by_public_key(&self, public_key: &AP::PublicKey) -> bool {
+        self.auth_protocol.has_any_session_by_public_key(public_key)
+    }
+
+    pub fn write_with_buffering(
+        &mut self,
+        public_key: &AP::PublicKey,
+        plaintext: Bytes,
+        priority: UdpPriority,
+    ) -> bool {
+        if self.auth_protocol.is_connected_public_key(public_key) {
+            let Some(addr) = self.auth_protocol.get_socket_by_public_key(public_key) else {
+                warn!("failed to find socket for connected public key");
+                return false;
+            };
+
+            let Some(packet) = self.encrypt_packet_by_public_key(public_key, plaintext) else {
+                return false;
+            };
+
+            let stride = packet.len() as u16;
+            self.socket.write_unicast_with_priority(
+                UnicastMsg {
+                    msgs: vec![(addr, packet)],
+                    stride,
+                },
+                priority,
+            );
+            return true;
+        }
+
+        if !self.auth_protocol.has_any_session_by_public_key(public_key) {
+            return false;
+        }
+
+        match self.auth_protocol.buffer_message(public_key, plaintext) {
+            Ok(()) => true,
+            Err(e) => {
+                warn!(error=?e, "failed to buffer message");
+                false
+            }
+        }
+    }
+
     pub fn connect(
         &mut self,
         remote_public_key: &AP::PublicKey,
@@ -344,6 +401,32 @@ where
             }
             Err(e) => {
                 warn!(addr=?addr, error=?e, "failed to encrypt message");
+                None
+            }
+        }
+    }
+
+    fn encrypt_packet_by_public_key(
+        &mut self,
+        public_key: &AP::PublicKey,
+        plaintext: Bytes,
+    ) -> Option<Bytes> {
+        let header_size = AP::HEADER_SIZE as usize;
+        let mut packet = BytesMut::with_capacity(header_size + plaintext.len());
+        packet.resize(header_size, 0);
+        packet.extend_from_slice(&plaintext);
+
+        match self
+            .auth_protocol
+            .encrypt_by_public_key(public_key, &mut packet[header_size..])
+        {
+            Ok(header) => {
+                let header_bytes = header.as_bytes();
+                packet[..header_size].copy_from_slice(header_bytes);
+                Some(packet.freeze())
+            }
+            Err(e) => {
+                warn!(error=?e, "failed to encrypt message");
                 None
             }
         }
