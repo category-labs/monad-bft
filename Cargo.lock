@@ -5906,6 +5906,7 @@ version = "0.1.0"
 dependencies = [
  "lru 0.16.3",
  "monad-executor",
+ "monad-fair-queue",
  "proptest",
  "tracing",
  "tracing-subscriber",

@@ -9,6 +9,7 @@ test-utils = []
 [dependencies]
 lru = { workspace = true }
 monad-executor = { workspace = true }
+monad-fair-queue = { path = "../monad-fair-queue" }
 tracing = { workspace = true }
 
 [dev-dependencies]

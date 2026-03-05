@@ -564,6 +564,28 @@ impl<I: Hash + Eq, C: Clock> IdentityScore for ScoreReader<I, C> {
     }
 }
 
+fn convert_score_for_fair_queue(score: Score) -> monad_fair_queue::Score {
+    // Score invariants guarantee finite positive values.
+    monad_fair_queue::Score::try_from(1.0 / score.reciprocal())
+        .expect("score must be finite and positive")
+}
+
+impl<I: Hash + Eq, C: Clock> monad_fair_queue::IdentityScore for ScoreReader<I, C> {
+    type Identity = I;
+
+    fn score(&self, identity: &Self::Identity) -> monad_fair_queue::PeerStatus {
+        match self.score(identity) {
+            PeerStatus::Promoted(score) => {
+                monad_fair_queue::PeerStatus::Promoted(convert_score_for_fair_queue(score))
+            }
+            PeerStatus::Newcomer(score) => {
+                monad_fair_queue::PeerStatus::Newcomer(convert_score_for_fair_queue(score))
+            }
+            PeerStatus::Unknown => monad_fair_queue::PeerStatus::Unknown,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};

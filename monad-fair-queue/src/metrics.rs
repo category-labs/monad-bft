@@ -13,17 +13,49 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-pub const COUNTER_FAIR_QUEUE_PUSH_TOTAL: &str = "monad.fair_queue.push.total";
-pub const COUNTER_FAIR_QUEUE_PUSH_PRIORITY: &str = "monad.fair_queue.push.priority";
-pub const COUNTER_FAIR_QUEUE_PUSH_REGULAR: &str = "monad.fair_queue.push.regular";
-pub const COUNTER_FAIR_QUEUE_PUSH_ERROR_FULL: &str = "monad.fair_queue.push.error.full";
-pub const COUNTER_FAIR_QUEUE_PUSH_ERROR_PER_ID_LIMIT: &str =
-    "monad.fair_queue.push.error.per_id_limit";
-
-pub const COUNTER_FAIR_QUEUE_POP_TOTAL: &str = "monad.fair_queue.pop.total";
-pub const COUNTER_FAIR_QUEUE_POP_EMPTY: &str = "monad.fair_queue.pop.empty";
-pub const COUNTER_FAIR_QUEUE_POP_FROM_PRIORITY: &str = "monad.fair_queue.pop.from_priority";
-pub const COUNTER_FAIR_QUEUE_POP_FROM_REGULAR: &str = "monad.fair_queue.pop.from_regular";
-
-pub const GAUGE_FAIR_QUEUE_PRIORITY_ITEMS: &str = "monad.fair_queue.priority_items";
-pub const GAUGE_FAIR_QUEUE_REGULAR_ITEMS: &str = "monad.fair_queue.regular_items";
+monad_executor::metric_consts! {
+    pub COUNTER_FAIR_QUEUE_PUSH_TOTAL {
+        name: "monad.fair_queue.push.total",
+        help: "Total number of accepted fair queue pushes",
+    }
+    pub COUNTER_FAIR_QUEUE_PUSH_PRIORITY {
+        name: "monad.fair_queue.push.priority",
+        help: "Number of accepted pushes into the priority pool",
+    }
+    pub COUNTER_FAIR_QUEUE_PUSH_REGULAR {
+        name: "monad.fair_queue.push.regular",
+        help: "Number of accepted pushes into the regular pool",
+    }
+    pub COUNTER_FAIR_QUEUE_PUSH_ERROR_FULL {
+        name: "monad.fair_queue.push.error.full",
+        help: "Number of rejected pushes due to global pool fullness",
+    }
+    pub COUNTER_FAIR_QUEUE_PUSH_ERROR_PER_ID_LIMIT {
+        name: "monad.fair_queue.push.error.per_id_limit",
+        help: "Number of rejected pushes due to per-identity limits",
+    }
+    pub COUNTER_FAIR_QUEUE_POP_TOTAL {
+        name: "monad.fair_queue.pop.total",
+        help: "Total number of successful fair queue pops",
+    }
+    pub COUNTER_FAIR_QUEUE_POP_EMPTY {
+        name: "monad.fair_queue.pop.empty",
+        help: "Number of pop attempts that found no available items",
+    }
+    pub COUNTER_FAIR_QUEUE_POP_FROM_PRIORITY {
+        name: "monad.fair_queue.pop.from_priority",
+        help: "Number of items popped from the priority pool",
+    }
+    pub COUNTER_FAIR_QUEUE_POP_FROM_REGULAR {
+        name: "monad.fair_queue.pop.from_regular",
+        help: "Number of items popped from the regular pool",
+    }
+    pub GAUGE_FAIR_QUEUE_PRIORITY_ITEMS {
+        name: "monad.fair_queue.priority_items",
+        help: "Current number of items in the priority pool",
+    }
+    pub GAUGE_FAIR_QUEUE_REGULAR_ITEMS {
+        name: "monad.fair_queue.regular_items",
+        help: "Current number of items in the regular pool",
+    }
+}

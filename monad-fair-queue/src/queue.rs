@@ -33,7 +33,7 @@ enum PoolKind {
 }
 
 impl PoolKind {
-    fn pop_from_counter(self) -> &'static str {
+    fn pop_from_counter(self) -> &'static monad_executor::MetricDef {
         match self {
             Self::Priority => COUNTER_FAIR_QUEUE_POP_FROM_PRIORITY,
             Self::Regular => COUNTER_FAIR_QUEUE_POP_FROM_REGULAR,
