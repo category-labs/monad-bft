@@ -722,9 +722,26 @@ impl<T: Triedb> ChainState<T> {
                 && FilteredParams::matches_topics(bloom, &topics_filter)
         };
 
-        let stream_with_triedb = stream::iter(from_block..=to_block)
-            .map(|block_num| async move {
-                let block_key = self.triedb_env.get_block_key(SeqNum(block_num)).ok_or(
+        let stream_with_buffer = stream::iter(from_block..=to_block).map(|block_num| {
+            if let Some(buffer) = &self.buffer {
+                if let Some(data) =
+                    buffer.get_bloom_filtered_header_transactions_receipts(block_num, filter_match)
+                {
+                    return Either::Left(data);
+                }
+            }
+
+            Either::Right(block_num)
+        });
+
+        let stream_with_triedb = stream_with_buffer
+            .map(|either| async move {
+                let block_number = match either {
+                    Either::Left(data) => return Ok(Either::Left(data)),
+                    Either::Right(block_num) => block_num,
+                };
+
+                let block_key = self.triedb_env.get_block_key(SeqNum(block_number)).ok_or(
                     JsonRpcError::internal_error("missing block in db in range".to_owned()),
                 )?;
 
@@ -735,7 +752,7 @@ impl<T: Triedb> ChainState<T> {
                     .map_err(JsonRpcError::internal_error)?
                 else {
                     // pass block number to try for archive
-                    return Ok(Either::Right(block_num));
+                    return Ok(Either::Right(block_number));
                 };
 
                 if !filter_match(header.header.logs_bloom) {
@@ -746,7 +763,7 @@ impl<T: Triedb> ChainState<T> {
                 let Ok(transactions) = self.triedb_env.get_transactions(block_key).await else {
                     // header exists but not transactions, block is statesynced
                     // pass block number to try for archive
-                    return Ok(Either::Right(block_num));
+                    return Ok(Either::Right(block_number));
                 };
 
                 let receipts = self
@@ -764,7 +781,7 @@ impl<T: Triedb> ChainState<T> {
             .map(|result| {
                 async move {
                     match result {
-                        Ok(Either::Left(data)) => Ok(data), // successfully fetched from triedb
+                        Ok(Either::Left(data)) => Ok(data),
                         Ok(Either::Right(block_number)) => {
                             // fallback and try fetching from archive
                             if let Some(archive_reader) = &self.archive_reader {
