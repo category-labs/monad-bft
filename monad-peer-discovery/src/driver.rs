@@ -284,6 +284,16 @@ impl<PD: PeerDiscoveryAlgo> PeerDiscoveryDriver<PD> {
         self.pd.get_addr_by_id(node_id).map(SocketAddr::V4)
     }
 
+    pub fn get_direct_udp_addr(
+        &self,
+        node_id: &NodeId<CertificateSignaturePubKey<PD::SignatureType>>,
+    ) -> Option<SocketAddr> {
+        self.pd
+            .get_name_record(node_id)
+            .and_then(|record| record.direct_udp_address())
+            .map(SocketAddr::V4)
+    }
+
     pub fn get_known_addresses(
         &self,
     ) -> HashMap<NodeId<CertificateSignaturePubKey<PD::SignatureType>>, SocketAddr> {
