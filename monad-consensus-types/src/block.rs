@@ -323,17 +323,6 @@ pub enum BlockPolicyBlockValidatorError {
     InsufficientReserveBalance,
 }
 
-#[derive(Debug, Default, Clone)]
-pub struct TxnFee {
-    pub first_txn_value: Balance,
-    pub first_txn_gas: Balance,
-    pub max_gas_cost: Balance,
-    pub is_delegated: bool,
-    pub delegation_before_first_txn: bool,
-}
-
-pub type TxnFees = BTreeMap<Address, TxnFee>;
-
 /// Trait that represents how inner contents of a block should be validated
 #[auto_impl(Box)]
 pub trait BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>
