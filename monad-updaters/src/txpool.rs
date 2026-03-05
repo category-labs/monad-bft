@@ -276,7 +276,9 @@ where
                         waker.wake();
                     }
                 }
-                TxPoolCommand::BlockCommit(_) | TxPoolCommand::Reset { .. } => {}
+                TxPoolCommand::BlockCommit(_)
+                | TxPoolCommand::Reset { .. }
+                | TxPoolCommand::Contribution { .. } => {}
                 TxPoolCommand::InsertForwardedTxs { .. } => {
                     unimplemented!(
                         "MockTxPoolExecutor should never recieve txs with MockExecutionProtocol"
@@ -447,6 +449,7 @@ where
                         |_| {},
                     );
                 }
+                TxPoolCommand::Contribution { .. } => {}
                 // TODO: add chain config to MockTxPoolExecutor if we're testing
                 // param forking with it
                 TxPoolCommand::EnterRound { .. } => {}

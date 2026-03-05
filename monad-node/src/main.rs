@@ -50,7 +50,10 @@ use monad_peer_discovery::{
     MonadNameRecord, NameRecord,
 };
 use monad_pprof::start_pprof_server;
-use monad_raptorcast::config::{RaptorCastConfig, RaptorCastConfigPrimary};
+use monad_raptorcast::{
+    auth::WireAuthProtocol,
+    config::{RaptorCastConfig, RaptorCastConfigPrimary},
+};
 use monad_router_multi::MultiRouter;
 use monad_state::{MonadMessage, MonadStateBuilder, VerifiedMonadMessage};
 use monad_state_backend::StateBackendThreadClient;
@@ -534,6 +537,10 @@ where
         .network
         .authenticated_bind_address_port
         .map(|port| SocketAddr::new(IpAddr::V4(node_config.network.bind_address_host), port));
+    let direct_udp_bind_address = node_config
+        .network
+        .direct_udp_port
+        .map(|port| SocketAddr::new(IpAddr::V4(node_config.network.bind_address_host), port));
     let Some(SocketAddr::V4(name_record_address)) = resolve_domain_v4(
         &NodeId::new(identity.pubkey()),
         &peer_discovery_config.self_address,
@@ -547,6 +554,7 @@ where
     tracing::debug!(
         ?bind_address,
         ?authenticated_bind_address,
+        ?direct_udp_bind_address,
         ?name_record_address,
         "Monad-node starting, pid: {}",
         process::id()
@@ -574,6 +582,9 @@ where
     if let Some(auth_addr) = authenticated_bind_address {
         udp_sockets.push((UdpSocketId::AuthenticatedRaptorcast, auth_addr));
     }
+    if let Some(direct_addr) = direct_udp_bind_address {
+        udp_sockets.push((UdpSocketId::DirectUdp, direct_addr));
+    }
     dp_builder = dp_builder
         .with_udp_sockets(udp_sockets)
         .with_tcp_sockets([(TcpSocketId::Raptorcast, bind_address)]);
@@ -583,17 +594,41 @@ where
         peer_discovery_config.self_auth_port.is_some(),
         network_config.authenticated_bind_address_port.is_some()
     );
+    assert!(
+        peer_discovery_config.self_direct_udp_auth_port.is_none()
+            || peer_discovery_config.self_auth_port.is_some(),
+        "self_direct_udp_auth_port requires self_auth_port"
+    );
+    if let (Some(auth_addr), Some(direct_addr)) =
+        (authenticated_bind_address, direct_udp_bind_address)
+    {
+        assert_ne!(
+            auth_addr, direct_addr,
+            "authenticated_bind_address_port and direct_udp_port must differ"
+        );
+    }
 
     let self_id = NodeId::new(identity.pubkey());
-    let self_record = match peer_discovery_config.self_auth_port {
-        Some(auth_port) => NameRecord::new_with_authentication(
+    let self_record = match (
+        peer_discovery_config.self_auth_port,
+        peer_discovery_config.self_direct_udp_auth_port,
+    ) {
+        (Some(auth_port), Some(direct_udp_port)) => NameRecord::new_with_direct_udp_auth(
+            *name_record_address.ip(),
+            name_record_address.port(),
+            name_record_address.port(),
+            auth_port,
+            direct_udp_port,
+            peer_discovery_config.self_record_seq_num,
+        ),
+        (Some(auth_port), None) => NameRecord::new_with_authentication(
             *name_record_address.ip(),
             name_record_address.port(),
             name_record_address.port(),
             auth_port,
             peer_discovery_config.self_record_seq_num,
         ),
-        None => NameRecord::new(
+        _ => NameRecord::new(
             *name_record_address.ip(),
             name_record_address.port(),
             peer_discovery_config.self_record_seq_num,
@@ -629,6 +664,7 @@ where
                 signature: peer.name_record_sig,
                 record_seq_num: peer.record_seq_num,
                 auth_port: peer.auth_port,
+                direct_udp_auth_port: peer.direct_udp_auth_port,
             };
 
             match MonadNameRecord::try_from(&peer_entry) {
@@ -696,13 +732,21 @@ where
 
     let shared_key = Arc::new(identity);
     let wireauth_config = monad_wireauth::Config::default();
-    let auth_protocol = monad_raptorcast::auth::WireAuthProtocol::new(
+    let auth_protocol = WireAuthProtocol::new(
         &monad_raptorcast::auth::metrics::UDP_METRICS,
-        wireauth_config,
+        wireauth_config.clone(),
         shared_key.clone(),
     );
 
-    MultiRouter::new(
+    let direct_udp_auth_protocol = direct_udp_bind_address.map(|_| {
+        WireAuthProtocol::new(
+            &monad_raptorcast::auth::metrics::UDP_METRICS,
+            wireauth_config.clone(),
+            shared_key.clone(),
+        )
+    });
+
+    let router = MultiRouter::new(
         self_id,
         RaptorCastConfig {
             shared_key,
@@ -723,7 +767,10 @@ where
         current_epoch,
         epoch_validators,
         auth_protocol,
-    )
+        direct_udp_auth_protocol,
+    );
+
+    router
 }
 
 fn resolve_domain_v4<P: PubKey>(node_id: &NodeId<P>, domain: &String) -> Option<SocketAddr> {

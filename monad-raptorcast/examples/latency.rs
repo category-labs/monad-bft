@@ -666,11 +666,13 @@ fn setup_node(
         SecondaryRaptorCastModeConfig::None,
         tcp_socket,
         Some(authenticated_socket),
+        None,
         non_authenticated_socket,
         dataplane_control,
         Arc::new(std::sync::Mutex::new(pd)),
         Epoch(0),
         auth_protocol,
+        None,
     );
 
     raptorcast.exec(vec![RouterCommand::AddEpochValidatorSet {

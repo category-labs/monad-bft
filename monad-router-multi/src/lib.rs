@@ -91,6 +91,7 @@ where
         current_epoch: Epoch,
         epoch_validators: BTreeMap<Epoch, BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>>,
         auth_protocol: AP,
+        direct_udp_auth_protocol: Option<AP>,
     ) -> Self
     where
         B: PeerDiscoveryAlgoBuilder<PeerDiscoveryAlgoType = PD>,
@@ -104,6 +105,7 @@ where
 
         let tcp_socket = dp.tcp_sockets.take(TcpSocketId::Raptorcast).unwrap();
         let authenticated_socket = dp.udp_sockets.take(UdpSocketId::AuthenticatedRaptorcast);
+        let direct_udp_socket = dp.udp_sockets.take(UdpSocketId::DirectUdp);
         let non_authenticated_socket = dp
             .udp_sockets
             .take(UdpSocketId::Raptorcast)
@@ -153,11 +155,13 @@ where
             secondary_mode,
             tcp_socket,
             authenticated_socket,
+            direct_udp_socket,
             non_authenticated_socket,
             control,
             shared_pdd.clone(),
             current_epoch,
             auth_protocol,
+            direct_udp_auth_protocol,
         );
         rc_primary.bind_channel_to_secondary_raptorcast(
             secondary_mode,
@@ -388,6 +392,9 @@ where
                     };
                     validator_cmds.push(cmd_cpy);
                     fullnodes_cmds.push(cmd);
+                }
+                RouterCommand::LeanPointToPoint { .. } => {
+                    validator_cmds.push(cmd);
                 }
                 RouterCommand::UpdateCurrentRound(epoch, round) => {
                     let cmd_cpy = RouterCommand::UpdateCurrentRound(epoch, round);

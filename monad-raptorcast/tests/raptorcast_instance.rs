@@ -14,9 +14,9 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     io::ErrorKind,
-    net::{SocketAddr, SocketAddrV4, UdpSocket},
+    net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket},
     num::ParseIntError,
     sync::{Arc, Once},
     time::Duration,
@@ -29,10 +29,18 @@ use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
     CertificateSignatureRecoverable, PubKey,
 };
-use monad_dataplane::udp::DEFAULT_SEGMENT_SIZE;
+use monad_dataplane::{
+    udp::{DEFAULT_MTU, DEFAULT_SEGMENT_SIZE},
+    DataplaneBuilder, DataplaneControl, TcpSocketHandle, TcpSocketId, UdpSocketHandle, UdpSocketId,
+};
 use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand};
-use monad_peer_discovery::mock::NopDiscovery;
+use monad_node_config::{FullNodeConfig, FullNodeRaptorCastConfig};
+use monad_peer_discovery::{
+    driver::PeerDiscoveryDriver,
+    mock::{NopDiscovery, NopDiscoveryBuilder},
+    MonadNameRecord, NameRecord,
+};
 use monad_raptorcast::{
     create_dataplane_for_tests, new_defaulted_raptorcast_for_tests,
     packet::build_messages,
@@ -450,6 +458,153 @@ type MockRaptorCast = RaptorCast<
     monad_raptorcast::auth::NoopAuthProtocol<CertificateSignaturePubKey<SignatureType>>,
 >;
 
+type WireauthMockRaptorCast = RaptorCast<
+    SignatureType,
+    MockMessage,
+    MockMessage,
+    MockEvent<CertificateSignaturePubKey<SignatureType>>,
+    NopDiscovery<SignatureType>,
+    monad_raptorcast::auth::WireAuthProtocol,
+>;
+
+struct DirectDataplaneHandles {
+    tcp_socket: TcpSocketHandle,
+    authenticated_socket: UdpSocketHandle,
+    direct_udp_socket: UdpSocketHandle,
+    non_authenticated_socket: UdpSocketHandle,
+    control: DataplaneControl,
+    tcp_addr: SocketAddrV4,
+    auth_addr: SocketAddrV4,
+    direct_udp_addr: SocketAddrV4,
+    non_auth_addr: SocketAddrV4,
+}
+
+fn create_dataplane_with_direct_udp_for_tests() -> DirectDataplaneHandles {
+    let bind_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let mut dataplane = DataplaneBuilder::new(1_000)
+        .with_tcp_sockets([(TcpSocketId::Raptorcast, bind_addr)])
+        .with_udp_sockets([
+            (UdpSocketId::AuthenticatedRaptorcast, bind_addr),
+            (UdpSocketId::DirectUdp, bind_addr),
+            (UdpSocketId::Raptorcast, bind_addr),
+        ])
+        .build();
+
+    let tcp_socket = dataplane.tcp_sockets.take(TcpSocketId::Raptorcast).unwrap();
+    let tcp_addr = match tcp_socket.local_addr() {
+        SocketAddr::V4(addr) => addr,
+        SocketAddr::V6(_) => panic!("expected v4 address"),
+    };
+
+    let authenticated_socket = dataplane
+        .udp_sockets
+        .take(UdpSocketId::AuthenticatedRaptorcast)
+        .expect("authenticated socket");
+    let auth_addr = match authenticated_socket.local_addr() {
+        SocketAddr::V4(addr) => addr,
+        SocketAddr::V6(_) => panic!("expected v4 address"),
+    };
+
+    let direct_udp_socket = dataplane
+        .udp_sockets
+        .take(UdpSocketId::DirectUdp)
+        .expect("direct udp socket");
+    let direct_udp_addr = match direct_udp_socket.local_addr() {
+        SocketAddr::V4(addr) => addr,
+        SocketAddr::V6(_) => panic!("expected v4 address"),
+    };
+
+    let non_authenticated_socket = dataplane
+        .udp_sockets
+        .take(UdpSocketId::Raptorcast)
+        .expect("non-authenticated socket");
+    let non_auth_addr = match non_authenticated_socket.local_addr() {
+        SocketAddr::V4(addr) => addr,
+        SocketAddr::V6(_) => panic!("expected v4 address"),
+    };
+
+    DirectDataplaneHandles {
+        tcp_socket,
+        authenticated_socket,
+        direct_udp_socket,
+        non_authenticated_socket,
+        control: dataplane.control,
+        tcp_addr,
+        auth_addr,
+        direct_udp_addr,
+        non_auth_addr,
+    }
+}
+
+fn create_wireauth_raptorcast_config(
+    shared_key: Arc<KeyPair>,
+) -> monad_raptorcast::config::RaptorCastConfig<SignatureType> {
+    monad_raptorcast::config::RaptorCastConfig {
+        shared_key,
+        mtu: DEFAULT_MTU,
+        udp_message_max_age_ms: u64::MAX,
+        sig_verification_rate_limit: 10_000,
+        primary_instance: Default::default(),
+        secondary_instance: FullNodeRaptorCastConfig {
+            enable_publisher: false,
+            enable_client: false,
+            raptor10_fullnode_redundancy_factor: 2f32,
+            full_nodes_prioritized: FullNodeConfig { identities: vec![] },
+            round_span: Round(10),
+            invite_lookahead: Round(5),
+            max_invite_wait: Round(3),
+            deadline_round_dist: Round(3),
+            init_empty_round_span: Round(1),
+            max_group_size: 10,
+            max_num_group: 5,
+            invite_future_dist_min: Round(1),
+            invite_future_dist_max: Round(5),
+            invite_accept_heartbeat_ms: 100,
+        },
+    }
+}
+
+fn setup_wireauth_direct_raptorcast_service(
+    keypair: Arc<KeyPair>,
+    dataplane: DirectDataplaneHandles,
+    known_addresses: HashMap<NodeId<PubKeyType>, SocketAddrV4>,
+    name_records: HashMap<NodeId<PubKeyType>, MonadNameRecord<SignatureType>>,
+) -> WireauthMockRaptorCast {
+    let peer_discovery_builder = NopDiscoveryBuilder {
+        known_addresses,
+        name_records,
+        ..Default::default()
+    };
+    let pd = PeerDiscoveryDriver::new(peer_discovery_builder);
+    let shared_pd = Arc::new(std::sync::Mutex::new(pd));
+
+    let wireauth_config = monad_wireauth::Config::default();
+    let auth_protocol = monad_raptorcast::auth::WireAuthProtocol::new(
+        &monad_raptorcast::auth::metrics::UDP_METRICS,
+        wireauth_config.clone(),
+        keypair.clone(),
+    );
+    let direct_udp_auth_protocol = monad_raptorcast::auth::WireAuthProtocol::new(
+        &monad_raptorcast::auth::metrics::UDP_METRICS,
+        wireauth_config,
+        keypair.clone(),
+    );
+
+    RaptorCast::<SignatureType, MockMessage, MockMessage, MockEvent<PubKeyType>, _, _>::new(
+        create_wireauth_raptorcast_config(keypair),
+        SecondaryRaptorCastModeConfig::None,
+        dataplane.tcp_socket,
+        Some(dataplane.authenticated_socket),
+        Some(dataplane.direct_udp_socket),
+        dataplane.non_authenticated_socket,
+        dataplane.control,
+        shared_pd,
+        Epoch(0),
+        auth_protocol,
+        Some(direct_udp_auth_protocol),
+    )
+}
+
 fn setup_raptorcast_service(
     keypair: KeyPair,
     dataplane: DataplaneHandles,
@@ -461,6 +616,155 @@ fn setup_raptorcast_service(
         MockMessage,
         <MockMessage as Message>::Event,
     >(dataplane, known_addresses, Arc::new(keypair))
+}
+
+#[tokio::test]
+async fn test_leanudp_direct_udp_buffered_bidirectional_exchange() {
+    ONCE_SETUP.call_once(|| {
+        tracing_subscriber::fmt::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .with_span_events(FmtSpan::CLOSE)
+            .init();
+
+        let orig_panic_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |panic_info| {
+            orig_panic_hook(panic_info);
+            std::process::exit(1);
+        }));
+    });
+
+    let alice_keypair = Arc::new(keypair(11));
+    let bob_keypair = Arc::new(keypair(12));
+    let alice_nodeid = NodeId::new(alice_keypair.pubkey());
+    let bob_nodeid = NodeId::new(bob_keypair.pubkey());
+
+    let alice_dataplane = create_dataplane_with_direct_udp_for_tests();
+    let bob_dataplane = create_dataplane_with_direct_udp_for_tests();
+
+    let known_addresses: HashMap<NodeId<PubKeyType>, SocketAddrV4> = [
+        (alice_nodeid, alice_dataplane.non_auth_addr),
+        (bob_nodeid, bob_dataplane.non_auth_addr),
+    ]
+    .into_iter()
+    .collect();
+
+    let name_records: HashMap<NodeId<PubKeyType>, MonadNameRecord<SignatureType>> = [
+        (
+            alice_nodeid,
+            MonadNameRecord::new(
+                NameRecord::new_with_direct_udp_auth(
+                    Ipv4Addr::new(127, 0, 0, 1),
+                    alice_dataplane.tcp_addr.port(),
+                    alice_dataplane.non_auth_addr.port(),
+                    alice_dataplane.auth_addr.port(),
+                    alice_dataplane.direct_udp_addr.port(),
+                    1,
+                ),
+                &*alice_keypair,
+            ),
+        ),
+        (
+            bob_nodeid,
+            MonadNameRecord::new(
+                NameRecord::new_with_direct_udp_auth(
+                    Ipv4Addr::new(127, 0, 0, 1),
+                    bob_dataplane.tcp_addr.port(),
+                    bob_dataplane.non_auth_addr.port(),
+                    bob_dataplane.auth_addr.port(),
+                    bob_dataplane.direct_udp_addr.port(),
+                    1,
+                ),
+                &*bob_keypair,
+            ),
+        ),
+    ]
+    .into_iter()
+    .collect();
+
+    let mut alice_rc = setup_wireauth_direct_raptorcast_service(
+        alice_keypair.clone(),
+        alice_dataplane,
+        known_addresses.clone(),
+        name_records.clone(),
+    );
+    let mut bob_rc = setup_wireauth_direct_raptorcast_service(
+        bob_keypair.clone(),
+        bob_dataplane,
+        known_addresses,
+        name_records,
+    );
+
+    let epoch = Epoch(0);
+    let validator_set = vec![(alice_nodeid, Stake::ONE), (bob_nodeid, Stake::ONE)];
+    alice_rc.exec(vec![RouterCommand::AddEpochValidatorSet {
+        epoch,
+        validator_set: validator_set.clone(),
+    }]);
+    bob_rc.exec(vec![RouterCommand::AddEpochValidatorSet {
+        epoch,
+        validator_set,
+    }]);
+
+    const MESSAGE_COUNT: usize = 32;
+    const MESSAGE_SIZE: usize = 32 * 1024;
+    const ALICE_TO_BOB_BASE: u32 = 10_000;
+    const BOB_TO_ALICE_BASE: u32 = 20_000;
+
+    for i in 0..MESSAGE_COUNT {
+        alice_rc.exec(vec![RouterCommand::LeanPointToPoint {
+            target: bob_nodeid,
+            message: MockMessage::new(ALICE_TO_BOB_BASE + i as u32, MESSAGE_SIZE),
+            priority: UdpPriority::Regular,
+        }]);
+        bob_rc.exec(vec![RouterCommand::LeanPointToPoint {
+            target: alice_nodeid,
+            message: MockMessage::new(BOB_TO_ALICE_BASE + i as u32, MESSAGE_SIZE),
+            priority: UdpPriority::Regular,
+        }]);
+    }
+
+    let expected_on_bob: HashSet<u32> = (0..MESSAGE_COUNT as u32)
+        .map(|offset| ALICE_TO_BOB_BASE + offset)
+        .collect();
+    let expected_on_alice: HashSet<u32> = (0..MESSAGE_COUNT as u32)
+        .map(|offset| BOB_TO_ALICE_BASE + offset)
+        .collect();
+
+    let mut received_on_bob = HashSet::new();
+    let mut received_on_alice = HashSet::new();
+    let start = std::time::Instant::now();
+    let timeout = Duration::from_secs(10);
+
+    while (received_on_bob.len() < MESSAGE_COUNT || received_on_alice.len() < MESSAGE_COUNT)
+        && start.elapsed() < timeout
+    {
+        tokio::select! {
+            event = alice_rc.next() => {
+                let event = event.expect("alice stream should not end");
+                let MockEvent((from, id)) = event;
+                if from == bob_nodeid {
+                    received_on_alice.insert(id);
+                }
+            }
+            event = bob_rc.next() => {
+                let event = event.expect("bob stream should not end");
+                let MockEvent((from, id)) = event;
+                if from == alice_nodeid {
+                    received_on_bob.insert(id);
+                }
+            }
+            _ = tokio::time::sleep(Duration::from_millis(5)) => {}
+        }
+    }
+
+    assert_eq!(
+        received_on_bob, expected_on_bob,
+        "bob should receive all buffered direct UDP messages from alice"
+    );
+    assert_eq!(
+        received_on_alice, expected_on_alice,
+        "alice should receive all buffered direct UDP messages from bob"
+    );
 }
 
 #[cfg(test)]

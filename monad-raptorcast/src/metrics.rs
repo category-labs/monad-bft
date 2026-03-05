@@ -36,6 +36,30 @@ monad_executor::metric_consts! {
         name: "monad.raptorcast.decoding_cache.signature_verifications_rate_limited",
         help: "Signature verifications rate limited",
     }
+    pub COUNTER_RAPTORCAST_LEANUDP_FORWARD_ATTEMPTS {
+        name: "monad.raptorcast.leanudp.forward_attempts",
+        help: "Lean UDP forward attempts",
+    }
+    pub COUNTER_RAPTORCAST_LEANUDP_FORWARD_SENT {
+        name: "monad.raptorcast.leanudp.forward_sent",
+        help: "Lean UDP forwards sent",
+    }
+    pub COUNTER_RAPTORCAST_LEANUDP_FORWARD_FALLBACK {
+        name: "monad.raptorcast.leanudp.forward_fallback",
+        help: "Lean UDP forwards that fell back to regular path",
+    }
+    pub COUNTER_RAPTORCAST_LEANUDP_FORWARD_OVERSIZE {
+        name: "monad.raptorcast.leanudp.forward_oversize",
+        help: "Lean UDP forwards rejected due to oversize payload",
+    }
+    pub COUNTER_RAPTORCAST_LEANUDP_CONNECT_ATTEMPTS {
+        name: "monad.raptorcast.leanudp.connect_attempts",
+        help: "Lean UDP peer connect attempts",
+    }
+    pub COUNTER_RAPTORCAST_LEANUDP_CONNECT_FAILURES {
+        name: "monad.raptorcast.leanudp.connect_failures",
+        help: "Lean UDP peer connect failures",
+    }
     pub PRIMARY_BROADCAST_LATENCY_P99_MS {
         name: "monad.bft.raptorcast.udp.primary_broadcast_latency_p99_ms",
         help: "P99 primary UDP broadcast latency in ms (30s rolling window)",

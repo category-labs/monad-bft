@@ -34,7 +34,7 @@ use monad_executor_glue::{
 };
 use monad_router_scheduler::{RouterEvent, RouterScheduler};
 use monad_state::VerifiedMonadMessage;
-use monad_types::NodeId;
+use monad_types::{NodeId, RouterTarget};
 use monad_updaters::{
     config_file::MockConfigFile, ledger::MockableLedger, loopback::LoopbackExecutor,
     statesync::MockableStateSync, timestamp::TimestampAdjuster, txpool::MockableTxPool,
@@ -406,6 +406,17 @@ impl<S: SwarmRelation> Executor for MockExecutor<S> {
                     priority: _,
                 } => {
                     self.router.send_outbound(self.tick, target, message);
+                }
+                RouterCommand::LeanPointToPoint {
+                    target,
+                    message,
+                    priority: _,
+                } => {
+                    self.router.send_outbound(
+                        self.tick,
+                        RouterTarget::PointToPoint(target),
+                        message,
+                    );
                 }
             }
         }
