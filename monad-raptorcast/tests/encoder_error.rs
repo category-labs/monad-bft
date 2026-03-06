@@ -21,8 +21,8 @@ use monad_crypto::hasher::{Hasher, HasherType};
 use monad_dataplane::udp::DEFAULT_SEGMENT_SIZE;
 use monad_raptor::SOURCE_SYMBOLS_MAX;
 use monad_raptorcast::{
-    udp::{build_messages, GroupId},
-    util::{BuildTarget, Redundancy},
+    udp::build_messages,
+    util::{BuildTarget, PrimaryBroadcastGroup, Redundancy, ValidatorGroupMap},
 };
 use monad_secp::{KeyPair, SecpSignature};
 use monad_types::{Epoch, NodeId, Stake};
@@ -67,14 +67,17 @@ pub fn encoder_error() {
         })
         .collect();
 
+    let self_id = NodeId::new(keys[0].pubkey());
+    let group_map: ValidatorGroupMap<_> = [(Epoch(0), validators)].into();
+    let group = PrimaryBroadcastGroup::of_epoch(Epoch(0), &self_id, &group_map).unwrap();
+
     let _ = build_messages::<SecpSignature>(
         &keys[0],
         DEFAULT_SEGMENT_SIZE,
         message,
         Redundancy::from_u8(1),
-        GroupId::Primary(Epoch(0)), // epoch_no
-        0,                          // unix_ts_ms
-        BuildTarget::Raptorcast(&validators),
+        0, // unix_ts_ms
+        BuildTarget::Raptorcast(group),
         &known_addresses,
     );
 }

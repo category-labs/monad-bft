@@ -23,7 +23,6 @@ use monad_dataplane::udp::DEFAULT_SEGMENT_SIZE;
 use super::{regular, BuildError};
 use crate::{
     message::MAX_MESSAGE_SIZE,
-    udp::GroupId,
     util::{unix_ts_ms_now, BuildTarget, Collector, Redundancy, UdpMessage},
 };
 
@@ -80,7 +79,6 @@ where
     key: MaybeArc<'key, ST::KeyPairType>,
 
     // required fields
-    group_id: Option<GroupId>,
     redundancy: Option<Redundancy>,
 
     // optional fields
@@ -96,7 +94,6 @@ where
     fn clone(&self) -> Self {
         Self {
             key: self.key.clone(),
-            group_id: self.group_id,
             redundancy: self.redundancy,
             unix_ts_ms: self.unix_ts_ms,
             segment_size: self.segment_size,
@@ -123,7 +120,6 @@ where
 
             // default fields
             redundancy: None,
-            group_id: None,
             unix_ts_ms: TimestampMode::RealTime,
 
             // optional fields
@@ -143,11 +139,6 @@ where
         self
     }
 
-    pub fn group_id(mut self, group_id: GroupId) -> Self {
-        self.group_id = Some(group_id);
-        self
-    }
-
     pub fn unix_ts_ms(mut self, unix_ts_ms: impl Into<u64>) -> Self {
         self.unix_ts_ms = TimestampMode::Fixed(unix_ts_ms.into());
         self
@@ -160,53 +151,9 @@ where
         self
     }
 
-    // ----- Convenience methods for modifying the builder -----
-    pub fn set_group_id(&mut self, group_id: GroupId) {
-        self.group_id = Some(group_id);
-    }
-
-    // ----- Prepare override builder -----
-    pub fn prepare(&self) -> PreparedMessageBuilder<'_, 'key, ST> {
-        PreparedMessageBuilder {
-            base: self,
-            group_id: None,
-        }
-    }
-}
-
-pub struct PreparedMessageBuilder<'base, 'key, ST>
-where
-    ST: CertificateSignatureRecoverable,
-{
-    base: &'base MessageBuilder<'key, ST>,
-
-    // Add extra override fields as needed
-    group_id: Option<GroupId>,
-}
-
-impl<'base, 'key, ST> PreparedMessageBuilder<'base, 'key, ST>
-where
-    ST: CertificateSignatureRecoverable,
-{
-    // ----- Setters for overrides -----
-    pub fn group_id(mut self, group_id: GroupId) -> Self {
-        self.group_id = Some(group_id);
-        self
-    }
-
     // ----- Parameter validation methods -----
-    fn unwrap_group_id(&self) -> Result<GroupId> {
-        if let Some(group_id) = self.group_id {
-            return Ok(group_id);
-        }
-        let group_id = self
-            .base
-            .group_id
-            .expect("group_id must be set before building");
-        Ok(group_id)
-    }
     fn unwrap_unix_ts_ms(&self) -> Result<u64> {
-        let unix_ts_ms = match self.base.unix_ts_ms {
+        let unix_ts_ms = match self.unix_ts_ms {
             TimestampMode::Fixed(ts) => ts,
             TimestampMode::RealTime => unix_ts_ms_now(),
         };
@@ -214,7 +161,6 @@ where
     }
     fn unwrap_redundancy(&self) -> Result<Redundancy> {
         let redundancy = self
-            .base
             .redundancy
             .expect("redundancy must be set before building");
 
@@ -225,7 +171,7 @@ where
     }
 
     fn unwrap_merkle_tree_depth(&self) -> Result<u8> {
-        let depth = self.base.merkle_tree_depth;
+        let depth = self.merkle_tree_depth;
         if depth < regular::MIN_MERKLE_TREE_DEPTH {
             return Err(BuildError::MerkleTreeTooShallow);
         } else if depth > regular::MAX_MERKLE_TREE_DEPTH {
@@ -236,11 +182,11 @@ where
     }
 
     fn unwrap_segment_size(&self) -> Result<usize> {
-        let segment_size = self.base.segment_size;
+        let segment_size = self.segment_size;
         debug_assert!(segment_size <= regular::MAX_SEGMENT_LENGTH);
         let min_segment_size_for_depth = regular::PacketLayout::calc_segment_len(
             regular::MIN_CHUNK_LENGTH,
-            self.base.merkle_tree_depth,
+            self.merkle_tree_depth,
         );
         debug_assert!(segment_size >= min_segment_size_for_depth);
 
@@ -258,7 +204,7 @@ where
     pub fn build_into<C>(
         &self,
         app_message: &[u8],
-        build_target: &BuildTarget<CertificateSignaturePubKey<ST>>,
+        build_target: &BuildTarget<'_, CertificateSignaturePubKey<ST>>,
         collector: &mut C,
     ) -> Result<()>
     where
@@ -267,17 +213,15 @@ where
         let segment_size = self.unwrap_segment_size()?;
         let depth = self.unwrap_merkle_tree_depth()?;
         let redundancy = self.unwrap_redundancy()?;
-        let group_id = self.unwrap_group_id()?;
         let unix_ts_ms = self.unwrap_unix_ts_ms()?;
         self.checked_message_len(app_message.len())?;
 
         let layout = regular::PacketLayout::new(segment_size, depth);
 
         regular::build_into::<ST, C>(
-            self.base.key.as_ref(),
+            self.key.as_ref(),
             layout,
             redundancy,
-            group_id,
             unix_ts_ms,
             app_message,
             build_target,
@@ -288,7 +232,7 @@ where
     pub fn build_vec(
         &self,
         app_message: &[u8],
-        build_target: &BuildTarget<CertificateSignaturePubKey<ST>>,
+        build_target: &BuildTarget<'_, CertificateSignaturePubKey<ST>>,
     ) -> Result<Vec<UdpMessage<CertificateSignaturePubKey<ST>>>> {
         let mut packets = Vec::new();
         self.build_into(app_message, build_target, &mut packets)?;

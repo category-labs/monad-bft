@@ -29,7 +29,6 @@ use monad_dataplane::udp::{segment_size_for_mtu, ETHERNET_SEGMENT_SIZE};
 use monad_merkle::{MerkleHash, MerkleTree};
 use monad_raptor::Encoder;
 use monad_types::NodeId;
-use monad_validator::validator_set::ValidatorSetType as _;
 use rand::{CryptoRng, Rng};
 
 use super::{
@@ -40,8 +39,7 @@ use super::{
 use crate::{
     udp::{GroupId, MAX_NUM_PACKETS},
     util::{
-        compute_app_message_hash, BroadcastMode, BuildTarget, Collector, Redundancy,
-        SecondaryGroup, UdpMessage,
+        compute_app_message_hash, BroadcastMode, BuildTarget, Collector, Redundancy, UdpMessage,
     },
     SIGNATURE_SIZE,
 };
@@ -604,7 +602,6 @@ pub(crate) fn build_into<ST, C>(
     key: &ST::KeyPairType,
     layout: PacketLayout,
     redundancy: Redundancy,
-    group_id: GroupId,
     unix_ts_ms: u64,
     app_message: &[u8],
     build_target: &BuildTarget<'_, CertificateSignaturePubKey<ST>>,
@@ -649,7 +646,7 @@ where
     let header = build_header(
         broadcast_mode_from_build_target(build_target),
         layout.merkle_tree_depth(),
-        group_id,
+        build_target.group_id(),
         unix_ts_ms,
         &app_message_hash,
         app_message.len(),
@@ -670,15 +667,15 @@ where
 }
 
 fn make_assigner<PT: PubKey>(
-    build_target: &BuildTarget<PT>,
+    build_target: &BuildTarget<'_, PT>,
     self_node_id: &NodeId<PT>,
     app_message_hash: &[u8; 20],
     rng: &mut (impl Rng + CryptoRng),
 ) -> Box<dyn ChunkAssigner<PT>> {
     match build_target {
-        BuildTarget::PointToPoint(to) => {
+        BuildTarget::PointToPoint { recipient, .. } => {
             let assigner = Replicated::from_broadcast(
-                std::iter::once(*to)
+                std::iter::once(*recipient)
                     .filter(|node_id| *node_id != self_node_id)
                     .cloned(),
             );
@@ -687,29 +684,29 @@ fn make_assigner<PT: PubKey>(
         BuildTarget::Broadcast(nodes) => {
             let assigner = Replicated::from_broadcast(
                 nodes
-                    .get_members()
-                    .keys()
+                    .iter()
+                    .map(|(n, _)| n)
                     .filter(|node_id| *node_id != self_node_id)
                     .cloned(),
             );
             Box::new(assigner)
         }
         BuildTarget::Raptorcast(validators) => {
-            let seed = derive_seed(app_message_hash);
-            let mut validators: Vec<_> = validators
-                .get_members()
+            let mut validators = validators
                 .iter()
-                .filter(|(node_id, _)| *node_id != self_node_id)
+                .filter(|(node_id, _stake)| *node_id != self_node_id)
                 .map(|(node_id, stake)| (*node_id, *stake))
-                .collect();
+                .collect::<Vec<_>>();
+            let seed = derive_seed(app_message_hash);
             StakeBasedWithRC::shuffle_validators(&mut validators, seed);
             let assigner = StakeBasedWithRC::from_validator_set(validators);
             Box::new(assigner)
         }
         BuildTarget::FullNodeRaptorCast(group) => {
             let seed = rng.gen::<usize>();
-            let shifted_nodes = randomize_secondary_group_nodes(group, seed);
-            Box::new(Partitioned::from_homogeneous_peers(shifted_nodes))
+            let mut members: Vec<_> = group.iter().cloned().collect();
+            randomize_secondary_group_nodes(&mut members, seed);
+            Box::new(Partitioned::from_homogeneous_peers(members))
         }
     }
 }
@@ -720,19 +717,14 @@ fn broadcast_mode_from_build_target<PT: PubKey>(
     match build_target {
         BuildTarget::Raptorcast { .. } => BroadcastMode::Primary,
         BuildTarget::FullNodeRaptorCast { .. } => BroadcastMode::Secondary,
-        BuildTarget::Broadcast(_) | BuildTarget::PointToPoint(_) => BroadcastMode::Unspecified,
+        BuildTarget::Broadcast(_) | BuildTarget::PointToPoint { .. } => BroadcastMode::Unspecified,
     }
 }
 
 // introduce variation in the group member ordering
-fn randomize_secondary_group_nodes<PT: PubKey>(
-    group: &SecondaryGroup<PT>,
-    seed: usize,
-) -> Vec<NodeId<PT>> {
+fn randomize_secondary_group_nodes<PT: PubKey>(group: &mut [NodeId<PT>], seed: usize) {
     let n = seed % group.len();
-    let mut shifted_group: Vec<_> = group.iter().cloned().collect();
-    shifted_group.rotate_left(n);
-    shifted_group
+    group.rotate_left(n);
 }
 
 impl AssembleMode {

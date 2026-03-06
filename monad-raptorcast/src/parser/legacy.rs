@@ -112,6 +112,7 @@ where
             .try_into()
             .expect("Hash is 20 bytes"),
     );
+    let message_id = MessageIdentifier::AppMessageHash(app_message_hash);
 
     let cursor_app_message_len = split_off(4)?;
     let app_message_len = u32::from_le_bytes(
@@ -213,7 +214,7 @@ where
         author,
         group_id,
         unix_ts_ms,
-        message_id: MessageIdentifier::AppMessageHash(app_message_hash),
+        message_id,
         app_message_len: app_message_len as u32,
         broadcast_mode,
         recipient_hash,
@@ -287,8 +288,8 @@ mod tests {
     use super::*;
     use crate::{
         packet::build_messages,
-        udp::{GroupId, SIGNATURE_CACHE_SIZE},
-        util::{BuildTarget, Redundancy},
+        udp::SIGNATURE_CACHE_SIZE,
+        util::{BuildTarget, PrimaryBroadcastGroup, Redundancy, ValidatorGroupMap},
     };
 
     type SignatureType = SecpSignature;
@@ -327,6 +328,9 @@ mod tests {
     #[test]
     fn test_legacy_vs_new_parser_equivalence() {
         let (key, validators, known_addresses) = validator_set();
+        let self_id = NodeId::new(key.pubkey());
+        let group_map: ValidatorGroupMap<_> = [(EPOCH, validators)].into();
+        let group = PrimaryBroadcastGroup::of_epoch(EPOCH, &self_id, &group_map).unwrap();
 
         let app_message: Bytes = vec![1_u8; 1024 * 64].into();
 
@@ -335,9 +339,8 @@ mod tests {
             DEFAULT_SEGMENT_SIZE,
             app_message,
             Redundancy::from_u8(2),
-            GroupId::Primary(EPOCH),
             UNIX_TS_MS,
-            BuildTarget::Raptorcast(&validators),
+            BuildTarget::Raptorcast(group),
             &known_addresses,
         );
 
