@@ -243,6 +243,25 @@ where
             accounts
         );
 
+        // collect senders and authorities from recent blocks within execution delay
+        let mut recent_senders_and_authorities: HashSet<Address> = HashSet::new();
+        if self.validate_reserve_balance {
+            // walk back up to execution_delay - 1 ancestor blocks
+            let mut lookup_id = parent_id;
+            for _ in 0..self.execution_delay.0.saturating_sub(1) {
+                let block = self.proposals.get(&lookup_id).or_else(|| {
+                    // find committed block by scanning commits for matching block_id
+                    self.commits.values().find(|b| b.block_id == lookup_id)
+                });
+                let Some(block) = block else { break };
+                if block.seq_num == GENESIS_SEQ_NUM {
+                    break;
+                }
+                recent_senders_and_authorities.extend(&block.senders_and_authorities);
+                lookup_id = block.parent_id;
+            }
+        }
+
         // track senders and authorities for the current block
         let mut block_senders_and_authorities: HashSet<Address> = HashSet::new();
 
@@ -262,7 +281,7 @@ where
             };
 
             let account_entry = accounts.entry(addr).or_insert(AccountState {
-                balance: Balance::from(100_000_000_000_000_000_u64),
+                balance: Balance::default(),
                 reserve_balance: self.default_reserve_balance,
                 nonce: 0,
                 is_delegated: false,
@@ -314,10 +333,11 @@ where
                 //   - not delegated
                 //   - not a sender of an earlier txn in this block
                 //   - not an authority in any txn up to and including this one
-                //   - TODO: not in execution delay block's senders/authorities
+                //   - not in execution delay window's senders/authorities
                 let can_dip = !account_entry.is_delegated
                     && !block_senders_and_authorities.contains(&addr)
-                    && !txn_authorities.contains(&addr);
+                    && !txn_authorities.contains(&addr)
+                    && !recent_senders_and_authorities.contains(&addr);
 
                 // post-execution reserve balance check
                 // in execution, if the sender dips into reserve without
@@ -349,7 +369,7 @@ where
                     if let Ok(auth_addr) = tuple.recover_authority() {
                         let auth_account_entry =
                             accounts.entry(auth_addr).or_insert(AccountState {
-                                balance: Balance::from(100_000_000_000_000_000_u64),
+                                balance: Balance::default(),
                                 reserve_balance: self.default_reserve_balance,
                                 nonce: 0,
                                 is_delegated: false,

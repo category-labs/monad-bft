@@ -91,6 +91,7 @@ mod test {
         {}
 
         let mut sender_nonces: Vec<u64> = vec![0; num_senders as usize];
+        let mut current_block: usize = 2;
 
         for (sender_idx, sender_key) in sender_keys.iter().enumerate() {
             let num_txns = rng.gen_range(1..=8u64);
@@ -124,7 +125,6 @@ mod test {
                         10,
                     ),
                     _ => {
-                        // delegate a different sender as authority
                         let auth_target_idx = (sender_idx + 1) % num_senders as usize;
                         let auth_key = sender_keys[auth_target_idx];
                         let auth_nonce = sender_nonces[auth_target_idx];
@@ -149,18 +149,28 @@ mod test {
 
                 sender_nonces[sender_idx] += 1;
                 swarm.send_transaction(node_1_id, alloy_rlp::encode(&txn).into());
+
+                // randomly advance a block with 10% probability
+                if rng.gen_bool(0.1) {
+                    current_block += 1;
+                    while swarm
+                        .step_until(&mut UntilTerminator::new().until_block(current_block))
+                        .is_some()
+                    {}
+                }
             }
         }
 
         // run consensus block policy to filter invalid transactions
         // and ledger_propose asserts reserve balance invariants on execution
+        let total_blocks = current_block + 10;
         while swarm
-            .step_until(&mut UntilTerminator::new().until_block(10))
+            .step_until(&mut UntilTerminator::new().until_block(total_blocks))
             .is_some()
         {}
 
         let mut verifier = MockSwarmVerifier::default().tick_range(
-            happy_path_tick_by_block(10, CONSENSUS_DELTA),
+            happy_path_tick_by_block(total_blocks, CONSENSUS_DELTA),
             CONSENSUS_DELTA,
         );
         verifier.metrics_happy_path(&node_ids, &swarm);
