@@ -42,7 +42,9 @@ pub async fn monad_eth_getBalance<T: Triedb>(
 ) -> JsonRpcResult<String> {
     trace!("monad_eth_getBalance: {params:?}");
 
-    let block_key = get_block_key_from_tag_or_hash(triedb_env, params.block_number).await?;
+    let block_key = get_block_key_from_tag_or_hash(triedb_env, params.block_number)
+        .await
+        .ok_or_else(JsonRpcError::block_not_found)?;
     let account = triedb_env
         .get_account(block_key, params.account.0)
         .await
@@ -73,7 +75,9 @@ pub async fn monad_eth_getCode<T: Triedb>(
 ) -> JsonRpcResult<String> {
     trace!("monad_eth_getCode: {params:?}");
 
-    let block_key = get_block_key_from_tag_or_hash(triedb_env, params.block).await?;
+    let block_key = get_block_key_from_tag_or_hash(triedb_env, params.block)
+        .await
+        .ok_or_else(JsonRpcError::block_not_found)?;
     let account = triedb_env
         .get_account(block_key, params.account.0)
         .await
@@ -110,7 +114,9 @@ pub async fn monad_eth_getStorageAt<T: Triedb>(
 ) -> JsonRpcResult<String> {
     trace!("monad_eth_getStorageAt: {params:?}");
 
-    let block_key = get_block_key_from_tag_or_hash(triedb_env, params.block).await?;
+    let block_key = get_block_key_from_tag_or_hash(triedb_env, params.block)
+        .await
+        .ok_or_else(JsonRpcError::block_not_found)?;
     let storage_value = triedb_env
         .get_storage_at(block_key, params.account.0, B256::from(params.position.0).0)
         .await
@@ -141,7 +147,9 @@ pub async fn monad_eth_getTransactionCount<T: Triedb>(
 ) -> JsonRpcResult<String> {
     trace!("monad_eth_getTransactionCount: {params:?}");
 
-    let block_key = get_block_key_from_tag_or_hash(triedb_env, params.block).await?;
+    let block_key = get_block_key_from_tag_or_hash(triedb_env, params.block)
+        .await
+        .ok_or_else(JsonRpcError::block_not_found)?;
     let account = triedb_env
         .get_account(block_key, params.account.0)
         .await

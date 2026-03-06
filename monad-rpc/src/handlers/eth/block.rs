@@ -32,20 +32,16 @@ use crate::{
 pub async fn get_block_key_from_tag_or_hash<T: Triedb>(
     triedb_env: &T,
     block_reference: BlockTagOrHash,
-) -> JsonRpcResult<BlockKey> {
+) -> Option<BlockKey> {
     match block_reference {
-        BlockTagOrHash::BlockTags(tag) => {
-            get_block_key_from_tag(triedb_env, tag).ok_or(JsonRpcError::block_not_found())
-        }
+        BlockTagOrHash::BlockTags(tag) => get_block_key_from_tag(triedb_env, tag),
         BlockTagOrHash::Hash(block_hash) => {
             let num = triedb_env
                 .get_block_number_by_hash(triedb_env.get_latest_proposed_block_key(), block_hash.0)
                 .await
-                .map_err(|_| JsonRpcError::block_not_found())?
-                .ok_or(JsonRpcError::block_not_found())?;
-            triedb_env
-                .get_block_key(SeqNum(num))
-                .ok_or(JsonRpcError::block_not_found())
+                .ok()
+                .flatten()?;
+            triedb_env.get_block_key(SeqNum(num))
         }
     }
 }
