@@ -14,41 +14,19 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use monad_rpc_docs::rpc;
-use monad_triedb_utils::triedb_env::{BlockKey, Triedb};
-use monad_types::SeqNum;
+use monad_triedb_utils::triedb_env::Triedb;
 use serde::{Deserialize, Serialize};
 use tracing::trace;
 
 use crate::{
-    chainstate::{get_block_key_from_tag, ChainState},
+    chainstate::ChainState,
     types::{
         eth_json::{
             BlockTagOrHash, BlockTags, EthHash, MonadBlock, MonadTransactionReceipt, Quantity,
         },
-        jsonrpc::{ChainStateResultMap, JsonRpcError, JsonRpcResult},
+        jsonrpc::{ChainStateResultMap, JsonRpcResult},
     },
 };
-
-pub async fn get_block_key_from_tag_or_hash<T: Triedb>(
-    triedb_env: &T,
-    block_reference: BlockTagOrHash,
-) -> JsonRpcResult<BlockKey> {
-    match block_reference {
-        BlockTagOrHash::BlockTags(tag) => {
-            get_block_key_from_tag(triedb_env, tag).ok_or(JsonRpcError::block_not_found())
-        }
-        BlockTagOrHash::Hash(block_hash) => {
-            let num = triedb_env
-                .get_block_number_by_hash(triedb_env.get_latest_proposed_block_key(), block_hash.0)
-                .await
-                .map_err(|_| JsonRpcError::block_not_found())?
-                .ok_or(JsonRpcError::block_not_found())?;
-            triedb_env
-                .get_block_key(SeqNum(num))
-                .ok_or(JsonRpcError::block_not_found())
-        }
-    }
-}
 
 #[rpc(method = "eth_blockNumber")]
 #[allow(non_snake_case)]

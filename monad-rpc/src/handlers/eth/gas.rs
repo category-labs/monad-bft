@@ -31,11 +31,8 @@ use serde::Deserialize;
 use tracing::trace;
 
 use crate::{
-    chainstate::ChainState,
-    handlers::eth::{
-        block::get_block_key_from_tag_or_hash,
-        call::{fill_gas_params, CallRequest},
-    },
+    chainstate::{get_block_key_from_tag_or_hash, ChainState},
+    handlers::eth::call::{fill_gas_params, CallRequest},
     types::{
         eth_json::{BlockTagOrHash, BlockTags, MonadFeeHistory, Quantity},
         jsonrpc::{JsonRpcError, JsonRpcResult},
@@ -262,7 +259,9 @@ pub async fn monad_eth_estimateGas<T: Triedb>(
         ));
     }
 
-    let block_key = get_block_key_from_tag_or_hash(triedb_env, params.block).await?;
+    let block_key = get_block_key_from_tag_or_hash(triedb_env, params.block)
+        .await
+        .ok_or_else(JsonRpcError::block_not_found)?;
 
     let mut header = match triedb_env
         .get_block_header(block_key)

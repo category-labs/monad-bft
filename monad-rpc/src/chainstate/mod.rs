@@ -43,7 +43,7 @@ use tracing::{debug, error, trace, warn};
 
 use crate::{
     chainstate::buffer::{block_height_from_tag, ChainStateBuffer},
-    handlers::eth::{block::get_block_key_from_tag_or_hash, txn::FilterError},
+    handlers::eth::txn::FilterError,
     types::{
         eth_json::{
             BlockTagOrHash, BlockTags, FixedData, MonadLog, MonadTransactionReceipt, Quantity,
@@ -90,6 +90,24 @@ pub fn get_block_key_from_tag(triedb_env: &impl Triedb, tag: BlockTags) -> Optio
         BlockTags::Finalized => Some(BlockKey::Finalized(
             triedb_env.get_latest_finalized_block_key(),
         )),
+    }
+}
+
+pub async fn get_block_key_from_tag_or_hash(
+    triedb_env: &impl Triedb,
+    block_reference: BlockTagOrHash,
+) -> Option<BlockKey> {
+    match block_reference {
+        BlockTagOrHash::BlockTags(tag) => get_block_key_from_tag(triedb_env, tag),
+        BlockTagOrHash::Hash(block_hash) => {
+            let block_number = triedb_env
+                .get_block_number_by_hash(triedb_env.get_latest_proposed_block_key(), block_hash.0)
+                .await
+                .ok()
+                .flatten()?;
+
+            triedb_env.get_block_key(SeqNum(block_number))
+        }
     }
 }
 
@@ -516,7 +534,8 @@ impl<T: Triedb> ChainState<T> {
             }
         }
 
-        if let Ok(block_key) = get_block_key_from_tag_or_hash(&self.triedb_env, block.clone()).await
+        if let Some(block_key) =
+            get_block_key_from_tag_or_hash(&self.triedb_env, block.clone()).await
         {
             if let Some(header) = self
                 .triedb_env
