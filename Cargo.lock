@@ -6165,6 +6165,7 @@ dependencies = [
  "monad-crypto",
  "monad-eth-types",
  "monad-multi-sig",
+ "monad-tfm",
  "monad-types",
  "monad-validator",
  "serde",
