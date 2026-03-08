@@ -5297,6 +5297,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-dynamic-cap"
+version = "0.1.0"
+
+[[package]]
 name = "monad-eth-block-policy"
 version = "0.1.0"
 dependencies = [
@@ -5488,6 +5492,8 @@ dependencies = [
  "monad-eth-types",
  "monad-executor",
  "monad-executor-glue",
+ "monad-fair-queue",
+ "monad-peer-score",
  "monad-secp",
  "monad-state-backend",
  "monad-testutil",
@@ -5625,6 +5631,18 @@ dependencies = [
  "monad-validator",
  "serde",
  "serde_with",
+]
+
+[[package]]
+name = "monad-fair-queue"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "monad-dynamic-cap",
+ "monad-executor",
+ "proptest",
+ "thiserror 1.0.69",
+ "tracing",
 ]
 
 [[package]]
@@ -5882,6 +5900,18 @@ dependencies = [
  "tokio-util",
  "toml",
  "tracing",
+]
+
+[[package]]
+name = "monad-peer-score"
+version = "0.1.0"
+dependencies = [
+ "lru 0.16.3",
+ "monad-executor",
+ "monad-fair-queue",
+ "proptest",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
