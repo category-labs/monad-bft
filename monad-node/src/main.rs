@@ -583,17 +583,33 @@ where
         peer_discovery_config.self_auth_port.is_some(),
         network_config.authenticated_bind_address_port.is_some()
     );
+    assert!(
+        peer_discovery_config.self_direct_udp_auth_port.is_none()
+            || peer_discovery_config.self_auth_port.is_some(),
+        "self_direct_udp_auth_port requires self_auth_port"
+    );
 
     let self_id = NodeId::new(identity.pubkey());
-    let self_record = match peer_discovery_config.self_auth_port {
-        Some(auth_port) => NameRecord::new_with_authentication(
+    let self_record = match (
+        peer_discovery_config.self_auth_port,
+        peer_discovery_config.self_direct_udp_auth_port,
+    ) {
+        (Some(auth_port), Some(direct_udp_auth_port)) => NameRecord::new_with_direct_udp_auth(
+            *name_record_address.ip(),
+            name_record_address.port(),
+            name_record_address.port(),
+            auth_port,
+            direct_udp_auth_port,
+            peer_discovery_config.self_record_seq_num,
+        ),
+        (Some(auth_port), None) => NameRecord::new_with_authentication(
             *name_record_address.ip(),
             name_record_address.port(),
             name_record_address.port(),
             auth_port,
             peer_discovery_config.self_record_seq_num,
         ),
-        None => NameRecord::new(
+        _ => NameRecord::new(
             *name_record_address.ip(),
             name_record_address.port(),
             peer_discovery_config.self_record_seq_num,
@@ -629,6 +645,7 @@ where
                 signature: peer.name_record_sig,
                 record_seq_num: peer.record_seq_num,
                 auth_port: peer.auth_port,
+                direct_udp_auth_port: peer.direct_udp_auth_port,
             };
 
             match MonadNameRecord::try_from(&peer_entry) {

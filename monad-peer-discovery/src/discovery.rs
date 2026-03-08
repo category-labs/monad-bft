@@ -596,12 +596,18 @@ impl<ST: CertificateSignatureRecoverable, C: governor::clock::Clock> PeerDiscove
             if let Some(auth_socket) = record.authenticated_udp_address() {
                 self.socket_to_id.remove(&auth_socket);
             }
+            if let Some(direct_udp_auth_socket) = record.direct_udp_auth_address() {
+                self.socket_to_id.remove(&direct_udp_auth_socket);
+            }
         }
 
         // record socket addresses to node id
         self.socket_to_id.insert(name_record.udp_address(), peer);
         if let Some(auth_socket) = name_record.authenticated_udp_address() {
             self.socket_to_id.insert(auth_socket, peer);
+        }
+        if let Some(direct_udp_auth_socket) = name_record.direct_udp_auth_address() {
+            self.socket_to_id.insert(direct_udp_auth_socket, peer);
         }
 
         if self.self_role == PeerDiscoveryRole::FullNodeClient {
@@ -3184,10 +3190,16 @@ mod tests {
             }
         };
 
-        // peer2 has authenticated UDP port
+        // peer2 has authenticated UDP port and direct UDP authenticated port
         let peer2_name_record = {
-            let name_record =
-                NameRecord::new_with_authentication(Ipv4Addr::new(8, 8, 4, 4), 8001, 8001, 9001, 2);
+            let name_record = NameRecord::new_with_direct_udp_auth(
+                Ipv4Addr::new(8, 8, 4, 4),
+                8001,
+                8001,
+                9001,
+                9002,
+                2,
+            );
             let mut encoded = Vec::new();
             name_record.encode(&mut encoded);
             let signature = SecpSignature::sign::<signing_domain::NameRecord>(&encoded, peer2);
@@ -3317,7 +3329,7 @@ mod tests {
             "peer1 should not have auth port"
         );
 
-        // verify peer2 data (with auth port)
+        // verify peer2 data (with auth port and direct UDP authenticated port)
         let loaded_peer2 = &state.pending_queue.get(&peer2_pubkey).unwrap().name_record;
         assert_eq!(
             loaded_peer2.udp_address(),
@@ -3329,6 +3341,11 @@ mod tests {
             loaded_peer2.name_record.authenticated_udp_port(),
             Some(9001),
             "peer2 auth port should match"
+        );
+        assert_eq!(
+            loaded_peer2.name_record.direct_udp_auth_port(),
+            Some(9002),
+            "peer2 direct UDP auth port should match"
         );
 
         let _ = std::fs::remove_file(&temp_file);
