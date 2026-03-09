@@ -12,11 +12,11 @@ endif()
 # again
 add_library(monad_execution_local SHARED IMPORTED)
 set_target_properties(monad_execution_local PROPERTIES
-  INTERFACE_INCLUDE_DIRECTORIES "${PROJECT_SOURCE_DIR}/../../monad-cxx/monad-execution"
+  INTERFACE_INCLUDE_DIRECTORIES "${PROJECT_SOURCE_DIR}/../../monad-execution"
   IMPORTED_LOCATION "${MONAD_EXECUTION_DIR}/libmonad_execution.so"
 )
 
-add_subdirectory("../../monad-cxx/monad-execution" "monad-execution-build"
+add_subdirectory("../../monad-execution" "monad-execution-build"
 )# needed for monad-trie
 
 add_library(triedb_driver SHARED "${PROJECT_SOURCE_DIR}/include/triedb.h"

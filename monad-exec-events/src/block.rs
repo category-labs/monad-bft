@@ -105,6 +105,7 @@ impl ExecutedBlock {
                 let inner = tx.to_alloy();
                 let effective_gas_price = inner.effective_gas_price(header.base_fee_per_gas);
                 let sender = alloy_primitives::Address::from(tx.sender.bytes);
+
                 alloy_rpc_types::Transaction {
                     inner: Recovered::new_unchecked(inner, sender),
                     block_hash: Some(header.hash),
@@ -121,6 +122,154 @@ impl ExecutedBlock {
             transactions: alloy_rpc_types::BlockTransactions::Full(transactions),
             withdrawals: None,
         }
+    }
+
+    /// Iterate over alloy transactions.
+    pub fn iter_alloy_tx_envelopes(
+        &self,
+    ) -> impl Iterator<Item = alloy_consensus::TxEnvelope> + '_ {
+        self.txns.iter().map(|tx| tx.to_alloy())
+    }
+
+    /// Iterate over alloy rpc transactions.
+    pub fn iter_alloy_rpc_txs(&self) -> impl Iterator<Item = alloy_rpc_types::Transaction> + '_ {
+        let block_hash = alloy_primitives::FixedBytes::from(self.end.eth_block_hash.bytes);
+        let block_number = self.start.eth_block_input.number;
+
+        let base_fee = Some(
+            TryInto::<u64>::try_into(alloy_primitives::U256::from_limbs(
+                self.start.eth_block_input.base_fee_per_gas.limbs,
+            ))
+            .expect("base fee fits in u64"),
+        );
+
+        self.txns.iter().enumerate().map(move |(tx_idx, tx)| {
+            let transaction_index = Some(tx_idx as u64);
+
+            let tx = tx.to_alloy_recovered();
+
+            let effective_gas_price =
+                alloy_consensus::Transaction::effective_gas_price(tx.inner(), base_fee);
+
+            alloy_rpc_types::Transaction {
+                inner: tx,
+                block_hash: Some(block_hash),
+                block_number: Some(block_number),
+                transaction_index,
+                effective_gas_price: Some(effective_gas_price),
+            }
+        })
+    }
+
+    /// Iterate over alloy rpc transaction receipts.
+    pub fn iter_alloy_rpc_tx_receipts(
+        &self,
+    ) -> impl Iterator<Item = alloy_rpc_types::TransactionReceipt> + '_ {
+        let block_hash = Some(alloy_primitives::FixedBytes::from(
+            self.end.eth_block_hash.bytes,
+        ));
+        let block_number = Some(self.start.eth_block_input.number);
+        let block_timestamp = Some(self.start.eth_block_input.timestamp);
+
+        let base_fee = Some(
+            TryInto::<u64>::try_into(alloy_primitives::U256::from_limbs(
+                self.start.eth_block_input.base_fee_per_gas.limbs,
+            ))
+            .expect("base fee fits in u64"),
+        );
+
+        let mut cumulative_gas_used = 0u64;
+        let mut log_index = 0u64;
+
+        self.txns.iter().enumerate().map(move |(tx_idx, tx)| {
+            cumulative_gas_used += tx.receipt.gas_used;
+
+            let transaction_hash = alloy_primitives::FixedBytes(tx.hash.bytes);
+            let transaction_index = Some(tx_idx as u64);
+
+            let logs = tx
+                .iter_alloy_logs()
+                .map(|log| {
+                    let log = alloy_rpc_types::Log {
+                        inner: log,
+                        block_hash,
+                        block_number,
+                        block_timestamp,
+                        transaction_hash: Some(transaction_hash),
+                        transaction_index,
+                        log_index: Some(log_index),
+                        removed: false,
+                    };
+
+                    log_index += 1;
+
+                    log
+                })
+                .collect_vec();
+
+            let logs_bloom = alloy_primitives::logs_bloom(logs.iter().map(|log| &log.inner));
+
+            let receipt_with_bloom = alloy_consensus::ReceiptWithBloom {
+                receipt: alloy_consensus::Receipt {
+                    status: alloy_consensus::Eip658Value::Eip658(tx.receipt.status),
+                    cumulative_gas_used,
+                    logs,
+                },
+                logs_bloom,
+            };
+
+            let receipt = match tx.header.txn_type {
+                ffi::MONAD_TXN_LEGACY => {
+                    alloy_consensus::ReceiptEnvelope::Legacy(receipt_with_bloom)
+                }
+                ffi::MONAD_TXN_EIP2930 => {
+                    alloy_consensus::ReceiptEnvelope::Eip2930(receipt_with_bloom)
+                }
+                ffi::MONAD_TXN_EIP1559 => {
+                    alloy_consensus::ReceiptEnvelope::Eip1559(receipt_with_bloom)
+                }
+                ffi::MONAD_TXN_EIP4844 => {
+                    unreachable!("ExecutedTxn encountered unsupported EIP4844 tx type");
+                }
+                ffi::MONAD_TXN_EIP7702 => {
+                    alloy_consensus::ReceiptEnvelope::Eip7702(receipt_with_bloom)
+                }
+                _ => panic!(
+                    "ExecutedTxn encountered unknown tx type {}",
+                    tx.header.txn_type
+                ),
+            };
+
+            let from = alloy_primitives::Address::from(tx.sender.bytes);
+
+            let (to, contract_address) = if tx.header.is_contract_creation {
+                (None, Some(from.create(tx.header.nonce)))
+            } else {
+                (
+                    Some(alloy_primitives::Address::from(tx.header.to.bytes)),
+                    None,
+                )
+            };
+
+            alloy_rpc_types::TransactionReceipt {
+                inner: receipt,
+                transaction_hash,
+                transaction_index,
+                block_hash,
+                block_number,
+                gas_used: tx.receipt.gas_used,
+                // TODO(andr-dev): Don't build TxEnvelope just to calcualte effective gas price
+                effective_gas_price: alloy_consensus::Transaction::effective_gas_price(
+                    &tx.to_alloy(),
+                    base_fee,
+                ),
+                blob_gas_used: None,
+                blob_gas_price: None,
+                from,
+                to,
+                contract_address,
+            }
+        })
     }
 
     /// Creates a flat list of alloy logs including all logs in the block's transactions.
@@ -341,9 +490,14 @@ impl ExecutedTxn {
         )
     }
 
+    /// Iterate over alloy logs.
+    pub fn iter_alloy_logs(&self) -> impl Iterator<Item = alloy_primitives::Log> + '_ {
+        self.logs.iter().map(ExecutedTxnLog::to_alloy)
+    }
+
     /// Creates a list of alloy logs.
     pub fn to_alloy_logs(&self) -> Vec<alloy_primitives::Log> {
-        self.logs.iter().map(ExecutedTxnLog::to_alloy).collect_vec()
+        self.iter_alloy_logs().collect_vec()
     }
 }
 

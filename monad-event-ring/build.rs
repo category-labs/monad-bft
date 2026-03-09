@@ -16,7 +16,7 @@
 use std::path::PathBuf;
 
 const INCLUDES: [(&str, &[&str]); 1] = [(
-    "../monad-cxx/monad-execution/",
+    "../monad-execution/",
     &[
         "category/core/event/event_iterator_inline.h",
         "category/core/event/event_iterator.h",
@@ -30,10 +30,10 @@ const STATIC_FNS_PATH: &str = "monad_event__wrap_static_fns";
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-changed=../monad-cxx/monad-execution");
+    println!("cargo:rerun-if-changed=../monad-execution");
 
     let client_target = "monad_event";
-    let client_dst = cmake::Config::new("../monad-cxx/monad-execution/category/event")
+    let client_dst = cmake::Config::new("../monad-execution/category/event")
         .build_target(client_target)
         .build();
 

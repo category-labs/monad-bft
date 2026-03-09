@@ -13,18 +13,14 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use alloy_consensus::Header as RlpHeader;
-use alloy_primitives::FixedBytes;
-use alloy_rpc_types::TransactionReceipt;
 use monad_rpc_docs::rpc;
-use monad_triedb_utils::triedb_env::{BlockKey, ReceiptWithLogIndex, Triedb, TxEnvelopeWithSender};
+use monad_triedb_utils::triedb_env::{BlockKey, Triedb};
 use monad_types::SeqNum;
 use serde::{Deserialize, Serialize};
 use tracing::trace;
 
 use crate::{
     chainstate::{get_block_key_from_tag, ChainState},
-    handlers::eth::txn::parse_tx_receipt,
     types::{
         eth_json::{
             BlockTagOrHash, BlockTags, EthHash, MonadBlock, MonadTransactionReceipt, Quantity,
@@ -173,64 +169,6 @@ pub async fn monad_eth_getBlockTransactionCountByNumber<T: Triedb>(
         .get_block(BlockTagOrHash::BlockTags(params.block_tag), true)
         .await
         .map_present_and_no_err(|block| format!("0x{:x}", block.transactions.len()))
-}
-
-pub fn map_block_receipts<R>(
-    transactions: Vec<TxEnvelopeWithSender>,
-    receipts: Vec<ReceiptWithLogIndex>,
-    block_header: &RlpHeader,
-    block_hash: FixedBytes<32>,
-    f: impl Fn(TransactionReceipt) -> R,
-) -> Result<Vec<R>, JsonRpcError> {
-    let block_num: u64 = block_header.number;
-
-    if transactions.len() != receipts.len() {
-        Err(JsonRpcError::internal_error(
-            "number of receipts and txs mismatch".into(),
-        ))?;
-    }
-
-    let mut cumulative_gas_used = 0u64;
-
-    Ok(transactions
-        .into_iter()
-        .zip(receipts)
-        .enumerate()
-        .map(|(tx_index, (tx, receipt))| {
-            let new_cumulative_gas_used = receipt.receipt.cumulative_gas_used();
-
-            let tx_gas_used = new_cumulative_gas_used - cumulative_gas_used;
-            cumulative_gas_used = new_cumulative_gas_used;
-
-            let parsed_receipt = parse_tx_receipt(
-                block_hash,
-                block_num,
-                Some(block_header.timestamp),
-                block_header.base_fee_per_gas,
-                tx_index as u64,
-                tx,
-                receipt,
-                tx_gas_used,
-            );
-
-            f(parsed_receipt)
-        })
-        .collect())
-}
-
-pub fn block_receipts(
-    transactions: Vec<TxEnvelopeWithSender>,
-    receipts: Vec<ReceiptWithLogIndex>,
-    block_header: &RlpHeader,
-    block_hash: FixedBytes<32>,
-) -> Result<Vec<TransactionReceipt>, JsonRpcError> {
-    map_block_receipts(
-        transactions,
-        receipts,
-        block_header,
-        block_hash,
-        |receipt| receipt,
-    )
 }
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]

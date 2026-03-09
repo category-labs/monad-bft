@@ -33,10 +33,10 @@ use monad_eth_txpool_ipc::EthTxPoolIpcClient;
 use monad_eth_txpool_types::{EthTxPoolIpcTx, EthTxPoolSnapshot};
 use monad_executor::Executor;
 use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
-use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner};
+use monad_state_backend::{AccountState, InMemoryBlockState, InMemoryState, InMemoryStateInner};
 use monad_testutil::signing::MockSignatures;
 use monad_tfm::base_fee::MIN_BASE_FEE;
-use monad_types::{Balance, SeqNum, GENESIS_ROUND, GENESIS_SEQ_NUM};
+use monad_types::{SeqNum, GENESIS_ROUND, GENESIS_SEQ_NUM};
 
 type SignatureType = NopSignature;
 type SignatureCollectionType = MockSignatures<SignatureType>;
@@ -55,9 +55,11 @@ async fn setup_txpool_executor_with_client() -> (
     let eth_block_policy = EthBlockPolicy::new(GENESIS_SEQ_NUM, u64::MAX);
 
     let state_backend: StateBackendType = InMemoryStateInner::new(
-        Balance::MAX,
         SeqNum::MAX,
-        InMemoryBlockState::genesis(BTreeMap::from_iter([(secret_to_eth_address(S1), 0)])),
+        InMemoryBlockState::genesis(BTreeMap::from_iter([(
+            secret_to_eth_address(S1),
+            AccountState::max_balance(),
+        )])),
     );
 
     let ipc_tempdir = tempfile::tempdir().unwrap();

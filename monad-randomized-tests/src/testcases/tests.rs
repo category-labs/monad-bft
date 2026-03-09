@@ -32,7 +32,7 @@ use monad_transformer::{
     GenericTransformer, LatencyTransformer, PartitionTransformer, RandLatencyTransformer,
     ReplayTransformer, TransformerReplayOrder, ID,
 };
-use monad_types::{Balance, NodeId, SeqNum};
+use monad_types::{NodeId, SeqNum};
 use monad_updaters::{
     ledger::MockLedger, statesync::MockStateSyncExecutor, txpool::MockTxPoolExecutor,
     val_set::MockValSetUpdaterNop,
@@ -56,7 +56,7 @@ fn random_latency_test(latency_seed: u64) {
         SimpleRoundRobin::default,
         || MockValidator,
         || PassthruBlockPolicy,
-        || InMemoryStateInner::genesis(Balance::MAX, SeqNum(4)),
+        || InMemoryStateInner::genesis(SeqNum(4)),
         SeqNum(4),                           // execution_delay
         Duration::from_millis(250),          // delta
         MockChainConfig::new(&CHAIN_PARAMS), // chain config
@@ -115,7 +115,7 @@ fn delayed_message_test(latency_seed: u64) {
         SimpleRoundRobin::default,
         || MockValidator,
         || PassthruBlockPolicy,
-        || InMemoryStateInner::genesis(Balance::MAX, SeqNum(4)),
+        || InMemoryStateInner::genesis(SeqNum(4)),
         SeqNum(4),                                        // execution_delay
         Duration::from_millis(2),                         // delta
         MockChainConfig::new(&CHAIN_PARAMS_NO_VOTE_PACE), // chain config

@@ -19,10 +19,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use monad_executor::{ExecutorMetrics, ExecutorMetricsChain};
 use monad_secp::PubKey;
 use tracing::{debug, error, instrument, trace, warn, Level};
+use zerocopy::IntoBytes;
 
 use crate::{
     config::Config,
@@ -165,27 +166,39 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
         let duration_since_start = self.context.duration_since_start();
 
         self.filter.tick(duration_since_start);
+        let max_expired_timers_per_tick = self.config.max_expired_timers_per_tick;
 
-        let expired_timers: Vec<(Duration, SessionIndex)> = self
+        let has_expired_timer = self
             .timers
-            .range(..=(duration_since_start, SessionIndex::MAX))
-            .copied()
-            .collect();
-
+            .first()
+            .is_some_and(|&(deadline, _)| deadline <= duration_since_start);
         if let Some(last_tick) = self.last_tick {
             let checked_duration = duration_since_start.saturating_sub(last_tick);
             trace!(
                 checked_duration_ms = checked_duration.as_millis(),
-                expired_timers = expired_timers.len(),
+                has_expired_timer,
+                timers_size = self.timers.len(),
                 "tick"
             );
         } else {
-            trace!(expired_timers = expired_timers.len(), "tick");
+            trace!(has_expired_timer, timers_size = self.timers.len(), "tick");
         }
 
-        for (duration, session_id) in expired_timers {
-            self.timers.remove(&(duration, session_id));
+        let mut processed_timers = 0usize;
+
+        while processed_timers < max_expired_timers_per_tick {
+            let Some((deadline, _)) = self.timers.first().copied() else {
+                break;
+            };
+            if deadline > duration_since_start {
+                break;
+            }
+            let (duration, session_id) = self
+                .timers
+                .pop_first()
+                .expect("timer disappeared after checking it exists");
             self.metrics[self.metric_names.state_timers_size] = self.timers.len() as u64;
+            processed_timers += 1;
 
             if let Some(elapsed) = duration_since_start.checked_sub(duration) {
                 let elapsed_ms = elapsed.as_millis();
@@ -281,6 +294,13 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
         debug!(retry_attempts, "initiating connection");
 
         self.check_connect_rate_limit()?;
+        let initiated_count = self.state.initiated_sessions_count();
+        if initiated_count >= self.config.max_initiated_sessions {
+            self.metrics[self.metric_names.error_connect] += 1;
+            return Err(Error::TooManyInitiatedSessions {
+                limit: self.config.max_initiated_sessions,
+            });
+        }
 
         // Cookies are looked up from initiated sessions for simplicity.
         // In the future, this can be improved to look up from both initiated and accepted sessions.
@@ -613,6 +633,14 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
                     index: receiver_session_index,
                 }
             })?;
+        let expected_remote_addr = initiator.remote_addr;
+        if remote_addr != expected_remote_addr {
+            self.metrics[self.metric_names.error_handshake_response_validation] += 1;
+            return Err(Error::HandshakeResponseAddressMismatch {
+                expected: expected_remote_addr,
+                actual: remote_addr,
+            });
+        }
 
         let validated_response = initiator
             .validate_response(&self.config, self.local_static_key.as_ref(), response)
@@ -626,21 +654,47 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
             .remove_initiator(&receiver_session_index)
             .expect("initiator was accessed above");
 
+        let buffered_message_count = initiator.buffered_message_count();
         let duration_since_start = self.context.duration_since_start();
-        debug!(local_session_id=?receiver_session_index, "initiator session established");
-        let (transport, timer, message) = initiator.establish(
+        debug!(
+            local_session_id=?receiver_session_index,
+            buffered_messages=buffered_message_count,
+            "initiator session established"
+        );
+        let (transport, messages) = initiator.establish(
             self.context.rng(),
             &self.config,
             duration_since_start,
             validated_response,
-            remote_addr,
         );
+        let is_buffered = messages.is_buffered();
 
         self.state
             .insert_transport(receiver_session_index, transport);
 
-        self.enqueue_packet(remote_addr, message);
-        self.replace_timer(timer, receiver_session_index);
+        for msg in messages {
+            let mut packet = BytesMut::with_capacity(DataPacketHeader::SIZE + msg.len());
+            packet.resize(DataPacketHeader::SIZE, 0);
+            packet.extend_from_slice(&msg);
+
+            let transport = self
+                .state
+                .get_transport_mut(&receiver_session_index)
+                .expect("transport was just inserted");
+            let (header, timer) = transport.encrypt(
+                self.context.rng(),
+                &self.config,
+                duration_since_start,
+                &mut packet[DataPacketHeader::SIZE..],
+            );
+            packet[..DataPacketHeader::SIZE].copy_from_slice(header.as_bytes());
+
+            self.replace_timer(timer, receiver_session_index);
+            self.enqueue_packet(remote_addr, packet.freeze());
+            if is_buffered {
+                self.metrics[self.metric_names.initiator_messages_sent_from_buffer] += 1;
+            }
+        }
 
         Ok(())
     }
@@ -698,6 +752,42 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
         let session_id = transport.common.local_index;
         self.replace_timer(timer, session_id);
         Ok(header)
+    }
+
+    /// Buffers a message for a peer that has an initiator session (handshake in progress).
+    /// Returns Ok(()) if the message was buffered, or Err if no initiator session exists
+    /// or the buffer limit would be exceeded.
+    #[instrument(level = Level::TRACE, skip(self, public_key, message), fields(local_public_key = ?self.local_serialized_public))]
+    pub fn buffer_message(
+        &mut self,
+        public_key: &monad_secp::PubKey,
+        message: Bytes,
+    ) -> Result<()> {
+        let initiator = self
+            .state
+            .get_initiator_by_public_key_mut(public_key)
+            .ok_or(Error::SessionNotFound)?;
+        let new_size = initiator
+            .buffered_bytes()
+            .checked_add(message.len())
+            .ok_or(Error::BufferLimitExceeded {
+                size: usize::MAX,
+                limit: self.config.max_buffered_bytes_per_session,
+            })?;
+        if new_size > self.config.max_buffered_bytes_per_session {
+            return Err(Error::BufferLimitExceeded {
+                size: new_size,
+                limit: self.config.max_buffered_bytes_per_session,
+            });
+        }
+        initiator.buffer_message(message);
+        self.metrics[self.metric_names.initiator_buffered_messages] += 1;
+        trace!(
+            buffered_message_count = initiator.buffered_message_count(),
+            public_key = ?CompressedPublicKey::from(public_key),
+            "message buffered in initiator"
+        );
+        Ok(())
     }
 
     /// Disconnects and removes all sessions with the given public key.

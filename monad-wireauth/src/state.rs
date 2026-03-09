@@ -422,6 +422,14 @@ impl State {
         self.initiating_sessions.get_mut(session_index)
     }
 
+    pub fn get_initiator_by_public_key_mut(
+        &mut self,
+        public_key: &monad_secp::PubKey,
+    ) -> Option<&mut InitiatorState> {
+        let session_id = self.initiated_session_by_peer.get(public_key)?;
+        self.initiating_sessions.get_mut(session_id)
+    }
+
     #[cfg(test)]
     pub fn get_responder(&self, session_index: &SessionIndex) -> Option<&ResponderState> {
         self.responding_sessions.get(session_index)
@@ -613,6 +621,10 @@ impl State {
 
     pub fn ip_session_count(&self, ip: &IpAddr) -> usize {
         self.ip_session_counts.get(ip).copied().unwrap_or(0)
+    }
+
+    pub fn initiated_sessions_count(&self) -> usize {
+        self.initiating_sessions.len()
     }
 }
 

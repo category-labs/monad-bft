@@ -140,66 +140,48 @@ fn broadcast_block_updates(
 ) {
     let block_id = BlockId(monad_types::Hash(block.start.block_tag.id.bytes));
 
-    let alloy_block = block.to_alloy_rpc();
-
     let serialized_monad_header = JsonSerialized::new_shared_with_map(
         MonadNotification {
             block_id,
             commit_state,
-            data: alloy_block.header.clone(),
+            data: block.to_alloy_rpc_header(),
         },
         |notification| notification.map(JsonSerialized::new_shared),
     );
 
-    let serialized_monad_block = JsonSerialized::new_shared_with_map(
-        MonadNotification {
-            block_id,
-            commit_state,
-            data: alloy_block,
-        },
-        |notification| {
-            notification.map(|alloy_block| {
-                JsonSerialized::new_shared_with_map(
-                    alloy_block,
-                    |alloy_rpc_types::Block {
-                         header: _,
-                         uncles,
-                         transactions,
-                         withdrawals,
-                     }| alloy_rpc_types::Block {
-                        header: serialized_monad_header.data.clone(),
-                        uncles,
-                        transactions,
-                        withdrawals,
-                    },
-                )
-            })
-        },
-    );
+    let transactions = block
+        .iter_alloy_rpc_txs()
+        .zip_eq(block.iter_alloy_rpc_tx_receipts())
+        .map(|(tx, tx_receipt)| {
+            let logs = tx_receipt
+                .logs()
+                .iter()
+                .map(|log| {
+                    JsonSerialized::new_shared_with_map(
+                        MonadNotification {
+                            block_id,
+                            commit_state,
+                            data: log.clone(),
+                        },
+                        |notification| notification.map(JsonSerialized::new_shared),
+                    )
+                })
+                .collect_vec();
 
-    let logs = Arc::new(
-        block
-            .get_alloy_rpc_logs()
-            .into_iter()
-            .map(|log| {
-                JsonSerialized::new_shared_with_map(
-                    MonadNotification {
-                        block_id,
-                        commit_state,
-                        data: log,
-                    },
-                    |notification| notification.map(JsonSerialized::new_shared),
-                )
-            })
-            .collect_vec(),
-    );
+            (
+                JsonSerialized::new_shared(tx),
+                JsonSerialized::new_shared(tx_receipt),
+                logs.into_boxed_slice(),
+            )
+        })
+        .collect_vec();
 
     broadcast_event(
         broadcast_tx,
         EventServerEvent::Block {
+            commit_state,
             header: serialized_monad_header,
-            block: serialized_monad_block,
-            logs,
+            transactions: Arc::new(transactions.into_boxed_slice()),
         },
     );
 }
@@ -335,16 +317,18 @@ mod test {
             .unwrap()
             .unwrap();
 
-        let (monad_header, monad_block, monad_logs) = match event {
+        let (commit_state, monad_header, transactions) = match event {
             EventServerEvent::Gap => {
                 panic!("EventServer using snapshot should never produce a gap!")
             }
             EventServerEvent::Block {
+                commit_state,
                 header,
-                block,
-                logs,
-            } => (header, block, logs),
+                transactions,
+            } => (commit_state, header, transactions),
         };
+
+        assert_eq!(commit_state, BlockCommitState::Proposed);
 
         assert_json::<_, MonadNotification<alloy_rpc_types::Header>>(
             &[&monad_header],
@@ -354,27 +338,35 @@ mod test {
         );
 
         assert_json::<_, alloy_rpc_types::Header>(
-            &[&monad_header.data, &monad_block.data.header],
+            &[&monad_header.data],
             include_str!(
                 "../../../monad-exec-events/test/data/exec-events-emn-30b-15m/0.header.json"
             ),
         );
 
-        assert_json::<_, MonadNotification<alloy_rpc_types::Block>>(
-            &[&monad_block],
+        let (tx_first, tx_first_receipt, tx_first_monad_logs) = transactions.first().unwrap();
+
+        assert_json::<_, alloy_rpc_types::Transaction>(
+            &[&tx_first],
             include_str!(
-                "../../../monad-exec-events/test/data/exec-events-emn-30b-15m/0.monad-block.json"
+                "../../../monad-exec-events/test/data/exec-events-emn-30b-15m/0.tx.0.json"
             ),
         );
 
-        assert_json::<_, alloy_rpc_types::Block>(
-            &[&monad_block.data],
+        assert_json::<_, alloy_rpc_types::TransactionReceipt>(
+            &[&tx_first_receipt],
             include_str!(
-                "../../../monad-exec-events/test/data/exec-events-emn-30b-15m/0.block.json"
+                "../../../monad-exec-events/test/data/exec-events-emn-30b-15m/0.tx-receipt.0.json"
             ),
         );
 
-        let monad_log = monad_logs.first().unwrap().clone();
+        assert!(tx_first_monad_logs.is_empty());
+
+        let monad_log = transactions
+            .iter()
+            .flat_map(|(_, _, logs)| logs.iter())
+            .next()
+            .unwrap();
 
         assert_json::<_, MonadNotification<alloy_rpc_types::Log>>(
             &[&monad_log],

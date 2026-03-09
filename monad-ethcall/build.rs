@@ -16,7 +16,7 @@
 use std::{env, path::PathBuf};
 
 fn main() {
-    println!("cargo:rerun-if-changed=../monad-cxx/monad-execution");
+    println!("cargo:rerun-if-changed=../monad-execution");
 
     let has_execution_lib = env::var("TRIEDB_TARGET").is_ok_and(|target| target == "triedb_driver");
     if has_execution_lib {
@@ -24,9 +24,9 @@ fn main() {
     }
 
     let bindings = bindgen::Builder::default()
-        .header("../monad-cxx/monad-execution/category/execution/ethereum/chain/chain_config.h")
-        .header("../monad-cxx/monad-execution/category/rpc/monad_executor.h")
-        .clang_arg("-I../monad-cxx/monad-execution")
+        .header("../monad-execution/category/execution/ethereum/chain/chain_config.h")
+        .header("../monad-execution/category/rpc/monad_executor.h")
+        .clang_arg("-I../monad-execution")
         .clang_arg("-std=c23")
         // invalidate on header change
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
