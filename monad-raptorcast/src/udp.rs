@@ -37,7 +37,7 @@ use crate::{
     },
     util::{
         compute_hash, unix_ts_ms_now, AppMessageHash, BroadcastGroup, BroadcastMode,
-        FullNodeGroupMap, NodeIdHash,
+        FullNodeGroupMap, GlobalMerkleRoot, NodeIdHash,
     },
 };
 
@@ -339,7 +339,9 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                     &parsed_message,
                     message.auth_public_key.as_ref(),
                 ),
-                BroadcastMode::Primary | BroadcastMode::Secondary => self.handle_broadcast(
+                BroadcastMode::Primary
+                | BroadcastMode::Secondary
+                | BroadcastMode::DeterministicPrimary(_) => self.handle_broadcast(
                     epoch_validators,
                     full_node_group_map,
                     &parsed_message,
@@ -382,6 +384,7 @@ impl From<GroupId> for u64 {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum MessageIdentifier {
     AppMessageHash(AppMessageHash),
+    GlobalMerkleRoot(GlobalMerkleRoot),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -436,28 +439,6 @@ impl From<SignatureVerifierError> for MessageValidationError {
     }
 }
 
-/// - 65 bytes => Signature of sender over hash(rest of message up to merkle proof, concatenated with merkle root)
-/// - 2 bytes => Version: bumped on protocol updates
-/// - 1 bit => broadcast or not
-/// - 1 bit => secondary broadcast or not (full-node raptorcast)
-/// - 2 bits => unused
-/// - 4 bits => Merkle tree depth
-/// - 8 bytes (u64) => Epoch #
-/// - 8 bytes (u64) => Unix timestamp
-/// - 20 bytes => first 20 bytes of hash of AppMessage
-///   - this isn't technically necessary if payload_len is small enough to fit in 1 chunk, but keep
-///     for simplicity
-/// - 4 bytes (u32) => Serialized AppMessage length (bytes)
-/// - 20 bytes * (merkle_tree_depth - 1) => merkle proof (leaves include everything that follows,
-///   eg hash(chunk_recipient + chunk_byte_offset + symbol_len + payload))
-///
-/// - 20 bytes => first 20 bytes of hash of chunk's first hop recipient
-///   - we set this even if broadcast bit is not set so that it's known if a message was intended
-///     to be sent to self
-/// - 1 byte => Chunk's merkle leaf idx
-/// - 1 byte => reserved
-/// - 2 bytes (u16) => This chunk's id
-/// - rest => data
 pub fn parse_message<ST, F>(
     signature_verifier: &mut ChunkSignatureVerifier<ST>,
     message: Bytes,
@@ -469,7 +450,7 @@ where
     F: FnOnce(Epoch) -> bool,
 {
     use crate::parser::packet_parser::{
-        validate_message_v0, RaptorcastPacket, RaptorcastPacketVersioned,
+        validate_message_v0, validate_message_v1, RaptorcastPacket, RaptorcastPacketVersioned,
     };
 
     let packet = RaptorcastPacket::parse(&message)?;
@@ -479,6 +460,14 @@ where
             signature_verifier,
             &packet.common_header,
             v0_packet,
+            &message,
+            max_age_ms,
+            bypass_rate_limiter,
+        ),
+        RaptorcastPacketVersioned::V1(ref v1_packet) => validate_message_v1(
+            signature_verifier,
+            &packet.common_header,
+            v1_packet,
             &message,
             max_age_ms,
             bypass_rate_limiter,
@@ -718,7 +707,7 @@ mod tests {
             app_message.clone(),
             Redundancy::from_u8(2),
             UNIX_TS_MS,
-            BuildTarget::Raptorcast(group),
+            BuildTarget::raptorcast(group),
             &known_addresses,
         );
 
@@ -765,7 +754,7 @@ mod tests {
             app_message,
             Redundancy::from_u8(2),
             UNIX_TS_MS,
-            BuildTarget::Raptorcast(group),
+            BuildTarget::raptorcast(group),
             &known_addresses,
         );
 
@@ -817,7 +806,7 @@ mod tests {
             app_message,
             Redundancy::from_u8(2),
             UNIX_TS_MS,
-            BuildTarget::Raptorcast(group),
+            BuildTarget::raptorcast(group),
             &known_addresses,
         );
 
@@ -863,7 +852,7 @@ mod tests {
 
         let app_message: Bytes = vec![1_u8; 1024 * 1024].into();
         let build_targets = vec![
-            BuildTarget::Raptorcast(primary_group),
+            BuildTarget::raptorcast(primary_group),
             BuildTarget::FullNodeRaptorCast(secondary_group),
         ];
 
@@ -892,7 +881,7 @@ mod tests {
                     .expect("valid message");
 
                     match build_target {
-                        BuildTarget::Raptorcast(_) => {
+                        BuildTarget::Raptorcast { .. } => {
                             assert!(matches!(
                                 parsed_message.broadcast_mode,
                                 BroadcastMode::Primary
@@ -1060,7 +1049,7 @@ mod tests {
         let group_map = make_group_map(&validators);
         let group = PrimaryBroadcastGroup::of_epoch(EPOCH, &self_id, &group_map).unwrap();
         let target = if raptorcast {
-            BuildTarget::Raptorcast(group)
+            BuildTarget::raptorcast(group)
         } else {
             BuildTarget::Broadcast(group)
         };
@@ -1159,7 +1148,7 @@ mod tests {
             app_message,
             Redundancy::from_u8(1),
             UNIX_TS_MS,
-            BuildTarget::Raptorcast(group),
+            BuildTarget::raptorcast(group),
             &known_addresses,
         );
 
@@ -1201,5 +1190,554 @@ mod tests {
         let bypass = |_| true;
         let result4 = parse_message(&mut signature_verifier, message_b, u64::MAX, bypass);
         assert!(result4.is_ok());
+    }
+}
+
+#[cfg(test)]
+mod tests_deterministic {
+    use std::{
+        collections::{BTreeMap, HashMap, HashSet},
+        net::{IpAddr, Ipv4Addr, SocketAddr},
+    };
+
+    use bytes::{Bytes, BytesMut};
+    use itertools::Itertools as _;
+    use monad_crypto::{
+        certificate_signature::CertificateSignaturePubKey,
+        hasher::{Hasher, HasherType},
+    };
+    use monad_secp::{KeyPair, SecpSignature};
+    use monad_types::{Epoch, NodeId, Round, Stake};
+    use monad_validator::validator_set::{ValidatorSet, ValidatorSetType as _};
+    use rstest::*;
+
+    use super::{ChunkSignatureVerifier, MessageValidationError, UdpState};
+    use crate::{
+        auth::AuthRecvMsg,
+        packet::{deterministic, MessageBuilder},
+        parser::signature_verifier::SignatureVerifier,
+        udp::{parse_message, MessageIdentifier, SIGNATURE_CACHE_SIZE},
+        util::{
+            compute_hash, BroadcastMode, BuildTarget, FullNodeGroupMap, PrimaryBroadcastGroup,
+            UdpMessage, ValidatorGroupMap,
+        },
+    };
+
+    type SignatureType = SecpSignature;
+    type PubKeyType = CertificateSignaturePubKey<SignatureType>;
+    type KeyPairType = KeyPair;
+    type TestSignatureVerifier = ChunkSignatureVerifier<SignatureType>;
+
+    fn signature_verifier() -> TestSignatureVerifier {
+        SignatureVerifier::new().with_cache(SIGNATURE_CACHE_SIZE)
+    }
+
+    fn validator_set() -> (
+        KeyPairType,
+        ValidatorSet<PubKeyType>,
+        HashMap<NodeId<PubKeyType>, SocketAddr>,
+    ) {
+        const NUM_KEYS: u8 = 100;
+        let mut keys = (0_u8..NUM_KEYS)
+            .map(|n| {
+                let mut hasher = HasherType::new();
+                hasher.update(n.to_le_bytes());
+                let mut hash = hasher.hash();
+                KeyPairType::from_bytes(&mut hash.0).unwrap()
+            })
+            .collect_vec();
+
+        let valset = keys
+            .iter()
+            .map(|key| (NodeId::new(key.pubkey()), Stake::ONE))
+            .collect();
+        let validators = ValidatorSet::new_unchecked(valset);
+
+        let known_addresses = keys
+            .iter()
+            .skip(NUM_KEYS as usize / 10) // test some missing known_addresses
+            .enumerate()
+            .map(|(idx, key)| {
+                (
+                    NodeId::new(key.pubkey()),
+                    SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), idx as u16),
+                )
+            })
+            .collect();
+
+        (keys.pop().unwrap(), validators, known_addresses)
+    }
+
+    const EPOCH: Epoch = Epoch(5);
+    const UNIX_TS_MS: u64 = 5;
+    const ROUND: Round = Round(42);
+
+    fn make_group_map(validators: &ValidatorSet<PubKeyType>) -> ValidatorGroupMap<PubKeyType> {
+        [(EPOCH, validators.clone())].into()
+    }
+
+    fn build_packets(
+        key: &KeyPairType,
+        app_message: &[u8],
+        group: PrimaryBroadcastGroup<'_, PubKeyType>,
+    ) -> Vec<UdpMessage<PubKeyType>> {
+        MessageBuilder::<SignatureType>::new(key)
+            .unix_ts_ms(UNIX_TS_MS)
+            .build_vec(
+                app_message,
+                &BuildTarget::deterministic_raptorcast(group, ROUND),
+            )
+            .expect("build should succeed")
+    }
+
+    #[test]
+    fn test_roundtrip() {
+        let (key, validators, _known_addresses) = validator_set();
+        let self_id = NodeId::new(key.pubkey());
+        let group_map = make_group_map(&validators);
+        let group = PrimaryBroadcastGroup::of_epoch(EPOCH, &self_id, &group_map).unwrap();
+
+        let app_message: Bytes = vec![0x1_u8; 1024 * 1024].into();
+        let packets = build_packets(&key, &app_message, group);
+
+        assert!(!packets.is_empty());
+        assert!(packets
+            .iter()
+            .all(|msg| msg.payload.len() == deterministic::PacketLayout::SEGMENT_LEN));
+
+        let mut signature_verifier = signature_verifier();
+        let mut message_id: Option<MessageIdentifier> = None;
+
+        for msg in &packets {
+            let message = msg.payload.clone();
+            let parsed =
+                parse_message(&mut signature_verifier, message.clone(), u64::MAX, |_| true)
+                    .expect("valid message");
+
+            assert_eq!(parsed.message, message);
+            assert_eq!(parsed.unix_ts_ms, UNIX_TS_MS);
+            assert_eq!(parsed.app_message_len, app_message.len() as u32);
+            assert_eq!(parsed.author, NodeId::new(key.pubkey()));
+            assert!(
+                matches!(parsed.broadcast_mode, BroadcastMode::DeterministicPrimary(r) if r == ROUND),
+                "expected DeterministicPrimary({ROUND:?}), got {:?}",
+                parsed.broadcast_mode
+            );
+            assert!(
+                matches!(parsed.message_id, MessageIdentifier::GlobalMerkleRoot(_)),
+                "expected GlobalMerkleRoot, got {:?}",
+                parsed.message_id
+            );
+
+            match &message_id {
+                None => message_id = Some(parsed.message_id),
+                Some(first) => assert_eq!(
+                    parsed.message_id, *first,
+                    "all chunks must share the same global merkle root"
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn test_bit_flip_parse_failure_slow() {
+        let (key, validators, _known_addresses) = validator_set();
+        let self_id = NodeId::new(key.pubkey());
+        let group_map = make_group_map(&validators);
+        let group = PrimaryBroadcastGroup::of_epoch(EPOCH, &self_id, &group_map).unwrap();
+
+        let app_message: Bytes = vec![1_u8; 1024 * 2].into();
+        let packets = build_packets(&key, &app_message, group);
+
+        let mut signature_verifier = signature_verifier();
+
+        for msg in &packets {
+            let mut payload: BytesMut = msg.payload.as_ref().into();
+            // try flipping each bit
+            for bit_idx in 0..payload.len() * 8 {
+                let old_byte = payload[bit_idx / 8];
+                // flip bit
+                payload[bit_idx / 8] = old_byte ^ (1 << (bit_idx % 8));
+                let maybe_parsed = parse_message(
+                    &mut signature_verifier,
+                    payload.clone().into(),
+                    u64::MAX,
+                    |_| true,
+                );
+
+                // check that decoding fails
+                assert!(
+                    maybe_parsed.is_err()
+                        || maybe_parsed.unwrap().author != NodeId::new(key.pubkey())
+                );
+
+                // reset bit
+                payload[bit_idx / 8] = old_byte;
+            }
+        }
+    }
+
+    #[test]
+    fn test_raptorcast_chunk_ids() {
+        let (key, validators, _known_addresses) = validator_set();
+        let self_id = NodeId::new(key.pubkey());
+        let group_map = make_group_map(&validators);
+        let group = PrimaryBroadcastGroup::of_epoch(EPOCH, &self_id, &group_map).unwrap();
+
+        let app_message: Bytes = vec![1_u8; 1024 * 1024].into();
+        let packets = build_packets(&key, &app_message, group);
+
+        let mut signature_verifier = signature_verifier();
+        let mut used_ids = HashSet::new();
+
+        for msg in &packets {
+            let parsed = parse_message(
+                &mut signature_verifier,
+                msg.payload.clone(),
+                u64::MAX,
+                |_| true,
+            )
+            .expect("valid message");
+            let newly_inserted = used_ids.insert(parsed.chunk_id);
+            assert!(newly_inserted);
+        }
+    }
+
+    #[test]
+    fn test_handle_message_stride_slice() {
+        let (key, validators, _known_addresses) = validator_set();
+        let self_id = NodeId::new(key.pubkey());
+        let epoch_validators = [(Epoch(1), validators)].into_iter().collect();
+        let full_node_groups = FullNodeGroupMap::default();
+
+        let mut udp_state = UdpState::<SignatureType>::new(self_id, u64::MAX, 10_000);
+
+        // payload will fail to parse but shouldn't panic on index error
+        let stride = deterministic::PacketLayout::SEGMENT_LEN;
+        let payload: Bytes = vec![1_u8; stride * 8 + 1].into();
+        let recv_msg = AuthRecvMsg {
+            src_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8000),
+            payload,
+            stride: stride as u16,
+            auth_public_key: None::<PubKeyType>,
+        };
+
+        udp_state.handle_message(
+            &epoch_validators,
+            &full_node_groups,
+            |_targets, _payload, _stride| {},
+            recv_msg,
+        );
+    }
+
+    #[rstest]
+    #[case(-2 * 60 * 60 * 1000, u64::MAX, true)]
+    #[case(2 * 60 * 60 * 1000, u64::MAX, true)]
+    #[case(-2 * 60 * 60 * 1000, 0, false)]
+    #[case(2 * 60 * 60 * 1000, 0, false)]
+    #[case(-30_000, 60_000, true)]
+    #[case(-120_000, 60_000, false)]
+    #[case(120_000, 60_000, false)]
+    #[case(30_000, 60_000, true)]
+    #[case(-90_000, 60_000, false)]
+    #[case(90_000, 60_000, false)]
+    fn test_timestamp_validation(
+        #[case] timestamp_offset_ms: i64,
+        #[case] max_age_ms: u64,
+        #[case] should_succeed: bool,
+    ) {
+        let (key, validators, _known_addresses) = validator_set();
+        let mut signature_verifier = signature_verifier();
+
+        let current_time = std::time::UNIX_EPOCH.elapsed().unwrap().as_millis() as u64;
+        let test_timestamp = (current_time as i64 + timestamp_offset_ms) as u64;
+
+        let self_id = NodeId::new(key.pubkey());
+        let group_map = make_group_map(&validators);
+        let group = PrimaryBroadcastGroup::of_epoch(EPOCH, &self_id, &group_map).unwrap();
+
+        let app_message = Bytes::from_static(b"test message");
+        let packets = MessageBuilder::<SignatureType>::new(&key)
+            .unix_ts_ms(test_timestamp)
+            .build_vec(
+                &app_message,
+                &BuildTarget::deterministic_raptorcast(group, ROUND),
+            )
+            .expect("build should succeed");
+
+        let message = packets.into_iter().next().unwrap().payload;
+        let result = parse_message(&mut signature_verifier, message, max_age_ms, |_| true);
+
+        if should_succeed {
+            assert!(result.is_ok(), "unexpected success: {:?}", result.err());
+        } else {
+            assert!(result.is_err());
+            match result.err().unwrap() {
+                MessageValidationError::InvalidTimestamp { .. } => {}
+                other => panic!("unexpected error {:?}", other),
+            }
+        }
+    }
+
+    #[test]
+    fn test_zero_len_chunk() {
+        let (key, validators, _known_addresses) = validator_set();
+        let self_id = NodeId::new(key.pubkey());
+        let group_map = make_group_map(&validators);
+        let group = PrimaryBroadcastGroup::of_epoch(EPOCH, &self_id, &group_map).unwrap();
+        let app_message: Bytes = vec![1_u8; 1024 * 1024].into();
+        let mut packet = build_packets(&key, &app_message, group).pop().unwrap();
+        let layout = deterministic::PacketLayout::new(app_message.len(), validators.len());
+        packet.payload.truncate(layout.symbol_range().start);
+        assert_eq!(
+            packet.payload.len(),
+            deterministic::PacketLayout::SEGMENT_LEN - layout.symbol_len()
+        );
+
+        let mut signature_verifier = signature_verifier();
+        let result = parse_message(&mut signature_verifier, packet.payload, u64::MAX, |_| true);
+        // should error instead of panicking
+        assert_eq!(result.err(), Some(MessageValidationError::TooShort))
+    }
+
+    #[test]
+    fn test_parse_message_signature_verifier() {
+        let (key, validators, _known_addresses) = validator_set();
+        let self_id = NodeId::new(key.pubkey());
+        let group_map = make_group_map(&validators);
+        let group = PrimaryBroadcastGroup::of_epoch(EPOCH, &self_id, &group_map).unwrap();
+
+        // Two different app messages to get distinct global merkle roots (= distinct
+        // signed_over_data cache keys), required to exercise the rate-limiter path.
+        let app_message_a: Bytes = vec![1_u8; 1024].into();
+        let app_message_b: Bytes = vec![2_u8; 1024].into();
+
+        let packets_a = build_packets(&key, &app_message_a, group);
+        let packets_b = build_packets(&key, &app_message_b, group);
+
+        let message_a: Bytes = packets_a[0].payload.clone();
+        let message_b: Bytes = packets_b[0].payload.clone();
+
+        let mut signature_verifier: TestSignatureVerifier = SignatureVerifier::new()
+            .with_cache(SIGNATURE_CACHE_SIZE)
+            .with_rate_limit(1);
+
+        // Case 1: cache miss, verify signature, cache saved
+        let bypass = |_| true;
+        let result1 = parse_message(&mut signature_verifier, message_a.clone(), u64::MAX, bypass);
+        let author = result1.expect("first parse should succeed").author;
+        assert_eq!(author, NodeId::new(key.pubkey()));
+
+        // Case 2: parse with same message: cache hit, no rate limit consumed
+        let bypass = |_| false;
+        let result2 = parse_message(&mut signature_verifier, message_a, u64::MAX, bypass);
+        assert_eq!(
+            result2.expect("cache hit should succeed").author,
+            author,
+            "cache hit should return same author"
+        );
+
+        // Case 3: parse different message without bypass: rate limited
+        let bypass = |_| false;
+        let result3 = parse_message(&mut signature_verifier, message_b.clone(), u64::MAX, bypass);
+        assert!(
+            matches!(result3, Err(MessageValidationError::RateLimited)),
+            "new message without bypass should be rate limited"
+        );
+
+        // Case 4: Same message with bypass: succeeds
+        let bypass = |_| true;
+        let result4 = parse_message(&mut signature_verifier, message_b, u64::MAX, bypass);
+        assert!(result4.is_ok());
+    }
+
+    #[test]
+    fn test_deterministic_end_to_end_decode_and_rebroadcast() {
+        let (sender_key, validators, _) = validator_set();
+        let sender_id = NodeId::new(sender_key.pubkey());
+        let group_map = make_group_map(&validators);
+        let group = PrimaryBroadcastGroup::of_epoch(EPOCH, &sender_id, &group_map).unwrap();
+
+        let app_message: Bytes = vec![0xAB_u8; 64 * 1024].into();
+        let packets = build_packets(&sender_key, &app_message, group);
+        assert!(!packets.is_empty());
+
+        // Pick a receiver that is in the validator set but not the sender
+        let receiver_id = validators
+            .get_members()
+            .keys()
+            .find(|id| **id != sender_id)
+            .copied()
+            .unwrap();
+        let receiver_id_hash = compute_hash(&receiver_id);
+
+        let epoch_validators: BTreeMap<_, _> = [(EPOCH, validators)].into();
+        let full_node_groups = FullNodeGroupMap::default();
+        let mut udp_state = UdpState::<SignatureType>::new(receiver_id, u64::MAX, 10_000);
+
+        let stride = deterministic::PacketLayout::SEGMENT_LEN;
+        let mut all_decoded = Vec::new();
+        let mut rebroadcast_count = 0usize;
+
+        for packet in &packets {
+            let recv_msg = AuthRecvMsg {
+                src_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8000),
+                payload: packet.payload.clone(),
+                stride: stride as u16,
+                auth_public_key: None::<PubKeyType>,
+            };
+            let decoded = udp_state.handle_message(
+                &epoch_validators,
+                &full_node_groups,
+                |_targets, _payload, _stride| rebroadcast_count += 1,
+                recv_msg,
+            );
+            all_decoded.extend(decoded);
+        }
+
+        assert_eq!(all_decoded.len(), 1, "should decode exactly one message");
+        let (author, decoded) = &all_decoded[0];
+        assert_eq!(*author, sender_id);
+        assert_eq!(*decoded, app_message);
+
+        // Chunks addressed to receiver should trigger rebroadcast
+        let addressed_to_receiver = packets
+            .iter()
+            .filter(|p| {
+                let parsed = parse_message(
+                    &mut signature_verifier(),
+                    p.payload.clone(),
+                    u64::MAX,
+                    |_| true,
+                )
+                .unwrap();
+                parsed.recipient_hash == receiver_id_hash
+            })
+            .count();
+        assert_eq!(rebroadcast_count, addressed_to_receiver);
+        assert!(
+            rebroadcast_count > 0,
+            "receiver should be assigned some chunks"
+        );
+    }
+
+    #[rstest]
+    #[case::tiny(12)]
+    #[case::one_symbol(1024)]
+    #[case::medium(64 * 1024)]
+    #[case::large(1024 * 1024)]
+    #[case::max(crate::message::MAX_MESSAGE_SIZE)]
+    fn test_deterministic_roundtrip_various_sizes(#[case] msg_size: usize) {
+        let (key, validators, _) = validator_set();
+        let self_id = NodeId::new(key.pubkey());
+        let group_map = make_group_map(&validators);
+        let group = PrimaryBroadcastGroup::of_epoch(EPOCH, &self_id, &group_map).unwrap();
+
+        let app_message: Bytes = vec![0x42_u8; msg_size].into();
+        let packets = build_packets(&key, &app_message, group);
+
+        assert!(!packets.is_empty());
+        assert!(
+            packets
+                .iter()
+                .all(|msg| msg.payload.len() == deterministic::PacketLayout::SEGMENT_LEN),
+            "all packets must be exactly SEGMENT_LEN"
+        );
+
+        let mut signature_verifier = signature_verifier();
+        let mut seen_ids = HashSet::new();
+        let mut message_id = None;
+
+        for msg in &packets {
+            let parsed = parse_message(
+                &mut signature_verifier,
+                msg.payload.clone(),
+                u64::MAX,
+                |_| true,
+            )
+            .expect("valid message");
+
+            assert_eq!(parsed.app_message_len, msg_size as u32);
+            assert!(seen_ids.insert(parsed.chunk_id), "duplicate chunk_id");
+
+            match &message_id {
+                None => message_id = Some(parsed.message_id),
+                Some(first) => assert_eq!(parsed.message_id, *first),
+            }
+        }
+    }
+
+    #[test]
+    fn test_deterministic_reproducibility() {
+        let (proposer_key, validators, _) = validator_set();
+        let proposer_id = NodeId::new(proposer_key.pubkey());
+
+        // Validator: a different member of the validator set
+        let validator_key = {
+            let mut hasher = HasherType::new();
+            hasher.update(0_u8.to_le_bytes());
+            let mut hash = hasher.hash();
+            KeyPairType::from_bytes(&mut hash.0).unwrap()
+        };
+        let validator_id = NodeId::new(validator_key.pubkey());
+        assert_ne!(proposer_id, validator_id);
+        assert!(validators.is_member(&validator_id));
+
+        let group_map = make_group_map(&validators);
+
+        let app_message: Bytes = vec![0xFF_u8; 64 * 1024].into();
+
+        // Step 1: Proposer builds packets
+        let proposer_group =
+            PrimaryBroadcastGroup::of_epoch(EPOCH, &proposer_id, &group_map).unwrap();
+        let proposer_packets = build_packets(&proposer_key, &app_message, proposer_group);
+
+        // Step 2: Validator receives and decodes
+        let epoch_validators: BTreeMap<_, _> = [(EPOCH, validators)].into();
+        let full_node_groups = FullNodeGroupMap::default();
+        let mut udp_state = UdpState::<SignatureType>::new(validator_id, u64::MAX, 10_000);
+        let stride = deterministic::PacketLayout::SEGMENT_LEN;
+
+        let mut decoded_msg = None;
+        for packet in &proposer_packets {
+            let recv_msg = AuthRecvMsg {
+                src_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8000),
+                payload: packet.payload.clone(),
+                stride: stride as u16,
+                auth_public_key: None::<PubKeyType>,
+            };
+            for (_, msg) in udp_state.handle_message(
+                &epoch_validators,
+                &full_node_groups,
+                |_, _, _| {},
+                recv_msg,
+            ) {
+                decoded_msg = Some(msg);
+            }
+        }
+        let decoded_msg = decoded_msg.expect("should decode");
+        assert_eq!(decoded_msg, app_message);
+
+        // Step 3: Validator rebuilds the packets from the decoded
+        // message using the same parameters (unix_ts_ms, round, epoch,
+        // validator set).
+        let validator_group =
+            PrimaryBroadcastGroup::of_epoch(EPOCH, &validator_id, &group_map).unwrap();
+        let validator_packets = build_packets(&validator_key, &decoded_msg, validator_group);
+        assert_eq!(proposer_packets.len(), validator_packets.len());
+
+        // Step 4: For each rebuilt chunk, write proposer's signature
+        // then it should be bit-identical to proposer's original
+        // chunk.
+        let sig_len = crate::SIGNATURE_SIZE;
+        for (pp, vp) in proposer_packets.iter().zip(validator_packets.iter()) {
+            let mut rebuilt = BytesMut::from(vp.payload.as_ref());
+            rebuilt[..sig_len].copy_from_slice(&pp.payload[..sig_len]);
+            assert_eq!(
+                pp.payload,
+                rebuilt.freeze(),
+                "rebuilt chunk with spliced signature must match original"
+            );
+        }
     }
 }

@@ -20,10 +20,10 @@ use monad_crypto::certificate_signature::{
 };
 use monad_dataplane::udp::DEFAULT_SEGMENT_SIZE;
 
-use super::{regular, BuildError};
+use super::{deterministic, regular, BuildError};
 use crate::{
     message::MAX_MESSAGE_SIZE,
-    util::{unix_ts_ms_now, BuildTarget, Collector, Redundancy, UdpMessage},
+    util::{unix_ts_ms_now, BuildTarget, Collector, RaptorcastMode, Redundancy, UdpMessage},
 };
 
 pub const DEFAULT_MERKLE_TREE_DEPTH: u8 = 6;
@@ -193,13 +193,6 @@ where
         Ok(segment_size)
     }
 
-    fn checked_message_len(&self, len: usize) -> Result<usize> {
-        if len > MAX_MESSAGE_SIZE {
-            return Err(BuildError::AppMessageTooLarge);
-        }
-        Ok(len)
-    }
-
     // ----- Build methods -----
     pub fn build_into<C>(
         &self,
@@ -210,12 +203,30 @@ where
     where
         C: Collector<UdpMessage<CertificateSignaturePubKey<ST>>>,
     {
+        if let BuildTarget::Raptorcast {
+            group,
+            mode: RaptorcastMode::Deterministic { round },
+        } = build_target
+        {
+            let unix_ts_ms = self.unwrap_unix_ts_ms()?;
+            return deterministic::build_into::<ST, C>(
+                self.key.as_ref(),
+                unix_ts_ms,
+                app_message,
+                group,
+                *round,
+                collector,
+            );
+        }
+
+        if app_message.len() > MAX_MESSAGE_SIZE {
+            return Err(BuildError::AppMessageTooLarge);
+        }
+
         let segment_size = self.unwrap_segment_size()?;
         let depth = self.unwrap_merkle_tree_depth()?;
         let redundancy = self.unwrap_redundancy()?;
         let unix_ts_ms = self.unwrap_unix_ts_ms()?;
-        self.checked_message_len(app_message.len())?;
-
         let layout = regular::PacketLayout::new(segment_size, depth);
 
         regular::build_into::<ST, C>(

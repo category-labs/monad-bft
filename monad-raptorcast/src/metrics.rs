@@ -112,6 +112,7 @@ impl UdpStateMetrics {
             crate::util::BroadcastMode::Unspecified => return,
             crate::util::BroadcastMode::Primary => &mut self.primary_broadcast,
             crate::util::BroadcastMode::Secondary => &mut self.secondary_broadcast,
+            crate::util::BroadcastMode::DeterministicPrimary(_) => &mut self.primary_broadcast,
         };
         histogram.record(latency_ms, &mut self.executor_metrics);
     }

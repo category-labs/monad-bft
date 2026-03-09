@@ -267,7 +267,7 @@ impl<'a, PT: PubKey> ChunkAssignment<'a, PT> {
         output
     }
 
-    pub fn generate(&self, segment_len: usize) -> Vec<Chunk<PT>> {
+    pub(crate) fn generate(&self, segment_len: usize) -> Vec<Chunk<PT>> {
         let mut buffer = BytesMut::zeroed(self.total_chunks * segment_len);
         let mut all_chunks = Vec::with_capacity(self.total_chunks);
 

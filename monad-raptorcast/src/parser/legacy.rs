@@ -93,6 +93,7 @@ where
     let group_id = match broadcast_mode {
         BroadcastMode::Primary | BroadcastMode::Unspecified => GroupId::Primary(Epoch(group_id)),
         BroadcastMode::Secondary => GroupId::Secondary(Round(group_id)),
+        BroadcastMode::DeterministicPrimary(_) => GroupId::Primary(Epoch(group_id)),
     };
 
     let cursor_unix_ts_ms = split_off(8)?;
@@ -168,6 +169,9 @@ where
             // only perform a basic sanity check here. more precise
             // check of chunk_id is in decoding.rs when the validator
             // set is available.
+            valid_chunk_id_range_raptorcast(app_message_len, symbol_len, MAX_VALIDATOR_SET_SIZE)?
+        }
+        BroadcastMode::DeterministicPrimary(_) => {
             valid_chunk_id_range_raptorcast(app_message_len, symbol_len, MAX_VALIDATOR_SET_SIZE)?
         }
     };
@@ -340,7 +344,7 @@ mod tests {
             app_message,
             Redundancy::from_u8(2),
             UNIX_TS_MS,
-            BuildTarget::Raptorcast(group),
+            BuildTarget::raptorcast(group),
             &known_addresses,
         );
 

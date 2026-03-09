@@ -555,6 +555,9 @@ pub(crate) fn build_header(
         BroadcastMode::Primary => 0b10 << 6,
         BroadcastMode::Secondary => 0b01 << 6,
         BroadcastMode::Unspecified => 0b00 << 6,
+        BroadcastMode::DeterministicPrimary(_) => {
+            return Err(BuildError::InvalidBroadcastMode(broadcast_mode))
+        }
     };
     // tree_depth max 4 bits
     if (merkle_tree_depth & 0b1111_0000) != 0 {
@@ -691,8 +694,8 @@ fn make_assigner<PT: PubKey>(
             );
             Box::new(assigner)
         }
-        BuildTarget::Raptorcast(validators) => {
-            let mut validators = validators
+        BuildTarget::Raptorcast { group, .. } => {
+            let mut validators = group
                 .iter()
                 .filter(|(node_id, _stake)| *node_id != self_node_id)
                 .map(|(node_id, stake)| (*node_id, *stake))

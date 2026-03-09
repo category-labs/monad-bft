@@ -36,6 +36,12 @@ use tracing::debug;
 
 use crate::udp::GroupId;
 
+#[derive(Debug, Clone, Copy)]
+pub enum RaptorcastMode {
+    Regular,
+    Deterministic { round: Round },
+}
+
 // Argument for raptorcast send
 #[derive(Debug, Clone, Copy)]
 pub enum BuildTarget<'a, PT: PubKey> {
@@ -44,7 +50,10 @@ pub enum BuildTarget<'a, PT: PubKey> {
     Broadcast(PrimaryBroadcastGroup<'a, PT>),
     // raptorcast to the validators, chunks distributed by their
     // proportion of stakes.
-    Raptorcast(PrimaryBroadcastGroup<'a, PT>),
+    Raptorcast {
+        group: PrimaryBroadcastGroup<'a, PT>,
+        mode: RaptorcastMode,
+    },
     // unicast message as raptor-coded chunks to a single recipient
     PointToPoint {
         // The group_id is not used for point-to-point message,
@@ -60,6 +69,20 @@ pub enum BuildTarget<'a, PT: PubKey> {
 impl<'a, PT: PubKey> BuildTarget<'a, PT> {
     // The epoch field has no use for point-to-point message, included
     // only for backward-compatibility.
+    pub fn raptorcast(group: PrimaryBroadcastGroup<'a, PT>) -> Self {
+        BuildTarget::Raptorcast {
+            group,
+            mode: RaptorcastMode::Regular,
+        }
+    }
+
+    pub fn deterministic_raptorcast(group: PrimaryBroadcastGroup<'a, PT>, round: Round) -> Self {
+        BuildTarget::Raptorcast {
+            group,
+            mode: RaptorcastMode::Deterministic { round },
+        }
+    }
+
     pub fn point_to_point(epoch: Epoch, recipient: &'a NodeId<PT>) -> Self {
         BuildTarget::PointToPoint {
             group_id: GroupId::Primary(epoch),
@@ -69,7 +92,7 @@ impl<'a, PT: PubKey> BuildTarget<'a, PT> {
 
     pub fn iter(&self) -> Box<dyn Iterator<Item = &NodeId<PT>> + '_> {
         match self {
-            BuildTarget::Broadcast(group) | BuildTarget::Raptorcast(group) => {
+            BuildTarget::Broadcast(group) | BuildTarget::Raptorcast { group, .. } => {
                 Box::new(group.iter().map(|(n, _)| n))
             }
             BuildTarget::PointToPoint { recipient, .. } => Box::new(std::iter::once(*recipient)),
@@ -79,7 +102,9 @@ impl<'a, PT: PubKey> BuildTarget<'a, PT> {
 
     pub fn group_id(&self) -> GroupId {
         match self {
-            BuildTarget::Broadcast(group) | BuildTarget::Raptorcast(group) => group.group_id(),
+            BuildTarget::Broadcast(group) | BuildTarget::Raptorcast { group, .. } => {
+                group.group_id()
+            }
             BuildTarget::FullNodeRaptorCast(group) => group.group_id(),
             BuildTarget::PointToPoint { group_id, .. } => *group_id,
         }
@@ -125,11 +150,13 @@ impl<const N: usize> HexBytes<N> {
 
 pub type NodeIdHash = HexBytes<20>;
 pub type AppMessageHash = HexBytes<20>;
+pub type GlobalMerkleRoot = HexBytes<20>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BroadcastMode {
     Primary,
     Secondary,
+    DeterministicPrimary(Round),
     Unspecified,
 }
 

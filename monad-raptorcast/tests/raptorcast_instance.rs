@@ -98,7 +98,7 @@ pub fn different_symbol_sizes() {
             message.clone(),
             Redundancy::from_u8(2),
             0, // unix_ts_ms
-            BuildTarget::Raptorcast(group),
+            BuildTarget::raptorcast(group),
             &known_addresses,
         );
 
@@ -153,7 +153,7 @@ pub fn buffer_count_overflow() {
         message,
         Redundancy::from_u8(2),
         0, // unix_ts_ms
-        BuildTarget::Raptorcast(group),
+        BuildTarget::raptorcast(group),
         &known_addresses,
     );
 
@@ -224,7 +224,7 @@ pub fn valid_rebroadcast() {
         message,
         regular::MAX_REDUNDANCY, // redundancy,
         0,                       // unix_ts_ms
-        BuildTarget::Raptorcast(group),
+        BuildTarget::raptorcast(group),
         &known_addresses,
     );
 

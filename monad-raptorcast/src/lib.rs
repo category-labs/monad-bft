@@ -442,7 +442,7 @@ where
 
                 let build_target = match &target {
                     RouterTarget::Broadcast(_) => BuildTarget::Broadcast(group),
-                    RouterTarget::Raptorcast(_) => BuildTarget::Raptorcast(group),
+                    RouterTarget::Raptorcast(_) => BuildTarget::raptorcast(group),
                     _ => unreachable!(),
                 };
                 let outbound_message =

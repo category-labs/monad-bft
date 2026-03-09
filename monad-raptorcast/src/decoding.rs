@@ -35,8 +35,8 @@ use monad_validator::validator_set::{ValidatorSet, ValidatorSetType as _};
 use rand::Rng as _;
 
 use crate::{
-    packet::regular,
-    udp::{MessageIdentifier, ValidatedMessage},
+    packet::{deterministic, regular},
+    udp::{MessageIdentifier, ValidatedMessage, MAX_VALIDATOR_SET_SIZE},
     util::{compute_app_message_hash, compute_hash, AppMessageHash, BroadcastMode, NodeIdHash},
 };
 
@@ -234,6 +234,8 @@ where
                     return Err(TryDecodeError::AppMessageHashMismatch { expected, actual });
                 }
             }
+            // The merkle proof is already validated in the parser.
+            MessageIdentifier::GlobalMerkleRoot(_) => {}
         }
 
         self.recently_decoded
@@ -1503,9 +1505,18 @@ impl DecoderState {
             .try_into()
             .expect("usize smaller than u32");
 
+        // TODO: move the hard-coded calculation logic to individual broadcast modes.
+
         // symbol_len is always greater than zero, so this division is safe
         let num_source_symbols = app_message_len.div_ceil(symbol_len).max(SOURCE_SYMBOLS_MIN);
-        let mut encoded_symbol_capacity = regular::MAX_REDUNDANCY
+        let max_redundancy = match message.broadcast_mode {
+            BroadcastMode::Primary | BroadcastMode::Secondary | BroadcastMode::Unspecified => {
+                regular::MAX_REDUNDANCY
+            }
+            BroadcastMode::DeterministicPrimary(_) => deterministic::REDUNDANCY,
+        };
+
+        let mut encoded_symbol_capacity = max_redundancy
             .scale(num_source_symbols)
             .expect("redundancy-scaled num_source_symbols doesn't fit in usize");
 
@@ -1519,6 +1530,13 @@ impl DecoderState {
                 );
                 0
             });
+        } else if matches!(
+            message.broadcast_mode,
+            BroadcastMode::DeterministicPrimary(_)
+        ) {
+            encoded_symbol_capacity =
+                deterministic::PacketLayout::new(app_message_len, MAX_VALIDATOR_SET_SIZE)
+                    .encoded_symbol_capacity();
         };
 
         let decoder = ManagedDecoder::new(num_source_symbols, encoded_symbol_capacity, symbol_len)
