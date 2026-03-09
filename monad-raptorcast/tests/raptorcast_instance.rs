@@ -35,13 +35,15 @@ use monad_executor_glue::{Message, RouterCommand};
 use monad_peer_discovery::mock::NopDiscovery;
 use monad_raptorcast::{
     create_dataplane_for_tests, new_defaulted_raptorcast_for_tests,
-    packet::build_messages,
+    packet::{build_messages, regular},
     raptorcast_secondary::{
         group_message::FullNodesGroupMessage, SecondaryOutboundMessage,
         SecondaryRaptorCastModeConfig,
     },
-    udp::{GroupId, MAX_REDUNDANCY},
-    util::{BuildTarget, Redundancy, SecondaryGroup, SecondaryGroupAssignment},
+    util::{
+        BuildTarget, PrimaryBroadcastGroup, Redundancy, SecondaryGroup, SecondaryGroupAssignment,
+        ValidatorGroupMap,
+    },
     DataplaneHandles, RaptorCast, RaptorCastEvent,
 };
 use monad_secp::{KeyPair, SecpSignature};
@@ -87,15 +89,16 @@ pub fn different_symbol_sizes() {
 
         let valset = BTreeMap::from([(rx_nodeid, Stake::ONE), (tx_nodeid, Stake::ONE)]);
         let validators = ValidatorSet::new_unchecked(valset);
+        let group_map: ValidatorGroupMap<_> = [(Epoch(0), validators)].into();
+        let group = PrimaryBroadcastGroup::of_epoch(Epoch(0), &tx_nodeid, &group_map).unwrap();
 
         let messages = build_messages::<SignatureType>(
             &tx_keypair,
             segment_size,
             message.clone(),
             Redundancy::from_u8(2),
-            GroupId::Primary(Epoch(0)), // epoch_no
-            0,                          // unix_ts_ms
-            BuildTarget::Raptorcast(&validators),
+            0, // unix_ts_ms
+            BuildTarget::raptorcast(group),
             &known_addresses,
         );
 
@@ -141,15 +144,16 @@ pub fn buffer_count_overflow() {
 
     let valset = BTreeMap::from([(rx_nodeid, Stake::ONE), (tx_nodeid, Stake::ONE)]);
     let validators = ValidatorSet::new_unchecked(valset);
+    let group_map: ValidatorGroupMap<_> = [(Epoch(0), validators)].into();
+    let group = PrimaryBroadcastGroup::of_epoch(Epoch(0), &tx_nodeid, &group_map).unwrap();
 
     let messages = build_messages::<SignatureType>(
         &tx_keypair,
         DEFAULT_SEGMENT_SIZE,
         message,
         Redundancy::from_u8(2),
-        GroupId::Primary(Epoch(0)), // epoch_no
-        0,                          // unix_ts_ms
-        BuildTarget::Raptorcast(&validators),
+        0, // unix_ts_ms
+        BuildTarget::raptorcast(group),
         &known_addresses,
     );
 
@@ -211,15 +215,16 @@ pub fn valid_rebroadcast() {
 
     let valset = BTreeMap::from([(rx_nodeid, Stake::ONE), (tx_nodeid, Stake::ONE)]);
     let validators = ValidatorSet::new_unchecked(valset);
+    let group_map: ValidatorGroupMap<_> = [(Epoch(0), validators)].into();
+    let group = PrimaryBroadcastGroup::of_epoch(Epoch(0), &tx_nodeid, &group_map).unwrap();
 
     let messages = build_messages::<SignatureType>(
         &tx_keypair,
         DEFAULT_SEGMENT_SIZE,
         message,
-        MAX_REDUNDANCY,             // redundancy,
-        GroupId::Primary(Epoch(0)), // epoch_no
-        0,                          // unix_ts_ms
-        BuildTarget::Raptorcast(&validators),
+        regular::MAX_REDUNDANCY, // redundancy,
+        0,                       // unix_ts_ms
+        BuildTarget::raptorcast(group),
         &known_addresses,
     );
 
