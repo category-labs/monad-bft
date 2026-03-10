@@ -71,9 +71,11 @@ pub const MAX_NUM_PACKETS: usize = 65535;
 // Any received encoded symbol with an ESI equal to or greater than MAX_REDUNDANCY * K
 // will be discarded, as a protection against DoS and algorithmic complexity attacks.
 //
-// We pick 7 because that is the largest value that works for all values of K, as K
+// 7 is the largest value that works for all values of K, as K
 // can be at most 8192, and there can be at most 65521 encoding symbol IDs.
-pub const MAX_REDUNDANCY: Redundancy = Redundancy::from_u8(7);
+//
+// We set this to 3 as a more reasonable upper bound.
+pub const MAX_REDUNDANCY: Redundancy = Redundancy::from_u8(3);
 
 // For a tree depth of 1, every encoded symbol is its own Merkle tree, and there will be no
 // Merkle proof section in the constructed RaptorCast packets.
@@ -991,7 +993,7 @@ mod tests {
     pub const MERKLE_TREE_DEPTH: u8 = 6;
     pub const SYMBOL_LEN: usize =
         PacketLayout::new(DEFAULT_SEGMENT_SIZE as usize, MERKLE_TREE_DEPTH).symbol_len();
-    pub const MAX_REDUNDANCY: u16 = 7;
+    pub const MAX_REDUNDANCY: u16 = 3;
 
     #[rstest]
     #[case(SYMBOL_LEN * 2, 1, false, true)] // sanity check
