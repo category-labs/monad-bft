@@ -23,8 +23,8 @@ sudo sysctl -w net.core.rmem_default=62500000
 sudo sysctl -w net.core.wmem_max=62500000
 sudo sysctl -w net.core.wmem_default=62500000
 # TCP buffer sizes
-sudo sysctl -w net.ipv4.tcp_rmem='4096 62500000 62500000'
-sudo sysctl -w net.ipv4.tcp_wmem='4096 62500000 62500000'
+sudo sysctl -w net.ipv4.tcp_rmem='4096 12582912 12582912'
+sudo sysctl -w net.ipv4.tcp_wmem='4096 12582912 12582912'
 ```
 
 To make these persistent, you can create a custom settings file, e.g. `/etc/sysctl.d/99-custom-monad.conf` with the following settings:
@@ -40,8 +40,8 @@ net.core.wmem_max = 62500000
 net.core.wmem_default = 62500000
 
 # TCP Buffer Sizes
-net.ipv4.tcp_rmem = 4096 62500000 62500000
-net.ipv4.tcp_wmem = 4096 62500000 62500000
+net.ipv4.tcp_rmem = 4096 12582912 12582912
+net.ipv4.tcp_wmem = 4096 12582912 12582912
 ```
 
 Apply these changes if needed.
