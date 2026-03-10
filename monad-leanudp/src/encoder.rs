@@ -25,8 +25,9 @@ use crate::{
     FragmentType, PacketHeader, LEANUDP_HEADER_SIZE,
 };
 
-/// Maximum fragments per message.
-pub(crate) const MAX_FRAGMENTS: usize = 128;
+/// Maximum fragments per message. At the default 1440-byte fragment size,
+/// this supports payloads comfortably above the 512 KiB tx-forwarding limit.
+pub(crate) const MAX_FRAGMENTS: usize = 512;
 const _: () = assert!(
     MAX_FRAGMENTS < u16::MAX as usize,
     "MAX_FRAGMENTS must be strictly below u16::MAX",

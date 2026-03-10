@@ -203,8 +203,10 @@ where
         let lean_udp_socket = match (direct_udp_socket, direct_udp_auth_protocol) {
             (Some(socket), Some(protocol)) => {
                 let direct_auth_socket = auth::AuthenticatedSocketHandle::new(socket, protocol);
-                let mut leanudp_config = monad_leanudp::Config::default();
-                leanudp_config.max_message_size = TX_FORWARD_LEANUDP_MAX_MESSAGE_SIZE_BYTES;
+                let leanudp_config = monad_leanudp::Config {
+                    max_message_size: TX_FORWARD_LEANUDP_MAX_MESSAGE_SIZE_BYTES,
+                    ..monad_leanudp::Config::default()
+                };
                 Some(auth::LeanUdpSocketHandle::new(
                     direct_auth_socket,
                     auth::NopScore::new(),

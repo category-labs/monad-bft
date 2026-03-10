@@ -196,6 +196,34 @@ fn test_encoder_oversize_payload_is_rejected() {
 }
 
 #[test]
+fn test_roundtrip_512k_message() {
+    let config = Config {
+        max_message_size: 512 * 1024,
+        ..Config::default()
+    };
+    let (mut encoder, mut decoder, _clock) = build_regular(config);
+    let payload = Bytes::from(vec![0xAB; 512 * 1024]);
+    let packets = fragment_packets(&mut encoder, payload.clone());
+
+    assert!(
+        packets.len() > 128,
+        "512 KiB payload should require more than the old fragment cap"
+    );
+
+    for packet in packets.iter().take(packets.len() - 1) {
+        assert_pending!(decoder, 7, packet.clone());
+    }
+
+    assert_eq!(
+        decoder.decode(
+            7,
+            packets.last().expect("packets must be non-empty").clone()
+        ),
+        Ok(DecodeOutcome::Complete(payload))
+    );
+}
+
+#[test]
 fn test_reassembles_multi_fragment_out_of_order() {
     let (mut encoder, mut decoder, _clock) = build_regular(Config::default());
     let packets = fragment_packets(&mut encoder, Bytes::from(vec![b'X'; 3000]));
@@ -228,16 +256,23 @@ fn test_duplicate_fragment_is_rejected() {
 
 #[test]
 fn test_too_many_fragments_error_path() {
-    let (mut encoder, mut decoder, _clock) = build_regular(Config::default());
+    let config = Config::default();
+    let (mut encoder, mut decoder, _clock) = build_regular(config.clone());
+    let max_fragments =
+        encoder.max_payload_size() / (config.max_fragment_payload - LEANUDP_HEADER_SIZE);
     let packet = first_packet(&mut encoder, Bytes::from_static(b"A"));
-    let mut out_of_range = packet_with_seq(&packet, 128).to_vec();
+    let mut out_of_range = packet_with_seq(
+        &packet,
+        u16::try_from(max_fragments).expect("max_fragments must fit in u16"),
+    )
+    .to_vec();
     out_of_range[7] = 0; // Middle fragment with out-of-range sequence number.
     let out_of_range = Bytes::from(out_of_range);
     assert_eq!(
         decoder.decode(1, out_of_range),
         Err(DecodeError::TooManyFragments {
-            count: 129,
-            max: 128,
+            count: max_fragments + 1,
+            max: max_fragments,
         })
     );
 }
