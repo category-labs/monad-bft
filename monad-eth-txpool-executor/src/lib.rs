@@ -42,19 +42,23 @@ use monad_eth_txpool_types::{
 use monad_eth_types::{EthExecutionProtocol, ExtractEthAddress};
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
+use monad_peer_score::{ema, StdClock};
 use monad_secp::RecoverableAddress;
 use monad_state_backend::StateBackend;
-use monad_types::{DropTimer, Round};
+use monad_types::{DropTimer, NodeId, Round};
 use monad_validator::signature_collection::SignatureCollection;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tokio::{sync::mpsc, time::Instant};
 use tracing::{debug, debug_span, error, info, trace_span, warn};
 
-pub use self::{client::EthTxPoolExecutorClient, ipc::EthTxPoolIpcConfig};
 use self::{
     client::ForwardedTxs, forward::EthTxPoolForwardingManager, ipc::EthTxPoolIpcServer,
     metrics::EthTxPoolExecutorMetrics, preload::EthTxPoolPreloadManager,
     reset::EthTxPoolResetTrigger,
+};
+pub use self::{
+    client::{EthTxPoolExecutorClient, ForwardedIngressFairQueueConfig},
+    ipc::EthTxPoolIpcConfig,
 };
 
 mod client;
@@ -119,6 +123,10 @@ where
 
         let metrics = Arc::new(EthTxPoolExecutorMetrics::default());
         let mut executor_metrics = ExecutorMetrics::default();
+        let (_score_provider, score_reader) = ema::create::<
+            NodeId<CertificateSignaturePubKey<ST>>,
+            StdClock,
+        >(ema::ScoreConfig::default(), StdClock);
 
         metrics.update(&mut executor_metrics);
 
@@ -168,6 +176,8 @@ where
             Box::new(move |executor_metrics: &mut ExecutorMetrics| {
                 metrics.update(executor_metrics)
             }),
+            score_reader,
+            ForwardedIngressFairQueueConfig::default(),
         ))
     }
 
@@ -190,6 +200,13 @@ where
         event_tx: mpsc::Sender<MonadEvent<ST, SCT, EthExecutionProtocol>>,
     ) {
         use futures::StreamExt;
+        const FORWARDED_CHANNEL_POLL_INTERVAL_MS: u64 = 8;
+
+        let mut forwarded_channel_poll = tokio::time::interval_at(
+            tokio::time::Instant::now() + Duration::from_millis(FORWARDED_CHANNEL_POLL_INTERVAL_MS),
+            Duration::from_millis(FORWARDED_CHANNEL_POLL_INTERVAL_MS),
+        );
+        forwarded_channel_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         loop {
             tokio::select! {
@@ -204,6 +221,27 @@ where
                     self.exec(commands);
                 }
 
+                _ = forwarded_channel_poll.tick() => {
+                    if !self.forwarding_manager.as_ref().get_ref().ingress_is_empty() {
+                        continue;
+                    }
+
+                    match forwarded_rx.try_recv() {
+                        Ok(forwarded_txs) => {
+                            debug!(
+                                batch_items = forwarded_txs.len(),
+                                "txpool executor: received forwarded batch from channel on timeout"
+                            );
+                            self.process_forwarded_txs(forwarded_txs);
+                        }
+                        Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
+                        Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                            warn!("forwarded channel was dropped, shutting down txpool executor");
+                            break;
+                        }
+                    }
+                }
+
                 result = self.next() => {
                     let Some(event) = result else {
                         error!("txpool executor stream terminated, shutting down txpool executor");
@@ -214,15 +252,6 @@ where
                         warn!(?err, "failed to send event to BFT, shutting down txpool executor");
                         break;
                     }
-                }
-
-                result = forwarded_rx.recv() => {
-                    let Some(forwarded_txs) = result else {
-                        warn!("forwarded channel was dropped, shutting down txpool executor");
-                        break;
-                    };
-
-                    self.process_forwarded_txs(forwarded_txs);
                 }
             }
         }
@@ -633,8 +662,6 @@ where
             );
 
             preload_manager.add_requests(inserted_addresses.iter());
-
-            forwarding_manager.as_mut().complete_ingress();
         }
 
         while let Poll::Ready((predicted_proposal_seqnum, addresses)) =
