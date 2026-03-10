@@ -47,7 +47,7 @@ impl Default for ScoreConfig {
             time_weight_unit: Duration::from_secs(3600),
             ema_half_life: Duration::from_secs(24 * 3600),
             block_time: Duration::from_millis(400),
-            promotion_threshold: 1_000_000.0,
+            promotion_threshold: 10_000.0,
         }
     }
 }
@@ -778,6 +778,34 @@ mod tests {
         let score_30h = score_value(reader.score(&1));
 
         assert!(score_10h > 0.0 && score_30h > 0.0);
+    }
+
+    #[test]
+    fn default_threshold_promotes_steady_devnet_peer_in_about_one_hour() {
+        let clock = MockClock::new();
+        let (mut provider, reader) = create::<u32, _>(ScoreConfig::default(), clock.clone());
+        let gas_per_contribution = 200_u64 * 21_000;
+
+        provider.record_contribution(1, gas_per_contribution);
+        for _ in 0..720 {
+            clock.advance(Duration::from_secs(5));
+            provider.record_contribution(1, gas_per_contribution);
+        }
+
+        assert!(
+            matches!(reader.score(&1), PeerStatus::Newcomer(_)),
+            "default threshold should still be unmet at 60 minutes"
+        );
+
+        for _ in 0..60 {
+            clock.advance(Duration::from_secs(5));
+            provider.record_contribution(1, gas_per_contribution);
+        }
+
+        assert!(
+            reader.score(&1).is_promoted(),
+            "default threshold should promote a steady devnet peer within 65 minutes"
+        );
     }
 
     #[test]
