@@ -44,7 +44,8 @@ pub(crate) async fn task(
                     // 1. when ip address was last banned
                     // 2. and when it was inserted into the queue for expiry
                     // we separate them so that ban can be re-newed before original ban has expired
-                    if timestamp.elapsed() >= ban_duration {
+                    let elapsed = timestamp.elapsed();
+                    if elapsed >= ban_duration {
                         addrlist.banned_at(addr).is_some_and(|banned_at| banned_at.elapsed() >= ban_duration)
                             .then(|| {
                                 debug!(%addr, "unban");
@@ -53,7 +54,7 @@ pub(crate) async fn task(
                         queue.pop_front();
                     } else {
                         trace!("renew ticker");
-                        ticker = Some(Box::pin(sleep(ban_duration - timestamp.elapsed())));
+                        ticker = Some(Box::pin(sleep(ban_duration.saturating_sub(elapsed))));
                         break;
                     }
                 }
