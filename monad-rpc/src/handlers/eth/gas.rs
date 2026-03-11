@@ -324,10 +324,7 @@ pub async fn monad_eth_estimateGas<T: Triedb>(
         let to = txn.to().unwrap();
         if let Ok(acct) = triedb_env.get_account(block_key, to.into()).await {
             // If the account has no code, then execute the call with gas limit 21000
-            // TODO(andr-dev): Explicitly handle no code hash case
-            if acct
-                .code_hash
-                .is_none_or(|code_hash| code_hash == [0u8; 32])
+            if acct.code_hash.is_none()
                 && matches!(
                     eth_call_provider
                         .eth_call(txn.clone(), Some(eth_call_executor.clone()))
