@@ -27,10 +27,7 @@ use monad_crypto::certificate_signature::{
 use monad_types::NodeId;
 
 pub(crate) use self::{assigner::ChunkAssigner, builder::MessageBuilder, chunk::Chunk};
-use crate::{
-    udp::GroupId,
-    util::{BuildTarget, Redundancy},
-};
+use crate::util::{BuildTarget, Redundancy};
 
 #[derive(Debug)]
 pub enum BuildError {
@@ -56,13 +53,11 @@ pub enum BuildError {
 
 type Result<A, E = BuildError> = std::result::Result<A, E>;
 
-#[allow(clippy::too_many_arguments)]
 pub fn build_messages<ST>(
     key: &ST::KeyPairType,
     segment_size: u16,
     app_message: Bytes,
     redundancy: Redundancy,
-    group_id: GroupId,
     unix_ts_ms: u64,
     build_target: BuildTarget<'_, CertificateSignaturePubKey<ST>>,
     known_addresses: &HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
@@ -72,12 +67,10 @@ where
 {
     let builder = MessageBuilder::<ST>::new(key)
         .segment_size(segment_size)
-        .group_id(group_id)
         .unix_ts_ms(unix_ts_ms)
         .redundancy(redundancy);
 
     let packets = builder
-        .prepare()
         .build_vec(&app_message, &build_target)
         .unwrap_log_on_error(&app_message, &build_target);
 
