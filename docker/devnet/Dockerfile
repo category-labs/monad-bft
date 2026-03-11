@@ -86,8 +86,8 @@ ENV GIT_MODIFIED=$GIT_MODIFIED
 
 # Builder
 COPY . .
-RUN ASMFLAGS="-march=haswell" CFLAGS="-march=haswell -fno-omit-frame-pointer" CXXFLAGS="-march=haswell -fno-omit-frame-pointer" \
-    RUSTFLAGS="-C target-cpu=haswell -C force-frame-pointers=yes" CC=gcc-15 CXX=g++-15 cargo build --release --bin monad-node --bin monad-keystore --bin monad-debug-node --example ledger-tail --example wal2json --example triedb-bench --example sign-name-record && \
+RUN ASMFLAGS="-march=haswell" CFLAGS="-march=haswell -fno-omit-frame-pointer -fstack-protector-strong -fPIC -D_FORTIFY_SOURCE=1" CXXFLAGS="-march=haswell -fno-omit-frame-pointer -fstack-protector-strong -fPIC -D_FORTIFY_SOURCE=1" \
+    RUSTFLAGS="-C target-cpu=haswell -C force-frame-pointers=yes -C link-args=-Wl,-z,relro,-z,now,-z,noexecstack,-z,separate-code" CC=gcc-15 CXX=g++-15 cargo build --release --bin monad-node --bin monad-keystore --bin monad-debug-node --example ledger-tail --example wal2json --example triedb-bench --example sign-name-record && \
     mv target/release/monad-node monad-node && \
     mv target/release/monad-keystore keystore && \
     mv target/release/monad-debug-node monad-debug-node && \
