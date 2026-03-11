@@ -274,7 +274,9 @@ impl ReserveBalanceUpdater {
         let eth_address = txn.signer();
         let maybe_account_balance = account_balances.get_mut(&eth_address);
         let Some(account_balance) = maybe_account_balance else {
-            return Ok(());
+            return Err(BlockPolicyError::ReserveBalanceUpdaterError(
+                ReserveBalanceUpdaterError::AccountBalanceMissing,
+            ));
         };
 
         let is_emptying_transaction = is_possibly_emptying_transaction(
@@ -663,7 +665,15 @@ where
                 );
 
                 for txn in &block.validated_txns {
-                    reserve_balance_updater.try_add_transaction(&mut account_balances, txn)?;
+                    match reserve_balance_updater.try_add_transaction(&mut account_balances, txn) {
+                        // previous blocks may contain senders that are not relevant to the current block being validated
+                        // therefore if account balance of a sender is missing, we skip instead of erroring out
+                        Ok(())
+                        | Err(BlockPolicyError::ReserveBalanceUpdaterError(
+                            ReserveBalanceUpdaterError::AccountBalanceMissing,
+                        )) => {}
+                        Err(e) => return Err(e),
+                    }
                 }
             }
             next_validate += SeqNum(1);
@@ -1017,8 +1027,6 @@ where
         for txn in block.validated_txns.iter() {
             self.nonce_check_and_update(txn, &mut account_nonces)?;
 
-            // account balance must exist since we populated from tx signers
-            assert!(account_balances.contains_key(&txn.signer()));
             reserve_balance_updater.try_add_transaction(&mut account_balances, txn)?;
 
             // https://eips.ethereum.org/EIPS/eip-7702#behavior
