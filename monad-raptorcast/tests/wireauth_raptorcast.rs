@@ -740,6 +740,9 @@ async fn test_rate_limiting_basic() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+// This test depends on broadcasting to validators as non-validators,
+// which is now prohibited.
+#[ignore]
 async fn test_rate_limiting_p2p() {
     init_tracing();
 

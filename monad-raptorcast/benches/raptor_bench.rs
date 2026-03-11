@@ -23,8 +23,8 @@ use monad_dataplane::udp::DEFAULT_SEGMENT_SIZE;
 use monad_raptor::ManagedDecoder;
 use monad_raptorcast::{
     packet::{build_messages, regular::MAX_REDUNDANCY},
-    udp::{parse_message, ChunkSignatureVerifier, GroupId, SIGNATURE_CACHE_SIZE},
-    util::{BuildTarget, Redundancy},
+    udp::{parse_message, ChunkSignatureVerifier, SIGNATURE_CACHE_SIZE},
+    util::{BuildTarget, PrimaryBroadcastGroup, Redundancy, ValidatorGroupMap},
 };
 use monad_secp::{KeyPair, SecpSignature};
 use monad_types::{Epoch, NodeId, Stake};
@@ -63,15 +63,18 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             })
             .collect();
 
+        let self_id = NodeId::new(keys[0].pubkey());
+        let group_map: ValidatorGroupMap<_> = [(Epoch(0), validators)].into();
+        let group = PrimaryBroadcastGroup::of_epoch(Epoch(0), &self_id, &group_map).unwrap();
+
         b.iter(|| {
             let _ = build_messages::<SecpSignature>(
                 &keys[0],
                 DEFAULT_SEGMENT_SIZE, // segment_size
                 message.clone(),
                 Redundancy::from_u8(2),
-                GroupId::Primary(Epoch(0)), // epoch_no
-                0,                          // unix_ts_ms
-                BuildTarget::Raptorcast(&validators),
+                0, // unix_ts_ms
+                BuildTarget::Raptorcast(group),
                 &known_addresses,
             );
         });
@@ -103,14 +106,17 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             })
             .collect();
 
+        let self_id = NodeId::new(keys[0].pubkey());
+        let group_map: ValidatorGroupMap<_> = [(Epoch(0), validators)].into();
+        let group = PrimaryBroadcastGroup::of_epoch(Epoch(0), &self_id, &group_map).unwrap();
+
         let messages = build_messages::<SecpSignature>(
             &keys[0],
             DEFAULT_SEGMENT_SIZE, // segment_size
             message.clone(),
             Redundancy::from_u8(2),
-            GroupId::Primary(Epoch(0)), // epoch_no
-            0,                          // unix_ts_ms
-            BuildTarget::Raptorcast(&validators),
+            0, // unix_ts_ms
+            BuildTarget::Raptorcast(group),
             &known_addresses,
         )
         .into_iter()
