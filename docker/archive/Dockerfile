@@ -82,8 +82,8 @@ ENV GIT_MODIFIED=$GIT_MODIFIED
 
 # Builder
 COPY . .
-RUN ASMFLAGS="-march=haswell" CFLAGS="-march=haswell" CXXFLAGS="-march=haswell" \
-    CC=gcc-15 CXX=g++-15 cargo build --release \
+RUN ASMFLAGS="-march=haswell" CFLAGS="-march=haswell -fstack-protector-strong -fPIC -D_FORTIFY_SOURCE=1" CXXFLAGS="-march=haswell -fstack-protector-strong -fPIC -D_FORTIFY_SOURCE=1" \
+    RUSTFLAGS="-C link-args=-Wl,-z,relro,-z,now" CC=gcc-15 CXX=g++-15 cargo build --release \
     --bin monad-archiver \
     --bin monad-archive-checker \
     --bin monad-indexer && \

@@ -85,8 +85,8 @@ ENV GIT_MODIFIED=$GIT_MODIFIED
 
 # Builder
 COPY . .
-RUN ASMFLAGS="-march=haswell" CFLAGS="-march=haswell -fno-omit-frame-pointer" CXXFLAGS="-march=haswell -fno-omit-frame-pointer" \
-    RUSTFLAGS="-C force-frame-pointers=yes" CC=gcc-15 CXX=g++-15 cargo build --release --bin monad-rpc && \
+RUN ASMFLAGS="-march=haswell" CFLAGS="-march=haswell -fno-omit-frame-pointer -fstack-protector-strong -fPIC -D_FORTIFY_SOURCE=1" CXXFLAGS="-march=haswell -fno-omit-frame-pointer -fstack-protector-strong -fPIC -D_FORTIFY_SOURCE=1" \
+    RUSTFLAGS="-C force-frame-pointers=yes -C link-args=-Wl,-z,relro,-z,now" CC=gcc-15 CXX=g++-15 cargo build --release --bin monad-rpc && \
     mv target/release/monad-rpc rpc && \
     cp `ls -Lt $(find target/release | grep -e "libtriedb_driver.so")` . && \
     ldd $(ls -Lt $(find target/release | grep -e "libtriedb_driver.so")) | docker/filter-dependent-shared-objects.py | xargs -I {} cp {} .
