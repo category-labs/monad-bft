@@ -26,8 +26,8 @@ use alloy_primitives::Bloom;
 use alloy_rpc_types::{Block, BlockTransactions, Transaction, TransactionReceipt};
 use dashmap::DashMap;
 use itertools::Itertools;
+use monad_eth_types::{BlockHeader, ReceiptWithLogIndex, TxEnvelopeWithSender};
 use monad_exec_events::BlockCommitState;
-use monad_triedb_utils::triedb_env::{BlockHeader, ReceiptWithLogIndex, TxEnvelopeWithSender};
 use tokio::sync::Mutex;
 use tracing::{error, warn};
 

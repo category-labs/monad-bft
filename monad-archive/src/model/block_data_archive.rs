@@ -24,7 +24,7 @@ use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable, EMPTY_LIST_COD
 use bytes::BufMut;
 use eyre::bail;
 use futures::try_join;
-use monad_triedb_utils::triedb_env::{ReceiptWithLogIndex, TxEnvelopeWithSender};
+use monad_eth_types::{ReceiptWithLogIndex, TxEnvelopeWithSender};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
 use crate::{kvstore::WritePolicy, prelude::*, rlp_offset_scanner::get_all_tx_offsets};
@@ -389,7 +389,10 @@ impl BlockStorageRepr {
         match decoding_result {
             Ok(decoded) => decoded.convert().await,
             Err(e) => {
-                info!(?e, "Failed to parse BlockStorageRepr despite sentinel bit being set. Falling back to raw InlineV0 decoding...");
+                info!(
+                    ?e,
+                    "Failed to parse BlockStorageRepr despite sentinel bit being set. Falling back to raw InlineV0 decoding..."
+                );
                 let v0 =
                     BlockStorageRepr::V0(AlloyBlock::<TxEnvelope, Header>::decode(&mut &buf[..])?);
                 v0.convert().await
@@ -507,7 +510,10 @@ impl ReceiptStorageRepr {
         match decoding_result {
             Ok(decoded) => decoded.convert(),
             Err(e) => {
-                info!(?e, "Failed to parse ReceiptStorageRepr despite sentinel bit being set. Falling back to raw V0 decoding...");
+                info!(
+                    ?e,
+                    "Failed to parse ReceiptStorageRepr despite sentinel bit being set. Falling back to raw V0 decoding..."
+                );
                 let v0 = Vec::<ReceiptEnvelope>::decode(&mut &buf[..]) // fmt
                     .map(ReceiptStorageRepr::V0)?;
                 v0.convert()

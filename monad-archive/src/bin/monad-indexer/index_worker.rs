@@ -178,7 +178,11 @@ async fn handle_block(
         Ok(data) => data,
         Err(e) => match fallback_block_data_source {
             Some(fallback) => {
-                warn!(?e, block_num, "Failed to get block data with offsets from main source for block {block_num}, trying fallback source");
+                warn!(
+                    ?e,
+                    block_num,
+                    "Failed to get block data with offsets from main source for block {block_num}, trying fallback source"
+                );
                 fallback
                 .get_block_data_with_offsets(block_num)
                 .await
@@ -275,7 +279,7 @@ mod tests {
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use monad_archive::kvstore::{memory::MemoryStorage, WritePolicy};
-    use monad_triedb_utils::triedb_env::{ReceiptWithLogIndex, TxEnvelopeWithSender};
+    use monad_eth_types::{ReceiptWithLogIndex, TxEnvelopeWithSender};
 
     use super::*;
 

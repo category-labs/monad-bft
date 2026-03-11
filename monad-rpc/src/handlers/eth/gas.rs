@@ -151,7 +151,7 @@ async fn estimate_gas<T: EthCallProvider>(
         _ => {
             return Err(JsonRpcError::internal_error(
                 "Unexpected CallResult type".into(),
-            ))
+            ));
         }
     };
 
@@ -176,7 +176,7 @@ async fn estimate_gas<T: EthCallProvider>(
                 _ => {
                     return Err(JsonRpcError::internal_error(
                         "Unexpected CallResult type".into(),
-                    ))
+                    ));
                 }
             }
         } else {
@@ -207,7 +207,7 @@ async fn estimate_gas<T: EthCallProvider>(
             _ => {
                 return Err(JsonRpcError::internal_error(
                     "Unexpected CallResult type".into(),
-                ))
+                ));
             }
         };
     }
@@ -324,7 +324,10 @@ pub async fn monad_eth_estimateGas<T: Triedb>(
         let to = txn.to().unwrap();
         if let Ok(acct) = triedb_env.get_account(block_key, to.into()).await {
             // If the account has no code, then execute the call with gas limit 21000
-            if acct.code_hash == [0; 32]
+            // TODO(andr-dev): Explicitly handle no code hash case
+            if acct
+                .code_hash
+                .is_none_or(|code_hash| code_hash == [0u8; 32])
                 && matches!(
                     eth_call_provider
                         .eth_call(txn.clone(), Some(eth_call_executor.clone()))
@@ -409,7 +412,7 @@ pub async fn monad_eth_feeHistory<T: Triedb>(
         _ => {
             return Err(JsonRpcError::custom(
                 "block count must be between 1 and 1024".to_string(),
-            ))
+            ));
         }
     }
 
@@ -620,8 +623,9 @@ mod tests {
     use alloy_primitives::{Bloom, Bytes, FixedBytes, Log, LogData};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
+    use monad_eth_types::ReceiptWithLogIndex;
     use monad_ethcall::{FailureCallResult, SuccessCallResult};
-    use monad_triedb_utils::{mock_triedb::MockTriedb, triedb_env::ReceiptWithLogIndex};
+    use monad_triedb_utils::mock_triedb::MockTriedb;
 
     use super::*;
     use crate::handlers::eth::call::CallRequest;

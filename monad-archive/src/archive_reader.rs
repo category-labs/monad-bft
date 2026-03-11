@@ -15,7 +15,7 @@
 
 use alloy_primitives::BlockHash;
 use eyre::Result;
-use monad_triedb_utils::triedb_env::ReceiptWithLogIndex;
+use monad_eth_types::ReceiptWithLogIndex;
 use tracing::trace;
 
 use crate::{

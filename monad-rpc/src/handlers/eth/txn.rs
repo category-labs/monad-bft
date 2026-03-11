@@ -416,7 +416,8 @@ mod tests {
     use alloy_rlp::Encodable;
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
-    use monad_triedb_utils::{mock_triedb::MockTriedb, triedb_env::Account};
+    use monad_eth_types::EthAccount;
+    use monad_triedb_utils::mock_triedb::MockTriedb;
 
     use super::{
         monad_eth_sendRawTransaction, monad_eth_sendRawTransactionSync,
@@ -467,7 +468,7 @@ mod tests {
 
         triedb.set_account(
             signer.address().0.into(),
-            Account {
+            EthAccount {
                 nonce: 10,
                 ..Default::default()
             },
@@ -510,7 +511,7 @@ mod tests {
 
         triedb.set_account(
             signer.address().0.into(),
-            Account {
+            EthAccount {
                 nonce: 10,
                 ..Default::default()
             },

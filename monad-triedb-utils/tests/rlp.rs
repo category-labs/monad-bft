@@ -17,7 +17,7 @@ use alloy_consensus::{transaction::SignerRecoverable, ReceiptEnvelope};
 use alloy_primitives::B256;
 use alloy_rlp::{Decodable, Encodable};
 use monad_eth_testutil::{make_eip1559_tx, make_legacy_tx, make_receipt};
-use monad_triedb_utils::triedb_env::{ReceiptWithLogIndex, TxEnvelopeWithSender};
+use monad_eth_types::{ReceiptWithLogIndex, TxEnvelopeWithSender};
 
 #[test]
 fn test_rlp_encode_decode_legacy_tx() {

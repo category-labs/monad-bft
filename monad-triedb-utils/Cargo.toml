@@ -16,12 +16,11 @@ monad-state-backend = { workspace = true }
 monad-triedb = { workspace = true }
 monad-types = { workspace = true }
 
-alloy-consensus = { workspace = true, features = ["serde"] }
+alloy-consensus = { workspace = true }
 alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
 futures = { workspace = true }
 hex = { workspace = true }
-serde = { workspace = true, features = ["derive"] }
 tokio = { workspace = true, features = ["rt"] }
 tracing = { workspace = true, features = ["log"] }
 

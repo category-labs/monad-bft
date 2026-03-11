@@ -31,6 +31,7 @@ mongodb-integration-tests = []
 
 [dependencies]
 monad-compress = { workspace = true }
+monad-eth-types = { workspace = true }
 monad-triedb-utils = { workspace = true }
 monad-types = { workspace = true }
 

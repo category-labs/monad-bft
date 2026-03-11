@@ -27,7 +27,7 @@ pub use alloy_primitives::{U128, U256, U64};
 pub use bytes::Bytes;
 pub use eyre::{bail, eyre, Context, ContextCompat, OptionExt, Report, Result};
 pub use futures::{try_join, StreamExt, TryStream, TryStreamExt};
-pub use monad_triedb_utils::triedb_env::{ReceiptWithLogIndex, TxEnvelopeWithSender};
+pub use monad_eth_types::{ReceiptWithLogIndex, TxEnvelopeWithSender};
 pub use tokio::time::sleep;
 pub use tracing::{debug, error, info, warn, Level};
 

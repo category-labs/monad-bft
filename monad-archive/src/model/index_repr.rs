@@ -17,7 +17,7 @@ use alloy_consensus::{transaction::SignerRecoverable, ReceiptEnvelope, TxEnvelop
 use alloy_primitives::BlockHash;
 use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
 use eyre::{bail, ensure};
-use monad_triedb_utils::triedb_env::{ReceiptWithLogIndex, TxEnvelopeWithSender};
+use monad_eth_types::{ReceiptWithLogIndex, TxEnvelopeWithSender};
 use serde::{Deserialize, Serialize};
 
 use crate::prelude::*;
@@ -136,7 +136,10 @@ impl IndexDataStorageRepr {
         match result {
             Ok(d) => Ok(d),
             Err(e) => {
-                info!(?e, "Failed to parse IndexDataStorageRepr despite sentinel bit being set. Falling back to raw InlineV0 decoding...");
+                info!(
+                    ?e,
+                    "Failed to parse IndexDataStorageRepr despite sentinel bit being set. Falling back to raw InlineV0 decoding..."
+                );
                 InlineV0::decode(&mut &buf[..])
                     .map(IndexDataStorageRepr::InlineV0)
                     .map_err(Into::into)

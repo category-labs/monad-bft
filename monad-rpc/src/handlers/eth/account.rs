@@ -83,8 +83,9 @@ pub async fn monad_eth_getCode<T: Triedb>(
         .await
         .map_err(JsonRpcError::internal_error)?;
 
+    // TODO(andr-dev): Skip looking up code if code_hash is None
     let code = triedb_env
-        .get_code(block_key, account.code_hash)
+        .get_code(block_key, account.code_hash.unwrap_or([0u8; 32]))
         .await
         .map_err(JsonRpcError::internal_error)?;
 

@@ -33,11 +33,12 @@ use futures::{stream, Stream, StreamExt, TryStreamExt};
 use itertools::Either;
 use monad_archive::{
     model::{BlockDataReader, TxIndexedData},
-    prelude::{ArchiveReader, Context, ContextCompat, IndexReader, TxEnvelopeWithSender},
+    prelude::{ArchiveReader, Context, ContextCompat, IndexReader},
 };
-use monad_triedb_utils::triedb_env::{
-    BlockHeader, BlockKey, FinalizedBlockKey, ReceiptWithLogIndex, TransactionLocation, Triedb,
+use monad_eth_types::{
+    BlockHeader, ReceiptWithLogIndex, TransactionLocation, TxEnvelopeWithSender,
 };
+use monad_triedb_utils::triedb_env::{BlockKey, FinalizedBlockKey, Triedb};
 use monad_types::SeqNum;
 use tracing::{debug, error, trace, warn};
 
