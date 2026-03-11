@@ -322,6 +322,7 @@ mod tests {
         test_utils::{mock_block, mock_rx, mock_tx, MemoryStorage},
     };
     use monad_compress::util::BoundedWriter;
+    use monad_eth_types::ReceiptWithLogIndex;
 
     use super::*;
 

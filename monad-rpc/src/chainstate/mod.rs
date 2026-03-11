@@ -1531,11 +1531,10 @@ mod tests {
     use alloy_rpc_types::{Filter, FilterBlockOption};
     use monad_archive::{
         kvstore::WritePolicy,
-        prelude::{
-            ArchiveReader, BlockDataArchive, IndexReaderImpl, TxEnvelopeWithSender, TxIndexArchiver,
-        },
+        prelude::{ArchiveReader, BlockDataArchive, IndexReaderImpl, TxIndexArchiver},
         test_utils::{mock_block, mock_rx, mock_tx, MemoryStorage},
     };
+    use monad_eth_types::TxEnvelopeWithSender;
     use monad_triedb_utils::mock_triedb::MockTriedb;
 
     use crate::{
