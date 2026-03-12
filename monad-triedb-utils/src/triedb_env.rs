@@ -159,7 +159,7 @@ fn polling_thread(
                 // retry in case of a race
             }
 
-            let mut latest_proposed = last_proposed;
+            let mut latest_proposed = latest_voted;
             for _ in 0..3 {
                 if let Some(proposed) = get_latest_proposed_block_key(&triedb_handle) {
                     latest_proposed = BlockKey::Proposed(proposed);
