@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["monad-*"]
-exclude = ["monad-execution", "monad-scripts"]
+exclude = ["monad-execution", "monad-scripts", "monad-fuzz"]
 
 [profile.dev]
 opt-level = 1

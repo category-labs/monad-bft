@@ -73,6 +73,9 @@ jobs:
           echo [profile.release] > .cargo/config.toml
           echo lto=false >> .cargo/config.toml
 
+          # remove monad-fuzz from excluded member of the workspace
+          sed -i -E 's/^(exclude = .*), "monad-fuzz"(.*)/\1\2/' Cargo.toml
+
       - uses: Swatinem/rust-cache@v2
       - name: Run fuzzing
         id: fuzz
