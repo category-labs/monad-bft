@@ -50,6 +50,65 @@ impl BufferSet {
         }
     }
 
+    #[inline(always)]
+    fn xor_bytes(dst: &mut [u8], src: &[u8]) {
+        assert_eq!(dst.len(), src.len());
+
+        #[cfg(all(
+            any(target_arch = "x86", target_arch = "x86_64"),
+            target_feature = "avx2"
+        ))]
+        {
+            let (dst_chunks, dst_tail) = dst.as_chunks_mut::<32>();
+            let (src_chunks, src_tail) = src.as_chunks::<32>();
+
+            for (dst_chunk, src_chunk) in dst_chunks.iter_mut().zip(src_chunks) {
+                unsafe {
+                    Self::xor_chunk_avx2(dst_chunk, src_chunk);
+                }
+            }
+
+            Self::xor_bytes_scalar(dst_tail, src_tail);
+        }
+
+        #[cfg(not(all(
+            any(target_arch = "x86", target_arch = "x86_64"),
+            target_feature = "avx2"
+        )))]
+        Self::xor_bytes_scalar(dst, src);
+    }
+
+    #[inline(always)]
+    fn xor_bytes_scalar(dst: &mut [u8], src: &[u8]) {
+        for (dst_byte, src_byte) in dst.iter_mut().zip(src) {
+            *dst_byte ^= *src_byte;
+        }
+    }
+
+    #[cfg(all(
+        any(target_arch = "x86", target_arch = "x86_64"),
+        target_feature = "avx2"
+    ))]
+    #[target_feature(enable = "avx2")]
+    unsafe fn xor_chunk_avx2(dst: &mut [u8; 32], src: &[u8; 32]) {
+        #[cfg(target_arch = "x86")]
+        use std::arch::x86::{__m256i, _mm256_loadu_si256, _mm256_storeu_si256, _mm256_xor_si256};
+        #[cfg(target_arch = "x86_64")]
+        use std::arch::x86_64::{
+            __m256i, _mm256_loadu_si256, _mm256_storeu_si256, _mm256_xor_si256,
+        };
+
+        let dst_ptr = dst.as_mut_ptr().cast::<__m256i>();
+        let src_ptr = src.as_ptr().cast::<__m256i>();
+        let dst_vec = unsafe { _mm256_loadu_si256(dst_ptr.cast_const()) };
+        let src_vec = unsafe { _mm256_loadu_si256(src_ptr) };
+        let xor_vec = _mm256_xor_si256(dst_vec, src_vec);
+
+        unsafe {
+            _mm256_storeu_si256(dst_ptr, xor_vec);
+        }
+    }
+
     pub fn xor_buffers(&mut self, a: BufferId, b: BufferId) {
         let a_index = self.buffer_index(a);
         let b_index = self.buffer_index(b);
@@ -69,13 +128,7 @@ impl BufferSet {
             Ordering::Equal => panic!("xor_buffers: Was asked to XOR buffer with itself"),
         };
 
-        let len = dst.len();
-
-        assert_eq!(len, src.len());
-
-        for i in 0..len {
-            dst[i] ^= src[i];
-        }
+        Self::xor_bytes(dst, src);
     }
 
     pub fn buffer(&self, buffer_id: BufferId) -> &[u8] {
