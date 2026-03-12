@@ -13,7 +13,7 @@ ExecStart=/usr/local/bin/monad-archiver \
     --max-concurrent-blocks ${MAX_CONCURRENT_BLOCKS}
 EnvironmentFile=-/home/monad/.env
 Environment="RUST_LOG=debug,h2=warn,tower=warn"
-Restart=no
+Restart=always
 User=monad
 Group=monad
 AllowedCPUs=13-14
