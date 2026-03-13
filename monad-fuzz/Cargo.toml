@@ -10,6 +10,7 @@ afl = "*"
 arbitrary = { workspace = true, features = ["derive"] }
 bytes = { workspace = true }
 
+monad-types = { workspace = true }
 monad-bls = { workspace = true }
 monad-crypto = { workspace = true }
 monad-eth-types = { workspace = true }

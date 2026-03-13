@@ -25,13 +25,32 @@
 // AFL_INPUT_LEN_MAX=1500
 
 use bytes::Bytes;
-use monad_raptorcast::udp::{parse_message, ChunkSignatureVerifier};
-use monad_secp::mock::MockSecpSignature;
+use monad_raptorcast::{
+    parser::packet_parser::{ChunkValidationEnv, RaptorcastPacket},
+    udp::ChunkSignatureVerifier,
+};
+use monad_crypto::certificate_signature::CertificateKeyPair;
+use monad_secp::mock::{MockSecpKeyPair, MockSecpSignature};
+use monad_types::NodeId;
 
 fn main() {
+    let self_id = NodeId::new(MockSecpKeyPair::from_seed(0).pubkey());
+
     afl::fuzz!(|data: &[u8]| {
         let mut sig_cache = ChunkSignatureVerifier::<MockSecpSignature>::new().with_cache(1);
         let payload = Bytes::copy_from_slice(data);
-        let _ = parse_message::<MockSecpSignature, _>(&mut sig_cache, payload, u64::MAX, |_| true);
+        let Ok(packet) = RaptorcastPacket::parse(&payload) else {
+            return;
+        };
+
+        let _ = packet.validate_chunk(
+            &payload,
+            ChunkValidationEnv {
+                signature_verifier: &mut sig_cache,
+                max_age_ms: u64::MAX,
+                bypass_rate_limiter: |_| true,
+                self_id: &self_id,
+            },
+        );
     });
 }
