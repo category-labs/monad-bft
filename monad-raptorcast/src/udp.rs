@@ -20,7 +20,6 @@ use monad_crypto::{
     certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey},
     signing_domain,
 };
-use monad_dataplane::udp::{segment_size_for_mtu, ETHERNET_SEGMENT_SIZE};
 use monad_executor::ExecutorMetricsChain;
 use monad_types::{Epoch, NodeId, Round};
 use monad_validator::validator_set::{ValidatorSet, ValidatorSetType as _};
@@ -31,69 +30,22 @@ use crate::{
     metrics::{
         UdpStateMetrics, GAUGE_RAPTORCAST_DECODING_CACHE_SIGNATURE_VERIFICATIONS_RATE_LIMITED,
     },
-    packet::PacketLayout,
     parser::{
-        packet_parser::SignedOverData,
+        packet_parser::{ChunkValidationEnv, MalformedPacket, RaptorcastPacket, SignedOverData},
         signature_verifier::{SignatureVerifier, SignatureVerifierError},
     },
     util::{
-        compute_hash, unix_ts_ms_now, AppMessageHash, BroadcastMode, NodeIdHash,
-        ReBroadcastGroupMap, Redundancy,
+        compute_hash, unix_ts_ms_now, AppMessageHash, BroadcastGroup, BroadcastMode,
+        FullNodeGroupMap, NodeIdHash,
     },
 };
 
-const _: () = assert!(
-    MAX_MERKLE_TREE_DEPTH <= 0xF,
-    "merkle tree depth must be <= 4 bits"
-);
-
-const _: () = assert!(
-    MIN_SEGMENT_LENGTH == segment_size_for_mtu(1280) as usize,
-    "MIN_SEGMENT_LENGTH should be the segment size for the IPv6 minimum MTU of 1280 bytes"
-);
-
 pub const SIGNATURE_CACHE_SIZE: usize = 10_000;
-
-// We assume an MTU of at least 1280 (the IPv6 minimum MTU), which for the maximum Merkle tree
-// depth of 9 gives a symbol size of 960 bytes, which we will use as the minimum chunk length for
-// received packets, and we'll drop received chunks that are smaller than this to mitigate attacks
-// involving a peer sending us a message as a very large set of very small chunks.
-pub const MIN_CHUNK_LENGTH: usize = 960;
 
 // Drop a message to be transmitted if it would lead to more than this number of packets
 // to be transmitted.  This can happen in Broadcast mode when the message is large or
 // if we have many peers to transmit the message to.
 pub const MAX_NUM_PACKETS: usize = 65535;
-
-// For a message with K source symbols, we accept up to the first MAX_REDUNDANCY * K
-// encoded symbols.
-//
-// Any received encoded symbol with an ESI equal to or greater than MAX_REDUNDANCY * K
-// will be discarded, as a protection against DoS and algorithmic complexity attacks.
-//
-// 7 is the largest value that works for all values of K, as K
-// can be at most 8192, and there can be at most 65521 encoding symbol IDs.
-//
-// We set this to 3 as a more reasonable upper bound.
-pub const MAX_REDUNDANCY: Redundancy = Redundancy::from_u8(3);
-
-// For a tree depth of 1, every encoded symbol is its own Merkle tree, and there will be no
-// Merkle proof section in the constructed RaptorCast packets.
-//
-// For a tree depth of 9, the index of the rightmost Merkle tree leaf will be 0xff, and the
-// Merkle leaf index field is 8 bits wide.
-pub const MIN_MERKLE_TREE_DEPTH: u8 = 1;
-pub const MAX_MERKLE_TREE_DEPTH: u8 = 9;
-
-/// The min segment length should be large enough to hold at least
-/// MAX_CHUNK_LENGTH of payload plus all headers with the smallest
-/// merkle tree depth.
-pub const MIN_SEGMENT_LENGTH: usize =
-    PacketLayout::calc_segment_len(MIN_CHUNK_LENGTH, MAX_MERKLE_TREE_DEPTH);
-
-/// The max segment length should not exceed the standard MTU for
-/// Ethernet to avoid fragmentation when routed across the internet.
-pub const MAX_SEGMENT_LENGTH: usize = ETHERNET_SEGMENT_SIZE as usize;
 
 /// The maximum sane validator set size. Defined in
 /// <execution>/monad/staking/util/constants.hpp.
@@ -106,6 +58,7 @@ pub type ChunkSignatureVerifier<ST> =
 
 pub(crate) struct UdpState<ST: CertificateSignatureRecoverable> {
     self_id: NodeId<CertificateSignaturePubKey<ST>>,
+    self_id_hash: NodeIdHash,
     max_age_ms: u64,
 
     // TODO add a cap on max number of chunks that will be forwarded per message? so that a DOS
@@ -125,12 +78,14 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
         max_age_ms: u64,
         sig_verification_rate_limit: u32,
     ) -> Self {
+        let self_id_hash = compute_hash(&self_id);
         let signature_verifier = SignatureVerifier::new()
             .with_cache(SIGNATURE_CACHE_SIZE)
             .with_rate_limit(sig_verification_rate_limit);
 
         Self {
             self_id,
+            self_id_hash,
             max_age_ms,
 
             decoder_cache: DecoderCache::default(),
@@ -148,20 +103,152 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
         self.decoder_cache.metrics()
     }
 
+    pub fn handle_unicast(
+        &mut self,
+        epoch_validators: &BTreeMap<Epoch, ValidatorSet<CertificateSignaturePubKey<ST>>>,
+        parsed_message: &ValidatedChunk<CertificateSignaturePubKey<ST>>,
+        _sender_pk: Option<&CertificateSignaturePubKey<ST>>,
+    ) -> Option<(NodeId<CertificateSignaturePubKey<ST>>, Bytes)> {
+        if parsed_message.recipient_hash != self.self_id_hash {
+            tracing::debug!(
+                ?self.self_id,
+                recipient_hash =? parsed_message.recipient_hash,
+                "dropping spoofed unicast message"
+            );
+            return None;
+        }
+
+        let validator_set = match parsed_message.group_id {
+            GroupId::Primary(epoch) => epoch_validators.get(&epoch),
+            GroupId::Secondary(_round) => None,
+        };
+
+        let decoding_context = DecodingContext::new(validator_set, unix_ts_ms_now());
+        self.try_decode(parsed_message, &decoding_context)?
+    }
+
+    pub fn handle_broadcast(
+        &mut self,
+        epoch_validators: &BTreeMap<Epoch, ValidatorSet<CertificateSignaturePubKey<ST>>>,
+        full_node_group_map: &FullNodeGroupMap<CertificateSignaturePubKey<ST>>,
+        parsed_message: &ValidatedChunk<CertificateSignaturePubKey<ST>>,
+        rebroadcast_to: &mut impl FnMut(Vec<NodeId<CertificateSignaturePubKey<ST>>>),
+        sender_pk: Option<&CertificateSignaturePubKey<ST>>,
+    ) -> Option<(NodeId<CertificateSignaturePubKey<ST>>, Bytes)> {
+        let self_id = self.self_id;
+        let Ok(group) = BroadcastGroup::from_group_id(
+            parsed_message.group_id,
+            &parsed_message.author,
+            epoch_validators,
+            full_node_group_map,
+        ) else {
+            tracing::debug!(
+                ?parsed_message.group_id,
+                author =? parsed_message.author,
+                "dropping message from unknown author/group"
+            );
+            return None;
+        };
+
+        if let Some(sender) = sender_pk {
+            let sender_id = NodeId::new(*sender);
+            if !group.is_sender_valid(&sender_id) {
+                tracing::debug!(
+                    ?parsed_message.group_id,
+                    author =? parsed_message.author,
+                    sender =? sender_id,
+                    "dropping message from invalid sender"
+                );
+                return None;
+            }
+        }
+
+        let validator_set = match parsed_message.group_id {
+            GroupId::Primary(epoch) => epoch_validators.get(&epoch),
+            GroupId::Secondary(_round) => None,
+        };
+
+        let decoding_context = DecodingContext::new(validator_set, unix_ts_ms_now());
+        let message = self.try_decode(parsed_message, &decoding_context)?;
+
+        let is_first_hop_recipient = parsed_message.recipient_hash == self.self_id_hash;
+        if let Some(ctx) = group.try_rebroadcast(&self_id, is_first_hop_recipient) {
+            // TODO: cap rebroadcast symbols based on some multiple of esis.
+            rebroadcast_to(ctx.peers().cloned().collect());
+        }
+
+        message
+    }
+
+    // Outer Option: whether the chunk was admitted
+    // Inner Option: the successfully decoded app message
+    fn try_decode(
+        &mut self,
+        parsed_message: &ValidatedChunk<CertificateSignaturePubKey<ST>>,
+        decoding_context: &DecodingContext<CertificateSignaturePubKey<ST>>,
+    ) -> Option<Option<(NodeId<CertificateSignaturePubKey<ST>>, Bytes)>> {
+        match self
+            .decoder_cache
+            .try_decode(parsed_message, decoding_context)
+        {
+            Err(TryDecodeError::InvalidSymbol(err)) => {
+                err.log(parsed_message, &self.self_id);
+                None
+            }
+
+            Err(TryDecodeError::UnableToReconstructSourceData) => {
+                tracing::error!("failed to reconstruct source data");
+                None
+            }
+
+            Err(TryDecodeError::AppMessageHashMismatch { expected, actual }) => {
+                tracing::error!(
+                    author =? parsed_message.author,
+                    ?expected,
+                    ?actual,
+                    "mismatch message hash"
+                );
+                None
+            }
+
+            Ok(TryDecodeStatus::RejectedByCache) => {
+                tracing::warn!(
+                    author =? parsed_message.author,
+                    chunk_id = parsed_message.chunk_id,
+                    "message rejected by cache, author may be flooding messages",
+                );
+                None
+            }
+
+            Ok(TryDecodeStatus::RecentlyDecoded) | Ok(TryDecodeStatus::NeedsMoreSymbols) => {
+                Some(None)
+            }
+
+            Ok(TryDecodeStatus::Decoded {
+                author,
+                app_message,
+            }) => {
+                self.metrics.record_broadcast_latency(
+                    parsed_message.broadcast_mode,
+                    parsed_message.unix_ts_ms,
+                );
+
+                Some(Some((author, app_message)))
+            }
+        }
+    }
+
     /// Given a RecvUdpMsg, emits all decoded messages while rebroadcasting as necessary
     #[tracing::instrument(level = "debug", name = "udp_handle_message", skip_all)]
     pub fn handle_message(
         &mut self,
-        group_map: &ReBroadcastGroupMap<CertificateSignaturePubKey<ST>>,
         epoch_validators: &BTreeMap<Epoch, ValidatorSet<CertificateSignaturePubKey<ST>>>,
+        full_node_group_map: &FullNodeGroupMap<CertificateSignaturePubKey<ST>>,
         rebroadcast: impl FnMut(Vec<NodeId<CertificateSignaturePubKey<ST>>>, Bytes, u16),
         message: crate::auth::AuthRecvMsg<CertificateSignaturePubKey<ST>>,
     ) -> Vec<(NodeId<CertificateSignaturePubKey<ST>>, Bytes)> {
-        let self_id = self.self_id;
-        let self_hash = compute_hash(&self_id);
-
         let mut broadcast_batcher =
-            BroadcastBatcher::new(self_id, rebroadcast, &message.payload, message.stride);
+            BroadcastBatcher::new(self.self_id, rebroadcast, &message.payload, message.stride);
 
         let mut messages = Vec::new(); // The return result; decoded messages
 
@@ -175,23 +262,35 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
             let payload = message.payload.slice(payload_start_idx..payload_end_idx);
 
             // "message" here means a raptor-casted chunk (AKA r10 symbol), not the whole final message (proposal)
-            let parsed_message = match parse_message(
-                &mut self.signature_verifier,
-                payload,
-                self.max_age_ms,
-                |epoch: Epoch| {
-                    // validator senders are allowed to bypass rate limiting
-                    message.auth_public_key.as_ref().is_some_and(|pk| {
-                        let node_id = NodeId::new(*pk);
-                        epoch_validators
-                            .get(&epoch)
-                            .iter()
-                            .any(|ev| ev.is_member(&node_id))
-                    })
-                },
-            ) {
-                Ok(message) => message,
-                Err(MessageValidationError::RateLimited) => {
+            let bypass_rate_limiter = |epoch: Epoch| {
+                // validator senders are allowed to bypass signature
+                // verification rate limiting
+                message.auth_public_key.as_ref().is_some_and(|pk| {
+                    let node_id = NodeId::new(*pk);
+                    epoch_validators
+                        .get(&epoch)
+                        .iter()
+                        .any(|ev| ev.is_member(&node_id))
+                })
+            };
+
+            let packet = match RaptorcastPacket::parse(&payload) {
+                Ok(packet) => packet,
+                Err(err) => {
+                    tracing::debug!(src_addr = ?message.src_addr, ?err, "malformed message");
+                    continue;
+                }
+            };
+
+            let env = ChunkValidationEnv {
+                signature_verifier: &mut self.signature_verifier,
+                max_age_ms: self.max_age_ms,
+                bypass_rate_limiter,
+            };
+
+            let chunk = match packet.validate_chunk(&payload, env) {
+                Ok(chunk) => chunk,
+                Err(InvalidChunk::RateLimited) => {
                     tracing::debug!(
                         src_addr = ?message.src_addr,
                         "rate limited raptorcast chunk signature verification"
@@ -201,144 +300,55 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                     continue;
                 }
                 Err(err) => {
-                    tracing::debug!(src_addr = ?message.src_addr, ?err, "unable to parse message");
+                    tracing::debug!(src_addr = ?message.src_addr, ?err, "invalid chunk");
                     continue;
                 }
             };
 
             // Ignore chunk if self is the author
             // This can happen if a peer validator rebroadcasts a message back to self
-            if parsed_message.author == self.self_id {
+            if chunk.author == self.self_id {
                 tracing::trace!(
-                    app_message_hash =? parsed_message.app_message_hash,
-                    encoding_symbol_id =? parsed_message.chunk_id,
+                    app_message_hash =? chunk.app_message_hash,
+                    encoding_symbol_id =? chunk.chunk_id,
                     "received raptor chunk generated by self"
-                );
-                continue;
-            }
-
-            // Enforce a minimum chunk size for messages consisting of multiple source chunks.
-            if parsed_message.chunk.len() < MIN_CHUNK_LENGTH
-                && usize::try_from(parsed_message.app_message_len).unwrap()
-                    > parsed_message.chunk.len()
-            {
-                tracing::debug!(
-                    src_addr = ?message.src_addr,
-                    chunk_length = parsed_message.chunk.len(),
-                    MIN_CHUNK_LENGTH,
-                    "dropping undersized received message",
-                );
-                continue;
-            }
-
-            // Note: The check that parsed_message.author is valid is already
-            // done in iterate_rebroadcast_peers(), but we want to drop invalid
-            // chunks ASAP, before changing `recently_decoded_state`.
-            if !matches!(parsed_message.broadcast_mode, BroadcastMode::Unspecified) {
-                if !group_map.check_source(
-                    parsed_message.group_id,
-                    &parsed_message.author,
-                    &message.src_addr,
-                ) {
-                    continue;
-                }
-            } else if self_hash != parsed_message.recipient_hash {
-                tracing::debug!(
-                    src_addr = ?message.src_addr,
-                    ?self_hash,
-                    recipient_hash =? parsed_message.recipient_hash,
-                    "dropping spoofed message"
                 );
                 continue;
             }
 
             tracing::trace!(
                 src_addr = ?message.src_addr,
-                app_message_len = ?parsed_message.app_message_len,
+                app_message_len = ?chunk.app_message_len,
                 self_id =? self.self_id,
-                author =? parsed_message.author,
-                unix_ts_ms = parsed_message.unix_ts_ms,
-                app_message_hash =? parsed_message.app_message_hash,
-                encoding_symbol_id =? parsed_message.chunk_id as usize,
+                author =? chunk.author,
+                unix_ts_ms = chunk.unix_ts_ms,
+                app_message_hash =? chunk.app_message_hash,
+                encoding_symbol_id =? chunk.chunk_id as usize,
                 "received encoded symbol"
             );
 
-            let mut try_rebroadcast_symbol = || {
-                // rebroadcast raptorcast chunks if broadcast mode is set and
-                // we're the assigned rebroadcaster
-                if !matches!(parsed_message.broadcast_mode, BroadcastMode::Unspecified)
-                    && self_hash == parsed_message.recipient_hash
-                {
-                    let maybe_targets = group_map
-                        .iterate_rebroadcast_peers(parsed_message.group_id, &parsed_message.author);
-                    if let Some(targets) = maybe_targets {
+            let maybe_decoded_message = match chunk.broadcast_mode {
+                BroadcastMode::Unspecified => {
+                    self.handle_unicast(epoch_validators, &chunk, message.auth_public_key.as_ref())
+                }
+                BroadcastMode::Primary | BroadcastMode::Secondary => self.handle_broadcast(
+                    epoch_validators,
+                    full_node_group_map,
+                    &chunk,
+                    &mut |targets| {
                         batch_guard.queue_broadcast(
                             payload_start_idx,
                             payload_end_idx,
-                            &parsed_message.author,
-                            || targets.cloned().collect(),
+                            &chunk.author,
+                            || targets,
                         )
-                    }
-                }
+                    },
+                    message.auth_public_key.as_ref(),
+                ),
             };
 
-            let validator_set = match parsed_message.group_id {
-                GroupId::Primary(epoch) => epoch_validators.get(&epoch),
-                GroupId::Secondary(_round) => None,
-            };
-
-            let decoding_context = DecodingContext::new(validator_set, unix_ts_ms_now());
-
-            match self
-                .decoder_cache
-                .try_decode(&parsed_message, &decoding_context)
-            {
-                Err(TryDecodeError::InvalidSymbol(err)) => {
-                    err.log(&parsed_message, &self.self_id);
-                }
-
-                Err(TryDecodeError::UnableToReconstructSourceData) => {
-                    tracing::error!("failed to reconstruct source data");
-                }
-
-                Err(TryDecodeError::AppMessageHashMismatch { expected, actual }) => {
-                    tracing::error!(
-                        ?self_id,
-                        author =? parsed_message.author,
-                        ?expected,
-                        ?actual,
-                        "mismatch message hash"
-                    );
-                }
-
-                Ok(TryDecodeStatus::RejectedByCache) => {
-                    tracing::warn!(
-                        ?self_id,
-                        author =? parsed_message.author,
-                        chunk_id = parsed_message.chunk_id,
-                        "message rejected by cache, author may be flooding messages",
-                    );
-                }
-
-                Ok(TryDecodeStatus::RecentlyDecoded) | Ok(TryDecodeStatus::NeedsMoreSymbols) => {
-                    // TODO: cap rebroadcast symbols based on some multiple of esis.
-                    try_rebroadcast_symbol();
-                }
-
-                Ok(TryDecodeStatus::Decoded {
-                    author,
-                    app_message,
-                }) => {
-                    // TODO: cap rebroadcast symbols based on some multiple of esis.
-                    try_rebroadcast_symbol();
-
-                    self.metrics.record_broadcast_latency(
-                        parsed_message.broadcast_mode,
-                        parsed_message.unix_ts_ms,
-                    );
-
-                    messages.push((author, app_message));
-                }
+            if let Some((author, decoded_message)) = maybe_decoded_message {
+                messages.push((author, decoded_message))
             }
         }
 
@@ -362,16 +372,13 @@ impl From<GroupId> for u64 {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ValidatedMessage<PT>
+pub struct ValidatedChunk<PT>
 where
     PT: PubKey,
 {
+    pub chunk: Bytes, // raptor-coded portion
     pub message: Bytes,
 
-    // `author` is recovered from the public key in the chunk signature, which
-    // was signed by the validator who encoded the proposal into raptorcast.
-    // This applies to both validator-to-validator and validator-to-full-node
-    // raptorcasting.
     pub author: NodeId<PT>,
     // group_id is set to
     // - epoch number for validator-to-validator raptorcast
@@ -383,83 +390,34 @@ where
     pub broadcast_mode: BroadcastMode,
     pub recipient_hash: NodeIdHash, // if this matches our node_id, then we need to re-broadcast RaptorCast chunks
     pub chunk_id: u16,
-    pub chunk: Bytes, // raptor-coded portion
+    pub num_source_symbols: usize,
+    pub encoded_symbol_capacity: usize,
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub enum MessageValidationError {
-    UnknownVersion(u16),
-    TooShort,
-    TooLong,
-    InvalidSignature,
-    InvalidTreeDepth,
-    InvalidMerkleProof,
+pub enum InvalidChunk {
+    Malformed(MalformedPacket),
+
+    // Chunk metadata validation error
+    InvalidAppMessageLen(usize),
+    InvalidChunkLen,
     InvalidChunkId,
+    InvalidMerkleProof,
+
+    InvalidSignature,
     InvalidTimestamp {
-        timestamp: u64,
-        max: u64,
-        delta: i64,
+        packet_ts_ms: u64,
+        current_ts_ms: u64,
     },
-    InvalidBroadcastBits(u8),
     RateLimited,
 }
 
-impl From<SignatureVerifierError> for MessageValidationError {
+impl From<SignatureVerifierError> for InvalidChunk {
     fn from(err: SignatureVerifierError) -> Self {
         match err {
-            SignatureVerifierError::RateLimited => MessageValidationError::RateLimited,
-            SignatureVerifierError::InvalidSignature => MessageValidationError::InvalidSignature,
+            SignatureVerifierError::RateLimited => InvalidChunk::RateLimited,
+            SignatureVerifierError::InvalidSignature => InvalidChunk::InvalidSignature,
         }
-    }
-}
-
-/// - 65 bytes => Signature of sender over hash(rest of message up to merkle proof, concatenated with merkle root)
-/// - 2 bytes => Version: bumped on protocol updates
-/// - 1 bit => broadcast or not
-/// - 1 bit => secondary broadcast or not (full-node raptorcast)
-/// - 2 bits => unused
-/// - 4 bits => Merkle tree depth
-/// - 8 bytes (u64) => Epoch #
-/// - 8 bytes (u64) => Unix timestamp
-/// - 20 bytes => first 20 bytes of hash of AppMessage
-///   - this isn't technically necessary if payload_len is small enough to fit in 1 chunk, but keep
-///     for simplicity
-/// - 4 bytes (u32) => Serialized AppMessage length (bytes)
-/// - 20 bytes * (merkle_tree_depth - 1) => merkle proof (leaves include everything that follows,
-///   eg hash(chunk_recipient + chunk_byte_offset + symbol_len + payload))
-///
-/// - 20 bytes => first 20 bytes of hash of chunk's first hop recipient
-///   - we set this even if broadcast bit is not set so that it's known if a message was intended
-///     to be sent to self
-/// - 1 byte => Chunk's merkle leaf idx
-/// - 1 byte => reserved
-/// - 2 bytes (u16) => This chunk's id
-/// - rest => data
-pub fn parse_message<ST, F>(
-    signature_verifier: &mut ChunkSignatureVerifier<ST>,
-    message: Bytes,
-    max_age_ms: u64,
-    bypass_rate_limiter: F,
-) -> Result<ValidatedMessage<CertificateSignaturePubKey<ST>>, MessageValidationError>
-where
-    ST: CertificateSignatureRecoverable,
-    F: FnOnce(Epoch) -> bool,
-{
-    use crate::parser::packet_parser::{
-        validate_message_v0, RaptorcastPacket, RaptorcastPacketVersioned,
-    };
-
-    let packet = RaptorcastPacket::parse(&message)?;
-
-    match packet.versioned {
-        RaptorcastPacketVersioned::V0(ref v0_packet) => validate_message_v0(
-            signature_verifier,
-            &packet.common_header,
-            v0_packet,
-            &message,
-            max_age_ms,
-            bypass_rate_limiter,
-        ),
     }
 }
 
@@ -605,19 +563,51 @@ mod tests {
     };
     use monad_dataplane::udp::DEFAULT_SEGMENT_SIZE;
     use monad_secp::{KeyPair, SecpSignature};
-    use monad_types::{Epoch, NodeId, Stake};
+    use monad_types::{Epoch, NodeId, Round, Stake};
     use monad_validator::validator_set::{ValidatorSet, ValidatorSetType as _};
     use rstest::*;
 
-    use super::{ChunkSignatureVerifier, GroupId, MessageValidationError, UdpState};
+    use super::{ChunkSignatureVerifier, InvalidChunk, UdpState, ValidatedChunk};
     use crate::{
-        packet::{MessageBuilder, PacketLayout},
-        parser::signature_verifier::SignatureVerifier,
-        udp::{build_messages, parse_message, MAX_VALIDATOR_SET_SIZE, SIGNATURE_CACHE_SIZE},
-        util::{BroadcastMode, BuildTarget, ReBroadcastGroupMap, Redundancy, SecondaryGroup},
+        packet::{regular, MessageBuilder},
+        parser::{
+            packet_parser::{ChunkValidationEnv, MalformedPacket, RaptorcastPacket},
+            signature_verifier::SignatureVerifier,
+        },
+        udp::{build_messages, MAX_VALIDATOR_SET_SIZE, SIGNATURE_CACHE_SIZE},
+        util::{
+            compute_app_message_hash, BroadcastMode, BuildTarget, FullNodeGroupMap,
+            PrimaryBroadcastGroup, Redundancy, SecondaryBroadcastGroup, SecondaryGroup,
+            ValidatorGroupMap,
+        },
     };
 
+    struct ChunkParser {
+        signature_verifier: ChunkSignatureVerifier<SecpSignature>,
+    }
+
+    impl ChunkParser {
+        fn new() -> Self {
+            Self {
+                signature_verifier: signature_verifier(),
+            }
+        }
+
+        fn parse(&mut self, message: &Bytes) -> Result<ValidatedChunk<PubKeyType>, InvalidChunk> {
+            let packet = RaptorcastPacket::parse(message)?;
+            packet.validate_chunk(
+                message,
+                ChunkValidationEnv {
+                    signature_verifier: &mut self.signature_verifier,
+                    max_age_ms: u64::MAX,
+                    bypass_rate_limiter: |_| true,
+                },
+            )
+        }
+    }
+
     type SignatureType = SecpSignature;
+    type PubKeyType = CertificateSignaturePubKey<SignatureType>;
     type KeyPairType = KeyPair;
     type TestSignatureVerifier = ChunkSignatureVerifier<SignatureType>;
 
@@ -627,8 +617,8 @@ mod tests {
 
     fn validator_set() -> (
         KeyPairType,
-        ValidatorSet<CertificateSignaturePubKey<SignatureType>>,
-        HashMap<NodeId<CertificateSignaturePubKey<SignatureType>>, SocketAddr>,
+        ValidatorSet<PubKeyType>,
+        HashMap<NodeId<PubKeyType>, SocketAddr>,
     ) {
         const NUM_KEYS: u8 = 100;
         let mut keys = (0_u8..NUM_KEYS)
@@ -664,42 +654,37 @@ mod tests {
     const EPOCH: Epoch = Epoch(5);
     const UNIX_TS_MS: u64 = 5;
 
+    fn make_group_map(validators: &ValidatorSet<PubKeyType>) -> ValidatorGroupMap<PubKeyType> {
+        [(EPOCH, validators.clone())].into()
+    }
+
     #[test]
     fn test_roundtrip() {
         let (key, validators, known_addresses) = validator_set();
+        let self_id = NodeId::new(key.pubkey());
+        let group_map = make_group_map(&validators);
+        let group = PrimaryBroadcastGroup::of_epoch(EPOCH, &self_id, &group_map).unwrap();
 
         let app_message: Bytes = vec![1_u8; 1024 * 1024].into();
-        let app_message_hash = {
-            let mut hasher = HasherType::new();
-            hasher.update(&app_message);
-            hasher.hash()
-        };
+        let app_message_hash = compute_app_message_hash(&app_message);
 
         let messages = build_messages::<SignatureType>(
             &key,
             DEFAULT_SEGMENT_SIZE, // segment_size
             app_message.clone(),
             Redundancy::from_u8(2),
-            GroupId::Primary(EPOCH), // epoch_no
             UNIX_TS_MS,
-            BuildTarget::Raptorcast(&validators),
+            BuildTarget::Raptorcast(group),
             &known_addresses,
         );
 
-        let mut signature_verifier = signature_verifier();
-
+        let mut parser = ChunkParser::new();
         for (_to, mut aggregate_message) in messages {
             while !aggregate_message.is_empty() {
                 let message = aggregate_message.split_to(DEFAULT_SEGMENT_SIZE.into());
-                let parsed_message = parse_message(
-                    &mut signature_verifier,
-                    message.clone(),
-                    u64::MAX,
-                    |_| true, // bypass_rate_limiter
-                )
-                .expect("valid message");
+                let parsed_message = parser.parse(&message).expect("valid message");
                 assert_eq!(parsed_message.message, message);
-                assert_eq!(parsed_message.app_message_hash.0, app_message_hash.0[..20]);
+                assert_eq!(parsed_message.app_message_hash.0, app_message_hash.0);
                 assert_eq!(parsed_message.unix_ts_ms, UNIX_TS_MS);
                 assert!(matches!(
                     parsed_message.broadcast_mode,
@@ -714,6 +699,9 @@ mod tests {
     #[test]
     fn test_bit_flip_parse_failure_slow() {
         let (key, validators, known_addresses) = validator_set();
+        let self_id = NodeId::new(key.pubkey());
+        let group_map = make_group_map(&validators);
+        let group = PrimaryBroadcastGroup::of_epoch(EPOCH, &self_id, &group_map).unwrap();
 
         let app_message: Bytes = vec![1_u8; 1024 * 2].into();
 
@@ -722,14 +710,12 @@ mod tests {
             DEFAULT_SEGMENT_SIZE, // segment_size
             app_message,
             Redundancy::from_u8(2),
-            GroupId::Primary(EPOCH), // epoch_no
             UNIX_TS_MS,
-            BuildTarget::Raptorcast(&validators),
+            BuildTarget::Raptorcast(group),
             &known_addresses,
         );
 
-        let mut signature_verifier = signature_verifier();
-
+        let mut parser = ChunkParser::new();
         for (_to, mut aggregate_message) in messages {
             while !aggregate_message.is_empty() {
                 let mut message: BytesMut = aggregate_message
@@ -741,12 +727,8 @@ mod tests {
                     let old_byte = message[bit_idx / 8];
                     // flip bit
                     message[bit_idx / 8] = old_byte ^ (1 << (bit_idx % 8));
-                    let maybe_parsed = parse_message(
-                        &mut signature_verifier,
-                        message.clone().into(),
-                        u64::MAX,
-                        |_| true, // bypass_rate_limiter
-                    );
+                    let flipped: Bytes = message.clone().into();
+                    let maybe_parsed = parser.parse(&flipped);
 
                     // check that decoding fails
                     assert!(
@@ -764,6 +746,9 @@ mod tests {
     #[test]
     fn test_raptorcast_chunk_ids() {
         let (key, validators, known_addresses) = validator_set();
+        let self_id = NodeId::new(key.pubkey());
+        let group_map = make_group_map(&validators);
+        let group = PrimaryBroadcastGroup::of_epoch(EPOCH, &self_id, &group_map).unwrap();
 
         let app_message: Bytes = vec![1_u8; 1024 * 1024].into();
 
@@ -772,26 +757,18 @@ mod tests {
             DEFAULT_SEGMENT_SIZE, // segment_size
             app_message,
             Redundancy::from_u8(2),
-            GroupId::Primary(EPOCH), // epoch_no
             UNIX_TS_MS,
-            BuildTarget::Raptorcast(&validators),
+            BuildTarget::Raptorcast(group),
             &known_addresses,
         );
 
-        let mut signature_verifier = signature_verifier();
-
+        let mut parser = ChunkParser::new();
         let mut used_ids = HashSet::new();
 
         for (_to, mut aggregate_message) in messages {
             while !aggregate_message.is_empty() {
                 let message = aggregate_message.split_to(DEFAULT_SEGMENT_SIZE.into());
-                let parsed_message = parse_message(
-                    &mut signature_verifier,
-                    message.clone(),
-                    u64::MAX,
-                    |_| true, // bypass_rate_limiter
-                )
-                .expect("valid message");
+                let parsed_message = parser.parse(&message).expect("valid message");
                 let newly_inserted = used_ids.insert(parsed_message.chunk_id);
                 assert!(newly_inserted);
             }
@@ -802,6 +779,9 @@ mod tests {
     fn test_broadcast_bit() {
         let (key, validators, known_addresses) = validator_set();
         let self_id = NodeId::new(key.pubkey());
+        let group_map = make_group_map(&validators);
+        let primary_group = PrimaryBroadcastGroup::of_epoch(EPOCH, &self_id, &group_map).unwrap();
+
         let full_nodes = SecondaryGroup::new_unchecked(
             validators
                 .get_members()
@@ -810,37 +790,33 @@ mod tests {
                 .cloned()
                 .collect(),
         );
+        let secondary_group = {
+            let round = Round(1);
+            SecondaryBroadcastGroup::as_publisher(&self_id, round, &full_nodes)
+        };
 
         let app_message: Bytes = vec![1_u8; 1024 * 1024].into();
         let build_targets = vec![
-            BuildTarget::Raptorcast(&validators),
-            BuildTarget::FullNodeRaptorCast(&full_nodes),
+            BuildTarget::Raptorcast(primary_group),
+            BuildTarget::FullNodeRaptorCast(secondary_group),
         ];
 
+        let mut parser = ChunkParser::new();
         for build_target in build_targets {
             let messages = build_messages::<SignatureType>(
                 &key,
                 DEFAULT_SEGMENT_SIZE, // segment_size
                 app_message.clone(),
                 Redundancy::from_u8(2),
-                GroupId::Primary(EPOCH), // epoch_no
                 UNIX_TS_MS,
                 build_target,
                 &known_addresses,
             );
 
-            let mut signature_verifier = signature_verifier();
-
             for (_to, mut aggregate_message) in messages {
                 while !aggregate_message.is_empty() {
                     let message = aggregate_message.split_to(DEFAULT_SEGMENT_SIZE.into());
-                    let parsed_message = parse_message(
-                        &mut signature_verifier,
-                        message.clone(),
-                        u64::MAX,
-                        |_| true, // bypass_rate_limiter
-                    )
-                    .expect("valid message");
+                    let parsed_message = parser.parse(&message).expect("valid message");
 
                     match build_target {
                         BuildTarget::Raptorcast(_) => {
@@ -865,6 +841,9 @@ mod tests {
     #[test]
     fn test_broadcast_chunk_ids() {
         let (key, validators, known_addresses) = validator_set();
+        let self_id = NodeId::new(key.pubkey());
+        let group_map = make_group_map(&validators);
+        let group = PrimaryBroadcastGroup::of_epoch(EPOCH, &self_id, &group_map).unwrap();
 
         let app_message: Bytes = vec![1_u8; 1024 * 8].into();
 
@@ -873,26 +852,18 @@ mod tests {
             DEFAULT_SEGMENT_SIZE, // segment_size
             app_message,
             Redundancy::from_u8(2),
-            GroupId::Primary(EPOCH), // epoch_no
             UNIX_TS_MS,
-            BuildTarget::Broadcast(&validators),
+            BuildTarget::Broadcast(group),
             &known_addresses,
         );
 
-        let mut signature_verifier = signature_verifier();
-
+        let mut parser = ChunkParser::new();
         let mut used_ids: HashMap<SocketAddr, HashSet<_>> = HashMap::new();
 
         for (to, mut aggregate_message) in messages {
             while !aggregate_message.is_empty() {
                 let message = aggregate_message.split_to(DEFAULT_SEGMENT_SIZE.into());
-                let parsed_message = parse_message(
-                    &mut signature_verifier,
-                    message.clone(),
-                    u64::MAX,
-                    |_| true, // bypass_rate_limiter
-                )
-                .expect("valid message");
+                let parsed_message = parser.parse(&message).expect("valid message");
                 let newly_inserted = used_ids
                     .entry(to)
                     .or_default()
@@ -910,14 +881,8 @@ mod tests {
     fn test_handle_message_stride_slice() {
         let (key, validators, _known_addresses) = validator_set();
         let self_id = NodeId::new(key.pubkey());
-        let mut group_map = ReBroadcastGroupMap::new(self_id);
-        let node_stake_pairs: Vec<_> = validators
-            .get_members()
-            .iter()
-            .map(|(node_id, stake)| (*node_id, *stake))
-            .collect();
-        group_map.push_group_validator_set(node_stake_pairs, Epoch(1));
-        let validator_set = [(Epoch(1), validators)].into_iter().collect();
+        let epoch_validators = [(Epoch(1), validators)].into_iter().collect();
+        let full_node_groups = FullNodeGroupMap::default();
 
         let mut udp_state = UdpState::<SignatureType>::new(self_id, u64::MAX, 10_000);
 
@@ -927,12 +892,12 @@ mod tests {
             src_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8000),
             payload,
             stride: 1024,
-            auth_public_key: None::<CertificateSignaturePubKey<SignatureType>>,
+            auth_public_key: None::<PubKeyType>,
         };
 
         udp_state.handle_message(
-            &group_map,
-            &validator_set,
+            &epoch_validators,
+            &full_node_groups,
             |_targets, _payload, _stride| {},
             recv_msg,
         );
@@ -955,6 +920,9 @@ mod tests {
         #[case] should_succeed: bool,
     ) {
         let (key, validators, known_addresses) = validator_set();
+        let self_id = NodeId::new(key.pubkey());
+        let group_map = make_group_map(&validators);
+        let group = PrimaryBroadcastGroup::of_epoch(EPOCH, &self_id, &group_map).unwrap();
         let mut signature_verifier = signature_verifier();
 
         let current_time = std::time::UNIX_EPOCH.elapsed().unwrap().as_millis() as u64;
@@ -966,17 +934,19 @@ mod tests {
             DEFAULT_SEGMENT_SIZE,
             app_message,
             Redundancy::from_u8(1),
-            GroupId::Primary(EPOCH),
             test_timestamp,
-            BuildTarget::Broadcast(&validators),
+            BuildTarget::Broadcast(group),
             &known_addresses,
         );
         let message = messages.into_iter().next().unwrap().1;
-        let result = parse_message(
-            &mut signature_verifier,
-            message,
-            max_age_ms,
-            |_| true, // bypass_rate_limiter
+        let packet = RaptorcastPacket::parse(&message).unwrap();
+        let result = packet.validate_chunk(
+            &message,
+            ChunkValidationEnv {
+                signature_verifier: &mut signature_verifier,
+                max_age_ms,
+                bypass_rate_limiter: |_| true,
+            },
         );
 
         if should_succeed {
@@ -984,7 +954,7 @@ mod tests {
         } else {
             assert!(result.is_err());
             match result.err().unwrap() {
-                MessageValidationError::InvalidTimestamp { .. } => {}
+                InvalidChunk::InvalidTimestamp { .. } => {}
                 other => panic!("unexpected error {:?}", other),
             }
         }
@@ -992,7 +962,7 @@ mod tests {
 
     pub const MERKLE_TREE_DEPTH: u8 = 6;
     pub const SYMBOL_LEN: usize =
-        PacketLayout::new(DEFAULT_SEGMENT_SIZE as usize, MERKLE_TREE_DEPTH).symbol_len();
+        regular::PacketLayout::new(DEFAULT_SEGMENT_SIZE as usize, MERKLE_TREE_DEPTH).symbol_len();
     pub const MAX_REDUNDANCY: u16 = 3;
 
     #[rstest]
@@ -1009,48 +979,39 @@ mod tests {
         #[case] should_succeed: bool,
     ) {
         let (key, validators, _known_addresses) = validator_set();
+        let self_id = NodeId::new(key.pubkey());
+        let group_map = make_group_map(&validators);
+        let group = PrimaryBroadcastGroup::of_epoch(EPOCH, &self_id, &group_map).unwrap();
         let target = if raptorcast {
-            BuildTarget::Raptorcast(&validators)
+            BuildTarget::Raptorcast(group)
         } else {
-            BuildTarget::Broadcast(&validators)
+            BuildTarget::Broadcast(group)
         };
         let app_msg = vec![0; app_msg_len];
         let messages = MessageBuilder::<SignatureType>::new(&key)
             .segment_size(DEFAULT_SEGMENT_SIZE as usize)
-            .group_id(GroupId::Primary(EPOCH))
             .redundancy(Redundancy::from_u8(1))
             .merkle_tree_depth(MERKLE_TREE_DEPTH)
-            .prepare()
             .build_vec(&app_msg, &target);
         let message = messages.unwrap().into_iter().next().unwrap();
         let mut payload = BytesMut::from(&message.payload[..message.stride]);
 
-        let layout = PacketLayout::new(DEFAULT_SEGMENT_SIZE as usize, MERKLE_TREE_DEPTH);
+        let layout = regular::PacketLayout::new(DEFAULT_SEGMENT_SIZE as usize, MERKLE_TREE_DEPTH);
         let chunk_header = &mut payload[layout.chunk_header_range()];
         let chunk_id_buf: &mut [u8] = &mut chunk_header[22..24];
         chunk_id_buf.copy_from_slice(&chunk_id.to_le_bytes()); // override chunk id
 
-        let mut signature_verifier = signature_verifier();
-        let result = parse_message(
-            &mut signature_verifier,
-            payload.freeze(),
-            u64::MAX,
-            |_| true, // bypass_rate_limiter
-        );
+        let payload = payload.freeze();
+        let result = ChunkParser::new().parse(&payload);
 
         if should_succeed {
             // modifying the chunk_id field can still result in invalid leaf hash/signature.
             assert!(matches!(
                 result,
-                Ok(_)
-                    | Err(MessageValidationError::InvalidMerkleProof)
-                    | Err(MessageValidationError::InvalidSignature)
+                Ok(_) | Err(InvalidChunk::InvalidMerkleProof) | Err(InvalidChunk::InvalidSignature)
             ));
         } else {
-            assert!(matches!(
-                result,
-                Err(MessageValidationError::InvalidChunkId)
-            ));
+            assert!(matches!(result, Err(InvalidChunk::InvalidChunkId)));
         }
     }
 
@@ -1086,19 +1047,19 @@ mod tests {
 
             packet
         };
-        let mut signature_verifier = signature_verifier();
-        let result = parse_message(
-            &mut signature_verifier,
-            payload.into(),
-            u64::MAX,
-            |_| true, // bypass_rate_limiter
-        );
-        assert_eq!(result.err(), Some(MessageValidationError::TooShort))
+        let payload: Bytes = payload.into();
+        assert_eq!(
+            ChunkParser::new().parse(&payload).err(),
+            Some(InvalidChunk::Malformed(MalformedPacket::TooShort))
+        )
     }
 
     #[test]
     fn test_parse_message_signature_verifier() {
         let (key, validators, known_addresses) = validator_set();
+        let self_id = NodeId::new(key.pubkey());
+        let group_map = make_group_map(&validators);
+        let group = PrimaryBroadcastGroup::of_epoch(EPOCH, &self_id, &group_map).unwrap();
 
         let app_message: Bytes = vec![1_u8; 1024].into();
 
@@ -1107,9 +1068,8 @@ mod tests {
             DEFAULT_SEGMENT_SIZE,
             app_message,
             Redundancy::from_u8(1),
-            GroupId::Primary(EPOCH),
             UNIX_TS_MS,
-            BuildTarget::Raptorcast(&validators),
+            BuildTarget::Raptorcast(group),
             &known_addresses,
         );
 
@@ -1124,15 +1084,25 @@ mod tests {
             .with_cache(SIGNATURE_CACHE_SIZE)
             .with_rate_limit(1);
 
+        let validate = |sv: &mut TestSignatureVerifier, msg: &Bytes, bypass: fn(Epoch) -> bool| {
+            let packet = RaptorcastPacket::parse(msg).unwrap();
+            packet.validate_chunk(
+                msg,
+                ChunkValidationEnv {
+                    signature_verifier: sv,
+                    max_age_ms: u64::MAX,
+                    bypass_rate_limiter: bypass,
+                },
+            )
+        };
+
         // Case 1: cache miss, verify signature, cache saved
-        let bypass = |_| true;
-        let result1 = parse_message(&mut signature_verifier, message_a.clone(), u64::MAX, bypass);
+        let result1 = validate(&mut signature_verifier, &message_a, |_| true);
         let author = result1.expect("first parse should succeed").author;
         assert_eq!(author, NodeId::new(key.pubkey()));
 
         // Case 2: parse with same message: cache hit, no rate limit consumed
-        let bypass = |_| false;
-        let result2 = parse_message(&mut signature_verifier, message_a, u64::MAX, bypass);
+        let result2 = validate(&mut signature_verifier, &message_a, |_| false);
         assert_eq!(
             result2.expect("cache hit should succeed").author,
             author,
@@ -1140,16 +1110,14 @@ mod tests {
         );
 
         // Case 3: parse different message without bypass: rate limited
-        let bypass = |_| false;
-        let result3 = parse_message(&mut signature_verifier, message_b.clone(), u64::MAX, bypass);
+        let result3 = validate(&mut signature_verifier, &message_b, |_| false);
         assert!(
-            matches!(result3, Err(MessageValidationError::RateLimited)),
+            matches!(result3, Err(InvalidChunk::RateLimited)),
             "new message without bypass should be rate limited"
         );
 
         // Case 4: Same message with bypass: succeeds
-        let bypass = |_| true;
-        let result4 = parse_message(&mut signature_verifier, message_b, u64::MAX, bypass);
+        let result4 = validate(&mut signature_verifier, &message_b, |_| true);
         assert!(result4.is_ok());
     }
 }

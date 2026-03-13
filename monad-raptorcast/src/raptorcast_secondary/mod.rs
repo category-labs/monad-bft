@@ -35,7 +35,7 @@ use monad_crypto::certificate_signature::{
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{Message, PeerEntry, RouterCommand};
 use monad_peer_discovery::{driver::PeerDiscoveryDriver, PeerDiscoveryAlgo, PeerDiscoveryEvent};
-use monad_types::{Epoch, NodeId};
+use monad_types::{Epoch, NodeId, Round};
 use publisher::Publisher;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
@@ -45,8 +45,7 @@ use tracing::{debug, error, trace, warn};
 use crate::{
     config::{RaptorCastConfig, SecondaryRaptorCastMode},
     message::OutboundRouterMessage,
-    udp::GroupId,
-    util::{Group, SecondaryGroup},
+    util::{SecondaryGroup, SecondaryGroupAssignment},
     RaptorCastEvent,
 };
 
@@ -62,12 +61,12 @@ pub enum SecondaryOutboundMessage<PT: PubKey> {
     SendSingle {
         msg_bytes: bytes::Bytes,
         dest: NodeId<PT>,
-        group_id: GroupId,
+        epoch: Epoch,
     },
     SendToGroup {
         msg_bytes: bytes::Bytes,
+        round: Round,
         group: SecondaryGroup<PT>,
-        group_id: GroupId,
     },
 }
 
@@ -117,7 +116,9 @@ where
         secondary_mode: SecondaryRaptorCastMode<CertificateSignaturePubKey<ST>>,
         peer_discovery_driver: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
         channel_from_primary: UnboundedReceiver<FullNodesGroupMessage<ST>>,
-        channel_to_primary: UnboundedSender<Group<CertificateSignaturePubKey<ST>>>,
+        channel_to_primary: UnboundedSender<
+            SecondaryGroupAssignment<CertificateSignaturePubKey<ST>>,
+        >,
         channel_to_primary_outbound: UnboundedSender<
             SecondaryOutboundMessage<CertificateSignaturePubKey<ST>>,
         >,
@@ -178,7 +179,7 @@ where
         let outbound = SecondaryOutboundMessage::SendSingle {
             msg_bytes,
             dest: dest_node,
-            group_id: GroupId::Primary(self.curr_epoch),
+            epoch: self.curr_epoch,
         };
         if let Err(err) = self.channel_to_primary_outbound.send(outbound) {
             error!(?err, "failed to send message to primary");
@@ -371,8 +372,8 @@ where
 
                     let outbound = SecondaryOutboundMessage::SendToGroup {
                         msg_bytes: outbound_message,
+                        round,
                         group,
-                        group_id: GroupId::Secondary(round),
                     };
                     if let Err(err) = self.channel_to_primary_outbound.send(outbound) {
                         error!(?err, "failed to send message to primary");

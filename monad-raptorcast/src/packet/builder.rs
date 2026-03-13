@@ -15,30 +15,15 @@
 
 use std::sync::Arc;
 
-use bytes::Bytes;
 use monad_crypto::certificate_signature::{
-    CertificateKeyPair as _, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
+    CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_dataplane::udp::DEFAULT_SEGMENT_SIZE;
-use monad_types::NodeId;
-use monad_validator::validator_set::ValidatorSetType as _;
-use rand::{CryptoRng, Rng};
 
-use super::{
-    assembler::{self, build_header, AssembleMode, PacketLayout},
-    assigner::{self, ChunkAssignment},
-    BuildError, ChunkAssigner,
-};
+use super::{regular, BuildError};
 use crate::{
     message::MAX_MESSAGE_SIZE,
-    udp::{
-        GroupId, MAX_MERKLE_TREE_DEPTH, MAX_NUM_PACKETS, MAX_REDUNDANCY, MAX_SEGMENT_LENGTH,
-        MIN_CHUNK_LENGTH, MIN_MERKLE_TREE_DEPTH,
-    },
-    util::{
-        compute_app_message_hash, unix_ts_ms_now, BroadcastMode, BuildTarget, Collector,
-        Redundancy, UdpMessage,
-    },
+    util::{unix_ts_ms_now, BuildTarget, Collector, Redundancy, UdpMessage},
 };
 
 pub const DEFAULT_MERKLE_TREE_DEPTH: u8 = 6;
@@ -94,14 +79,12 @@ where
     key: MaybeArc<'key, ST::KeyPairType>,
 
     // required fields
-    group_id: Option<GroupId>,
     redundancy: Option<Redundancy>,
 
     // optional fields
     unix_ts_ms: TimestampMode,
     segment_size: usize,
     merkle_tree_depth: u8,
-    assemble_mode: AssembleMode,
 }
 
 impl<'key, ST> Clone for MessageBuilder<'key, ST>
@@ -111,12 +94,10 @@ where
     fn clone(&self) -> Self {
         Self {
             key: self.key.clone(),
-            group_id: self.group_id,
             redundancy: self.redundancy,
             unix_ts_ms: self.unix_ts_ms,
             segment_size: self.segment_size,
             merkle_tree_depth: self.merkle_tree_depth,
-            assemble_mode: self.assemble_mode,
         }
     }
 }
@@ -139,11 +120,9 @@ where
 
             // default fields
             redundancy: None,
-            group_id: None,
             unix_ts_ms: TimestampMode::RealTime,
 
             // optional fields
-            assemble_mode: AssembleMode::default(),
             segment_size,
             merkle_tree_depth,
         }
@@ -160,11 +139,6 @@ where
         self
     }
 
-    pub fn group_id(mut self, group_id: GroupId) -> Self {
-        self.group_id = Some(group_id);
-        self
-    }
-
     pub fn unix_ts_ms(mut self, unix_ts_ms: impl Into<u64>) -> Self {
         self.unix_ts_ms = TimestampMode::Fixed(unix_ts_ms.into());
         self
@@ -177,60 +151,9 @@ where
         self
     }
 
-    // we currently don't use any non-standard assemble mode.
-    #[expect(unused)]
-    pub fn assemble_mode(mut self, mode: AssembleMode) -> Self {
-        self.assemble_mode = mode;
-        self
-    }
-
-    // ----- Convenience methods for modifying the builder -----
-    pub fn set_group_id(&mut self, group_id: GroupId) {
-        self.group_id = Some(group_id);
-    }
-
-    // ----- Prepare override builder -----
-    pub fn prepare(&self) -> PreparedMessageBuilder<'_, 'key, ST> {
-        PreparedMessageBuilder {
-            base: self,
-            group_id: None,
-        }
-    }
-}
-
-pub struct PreparedMessageBuilder<'base, 'key, ST>
-where
-    ST: CertificateSignatureRecoverable,
-{
-    base: &'base MessageBuilder<'key, ST>,
-
-    // Add extra override fields as needed
-    group_id: Option<GroupId>,
-}
-
-impl<'base, 'key, ST> PreparedMessageBuilder<'base, 'key, ST>
-where
-    ST: CertificateSignatureRecoverable,
-{
-    // ----- Setters for overrides -----
-    pub fn group_id(mut self, group_id: GroupId) -> Self {
-        self.group_id = Some(group_id);
-        self
-    }
-
     // ----- Parameter validation methods -----
-    fn unwrap_group_id(&self) -> Result<GroupId> {
-        if let Some(group_id) = self.group_id {
-            return Ok(group_id);
-        }
-        let group_id = self
-            .base
-            .group_id
-            .expect("group_id must be set before building");
-        Ok(group_id)
-    }
     fn unwrap_unix_ts_ms(&self) -> Result<u64> {
-        let unix_ts_ms = match self.base.unix_ts_ms {
+        let unix_ts_ms = match self.unix_ts_ms {
             TimestampMode::Fixed(ts) => ts,
             TimestampMode::RealTime => unix_ts_ms_now(),
         };
@@ -238,21 +161,20 @@ where
     }
     fn unwrap_redundancy(&self) -> Result<Redundancy> {
         let redundancy = self
-            .base
             .redundancy
             .expect("redundancy must be set before building");
 
-        if redundancy > MAX_REDUNDANCY {
+        if redundancy > regular::MAX_REDUNDANCY {
             return Err(BuildError::RedundancyTooHigh);
         }
         Ok(redundancy)
     }
 
     fn unwrap_merkle_tree_depth(&self) -> Result<u8> {
-        let depth = self.base.merkle_tree_depth;
-        if depth < MIN_MERKLE_TREE_DEPTH {
+        let depth = self.merkle_tree_depth;
+        if depth < regular::MIN_MERKLE_TREE_DEPTH {
             return Err(BuildError::MerkleTreeTooShallow);
-        } else if depth > MAX_MERKLE_TREE_DEPTH {
+        } else if depth > regular::MAX_MERKLE_TREE_DEPTH {
             return Err(BuildError::MerkleTreeTooDeep);
         }
 
@@ -260,10 +182,12 @@ where
     }
 
     fn unwrap_segment_size(&self) -> Result<usize> {
-        let segment_size = self.base.segment_size;
-        debug_assert!(segment_size <= MAX_SEGMENT_LENGTH);
-        let min_segment_size_for_depth =
-            PacketLayout::calc_segment_len(MIN_CHUNK_LENGTH, self.base.merkle_tree_depth);
+        let segment_size = self.segment_size;
+        debug_assert!(segment_size <= regular::MAX_SEGMENT_LENGTH);
+        let min_segment_size_for_depth = regular::PacketLayout::calc_segment_len(
+            regular::MIN_CHUNK_LENGTH,
+            self.merkle_tree_depth,
+        );
         debug_assert!(segment_size >= min_segment_size_for_depth);
 
         Ok(segment_size)
@@ -276,200 +200,42 @@ where
         Ok(len)
     }
 
-    fn check_assignment(
-        &self,
-        assignment: &ChunkAssignment<CertificateSignaturePubKey<ST>>,
-        app_msg_len: usize, // only used for logging
-    ) -> Result<()> {
-        if assignment.is_empty() {
-            tracing::warn!(?app_msg_len, "no chunk generated");
-            return Ok(());
-        }
-
-        if assignment.total_chunks() > MAX_NUM_PACKETS {
-            return Err(BuildError::TooManyChunks);
-        }
-
-        Ok(())
-    }
-
-    // ----- Helper methods -----
-    fn calc_num_symbols(&self, layout: PacketLayout, app_message_len: usize) -> Result<usize> {
-        let redundancy = self.unwrap_redundancy()?;
-        let num_symbols = layout
-            .calc_num_symbols(app_message_len, redundancy)
-            .ok_or(BuildError::TooManyChunks)?;
-        if num_symbols > MAX_NUM_PACKETS {
-            return Err(BuildError::TooManyChunks);
-        }
-
-        Ok(num_symbols)
-    }
-
-    fn build_header(
-        &self,
-        merkle_tree_depth: u8,
-        layout: PacketLayout,
-        broadcast_mode: BroadcastMode,
-        app_message_hash: &[u8; 20],
-        app_message_len: usize,
-    ) -> Result<Bytes> {
-        let group_id = self.unwrap_group_id()?;
-        let unix_ts_ms = self.unwrap_unix_ts_ms()?;
-
-        let header_buf = build_header(
-            0, // version
-            broadcast_mode,
-            merkle_tree_depth,
-            group_id,
-            unix_ts_ms,
-            app_message_hash,
-            app_message_len,
-        )?;
-
-        debug_assert_eq!(header_buf.len(), layout.header_sans_signature_range().len());
-
-        Ok(header_buf)
-    }
-
-    fn make_assigner<PT: PubKey>(
-        build_target: &BuildTarget<PT>,
-        self_node_id: &NodeId<PT>,
-        app_message_hash: &[u8; 20],
-        rng: &mut (impl Rng + CryptoRng),
-    ) -> Box<dyn ChunkAssigner<PT>>
-    where
-        ST: CertificateSignatureRecoverable,
-    {
-        use assigner::{Partitioned, Replicated, StakeBasedWithRC};
-        match build_target {
-            BuildTarget::PointToPoint(to) => {
-                let assigner = Replicated::from_broadcast(
-                    std::iter::once(*to)
-                        .filter(|node_id| *node_id != self_node_id)
-                        .cloned(),
-                );
-                Box::new(assigner)
-            }
-            BuildTarget::Broadcast(nodes) => {
-                let assigner = Replicated::from_broadcast(
-                    nodes
-                        .get_members()
-                        .keys()
-                        .filter(|node_id| *node_id != self_node_id)
-                        .cloned(),
-                );
-                Box::new(assigner)
-            }
-            BuildTarget::Raptorcast(validators) => {
-                let seed =
-                    StakeBasedWithRC::<CertificateSignaturePubKey<ST>>::seed_from_app_message_hash(
-                        app_message_hash,
-                    );
-                let sorted_validators =
-                    StakeBasedWithRC::shuffle_validators(*validators, self_node_id, seed);
-                let assigner = StakeBasedWithRC::from_validator_set(sorted_validators);
-                Box::new(assigner)
-            }
-            BuildTarget::FullNodeRaptorCast(group) => {
-                let seed = rng.gen::<usize>();
-                let shifted_nodes = randomize_secondary_group_nodes(group, seed);
-                Box::new(Partitioned::from_homogeneous_peers(shifted_nodes))
-            }
-        }
-    }
-
     // ----- Build methods -----
     pub fn build_into<C>(
         &self,
         app_message: &[u8],
-        build_target: &BuildTarget<CertificateSignaturePubKey<ST>>,
+        build_target: &BuildTarget<'_, CertificateSignaturePubKey<ST>>,
         collector: &mut C,
     ) -> Result<()>
     where
         C: Collector<UdpMessage<CertificateSignaturePubKey<ST>>>,
     {
-        // figure out the layout of the packet
         let segment_size = self.unwrap_segment_size()?;
         let depth = self.unwrap_merkle_tree_depth()?;
-        let layout = PacketLayout::new(segment_size, depth);
+        let redundancy = self.unwrap_redundancy()?;
+        let unix_ts_ms = self.unwrap_unix_ts_ms()?;
+        self.checked_message_len(app_message.len())?;
 
-        // compute app message hash
-        let app_message_hash = compute_app_message_hash(app_message).0;
+        let layout = regular::PacketLayout::new(segment_size, depth);
 
-        // select chunk assignment algorithm based on build target
-        let rng = &mut rand::thread_rng();
-        let self_node_id = NodeId::new(self.base.key.as_ref().pubkey());
-        let assigner = Self::make_assigner(build_target, &self_node_id, &app_message_hash, rng);
-
-        // calculate the number of symbols needed for assignment
-        let app_message_len = self.checked_message_len(app_message.len())?;
-        let num_symbols = self.calc_num_symbols(layout, app_message_len)?;
-
-        // assign the chunks to recipients
-        let assemble_mode = self.base.assemble_mode;
-        let order = assemble_mode.expected_chunk_order();
-        let mut assignment = assigner.assign_chunks(num_symbols, order)?;
-        assignment.ensure_order(order);
-        self.check_assignment(&assignment, app_message_len)?;
-
-        if assignment.is_empty() {
-            tracing::debug!(app_msg_len = app_message.len(), "no chunk generated");
-            return Ok(());
-        }
-
-        // build the shared header
-        let header = self.build_header(
-            depth,
+        regular::build_into::<ST, C>(
+            self.key.as_ref(),
             layout,
-            broadcast_mode_from_build_target(build_target),
-            &app_message_hash,
-            app_message.len(),
-        )?;
-
-        // assemble the chunks's headers and content
-        assembler::assemble::<ST>(
-            self.base.key.as_ref(),
-            layout,
+            redundancy,
+            unix_ts_ms,
             app_message,
-            &header,
-            assignment,
-            assemble_mode,
+            build_target,
             collector,
-        )?;
-
-        Ok(())
+        )
     }
 
     pub fn build_vec(
         &self,
         app_message: &[u8],
-        build_target: &BuildTarget<CertificateSignaturePubKey<ST>>,
+        build_target: &BuildTarget<'_, CertificateSignaturePubKey<ST>>,
     ) -> Result<Vec<UdpMessage<CertificateSignaturePubKey<ST>>>> {
         let mut packets = Vec::new();
         self.build_into(app_message, build_target, &mut packets)?;
         Ok(packets)
     }
-}
-
-fn broadcast_mode_from_build_target<PT>(build_target: &BuildTarget<'_, PT>) -> BroadcastMode
-where
-    PT: PubKey,
-{
-    match build_target {
-        BuildTarget::Raptorcast { .. } => BroadcastMode::Primary,
-        BuildTarget::FullNodeRaptorCast { .. } => BroadcastMode::Secondary,
-        BuildTarget::Broadcast(_) | BuildTarget::PointToPoint(_) => BroadcastMode::Unspecified,
-    }
-}
-
-// introduce variation in the group member ordering
-fn randomize_secondary_group_nodes<PT: PubKey>(
-    group: &crate::util::SecondaryGroup<PT>,
-    seed: usize,
-) -> Vec<NodeId<PT>> {
-    let n = seed % group.len();
-    let mut shifted_group: Vec<_> = group.iter().cloned().collect();
-    shifted_group.rotate_left(n);
-    shifted_group
 }

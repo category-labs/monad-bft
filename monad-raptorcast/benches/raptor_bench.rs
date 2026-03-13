@@ -22,9 +22,10 @@ use monad_crypto::hasher::{Hasher, HasherType};
 use monad_dataplane::udp::DEFAULT_SEGMENT_SIZE;
 use monad_raptor::ManagedDecoder;
 use monad_raptorcast::{
-    packet::build_messages,
-    udp::{parse_message, ChunkSignatureVerifier, GroupId, MAX_REDUNDANCY, SIGNATURE_CACHE_SIZE},
-    util::{BuildTarget, Redundancy},
+    packet::{build_messages, regular::MAX_REDUNDANCY},
+    parser::packet_parser::{ChunkValidationEnv, RaptorcastPacket},
+    udp::{ChunkSignatureVerifier, SIGNATURE_CACHE_SIZE},
+    util::{BuildTarget, PrimaryBroadcastGroup, Redundancy, ValidatorGroupMap},
 };
 use monad_secp::{KeyPair, SecpSignature};
 use monad_types::{Epoch, NodeId, Stake};
@@ -63,15 +64,18 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             })
             .collect();
 
+        let self_id = NodeId::new(keys[0].pubkey());
+        let group_map: ValidatorGroupMap<_> = [(Epoch(0), validators)].into();
+        let group = PrimaryBroadcastGroup::of_epoch(Epoch(0), &self_id, &group_map).unwrap();
+
         b.iter(|| {
             let _ = build_messages::<SecpSignature>(
                 &keys[0],
                 DEFAULT_SEGMENT_SIZE, // segment_size
                 message.clone(),
                 Redundancy::from_u8(2),
-                GroupId::Primary(Epoch(0)), // epoch_no
-                0,                          // unix_ts_ms
-                BuildTarget::Raptorcast(&validators),
+                0, // unix_ts_ms
+                BuildTarget::Raptorcast(group),
                 &known_addresses,
             );
         });
@@ -103,14 +107,17 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             })
             .collect();
 
+        let self_id = NodeId::new(keys[0].pubkey());
+        let group_map: ValidatorGroupMap<_> = [(Epoch(0), validators)].into();
+        let group = PrimaryBroadcastGroup::of_epoch(Epoch(0), &self_id, &group_map).unwrap();
+
         let messages = build_messages::<SecpSignature>(
             &keys[0],
             DEFAULT_SEGMENT_SIZE, // segment_size
             message.clone(),
             Redundancy::from_u8(2),
-            GroupId::Primary(Epoch(0)), // epoch_no
-            0,                          // unix_ts_ms
-            BuildTarget::Raptorcast(&validators),
+            0, // unix_ts_ms
+            BuildTarget::Raptorcast(group),
             &known_addresses,
         )
         .into_iter()
@@ -119,13 +126,16 @@ pub fn criterion_benchmark(c: &mut Criterion) {
 
         let mut signature_verifier =
             ChunkSignatureVerifier::<SecpSignature>::new().with_cache(SIGNATURE_CACHE_SIZE);
-        let example_chunk = parse_message(
-            &mut signature_verifier,
-            messages[0].clone().split_to(DEFAULT_SEGMENT_SIZE.into()),
-            u64::MAX,
-            |_| true,
-        )
-        .expect("valid chunk");
+        let example_payload = messages[0].clone().split_to(DEFAULT_SEGMENT_SIZE.into());
+        let packet = RaptorcastPacket::parse(&example_payload).unwrap();
+        let env = ChunkValidationEnv {
+            signature_verifier: &mut signature_verifier,
+            max_age_ms: u64::MAX,
+            bypass_rate_limiter: |_| true,
+        };
+        let example_chunk = packet
+            .validate_chunk(&example_payload, env)
+            .expect("valid chunk");
 
         b.iter_batched(
             || messages.clone(),
@@ -145,13 +155,15 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 let mut decode_success = false;
                 for mut message in messages {
                     while !message.is_empty() {
-                        let parsed_message = parse_message(
-                            &mut signature_verifier,
-                            message.split_to(DEFAULT_SEGMENT_SIZE.into()),
-                            u64::MAX,
-                            |_| true,
-                        )
-                        .expect("valid message");
+                        let payload = message.split_to(DEFAULT_SEGMENT_SIZE.into());
+                        let packet = RaptorcastPacket::parse(&payload).unwrap();
+                        let env = ChunkValidationEnv {
+                            signature_verifier: &mut signature_verifier,
+                            max_age_ms: u64::MAX,
+                            bypass_rate_limiter: |_| true,
+                        };
+                        let parsed_message =
+                            packet.validate_chunk(&payload, env).expect("valid message");
                         decoder.received_encoded_symbol(
                             &parsed_message.chunk,
                             parsed_message.chunk_id.into(),
