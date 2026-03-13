@@ -29,6 +29,7 @@ env:
   CFLAGS: -march=haswell
   CXX: g++-15
   CXXFLAGS: -march=haswell
+  RUSTFLAGS: -C target-cpu=haswell
   TRIEDB_TARGET: triedb_driver
 
 jobs:
