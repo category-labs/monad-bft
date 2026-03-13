@@ -62,7 +62,7 @@ dependencies = [
  "actix-utils",
  "base64 0.22.1",
  "bitflags 2.10.0",
- "brotli 8.0.2",
+ "brotli",
  "bytes",
  "bytestring",
  "derive_more",
@@ -907,13 +907,10 @@ dependencies = [
  "alloy-json-rpc",
  "alloy-transport",
  "itertools 0.13.0",
- "opentelemetry",
- "opentelemetry-http",
  "reqwest",
  "serde_json",
  "tower",
  "tracing",
- "tracing-opentelemetry",
  "url",
 ]
 
@@ -2131,34 +2128,13 @@ dependencies = [
 
 [[package]]
 name = "brotli"
-version = "3.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d640d25bc63c50fb1f0b545ffd80207d2e10a4c965530809b40ba3386825c391"
-dependencies = [
- "alloc-no-stdlib",
- "alloc-stdlib",
- "brotli-decompressor 2.5.1",
-]
-
-[[package]]
-name = "brotli"
 version = "8.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4bd8b9603c7aa97359dbd97ecf258968c95f3adddd6db2f7e7a5bef101c84560"
 dependencies = [
  "alloc-no-stdlib",
  "alloc-stdlib",
- "brotli-decompressor 5.0.0",
-]
-
-[[package]]
-name = "brotli-decompressor"
-version = "2.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4e2e4afe60d7dd600fdd3de8d0f08c2b7ec039712e3b6137ff98b7004e82de4f"
-dependencies = [
- "alloc-no-stdlib",
- "alloc-stdlib",
+ "brotli-decompressor",
 ]
 
 [[package]]
@@ -4078,7 +4054,6 @@ dependencies = [
  "tokio",
  "tokio-rustls 0.26.4",
  "tower-service",
- "webpki-roots",
 ]
 
 [[package]]
@@ -4642,12 +4617,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "lru-slab"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
-
-[[package]]
 name = "lz4"
 version = "1.28.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4977,7 +4946,7 @@ dependencies = [
 name = "monad-compress"
 version = "0.1.0"
 dependencies = [
- "brotli 3.5.0",
+ "brotli",
  "bytes",
  "criterion",
  "flate2",
@@ -5900,7 +5869,7 @@ dependencies = [
  "arbitrary",
  "async-stream",
  "awc",
- "brotli 3.5.0",
+ "brotli",
  "bytes",
  "clap",
  "criterion",
@@ -6423,11 +6392,12 @@ dependencies = [
  "md-5",
  "mongocrypt",
  "mongodb-internal-macros",
+ "openssl",
+ "openssl-probe 0.1.6",
  "pbkdf2",
  "percent-encoding",
  "rand 0.9.2",
  "rustc_version_runtime",
- "rustls 0.23.36",
  "rustversion",
  "serde",
  "serde_bytes",
@@ -6440,11 +6410,10 @@ dependencies = [
  "take_mut",
  "thiserror 2.0.17",
  "tokio",
- "tokio-rustls 0.26.4",
+ "tokio-openssl",
  "tokio-util",
  "typed-builder",
  "uuid",
- "webpki-roots",
 ]
 
 [[package]]
@@ -7434,61 +7403,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "quinn"
-version = "0.11.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b9e20a958963c291dc322d98411f541009df2ced7b5a4f2bd52337638cfccf20"
-dependencies = [
- "bytes",
- "cfg_aliases",
- "pin-project-lite",
- "quinn-proto",
- "quinn-udp",
- "rustc-hash",
- "rustls 0.23.36",
- "socket2 0.6.1",
- "thiserror 2.0.17",
- "tokio",
- "tracing",
- "web-time",
-]
-
-[[package]]
-name = "quinn-proto"
-version = "0.11.14"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "434b42fec591c96ef50e21e886936e66d3cc3f737104fdb9b737c40ffb94c098"
-dependencies = [
- "bytes",
- "getrandom 0.3.4",
- "lru-slab",
- "rand 0.9.2",
- "ring",
- "rustc-hash",
- "rustls 0.23.36",
- "rustls-pki-types",
- "slab",
- "thiserror 2.0.17",
- "tinyvec",
- "tracing",
- "web-time",
-]
-
-[[package]]
-name = "quinn-udp"
-version = "0.5.14"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "addec6a0dcad8a8d96a771f815f0eaf55f9d1805756410b39f5fa81332574cbd"
-dependencies = [
- "cfg_aliases",
- "libc",
- "once_cell",
- "socket2 0.6.1",
- "tracing",
- "windows-sys 0.60.2",
-]
-
-[[package]]
 name = "quote"
 version = "1.0.43"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7751,8 +7665,6 @@ dependencies = [
  "native-tls",
  "percent-encoding",
  "pin-project-lite",
- "quinn",
- "rustls 0.23.36",
  "rustls-pki-types",
  "serde",
  "serde_json",
@@ -7760,7 +7672,6 @@ dependencies = [
  "sync_wrapper",
  "tokio",
  "tokio-native-tls",
- "tokio-rustls 0.26.4",
  "tower",
  "tower-http",
  "tower-service",
@@ -7768,7 +7679,6 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
- "webpki-roots",
 ]
 
 [[package]]
@@ -8034,9 +7944,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c665f33d38cea657d9614f766881e4d510e0eda4239891eea56b4cadcf01801b"
 dependencies = [
  "aws-lc-rs",
- "log",
  "once_cell",
- "ring",
  "rustls-pki-types",
  "rustls-webpki 0.103.8",
  "subtle",
@@ -8061,7 +7969,6 @@ version = "1.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "21e6f2ab2928ca4291b86736a8bd920a277a399bba1589409d72154ff87c1282"
 dependencies = [
- "web-time",
  "zeroize",
 ]
 
@@ -9131,6 +9038,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tokio-openssl"
+version = "0.6.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "59df6849caa43bb7567f9a36f863c447d95a11d5903c9cc334ba32576a27eadd"
+dependencies = [
+ "openssl",
+ "openssl-sys",
+ "tokio",
+]
+
+[[package]]
 name = "tokio-retry"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9871,15 +9789,6 @@ checksum = "5a6580f308b1fad9207618087a65c04e7a10bc77e02c8e84e9b00dd4b12fa0bb"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "webpki-roots"
-version = "1.0.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "12bed680863276c63889429bfd6cab3b99943659923822de1c8a39c49e4d722c"
-dependencies = [
- "rustls-pki-types",
 ]
 
 [[package]]
