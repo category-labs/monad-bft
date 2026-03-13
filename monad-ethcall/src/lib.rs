@@ -28,7 +28,7 @@ use alloy_sol_types::decode_revert_reason;
 use bindings::monad_executor_result;
 use futures::channel::oneshot::{channel, Sender};
 use monad_chain_config::{
-    ETHEREUM_MAINNET_CHAIN_ID, MONAD_DEVNET_CHAIN_ID, MONAD_MAINNET_CHAIN_ID,
+    ETHEREUM_MAINNET_CHAIN_ID, HIVE_CHAIN_ID, MONAD_DEVNET_CHAIN_ID, MONAD_MAINNET_CHAIN_ID,
     MONAD_TESTNET_CHAIN_ID,
 };
 use serde::{Deserialize, Serialize};
@@ -295,6 +295,7 @@ pub async fn eth_call(
         MONAD_DEVNET_CHAIN_ID => bindings::monad_chain_config_CHAIN_CONFIG_MONAD_DEVNET,
         MONAD_TESTNET_CHAIN_ID => bindings::monad_chain_config_CHAIN_CONFIG_MONAD_TESTNET,
         MONAD_MAINNET_CHAIN_ID => bindings::monad_chain_config_CHAIN_CONFIG_MONAD_MAINNET,
+        HIVE_CHAIN_ID => bindings::monad_chain_config_CHAIN_CONFIG_HIVE_NET,
         _ => {
             unsafe { bindings::monad_state_override_destroy(override_ctx) };
 
@@ -481,6 +482,7 @@ pub async fn eth_trace_block_or_transaction(
         MONAD_DEVNET_CHAIN_ID => bindings::monad_chain_config_CHAIN_CONFIG_MONAD_DEVNET,
         MONAD_TESTNET_CHAIN_ID => bindings::monad_chain_config_CHAIN_CONFIG_MONAD_TESTNET,
         MONAD_MAINNET_CHAIN_ID => bindings::monad_chain_config_CHAIN_CONFIG_MONAD_MAINNET,
+        HIVE_CHAIN_ID => bindings::monad_chain_config_CHAIN_CONFIG_HIVE_NET,
         _ => {
             return CallResult::Failure(FailureCallResult {
                 error_code: EthCallResult::OtherError,
