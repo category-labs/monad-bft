@@ -22,7 +22,7 @@ use alloy_consensus::{
     transaction::{Recovered, SignerRecoverable},
     TxEnvelope,
 };
-use alloy_rlp::Decodable;
+use alloy_eips::eip2718::{Decodable2718, Encodable2718};
 use bytes::Bytes;
 use futures::Stream;
 use monad_chain_config::{
@@ -439,7 +439,7 @@ where
                         &self.chain_config,
                         txs.into_iter()
                             .filter_map(|raw_tx| {
-                                let tx = TxEnvelope::decode(&mut raw_tx.as_ref()).ok()?;
+                                let tx = TxEnvelope::decode_2718_exact(raw_tx.as_ref()).ok()?;
                                 let signer = tx.recover_signer().ok()?;
                                 Some((Recovered::new_unchecked(tx, signer), PoolTxKind::Forwarded))
                             })
@@ -573,7 +573,7 @@ where
     fn send_transaction(&mut self, tx: Bytes) {
         let (pool, block_policy, state_backend) = self.eth.as_mut().unwrap();
 
-        let Ok(tx) = TxEnvelope::decode(&mut tx.as_ref()) else {
+        let Ok(tx) = TxEnvelope::decode_2718_exact(tx.as_ref()) else {
             panic!("MockableTxPool received invalid tx bytes!");
         };
 
@@ -590,9 +590,10 @@ where
             &MockChainConfig::DEFAULT,
             vec![(tx, PoolTxKind::owned_default())],
             |tx| {
-                self.events.push_back(MempoolEvent::ForwardTxs(vec![
-                    alloy_rlp::encode(tx.raw()).into()
-                ]));
+                self.events.push_back(MempoolEvent::ForwardTxs(vec![tx
+                    .raw()
+                    .encoded_2718()
+                    .into()]));
             },
         );
 

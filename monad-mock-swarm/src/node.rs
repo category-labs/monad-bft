@@ -354,7 +354,7 @@ impl<S: SwarmRelation> Node<S> {
                 cert_pubkey: *cert_pubkey,
             });
         }
-        ValidatorSetData(validator_set_data)
+        ValidatorSetData(validator_set_data.into())
     }
 
     pub fn get_forkpoint(

@@ -344,8 +344,8 @@ where
                 .chain(user_transactions)
                 .map(|tx| tx.into_inner())
                 .collect(),
-            ommers: Vec::new(),
-            withdrawals: Vec::new(),
+            ommers: Default::default(),
+            withdrawals: Default::default(),
         };
 
         // Monad does not use request hashes yet

@@ -11,10 +11,11 @@ bench = false
 [dependencies]
 monad-crypto = { workspace = true }
 monad-eth-types = { workspace = true }
+monad-tfm = { workspace = true }
 monad-types = { workspace = true }
 monad-validator = { workspace = true }
 
-alloy-consensus = { workspace = true }
+alloy-consensus = { workspace = true, features = ["k256"] }
 alloy-primitives = { workspace = true }
 tracing = { workspace = true }
 serde = { workspace = true, features = ["derive"] }

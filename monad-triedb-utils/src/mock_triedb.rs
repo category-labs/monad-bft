@@ -16,16 +16,20 @@
 use std::{collections::HashMap, future::ready};
 
 use alloy_consensus::{transaction::SignerRecoverable, Block, TxEnvelope};
+use monad_eth_types::{
+    BlockHeader, EthAccount, EthAddress, EthBlockHash, EthCodeHash, EthStorageKey, EthTxHash,
+    ReceiptWithLogIndex, TransactionLocation, TxEnvelopeWithSender,
+};
 use monad_types::SeqNum;
 
-use crate::triedb_env::*;
+use crate::triedb_env::{BlockKey, FinalizedBlockKey, Triedb};
 
 #[derive(Debug, Default)]
 pub struct MockTriedb {
     latest_block: u64,
     finalized_blocks: HashMap<SeqNum, Block<TxEnvelope>>,
     receipts: HashMap<SeqNum, Vec<ReceiptWithLogIndex>>,
-    accounts: HashMap<EthAddress, Account>,
+    accounts: HashMap<EthAddress, EthAccount>,
     tx_locations: HashMap<EthTxHash, TransactionLocation>,
     call_frames: HashMap<TransactionLocation, Vec<u8>>,
     code: String,
@@ -36,7 +40,7 @@ impl MockTriedb {
         self.latest_block = block_num;
     }
 
-    pub fn set_account(&mut self, address: EthAddress, account: Account) {
+    pub fn set_account(&mut self, address: EthAddress, account: EthAccount) {
         self.accounts.insert(address, account);
     }
 
@@ -90,10 +94,10 @@ impl Triedb for MockTriedb {
         &self,
         _block_key: BlockKey,
         _addr: EthAddress,
-    ) -> impl std::future::Future<Output = Result<Account, String>> + Send {
+    ) -> impl std::future::Future<Output = Result<EthAccount, String>> + Send {
         self.accounts.get(&_addr).map_or_else(
-            || ready(Ok(Account::default())),
-            |account| ready(Ok(account.clone())),
+            || ready(Ok(EthAccount::default())),
+            |account| ready(Ok(*account)),
         )
     }
 

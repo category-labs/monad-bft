@@ -725,14 +725,20 @@ async fn include_code_output<T: Triedb>(
             .get_account(block_key, contract_addr.0.into())
             .await
             .map_err(JsonRpcError::internal_error)?;
-        let code = triedb_env
-            .get_code(block_key, account.code_hash)
-            .await
-            .map_err(JsonRpcError::internal_error)?;
 
-        let decoded_code = ethhex::decode_bytes(&code)
-            .map_err(|_| JsonRpcError::internal_error("could not decode code".to_string()))?;
-        frame.output = decoded_code.into();
+        frame.output = if let Some(code_hash) = account.code_hash {
+            let code = triedb_env
+                .get_code(block_key, code_hash)
+                .await
+                .map_err(JsonRpcError::internal_error)?;
+
+            let decoded_code = ethhex::decode_bytes(&code)
+                .map_err(|_| JsonRpcError::internal_error("could not decode code".to_string()))?;
+
+            decoded_code.into()
+        } else {
+            Bytes::default()
+        };
     }
 
     Ok(())
@@ -782,10 +788,8 @@ async fn build_call_tree(
 mod tests {
     use alloy_consensus::ReceiptWithBloom;
     use alloy_primitives::Bloom;
-    use monad_triedb_utils::{
-        mock_triedb,
-        triedb_env::{EthTxHash, ReceiptWithLogIndex, TransactionLocation},
-    };
+    use monad_eth_types::{EthTxHash, ReceiptWithLogIndex, TransactionLocation};
+    use monad_triedb_utils::mock_triedb;
 
     use super::*;
     use crate::types::ethhex;

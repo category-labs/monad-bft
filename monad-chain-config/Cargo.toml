@@ -9,6 +9,7 @@ edition = "2021"
 bench = false
 
 [dependencies]
+monad-eth-types = { workspace = true }
 monad-types = { workspace = true }
 
 serde = { workspace = true, features = ["derive"] }

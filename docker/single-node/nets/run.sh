@@ -61,7 +61,7 @@ export HOST_GID=$(id -g)
 export HOST_UID=$(id -u)
 export DEVNET_DIR=$(realpath "$devnet_dir")
 export RPC_DIR=$(realpath "$rpc_dir")
-export MONAD_EXECUTION_ROOT="${MONAD_BFT_ROOT}/monad-cxx/monad-execution"
+export MONAD_EXECUTION_ROOT="${MONAD_BFT_ROOT}/monad-execution"
 
 # Get git describe tag for versioning
 export GIT_TAG_VERSION=$(git -C "$MONAD_BFT_ROOT" describe --always)

@@ -347,11 +347,11 @@ where
         } = &body.execution_body;
 
         if !ommers.is_empty() {
-            return Err(PayloadError::NonEmptyOmmers(ommers.clone()).into());
+            return Err(PayloadError::NonEmptyOmmers(ommers.to_vec()).into());
         }
 
         if !withdrawals.is_empty() {
-            return Err(PayloadError::NonEmptyWithdrawals(withdrawals.clone()).into());
+            return Err(PayloadError::NonEmptyWithdrawals(withdrawals.to_vec()).into());
         }
 
         // early return if number of transactions exceed limit
@@ -374,7 +374,7 @@ where
 
         // recovering the signers verifies that these are valid signatures
         let recovered_txns: VecDeque<Recovered<TxEnvelope>> = transactions
-            .into_par_iter()
+            .par_iter()
             .map(|tx| {
                 let _span = trace_span!("validator: recover signer").entered();
                 let signer = tx.secp256k1_recover()?;
@@ -706,9 +706,9 @@ mod test {
         let txs = vec![txn1, txn2];
         let payload = ConsensusBlockBody::new(ConsensusBlockBodyInner {
             execution_body: EthBlockBody {
-                transactions: txs,
-                ommers: Vec::new(),
-                withdrawals: Vec::new(),
+                transactions: txs.into(),
+                ommers: Default::default(),
+                withdrawals: Default::default(),
             },
         });
         let header = get_header(payload.get_id());
@@ -757,9 +757,9 @@ mod test {
         let txs = vec![txn1, txn2, txn3];
         let payload = ConsensusBlockBody::new(ConsensusBlockBodyInner {
             execution_body: EthBlockBody {
-                transactions: txs,
-                ommers: Vec::new(),
-                withdrawals: Vec::new(),
+                transactions: txs.into(),
+                ommers: Default::default(),
+                withdrawals: Default::default(),
             },
         });
         let header = get_header(payload.get_id());
@@ -798,9 +798,9 @@ mod test {
         let txs = vec![txn1, txn2];
         let payload = ConsensusBlockBody::new(ConsensusBlockBodyInner {
             execution_body: EthBlockBody {
-                transactions: txs,
-                ommers: Vec::new(),
-                withdrawals: Vec::new(),
+                transactions: txs.into(),
+                ommers: Default::default(),
+                withdrawals: Default::default(),
             },
         });
         let header = get_header(payload.get_id());
@@ -842,9 +842,9 @@ mod test {
         let txs = vec![txn1, txn2];
         let payload = ConsensusBlockBody::new(ConsensusBlockBodyInner {
             execution_body: EthBlockBody {
-                transactions: txs,
-                ommers: Vec::new(),
-                withdrawals: Vec::new(),
+                transactions: txs.into(),
+                ommers: Default::default(),
+                withdrawals: Default::default(),
             },
         });
         let header = get_header(payload.get_id());
@@ -890,9 +890,9 @@ mod test {
         let txs = vec![txn1, txn2];
         let payload = ConsensusBlockBody::new(ConsensusBlockBodyInner {
             execution_body: EthBlockBody {
-                transactions: txs,
-                ommers: Vec::new(),
-                withdrawals: Vec::new(),
+                transactions: txs.into(),
+                ommers: Default::default(),
+                withdrawals: Default::default(),
             },
         });
         let header = get_header(payload.get_id());
@@ -922,9 +922,9 @@ mod test {
         let txs = vec![txn1, txn2];
         let payload = ConsensusBlockBody::new(ConsensusBlockBodyInner {
             execution_body: EthBlockBody {
-                transactions: txs,
-                ommers: Vec::new(),
-                withdrawals: Vec::new(),
+                transactions: txs.into(),
+                ommers: Default::default(),
+                withdrawals: Default::default(),
             },
         });
         let header = get_header(payload.get_id());
@@ -965,9 +965,9 @@ mod test {
         let txs = vec![txn1];
         let payload = ConsensusBlockBody::new(ConsensusBlockBodyInner {
             execution_body: EthBlockBody {
-                transactions: txs,
-                ommers: Vec::new(),
-                withdrawals: Vec::new(),
+                transactions: txs.into(),
+                ommers: Default::default(),
+                withdrawals: Default::default(),
             },
         });
         let header = get_header(payload.get_id());
@@ -995,9 +995,9 @@ mod test {
         let txs = vec![valid_txn.clone()];
         let payload = ConsensusBlockBody::new(ConsensusBlockBodyInner {
             execution_body: EthBlockBody {
-                transactions: txs,
-                ommers: Vec::new(),
-                withdrawals: Vec::new(),
+                transactions: txs.into(),
+                ommers: Default::default(),
+                withdrawals: Default::default(),
             },
         });
         let header = get_header(payload.get_id());
@@ -1041,9 +1041,9 @@ mod test {
         let txs = vec![invalid_txn];
         let payload = ConsensusBlockBody::new(ConsensusBlockBodyInner {
             execution_body: EthBlockBody {
-                transactions: txs,
-                ommers: Vec::new(),
-                withdrawals: Vec::new(),
+                transactions: txs.into(),
+                ommers: Default::default(),
+                withdrawals: Default::default(),
             },
         });
         let header = get_header(payload.get_id());
@@ -1095,9 +1095,9 @@ mod test {
         let txs = vec![txn1, txn2, txn3];
         let payload = ConsensusBlockBody::new(ConsensusBlockBodyInner {
             execution_body: EthBlockBody {
-                transactions: txs,
-                ommers: Vec::new(),
-                withdrawals: Vec::new(),
+                transactions: txs.into(),
+                ommers: Default::default(),
+                withdrawals: Default::default(),
             },
         });
         let header = get_header(payload.get_id());
@@ -1141,9 +1141,9 @@ mod test {
         let txs = vec![txn1, txn2, txn3];
         let payload = ConsensusBlockBody::new(ConsensusBlockBodyInner {
             execution_body: EthBlockBody {
-                transactions: txs,
-                ommers: Vec::new(),
-                withdrawals: Vec::new(),
+                transactions: txs.into(),
+                ommers: Default::default(),
+                withdrawals: Default::default(),
             },
         });
         let header = get_header(payload.get_id());
@@ -1187,9 +1187,9 @@ mod test {
         let txs = vec![txn1, txn2, txn3];
         let payload = ConsensusBlockBody::new(ConsensusBlockBodyInner {
             execution_body: EthBlockBody {
-                transactions: txs,
-                ommers: Vec::new(),
-                withdrawals: Vec::new(),
+                transactions: txs.into(),
+                ommers: Default::default(),
+                withdrawals: Default::default(),
             },
         });
         let header = get_header(payload.get_id());
@@ -1235,9 +1235,9 @@ mod test {
         let txs = vec![txn1, txn2, txn3, txn4];
         let payload = ConsensusBlockBody::new(ConsensusBlockBodyInner {
             execution_body: EthBlockBody {
-                transactions: txs,
-                ommers: Vec::new(),
-                withdrawals: Vec::new(),
+                transactions: txs.into(),
+                ommers: Default::default(),
+                withdrawals: Default::default(),
             },
         });
         let header = get_header(payload.get_id());
@@ -1288,9 +1288,9 @@ mod test {
         let txs = vec![txn1, txn2, txn3, txn4];
         let payload = ConsensusBlockBody::new(ConsensusBlockBodyInner {
             execution_body: EthBlockBody {
-                transactions: txs,
-                ommers: Vec::new(),
-                withdrawals: Vec::new(),
+                transactions: txs.into(),
+                ommers: Default::default(),
+                withdrawals: Default::default(),
             },
         });
         let header = get_header(payload.get_id());
@@ -1373,9 +1373,9 @@ mod test {
         // payload with empty transactions
         let payload = ConsensusBlockBody::new(ConsensusBlockBodyInner {
             execution_body: EthBlockBody {
-                transactions: Vec::new(),
-                ommers: Vec::new(),
-                withdrawals: Vec::new(),
+                transactions: Default::default(),
+                ommers: Default::default(),
+                withdrawals: Default::default(),
             },
         });
 

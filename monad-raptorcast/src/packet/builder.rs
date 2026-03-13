@@ -21,7 +21,8 @@ use monad_crypto::certificate_signature::{
 };
 use monad_dataplane::udp::DEFAULT_SEGMENT_SIZE;
 use monad_types::NodeId;
-use rand::Rng;
+use monad_validator::validator_set::ValidatorSetType as _;
+use rand::{CryptoRng, Rng};
 
 use super::{
     assembler::{self, build_header, AssembleMode, PacketLayout},
@@ -335,16 +336,29 @@ where
         build_target: &BuildTarget<PT>,
         self_node_id: &NodeId<PT>,
         app_message_hash: &[u8; 20],
-        rng: &mut impl Rng,
+        rng: &mut (impl Rng + CryptoRng),
     ) -> Box<dyn ChunkAssigner<PT>>
     where
         ST: CertificateSignatureRecoverable,
     {
         use assigner::{Partitioned, Replicated, StakeBasedWithRC};
         match build_target {
-            BuildTarget::PointToPoint(to) => Box::new(Replicated::from_unicast(**to)),
+            BuildTarget::PointToPoint(to) => {
+                let assigner = Replicated::from_broadcast(
+                    std::iter::once(*to)
+                        .filter(|node_id| *node_id != self_node_id)
+                        .cloned(),
+                );
+                Box::new(assigner)
+            }
             BuildTarget::Broadcast(nodes) => {
-                let assigner = Replicated::from_broadcast(nodes.iter().copied().collect());
+                let assigner = Replicated::from_broadcast(
+                    nodes
+                        .get_members()
+                        .keys()
+                        .filter(|node_id| *node_id != self_node_id)
+                        .cloned(),
+                );
                 Box::new(assigner)
             }
             BuildTarget::Raptorcast(validators) => {
@@ -352,17 +366,15 @@ where
                     StakeBasedWithRC::<CertificateSignaturePubKey<ST>>::seed_from_app_message_hash(
                         app_message_hash,
                     );
-                let sorted_validators = StakeBasedWithRC::shuffle_validators(validators, seed);
+                let sorted_validators =
+                    StakeBasedWithRC::shuffle_validators(*validators, self_node_id, seed);
                 let assigner = StakeBasedWithRC::from_validator_set(sorted_validators);
                 Box::new(assigner)
             }
             BuildTarget::FullNodeRaptorCast(group) => {
                 let seed = rng.gen::<usize>();
-                let nodes = group
-                    .iter_skip_self_and_author(self_node_id, seed)
-                    .copied()
-                    .collect();
-                Box::new(Partitioned::from_homogeneous_peers(nodes))
+                let shifted_nodes = randomize_secondary_group_nodes(group, seed);
+                Box::new(Partitioned::from_homogeneous_peers(shifted_nodes))
             }
         }
     }
@@ -400,6 +412,11 @@ where
         let mut assignment = assigner.assign_chunks(num_symbols, order)?;
         assignment.ensure_order(order);
         self.check_assignment(&assignment, app_message_len)?;
+
+        if assignment.is_empty() {
+            tracing::debug!(app_msg_len = app_message.len(), "no chunk generated");
+            return Ok(());
+        }
 
         // build the shared header
         let header = self.build_header(
@@ -444,4 +461,15 @@ where
         BuildTarget::FullNodeRaptorCast { .. } => BroadcastMode::Secondary,
         BuildTarget::Broadcast(_) | BuildTarget::PointToPoint(_) => BroadcastMode::Unspecified,
     }
+}
+
+// introduce variation in the group member ordering
+fn randomize_secondary_group_nodes<PT: PubKey>(
+    group: &crate::util::SecondaryGroup<PT>,
+    seed: usize,
+) -> Vec<NodeId<PT>> {
+    let n = seed % group.len();
+    let mut shifted_group: Vec<_> = group.iter().cloned().collect();
+    shifted_group.rotate_left(n);
+    shifted_group
 }

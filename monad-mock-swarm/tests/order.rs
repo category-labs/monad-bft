@@ -36,7 +36,7 @@ use monad_transformer::{
     GenericTransformer, LatencyTransformer, PartitionTransformer, ReplayTransformer,
     TransformerReplayOrder, ID,
 };
-use monad_types::{Balance, NodeId, SeqNum};
+use monad_types::{NodeId, SeqNum};
 use monad_updaters::{
     ledger::{MockLedger, MockableLedger},
     statesync::MockStateSyncExecutor,
@@ -105,7 +105,7 @@ fn all_messages_delayed(direction: TransformerReplayOrder) -> Result<(), String>
         SimpleRoundRobin::default,
         || MockValidator,
         || PassthruBlockPolicy,
-        || InMemoryStateInner::genesis(Balance::MAX, SeqNum(1)),
+        || InMemoryStateInner::genesis(SeqNum(1)),
         // due to the burst behavior of replay-transformer, its okay to
         // have delay as 1
         //

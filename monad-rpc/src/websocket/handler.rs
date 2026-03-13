@@ -299,9 +299,9 @@ async fn handle_notification(
             )));
         }
         EventServerEvent::Block {
+            commit_state,
             header,
-            block: _,
-            logs,
+            transactions,
         } => {
             for (id, _) in subscriptions
                 .get(&SubscriptionKind::MonadNewHeads)
@@ -311,7 +311,7 @@ async fn handle_notification(
                 send_notification(session, id, header.as_ref(), max_response_size).await?;
             }
 
-            if header.commit_state == COMMIT_STATE_FILTER {
+            if commit_state == COMMIT_STATE_FILTER {
                 for (id, _) in subscriptions
                     .get(&SubscriptionKind::NewHeads)
                     .map(|x| x.iter())
@@ -321,12 +321,14 @@ async fn handle_notification(
                 }
             }
 
+            let iter_logs = || transactions.iter().flat_map(|(_, _, logs)| logs.iter());
+
             for (id, filter) in subscriptions
                 .get(&SubscriptionKind::MonadLogs)
                 .map(|x| x.iter())
                 .unwrap_or_default()
             {
-                let Some(logs) = apply_logs_filter(filter, header.data.as_ref(), logs.iter())
+                let Some(logs) = apply_logs_filter(filter, header.data.as_ref(), iter_logs())
                 else {
                     continue;
                 };
@@ -336,13 +338,13 @@ async fn handle_notification(
                 }
             }
 
-            if header.commit_state == COMMIT_STATE_FILTER {
+            if commit_state == COMMIT_STATE_FILTER {
                 for (id, filter) in subscriptions
                     .get(&SubscriptionKind::Logs)
                     .map(|x| x.iter())
                     .unwrap_or_default()
                 {
-                    let Some(logs) = apply_logs_filter(filter, header.data.as_ref(), logs.iter())
+                    let Some(logs) = apply_logs_filter(filter, header.data.as_ref(), iter_logs())
                     else {
                         continue;
                     };
@@ -712,11 +714,12 @@ mod tests {
     fn create_test_server() -> actix_test::TestServer {
         const SNAPSHOT_NAME: &str = "ETHEREUM_MAINNET_30B_15M";
         const SNAPSHOT_ZSTD_BYTES: &[u8] = include_bytes!(
-            "../../../monad-exec-events/test/data/exec-events-emn-30b-15m/snapshot.zst"
+            "../../../monad-execution/rust/crates/monad-exec-events/test/data/exec-events-emn-30b-15m/snapshot.zst"
         );
 
         let snapshot =
-            SnapshotEventRing::new_from_zstd_bytes(SNAPSHOT_ZSTD_BYTES, SNAPSHOT_NAME).unwrap();
+            SnapshotEventRing::new_from_zstd_bytes(SNAPSHOT_NAME, SNAPSHOT_ZSTD_BYTES, None)
+                .unwrap();
 
         let ws_server_handle =
             EventServer::start_for_testing_with_delay(snapshot, Duration::from_secs(1));

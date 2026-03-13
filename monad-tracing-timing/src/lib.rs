@@ -256,7 +256,7 @@ mod tests {
     use futures::{executor, future::join_all, FutureExt};
     use opentelemetry::{metrics::MeterProvider, Key, KeyValue};
     use opentelemetry_sdk::metrics::{
-        data::{Histogram as HistogramData, HistogramDataPoint},
+        data::{AggregatedMetrics, HistogramDataPoint, MetricData},
         InMemoryMetricExporter, PeriodicReader, SdkMeterProvider,
     };
     use tokio::sync::{mpsc, Barrier};
@@ -304,19 +304,19 @@ mod tests {
             let finished = self.exporter.get_finished_metrics().unwrap();
             let histogram = finished.first().expect("histogram must be there");
             let metric = histogram
-                .scope_metrics
-                .first()
+                .scope_metrics()
+                .next()
                 .expect("exactly 1 scope")
-                .metrics
-                .first()
+                .metrics()
+                .next()
                 .expect("exactly 1 metric");
-            let data = metric
-                .data
-                .as_any()
-                .downcast_ref::<HistogramData<f64>>()
-                .unwrap();
 
-            data.data_points.clone()
+            let data = match metric.data() {
+                AggregatedMetrics::F64(MetricData::Histogram(data)) => data,
+                _ => panic!("expected aggregated f64 histogram metrics data"),
+            };
+
+            data.data_points().cloned().collect()
         }
     }
 
@@ -344,19 +344,19 @@ mod tests {
         });
 
         let mut data_points = tctx.extract_data_points();
-        data_points.sort_by_key(|k| k.sum as u64);
+        data_points.sort_by_key(|k| k.sum() as u64);
         assert_eq!(data_points.len(), 2);
         assert_eq!(
-            data_points[0].attributes,
+            data_points[0].attributes().cloned().collect::<Vec<_>>(),
             vec![
                 KeyValue::new("main", "first"),
                 KeyValue::new("type", "wait")
             ]
         );
-        assert_eq!(data_points[0].sum, 0.0);
+        assert_eq!(data_points[0].sum(), 0.0);
 
         assert_eq!(
-            data_points[1].attributes,
+            data_points[1].attributes().cloned().collect::<Vec<_>>(),
             vec![
                 KeyValue::new("main", "first"),
                 KeyValue::new("type", "total")
@@ -364,11 +364,11 @@ mod tests {
         );
         let data_point = &data_points[1];
         assert_eq!(
-            data_point.count,
+            data_point.count(),
             samples.iter().map(|(count, _)| *count).sum::<u64>()
         );
         assert_eq!(
-            data_point.sum,
+            data_point.sum(),
             samples
                 .iter()
                 .map(|(count, value)| *count as f64 * *value as f64)
@@ -376,7 +376,7 @@ mod tests {
         );
         // skip 1st bucket as this is one below min value
         assert_eq!(
-            data_point.bucket_counts[1..].to_vec(),
+            data_point.bucket_counts().skip(1).collect::<Vec<_>>(),
             samples.iter().map(|(count, _)| *count).collect::<Vec<_>>()
         );
     }
@@ -413,25 +413,31 @@ mod tests {
         let mut data_points = tctx.extract_data_points();
         assert_eq!(data_points.len(), 4);
         // NOTE(dshulyak) order is only for assertions
-        data_points.sort_by_key(|k| k.sum as u64);
+        data_points.sort_by_key(|k| k.sum() as u64);
         assert_eq!(
-            data_points[3].attributes,
+            data_points[3].attributes().cloned().collect::<Vec<_>>(),
             vec![
                 KeyValue::new("main", "first"),
                 KeyValue::new("type", "total")
-            ]
+            ],
         );
         assert_eq!(
-            data_points[2].attributes,
+            data_points[2].attributes().cloned().collect::<Vec<_>>(),
             vec![
                 KeyValue::new("main", "first"),
                 KeyValue::new("secondary", "second"),
                 KeyValue::new("type", "total")
-            ]
+            ],
         );
 
-        assert_eq!(data_points[3].bucket_counts, expected_buckets_first);
-        assert_eq!(data_points[2].bucket_counts, expected_buckets_second);
+        assert_eq!(
+            data_points[3].bucket_counts().collect::<Vec<_>>(),
+            expected_buckets_first
+        );
+        assert_eq!(
+            data_points[2].bucket_counts().collect::<Vec<_>>(),
+            expected_buckets_second
+        );
     }
 
     #[test]
@@ -471,10 +477,16 @@ mod tests {
         let mut data_points = tctx.extract_data_points();
         assert_eq!(data_points.len(), 4);
         // NOTE(dshulyak) order is only for assertions
-        data_points.sort_by_key(|k| k.sum as u64);
+        data_points.sort_by_key(|k| k.sum() as u64);
 
-        assert_eq!(data_points[3].bucket_counts, expected_buckets_first);
-        assert_eq!(data_points[2].bucket_counts, expected_buckets_second);
+        assert_eq!(
+            data_points[3].bucket_counts().collect::<Vec<_>>(),
+            expected_buckets_first
+        );
+        assert_eq!(
+            data_points[2].bucket_counts().collect::<Vec<_>>(),
+            expected_buckets_second
+        );
     }
 
     #[test]
@@ -514,20 +526,21 @@ mod tests {
 
         let mut data_points = tctx.extract_data_points();
         assert_eq!(data_points.len(), 12);
-        data_points.sort_by_key(|k| k.sum as u64);
+        data_points.sort_by_key(|k| k.sum() as u64);
         // test that attributes in secondary labels have main label as aa prefix
         for data_point in data_points {
+            let data_point_attributes = data_point.attributes().collect::<Vec<_>>();
             // there are always atleast 2 attributes
-            if data_point.attributes.len() == 2 {
-                assert_eq!(data_point.attributes[0].key, Key::from_static_str("main"));
+            if data_point_attributes.len() == 2 {
+                assert_eq!(data_point_attributes[0].key, Key::from_static_str("main"));
             } else {
-                assert_eq!(data_point.attributes[0].key, Key::from_static_str("main"));
+                assert_eq!(data_point_attributes[0].key, Key::from_static_str("main"));
                 assert_eq!(
-                    data_point.attributes[1].key,
+                    data_point_attributes[1].key,
                     Key::from_static_str("secondary")
                 );
-                assert!(data_point.attributes[1].value.as_str().starts_with(
-                    data_point.attributes[0]
+                assert!(data_point_attributes[1].value.as_str().starts_with(
+                    data_point_attributes[0]
                         .value
                         .as_str()
                         .into_owned()
@@ -583,11 +596,11 @@ mod tests {
         // future spends all the time in await
         for data_point in &data_points {
             assert_eq!(
-                data_point.count,
+                data_point.count(),
                 samples.iter().map(|(count, _)| *count as u64).sum::<u64>()
             );
             assert_eq!(
-                data_point.sum,
+                data_point.sum(),
                 samples
                     .iter()
                     .map(|(count, value)| *count as f64 * *value as f64)

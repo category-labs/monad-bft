@@ -30,8 +30,8 @@ use futures::{
 use monad_crypto::certificate_signature::PubKey;
 use monad_executor_glue::{
     SessionId, StateSyncBadVersion, StateSyncNetworkMessage, StateSyncRequest, StateSyncResponse,
-    StateSyncUpsertType, StateSyncUpsertV1, SELF_STATESYNC_VERSION, STATESYNC_VERSION_MIN,
-    STATESYNC_VERSION_V2,
+    StateSyncUpsertType, StateSyncUpsertV1, MAX_UPSERTS_PER_RESPONSE, SELF_STATESYNC_VERSION,
+    STATESYNC_VERSION_MIN, STATESYNC_VERSION_V2,
 };
 use monad_types::NodeId;
 use tokio::{
@@ -101,9 +101,6 @@ pub enum ExecutionMessage {
     SyncDone(bindings::monad_sync_done),
 }
 
-/// maximum number of upserts we can send in a single response
-/// at 75 bytes per upsert, approx 1.5MB
-const MAX_UPSERTS_PER_RESPONSE: usize = 20_000;
 /// maximum amount of data in upserts we can send in a single response
 const MAX_RESPONSE_SIZE: usize = 1_500_000;
 /// max number of chunked responses to send out before blocking on completions

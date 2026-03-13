@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     marker::PhantomData,
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -22,7 +22,7 @@ use std::{
     },
 };
 
-use alloy_consensus::Header;
+use alloy_consensus::{transaction::SignerRecoverable as _, Header, Transaction, TxEnvelope};
 use alloy_primitives::Address;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -36,9 +36,57 @@ use monad_validator::signature_collection::{SignatureCollection, SignatureCollec
 use serde::{Deserialize, Serialize};
 use tracing::trace;
 
-use crate::{StateBackend, StateBackendError, StateBackendTest};
+use crate::{MockExecution, StateBackend, StateBackendError};
 
 pub type InMemoryState<ST, SCT> = Arc<Mutex<InMemoryStateInner<ST, SCT>>>;
+
+const DEFAULT_RESERVE_BALANCE: u128 = 10_000_000_000_000_000_000; // 10 MON
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountState {
+    pub balance: Balance,
+    pub reserve_balance: Balance,
+    pub nonce: Nonce,
+    pub is_delegated: bool,
+}
+
+impl AccountState {
+    pub fn max_balance() -> Self {
+        Self {
+            balance: Balance::MAX,
+            reserve_balance: Balance::from(DEFAULT_RESERVE_BALANCE),
+            nonce: 0,
+            is_delegated: false,
+        }
+    }
+
+    pub fn max_balance_with_nonce(nonce: u64) -> Self {
+        Self {
+            balance: Balance::MAX,
+            reserve_balance: Balance::from(DEFAULT_RESERVE_BALANCE),
+            nonce,
+            is_delegated: false,
+        }
+    }
+
+    pub fn new_with_balance(balance: Balance) -> Self {
+        Self {
+            balance,
+            reserve_balance: Balance::from(DEFAULT_RESERVE_BALANCE),
+            nonce: 0,
+            is_delegated: false,
+        }
+    }
+
+    pub fn empty_account() -> Self {
+        Self {
+            balance: Balance::ZERO,
+            reserve_balance: Balance::from(DEFAULT_RESERVE_BALANCE),
+            nonce: 0,
+            is_delegated: false,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct InMemoryStateInner<ST, SCT>
@@ -48,11 +96,13 @@ where
 {
     commits: BTreeMap<SeqNum, InMemoryBlockState>,
     proposals: HashMap<BlockId, InMemoryBlockState>,
-    /// InMemoryState doesn't have access to an execution engine. It returns
-    /// `max_account_balance` as the balance every time so txn fee balance check
-    /// will pass if the sum doesn't exceed the max account balance
-    max_account_balance: Balance,
     execution_delay: SeqNum,
+    default_reserve_balance: Balance,
+
+    /// when true, ledger_propose checks execution engine reserve balance
+    /// invariants and panics on violations. disabled by default since most
+    /// consensus tests don't need it.
+    pub validate_reserve_balance: bool,
 
     /// can be used to mess with eth-header execution results
     pub extra_data: u64,
@@ -68,17 +118,25 @@ pub struct InMemoryBlockState {
     seq_num: SeqNum,
     round: Round,
     parent_id: BlockId,
-    nonces: BTreeMap<Address, Nonce>,
+    /// the txns to execute for this seq_num
+    txns: Vec<TxEnvelope>,
+    /// account states after executing this block seq_num
+    accounts: BTreeMap<Address, AccountState>,
+    /// all transaction senders and authority addresses in this block
+    /// used for reserve balance validation
+    senders_and_authorities: HashSet<Address>,
 }
 
 impl InMemoryBlockState {
-    pub fn genesis(nonces: BTreeMap<Address, Nonce>) -> Self {
+    pub fn genesis(accounts: BTreeMap<Address, AccountState>) -> Self {
         Self {
             block_id: GENESIS_BLOCK_ID,
             seq_num: GENESIS_SEQ_NUM,
             round: GENESIS_ROUND,
             parent_id: GENESIS_BLOCK_ID,
-            nonces,
+            txns: Vec::new(),
+            accounts,
+            senders_and_authorities: HashSet::new(),
         }
     }
 }
@@ -88,19 +146,17 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    pub fn genesis(
-        max_account_balance: Balance,
-        execution_delay: SeqNum,
-    ) -> InMemoryState<ST, SCT> {
+    pub fn genesis(execution_delay: SeqNum) -> InMemoryState<ST, SCT> {
         Arc::new(Mutex::new(Self {
             commits: std::iter::once((
                 GENESIS_SEQ_NUM,
-                InMemoryBlockState::genesis(Default::default()),
+                InMemoryBlockState::genesis(BTreeMap::new()),
             ))
             .collect(),
             proposals: Default::default(),
-            max_account_balance,
             execution_delay,
+            default_reserve_balance: Balance::from(DEFAULT_RESERVE_BALANCE),
+            validate_reserve_balance: false,
 
             extra_data: 0,
             total_mock_lookups: Arc::default(),
@@ -109,16 +165,13 @@ where
         }))
     }
 
-    pub fn new(
-        max_account_balance: Balance,
-        execution_delay: SeqNum,
-        last_commit: InMemoryBlockState,
-    ) -> InMemoryState<ST, SCT> {
+    pub fn new(execution_delay: SeqNum, last_commit: InMemoryBlockState) -> InMemoryState<ST, SCT> {
         Arc::new(Mutex::new(Self {
             commits: std::iter::once((last_commit.seq_num, last_commit)).collect(),
             proposals: Default::default(),
-            max_account_balance,
             execution_delay,
+            default_reserve_balance: Balance::from(DEFAULT_RESERVE_BALANCE),
+            validate_reserve_balance: false,
 
             extra_data: 0,
             total_mock_lookups: Arc::default(),
@@ -137,21 +190,18 @@ where
     }
 }
 
-impl<ST, SCT> StateBackendTest<ST, SCT> for InMemoryStateInner<ST, SCT>
+impl<ST, SCT> MockExecution<ST, SCT> for InMemoryStateInner<ST, SCT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    // new_account_nonces is the changeset of nonces from a given block
-    // if account A's last tx nonce in a block is N, then new_account_nonces should include A=N+1
-    // this is because N+1 is the next valid nonce for A
     fn ledger_propose(
         &mut self,
         block_id: BlockId,
         seq_num: SeqNum,
         round: Round,
         parent_id: BlockId,
-        new_account_nonces: BTreeMap<Address, Nonce>,
+        txns: Vec<TxEnvelope>,
     ) {
         if self
             .commits
@@ -172,20 +222,172 @@ where
         }
 
         trace!(?block_id, ?seq_num, ?round, "ledger_propose");
-        let mut last_state_nonces = if let Some(parent_state) = self.proposals.get(&parent_id) {
-            parent_state.nonces.clone()
-        } else {
-            let last_committed_entry = self
-                .commits
-                .last_entry()
-                .expect("last_commit doesn't exist");
-            let last_committed_state = last_committed_entry.get();
-            assert_eq!(last_committed_state.block_id, parent_id);
-            last_committed_state.nonces.clone()
-        };
 
-        for (address, account_nonce) in new_account_nonces {
-            last_state_nonces.insert(address, account_nonce);
+        // get parent block state. Execute on top of that block. Generate the new state
+        let parent_state = self
+            .proposals
+            .get(&parent_id)
+            .or_else(|| self.commits.get(&(seq_num - SeqNum(1))))
+            .unwrap_or_else(|| {
+                panic!(
+                    "parent block not found for proposed block, proposed_seq_num={:?}, round={:?}",
+                    seq_num, round
+                )
+            });
+
+        let mut accounts = parent_state.accounts.clone();
+
+        trace!(
+            "block N={:?}, parent account state: {:?}",
+            seq_num,
+            accounts
+        );
+
+        // collect senders and authorities from recent blocks within execution delay
+        let mut recent_senders_and_authorities: HashSet<Address> = HashSet::new();
+        if self.validate_reserve_balance {
+            // walk back up to execution_delay - 1 ancestor blocks
+            let mut lookup_id = parent_id;
+            for _ in 0..self.execution_delay.0.saturating_sub(1) {
+                let block = self.proposals.get(&lookup_id).or_else(|| {
+                    // find committed block by scanning commits for matching block_id
+                    self.commits.values().find(|b| b.block_id == lookup_id)
+                });
+                let Some(block) = block else { break };
+                if block.seq_num == GENESIS_SEQ_NUM {
+                    break;
+                }
+                recent_senders_and_authorities.extend(&block.senders_and_authorities);
+                lookup_id = block.parent_id;
+            }
+        }
+
+        // track senders and authorities for the current block
+        let mut block_senders_and_authorities: HashSet<Address> = HashSet::new();
+
+        for tx in txns.iter() {
+            let addr = tx.recover_signer().expect("invalid eth tx in block");
+
+            // recover 7702 authorities of current block
+            let txn_authorities: Vec<Address> = if self.validate_reserve_balance && tx.is_eip7702()
+            {
+                tx.authorization_list()
+                    .expect("valid 7702 must have auth list")
+                    .iter()
+                    .filter_map(|tuple| tuple.recover_authority().ok())
+                    .collect()
+            } else {
+                Vec::new()
+            };
+
+            let account_entry = accounts.entry(addr).or_insert(AccountState {
+                balance: Balance::default(),
+                reserve_balance: self.default_reserve_balance,
+                nonce: 0,
+                is_delegated: false,
+            });
+
+            // validate the nonce
+            if account_entry.nonce != tx.nonce() {
+                panic!(
+                    "tfm state backend executed invalid nonce: account={}, expected={}, got={}",
+                    addr,
+                    account_entry.nonce,
+                    tx.nonce()
+                );
+            }
+            account_entry.nonce += 1;
+
+            // execution engine reserve balance invariant checks
+            if self.validate_reserve_balance {
+                // compute gas cost
+                let gas_cost = if tx.is_legacy() || tx.is_eip2930() {
+                    Balance::from(tx.gas_limit())
+                        .checked_mul(Balance::from(tx.max_fee_per_gas()))
+                        .expect("no overflow")
+                } else {
+                    let gas_limit = Balance::from(tx.gas_limit());
+                    let max_fee = Balance::from(tx.max_fee_per_gas());
+                    let priority_fee = Balance::from(tx.max_priority_fee_per_gas().unwrap_or(0));
+                    let base_fee = Balance::from(monad_tfm::base_fee::MIN_BASE_FEE);
+                    let gas_bid = max_fee.min(base_fee.saturating_add(priority_fee));
+                    gas_limit.checked_mul(gas_bid).expect("no overflow")
+                };
+                let total_cost = gas_cost.saturating_add(tx.value());
+
+                // pre-execution invariant
+                // balance >= gas_fee is required for all txns. If this fails,
+                // the txn is invalid and should not be in the block at all
+                assert!(
+                    account_entry.balance >= gas_cost,
+                    "execution pre-check violation: balance < gas_fee. \
+                     account={}, balance={}, gas_cost={}, nonce={}",
+                    addr,
+                    account_entry.balance,
+                    gas_cost,
+                    tx.nonce()
+                );
+
+                // can_sender_dip_into_reserve:
+                // sender can dip ONLY if all of:
+                //   - not delegated
+                //   - not a sender of an earlier txn in this block
+                //   - not an authority in any txn up to and including this one
+                //   - not in execution delay window's senders/authorities
+                let can_dip = !account_entry.is_delegated
+                    && !block_senders_and_authorities.contains(&addr)
+                    && !txn_authorities.contains(&addr)
+                    && !recent_senders_and_authorities.contains(&addr);
+
+                // post-execution reserve balance check
+                // in execution, if the sender dips into reserve without
+                // permission, the txn is reverted (only gas fees charged)
+                let reverted = if can_dip {
+                    false
+                } else {
+                    let reserve = account_entry.balance.min(self.default_reserve_balance);
+                    let violation_threshold = reserve.saturating_sub(gas_cost);
+                    let balance_after = account_entry.balance.saturating_sub(total_cost);
+                    balance_after < violation_threshold
+                };
+
+                if reverted {
+                    // only gas fees charged
+                    account_entry.balance = account_entry.balance.saturating_sub(gas_cost);
+                } else {
+                    // gas + value deducted
+                    account_entry.balance = account_entry.balance.saturating_sub(total_cost);
+                }
+            }
+
+            // update nonces and delegation status for EIP7702 txns
+            if tx.is_eip7702() {
+                let auth_list = tx
+                    .authorization_list()
+                    .expect("valid 7702 must have auth list");
+                for tuple in auth_list {
+                    if let Ok(auth_addr) = tuple.recover_authority() {
+                        let auth_account_entry =
+                            accounts.entry(auth_addr).or_insert(AccountState {
+                                balance: Balance::default(),
+                                reserve_balance: self.default_reserve_balance,
+                                nonce: 0,
+                                is_delegated: false,
+                            });
+                        if auth_account_entry.nonce != tuple.nonce() {
+                            // invalid tuples are skipped
+                            continue;
+                        }
+                        auth_account_entry.nonce += 1;
+                        auth_account_entry.is_delegated = true;
+                    };
+                }
+            }
+
+            block_senders_and_authorities.insert(addr);
+            for &auth_addr in &txn_authorities {
+                block_senders_and_authorities.insert(auth_addr);
+            }
         }
 
         self.proposals.insert(
@@ -195,7 +397,9 @@ where
                 seq_num,
                 round,
                 parent_id,
-                nonces: last_state_nonces,
+                txns,
+                accounts,
+                senders_and_authorities: block_senders_and_authorities,
             },
         );
     }
@@ -289,12 +493,12 @@ where
         Ok(addresses
             .map(|address| {
                 self.total_mock_lookups.fetch_add(1, Ordering::SeqCst);
-                let nonce = state.nonces.get(address)?;
+                let account = state.accounts.get(address)?;
                 Some(EthAccount {
-                    nonce: *nonce,
-                    balance: self.max_account_balance,
+                    nonce: account.nonce,
+                    balance: account.balance,
                     code_hash: None,
-                    is_delegated: false,
+                    is_delegated: account.is_delegated,
                 })
             })
             .collect())

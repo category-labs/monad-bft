@@ -29,7 +29,7 @@ use monad_crypto::{
 };
 use monad_state_backend::{InMemoryState, StateBackend, StateBackendError};
 use monad_types::{
-    Balance, BlockId, Epoch, ExecutionProtocol, FinalizedHeader, NodeId, Round, SeqNum,
+    Balance, BlockId, Epoch, ExecutionProtocol, FinalizedHeader, LimitedVec, NodeId, Round, SeqNum,
     GENESIS_SEQ_NUM,
 };
 use monad_validator::signature_collection::SignatureCollection;
@@ -43,6 +43,7 @@ use crate::{
 };
 
 pub const GENESIS_TIMESTAMP: u128 = 0;
+const MAX_DELAYED_RESULTS: usize = 4;
 
 /// Represent a range of blocks the last of which is `last_block_id` and includes `num_blocks`.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize)]
@@ -156,7 +157,8 @@ where
             seq_num: Decodable::decode(buf)?,
             timestamp_ns: Decodable::decode(buf)?,
             round_signature: Decodable::decode(buf)?,
-            delayed_execution_results: Decodable::decode(buf)?,
+            delayed_execution_results:
+                LimitedVec::<EPT::FinalizedHeader, MAX_DELAYED_RESULTS>::decode(buf)?.into_inner(),
             execution_inputs: Decodable::decode(buf)?,
             block_body_id: Decodable::decode(buf)?,
             base_fee: Decodable::decode(buf)?,

@@ -24,7 +24,7 @@ use monad_raptor::ManagedDecoder;
 use monad_raptorcast::{
     packet::build_messages,
     udp::{parse_message, ChunkSignatureVerifier, GroupId, MAX_REDUNDANCY, SIGNATURE_CACHE_SIZE},
-    util::{BuildTarget, EpochValidators, Redundancy},
+    util::{BuildTarget, Redundancy},
 };
 use monad_secp::{KeyPair, SecpSignature};
 use monad_types::{Epoch, NodeId, Stake};
@@ -51,9 +51,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             .iter()
             .map(|key| (NodeId::new(key.pubkey()), Stake::ONE))
             .collect();
-        let validators = EpochValidators {
-            validators: ValidatorSet::new_unchecked(valset),
-        };
+        let validators = ValidatorSet::new_unchecked(valset);
 
         let known_addresses = keys
             .iter()
@@ -66,7 +64,6 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             .collect();
 
         b.iter(|| {
-            let epoch_validators = validators.view_without(vec![&NodeId::new(keys[0].pubkey())]);
             let _ = build_messages::<SecpSignature>(
                 &keys[0],
                 DEFAULT_SEGMENT_SIZE, // segment_size
@@ -74,7 +71,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 Redundancy::from_u8(2),
                 GroupId::Primary(Epoch(0)), // epoch_no
                 0,                          // unix_ts_ms
-                BuildTarget::Raptorcast(epoch_validators),
+                BuildTarget::Raptorcast(&validators),
                 &known_addresses,
             );
         });
@@ -94,11 +91,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             .iter()
             .map(|key| (NodeId::new(key.pubkey()), Stake::ONE))
             .collect();
-        let validators = EpochValidators {
-            validators: ValidatorSet::new_unchecked(valset),
-        };
-
-        let epoch_validators = validators.view_without(vec![&NodeId::new(keys[0].pubkey())]);
+        let validators = ValidatorSet::new_unchecked(valset);
 
         let known_addresses = keys
             .iter()
@@ -117,7 +110,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             Redundancy::from_u8(2),
             GroupId::Primary(Epoch(0)), // epoch_no
             0,                          // unix_ts_ms
-            BuildTarget::Raptorcast(epoch_validators),
+            BuildTarget::Raptorcast(&validators),
             &known_addresses,
         )
         .into_iter()

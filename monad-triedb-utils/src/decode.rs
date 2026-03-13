@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use alloy_primitives::{B256, U256};
+use alloy_primitives::U256;
 use alloy_rlp::Decodable;
 use monad_eth_types::EthAccount;
 use tracing::warn;
@@ -63,7 +63,7 @@ pub fn rlp_decode_account(account_rlp: Vec<u8>) -> Option<EthAccount> {
     Some(EthAccount {
         nonce,
         balance,
-        code_hash: code_hash.map(B256::from),
+        code_hash,
         is_delegated,
     })
 }

@@ -2011,14 +2011,14 @@ mod test {
     use monad_eth_block_validator::EthBlockValidator;
     use monad_eth_types::{EthBlockBody, EthExecutionProtocol, EthHeader, ProposedEthHeader};
     use monad_multi_sig::MultiSig;
-    use monad_state_backend::{InMemoryState, InMemoryStateInner, StateBackend, StateBackendTest};
+    use monad_state_backend::{InMemoryState, InMemoryStateInner, MockExecution, StateBackend};
     use monad_testutil::{
         proposal::ProposalGen,
         signing::{create_certificate_keys, create_keys, get_key},
         validators::create_keys_w_validators,
     };
     use monad_types::{
-        Balance, BlockId, Epoch, ExecutionProtocol, NodeId, Round, RouterTarget, SeqNum, Stake,
+        BlockId, Epoch, ExecutionProtocol, NodeId, Round, RouterTarget, SeqNum, Stake,
         GENESIS_SEQ_NUM,
     };
     use monad_validator::{
@@ -2069,7 +2069,7 @@ mod test {
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT, MockChainConfig, MockChainRevision>,
-        SBT: StateBackend<ST, SCT> + StateBackendTest<ST, SCT>,
+        SBT: StateBackend<ST, SCT> + MockExecution<ST, SCT>,
         BVT: BlockValidator<
             ST,
             SCT,
@@ -2116,7 +2116,7 @@ mod test {
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT, MockChainConfig, MockChainRevision>,
-        SBT: StateBackend<ST, SCT> + StateBackendTest<ST, SCT>,
+        SBT: StateBackend<ST, SCT> + MockExecution<ST, SCT>,
         BVT: BlockValidator<
             ST,
             SCT,
@@ -2250,7 +2250,7 @@ mod test {
                 block.seq_num,
                 block.block_round,
                 block.get_parent_id(),
-                BTreeMap::default(),
+                Vec::default(),
             );
         }
     }
@@ -2397,7 +2397,7 @@ mod test {
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT, MockChainConfig, MockChainRevision>,
-        SBT: StateBackend<ST, SCT> + StateBackendTest<ST, SCT>,
+        SBT: StateBackend<ST, SCT> + MockExecution<ST, SCT>,
         BVT: BlockValidator<ST, SCT, EthExecutionProtocol, BPT, SBT, MockChainConfig, MockChainRevision>,
         VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Clone,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Clone,
@@ -2524,9 +2524,9 @@ mod test {
 
     fn generate_block_body(eth_tx_list: Vec<TxEnvelope>) -> EthBlockBody {
         EthBlockBody {
-            transactions: eth_tx_list,
-            ommers: Vec::new(),
-            withdrawals: Vec::new(),
+            transactions: eth_tx_list.into(),
+            ommers: Default::default(),
+            withdrawals: Default::default(),
         }
     }
 
@@ -2844,7 +2844,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0),
-            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
+            || InMemoryStateInner::genesis(execution_delay),
             EthBlockValidator::default,
             execution_delay,
         );
@@ -2921,7 +2921,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0),
-            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
+            || InMemoryStateInner::genesis(execution_delay),
             EthBlockValidator::default,
             execution_delay,
         );
@@ -2964,7 +2964,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0),
-            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
+            || InMemoryStateInner::genesis(execution_delay),
             EthBlockValidator::default,
             execution_delay,
         );
@@ -3024,7 +3024,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0),
-            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
+            || InMemoryStateInner::genesis(execution_delay),
             EthBlockValidator::default,
             execution_delay,
         );
@@ -3056,7 +3056,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0),
-            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
+            || InMemoryStateInner::genesis(execution_delay),
             EthBlockValidator::default,
             execution_delay,
         );
@@ -3118,7 +3118,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0),
-            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
+            || InMemoryStateInner::genesis(execution_delay),
             EthBlockValidator::default,
             execution_delay,
         );
@@ -3208,7 +3208,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0),
-            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
+            || InMemoryStateInner::genesis(execution_delay),
             EthBlockValidator::default,
             execution_delay,
         );
@@ -3303,7 +3303,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0),
-            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
+            || InMemoryStateInner::genesis(execution_delay),
             EthBlockValidator::default,
             execution_delay,
         );
@@ -3398,7 +3398,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0),
-            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
+            || InMemoryStateInner::genesis(execution_delay),
             EthBlockValidator::default,
             execution_delay,
         );
@@ -3473,7 +3473,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0),
-            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
+            || InMemoryStateInner::genesis(execution_delay),
             EthBlockValidator::default,
             execution_delay,
         );
@@ -3678,7 +3678,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0),
-            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
+            || InMemoryStateInner::genesis(execution_delay),
             EthBlockValidator::default,
             execution_delay,
         );
@@ -3727,7 +3727,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0),
-            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
+            || InMemoryStateInner::genesis(execution_delay),
             EthBlockValidator::default,
             execution_delay,
         );
@@ -3813,7 +3813,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0),
-            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
+            || InMemoryStateInner::genesis(execution_delay),
             EthBlockValidator::default,
             execution_delay,
         );
@@ -3917,7 +3917,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0),
-            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
+            || InMemoryStateInner::genesis(execution_delay),
             EthBlockValidator::default,
             execution_delay,
         );
@@ -3988,7 +3988,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0),
-            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
+            || InMemoryStateInner::genesis(execution_delay),
             EthBlockValidator::default,
             execution_delay,
         );
@@ -4034,7 +4034,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0),
-            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
+            || InMemoryStateInner::genesis(execution_delay),
             EthBlockValidator::default,
             execution_delay,
         );
@@ -4153,7 +4153,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0),
-            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
+            || InMemoryStateInner::genesis(execution_delay),
             EthBlockValidator::default,
             execution_delay,
         );
@@ -4233,7 +4233,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0),
-            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
+            || InMemoryStateInner::genesis(execution_delay),
             EthBlockValidator::default,
             execution_delay,
         );
@@ -4300,7 +4300,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0),
-            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
+            || InMemoryStateInner::genesis(execution_delay),
             EthBlockValidator::default,
             execution_delay,
         );
@@ -4405,7 +4405,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0),
-            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
+            || InMemoryStateInner::genesis(execution_delay),
             EthBlockValidator::default,
             execution_delay,
         );
@@ -4501,7 +4501,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0),
-            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
+            || InMemoryStateInner::genesis(execution_delay),
             EthBlockValidator::default,
             execution_delay,
         );
@@ -4613,7 +4613,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0),
-            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
+            || InMemoryStateInner::genesis(execution_delay),
             EthBlockValidator::default,
             execution_delay,
         );
@@ -4768,7 +4768,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0),
-            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
+            || InMemoryStateInner::genesis(execution_delay),
             EthBlockValidator::default,
             execution_delay,
         );
@@ -4887,7 +4887,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0),
-            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
+            || InMemoryStateInner::genesis(execution_delay),
             EthBlockValidator::default,
             execution_delay,
         );
@@ -4932,7 +4932,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0),
-            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
+            || InMemoryStateInner::genesis(execution_delay),
             EthBlockValidator::default,
             execution_delay,
         );
@@ -4993,7 +4993,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0),
-            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
+            || InMemoryStateInner::genesis(execution_delay),
             EthBlockValidator::default,
             execution_delay,
         );
@@ -5100,7 +5100,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0),
-            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
+            || InMemoryStateInner::genesis(execution_delay),
             EthBlockValidator::default,
             execution_delay,
         );
@@ -5225,7 +5225,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0),
-            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
+            || InMemoryStateInner::genesis(execution_delay),
             EthBlockValidator::default,
             execution_delay,
         );
@@ -5384,7 +5384,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0),
-            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
+            || InMemoryStateInner::genesis(execution_delay),
             EthBlockValidator::default,
             execution_delay,
         );
@@ -5500,7 +5500,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0),
-            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
+            || InMemoryStateInner::genesis(execution_delay),
             EthBlockValidator::default,
             execution_delay,
         );
@@ -5601,7 +5601,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0),
-            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
+            || InMemoryStateInner::genesis(execution_delay),
             EthBlockValidator::default,
             execution_delay,
         );
@@ -5699,7 +5699,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0),
-            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
+            || InMemoryStateInner::genesis(execution_delay),
             EthBlockValidator::default,
             execution_delay,
         );
@@ -5834,7 +5834,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0),
-            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
+            || InMemoryStateInner::genesis(execution_delay),
             EthBlockValidator::default,
             execution_delay,
         );

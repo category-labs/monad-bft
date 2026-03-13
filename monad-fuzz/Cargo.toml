@@ -1,0 +1,31 @@
+[package]
+name = "monad-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[dependencies]
+afl = "*"
+
+arbitrary = { workspace = true, features = ["derive"] }
+bytes = { workspace = true }
+
+monad-bls = { workspace = true }
+monad-crypto = { workspace = true }
+monad-eth-types = { workspace = true }
+monad-raptorcast = { workspace = true }
+monad-raptor = { workspace = true }
+monad-secp = { workspace = true }
+monad-state = { workspace = true }
+
+[[bin]]
+name = "fuzz_parse_message"
+path = "fuzz_targets/fuzz_parse_message.rs"
+
+[[bin]]
+name = "fuzz_deserialize"
+path = "fuzz_targets/fuzz_deserialize.rs"
+
+[[bin]]
+name = "fuzz_raptor_decoder"
+path = "fuzz_targets/fuzz_raptor_decoder.rs"

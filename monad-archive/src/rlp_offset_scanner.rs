@@ -218,7 +218,7 @@ mod tests {
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use base64::Engine;
-    use monad_triedb_utils::triedb_env::TxEnvelopeWithSender;
+    use monad_eth_types::TxEnvelopeWithSender;
 
     use super::*;
     use crate::prelude::Block;

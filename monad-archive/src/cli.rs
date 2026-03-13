@@ -30,6 +30,7 @@ use serde_json::{Map as JsonMap, Value as JsonValue};
 use crate::{archive_reader::redact_mongo_url, kvstore::mongo::MongoDbStorage, prelude::*};
 
 const DEFAULT_BUCKET_TIMEOUT: u64 = 10;
+const DEFAULT_OPERATION_TIMEOUT: u64 = 40;
 const DEFAULT_CONCURRENCY: usize = 50;
 const DEFAULT_TRIEDB_NODE_LRU_MAX_MEM: u64 = 50 << 20;
 const DEFAULT_MAX_BUFFERED_READ_REQUESTS: usize = 5000;
@@ -73,6 +74,10 @@ fn default_triedb_max_voted_block_cache_len() -> usize {
 
 pub fn get_default_bucket_timeout() -> u64 {
     DEFAULT_BUCKET_TIMEOUT
+}
+
+fn get_default_operation_timeout() -> u64 {
+    DEFAULT_OPERATION_TIMEOUT
 }
 
 pub fn set_source_and_sink_metrics(
@@ -156,12 +161,12 @@ pub async fn get_aws_config(region: Option<String>, timeout_secs: u64) -> SdkCon
         .region(region_provider)
         .timeout_config(
             TimeoutConfig::builder()
-                .operation_timeout(Duration::from_secs(timeout_secs))
+                .operation_timeout(Duration::from_secs(4 * timeout_secs))
                 .operation_attempt_timeout(Duration::from_secs(timeout_secs))
                 .read_timeout(Duration::from_secs(timeout_secs))
                 .build(),
         )
-        .retry_config(RetryConfig::adaptive())
+        .retry_config(RetryConfig::standard().with_max_attempts(3))
         .load()
         .await
 }
@@ -500,7 +505,7 @@ pub struct AwsCliArgs {
     #[serde(default = "default_aws_concurrency")]
     pub concurrency: usize,
     // If these are not provided, uses timeout_secs for all
-    #[serde(default = "get_default_bucket_timeout")]
+    #[serde(default = "get_default_operation_timeout")]
     pub operation_timeout_secs: u64,
     #[serde(default = "get_default_bucket_timeout")]
     pub operation_attempt_timeout_secs: u64,
@@ -563,7 +568,7 @@ impl AwsCliArgs {
                 // TODO: remove me, concurrency should be handled elsewhere
                 .unwrap_or(DEFAULT_CONCURRENCY),
             // If these are not provided, uses timeout_secs for all
-            operation_timeout_secs: get_u64(&kv, "operation-timeout-secs", timeout_secs),
+            operation_timeout_secs: get_u64(&kv, "operation-timeout-secs", 4 * timeout_secs),
             operation_attempt_timeout_secs: get_u64(
                 &kv,
                 "operation-attempt-timeout-secs",
@@ -592,7 +597,7 @@ impl AwsCliArgs {
                     .read_timeout(Duration::from_secs(self.read_timeout_secs))
                     .build(),
             )
-            .retry_config(RetryConfig::adaptive());
+            .retry_config(RetryConfig::standard().with_max_attempts(3));
 
         if let Some(endpoint) = &self.endpoint {
             config = config.endpoint_url(endpoint);

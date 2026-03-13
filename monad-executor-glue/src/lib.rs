@@ -49,14 +49,18 @@ use monad_crypto::certificate_signature::{
 };
 use monad_state_backend::StateBackend;
 use monad_types::{
-    deserialize_pubkey, serialize_pubkey, Epoch, ExecutionProtocol, NodeId, Round, RouterTarget,
-    SeqNum, Stake, UdpPriority,
+    deserialize_pubkey, serialize_pubkey, Epoch, ExecutionProtocol, LimitedVec, NodeId, Round,
+    RouterTarget, SeqNum, Stake, UdpPriority,
 };
 use monad_validator::signature_collection::SignatureCollection;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
 const STATESYNC_NETWORK_MESSAGE_NAME: &str = "StateSyncNetworkMessage";
+
+/// maximum number of upserts we can send in a single response
+/// at 75 bytes per upsert, approx 1.5MB
+pub const MAX_UPSERTS_PER_RESPONSE: usize = 20_000;
 
 pub enum RouterCommand<ST: CertificateSignatureRecoverable, OM> {
     // Publish should not be replayed
@@ -1387,6 +1391,9 @@ impl Decodable for StateSyncRequest {
             let until = u64::decode(&mut payload)?;
             let old_target = u64::decode(&mut payload)?;
 
+            if !payload.is_empty() {
+                return Err(alloy_rlp::Error::UnexpectedLength);
+            }
             Ok(Self {
                 version,
                 prefix,
@@ -1501,17 +1508,23 @@ impl Decodable for StateSyncUpsertType {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
         let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
 
-        match u8::decode(&mut payload)? {
-            1 => Ok(Self::Code),
-            2 => Ok(Self::Account),
-            3 => Ok(Self::Storage),
-            4 => Ok(Self::AccountDelete),
-            5 => Ok(Self::StorageDelete),
-            6 => Ok(Self::Header),
-            _ => Err(alloy_rlp::Error::Custom(
-                "failed to decode unknown StateSyncUpsertType",
-            )),
+        let result = match u8::decode(&mut payload)? {
+            1 => Self::Code,
+            2 => Self::Account,
+            3 => Self::Storage,
+            4 => Self::AccountDelete,
+            5 => Self::StorageDelete,
+            6 => Self::Header,
+            _ => {
+                return Err(alloy_rlp::Error::Custom(
+                    "failed to decode unknown StateSyncUpsertType",
+                ))
+            }
+        };
+        if !payload.is_empty() {
+            return Err(alloy_rlp::Error::UnexpectedLength);
         }
+        Ok(result)
     }
 }
 
@@ -1599,13 +1612,19 @@ impl Decodable for StateSyncResponse {
         let request = StateSyncRequest::decode(&mut payload)?;
         // check if server version is past V1: upsert fork
         let response: Vec<StateSyncUpsertV1> = if version >= STATESYNC_VERSION_V1 {
-            Vec::<StateSyncUpsertV1>::decode(&mut payload)?
+            LimitedVec::<StateSyncUpsertV1, MAX_UPSERTS_PER_RESPONSE>::decode(&mut payload)?
+                .into_inner()
         } else {
-            let v0_response = Vec::<StateSyncUpsertV0>::decode(&mut payload)?;
+            let v0_response =
+                LimitedVec::<StateSyncUpsertV0, MAX_UPSERTS_PER_RESPONSE>::decode(&mut payload)?
+                    .into_inner();
             v0_response.iter().map(StateSyncUpsertV0::as_v1).collect()
         };
         let response_n = u64::decode(&mut payload)?;
 
+        if !payload.is_empty() {
+            return Err(alloy_rlp::Error::UnexpectedLength);
+        }
         Ok(Self {
             version,
             nonce,
@@ -1706,16 +1725,22 @@ impl Decodable for StateSyncNetworkMessage {
             ));
         }
 
-        match u8::decode(&mut payload)? {
-            1 => Ok(Self::Request(StateSyncRequest::decode(&mut payload)?)),
-            2 => Ok(Self::Response(StateSyncResponse::decode(&mut payload)?)),
-            3 => Ok(Self::BadVersion(StateSyncBadVersion::decode(&mut payload)?)),
-            4 => Ok(Self::Completion(SessionId::decode(&mut payload)?)),
-            5 => Ok(Self::NotWhitelisted),
-            _ => Err(alloy_rlp::Error::Custom(
-                "failed to decode unknown StateSyncNetworkMessage",
-            )),
+        let result = match u8::decode(&mut payload)? {
+            1 => Self::Request(StateSyncRequest::decode(&mut payload)?),
+            2 => Self::Response(StateSyncResponse::decode(&mut payload)?),
+            3 => Self::BadVersion(StateSyncBadVersion::decode(&mut payload)?),
+            4 => Self::Completion(SessionId::decode(&mut payload)?),
+            5 => Self::NotWhitelisted,
+            _ => {
+                return Err(alloy_rlp::Error::Custom(
+                    "failed to decode unknown StateSyncNetworkMessage",
+                ))
+            }
+        };
+        if !payload.is_empty() {
+            return Err(alloy_rlp::Error::UnexpectedLength);
         }
+        Ok(result)
     }
 }
 

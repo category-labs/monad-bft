@@ -19,14 +19,17 @@ use alloy_rlp::{RlpDecodable, RlpEncodable};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
-use monad_types::{Epoch, ExecutionProtocol, NodeId, Stake};
+use monad_types::{Epoch, ExecutionProtocol, LimitedVec, NodeId, Stake};
 use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionPubKeyType};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::checkpoint::Checkpoint;
 
+/// Maximum validator set size with some additional buffer.
+/// Needs to be updated alongside constant in <execution>/monad/staking/util/constants.hpp
+pub const MAX_VALIDATORS: usize = 300;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, RlpEncodable, RlpDecodable)]
-#[rlp(trailing)]
 pub struct ValidatorSetDataWithEpoch<SCT: SignatureCollection> {
     /// Validator set are active for this epoch
     pub epoch: Epoch,
@@ -37,9 +40,11 @@ pub struct ValidatorSetDataWithEpoch<SCT: SignatureCollection> {
 
 /// ValidatorSetData is used by updaters to send validator set updates to
 /// MonadState
+#[rustfmt::skip]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, RlpEncodable, RlpDecodable)]
 pub struct ValidatorSetData<SCT: SignatureCollection>(
-    #[serde(bound(serialize = "", deserialize = ""))] pub Vec<ValidatorData<SCT>>,
+    #[serde(bound(serialize = "", deserialize = ""))]
+    pub LimitedVec<ValidatorData<SCT>, MAX_VALIDATORS>,
 );
 
 #[derive(

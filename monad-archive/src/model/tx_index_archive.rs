@@ -17,7 +17,7 @@ use std::ops::Deref;
 
 use alloy_primitives::{hex::ToHexExt, TxHash};
 use eyre::bail;
-use monad_triedb_utils::triedb_env::{ReceiptWithLogIndex, TxEnvelopeWithSender};
+use monad_eth_types::{ReceiptWithLogIndex, TxEnvelopeWithSender};
 
 use super::{
     block_data_archive::BlockDataArchive,
@@ -224,8 +224,12 @@ impl TxIndexArchiver {
             || traces.len() != receipts.len()
             || (offsets.is_some() && receipts.len() != offsets.as_ref().unwrap().len())
         {
-            bail!("Block must have same number of txs as traces and receipts. num_txs: {}, num_traces: {}, num_receipts: {}", 
-            block.body.transactions.len(), traces.len(), receipts.len());
+            bail!(
+                "Block must have same number of txs as traces and receipts. num_txs: {}, num_traces: {}, num_receipts: {}",
+                block.body.transactions.len(),
+                traces.len(),
+                receipts.len()
+            );
         }
 
         let mut prev_cumulative_gas_used: u64 = 0;

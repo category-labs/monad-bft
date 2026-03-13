@@ -76,6 +76,11 @@ impl TransportState {
 
         self.send_nonce += 1;
 
+        if !plaintext.is_empty() {
+            self.common
+                .reset_gc_deadline(duration_since_start, config.gc_idle_timeout);
+        }
+
         let keepalive_timer = self.common.reset_keepalive(
             duration_since_start,
             super::common::add_jitter(rng, config.keepalive_interval, config.keepalive_jitter),
@@ -118,6 +123,11 @@ impl TransportState {
 
         self.replay_filter.update(counter);
 
+        if !data_packet.data().is_empty() {
+            self.common
+                .reset_gc_deadline(duration_since_start, config.gc_idle_timeout);
+        }
+
         let session_timer = self
             .common
             .reset_session_timeout(duration_since_start, config.session_timeout);
@@ -147,9 +157,66 @@ impl TransportState {
         Option<RekeyEvent>,
         Option<TerminatedEvent>,
     ) {
+        // Termination takes precedence: on any termination we should avoid doing extra work
+        // (e.g. sending keepalives) in the same tick.
+        let max_session_duration_expired = self
+            .common
+            .max_session_duration_deadline
+            .is_some_and(|deadline| deadline <= duration_since_start);
+        if max_session_duration_expired {
+            self.common.clear_max_session_duration();
+
+            debug!(
+                remote_addr = ?self.common.remote_addr,
+                "max session duration expired"
+            );
+
+            let (terminated_event, _) = self.common.handle_session_timeout();
+            return (None, None, None, Some(terminated_event));
+        }
+
+        let session_timeout_expired = self
+            .common
+            .session_timeout_deadline
+            .is_some_and(|deadline| deadline <= duration_since_start);
+        if session_timeout_expired {
+            self.common.clear_session_timeout();
+
+            debug!(
+                remote_addr = ?self.common.remote_addr,
+                "session timeout expired"
+            );
+
+            let (terminated_event, rekey_event) = self.common.handle_session_timeout();
+            return (None, None, rekey_event, Some(terminated_event));
+        }
+
+        let gc_expired = self
+            .common
+            .gc_deadline
+            .is_some_and(|deadline| deadline <= duration_since_start);
+        if gc_expired {
+            self.common.clear_gc_deadline();
+
+            debug!(
+                remote_addr = ?self.common.remote_addr,
+                "gc timer expired (no useful data)"
+            );
+
+            return (
+                None,
+                None,
+                None,
+                Some(TerminatedEvent {
+                    remote_public_key: self.common.remote_public_key,
+                    remote_addr: self.common.remote_addr,
+                }),
+            );
+        }
+
         let mut message = None;
         let mut rekey = None;
-        let mut terminated = None;
+        let terminated = None;
 
         let keepalive_expired = self
             .common
@@ -185,40 +252,6 @@ impl TransportState {
                 retry_attempts: self.common.retry_attempts,
                 stored_cookie: self.common.stored_cookie,
             });
-        }
-
-        let session_timeout_expired = self
-            .common
-            .session_timeout_deadline
-            .is_some_and(|deadline| deadline <= duration_since_start);
-        if session_timeout_expired {
-            self.common.clear_session_timeout();
-
-            debug!(
-                remote_addr = ?self.common.remote_addr,
-                "session timeout expired"
-            );
-
-            let (terminated_event, rekey_event) = self.common.handle_session_timeout();
-            terminated = Some(terminated_event);
-            rekey = rekey.or(rekey_event);
-        }
-
-        let max_session_duration_expired = self
-            .common
-            .max_session_duration_deadline
-            .is_some_and(|deadline| deadline <= duration_since_start);
-        if max_session_duration_expired {
-            self.common.clear_max_session_duration();
-
-            debug!(
-                remote_addr = ?self.common.remote_addr,
-                "max session duration expired"
-            );
-
-            let (terminated_event, _) = self.common.handle_session_timeout();
-            terminated = Some(terminated_event);
-            rekey = None;
         }
 
         let next_timer = self.common.get_next_deadline();

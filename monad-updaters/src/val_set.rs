@@ -237,7 +237,7 @@ where
             epoch: Epoch(1),
             genesis_val_data: genesis_validator_data,
             val_data_1: ValidatorSetData(val_data_1),
-            val_data_2: ValidatorSetData(val_data_2),
+            val_data_2: ValidatorSetData(val_data_2.into()),
             next_val_data: None,
             epoch_length,
 

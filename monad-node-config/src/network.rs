@@ -70,7 +70,7 @@ fn default_udp_message_max_age_ms() -> u64 {
 }
 
 fn default_tcp_connections_limit() -> usize {
-    1000
+    100
 }
 
 fn default_tcp_per_ip_connections_limit() -> usize {

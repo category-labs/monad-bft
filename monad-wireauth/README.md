@@ -26,12 +26,14 @@ the filter operates in three modes based on load:
 
 | condition | action |
 |-----------|--------|
-| sessions >= `high_watermark_sessions` or handshakes >= `handshake_rate_limit` | drop request |
+| cookie invalid and handshakes >= `handshake_cookie_unverified_rate_limit` | send cookie reply (if `handshake_cookie_verified_rate_limit` has remaining budget), otherwise drop request |
+| cookie valid and handshakes >= `handshake_cookie_verified_rate_limit` | drop request |
+| sessions >= `high_watermark_sessions` | drop request |
 | sessions >= `low_watermark_sessions` and cookie invalid | send cookie reply |
 | sessions >= `low_watermark_sessions` and cookie valid | apply per-ip rate limiting via lru cache |
 | sessions < `low_watermark_sessions` | no additional measures |
 
-defaults: `high_watermark_sessions`=100,000, `handshake_rate_limit`=2000/sec, `connect_rate_limit`=1000/sec, `low_watermark_sessions`=10,000, `ip_rate_limit_window`=10s, `max_sessions_per_ip`=10, `ip_history_capacity`=1,000,000
+defaults: `high_watermark_sessions`=100,000, `handshake_cookie_unverified_rate_limit`=1000/sec, `handshake_cookie_verified_rate_limit`=1000/sec, `connect_rate_limit`=1000/sec, `low_watermark_sessions`=10,000, `ip_rate_limit_window`=10s, `max_sessions_per_ip`=10, `ip_history_capacity`=1,000,000
 
 at 2000 handshakes/sec, approximately 400ms of cpu time per second is spent on handshake-related computation during such attack.
 
@@ -140,6 +142,13 @@ session_decrypt         time:   [166.11 ns 168.75 ns 171.20 ns]
 | `monad.wireauth.enqueued.cookie_reply` | cookie challenges added to outbound queue |
 | `monad.wireauth.enqueued.keepalive` | keepalive packets added to outbound queue |
 
+### initiator buffering
+
+| metric | description |
+|--------|-------------|
+| `monad.wireauth.initiator.buffered_messages` | messages buffered in initiator sessions during handshake |
+| `monad.wireauth.initiator.messages_sent_from_buffer` | buffered messages sent after session established |
+
 ## Configuration
 
 | parameter | type | default | description |
@@ -151,7 +160,8 @@ session_decrypt         time:   [166.11 ns 168.75 ns 171.20 ns]
 | `rekey_interval` | Duration | 6h | time before initiating new handshake to rotate keys |
 | `rekey_jitter` | Duration | 60s | randomization to avoid synchronized rekey storms |
 | `max_session_duration` | Duration | 7h | absolute session lifetime regardless of activity (forces rekey) |
-| `handshake_rate_limit` | u64 | 2000 | max handshake requests processed per second (dos protection) |
+| `handshake_cookie_unverified_rate_limit` | u64 | 1000 | max handshake initiations per second without a valid cookie |
+| `handshake_cookie_verified_rate_limit` | u64 | 1000 | max handshake initiations per second with a valid cookie |
 | `handshake_rate_reset_interval` | Duration | 1s | window for handshake rate limiting |
 | `connect_rate_limit` | u64 | 1000 | max outbound connect attempts per second (dos protection) |
 | `connect_rate_reset_interval` | Duration | 1s | window for outbound connect rate limiting |
@@ -160,6 +170,9 @@ session_decrypt         time:   [166.11 ns 168.75 ns 171.20 ns]
 | `high_watermark_sessions` | usize | 100000 | at this threshold, drop all incoming handshake requests |
 | `max_sessions_per_ip` | usize | 10 | limit concurrent sessions from single ip (anti-amplification) |
 | `ip_rate_limit_window` | Duration | 10s | time window for counting handshake requests per ip |
-| `max_requests_per_ip` | usize | 10 | max handshake requests from single ip within rate limit window |
 | `ip_history_capacity` | usize | 1000000 | lru cache size for tracking handshake request timestamps per ip |
 | `psk` | [u8; 32] | zeros | optional pre-shared key mixed into handshake for additional auth |
+| `max_initiated_sessions` | usize | 1000 | max concurrent initiated sessions (handshakes in progress) |
+| `max_buffered_bytes_per_session` | usize | 131072 | max bytes of buffered messages per initiated session (128KB) |
+| `gc_idle_timeout` | Duration | 120s | idle time without useful data before session is garbage collected (keepalives don't reset) |
+| `max_expired_timers_per_tick` | usize | 10000 | cap expired timers processed per `API::tick` |

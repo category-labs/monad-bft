@@ -14,6 +14,13 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use core::str;
+use std::{
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        RwLock,
+    },
+    time::SystemTime,
+};
 
 use aws_config::SdkConfig;
 use aws_sdk_s3::{
@@ -26,48 +33,161 @@ use bytes::Bytes;
 use eyre::{Context, Result};
 use tracing::trace;
 
-use super::{
-    kvstore_get_metrics, kvstore_put_metrics, KVStoreType, MetricsResultExt, PutResult, WritePolicy,
-};
+use super::{kvstore_get_metrics, kvstore_put_metrics, KVStoreType, PutResult, WritePolicy};
 use crate::{metrics::Metrics, prelude::*};
+
+const CLIENT_RECREATE_AFTER_SECS: u64 = 60;
 
 #[derive(Clone)]
 pub struct Bucket {
-    pub(crate) client: Client,
-    pub bucket: String,
+    inner: Arc<BucketInner>,
+}
+
+struct BucketInner {
+    client: RwLock<Client>,
+    bucket: String,
     metrics: Metrics,
+    sdk_config: Option<SdkConfig>,
+    last_success: AtomicU64,
+}
+
+fn epoch_secs_now() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 impl Bucket {
     pub fn new(bucket: String, sdk_config: &SdkConfig, metrics: Metrics) -> Self {
-        Bucket::from_client(bucket, Client::new(sdk_config), metrics)
-    }
-
-    pub fn from_client(bucket: String, client: Client, metrics: Metrics) -> Self {
         Bucket {
-            bucket,
-            client,
-            metrics,
+            inner: Arc::new(BucketInner {
+                client: RwLock::new(Client::new(sdk_config)),
+                bucket,
+                metrics,
+                sdk_config: Some(sdk_config.clone()),
+                last_success: AtomicU64::new(epoch_secs_now()),
+            }),
         }
     }
 
-    pub async fn create_bucket(&self) -> Result<()> {
-        match self
+    /// Build a `Bucket` from a pre-constructed `Client`.  Client recreation
+    /// on sustained failures is disabled since no `SdkConfig` is available.
+    pub fn from_client(bucket: String, client: Client, metrics: Metrics) -> Self {
+        Bucket {
+            inner: Arc::new(BucketInner {
+                client: RwLock::new(client),
+                bucket,
+                metrics,
+                sdk_config: None,
+                last_success: AtomicU64::new(epoch_secs_now()),
+            }),
+        }
+    }
+
+    /// Clone the current S3 client (cheap -- all internal Arcs).
+    /// Recovers from a poisoned lock rather than panicking.
+    fn client(&self) -> Client {
+        self.inner
             .client
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// Record the outcome of an S3 operation: update the recreation timer
+    /// and, on failure, potentially recreate the client.
+    fn on_result(&self, is_success: bool) {
+        if is_success {
+            self.inner
+                .last_success
+                .store(epoch_secs_now(), Ordering::Relaxed);
+        } else {
+            self.maybe_recreate_client();
+        }
+    }
+
+    /// Combined: record OTel get metrics + update client health state.
+    fn record_get_metrics(&self, duration: Duration, is_success: bool) {
+        kvstore_get_metrics(
+            duration,
+            is_success,
+            KVStoreType::AwsS3,
+            &self.inner.metrics,
+        );
+        self.on_result(is_success);
+    }
+
+    /// Combined: record OTel put metrics + update client health state.
+    fn record_put_metrics(&self, duration: Duration, is_success: bool) {
+        kvstore_put_metrics(
+            duration,
+            is_success,
+            KVStoreType::AwsS3,
+            &self.inner.metrics,
+        );
+        self.on_result(is_success);
+    }
+
+    /// If no successful operation has occurred within the recreation window and
+    /// we have an `SdkConfig`, rebuild the S3 client.  Uses `try_write` so
+    /// only one thread performs the recreation at a time; others simply skip.
+    fn maybe_recreate_client(&self) {
+        let Some(sdk_config) = self.inner.sdk_config.as_ref() else {
+            return;
+        };
+        let now = epoch_secs_now();
+        let last = self.inner.last_success.load(Ordering::Relaxed);
+        if now.saturating_sub(last) < CLIENT_RECREATE_AFTER_SECS {
+            return;
+        }
+        // Non-blocking: if another thread already holds the write lock, skip.
+        let Ok(mut guard) = self.inner.client.try_write() else {
+            return;
+        };
+        // Double-check after acquiring lock.
+        let last = self.inner.last_success.load(Ordering::Relaxed);
+        if now.saturating_sub(last) < CLIENT_RECREATE_AFTER_SECS {
+            return;
+        }
+        warn!(
+            "Recreating S3 client after {} seconds without success",
+            now.saturating_sub(last)
+        );
+        *guard = Client::new(sdk_config);
+        // Reset timer so we don't immediately recreate again.
+        self.inner.last_success.store(now, Ordering::Relaxed);
+    }
+
+    pub async fn create_bucket(&self) -> Result<()> {
+        let client = self.client();
+        match client
             .create_bucket()
-            .bucket(&self.bucket)
+            .bucket(&self.inner.bucket)
             .send()
             .await
         {
-            Ok(_) => Ok(()),
+            Ok(_) => {
+                self.on_result(true);
+                Ok(())
+            }
             Err(SdkError::ServiceError(service_err)) => match service_err.err() {
                 CreateBucketError::BucketAlreadyExists(_)
-                | CreateBucketError::BucketAlreadyOwnedByYou(_) => Ok(()),
+                | CreateBucketError::BucketAlreadyOwnedByYou(_) => {
+                    self.on_result(true);
+                    Ok(())
+                }
                 _ => {
-                    Err(SdkError::ServiceError(service_err)).wrap_err("Failed to create bucket")?
+                    self.on_result(false);
+                    Err(SdkError::ServiceError(service_err)).wrap_err_with(|| {
+                        format!("Failed to create bucket {}", self.inner.bucket)
+                    })?
                 }
             },
-            Err(e) => Err(e.into()),
+            Err(e) => {
+                self.on_result(false);
+                Err(e).wrap_err_with(|| format!("Failed to create bucket {}", self.inner.bucket))
+            }
         }
     }
 }
@@ -75,10 +195,10 @@ impl Bucket {
 impl KVReader for Bucket {
     async fn get(&self, key: &str) -> Result<Option<Bytes>> {
         trace!(key, "S3 get");
-        let req = self
-            .client
+        let client = self.client();
+        let req = client
             .get_object()
-            .bucket(&self.bucket)
+            .bucket(&self.inner.bucket)
             .key(key)
             .request_payer(aws_sdk_s3::types::RequestPayer::Requester);
 
@@ -91,26 +211,24 @@ impl KVReader for Bucket {
             Ok(resp) => resp,
             Err(SdkError::ServiceError(service_err)) => match service_err.err() {
                 aws_sdk_s3::operation::get_object::GetObjectError::NoSuchKey(_) => {
-                    kvstore_get_metrics(duration, true, KVStoreType::AwsS3, &self.metrics);
+                    self.record_get_metrics(duration, true);
                     return Ok(None);
                 }
-                _ => Err(SdkError::ServiceError(service_err)).wrap_err_with(|| {
-                    kvstore_get_metrics(duration, false, KVStoreType::AwsS3, &self.metrics);
-                    format!("Failed to read key from s3 {key}")
-                })?,
+                _ => {
+                    self.record_get_metrics(duration, false);
+                    Err(SdkError::ServiceError(service_err))
+                        .wrap_err_with(|| format!("Failed to read key from s3 {key}"))?
+                }
             },
-            _ => resp.wrap_err_with(|| {
-                kvstore_get_metrics(duration, false, KVStoreType::AwsS3, &self.metrics);
-                format!("Failed to read key from s3 {key}")
-            })?,
+            Err(e) => {
+                self.record_get_metrics(duration, false);
+                return Err(e).wrap_err_with(|| format!("Failed to read key from s3 {key}"));
+            }
         };
 
-        let data = resp
-            .body
-            .collect()
-            .await
-            .write_get_metrics(duration, KVStoreType::AwsS3, &self.metrics)
-            .wrap_err_with(|| "Unable to collect response data")?;
+        let data = resp.body.collect().await;
+        self.record_get_metrics(duration, data.is_ok());
+        let data = data.wrap_err("Unable to collect response data")?;
 
         let bytes = data.into_bytes();
         if bytes.is_empty() {
@@ -122,11 +240,11 @@ impl KVReader for Bucket {
 
     async fn exists(&self, key: &str) -> Result<bool> {
         trace!(key, "S3 exists check");
+        let client = self.client();
         let start = Instant::now();
-        let resp = self
-            .client
+        let resp = client
             .head_object()
-            .bucket(&self.bucket)
+            .bucket(&self.inner.bucket)
             .key(key)
             .request_payer(aws_sdk_s3::types::RequestPayer::Requester)
             .send()
@@ -135,15 +253,15 @@ impl KVReader for Bucket {
 
         match resp {
             Ok(_) => {
-                kvstore_get_metrics(duration, true, KVStoreType::AwsS3, &self.metrics);
+                self.record_get_metrics(duration, true);
                 Ok(true)
             }
             Err(SdkError::ServiceError(service_err)) if service_err.err().is_not_found() => {
-                kvstore_get_metrics(duration, true, KVStoreType::AwsS3, &self.metrics);
+                self.record_get_metrics(duration, true);
                 Ok(false)
             }
             Err(e) => {
-                kvstore_get_metrics(duration, false, KVStoreType::AwsS3, &self.metrics);
+                self.record_get_metrics(duration, false);
                 Err(e).wrap_err_with(|| format!("S3 exists check failed for key {key}"))
             }
         }
@@ -151,7 +269,6 @@ impl KVReader for Bucket {
 }
 
 impl KVStore for Bucket {
-    // Upload rlp-encoded bytes with retry
     async fn put(
         &self,
         key: impl AsRef<str>,
@@ -159,11 +276,11 @@ impl KVStore for Bucket {
         policy: WritePolicy,
     ) -> Result<PutResult> {
         let key = key.as_ref();
+        let client = self.client();
 
-        let mut req = self
-            .client
+        let mut req = client
             .put_object()
-            .bucket(&self.bucket)
+            .bucket(&self.inner.bucket)
             .key(key)
             .body(ByteStream::from(data.clone()))
             .request_payer(aws_sdk_s3::types::RequestPayer::Requester);
@@ -177,27 +294,26 @@ impl KVStore for Bucket {
 
         match result {
             Ok(_) => {
-                kvstore_put_metrics(start.elapsed(), true, KVStoreType::AwsS3, &self.metrics);
+                self.record_put_metrics(start.elapsed(), true);
                 Ok(PutResult::Written)
             }
             Err(SdkError::ServiceError(service_err))
                 if policy == WritePolicy::NoClobber
                     && service_err.err().code() == Some("PreconditionFailed") =>
             {
-                kvstore_put_metrics(start.elapsed(), true, KVStoreType::AwsS3, &self.metrics);
+                self.record_put_metrics(start.elapsed(), true);
                 warn!(key, "S3 put skipped: key already exists (NoClobber policy)");
                 Ok(PutResult::Skipped)
             }
             Err(e) => {
-                kvstore_put_metrics(start.elapsed(), false, KVStoreType::AwsS3, &self.metrics);
-                Err(e)
-                    .wrap_err_with(|| format!("Failed to upload, retries exhausted. Key: {}", key))
+                self.record_put_metrics(start.elapsed(), false);
+                Err(e).wrap_err_with(|| format!("S3 upload failed. Key: {}", key))
             }
         }
     }
 
     fn bucket_name(&self) -> &str {
-        &self.bucket
+        &self.inner.bucket
     }
 
     async fn scan_prefix(&self, prefix: &str) -> Result<Vec<String>> {
@@ -205,18 +321,27 @@ impl KVStore for Bucket {
         let mut continuation_token = None;
 
         loop {
+            let client = self.client();
             let token = continuation_token.as_ref();
-            let mut request = self
-                .client
+            let mut request = client
                 .list_objects_v2()
-                .bucket(&self.bucket)
+                .bucket(&self.inner.bucket)
                 .prefix(prefix)
                 .request_payer(aws_sdk_s3::types::RequestPayer::Requester);
 
             if let Some(token) = token {
                 request = request.continuation_token(token);
             }
-            let response = request.send().await.wrap_err("Failed to list objects")?;
+            let response = match request.send().await {
+                Ok(resp) => {
+                    self.on_result(true);
+                    resp
+                }
+                Err(e) => {
+                    self.on_result(false);
+                    return Err(e).wrap_err("Failed to list objects");
+                }
+            };
 
             // Process objects
             if let Some(contents) = response.contents {
@@ -236,17 +361,25 @@ impl KVStore for Bucket {
 
     async fn delete(&self, key: impl AsRef<str>) -> Result<()> {
         let key = key.as_ref();
+        let client = self.client();
 
-        self.client
+        match client
             .delete_object()
-            .bucket(&self.bucket)
+            .bucket(&self.inner.bucket)
             .key(key)
             .request_payer(aws_sdk_s3::types::RequestPayer::Requester)
             .send()
             .await
-            .wrap_err_with(|| format!("Failed to delete, retries exhausted. Key: {}", key))?;
-
-        Ok(())
+        {
+            Ok(_) => {
+                self.on_result(true);
+                Ok(())
+            }
+            Err(e) => {
+                self.on_result(false);
+                Err(e).wrap_err_with(|| format!("S3 delete failed. Key: {}", key))
+            }
+        }
     }
 }
 

@@ -24,7 +24,9 @@ use monad_crypto::{
 mod aggregation_tree;
 pub use aggregation_tree::BlsSignatureCollection;
 mod bls;
-pub use bls::{BlsAggregateSignature, BlsError, BlsKeyPair, BlsPubKey, BlsSignature};
+pub use bls::{
+    BlsAggregateSignature, BlsError, BlsKeyPair, BlsPubKey, BlsSignature, LazyBlsSignature,
+};
 
 impl std::fmt::Display for BlsPubKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

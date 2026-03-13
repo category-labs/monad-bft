@@ -39,7 +39,7 @@ use monad_node_config::{FullNodeConfig, FullNodeRaptorCastConfig};
 use monad_raptorcast::config::RaptorCastConfig;
 use monad_secp::SecpSignature;
 use monad_state_backend::InMemoryStateInner;
-use monad_types::{Balance, NodeId, Round, SeqNum, Stake};
+use monad_types::{NodeId, Round, SeqNum, Stake};
 use monad_updaters::{ledger::MockableLedger, local_router::LocalRouterConfig};
 use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionKeyPairType};
 use opentelemetry::trace::{Span, TraceContextExt, Tracer};
@@ -287,7 +287,7 @@ where
                 stake: Stake::ONE,
                 cert_pubkey: cert_keypair.pubkey(),
             })
-            .collect::<Vec<_>>(),
+            .collect(),
     );
 
     let all_peers: Vec<NodeId<_>> = validators.0.iter().map(|data| data.node_id).collect();
@@ -404,7 +404,7 @@ async fn run<ST, SCT>(
     <ST as CertificateSignature>::KeyPairType: Unpin,
     <SCT as SignatureCollection>::SignatureType: Unpin,
 {
-    let state_backend = InMemoryStateInner::genesis(Balance::MAX, SeqNum(4));
+    let state_backend = InMemoryStateInner::genesis(SeqNum(4));
     let nodeid = config.executor_config.nodeid;
     // Instantiates MonadState -> ConsensusChildState
     let (mut state, init_commands) = make_monad_state(state_backend.clone(), config.state_config);

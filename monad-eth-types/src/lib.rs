@@ -16,19 +16,29 @@
 use std::{fmt::Debug, ops::Deref};
 
 use ::serde::{Deserialize, Serialize};
-use alloy_consensus::{transaction::Recovered, Header, TxEnvelope};
+use alloy_consensus::{transaction::Recovered, Header, ReceiptEnvelope, TxEnvelope};
 use alloy_eips::eip7702::RecoveredAuthorization;
-use alloy_primitives::{Address, B256};
+use alloy_primitives::{Address, FixedBytes};
 use alloy_rlp::{
-    Decodable, Encodable, RlpDecodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper,
+    encode_list, BytesMut, Decodable, Encodable, RlpDecodable, RlpDecodableWrapper, RlpEncodable,
+    RlpEncodableWrapper,
 };
 use monad_crypto::NopPubKey;
-use monad_types::{Balance, ExecutionProtocol, FinalizedHeader, Nonce, SeqNum};
+use monad_types::{Balance, ExecutionProtocol, FinalizedHeader, LimitedVec, Nonce, SeqNum};
 use serde_with::{serde_as, DisplayFromStr};
 
 pub mod serde;
 
 pub const EMPTY_RLP_TX_LIST: u8 = 0xc0;
+pub const MAX_TRANSACTIONS_PER_BLOCK: usize = 10000;
+const MAX_OMMERS: usize = 0;
+const MAX_WITHDRAWALS: usize = 0;
+
+pub type EthAddress = [u8; 20];
+pub type EthStorageKey = [u8; 32];
+pub type EthCodeHash = [u8; 32];
+pub type EthTxHash = [u8; 32];
+pub type EthBlockHash = [u8; 32];
 
 pub trait ExtractEthAddress {
     fn get_eth_address(&self) -> Address;
@@ -40,11 +50,11 @@ impl ExtractEthAddress for NopPubKey {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, Default)]
 pub struct EthAccount {
     pub nonce: Nonce,
     pub balance: Balance,
-    pub code_hash: Option<B256>,
+    pub code_hash: Option<EthCodeHash>,
     pub is_delegated: bool,
 }
 
@@ -205,9 +215,9 @@ impl FinalizedHeader for EthHeader {
 #[derive(Clone, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize, Deserialize, Default)]
 pub struct EthBlockBody {
     // TODO consider storing recovered txs inline here
-    pub transactions: Vec<TxEnvelope>,
-    pub ommers: Vec<Ommer>,
-    pub withdrawals: Vec<Withdrawal>,
+    pub transactions: LimitedVec<TxEnvelope, MAX_TRANSACTIONS_PER_BLOCK>,
+    pub ommers: LimitedVec<Ommer, MAX_OMMERS>,
+    pub withdrawals: LimitedVec<Withdrawal, MAX_WITHDRAWALS>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize, Deserialize)]
@@ -242,6 +252,99 @@ impl Deref for ValidatedTx {
 
     fn deref(&self) -> &Self::Target {
         &self.tx
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct BlockHeader {
+    pub hash: FixedBytes<32>,
+    pub header: Header,
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct TransactionLocation {
+    pub tx_index: u64,
+    pub block_num: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReceiptWithLogIndex {
+    pub receipt: ReceiptEnvelope,
+    pub starting_log_index: u64,
+}
+
+impl Encodable for ReceiptWithLogIndex {
+    fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
+        let mut encoded_receipt: BytesMut = BytesMut::new();
+        self.receipt.encode(&mut encoded_receipt);
+        let enc: [&dyn Encodable; 2] = [&encoded_receipt, &self.starting_log_index];
+        encode_list::<_, dyn Encodable>(&enc, out);
+    }
+}
+
+impl Decodable for ReceiptWithLogIndex {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let alloy_rlp::Header {
+            list,
+            payload_length: _,
+        } = alloy_rlp::Header::decode(buf)?;
+        if !list {
+            return Err(alloy_rlp::Error::UnexpectedString);
+        }
+
+        let alloy_rlp::Header {
+            list,
+            payload_length: _,
+        } = alloy_rlp::Header::decode(buf)?;
+        if list {
+            return Err(alloy_rlp::Error::UnexpectedList);
+        }
+        let receipt = ReceiptEnvelope::decode(buf)?;
+        let starting_log_index = u64::decode(buf)?;
+
+        Ok(ReceiptWithLogIndex {
+            receipt,
+            starting_log_index,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TxEnvelopeWithSender {
+    pub tx: TxEnvelope,
+    pub sender: Address,
+}
+
+impl Encodable for TxEnvelopeWithSender {
+    fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
+        let mut encoded_tx: BytesMut = BytesMut::new();
+        self.tx.encode(&mut encoded_tx);
+        let enc: [&dyn Encodable; 2] = [&encoded_tx, &self.sender];
+        encode_list::<_, dyn Encodable>(&enc, out);
+    }
+}
+
+impl Decodable for TxEnvelopeWithSender {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let alloy_rlp::Header {
+            list,
+            payload_length: _,
+        } = alloy_rlp::Header::decode(buf)?;
+        if !list {
+            return Err(alloy_rlp::Error::UnexpectedString);
+        }
+
+        let alloy_rlp::Header {
+            list,
+            payload_length: _,
+        } = alloy_rlp::Header::decode(buf)?;
+        if list {
+            return Err(alloy_rlp::Error::UnexpectedList);
+        }
+        let tx = TxEnvelope::decode(buf)?;
+        let sender = Address::decode(buf)?;
+
+        Ok(TxEnvelopeWithSender { tx, sender })
     }
 }
 

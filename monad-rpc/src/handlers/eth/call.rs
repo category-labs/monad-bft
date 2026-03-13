@@ -40,8 +40,8 @@ use serde_json::value::RawValue;
 use tokio::sync::Mutex;
 use tracing::{debug, trace};
 
-use super::block::get_block_key_from_tag_or_hash;
 use crate::{
+    chainstate::get_block_key_from_tag_or_hash,
     handlers::debug::{decode_call_frame, Tracer, TracerObject},
     middleware::TimingRequestId,
     types::{
@@ -685,7 +685,9 @@ pub async fn prepare_eth_call<T: Triedb + TriedbPath>(
 
     // TODO: check duplicate address, duplicate storage key, etc.
 
-    let block_key = get_block_key_from_tag_or_hash(triedb_env, params.block()).await?;
+    let block_key = get_block_key_from_tag_or_hash(triedb_env, params.block())
+        .await
+        .ok_or_else(JsonRpcError::block_not_found)?;
 
     let mut header = match triedb_env
         .get_block_header(block_key)
@@ -821,7 +823,9 @@ pub async fn monad_debug_traceCall<T: Triedb + TriedbPath>(
 ) -> JsonRpcResult<Box<RawValue>> {
     debug!(?params, "monad_debug_traceCall");
 
-    let block_key = get_block_key_from_tag_or_hash(triedb_env, params.block.clone()).await?;
+    let block_key = get_block_key_from_tag_or_hash(triedb_env, params.block.clone())
+        .await
+        .ok_or_else(JsonRpcError::block_not_found)?;
 
     let tracer = CallParams::Trace(params.clone()).monad_tracer();
 

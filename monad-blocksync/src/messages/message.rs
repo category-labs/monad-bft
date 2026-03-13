@@ -69,13 +69,19 @@ impl Decodable for BlockSyncRequestMessage {
                 "expected to decode type BlockSyncRequestMessage",
             ));
         }
-        match u8::decode(&mut payload)? {
-            1 => Ok(Self::Headers(BlockRange::decode(&mut payload)?)),
-            2 => Ok(Self::Payload(ConsensusBlockBodyId::decode(&mut payload)?)),
-            _ => Err(alloy_rlp::Error::Custom(
-                "failed to decode unknown BlockSyncRequestMessage",
-            )),
+        let result = match u8::decode(&mut payload)? {
+            1 => Self::Headers(BlockRange::decode(&mut payload)?),
+            2 => Self::Payload(ConsensusBlockBodyId::decode(&mut payload)?),
+            _ => {
+                return Err(alloy_rlp::Error::Custom(
+                    "failed to decode unknown BlockSyncRequestMessage",
+                ))
+            }
+        };
+        if !payload.is_empty() {
+            return Err(alloy_rlp::Error::UnexpectedLength);
         }
+        Ok(result)
     }
 }
 
@@ -139,7 +145,7 @@ where
                 "expected to decode type BlockSyncHeaderResponse",
             ));
         }
-        match u8::decode(&mut payload)? {
+        let result = match u8::decode(&mut payload)? {
             1 => {
                 let block_range = BlockRange::decode(&mut payload)?;
                 let headers = LimitedVec::<
@@ -147,13 +153,19 @@ where
                     BLOCKSYNC_MAX_NUM_HEADERS,
                 >::decode(&mut payload)?
                 .into_inner();
-                Ok(Self::Found((block_range, headers)))
+                Self::Found((block_range, headers))
             }
-            2 => Ok(Self::NotAvailable(BlockRange::decode(&mut payload)?)),
-            _ => Err(alloy_rlp::Error::Custom(
-                "failed to decode unknown BlockSyncHeadersResponse",
-            )),
+            2 => Self::NotAvailable(BlockRange::decode(&mut payload)?),
+            _ => {
+                return Err(alloy_rlp::Error::Custom(
+                    "failed to decode unknown BlockSyncHeadersResponse",
+                ))
+            }
+        };
+        if !payload.is_empty() {
+            return Err(alloy_rlp::Error::UnexpectedLength);
         }
+        Ok(result)
     }
 }
 
@@ -209,15 +221,19 @@ where
                 "expected to decode type BlockSyncBodyResponse",
             ));
         }
-        match u8::decode(&mut payload)? {
-            1 => Ok(Self::Found(ConsensusBlockBody::decode(&mut payload)?)),
-            2 => Ok(Self::NotAvailable(ConsensusBlockBodyId::decode(
-                &mut payload,
-            )?)),
-            _ => Err(alloy_rlp::Error::Custom(
-                "failed to decode unknown BlockSyncBodyResponse",
-            )),
+        let result = match u8::decode(&mut payload)? {
+            1 => Self::Found(ConsensusBlockBody::decode(&mut payload)?),
+            2 => Self::NotAvailable(ConsensusBlockBodyId::decode(&mut payload)?),
+            _ => {
+                return Err(alloy_rlp::Error::Custom(
+                    "failed to decode unknown BlockSyncBodyResponse",
+                ))
+            }
+        };
+        if !payload.is_empty() {
+            return Err(alloy_rlp::Error::UnexpectedLength);
         }
+        Ok(result)
     }
 }
 
@@ -304,16 +320,18 @@ where
                 "expected to decode type BlockSyncResponseMessage",
             ));
         }
-        match u8::decode(&mut payload)? {
-            1 => Ok(Self::HeadersResponse(BlockSyncHeadersResponse::decode(
-                &mut payload,
-            )?)),
-            2 => Ok(Self::PayloadResponse(BlockSyncBodyResponse::decode(
-                &mut payload,
-            )?)),
-            _ => Err(alloy_rlp::Error::Custom(
-                "failed to decode unknown BlockSyncResponseMessage",
-            )),
+        let result = match u8::decode(&mut payload)? {
+            1 => Self::HeadersResponse(BlockSyncHeadersResponse::decode(&mut payload)?),
+            2 => Self::PayloadResponse(BlockSyncBodyResponse::decode(&mut payload)?),
+            _ => {
+                return Err(alloy_rlp::Error::Custom(
+                    "failed to decode unknown BlockSyncResponseMessage",
+                ))
+            }
+        };
+        if !payload.is_empty() {
+            return Err(alloy_rlp::Error::UnexpectedLength);
         }
+        Ok(result)
     }
 }

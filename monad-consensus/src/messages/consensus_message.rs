@@ -133,27 +133,23 @@ where
             ));
         }
 
-        match u8::decode(&mut payload)? {
-            1 => Ok(ProtocolMessage::Proposal(ProposalMessage::decode(
-                &mut payload,
-            )?)),
-            2 => Ok(ProtocolMessage::Vote(VoteMessage::decode(&mut payload)?)),
-            3 => Ok(ProtocolMessage::Timeout(TimeoutMessage::decode(
-                &mut payload,
-            )?)),
-            4 => Ok(ProtocolMessage::RoundRecovery(
-                RoundRecoveryMessage::decode(&mut payload)?,
-            )),
-            5 => Ok(ProtocolMessage::NoEndorsement(
-                NoEndorsementMessage::decode(&mut payload)?,
-            )),
-            6 => Ok(ProtocolMessage::AdvanceRound(AdvanceRoundMessage::decode(
-                &mut payload,
-            )?)),
-            _ => Err(alloy_rlp::Error::Custom(
-                "failed to decode unknown ProtocolMessage",
-            )),
+        let result = match u8::decode(&mut payload)? {
+            1 => ProtocolMessage::Proposal(ProposalMessage::decode(&mut payload)?),
+            2 => ProtocolMessage::Vote(VoteMessage::decode(&mut payload)?),
+            3 => ProtocolMessage::Timeout(TimeoutMessage::decode(&mut payload)?),
+            4 => ProtocolMessage::RoundRecovery(RoundRecoveryMessage::decode(&mut payload)?),
+            5 => ProtocolMessage::NoEndorsement(NoEndorsementMessage::decode(&mut payload)?),
+            6 => ProtocolMessage::AdvanceRound(AdvanceRoundMessage::decode(&mut payload)?),
+            _ => {
+                return Err(alloy_rlp::Error::Custom(
+                    "failed to decode unknown ProtocolMessage",
+                ))
+            }
+        };
+        if !payload.is_empty() {
+            return Err(alloy_rlp::Error::UnexpectedLength);
         }
+        Ok(result)
     }
 }
 

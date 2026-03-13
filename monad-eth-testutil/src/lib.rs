@@ -102,13 +102,24 @@ pub fn make_legacy_tx(
     nonce: u64,
     input_len: usize,
 ) -> TxEnvelope {
+    make_legacy_tx_with_value(sender, 0, gas_price, gas_limit, nonce, input_len)
+}
+
+pub fn make_legacy_tx_with_value(
+    sender: FixedBytes<32>,
+    value: u128,
+    gas_price: u128,
+    gas_limit: u64,
+    nonce: u64,
+    input_len: usize,
+) -> TxEnvelope {
     let transaction = TxLegacy {
         chain_id: Some(1337),
         nonce,
         gas_price,
         gas_limit,
         to: TxKind::Call(Address::repeat_byte(0u8)),
-        value: Default::default(),
+        value: U256::from(value),
         input: vec![0; input_len].into(),
     };
 
@@ -366,8 +377,8 @@ pub fn generate_consensus_test_block(
     let body = ConsensusBlockBody::new(ConsensusBlockBodyInner {
         execution_body: EthBlockBody {
             transactions: txs.iter().map(|tx| tx.inner().to_owned()).collect(),
-            ommers: Vec::default(),
-            withdrawals: Vec::default(),
+            ommers: Default::default(),
+            withdrawals: Default::default(),
         },
     });
 
