@@ -35,12 +35,12 @@ use monad_executor_glue::{Message, RouterCommand};
 use monad_peer_discovery::mock::NopDiscovery;
 use monad_raptorcast::{
     create_dataplane_for_tests, new_defaulted_raptorcast_for_tests,
-    packet::build_messages,
+    packet::{build_messages, regular},
     raptorcast_secondary::{
         group_message::FullNodesGroupMessage, SecondaryOutboundMessage,
         SecondaryRaptorCastModeConfig,
     },
-    udp::{GroupId, MAX_REDUNDANCY},
+    udp::GroupId,
     util::{BuildTarget, Group, Redundancy},
     DataplaneHandles, RaptorCast, RaptorCastEvent,
 };
@@ -216,7 +216,7 @@ pub fn valid_rebroadcast() {
         &tx_keypair,
         DEFAULT_SEGMENT_SIZE,
         message,
-        MAX_REDUNDANCY,             // redundancy,
+        regular::MAX_REDUNDANCY,    // redundancy,
         GroupId::Primary(Epoch(0)), // epoch_no
         0,                          // unix_ts_ms
         BuildTarget::Raptorcast(&validators),
