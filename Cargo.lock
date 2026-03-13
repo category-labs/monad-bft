@@ -5182,6 +5182,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-dynamic-cap"
+version = "0.1.0"
+
+[[package]]
 name = "monad-eth-block-policy"
 version = "0.1.0"
 dependencies = [
@@ -5503,6 +5507,18 @@ dependencies = [
  "monad-validator",
  "serde",
  "serde_with",
+]
+
+[[package]]
+name = "monad-fair-queue"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "monad-dynamic-cap",
+ "monad-executor",
+ "proptest",
+ "thiserror 1.0.69",
+ "tracing",
 ]
 
 [[package]]
