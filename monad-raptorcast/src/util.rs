@@ -30,7 +30,7 @@ use monad_crypto::{
     certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey},
     hasher::{Hasher, HasherType},
 };
-use monad_types::{Epoch, NodeId, Round, RoundSpan};
+use monad_types::{Epoch, NodeId, Round, RoundSpan, Stake};
 use monad_validator::validator_set::{ValidatorSet, ValidatorSetType as _};
 
 use crate::udp::GroupId;
@@ -40,24 +40,47 @@ use crate::udp::GroupId;
 pub enum BuildTarget<'a, PT: PubKey> {
     // broadcast a message to the validators where each validator gets
     // the full chunks of the raptor-coded message
-    Broadcast(&'a ValidatorSet<PT>),
+    Broadcast(PrimaryBroadcastGroup<'a, PT>),
     // raptorcast to the validators, chunks distributed by their
     // proportion of stakes.
-    Raptorcast(&'a ValidatorSet<PT>),
+    Raptorcast(PrimaryBroadcastGroup<'a, PT>),
     // unicast message as raptor-coded chunks to a single recipient
-    PointToPoint(&'a NodeId<PT>),
+    PointToPoint {
+        // The group_id is not used for point-to-point message,
+        // only included for backward-compatibility.
+        group_id: GroupId,
+        recipient: &'a NodeId<PT>,
+    },
     // raptorcast to a set of full nodes, assuming equal stake
     // distribution
-    FullNodeRaptorCast(&'a SecondaryGroup<PT>),
+    FullNodeRaptorCast(SecondaryBroadcastGroup<'a, PT>),
 }
 
 impl<'a, PT: PubKey> BuildTarget<'a, PT> {
+    // The epoch field has no use for point-to-point message, included
+    // only for backward-compatibility.
+    pub fn point_to_point(epoch: Epoch, recipient: &'a NodeId<PT>) -> Self {
+        BuildTarget::PointToPoint {
+            group_id: GroupId::Primary(epoch),
+            recipient,
+        }
+    }
+
     pub fn iter(&self) -> Box<dyn Iterator<Item = &NodeId<PT>> + '_> {
         match self {
-            BuildTarget::Broadcast(valset) => Box::new(valset.get_members().keys()),
-            BuildTarget::Raptorcast(valset) => Box::new(valset.get_members().keys()),
-            BuildTarget::PointToPoint(node_id) => Box::new(std::iter::once(*node_id)),
+            BuildTarget::Broadcast(group) | BuildTarget::Raptorcast(group) => {
+                Box::new(group.iter().map(|(n, _)| n))
+            }
+            BuildTarget::PointToPoint { recipient, .. } => Box::new(std::iter::once(*recipient)),
             BuildTarget::FullNodeRaptorCast(group) => Box::new(group.iter()),
+        }
+    }
+
+    pub fn group_id(&self) -> GroupId {
+        match self {
+            BuildTarget::Broadcast(group) | BuildTarget::Raptorcast(group) => group.group_id(),
+            BuildTarget::FullNodeRaptorCast(group) => group.group_id(),
+            BuildTarget::PointToPoint { group_id, .. } => *group_id,
         }
     }
 }
@@ -285,11 +308,16 @@ pub type ValidatorGroupMap<PT> = BTreeMap<Epoch, ValidatorSet<PT>>;
 #[derive(Debug)]
 pub enum BroadcastGroupError {
     // The specified group_id does not correspond to any known group.
-    GroupNotFound,
+    GroupNotFound(GroupId),
     // The author is not a member of the specified group.
     InvalidAuthor,
 }
 
+// Invariances:
+//
+// - the group must be established in epoch_validators
+// - the epoch must be consistent with the group in epoch_validators
+#[derive(Debug, Clone, Copy)]
 pub struct PrimaryBroadcastGroup<'a, PT: PubKey> {
     epoch: Epoch,
     author: &'a NodeId<PT>,
@@ -302,9 +330,10 @@ impl<'a, PT: PubKey> PrimaryBroadcastGroup<'a, PT> {
         author: &'a NodeId<PT>,
         validator_group_map: &'a ValidatorGroupMap<PT>,
     ) -> Result<Self, BroadcastGroupError> {
+        let group_id = GroupId::Primary(epoch);
         let group = validator_group_map
             .get(&epoch)
-            .ok_or(BroadcastGroupError::GroupNotFound)?;
+            .ok_or(BroadcastGroupError::GroupNotFound(group_id))?;
         if !group.is_member(author) {
             return Err(BroadcastGroupError::InvalidAuthor);
         }
@@ -315,9 +344,17 @@ impl<'a, PT: PubKey> PrimaryBroadcastGroup<'a, PT> {
         })
     }
 
+    pub fn iter(&self) -> impl Iterator<Item = (&NodeId<PT>, &Stake)> + '_ {
+        self.group.get_members().iter()
+    }
+
+    pub fn is_member(&self, node_id: &NodeId<PT>) -> bool {
+        self.group.is_member(node_id)
+    }
+
     // For Primary RC, the sender can be any one of the validators.
     pub fn is_sender_valid(&self, sender: &NodeId<PT>) -> bool {
-        self.group.is_member(sender)
+        self.is_member(sender)
     }
 
     pub fn try_rebroadcast(
@@ -325,16 +362,28 @@ impl<'a, PT: PubKey> PrimaryBroadcastGroup<'a, PT> {
         self_id: &'a NodeId<PT>,
         is_first_hop_recipient: bool,
     ) -> Option<RebroadcastContext<'a, PT>> {
+        // Only rebroadcast if self is a member of the validator set
+        // and is the recipient of the first hop.
         if !self.group.is_member(self_id) || !is_first_hop_recipient {
             return None;
         }
+
         Some(RebroadcastContext {
             members: Box::new(self.group.get_members().keys()),
             excluded: [Some(self_id), Some(self.author)],
         })
     }
+
+    pub fn group_id(&self) -> GroupId {
+        GroupId::Primary(self.epoch)
+    }
 }
 
+// Invariances:
+//
+// - the group must be established (exists in publisher and clients' group_map)
+// - the round number must be consistent with the group
+#[derive(Debug, Clone, Copy)]
 pub struct SecondaryBroadcastGroup<'a, PT: PubKey> {
     round: Round,
     publisher: &'a NodeId<PT>,
@@ -342,21 +391,36 @@ pub struct SecondaryBroadcastGroup<'a, PT: PubKey> {
 }
 
 impl<'a, PT: PubKey> SecondaryBroadcastGroup<'a, PT> {
+    // The caller must ensure the round number to be consistent with
+    // the group.
+    pub fn as_publisher(
+        publisher: &'a NodeId<PT>,
+        round: Round,
+        group: &'a SecondaryGroup<PT>,
+    ) -> Self {
+        Self {
+            round,
+            publisher,
+            group,
+        }
+    }
+
     pub fn of_round(
         round: Round,
         // The publisher is the author/signer of the raptorcast message.
         publisher: &'a NodeId<PT>,
         full_node_group_map: &'a FullNodeGroupMap<PT>,
     ) -> Result<Self, BroadcastGroupError> {
+        let group_id = GroupId::Secondary(round);
         let group = full_node_group_map
             .get_group_map(publisher)
-            .ok_or(BroadcastGroupError::GroupNotFound)?
+            .ok_or(BroadcastGroupError::GroupNotFound(group_id))?
             // FIXME: should use `get` method. `get_current_or_next`
             // implements the old behavior, which can be hit if full node is
             // upgraded before the validator. It'll be removed after the
             // upgrade
             .get_current_or_next(round)
-            .ok_or(BroadcastGroupError::GroupNotFound)?;
+            .ok_or(BroadcastGroupError::GroupNotFound(group_id))?;
         Ok(Self {
             round,
             publisher,
@@ -383,6 +447,14 @@ impl<'a, PT: PubKey> SecondaryBroadcastGroup<'a, PT> {
             members: Box::new(self.group.iter()),
             excluded: [Some(self_id), None],
         })
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &NodeId<PT>> + '_ {
+        self.group.iter()
+    }
+
+    pub fn group_id(&self) -> GroupId {
+        GroupId::Secondary(self.round)
     }
 }
 
@@ -416,10 +488,10 @@ impl<'a, PT: PubKey> From<SecondaryBroadcastGroup<'a, PT>> for BroadcastGroup<'a
 }
 
 impl<'a, PT: PubKey> BroadcastGroup<'a, PT> {
-    // Return a known valid group of the given group_id.
+    // Return an established group of the given group_id.
     pub fn from_group_id(
         group_id: GroupId,
-        // The signer of the raptorcast message, not necessarily the sender.
+        // The signer the raptorcast message, not necessarily the sender.
         author: &'a NodeId<PT>,
         validator_group_map: &'a ValidatorGroupMap<PT>,
         full_node_group_map: &'a FullNodeGroupMap<PT>,
@@ -681,6 +753,15 @@ pub struct UdpMessage<PT: PubKey> {
     pub payload: Bytes,
     pub stride: usize,
 }
+impl<PT: PubKey> UdpMessage<PT> {
+    pub fn tee(&self, peer: &NodeId<PT>) -> UdpMessage<PT> {
+        UdpMessage {
+            recipient: Recipient::new(*peer),
+            payload: self.payload.clone(),
+            stride: self.stride,
+        }
+    }
+}
 
 // Represented as a fixed-point number with 11 fractional bits.
 // Range: 0 to ~31.9995, Increments: ~0.000488
@@ -801,6 +882,10 @@ mod tests {
         assert!((u16::MAX as usize)
             .checked_mul(Redundancy::MAX_MULTIPLIER + 1)
             .is_none());
+
+        assert!(Redundancy::MAX
+            .scale(crate::message::MAX_MESSAGE_SIZE)
+            .is_some());
     }
 
     #[test]
@@ -1042,7 +1127,7 @@ mod tests {
             &full_node_group_map,
         );
 
-        assert!(matches!(result, Err(BroadcastGroupError::GroupNotFound)));
+        assert!(matches!(result, Err(BroadcastGroupError::GroupNotFound(_))));
     }
 
     #[test]
@@ -1108,7 +1193,7 @@ mod tests {
             &full_node_group_map,
         );
 
-        assert!(matches!(result, Err(BroadcastGroupError::GroupNotFound)));
+        assert!(matches!(result, Err(BroadcastGroupError::GroupNotFound(_))));
     }
 
     #[test]
@@ -1136,7 +1221,7 @@ mod tests {
             &full_node_group_map,
         );
 
-        assert!(matches!(result, Err(BroadcastGroupError::GroupNotFound)));
+        assert!(matches!(result, Err(BroadcastGroupError::GroupNotFound(_))));
     }
 
     #[test]
