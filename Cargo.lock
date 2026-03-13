@@ -5358,7 +5358,6 @@ dependencies = [
  "alloy-consensus",
  "alloy-eips",
  "alloy-primitives",
- "alloy-rlp",
  "bytes",
  "futures",
  "indexmap 2.12.1",
