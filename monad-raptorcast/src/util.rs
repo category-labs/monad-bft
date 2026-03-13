@@ -13,6 +13,14 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+macro_rules! ensure {
+    ($cond:expr, $err:expr) => {
+        if !($cond) {
+            return Err($err.into());
+        }
+    };
+}
+
 use std::{
     cell::OnceCell,
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -24,6 +32,7 @@ use std::{
 };
 
 use bytes::Bytes;
+pub(crate) use ensure; // export the macro for use in other modules
 use fixed::{types::extra::U11, FixedU16};
 use iset::IntervalMap;
 use monad_crypto::{

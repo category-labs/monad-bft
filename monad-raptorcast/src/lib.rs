@@ -1287,10 +1287,9 @@ where
                 let mut recv_fut = pin!(socket.recv());
                 match recv_fut.poll_unpin(cx) {
                     Poll::Ready(Ok(msg)) => {
-                        let from =
-                            NodeId::new(msg.auth_public_key.expect(
-                                "framed direct udp transport requires authenticated messages",
-                            ));
+                        let from = msg
+                            .sender
+                            .expect("framed direct udp transport requires authenticated messages");
                         match InboundRouterMessage::<M, ST>::try_deserialize(&msg.payload) {
                             Ok(InboundRouterMessage::AppMessage(app_message)) => {
                                 this.pending_events

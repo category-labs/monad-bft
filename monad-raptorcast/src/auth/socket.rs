@@ -22,9 +22,10 @@ use std::{
 };
 
 use bytes::{Bytes, BytesMut};
+use monad_crypto::certificate_signature::PubKey;
 use monad_dataplane::{UdpSocketHandle, UnicastMsg};
 use monad_executor::{ExecutorMetrics, ExecutorMetricsChain};
-use monad_types::UdpPriority;
+use monad_types::{NodeId, UdpPriority};
 use thiserror::Error;
 use tokio::time::Sleep;
 use tracing::{debug, trace, warn};
@@ -33,11 +34,11 @@ use zerocopy::IntoBytes;
 use super::framing::AuthPacketFramer;
 
 #[derive(Clone)]
-pub struct AuthRecvMsg<P> {
+pub struct AuthRecvMsg<P: PubKey> {
     pub src_addr: SocketAddr,
     pub payload: Bytes,
     pub stride: u16,
-    pub auth_public_key: Option<P>,
+    pub sender: Option<NodeId<P>>,
 }
 
 use super::{
@@ -158,7 +159,7 @@ where
                         src_addr: msg.src_addr,
                         payload: msg.payload,
                         stride: msg.stride,
-                        auth_public_key: None,
+                        sender: None,
                     })
                 },
             }
@@ -170,7 +171,7 @@ where
                 src_addr: msg.src_addr,
                 payload: msg.payload,
                 stride: msg.stride,
-                auth_public_key: None,
+                sender: None,
             })
         }
     }
@@ -256,7 +257,7 @@ where
                                 src_addr: message.src_addr,
                                 payload: plaintext,
                                 stride: message.stride,
-                                auth_public_key,
+                                sender: auth_public_key.map(NodeId::new),
                             })
                         }
                         Ok(None) => {
@@ -502,17 +503,17 @@ where
     pub async fn recv(&mut self) -> Result<AuthRecvMsg<AP::PublicKey>, FramedRecvError<AP::Error>> {
         loop {
             let msg = self.socket.recv().await.map_err(FramedRecvError::Auth)?;
-            let Some(public_key) = msg.auth_public_key else {
+            let Some(sender) = msg.sender else {
                 return Err(FramedRecvError::MissingAuthPublicKey);
             };
 
-            match self.framer.deframe(public_key, msg.payload) {
+            match self.framer.deframe(sender.pubkey(), msg.payload) {
                 Ok(Some(payload)) => {
                     return Ok(AuthRecvMsg {
                         src_addr: msg.src_addr,
                         payload,
+                        sender: Some(sender),
                         stride: msg.stride,
-                        auth_public_key: msg.auth_public_key,
                     });
                 }
                 Ok(None) => continue,
