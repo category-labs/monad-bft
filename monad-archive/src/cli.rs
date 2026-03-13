@@ -499,6 +499,7 @@ pub struct AwsCliArgs {
     pub bucket: String,
     pub region: Option<String>,
     pub endpoint: Option<String>,
+    pub profile: Option<String>,
     pub access_key_id: Option<String>,
     pub secret_access_key: Option<String>,
     // TODO: remove me, concurrency should be handled elsewhere
@@ -519,6 +520,7 @@ impl std::fmt::Debug for AwsCliArgs {
             .field("bucket", &self.bucket)
             .field("region", &self.region)
             .field("endpoint", &self.endpoint)
+            .field("profile", &self.profile)
             .field(
                 "access_key_id",
                 &self.access_key_id.as_ref().map(|_| "[REDACTED]"),
@@ -560,6 +562,7 @@ impl AwsCliArgs {
                 .ok_or_eyre("storage args missing bucket")?,
             region: kv.remove("region"),
             endpoint: kv.remove("endpoint"),
+            profile: kv.remove("profile"),
             access_key_id: kv.remove("access-key-id"),
             secret_access_key: kv.remove("secret-access-key"),
             concurrency: kv
@@ -579,15 +582,23 @@ impl AwsCliArgs {
     }
 
     pub(crate) async fn config(&self) -> SdkConfig {
-        let region = self
-            .region
-            .clone()
-            .unwrap_or_else(|| "us-east-2".to_string());
+        let mut config = aws_config::defaults(BehaviorVersion::latest());
 
-        info!("Bucket {} running in region: {}", self.bucket, region);
+        if let Some(profile) = &self.profile {
+            config = config.profile_name(profile);
+        }
 
-        let mut config = aws_config::defaults(BehaviorVersion::latest())
-            .region(Region::new(region))
+        if let Some(region) = self.region_override() {
+            info!("Bucket {} running in region: {}", self.bucket, region);
+            config = config.region(Region::new(region));
+        } else {
+            info!(
+                "Bucket {} using region from profile/default provider chain",
+                self.bucket
+            );
+        }
+
+        let mut config = config
             .timeout_config(
                 TimeoutConfig::builder()
                     .operation_timeout(Duration::from_secs(self.operation_timeout_secs))
@@ -616,6 +627,12 @@ impl AwsCliArgs {
         }
 
         config.load().await
+    }
+
+    fn region_override(&self) -> Option<String> {
+        self.region
+            .clone()
+            .or_else(|| self.profile.is_none().then_some("us-east-2".to_string()))
     }
 }
 
@@ -837,6 +854,7 @@ mod tests {
                 assert_eq!(args.bucket, "my-bucket");
                 assert_eq!(args.concurrency, DEFAULT_CONCURRENCY); // default
                 assert_eq!(args.region, None);
+                assert_eq!(args.profile, None);
             }
             _ => panic!("expected Aws variant"),
         }
@@ -851,6 +869,16 @@ mod tests {
                 assert_eq!(args.bucket, "my-bucket");
                 assert_eq!(args.concurrency, 64);
                 assert_eq!(args.region.as_deref(), Some("us-west-2"));
+                assert_eq!(args.profile, None);
+            }
+            _ => panic!("expected Aws variant"),
+        }
+
+        let a = BlockDataReaderArgs::from_str("aws my-bucket --profile mainnet").unwrap();
+        match a {
+            BlockDataReaderArgs::Aws(args) => {
+                assert_eq!(args.bucket, "my-bucket");
+                assert_eq!(args.profile.as_deref(), Some("mainnet"));
             }
             _ => panic!("expected Aws variant"),
         }
@@ -864,6 +892,30 @@ mod tests {
             }
             _ => panic!("expected Aws variant"),
         }
+    }
+
+    #[test]
+    fn aws_region_override_behavior() {
+        let args = AwsCliArgs {
+            bucket: "my-bucket".to_string(),
+            region: Some("us-west-2".to_string()),
+            profile: Some("mainnet".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(args.region_override().as_deref(), Some("us-west-2"));
+
+        let args = AwsCliArgs {
+            bucket: "my-bucket".to_string(),
+            profile: Some("mainnet".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(args.region_override(), None);
+
+        let args = AwsCliArgs {
+            bucket: "my-bucket".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(args.region_override().as_deref(), Some("us-east-2"));
     }
 
     #[test]
@@ -1045,6 +1097,7 @@ mod tests {
             bucket: "my-bucket".to_string(),
             region: Some("us-east-1".to_string()),
             endpoint: Some("https://s3.amazonaws.com".to_string()),
+            profile: Some("mainnet".to_string()),
             access_key_id: Some("AKIAIOSFODNN7EXAMPLE".to_string()),
             secret_access_key: Some("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY".to_string()),
             concurrency: 10,
@@ -1074,6 +1127,7 @@ mod tests {
             bucket: "my-bucket".to_string(),
             region: None,
             endpoint: None,
+            profile: None,
             access_key_id: None,
             secret_access_key: None,
             concurrency: 10,
@@ -1095,6 +1149,7 @@ mod tests {
             bucket: "test".to_string(),
             region: None,
             endpoint: None,
+            profile: None,
             access_key_id: Some("SECRET_KEY_ID".to_string()),
             secret_access_key: Some("SECRET_ACCESS_KEY".to_string()),
             concurrency: default_aws_concurrency(),
