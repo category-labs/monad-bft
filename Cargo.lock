@@ -5182,6 +5182,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-dynamic-cap"
+version = "0.1.0"
+
+[[package]]
 name = "monad-eth-block-policy"
 version = "0.1.0"
 dependencies = [
@@ -5374,6 +5378,8 @@ dependencies = [
  "monad-eth-types",
  "monad-executor",
  "monad-executor-glue",
+ "monad-fair-queue",
+ "monad-peer-score",
  "monad-secp",
  "monad-state-backend",
  "monad-testutil",
@@ -5506,6 +5512,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-fair-queue"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "monad-dynamic-cap",
+ "monad-executor",
+ "proptest",
+ "thiserror 1.0.69",
+ "tracing",
+]
+
+[[package]]
 name = "monad-fuzz"
 version = "0.0.0"
 dependencies = [
@@ -5543,6 +5561,20 @@ dependencies = [
  "tempfile",
  "unicode-normalization",
  "zeroize",
+]
+
+[[package]]
+name = "monad-leanudp"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "criterion",
+ "indexmap 2.12.1",
+ "monad-dynamic-cap",
+ "monad-executor",
+ "rand 0.8.5",
+ "thiserror 1.0.69",
+ "zerocopy",
 ]
 
 [[package]]
@@ -5661,6 +5693,7 @@ dependencies = [
  "monad-executor",
  "monad-executor-glue",
  "monad-keystore",
+ "monad-leanudp",
  "monad-ledger",
  "monad-node-config",
  "monad-peer-discovery",
@@ -5764,6 +5797,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-peer-score"
+version = "0.1.0"
+dependencies = [
+ "lru 0.16.3",
+ "monad-executor",
+ "monad-fair-queue",
+ "proptest",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "monad-perf-util"
 version = "0.1.0"
 
@@ -5832,9 +5877,11 @@ dependencies = [
  "monad-dataplane",
  "monad-executor",
  "monad-executor-glue",
+ "monad-leanudp",
  "monad-merkle",
  "monad-node-config",
  "monad-peer-discovery",
+ "monad-peer-score",
  "monad-raptor",
  "monad-secp",
  "monad-testutil",

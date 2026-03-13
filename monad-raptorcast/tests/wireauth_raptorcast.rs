@@ -251,11 +251,13 @@ fn spawn_noop_validator(
             monad_raptorcast::raptorcast_secondary::SecondaryRaptorCastModeConfig::None,
             dataplane.tcp_socket,
             None,
+            None,
             dataplane.non_authenticated_socket,
             dataplane.control,
             shared_pd,
             Epoch(0),
             auth_protocol,
+            None,
         );
 
         let mut cmd_rx = cmd_rx;
@@ -322,11 +324,13 @@ fn spawn_wireauth_validator(
             monad_raptorcast::raptorcast_secondary::SecondaryRaptorCastModeConfig::None,
             dataplane.tcp_socket,
             dataplane.authenticated_socket,
+            None,
             dataplane.non_authenticated_socket,
             dataplane.control,
             shared_pd,
             Epoch(0),
             auth_protocol,
+            None,
         );
 
         let mut cmd_rx = cmd_rx;
