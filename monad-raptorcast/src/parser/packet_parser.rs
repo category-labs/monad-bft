@@ -21,22 +21,56 @@ use monad_crypto::{
     hasher::{Hasher as _, HasherType},
 };
 use monad_merkle::{MerkleHash, MerkleProof};
-use monad_types::{Epoch, Round};
+use monad_types::{Epoch, NodeId, Round};
 use tracing::warn;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Ref, LE, U16, U32, U64};
 
 use crate::{
     message::MAX_MESSAGE_SIZE,
     packet::regular,
-    udp::{
-        ChunkSignatureVerifier, GroupId, MessageValidationError, SignatureCacheKey,
-        ValidatedMessage, MAX_VALIDATOR_SET_SIZE,
-    },
-    util::{BroadcastMode, HexBytes, Redundancy},
+    udp::{ChunkSignatureVerifier, GroupId, InvalidChunk, ValidatedChunk, MAX_VALIDATOR_SET_SIZE},
+    util::{ensure, BroadcastMode, HexBytes},
     SIGNATURE_SIZE,
 };
 
+struct ChunkMeta {
+    app_message_len: usize,
+    chunk_id: usize,
+    num_source_symbols: usize,
+    encoded_symbol_capacity: usize,
+    timestamp: u64,
+    broadcast_mode: BroadcastMode,
+    group_id: GroupId,
+    app_message_hash: HexBytes<HASH_SIZE>,
+    recipient_hash: HexBytes<HASH_SIZE>,
+    signed_over_data: SignedOverData,
+}
+impl ChunkMeta {
+    fn get_epoch(&self) -> Option<Epoch> {
+        match self.group_id {
+            GroupId::Primary(epoch) => Some(epoch),
+            GroupId::Secondary(_) => None,
+        }
+    }
+}
+
 const MERKLE_HASH_SIZE: usize = 20;
+const HASH_SIZE: usize = MERKLE_HASH_SIZE;
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum MalformedPacket {
+    TooShort,
+    TooLong,
+    InvalidTreeDepth(u8),
+    InvalidBroadcastBits(u8),
+    UnknownVersion(u16),
+}
+
+impl From<MalformedPacket> for InvalidChunk {
+    fn from(err: MalformedPacket) -> Self {
+        InvalidChunk::Malformed(err)
+    }
+}
 
 /// Raptorcast packet header (common to all versions):
 /// - 65 bytes => Signature of sender
@@ -92,16 +126,16 @@ impl RaptorcastHeaderV0 {
         MERKLE_HASH_SIZE * (self.tree_depth() as usize - 1)
     }
 
-    pub fn broadcast_mode(&self) -> Result<BroadcastMode, MessageValidationError> {
+    pub fn broadcast_mode(&self) -> Result<BroadcastMode, MalformedPacket> {
         match (self.broadcast(), self.secondary_broadcast()) {
             (true, false) => Ok(BroadcastMode::Primary),
             (false, true) => Ok(BroadcastMode::Secondary),
             (false, false) => Ok(BroadcastMode::Unspecified),
-            (true, true) => Err(MessageValidationError::InvalidBroadcastBits(0b11)),
+            (true, true) => Err(MalformedPacket::InvalidBroadcastBits(0b11)),
         }
     }
 
-    pub fn group_id(&self) -> Result<GroupId, MessageValidationError> {
+    pub fn group_id(&self) -> Result<GroupId, MalformedPacket> {
         match self.broadcast_mode()? {
             BroadcastMode::Primary | BroadcastMode::Unspecified => {
                 Ok(GroupId::Primary(Epoch(self.group_id.get())))
@@ -149,7 +183,7 @@ const _: () = assert!(
 
 /// header + merkle root, used as cache key for signatures
 #[repr(transparent)]
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SignedOverDataV0([u8; RAPTORCAST_HEADER_V0_SIZE + MERKLE_HASH_SIZE]);
 
 impl SignedOverDataV0 {
@@ -167,17 +201,27 @@ impl SignedOverDataV0 {
         Self(data)
     }
 
-    pub fn signed_message(&self) -> &[u8] {
+    fn signed_message(&self) -> &[u8] {
         &self.0[SIGNATURE_SIZE..]
+    }
+
+    fn signature(&self) -> &[u8] {
+        &self.0[..SIGNATURE_SIZE]
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SignedOverData {
     V0(SignedOverDataV0),
 }
 
 impl SignedOverData {
+    pub fn signature(&self) -> &[u8] {
+        match self {
+            SignedOverData::V0(v0) => v0.signature(),
+        }
+    }
+
     pub fn signed_message(&self) -> &[u8] {
         match self {
             SignedOverData::V0(v0) => v0.signed_message(),
@@ -186,48 +230,45 @@ impl SignedOverData {
 }
 
 pub struct RaptorcastPacketV0<'a> {
-    pub header: Ref<&'a [u8], RaptorcastHeaderV0>,
-    pub merkle_proof: Ref<&'a [u8], [MerkleHash]>,
-    pub chunk_header: Ref<&'a [u8], RaptorcastChunkHeaderV0>,
-    pub chunk_header_and_payload: &'a [u8],
-    pub payload: &'a [u8],
-    pub payload_offset: usize,
+    header: Ref<&'a [u8], RaptorcastHeaderV0>,
+    merkle_proof: Ref<&'a [u8], [MerkleHash]>,
+    chunk_header: Ref<&'a [u8], RaptorcastChunkHeaderV0>,
+    chunk_header_and_payload: &'a [u8],
+    payload_offset: usize,
 }
 
 impl<'a> RaptorcastPacketV0<'a> {
-    pub fn parse(rest: &'a [u8]) -> Result<Self, MessageValidationError> {
-        if rest.len() < RaptorcastHeaderV0::SIZE {
-            return Err(MessageValidationError::TooShort);
-        }
+    pub fn parse(rest: &'a [u8]) -> Result<Self, MalformedPacket> {
+        ensure!(
+            rest.len() >= RaptorcastHeaderV0::SIZE,
+            MalformedPacket::TooShort
+        );
         let (header_bytes, rest) = rest.split_at(RaptorcastHeaderV0::SIZE);
         let header: Ref<&[u8], RaptorcastHeaderV0> =
-            Ref::from_bytes(header_bytes).map_err(|_| MessageValidationError::TooShort)?;
+            Ref::from_bytes(header_bytes).map_err(|_| MalformedPacket::TooShort)?;
 
         let tree_depth = header.tree_depth();
-        if !(regular::MIN_MERKLE_TREE_DEPTH..=regular::MAX_MERKLE_TREE_DEPTH).contains(&tree_depth)
-        {
-            return Err(MessageValidationError::InvalidTreeDepth);
-        }
+        ensure!(
+            (regular::MIN_MERKLE_TREE_DEPTH..=regular::MAX_MERKLE_TREE_DEPTH).contains(&tree_depth),
+            MalformedPacket::InvalidTreeDepth(tree_depth)
+        );
 
         let merkle_proof_len = header.merkle_proof_size();
-        if rest.len() < merkle_proof_len {
-            return Err(MessageValidationError::TooShort);
-        }
+        ensure!(rest.len() >= merkle_proof_len, MalformedPacket::TooShort);
         let (merkle_proof_bytes, chunk_header_and_payload) = rest.split_at(merkle_proof_len);
         let merkle_proof: Ref<&[u8], [MerkleHash]> =
-            Ref::from_bytes(merkle_proof_bytes).map_err(|_| MessageValidationError::TooShort)?;
+            Ref::from_bytes(merkle_proof_bytes).map_err(|_| MalformedPacket::TooShort)?;
 
-        if chunk_header_and_payload.len() < RaptorcastChunkHeaderV0::SIZE {
-            return Err(MessageValidationError::TooShort);
-        }
+        ensure!(
+            chunk_header_and_payload.len() >= RaptorcastChunkHeaderV0::SIZE,
+            MalformedPacket::TooShort
+        );
         let (chunk_header_bytes, payload) =
             chunk_header_and_payload.split_at(RaptorcastChunkHeaderV0::SIZE);
         let chunk_header: Ref<&[u8], RaptorcastChunkHeaderV0> =
-            Ref::from_bytes(chunk_header_bytes).map_err(|_| MessageValidationError::TooShort)?;
+            Ref::from_bytes(chunk_header_bytes).map_err(|_| MalformedPacket::TooShort)?;
 
-        if payload.is_empty() {
-            return Err(MessageValidationError::TooShort);
-        }
+        ensure!(!payload.is_empty(), MalformedPacket::TooShort);
 
         let payload_offset =
             RAPTORCAST_HEADER_V0_SIZE + merkle_proof_len + RaptorcastChunkHeaderV0::SIZE;
@@ -237,15 +278,15 @@ impl<'a> RaptorcastPacketV0<'a> {
             merkle_proof,
             chunk_header,
             chunk_header_and_payload,
-            payload,
             payload_offset,
         })
     }
 
-    pub fn split_chunk(&self, message: &Bytes) -> Result<Bytes, MessageValidationError> {
-        if message.len() < self.payload_offset {
-            return Err(MessageValidationError::TooShort);
-        }
+    pub fn split_chunk(&self, message: &Bytes) -> Result<Bytes, MalformedPacket> {
+        ensure!(
+            message.len() >= self.payload_offset,
+            MalformedPacket::TooShort
+        );
         Ok(message.slice(self.payload_offset..))
     }
 
@@ -253,12 +294,12 @@ impl<'a> RaptorcastPacketV0<'a> {
         &self.chunk_header_and_payload[RaptorcastChunkHeaderV0::SIZE..]
     }
 
-    pub fn compute_merkle_root(&self) -> Result<MerkleHash, MessageValidationError> {
+    fn compute_merkle_root(&self) -> Result<MerkleHash, InvalidChunk> {
         let proof = MerkleProof::new_from_leaf_idx(
             self.merkle_proof.to_vec(),
             self.chunk_header.merkle_leaf_idx as u16,
         )
-        .ok_or(MessageValidationError::InvalidMerkleProof)?;
+        .ok_or(InvalidChunk::InvalidMerkleProof)?;
 
         let mut hasher = HasherType::new();
         hasher.update(self.chunk_header_and_payload);
@@ -266,7 +307,71 @@ impl<'a> RaptorcastPacketV0<'a> {
 
         proof
             .compute_root(&leaf_hash)
-            .ok_or(MessageValidationError::InvalidMerkleProof)
+            .ok_or(InvalidChunk::InvalidMerkleProof)
+    }
+
+    fn ensure_app_message_length(&self) -> Result<usize, InvalidChunk> {
+        let app_message_len = self.header.app_message_len.get() as usize;
+        ensure!(
+            app_message_len > 0 && app_message_len <= MAX_MESSAGE_SIZE,
+            InvalidChunk::InvalidAppMessageLen(app_message_len)
+        );
+        Ok(app_message_len)
+    }
+
+    // Validates all the header fields to be consistent and within
+    // expected bounds. Does not check the signature yet.
+    fn validate_chunk_meta(
+        &self,
+        common_header: &Ref<&[u8], RaptorcastHeader>,
+        max_age_ms: u64,
+    ) -> Result<ChunkMeta, InvalidChunk> {
+        let app_message_len = self.ensure_app_message_length()?;
+        let timestamp = self.header.unix_ts_ms.get();
+        ensure_valid_timestamp(timestamp, max_age_ms)?;
+
+        let merkle_root = self.compute_merkle_root()?;
+        let chunk_len = self.payload().len();
+        ensure!(
+            chunk_len >= regular::MIN_CHUNK_LENGTH || chunk_len == app_message_len,
+            InvalidChunk::InvalidChunkLen
+        );
+
+        let num_source_symbols = app_message_len.div_ceil(chunk_len);
+        ensure!(
+            (monad_raptor::SOURCE_SYMBOLS_MIN..=monad_raptor::SOURCE_SYMBOLS_MAX)
+                .contains(&num_source_symbols),
+            InvalidChunk::InvalidAppMessageLen(app_message_len)
+        );
+        let mut chunk_id_cap = regular::MAX_REDUNDANCY
+            .scale(num_source_symbols)
+            .ok_or(InvalidChunk::InvalidChunkLen)?;
+
+        let broadcast_mode = self.header.broadcast_mode()?;
+        if matches!(broadcast_mode, BroadcastMode::Primary) {
+            // TODO: use more accurate estimation for number of rounding chunks
+            chunk_id_cap = chunk_id_cap.saturating_add(MAX_VALIDATOR_SET_SIZE);
+        }
+        let chunk_id = self.chunk_header.chunk_id.get() as usize;
+        ensure!(chunk_id < chunk_id_cap, InvalidChunk::InvalidChunkId);
+
+        let group_id = self.header.group_id()?;
+        let signed_over_data = self.signed_over_data(common_header, &merkle_root);
+        let app_message_hash = HexBytes(self.header.app_message_hash);
+        let recipient_hash = HexBytes(self.chunk_header.recipient_hash);
+
+        Ok(ChunkMeta {
+            app_message_len,
+            chunk_id,
+            num_source_symbols,
+            encoded_symbol_capacity: chunk_id_cap,
+            timestamp,
+            broadcast_mode,
+            group_id,
+            app_message_hash,
+            recipient_hash,
+            signed_over_data,
+        })
     }
 
     pub fn signed_over_data(
@@ -288,24 +393,30 @@ pub enum RaptorcastPacketVersioned<'a> {
 
 pub type CommonRaptorcastHeader<'a> = Ref<&'a [u8], RaptorcastHeader>;
 
+pub struct ChunkValidationEnv<'a, ST: CertificateSignatureRecoverable, F> {
+    pub signature_verifier: &'a mut ChunkSignatureVerifier<ST>,
+    pub max_age_ms: u64,
+    pub bypass_rate_limiter: F,
+}
+
 pub struct RaptorcastPacket<'a> {
     pub common_header: CommonRaptorcastHeader<'a>,
     pub versioned: RaptorcastPacketVersioned<'a>,
 }
 
 impl<'a> RaptorcastPacket<'a> {
-    pub fn parse(data: &'a [u8]) -> Result<Self, MessageValidationError> {
-        if data.len() < RaptorcastHeader::SIZE {
-            return Err(MessageValidationError::TooShort);
-        }
-
+    pub fn parse(data: &'a [u8]) -> Result<Self, MalformedPacket> {
+        ensure!(
+            data.len() >= RaptorcastHeader::SIZE,
+            MalformedPacket::TooShort
+        );
         let (header_bytes, rest) = data.split_at(RaptorcastHeader::SIZE);
         let header: Ref<&[u8], RaptorcastHeader> =
-            Ref::from_bytes(header_bytes).map_err(|_| MessageValidationError::TooShort)?;
+            Ref::from_bytes(header_bytes).map_err(|_| MalformedPacket::TooShort)?;
 
         let versioned = match header.version.get() {
             0 => RaptorcastPacketVersioned::V0(RaptorcastPacketV0::parse(rest)?),
-            v => return Err(MessageValidationError::UnknownVersion(v)),
+            v => return Err(MalformedPacket::UnknownVersion(v)),
         };
 
         Ok(Self {
@@ -313,111 +424,93 @@ impl<'a> RaptorcastPacket<'a> {
             versioned,
         })
     }
-}
 
-pub fn validate_message_v0<ST, F>(
-    signature_verifier: &mut ChunkSignatureVerifier<ST>,
-    common_header: &Ref<&[u8], RaptorcastHeader>,
-    packet: &RaptorcastPacketV0,
-    message: &Bytes,
-    max_age_ms: u64,
-    bypass_rate_limiter: F,
-) -> Result<ValidatedMessage<CertificateSignaturePubKey<ST>>, MessageValidationError>
-where
-    ST: CertificateSignatureRecoverable,
-    F: FnOnce(Epoch) -> bool,
-{
-    let app_message_len = packet.header.app_message_len.get() as usize;
-    if app_message_len > MAX_MESSAGE_SIZE {
-        return Err(MessageValidationError::TooLong);
+    fn validate_chunk_meta(&self, max_age_ms: u64) -> Result<ChunkMeta, InvalidChunk> {
+        match &self.versioned {
+            RaptorcastPacketVersioned::V0(v0) => {
+                v0.validate_chunk_meta(&self.common_header, max_age_ms)
+            }
+        }
     }
 
-    ensure_valid_timestamp(packet.header.unix_ts_ms.get(), max_age_ms)?;
-
-    let broadcast_mode = packet.header.broadcast_mode()?;
-    let group_id = packet.header.group_id()?;
-
-    match broadcast_mode {
-        BroadcastMode::Unspecified | BroadcastMode::Secondary => {
-            validate_chunk_id(packet, regular::MAX_REDUNDANCY, 0)?
-        }
-        BroadcastMode::Primary => {
-            validate_chunk_id(packet, regular::MAX_REDUNDANCY, MAX_VALIDATOR_SET_SIZE)?
-        }
-    };
-
-    let signature = <ST as CertificateSignature>::deserialize(&common_header.signature)
-        .map_err(|_| MessageValidationError::InvalidSignature)?;
-
-    let merkle_root = packet.compute_merkle_root()?;
-
-    let signed_over: SignatureCacheKey = packet.signed_over_data(common_header, &merkle_root);
-
-    let author = if let Some(author) = signature_verifier.load_cached(&signed_over) {
-        author
-    } else {
-        let new_author = match group_id {
-            GroupId::Primary(epoch) if bypass_rate_limiter(epoch) => {
-                signature_verifier.verify_force(signature, signed_over.signed_message())?
-            }
-            _ => signature_verifier.verify(signature, signed_over.signed_message())?,
+    pub fn validate_chunk<ST, F>(
+        &self,
+        message: &Bytes,
+        env: ChunkValidationEnv<'_, ST, F>,
+    ) -> Result<ValidatedChunk<CertificateSignaturePubKey<ST>>, InvalidChunk>
+    where
+        ST: CertificateSignatureRecoverable,
+        F: FnOnce(Epoch) -> bool,
+    {
+        let meta = self.validate_chunk_meta(env.max_age_ms)?;
+        let author = verify_signature(env.signature_verifier, &meta, env.bypass_rate_limiter)?;
+        let chunk = match &self.versioned {
+            RaptorcastPacketVersioned::V0(v0) => v0.split_chunk(message)?,
         };
-        signature_verifier.save_cache(signed_over, new_author);
-        new_author
-    };
 
-    Ok(ValidatedMessage {
-        message: message.clone(),
-        author,
-        group_id,
-        unix_ts_ms: packet.header.unix_ts_ms.get(),
-        app_message_hash: HexBytes(packet.header.app_message_hash),
-        app_message_len: packet.header.app_message_len.get(),
-        broadcast_mode,
-        recipient_hash: HexBytes(packet.chunk_header.recipient_hash),
-        chunk_id: packet.chunk_header.chunk_id.get(),
-        chunk: packet.split_chunk(message)?,
-    })
+        Ok(ValidatedChunk {
+            chunk,
+            message: message.clone(),
+            author,
+            group_id: meta.group_id,
+            unix_ts_ms: meta.timestamp,
+            app_message_hash: meta.app_message_hash,
+            app_message_len: meta.app_message_len as u32,
+            broadcast_mode: meta.broadcast_mode,
+            recipient_hash: meta.recipient_hash,
+            chunk_id: meta.chunk_id as u16,
+            num_source_symbols: meta.num_source_symbols,
+            encoded_symbol_capacity: meta.encoded_symbol_capacity,
+        })
+    }
 }
 
-fn ensure_valid_timestamp(unix_ts_ms: u64, max_age_ms: u64) -> Result<(), MessageValidationError> {
-    let current_time_ms = if let Ok(current_time_elapsed) = std::time::UNIX_EPOCH.elapsed() {
+fn ensure_valid_timestamp(packet_ts_ms: u64, max_age_ms: u64) -> Result<(), InvalidChunk> {
+    let current_ts_ms = if let Ok(current_time_elapsed) = std::time::UNIX_EPOCH.elapsed() {
         current_time_elapsed.as_millis() as u64
     } else {
         warn!("system time is before unix epoch, ignoring timestamp");
         return Ok(());
     };
-    let delta = (current_time_ms as i64).saturating_sub(unix_ts_ms as i64);
-    if delta.unsigned_abs() > max_age_ms {
-        Err(MessageValidationError::InvalidTimestamp {
-            timestamp: unix_ts_ms,
-            max: max_age_ms,
-            delta,
-        })
-    } else {
-        Ok(())
+
+    let delta_abs = current_ts_ms.abs_diff(packet_ts_ms);
+    if delta_abs > max_age_ms {
+        return Err(InvalidChunk::InvalidTimestamp {
+            packet_ts_ms,
+            current_ts_ms,
+        });
     }
+
+    Ok(())
 }
 
-pub(crate) fn validate_chunk_id(
-    packet: &RaptorcastPacketV0,
-    max_redundancy: Redundancy,
-    max_rounding_chunks: usize,
-) -> Result<(), MessageValidationError> {
-    let symbol_len = packet.payload().len();
-    if symbol_len == 0 {
-        return Err(MessageValidationError::TooShort);
-    }
-    let base_chunks = (packet.header.app_message_len.get() as usize).div_ceil(symbol_len);
-    let num_chunks = max_redundancy
-        .scale(base_chunks)
-        .ok_or(MessageValidationError::TooLong)?
-        + max_rounding_chunks;
+fn verify_signature<ST, F>(
+    signature_verifier: &mut ChunkSignatureVerifier<ST>,
+    chunk_meta: &ChunkMeta,
+    bypass_rate_limiter: F,
+) -> Result<NodeId<CertificateSignaturePubKey<ST>>, InvalidChunk>
+where
+    ST: CertificateSignatureRecoverable,
+    F: FnOnce(Epoch) -> bool,
+{
+    let signed_over_data = &chunk_meta.signed_over_data;
+    if let Some(author) = signature_verifier.load_cached(signed_over_data) {
+        return Ok(author); // cache hit
+    };
 
-    let chunk_id = packet.chunk_header.chunk_id.get() as usize;
+    let signature = signed_over_data.signature();
+    let signature = <ST as CertificateSignature>::deserialize(signature)
+        .map_err(|_| InvalidChunk::InvalidSignature)?;
 
-    if chunk_id >= num_chunks {
-        return Err(MessageValidationError::InvalidChunkId);
-    }
-    Ok(())
+    // bypass signature verification rate limiter if sender is
+    // validator.
+    let bypass = chunk_meta.get_epoch().is_some_and(bypass_rate_limiter);
+    let author = if bypass {
+        signature_verifier.verify_force(signature, signed_over_data.signed_message())
+    } else {
+        signature_verifier.verify(signature, signed_over_data.signed_message())
+    }?;
+    signature_verifier.save_cache(*signed_over_data, author);
+
+    Ok(author)
 }
