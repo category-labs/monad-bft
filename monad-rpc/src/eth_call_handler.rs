@@ -13,9 +13,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{future::Future, sync::Arc};
+use std::{future::Future, path::Path, sync::Arc};
 
-use monad_ethcall::EthCallExecutor;
+use monad_ethcall::{EthCallExecutor, PoolConfig};
 use tokio::sync::{Semaphore, SemaphorePermit, TryAcquireError};
 use tracing::error;
 
@@ -27,7 +27,11 @@ use crate::{
 #[derive(Clone, Debug)]
 pub struct EthCallHandlerConfig {
     pub enable_stats: bool,
-    pub executor_fibers: usize,
+    pub pool_low: PoolConfig,
+    pub pool_high: PoolConfig,
+    pub pool_block: PoolConfig,
+    pub tx_exec_num_fibers: u32,
+    pub node_cache_max_mem: u64,
     pub max_concurrent_permits: usize,
 }
 
@@ -41,7 +45,16 @@ pub struct EthCallHandler {
 }
 
 impl EthCallHandler {
-    pub fn new(config: EthCallHandlerConfig, executor: Arc<EthCallExecutor>) -> Self {
+    pub fn new(config: EthCallHandlerConfig, triedb_path: &Path) -> Self {
+        let executor = Arc::new(EthCallExecutor::new(
+            config.pool_low,
+            config.pool_high,
+            config.pool_block,
+            config.tx_exec_num_fibers,
+            config.node_cache_max_mem,
+            triedb_path,
+        ));
+
         let rate_limiter = Arc::new(Semaphore::new(config.max_concurrent_permits));
 
         let stats_tracker = config
