@@ -13,40 +13,31 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::sync::Arc;
-
 use actix::{Actor, Context};
 use actix_web::{
     dev::{ServiceRequest, ServiceResponse},
     Error,
 };
 use monad_archive::prelude::ArchiveReader;
-use monad_ethcall::EthCallExecutor;
 use monad_triedb_utils::triedb_env::TriedbEnv;
-use tokio::sync::Semaphore;
 use tracing_actix_web::RootSpanBuilder;
 
-use super::eth::call::EthCallStatsTracker;
 use crate::{
-    chainstate::ChainState, comparator::RpcComparator, middleware::Metrics,
-    txpool::EthTxPoolBridgeClient,
+    chainstate::ChainState, comparator::RpcComparator, eth_call_handler::EthCallHandler,
+    middleware::Metrics, txpool::EthTxPoolBridgeClient,
 };
 
 #[derive(Clone)]
 pub struct MonadRpcResources {
     pub txpool_bridge_client: Option<EthTxPoolBridgeClient>,
     pub triedb_reader: Option<TriedbEnv>,
-    pub eth_call_executor: Option<Arc<EthCallExecutor>>,
-    pub eth_call_executor_fibers: usize,
-    pub eth_call_stats_tracker: Option<Arc<EthCallStatsTracker>>,
+    pub eth_call_handler: Option<EthCallHandler>,
     pub archive_reader: Option<ArchiveReader>,
     pub chain_id: u64,
     pub chain_state: Option<ChainState<TriedbEnv>>,
     pub batch_request_limit: u16,
     pub max_response_size: u32,
     pub allow_unprotected_txs: bool,
-    pub rate_limiter: Arc<Semaphore>,
-    pub total_permits: usize,
     pub logs_max_block_range: u64,
     pub eth_call_provider_gas_limit: u64,
     pub eth_estimate_gas_provider_gas_limit: u64,
@@ -55,25 +46,22 @@ pub struct MonadRpcResources {
     pub dry_run_get_logs_index: bool,
     pub use_eth_get_logs_index: bool,
     pub max_finalized_block_cache_len: u64,
-    pub enable_eth_call_statistics: bool,
     pub metrics: Option<Metrics>,
     pub rpc_comparator: Option<RpcComparator>,
 }
 
 impl MonadRpcResources {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         txpool_bridge_client: Option<EthTxPoolBridgeClient>,
         triedb_reader: Option<TriedbEnv>,
-        eth_call_executor: Option<Arc<EthCallExecutor>>,
-        eth_call_executor_fibers: usize,
+        eth_call_handler: Option<EthCallHandler>,
         archive_reader: Option<ArchiveReader>,
         chain_id: u64,
         chain_state: Option<ChainState<TriedbEnv>>,
         batch_request_limit: u16,
         max_response_size: u32,
         allow_unprotected_txs: bool,
-        rate_limiter: Arc<Semaphore>,
-        total_permits: usize,
         logs_max_block_range: u64,
         eth_call_provider_gas_limit: u64,
         eth_estimate_gas_provider_gas_limit: u64,
@@ -82,28 +70,19 @@ impl MonadRpcResources {
         dry_run_get_logs_index: bool,
         use_eth_get_logs_index: bool,
         max_finalized_block_cache_len: u64,
-        enable_eth_call_statistics: bool,
         metrics: Option<Metrics>,
         rpc_comparator: Option<RpcComparator>,
     ) -> Self {
         Self {
             txpool_bridge_client,
             triedb_reader,
-            eth_call_executor,
-            eth_call_executor_fibers,
-            eth_call_stats_tracker: if enable_eth_call_statistics {
-                Some(Arc::new(EthCallStatsTracker::default()))
-            } else {
-                None
-            },
+            eth_call_handler,
             archive_reader,
             chain_id,
             chain_state,
             batch_request_limit,
             max_response_size,
             allow_unprotected_txs,
-            rate_limiter,
-            total_permits,
             logs_max_block_range,
             eth_call_provider_gas_limit,
             eth_estimate_gas_provider_gas_limit,
@@ -112,7 +91,6 @@ impl MonadRpcResources {
             dry_run_get_logs_index,
             use_eth_get_logs_index,
             max_finalized_block_cache_len,
-            enable_eth_call_statistics,
             metrics,
             rpc_comparator,
         }

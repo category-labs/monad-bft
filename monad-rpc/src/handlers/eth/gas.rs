@@ -13,10 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{
-    ops::{Div, Sub},
-    sync::Arc,
-};
+use std::ops::{Div, Sub};
 
 use alloy_consensus::{Header, Transaction, TxEnvelope};
 use alloy_primitives::{Address, TxKind, U256, U64};
@@ -46,7 +43,7 @@ trait EthCallProvider {
     async fn eth_call(
         &self,
         txn: TxEnvelope,
-        eth_call_executor: Option<Arc<EthCallExecutor>>,
+        eth_call_executor: Option<&EthCallExecutor>,
     ) -> CallResult;
 }
 
@@ -83,7 +80,7 @@ impl EthCallProvider for GasEstimator {
     async fn eth_call(
         &self,
         txn: TxEnvelope,
-        eth_call_executor: Option<Arc<EthCallExecutor>>,
+        eth_call_executor: Option<&EthCallExecutor>,
     ) -> CallResult {
         let (block_number, block_id) = match self.block_key {
             BlockKey::Finalized(FinalizedBlockKey(SeqNum(n))) => (n, None),
@@ -114,7 +111,7 @@ impl EthCallProvider for GasEstimator {
 
 async fn estimate_gas<T: EthCallProvider>(
     provider: &T,
-    eth_call_executor: Option<Arc<EthCallExecutor>>,
+    eth_call_executor: Option<&EthCallExecutor>,
     call_request: &mut CallRequest,
     original_tx_gas: U256,
     provider_gas_limit: u64,
@@ -122,10 +119,7 @@ async fn estimate_gas<T: EthCallProvider>(
 ) -> Result<Quantity, JsonRpcError> {
     let mut txn: TxEnvelope = call_request.clone().try_into()?;
 
-    let (gas_used, gas_refund) = match provider
-        .eth_call(txn.clone(), eth_call_executor.clone())
-        .await
-    {
+    let (gas_used, gas_refund) = match provider.eth_call(txn.clone(), eth_call_executor).await {
         monad_ethcall::CallResult::Success(monad_ethcall::SuccessCallResult {
             gas_used,
             gas_refund,
@@ -162,10 +156,7 @@ async fn estimate_gas<T: EthCallProvider>(
 
     let (mut lower_bound_gas_limit, mut upper_bound_gas_limit) =
         if txn.gas_limit() < upper_bound_gas_limit {
-            match provider
-                .eth_call(txn.clone(), eth_call_executor.clone())
-                .await
-            {
+            match provider.eth_call(txn.clone(), eth_call_executor).await {
                 monad_ethcall::CallResult::Success(monad_ethcall::SuccessCallResult {
                     gas_used,
                     ..
@@ -197,7 +188,7 @@ async fn estimate_gas<T: EthCallProvider>(
         call_request.gas = Some(U256::from(mid));
         txn = call_request.clone().try_into()?;
 
-        match provider.eth_call(txn, eth_call_executor.clone()).await {
+        match provider.eth_call(txn, eth_call_executor).await {
             monad_ethcall::CallResult::Success(monad_ethcall::SuccessCallResult { .. }) => {
                 upper_bound_gas_limit = mid;
             }
@@ -233,7 +224,7 @@ pub struct MonadEthEstimateGasParams {
 /// Generates and returns an estimate of how much gas is necessary to allow the transaction to complete.
 pub async fn monad_eth_estimateGas<T: Triedb>(
     triedb_env: &T,
-    eth_call_executor: Arc<EthCallExecutor>,
+    eth_call_executor: &EthCallExecutor,
     chain_id: u64,
     provider_gas_limit: u64,
     params: MonadEthEstimateGasParams,
@@ -327,7 +318,7 @@ pub async fn monad_eth_estimateGas<T: Triedb>(
             if acct.code_hash.is_none()
                 && matches!(
                     eth_call_provider
-                        .eth_call(txn.clone(), Some(eth_call_executor.clone()))
+                        .eth_call(txn.clone(), Some(eth_call_executor))
                         .await,
                     monad_ethcall::CallResult::Success(_)
                 )
@@ -633,7 +624,7 @@ mod tests {
     }
 
     impl EthCallProvider for MockGasEstimator {
-        async fn eth_call(&self, txn: TxEnvelope, _: Option<Arc<EthCallExecutor>>) -> CallResult {
+        async fn eth_call(&self, txn: TxEnvelope, _: Option<&EthCallExecutor>) -> CallResult {
             if txn.gas_limit() >= self.gas_used + self.gas_refund {
                 CallResult::Success(SuccessCallResult {
                     gas_used: self.gas_used,

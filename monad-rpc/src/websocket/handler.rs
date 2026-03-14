@@ -688,7 +688,7 @@ fn parse_request<'p>(body: &'p bytes::Bytes) -> Result<Request<'p>, JsonRpcError
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::Arc, time::Duration};
+    use std::time::Duration;
 
     use actix_http::{ws, ws::Frame};
     use actix_web::{web, App};
@@ -697,12 +697,11 @@ mod tests {
     use futures_util::{SinkExt as _, StreamExt as _};
     use monad_event_ring::SnapshotEventRing;
     use serde_json::json;
-    use tokio::sync::Semaphore;
 
     use super::ws_handler;
     use crate::{
         event::EventServer,
-        handlers::{eth::call::EthCallStatsTracker, resources::MonadRpcResources},
+        handlers::resources::MonadRpcResources,
         txpool::EthTxPoolBridgeClient,
         types::{
             eth_json::{EthSubscribeResult, FixedData},
@@ -727,17 +726,13 @@ mod tests {
         let app_state = MonadRpcResources {
             txpool_bridge_client: Some(EthTxPoolBridgeClient::for_testing()),
             triedb_reader: None,
-            eth_call_executor: None,
-            eth_call_executor_fibers: 64,
-            eth_call_stats_tracker: Some(Arc::new(EthCallStatsTracker::default())),
+            eth_call_handler: None,
             archive_reader: None,
             chain_id: 1337,
             chain_state: None,
             batch_request_limit: 5,
             max_response_size: 25_000_000,
             allow_unprotected_txs: false,
-            rate_limiter: Arc::new(Semaphore::new(1000)),
-            total_permits: 1000,
             logs_max_block_range: 1000,
             eth_call_provider_gas_limit: u64::MAX,
             eth_estimate_gas_provider_gas_limit: u64::MAX,
@@ -746,7 +741,6 @@ mod tests {
             dry_run_get_logs_index: false,
             use_eth_get_logs_index: false,
             max_finalized_block_cache_len: 200,
-            enable_eth_call_statistics: true,
             metrics: None,
             rpc_comparator: None,
         };
