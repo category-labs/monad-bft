@@ -392,13 +392,15 @@ impl<'a, PT: PubKey> MerkleBatch<'a, PT> {
         // merkle tree.
         let merkle_tree = self.build_merkle_tree(layout)?;
         let signature = self.sign::<ST>(key, header, merkle_tree.root());
+        let num_chunks = self.chunks.len();
 
         for (leaf_index, chunk) in self.chunks.iter_mut().enumerate() {
             // write signature and the rest of the header
             chunk.write_header(layout, &signature, header);
 
             // write merkle proof
-            let proof = merkle_tree.proof(leaf_index as u8);
+            debug_assert!(leaf_index < num_chunks);
+            let proof = merkle_tree.proof(leaf_index as u16);
             chunk.write_merkle_proof(layout, proof.siblings());
         }
 
