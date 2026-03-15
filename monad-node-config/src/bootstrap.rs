@@ -43,4 +43,10 @@ pub struct NodeBootstrapPeerConfig<ST: CertificateSignatureRecoverable> {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auth_port: Option<u16>,
+
+    #[serde(
+        alias = "direct_udp_auth_port",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub direct_udp_port: Option<u16>,
 }
