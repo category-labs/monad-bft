@@ -497,7 +497,7 @@ where
                 Some(EthAccount {
                     nonce: account.nonce,
                     balance: account.balance,
-                    code_hash: None,
+                    code: Default::default(),
                     is_delegated: account.is_delegated,
                 })
             })

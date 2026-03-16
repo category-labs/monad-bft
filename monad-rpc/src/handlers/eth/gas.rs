@@ -489,7 +489,7 @@ pub async fn monad_eth_estimateGas<T: Triedb>(
             .await
         {
             // If the account has no code, then execute the call with gas limit 21000
-            if acct.code_hash.is_none()
+            if !acct.code.has_code()
                 && matches!(
                     eth_call_provider
                         .eth_call(txn.clone(), Some(eth_call_executor))

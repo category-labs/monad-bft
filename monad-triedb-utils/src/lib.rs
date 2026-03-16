@@ -29,7 +29,7 @@ use futures::{channel::oneshot, executor::block_on, future::join_all, FutureExt}
 use key::Version;
 use monad_bls::{BlsPubKey, BlsSignatureCollection};
 use monad_crypto::certificate_signature::PubKey;
-use monad_eth_types::{EthAccount, EthHeader};
+use monad_eth_types::{AccountCode, EthAccount, EthHeader, DELEGATION_PREFIX};
 use monad_secp::SecpSignature;
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_triedb::TriedbHandle;
@@ -187,12 +187,11 @@ impl TriedbReader {
                 let res = maybe_rlp_account.and_then(rlp_decode_account);
                 match res {
                     Some(mut eth_account) => {
-                        trace!(?eth_account, block_id = ?seq_num.0, "account code_hash");
-                        match eth_account.code_hash {
-                            Some(code_hash) => {
-                                // Request code
+                        trace!(?eth_account, block_id = ?seq_num.0, "account code");
+                        match &eth_account.code {
+                            AccountCode::CodeHash(code_hash) => {
                                 let (triedb_key, key_len_nibbles) =
-                                    create_triedb_key(version, KeyInput::CodeHash(&code_hash));
+                                    create_triedb_key(version, KeyInput::CodeHash(code_hash));
                                 let res = self.handle.read(&triedb_key, key_len_nibbles, seq_num.0);
                                 trace!(?res, block_id = ?seq_num.0, ?eth_account, "account code_data");
                                 match res {
@@ -200,7 +199,7 @@ impl TriedbReader {
                                         if data.len() >= 3 {
                                             let delegation_code = &data[0..3];
                                             eth_account.is_delegated =
-                                                delegation_code == [0xef, 0x01, 0x00];
+                                                delegation_code == DELEGATION_PREFIX;
                                             if eth_account.is_delegated {
                                                 trace!(?eth_account, block_id = ?seq_num.0, "is_delegated == true");
                                             }
@@ -210,7 +209,9 @@ impl TriedbReader {
                                     None => Some(eth_account),
                                 }
                             }
-                            None => Some(eth_account),
+                            // InlineDelegated: is_delegated already set during RLP decode
+                            // None: no code to look up
+                            _ => Some(eth_account),
                         }
                     }
                     None => None,

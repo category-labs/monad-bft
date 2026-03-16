@@ -22,6 +22,7 @@ use alloy_primitives::{
     Address, Bytes, Log,
 };
 use alloy_rlp::{Decodable, Encodable, RlpDecodable};
+use monad_eth_types::AccountCode;
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{BlockKey, Triedb};
 use serde::{Deserialize, Serialize};
@@ -643,15 +644,17 @@ async fn include_code_output<T: Triedb>(
             .await
             .map_err(JsonRpcError::internal_error)?;
 
-        frame.output = if let Some(code_hash) = account.code_hash {
-            let code = triedb_env
-                .get_code(block_key, code_hash)
-                .await
-                .map_err(JsonRpcError::internal_error)?;
+        frame.output = match &account.code {
+            AccountCode::InlineDelegated(inline_code) => Bytes::copy_from_slice(inline_code),
+            AccountCode::CodeHash(code_hash) => {
+                let code = triedb_env
+                    .get_code(block_key, *code_hash)
+                    .await
+                    .map_err(JsonRpcError::internal_error)?;
 
-            code.into()
-        } else {
-            Bytes::default()
+                code.into()
+            }
+            AccountCode::None => Bytes::default(),
         };
     }
 
