@@ -37,8 +37,8 @@ use crate::{
         signature_verifier::{SignatureVerifier, SignatureVerifierError},
     },
     util::{
-        compute_hash, unix_ts_ms_now, AppMessageHash, BroadcastGroup, BroadcastMode,
-        FullNodeGroupMap, NodeIdHash, Redundancy,
+        compute_app_message_hash, compute_hash, unix_ts_ms_now, AppMessageHash, BroadcastGroup,
+        BroadcastMode, FullNodeGroupMap, NodeIdHash, Redundancy,
     },
 };
 
@@ -249,18 +249,16 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                 None
             }
 
-            Err(TryDecodeError::AppMessageHashMismatch { expected, actual }) => {
-                tracing::error!(
+            Err(TryDecodeError::MessageTainted) => {
+                tracing::debug!(
                     author =? parsed_message.author,
-                    ?expected,
-                    ?actual,
                     "mismatch message hash"
                 );
                 None
             }
 
             Ok(TryDecodeStatus::RejectedByCache) => {
-                tracing::warn!(
+                tracing::debug!(
                     author =? parsed_message.author,
                     chunk_id = parsed_message.chunk_id,
                     "message rejected by cache, author may be flooding messages",
@@ -276,6 +274,18 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                 author,
                 app_message,
             }) => {
+                let actual_hash = compute_app_message_hash(&app_message);
+                if actual_hash != parsed_message.app_message_hash {
+                    tracing::error!(
+                        author =? parsed_message.author,
+                        expected =? parsed_message.app_message_hash,
+                        ?actual_hash,
+                        "message failed hash validation"
+                    );
+                    self.decoder_cache.mark_tainted(parsed_message);
+                    return None;
+                }
+
                 self.metrics.record_broadcast_latency(
                     parsed_message.broadcast_mode,
                     parsed_message.unix_ts_ms,

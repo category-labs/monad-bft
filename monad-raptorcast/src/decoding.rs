@@ -27,10 +27,7 @@ use bitvec::prelude::*;
 use bytes::Bytes;
 use indexmap::IndexMap;
 use lru::LruCache;
-use monad_crypto::{
-    certificate_signature::PubKey,
-    hasher::{Hasher as _, HasherType},
-};
+use monad_crypto::certificate_signature::PubKey;
 use monad_executor::{ExecutorMetrics, ExecutorMetricsChain};
 use monad_raptor::{ManagedDecoder, SOURCE_SYMBOLS_MIN};
 use monad_types::{NodeId, Stake};
@@ -39,7 +36,7 @@ use rand::Rng as _;
 
 use crate::{
     udp::{ValidatedMessage, MAX_REDUNDANCY},
-    util::{compute_hash, AppMessageHash, BroadcastMode, HexBytes, NodeIdHash},
+    util::{compute_hash, AppMessageHash, BroadcastMode, NodeIdHash},
 };
 
 pub const DECODING_CACHE_METRIC_PREFIX: &str = "monad.raptorcast.decoding_cache";
@@ -186,9 +183,7 @@ where
         let decoder_state = match self.decoder_state_entry(&cache_key, message, context) {
             Some(MessageCacheEntry::RecentlyDecoded(recently_decoded)) => {
                 // the app message was recently decoded
-                recently_decoded
-                    .handle_message(message)
-                    .map_err(TryDecodeError::InvalidSymbol)?;
+                recently_decoded.handle_message(message)?;
                 self.metrics[METRIC_RECENTLY_DECODED_HIT] += 1;
                 return Ok(TryDecodeStatus::RecentlyDecoded);
             }
@@ -243,18 +238,6 @@ where
             .remove_decoder_state(&cache_key, message, context)
             .expect("decoder state must exist");
 
-        let decoded_app_message_hash = HexBytes({
-            let mut hasher = HasherType::new();
-            hasher.update(&decoded);
-            hasher.hash().0[..20].try_into().unwrap()
-        });
-        if decoded_app_message_hash != message.app_message_hash {
-            return Err(TryDecodeError::AppMessageHashMismatch {
-                expected: message.app_message_hash,
-                actual: decoded_app_message_hash,
-            });
-        }
-
         self.recently_decoded
             .put(cache_key, RecentlyDecodedState::from(decoder_state));
         self.metrics[METRIC_DECODED] += 1;
@@ -263,6 +246,13 @@ where
             author: message.author,
             app_message: decoded,
         })
+    }
+
+    pub fn mark_tainted(&mut self, message: &ValidatedMessage<PT>) {
+        let cache_key = CacheKey::from_message(message);
+        if let Some(recently_decoded) = self.recently_decoded.get_mut(&cache_key) {
+            recently_decoded.mark_tainted();
+        }
     }
 
     fn decoder_state_entry(
@@ -1392,10 +1382,7 @@ enum MessageCacheEntry<'a> {
 pub(crate) enum TryDecodeError {
     InvalidSymbol(InvalidSymbol),
     UnableToReconstructSourceData,
-    AppMessageHashMismatch {
-        expected: AppMessageHash,
-        actual: AppMessageHash,
-    },
+    MessageTainted,
 }
 
 #[derive(Debug)]
@@ -1604,28 +1591,43 @@ struct RecentlyDecodedState {
     app_message_len: usize,
     seen_esis: BitVec<usize, Lsb0>,
     excess_chunk_count: usize,
+    // the flag signifies that although decoding is successful, the
+    // message does not pass further validation (e.g. app message hash
+    // mismatch).
+    message_tainted: bool,
 }
 
 impl RecentlyDecodedState {
     pub fn handle_message<PT>(
         &mut self,
         message: &ValidatedMessage<PT>,
-    ) -> Result<(), InvalidSymbol>
+    ) -> Result<(), TryDecodeError>
     where
         PT: PubKey,
     {
+        if self.message_tainted {
+            // we have already marked this message as tainted, so we skip
+            // any further processing.
+            return Err(TryDecodeError::MessageTainted);
+        }
+
         validate_symbol(
             message,
             self.symbol_len,
             self.app_message_len,
             &self.seen_esis,
-        )?;
+        )
+        .map_err(TryDecodeError::InvalidSymbol)?;
 
         let symbol_id = message.chunk_id.into();
         self.seen_esis.set(symbol_id, true);
         self.excess_chunk_count += 1;
 
         Ok(())
+    }
+
+    pub fn mark_tainted(&mut self) {
+        self.message_tainted = true;
     }
 }
 
@@ -1636,6 +1638,7 @@ impl From<DecoderState> for RecentlyDecodedState {
             app_message_len: decoder_state.app_message_len,
             seen_esis: decoder_state.seen_esis,
             excess_chunk_count: 0,
+            message_tainted: false,
         }
     }
 }
@@ -1713,11 +1716,15 @@ fn quota_policy_from_config<PT: PubKey>(config: &SoftQuotaCacheConfig) -> Box<dy
 mod test {
     use bytes::BytesMut;
     use itertools::Itertools;
+    use monad_crypto::hasher::{Hasher as _, HasherType};
     use monad_types::{Epoch, Stake};
     use rand::seq::SliceRandom as _;
 
     use super::*;
-    use crate::{udp::GroupId, util::BroadcastMode};
+    use crate::{
+        udp::GroupId,
+        util::{BroadcastMode, HexBytes},
+    };
     type PT = monad_crypto::NopPubKey;
 
     const EPOCH: Epoch = Epoch(1);
@@ -2440,6 +2447,55 @@ mod test {
             (1800, 9) | // small=1,large=1 (evicted)
             (2000, 10) // large=1,small=0 (evicted)
         ));
+    }
+
+    // after decoding completes, the cache entry must exist in
+    // recently_decoded regardless of whether the decoded payload is
+    // correct (e.g. matches the claimed app_message_hash). If we
+    // simply discard such messages, the same symbols can be reused to
+    // re-trigger decoding.
+    #[test]
+    fn test_hash_mismatch_does_not_evict_cache_entry() {
+        let app_message = Bytes::from(vec![1u8; APP_MESSAGE_LEN]);
+        let author = node_id(0);
+        let mut symbols = make_symbols(&app_message, author, UNIX_TS_MS);
+
+        let wrong_hash = HexBytes([0xAA; 20]);
+        for symbol in &mut symbols {
+            symbol.app_message_hash = wrong_hash;
+        }
+
+        let context = DecodingContext::new(None, UNIX_TS_MS);
+        let mut cache = make_cache(10, 10, 10);
+
+        // keep the last symbol for testing
+        let decode_count = symbols.len() - 1;
+        let res = try_decode_all(&mut cache, &context, symbols.iter().take(decode_count)).unwrap();
+        assert_eq!(res.len(), 1); // decoding should success
+
+        // the message should be moved to recently_decoded lru cache
+        assert_eq!(cache.recently_decoded_len(), 1);
+        assert_eq!(cache.pending_len(MessageTier::P2P), 0);
+
+        // for an unseen symbol, it should return RecentlyDecoded
+        let unseen_symbol = symbols.last().unwrap();
+        let status = cache.try_decode(unseen_symbol, &context);
+        assert!(matches!(status, Ok(TryDecodeStatus::RecentlyDecoded)));
+
+        // for a seen symbol, it should detect duplicate symbol id
+        let seen_symbol = symbols.first().unwrap();
+        let status = cache.try_decode(seen_symbol, &context);
+        assert!(matches!(
+            status,
+            Err(TryDecodeError::InvalidSymbol(
+                InvalidSymbol::DuplicateSymbol { .. }
+            ))
+        ));
+
+        // if the message has been marked tainted, it should return as such
+        cache.mark_tainted(seen_symbol);
+        let status = cache.try_decode(seen_symbol, &context);
+        assert!(matches!(status, Err(TryDecodeError::MessageTainted)));
     }
 
     fn try_decode_all<'a>(
