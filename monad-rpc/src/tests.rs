@@ -13,8 +13,6 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::sync::Arc;
-
 use actix_http::{Request, StatusCode};
 use actix_web::{
     body::{to_bytes, MessageBody},
@@ -23,12 +21,10 @@ use actix_web::{
 };
 use serde_json::{json, Value};
 use test_case::test_case;
-use tokio::sync::Semaphore;
 use tracing_actix_web::TracingLogger;
 
 use crate::{
     handlers::{
-        eth::call::EthCallStatsTracker,
         resources::{MonadJsonRootSpanBuilder, MonadRpcResources},
         rpc_handler,
     },
@@ -42,17 +38,13 @@ pub async fn init_server(
     let app_state = MonadRpcResources {
         txpool_bridge_client: Some(EthTxPoolBridgeClient::for_testing()),
         triedb_reader: None,
-        eth_call_executor: None,
-        eth_call_executor_fibers: 64,
-        eth_call_stats_tracker: Some(Arc::new(EthCallStatsTracker::default())),
+        eth_call_handler: None,
         archive_reader: None,
         chain_id: 1337,
         chain_state: None,
         batch_request_limit: 5,
         max_response_size: 25_000_000,
         allow_unprotected_txs: false,
-        rate_limiter: Arc::new(Semaphore::new(1000)),
-        total_permits: 1000,
         logs_max_block_range: 1000,
         eth_call_provider_gas_limit: u64::MAX,
         eth_estimate_gas_provider_gas_limit: u64::MAX,
@@ -61,7 +53,6 @@ pub async fn init_server(
         dry_run_get_logs_index: false,
         use_eth_get_logs_index: false,
         max_finalized_block_cache_len: 200,
-        enable_eth_call_statistics: true,
         metrics: None,
         rpc_comparator: None,
     };

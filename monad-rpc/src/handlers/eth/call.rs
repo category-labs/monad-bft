@@ -42,6 +42,7 @@ use tracing::{debug, trace};
 
 use crate::{
     chainstate::get_block_key_from_tag_or_hash,
+    eth_call_handler::EthCallHandlerConfig,
     handlers::debug::{decode_call_frame, Tracer, TracerObject},
     middleware::TimingRequestId,
     types::{
@@ -658,7 +659,7 @@ impl CallParams {
 #[tracing::instrument(level = "debug")]
 pub async fn prepare_eth_call<T: Triedb + TriedbPath>(
     triedb_env: &T,
-    eth_call_executor: Arc<EthCallExecutor>,
+    eth_call_executor: &EthCallExecutor,
     chain_id: u64,
     eth_call_provider_gas_limit: u64,
     mut params: CallParams,
@@ -780,7 +781,7 @@ pub async fn prepare_eth_call<T: Triedb + TriedbPath>(
 )]
 pub async fn monad_eth_call<T: Triedb + TriedbPath>(
     triedb_env: &T,
-    eth_call_executor: Arc<EthCallExecutor>,
+    eth_call_executor: &EthCallExecutor,
     chain_id: u64,
     eth_call_provider_gas_limit: u64,
     params: MonadEthCallParams,
@@ -816,7 +817,7 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
 #[allow(non_snake_case)]
 pub async fn monad_debug_traceCall<T: Triedb + TriedbPath>(
     triedb_env: &T,
-    eth_call_executor: Arc<EthCallExecutor>,
+    eth_call_executor: &EthCallExecutor,
     chain_id: u64,
     eth_call_gas_limit: u64,
     params: MonadDebugTraceCallParams,
@@ -884,7 +885,7 @@ pub async fn monad_debug_traceCall<T: Triedb + TriedbPath>(
 #[allow(non_snake_case)]
 pub async fn monad_createAccessList<T: Triedb + TriedbPath>(
     triedb_env: &T,
-    eth_call_executor: Arc<EthCallExecutor>,
+    eth_call_executor: &EthCallExecutor,
     chain_id: u64,
     eth_call_gas_limit: u64,
     params: MonadCreateAccessListParams,
@@ -893,7 +894,7 @@ pub async fn monad_createAccessList<T: Triedb + TriedbPath>(
 
     let raw_payload: Vec<u8> = match prepare_eth_call(
         triedb_env,
-        eth_call_executor.clone(),
+        eth_call_executor,
         chain_id,
         eth_call_gas_limit,
         CallParams::AccessList(params.clone()),
@@ -983,19 +984,19 @@ pub struct EthCallCapacityStats {
 #[tracing::instrument(level = "debug")]
 #[monad_rpc_docs::rpc(
     method = "admin_ethCallStatistics",
-    ignore = "eth_call_executor_fibers,total_permits,available_permits"
+    ignore = "config,available_permits"
 )]
 pub async fn monad_admin_ethCallStatistics(
-    eth_call_executor_fibers: usize,
-    total_permits: usize,
+    config: &EthCallHandlerConfig,
     available_permits: usize,
     stats_tracker: &EthCallStatsTracker,
 ) -> JsonRpcResult<EthCallCapacityStats> {
-    let active_requests = total_permits - available_permits;
+    let active_requests = config.max_concurrent_permits - available_permits;
 
-    let inactive_executors = eth_call_executor_fibers.saturating_sub(active_requests);
+    let inactive_executors = config.executor_fibers.saturating_sub(active_requests);
 
-    let queued_requests = active_requests.saturating_sub(eth_call_executor_fibers);
+    let queued_requests = active_requests.saturating_sub(config.executor_fibers);
+
     let (max_age, avg_age, cumulative_stats) = stats_tracker.get_stats().await;
 
     Ok(EthCallCapacityStats {

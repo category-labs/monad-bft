@@ -26,6 +26,7 @@ use monad_pprof::start_pprof_server;
 use monad_rpc::{
     chainstate::{buffer::ChainStateBuffer, ChainState},
     comparator::RpcComparator,
+    eth_call_handler::{EthCallHandler, EthCallHandlerConfig},
     event::EventServer,
     handlers::{
         resources::{MonadJsonRootSpanBuilder, MonadRpcResources},
@@ -37,7 +38,6 @@ use monad_rpc::{
 };
 use monad_tracing_timing::TimingsLayer;
 use monad_triedb_utils::triedb_env::TriedbEnv;
-use tokio::sync::Semaphore;
 use tracing::{debug, error, info, warn};
 use tracing_actix_web::TracingLogger;
 use tracing_manytrace::{ManytraceLayer, TracingExtension};
@@ -120,11 +120,6 @@ async fn main() -> std::io::Result<()> {
             }
         });
     }
-
-    // initialize concurrent requests limiter
-    let concurrent_requests_limiter = Arc::new(Semaphore::new(
-        args.eth_call_max_concurrent_requests as usize,
-    ));
 
     MONAD_RPC_VERSION.map(|v| info!("starting monad-rpc with version {}", v));
 
@@ -364,19 +359,27 @@ async fn main() -> std::io::Result<()> {
         .as_ref()
         .map(|endpoint| RpcComparator::new(endpoint.to_string(), node_config.node_name));
 
+    let eth_call_handler = eth_call_executor.map(|executor| {
+        EthCallHandler::new(
+            EthCallHandlerConfig {
+                enable_stats: args.enable_admin_eth_call_statistics,
+                executor_fibers: args.eth_call_executor_fibers as usize,
+                max_concurrent_permits: args.eth_call_max_concurrent_requests as usize,
+            },
+            executor,
+        )
+    });
+
     let app_state = MonadRpcResources::new(
         txpool_bridge_client,
         triedb_env,
-        eth_call_executor,
-        args.eth_call_executor_fibers as usize,
+        eth_call_handler,
         archive_reader,
         node_config.chain_id,
         chain_state,
         args.batch_request_limit,
         args.max_response_size,
         args.allow_unprotected_txs,
-        concurrent_requests_limiter,
-        args.eth_call_max_concurrent_requests as usize,
         args.eth_get_logs_max_block_range,
         args.eth_call_provider_gas_limit,
         args.eth_estimate_gas_provider_gas_limit,
@@ -385,7 +388,6 @@ async fn main() -> std::io::Result<()> {
         args.dry_run_get_logs_index,
         args.use_eth_get_logs_index,
         args.max_finalized_block_cache_len,
-        args.enable_admin_eth_call_statistics,
         with_metrics.clone(),
         rpc_comparator.clone(),
     );
