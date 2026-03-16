@@ -992,10 +992,11 @@ pub async fn monad_admin_ethCallStatistics(
     stats_tracker: &EthCallStatsTracker,
 ) -> JsonRpcResult<EthCallCapacityStats> {
     let active_requests = config.max_concurrent_permits - available_permits;
+    let executor_fibers = config.pool_low.num_fibers as usize;
 
-    let inactive_executors = config.executor_fibers.saturating_sub(active_requests);
+    let inactive_executors = executor_fibers.saturating_sub(active_requests);
 
-    let queued_requests = active_requests.saturating_sub(config.executor_fibers);
+    let queued_requests = active_requests.saturating_sub(executor_fibers);
 
     let (max_age, avg_age, cumulative_stats) = stats_tracker.get_stats().await;
 

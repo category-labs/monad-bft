@@ -19,7 +19,6 @@ use actix_web::{web, App, HttpServer};
 use agent::AgentBuilder;
 use clap::Parser;
 use monad_archive::archive_reader::{redact_mongo_url, ArchiveReader};
-use monad_ethcall::EthCallExecutor;
 use monad_event_ring::{EventRing, EventRingPath};
 use monad_node_config::MonadNodeConfig;
 use monad_pprof::start_pprof_server;
@@ -259,35 +258,34 @@ async fn main() -> std::io::Result<()> {
         }
     };
 
-    let low_pool_config = monad_ethcall::PoolConfig {
-        num_threads: args.eth_call_executor_threads,
-        num_fibers: args.eth_call_executor_fibers,
-        timeout_sec: args.eth_call_executor_queuing_timeout,
-        queue_limit: args.eth_call_max_concurrent_requests,
-    };
-    let high_pool_config = monad_ethcall::PoolConfig {
-        num_threads: args.eth_call_high_executor_threads,
-        num_fibers: args.eth_call_high_executor_fibers,
-        timeout_sec: args.eth_call_high_executor_queuing_timeout,
-        queue_limit: args.eth_call_high_max_concurrent_requests,
-    };
-    let block_pool_config = monad_ethcall::PoolConfig {
-        num_threads: args.eth_trace_block_executor_threads,
-        num_fibers: args.eth_trace_block_executor_fibers,
-        timeout_sec: args.eth_trace_block_executor_queuing_timeout,
-        queue_limit: args.eth_trace_block_max_concurrent_requests,
-    };
-    let tx_exec_num_fibers = args.eth_trace_tx_executor_fibers;
-
-    let eth_call_executor = args.triedb_path.clone().as_deref().map(|path| {
-        Arc::new(EthCallExecutor::new(
-            low_pool_config,
-            high_pool_config,
-            block_pool_config,
-            tx_exec_num_fibers,
-            args.eth_call_executor_node_lru_max_mem,
-            path,
-        ))
+    let eth_call_handler = args.triedb_path.clone().as_deref().map(|triedb_path| {
+        EthCallHandler::new(
+            EthCallHandlerConfig {
+                enable_stats: args.enable_admin_eth_call_statistics,
+                pool_low: monad_ethcall::PoolConfig {
+                    num_threads: args.eth_call_executor_threads,
+                    num_fibers: args.eth_call_executor_fibers,
+                    timeout_sec: args.eth_call_executor_queuing_timeout,
+                    queue_limit: args.eth_call_max_concurrent_requests,
+                },
+                pool_high: monad_ethcall::PoolConfig {
+                    num_threads: args.eth_call_high_executor_threads,
+                    num_fibers: args.eth_call_high_executor_fibers,
+                    timeout_sec: args.eth_call_high_executor_queuing_timeout,
+                    queue_limit: args.eth_call_high_max_concurrent_requests,
+                },
+                pool_block: monad_ethcall::PoolConfig {
+                    num_threads: args.eth_trace_block_executor_threads,
+                    num_fibers: args.eth_trace_block_executor_fibers,
+                    timeout_sec: args.eth_trace_block_executor_queuing_timeout,
+                    queue_limit: args.eth_trace_block_max_concurrent_requests,
+                },
+                tx_exec_num_fibers: args.eth_trace_tx_executor_fibers,
+                node_cache_max_mem: args.eth_call_executor_node_lru_max_mem,
+                max_concurrent_permits: args.eth_call_max_concurrent_requests as usize,
+            },
+            triedb_path,
+        )
     });
 
     let with_metrics = args.otel_endpoint.map(|otel_endpoint| {
@@ -358,17 +356,6 @@ async fn main() -> std::io::Result<()> {
         .rpc_comparison_endpoint
         .as_ref()
         .map(|endpoint| RpcComparator::new(endpoint.to_string(), node_config.node_name));
-
-    let eth_call_handler = eth_call_executor.map(|executor| {
-        EthCallHandler::new(
-            EthCallHandlerConfig {
-                enable_stats: args.enable_admin_eth_call_statistics,
-                executor_fibers: args.eth_call_executor_fibers as usize,
-                max_concurrent_permits: args.eth_call_max_concurrent_requests as usize,
-            },
-            executor,
-        )
-    });
 
     let app_state = MonadRpcResources::new(
         txpool_bridge_client,
