@@ -166,7 +166,7 @@ impl ArchiveReader {
             read_timeout_secs: 2,
             ..Default::default()
         };
-        let config = args.config().await;
+        let config = args.config().await?;
         let block_data_reader =
             BlockDataArchive::new(Bucket::new(bucket.clone(), &config, Metrics::none()));
 
