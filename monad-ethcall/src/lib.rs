@@ -17,7 +17,6 @@ use std::{
     collections::HashMap,
     ffi::{CStr, CString},
     path::Path,
-    sync::Arc,
 };
 
 use alloy_consensus::{Header, Transaction as _, TxEnvelope};
@@ -196,7 +195,7 @@ pub async fn eth_call(
     sender: Address,
     block_number: u64,
     block_id: Option<[u8; 32]>,
-    eth_call_executor: Arc<EthCallExecutor>,
+    eth_call_executor: &EthCallExecutor,
     state_override_set: &StateOverrideSet,
     tracer: MonadTracer,
     gas_specified: bool,
@@ -473,7 +472,7 @@ pub async fn eth_trace_block_or_transaction(
     parent_id: Option<[u8; 32]>,
     grandparent_id: Option<[u8; 32]>,
     transaction_index: i64,
-    eth_call_executor: Arc<EthCallExecutor>,
+    eth_call_executor: &EthCallExecutor,
     tracer: MonadTracer,
 ) -> CallResult {
     let chain_config = match chain_id {

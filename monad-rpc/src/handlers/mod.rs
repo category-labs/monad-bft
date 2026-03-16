@@ -189,25 +189,15 @@ async fn admin_ethCallStatistics(
     app_state: &MonadRpcResources,
     _params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    if app_state.enable_eth_call_statistics {
-        let available_permits = app_state.rate_limiter.available_permits();
-        if let Some(tracker) = &app_state.eth_call_stats_tracker {
-            monad_admin_ethCallStatistics(
-                app_state.eth_call_executor_fibers,
-                app_state.total_permits,
-                available_permits,
-                tracker,
-            )
-            .await
-            .map(serialize_result)?
-        } else {
-            Err(JsonRpcError::internal_error(
-                "stats tracking not initialized".into(),
-            ))
-        }
-    } else {
-        Err(JsonRpcError::method_not_supported())
-    }
+    let eth_call_handler = app_state.eth_call_handler.as_ref().method_not_supported()?;
+    let tracker = eth_call_handler.stats_tracker().method_not_supported()?;
+    monad_admin_ethCallStatistics(
+        eth_call_handler.config(),
+        eth_call_handler.available_permits(),
+        tracker,
+    )
+    .await
+    .map(serialize_result)?
 }
 
 #[allow(non_snake_case)]
@@ -303,30 +293,27 @@ async fn debug_traceBlockByNumber(
 
 #[allow(non_snake_case)]
 async fn debug_traceCall(
-    _: TimingRequestId,
+    request_id: TimingRequestId,
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
     let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
-    let Some(ref eth_call_executor) = app_state.eth_call_executor else {
-        return Err(JsonRpcError::method_not_supported());
-    };
-    // acquire the concurrent requests permit
-    let _permit = &app_state
-        .rate_limiter
-        .try_acquire()
-        .map_err(|_| JsonRpcError::internal_error("eth_call concurrent requests limit".into()))?;
-
+    let eth_call_handler = app_state.eth_call_handler.as_ref().method_not_supported()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
-    monad_debug_traceCall(
-        triedb_env,
-        eth_call_executor.clone(),
-        app_state.chain_id,
-        app_state.eth_call_provider_gas_limit,
-        params,
-    )
-    .await
-    .map(serialize_result)?
+    let permit = eth_call_handler.acquire(request_id).await?;
+
+    permit
+        .execute(|executor| {
+            monad_debug_traceCall(
+                triedb_env,
+                executor,
+                app_state.chain_id,
+                app_state.eth_call_provider_gas_limit,
+                params,
+            )
+        })
+        .await
+        .map(serialize_result)?
 }
 
 #[allow(non_snake_case)]
@@ -356,44 +343,22 @@ async fn eth_call(
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
     let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
-    let Some(ref eth_call_executor) = app_state.eth_call_executor else {
-        return Err(JsonRpcError::method_not_supported());
-    };
-
-    // acquire the concurrent requests permit
-    let _permit = match app_state.rate_limiter.try_acquire() {
-        Ok(permit) => permit,
-        Err(_) => {
-            if let Some(tracker) = &app_state.eth_call_stats_tracker {
-                tracker.record_queue_rejection().await;
-            }
-            return Err(JsonRpcError::internal_error(
-                "eth_call concurrent requests limit".into(),
-            ));
-        }
-    };
-
+    let eth_call_handler = app_state.eth_call_handler.as_ref().method_not_supported()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
+    let permit = eth_call_handler.acquire(request_id).await?;
 
-    if let Some(tracker) = &app_state.eth_call_stats_tracker {
-        tracker.record_request_start(request_id).await;
-    }
-
-    let result = monad_eth_call(
-        triedb_env,
-        eth_call_executor.clone(),
-        app_state.chain_id,
-        app_state.eth_call_provider_gas_limit,
-        params,
-    )
-    .await;
-
-    if let Some(tracker) = &app_state.eth_call_stats_tracker {
-        let is_error = result.is_err();
-        tracker.record_request_complete(&request_id, is_error).await;
-    }
-
-    result.map(serialize_result)?
+    permit
+        .execute(|executor| {
+            monad_eth_call(
+                triedb_env,
+                executor,
+                app_state.chain_id,
+                app_state.eth_call_provider_gas_limit,
+                params,
+            )
+        })
+        .await
+        .map(serialize_result)?
 }
 
 #[allow(non_snake_case)]
@@ -445,30 +410,27 @@ async fn eth_sendRawTransactionSync(
 
 #[allow(non_snake_case)]
 async fn eth_createAccessList(
-    _: TimingRequestId,
+    request_id: TimingRequestId,
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
     let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
-    let Some(ref eth_call_executor) = app_state.eth_call_executor else {
-        return Err(JsonRpcError::method_not_supported());
-    };
-    // acquire the concurrent requests permit
-    let _permit = &app_state
-        .rate_limiter
-        .try_acquire()
-        .map_err(|_| JsonRpcError::internal_error("eth_call concurrent requests limit".into()))?;
-
+    let eth_call_handler = app_state.eth_call_handler.as_ref().method_not_supported()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
-    monad_createAccessList(
-        triedb_env,
-        eth_call_executor.clone(),
-        app_state.chain_id,
-        app_state.eth_call_provider_gas_limit,
-        params,
-    )
-    .await
-    .map(serialize_result)?
+    let permit = eth_call_handler.acquire(request_id).await?;
+
+    permit
+        .execute(|executor| {
+            monad_createAccessList(
+                triedb_env,
+                executor,
+                app_state.chain_id,
+                app_state.eth_call_provider_gas_limit,
+                params,
+            )
+        })
+        .await
+        .map(serialize_result)?
 }
 
 #[allow(non_snake_case)]
@@ -715,43 +677,22 @@ async fn eth_estimateGas(
     let Some(triedb_env) = &app_state.triedb_reader else {
         return Err(JsonRpcError::method_not_supported());
     };
-    let Some(ref eth_call_executor) = app_state.eth_call_executor else {
-        return Err(JsonRpcError::method_not_supported());
-    };
-
-    // acquire the concurrent requests permit
-    let _permit = match app_state.rate_limiter.try_acquire() {
-        Ok(permit) => permit,
-        Err(_) => {
-            if let Some(tracker) = &app_state.eth_call_stats_tracker {
-                tracker.record_queue_rejection().await;
-            }
-            return Err(JsonRpcError::internal_error(
-                "eth_estimateGas concurrent requests limit".into(),
-            ));
-        }
-    };
-
-    if let Some(tracker) = &app_state.eth_call_stats_tracker {
-        tracker.record_request_start(request_id).await;
-    }
-
+    let eth_call_handler = app_state.eth_call_handler.as_ref().method_not_supported()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
-    let result = monad_eth_estimateGas(
-        triedb_env,
-        eth_call_executor.clone(),
-        app_state.chain_id,
-        app_state.eth_estimate_gas_provider_gas_limit,
-        params,
-    )
-    .await;
+    let permit = eth_call_handler.acquire(request_id).await?;
 
-    if let Some(tracker) = &app_state.eth_call_stats_tracker {
-        let is_error = result.is_err();
-        tracker.record_request_complete(&request_id, is_error).await;
-    }
-
-    result.map(serialize_result)?
+    permit
+        .execute(|executor| {
+            monad_eth_estimateGas(
+                triedb_env,
+                executor,
+                app_state.chain_id,
+                app_state.eth_estimate_gas_provider_gas_limit,
+                params,
+            )
+        })
+        .await
+        .map(serialize_result)?
 }
 
 #[allow(non_snake_case)]

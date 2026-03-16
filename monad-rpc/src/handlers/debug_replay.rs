@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{num::TryFromIntError, sync::Arc};
+use std::num::TryFromIntError;
 
 use monad_ethcall::{eth_trace_block_or_transaction, CallResult, EthCallExecutor, MonadTracer};
 use monad_triedb_utils::triedb_env::{BlockKey, Triedb};
@@ -32,7 +32,7 @@ use crate::{
     middleware::TimingRequestId,
     types::{
         eth_json::{BlockTagOrHash, BlockTags, EthHash},
-        jsonrpc::{JsonRpcError, JsonRpcResult},
+        jsonrpc::{JsonRpcError, JsonRpcResult, JsonRpcResultExt},
     },
 };
 
@@ -134,7 +134,7 @@ impl TryFrom<BlockTagOrHash> for EthHash {
 /// A generic handler for debug trace requests that requires transaction replay (e.g., PreStateTracer).
 pub async fn monad_debug_trace_replay<T: Triedb>(
     triedb_env: &T,
-    eth_call_executor: Arc<EthCallExecutor>,
+    eth_call_executor: &EthCallExecutor,
     chain_id: u64,
     params: &impl DebugTraceParams,
 ) -> JsonRpcResult<Box<RawValue>> {
@@ -240,7 +240,7 @@ pub async fn monad_debug_trace_replay<T: Triedb>(
     let raw_payload = match call_result {
         CallResult::Success(monad_ethcall::SuccessCallResult { output_data, .. }) => output_data,
         CallResult::Failure(error) => {
-            return Err(JsonRpcError::eth_call_error(error.message, error.data))
+            return Err(JsonRpcError::eth_call_error(error.message, error.data));
         }
         CallResult::Revert(result) => result.trace,
     };
@@ -256,38 +256,11 @@ pub async fn collect_debug_trace_via_replay(
     app_state: &MonadRpcResources,
     params: &impl DebugTraceParams,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    let Some(ref eth_call_executor) = app_state.eth_call_executor else {
-        return Err(JsonRpcError::method_not_supported());
-    };
-    // acquire the concurrent requests permit
-    let _permit = match app_state.rate_limiter.try_acquire() {
-        Ok(permit) => permit,
-        Err(_) => {
-            if let Some(tracker) = &app_state.eth_call_stats_tracker {
-                tracker.record_queue_rejection().await;
-            }
-            return Err(JsonRpcError::internal_error(
-                "eth_call concurrent requests limit".into(),
-            ));
-        }
-    };
+    let eth_call_handler = app_state.eth_call_handler.as_ref().method_not_supported()?;
+    let permit = eth_call_handler.acquire(request_id).await?;
+    let chain_id = app_state.chain_id;
 
-    if let Some(tracker) = &app_state.eth_call_stats_tracker {
-        tracker.record_request_start(request_id).await;
-    }
-
-    let result = monad_debug_trace_replay(
-        triedb_env,
-        eth_call_executor.clone(),
-        app_state.chain_id,
-        params,
-    )
-    .await;
-
-    if let Some(tracker) = &app_state.eth_call_stats_tracker {
-        let is_error = result.is_err();
-        tracker.record_request_complete(&request_id, is_error).await;
-    }
-
-    result
+    permit
+        .execute(|executor| monad_debug_trace_replay(triedb_env, executor, chain_id, params))
+        .await
 }

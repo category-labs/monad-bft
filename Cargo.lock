@@ -5747,7 +5747,7 @@ dependencies = [
 name = "monad-peer-score"
 version = "0.1.0"
 dependencies = [
- "lru 0.16.3",
+ "lru",
  "monad-executor",
  "proptest",
  "tracing",
