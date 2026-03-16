@@ -398,7 +398,11 @@ mod tests {
             "aws test-bucket  --endpoint http://127.0.0.1:{port} --access-key-id minioadmin --secret-access-key minioadmin",
             port = minio.port
         );
-        let sdk_config = AwsCliArgs::parse(&arg_string).unwrap().config().await;
+        let sdk_config = AwsCliArgs::parse(&arg_string)
+            .unwrap()
+            .config()
+            .await
+            .unwrap();
 
         let bucket = Bucket::new("test-bucket".to_string(), &sdk_config, Metrics::none());
 
