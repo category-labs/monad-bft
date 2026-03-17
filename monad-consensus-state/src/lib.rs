@@ -1836,7 +1836,10 @@ where
                 );
 
                 cmds.push(ConsensusCommand::Publish {
-                    target: RouterTarget::Raptorcast(self.consensus.pacemaker.get_current_epoch()),
+                    target: RouterTarget::Raptorcast {
+                        round: self.consensus.pacemaker.get_current_round(),
+                        epoch: self.consensus.pacemaker.get_current_epoch(),
+                    },
                     message: ConsensusMessage {
                         version: self.version,
                         message: ProtocolMessage::Proposal(ProposalMessage {
@@ -2773,7 +2776,7 @@ mod test {
     {
         cmds.iter().find_map(|c| match c {
             ConsensusCommand::Publish {
-                target: RouterTarget::Raptorcast(_),
+                target: RouterTarget::Raptorcast { .. },
                 message,
             } => match &message.deref().deref().message {
                 ProtocolMessage::Proposal(p) => Some(p.clone()),

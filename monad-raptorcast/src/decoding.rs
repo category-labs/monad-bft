@@ -1775,6 +1775,7 @@ mod test {
                 app_message_hash: Some(app_message_hash),
                 merkle_root: HexBytes([0; 20]),
                 app_message_len: app_message.len() as u32,
+                version: 0,
                 encoding_scheme: EncodingScheme::Unspecified,
                 broadcast_mode: BroadcastMode::Unspecified,
                 chunk: chunk.freeze(),

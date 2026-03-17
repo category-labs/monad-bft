@@ -259,6 +259,7 @@ mod tests {
             chunk_id: 0,
             num_source_symbols: 0,
             encoded_symbol_capacity: 0,
+            version: 0,
             encoding_scheme: EncodingScheme::Unspecified,
             broadcast_mode: BroadcastMode::Primary,
             signature: Bytes::copy_from_slice(&SIG_A),
@@ -273,6 +274,7 @@ mod tests {
     ) -> ValidatedChunk<NopPubKey> {
         ValidatedChunk {
             signature: Bytes::copy_from_slice(sig),
+            version: 1,
             broadcast_mode: BroadcastMode::Primary,
             encoding_scheme: EncodingScheme::Deterministic25(Round(round)),
             merkle_root: *merkle,

@@ -36,7 +36,7 @@ use monad_peer_discovery::{
 };
 use monad_raptorcast::{create_dataplane_for_tests, DataplaneHandles, RaptorCastEvent};
 use monad_secp::{KeyPair, SecpSignature};
-use monad_types::{Deserializable, Epoch, NodeId, Serializable, Stake};
+use monad_types::{Deserializable, Epoch, NodeId, Round, Serializable, Stake};
 use rstest::rstest;
 use tracing_subscriber::EnvFilter;
 
@@ -191,6 +191,7 @@ fn create_raptorcast_config(
             invite_future_dist_max: monad_types::Round(5),
             invite_accept_heartbeat_ms: 100,
         },
+        deterministic_protocol_rollout: monad_raptorcast::v1_rollout::CURRENT_STAGE,
     }
 }
 
@@ -507,6 +508,7 @@ async fn run_test_scenario(num_auth_nodes: usize, routing_type: RoutingType, mes
         .collect();
 
     let epoch = Epoch(0);
+    let round = Round(0);
     let validator_set: Vec<_> = validator_infos
         .iter()
         .map(|v| (v.nodeid, Stake::ONE))
@@ -564,7 +566,7 @@ async fn run_test_scenario(num_auth_nodes: usize, routing_type: RoutingType, mes
         RoutingType::Raptorcast | RoutingType::Broadcast => {
             let message = MockMessage::new(1000, message_size);
             let target = match routing_type {
-                RoutingType::Raptorcast => monad_types::RouterTarget::Raptorcast(epoch),
+                RoutingType::Raptorcast => monad_types::RouterTarget::Raptorcast { round, epoch },
                 RoutingType::Broadcast => monad_types::RouterTarget::Broadcast(epoch),
                 _ => unreachable!(),
             };
