@@ -60,10 +60,15 @@ use monad_validator::{
 };
 use tracing::{debug, error, info, trace, warn};
 
-use crate::{command::ConsensusCommand, timestamp::BlockTimestamp};
+use crate::{
+    command::ConsensusCommand,
+    timestamp::BlockTimestamp,
+    vote_delay_metrics::{ns_to_ms, VoteDelayMetricsWindow, VoteDelayTimerStart},
+};
 
 pub mod command;
 pub mod timestamp;
+mod vote_delay_metrics;
 
 // TODO(andr-dev): Make configurable
 const NUM_LEADERS_FORWARD_TXS: usize = 3;
@@ -99,6 +104,8 @@ where
 
     /// Last canonical coherent tip emitted
     canonical_proposed_tip: Option<BlockId>,
+    vote_delay_timer_start: Option<VoteDelayTimerStart>,
+    vote_delay_metrics: VoteDelayMetricsWindow,
 }
 
 impl<ST, SCT, EPT, BPT, SBT, CCT, CRT> PartialEq
@@ -277,7 +284,13 @@ where
             ),
             block_sync_requests: Default::default(),
             canonical_proposed_tip: None,
+            vote_delay_timer_start: None,
+            vote_delay_metrics: VoteDelayMetricsWindow::default(),
         }
+    }
+
+    pub fn refresh_vote_delay_metrics(&mut self, now_ns: u128, metrics: &mut Metrics) {
+        self.vote_delay_metrics.refresh(ns_to_ms(now_ns), metrics);
     }
 
     pub fn blocktree(&self) -> &BlockTree<ST, SCT, EPT, BPT, SBT, CCT, CRT> {
@@ -1126,6 +1139,29 @@ where
         self.send_vote_and_reset_timer(v)
     }
 
+    fn maybe_record_vote_delay_metrics(
+        &mut self,
+        proposal_round: Round,
+        parent_block_round: Round,
+    ) {
+        let Some(timer_start) = self.consensus.vote_delay_timer_start else {
+            return;
+        };
+
+        if timer_start.round != proposal_round || parent_block_round + Round(1) != proposal_round {
+            return;
+        }
+
+        let now_ms = ns_to_ms(self.block_timestamp.get_current_time());
+        self.consensus
+            .vote_delay_metrics
+            .record_ready_after_timer_start(
+                now_ms,
+                now_ms.saturating_sub(timer_start.started_at_ms),
+                self.metrics,
+            );
+    }
+
     #[must_use]
     #[tracing::instrument(level = "debug", skip_all)]
     pub fn send_vote_and_reset_timer(
@@ -1174,14 +1210,20 @@ where
         debug!(?round, ?vote, ?current_leader, ?next_leader, "sending vote");
 
         // start the vote-timer for the next round
+        let next_round = round + Round(1);
+        let vote_pace = self
+            .config
+            .chain_config
+            .get_chain_revision(next_round)
+            .chain_params()
+            .vote_pace;
         cmds.push(ConsensusCommand::ScheduleVote {
-            duration: self
-                .config
-                .chain_config
-                .get_chain_revision(round + Round(1))
-                .chain_params()
-                .vote_pace,
-            round: round + Round(1),
+            duration: vote_pace,
+            round: next_round,
+        });
+        self.consensus.vote_delay_timer_start = Some(VoteDelayTimerStart {
+            round: next_round,
+            started_at_ms: ns_to_ms(self.block_timestamp.get_current_time()),
         });
         self.consensus.scheduled_vote = None;
 
@@ -1537,7 +1579,11 @@ where
         {
             Vec::new()
         } else {
-            panic!("high qc too far ahead of block tree root, restart client and statesync. highqc: {:?}, block-tree root {:?}", high_qc_seq_num, self.consensus.pending_block_tree.get_root_seq_num());
+            panic!(
+                "high qc too far ahead of block tree root, restart client and statesync. highqc: {:?}, block-tree root {:?}",
+                high_qc_seq_num,
+                self.consensus.pending_block_tree.get_root_seq_num()
+            );
         }
     }
 
@@ -1630,6 +1676,7 @@ where
         };
 
         debug!(?v, "vote successful");
+        self.maybe_record_vote_delay_metrics(proposal_round, parent_block_round);
 
         match self.consensus.scheduled_vote {
             Some(OutgoingVoteStatus::TimerFired) => {
@@ -1638,7 +1685,10 @@ where
                 cmds.extend(vote_cmd);
             }
             Some(OutgoingVoteStatus::VoteReady(r)) if r.round >= v.round => {
-                panic!("trying to schedule another vote in same round. scheduled vote {:?}, new vote {:?}", r, v);
+                panic!(
+                    "trying to schedule another vote in same round. scheduled vote {:?}, new vote {:?}",
+                    r, v
+                );
             }
             Some(OutgoingVoteStatus::VoteReady(_)) | None => {
                 if matches!(
