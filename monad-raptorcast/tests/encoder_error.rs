@@ -77,7 +77,7 @@ pub fn encoder_error() {
         message,
         Redundancy::from_u8(1),
         0, // unix_ts_ms
-        BuildTarget::Raptorcast(group),
+        BuildTarget::raptorcast(group),
         &known_addresses,
     );
 }
