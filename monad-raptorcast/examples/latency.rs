@@ -51,7 +51,7 @@ use monad_raptorcast::{
     RaptorCast, RaptorCastEvent,
 };
 use monad_secp::{KeyPair, SecpSignature};
-use monad_types::{Deserializable, Epoch, NodeId, RouterTarget, Serializable, Stake};
+use monad_types::{Deserializable, Epoch, NodeId, Round, RouterTarget, Serializable, Stake};
 use opentelemetry::metrics::MeterProvider;
 use opentelemetry_otlp::{MetricExporter, WithExportConfig};
 use rand::{thread_rng, Rng};
@@ -291,6 +291,7 @@ fn create_raptorcast_config(keypair: Arc<KeyPair>) -> RaptorCastConfig<Signature
             invite_future_dist_max: monad_types::Round(5),
             invite_accept_heartbeat_ms: 100,
         },
+        deterministic_protocol_rollout: monad_raptorcast::v1_rollout::CURRENT_STAGE,
     }
 }
 
@@ -769,7 +770,7 @@ async fn run_producer(
             _ = interval_timer.tick() => {
                 let message = MockMessage::new_with_timestamp(size);
                 raptorcast.exec(vec![RouterCommand::Publish {
-                    target: RouterTarget::Raptorcast(Epoch(0)),
+                    target: RouterTarget::Raptorcast { round: Round(0), epoch: Epoch(0) },
                     message,
                 }]);
 
