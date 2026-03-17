@@ -633,7 +633,10 @@ fn generate_chunks<PT: PubKey>(
             chunks
         }
 
-        BuildTarget::Raptorcast(primary_group) => {
+        BuildTarget::Raptorcast {
+            group: primary_group,
+            ..
+        } => {
             let mut partition = StakePartition::from_group(primary_group);
             partition.shuffle(derive_seed(app_message_hash));
             let assignment = partition.assign(num_base_symbols, redundancy)?;
