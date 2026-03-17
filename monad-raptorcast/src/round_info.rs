@@ -281,6 +281,7 @@ mod tests {
             app_message_len: 0,
             recipient_hash: None,
             chunk_id: 0,
+            version: 1,
             num_source_symbols: 0,
             encoded_symbol_capacity: 0,
             encoding_scheme: EncodingScheme::Deterministic25(Round(round)),
