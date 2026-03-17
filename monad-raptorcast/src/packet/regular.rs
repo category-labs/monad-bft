@@ -69,6 +69,11 @@ const _: () = assert!(
     "merkle tree depth must be <= 4 bits"
 );
 
+const _: () = assert!(
+    MIN_SEGMENT_LENGTH == segment_size_for_mtu(1280) as usize,
+    "MIN_SEGMENT_LENGTH should be the segment size for the IPv6 minimum MTU of 1280 bytes"
+);
+
 // We assume an MTU of at least 1280 (the IPv6 minimum MTU), which for the maximum Merkle tree
 // depth of 9 gives a symbol size of 960 bytes, which we will use as the minimum chunk length for
 // received packets, and we'll drop received chunks that are smaller than this to mitigate attacks
@@ -80,11 +85,6 @@ pub const MIN_CHUNK_LENGTH: usize = 960;
 /// merkle tree depth.
 pub const MIN_SEGMENT_LENGTH: usize =
     PacketLayout::calc_segment_len(MIN_CHUNK_LENGTH, MAX_MERKLE_TREE_DEPTH);
-
-const _: () = assert!(
-    MIN_SEGMENT_LENGTH == segment_size_for_mtu(1280) as usize,
-    "MIN_SEGMENT_LENGTH should be the segment size for the IPv6 minimum MTU of 1280 bytes"
-);
 
 /// The max segment length should not exceed the standard MTU for
 /// Ethernet to avoid fragmentation when routed across the internet.
@@ -693,8 +693,8 @@ fn make_assigner<PT: PubKey>(
             );
             Box::new(assigner)
         }
-        BuildTarget::Raptorcast(validators) => {
-            let mut validators = validators
+        BuildTarget::Raptorcast { group, .. } => {
+            let mut validators = group
                 .iter()
                 .filter(|(node_id, _stake)| *node_id != self_node_id)
                 .map(|(node_id, stake)| (*node_id, *stake))

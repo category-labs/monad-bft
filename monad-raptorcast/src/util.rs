@@ -44,6 +44,12 @@ use monad_validator::validator_set::{ValidatorSet, ValidatorSetType as _};
 
 use crate::udp::GroupId;
 
+#[derive(Debug, Clone, Copy)]
+pub enum RaptorcastMode {
+    Regular,
+    Deterministic { round: Round },
+}
+
 // Argument for raptorcast send
 #[derive(Debug, Clone, Copy)]
 pub enum BuildTarget<'a, PT: PubKey> {
@@ -52,7 +58,10 @@ pub enum BuildTarget<'a, PT: PubKey> {
     Broadcast(PrimaryBroadcastGroup<'a, PT>),
     // raptorcast to the validators, chunks distributed by their
     // proportion of stakes.
-    Raptorcast(PrimaryBroadcastGroup<'a, PT>),
+    Raptorcast {
+        group: PrimaryBroadcastGroup<'a, PT>,
+        mode: RaptorcastMode,
+    },
     // unicast message as raptor-coded chunks to a single recipient
     PointToPoint {
         group_id: GroupId,
@@ -64,6 +73,20 @@ pub enum BuildTarget<'a, PT: PubKey> {
 }
 
 impl<'a, PT: PubKey> BuildTarget<'a, PT> {
+    pub fn raptorcast(group: PrimaryBroadcastGroup<'a, PT>) -> Self {
+        BuildTarget::Raptorcast {
+            group,
+            mode: RaptorcastMode::Regular,
+        }
+    }
+
+    pub fn deterministic_raptorcast(group: PrimaryBroadcastGroup<'a, PT>, round: Round) -> Self {
+        BuildTarget::Raptorcast {
+            group,
+            mode: RaptorcastMode::Deterministic { round },
+        }
+    }
+
     pub fn point_to_point(epoch: Epoch, recipient: &'a NodeId<PT>) -> Self {
         BuildTarget::PointToPoint {
             group_id: GroupId::Primary(epoch),
@@ -73,7 +96,7 @@ impl<'a, PT: PubKey> BuildTarget<'a, PT> {
 
     pub fn iter(&self) -> Box<dyn Iterator<Item = &NodeId<PT>> + '_> {
         match self {
-            BuildTarget::Broadcast(group) | BuildTarget::Raptorcast(group) => {
+            BuildTarget::Broadcast(group) | BuildTarget::Raptorcast { group, .. } => {
                 Box::new(group.iter().map(|(n, _)| n))
             }
             BuildTarget::PointToPoint { recipient, .. } => Box::new(std::iter::once(*recipient)),
@@ -83,7 +106,9 @@ impl<'a, PT: PubKey> BuildTarget<'a, PT> {
 
     pub fn group_id(&self) -> GroupId {
         match self {
-            BuildTarget::Broadcast(group) | BuildTarget::Raptorcast(group) => group.group_id(),
+            BuildTarget::Broadcast(group) | BuildTarget::Raptorcast { group, .. } => {
+                group.group_id()
+            }
             BuildTarget::FullNodeRaptorCast(group) => group.group_id(),
             BuildTarget::PointToPoint { group_id, .. } => *group_id,
         }
@@ -129,6 +154,19 @@ impl<const N: usize> HexBytes<N> {
 
 pub type NodeIdHash = HexBytes<20>;
 pub type AppMessageHash = HexBytes<20>;
+pub type MerkleRoot = HexBytes<20>;
+pub type GlobalMerkleRoot = MerkleRoot;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EncodingScheme {
+    Unspecified,
+
+    // Deterministic RaptorCast (encoding_scheme_variant=0x1)
+    // - redundancy: 2.5
+    // - seed: (round, unix_ts_ms//2048, author_pk[:16])
+    // - assignment: round-robin
+    Deterministic25(Round),
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BroadcastMode {
@@ -350,6 +388,10 @@ impl<'a, PT: PubKey> PrimaryBroadcastGroup<'a, PT> {
         })
     }
 
+    pub fn author(&self) -> &NodeId<PT> {
+        self.author
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = (&NodeId<PT>, &Stake)> + '_ {
         self.group.get_members().iter()
     }
@@ -382,6 +424,11 @@ impl<'a, PT: PubKey> PrimaryBroadcastGroup<'a, PT> {
 
     pub fn group_id(&self) -> GroupId {
         GroupId::Primary(self.epoch)
+    }
+
+    pub fn len(&self) -> NonZero<usize> {
+        // SAFETY: validator set invariant ensures non-empty
+        NonZero::new(self.group.len()).unwrap()
     }
 }
 
@@ -839,6 +886,18 @@ impl Redundancy {
     pub const fn from_u8(num: u8) -> Self {
         assert!((num as u16) <= u16::MAX >> Self::FRAC_BITS);
         Redundancy(FixedU16::from_bits((num as u16) << Self::FRAC_BITS))
+    }
+
+    pub const fn from_fract(
+        int_part: u8,
+        decimal_part: u8, // out of 100
+    ) -> Self {
+        assert!((int_part as u16) < u16::MAX >> Self::FRAC_BITS);
+        assert!(decimal_part < 100);
+
+        let int_bits = (int_part as u16) << Self::FRAC_BITS;
+        let decimal_bits = ((decimal_part as u32) << Self::FRAC_BITS) / 100;
+        Redundancy(FixedU16::from_bits(int_bits + decimal_bits as u16))
     }
 
     // may round to the nearest representable number when needed
