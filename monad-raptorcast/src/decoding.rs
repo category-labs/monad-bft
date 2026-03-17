@@ -1779,6 +1779,7 @@ mod test {
                 broadcast_mode: BroadcastMode::Unspecified,
                 chunk: chunk.freeze(),
                 // these fields are never touched in this module
+                signature: Bytes::new(),
                 recipient_hash: HexBytes([0; 20]),
                 message: Bytes::new(),
                 group_id: GroupId::Primary(EPOCH),

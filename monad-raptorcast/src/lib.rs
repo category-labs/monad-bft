@@ -84,6 +84,7 @@ use crate::{
 };
 
 pub mod auth;
+pub mod commit;
 pub mod config;
 pub mod decoding;
 pub mod message;
@@ -926,6 +927,7 @@ where
 
                         self.epoch_validators.retain(|e, _| *e + Epoch(1) >= epoch);
                     }
+                    self.udp_state.update_current_round(round);
                     self.full_node_groups.delete_expired(round);
                     self.peer_discovery_driver
                         .lock()

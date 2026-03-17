@@ -26,6 +26,7 @@ use monad_validator::validator_set::{ValidatorSet, ValidatorSetType as _};
 
 pub use crate::packet::build_messages;
 use crate::{
+    commit::RoundCommitments,
     decoding::{DecoderCache, DecodingContext, TryDecodeError, TryDecodeStatus},
     metrics::{
         UdpStateMetrics, GAUGE_RAPTORCAST_DECODING_CACHE_SIGNATURE_VERIFICATIONS_RATE_LIMITED,
@@ -72,6 +73,8 @@ pub(crate) struct UdpState<ST: CertificateSignatureRecoverable> {
 
     signature_verifier: ChunkSignatureVerifier<ST>,
 
+    round_commitments: RoundCommitments,
+
     metrics: UdpStateMetrics,
 }
 
@@ -94,6 +97,8 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
             decoder_cache: DecoderCache::default(),
             signature_verifier,
 
+            round_commitments: RoundCommitments::default(),
+
             metrics: UdpStateMetrics::new(),
         }
     }
@@ -104,6 +109,10 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
 
     pub fn decoder_metrics(&self) -> ExecutorMetricsChain<'_> {
         self.decoder_cache.metrics()
+    }
+
+    pub fn update_current_round(&mut self, round: Round) {
+        self.round_commitments.update_current_round(round);
     }
 
     pub fn handle_unicast(
@@ -179,6 +188,16 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
             }
 
             // Future: check if author (proposer) is valid for round.
+        }
+
+        if let Err(e) = self.round_commitments.try_commit(chunk) {
+            tracing::debug!(
+                ?chunk.group_id,
+                author =? chunk.author,
+                ?e,
+                "dropping chunk: commitment error"
+            );
+            return None;
         }
 
         let validator_set = epoch_validators.get(&epoch);
@@ -473,6 +492,7 @@ where
 {
     pub chunk: Bytes, // raptor-coded portion
     pub message: Bytes,
+    pub signature: Bytes,
 
     pub author: NodeId<PT>,
     // group_id is set to

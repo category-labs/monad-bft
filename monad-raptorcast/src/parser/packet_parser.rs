@@ -819,6 +819,7 @@ impl<'a> RaptorcastPacket<'a> {
         Ok(ValidatedChunk {
             chunk,
             message: message.clone(),
+            signature: message.slice(..SIGNATURE_SIZE),
             author,
             group_id: meta.group_id,
             unix_ts_ms: meta.timestamp,
