@@ -39,7 +39,6 @@ pub async fn init_server(
         txpool_bridge_client: Some(EthTxPoolBridgeClient::for_testing()),
         triedb_reader: None,
         eth_call_handler: None,
-        archive_reader: None,
         chain_id: 1337,
         chain_state: None,
         batch_request_limit: 5,

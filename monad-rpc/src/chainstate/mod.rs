@@ -60,7 +60,7 @@ pub mod buffer;
 pub struct ChainState<T> {
     buffer: Option<Arc<ChainStateBuffer>>,
     pub triedb_env: T,
-    archive_reader: Option<ArchiveReader>,
+    pub archive_reader: Option<ArchiveReader>,
 }
 
 #[derive(Debug)]

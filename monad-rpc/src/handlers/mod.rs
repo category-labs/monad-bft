@@ -258,15 +258,15 @@ async fn debug_traceBlockByHash(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
+    let chain_state = app_state.chain_state.as_ref().method_not_supported()?;
     let params: MonadDebugTraceBlockByHashParams =
         serde_json::from_str(params.get()).invalid_params()?;
     if params.requires_replay() {
-        return collect_debug_trace_via_replay(request_id, triedb_env, app_state, &params)
+        return collect_debug_trace_via_replay(request_id, chain_state, app_state, &params)
             .await
             .map(serialize_result)?;
     }
-    monad_debug_traceBlockByHash(triedb_env, &app_state.archive_reader, params)
+    monad_debug_traceBlockByHash(chain_state, params)
         .await
         .map(serialize_result)?
 }
@@ -277,16 +277,16 @@ async fn debug_traceBlockByNumber(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
+    let chain_state = app_state.chain_state.as_ref().method_not_supported()?;
     let params: MonadDebugTraceBlockByNumberParams =
         serde_json::from_str(params.get()).invalid_params()?;
     if params.requires_replay() {
-        return collect_debug_trace_via_replay(request_id, triedb_env, app_state, &params)
+        return collect_debug_trace_via_replay(request_id, chain_state, app_state, &params)
             .await
             .map(serialize_result)?;
     }
 
-    monad_debug_traceBlockByNumber(triedb_env, &app_state.archive_reader, params)
+    monad_debug_traceBlockByNumber(chain_state, params)
         .await
         .map(serialize_result)?
 }
@@ -322,16 +322,16 @@ async fn debug_traceTransaction(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
+    let chain_state = app_state.chain_state.as_ref().method_not_supported()?;
     let params: MonadDebugTraceTransactionParams =
         serde_json::from_str(params.get()).invalid_params()?;
     if params.requires_replay() {
-        return collect_debug_trace_via_replay(request_id, triedb_env, app_state, &params)
+        return collect_debug_trace_via_replay(request_id, chain_state, app_state, &params)
             .await
             .map(serialize_result)?;
     }
 
-    monad_debug_traceTransaction(triedb_env, &app_state.archive_reader, params)
+    monad_debug_traceTransaction(chain_state, params)
         .await
         .map(serialize_result)?
 }

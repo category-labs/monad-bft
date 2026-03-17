@@ -18,7 +18,6 @@ use actix_web::{
     dev::{ServiceRequest, ServiceResponse},
     Error,
 };
-use monad_archive::prelude::ArchiveReader;
 use monad_triedb_utils::triedb_env::TriedbEnv;
 use tracing_actix_web::RootSpanBuilder;
 
@@ -32,7 +31,6 @@ pub struct MonadRpcResources {
     pub txpool_bridge_client: Option<EthTxPoolBridgeClient>,
     pub triedb_reader: Option<TriedbEnv>,
     pub eth_call_handler: Option<EthCallHandler>,
-    pub archive_reader: Option<ArchiveReader>,
     pub chain_id: u64,
     pub chain_state: Option<ChainState<TriedbEnv>>,
     pub batch_request_limit: u16,
@@ -56,7 +54,6 @@ impl MonadRpcResources {
         txpool_bridge_client: Option<EthTxPoolBridgeClient>,
         triedb_reader: Option<TriedbEnv>,
         eth_call_handler: Option<EthCallHandler>,
-        archive_reader: Option<ArchiveReader>,
         chain_id: u64,
         chain_state: Option<ChainState<TriedbEnv>>,
         batch_request_limit: u16,
@@ -77,7 +74,6 @@ impl MonadRpcResources {
             txpool_bridge_client,
             triedb_reader,
             eth_call_handler,
-            archive_reader,
             chain_id,
             chain_state,
             batch_request_limit,
