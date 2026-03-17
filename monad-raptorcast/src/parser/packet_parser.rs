@@ -763,6 +763,7 @@ impl<'a> RaptorcastPacket<'a> {
             message: message.clone(),
             signature: message.slice(..SIGNATURE_SIZE),
             author,
+            version: self.common_header.version.get(),
             group_id: meta.group_id,
             unix_ts_ms: meta.timestamp,
             app_message_hash: meta.app_message_hash,
