@@ -190,6 +190,24 @@ metrics!(
         ]
     ),
     (
+        VoteDelay,
+        vote_delay,
+        [
+            (
+                ready_after_timer_start_p50_ms,
+                "Vote delay ready-after-timer-start p50 in ms (5m rolling window)"
+            ),
+            (
+                ready_after_timer_start_p90_ms,
+                "Vote delay ready-after-timer-start p90 in ms (5m rolling window)"
+            ),
+            (
+                ready_after_timer_start_p99_ms,
+                "Vote delay ready-after-timer-start p99 in ms (5m rolling window)"
+            )
+        ]
+    ),
+    (
         BlocktreeEvents,
         blocktree_events,
         [

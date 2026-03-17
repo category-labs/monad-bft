@@ -1249,6 +1249,9 @@ where
             },
             MonadEvent::TimestampUpdateEvent(t) => {
                 self.block_timestamp.update_time(t);
+                if let ConsensusMode::Live(consensus) = &mut self.consensus {
+                    consensus.refresh_vote_delay_metrics(t, &mut self.metrics);
+                }
                 vec![]
             }
             MonadEvent::ConfigEvent(config_event) => match config_event {
