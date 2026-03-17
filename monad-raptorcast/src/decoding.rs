@@ -36,13 +36,8 @@ use rand::Rng as _;
 
 use crate::{
     udp::ValidatedChunk,
-    util::{compute_hash, AppMessageHash, BroadcastMode, NodeIdHash},
+    util::{compute_hash, AppMessageHash, BroadcastMode, GlobalMerkleRoot, NodeIdHash},
 };
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-enum MessageIdentifier {
-    AppMessageHash(AppMessageHash),
-}
 
 pub const DECODING_CACHE_METRIC_PREFIX: &str = "monad.raptorcast.decoding_cache";
 monad_executor::metric_consts! {
@@ -101,6 +96,12 @@ pub const MAX_TOTAL_SIZE_LIMIT: usize = 20 * 1024 * 1024 * 1024; // 20 GB
 //
 // Required properties: (Copy, Add, Sub, Eq, Ord)
 type MessageSize = usize;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+enum MessageIdentifier {
+    AppMessageHash(AppMessageHash),
+    GlobalMerkleRoot(GlobalMerkleRoot),
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct DecoderCacheConfig {
@@ -436,9 +437,19 @@ struct CacheKey {
 
 impl CacheKey {
     fn from_message<PT: PubKey>(message: &ValidatedChunk<PT>) -> Self {
+        let message_id = if let Some(root) = message.global_merkle_root() {
+            MessageIdentifier::GlobalMerkleRoot(*root)
+        } else {
+            MessageIdentifier::AppMessageHash(
+                message
+                    .app_message_hash()
+                    .copied()
+                    .expect("V0 chunks must have app_message_hash"),
+            )
+        };
         let inner = CacheKeyInner {
             author_hash: compute_hash(&message.author),
-            message_id: MessageIdentifier::AppMessageHash(message.app_message_hash),
+            message_id,
             unix_ts_ms: message.unix_ts_ms,
         };
         Self {
@@ -1522,7 +1533,6 @@ impl DecoderState {
             .expect("usize smaller than u32");
         let num_source_symbols = message.num_source_symbols;
         let encoded_symbol_capacity = message.encoded_symbol_capacity;
-
         let decoder = ManagedDecoder::new(num_source_symbols, encoded_symbol_capacity, symbol_len)
             .map_err(InvalidSymbol::InvalidDecoderParameter)?;
 
@@ -1702,7 +1712,7 @@ mod test {
     use super::*;
     use crate::{
         udp::GroupId,
-        util::{compute_app_message_hash, BroadcastMode, HexBytes},
+        util::{compute_app_message_hash, BroadcastMode, EncodingScheme, HexBytes},
     };
     type PT = monad_crypto::NopPubKey;
 
@@ -1762,8 +1772,10 @@ mod test {
             let chunk = ValidatedChunk {
                 chunk_id: symbol_id as u16,
                 author,
-                app_message_hash,
+                app_message_hash: Some(app_message_hash),
+                merkle_root: HexBytes([0; 20]),
                 app_message_len: app_message.len() as u32,
+                encoding_scheme: EncodingScheme::Unspecified,
                 broadcast_mode: BroadcastMode::Unspecified,
                 chunk: chunk.freeze(),
                 // these fields are never touched in this module
@@ -2440,7 +2452,7 @@ mod test {
 
         let wrong_hash = HexBytes([0xAA; 20]);
         for symbol in &mut symbols {
-            symbol.app_message_hash = wrong_hash;
+            symbol.app_message_hash = Some(wrong_hash);
         }
 
         let context = DecodingContext::new(None, UNIX_TS_MS);
