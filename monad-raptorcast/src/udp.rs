@@ -219,6 +219,9 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
             return None;
         };
 
+        // already logged the equivocation in try_commit.
+        round_info.try_commit(chunk)?;
+
         let Some(routing) = round_info.chunk_routing(group, chunk) else {
             tracing::debug!(
                 ?chunk.group_id,
@@ -541,6 +544,7 @@ where
 {
     pub chunk: Bytes, // raptor-coded portion
     pub message: Bytes,
+    pub signature: Bytes,
 
     pub author: NodeId<PT>,
     // group_id is set to
