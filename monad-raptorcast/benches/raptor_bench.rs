@@ -75,7 +75,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 message.clone(),
                 Redundancy::from_u8(2),
                 0, // unix_ts_ms
-                BuildTarget::Raptorcast(group),
+                BuildTarget::raptorcast(group),
                 &known_addresses,
             );
         });
@@ -118,7 +118,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             message.clone(),
             Redundancy::from_u8(2),
             0, // unix_ts_ms
-            BuildTarget::Raptorcast(group),
+            BuildTarget::raptorcast(group),
             &known_addresses,
         )
         .into_iter()
