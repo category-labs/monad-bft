@@ -747,6 +747,7 @@ where
                     .collect(),
             },
             secondary_instance: node_config.fullnode_raptorcast,
+            deterministic_protocol_rollout: node_config.deterministic_raptorcast_rollout,
         },
         dp_builder,
         peer_discovery_builder,

@@ -33,7 +33,7 @@ use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand};
 use monad_raptorcast::{new_defaulted_raptorcast_for_tests, RaptorCastEvent};
 use monad_secp::SecpSignature;
-use monad_types::{Deserializable, Epoch, NodeId, RouterTarget, Serializable, Stake};
+use monad_types::{Deserializable, Epoch, NodeId, Round, RouterTarget, Serializable, Stake};
 use tracing_subscriber::fmt::format::FmtSpan;
 
 #[derive(Parser, Debug)]
@@ -168,7 +168,10 @@ fn service(
     for broadcast_id in 0..num_broadcast {
         let message = MockMessage::new(broadcast_id, message_len);
         let command = RouterCommand::Publish {
-            target: RouterTarget::Raptorcast(Epoch(0)),
+            target: RouterTarget::Raptorcast {
+                round: Round(0),
+                epoch: Epoch(0),
+            },
             message,
         };
         tx_router
