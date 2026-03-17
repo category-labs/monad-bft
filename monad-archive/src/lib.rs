@@ -16,6 +16,7 @@
 #![allow(async_fn_in_trait, clippy::too_many_arguments)]
 
 pub mod archive_reader;
+pub mod aws_cli;
 pub mod cli;
 pub mod failover_circuit_breaker;
 pub mod kvstore;
