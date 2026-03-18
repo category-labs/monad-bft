@@ -34,7 +34,6 @@ indexmap = { workspace = true }
 itertools = { workspace = true }
 pin-project = { workspace = true }
 rayon = { workspace = true }
-serde = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 

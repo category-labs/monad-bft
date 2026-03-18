@@ -13,11 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::sync::atomic::{AtomicU64, Ordering};
-
 use monad_eth_txpool::EthTxPoolMetrics;
-use monad_executor::ExecutorMetrics;
-use serde::{Deserialize, Serialize};
+use monad_executor::{ExecutorMetricHandle, ExecutorMetrics};
 
 monad_executor::metric_consts! {
     REJECT_FORWARDED_INVALID_BYTES {
@@ -42,31 +39,36 @@ monad_executor::metric_consts! {
     }
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug)]
 pub struct EthTxPoolExecutorMetrics {
-    pub reject_forwarded_invalid_bytes: AtomicU64,
+    pub reject_forwarded_invalid_bytes: ExecutorMetricHandle,
 
-    pub create_proposal: AtomicU64,
-    pub create_proposal_elapsed_ns: AtomicU64,
+    pub create_proposal: ExecutorMetricHandle,
+    pub create_proposal_elapsed_ns: ExecutorMetricHandle,
 
-    pub preload_backend_lookups: AtomicU64,
-    pub preload_backend_requests: AtomicU64,
+    pub preload_backend_lookups: ExecutorMetricHandle,
+    pub preload_backend_requests: ExecutorMetricHandle,
 
     pub pool: EthTxPoolMetrics,
 }
 
 impl EthTxPoolExecutorMetrics {
-    pub fn update(&self, metrics: &mut ExecutorMetrics) {
-        metrics[REJECT_FORWARDED_INVALID_BYTES] =
-            self.reject_forwarded_invalid_bytes.load(Ordering::SeqCst);
+    pub fn register(executor_metrics: &mut ExecutorMetrics) -> Self {
+        Self {
+            reject_forwarded_invalid_bytes: executor_metrics
+                .register(REJECT_FORWARDED_INVALID_BYTES),
+            create_proposal: executor_metrics.register(CREATE_PROPOSAL),
+            create_proposal_elapsed_ns: executor_metrics.register(CREATE_PROPOSAL_ELAPSED_NS),
+            preload_backend_lookups: executor_metrics.register(PRELOAD_BACKEND_LOOKUPS),
+            preload_backend_requests: executor_metrics.register(PRELOAD_BACKEND_REQUESTS),
+            pool: EthTxPoolMetrics::register(executor_metrics),
+        }
+    }
+}
 
-        metrics[CREATE_PROPOSAL] = self.create_proposal.load(Ordering::SeqCst);
-        metrics[CREATE_PROPOSAL_ELAPSED_NS] =
-            self.create_proposal_elapsed_ns.load(Ordering::SeqCst);
-
-        metrics[PRELOAD_BACKEND_LOOKUPS] = self.preload_backend_lookups.load(Ordering::SeqCst);
-        metrics[PRELOAD_BACKEND_REQUESTS] = self.preload_backend_requests.load(Ordering::SeqCst);
-
-        self.pool.update(metrics);
+impl Default for EthTxPoolExecutorMetrics {
+    fn default() -> Self {
+        let mut executor_metrics = ExecutorMetrics::default();
+        Self::register(&mut executor_metrics)
     }
 }

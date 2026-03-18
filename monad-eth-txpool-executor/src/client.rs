@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{future::Future, pin::Pin};
+use std::{future::Future, pin::Pin, sync::Arc};
 
 use bytes::Bytes;
 use futures::Stream;
@@ -54,8 +54,7 @@ where
     CRT: ChainRevision,
 {
     handle: tokio::task::JoinHandle<()>,
-    metrics: ExecutorMetrics,
-    update_metrics: Box<dyn Fn(&mut ExecutorMetrics)>,
+    metrics: Arc<ExecutorMetrics>,
 
     command_tx: tokio::sync::mpsc::Sender<
         Vec<
@@ -103,14 +102,14 @@ where
             ) -> F
             + Send
             + 'static,
-        update_metrics: Box<dyn Fn(&mut ExecutorMetrics) + Send + 'static>,
+        metrics: Arc<ExecutorMetrics>,
     ) -> Self
     where
         F: Future<Output = ()> + Send + 'static,
     {
         Self::new_with_buffer_sizes(
             updater,
-            update_metrics,
+            metrics,
             DEFAULT_COMMAND_BUFFER_SIZE,
             DEFAULT_FORWARDED_BUFFER_SIZE,
             DEFAULT_EVENT_BUFFER_SIZE,
@@ -137,7 +136,7 @@ where
             ) -> F
             + Send
             + 'static,
-        update_metrics: Box<dyn Fn(&mut ExecutorMetrics) + Send + 'static>,
+        metrics: Arc<ExecutorMetrics>,
         command_buffer_size: usize,
         forwarded_buffer_size: usize,
         event_buffer_size: usize,
@@ -153,8 +152,7 @@ where
 
         Self {
             handle,
-            metrics: ExecutorMetrics::default(),
-            update_metrics,
+            metrics,
 
             command_tx,
             forwarded_tx,
@@ -228,7 +226,7 @@ where
     }
 
     fn metrics(&self) -> ExecutorMetricsChain<'_> {
-        ExecutorMetricsChain::from(&self.metrics)
+        ExecutorMetricsChain::from(self.metrics.as_ref())
     }
 }
 
@@ -250,8 +248,6 @@ where
         let this = self.get_mut();
 
         this.verify_handle_liveness();
-
-        (this.update_metrics)(&mut this.metrics);
 
         this.event_rx.poll_recv(cx)
     }

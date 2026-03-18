@@ -5334,7 +5334,6 @@ dependencies = [
  "monad-validator",
  "pin-project",
  "rayon",
- "serde",
  "tempfile",
  "tokio",
  "tracing",

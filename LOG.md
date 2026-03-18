@@ -36,7 +36,7 @@ Reasoning:
 - [completed] `monad-executor`: added Prometheus-backed metric registration, explicit test-readable accessors, and a compatibility path for existing indexed mutation.
 - [completed] `monad-eth-txpool`: replaced atomic metric storage with registered handles and kept a temporary compatibility snapshot serializer/update path for downstream crates still being migrated.
 - [completed] `monad-updaters`: switched the mock txpool wrapper to register `EthTxPoolMetrics` into its shared `ExecutorMetrics` once at construction time.
-- [pending] `monad-eth-txpool-executor`
+- [completed] `monad-eth-txpool-executor`: registered executor-level and pool-level metrics into one shared `ExecutorMetrics` instance and removed the remaining polling-time snapshot refresh path.
 
 ## Notes
 
@@ -52,3 +52,6 @@ Reasoning:
 - Verification for `monad-updaters`:
   - `cargo test -p monad-updaters`
   - `cargo check -p monad-eth-txpool-executor --tests`
+- Verification for `monad-eth-txpool-executor`:
+  - `cargo test -p monad-eth-txpool-executor`
+  - `cargo check -p monad-node --bin monad-node`
