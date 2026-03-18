@@ -139,6 +139,8 @@ where
     CRT: ChainRevision,
 {
     fn default() -> Self {
+        let mut executor_metrics = ExecutorMetrics::default();
+
         Self {
             eth: None,
             chain_config: CCT::default(),
@@ -147,8 +149,8 @@ where
             events: VecDeque::default(),
             waker: None,
 
-            metrics: EthTxPoolMetrics::default(),
-            executor_metrics: ExecutorMetrics::default(),
+            metrics: EthTxPoolMetrics::register(&mut executor_metrics),
+            executor_metrics,
         }
     }
 }
@@ -172,6 +174,8 @@ where
     CertificateSignaturePubKey<ST>: ExtractEthAddress,
 {
     pub fn new(block_policy: EthBlockPolicy<ST, SCT, CCT, CRT>, state_backend: SBT) -> Self {
+        let mut executor_metrics = ExecutorMetrics::default();
+
         Self {
             eth: Some((EthTxPool::default_testing(), block_policy, state_backend)),
             chain_config: MockChainConfig::DEFAULT,
@@ -180,8 +184,8 @@ where
             events: VecDeque::default(),
             waker: None,
 
-            metrics: EthTxPoolMetrics::default(),
-            executor_metrics: ExecutorMetrics::default(),
+            metrics: EthTxPoolMetrics::register(&mut executor_metrics),
+            executor_metrics,
         }
     }
 
@@ -452,8 +456,6 @@ where
                 TxPoolCommand::EnterRound { .. } => {}
             }
         }
-
-        self.metrics.update(&mut self.executor_metrics);
     }
 
     fn metrics(&self) -> ExecutorMetricsChain<'_> {
