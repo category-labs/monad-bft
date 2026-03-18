@@ -582,7 +582,9 @@ where
             );
             return;
         }
-        if !self.full_nodes_candidates.contains(&candidate) {
+        let end = self.full_nodes_candidates.len().min(self.num_invites_sent);
+        let invited = &self.full_nodes_candidates[..end];
+        if !invited.contains(&candidate) {
             warn!(
                 ?candidate,
                 ?self,
@@ -2205,6 +2207,49 @@ mod tests {
                 dump_pub_sched(&v0_fsm)
             );
         }
+    }
+
+    #[test]
+    fn uninvited_candidate_rejected() {
+        let sched_cfg = GroupSchedulingConfig {
+            max_group_size: 3,
+            round_span: Round(5),
+            invite_lookahead: Round(8),
+            max_invite_wait: Round(2),
+            deadline_round_dist: Round(3),
+            init_empty_round_span: Round(7),
+        };
+
+        let mut v0_fsm: Publisher<ST> = Publisher::new(
+            nid(0),
+            RaptorCastConfigSecondaryPublisher {
+                full_nodes_prioritized: vec![nid(10), nid(11)],
+                group_scheduling: sched_cfg,
+            },
+            ChaCha8Rng::seed_from_u64(42),
+        );
+
+        v0_fsm.upsert_peer_disc_full_nodes(vec![nid(12), nid(13), nid(14), nid(15)]);
+
+        // Send invitation to 3 nodes (2 prioritized + 1 from peer disc)
+        let (_group_msg, invitees) = v0_fsm
+            .enter_round_and_step_until(Round(1))
+            .expect("should send invites");
+        assert_eq!(invitees, node_ids_vec![10, 11, 12]);
+
+        // Get the scheduled group to inspect its full state
+        let start_round = Round(8);
+        let group = v0_fsm.group_schedule.get(&start_round).unwrap();
+
+        // The uninvited node sends a PrepareGroupResponse(accept=true).
+        let uninvited_node = nid(14); // nid(14) was not in invitees
+        let attacker_response =
+            make_invite_response(nid(0), uninvited_node, true, start_round, &sched_cfg);
+        v0_fsm.on_candidate_response(attacker_response);
+
+        // Verify the uninvited node was not accepted into the group
+        let group = v0_fsm.group_schedule.get(&start_round).unwrap();
+        assert!(!group.full_nodes_accepted.contains(&uninvited_node));
     }
 
     // cargo test -p monad-raptorcast raptorcast_secondary::tests::reject_and_accept_counter -- --nocapture
