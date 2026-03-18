@@ -55,7 +55,7 @@ Reasoning:
 - [completed] `monad-eth-txpool-executor`: added a crate-local `init_executor_metrics()` that layers executor-local metrics on top of txpool metrics, then reused that shared `ExecutorMetrics` for both the executor and client sides.
 - [completed] `monad-peer-score`: added a crate-local metrics initializer and replaced all indexed metric updates/reads with explicit `ExecutorMetrics` methods.
 - [completed] `monad-ledger`: added a crate-local metrics initializer and replaced direct ledger metric indexing with explicit `ExecutorMetrics` updates.
-- [pending] `monad-statesync`
+- [completed] `monad-statesync`: added a crate-local metrics initializer and replaced all state sync metric assignments with explicit `ExecutorMetrics::set` calls.
 - [pending] `monad-leanudp`
 - [pending] `monad-peer-discovery`
 - [pending] `monad-wireauth`
@@ -76,4 +76,5 @@ Reasoning:
   - `cargo test -p monad-eth-txpool-executor`
   - `cargo test -p monad-peer-score`
   - `cargo test -p monad-ledger`
+  - `cargo test -p monad-statesync`
   - `cargo check -p monad-node --bin monad-node`
