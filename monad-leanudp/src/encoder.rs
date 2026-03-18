@@ -19,8 +19,9 @@ use thiserror::Error;
 
 use crate::{
     metrics::{
-        COUNTER_LEANUDP_ENCODE_BYTES, COUNTER_LEANUDP_ENCODE_ERROR_TOO_LARGE,
-        COUNTER_LEANUDP_ENCODE_FRAGMENTS, COUNTER_LEANUDP_ENCODE_MESSAGES,
+        init_executor_metrics, COUNTER_LEANUDP_ENCODE_BYTES,
+        COUNTER_LEANUDP_ENCODE_ERROR_TOO_LARGE, COUNTER_LEANUDP_ENCODE_FRAGMENTS,
+        COUNTER_LEANUDP_ENCODE_MESSAGES,
     },
     FragmentType, PacketHeader, LEANUDP_HEADER_SIZE,
 };
@@ -65,7 +66,7 @@ impl Encoder {
         Self {
             max_fragment_payload: max_fragment_payload.saturating_sub(LEANUDP_HEADER_SIZE),
             next_msg_id: 0,
-            metrics: ExecutorMetrics::default(),
+            metrics: init_executor_metrics(),
         }
     }
 
@@ -74,7 +75,7 @@ impl Encoder {
         let count = payload_len.max(1).div_ceil(self.max_fragment_payload);
 
         if count > MAX_FRAGMENTS {
-            self.metrics[COUNTER_LEANUDP_ENCODE_ERROR_TOO_LARGE] += 1;
+            self.metrics.inc(COUNTER_LEANUDP_ENCODE_ERROR_TOO_LARGE);
             return Err(EncodeError::PayloadTooLarge {
                 payload_len,
                 fragment_count: count,
@@ -84,9 +85,11 @@ impl Encoder {
         let msg_id = self.next_msg_id;
         self.next_msg_id = self.next_msg_id.wrapping_add(1);
 
-        self.metrics[COUNTER_LEANUDP_ENCODE_MESSAGES] += 1;
-        self.metrics[COUNTER_LEANUDP_ENCODE_FRAGMENTS] += count as u64;
-        self.metrics[COUNTER_LEANUDP_ENCODE_BYTES] += payload_len as u64;
+        self.metrics.inc(COUNTER_LEANUDP_ENCODE_MESSAGES);
+        self.metrics
+            .add(COUNTER_LEANUDP_ENCODE_FRAGMENTS, count as u64);
+        self.metrics
+            .add(COUNTER_LEANUDP_ENCODE_BYTES, payload_len as u64);
 
         Ok(FragmentIter {
             payload,

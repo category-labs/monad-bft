@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use monad_executor::ExecutorMetrics;
+
 monad_executor::metric_consts! {
     pub GAUGE_LEANUDP_POOL_PRIORITY_MESSAGES {
         name: "monad.leanudp.pool.priority_messages",
@@ -110,4 +112,33 @@ monad_executor::metric_consts! {
         name: "monad.leanudp.encode.error.too_large",
         help: "Total messages rejected by the encoder because they exceed the fragment limit",
     }
+}
+
+pub fn init_executor_metrics() -> ExecutorMetrics {
+    ExecutorMetrics::with_metric_defs([
+        GAUGE_LEANUDP_POOL_PRIORITY_MESSAGES,
+        GAUGE_LEANUDP_POOL_REGULAR_MESSAGES,
+        COUNTER_LEANUDP_DECODE_FRAGMENTS_RECEIVED,
+        COUNTER_LEANUDP_DECODE_BYTES_RECEIVED,
+        COUNTER_LEANUDP_DECODE_FRAGMENTS_PRIORITY,
+        COUNTER_LEANUDP_DECODE_BYTES_PRIORITY,
+        COUNTER_LEANUDP_DECODE_FRAGMENTS_REGULAR,
+        COUNTER_LEANUDP_DECODE_BYTES_REGULAR,
+        COUNTER_LEANUDP_DECODE_MESSAGES_COMPLETED,
+        COUNTER_LEANUDP_DECODE_BYTES_COMPLETED,
+        COUNTER_LEANUDP_DECODE_EVICTED_TIMEOUT,
+        COUNTER_LEANUDP_DECODE_EVICTED_RANDOM,
+        COUNTER_LEANUDP_ERROR_INVALID_HEADER,
+        COUNTER_LEANUDP_ERROR_UNSUPPORTED_VERSION,
+        COUNTER_LEANUDP_ERROR_IDENTITY_LIMIT,
+        COUNTER_LEANUDP_ERROR_DUPLICATE_FRAGMENT,
+        COUNTER_LEANUDP_ERROR_TOO_MANY_FRAGMENTS,
+        COUNTER_LEANUDP_ERROR_CONFLICTING_END,
+        COUNTER_LEANUDP_ERROR_MESSAGE_TOO_LARGE,
+        COUNTER_LEANUDP_ERROR_POOL_FULL,
+        COUNTER_LEANUDP_ENCODE_MESSAGES,
+        COUNTER_LEANUDP_ENCODE_FRAGMENTS,
+        COUNTER_LEANUDP_ENCODE_BYTES,
+        COUNTER_LEANUDP_ENCODE_ERROR_TOO_LARGE,
+    ])
 }

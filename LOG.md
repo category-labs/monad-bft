@@ -56,7 +56,7 @@ Reasoning:
 - [completed] `monad-peer-score`: added a crate-local metrics initializer and replaced all indexed metric updates/reads with explicit `ExecutorMetrics` methods.
 - [completed] `monad-ledger`: added a crate-local metrics initializer and replaced direct ledger metric indexing with explicit `ExecutorMetrics` updates.
 - [completed] `monad-statesync`: added a crate-local metrics initializer and replaced all state sync metric assignments with explicit `ExecutorMetrics::set` calls.
-- [pending] `monad-leanudp`
+- [completed] `monad-leanudp`: added a crate-local metrics initializer for encoder/decoder metrics and replaced test reads plus runtime updates with explicit `ExecutorMetrics` methods.
 - [pending] `monad-peer-discovery`
 - [pending] `monad-wireauth`
 - [pending] `monad-raptorcast`
@@ -77,4 +77,5 @@ Reasoning:
   - `cargo test -p monad-peer-score`
   - `cargo test -p monad-ledger`
   - `cargo test -p monad-statesync`
+  - `cargo test -p monad-leanudp`
   - `cargo check -p monad-node --bin monad-node`
