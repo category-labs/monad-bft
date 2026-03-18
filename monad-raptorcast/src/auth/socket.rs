@@ -39,7 +39,7 @@ pub struct AuthRecvMsg<P> {
 
 use super::{
     metrics::{
-        GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_READ,
+        init_socket_executor_metrics, GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_READ,
         GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_WRITTEN,
         GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_READ,
         GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_WRITTEN,
@@ -67,7 +67,7 @@ where
         Self {
             authenticated,
             non_authenticated,
-            metrics: ExecutorMetrics::default(),
+            metrics: init_socket_executor_metrics(),
         }
     }
 
@@ -91,7 +91,10 @@ where
 
         if !auth_msgs.is_empty() {
             if let Some(authenticated) = &mut self.authenticated {
-                self.metrics[GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_WRITTEN] += auth_bytes;
+                self.metrics.add(
+                    GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_WRITTEN,
+                    auth_bytes,
+                );
                 authenticated.write_unicast_with_priority(
                     UnicastMsg {
                         msgs: auth_msgs,
@@ -103,8 +106,10 @@ where
         }
 
         if !non_auth_msgs.is_empty() {
-            self.metrics[GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_WRITTEN] +=
-                non_auth_bytes;
+            self.metrics.add(
+                GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_WRITTEN,
+                non_auth_bytes,
+            );
             self.non_authenticated.write_unicast_with_priority(
                 UnicastMsg {
                     msgs: non_auth_msgs,
@@ -145,12 +150,18 @@ where
             tokio::select! {
                 result = authenticated.recv() => {
                     if let Ok(ref msg) = result {
-                        self.metrics[GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_READ] += msg.payload.len() as u64;
+                        self.metrics.add(
+                            GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_READ,
+                            msg.payload.len() as u64,
+                        );
                     }
                     result
                 },
                 msg = self.non_authenticated.recv() => {
-                    self.metrics[GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_READ] += msg.payload.len() as u64;
+                    self.metrics.add(
+                        GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_READ,
+                        msg.payload.len() as u64,
+                    );
                     Ok(AuthRecvMsg {
                         src_addr: msg.src_addr,
                         payload: msg.payload,
@@ -161,8 +172,10 @@ where
             }
         } else {
             let msg = self.non_authenticated.recv().await;
-            self.metrics[GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_READ] +=
-                msg.payload.len() as u64;
+            self.metrics.add(
+                GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_READ,
+                msg.payload.len() as u64,
+            );
             Ok(AuthRecvMsg {
                 src_addr: msg.src_addr,
                 payload: msg.payload,

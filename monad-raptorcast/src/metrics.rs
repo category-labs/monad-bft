@@ -56,6 +56,37 @@ monad_executor::metric_consts! {
 
 const HISTOGRAM_CLEAR_INTERVAL: Duration = Duration::from_secs(30);
 
+pub fn init_executor_metrics() -> ExecutorMetrics {
+    ExecutorMetrics::with_metric_defs([
+        GAUGE_RAPTORCAST_TOTAL_MESSAGES_RECEIVED,
+        GAUGE_RAPTORCAST_TOTAL_RECV_ERRORS,
+        GAUGE_RAPTORCAST_TOTAL_DESERIALIZE_ERRORS,
+        GAUGE_RAPTORCAST_DECODING_CACHE_SIGNATURE_VERIFICATIONS_RATE_LIMITED,
+        PRIMARY_BROADCAST_LATENCY_P99_MS,
+        PRIMARY_BROADCAST_LATENCY_COUNT,
+        SECONDARY_BROADCAST_LATENCY_P99_MS,
+        SECONDARY_BROADCAST_LATENCY_COUNT,
+    ])
+}
+
+pub(crate) fn init_router_executor_metrics() -> ExecutorMetrics {
+    ExecutorMetrics::with_metric_defs([
+        GAUGE_RAPTORCAST_TOTAL_MESSAGES_RECEIVED,
+        GAUGE_RAPTORCAST_TOTAL_RECV_ERRORS,
+        GAUGE_RAPTORCAST_TOTAL_DESERIALIZE_ERRORS,
+    ])
+}
+
+pub(crate) fn init_udp_state_executor_metrics() -> ExecutorMetrics {
+    ExecutorMetrics::with_metric_defs([
+        GAUGE_RAPTORCAST_DECODING_CACHE_SIGNATURE_VERIFICATIONS_RATE_LIMITED,
+        PRIMARY_BROADCAST_LATENCY_P99_MS,
+        PRIMARY_BROADCAST_LATENCY_COUNT,
+        SECONDARY_BROADCAST_LATENCY_P99_MS,
+        SECONDARY_BROADCAST_LATENCY_COUNT,
+    ])
+}
+
 pub(crate) struct LatencyHistogram {
     histogram: Histogram,
     p99_metric: &'static MetricDef,
@@ -85,8 +116,8 @@ impl LatencyHistogram {
             tracing::warn!("failed to record latency: {}", e);
         }
 
-        metrics[self.p99_metric] = self.histogram.p99();
-        metrics[self.count_metric] = self.histogram.count();
+        metrics.set(self.p99_metric, self.histogram.p99());
+        metrics.set(self.count_metric, self.histogram.count());
     }
 }
 
@@ -109,7 +140,7 @@ impl UdpStateMetrics {
                 SECONDARY_BROADCAST_LATENCY_P99_MS,
                 SECONDARY_BROADCAST_LATENCY_COUNT,
             ),
-            executor_metrics: ExecutorMetrics::default(),
+            executor_metrics: init_udp_state_executor_metrics(),
         }
     }
 
