@@ -51,7 +51,7 @@ Reasoning:
 
 - [completed] `monad-executor`: removed registry ownership from `ExecutorMetrics`, kept legacy indexed metrics working, added external `register`/`register_all` helpers, and kept Prometheus-backed metrics readable in tests via handles and `get`.
 - [completed] `monad-eth-txpool`: added `init_executor_metrics()`, changed metric construction to `from_executor_metrics(&ExecutorMetrics)`, and kept the existing serde snapshot compatibility path.
-- [completed] `monad-updaters`: switched the mock txpool executor to create one txpool-initialized `ExecutorMetrics` and derive `EthTxPoolMetrics` handles from it.
+- [completed] `monad-updaters`: switched the mock txpool executor to create one txpool-initialized `ExecutorMetrics`, derived `EthTxPoolMetrics` handles from it, and migrated parent executor timing metrics to a crate-local initializer plus explicit updates.
 - [completed] `monad-eth-txpool-executor`: added a crate-local `init_executor_metrics()` that layers executor-local metrics on top of txpool metrics, then reused that shared `ExecutorMetrics` for both the executor and client sides.
 - [completed] `monad-peer-score`: added a crate-local metrics initializer and replaced all indexed metric updates/reads with explicit `ExecutorMetrics` methods.
 - [completed] `monad-ledger`: added a crate-local metrics initializer and replaced direct ledger metric indexing with explicit `ExecutorMetrics` updates.

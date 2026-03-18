@@ -84,6 +84,22 @@ monad_executor::metric_consts! {
     }
 }
 
+fn init_executor_metrics() -> ExecutorMetrics {
+    ExecutorMetrics::with_metric_defs([
+        GAUGE_PARENT_TOTAL_EXEC_US,
+        GAUGE_LEDGER_TOTAL_EXEC_US,
+        GAUGE_CONFIG_FILE_TOTAL_EXEC_US,
+        GAUGE_TXPOOL_TOTAL_EXEC_US,
+        GAUGE_ROUTER_TOTAL_EXEC_US,
+        GAUGE_STATESYNC_TOTAL_EXEC_US,
+        GAUGE_PARENT_TOTAL_POLL_US,
+        GAUGE_LEDGER_TOTAL_POLL_US,
+        GAUGE_TXPOOL_TOTAL_POLL_US,
+        GAUGE_ROUTER_TOTAL_POLL_US,
+        GAUGE_STATESYNC_TOTAL_POLL_US,
+    ])
+}
+
 /// Single top-level executor for all other required by a node.
 /// This executor will distribute commands to the appropriate sub-executor
 /// and will poll them for events
@@ -262,8 +278,13 @@ impl<R, T, L, C, S, TS, TP, CP, LO, SS, CL> ParentExecutor<R, T, L, C, S, TS, TP
     }
 }
 
-#[derive(Default)]
 pub struct ParentExecutorMetrics(ExecutorMetrics);
+
+impl Default for ParentExecutorMetrics {
+    fn default() -> Self {
+        Self(init_executor_metrics())
+    }
+}
 
 impl ParentExecutorMetrics {
     fn record<T>(
@@ -273,7 +294,7 @@ impl ParentExecutorMetrics {
     ) -> T {
         let start = Instant::now();
         let e = f();
-        self.0[metric] += start.elapsed().as_micros() as u64;
+        self.0.add(metric, start.elapsed().as_micros() as u64);
         e
     }
 }
@@ -299,6 +320,8 @@ impl<'a> ParentExecutorMetricsGuard<'a> {
 
 impl<'a> Drop for ParentExecutorMetricsGuard<'a> {
     fn drop(&mut self) {
-        self.metrics.0[self.guard_metric] += self.start.elapsed().as_micros() as u64;
+        self.metrics
+            .0
+            .add(self.guard_metric, self.start.elapsed().as_micros() as u64);
     }
 }
