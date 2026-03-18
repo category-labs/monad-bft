@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use monad_eth_txpool::EthTxPoolMetrics;
+use monad_eth_txpool::{init_executor_metrics as init_txpool_executor_metrics, EthTxPoolMetrics};
 use monad_executor::{ExecutorMetricHandle, ExecutorMetrics};
 
 monad_executor::metric_consts! {
@@ -39,6 +39,18 @@ monad_executor::metric_consts! {
     }
 }
 
+pub fn init_executor_metrics() -> ExecutorMetrics {
+    let mut executor_metrics = init_txpool_executor_metrics();
+    executor_metrics.add_metric_defs([
+        REJECT_FORWARDED_INVALID_BYTES,
+        CREATE_PROPOSAL,
+        CREATE_PROPOSAL_ELAPSED_NS,
+        PRELOAD_BACKEND_LOOKUPS,
+        PRELOAD_BACKEND_REQUESTS,
+    ]);
+    executor_metrics
+}
+
 #[derive(Debug)]
 pub struct EthTxPoolExecutorMetrics {
     pub reject_forwarded_invalid_bytes: ExecutorMetricHandle,
@@ -53,22 +65,21 @@ pub struct EthTxPoolExecutorMetrics {
 }
 
 impl EthTxPoolExecutorMetrics {
-    pub fn register(executor_metrics: &mut ExecutorMetrics) -> Self {
+    pub fn from_executor_metrics(executor_metrics: &ExecutorMetrics) -> Self {
         Self {
-            reject_forwarded_invalid_bytes: executor_metrics
-                .register(REJECT_FORWARDED_INVALID_BYTES),
-            create_proposal: executor_metrics.register(CREATE_PROPOSAL),
-            create_proposal_elapsed_ns: executor_metrics.register(CREATE_PROPOSAL_ELAPSED_NS),
-            preload_backend_lookups: executor_metrics.register(PRELOAD_BACKEND_LOOKUPS),
-            preload_backend_requests: executor_metrics.register(PRELOAD_BACKEND_REQUESTS),
-            pool: EthTxPoolMetrics::register(executor_metrics),
+            reject_forwarded_invalid_bytes: executor_metrics.handle(REJECT_FORWARDED_INVALID_BYTES),
+            create_proposal: executor_metrics.handle(CREATE_PROPOSAL),
+            create_proposal_elapsed_ns: executor_metrics.handle(CREATE_PROPOSAL_ELAPSED_NS),
+            preload_backend_lookups: executor_metrics.handle(PRELOAD_BACKEND_LOOKUPS),
+            preload_backend_requests: executor_metrics.handle(PRELOAD_BACKEND_REQUESTS),
+            pool: EthTxPoolMetrics::from_executor_metrics(executor_metrics),
         }
     }
 }
 
 impl Default for EthTxPoolExecutorMetrics {
     fn default() -> Self {
-        let mut executor_metrics = ExecutorMetrics::default();
-        Self::register(&mut executor_metrics)
+        let executor_metrics = init_executor_metrics();
+        Self::from_executor_metrics(&executor_metrics)
     }
 }

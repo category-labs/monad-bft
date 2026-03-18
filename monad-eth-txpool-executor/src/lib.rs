@@ -52,8 +52,11 @@ use tracing::{debug, debug_span, error, info, trace_span, warn};
 
 pub use self::{client::EthTxPoolExecutorClient, ipc::EthTxPoolIpcConfig};
 use self::{
-    client::ForwardedTxs, forward::EthTxPoolForwardingManager, ipc::EthTxPoolIpcServer,
-    metrics::EthTxPoolExecutorMetrics, preload::EthTxPoolPreloadManager,
+    client::ForwardedTxs,
+    forward::EthTxPoolForwardingManager,
+    ipc::EthTxPoolIpcServer,
+    metrics::{init_executor_metrics, EthTxPoolExecutorMetrics},
+    preload::EthTxPoolPreloadManager,
     reset::EthTxPoolResetTrigger,
 };
 
@@ -117,9 +120,10 @@ where
 
         let (events_tx, events) = mpsc::unbounded_channel();
 
-        let mut executor_metrics = ExecutorMetrics::default();
-        let metrics = Arc::new(EthTxPoolExecutorMetrics::register(&mut executor_metrics));
-        let executor_metrics = Arc::new(executor_metrics);
+        let executor_metrics = Arc::new(init_executor_metrics());
+        let metrics = Arc::new(EthTxPoolExecutorMetrics::from_executor_metrics(
+            executor_metrics.as_ref(),
+        ));
 
         Ok(EthTxPoolExecutorClient::new(
             {
