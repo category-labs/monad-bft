@@ -54,7 +54,7 @@ Reasoning:
 - [completed] `monad-updaters`: switched the mock txpool executor to create one txpool-initialized `ExecutorMetrics` and derive `EthTxPoolMetrics` handles from it.
 - [completed] `monad-eth-txpool-executor`: added a crate-local `init_executor_metrics()` that layers executor-local metrics on top of txpool metrics, then reused that shared `ExecutorMetrics` for both the executor and client sides.
 - [completed] `monad-peer-score`: added a crate-local metrics initializer and replaced all indexed metric updates/reads with explicit `ExecutorMetrics` methods.
-- [pending] `monad-ledger`
+- [completed] `monad-ledger`: added a crate-local metrics initializer and replaced direct ledger metric indexing with explicit `ExecutorMetrics` updates.
 - [pending] `monad-statesync`
 - [pending] `monad-leanudp`
 - [pending] `monad-peer-discovery`
@@ -75,4 +75,5 @@ Reasoning:
   - `cargo test -p monad-updaters`
   - `cargo test -p monad-eth-txpool-executor`
   - `cargo test -p monad-peer-score`
+  - `cargo test -p monad-ledger`
   - `cargo check -p monad-node --bin monad-node`
