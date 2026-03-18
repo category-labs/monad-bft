@@ -22,7 +22,7 @@ use std::{
 use monad_executor::ExecutorMetrics;
 
 use crate::{
-    metrics::MetricNames,
+    metrics::{init_state_executor_metrics, MetricNames},
     protocol::tai64::Tai64N,
     session::{InitiatorState, ResponderState, SessionIndex, TransportState},
 };
@@ -105,8 +105,10 @@ impl<'a> SessionIndexReservation<'a> {
         self.state.next_session_index = self.index;
         self.state.next_session_index.increment();
         self.state.allocated_indices.insert(self.index);
-        self.state.metrics[self.state.metric_names.state_allocated_indices] =
-            self.state.allocated_indices.len() as u64;
+        self.state.metrics.set(
+            self.state.metric_names.state_allocated_indices,
+            self.state.allocated_indices.len() as u64,
+        );
     }
 }
 
@@ -140,7 +142,7 @@ impl State {
             accepted_sessions_by_peer: BTreeSet::new(),
             ip_session_counts: HashMap::new(),
             total_sessions: 0,
-            metrics: ExecutorMetrics::default(),
+            metrics: init_state_executor_metrics(metric_names),
             metric_names,
         }
     }
@@ -263,15 +265,21 @@ impl State {
         let is_initiator = transport.is_initiator;
 
         if is_initiator {
-            self.metrics[self.metric_names.state_session_established_initiator] += 1;
+            self.metrics
+                .inc(self.metric_names.state_session_established_initiator);
             self.initiating_sessions.remove(&session_id);
-            self.metrics[self.metric_names.state_initiating_sessions] =
-                self.initiating_sessions.len() as u64;
+            self.metrics.set(
+                self.metric_names.state_initiating_sessions,
+                self.initiating_sessions.len() as u64,
+            );
         } else {
-            self.metrics[self.metric_names.state_session_established_responder] += 1;
+            self.metrics
+                .inc(self.metric_names.state_session_established_responder);
             self.responding_sessions.remove(&session_id);
-            self.metrics[self.metric_names.state_responding_sessions] =
-                self.responding_sessions.len() as u64;
+            self.metrics.set(
+                self.metric_names.state_responding_sessions,
+                self.responding_sessions.len() as u64,
+            );
         }
 
         let mut evicted_sessions = Vec::new();
@@ -289,8 +297,10 @@ impl State {
         if let Some(evicted_id) = evicted {
             evicted_sessions.push(evicted_id);
         }
-        self.metrics[self.metric_names.state_sessions_by_public_key] =
-            self.last_established_session_by_public_key.len() as u64;
+        self.metrics.set(
+            self.metric_names.state_sessions_by_public_key,
+            self.last_established_session_by_public_key.len() as u64,
+        );
 
         let sessions = self
             .last_established_session_by_socket
@@ -307,8 +317,10 @@ impl State {
                 evicted_sessions.push(evicted_id);
             }
         }
-        self.metrics[self.metric_names.state_sessions_by_socket] =
-            self.last_established_session_by_socket.len() as u64;
+        self.metrics.set(
+            self.metric_names.state_sessions_by_socket,
+            self.last_established_session_by_socket.len() as u64,
+        );
 
         for evicted_session_id in evicted_sessions {
             if let Some(session) = self.transport_sessions.get(&evicted_session_id) {
@@ -323,8 +335,10 @@ impl State {
         }
 
         self.transport_sessions.insert(session_id, transport);
-        self.metrics[self.metric_names.state_transport_sessions] =
-            self.transport_sessions.len() as u64;
+        self.metrics.set(
+            self.metric_names.state_transport_sessions,
+            self.transport_sessions.len() as u64,
+        );
     }
 
     pub(crate) fn terminate_session(
@@ -333,31 +347,44 @@ impl State {
         remote_public_key: &monad_secp::PubKey,
         remote_addr: SocketAddr,
     ) {
-        self.metrics[self.metric_names.state_session_terminated] += 1;
+        self.metrics.inc(self.metric_names.state_session_terminated);
 
         if let Some(count) = self.ip_session_counts.get_mut(&remote_addr.ip()) {
             *count = count.saturating_sub(1);
             if *count == 0 {
                 self.ip_session_counts.remove(&remote_addr.ip());
-                self.metrics[self.metric_names.state_ip_session_counts_size] =
-                    self.ip_session_counts.len() as u64;
+                self.metrics.set(
+                    self.metric_names.state_ip_session_counts_size,
+                    self.ip_session_counts.len() as u64,
+                );
             }
         }
         self.total_sessions = self.total_sessions.saturating_sub(1);
-        self.metrics[self.metric_names.state_total_sessions] = self.total_sessions as u64;
+        self.metrics.set(
+            self.metric_names.state_total_sessions,
+            self.total_sessions as u64,
+        );
 
         let transport = self.transport_sessions.remove(&session_id);
-        self.metrics[self.metric_names.state_transport_sessions] =
-            self.transport_sessions.len() as u64;
+        self.metrics.set(
+            self.metric_names.state_transport_sessions,
+            self.transport_sessions.len() as u64,
+        );
         self.initiating_sessions.remove(&session_id);
-        self.metrics[self.metric_names.state_initiating_sessions] =
-            self.initiating_sessions.len() as u64;
+        self.metrics.set(
+            self.metric_names.state_initiating_sessions,
+            self.initiating_sessions.len() as u64,
+        );
         self.responding_sessions.remove(&session_id);
-        self.metrics[self.metric_names.state_responding_sessions] =
-            self.responding_sessions.len() as u64;
+        self.metrics.set(
+            self.metric_names.state_responding_sessions,
+            self.responding_sessions.len() as u64,
+        );
         self.allocated_indices.remove(&session_id);
-        self.metrics[self.metric_names.state_allocated_indices] =
-            self.allocated_indices.len() as u64;
+        self.metrics.set(
+            self.metric_names.state_allocated_indices,
+            self.allocated_indices.len() as u64,
+        );
 
         if let Some(transport) = transport {
             if let Some(sessions) = self
@@ -372,8 +399,10 @@ impl State {
 
                 if sessions.is_empty() {
                     self.last_established_session_by_socket.remove(&remote_addr);
-                    self.metrics[self.metric_names.state_sessions_by_socket] =
-                        self.last_established_session_by_socket.len() as u64;
+                    self.metrics.set(
+                        self.metric_names.state_sessions_by_socket,
+                        self.last_established_session_by_socket.len() as u64,
+                    );
                 }
             }
 
@@ -390,8 +419,10 @@ impl State {
                 if sessions.is_empty() {
                     self.last_established_session_by_public_key
                         .remove(remote_public_key);
-                    self.metrics[self.metric_names.state_sessions_by_public_key] =
-                        self.last_established_session_by_public_key.len() as u64;
+                    self.metrics.set(
+                        self.metric_names.state_sessions_by_public_key,
+                        self.last_established_session_by_public_key.len() as u64,
+                    );
                 }
             }
         }
@@ -399,15 +430,19 @@ impl State {
         if let Some(&initiated_id) = self.initiated_session_by_peer.get(remote_public_key) {
             if initiated_id == session_id {
                 self.initiated_session_by_peer.remove(remote_public_key);
-                self.metrics[self.metric_names.state_initiated_session_by_peer_size] =
-                    self.initiated_session_by_peer.len() as u64;
+                self.metrics.set(
+                    self.metric_names.state_initiated_session_by_peer_size,
+                    self.initiated_session_by_peer.len() as u64,
+                );
             }
         }
 
         self.accepted_sessions_by_peer
             .remove(&(*remote_public_key, session_id));
-        self.metrics[self.metric_names.state_accepted_sessions_by_peer_size] =
-            self.accepted_sessions_by_peer.len() as u64;
+        self.metrics.set(
+            self.metric_names.state_accepted_sessions_by_peer_size,
+            self.accepted_sessions_by_peer.len() as u64,
+        );
     }
 
     #[cfg(test)]
@@ -444,15 +479,19 @@ impl State {
 
     pub fn remove_initiator(&mut self, session_index: &SessionIndex) -> Option<InitiatorState> {
         let session = self.initiating_sessions.remove(session_index)?;
-        self.metrics[self.metric_names.state_initiating_sessions] =
-            self.initiating_sessions.len() as u64;
+        self.metrics.set(
+            self.metric_names.state_initiating_sessions,
+            self.initiating_sessions.len() as u64,
+        );
         let remote_public_key = session.remote_public_key;
         if let Some(&stored_session_index) = self.initiated_session_by_peer.get(&remote_public_key)
         {
             if stored_session_index == *session_index {
                 self.initiated_session_by_peer.remove(&remote_public_key);
-                self.metrics[self.metric_names.state_initiated_session_by_peer_size] =
-                    self.initiated_session_by_peer.len() as u64;
+                self.metrics.set(
+                    self.metric_names.state_initiated_session_by_peer_size,
+                    self.initiated_session_by_peer.len() as u64,
+                );
             }
         }
         Some(session)
@@ -460,13 +499,17 @@ impl State {
 
     pub fn remove_responder(&mut self, session_index: &SessionIndex) -> Option<ResponderState> {
         let session = self.responding_sessions.remove(session_index)?;
-        self.metrics[self.metric_names.state_responding_sessions] =
-            self.responding_sessions.len() as u64;
+        self.metrics.set(
+            self.metric_names.state_responding_sessions,
+            self.responding_sessions.len() as u64,
+        );
         let remote_public_key = session.remote_public_key;
         self.accepted_sessions_by_peer
             .remove(&(remote_public_key, *session_index));
-        self.metrics[self.metric_names.state_accepted_sessions_by_peer_size] =
-            self.accepted_sessions_by_peer.len() as u64;
+        self.metrics.set(
+            self.metric_names.state_accepted_sessions_by_peer_size,
+            self.accepted_sessions_by_peer.len() as u64,
+        );
         Some(session)
     }
 
@@ -478,18 +521,28 @@ impl State {
     ) {
         let remote_addr = session.remote_addr;
         self.initiating_sessions.insert(session_index, session);
-        self.metrics[self.metric_names.state_initiating_sessions] =
-            self.initiating_sessions.len() as u64;
+        self.metrics.set(
+            self.metric_names.state_initiating_sessions,
+            self.initiating_sessions.len() as u64,
+        );
         self.initiated_session_by_peer
             .insert(remote_key, session_index);
-        self.metrics[self.metric_names.state_initiated_session_by_peer_size] =
-            self.initiated_session_by_peer.len() as u64;
+        self.metrics.set(
+            self.metric_names.state_initiated_session_by_peer_size,
+            self.initiated_session_by_peer.len() as u64,
+        );
         *self.ip_session_counts.entry(remote_addr.ip()).or_insert(0) += 1;
-        self.metrics[self.metric_names.state_ip_session_counts_size] =
-            self.ip_session_counts.len() as u64;
+        self.metrics.set(
+            self.metric_names.state_ip_session_counts_size,
+            self.ip_session_counts.len() as u64,
+        );
         self.total_sessions += 1;
-        self.metrics[self.metric_names.state_total_sessions] = self.total_sessions as u64;
-        self.metrics[self.metric_names.state_session_index_allocated] += 1;
+        self.metrics.set(
+            self.metric_names.state_total_sessions,
+            self.total_sessions as u64,
+        );
+        self.metrics
+            .inc(self.metric_names.state_session_index_allocated);
     }
 
     pub fn insert_responder(
@@ -500,17 +553,26 @@ impl State {
     ) {
         let remote_addr = session.remote_addr;
         self.responding_sessions.insert(session_index, session);
-        self.metrics[self.metric_names.state_responding_sessions] =
-            self.responding_sessions.len() as u64;
+        self.metrics.set(
+            self.metric_names.state_responding_sessions,
+            self.responding_sessions.len() as u64,
+        );
         self.accepted_sessions_by_peer
             .insert((remote_key, session_index));
-        self.metrics[self.metric_names.state_accepted_sessions_by_peer_size] =
-            self.accepted_sessions_by_peer.len() as u64;
+        self.metrics.set(
+            self.metric_names.state_accepted_sessions_by_peer_size,
+            self.accepted_sessions_by_peer.len() as u64,
+        );
         *self.ip_session_counts.entry(remote_addr.ip()).or_insert(0) += 1;
-        self.metrics[self.metric_names.state_ip_session_counts_size] =
-            self.ip_session_counts.len() as u64;
+        self.metrics.set(
+            self.metric_names.state_ip_session_counts_size,
+            self.ip_session_counts.len() as u64,
+        );
         self.total_sessions += 1;
-        self.metrics[self.metric_names.state_total_sessions] = self.total_sessions as u64;
+        self.metrics.set(
+            self.metric_names.state_total_sessions,
+            self.total_sessions as u64,
+        );
     }
 
     pub fn lookup_cookie_from_initiated_sessions(

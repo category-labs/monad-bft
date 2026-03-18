@@ -23,7 +23,10 @@ use lru::LruCache;
 use monad_executor::ExecutorMetrics;
 use tracing::{debug, trace, warn};
 
-use crate::{metrics::MetricNames, state::State};
+use crate::{
+    metrics::{init_filter_executor_metrics, MetricNames},
+    state::State,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FilterAction {
@@ -77,7 +80,7 @@ impl Filter {
             max_sessions_per_ip,
             low_watermark_sessions,
             high_watermark_sessions,
-            metrics: ExecutorMetrics::default(),
+            metrics: init_filter_executor_metrics(metric_names),
             metric_names,
         }
     }
@@ -224,8 +227,10 @@ impl Filter {
             }
             None => {
                 self.ip_request_history.put(ip, duration_since_start);
-                self.metrics[self.metric_names.filter_ip_request_history_size] =
-                    self.ip_request_history.len() as u64;
+                self.metrics.set(
+                    self.metric_names.filter_ip_request_history_size,
+                    self.ip_request_history.len() as u64,
+                );
                 None
             }
         }
@@ -248,7 +253,7 @@ impl Filter {
             FilterAction::SendCookie => self.metric_names.filter_send_cookie,
             FilterAction::Drop => self.metric_names.filter_drop,
         };
-        self.metrics[metric] += 1;
+        self.metrics.inc(metric);
     }
 }
 

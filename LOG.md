@@ -58,7 +58,7 @@ Reasoning:
 - [completed] `monad-statesync`: added a crate-local metrics initializer and replaced all state sync metric assignments with explicit `ExecutorMetrics::set` calls.
 - [completed] `monad-leanudp`: added a crate-local metrics initializer for encoder/decoder metrics and replaced test reads plus runtime updates with explicit `ExecutorMetrics` methods.
 - [completed] `monad-peer-discovery`: added a crate-local metrics initializer and replaced all runtime/test metric access with explicit `ExecutorMetrics` methods inside the crate.
-- [pending] `monad-wireauth`
+- [completed] `monad-wireauth`: added crate-local metric initializers derived from `MetricNames`, switched `API`/`State`/`Filter` off `ExecutorMetrics::default()`, and replaced all indexed metric writes with explicit `ExecutorMetrics` methods.
 - [pending] `monad-raptorcast`
 - [completed] `monad-peer-disc-swarm`: replaced downstream metric assertions with explicit `ExecutorMetrics::get` reads so the tests no longer depend on indexed metric access.
 - [pending] `monad-executor` cleanup: remove `values` and index-based access after the workspace migration is complete
@@ -80,4 +80,5 @@ Reasoning:
   - `cargo test -p monad-leanudp`
   - `cargo test -p monad-peer-discovery`
   - `cargo test -p monad-peer-disc-swarm`
+  - `cargo test -p monad-wireauth`
   - `cargo check -p monad-node --bin monad-node`

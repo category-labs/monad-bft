@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use monad_executor::MetricDef;
+use monad_executor::{ExecutorMetrics, MetricDef};
 
 pub struct MetricNames {
     pub state_initiating_sessions: &'static MetricDef,
@@ -80,6 +80,156 @@ pub struct MetricNames {
 
     pub initiator_buffered_messages: &'static MetricDef,
     pub initiator_messages_sent_from_buffer: &'static MetricDef,
+}
+
+impl MetricNames {
+    fn all_metric_defs(&'static self) -> [&'static MetricDef; 56] {
+        [
+            self.state_initiating_sessions,
+            self.state_responding_sessions,
+            self.state_transport_sessions,
+            self.state_total_sessions,
+            self.state_allocated_indices,
+            self.state_sessions_by_public_key,
+            self.state_sessions_by_socket,
+            self.state_session_index_allocated,
+            self.state_session_established_initiator,
+            self.state_session_established_responder,
+            self.state_session_terminated,
+            self.state_timers_size,
+            self.state_packet_queue_size,
+            self.state_initiated_session_by_peer_size,
+            self.state_accepted_sessions_by_peer_size,
+            self.state_ip_session_counts_size,
+            self.filter_pass,
+            self.filter_send_cookie,
+            self.filter_drop,
+            self.filter_ip_request_history_size,
+            self.api_connect,
+            self.api_decrypt,
+            self.api_encrypt_by_public_key,
+            self.api_encrypt_by_socket,
+            self.api_disconnect,
+            self.api_dispatch_control,
+            self.api_next_packet,
+            self.api_tick,
+            self.dispatch_handshake_init,
+            self.dispatch_handshake_response,
+            self.dispatch_cookie_reply,
+            self.dispatch_keepalive,
+            self.error_connect,
+            self.error_decrypt,
+            self.error_decrypt_nonce_outside_window,
+            self.error_decrypt_nonce_duplicate,
+            self.error_decrypt_mac,
+            self.error_encrypt_by_public_key,
+            self.error_encrypt_by_socket,
+            self.error_dispatch_control,
+            self.error_session_exhausted,
+            self.error_mac1_verification_failed,
+            self.error_timestamp_replay,
+            self.error_session_not_found,
+            self.error_session_index_not_found,
+            self.error_handshake_init_validation,
+            self.error_cookie_reply,
+            self.error_handshake_response_validation,
+            self.enqueued_handshake_init,
+            self.enqueued_handshake_response,
+            self.enqueued_cookie_reply,
+            self.enqueued_keepalive,
+            self.rate_limit_drop,
+            self.rate_limit_connect,
+            self.initiator_buffered_messages,
+            self.initiator_messages_sent_from_buffer,
+        ]
+    }
+
+    pub(crate) fn state_metric_defs(&'static self) -> [&'static MetricDef; 14] {
+        [
+            self.state_initiating_sessions,
+            self.state_responding_sessions,
+            self.state_transport_sessions,
+            self.state_total_sessions,
+            self.state_allocated_indices,
+            self.state_sessions_by_public_key,
+            self.state_sessions_by_socket,
+            self.state_session_index_allocated,
+            self.state_session_established_initiator,
+            self.state_session_established_responder,
+            self.state_session_terminated,
+            self.state_initiated_session_by_peer_size,
+            self.state_accepted_sessions_by_peer_size,
+            self.state_ip_session_counts_size,
+        ]
+    }
+
+    pub(crate) fn filter_metric_defs(&'static self) -> [&'static MetricDef; 4] {
+        [
+            self.filter_pass,
+            self.filter_send_cookie,
+            self.filter_drop,
+            self.filter_ip_request_history_size,
+        ]
+    }
+
+    pub(crate) fn api_metric_defs(&'static self) -> [&'static MetricDef; 38] {
+        [
+            self.state_timers_size,
+            self.state_packet_queue_size,
+            self.api_connect,
+            self.api_decrypt,
+            self.api_encrypt_by_public_key,
+            self.api_encrypt_by_socket,
+            self.api_disconnect,
+            self.api_dispatch_control,
+            self.api_next_packet,
+            self.api_tick,
+            self.dispatch_handshake_init,
+            self.dispatch_handshake_response,
+            self.dispatch_cookie_reply,
+            self.dispatch_keepalive,
+            self.error_connect,
+            self.error_decrypt,
+            self.error_decrypt_nonce_outside_window,
+            self.error_decrypt_nonce_duplicate,
+            self.error_decrypt_mac,
+            self.error_encrypt_by_public_key,
+            self.error_encrypt_by_socket,
+            self.error_dispatch_control,
+            self.error_session_exhausted,
+            self.error_mac1_verification_failed,
+            self.error_timestamp_replay,
+            self.error_session_not_found,
+            self.error_session_index_not_found,
+            self.error_handshake_init_validation,
+            self.error_cookie_reply,
+            self.error_handshake_response_validation,
+            self.enqueued_handshake_init,
+            self.enqueued_handshake_response,
+            self.enqueued_cookie_reply,
+            self.enqueued_keepalive,
+            self.rate_limit_drop,
+            self.rate_limit_connect,
+            self.initiator_buffered_messages,
+            self.initiator_messages_sent_from_buffer,
+        ]
+    }
+}
+
+pub fn init_executor_metrics(metric_names: &'static MetricNames) -> ExecutorMetrics {
+    ExecutorMetrics::with_metric_defs(metric_names.all_metric_defs())
+}
+
+pub(crate) fn init_state_executor_metrics(metric_names: &'static MetricNames) -> ExecutorMetrics {
+    ExecutorMetrics::with_metric_defs(metric_names.state_metric_defs())
+}
+
+pub(crate) fn init_filter_executor_metrics(metric_names: &'static MetricNames) -> ExecutorMetrics {
+    ExecutorMetrics::with_metric_defs(metric_names.filter_metric_defs())
+}
+
+pub(crate) fn init_api_executor_metrics(metric_names: &'static MetricNames) -> ExecutorMetrics {
+    ExecutorMetrics::with_metric_defs(metric_names.api_metric_defs())
 }
 
 #[macro_export]
