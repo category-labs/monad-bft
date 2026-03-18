@@ -280,10 +280,10 @@ fn test_ping_pong() {
     for state in nodes.states().values() {
         let state = state.peer_disc_driver.get_peer_disc_state();
         let metrics = state.metrics();
-        assert_eq!(metrics[GAUGE_PEER_DISC_SEND_PING], 1);
-        assert_eq!(metrics[GAUGE_PEER_DISC_SEND_PONG], 1);
-        assert_eq!(metrics[GAUGE_PEER_DISC_RECV_PING], 1);
-        assert_eq!(metrics[GAUGE_PEER_DISC_RECV_PONG], 1);
+        assert_eq!(metrics.get(GAUGE_PEER_DISC_SEND_PING), 1);
+        assert_eq!(metrics.get(GAUGE_PEER_DISC_SEND_PONG), 1);
+        assert_eq!(metrics.get(GAUGE_PEER_DISC_RECV_PING), 1);
+        assert_eq!(metrics.get(GAUGE_PEER_DISC_RECV_PONG), 1);
 
         for node_id in node_ids.iter() {
             if node_id == &state.self_id {
@@ -457,8 +457,8 @@ fn test_unresponsive_pings() {
         let state = state.peer_disc_driver.get_peer_disc_state();
         let metrics = state.metrics();
 
-        assert_eq!(metrics[GAUGE_PEER_DISC_SEND_PING], 3);
-        assert_eq!(metrics[GAUGE_PEER_DISC_PING_TIMEOUT], 3);
+        assert_eq!(metrics.get(GAUGE_PEER_DISC_SEND_PING), 3);
+        assert_eq!(metrics.get(GAUGE_PEER_DISC_PING_TIMEOUT), 3);
         assert!(state.routing_info.is_empty());
     }
 }
@@ -508,7 +508,7 @@ fn test_peer_lookup_open_discovery() {
 
     // check that Node1 sends pings to new nodes
     let metrics = node_1_state.metrics();
-    assert_eq!(metrics[GAUGE_PEER_DISC_SEND_PING], 3);
+    assert_eq!(metrics.get(GAUGE_PEER_DISC_SEND_PING), 3);
 
     // check that Node2 and Node3 now has name record of Node1
     for (node_id, state) in nodes.states() {
@@ -563,8 +563,8 @@ fn test_peer_lookup_targeted_nodes() {
 
         if state.self_id == node_ids[0] {
             // Both Node1 and Node2 sends targeted peer lookup request to Node0
-            assert_eq!(metrics[GAUGE_PEER_DISC_RECV_LOOKUP_REQUEST], 2);
-            assert_eq!(metrics[GAUGE_PEER_DISC_RECV_TARGETED_LOOKUP_REQUEST], 2);
+            assert_eq!(metrics.get(GAUGE_PEER_DISC_RECV_LOOKUP_REQUEST), 2);
+            assert_eq!(metrics.get(GAUGE_PEER_DISC_RECV_TARGETED_LOOKUP_REQUEST), 2);
         }
     }
 }
@@ -618,8 +618,8 @@ fn test_peer_lookup_retry() {
         let metrics = state.metrics();
 
         // Node1 and Node2 should send targeted peer lookup request to Node0
-        assert_eq!(metrics[GAUGE_PEER_DISC_SEND_LOOKUP_REQUEST], 4);
-        assert_eq!(metrics[GAUGE_PEER_DISC_LOOKUP_TIMEOUT], 4);
+        assert_eq!(metrics.get(GAUGE_PEER_DISC_SEND_LOOKUP_REQUEST), 4);
+        assert_eq!(metrics.get(GAUGE_PEER_DISC_LOOKUP_TIMEOUT), 4);
 
         // Node1 and Node2 does not contain each other in routing info
         if node == &node_ids[1] {
@@ -658,10 +658,10 @@ fn test_ping_timeout() {
         let state = state.peer_disc_driver.get_peer_disc_state();
         let metrics = state.metrics();
         // prune threshold is three, so it's pruned after 3 unresponsive pings
-        assert_eq!(metrics[GAUGE_PEER_DISC_SEND_PING], 5);
-        assert_eq!(metrics[GAUGE_PEER_DISC_PING_TIMEOUT], 4);
-        assert_eq!(metrics[GAUGE_PEER_DISC_RECV_PONG], 1);
-        assert_eq!(metrics[GAUGE_PEER_DISC_DROP_PONG], 1);
+        assert_eq!(metrics.get(GAUGE_PEER_DISC_SEND_PING), 5);
+        assert_eq!(metrics.get(GAUGE_PEER_DISC_PING_TIMEOUT), 4);
+        assert_eq!(metrics.get(GAUGE_PEER_DISC_RECV_PONG), 1);
+        assert_eq!(metrics.get(GAUGE_PEER_DISC_DROP_PONG), 1);
 
         // name record not added to routing info
         assert!(state.routing_info.is_empty());
@@ -709,9 +709,9 @@ fn test_min_watermark() {
         }
 
         if node_id == &node_ids[0] {
-            assert_eq!(metrics[GAUGE_PEER_DISC_RECV_LOOKUP_REQUEST], 3);
+            assert_eq!(metrics.get(GAUGE_PEER_DISC_RECV_LOOKUP_REQUEST), 3);
         } else {
-            assert_eq!(metrics[GAUGE_PEER_DISC_SEND_LOOKUP_REQUEST], 1);
+            assert_eq!(metrics.get(GAUGE_PEER_DISC_SEND_LOOKUP_REQUEST), 1);
         }
     }
 }
@@ -906,16 +906,16 @@ fn test_full_nodes_connections() {
         let metrics = state.metrics();
 
         if state.self_id == node_ids[0] {
-            assert_eq!(metrics[GAUGE_PEER_DISC_NUM_UPSTREAM_VALIDATORS], 0);
-            assert_eq!(metrics[GAUGE_PEER_DISC_NUM_DOWNSTREAM_FULLNODES], 0);
+            assert_eq!(metrics.get(GAUGE_PEER_DISC_NUM_UPSTREAM_VALIDATORS), 0);
+            assert_eq!(metrics.get(GAUGE_PEER_DISC_NUM_DOWNSTREAM_FULLNODES), 0);
         } else if state.self_id == node_ids[1] {
             assert!(state.routing_info.contains_key(&node_ids[2]));
             assert_eq!(
                 state.participation_info.get(&node_ids[2]).unwrap().status,
                 SecondaryRaptorcastConnectionStatus::Connected
             );
-            assert_eq!(metrics[GAUGE_PEER_DISC_NUM_UPSTREAM_VALIDATORS], 0);
-            assert_eq!(metrics[GAUGE_PEER_DISC_NUM_DOWNSTREAM_FULLNODES], 1);
+            assert_eq!(metrics.get(GAUGE_PEER_DISC_NUM_UPSTREAM_VALIDATORS), 0);
+            assert_eq!(metrics.get(GAUGE_PEER_DISC_NUM_DOWNSTREAM_FULLNODES), 1);
         } else if state.self_id == node_ids[2] {
             assert!(state.routing_info.contains_key(&node_ids[0]));
             assert_eq!(
@@ -927,8 +927,8 @@ fn test_full_nodes_connections() {
                 state.participation_info.get(&node_ids[1]).unwrap().status,
                 SecondaryRaptorcastConnectionStatus::Connected
             );
-            assert_eq!(metrics[GAUGE_PEER_DISC_NUM_UPSTREAM_VALIDATORS], 1);
-            assert_eq!(metrics[GAUGE_PEER_DISC_NUM_DOWNSTREAM_FULLNODES], 0);
+            assert_eq!(metrics.get(GAUGE_PEER_DISC_NUM_UPSTREAM_VALIDATORS), 1);
+            assert_eq!(metrics.get(GAUGE_PEER_DISC_NUM_DOWNSTREAM_FULLNODES), 0);
         }
     }
 }
