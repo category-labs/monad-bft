@@ -61,14 +61,15 @@ Reasoning:
 - [completed] `monad-wireauth`: added crate-local metric initializers derived from `MetricNames`, switched `API`/`State`/`Filter` off `ExecutorMetrics::default()`, and replaced all indexed metric writes with explicit `ExecutorMetrics` methods.
 - [completed] `monad-raptorcast`: added local metric initializers for router, UDP state, auth socket, decoding cache, and secondary client/publisher paths, then replaced all indexed metric writes with explicit `ExecutorMetrics` methods.
 - [completed] `monad-peer-disc-swarm`: replaced downstream metric assertions with explicit `ExecutorMetrics::get` reads so the tests no longer depend on indexed metric access.
-- [pending] `monad-executor` cleanup: remove `values` and index-based access after the workspace migration is complete
+- [completed] `monad-executor` cleanup: removed the legacy `values` store and index-based metric access, keeping `set`/`add`/`inc`/`get` as the only mutation API for both initialized and lazily created metrics.
 
 ## Notes
 
 - The compatibility requirement matters because many crates still mutate `ExecutorMetrics` through indexed access.
-- Helper-initialized metrics are gauge-backed and are meant to be mutated through `ExecutorMetricHandle`s. Plain `ExecutorMetrics::default()` remains the legacy value-backed path.
+- Helper-initialized metrics are gauge-backed and are meant to be mutated through `ExecutorMetricHandle`s. Plain `ExecutorMetrics::default()` now lazily creates gauge-backed metrics on first `set`/`add`/`inc`.
 - Prometheus registration now happens only through `ExecutorMetrics::register` or `ExecutorMetricsChain::register`, which is the boundary intended for the exporting binary.
 - Prometheus collector names are sanitized internally because the existing external metric names contain dots and must stay stable for the rest of the codebase.
+- Rust call sites no longer use indexed metric syntax; the remaining `metrics[...]` matches in the repository are only in third-party C/C++ code.
 - Verification completed so far:
   - `cargo test -p monad-executor`
   - `cargo test -p monad-eth-txpool`

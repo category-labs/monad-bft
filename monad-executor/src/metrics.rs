@@ -15,7 +15,6 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    ops::{Index, IndexMut},
 };
 
 use hdrhistogram::Histogram as HdrHistogram;
@@ -117,14 +116,12 @@ impl ExecutorMetricHandle {
 }
 
 pub struct ExecutorMetrics {
-    values: HashMap<&'static MetricDef, u64>,
     gauges: HashMap<&'static MetricDef, UIntGauge>,
 }
 
 impl Default for ExecutorMetrics {
     fn default() -> Self {
         Self {
-            values: HashMap::new(),
             gauges: HashMap::new(),
         }
     }
@@ -156,27 +153,16 @@ impl ExecutorMetrics {
 
         let gauge = UIntGauge::with_opts(Opts::new(prometheus_metric_name(metric), metric.help))
             .expect("executor metric definition is valid");
-        if let Some(&value) = self.values.get(metric) {
-            gauge.set(value);
-        }
 
         self.gauges.insert(metric, gauge.clone());
         gauge
     }
 
     fn snapshot(&self) -> Vec<(&'static MetricDef, u64)> {
-        let mut metrics = Vec::with_capacity(self.values.len().max(self.gauges.len()));
-        let mut seen = HashSet::with_capacity(self.values.len() + self.gauges.len());
+        let mut metrics = Vec::with_capacity(self.gauges.len());
 
         for (&metric, gauge) in &self.gauges {
             metrics.push((metric, gauge.get()));
-            seen.insert(metric);
-        }
-
-        for (&metric, &value) in &self.values {
-            if seen.insert(metric) {
-                metrics.push((metric, value));
-            }
         }
 
         metrics
@@ -216,27 +202,21 @@ impl ExecutorMetrics {
     }
 
     pub fn set(&mut self, metric: &'static MetricDef, value: u64) {
-        self.values.insert(metric, value);
         self.ensure_gauge(metric).set(value);
     }
 
     pub fn inc(&mut self, metric: &'static MetricDef) {
-        let value = self.get(metric) + 1;
-        self.values.insert(metric, value);
-        self.ensure_gauge(metric).set(value);
+        self.ensure_gauge(metric).inc();
     }
 
     pub fn add(&mut self, metric: &'static MetricDef, value: u64) {
-        let updated = self.get(metric) + value;
-        self.values.insert(metric, updated);
-        self.ensure_gauge(metric).set(updated);
+        self.ensure_gauge(metric).add(value);
     }
 
     pub fn get(&self, metric: &'static MetricDef) -> u64 {
         self.gauges
             .get(metric)
             .map(UIntGauge::get)
-            .or_else(|| self.values.get(metric).copied())
             .unwrap_or_default()
     }
 
@@ -246,20 +226,6 @@ impl ExecutorMetrics {
         self.snapshot()
             .into_iter()
             .map(|(metric, value)| (metric.name, value, metric.help))
-    }
-}
-
-impl Index<&'static MetricDef> for ExecutorMetrics {
-    type Output = u64;
-
-    fn index(&self, metric: &'static MetricDef) -> &Self::Output {
-        self.values.get(metric).unwrap_or(&0)
-    }
-}
-
-impl IndexMut<&'static MetricDef> for ExecutorMetrics {
-    fn index_mut(&mut self, metric: &'static MetricDef) -> &mut Self::Output {
-        self.values.entry(metric).or_default()
     }
 }
 
@@ -384,13 +350,12 @@ mod tests {
     }
 
     #[test]
-    fn test_legacy_metrics_are_exported() {
+    fn test_unregistered_metrics_are_exported() {
         let mut metrics = ExecutorMetrics::default();
 
-        metrics[TEST_LEGACY_METRIC] += 2;
-        metrics[TEST_LEGACY_METRIC] = 5;
+        metrics.add(TEST_LEGACY_METRIC, 2);
+        metrics.set(TEST_LEGACY_METRIC, 5);
 
-        assert_eq!(metrics[TEST_LEGACY_METRIC], 5);
         assert_eq!(metrics.get(TEST_LEGACY_METRIC), 5);
 
         let exported = metrics.iter_with_descriptions().collect::<Vec<_>>();
