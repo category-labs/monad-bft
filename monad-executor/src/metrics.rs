@@ -118,16 +118,14 @@ impl ExecutorMetricHandle {
 
 pub struct ExecutorMetrics {
     values: HashMap<&'static MetricDef, u64>,
-    registered: HashMap<&'static MetricDef, UIntGauge>,
-    registry: Registry,
+    gauges: HashMap<&'static MetricDef, UIntGauge>,
 }
 
 impl Default for ExecutorMetrics {
     fn default() -> Self {
         Self {
             values: HashMap::new(),
-            registered: HashMap::new(),
-            registry: Registry::new(),
+            gauges: HashMap::new(),
         }
     }
 }
@@ -151,8 +149,8 @@ impl std::fmt::Debug for ExecutorMetrics {
 }
 
 impl ExecutorMetrics {
-    fn ensure_registered(&mut self, metric: &'static MetricDef) -> UIntGauge {
-        if let Some(gauge) = self.registered.get(metric) {
+    fn ensure_gauge(&mut self, metric: &'static MetricDef) -> UIntGauge {
+        if let Some(gauge) = self.gauges.get(metric) {
             return gauge.clone();
         }
 
@@ -162,62 +160,83 @@ impl ExecutorMetrics {
             gauge.set(value);
         }
 
-        self.registry
-            .register(Box::new(gauge.clone()))
-            .expect("executor metric can be registered once");
-        self.registered.insert(metric, gauge.clone());
+        self.gauges.insert(metric, gauge.clone());
         gauge
     }
 
     fn snapshot(&self) -> Vec<(&'static MetricDef, u64)> {
-        let mut metrics = Vec::with_capacity(self.values.len().max(self.registered.len()));
-        let mut seen = HashSet::with_capacity(self.values.len() + self.registered.len());
+        let mut metrics = Vec::with_capacity(self.values.len().max(self.gauges.len()));
+        let mut seen = HashSet::with_capacity(self.values.len() + self.gauges.len());
 
-        for (&metric, &value) in &self.values {
-            if let Some(gauge) = self.registered.get(metric) {
-                gauge.set(value);
-            }
-            metrics.push((metric, value));
+        for (&metric, gauge) in &self.gauges {
+            metrics.push((metric, gauge.get()));
             seen.insert(metric);
         }
 
-        for (&metric, gauge) in &self.registered {
+        for (&metric, &value) in &self.values {
             if seen.insert(metric) {
-                metrics.push((metric, gauge.get()));
+                metrics.push((metric, value));
             }
         }
 
         metrics
     }
 
-    pub fn register(&mut self, metric: &'static MetricDef) -> ExecutorMetricHandle {
-        ExecutorMetricHandle {
-            gauge: self.ensure_registered(metric),
+    pub fn with_metric_defs<const N: usize>(metric_defs: [&'static MetricDef; N]) -> Self {
+        let mut metrics = Self::default();
+        metrics.add_metric_defs(metric_defs);
+        metrics
+    }
+
+    pub fn add_metric_defs<const N: usize>(&mut self, metric_defs: [&'static MetricDef; N]) {
+        for metric in metric_defs {
+            self.ensure_gauge(metric);
         }
+    }
+
+    pub fn handle(&self, metric: &'static MetricDef) -> ExecutorMetricHandle {
+        ExecutorMetricHandle {
+            gauge: self
+                .gauges
+                .get(metric)
+                .cloned()
+                .expect("executor metric must be initialized before taking a handle"),
+        }
+    }
+
+    pub fn register(&self, registry: &Registry) -> prometheus::Result<()> {
+        for gauge in self.gauges.values() {
+            registry.register(Box::new(gauge.clone()))?;
+        }
+        Ok(())
+    }
+
+    pub fn register_all(&self, registry: &Registry) -> prometheus::Result<()> {
+        self.register(registry)
     }
 
     pub fn set(&mut self, metric: &'static MetricDef, value: u64) {
         self.values.insert(metric, value);
-        self.ensure_registered(metric).set(value);
+        self.ensure_gauge(metric).set(value);
     }
 
     pub fn inc(&mut self, metric: &'static MetricDef) {
         let value = self.get(metric) + 1;
         self.values.insert(metric, value);
-        self.ensure_registered(metric).set(value);
+        self.ensure_gauge(metric).set(value);
     }
 
     pub fn add(&mut self, metric: &'static MetricDef, value: u64) {
         let updated = self.get(metric) + value;
         self.values.insert(metric, updated);
-        self.ensure_registered(metric).set(updated);
+        self.ensure_gauge(metric).set(updated);
     }
 
     pub fn get(&self, metric: &'static MetricDef) -> u64 {
-        self.values
+        self.gauges
             .get(metric)
-            .copied()
-            .or_else(|| self.registered.get(metric).map(UIntGauge::get))
+            .map(UIntGauge::get)
+            .or_else(|| self.values.get(metric).copied())
             .unwrap_or_default()
     }
 
@@ -240,7 +259,6 @@ impl Index<&'static MetricDef> for ExecutorMetrics {
 
 impl IndexMut<&'static MetricDef> for ExecutorMetrics {
     fn index_mut(&mut self, metric: &'static MetricDef) -> &mut Self::Output {
-        self.ensure_registered(metric);
         self.values.entry(metric).or_default()
     }
 }
@@ -276,6 +294,24 @@ impl<'a> ExecutorMetricsChain<'a> {
             .into_iter()
             .flat_map(|metrics| metrics.iter_with_descriptions())
             .collect()
+    }
+
+    pub fn register(&self, registry: &Registry) -> prometheus::Result<()> {
+        let mut seen = HashSet::new();
+
+        for metrics in &self.0 {
+            for (&metric, gauge) in &metrics.gauges {
+                if seen.insert(metric) {
+                    registry.register(Box::new(gauge.clone()))?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn register_all(&self, registry: &Registry) -> prometheus::Result<()> {
+        self.register(registry)
     }
 }
 
@@ -366,8 +402,8 @@ mod tests {
 
     #[test]
     fn test_registered_metrics_are_readable_and_clone_as_snapshot() {
-        let mut metrics = ExecutorMetrics::default();
-        let registered = metrics.register(TEST_REGISTERED_METRIC);
+        let metrics = ExecutorMetrics::with_metric_defs([TEST_REGISTERED_METRIC]);
+        let registered = metrics.handle(TEST_REGISTERED_METRIC);
 
         registered.add(3);
         registered.inc();
@@ -380,5 +416,19 @@ mod tests {
 
         assert_eq!(metrics.get(TEST_REGISTERED_METRIC), 5);
         assert_eq!(snapshot.get(TEST_REGISTERED_METRIC), 4);
+    }
+
+    #[test]
+    fn test_metrics_are_registered_externally() {
+        let metrics = ExecutorMetrics::with_metric_defs([TEST_REGISTERED_METRIC]);
+        let registered = metrics.handle(TEST_REGISTERED_METRIC);
+        let registry = Registry::new();
+
+        registered.set(9);
+        metrics.register(&registry).expect("registered metrics");
+
+        let gathered = registry.gather();
+        assert_eq!(gathered.len(), 1);
+        assert_eq!(gathered[0].get_metric()[0].get_gauge().value() as u64, 9);
     }
 }
