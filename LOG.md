@@ -38,7 +38,7 @@ Reasoning:
 ## Progress
 
 - [completed] `monad-executor`: removed registry ownership from `ExecutorMetrics`, kept legacy indexed metrics working, added external `register`/`register_all` helpers, and kept Prometheus-backed metrics readable in tests via handles and `get`.
-- [pending] `monad-eth-txpool`: add `init_executor_metrics()`, switch metric construction to `from_executor_metrics(&ExecutorMetrics)`, and keep the existing serde snapshot compatibility path.
+- [completed] `monad-eth-txpool`: added `init_executor_metrics()`, changed metric construction to `from_executor_metrics(&ExecutorMetrics)`, and kept the existing serde snapshot compatibility path.
 - [pending] `monad-updaters`: switch the mock txpool executor to create one txpool-initialized `ExecutorMetrics` and derive `EthTxPoolMetrics` handles from it.
 - [pending] `monad-eth-txpool-executor`: add a crate-local `init_executor_metrics()` that layers executor-local metrics on top of txpool metrics, then reuse that shared `ExecutorMetrics` for both the executor and client sides.
 
@@ -50,3 +50,4 @@ Reasoning:
 - Prometheus collector names are sanitized internally because the existing external metric names contain dots and must stay stable for the rest of the codebase.
 - Verification completed so far:
   - `cargo test -p monad-executor`
+  - `cargo test -p monad-eth-txpool`
