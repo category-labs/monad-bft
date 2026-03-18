@@ -23,7 +23,7 @@ use zerocopy::FromBytes;
 
 use crate::{
     metrics::*,
-    pool::{EvictionKind, FragmentInput, IdentityUsage, MessagePool, PoolConfig},
+    pool::{EvictionKind, FragmentInput, IdentityUsage, MessagePool, MessageStatus, PoolConfig},
     Config, FragmentPolicy, IdentityScore, PacketHeader, LEANUDP_HEADER_SIZE,
     LEANUDP_PROTOCOL_VERSION,
 };
@@ -234,13 +234,23 @@ where
         }
     }
 
-    fn select_pool(&self, identity: &I, key: &(I, u16)) -> PoolSelection {
-        if self.priority_pool.has_message(key) {
-            PoolSelection::Priority
-        } else if self.regular_pool.has_message(key) {
-            PoolSelection::Regular
-        } else {
-            self.identity_score.score(identity).into()
+    fn select_pool(&mut self, identity: &I, key: &(I, u16), now: Instant) -> PoolSelection {
+        match self.priority_pool.message_status(key, now) {
+            MessageStatus::Active => return PoolSelection::Priority,
+            MessageStatus::Stale => {
+                self.metrics[EvictionKind::Timeout.metric_name()] += 1;
+                return self.identity_score.score(identity).into();
+            }
+            MessageStatus::Missing => {}
+        }
+
+        match self.regular_pool.message_status(key, now) {
+            MessageStatus::Active => PoolSelection::Regular,
+            MessageStatus::Stale => {
+                self.metrics[EvictionKind::Timeout.metric_name()] += 1;
+                self.identity_score.score(identity).into()
+            }
+            MessageStatus::Missing => self.identity_score.score(identity).into(),
         }
     }
 
@@ -353,8 +363,8 @@ where
 
         let msg_id = header.msg_id();
         let key = (identity.clone(), msg_id);
-        let selected_pool = self.select_pool(&identity, &key);
         let now = self.clock.now();
+        let selected_pool = self.select_pool(&identity, &key, now);
         let input = FragmentInput {
             identity,
             msg_id,

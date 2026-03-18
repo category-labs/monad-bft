@@ -117,6 +117,13 @@ impl EvictionKind {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MessageStatus {
+    Missing,
+    Active,
+    Stale,
+}
+
 pub(crate) trait IdentityLimitPolicy<I>
 where
     I: Eq + Hash + Clone + Ord,
@@ -347,6 +354,17 @@ impl<I: Eq + Hash + Clone + Ord, R: CryptoRng + RngCore> MessagePool<I, R> {
 
     pub(crate) fn has_message(&self, key: &(I, u16)) -> bool {
         self.messages.contains_key(key)
+    }
+
+    pub(crate) fn message_status(&mut self, key: &(I, u16), now: Instant) -> MessageStatus {
+        let Some(deadline) = self.messages.get(key).map(|state| state.eviction_deadline) else {
+            return MessageStatus::Missing;
+        };
+        if deadline > now {
+            return MessageStatus::Active;
+        }
+        let _ = self.remove_message(key);
+        MessageStatus::Stale
     }
 
     pub(crate) fn ensure_identity_capacity(&mut self, identity: &I) -> Result<(), DecodeError> {
