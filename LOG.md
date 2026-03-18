@@ -20,19 +20,31 @@ Primary crates involved:
 2. `monad-eth-txpool`
 3. `monad-updaters`
 4. `monad-eth-txpool-executor`
+5. `monad-peer-score`
+6. `monad-ledger`
+7. `monad-statesync`
+8. `monad-leanudp`
+9. `monad-peer-discovery`
+10. `monad-wireauth`
+11. `monad-raptorcast`
+12. `monad-peer-disc-swarm`
 
 Reasoning:
 - `monad-executor` owns `ExecutorMetrics` and is the right place for external registration APIs
 - `monad-eth-txpool` defines the shared txpool metric constants and needs a crate-local initializer
 - `monad-updaters` contains the txpool mock executor that should reuse the txpool initializer instead of constructing metrics ad hoc
 - `monad-eth-txpool-executor` defines additional executor-local metric constants and needs to layer those on top of the txpool initializer
+- `monad-peer-score`, `monad-ledger`, `monad-statesync`, `monad-leanudp`, and `monad-peer-discovery` still use indexed `ExecutorMetrics` mutation directly
+- `monad-wireauth` owns a large dynamic `MetricNames` set and needs a crate-local initializer derived from those defs
+- `monad-raptorcast` builds on top of `monad-wireauth` and also defines its own executor metrics across several modules
+- `monad-peer-disc-swarm` contains downstream tests that still read metrics through indexed access
 
 ## Plan
 
-1. Refactor `monad-executor` so `ExecutorMetrics` stores metric handles only, exposes external registration helpers, and stays readable in tests without embedding a registry.
-2. Add `init_executor_metrics()` in `monad-eth-txpool` and switch the crate to build `EthTxPoolMetrics` from an initialized `ExecutorMetrics`.
-3. Rebind `monad-updaters` txpool mock executor to the txpool initializer so it shares one `ExecutorMetrics` instance with its handles.
-4. Add a crate-local initializer in `monad-eth-txpool-executor` that extends the txpool initializer with executor-local metric defs, then construct handles from that shared instance.
+1. Keep the current compatibility path in `monad-executor` temporarily while migrating the rest of the workspace off indexed metric access.
+2. Migrate each metrics-owning crate to a crate-local initializer plus explicit `set/add/inc/get` calls, committing one crate at a time.
+3. Update downstream tests/crates that still read metrics through indexing.
+4. Remove the legacy `values` store and index-based mutation from `monad-executor` once no callers depend on it.
 5. Run crate-local tests after each step and commit once per migrated crate.
 
 ## Progress
@@ -41,6 +53,15 @@ Reasoning:
 - [completed] `monad-eth-txpool`: added `init_executor_metrics()`, changed metric construction to `from_executor_metrics(&ExecutorMetrics)`, and kept the existing serde snapshot compatibility path.
 - [completed] `monad-updaters`: switched the mock txpool executor to create one txpool-initialized `ExecutorMetrics` and derive `EthTxPoolMetrics` handles from it.
 - [completed] `monad-eth-txpool-executor`: added a crate-local `init_executor_metrics()` that layers executor-local metrics on top of txpool metrics, then reused that shared `ExecutorMetrics` for both the executor and client sides.
+- [completed] `monad-peer-score`: added a crate-local metrics initializer and replaced all indexed metric updates/reads with explicit `ExecutorMetrics` methods.
+- [pending] `monad-ledger`
+- [pending] `monad-statesync`
+- [pending] `monad-leanudp`
+- [pending] `monad-peer-discovery`
+- [pending] `monad-wireauth`
+- [pending] `monad-raptorcast`
+- [pending] `monad-peer-disc-swarm`
+- [pending] `monad-executor` cleanup: remove `values` and index-based access after the workspace migration is complete
 
 ## Notes
 
@@ -53,4 +74,5 @@ Reasoning:
   - `cargo test -p monad-eth-txpool`
   - `cargo test -p monad-updaters`
   - `cargo test -p monad-eth-txpool-executor`
+  - `cargo test -p monad-peer-score`
   - `cargo check -p monad-node --bin monad-node`

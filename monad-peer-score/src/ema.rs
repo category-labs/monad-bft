@@ -120,7 +120,7 @@ pub fn create<I: Hash + Eq, C: Clock + Clone>(
     let provider = ScoreProvider {
         state: Rc::clone(&state),
         clock: clock.clone(),
-        metrics: ExecutorMetrics::default(),
+        metrics: init_executor_metrics(),
     };
     let reader = ScoreReader { state, clock };
     (provider, reader)
@@ -258,7 +258,8 @@ impl<I: Hash + Eq, C: Clock> ScoreProvider<I, C> {
         }
 
         let now = self.clock.now();
-        self.metrics[COUNTER_PEER_SCORE_RECORD_CONTRIBUTION_TOTAL] += 1;
+        self.metrics
+            .inc(COUNTER_PEER_SCORE_RECORD_CONTRIBUTION_TOTAL);
         let mut state = self.state.borrow_mut();
 
         if state.promoted.peek(&identity).is_some() {
@@ -269,10 +270,14 @@ impl<I: Hash + Eq, C: Clock> ScoreProvider<I, C> {
             record_unknown_contribution(&mut self.metrics, &mut state, identity, gas, now);
         }
 
-        self.metrics[GAUGE_PEER_SCORE_PROMOTED_SIZE] = state.promoted.len() as u64;
-        self.metrics[GAUGE_PEER_SCORE_NEWCOMER_SIZE] = state.newcomers.len() as u64;
-        self.metrics[GAUGE_PEER_SCORE_TOTAL_SIZE] =
-            (state.promoted.len() + state.newcomers.len()) as u64;
+        self.metrics
+            .set(GAUGE_PEER_SCORE_PROMOTED_SIZE, state.promoted.len() as u64);
+        self.metrics
+            .set(GAUGE_PEER_SCORE_NEWCOMER_SIZE, state.newcomers.len() as u64);
+        self.metrics.set(
+            GAUGE_PEER_SCORE_TOTAL_SIZE,
+            (state.promoted.len() + state.newcomers.len()) as u64,
+        );
     }
 }
 
@@ -300,13 +305,13 @@ fn record_promoted_contribution<I: Hash + Eq>(
             .pop(&identity)
             .expect("promoted identity exists while demoting");
         let demotion = try_newcomer(newcomers, identity, id_state, config, now);
-        metrics[COUNTER_PEER_SCORE_DEMOTION] += 1;
+        metrics.inc(COUNTER_PEER_SCORE_DEMOTION);
         match demotion {
             NewcomerDecision::Inserted => {
-                metrics[COUNTER_PEER_SCORE_NEWCOMER_ADMITTED] += 1;
+                metrics.inc(COUNTER_PEER_SCORE_NEWCOMER_ADMITTED);
             }
             NewcomerDecision::Rejected => {
-                metrics[COUNTER_PEER_SCORE_NEWCOMER_REJECTED] += 1;
+                metrics.inc(COUNTER_PEER_SCORE_NEWCOMER_REJECTED);
             }
         }
     }
@@ -340,33 +345,33 @@ fn record_newcomer_contribution<I: Hash + Eq>(
             PromoteDecision::Promoted {
                 evicted_demotion: Some(NewcomerDecision::Inserted),
             } => {
-                metrics[COUNTER_PEER_SCORE_PROMOTION_SUCCEEDED] += 1;
-                metrics[COUNTER_PEER_SCORE_DEMOTION] += 1;
-                metrics[COUNTER_PEER_SCORE_NEWCOMER_ADMITTED] += 1;
+                metrics.inc(COUNTER_PEER_SCORE_PROMOTION_SUCCEEDED);
+                metrics.inc(COUNTER_PEER_SCORE_DEMOTION);
+                metrics.inc(COUNTER_PEER_SCORE_NEWCOMER_ADMITTED);
             }
             PromoteDecision::Promoted {
                 evicted_demotion: Some(NewcomerDecision::Rejected),
             } => {
-                metrics[COUNTER_PEER_SCORE_PROMOTION_SUCCEEDED] += 1;
-                metrics[COUNTER_PEER_SCORE_DEMOTION] += 1;
-                metrics[COUNTER_PEER_SCORE_NEWCOMER_REJECTED] += 1;
+                metrics.inc(COUNTER_PEER_SCORE_PROMOTION_SUCCEEDED);
+                metrics.inc(COUNTER_PEER_SCORE_DEMOTION);
+                metrics.inc(COUNTER_PEER_SCORE_NEWCOMER_REJECTED);
             }
             PromoteDecision::Promoted {
                 evicted_demotion: None,
             } => {
-                metrics[COUNTER_PEER_SCORE_PROMOTION_SUCCEEDED] += 1;
+                metrics.inc(COUNTER_PEER_SCORE_PROMOTION_SUCCEEDED);
             }
             PromoteDecision::Rejected {
                 newcomer: NewcomerDecision::Inserted,
             } => {
-                metrics[COUNTER_PEER_SCORE_PROMOTION_REJECTED] += 1;
-                metrics[COUNTER_PEER_SCORE_NEWCOMER_ADMITTED] += 1;
+                metrics.inc(COUNTER_PEER_SCORE_PROMOTION_REJECTED);
+                metrics.inc(COUNTER_PEER_SCORE_NEWCOMER_ADMITTED);
             }
             PromoteDecision::Rejected {
                 newcomer: NewcomerDecision::Rejected,
             } => {
-                metrics[COUNTER_PEER_SCORE_PROMOTION_REJECTED] += 1;
-                metrics[COUNTER_PEER_SCORE_NEWCOMER_REJECTED] += 1;
+                metrics.inc(COUNTER_PEER_SCORE_PROMOTION_REJECTED);
+                metrics.inc(COUNTER_PEER_SCORE_NEWCOMER_REJECTED);
             }
         }
     }
@@ -393,10 +398,10 @@ fn record_unknown_contribution<I: Hash + Eq>(
     let decision = try_newcomer(newcomers, identity, id_state, config, now);
     match decision {
         NewcomerDecision::Inserted => {
-            metrics[COUNTER_PEER_SCORE_NEWCOMER_ADMITTED] += 1;
+            metrics.inc(COUNTER_PEER_SCORE_NEWCOMER_ADMITTED);
         }
         NewcomerDecision::Rejected => {
-            metrics[COUNTER_PEER_SCORE_NEWCOMER_REJECTED] += 1;
+            metrics.inc(COUNTER_PEER_SCORE_NEWCOMER_REJECTED);
         }
     }
 }
@@ -660,15 +665,18 @@ mod tests {
 
     #[test]
     fn counters_increment_normally() {
-        let mut metrics = ExecutorMetrics::default();
-        metrics[COUNTER_PEER_SCORE_RECORD_CONTRIBUTION_TOTAL] = 41;
-        metrics[COUNTER_PEER_SCORE_NEWCOMER_ADMITTED] = 9;
+        let mut metrics = init_executor_metrics();
+        metrics.set(COUNTER_PEER_SCORE_RECORD_CONTRIBUTION_TOTAL, 41);
+        metrics.set(COUNTER_PEER_SCORE_NEWCOMER_ADMITTED, 9);
 
-        metrics[COUNTER_PEER_SCORE_RECORD_CONTRIBUTION_TOTAL] += 10;
-        metrics[COUNTER_PEER_SCORE_NEWCOMER_ADMITTED] += 1;
+        metrics.add(COUNTER_PEER_SCORE_RECORD_CONTRIBUTION_TOTAL, 10);
+        metrics.inc(COUNTER_PEER_SCORE_NEWCOMER_ADMITTED);
 
-        assert_eq!(metrics[COUNTER_PEER_SCORE_RECORD_CONTRIBUTION_TOTAL], 51);
-        assert_eq!(metrics[COUNTER_PEER_SCORE_NEWCOMER_ADMITTED], 10);
+        assert_eq!(
+            metrics.get(COUNTER_PEER_SCORE_RECORD_CONTRIBUTION_TOTAL),
+            51
+        );
+        assert_eq!(metrics.get(COUNTER_PEER_SCORE_NEWCOMER_ADMITTED), 10);
     }
 
     #[test]
