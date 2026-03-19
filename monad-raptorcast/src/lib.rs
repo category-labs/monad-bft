@@ -207,6 +207,7 @@ where
             .segment_size(segment_size)
             .group_id(GroupId::Primary(current_epoch))
             .redundancy(secondary_redundancy);
+        let peer_discovery_metrics = peer_discovery_driver.lock().unwrap().metrics().clone();
 
         Self {
             is_dynamic_fullnode,
@@ -239,7 +240,7 @@ where
 
             waker: None,
             metrics: init_router_executor_metrics(),
-            peer_discovery_metrics: Default::default(),
+            peer_discovery_metrics,
             _phantom: PhantomData,
         }
     }
@@ -1247,7 +1248,8 @@ where
                         send_peer_disc_msg(this, target, Some(name_record), message);
                     }
                     PeerDiscoveryEmit::MetricsCommand(executor_metrics) => {
-                        this.peer_discovery_metrics = executor_metrics;
+                        this.peer_discovery_metrics
+                            .copy_values_from(&executor_metrics);
                     }
                 }
             }
