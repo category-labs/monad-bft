@@ -348,9 +348,7 @@ async fn main() -> std::io::Result<()> {
         None
     };
 
-    let chain_state = triedb_env
-        .clone()
-        .map(|t| ChainState::new(event_buffer, t, archive_reader));
+    let chain_state = triedb_env.map(|t| ChainState::new(event_buffer, t, archive_reader));
 
     let rpc_comparator: Option<RpcComparator> = args
         .rpc_comparison_endpoint
@@ -359,7 +357,6 @@ async fn main() -> std::io::Result<()> {
 
     let app_state = MonadRpcResources::new(
         txpool_bridge_client,
-        triedb_env,
         eth_call_handler,
         node_config.chain_id,
         chain_state,

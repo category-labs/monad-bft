@@ -29,7 +29,6 @@ use crate::{
 #[derive(Clone)]
 pub struct MonadRpcResources {
     pub txpool_bridge_client: Option<EthTxPoolBridgeClient>,
-    pub triedb_reader: Option<TriedbEnv>,
     pub eth_call_handler: Option<EthCallHandler>,
     pub chain_id: u64,
     pub chain_state: Option<ChainState<TriedbEnv>>,
@@ -52,7 +51,6 @@ impl MonadRpcResources {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         txpool_bridge_client: Option<EthTxPoolBridgeClient>,
-        triedb_reader: Option<TriedbEnv>,
         eth_call_handler: Option<EthCallHandler>,
         chain_id: u64,
         chain_state: Option<ChainState<TriedbEnv>>,
@@ -72,7 +70,6 @@ impl MonadRpcResources {
     ) -> Self {
         Self {
             txpool_bridge_client,
-            triedb_reader,
             eth_call_handler,
             chain_id,
             chain_state,
