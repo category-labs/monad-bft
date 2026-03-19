@@ -34,13 +34,14 @@ pub(crate) async fn handle_get_heap() -> impl Responder {
     }
 }
 
+#[cfg_attr(not(feature = "jemallocator"), allow(dead_code))]
 #[derive(serde::Deserialize)]
 pub(crate) struct ProfilingConfig {
     active: Option<bool>,
 }
 
 pub(crate) async fn handle_update_prof_config(
-    config: web::Json<ProfilingConfig>,
+    _config: web::Json<ProfilingConfig>,
 ) -> impl Responder {
     #[cfg(not(feature = "jemallocator"))]
     return HttpResponse::NotImplemented()
@@ -51,7 +52,7 @@ pub(crate) async fn handle_update_prof_config(
         let mut prof_ctl = jemalloc_pprof::PROF_CTL.as_ref().unwrap().lock().await;
         let mut updates = Vec::new();
 
-        if let Some(active) = config.active {
+        if let Some(active) = _config.active {
             if active {
                 match prof_ctl.activate() {
                     Ok(_) => updates.push("profiling enabled"),
