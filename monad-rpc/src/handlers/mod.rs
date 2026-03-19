@@ -39,8 +39,8 @@ use self::{
         },
         call::{monad_admin_ethCallStatistics, monad_debug_traceCall, monad_eth_call},
         gas::{
-            monad_eth_estimateGas, monad_eth_feeHistory, monad_eth_gasPrice,
-            monad_eth_maxPriorityFeePerGas,
+            monad_eth_estimateGas, monad_eth_feeHistory, monad_eth_fillTransaction,
+            monad_eth_gasPrice, monad_eth_maxPriorityFeePerGas,
         },
         txn::{
             monad_eth_getLogs, monad_eth_getTransactionByBlockHashAndIndex,
@@ -411,6 +411,31 @@ async fn eth_sendRawTransactionSync(
     )
     .await
     .map(serialize_result)?
+}
+
+#[allow(non_snake_case)]
+async fn eth_fillTransaction(
+    request_id: TimingRequestId,
+    app_state: &MonadRpcResources,
+    params: RequestParams<'_>,
+) -> Result<Box<RawValue>, JsonRpcError> {
+    let chain_state = app_state.chain_state.as_ref().method_not_supported()?;
+    let eth_call_handler = app_state.eth_call_handler.as_ref().method_not_supported()?;
+    let params = serde_json::from_str(params.get()).invalid_params()?;
+    let permit = eth_call_handler.acquire(request_id).await?;
+
+    permit
+        .execute(|executor| {
+            monad_eth_fillTransaction(
+                chain_state,
+                executor,
+                app_state.chain_id,
+                app_state.eth_estimate_gas_provider_gas_limit,
+                params,
+            )
+        })
+        .await
+        .map(serialize_result)?
 }
 
 #[allow(non_snake_case)]
@@ -859,7 +884,8 @@ enabled_methods!(
     net_version,
     txpool_statusByHash,
     txpool_statusByAddress,
-    web3_clientVersion
+    web3_clientVersion,
+    eth_fillTransaction
 );
 
 #[tracing::instrument(level = "debug", skip_all)]
