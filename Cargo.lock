@@ -5469,22 +5469,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "monad-fuzz"
-version = "0.0.0"
-dependencies = [
- "afl",
- "arbitrary",
- "bytes",
- "monad-bls",
- "monad-crypto",
- "monad-eth-types",
- "monad-raptor",
- "monad-raptorcast",
- "monad-secp",
- "monad-state",
-]
-
-[[package]]
 name = "monad-keystore"
 version = "0.1.0"
 dependencies = [
