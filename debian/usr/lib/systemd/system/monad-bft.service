@@ -15,14 +15,13 @@ ExecStart=/usr/local/bin/monad-node \
     --statesync-ipc-path /home/monad/monad-bft/statesync.sock \
     --ledger-path /home/monad/monad-bft/ledger \
     --triedb-path /dev/triedb \
-    --otel-endpoint "http://127.0.0.1:4317" \
+    --pprof "127.0.0.1:8888" \
     --statesync-sq-thread-cpu 8 \
-    --record-metrics-interval-seconds 1 \
     --validators-path /home/monad/monad-bft/config/validators/validators.toml \
     --persisted-peers-path /home/monad/monad-bft/config/peers.toml \
     --keystore-password "${KEYSTORE_PASSWORD}"
 EnvironmentFile=-/home/monad/.env
-Environment="RUST_LOG=debug,h2=warn,tower=warn,opentelemetry_sdk=warn,opentelemetry-otlp=warn"
+Environment="RUST_LOG=debug,h2=warn,tower=warn"
 Restart=no
 User=monad
 Group=monad

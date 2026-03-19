@@ -28,6 +28,8 @@ Primary crates involved:
 10. `monad-wireauth`
 11. `monad-raptorcast`
 12. `monad-peer-disc-swarm`
+13. `monad-pprof`
+14. `monad-node`
 
 Reasoning:
 - `monad-executor` owns `ExecutorMetrics` and is the right place for external registration APIs
@@ -38,6 +40,8 @@ Reasoning:
 - `monad-wireauth` owns a large dynamic `MetricNames` set and needs a crate-local initializer derived from those defs
 - `monad-raptorcast` builds on top of `monad-wireauth` and also defines its own executor metrics across several modules
 - `monad-peer-disc-swarm` contains downstream tests that still read metrics through indexed access
+- `monad-pprof` is the existing debug server used by `monad-node` and is the smallest place to expose `/metrics`
+- `monad-node` is the binary boundary where executor metrics should be registered once and where the old OTLP polling bridge must be removed
 
 ## Plan
 
@@ -46,6 +50,7 @@ Reasoning:
 3. Update downstream tests/crates that still read metrics through indexing.
 4. Remove the legacy `values` store and index-based mutation from `monad-executor` once no callers depend on it.
 5. Run crate-local tests after each step and commit once per migrated crate.
+6. Finish the binary transition by exposing `/metrics`, registering executor metrics once in `monad-node`, and switching deployment config to scrape that endpoint.
 
 ## Progress
 
@@ -62,6 +67,11 @@ Reasoning:
 - [completed] `monad-raptorcast`: added local metric initializers for router, UDP state, auth socket, decoding cache, and secondary client/publisher paths, then replaced all indexed metric writes with explicit `ExecutorMetrics` methods.
 - [completed] `monad-peer-disc-swarm`: replaced downstream metric assertions with explicit `ExecutorMetrics::get` reads so the tests no longer depend on indexed metric access.
 - [completed] `monad-executor` cleanup: removed the legacy `values` store and index-based metric access, keeping `set`/`add`/`inc`/`get` as the only mutation API for both initialized and lazily created metrics.
+- [completed] `monad-pprof`: added a Prometheus-backed `/metrics` route with optional scrape-time callbacks while keeping the old debug-server entrypoint available for existing callers.
+- [completed] `monad-executor` follow-up: added `copy_values_from` so startup-registered metric sets can be kept alive and refreshed in place when a crate still emits metric snapshots internally.
+- [completed] `monad-raptorcast` follow-up: pre-initialized the peer discovery metric container during router construction and switched later updates to copy values into the already-registered storage.
+- [completed] `monad-node`: removed the OTLP metric exporter/timer bridge, added a node-local Prometheus registry helper, registered state and executor metrics once at startup, and served them through the debug server `/metrics` endpoint.
+- [completed] deployment config: switched the `monad-bft` service to enable the debug server for scraping and updated the collector config to scrape `/metrics` while still accepting OTLP from other services.
 
 ## Notes
 
@@ -70,6 +80,7 @@ Reasoning:
 - Prometheus registration now happens only through `ExecutorMetrics::register` or `ExecutorMetricsChain::register`, which is the boundary intended for the exporting binary.
 - Prometheus collector names are sanitized internally because the existing external metric names contain dots and must stay stable for the rest of the codebase.
 - Rust call sites no longer use indexed metric syntax; the remaining `metrics[...]` matches in the repository are only in third-party C/C++ code.
+- `monad-node` no longer pushes metrics over OTLP. It now exposes `/metrics` via `monad-pprof`, and the collector scrape config bridges that into the existing exported Prometheus endpoint.
 - Verification completed so far:
   - `cargo test -p monad-executor`
   - `cargo test -p monad-eth-txpool`
@@ -84,3 +95,5 @@ Reasoning:
   - `cargo test -p monad-wireauth`
   - `cargo test -p monad-raptorcast`
   - `cargo check -p monad-node --bin monad-node`
+  - `cargo check -p monad-pprof`
+  - `cargo check -p monad-rpc`
