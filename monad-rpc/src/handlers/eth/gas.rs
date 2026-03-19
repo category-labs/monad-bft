@@ -223,7 +223,7 @@ pub struct MonadEthEstimateGasParams {
 #[allow(non_snake_case)]
 /// Generates and returns an estimate of how much gas is necessary to allow the transaction to complete.
 pub async fn monad_eth_estimateGas<T: Triedb>(
-    triedb_env: &T,
+    chain_state: &ChainState<T>,
     eth_call_executor: &EthCallExecutor,
     chain_id: u64,
     provider_gas_limit: u64,
@@ -250,11 +250,12 @@ pub async fn monad_eth_estimateGas<T: Triedb>(
         ));
     }
 
-    let block_key = get_block_key_from_tag_or_hash(triedb_env, params.block)
+    let block_key = get_block_key_from_tag_or_hash(&chain_state.triedb_env, params.block)
         .await
         .ok_or_else(JsonRpcError::block_not_found)?;
 
-    let mut header = match triedb_env
+    let mut header = match chain_state
+        .triedb_env
         .get_block_header(block_key)
         .await
         .map_err(JsonRpcError::internal_error)?
@@ -267,7 +268,7 @@ pub async fn monad_eth_estimateGas<T: Triedb>(
     let provider_gas_limit = provider_gas_limit.min(header.header.gas_limit);
     let original_tx_gas = params.tx.gas.unwrap_or(U256::from(header.header.gas_limit));
     fill_gas_params(
-        triedb_env,
+        &chain_state.triedb_env,
         block_key,
         &mut params.tx,
         &mut header.header,
@@ -313,7 +314,11 @@ pub async fn monad_eth_estimateGas<T: Triedb>(
         let txn: TxEnvelope = request.try_into()?;
 
         let to = txn.to().unwrap();
-        if let Ok(acct) = triedb_env.get_account(block_key, to.into()).await {
+        if let Ok(acct) = chain_state
+            .triedb_env
+            .get_account(block_key, to.into())
+            .await
+        {
             // If the account has no code, then execute the call with gas limit 21000
             if acct.code_hash.is_none()
                 && matches!(

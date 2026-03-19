@@ -102,8 +102,12 @@ pub async fn rpc_handler(
             let response = Response::from_result(request.id.clone(), result);
 
             if let Some(comparator) = &app_state.rpc_comparator {
-                let block_number = if let Some(triedb_reader) = &app_state.triedb_reader {
-                    triedb_reader.get_latest_proposed_block_key().seq_num().0
+                let block_number = if let Some(chain_state) = &app_state.chain_state {
+                    chain_state
+                        .triedb_env
+                        .get_latest_proposed_block_key()
+                        .seq_num()
+                        .0
                 } else {
                     0
                 };
@@ -297,7 +301,7 @@ async fn debug_traceCall(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    let triedb_reader = app_state.triedb_reader.as_ref().method_not_supported()?;
+    let chain_state = app_state.chain_state.as_ref().method_not_supported()?;
     let eth_call_handler = app_state.eth_call_handler.as_ref().method_not_supported()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
     let permit = eth_call_handler.acquire(request_id).await?;
@@ -305,7 +309,7 @@ async fn debug_traceCall(
     permit
         .execute(|executor| {
             monad_debug_traceCall(
-                triedb_reader,
+                chain_state,
                 executor,
                 app_state.chain_id,
                 app_state.eth_call_provider_gas_limit,
@@ -342,7 +346,7 @@ async fn eth_call(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    let triedb_reader = app_state.triedb_reader.as_ref().method_not_supported()?;
+    let chain_state = app_state.chain_state.as_ref().method_not_supported()?;
     let eth_call_handler = app_state.eth_call_handler.as_ref().method_not_supported()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
     let permit = eth_call_handler.acquire(request_id).await?;
@@ -350,7 +354,7 @@ async fn eth_call(
     permit
         .execute(|executor| {
             monad_eth_call(
-                triedb_reader,
+                chain_state,
                 executor,
                 app_state.chain_id,
                 app_state.eth_call_provider_gas_limit,
@@ -415,7 +419,7 @@ async fn eth_createAccessList(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    let triedb_reader = app_state.triedb_reader.as_ref().method_not_supported()?;
+    let chain_state = app_state.chain_state.as_ref().method_not_supported()?;
     let eth_call_handler = app_state.eth_call_handler.as_ref().method_not_supported()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
     let permit = eth_call_handler.acquire(request_id).await?;
@@ -423,7 +427,7 @@ async fn eth_createAccessList(
     permit
         .execute(|executor| {
             monad_createAccessList(
-                triedb_reader,
+                chain_state,
                 executor,
                 app_state.chain_id,
                 app_state.eth_call_provider_gas_limit,
@@ -552,9 +556,9 @@ async fn eth_getBalance(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    let triedb_reader = app_state.triedb_reader.as_ref().method_not_supported()?;
+    let chain_state = app_state.chain_state.as_ref().method_not_supported()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
-    monad_eth_getBalance(triedb_reader, params)
+    monad_eth_getBalance(chain_state, params)
         .await
         .map(serialize_result)?
 }
@@ -565,9 +569,9 @@ async fn eth_getCode(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    let triedb_reader = app_state.triedb_reader.as_ref().method_not_supported()?;
+    let chain_state = app_state.chain_state.as_ref().method_not_supported()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
-    monad_eth_getCode(triedb_reader, params)
+    monad_eth_getCode(chain_state, params)
         .await
         .map(serialize_result)?
 }
@@ -578,9 +582,9 @@ async fn eth_getStorageAt(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    let triedb_reader = app_state.triedb_reader.as_ref().method_not_supported()?;
+    let chain_state = app_state.chain_state.as_ref().method_not_supported()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
-    monad_eth_getStorageAt(triedb_reader, params)
+    monad_eth_getStorageAt(chain_state, params)
         .await
         .map(serialize_result)?
 }
@@ -591,9 +595,9 @@ async fn eth_getTransactionCount(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    let triedb_reader = app_state.triedb_reader.as_ref().method_not_supported()?;
+    let chain_state = app_state.chain_state.as_ref().method_not_supported()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
-    monad_eth_getTransactionCount(triedb_reader, params)
+    monad_eth_getTransactionCount(chain_state, params)
         .await
         .map(serialize_result)?
 }
@@ -636,7 +640,7 @@ async fn eth_estimateGas(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    let triedb_reader = app_state.triedb_reader.as_ref().method_not_supported()?;
+    let chain_state = app_state.chain_state.as_ref().method_not_supported()?;
     let eth_call_handler = app_state.eth_call_handler.as_ref().method_not_supported()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
     let permit = eth_call_handler.acquire(request_id).await?;
@@ -644,7 +648,7 @@ async fn eth_estimateGas(
     permit
         .execute(|executor| {
             monad_eth_estimateGas(
-                triedb_reader,
+                chain_state,
                 executor,
                 app_state.chain_id,
                 app_state.eth_estimate_gas_provider_gas_limit,

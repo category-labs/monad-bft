@@ -41,7 +41,7 @@ use tokio::sync::Mutex;
 use tracing::{debug, trace};
 
 use crate::{
-    chainstate::get_block_key_from_tag_or_hash,
+    chainstate::{get_block_key_from_tag_or_hash, ChainState},
     eth_call_handler::EthCallHandlerConfig,
     handlers::debug::{decode_call_frame, Tracer, TracerObject},
     middleware::TimingRequestId,
@@ -774,13 +774,13 @@ pub async fn prepare_eth_call<T: Triedb + TriedbPath>(
 }
 
 /// Executes a new message call immediately without creating a transaction on the block chain.
-#[tracing::instrument(level = "debug")]
+#[tracing::instrument(level = "debug", skip(chain_state))]
 #[rpc(
     method = "eth_call",
     ignore = "eth_call_executor,chain_id,eth_call_provider_gas_limit"
 )]
 pub async fn monad_eth_call<T: Triedb + TriedbPath>(
-    triedb_env: &T,
+    chain_state: &ChainState<T>,
     eth_call_executor: &EthCallExecutor,
     chain_id: u64,
     eth_call_provider_gas_limit: u64,
@@ -789,7 +789,7 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
     trace!("monad_eth_call: {params:?}");
 
     match prepare_eth_call(
-        triedb_env,
+        &chain_state.triedb_env,
         eth_call_executor,
         chain_id,
         eth_call_provider_gas_limit,
@@ -816,7 +816,7 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
 )]
 #[allow(non_snake_case)]
 pub async fn monad_debug_traceCall<T: Triedb + TriedbPath>(
-    triedb_env: &T,
+    chain_state: &ChainState<T>,
     eth_call_executor: &EthCallExecutor,
     chain_id: u64,
     eth_call_gas_limit: u64,
@@ -824,14 +824,14 @@ pub async fn monad_debug_traceCall<T: Triedb + TriedbPath>(
 ) -> JsonRpcResult<Box<RawValue>> {
     debug!(?params, "monad_debug_traceCall");
 
-    let block_key = get_block_key_from_tag_or_hash(triedb_env, params.block.clone())
+    let block_key = get_block_key_from_tag_or_hash(&chain_state.triedb_env, params.block.clone())
         .await
         .ok_or_else(JsonRpcError::block_not_found)?;
 
     let tracer = CallParams::Trace(params.clone()).monad_tracer();
 
     let raw_payload: Vec<u8> = match prepare_eth_call(
-        triedb_env,
+        &chain_state.triedb_env,
         eth_call_executor,
         chain_id,
         eth_call_gas_limit,
@@ -850,7 +850,7 @@ pub async fn monad_debug_traceCall<T: Triedb + TriedbPath>(
         MonadTracer::CallTracer => {
             let mut slice: &[u8] = raw_payload.as_slice();
             let frame = decode_call_frame(
-                triedb_env,
+                &chain_state.triedb_env,
                 &mut slice,
                 block_key,
                 &params.tracer.tracer_params,
@@ -884,7 +884,7 @@ pub async fn monad_debug_traceCall<T: Triedb + TriedbPath>(
 )]
 #[allow(non_snake_case)]
 pub async fn monad_createAccessList<T: Triedb + TriedbPath>(
-    triedb_env: &T,
+    chain_state: &ChainState<T>,
     eth_call_executor: &EthCallExecutor,
     chain_id: u64,
     eth_call_gas_limit: u64,
@@ -893,7 +893,7 @@ pub async fn monad_createAccessList<T: Triedb + TriedbPath>(
     trace!("monad_createAccessList: {params:?}");
 
     let raw_payload: Vec<u8> = match prepare_eth_call(
-        triedb_env,
+        &chain_state.triedb_env,
         eth_call_executor,
         chain_id,
         eth_call_gas_limit,
@@ -937,7 +937,7 @@ pub async fn monad_createAccessList<T: Triedb + TriedbPath>(
     };
 
     let result: AccessListResult = match prepare_eth_call(
-        triedb_env,
+        &chain_state.triedb_env,
         eth_call_executor,
         chain_id,
         eth_call_gas_limit,
