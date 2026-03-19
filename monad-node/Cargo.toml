@@ -47,10 +47,7 @@ chrono = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 futures-util = { workspace = true }
 hex = { workspace = true }
-opentelemetry = { workspace = true }
-opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }
-opentelemetry-otlp = { workspace = true, features = ["metrics", "grpc-tonic"] }
-opentelemetry-semantic-conventions = { workspace = true }
+prometheus = { workspace = true }
 rand_chacha = { workspace = true }
 rayon = { workspace = true }
 reqwest = { workspace = true, features = ["blocking"] }

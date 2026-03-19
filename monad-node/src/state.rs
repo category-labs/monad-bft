@@ -18,11 +18,10 @@ use std::{
     ffi::OsStr,
     path::{Path, PathBuf},
     str::FromStr,
-    time::Duration,
 };
 
 use agent::AgentBuilder;
-use clap::{error::ErrorKind, FromArgMatches};
+use clap::{FromArgMatches, error::ErrorKind};
 use monad_bls::BlsKeyPair;
 use monad_chain_config::MonadChainConfig;
 use monad_consensus_types::validator_data::ValidatorsConfigFile;
@@ -31,13 +30,13 @@ use monad_keystore::keystore::Keystore;
 use monad_node_config::{ForkpointConfig, MonadNodeConfig, ValidatorsConfigType};
 use monad_secp::KeyPair;
 use monad_types::Round;
-use reqwest::{blocking::Client, Url};
+use reqwest::{Url, blocking::Client};
 use tracing::{info, warn};
 use tracing_manytrace::{ManytraceLayer, TracingExtension};
 use tracing_subscriber::{
-    fmt::{format::FmtSpan, Layer as FmtLayer},
-    layer::SubscriberExt,
     Layer,
+    fmt::{Layer as FmtLayer, format::FmtSpan},
+    layer::SubscriberExt,
 };
 
 use crate::{cli::Cli, error::NodeSetupError};
@@ -67,7 +66,6 @@ pub struct NodeState {
     pub triedb_path: PathBuf,
     pub persisted_peers_path: PathBuf,
 
-    pub otel_endpoint_interval: Option<(String, Duration)>,
     pub pprof: String,
     pub reload_handle: Box<dyn TracingReload>,
     // should be kept as long as node is alive, tracing listener is stopped when handle is dropped
@@ -92,8 +90,6 @@ impl NodeState {
             statesync_ipc_path,
             statesync_sq_thread_cpu,
             keystore_password,
-            otel_endpoint,
-            record_metrics_interval_seconds,
             pprof,
             manytrace_socket,
             persisted_peers_path,
@@ -168,15 +164,6 @@ impl NodeState {
                 .as_millis()
         ));
 
-        let otel_endpoint_interval = match (otel_endpoint, record_metrics_interval_seconds) {
-            (Some(otel_endpoint), Some(record_metrics_interval_seconds)) => Some((
-                otel_endpoint,
-                Duration::from_secs(record_metrics_interval_seconds),
-            )),
-            (None, None) => None,
-            _ => panic!("cli accepted otel_endpoint without record_metrics_interval_seconds"),
-        };
-
         Ok(Self {
             node_config,
             node_config_path,
@@ -198,7 +185,6 @@ impl NodeState {
             statesync_ipc_path,
             statesync_sq_thread_cpu,
 
-            otel_endpoint_interval,
             pprof,
             reload_handle,
             manytrace_agent: agent,

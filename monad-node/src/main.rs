@@ -26,10 +26,10 @@ use std::{
 use alloy_rlp::{Decodable, Encodable};
 use chrono::Utc;
 use clap::CommandFactory;
-use futures_util::{FutureExt, StreamExt};
+use futures_util::StreamExt;
 use monad_chain_config::ChainConfig;
 use monad_consensus_state::ConsensusConfig;
-use monad_consensus_types::{metrics::Metrics, validator_data::ValidatorSetDataWithEpoch};
+use monad_consensus_types::validator_data::ValidatorSetDataWithEpoch;
 use monad_control_panel::ipc::ControlPanelIpcReceiver;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
@@ -38,7 +38,7 @@ use monad_dataplane::{DataplaneBuilder, TcpSocketId, UdpSocketId};
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthBlockValidator;
 use monad_eth_txpool_executor::{EthTxPoolExecutor, EthTxPoolIpcConfig};
-use monad_executor::{Executor, ExecutorMetricsChain};
+use monad_executor::Executor;
 use monad_executor_glue::{LogFriendlyMonadEvent, Message, MonadEvent};
 use monad_ledger::MonadBlockFileLedger;
 use monad_node_config::{
@@ -46,10 +46,10 @@ use monad_node_config::{
     PeerDiscoveryConfig, SignatureCollectionType, SignatureType,
 };
 use monad_peer_discovery::{
-    discovery::{PeerDiscovery, PeerDiscoveryBuilder},
     MonadNameRecord, NameRecord,
+    discovery::{PeerDiscovery, PeerDiscoveryBuilder},
 };
-use monad_pprof::start_pprof_server;
+use monad_pprof::{MetricsServerState, start_pprof_server_with_metrics};
 use monad_raptorcast::config::{RaptorCastConfig, RaptorCastConfigPrimary};
 use monad_router_multi::MultiRouter;
 use monad_state::{MonadMessage, MonadStateBuilder, VerifiedMonadMessage};
@@ -57,7 +57,7 @@ use monad_state_backend::StateBackendThreadClient;
 use monad_state_backend_cache::StateBackendCache;
 use monad_statesync::StateSync;
 use monad_triedb_utils::TriedbReader;
-use monad_types::{DropTimer, Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
+use monad_types::{DropTimer, Epoch, GENESIS_SEQ_NUM, NodeId, Round, SeqNum};
 use monad_updaters::{
     config_file::ConfigFile, config_loader::ConfigLoader, loopback::LoopbackExecutor,
     parent::ParentExecutor, timer::TokioTimer, tokio_timestamp::TokioTimestamp,
@@ -68,16 +68,15 @@ use monad_validator::{
     weighted_round_robin::WeightedRoundRobin,
 };
 use monad_wal::wal::WALoggerConfig;
-use opentelemetry::metrics::MeterProvider;
-use opentelemetry_otlp::{MetricExporter, WithExportConfig};
-use rand_chacha::{rand_core::SeedableRng, ChaCha8Rng};
-use tokio::signal::unix::{signal, SignalKind};
-use tracing::{error, event, info, warn, Instrument, Level};
+use rand_chacha::{ChaCha8Rng, rand_core::SeedableRng};
+use tokio::signal::unix::{SignalKind, signal};
+use tracing::{Instrument, Level, error, event, info, warn};
 
-use self::{cli::Cli, error::NodeSetupError, state::NodeState};
+use self::{cli::Cli, error::NodeSetupError, metrics::NodePrometheusMetrics, state::NodeState};
 
 mod cli;
 mod error;
+mod metrics;
 mod state;
 
 #[cfg(all(not(target_env = "msvc"), feature = "jemallocator"))]
@@ -115,24 +114,6 @@ fn main() {
     drop(cmd);
 
     MONAD_NODE_VERSION.map(|v| info!("starting monad-bft with version {}", v));
-
-    if !node_state.pprof.is_empty() {
-        runtime.spawn({
-            let pprof = node_state.pprof.clone();
-            async {
-                let server = match start_pprof_server(pprof) {
-                    Ok(server) => server,
-                    Err(err) => {
-                        error!("failed to start pprof server: {}", err);
-                        return;
-                    }
-                };
-                if let Err(err) = server.await {
-                    error!("pprof server failed: {}", err);
-                }
-            }
-        });
-    }
 
     if let Err(e) = runtime.block_on(run(node_state)) {
         tracing::error!("monad consensus node crashed: {:?}", e);
@@ -368,36 +349,57 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         last_ledger_tip = last_ledger_tip.map(|s| s.as_u64())
     );
 
-    let (maybe_otel_meter_provider, mut maybe_metrics_ticker) = node_state
-        .otel_endpoint_interval
-        .map(|(otel_endpoint, record_metrics_interval)| {
-            let provider = build_otel_meter_provider(
-                &otel_endpoint,
-                format!(
-                    "{network_name}_{node_name}",
-                    network_name = node_state.node_config.network_name,
-                    node_name = node_state.node_config.node_name
-                ),
-                node_state.node_config.network_name.clone(),
-                record_metrics_interval,
-            )
-            .expect("failed to build otel monad-node");
-
-            let mut timer = tokio::time::interval(record_metrics_interval);
-
-            timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-
-            (provider, timer)
-        })
-        .unzip();
-
-    let maybe_otel_meter = maybe_otel_meter_provider
-        .as_ref()
-        .map(|provider| provider.meter("opentelemetry"));
-
-    let mut gauge_cache = HashMap::new();
     let process_start = Instant::now();
+    let mut prometheus_labels = HashMap::from([
+        ("service_name".to_owned(), "monad-node".to_owned()),
+        (
+            "network".to_owned(),
+            node_state.node_config.network_name.clone(),
+        ),
+        (
+            "node_name".to_owned(),
+            node_state.node_config.node_name.clone(),
+        ),
+    ]);
+    if let Some(version) = MONAD_NODE_VERSION {
+        prometheus_labels.insert("version".to_owned(), version.to_owned());
+    }
+
+    let prometheus_metrics = Arc::new(
+        NodePrometheusMetrics::new(
+            prometheus_labels,
+            state.metrics(),
+            executor.metrics(),
+            process_start,
+        )
+        .map_err(|err| {
+            error!(?err, "failed to initialize prometheus metrics");
+        })?,
+    );
     let mut total_state_update_elapsed = Duration::ZERO;
+
+    if !node_state.pprof.is_empty() {
+        tokio::spawn({
+            let pprof = node_state.pprof.clone();
+            let metrics = Arc::clone(&prometheus_metrics);
+            async move {
+                let metrics_server_state = MetricsServerState::new(
+                    metrics.registry(),
+                    Some(Arc::new(move || metrics.refresh_for_scrape())),
+                );
+                let server = match start_pprof_server_with_metrics(pprof, metrics_server_state) {
+                    Ok(server) => server,
+                    Err(err) => {
+                        error!("failed to start pprof server: {}", err);
+                        return;
+                    }
+                };
+                if let Err(err) = server.await {
+                    error!("pprof server failed: {}", err);
+                }
+            }
+        });
+    }
 
     let mut sigterm = signal(SignalKind::terminate()).expect("in tokio rt");
     let mut sigint = signal(SignalKind::interrupt()).expect("in tokio rt");
@@ -413,15 +415,6 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
             result = sigint.recv() => {
                 info!(?result, "received SIGINT, exiting...");
                 break;
-            }
-            _ = match &mut maybe_metrics_ticker {
-                Some(ticker) => ticker.tick().boxed(),
-                None => futures_util::future::pending().boxed(),
-            } => {
-                let otel_meter = maybe_otel_meter.as_ref().expect("otel_endpoint must have been set");
-                let state_metrics = state.metrics();
-                let executor_metrics = executor.metrics();
-                send_metrics(otel_meter, &mut gauge_cache, state_metrics, executor_metrics, &process_start, &total_state_update_elapsed);
             }
             event = executor.next().instrument(ledger_span.clone()) => {
                 let Some(event) = event else {
@@ -466,6 +459,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
                     let start = Instant::now();
                     let cmds = state.update(event.event);
                     total_state_update_elapsed += start.elapsed();
+                    prometheus_metrics.update(state.metrics(), &total_state_update_elapsed);
                     cmds
                 };
 
@@ -744,102 +738,4 @@ fn resolve_domain_v4<P: PubKey>(node_id: &NodeId<P>, domain: &String) -> Option<
 
     warn!(?node_id, ?domain, "No IPv4 DNS record");
     None
-}
-
-monad_executor::metric_consts! {
-    GAUGE_TOTAL_UPTIME_US {
-        name: "monad.total_uptime_us",
-        help: "Total node uptime in microseconds",
-    }
-    GAUGE_STATE_TOTAL_UPDATE_US {
-        name: "monad.state.total_update_us",
-        help: "Total time spent updating state in microseconds",
-    }
-    GAUGE_NODE_INFO {
-        name: "monad_node_info",
-        help: "Node info indicator (always 1)",
-    }
-}
-
-fn send_metrics(
-    meter: &opentelemetry::metrics::Meter,
-    gauge_cache: &mut HashMap<&'static str, opentelemetry::metrics::Gauge<u64>>,
-    state_metrics: &Metrics,
-    executor_metrics: ExecutorMetricsChain,
-    process_start: &Instant,
-    total_state_update_elapsed: &Duration,
-) {
-    let node_info_gauge = gauge_cache.entry(GAUGE_NODE_INFO.name).or_insert_with(|| {
-        meter
-            .u64_gauge(GAUGE_NODE_INFO.name)
-            .with_description(GAUGE_NODE_INFO.help)
-            .build()
-    });
-    node_info_gauge.record(1, &[]);
-
-    for (k, v, desc) in state_metrics
-        .metrics()
-        .into_iter()
-        .chain(executor_metrics.into_inner())
-        .chain(std::iter::once((
-            GAUGE_TOTAL_UPTIME_US.name,
-            process_start.elapsed().as_micros() as u64,
-            GAUGE_TOTAL_UPTIME_US.help,
-        )))
-        .chain(std::iter::once((
-            GAUGE_STATE_TOTAL_UPDATE_US.name,
-            total_state_update_elapsed.as_micros() as u64,
-            GAUGE_STATE_TOTAL_UPDATE_US.help,
-        )))
-    {
-        let gauge = gauge_cache.entry(k).or_insert_with(|| {
-            if desc.is_empty() {
-                meter.u64_gauge(k).build()
-            } else {
-                meter.u64_gauge(k).with_description(desc).build()
-            }
-        });
-        gauge.record(v, &[]);
-    }
-}
-
-fn build_otel_meter_provider(
-    otel_endpoint: &str,
-    service_name: String,
-    network_name: String,
-    interval: Duration,
-) -> Result<opentelemetry_sdk::metrics::SdkMeterProvider, NodeSetupError> {
-    let exporter = MetricExporter::builder()
-        .with_tonic()
-        .with_timeout(interval * 2)
-        .with_endpoint(otel_endpoint)
-        .build()?;
-
-    let reader = opentelemetry_sdk::metrics::PeriodicReader::builder(exporter)
-        .with_interval(interval / 2)
-        .build();
-
-    let mut attrs = vec![
-        opentelemetry::KeyValue::new(
-            opentelemetry_semantic_conventions::resource::SERVICE_NAME,
-            service_name,
-        ),
-        opentelemetry::KeyValue::new("network", network_name),
-    ];
-    if let Some(version) = MONAD_NODE_VERSION {
-        attrs.push(opentelemetry::KeyValue::new(
-            opentelemetry_semantic_conventions::resource::SERVICE_VERSION,
-            version,
-        ));
-    }
-
-    let provider_builder = opentelemetry_sdk::metrics::SdkMeterProvider::builder()
-        .with_reader(reader)
-        .with_resource(
-            opentelemetry_sdk::Resource::builder_empty()
-                .with_attributes(attrs)
-                .build(),
-        );
-
-    Ok(provider_builder.build())
 }
