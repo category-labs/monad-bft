@@ -13,14 +13,12 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{
-    collections::{HashMap, HashSet},
-};
+use std::collections::{HashMap, HashSet};
 
 use hdrhistogram::Histogram as HdrHistogram;
 use prometheus::{
-    core::{AtomicU64, GenericGauge},
     Opts, Registry,
+    core::{AtomicU64, GenericGauge},
 };
 
 type UIntGauge = GenericGauge<AtomicU64>;
@@ -220,6 +218,12 @@ impl ExecutorMetrics {
             .unwrap_or_default()
     }
 
+    pub fn copy_values_from(&mut self, other: &ExecutorMetrics) {
+        for (metric, value) in other.snapshot() {
+            self.set(metric, value);
+        }
+    }
+
     pub fn iter_with_descriptions(
         &self,
     ) -> impl Iterator<Item = (&'static str, u64, &'static str)> + '_ {
@@ -395,5 +399,19 @@ mod tests {
         let gathered = registry.gather();
         assert_eq!(gathered.len(), 1);
         assert_eq!(gathered[0].get_metric()[0].get_gauge().value() as u64, 9);
+    }
+
+    #[test]
+    fn test_copy_values_from_preserves_registered_storage() {
+        let mut registered_metrics = ExecutorMetrics::with_metric_defs([TEST_REGISTERED_METRIC]);
+        let registered = registered_metrics.handle(TEST_REGISTERED_METRIC);
+
+        let mut snapshot = ExecutorMetrics::with_metric_defs([TEST_REGISTERED_METRIC]);
+        snapshot.set(TEST_REGISTERED_METRIC, 7);
+
+        registered_metrics.copy_values_from(&snapshot);
+
+        assert_eq!(registered.get(), 7);
+        assert_eq!(registered_metrics.get(TEST_REGISTERED_METRIC), 7);
     }
 }
