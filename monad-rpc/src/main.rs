@@ -23,9 +23,12 @@ use monad_event_ring::{EventRing, EventRingPath};
 use monad_node_config::MonadNodeConfig;
 use monad_pprof::start_pprof_server;
 use monad_rpc::{
-    chainstate::{buffer::ChainStateBuffer, ChainState},
+    chainstate::{
+        buffer::ChainStateBuffer,
+        eth_call_handler::{EthCallHandler, EthCallHandlerConfig},
+        ChainState,
+    },
     comparator::RpcComparator,
-    eth_call_handler::{EthCallHandler, EthCallHandlerConfig},
     event::EventServer,
     handlers::{
         resources::{MonadJsonRootSpanBuilder, MonadRpcResources},

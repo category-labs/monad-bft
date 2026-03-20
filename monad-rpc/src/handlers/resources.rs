@@ -22,8 +22,10 @@ use monad_triedb_utils::triedb_env::TriedbEnv;
 use tracing_actix_web::RootSpanBuilder;
 
 use crate::{
-    chainstate::ChainState, comparator::RpcComparator, eth_call_handler::EthCallHandler,
-    middleware::Metrics, txpool::EthTxPoolBridgeClient,
+    chainstate::{eth_call_handler::EthCallHandler, ChainState},
+    comparator::RpcComparator,
+    middleware::Metrics,
+    txpool::EthTxPoolBridgeClient,
 };
 
 #[derive(Clone)]
