@@ -15,8 +15,7 @@
 
 use clap::error::ErrorKind;
 use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionError};
-use opentelemetry_otlp::ExporterBuildError;
-use opentelemetry_sdk::trace::TraceError;
+use prometheus::Error as PrometheusError;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -40,7 +39,7 @@ pub enum NodeSetupError {
     IoError(#[from] std::io::Error),
 
     #[error(transparent)]
-    MetricsError(#[from] ExporterBuildError),
+    MetricsError(#[from] PrometheusError),
 
     #[error(transparent)]
     RayonPoolBuildError(#[from] rayon::ThreadPoolBuildError),
@@ -62,9 +61,6 @@ pub enum NodeSetupError {
 
     #[error(transparent)]
     TomlDeError(#[from] toml::de::Error),
-
-    #[error(transparent)]
-    TraceError(#[from] TraceError),
 }
 
 impl NodeSetupError {
@@ -81,7 +77,6 @@ impl NodeSetupError {
             | NodeSetupError::Bls12_381(_)
             | NodeSetupError::SignatureCollectionError(_)
             | NodeSetupError::TomlDeError(_)
-            | NodeSetupError::TraceError(_)
             | NodeSetupError::MetricsError(_) => ErrorKind::ValueValidation,
         }
     }

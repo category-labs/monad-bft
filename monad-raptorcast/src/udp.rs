@@ -334,8 +334,9 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                         src_addr = ?message.src_addr,
                         "rate limited raptorcast chunk signature verification"
                     );
-                    self.metrics.executor_metrics_mut()
-                        [GAUGE_RAPTORCAST_DECODING_CACHE_SIGNATURE_VERIFICATIONS_RATE_LIMITED] += 1;
+                    self.metrics
+                        .executor_metrics_mut()
+                        .inc(GAUGE_RAPTORCAST_DECODING_CACHE_SIGNATURE_VERIFICATIONS_RATE_LIMITED);
                     continue;
                 }
                 Err(err) => {

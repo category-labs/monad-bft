@@ -6,7 +6,8 @@ edition = "2024"
 [dependencies]
 actix-web = { workspace = true }
 actix-server = { workspace = true }
-serde = { workspace = true }
+prometheus = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 jemalloc_pprof = { workspace = true, optional = true }
 
 [features]

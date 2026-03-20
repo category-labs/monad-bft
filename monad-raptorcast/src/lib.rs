@@ -68,8 +68,8 @@ use util::{
 
 use crate::{
     metrics::{
-        GAUGE_RAPTORCAST_TOTAL_DESERIALIZE_ERRORS, GAUGE_RAPTORCAST_TOTAL_MESSAGES_RECEIVED,
-        GAUGE_RAPTORCAST_TOTAL_RECV_ERRORS,
+        init_router_executor_metrics, GAUGE_RAPTORCAST_TOTAL_DESERIALIZE_ERRORS,
+        GAUGE_RAPTORCAST_TOTAL_MESSAGES_RECEIVED, GAUGE_RAPTORCAST_TOTAL_RECV_ERRORS,
     },
     packet::RetrofitResult as _,
     raptorcast_secondary::{
@@ -207,6 +207,7 @@ where
             .segment_size(segment_size)
             .group_id(GroupId::Primary(current_epoch))
             .redundancy(secondary_redundancy);
+        let peer_discovery_metrics = peer_discovery_driver.lock().unwrap().metrics().clone();
 
         Self {
             is_dynamic_fullnode,
@@ -238,8 +239,8 @@ where
             channel_from_secondary_outbound: None,
 
             waker: None,
-            metrics: Default::default(),
-            peer_discovery_metrics: Default::default(),
+            metrics: init_router_executor_metrics(),
+            peer_discovery_metrics,
             _phantom: PhantomData,
         }
     }
@@ -974,11 +975,11 @@ where
 
                 match sock.poll_unpin(cx) {
                     Poll::Ready(Ok(msg)) => {
-                        this.metrics[GAUGE_RAPTORCAST_TOTAL_MESSAGES_RECEIVED] += 1;
+                        this.metrics.inc(GAUGE_RAPTORCAST_TOTAL_MESSAGES_RECEIVED);
                         msg
                     }
                     Poll::Ready(Err(e)) => {
-                        this.metrics[GAUGE_RAPTORCAST_TOTAL_RECV_ERRORS] += 1;
+                        this.metrics.inc(GAUGE_RAPTORCAST_TOTAL_RECV_ERRORS);
                         trace!(error=?e, "socket recv error");
                         continue;
                     }
@@ -1094,7 +1095,7 @@ where
                         }
                     },
                     Err(err) => {
-                        this.metrics[GAUGE_RAPTORCAST_TOTAL_DESERIALIZE_ERRORS] += 1;
+                        this.metrics.inc(GAUGE_RAPTORCAST_TOTAL_DESERIALIZE_ERRORS);
                         debug!(?from, ?err, "failed to deserialize message");
                     }
                 }
@@ -1133,7 +1134,7 @@ where
                 match InboundRouterMessage::<M, ST>::try_deserialize(&app_message_bytes) {
                     Ok(message) => message,
                     Err(err) => {
-                        this.metrics[GAUGE_RAPTORCAST_TOTAL_DESERIALIZE_ERRORS] += 1;
+                        this.metrics.inc(GAUGE_RAPTORCAST_TOTAL_DESERIALIZE_ERRORS);
                         debug!(?err, ?src_addr, "failed to deserialize message");
                         this.dataplane_control.disconnect(src_addr);
                         continue;
@@ -1247,7 +1248,8 @@ where
                         send_peer_disc_msg(this, target, Some(name_record), message);
                     }
                     PeerDiscoveryEmit::MetricsCommand(executor_metrics) => {
-                        this.peer_discovery_metrics = executor_metrics;
+                        this.peer_discovery_metrics
+                            .copy_values_from(&executor_metrics);
                     }
                 }
             }

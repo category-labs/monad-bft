@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use monad_executor::ExecutorMetrics;
+
 monad_executor::metric_consts! {
     pub GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_WRITTEN {
         name: "monad.raptorcast.auth.authenticated_udp_bytes_written",
@@ -33,3 +35,23 @@ monad_executor::metric_consts! {
 }
 
 monad_wireauth::define_metric_names!(UDP_METRICS, "udp");
+
+pub fn init_executor_metrics() -> ExecutorMetrics {
+    let mut metrics = monad_wireauth::init_executor_metrics(&UDP_METRICS);
+    metrics.add_metric_defs([
+        GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_WRITTEN,
+        GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_WRITTEN,
+        GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_READ,
+        GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_READ,
+    ]);
+    metrics
+}
+
+pub(crate) fn init_socket_executor_metrics() -> ExecutorMetrics {
+    ExecutorMetrics::with_metric_defs([
+        GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_WRITTEN,
+        GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_WRITTEN,
+        GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_READ,
+        GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_READ,
+    ])
+}

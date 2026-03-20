@@ -45,6 +45,19 @@ use crate::{cli::Cli, error::NodeSetupError};
 const REMOTE_FORKPOINT_URL_ENV: &str = "REMOTE_FORKPOINT_URL";
 const REMOTE_VALIDATORS_URL_ENV: &str = "REMOTE_VALIDATORS_URL";
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PprofConfig {
+    pub addr: String,
+    pub enable_metrics: bool,
+    pub enable_profiling: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OtelConfig {
+    pub endpoint: String,
+    pub export_interval: Duration,
+}
+
 pub struct NodeState {
     pub node_config: MonadNodeConfig,
     pub node_config_path: PathBuf,
@@ -67,8 +80,8 @@ pub struct NodeState {
     pub triedb_path: PathBuf,
     pub persisted_peers_path: PathBuf,
 
-    pub otel_endpoint_interval: Option<(String, Duration)>,
-    pub pprof: String,
+    pub otel: Option<OtelConfig>,
+    pub pprof: Option<PprofConfig>,
     pub reload_handle: Box<dyn TracingReload>,
     // should be kept as long as node is alive, tracing listener is stopped when handle is dropped
     #[allow(unused)]
@@ -91,13 +104,18 @@ impl NodeState {
             control_panel_ipc_path,
             statesync_ipc_path,
             statesync_sq_thread_cpu,
-            keystore_password,
             otel_endpoint,
             record_metrics_interval_seconds,
+            keystore_password,
             pprof,
+            pprof_enable_profiling,
+            pprof_disable_metrics,
             manytrace_socket,
             persisted_peers_path,
         } = Cli::from_arg_matches_mut(&mut cmd.get_matches_mut())?;
+
+        let otel = parse_otel_config(otel_endpoint, record_metrics_interval_seconds)?;
+        let pprof = parse_pprof_config(pprof, pprof_disable_metrics, pprof_enable_profiling)?;
 
         let (reload_handle, agent) = NodeState::setup_tracing(manytrace_socket)?;
 
@@ -168,15 +186,6 @@ impl NodeState {
                 .as_millis()
         ));
 
-        let otel_endpoint_interval = match (otel_endpoint, record_metrics_interval_seconds) {
-            (Some(otel_endpoint), Some(record_metrics_interval_seconds)) => Some((
-                otel_endpoint,
-                Duration::from_secs(record_metrics_interval_seconds),
-            )),
-            (None, None) => None,
-            _ => panic!("cli accepted otel_endpoint without record_metrics_interval_seconds"),
-        };
-
         Ok(Self {
             node_config,
             node_config_path,
@@ -198,7 +207,7 @@ impl NodeState {
             statesync_ipc_path,
             statesync_sq_thread_cpu,
 
-            otel_endpoint_interval,
+            otel,
             pprof,
             reload_handle,
             manytrace_agent: agent,
@@ -256,6 +265,66 @@ impl NodeState {
             Ok((Box::new(reload_handle), None))
         }
     }
+}
+
+fn parse_otel_config(
+    endpoint: Option<String>,
+    export_interval_seconds: Option<u64>,
+) -> Result<Option<OtelConfig>, NodeSetupError> {
+    let Some(endpoint) = endpoint else {
+        if export_interval_seconds.is_some() {
+            return Err(NodeSetupError::Custom {
+                kind: ErrorKind::MissingRequiredArgument,
+                msg: "--record-metrics-interval-seconds requires --otel-endpoint".to_owned(),
+            });
+        }
+        return Ok(None);
+    };
+
+    let export_interval_seconds = export_interval_seconds.unwrap_or(1);
+    if export_interval_seconds == 0 {
+        return Err(NodeSetupError::Custom {
+            kind: ErrorKind::InvalidValue,
+            msg: "--record-metrics-interval-seconds must be greater than zero".to_owned(),
+        });
+    }
+
+    Ok(Some(OtelConfig {
+        endpoint,
+        export_interval: Duration::from_secs(export_interval_seconds),
+    }))
+}
+
+fn parse_pprof_config(
+    addr: String,
+    disable_metrics: bool,
+    enable_profiling: bool,
+) -> Result<Option<PprofConfig>, NodeSetupError> {
+    if addr.is_empty() {
+        if disable_metrics || enable_profiling {
+            return Err(NodeSetupError::Custom {
+                kind: ErrorKind::MissingRequiredArgument,
+                msg: "--pprof-disable-metrics and --pprof-enable-profiling require --pprof"
+                    .to_owned(),
+            });
+        }
+        return Ok(None);
+    }
+
+    let enable_metrics = !disable_metrics;
+
+    if !enable_metrics && !enable_profiling {
+        return Err(NodeSetupError::Custom {
+            kind: ErrorKind::InvalidValue,
+            msg: "--pprof cannot disable both metrics and profiling at the same time".to_owned(),
+        });
+    }
+
+    Ok(Some(PprofConfig {
+        addr,
+        enable_metrics,
+        enable_profiling,
+    }))
 }
 
 fn fetch_local_configs(
@@ -440,4 +509,87 @@ fn load_bls12_381_keypair(
         kind: ErrorKind::ValueValidation,
         msg: "bls secret secret must be encoded in keystore json".to_owned(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::error::ErrorKind;
+
+    use super::{parse_otel_config, parse_pprof_config, OtelConfig, PprofConfig};
+
+    #[test]
+    fn rejects_interval_without_otel_endpoint() {
+        let error = parse_otel_config(None, Some(1)).unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
+    fn defaults_otel_interval_to_one_second() {
+        let config = parse_otel_config(Some("http://127.0.0.1:4317".to_owned()), None)
+            .expect("otel config")
+            .expect("otel should be enabled");
+
+        assert_eq!(
+            config,
+            OtelConfig {
+                endpoint: "http://127.0.0.1:4317".to_owned(),
+                export_interval: std::time::Duration::from_secs(1),
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_zero_otel_interval() {
+        let error =
+            parse_otel_config(Some("http://127.0.0.1:4317".to_owned()), Some(0)).unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::InvalidValue);
+    }
+
+    #[test]
+    fn rejects_disable_flags_without_pprof_address() {
+        let error = parse_pprof_config(String::new(), true, false).unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
+    fn rejects_when_all_routes_are_disabled() {
+        let error = parse_pprof_config("127.0.0.1:8888".to_owned(), true, false).unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::InvalidValue);
+    }
+
+    #[test]
+    fn preserves_metrics_only_configuration() {
+        let config = parse_pprof_config("127.0.0.1:8888".to_owned(), false, false)
+            .expect("pprof config")
+            .expect("pprof should be enabled");
+
+        assert_eq!(
+            config,
+            PprofConfig {
+                addr: "127.0.0.1:8888".to_owned(),
+                enable_metrics: true,
+                enable_profiling: false,
+            }
+        );
+    }
+
+    #[test]
+    fn preserves_metrics_and_profiling_configuration() {
+        let config = parse_pprof_config("127.0.0.1:8888".to_owned(), false, true)
+            .expect("pprof config")
+            .expect("pprof should be enabled");
+
+        assert_eq!(
+            config,
+            PprofConfig {
+                addr: "127.0.0.1:8888".to_owned(),
+                enable_metrics: true,
+                enable_profiling: true,
+            }
+        );
+    }
 }

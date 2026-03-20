@@ -37,7 +37,10 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_block_policy::EthBlockPolicy;
-use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics, PoolTxKind};
+use monad_eth_txpool::{
+    init_executor_metrics as init_txpool_executor_metrics, EthTxPool, EthTxPoolEventTracker,
+    EthTxPoolMetrics, PoolTxKind,
+};
 use monad_eth_types::{EthExecutionProtocol, ExtractEthAddress};
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
@@ -139,6 +142,8 @@ where
     CRT: ChainRevision,
 {
     fn default() -> Self {
+        let executor_metrics = init_txpool_executor_metrics();
+
         Self {
             eth: None,
             chain_config: CCT::default(),
@@ -147,8 +152,8 @@ where
             events: VecDeque::default(),
             waker: None,
 
-            metrics: EthTxPoolMetrics::default(),
-            executor_metrics: ExecutorMetrics::default(),
+            metrics: EthTxPoolMetrics::from_executor_metrics(&executor_metrics),
+            executor_metrics,
         }
     }
 }
@@ -172,6 +177,8 @@ where
     CertificateSignaturePubKey<ST>: ExtractEthAddress,
 {
     pub fn new(block_policy: EthBlockPolicy<ST, SCT, CCT, CRT>, state_backend: SBT) -> Self {
+        let executor_metrics = init_txpool_executor_metrics();
+
         Self {
             eth: Some((EthTxPool::default_testing(), block_policy, state_backend)),
             chain_config: MockChainConfig::DEFAULT,
@@ -180,8 +187,8 @@ where
             events: VecDeque::default(),
             waker: None,
 
-            metrics: EthTxPoolMetrics::default(),
-            executor_metrics: ExecutorMetrics::default(),
+            metrics: EthTxPoolMetrics::from_executor_metrics(&executor_metrics),
+            executor_metrics,
         }
     }
 
@@ -452,8 +459,6 @@ where
                 TxPoolCommand::EnterRound { .. } => {}
             }
         }
-
-        self.metrics.update(&mut self.executor_metrics);
     }
 
     fn metrics(&self) -> ExecutorMetricsChain<'_> {

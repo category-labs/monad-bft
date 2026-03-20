@@ -168,6 +168,38 @@ monad_executor::metric_consts! {
     }
 }
 
+fn init_executor_metrics() -> ExecutorMetrics {
+    ExecutorMetrics::with_metric_defs([
+        GAUGE_PEER_DISC_SEND_PING,
+        GAUGE_PEER_DISC_RECV_PING,
+        GAUGE_PEER_DISC_DROP_PING,
+        GAUGE_PEER_DISC_PING_TIMEOUT,
+        GAUGE_PEER_DISC_SEND_PONG,
+        GAUGE_PEER_DISC_RECV_PONG,
+        GAUGE_PEER_DISC_DROP_PONG,
+        GAUGE_PEER_DISC_RATE_LIMITED,
+        GAUGE_PEER_DISC_SEND_LOOKUP_REQUEST,
+        GAUGE_PEER_DISC_RECV_LOOKUP_REQUEST,
+        GAUGE_PEER_DISC_RECV_OPEN_LOOKUP_REQUEST,
+        GAUGE_PEER_DISC_RECV_TARGETED_LOOKUP_REQUEST,
+        GAUGE_PEER_DISC_RETRY_LOOKUP_REQUEST,
+        GAUGE_PEER_DISC_SEND_LOOKUP_RESPONSE,
+        GAUGE_PEER_DISC_RECV_LOOKUP_RESPONSE,
+        GAUGE_PEER_DISC_DROP_LOOKUP_RESPONSE,
+        GAUGE_PEER_DISC_LOOKUP_TIMEOUT,
+        GAUGE_PEER_DISC_SEND_RAPTORCAST_REQUEST,
+        GAUGE_PEER_DISC_RECV_RAPTORCAST_REQUEST,
+        GAUGE_PEER_DISC_SEND_RAPTORCAST_RESPONSE,
+        GAUGE_PEER_DISC_RECV_RAPTORCAST_RESPONSE,
+        GAUGE_PEER_DISC_REFRESH,
+        GAUGE_PEER_DISC_NUM_PEERS,
+        GAUGE_PEER_DISC_NUM_PENDING_PEERS,
+        GAUGE_PEER_DISC_NUM_UPSTREAM_VALIDATORS,
+        GAUGE_PEER_DISC_NUM_DOWNSTREAM_FULLNODES,
+        GAUGE_PEER_DISC_SOCKET_COLLISIONS,
+    ])
+}
+
 /// validator role is given if the node is a validator in the current or next epoch.
 /// this is to ensure the node starts connecting to other validators even if joining
 /// as a validator only in the next epoch
@@ -353,7 +385,7 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscoveryAlgoBuilder for PeerDisco
             pending_queue: Default::default(),
             socket_to_id: Default::default(),
             outstanding_lookup_requests: Default::default(),
-            metrics: Default::default(),
+            metrics: init_executor_metrics(),
             refresh_period: self.refresh_period,
             request_timeout: self.request_timeout,
             unresponsive_prune_threshold: self.unresponsive_prune_threshold,
@@ -546,7 +578,10 @@ impl<ST: CertificateSignatureRecoverable, C: governor::clock::Clock> PeerDiscove
                 name_record: name_record.clone(),
             },
         );
-        self.metrics[GAUGE_PEER_DISC_NUM_PENDING_PEERS] = self.pending_queue.len() as u64;
+        self.metrics.set(
+            GAUGE_PEER_DISC_NUM_PENDING_PEERS,
+            self.pending_queue.len() as u64,
+        );
 
         // send ping to the peer, which will also insert the peer into pending queue
         Ok(self.send_ping(peer_id, name_record.name_record, ping_msg))
@@ -562,7 +597,10 @@ impl<ST: CertificateSignatureRecoverable, C: governor::clock::Clock> PeerDiscove
         self.pending_queue.remove(&peer_id);
         cmds.extend(self.clear_ping_timeout(peer_id));
 
-        self.metrics[GAUGE_PEER_DISC_NUM_PENDING_PEERS] = self.pending_queue.len() as u64;
+        self.metrics.set(
+            GAUGE_PEER_DISC_NUM_PENDING_PEERS,
+            self.pending_queue.len() as u64,
+        );
 
         cmds
     }
@@ -588,7 +626,8 @@ impl<ST: CertificateSignatureRecoverable, C: governor::clock::Clock> PeerDiscove
                 last_active: self.current_round,
             });
         cmds.extend(self.remove_peer_from_pending(peer));
-        self.metrics[GAUGE_PEER_DISC_NUM_PEERS] = self.routing_info.len() as u64;
+        self.metrics
+            .set(GAUGE_PEER_DISC_NUM_PEERS, self.routing_info.len() as u64);
 
         // clean up old socket bindings if name record is updated
         if let Some(record) = old_name_record {
@@ -639,7 +678,10 @@ impl<ST: CertificateSignatureRecoverable, C: governor::clock::Clock> PeerDiscove
             .map(|(id, _)| id)
             .collect::<HashSet<_>>();
 
-        self.metrics[GAUGE_PEER_DISC_NUM_UPSTREAM_VALIDATORS] = connected_validators.len() as u64;
+        self.metrics.set(
+            GAUGE_PEER_DISC_NUM_UPSTREAM_VALIDATORS,
+            connected_validators.len() as u64,
+        );
 
         let slots_to_fill = NUM_UPSTREAM_VALIDATORS.saturating_sub(connected_validators.len());
         if slots_to_fill > 0 {
@@ -842,7 +884,7 @@ impl<ST: CertificateSignatureRecoverable, C: governor::clock::Clock> PeerDiscove
                 ?expected_node_id,
                 "socket address already bound to another node ID"
             );
-            self.metrics[GAUGE_PEER_DISC_SOCKET_COLLISIONS] += 1;
+            self.metrics.inc(GAUGE_PEER_DISC_SOCKET_COLLISIONS);
             return false;
         }
         true
@@ -874,7 +916,7 @@ where
             message: PeerDiscoveryMessage::Ping(ping),
         });
 
-        self.metrics[GAUGE_PEER_DISC_SEND_PING] += 1;
+        self.metrics.inc(GAUGE_PEER_DISC_SEND_PING);
         cmds
     }
 
@@ -884,7 +926,7 @@ where
         ping_msg: Ping<Self::SignatureType>,
     ) -> Vec<PeerDiscoveryCommand<ST>> {
         debug!(?from.id, ?from.addr, ?ping_msg, "handling ping request");
-        self.metrics[GAUGE_PEER_DISC_RECV_PING] += 1;
+        self.metrics.inc(GAUGE_PEER_DISC_RECV_PING);
 
         let expected_ip = IpAddr::V4(ping_msg.local_name_record.name_record.ip());
         if from.addr.ip() != expected_ip {
@@ -894,7 +936,7 @@ where
                 %expected_ip,
                 "dropping ping: source address does not match name record IP"
             );
-            self.metrics[GAUGE_PEER_DISC_DROP_PING] += 1;
+            self.metrics.inc(GAUGE_PEER_DISC_DROP_PING);
             return Vec::new();
         }
 
@@ -904,7 +946,7 @@ where
         // check rate limit for incoming pings
         if self.ping_rate_limiter.check().is_err() {
             debug!(?from, "ping rate limit exceeded, dropping ping");
-            self.metrics[GAUGE_PEER_DISC_RATE_LIMITED] += 1;
+            self.metrics.inc(GAUGE_PEER_DISC_RATE_LIMITED);
             return cmds;
         }
 
@@ -944,7 +986,7 @@ where
                 ?from,
                 "peer list is full, not inserting name record from non-validator and non-pinned-full-node peer"
             );
-            self.metrics[GAUGE_PEER_DISC_DROP_PING] += 1;
+            self.metrics.inc(GAUGE_PEER_DISC_DROP_PING);
             peer_list_full = true;
         }
 
@@ -989,7 +1031,7 @@ where
             name_record: ping_msg.local_name_record.name_record,
             message: PeerDiscoveryMessage::Pong(pong_msg),
         });
-        self.metrics[GAUGE_PEER_DISC_SEND_PONG] += 1;
+        self.metrics.inc(GAUGE_PEER_DISC_SEND_PONG);
 
         cmds
     }
@@ -1002,7 +1044,7 @@ where
         let src_addr = from.addr;
         let from = from.id;
         debug!(?from, ?src_addr, ?pong_msg, "handling pong response");
-        self.metrics[GAUGE_PEER_DISC_RECV_PONG] += 1;
+        self.metrics.inc(GAUGE_PEER_DISC_RECV_PONG);
 
         let mut cmds = Vec::new();
 
@@ -1015,7 +1057,7 @@ where
                     %expected_ip,
                     "dropping pong: source address does not match name record IP"
                 );
-                self.metrics[GAUGE_PEER_DISC_DROP_PONG] += 1;
+                self.metrics.inc(GAUGE_PEER_DISC_DROP_PONG);
                 return cmds;
             }
             if info.last_ping.id == pong_msg.ping_id {
@@ -1024,14 +1066,14 @@ where
                 cmds.extend(self.promote_peer_to_routing_info(from, info.name_record.clone()));
             } else {
                 debug!(?from, "dropping pong, ping id does not match");
-                self.metrics[GAUGE_PEER_DISC_DROP_PONG] += 1;
+                self.metrics.inc(GAUGE_PEER_DISC_DROP_PONG);
             }
         } else {
             debug!(
                 ?from,
                 "dropping pong, ping sender does not exist in pending queue"
             );
-            self.metrics[GAUGE_PEER_DISC_DROP_PONG] += 1;
+            self.metrics.inc(GAUGE_PEER_DISC_DROP_PONG);
         }
 
         cmds
@@ -1056,7 +1098,7 @@ where
         // record timeout
         if info.last_ping.id == ping_id {
             debug!(?to, ?ping_id, "handling ping timeout");
-            self.metrics[GAUGE_PEER_DISC_PING_TIMEOUT] += 1;
+            self.metrics.inc(GAUGE_PEER_DISC_PING_TIMEOUT);
             info.unresponsive_pings += 1;
 
             // if unresponsive pings exceeds threshold, remove from pending queue
@@ -1119,7 +1161,7 @@ where
             message: PeerDiscoveryMessage::PeerLookupRequest(peer_lookup_request),
         });
 
-        self.metrics[GAUGE_PEER_DISC_SEND_LOOKUP_REQUEST] += 1;
+        self.metrics.inc(GAUGE_PEER_DISC_SEND_LOOKUP_REQUEST);
         cmds
     }
 
@@ -1130,14 +1172,14 @@ where
     ) -> Vec<PeerDiscoveryCommand<ST>> {
         let from = from.id;
         debug!(?from, ?request, "handling peer lookup request");
-        self.metrics[GAUGE_PEER_DISC_RECV_LOOKUP_REQUEST] += 1;
+        self.metrics.inc(GAUGE_PEER_DISC_RECV_LOOKUP_REQUEST);
 
         let mut cmds = Vec::new();
 
         // check rate limit for incoming peer lookup requests
         if self.peer_lookup_rate_limiter.check().is_err() {
             debug!(?from, "peer lookup rate limit exceeded, dropping request");
-            self.metrics[GAUGE_PEER_DISC_RATE_LIMITED] += 1;
+            self.metrics.inc(GAUGE_PEER_DISC_RATE_LIMITED);
             return cmds;
         }
 
@@ -1154,7 +1196,7 @@ where
 
         // if open discovery, return more nodes other than requested nodes
         if request.open_discovery {
-            self.metrics[GAUGE_PEER_DISC_RECV_OPEN_LOOKUP_REQUEST] += 1;
+            self.metrics.inc(GAUGE_PEER_DISC_RECV_OPEN_LOOKUP_REQUEST);
             // return random subset of validators (current and next epoch) up to MAX_PEER_IN_RESPONSE
             let validators: BTreeMap<_, _> = self
                 .routing_info
@@ -1172,7 +1214,8 @@ where
                     .map(|(_, name_record)| (*name_record).clone()),
             );
         } else {
-            self.metrics[GAUGE_PEER_DISC_RECV_TARGETED_LOOKUP_REQUEST] += 1;
+            self.metrics
+                .inc(GAUGE_PEER_DISC_RECV_TARGETED_LOOKUP_REQUEST);
         }
 
         let peer_lookup_response = PeerLookupResponse {
@@ -1186,7 +1229,7 @@ where
             message: PeerDiscoveryMessage::PeerLookupResponse(peer_lookup_response),
         });
 
-        self.metrics[GAUGE_PEER_DISC_SEND_LOOKUP_RESPONSE] += 1;
+        self.metrics.inc(GAUGE_PEER_DISC_SEND_LOOKUP_RESPONSE);
         cmds
     }
 
@@ -1197,7 +1240,7 @@ where
     ) -> Vec<PeerDiscoveryCommand<ST>> {
         let from = from.id;
         debug!(?from, ?response, "handling peer lookup response");
-        self.metrics[GAUGE_PEER_DISC_RECV_LOOKUP_RESPONSE] += 1;
+        self.metrics.inc(GAUGE_PEER_DISC_RECV_LOOKUP_RESPONSE);
 
         let mut cmds = Vec::new();
 
@@ -1211,7 +1254,7 @@ where
                 ?response,
                 "peer lookup response not in outstanding requests, dropping response..."
             );
-            self.metrics[GAUGE_PEER_DISC_DROP_LOOKUP_RESPONSE] += 1;
+            self.metrics.inc(GAUGE_PEER_DISC_DROP_LOOKUP_RESPONSE);
             return cmds;
         }
 
@@ -1220,7 +1263,7 @@ where
                 ?response,
                 "response includes number of peers larger than max, dropping response..."
             );
-            self.metrics[GAUGE_PEER_DISC_DROP_LOOKUP_RESPONSE] += 1;
+            self.metrics.inc(GAUGE_PEER_DISC_DROP_LOOKUP_RESPONSE);
             return cmds;
         }
 
@@ -1267,7 +1310,7 @@ where
             ?lookup_id,
             "handling peer lookup request timeout"
         );
-        self.metrics[GAUGE_PEER_DISC_LOOKUP_TIMEOUT] += 1;
+        self.metrics.inc(GAUGE_PEER_DISC_LOOKUP_TIMEOUT);
         if lookup_info.num_retries >= self.unresponsive_prune_threshold {
             debug!(
                 ?lookup_id,
@@ -1308,7 +1351,7 @@ where
         // schedule for next peer lookup retry
         cmds.extend(self.schedule_lookup_timeout(to, target, new_lookup_id));
 
-        self.metrics[GAUGE_PEER_DISC_SEND_LOOKUP_REQUEST] += 1;
+        self.metrics.inc(GAUGE_PEER_DISC_SEND_LOOKUP_REQUEST);
         cmds.push(PeerDiscoveryCommand::RouterCommand {
             target: to,
             message: PeerDiscoveryMessage::PeerLookupRequest(peer_lookup_request),
@@ -1320,7 +1363,7 @@ where
             ?new_lookup_id,
             "rescheduling peer lookup request"
         );
-        self.metrics[GAUGE_PEER_DISC_RETRY_LOOKUP_REQUEST] += 1;
+        self.metrics.inc(GAUGE_PEER_DISC_RETRY_LOOKUP_REQUEST);
 
         cmds
     }
@@ -1370,7 +1413,7 @@ where
             return cmds;
         }
 
-        self.metrics[GAUGE_PEER_DISC_SEND_RAPTORCAST_REQUEST] += 1;
+        self.metrics.inc(GAUGE_PEER_DISC_SEND_RAPTORCAST_REQUEST);
         cmds.push(PeerDiscoveryCommand::RouterCommand {
             target: to,
             message: PeerDiscoveryMessage::FullNodeRaptorcastRequest,
@@ -1388,7 +1431,7 @@ where
         debug!(?from, "handling full node raptorcast request");
 
         let mut cmds = Vec::new();
-        self.metrics[GAUGE_PEER_DISC_RECV_RAPTORCAST_REQUEST] += 1;
+        self.metrics.inc(GAUGE_PEER_DISC_RECV_RAPTORCAST_REQUEST);
 
         // drop request if not running as Publisher
         if self.self_role != PeerDiscoveryRole::ValidatorPublisher {
@@ -1429,7 +1472,7 @@ where
         }
 
         // respond to full node raptorcast request
-        self.metrics[GAUGE_PEER_DISC_SEND_RAPTORCAST_RESPONSE] += 1;
+        self.metrics.inc(GAUGE_PEER_DISC_SEND_RAPTORCAST_RESPONSE);
         cmds.push(PeerDiscoveryCommand::RouterCommand {
             target: from,
             message: PeerDiscoveryMessage::FullNodeRaptorcastResponse,
@@ -1452,7 +1495,7 @@ where
             return cmds;
         }
 
-        self.metrics[GAUGE_PEER_DISC_RECV_RAPTORCAST_RESPONSE] += 1;
+        self.metrics.inc(GAUGE_PEER_DISC_RECV_RAPTORCAST_RESPONSE);
 
         // update secondary raptorcast node status
         if let Some(info) = self.participation_info.get_mut(&from) {
@@ -1476,7 +1519,7 @@ where
     fn refresh(&mut self) -> Vec<PeerDiscoveryCommand<ST>> {
         debug!("refreshing peer discovery");
 
-        self.metrics[GAUGE_PEER_DISC_REFRESH] += 1;
+        self.metrics.inc(GAUGE_PEER_DISC_REFRESH);
         let mut cmds = Vec::new();
 
         // remove nodes that have not participated in secondary raptorcast beyond last_participation_prune_threshold
@@ -1612,12 +1655,18 @@ where
                 .filter(|(_, info)| info.status == SecondaryRaptorcastConnectionStatus::Connected)
                 .map(|(id, _)| id)
                 .collect::<Vec<_>>();
-            self.metrics[GAUGE_PEER_DISC_NUM_DOWNSTREAM_FULLNODES] =
-                connected_public_full_nodes.len() as u64;
+            self.metrics.set(
+                GAUGE_PEER_DISC_NUM_DOWNSTREAM_FULLNODES,
+                connected_public_full_nodes.len() as u64,
+            );
         }
 
-        self.metrics[GAUGE_PEER_DISC_NUM_PEERS] = self.routing_info.len() as u64;
-        self.metrics[GAUGE_PEER_DISC_NUM_PENDING_PEERS] = self.pending_queue.len() as u64;
+        self.metrics
+            .set(GAUGE_PEER_DISC_NUM_PEERS, self.routing_info.len() as u64);
+        self.metrics.set(
+            GAUGE_PEER_DISC_NUM_PENDING_PEERS,
+            self.pending_queue.len() as u64,
+        );
 
         self.write_peers_to_file();
 
@@ -2011,7 +2060,7 @@ mod tests {
             pending_queue: BTreeMap::new(),
             socket_to_id,
             outstanding_lookup_requests: HashMap::new(),
-            metrics: ExecutorMetrics::default(),
+            metrics: init_executor_metrics(),
             refresh_period: Duration::from_secs(120),
             request_timeout: Duration::from_secs(5),
             unresponsive_prune_threshold: 10,
@@ -2187,7 +2236,7 @@ mod tests {
         // next request should be rate limited and dropped
         let cmds = send_request(state, rate_limit + 1);
         assert_eq!(cmds.len(), 0, "request should be rate limited and dropped");
-        assert_eq!(state.metrics[GAUGE_PEER_DISC_RATE_LIMITED], 1);
+        assert_eq!(state.metrics.get(GAUGE_PEER_DISC_RATE_LIMITED), 1);
 
         // advance time by 1 second
         clock.advance(Duration::from_secs(1));
@@ -2907,7 +2956,7 @@ mod tests {
         assert_eq!(cmds.len(), 0); // dropped due to address conflict with no pings and pongs sent
         assert!(!state.pending_queue.contains_key(&peer2_pubkey));
         assert_eq!(state.socket_to_id.get(&DUMMY_ADDR), Some(&peer1_pubkey));
-        assert_eq!(state.metrics[GAUGE_PEER_DISC_SOCKET_COLLISIONS], 1);
+        assert_eq!(state.metrics.get(GAUGE_PEER_DISC_SOCKET_COLLISIONS), 1);
     }
 
     #[test]
@@ -3237,7 +3286,7 @@ mod tests {
             pending_queue,
             socket_to_id: BTreeMap::new(),
             outstanding_lookup_requests: HashMap::new(),
-            metrics: ExecutorMetrics::default(),
+            metrics: init_executor_metrics(),
             refresh_period: Duration::from_secs(120),
             request_timeout: Duration::from_secs(5),
             unresponsive_prune_threshold: 10,

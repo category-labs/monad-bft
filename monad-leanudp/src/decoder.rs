@@ -230,7 +230,7 @@ where
             ),
             identity_score,
             clock,
-            metrics: ExecutorMetrics::default(),
+            metrics: init_executor_metrics(),
         }
     }
 
@@ -266,7 +266,7 @@ where
                     .evict_one_stale_for_identity_if_limited(&input.identity, now),
             };
             if evicted {
-                self.metrics[EvictionKind::Timeout.metric_name()] += 1;
+                self.metrics.inc(EvictionKind::Timeout.metric_name());
             }
             match selected_pool {
                 PoolSelection::Priority => self
@@ -284,7 +284,7 @@ where
         };
 
         if let Some(kind) = pool_evicted {
-            self.metrics[kind.metric_name()] += 1;
+            self.metrics.inc(kind.metric_name());
         }
 
         result
@@ -296,32 +296,38 @@ where
         payload_bytes: u64,
         result: &Result<DecodeOutcome, DecodeError>,
     ) {
-        self.metrics[selected_pool.fragments_counter()] += 1;
+        self.metrics.inc(selected_pool.fragments_counter());
         if payload_bytes > 0 {
-            self.metrics[selected_pool.bytes_counter()] += payload_bytes;
+            self.metrics
+                .add(selected_pool.bytes_counter(), payload_bytes);
         }
 
         match result {
             Ok(DecodeOutcome::Complete(msg)) => {
-                self.metrics[COUNTER_LEANUDP_DECODE_MESSAGES_COMPLETED] += 1;
-                self.metrics[COUNTER_LEANUDP_DECODE_BYTES_COMPLETED] += msg.len() as u64;
+                self.metrics.inc(COUNTER_LEANUDP_DECODE_MESSAGES_COMPLETED);
+                self.metrics
+                    .add(COUNTER_LEANUDP_DECODE_BYTES_COMPLETED, msg.len() as u64);
             }
             Ok(DecodeOutcome::Pending) => {}
             Err(e) => {
-                self.metrics[e.metric_name()] += 1;
+                self.metrics.inc(e.metric_name());
             }
         }
     }
 
     fn update_pool_gauges(&mut self) {
-        self.metrics[GAUGE_LEANUDP_POOL_PRIORITY_MESSAGES] =
-            self.priority_pool.message_count() as u64;
-        self.metrics[GAUGE_LEANUDP_POOL_REGULAR_MESSAGES] =
-            self.regular_pool.message_count() as u64;
+        self.metrics.set(
+            GAUGE_LEANUDP_POOL_PRIORITY_MESSAGES,
+            self.priority_pool.message_count() as u64,
+        );
+        self.metrics.set(
+            GAUGE_LEANUDP_POOL_REGULAR_MESSAGES,
+            self.regular_pool.message_count() as u64,
+        );
     }
 
     fn reject_decode(&mut self, error: DecodeError) -> DecodeError {
-        self.metrics[error.metric_name()] += 1;
+        self.metrics.inc(error.metric_name());
         self.update_pool_gauges();
         error
     }
@@ -331,7 +337,7 @@ where
         T: TryInto<Packet>,
         T::Error: Into<DecodeError>,
     {
-        self.metrics[COUNTER_LEANUDP_DECODE_FRAGMENTS_RECEIVED] += 1;
+        self.metrics.inc(COUNTER_LEANUDP_DECODE_FRAGMENTS_RECEIVED);
 
         let Packet { header, payload } = match packet.try_into().map_err(Into::into) {
             Ok(packet) => packet,
@@ -339,7 +345,8 @@ where
         };
         let payload_bytes = payload.len() as u64;
         if payload_bytes > 0 {
-            self.metrics[COUNTER_LEANUDP_DECODE_BYTES_RECEIVED] += payload_bytes;
+            self.metrics
+                .add(COUNTER_LEANUDP_DECODE_BYTES_RECEIVED, payload_bytes);
         }
         if header.version() != LEANUDP_PROTOCOL_VERSION {
             return Err(self.reject_decode(DecodeError::UnsupportedVersion {

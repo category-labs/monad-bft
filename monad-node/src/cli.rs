@@ -77,21 +77,35 @@ pub struct Cli {
     #[arg(long)]
     pub otel_endpoint: Option<String>,
 
+    /// Set the OTLP metrics export interval in seconds
+    #[arg(long, requires = "otel_endpoint")]
+    pub record_metrics_interval_seconds: Option<u64>,
+
     /// Set the password for decrypting keystore file
     /// Default to empty string
     #[arg(long)]
     pub keystore_password: Option<String>,
 
-    /// Set the time interval for metrics collection
-    #[arg(long, requires = "otel_endpoint")]
-    pub record_metrics_interval_seconds: Option<u64>,
-
     #[arg(
         long,
-        help = "listen address for pprof server. pprof server won't be enabled if address is empty",
+        help = "listen address for the debug HTTP server serving /metrics and pprof routes. the server won't be enabled if address is empty",
         default_value = ""
     )]
     pub pprof: String,
+
+    #[arg(
+        long,
+        help = "enable heap profiling routes on the pprof server",
+        default_value_t = false
+    )]
+    pub pprof_enable_profiling: bool,
+
+    #[arg(
+        long,
+        help = "disable the /metrics route on the pprof server",
+        default_value_t = false
+    )]
+    pub pprof_disable_metrics: bool,
 
     #[arg(long)]
     pub manytrace_socket: Option<String>,

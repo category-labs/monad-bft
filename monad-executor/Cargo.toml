@@ -13,3 +13,4 @@ monad-types = { workspace = true }
 
 bytes = { workspace = true }
 hdrhistogram = { workspace = true }
+prometheus = { workspace = true }

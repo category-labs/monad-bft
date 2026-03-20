@@ -175,7 +175,7 @@ where
                                         consensus_tip =? new_root.seq_num,
                                         "setting new statesync target",
                                     );
-                                    self.metrics.consensus_events.trigger_state_sync += 1;
+                                    self.metrics.consensus_events.trigger_state_sync.inc();
                                     cmds.push(self.wrap(ConsensusCommand::RequestStateSync {
                                         root: new_root,
                                         high_qc: new_high_qc,
@@ -355,7 +355,7 @@ where
                 fresh_proposal_certificate,
             } => {
                 let _span = debug_span!("mempool proposal").entered();
-                consensus.metrics.consensus_events.creating_proposal += 1;
+                consensus.metrics.consensus_events.creating_proposal.inc();
                 let block_body = ConsensusBlockBody::new(ConsensusBlockBodyInner {
                     execution_body: proposed_execution_inputs.body,
                 });

@@ -372,7 +372,7 @@ where
                     return cmds;
                 }
 
-                self.metrics.blocksync_events.peer_headers_request += 1;
+                self.metrics.blocksync_events.peer_headers_request.inc();
                 debug!(?sender, ?block_range, "blocksync: peer headers request");
 
                 let cached_blocks = match self.block_cache {
@@ -421,7 +421,7 @@ where
                 }
             }
             BlockSyncRequestMessage::Payload(payload_id) => {
-                self.metrics.blocksync_events.peer_payload_request += 1;
+                self.metrics.blocksync_events.peer_payload_request.inc();
                 debug!(?sender, ?payload_id, "blocksync: peer payload request");
 
                 if let Some(cached_payload) = self.get_cached_payload(payload_id) {
@@ -579,7 +579,8 @@ where
 
                     self.metrics
                         .blocksync_events
-                        .self_payload_requests_in_flight -= 1;
+                        .self_payload_requests_in_flight
+                        .dec();
 
                     if request.to.is_some() {
                         // reset timeout if the request was made to a peer
@@ -602,7 +603,8 @@ where
 
                             self.metrics
                                 .blocksync_events
-                                .self_payload_response_successful += 1;
+                                .self_payload_response_successful
+                                .inc();
                         }
                     }
                 }
@@ -627,7 +629,8 @@ where
                 self.block_sync.self_payload_requests_in_flight += 1;
                 self.metrics
                     .blocksync_events
-                    .self_payload_requests_in_flight += 1;
+                    .self_payload_requests_in_flight
+                    .inc();
             } else {
                 // all payload requests initiated
                 break;
@@ -658,7 +661,10 @@ where
 
         if self_request.to != sender {
             // unexpected sender, but use the headers if it's valid
-            self.metrics.blocksync_events.headers_response_unexpected += 1;
+            self.metrics
+                .blocksync_events
+                .headers_response_unexpected
+                .inc();
         }
 
         match headers_response {
@@ -678,17 +684,23 @@ where
                     entry.remove();
 
                     if sender.is_some() {
-                        self.metrics.blocksync_events.headers_response_successful += 1;
+                        self.metrics
+                            .blocksync_events
+                            .headers_response_successful
+                            .inc();
                         cmds.push(BlockSyncCommand::ResetTimeout(
                             BlockSyncRequestMessage::Headers(block_range),
                         ));
                     } else {
                         self.metrics
                             .blocksync_events
-                            .self_headers_response_successful += 1;
+                            .self_headers_response_successful
+                            .inc();
                     }
-                    self.metrics.blocksync_events.num_headers_received +=
-                        block_headers.len() as u64;
+                    self.metrics
+                        .blocksync_events
+                        .num_headers_received
+                        .add(block_headers.len() as u64);
 
                     // add payloads to be requested
                     for payload_id in block_headers.iter().map(|block| block.block_body_id) {
@@ -725,7 +737,10 @@ where
                     // response from ledger shouldn't fail headers verification
                     assert!(sender.is_some());
 
-                    self.metrics.blocksync_events.headers_validation_failed += 1;
+                    self.metrics
+                        .blocksync_events
+                        .headers_validation_failed
+                        .inc();
                     // headers response from peer is invalid, re-request after timeout
                 }
             }
@@ -738,10 +753,13 @@ where
                 if sender.is_some() {
                     // received not available from a peer. ignore the response and re-request
                     // after timeout
-                    self.metrics.blocksync_events.headers_response_failed += 1;
+                    self.metrics.blocksync_events.headers_response_failed.inc();
                 } else if self_request.to.is_none() {
                     // tried to fetch from ledger and received not available
-                    self.metrics.blocksync_events.self_headers_response_failed += 1;
+                    self.metrics
+                        .blocksync_events
+                        .self_headers_response_failed
+                        .inc();
 
                     let maybe_to = Self::pick_peer(
                         self.nodeid,
@@ -754,7 +772,7 @@ where
                     self_request.to = maybe_to;
                     if let Some(to) = maybe_to {
                         // request from a peer
-                        self.metrics.blocksync_events.self_headers_request += 1;
+                        self.metrics.blocksync_events.self_headers_request.inc();
                         debug!(
                             ?to,
                             ?block_range,
@@ -765,7 +783,7 @@ where
                             request: BlockSyncRequestMessage::Headers(block_range),
                         });
                     } else {
-                        self.metrics.blocksync_events.request_failed_no_peers += 1;
+                        self.metrics.blocksync_events.request_failed_no_peers.inc();
                         warn!(
                             ?block_range,
                             "blocksync: header not found locally, but no peers - retrying later"
@@ -803,14 +821,20 @@ where
 
         let Some(self_request) = entry.get_mut() else {
             // got payload response when the request was never initiated
-            self.metrics.blocksync_events.payload_response_unexpected += 1;
+            self.metrics
+                .blocksync_events
+                .payload_response_unexpected
+                .inc();
             // TODO use it if valid ?
             return cmds;
         };
 
         if self_request.to != sender {
             // unexpected sender, but use the payload if it's valid
-            self.metrics.blocksync_events.payload_response_unexpected += 1;
+            self.metrics
+                .blocksync_events
+                .payload_response_unexpected
+                .inc();
         }
 
         let self_requester = self_request.requester;
@@ -822,17 +846,22 @@ where
 
                 self.metrics
                     .blocksync_events
-                    .self_payload_requests_in_flight -= 1;
+                    .self_payload_requests_in_flight
+                    .dec();
                 if sender.is_some() {
                     // reset timeout if requested from peer
                     cmds.push(BlockSyncCommand::ResetTimeout(
                         BlockSyncRequestMessage::Payload(payload_id),
                     ));
-                    self.metrics.blocksync_events.payload_response_successful += 1;
+                    self.metrics
+                        .blocksync_events
+                        .payload_response_successful
+                        .inc();
                 } else {
                     self.metrics
                         .blocksync_events
-                        .self_payload_response_successful += 1;
+                        .self_payload_response_successful
+                        .inc();
                 }
 
                 debug!(?sender, ?payload_id, "blocksync: received payload response");
@@ -857,10 +886,13 @@ where
                 if sender.is_some() {
                     // received not available from a peer. ignore the response and re-request
                     // after timeout
-                    self.metrics.blocksync_events.payload_response_failed += 1;
+                    self.metrics.blocksync_events.payload_response_failed.inc();
                 } else if self_request.to.is_none() {
                     // tried to fetch from ledger and received not available
-                    self.metrics.blocksync_events.self_payload_response_failed += 1;
+                    self.metrics
+                        .blocksync_events
+                        .self_payload_response_failed
+                        .inc();
 
                     let maybe_to = Self::pick_peer(
                         self.nodeid,
@@ -873,7 +905,7 @@ where
                     self_request.to = maybe_to;
                     if let Some(to) = maybe_to {
                         // request from peer
-                        self.metrics.blocksync_events.self_payload_request += 1;
+                        self.metrics.blocksync_events.self_payload_request.inc();
 
                         debug!(
                             ?to,
@@ -885,7 +917,7 @@ where
                             request: BlockSyncRequestMessage::Payload(payload_id),
                         });
                     } else {
-                        self.metrics.blocksync_events.request_failed_no_peers += 1;
+                        self.metrics.blocksync_events.request_failed_no_peers.inc();
                         warn!(
                             ?payload_id,
                             "blocksync: payload not found locally, but no peers - retrying later"
@@ -982,7 +1014,8 @@ where
                             requested_blocks.extend(cached_blocks);
                             self.metrics
                                 .blocksync_events
-                                .peer_headers_request_successful += 1;
+                                .peer_headers_request_successful
+                                .inc();
                             assert!(requested_blocks
                                 .iter()
                                 .zip(requested_blocks.iter().skip(1))
@@ -993,7 +1026,10 @@ where
                             ))
                         }
                         BlockSyncHeadersResponse::NotAvailable(_) => {
-                            self.metrics.blocksync_events.peer_headers_request_failed += 1;
+                            self.metrics
+                                .blocksync_events
+                                .peer_headers_request_failed
+                                .inc();
                             BlockSyncHeadersResponse::NotAvailable(requested_block_range)
                         }
                     };
@@ -1010,14 +1046,16 @@ where
                 let payload_id = payload_response.get_payload_id();
 
                 match payload_response {
-                    BlockSyncBodyResponse::Found(_) => {
-                        self.metrics
-                            .blocksync_events
-                            .peer_payload_request_successful += 1
-                    }
-                    BlockSyncBodyResponse::NotAvailable(_) => {
-                        self.metrics.blocksync_events.peer_payload_request_failed += 1
-                    }
+                    BlockSyncBodyResponse::Found(_) => self
+                        .metrics
+                        .blocksync_events
+                        .peer_payload_request_successful
+                        .inc(),
+                    BlockSyncBodyResponse::NotAvailable(_) => self
+                        .metrics
+                        .blocksync_events
+                        .peer_payload_request_failed
+                        .inc(),
                 }
 
                 // reply to the requested peers
@@ -1064,7 +1102,7 @@ where
         request: BlockSyncRequestMessage,
     ) -> Vec<BlockSyncCommand<ST, SCT, EPT>> {
         debug!(?request, "blocksync: self request timeout");
-        self.metrics.blocksync_events.request_timeout += 1;
+        self.metrics.blocksync_events.request_timeout.inc();
         let mut cmds = Vec::new();
 
         match request {
@@ -1095,7 +1133,7 @@ where
                             request: BlockSyncRequestMessage::Headers(block_range),
                         });
                     } else {
-                        self.metrics.blocksync_events.request_failed_no_peers += 1;
+                        self.metrics.blocksync_events.request_failed_no_peers.inc();
                         warn!(
                             ?maybe_previous_to,
                             ?block_range,
@@ -1139,7 +1177,7 @@ where
                             request: BlockSyncRequestMessage::Payload(payload_id),
                         });
                     } else {
-                        self.metrics.blocksync_events.request_failed_no_peers += 1;
+                        self.metrics.blocksync_events.request_failed_no_peers.inc();
                         warn!(
                             ?maybe_previous_to,
                             ?payload_id,
@@ -2225,7 +2263,8 @@ mod test {
             context
                 .metrics
                 .blocksync_events
-                .self_payload_requests_in_flight,
+                .self_payload_requests_in_flight
+                .get(),
             num_blocks as u64
         );
         assert_eq!(
@@ -2245,7 +2284,8 @@ mod test {
             context
                 .metrics
                 .blocksync_events
-                .self_payload_requests_in_flight,
+                .self_payload_requests_in_flight
+                .get(),
             (num_blocks - 1) as u64
         );
         assert_eq!(
@@ -2272,7 +2312,8 @@ mod test {
             context
                 .metrics
                 .blocksync_events
-                .self_payload_requests_in_flight,
+                .self_payload_requests_in_flight
+                .get(),
             (num_blocks - 2) as u64
         );
         assert_eq!(

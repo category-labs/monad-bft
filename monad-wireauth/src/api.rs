@@ -32,7 +32,7 @@ use crate::{
     error::{Error, Result},
     filter::{Filter, FilterAction},
     messages::MacMessage,
-    metrics::MetricNames,
+    metrics::{init_api_executor_metrics, MetricNames},
     protocol::messages::{
         ControlPacket, CookieReply, DataPacket, DataPacketHeader, HandshakeInitiation,
         HandshakeResponse, Plaintext,
@@ -97,7 +97,7 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
             cookies,
             filter,
             context,
-            metrics: ExecutorMetrics::default(),
+            metrics: init_api_executor_metrics(metric_names),
             metric_names,
             last_tick: None,
             connect_rate_counter: 0,
@@ -118,15 +118,21 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
     /// queue for pacing.
     #[instrument(level = Level::TRACE, skip(self), fields(local_public_key = ?self.local_serialized_public))]
     pub fn next_packet(&mut self) -> Option<(SocketAddr, Bytes)> {
-        self.metrics[self.metric_names.api_next_packet] += 1;
+        self.metrics.inc(self.metric_names.api_next_packet);
         let result = self.packet_queue.pop_front();
-        self.metrics[self.metric_names.state_packet_queue_size] = self.packet_queue.len() as u64;
+        self.metrics.set(
+            self.metric_names.state_packet_queue_size,
+            self.packet_queue.len() as u64,
+        );
         result
     }
 
     fn enqueue_packet(&mut self, addr: SocketAddr, pkt: impl Into<Bytes>) {
         self.packet_queue.push_back((addr, pkt.into()));
-        self.metrics[self.metric_names.state_packet_queue_size] = self.packet_queue.len() as u64;
+        self.metrics.set(
+            self.metric_names.state_packet_queue_size,
+            self.packet_queue.len() as u64,
+        );
     }
 
     /// Returns the next deadline.
@@ -149,7 +155,10 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
 
     fn insert_timer(&mut self, timer: Duration, session_id: SessionIndex) {
         self.timers.insert((timer, session_id));
-        self.metrics[self.metric_names.state_timers_size] = self.timers.len() as u64;
+        self.metrics.set(
+            self.metric_names.state_timers_size,
+            self.timers.len() as u64,
+        );
     }
 
     fn replace_timer(&mut self, timer: RenewedTimer, session_index: SessionIndex) {
@@ -157,12 +166,15 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
             self.timers.remove(&(previous, session_index));
         }
         self.timers.insert((timer.current, session_index));
-        self.metrics[self.metric_names.state_timers_size] = self.timers.len() as u64;
+        self.metrics.set(
+            self.metric_names.state_timers_size,
+            self.timers.len() as u64,
+        );
     }
 
     #[instrument(level = Level::TRACE, skip(self), fields(local_public_key = ?self.local_serialized_public))]
     pub fn tick(&mut self) {
-        self.metrics[self.metric_names.api_tick] += 1;
+        self.metrics.inc(self.metric_names.api_tick);
         let duration_since_start = self.context.duration_since_start();
 
         self.filter.tick(duration_since_start);
@@ -197,7 +209,10 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
                 .timers
                 .pop_first()
                 .expect("timer disappeared after checking it exists");
-            self.metrics[self.metric_names.state_timers_size] = self.timers.len() as u64;
+            self.metrics.set(
+                self.metric_names.state_timers_size,
+                self.timers.len() as u64,
+            );
             processed_timers += 1;
 
             if let Some(elapsed) = duration_since_start.checked_sub(duration) {
@@ -240,7 +255,7 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
             };
 
             if let Some(message) = message {
-                self.metrics[self.metric_names.enqueued_keepalive] += 1;
+                self.metrics.inc(self.metric_names.enqueued_keepalive);
                 self.enqueue_packet(message.remote_addr, message.header);
             }
 
@@ -251,7 +266,7 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
                     rekey.stored_cookie,
                     rekey.retry_attempts,
                 ) {
-                    self.metrics[self.metric_names.enqueued_handshake_init] += 1;
+                    self.metrics.inc(self.metric_names.enqueued_handshake_init);
                     self.enqueue_packet(rekey.remote_addr, message);
                     self.insert_timer(timer, new_session_index);
                 }
@@ -290,13 +305,13 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
         remote_addr: SocketAddr,
         retry_attempts: u64,
     ) -> Result<()> {
-        self.metrics[self.metric_names.api_connect] += 1;
+        self.metrics.inc(self.metric_names.api_connect);
         debug!(retry_attempts, "initiating connection");
 
         self.check_connect_rate_limit()?;
         let initiated_count = self.state.initiated_sessions_count();
         if initiated_count >= self.config.max_initiated_sessions {
-            self.metrics[self.metric_names.error_connect] += 1;
+            self.metrics.inc(self.metric_names.error_connect);
             return Err(Error::TooManyInitiatedSessions {
                 limit: self.config.max_initiated_sessions,
             });
@@ -311,10 +326,10 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
         let (local_index, timer, message) = self
             .init_session_with_cookie(remote_static_key, remote_addr, cookie, retry_attempts)
             .inspect_err(|_| {
-                self.metrics[self.metric_names.error_connect] += 1;
+                self.metrics.inc(self.metric_names.error_connect);
             })?;
 
-        self.metrics[self.metric_names.enqueued_handshake_init] += 1;
+        self.metrics.inc(self.metric_names.enqueued_handshake_init);
         self.enqueue_packet(remote_addr, message);
         self.insert_timer(timer, local_index);
 
@@ -330,8 +345,8 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
         }
 
         if self.connect_rate_counter >= self.config.connect_rate_limit {
-            self.metrics[self.metric_names.rate_limit_connect] += 1;
-            self.metrics[self.metric_names.error_connect] += 1;
+            self.metrics.inc(self.metric_names.rate_limit_connect);
+            self.metrics.inc(self.metric_names.error_connect);
             return Err(Error::ConnectRateLimited {
                 limit: self.config.connect_rate_limit,
                 interval: self.config.connect_rate_reset_interval,
@@ -353,7 +368,7 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
 
         // reservation should be committed when code is no longer fallible
         let reservation = self.state.reserve_session_index().ok_or_else(|| {
-            self.metrics[self.metric_names.error_session_exhausted] += 1;
+            self.metrics.inc(self.metric_names.error_session_exhausted);
             Error::SessionIndexExhausted
         })?;
         trace!(local_session_id=?reservation.index(), "allocating session index for new connection");
@@ -406,12 +421,12 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
                     message,
                     duration_since_start,
                 );
-                self.metrics[self.metric_names.enqueued_cookie_reply] += 1;
+                self.metrics.inc(self.metric_names.enqueued_cookie_reply);
                 self.enqueue_packet(remote_addr, reply);
                 false
             }
             FilterAction::Drop => {
-                self.metrics[self.metric_names.rate_limit_drop] += 1;
+                self.metrics.inc(self.metric_names.rate_limit_drop);
                 false
             }
         }
@@ -427,7 +442,8 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
             &self.local_static_key.as_ref().pubkey(),
         )
         .inspect_err(|_| {
-            self.metrics[self.metric_names.error_mac1_verification_failed] += 1;
+            self.metrics
+                .inc(self.metric_names.error_mac1_verification_failed);
         })?;
 
         if !self.is_under_load(
@@ -444,7 +460,8 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
         let validated_init =
             ResponderState::validate_init(self.local_static_key.as_ref(), handshake_packet)
                 .inspect_err(|_| {
-                    self.metrics[self.metric_names.error_handshake_init_validation] += 1;
+                    self.metrics
+                        .inc(self.metric_names.error_handshake_init_validation);
                 })?;
 
         let remote_key = validated_init.remote_public_key;
@@ -453,7 +470,7 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
             .get_max_timestamp(&remote_key)
             .is_some_and(|max| validated_init.timestamp <= max)
         {
-            self.metrics[self.metric_names.error_timestamp_replay] += 1;
+            self.metrics.inc(self.metric_names.error_timestamp_replay);
             debug!(?remote_addr, ?remote_key, "timestamp replay detected");
             return Err(Error::TimestampReplay);
         }
@@ -466,7 +483,7 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
         // Reservation should be committed only when code is no longer fallible
         // TODO(dshulyak): Get rid of reservation; code was refactored to be non-fallible when index is allocated
         let reservation = self.state.reserve_session_index().ok_or_else(|| {
-            self.metrics[self.metric_names.error_session_exhausted] += 1;
+            self.metrics.inc(self.metric_names.error_session_exhausted);
             Error::SessionIndexExhausted
         })?;
         let local_index = reservation.index();
@@ -485,7 +502,8 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
         self.state
             .insert_responder(local_index, session, remote_key);
 
-        self.metrics[self.metric_names.enqueued_handshake_response] += 1;
+        self.metrics
+            .inc(self.metric_names.enqueued_handshake_response);
         self.enqueue_packet(remote_addr, message);
         self.insert_timer(timer, local_index);
 
@@ -497,11 +515,11 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
 
         if let Some(session) = self.state.get_initiator_mut(&receiver_session_index) {
             session.handle_cookie(cookie_reply).inspect_err(|_| {
-                self.metrics[self.metric_names.error_cookie_reply] += 1;
+                self.metrics.inc(self.metric_names.error_cookie_reply);
             })?;
         } else if let Some(session) = self.state.get_responder_mut(&receiver_session_index) {
             session.handle_cookie(cookie_reply).inspect_err(|_| {
-                self.metrics[self.metric_names.error_cookie_reply] += 1;
+                self.metrics.inc(self.metric_names.error_cookie_reply);
             })?;
         }
         Ok(())
@@ -517,32 +535,33 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
         control: ControlPacket,
         remote_addr: SocketAddr,
     ) -> Result<()> {
-        self.metrics[self.metric_names.api_dispatch_control] += 1;
+        self.metrics.inc(self.metric_names.api_dispatch_control);
         let result = match control {
             ControlPacket::HandshakeInitiation(handshake) => {
                 debug!("processing handshake initiation");
-                self.metrics[self.metric_names.dispatch_handshake_init] += 1;
+                self.metrics.inc(self.metric_names.dispatch_handshake_init);
                 self.accept_handshake_init(handshake, remote_addr)
             }
             ControlPacket::HandshakeResponse(response) => {
                 debug!("processing handshake response");
-                self.metrics[self.metric_names.dispatch_handshake_response] += 1;
+                self.metrics
+                    .inc(self.metric_names.dispatch_handshake_response);
                 self.complete_handshake(response, remote_addr)
             }
             ControlPacket::CookieReply(cookie_reply) => {
                 debug!("processing cookie reply");
-                self.metrics[self.metric_names.dispatch_cookie_reply] += 1;
+                self.metrics.inc(self.metric_names.dispatch_cookie_reply);
                 self.accept_cookie(cookie_reply)
             }
             ControlPacket::Keepalive(data_packet) => {
                 trace!("processing keepalive packet");
-                self.metrics[self.metric_names.dispatch_keepalive] += 1;
+                self.metrics.inc(self.metric_names.dispatch_keepalive);
                 self.decrypt(data_packet, remote_addr)?;
                 Ok(())
             }
         };
         if result.is_err() {
-            self.metrics[self.metric_names.error_dispatch_control] += 1;
+            self.metrics.inc(self.metric_names.error_dispatch_control);
         }
         result
     }
@@ -554,7 +573,7 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
         data_packet: DataPacket<'a>,
         remote_addr: SocketAddr,
     ) -> Result<(Plaintext<'a>, PubKey)> {
-        self.metrics[self.metric_names.api_decrypt] += 1;
+        self.metrics.inc(self.metric_names.api_decrypt);
         let receiver_index = data_packet.header().receiver_index.into();
         let nonce: u64 = data_packet.header().nonce.into();
         trace!(local_session_id=?receiver_index, nonce, "decrypting data packet");
@@ -586,7 +605,10 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
                     debug!(local_session_id=?receiver_index, "responder session established");
                     self.state.insert_transport(receiver_index, transport);
                     self.timers.insert((establish_timer, receiver_index));
-                    self.metrics[self.metric_names.state_timers_size] = self.timers.len() as u64;
+                    self.metrics.set(
+                        self.metric_names.state_timers_size,
+                        self.timers.len() as u64,
+                    );
                     (remote_public_key, plaintext)
                 }
                 Err(e) => {
@@ -595,8 +617,9 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
                 }
             }
         } else {
-            self.metrics[self.metric_names.error_decrypt] += 1;
-            self.metrics[self.metric_names.error_session_index_not_found] += 1;
+            self.metrics.inc(self.metric_names.error_decrypt);
+            self.metrics
+                .inc(self.metric_names.error_session_index_not_found);
             return Err(Error::SessionIndexNotFound {
                 index: receiver_index,
             });
@@ -614,7 +637,8 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
         // All validators and other fallible actions must be done before removing the initiator from state.
         crate::protocol::crypto::verify_mac1(response, &self.local_static_key.as_ref().pubkey())
             .inspect_err(|_| {
-                self.metrics[self.metric_names.error_mac1_verification_failed] += 1;
+                self.metrics
+                    .inc(self.metric_names.error_mac1_verification_failed);
             })?;
 
         if !self.is_under_load(remote_addr, response.sender_index.get(), response) {
@@ -628,14 +652,16 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
             .state
             .get_initiator_mut(&receiver_session_index)
             .ok_or_else(|| {
-                self.metrics[self.metric_names.error_session_index_not_found] += 1;
+                self.metrics
+                    .inc(self.metric_names.error_session_index_not_found);
                 Error::InvalidReceiverIndex {
                     index: receiver_session_index,
                 }
             })?;
         let expected_remote_addr = initiator.remote_addr;
         if remote_addr != expected_remote_addr {
-            self.metrics[self.metric_names.error_handshake_response_validation] += 1;
+            self.metrics
+                .inc(self.metric_names.error_handshake_response_validation);
             return Err(Error::HandshakeResponseAddressMismatch {
                 expected: expected_remote_addr,
                 actual: remote_addr,
@@ -645,7 +671,8 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
         let validated_response = initiator
             .validate_response(&self.config, self.local_static_key.as_ref(), response)
             .inspect_err(|_| {
-                self.metrics[self.metric_names.error_handshake_response_validation] += 1;
+                self.metrics
+                    .inc(self.metric_names.error_handshake_response_validation);
             })?;
 
         // Code should not be fallible after this point
@@ -692,7 +719,8 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
             self.replace_timer(timer, receiver_session_index);
             self.enqueue_packet(remote_addr, packet.freeze());
             if is_buffered {
-                self.metrics[self.metric_names.initiator_messages_sent_from_buffer] += 1;
+                self.metrics
+                    .inc(self.metric_names.initiator_messages_sent_from_buffer);
             }
         }
 
@@ -706,13 +734,15 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
         public_key: &monad_secp::PubKey,
         plaintext: &mut [u8],
     ) -> Result<DataPacketHeader> {
-        self.metrics[self.metric_names.api_encrypt_by_public_key] += 1;
+        self.metrics
+            .inc(self.metric_names.api_encrypt_by_public_key);
         let transport = self
             .state
             .get_transport_by_public_key(public_key)
             .ok_or_else(|| {
-                self.metrics[self.metric_names.error_encrypt_by_public_key] += 1;
-                self.metrics[self.metric_names.error_session_not_found] += 1;
+                self.metrics
+                    .inc(self.metric_names.error_encrypt_by_public_key);
+                self.metrics.inc(self.metric_names.error_session_not_found);
                 Error::SessionNotFound
             })?;
         let duration_since_start = self.context.duration_since_start();
@@ -734,12 +764,12 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
         socket_addr: &SocketAddr,
         plaintext: &mut [u8],
     ) -> Result<DataPacketHeader> {
-        self.metrics[self.metric_names.api_encrypt_by_socket] += 1;
+        self.metrics.inc(self.metric_names.api_encrypt_by_socket);
         let transport = self
             .state
             .get_transport_by_socket(socket_addr)
             .ok_or_else(|| {
-                self.metrics[self.metric_names.error_encrypt_by_socket] += 1;
+                self.metrics.inc(self.metric_names.error_encrypt_by_socket);
                 Error::SessionNotEstablishedForAddress { addr: *socket_addr }
             })?;
         let duration_since_start = self.context.duration_since_start();
@@ -781,7 +811,8 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
             });
         }
         initiator.buffer_message(message);
-        self.metrics[self.metric_names.initiator_buffered_messages] += 1;
+        self.metrics
+            .inc(self.metric_names.initiator_buffered_messages);
         trace!(
             buffered_message_count = initiator.buffered_message_count(),
             public_key = ?CompressedPublicKey::from(public_key),
@@ -793,7 +824,7 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
     /// Disconnects and removes all sessions with the given public key.
     #[instrument(level = Level::TRACE, skip(self, public_key), fields(local_public_key = ?self.local_serialized_public))]
     pub fn disconnect(&mut self, public_key: &monad_secp::PubKey) {
-        self.metrics[self.metric_names.api_disconnect] += 1;
+        self.metrics.inc(self.metric_names.api_disconnect);
         self.state.terminate_by_public_key(public_key);
     }
 
@@ -854,16 +885,16 @@ fn track_decrypt_error_metrics(
     metric_names: &'static MetricNames,
     e: &SessionError,
 ) {
-    metrics[metric_names.error_decrypt] += 1;
+    metrics.inc(metric_names.error_decrypt);
     match e {
         SessionError::NonceOutsideWindow { .. } => {
-            metrics[metric_names.error_decrypt_nonce_outside_window] += 1;
+            metrics.inc(metric_names.error_decrypt_nonce_outside_window);
         }
         SessionError::NonceDuplicate { .. } => {
-            metrics[metric_names.error_decrypt_nonce_duplicate] += 1;
+            metrics.inc(metric_names.error_decrypt_nonce_duplicate);
         }
         SessionError::InvalidMac(_) => {
-            metrics[metric_names.error_decrypt_mac] += 1;
+            metrics.inc(metric_names.error_decrypt_mac);
         }
         _ => {
             warn!(error=?e, "unexpected decrypt error variant");

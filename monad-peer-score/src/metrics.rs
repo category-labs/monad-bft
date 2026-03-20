@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use monad_executor::ExecutorMetrics;
+
 monad_executor::metric_consts! {
     pub COUNTER_PEER_SCORE_RECORD_CONTRIBUTION_TOTAL {
         name: "monad.peer_score.record_contribution.total",
@@ -50,4 +52,18 @@ monad_executor::metric_consts! {
         name: "monad.peer_score.pool.total_size",
         help: "Current total number of identities tracked by peer-score",
     }
+}
+
+pub fn init_executor_metrics() -> ExecutorMetrics {
+    ExecutorMetrics::with_metric_defs([
+        COUNTER_PEER_SCORE_RECORD_CONTRIBUTION_TOTAL,
+        COUNTER_PEER_SCORE_NEWCOMER_ADMITTED,
+        COUNTER_PEER_SCORE_NEWCOMER_REJECTED,
+        COUNTER_PEER_SCORE_PROMOTION_SUCCEEDED,
+        COUNTER_PEER_SCORE_PROMOTION_REJECTED,
+        COUNTER_PEER_SCORE_DEMOTION,
+        GAUGE_PEER_SCORE_PROMOTED_SIZE,
+        GAUGE_PEER_SCORE_NEWCOMER_SIZE,
+        GAUGE_PEER_SCORE_TOTAL_SIZE,
+    ])
 }

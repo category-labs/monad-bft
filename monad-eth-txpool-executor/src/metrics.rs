@@ -13,11 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::sync::atomic::{AtomicU64, Ordering};
-
-use monad_eth_txpool::EthTxPoolMetrics;
-use monad_executor::ExecutorMetrics;
-use serde::{Deserialize, Serialize};
+use monad_eth_txpool::{init_executor_metrics as init_txpool_executor_metrics, EthTxPoolMetrics};
+use monad_executor::{ExecutorMetrics, Gauge};
 
 monad_executor::metric_consts! {
     REJECT_FORWARDED_INVALID_BYTES {
@@ -42,31 +39,47 @@ monad_executor::metric_consts! {
     }
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+pub fn init_executor_metrics() -> ExecutorMetrics {
+    let mut executor_metrics = init_txpool_executor_metrics();
+    executor_metrics.add_metric_defs([
+        REJECT_FORWARDED_INVALID_BYTES,
+        CREATE_PROPOSAL,
+        CREATE_PROPOSAL_ELAPSED_NS,
+        PRELOAD_BACKEND_LOOKUPS,
+        PRELOAD_BACKEND_REQUESTS,
+    ]);
+    executor_metrics
+}
+
+#[derive(Debug)]
 pub struct EthTxPoolExecutorMetrics {
-    pub reject_forwarded_invalid_bytes: AtomicU64,
+    pub reject_forwarded_invalid_bytes: Gauge,
 
-    pub create_proposal: AtomicU64,
-    pub create_proposal_elapsed_ns: AtomicU64,
+    pub create_proposal: Gauge,
+    pub create_proposal_elapsed_ns: Gauge,
 
-    pub preload_backend_lookups: AtomicU64,
-    pub preload_backend_requests: AtomicU64,
+    pub preload_backend_lookups: Gauge,
+    pub preload_backend_requests: Gauge,
 
     pub pool: EthTxPoolMetrics,
 }
 
 impl EthTxPoolExecutorMetrics {
-    pub fn update(&self, metrics: &mut ExecutorMetrics) {
-        metrics[REJECT_FORWARDED_INVALID_BYTES] =
-            self.reject_forwarded_invalid_bytes.load(Ordering::SeqCst);
+    pub fn from_executor_metrics(executor_metrics: &ExecutorMetrics) -> Self {
+        Self {
+            reject_forwarded_invalid_bytes: executor_metrics.gauge(REJECT_FORWARDED_INVALID_BYTES),
+            create_proposal: executor_metrics.gauge(CREATE_PROPOSAL),
+            create_proposal_elapsed_ns: executor_metrics.gauge(CREATE_PROPOSAL_ELAPSED_NS),
+            preload_backend_lookups: executor_metrics.gauge(PRELOAD_BACKEND_LOOKUPS),
+            preload_backend_requests: executor_metrics.gauge(PRELOAD_BACKEND_REQUESTS),
+            pool: EthTxPoolMetrics::from_executor_metrics(executor_metrics),
+        }
+    }
+}
 
-        metrics[CREATE_PROPOSAL] = self.create_proposal.load(Ordering::SeqCst);
-        metrics[CREATE_PROPOSAL_ELAPSED_NS] =
-            self.create_proposal_elapsed_ns.load(Ordering::SeqCst);
-
-        metrics[PRELOAD_BACKEND_LOOKUPS] = self.preload_backend_lookups.load(Ordering::SeqCst);
-        metrics[PRELOAD_BACKEND_REQUESTS] = self.preload_backend_requests.load(Ordering::SeqCst);
-
-        self.pool.update(metrics);
+impl Default for EthTxPoolExecutorMetrics {
+    fn default() -> Self {
+        let executor_metrics = init_executor_metrics();
+        Self::from_executor_metrics(&executor_metrics)
     }
 }

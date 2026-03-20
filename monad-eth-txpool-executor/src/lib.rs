@@ -18,7 +18,7 @@ use std::{
     io,
     marker::PhantomData,
     pin::Pin,
-    sync::{atomic::Ordering, Arc},
+    sync::Arc,
     task::Poll,
     time::Duration,
 };
@@ -52,8 +52,11 @@ use tracing::{debug, debug_span, error, info, trace_span, warn};
 
 pub use self::{client::EthTxPoolExecutorClient, ipc::EthTxPoolIpcConfig};
 use self::{
-    client::ForwardedTxs, forward::EthTxPoolForwardingManager, ipc::EthTxPoolIpcServer,
-    metrics::EthTxPoolExecutorMetrics, preload::EthTxPoolPreloadManager,
+    client::ForwardedTxs,
+    forward::EthTxPoolForwardingManager,
+    ipc::EthTxPoolIpcServer,
+    metrics::{init_executor_metrics, EthTxPoolExecutorMetrics},
+    preload::EthTxPoolPreloadManager,
     reset::EthTxPoolResetTrigger,
 };
 
@@ -88,7 +91,7 @@ where
     preload_manager: Pin<Box<EthTxPoolPreloadManager>>,
 
     metrics: Arc<EthTxPoolExecutorMetrics>,
-    executor_metrics: ExecutorMetrics,
+    executor_metrics: Arc<ExecutorMetrics>,
 
     _phantom: PhantomData<CRT>,
 }
@@ -117,14 +120,14 @@ where
 
         let (events_tx, events) = mpsc::unbounded_channel();
 
-        let metrics = Arc::new(EthTxPoolExecutorMetrics::default());
-        let mut executor_metrics = ExecutorMetrics::default();
-
-        metrics.update(&mut executor_metrics);
+        let executor_metrics = Arc::new(init_executor_metrics());
+        let metrics = Arc::new(EthTxPoolExecutorMetrics::from_executor_metrics(
+            executor_metrics.as_ref(),
+        ));
 
         Ok(EthTxPoolExecutorClient::new(
             {
-                let metrics = metrics.clone();
+                let executor_metrics = executor_metrics.clone();
 
                 move |command_rx, forwarded_rx, event_tx| {
                     let pool = EthTxPool::new(
@@ -159,15 +162,12 @@ where
 
                         metrics,
                         executor_metrics,
-
                         _phantom: PhantomData,
                     }
                     .run(command_rx, forwarded_rx, event_tx)
                 }
             },
-            Box::new(move |executor_metrics: &mut ExecutorMetrics| {
-                metrics.update(executor_metrics)
-            }),
+            executor_metrics,
         ))
     }
 
@@ -264,7 +264,7 @@ where
 
             self.metrics
                 .reject_forwarded_invalid_bytes
-                .fetch_add(num_invalid_bytes, Ordering::SeqCst);
+                .add(num_invalid_bytes);
 
             if num_invalid_bytes != 0 {
                 tracing::warn!(?sender, ?num_invalid_bytes, "invalid forwarded txs");
@@ -379,10 +379,10 @@ where
                         Ok(proposed_execution_inputs) => {
                             let elapsed = create_proposal_start.elapsed();
 
-                            self.metrics.create_proposal.fetch_add(1, Ordering::SeqCst);
+                            self.metrics.create_proposal.inc();
                             self.metrics
                                 .create_proposal_elapsed_ns
-                                .fetch_add(elapsed.as_nanos() as u64, Ordering::SeqCst);
+                                .add(elapsed.as_nanos() as u64);
 
                             self.events_tx
                                 .send(MempoolEvent::Proposal {
@@ -407,7 +407,7 @@ where
                         }
                     }
                 }
-                TxPoolCommand::InsertForwardedTxs { sender, txs } => {
+                TxPoolCommand::InsertForwardedTxs { sender: _, txs: _ } => {
                     // This will never happen because we separate out these commands in `EthTxPoolExecutorClient`.
                     error!("txpool executor received InsertForwardedTxs command over command rx");
                 }
@@ -449,15 +449,13 @@ where
             }
         }
 
-        self.metrics.update(&mut self.executor_metrics);
-
         self.tx_input_stream
             .as_mut()
             .broadcast_tx_events(ipc_events);
     }
 
     fn metrics(&self) -> ExecutorMetricsChain<'_> {
-        ExecutorMetricsChain::default().push(&self.executor_metrics)
+        ExecutorMetricsChain::default().push(self.executor_metrics.as_ref())
     }
 }
 
@@ -500,8 +498,7 @@ where
             preload_manager,
 
             metrics,
-            executor_metrics,
-
+            executor_metrics: _,
             _phantom,
         } = self.get_mut();
 
@@ -578,7 +575,6 @@ where
                 .project()
                 .add_egress_txs(immediately_forwardable_txs.iter());
 
-            metrics.update(executor_metrics);
             tx_input_stream.as_mut().broadcast_tx_events(ipc_events);
 
             cx.waker().wake_by_ref();
@@ -660,19 +656,15 @@ where
                 )
             }
 
-            metrics.preload_backend_lookups.fetch_add(
-                state_backend.total_db_lookups() - total_db_lookups_before,
-                Ordering::SeqCst,
-            );
             metrics
-                .preload_backend_requests
-                .fetch_add(addresses.len() as u64, Ordering::SeqCst);
+                .preload_backend_lookups
+                .add(state_backend.total_db_lookups() - total_db_lookups_before);
+            metrics.preload_backend_requests.add(addresses.len() as u64);
 
             preload_manager
                 .complete_polled_requests(predicted_proposal_seqnum, addresses.into_iter());
         }
 
-        metrics.update(executor_metrics);
         tx_input_stream.as_mut().broadcast_tx_events(ipc_events);
 
         Poll::Pending
