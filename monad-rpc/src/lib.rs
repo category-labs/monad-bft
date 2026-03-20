@@ -16,7 +16,6 @@
 pub mod chainstate;
 pub mod comparator;
 pub mod docs;
-pub mod eth_call_handler;
 pub mod event;
 pub mod handlers;
 pub mod middleware;

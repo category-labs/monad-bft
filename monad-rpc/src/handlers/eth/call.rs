@@ -16,15 +16,12 @@
 use std::{
     cmp::min,
     collections::{HashMap, HashSet},
-    sync::atomic::{AtomicU64, Ordering},
-    time::{Duration, Instant},
 };
 
 use alloy_consensus::{Header, SignableTransaction, TxEip1559, TxEip7702, TxEnvelope, TxLegacy};
 use alloy_eips::eip7702::SignedAuthorization;
 use alloy_primitives::{Address, Signature, TxKind, Uint, B256, U256, U64, U8};
 use alloy_rpc_types::{AccessList, AccessListItem, AccessListResult};
-use dashmap::DashMap;
 use monad_chain_config::execution_revision::MonadExecutionRevision;
 use monad_ethcall::{eth_call, CallResult, EthCallExecutor, MonadTracer, StateOverrideSet};
 use monad_rpc_docs::rpc;
@@ -38,105 +35,17 @@ use serde_json::value::RawValue;
 use tracing::{debug, trace};
 
 use crate::{
-    chainstate::{get_block_key_from_tag_or_hash, ChainState},
-    eth_call_handler::EthCallHandlerConfig,
+    chainstate::{
+        eth_call_handler::{EthCallHandlerConfig, EthCallStatsTracker},
+        get_block_key_from_tag_or_hash, ChainState,
+    },
     handlers::debug::{decode_call_frame, Tracer, TracerObject},
-    middleware::TimingRequestId,
     types::{
         eth_json::BlockTagOrHash,
         ethhex,
         jsonrpc::{JsonRpcError, JsonRpcResult},
     },
 };
-
-#[derive(Debug)]
-struct EthCallRequestStats {
-    entry_time: Instant,
-}
-
-#[derive(Debug)]
-struct CumulativeStats {
-    total_requests: AtomicU64,
-    total_errors: AtomicU64,
-    queue_rejections: AtomicU64,
-}
-
-impl Default for CumulativeStats {
-    fn default() -> Self {
-        Self {
-            total_requests: AtomicU64::new(0),
-            total_errors: AtomicU64::new(0),
-            queue_rejections: AtomicU64::new(0),
-        }
-    }
-}
-
-impl Clone for CumulativeStats {
-    fn clone(&self) -> Self {
-        Self {
-            total_requests: AtomicU64::new(self.total_requests.load(Ordering::Relaxed)),
-            total_errors: AtomicU64::new(self.total_errors.load(Ordering::Relaxed)),
-            queue_rejections: AtomicU64::new(self.queue_rejections.load(Ordering::Relaxed)),
-        }
-    }
-}
-
-#[derive(Debug, Default)]
-pub struct EthCallStatsTracker {
-    active_requests: DashMap<TimingRequestId, EthCallRequestStats>,
-    stats: CumulativeStats,
-}
-
-impl EthCallStatsTracker {
-    pub fn record_request_start(&self, request_id: TimingRequestId) {
-        self.active_requests.insert(
-            request_id,
-            EthCallRequestStats {
-                entry_time: Instant::now(),
-            },
-        );
-
-        self.stats.total_requests.fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub fn record_request_complete(&self, request_id: &TimingRequestId, is_error: bool) {
-        self.active_requests.remove(request_id);
-
-        if is_error {
-            self.stats.total_errors.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-
-    pub fn record_queue_rejection(&self) {
-        self.stats.queue_rejections.fetch_add(1, Ordering::Relaxed);
-        self.stats.total_requests.fetch_add(1, Ordering::Relaxed);
-        self.stats.total_errors.fetch_add(1, Ordering::Relaxed);
-    }
-
-    fn get_stats(&self) -> (Option<Duration>, Option<Duration>, CumulativeStats) {
-        let mut requests = 0usize;
-
-        let now = Instant::now();
-        let mut max_age = Duration::ZERO;
-        let mut total_age = Duration::ZERO;
-
-        for stats in self.active_requests.iter() {
-            requests += 1;
-
-            let age = now.saturating_duration_since(stats.value().entry_time);
-            max_age = max_age.max(age);
-            total_age += age;
-        }
-
-        if requests == 0 {
-            return (None, None, self.stats.clone());
-        }
-
-        let avg_age = total_age / requests as u32;
-
-        (Some(max_age), Some(avg_age), self.stats.clone())
-    }
-}
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1002,9 +911,9 @@ pub async fn monad_admin_ethCallStatistics(
         queued_requests,
         oldest_request_age_ms: max_age.map(|d| d.as_millis() as u64).unwrap_or(0),
         average_request_age_ms: avg_age.map(|d| d.as_millis() as u64).unwrap_or(0),
-        total_requests: cumulative_stats.total_requests.load(Ordering::Relaxed),
-        total_errors: cumulative_stats.total_errors.load(Ordering::Relaxed),
-        queue_rejections: cumulative_stats.queue_rejections.load(Ordering::Relaxed),
+        total_requests: cumulative_stats.total_requests,
+        total_errors: cumulative_stats.total_errors,
+        queue_rejections: cumulative_stats.queue_rejections,
     })
 }
 

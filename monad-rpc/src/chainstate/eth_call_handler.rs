@@ -13,16 +13,22 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{future::Future, path::Path, sync::Arc};
+use std::{
+    future::Future,
+    path::Path,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+    time::{Duration, Instant},
+};
 
+use dashmap::DashMap;
 use monad_ethcall::{EthCallExecutor, PoolConfig};
 use tokio::sync::{Semaphore, SemaphorePermit, TryAcquireError};
 use tracing::error;
 
-use crate::{
-    handlers::eth::call::EthCallStatsTracker, middleware::TimingRequestId,
-    types::jsonrpc::JsonRpcError,
-};
+use crate::{middleware::TimingRequestId, types::jsonrpc::JsonRpcError};
 
 #[derive(Clone, Debug)]
 pub struct EthCallHandlerConfig {
@@ -139,5 +145,91 @@ impl<'a> EthCallPermit<'a> {
         }
 
         result
+    }
+}
+
+#[derive(Debug)]
+struct EthCallRequestStats {
+    entry_time: Instant,
+}
+
+#[derive(Debug, Default)]
+struct CumulativeStats {
+    total_requests: AtomicU64,
+    total_errors: AtomicU64,
+    queue_rejections: AtomicU64,
+}
+
+impl CumulativeStats {
+    fn create_view(&self) -> CumulativeStatsView {
+        CumulativeStatsView {
+            total_requests: self.total_requests.load(Ordering::Relaxed),
+            total_errors: self.total_errors.load(Ordering::Relaxed),
+            queue_rejections: self.queue_rejections.load(Ordering::Relaxed),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct CumulativeStatsView {
+    pub total_requests: u64,
+    pub total_errors: u64,
+    pub queue_rejections: u64,
+}
+
+#[derive(Debug, Default)]
+pub struct EthCallStatsTracker {
+    active_requests: DashMap<TimingRequestId, EthCallRequestStats>,
+    stats: CumulativeStats,
+}
+
+impl EthCallStatsTracker {
+    fn record_request_start(&self, request_id: TimingRequestId) {
+        self.active_requests.insert(
+            request_id,
+            EthCallRequestStats {
+                entry_time: Instant::now(),
+            },
+        );
+
+        self.stats.total_requests.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn record_request_complete(&self, request_id: &TimingRequestId, is_error: bool) {
+        self.active_requests.remove(request_id);
+
+        if is_error {
+            self.stats.total_errors.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn record_queue_rejection(&self) {
+        self.stats.queue_rejections.fetch_add(1, Ordering::Relaxed);
+        self.stats.total_requests.fetch_add(1, Ordering::Relaxed);
+        self.stats.total_errors.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn get_stats(&self) -> (Option<Duration>, Option<Duration>, CumulativeStatsView) {
+        let mut requests = 0usize;
+
+        let now = Instant::now();
+        let mut max_age = Duration::ZERO;
+        let mut total_age = Duration::ZERO;
+
+        for stats in self.active_requests.iter() {
+            requests += 1;
+
+            let age = now.saturating_duration_since(stats.value().entry_time);
+            max_age = max_age.max(age);
+            total_age += age;
+        }
+
+        if requests == 0 {
+            return (None, None, self.stats.create_view());
+        }
+
+        let avg_age = total_age / requests as u32;
+
+        (Some(max_age), Some(avg_age), self.stats.create_view())
     }
 }

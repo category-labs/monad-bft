@@ -55,6 +55,7 @@ use crate::{
 };
 
 pub mod buffer;
+pub mod eth_call_handler;
 
 #[derive(Clone)]
 pub struct ChainState<T> {
