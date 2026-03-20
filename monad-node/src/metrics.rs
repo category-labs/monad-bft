@@ -19,19 +19,19 @@ use std::{
 };
 
 use monad_consensus_types::metrics::Metrics as StateMetrics;
-use monad_executor::{metric_consts, ExecutorMetrics, ExecutorMetricsChain, Gauge};
+use monad_executor::{ExecutorMetrics, ExecutorMetricsChain, Gauge, metric_consts};
 use prometheus::Registry;
 
 metric_consts! {
-    GAUGE_TOTAL_UPTIME_US {
+    pub GAUGE_TOTAL_UPTIME_US {
         name: "monad.total_uptime_us",
         help: "Total node uptime in microseconds",
     }
-    GAUGE_STATE_TOTAL_UPDATE_US {
+    pub GAUGE_STATE_TOTAL_UPDATE_US {
         name: "monad.state.total_update_us",
         help: "Total time spent updating state in microseconds",
     }
-    GAUGE_NODE_INFO {
+    pub GAUGE_NODE_INFO {
         name: "monad_node_info",
         help: "Node info indicator (always 1)",
     }
@@ -84,13 +84,33 @@ impl NodePrometheusMetrics {
         self.registry.clone()
     }
 
+    pub fn metric_handles(&self) -> Vec<(&'static str, Gauge, &'static str)> {
+        vec![
+            (
+                GAUGE_TOTAL_UPTIME_US.name,
+                self.total_uptime.clone(),
+                GAUGE_TOTAL_UPTIME_US.help,
+            ),
+            (
+                GAUGE_STATE_TOTAL_UPDATE_US.name,
+                self.total_state_update.clone(),
+                GAUGE_STATE_TOTAL_UPDATE_US.help,
+            ),
+            (
+                GAUGE_NODE_INFO.name,
+                self.node_info.clone(),
+                GAUGE_NODE_INFO.help,
+            ),
+        ]
+    }
+
     pub fn record_state_update_elapsed(&self, total_state_update_elapsed: &Duration) {
         self.total_state_update
             .set(total_state_update_elapsed.as_micros() as u64);
         self.node_info.set(1);
     }
 
-    pub fn refresh_for_scrape(&self) {
+    pub fn refresh_dynamic_metrics(&self) {
         self.total_uptime
             .set(self.process_start.elapsed().as_micros() as u64);
         self.node_info.set(1);

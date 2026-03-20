@@ -14,10 +14,10 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use prometheus::{
-    core::{AtomicU64, GenericGauge},
     Opts, Registry,
+    core::{AtomicU64, GenericGauge},
 };
-use serde::{ser::SerializeStruct, Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, ser::SerializeStruct};
 
 pub type Gauge = GenericGauge<AtomicU64>;
 
@@ -91,12 +91,19 @@ macro_rules! metrics {
 
         impl Metrics {
             pub fn metrics(&self) -> Vec<(&'static str, u64, &'static str)> {
+                self.metric_handles()
+                    .into_iter()
+                    .map(|(name, gauge, help)| (name, gauge.get(), help))
+                    .collect()
+            }
+
+            pub fn metric_handles(&self) -> Vec<(&'static str, Gauge, &'static str)> {
                 vec![
                     $(
                         $(
                             (
                                 concat!("monad.state.", stringify!($class_field), ".", stringify!($name)),
-                                self.$class_field.$name.get(),
+                                self.$class_field.$name.clone(),
                                 $help,
                             ),
                         )*

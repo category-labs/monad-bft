@@ -73,6 +73,14 @@ pub struct Cli {
     #[arg(long)]
     pub statesync_sq_thread_cpu: Option<u32>,
 
+    /// Set the opentelemetry OTLP exporter endpoint
+    #[arg(long)]
+    pub otel_endpoint: Option<String>,
+
+    /// Set the OTLP metrics export interval in seconds
+    #[arg(long, requires = "otel_endpoint")]
+    pub record_metrics_interval_seconds: Option<u64>,
+
     /// Set the password for decrypting keystore file
     /// Default to empty string
     #[arg(long)]

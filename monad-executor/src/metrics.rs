@@ -17,8 +17,8 @@ use std::collections::{HashMap, HashSet};
 
 use hdrhistogram::Histogram as HdrHistogram;
 use prometheus::{
-    core::{AtomicU64, GenericGauge},
     Opts, Registry,
+    core::{AtomicU64, GenericGauge},
 };
 
 pub type Gauge = GenericGauge<AtomicU64>;
@@ -167,9 +167,16 @@ impl ExecutorMetrics {
         self.gauge(metric)
     }
 
+    pub fn metric_handles(&self) -> Vec<(&'static str, Gauge, &'static str)> {
+        self.gauges
+            .iter()
+            .map(|(&metric, gauge)| (metric.name, gauge.clone(), metric.help))
+            .collect()
+    }
+
     pub fn register(&self, registry: &Registry) -> prometheus::Result<()> {
-        for gauge in self.gauges.values() {
-            registry.register(Box::new(gauge.clone()))?;
+        for (_, gauge, _) in self.metric_handles() {
+            registry.register(Box::new(gauge))?;
         }
         Ok(())
     }
@@ -236,21 +243,30 @@ impl<'a> ExecutorMetricsChain<'a> {
     }
 
     pub fn into_inner(self) -> Vec<(&'static str, u64, &'static str)> {
-        self.0
+        self.metric_handles()
             .into_iter()
-            .flat_map(|metrics| metrics.iter_with_descriptions())
+            .map(|(name, gauge, help)| (name, gauge.get(), help))
             .collect()
     }
 
-    pub fn register(&self, registry: &Registry) -> prometheus::Result<()> {
+    pub fn metric_handles(&self) -> Vec<(&'static str, Gauge, &'static str)> {
         let mut seen = HashSet::new();
+        let mut gauges = Vec::new();
 
         for metrics in &self.0 {
             for (&metric, gauge) in &metrics.gauges {
                 if seen.insert(metric) {
-                    registry.register(Box::new(gauge.clone()))?;
+                    gauges.push((metric.name, gauge.clone(), metric.help));
                 }
             }
+        }
+
+        gauges
+    }
+
+    pub fn register(&self, registry: &Registry) -> prometheus::Result<()> {
+        for (_, gauge, _) in self.metric_handles() {
+            registry.register(Box::new(gauge))?;
         }
 
         Ok(())

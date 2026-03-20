@@ -18,10 +18,11 @@ use std::{
     ffi::OsStr,
     path::{Path, PathBuf},
     str::FromStr,
+    time::Duration,
 };
 
 use agent::AgentBuilder;
-use clap::{error::ErrorKind, FromArgMatches};
+use clap::{FromArgMatches, error::ErrorKind};
 use monad_bls::BlsKeyPair;
 use monad_chain_config::MonadChainConfig;
 use monad_consensus_types::validator_data::ValidatorsConfigFile;
@@ -30,13 +31,13 @@ use monad_keystore::keystore::Keystore;
 use monad_node_config::{ForkpointConfig, MonadNodeConfig, ValidatorsConfigType};
 use monad_secp::KeyPair;
 use monad_types::Round;
-use reqwest::{blocking::Client, Url};
+use reqwest::{Url, blocking::Client};
 use tracing::{info, warn};
 use tracing_manytrace::{ManytraceLayer, TracingExtension};
 use tracing_subscriber::{
-    fmt::{format::FmtSpan, Layer as FmtLayer},
-    layer::SubscriberExt,
     Layer,
+    fmt::{Layer as FmtLayer, format::FmtSpan},
+    layer::SubscriberExt,
 };
 
 use crate::{cli::Cli, error::NodeSetupError};
@@ -49,6 +50,12 @@ pub struct PprofConfig {
     pub addr: String,
     pub enable_metrics: bool,
     pub enable_profiling: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OtelConfig {
+    pub endpoint: String,
+    pub export_interval: Duration,
 }
 
 pub struct NodeState {
@@ -73,6 +80,7 @@ pub struct NodeState {
     pub triedb_path: PathBuf,
     pub persisted_peers_path: PathBuf,
 
+    pub otel: Option<OtelConfig>,
     pub pprof: Option<PprofConfig>,
     pub reload_handle: Box<dyn TracingReload>,
     // should be kept as long as node is alive, tracing listener is stopped when handle is dropped
@@ -96,6 +104,8 @@ impl NodeState {
             control_panel_ipc_path,
             statesync_ipc_path,
             statesync_sq_thread_cpu,
+            otel_endpoint,
+            record_metrics_interval_seconds,
             keystore_password,
             pprof,
             pprof_enable_profiling,
@@ -104,6 +114,7 @@ impl NodeState {
             persisted_peers_path,
         } = Cli::from_arg_matches_mut(&mut cmd.get_matches_mut())?;
 
+        let otel = parse_otel_config(otel_endpoint, record_metrics_interval_seconds)?;
         let pprof = parse_pprof_config(pprof, pprof_disable_metrics, pprof_enable_profiling)?;
 
         let (reload_handle, agent) = NodeState::setup_tracing(manytrace_socket)?;
@@ -196,6 +207,7 @@ impl NodeState {
             statesync_ipc_path,
             statesync_sq_thread_cpu,
 
+            otel,
             pprof,
             reload_handle,
             manytrace_agent: agent,
@@ -255,6 +267,34 @@ impl NodeState {
     }
 }
 
+fn parse_otel_config(
+    endpoint: Option<String>,
+    export_interval_seconds: Option<u64>,
+) -> Result<Option<OtelConfig>, NodeSetupError> {
+    let Some(endpoint) = endpoint else {
+        if export_interval_seconds.is_some() {
+            return Err(NodeSetupError::Custom {
+                kind: ErrorKind::MissingRequiredArgument,
+                msg: "--record-metrics-interval-seconds requires --otel-endpoint".to_owned(),
+            });
+        }
+        return Ok(None);
+    };
+
+    let export_interval_seconds = export_interval_seconds.unwrap_or(1);
+    if export_interval_seconds == 0 {
+        return Err(NodeSetupError::Custom {
+            kind: ErrorKind::InvalidValue,
+            msg: "--record-metrics-interval-seconds must be greater than zero".to_owned(),
+        });
+    }
+
+    Ok(Some(OtelConfig {
+        endpoint,
+        export_interval: Duration::from_secs(export_interval_seconds),
+    }))
+}
+
 fn parse_pprof_config(
     addr: String,
     disable_metrics: bool,
@@ -308,7 +348,37 @@ fn fetch_local_configs(
 mod tests {
     use clap::error::ErrorKind;
 
-    use super::{parse_pprof_config, PprofConfig};
+    use super::{OtelConfig, PprofConfig, parse_otel_config, parse_pprof_config};
+
+    #[test]
+    fn rejects_interval_without_otel_endpoint() {
+        let error = parse_otel_config(None, Some(1)).unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
+    fn defaults_otel_interval_to_one_second() {
+        let config = parse_otel_config(Some("http://127.0.0.1:4317".to_owned()), None)
+            .expect("otel config")
+            .expect("otel should be enabled");
+
+        assert_eq!(
+            config,
+            OtelConfig {
+                endpoint: "http://127.0.0.1:4317".to_owned(),
+                export_interval: std::time::Duration::from_secs(1),
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_zero_otel_interval() {
+        let error =
+            parse_otel_config(Some("http://127.0.0.1:4317".to_owned()), Some(0)).unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::InvalidValue);
+    }
 
     #[test]
     fn rejects_disable_flags_without_pprof_address() {
