@@ -21,7 +21,7 @@ use std::{
 };
 
 use agent::AgentBuilder;
-use clap::{FromArgMatches, error::ErrorKind};
+use clap::{error::ErrorKind, FromArgMatches};
 use monad_bls::BlsKeyPair;
 use monad_chain_config::MonadChainConfig;
 use monad_consensus_types::validator_data::ValidatorsConfigFile;
@@ -30,19 +30,26 @@ use monad_keystore::keystore::Keystore;
 use monad_node_config::{ForkpointConfig, MonadNodeConfig, ValidatorsConfigType};
 use monad_secp::KeyPair;
 use monad_types::Round;
-use reqwest::{Url, blocking::Client};
+use reqwest::{blocking::Client, Url};
 use tracing::{info, warn};
 use tracing_manytrace::{ManytraceLayer, TracingExtension};
 use tracing_subscriber::{
-    Layer,
-    fmt::{Layer as FmtLayer, format::FmtSpan},
+    fmt::{format::FmtSpan, Layer as FmtLayer},
     layer::SubscriberExt,
+    Layer,
 };
 
 use crate::{cli::Cli, error::NodeSetupError};
 
 const REMOTE_FORKPOINT_URL_ENV: &str = "REMOTE_FORKPOINT_URL";
 const REMOTE_VALIDATORS_URL_ENV: &str = "REMOTE_VALIDATORS_URL";
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PprofConfig {
+    pub addr: String,
+    pub enable_metrics: bool,
+    pub enable_profiling: bool,
+}
 
 pub struct NodeState {
     pub node_config: MonadNodeConfig,
@@ -66,7 +73,7 @@ pub struct NodeState {
     pub triedb_path: PathBuf,
     pub persisted_peers_path: PathBuf,
 
-    pub pprof: String,
+    pub pprof: Option<PprofConfig>,
     pub reload_handle: Box<dyn TracingReload>,
     // should be kept as long as node is alive, tracing listener is stopped when handle is dropped
     #[allow(unused)]
@@ -91,9 +98,13 @@ impl NodeState {
             statesync_sq_thread_cpu,
             keystore_password,
             pprof,
+            pprof_enable_profiling,
+            pprof_disable_metrics,
             manytrace_socket,
             persisted_peers_path,
         } = Cli::from_arg_matches_mut(&mut cmd.get_matches_mut())?;
+
+        let pprof = parse_pprof_config(pprof, pprof_disable_metrics, pprof_enable_profiling)?;
 
         let (reload_handle, agent) = NodeState::setup_tracing(manytrace_socket)?;
 
@@ -244,6 +255,38 @@ impl NodeState {
     }
 }
 
+fn parse_pprof_config(
+    addr: String,
+    disable_metrics: bool,
+    enable_profiling: bool,
+) -> Result<Option<PprofConfig>, NodeSetupError> {
+    if addr.is_empty() {
+        if disable_metrics || enable_profiling {
+            return Err(NodeSetupError::Custom {
+                kind: ErrorKind::MissingRequiredArgument,
+                msg: "--pprof-disable-metrics and --pprof-enable-profiling require --pprof"
+                    .to_owned(),
+            });
+        }
+        return Ok(None);
+    }
+
+    let enable_metrics = !disable_metrics;
+
+    if !enable_metrics && !enable_profiling {
+        return Err(NodeSetupError::Custom {
+            kind: ErrorKind::InvalidValue,
+            msg: "--pprof cannot disable both metrics and profiling at the same time".to_owned(),
+        });
+    }
+
+    Ok(Some(PprofConfig {
+        addr,
+        enable_metrics,
+        enable_profiling,
+    }))
+}
+
 fn fetch_local_configs(
     forkpoint_config_path: &Path,
     validators_config_path: &Path,
@@ -259,6 +302,59 @@ fn fetch_local_configs(
         .map_err(|_| "failed to read local validators.toml file".to_owned())?;
 
     Ok((local_forkpoint_config, local_validators_config))
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::error::ErrorKind;
+
+    use super::{parse_pprof_config, PprofConfig};
+
+    #[test]
+    fn rejects_disable_flags_without_pprof_address() {
+        let error = parse_pprof_config(String::new(), true, false).unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
+    fn rejects_when_all_routes_are_disabled() {
+        let error = parse_pprof_config("127.0.0.1:8888".to_owned(), true, false).unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::InvalidValue);
+    }
+
+    #[test]
+    fn preserves_metrics_only_configuration() {
+        let config = parse_pprof_config("127.0.0.1:8888".to_owned(), false, false)
+            .expect("pprof config")
+            .expect("pprof should be enabled");
+
+        assert_eq!(
+            config,
+            PprofConfig {
+                addr: "127.0.0.1:8888".to_owned(),
+                enable_metrics: true,
+                enable_profiling: false,
+            }
+        );
+    }
+
+    #[test]
+    fn preserves_metrics_and_profiling_configuration() {
+        let config = parse_pprof_config("127.0.0.1:8888".to_owned(), false, true)
+            .expect("pprof config")
+            .expect("pprof should be enabled");
+
+        assert_eq!(
+            config,
+            PprofConfig {
+                addr: "127.0.0.1:8888".to_owned(),
+                enable_metrics: true,
+                enable_profiling: true,
+            }
+        );
+    }
 }
 
 fn fetch_remote_configs() -> Result<(ForkpointConfig, ValidatorsConfigType), String> {

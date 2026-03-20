@@ -19,7 +19,7 @@ pub mod timed_event;
 use std::{ops::DerefMut, pin::Pin};
 
 pub use metrics::{
-    ExecutorMetricHandle, ExecutorMetrics, ExecutorMetricsChain, Histogram, MetricDef,
+    ExecutorMetricHandle, ExecutorMetrics, ExecutorMetricsChain, Gauge, Histogram, MetricDef,
 };
 
 /// An Executor executes Commands

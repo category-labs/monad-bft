@@ -90,51 +90,51 @@ const STATESYNC_BLOCK_THRESHOLD: SeqNum = SeqNum(30_000);
 pub(crate) fn handle_validation_error(e: validation::Error, metrics: &mut Metrics) {
     match e {
         validation::Error::InvalidAuthor => {
-            metrics.validation_errors.invalid_author += 1;
+            metrics.validation_errors.invalid_author.inc();
         }
         validation::Error::NotWellFormed => {
-            metrics.validation_errors.not_well_formed_sig += 1;
+            metrics.validation_errors.not_well_formed_sig.inc();
         }
         validation::Error::InvalidSignature => {
-            metrics.validation_errors.invalid_signature += 1;
+            metrics.validation_errors.invalid_signature.inc();
         }
         validation::Error::InvalidTcRound => {
-            metrics.validation_errors.invalid_tc_round += 1;
+            metrics.validation_errors.invalid_tc_round.inc();
         }
         validation::Error::DuplicateTcTipRound => {
-            metrics.validation_errors.duplicate_tc_tip_round += 1;
+            metrics.validation_errors.duplicate_tc_tip_round.inc();
         }
         validation::Error::EmptySignersTcTipRound => {
-            metrics.validation_errors.empty_signers_tc_tip_round += 1;
+            metrics.validation_errors.empty_signers_tc_tip_round.inc();
         }
         validation::Error::TooManyTcTipRound => {
-            metrics.validation_errors.too_many_tc_tip_round += 1;
+            metrics.validation_errors.too_many_tc_tip_round.inc();
         }
         validation::Error::InsufficientStake => {
-            metrics.validation_errors.insufficient_stake += 1;
+            metrics.validation_errors.insufficient_stake.inc();
         }
         validation::Error::ValidatorSetDataUnavailable => {
             // This error occurs when the node knows when the next epoch starts,
             // but didn't get enough execution deltas to build the next
             // validator set.
             // TODO: This should trigger statesync
-            metrics.validation_errors.val_data_unavailable += 1;
+            metrics.validation_errors.val_data_unavailable.inc();
         }
         validation::Error::SignaturesDuplicateNode => {
-            metrics.validation_errors.signatures_duplicate_node += 1;
+            metrics.validation_errors.signatures_duplicate_node.inc();
         }
         validation::Error::InvalidVote => {
-            metrics.validation_errors.invalid_vote_message += 1;
+            metrics.validation_errors.invalid_vote_message.inc();
         }
         validation::Error::InvalidVersion => {
-            metrics.validation_errors.invalid_version += 1;
+            metrics.validation_errors.invalid_version.inc();
         }
         validation::Error::InvalidEpoch => {
             // TODO: If the node is not actively participating, getting this
             // error can indicate that the node is behind by more than an epoch
             // and needs state sync. Else if actively participating, this is
             // spam
-            metrics.validation_errors.invalid_epoch += 1;
+            metrics.validation_errors.invalid_epoch.inc();
         }
     };
 }
@@ -1027,7 +1027,10 @@ where
                     .iter()
                     .any(|cmd| matches!(cmd.command, ConsensusCommand::EnterRound(_, _)))
                 {
-                    self.metrics.node_state.self_stake_bps = self.get_self_stake_bps();
+                    self.metrics
+                        .node_state
+                        .self_stake_bps
+                        .set(self.get_self_stake_bps());
                 }
 
                 let mut cmds = consensus_cmds
@@ -1200,13 +1203,13 @@ where
             MonadEvent::ControlPanelEvent(control_panel_event) => match control_panel_event {
                 ControlPanelEvent::GetMetricsEvent => {
                     vec![Command::ControlPanelCommand(ControlPanelCommand::Read(
-                        ReadCommand::GetMetrics(GetMetrics::Response(self.metrics)),
+                        ReadCommand::GetMetrics(GetMetrics::Response(self.metrics.clone())),
                     ))]
                 }
                 ControlPanelEvent::ClearMetricsEvent => {
-                    self.metrics = Default::default();
+                    self.metrics.clear();
                     vec![Command::ControlPanelCommand(ControlPanelCommand::Write(
-                        WriteCommand::ClearMetrics(ClearMetrics::Response(self.metrics)),
+                        WriteCommand::ClearMetrics(ClearMetrics::Response(self.metrics.clone())),
                     ))]
                 }
                 ControlPanelEvent::UpdateLogFilter(filter) => {
@@ -1438,7 +1441,7 @@ where
                 warn!("starting from empty state, consider fetching a snapshot first");
             }
 
-            self.metrics.consensus_events.trigger_state_sync += 1;
+            self.metrics.consensus_events.trigger_state_sync.inc();
             return vec![Command::StateSyncCommand(StateSyncCommand::RequestSync(
                 delayed_execution_result
                     .first()

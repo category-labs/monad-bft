@@ -135,7 +135,10 @@ where
         ) {
             debug!(?header_error, ?header, "failed block header validation");
             if matches!(header_error, HeaderError::RandaoError) {
-                metrics.consensus_events.failed_verify_randao_reveal_sig += 1;
+                metrics
+                    .consensus_events
+                    .failed_verify_randao_reveal_sig
+                    .inc();
             }
 
             return Err(EthBlockValidationError::HeaderError(header_error));
@@ -159,11 +162,11 @@ where
                         debug!(?payload_err, "EthBlockValidator payload validation failed");
                     }
                     EthBlockValidationError::SystemTxnError(sys_txn_err) => {
-                        metrics.consensus_events.failed_txn_validation += 1;
+                        metrics.consensus_events.failed_txn_validation.inc();
                         debug!(?sys_txn_err, "EthBlockValidator sys txn validation failed");
                     }
                     EthBlockValidationError::TxnError(txn_err) => {
-                        metrics.consensus_events.failed_txn_validation += 1;
+                        metrics.consensus_events.failed_txn_validation.inc();
                         debug!(?txn_err, "EthBlockValidator txn validation failed");
                     }
                     _ => {}

@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use monad_executor::{ExecutorMetricHandle, ExecutorMetrics};
+use monad_executor::{ExecutorMetrics, Gauge};
 use serde::{Deserialize, Serialize};
 
 monad_executor::metric_consts! {
@@ -146,26 +146,26 @@ pub fn init_executor_metrics() -> ExecutorMetrics {
 
 #[derive(Debug)]
 pub struct EthTxPoolMetrics {
-    pub insert_owned_txs: ExecutorMetricHandle,
-    pub insert_forwarded_txs: ExecutorMetricHandle,
+    pub insert_owned_txs: Gauge,
+    pub insert_forwarded_txs: Gauge,
 
-    pub drop_not_well_formed: ExecutorMetricHandle,
-    pub drop_invalid_signature: ExecutorMetricHandle,
-    pub drop_nonce_too_low: ExecutorMetricHandle,
-    pub drop_fee_too_low: ExecutorMetricHandle,
-    pub drop_insufficient_balance: ExecutorMetricHandle,
-    pub drop_existing_higher_priority: ExecutorMetricHandle,
-    pub drop_replaced_by_higher_priority: ExecutorMetricHandle,
-    pub drop_pool_full: ExecutorMetricHandle,
-    pub drop_pool_not_ready: ExecutorMetricHandle,
-    pub drop_internal_state_backend_error: ExecutorMetricHandle,
-    pub drop_internal_not_ready: ExecutorMetricHandle,
+    pub drop_not_well_formed: Gauge,
+    pub drop_invalid_signature: Gauge,
+    pub drop_nonce_too_low: Gauge,
+    pub drop_fee_too_low: Gauge,
+    pub drop_insufficient_balance: Gauge,
+    pub drop_existing_higher_priority: Gauge,
+    pub drop_replaced_by_higher_priority: Gauge,
+    pub drop_pool_full: Gauge,
+    pub drop_pool_not_ready: Gauge,
+    pub drop_internal_state_backend_error: Gauge,
+    pub drop_internal_not_ready: Gauge,
 
-    pub create_proposal: ExecutorMetricHandle,
-    pub create_proposal_txs: ExecutorMetricHandle,
-    pub create_proposal_tracked_addresses: ExecutorMetricHandle,
-    pub create_proposal_available_addresses: ExecutorMetricHandle,
-    pub create_proposal_backend_lookups: ExecutorMetricHandle,
+    pub create_proposal: Gauge,
+    pub create_proposal_txs: Gauge,
+    pub create_proposal_tracked_addresses: Gauge,
+    pub create_proposal_available_addresses: Gauge,
+    pub create_proposal_backend_lookups: Gauge,
 
     pub tracked: EthTxPoolTrackedMetrics,
 }
@@ -173,32 +173,32 @@ pub struct EthTxPoolMetrics {
 impl EthTxPoolMetrics {
     pub fn from_executor_metrics(executor_metrics: &ExecutorMetrics) -> Self {
         Self {
-            insert_owned_txs: executor_metrics.handle(POOL_INSERT_OWNED_TXS),
-            insert_forwarded_txs: executor_metrics.handle(POOL_INSERT_FORWARDED_TXS),
+            insert_owned_txs: executor_metrics.gauge(POOL_INSERT_OWNED_TXS),
+            insert_forwarded_txs: executor_metrics.gauge(POOL_INSERT_FORWARDED_TXS),
 
-            drop_not_well_formed: executor_metrics.handle(POOL_DROP_NOT_WELL_FORMED),
-            drop_invalid_signature: executor_metrics.handle(POOL_DROP_INVALID_SIGNATURE),
-            drop_nonce_too_low: executor_metrics.handle(POOL_DROP_NONCE_TOO_LOW),
-            drop_fee_too_low: executor_metrics.handle(POOL_DROP_FEE_TOO_LOW),
-            drop_insufficient_balance: executor_metrics.handle(POOL_DROP_INSUFFICIENT_BALANCE),
+            drop_not_well_formed: executor_metrics.gauge(POOL_DROP_NOT_WELL_FORMED),
+            drop_invalid_signature: executor_metrics.gauge(POOL_DROP_INVALID_SIGNATURE),
+            drop_nonce_too_low: executor_metrics.gauge(POOL_DROP_NONCE_TOO_LOW),
+            drop_fee_too_low: executor_metrics.gauge(POOL_DROP_FEE_TOO_LOW),
+            drop_insufficient_balance: executor_metrics.gauge(POOL_DROP_INSUFFICIENT_BALANCE),
             drop_existing_higher_priority: executor_metrics
-                .handle(POOL_DROP_EXISTING_HIGHER_PRIORITY),
+                .gauge(POOL_DROP_EXISTING_HIGHER_PRIORITY),
             drop_replaced_by_higher_priority: executor_metrics
-                .handle(POOL_DROP_REPLACED_BY_HIGHER_PRIORITY),
-            drop_pool_full: executor_metrics.handle(POOL_DROP_POOL_FULL),
-            drop_pool_not_ready: executor_metrics.handle(POOL_DROP_POOL_NOT_READY),
+                .gauge(POOL_DROP_REPLACED_BY_HIGHER_PRIORITY),
+            drop_pool_full: executor_metrics.gauge(POOL_DROP_POOL_FULL),
+            drop_pool_not_ready: executor_metrics.gauge(POOL_DROP_POOL_NOT_READY),
             drop_internal_state_backend_error: executor_metrics
-                .handle(POOL_DROP_INTERNAL_STATE_BACKEND_ERROR),
-            drop_internal_not_ready: executor_metrics.handle(POOL_DROP_INTERNAL_NOT_READY),
+                .gauge(POOL_DROP_INTERNAL_STATE_BACKEND_ERROR),
+            drop_internal_not_ready: executor_metrics.gauge(POOL_DROP_INTERNAL_NOT_READY),
 
-            create_proposal: executor_metrics.handle(POOL_CREATE_PROPOSAL),
-            create_proposal_txs: executor_metrics.handle(POOL_CREATE_PROPOSAL_TXS),
+            create_proposal: executor_metrics.gauge(POOL_CREATE_PROPOSAL),
+            create_proposal_txs: executor_metrics.gauge(POOL_CREATE_PROPOSAL_TXS),
             create_proposal_tracked_addresses: executor_metrics
-                .handle(POOL_CREATE_PROPOSAL_TRACKED_ADDRESSES),
+                .gauge(POOL_CREATE_PROPOSAL_TRACKED_ADDRESSES),
             create_proposal_available_addresses: executor_metrics
-                .handle(POOL_CREATE_PROPOSAL_AVAILABLE_ADDRESSES),
+                .gauge(POOL_CREATE_PROPOSAL_AVAILABLE_ADDRESSES),
             create_proposal_backend_lookups: executor_metrics
-                .handle(POOL_CREATE_PROPOSAL_BACKEND_LOOKUPS),
+                .gauge(POOL_CREATE_PROPOSAL_BACKEND_LOOKUPS),
 
             tracked: EthTxPoolTrackedMetrics::from_executor_metrics(executor_metrics),
         }
@@ -266,23 +266,23 @@ impl Default for EthTxPoolMetrics {
 
 #[derive(Debug)]
 pub struct EthTxPoolTrackedMetrics {
-    pub addresses: ExecutorMetricHandle,
-    pub txs: ExecutorMetricHandle,
-    pub evict_expired_addresses: ExecutorMetricHandle,
-    pub evict_expired_txs: ExecutorMetricHandle,
-    pub remove_committed_addresses: ExecutorMetricHandle,
-    pub remove_committed_txs: ExecutorMetricHandle,
+    pub addresses: Gauge,
+    pub txs: Gauge,
+    pub evict_expired_addresses: Gauge,
+    pub evict_expired_txs: Gauge,
+    pub remove_committed_addresses: Gauge,
+    pub remove_committed_txs: Gauge,
 }
 
 impl EthTxPoolTrackedMetrics {
     pub fn from_executor_metrics(executor_metrics: &ExecutorMetrics) -> Self {
         Self {
-            addresses: executor_metrics.handle(TRACKED_ADDRESSES),
-            txs: executor_metrics.handle(TRACKED_TXS),
-            evict_expired_addresses: executor_metrics.handle(TRACKED_EVICT_EXPIRED_ADDRESSES),
-            evict_expired_txs: executor_metrics.handle(TRACKED_EVICT_EXPIRED_TXS),
-            remove_committed_addresses: executor_metrics.handle(TRACKED_REMOVE_COMMITTED_ADDRESSES),
-            remove_committed_txs: executor_metrics.handle(TRACKED_REMOVE_COMMITTED_TXS),
+            addresses: executor_metrics.gauge(TRACKED_ADDRESSES),
+            txs: executor_metrics.gauge(TRACKED_TXS),
+            evict_expired_addresses: executor_metrics.gauge(TRACKED_EVICT_EXPIRED_ADDRESSES),
+            evict_expired_txs: executor_metrics.gauge(TRACKED_EVICT_EXPIRED_TXS),
+            remove_committed_addresses: executor_metrics.gauge(TRACKED_REMOVE_COMMITTED_ADDRESSES),
+            remove_committed_txs: executor_metrics.gauge(TRACKED_REMOVE_COMMITTED_TXS),
         }
     }
 

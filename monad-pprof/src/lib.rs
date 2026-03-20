@@ -17,7 +17,7 @@ use actix_server::Server;
 use actix_web::{
     App, HttpRequest, HttpResponse, HttpServer,
     http::header::{self, HeaderValue},
-    web,
+    web::{self, ServiceConfig},
 };
 use prometheus::{Encoder, ProtobufEncoder, Registry, TextEncoder};
 use std::sync::Arc;
@@ -40,6 +40,21 @@ impl MetricsServerState {
 
     pub fn empty() -> Self {
         Self::new(Registry::new(), None)
+    }
+}
+
+#[derive(Clone)]
+pub struct PprofServerConfig {
+    pub metrics: Option<MetricsServerState>,
+    pub enable_heap_profiling: bool,
+}
+
+impl Default for PprofServerConfig {
+    fn default() -> Self {
+        Self {
+            metrics: Some(MetricsServerState::empty()),
+            enable_heap_profiling: true,
+        }
     }
 }
 
@@ -86,25 +101,113 @@ async fn handle_metrics(
         .body(buffer)
 }
 
+fn configure_pprof_routes(cfg: &mut ServiceConfig, server_config: &PprofServerConfig) {
+    if let Some(metrics) = &server_config.metrics {
+        cfg.app_data(web::Data::new(metrics.clone()));
+        cfg.route("/metrics", web::get().to(handle_metrics));
+    }
+
+    if server_config.enable_heap_profiling {
+        cfg.route("/debug/pprof/heap", web::get().to(heap::handle_get_heap));
+        cfg.route(
+            "/debug/pprof/heap/config",
+            web::post().to(heap::handle_update_prof_config),
+        );
+    }
+}
+
 pub fn start_pprof_server(addr: String) -> std::io::Result<Server> {
-    start_pprof_server_with_metrics(addr, MetricsServerState::empty())
+    start_pprof_server_with_config(addr, PprofServerConfig::default())
 }
 
 pub fn start_pprof_server_with_metrics(
     addr: String,
     metrics: MetricsServerState,
 ) -> std::io::Result<Server> {
+    start_pprof_server_with_config(
+        addr,
+        PprofServerConfig {
+            metrics: Some(metrics),
+            enable_heap_profiling: true,
+        },
+    )
+}
+
+pub fn start_pprof_server_with_config(
+    addr: String,
+    server_config: PprofServerConfig,
+) -> std::io::Result<Server> {
     Ok(HttpServer::new(move || {
-        App::new()
-            .app_data(web::Data::new(metrics.clone()))
-            .route("/metrics", web::get().to(handle_metrics))
-            .route("/debug/pprof/heap", web::get().to(heap::handle_get_heap))
-            .route(
-                "/debug/pprof/heap/config",
-                web::post().to(heap::handle_update_prof_config),
-            )
+        let server_config = server_config.clone();
+        App::new().configure(move |cfg| configure_pprof_routes(cfg, &server_config))
     })
     .bind(addr)?
     .workers(1)
     .run())
+}
+
+#[cfg(test)]
+mod tests {
+    use actix_web::{App, http::StatusCode, test};
+
+    use super::{MetricsServerState, PprofServerConfig, configure_pprof_routes};
+
+    #[actix_web::test]
+    async fn metrics_route_can_be_disabled() {
+        let app = test::init_service(App::new().configure(|cfg| {
+            configure_pprof_routes(
+                cfg,
+                &PprofServerConfig {
+                    metrics: None,
+                    enable_heap_profiling: true,
+                },
+            )
+        }))
+        .await;
+
+        let request = test::TestRequest::get().uri("/metrics").to_request();
+        let response = test::call_service(&app, request).await;
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[actix_web::test]
+    async fn heap_routes_can_be_disabled() {
+        let app = test::init_service(App::new().configure(|cfg| {
+            configure_pprof_routes(
+                cfg,
+                &PprofServerConfig {
+                    metrics: Some(MetricsServerState::empty()),
+                    enable_heap_profiling: false,
+                },
+            )
+        }))
+        .await;
+
+        let request = test::TestRequest::get()
+            .uri("/debug/pprof/heap")
+            .to_request();
+        let response = test::call_service(&app, request).await;
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[actix_web::test]
+    async fn metrics_route_remains_available_when_enabled() {
+        let app = test::init_service(App::new().configure(|cfg| {
+            configure_pprof_routes(
+                cfg,
+                &PprofServerConfig {
+                    metrics: Some(MetricsServerState::empty()),
+                    enable_heap_profiling: false,
+                },
+            )
+        }))
+        .await;
+
+        let request = test::TestRequest::get().uri("/metrics").to_request();
+        let response = test::call_service(&app, request).await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
 }

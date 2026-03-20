@@ -19,9 +19,7 @@ use std::{
 };
 
 use monad_consensus_types::metrics::Metrics as StateMetrics;
-use monad_executor::{
-    ExecutorMetricHandle, ExecutorMetrics, ExecutorMetricsChain, MetricDef, metric_consts,
-};
+use monad_executor::{metric_consts, ExecutorMetrics, ExecutorMetricsChain, Gauge};
 use prometheus::Registry;
 
 metric_consts! {
@@ -49,10 +47,9 @@ fn init_node_executor_metrics() -> ExecutorMetrics {
 
 pub struct NodePrometheusMetrics {
     registry: Registry,
-    state_metrics: HashMap<&'static str, ExecutorMetricHandle>,
-    total_uptime: ExecutorMetricHandle,
-    total_state_update: ExecutorMetricHandle,
-    node_info: ExecutorMetricHandle,
+    total_uptime: Gauge,
+    total_state_update: Gauge,
+    node_info: Gauge,
     process_start: Instant,
 }
 
@@ -64,15 +61,7 @@ impl NodePrometheusMetrics {
         process_start: Instant,
     ) -> Result<Self, prometheus::Error> {
         let registry = Registry::new_custom(None, Some(labels))?;
-
-        let mut state_executor_metrics = ExecutorMetrics::default();
-        let mut state_metric_defs = HashMap::new();
-        for (name, value, help) in state_metrics.metrics() {
-            let metric: &'static MetricDef = Box::leak(Box::new(MetricDef::new(name, help)));
-            state_executor_metrics.set(metric, value);
-            state_metric_defs.insert(name, metric);
-        }
-        state_executor_metrics.register(&registry)?;
+        state_metrics.register(&registry)?;
 
         executor_metrics.register(&registry)?;
 
@@ -84,13 +73,9 @@ impl NodePrometheusMetrics {
 
         Ok(Self {
             registry,
-            state_metrics: state_metric_defs
-                .into_iter()
-                .map(|(name, metric)| (name, state_executor_metrics.handle(metric)))
-                .collect(),
-            total_uptime: node_executor_metrics.handle(GAUGE_TOTAL_UPTIME_US),
-            total_state_update: node_executor_metrics.handle(GAUGE_STATE_TOTAL_UPDATE_US),
-            node_info: node_executor_metrics.handle(GAUGE_NODE_INFO),
+            total_uptime: node_executor_metrics.gauge(GAUGE_TOTAL_UPTIME_US),
+            total_state_update: node_executor_metrics.gauge(GAUGE_STATE_TOTAL_UPDATE_US),
+            node_info: node_executor_metrics.gauge(GAUGE_NODE_INFO),
             process_start,
         })
     }
@@ -99,14 +84,7 @@ impl NodePrometheusMetrics {
         self.registry.clone()
     }
 
-    pub fn update(&self, state_metrics: &StateMetrics, total_state_update_elapsed: &Duration) {
-        for (name, value, _) in state_metrics.metrics() {
-            self.state_metrics
-                .get(name)
-                .expect("state metric must be initialized")
-                .set(value);
-        }
-
+    pub fn record_state_update_elapsed(&self, total_state_update_elapsed: &Duration) {
         self.total_state_update
             .set(total_state_update_elapsed.as_micros() as u64);
         self.node_info.set(1);

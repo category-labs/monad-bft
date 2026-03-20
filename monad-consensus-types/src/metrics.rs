@@ -13,7 +13,34 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use serde::{Deserialize, Serialize};
+use prometheus::{
+    core::{AtomicU64, GenericGauge},
+    Opts, Registry,
+};
+use serde::{ser::SerializeStruct, Deserialize, Deserializer, Serialize, Serializer};
+
+pub type Gauge = GenericGauge<AtomicU64>;
+
+fn prometheus_metric_name(metric: &str) -> String {
+    let mut name = String::with_capacity(metric.len());
+    for ch in metric.chars() {
+        match ch {
+            'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | ':' => name.push(ch),
+            _ => name.push('_'),
+        }
+    }
+
+    if matches!(name.chars().next(), Some('0'..='9')) {
+        name.insert(0, '_');
+    }
+
+    name
+}
+
+fn new_gauge(name: &'static str, help: &'static str) -> Gauge {
+    Gauge::with_opts(Opts::new(prometheus_metric_name(name), help))
+        .expect("state metric definition is valid")
+}
 
 macro_rules! metrics {
     (
@@ -30,15 +57,36 @@ macro_rules! metrics {
             metrics!(
                 @class
                 $class,
-                [$($name),*]
+                $class_field,
+                [$(($name, $help)),*]
             );
         )*
 
-        #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+        #[derive(Debug, Serialize, Deserialize)]
         pub struct Metrics {
             $(
                 pub $class_field: $class
             ),*
+        }
+
+        impl Clone for Metrics {
+            fn clone(&self) -> Self {
+                Self {
+                    $(
+                        $class_field: self.$class_field.clone()
+                    ),*
+                }
+            }
+        }
+
+        impl Default for Metrics {
+            fn default() -> Self {
+                Self {
+                    $(
+                        $class_field: Default::default()
+                    ),*
+                }
+            }
         }
 
         impl Metrics {
@@ -48,12 +96,26 @@ macro_rules! metrics {
                         $(
                             (
                                 concat!("monad.state.", stringify!($class_field), ".", stringify!($name)),
-                                self.$class_field.$name,
+                                self.$class_field.$name.get(),
                                 $help,
                             ),
                         )*
                     )*
                 ]
+            }
+
+            pub fn register(&self, registry: &Registry) -> prometheus::Result<()> {
+                $(
+                    self.$class_field.register(registry)?;
+                )*
+
+                Ok(())
+            }
+
+            pub fn clear(&self) {
+                $(
+                    self.$class_field.clear();
+                )*
             }
         }
     };
@@ -61,15 +123,97 @@ macro_rules! metrics {
     (
         @class
         $class:ident,
-        [$($name:ident),*]
+        $class_field:ident,
+        [$(($name:ident, $help:expr)),*]
     ) => {
-        #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+        #[derive(Debug)]
         pub struct $class {
             $(
-                pub $name: u64
+                pub $name: Gauge
             ),*
         }
+
+        impl Clone for $class {
+            fn clone(&self) -> Self {
+                let metrics = Self::default();
+                $(
+                    metrics.$name.set(self.$name.get());
+                )*
+                metrics
+            }
+        }
+
+        impl Default for $class {
+            fn default() -> Self {
+                Self {
+                    $(
+                        $name: new_gauge(
+                            concat!("monad.state.", stringify!($class_field), ".", stringify!($name)),
+                            $help,
+                        )
+                    ),*
+                }
+            }
+        }
+
+        impl $class {
+            fn register(&self, registry: &Registry) -> prometheus::Result<()> {
+                $(
+                    registry.register(Box::new(self.$name.clone()))?;
+                )*
+
+                Ok(())
+            }
+
+            fn clear(&self) {
+                $(
+                    self.$name.set(0);
+                )*
+            }
+        }
+
+        impl Serialize for $class {
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: Serializer,
+            {
+                let mut state = serializer.serialize_struct(
+                    stringify!($class),
+                    metrics!(@count $($name),*),
+                )?;
+                $(
+                    state.serialize_field(stringify!($name), &self.$name.get())?;
+                )*
+                state.end()
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $class {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                #[derive(Deserialize)]
+                struct Snapshot {
+                    $(
+                        $name: u64
+                    ),*
+                }
+
+                let snapshot = Snapshot::deserialize(deserializer)?;
+                let metrics = Self::default();
+                $(
+                    metrics.$name.set(snapshot.$name);
+                )*
+                Ok(metrics)
+            }
+        }
     };
+
+    (@count $($name:ident),* $(,)?) => {
+        <[()]>::len(&[$(metrics!(@single $name)),*])
+    };
+    (@single $name:ident) => { () };
 }
 
 metrics!(
@@ -252,3 +396,60 @@ metrics!(
         ]
     ),
 );
+
+#[cfg(test)]
+mod tests {
+    use prometheus::Registry;
+
+    use super::Metrics;
+
+    #[test]
+    fn metrics_clone_is_a_snapshot() {
+        let metrics = Metrics::default();
+        metrics.consensus_events.created_qc.inc();
+
+        let snapshot = metrics.clone();
+        metrics.consensus_events.created_qc.inc();
+
+        assert_eq!(snapshot.consensus_events.created_qc.get(), 1);
+        assert_eq!(metrics.consensus_events.created_qc.get(), 2);
+    }
+
+    #[test]
+    fn metrics_roundtrip_through_toml() {
+        let metrics = Metrics::default();
+        metrics.consensus_events.created_qc.inc();
+        metrics.validation_errors.invalid_author.add(2);
+
+        let serialized = toml::to_string(&metrics).expect("serialize metrics");
+        let roundtripped: Metrics = toml::from_str(&serialized).expect("deserialize metrics");
+
+        assert_eq!(roundtripped.consensus_events.created_qc.get(), 1);
+        assert_eq!(roundtripped.validation_errors.invalid_author.get(), 2);
+    }
+
+    #[test]
+    fn metrics_register_once_and_clear_in_place() {
+        let metrics = Metrics::default();
+        let registry = Registry::new();
+        metrics.register(&registry).expect("register metrics");
+
+        metrics.consensus_events.created_qc.inc();
+
+        let gathered = registry.gather();
+        let family = gathered
+            .iter()
+            .find(|family| family.name() == "monad_state_consensus_events_created_qc")
+            .expect("metric family exists");
+        assert_eq!(family.get_metric()[0].get_gauge().value() as u64, 1);
+
+        metrics.clear();
+
+        let gathered = registry.gather();
+        let family = gathered
+            .iter()
+            .find(|family| family.name() == "monad_state_consensus_events_created_qc")
+            .expect("metric family exists");
+        assert_eq!(family.get_metric()[0].get_gauge().value() as u64, 0);
+    }
+}

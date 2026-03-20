@@ -17,11 +17,12 @@ use std::collections::{HashMap, HashSet};
 
 use hdrhistogram::Histogram as HdrHistogram;
 use prometheus::{
-    Opts, Registry,
     core::{AtomicU64, GenericGauge},
+    Opts, Registry,
 };
 
-type UIntGauge = GenericGauge<AtomicU64>;
+pub type Gauge = GenericGauge<AtomicU64>;
+pub type ExecutorMetricHandle = Gauge;
 
 #[derive(Copy, Clone, Debug)]
 pub struct MetricDef {
@@ -90,31 +91,8 @@ macro_rules! metric_consts {
     };
 }
 
-#[derive(Clone, Debug)]
-pub struct ExecutorMetricHandle {
-    gauge: UIntGauge,
-}
-
-impl ExecutorMetricHandle {
-    pub fn set(&self, value: u64) {
-        self.gauge.set(value);
-    }
-
-    pub fn inc(&self) {
-        self.gauge.inc();
-    }
-
-    pub fn add(&self, value: u64) {
-        self.gauge.add(value);
-    }
-
-    pub fn get(&self) -> u64 {
-        self.gauge.get()
-    }
-}
-
 pub struct ExecutorMetrics {
-    gauges: HashMap<&'static MetricDef, UIntGauge>,
+    gauges: HashMap<&'static MetricDef, Gauge>,
 }
 
 impl Default for ExecutorMetrics {
@@ -144,12 +122,12 @@ impl std::fmt::Debug for ExecutorMetrics {
 }
 
 impl ExecutorMetrics {
-    fn ensure_gauge(&mut self, metric: &'static MetricDef) -> UIntGauge {
+    fn ensure_gauge(&mut self, metric: &'static MetricDef) -> Gauge {
         if let Some(gauge) = self.gauges.get(metric) {
             return gauge.clone();
         }
 
-        let gauge = UIntGauge::with_opts(Opts::new(prometheus_metric_name(metric), metric.help))
+        let gauge = Gauge::with_opts(Opts::new(prometheus_metric_name(metric), metric.help))
             .expect("executor metric definition is valid");
 
         self.gauges.insert(metric, gauge.clone());
@@ -178,14 +156,15 @@ impl ExecutorMetrics {
         }
     }
 
+    pub fn gauge(&self, metric: &'static MetricDef) -> Gauge {
+        self.gauges
+            .get(metric)
+            .cloned()
+            .expect("executor metric must be initialized before taking a gauge")
+    }
+
     pub fn handle(&self, metric: &'static MetricDef) -> ExecutorMetricHandle {
-        ExecutorMetricHandle {
-            gauge: self
-                .gauges
-                .get(metric)
-                .cloned()
-                .expect("executor metric must be initialized before taking a handle"),
-        }
+        self.gauge(metric)
     }
 
     pub fn register(&self, registry: &Registry) -> prometheus::Result<()> {
@@ -212,10 +191,7 @@ impl ExecutorMetrics {
     }
 
     pub fn get(&self, metric: &'static MetricDef) -> u64 {
-        self.gauges
-            .get(metric)
-            .map(UIntGauge::get)
-            .unwrap_or_default()
+        self.gauges.get(metric).map(Gauge::get).unwrap_or_default()
     }
 
     pub fn copy_values_from(&mut self, other: &ExecutorMetrics) {

@@ -46,10 +46,10 @@ use monad_node_config::{
     PeerDiscoveryConfig, SignatureCollectionType, SignatureType,
 };
 use monad_peer_discovery::{
-    MonadNameRecord, NameRecord,
     discovery::{PeerDiscovery, PeerDiscoveryBuilder},
+    MonadNameRecord, NameRecord,
 };
-use monad_pprof::{MetricsServerState, start_pprof_server_with_metrics};
+use monad_pprof::{start_pprof_server_with_config, MetricsServerState, PprofServerConfig};
 use monad_raptorcast::config::{RaptorCastConfig, RaptorCastConfigPrimary};
 use monad_router_multi::MultiRouter;
 use monad_state::{MonadMessage, MonadStateBuilder, VerifiedMonadMessage};
@@ -57,7 +57,7 @@ use monad_state_backend::StateBackendThreadClient;
 use monad_state_backend_cache::StateBackendCache;
 use monad_statesync::StateSync;
 use monad_triedb_utils::TriedbReader;
-use monad_types::{DropTimer, Epoch, GENESIS_SEQ_NUM, NodeId, Round, SeqNum};
+use monad_types::{DropTimer, Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
 use monad_updaters::{
     config_file::ConfigFile, config_loader::ConfigLoader, loopback::LoopbackExecutor,
     parent::ParentExecutor, timer::TokioTimer, tokio_timestamp::TokioTimestamp,
@@ -68,9 +68,9 @@ use monad_validator::{
     weighted_round_robin::WeightedRoundRobin,
 };
 use monad_wal::wal::WALoggerConfig;
-use rand_chacha::{ChaCha8Rng, rand_core::SeedableRng};
-use tokio::signal::unix::{SignalKind, signal};
-use tracing::{Instrument, Level, error, event, info, warn};
+use rand_chacha::{rand_core::SeedableRng, ChaCha8Rng};
+use tokio::signal::unix::{signal, SignalKind};
+use tracing::{error, event, info, warn, Instrument, Level};
 
 use self::{cli::Cli, error::NodeSetupError, metrics::NodePrometheusMetrics, state::NodeState};
 
@@ -378,16 +378,24 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
     );
     let mut total_state_update_elapsed = Duration::ZERO;
 
-    if !node_state.pprof.is_empty() {
+    if let Some(pprof) = &node_state.pprof {
         tokio::spawn({
-            let pprof = node_state.pprof.clone();
+            let pprof = pprof.clone();
             let metrics = Arc::clone(&prometheus_metrics);
             async move {
-                let metrics_server_state = MetricsServerState::new(
-                    metrics.registry(),
-                    Some(Arc::new(move || metrics.refresh_for_scrape())),
-                );
-                let server = match start_pprof_server_with_metrics(pprof, metrics_server_state) {
+                let metrics_server_state = pprof.enable_metrics.then(|| {
+                    MetricsServerState::new(
+                        metrics.registry(),
+                        Some(Arc::new(move || metrics.refresh_for_scrape())),
+                    )
+                });
+                let server = match start_pprof_server_with_config(
+                    pprof.addr,
+                    PprofServerConfig {
+                        metrics: metrics_server_state,
+                        enable_heap_profiling: pprof.enable_profiling,
+                    },
+                ) {
                     Ok(server) => server,
                     Err(err) => {
                         error!("failed to start pprof server: {}", err);
@@ -459,7 +467,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
                     let start = Instant::now();
                     let cmds = state.update(event.event);
                     total_state_update_elapsed += start.elapsed();
-                    prometheus_metrics.update(state.metrics(), &total_state_update_elapsed);
+                    prometheus_metrics.record_state_update_elapsed(&total_state_update_elapsed);
                     cmds
                 };
 

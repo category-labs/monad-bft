@@ -80,10 +80,24 @@ pub struct Cli {
 
     #[arg(
         long,
-        help = "listen address for pprof server. pprof server won't be enabled if address is empty",
+        help = "listen address for the debug HTTP server serving /metrics and pprof routes. the server won't be enabled if address is empty",
         default_value = ""
     )]
     pub pprof: String,
+
+    #[arg(
+        long,
+        help = "enable heap profiling routes on the pprof server",
+        default_value_t = false
+    )]
+    pub pprof_enable_profiling: bool,
+
+    #[arg(
+        long,
+        help = "disable the /metrics route on the pprof server",
+        default_value_t = false
+    )]
+    pub pprof_disable_metrics: bool,
 
     #[arg(long)]
     pub manytrace_socket: Option<String>,

@@ -5015,6 +5015,7 @@ dependencies = [
  "monad-testutil",
  "monad-types",
  "monad-validator",
+ "prometheus",
  "serde",
  "serde_with",
  "test-case",

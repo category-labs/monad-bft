@@ -29,7 +29,7 @@ type MetricName = &'static str;
 #[macro_export]
 macro_rules! fetch_metric {
     ( $( $k:ident ).+ ) => {{
-        (stringify!($($k).+), |s: &Metrics| { s.$($k).+ })
+        (stringify!($($k).+), |s: &Metrics| { s.$($k).+.get() })
     }};
 }
 

@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use monad_eth_txpool::{init_executor_metrics as init_txpool_executor_metrics, EthTxPoolMetrics};
-use monad_executor::{ExecutorMetricHandle, ExecutorMetrics};
+use monad_executor::{ExecutorMetrics, Gauge};
 
 monad_executor::metric_consts! {
     REJECT_FORWARDED_INVALID_BYTES {
@@ -53,13 +53,13 @@ pub fn init_executor_metrics() -> ExecutorMetrics {
 
 #[derive(Debug)]
 pub struct EthTxPoolExecutorMetrics {
-    pub reject_forwarded_invalid_bytes: ExecutorMetricHandle,
+    pub reject_forwarded_invalid_bytes: Gauge,
 
-    pub create_proposal: ExecutorMetricHandle,
-    pub create_proposal_elapsed_ns: ExecutorMetricHandle,
+    pub create_proposal: Gauge,
+    pub create_proposal_elapsed_ns: Gauge,
 
-    pub preload_backend_lookups: ExecutorMetricHandle,
-    pub preload_backend_requests: ExecutorMetricHandle,
+    pub preload_backend_lookups: Gauge,
+    pub preload_backend_requests: Gauge,
 
     pub pool: EthTxPoolMetrics,
 }
@@ -67,11 +67,11 @@ pub struct EthTxPoolExecutorMetrics {
 impl EthTxPoolExecutorMetrics {
     pub fn from_executor_metrics(executor_metrics: &ExecutorMetrics) -> Self {
         Self {
-            reject_forwarded_invalid_bytes: executor_metrics.handle(REJECT_FORWARDED_INVALID_BYTES),
-            create_proposal: executor_metrics.handle(CREATE_PROPOSAL),
-            create_proposal_elapsed_ns: executor_metrics.handle(CREATE_PROPOSAL_ELAPSED_NS),
-            preload_backend_lookups: executor_metrics.handle(PRELOAD_BACKEND_LOOKUPS),
-            preload_backend_requests: executor_metrics.handle(PRELOAD_BACKEND_REQUESTS),
+            reject_forwarded_invalid_bytes: executor_metrics.gauge(REJECT_FORWARDED_INVALID_BYTES),
+            create_proposal: executor_metrics.gauge(CREATE_PROPOSAL),
+            create_proposal_elapsed_ns: executor_metrics.gauge(CREATE_PROPOSAL_ELAPSED_NS),
+            preload_backend_lookups: executor_metrics.gauge(PRELOAD_BACKEND_LOOKUPS),
+            preload_backend_requests: executor_metrics.gauge(PRELOAD_BACKEND_REQUESTS),
             pool: EthTxPoolMetrics::from_executor_metrics(executor_metrics),
         }
     }
