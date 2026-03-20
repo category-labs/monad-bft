@@ -83,7 +83,7 @@ impl EthCallHandler {
                 }
                 TryAcquireError::NoPermits => {
                     if let Some(tracker) = &self.stats_tracker {
-                        tracker.record_queue_rejection().await;
+                        tracker.record_queue_rejection();
                     }
                     return Err(JsonRpcError::internal_error(
                         "concurrent requests limit".into(),
@@ -129,15 +129,13 @@ impl<'a> EthCallPermit<'a> {
         F: Future<Output = Result<T, E>>,
     {
         if let Some(tracker) = self.stats_tracker {
-            tracker.record_request_start(self.request_id).await;
+            tracker.record_request_start(self.request_id);
         }
 
         let result = f(self.executor).await;
 
         if let Some(tracker) = self.stats_tracker {
-            tracker
-                .record_request_complete(&self.request_id, result.is_err())
-                .await;
+            tracker.record_request_complete(&self.request_id, result.is_err());
         }
 
         result

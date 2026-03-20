@@ -16,10 +16,7 @@
 use std::{
     cmp::min,
     collections::{HashMap, HashSet},
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc,
-    },
+    sync::atomic::{AtomicU64, Ordering},
     time::{Duration, Instant},
 };
 
@@ -27,6 +24,7 @@ use alloy_consensus::{Header, SignableTransaction, TxEip1559, TxEip7702, TxEnvel
 use alloy_eips::eip7702::SignedAuthorization;
 use alloy_primitives::{Address, Signature, TxKind, Uint, B256, U256, U64, U8};
 use alloy_rpc_types::{AccessList, AccessListItem, AccessListResult};
+use dashmap::DashMap;
 use monad_chain_config::execution_revision::MonadExecutionRevision;
 use monad_ethcall::{eth_call, CallResult, EthCallExecutor, MonadTracer, StateOverrideSet};
 use monad_rpc_docs::rpc;
@@ -37,7 +35,6 @@ use monad_types::{BlockId, Hash, SeqNum};
 use serde::{Deserialize, Serialize};
 use serde_cbor;
 use serde_json::value::RawValue;
-use tokio::sync::Mutex;
 use tracing::{debug, trace};
 
 use crate::{
@@ -86,14 +83,13 @@ impl Clone for CumulativeStats {
 
 #[derive(Debug, Default)]
 pub struct EthCallStatsTracker {
-    active_requests: Arc<Mutex<HashMap<TimingRequestId, EthCallRequestStats>>>,
+    active_requests: DashMap<TimingRequestId, EthCallRequestStats>,
     stats: CumulativeStats,
 }
 
 impl EthCallStatsTracker {
-    pub async fn record_request_start(&self, request_id: TimingRequestId) {
-        let mut requests = self.active_requests.lock().await;
-        requests.insert(
+    pub fn record_request_start(&self, request_id: TimingRequestId) {
+        self.active_requests.insert(
             request_id,
             EthCallRequestStats {
                 entry_time: Instant::now(),
@@ -103,39 +99,40 @@ impl EthCallStatsTracker {
         self.stats.total_requests.fetch_add(1, Ordering::Relaxed);
     }
 
-    pub async fn record_request_complete(&self, request_id: &TimingRequestId, is_error: bool) {
-        let mut requests = self.active_requests.lock().await;
-        requests.remove(request_id);
+    pub fn record_request_complete(&self, request_id: &TimingRequestId, is_error: bool) {
+        self.active_requests.remove(request_id);
 
         if is_error {
             self.stats.total_errors.fetch_add(1, Ordering::Relaxed);
         }
     }
 
-    pub async fn record_queue_rejection(&self) {
+    pub fn record_queue_rejection(&self) {
         self.stats.queue_rejections.fetch_add(1, Ordering::Relaxed);
         self.stats.total_requests.fetch_add(1, Ordering::Relaxed);
         self.stats.total_errors.fetch_add(1, Ordering::Relaxed);
     }
 
-    async fn get_stats(&self) -> (Option<Duration>, Option<Duration>, CumulativeStats) {
-        let requests = self.active_requests.lock().await;
-
-        if requests.is_empty() {
-            return (None, None, self.stats.clone());
-        }
+    fn get_stats(&self) -> (Option<Duration>, Option<Duration>, CumulativeStats) {
+        let mut requests = 0usize;
 
         let now = Instant::now();
         let mut max_age = Duration::ZERO;
         let mut total_age = Duration::ZERO;
 
-        for stats in requests.values() {
-            let age = now - stats.entry_time;
+        for stats in self.active_requests.iter() {
+            requests += 1;
+
+            let age = now.saturating_duration_since(stats.value().entry_time);
             max_age = max_age.max(age);
             total_age += age;
         }
 
-        let avg_age = total_age / requests.len() as u32;
+        if requests == 0 {
+            return (None, None, self.stats.clone());
+        }
+
+        let avg_age = total_age / requests as u32;
 
         (Some(max_age), Some(avg_age), self.stats.clone())
     }
@@ -998,7 +995,7 @@ pub async fn monad_admin_ethCallStatistics(
 
     let queued_requests = active_requests.saturating_sub(executor_fibers);
 
-    let (max_age, avg_age, cumulative_stats) = stats_tracker.get_stats().await;
+    let (max_age, avg_age, cumulative_stats) = stats_tracker.get_stats();
 
     Ok(EthCallCapacityStats {
         inactive_executors,
