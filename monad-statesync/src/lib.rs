@@ -171,7 +171,8 @@ where
                             unreachable!("Live -> Sync is not a valid state transition")
                         }
                     };
-                    self.metrics.set(GAUGE_STATESYNC_LAST_TARGET, header.0.number);
+                    self.metrics
+                        .set(GAUGE_STATESYNC_LAST_TARGET, header.0.number);
                     statesync.update_target(header.0);
                     if let Some(waker) = self.waker.take() {
                         waker.wake();
@@ -316,7 +317,8 @@ where
         match &mut this.mode {
             StateSyncMode::Sync(sync) => {
                 if let Some(progress) = sync.progress_estimate() {
-                    this.metrics.set(GAUGE_STATESYNC_PROGRESS_ESTIMATE, progress.0);
+                    this.metrics
+                        .set(GAUGE_STATESYNC_PROGRESS_ESTIMATE, progress.0);
                 }
 
                 if let Poll::Ready(event) = sync.poll_next_unpin(cx) {

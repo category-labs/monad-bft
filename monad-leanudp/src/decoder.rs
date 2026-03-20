@@ -298,7 +298,8 @@ where
     ) {
         self.metrics.inc(selected_pool.fragments_counter());
         if payload_bytes > 0 {
-            self.metrics.add(selected_pool.bytes_counter(), payload_bytes);
+            self.metrics
+                .add(selected_pool.bytes_counter(), payload_bytes);
         }
 
         match result {

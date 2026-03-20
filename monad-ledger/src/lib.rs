@@ -301,8 +301,10 @@ where
                     let num_tx = block.body().execution_body.transactions.len() as u64;
                     let block_num = block.get_seq_num().0;
                     info!(num_tx, block_num, "committed block");
-                    self.metrics.add(GAUGE_EXECUTION_LEDGER_NUM_TX_COMMITS, num_tx);
-                    self.metrics.set(GAUGE_EXECUTION_LEDGER_BLOCK_NUM, block_num);
+                    self.metrics
+                        .add(GAUGE_EXECUTION_LEDGER_NUM_TX_COMMITS, num_tx);
+                    self.metrics
+                        .set(GAUGE_EXECUTION_LEDGER_BLOCK_NUM, block_num);
 
                     self.last_commit = Some((block.get_seq_num(), block.get_block_round()));
 

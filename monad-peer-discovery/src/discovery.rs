@@ -578,8 +578,10 @@ impl<ST: CertificateSignatureRecoverable, C: governor::clock::Clock> PeerDiscove
                 name_record: name_record.clone(),
             },
         );
-        self.metrics
-            .set(GAUGE_PEER_DISC_NUM_PENDING_PEERS, self.pending_queue.len() as u64);
+        self.metrics.set(
+            GAUGE_PEER_DISC_NUM_PENDING_PEERS,
+            self.pending_queue.len() as u64,
+        );
 
         // send ping to the peer, which will also insert the peer into pending queue
         Ok(self.send_ping(peer_id, name_record.name_record, ping_msg))
@@ -595,8 +597,10 @@ impl<ST: CertificateSignatureRecoverable, C: governor::clock::Clock> PeerDiscove
         self.pending_queue.remove(&peer_id);
         cmds.extend(self.clear_ping_timeout(peer_id));
 
-        self.metrics
-            .set(GAUGE_PEER_DISC_NUM_PENDING_PEERS, self.pending_queue.len() as u64);
+        self.metrics.set(
+            GAUGE_PEER_DISC_NUM_PENDING_PEERS,
+            self.pending_queue.len() as u64,
+        );
 
         cmds
     }
@@ -1210,7 +1214,8 @@ where
                     .map(|(_, name_record)| (*name_record).clone()),
             );
         } else {
-            self.metrics.inc(GAUGE_PEER_DISC_RECV_TARGETED_LOOKUP_REQUEST);
+            self.metrics
+                .inc(GAUGE_PEER_DISC_RECV_TARGETED_LOOKUP_REQUEST);
         }
 
         let peer_lookup_response = PeerLookupResponse {
@@ -1658,8 +1663,10 @@ where
 
         self.metrics
             .set(GAUGE_PEER_DISC_NUM_PEERS, self.routing_info.len() as u64);
-        self.metrics
-            .set(GAUGE_PEER_DISC_NUM_PENDING_PEERS, self.pending_queue.len() as u64);
+        self.metrics.set(
+            GAUGE_PEER_DISC_NUM_PENDING_PEERS,
+            self.pending_queue.len() as u64,
+        );
 
         self.write_peers_to_file();
 
