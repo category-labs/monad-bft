@@ -23,9 +23,19 @@ const UP_BANDWIDTH_MBPS: u64 = 1_000;
 
 const BIND_ADDRS: [&str; 2] = ["0.0.0.0:0", "127.0.0.1:0"];
 
-fn find_ipv6_address() -> std::net::SocketAddr {
-    let socket = std::net::UdpSocket::bind("[::1]:0").unwrap();
-    socket.local_addr().unwrap()
+fn find_ipv6_address() -> Option<std::net::SocketAddr> {
+    match std::net::UdpSocket::bind("[::1]:0") {
+        Ok(socket) => Some(socket.local_addr().unwrap()),
+        Err(err)
+            if matches!(
+                err.raw_os_error(),
+                Some(libc::EADDRNOTAVAIL | libc::EAFNOSUPPORT)
+            ) =>
+        {
+            None
+        }
+        Err(err) => panic!("failed to bind IPv6 loopback socket: {err}"),
+    }
 }
 
 #[test]
@@ -43,7 +53,10 @@ fn address_family_mismatch() {
     }));
 
     let ipv4_target: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let ipv6_target = find_ipv6_address();
+    let Some(ipv6_target) = find_ipv6_address() else {
+        debug!("skipping IPv6 address family mismatch test on host without IPv6 loopback");
+        return;
+    };
 
     for addr in BIND_ADDRS {
         let bind_addr = addr.parse().unwrap();

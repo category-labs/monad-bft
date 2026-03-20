@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::sync::Arc;
+
 use actix_server::Server;
 use actix_web::{
     App, HttpRequest, HttpResponse, HttpServer,
@@ -20,7 +22,6 @@ use actix_web::{
     web::{self, ServiceConfig},
 };
 use prometheus::{Encoder, ProtobufEncoder, Registry, TextEncoder};
-use std::sync::Arc;
 
 mod heap;
 

@@ -14,10 +14,10 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use prometheus::{
-    Opts, Registry,
     core::{AtomicU64, GenericGauge},
+    Opts, Registry,
 };
-use serde::{Deserialize, Deserializer, Serialize, Serializer, ser::SerializeStruct};
+use serde::{ser::SerializeStruct, Deserialize, Deserializer, Serialize, Serializer};
 
 pub type Gauge = GenericGauge<AtomicU64>;
 

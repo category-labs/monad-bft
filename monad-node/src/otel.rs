@@ -19,16 +19,16 @@ use clap::error::ErrorKind;
 use monad_consensus_types::metrics::Metrics as StateMetrics;
 use monad_executor::{ExecutorMetricsChain, Gauge};
 use opentelemetry::{
-    KeyValue,
     metrics::{Meter, MeterProvider as _, ObservableGauge},
+    KeyValue,
 };
 use opentelemetry_otlp::{MetricExporter, WithExportConfig};
 use opentelemetry_sdk::metrics::SdkMeterProvider;
 
 use crate::{
-    MONAD_NODE_VERSION,
     error::NodeSetupError,
-    metrics::{GAUGE_TOTAL_UPTIME_US, NodePrometheusMetrics},
+    metrics::{NodePrometheusMetrics, GAUGE_TOTAL_UPTIME_US},
+    MONAD_NODE_VERSION,
 };
 
 pub struct NodeOtelMetricsExporter {

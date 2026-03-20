@@ -22,7 +22,7 @@ use std::{
 };
 
 use agent::AgentBuilder;
-use clap::{FromArgMatches, error::ErrorKind};
+use clap::{error::ErrorKind, FromArgMatches};
 use monad_bls::BlsKeyPair;
 use monad_chain_config::MonadChainConfig;
 use monad_consensus_types::validator_data::ValidatorsConfigFile;
@@ -31,13 +31,13 @@ use monad_keystore::keystore::Keystore;
 use monad_node_config::{ForkpointConfig, MonadNodeConfig, ValidatorsConfigType};
 use monad_secp::KeyPair;
 use monad_types::Round;
-use reqwest::{Url, blocking::Client};
+use reqwest::{blocking::Client, Url};
 use tracing::{info, warn};
 use tracing_manytrace::{ManytraceLayer, TracingExtension};
 use tracing_subscriber::{
-    Layer,
-    fmt::{Layer as FmtLayer, format::FmtSpan},
+    fmt::{format::FmtSpan, Layer as FmtLayer},
     layer::SubscriberExt,
+    Layer,
 };
 
 use crate::{cli::Cli, error::NodeSetupError};
@@ -344,89 +344,6 @@ fn fetch_local_configs(
     Ok((local_forkpoint_config, local_validators_config))
 }
 
-#[cfg(test)]
-mod tests {
-    use clap::error::ErrorKind;
-
-    use super::{OtelConfig, PprofConfig, parse_otel_config, parse_pprof_config};
-
-    #[test]
-    fn rejects_interval_without_otel_endpoint() {
-        let error = parse_otel_config(None, Some(1)).unwrap_err();
-
-        assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument);
-    }
-
-    #[test]
-    fn defaults_otel_interval_to_one_second() {
-        let config = parse_otel_config(Some("http://127.0.0.1:4317".to_owned()), None)
-            .expect("otel config")
-            .expect("otel should be enabled");
-
-        assert_eq!(
-            config,
-            OtelConfig {
-                endpoint: "http://127.0.0.1:4317".to_owned(),
-                export_interval: std::time::Duration::from_secs(1),
-            }
-        );
-    }
-
-    #[test]
-    fn rejects_zero_otel_interval() {
-        let error =
-            parse_otel_config(Some("http://127.0.0.1:4317".to_owned()), Some(0)).unwrap_err();
-
-        assert_eq!(error.kind(), ErrorKind::InvalidValue);
-    }
-
-    #[test]
-    fn rejects_disable_flags_without_pprof_address() {
-        let error = parse_pprof_config(String::new(), true, false).unwrap_err();
-
-        assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument);
-    }
-
-    #[test]
-    fn rejects_when_all_routes_are_disabled() {
-        let error = parse_pprof_config("127.0.0.1:8888".to_owned(), true, false).unwrap_err();
-
-        assert_eq!(error.kind(), ErrorKind::InvalidValue);
-    }
-
-    #[test]
-    fn preserves_metrics_only_configuration() {
-        let config = parse_pprof_config("127.0.0.1:8888".to_owned(), false, false)
-            .expect("pprof config")
-            .expect("pprof should be enabled");
-
-        assert_eq!(
-            config,
-            PprofConfig {
-                addr: "127.0.0.1:8888".to_owned(),
-                enable_metrics: true,
-                enable_profiling: false,
-            }
-        );
-    }
-
-    #[test]
-    fn preserves_metrics_and_profiling_configuration() {
-        let config = parse_pprof_config("127.0.0.1:8888".to_owned(), false, true)
-            .expect("pprof config")
-            .expect("pprof should be enabled");
-
-        assert_eq!(
-            config,
-            PprofConfig {
-                addr: "127.0.0.1:8888".to_owned(),
-                enable_metrics: true,
-                enable_profiling: true,
-            }
-        );
-    }
-}
-
 fn fetch_remote_configs() -> Result<(ForkpointConfig, ValidatorsConfigType), String> {
     let forkpoint_url_str = env::var(REMOTE_FORKPOINT_URL_ENV)
         .map_err(|_| format!("{REMOTE_FORKPOINT_URL_ENV} env variable unset"))?;
@@ -592,4 +509,87 @@ fn load_bls12_381_keypair(
         kind: ErrorKind::ValueValidation,
         msg: "bls secret secret must be encoded in keystore json".to_owned(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::error::ErrorKind;
+
+    use super::{parse_otel_config, parse_pprof_config, OtelConfig, PprofConfig};
+
+    #[test]
+    fn rejects_interval_without_otel_endpoint() {
+        let error = parse_otel_config(None, Some(1)).unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
+    fn defaults_otel_interval_to_one_second() {
+        let config = parse_otel_config(Some("http://127.0.0.1:4317".to_owned()), None)
+            .expect("otel config")
+            .expect("otel should be enabled");
+
+        assert_eq!(
+            config,
+            OtelConfig {
+                endpoint: "http://127.0.0.1:4317".to_owned(),
+                export_interval: std::time::Duration::from_secs(1),
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_zero_otel_interval() {
+        let error =
+            parse_otel_config(Some("http://127.0.0.1:4317".to_owned()), Some(0)).unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::InvalidValue);
+    }
+
+    #[test]
+    fn rejects_disable_flags_without_pprof_address() {
+        let error = parse_pprof_config(String::new(), true, false).unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
+    fn rejects_when_all_routes_are_disabled() {
+        let error = parse_pprof_config("127.0.0.1:8888".to_owned(), true, false).unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::InvalidValue);
+    }
+
+    #[test]
+    fn preserves_metrics_only_configuration() {
+        let config = parse_pprof_config("127.0.0.1:8888".to_owned(), false, false)
+            .expect("pprof config")
+            .expect("pprof should be enabled");
+
+        assert_eq!(
+            config,
+            PprofConfig {
+                addr: "127.0.0.1:8888".to_owned(),
+                enable_metrics: true,
+                enable_profiling: false,
+            }
+        );
+    }
+
+    #[test]
+    fn preserves_metrics_and_profiling_configuration() {
+        let config = parse_pprof_config("127.0.0.1:8888".to_owned(), false, true)
+            .expect("pprof config")
+            .expect("pprof should be enabled");
+
+        assert_eq!(
+            config,
+            PprofConfig {
+                addr: "127.0.0.1:8888".to_owned(),
+                enable_metrics: true,
+                enable_profiling: true,
+            }
+        );
+    }
 }

@@ -9,9 +9,8 @@ receivers:
   prometheus:
     config:
       scrape_configs:
-      - job_name: 'monad-node'
+      - job_name: 'otel-collector'
         scrape_interval: 10s
-        metrics_path: /metrics
         static_configs:
         - targets: ['127.0.0.1:8888']
 
@@ -33,6 +32,6 @@ processors:
 service:
   pipelines:
     metrics:
-      receivers: [otlp, prometheus]
+      receivers: [otlp]
       exporters: [prometheus]
       processors: [batch]

@@ -53,7 +53,6 @@ fn init_executor_metrics() -> ExecutorMetrics {
     ])
 }
 
-type GroupAsClient<PT> = Group<PT>;
 // This is for when the router is playing the role of a client
 // That is, we are a full-node receiving group invites from a validator
 pub struct Client<ST>

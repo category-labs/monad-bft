@@ -19,7 +19,7 @@ use std::{
 };
 
 use monad_consensus_types::metrics::Metrics as StateMetrics;
-use monad_executor::{ExecutorMetrics, ExecutorMetricsChain, Gauge, metric_consts};
+use monad_executor::{metric_consts, ExecutorMetrics, ExecutorMetricsChain, Gauge};
 use prometheus::Registry;
 
 metric_consts! {

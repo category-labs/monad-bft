@@ -127,7 +127,6 @@ where
 
         Ok(EthTxPoolExecutorClient::new(
             {
-                let metrics = metrics.clone();
                 let executor_metrics = executor_metrics.clone();
 
                 move |command_rx, forwarded_rx, event_tx| {

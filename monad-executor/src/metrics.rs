@@ -17,8 +17,8 @@ use std::collections::{HashMap, HashSet};
 
 use hdrhistogram::Histogram as HdrHistogram;
 use prometheus::{
-    Opts, Registry,
     core::{AtomicU64, GenericGauge},
+    Opts, Registry,
 };
 
 pub type Gauge = GenericGauge<AtomicU64>;
