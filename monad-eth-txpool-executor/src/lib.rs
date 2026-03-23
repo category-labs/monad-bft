@@ -709,3 +709,464 @@ where
         Poll::Pending
     }
 }
+
+#[cfg(test)]
+mod test {
+    use std::{
+        collections::BTreeMap,
+        marker::PhantomData,
+        pin::Pin,
+        sync::Arc,
+        task::{Context, Poll},
+        time::Duration,
+    };
+
+    use alloy_consensus::transaction::SignerRecoverable;
+    use alloy_primitives::TxHash;
+    use futures::StreamExt;
+    use monad_chain_config::{revision::MockChainRevision, ChainConfig, MockChainConfig};
+    use monad_consensus_types::{
+        block::GENESIS_TIMESTAMP, payload::RoundSignature, quorum_certificate::QuorumCertificate,
+    };
+    use monad_crypto::{
+        certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
+        NopKeyPair, NopSignature,
+    };
+    use monad_eth_block_policy::EthBlockPolicy;
+    use monad_eth_testutil::{generate_block_with_txs, make_legacy_tx, secret_to_eth_address, S1};
+    use monad_eth_txpool::{EthTxPool, EthTxPoolConfig, TrackedTxLimitsConfig};
+    use monad_eth_txpool_types::{
+        EthTxPoolEventType, EthTxPoolIpcTx, EthTxPoolSnapshot, EthTxPoolTxInputStream,
+    };
+    use monad_eth_types::EthExecutionProtocol;
+    use monad_executor::{Executor, ExecutorMetrics};
+    use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
+    use monad_peer_score::{ema, StdClock};
+    use monad_state_backend::{
+        AccountState, InMemoryBlockState, InMemoryState, InMemoryStateInner,
+    };
+    use monad_testutil::signing::{node_id, MockSignatures};
+    use monad_tfm::base_fee::MIN_BASE_FEE;
+    use monad_types::{Epoch, NodeId, Round, SeqNum, GENESIS_ROUND, GENESIS_SEQ_NUM};
+    use tokio::sync::mpsc;
+
+    use crate::{
+        forward::{EthTxPoolForwardingManager, INGRESS_CHUNK_INTERVAL_MS, INGRESS_CHUNK_MAX_SIZE},
+        metrics::EthTxPoolExecutorMetrics,
+        preload::EthTxPoolPreloadManager,
+        reset::EthTxPoolResetTrigger,
+        EthTxPoolExecutor, EthTxPoolExecutorClient, ForwardedIngressFairQueueConfig,
+    };
+
+    type SignatureType = NopSignature;
+    type SignatureCollectionType = MockSignatures<SignatureType>;
+    type StateBackendType = InMemoryState<SignatureType, SignatureCollectionType>;
+    type ExecutorType = EthTxPoolExecutor<
+        SignatureType,
+        SignatureCollectionType,
+        StateBackendType,
+        MockChainConfig,
+        MockChainRevision,
+        NoopTxInputStream,
+    >;
+    type CommandType = TxPoolCommand<
+        SignatureType,
+        SignatureCollectionType,
+        EthExecutionProtocol,
+        EthBlockPolicy<SignatureType, SignatureCollectionType, MockChainConfig, MockChainRevision>,
+        StateBackendType,
+        MockChainConfig,
+        MockChainRevision,
+    >;
+
+    #[derive(Default)]
+    struct NoopTxInputStream;
+
+    impl EthTxPoolTxInputStream for NoopTxInputStream {
+        fn poll_txs(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            _generate_snapshot: impl Fn() -> EthTxPoolSnapshot,
+        ) -> Poll<Vec<EthTxPoolIpcTx>> {
+            Poll::Pending
+        }
+
+        fn broadcast_tx_events(
+            self: Pin<&mut Self>,
+            _events: BTreeMap<TxHash, EthTxPoolEventType>,
+        ) {
+        }
+    }
+
+    fn make_forwarded_txs(start_nonce: u64, count: usize) -> Vec<bytes::Bytes> {
+        (start_nonce..(start_nonce + count as u64))
+            .map(|nonce| {
+                alloy_rlp::encode(make_legacy_tx(S1, MIN_BASE_FEE.into(), 100_000, nonce, 512))
+                    .into()
+            })
+            .collect()
+    }
+
+    fn proposal_command(round: Round) -> CommandType {
+        let mut key_bytes = [7_u8; 32];
+        let keypair = NopKeyPair::from_bytes(&mut key_bytes).unwrap();
+
+        TxPoolCommand::CreateProposal {
+            node_id: node_id::<SignatureType>(),
+            epoch: Epoch(1),
+            round,
+            seq_num: GENESIS_SEQ_NUM + SeqNum(1),
+            high_qc: QuorumCertificate::genesis_qc(),
+            round_signature: RoundSignature::new(round, &keypair),
+            last_round_tc: None,
+            fresh_proposal_certificate: None,
+            tx_limit: 1_024,
+            proposal_gas_limit: 30_000_000_u64 * 1_024,
+            proposal_byte_limit: 10_000_000_u64,
+            beneficiary: [0_u8; 20],
+            timestamp_ns: GENESIS_TIMESTAMP + 1,
+            extending_blocks: Vec::default(),
+            delayed_execution_results: Vec::default(),
+        }
+    }
+
+    fn collect_forwarded_txs(
+        event: MonadEvent<SignatureType, SignatureCollectionType, EthExecutionProtocol>,
+    ) -> Vec<bytes::Bytes> {
+        let expected_signer = secret_to_eth_address(S1);
+
+        match event {
+            MonadEvent::MempoolEvent(MempoolEvent::Proposal {
+                proposed_execution_inputs,
+                ..
+            }) => proposed_execution_inputs
+                .body
+                .transactions
+                .into_iter()
+                .filter_map(|tx| {
+                    let signer = tx.recover_signer().expect("proposal tx signer recovers");
+                    (signer == expected_signer).then(|| alloy_rlp::encode(tx).into())
+                })
+                .collect(),
+            other => panic!("unexpected txpool event: {other:?}"),
+        }
+    }
+
+    fn assert_no_proposal(
+        proposal_rx: &mut mpsc::UnboundedReceiver<Vec<bytes::Bytes>>,
+        context: &str,
+    ) {
+        assert!(
+            matches!(
+                proposal_rx.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+            ),
+            "{context}"
+        );
+    }
+
+    const MAX_YIELDS: usize = 10;
+
+    async fn recv_proposal_with_yields(
+        proposal_rx: &mut mpsc::UnboundedReceiver<Vec<bytes::Bytes>>,
+        yields: usize,
+        context: &str,
+    ) -> Vec<bytes::Bytes> {
+        assert!(yields <= MAX_YIELDS, "yield limit exceeded");
+
+        for _ in 0..yields {
+            match proposal_rx.try_recv() {
+                Ok(proposal) => return proposal,
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                    tokio::task::yield_now().await;
+                }
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                    panic!("proposal channel disconnected");
+                }
+            }
+        }
+
+        match proposal_rx.try_recv() {
+            Ok(proposal) => proposal,
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => panic!("{context}"),
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                panic!("proposal channel disconnected");
+            }
+        }
+    }
+
+    fn metric_value(metrics: &[(&'static str, u64, &'static str)], name: &'static str) -> u64 {
+        metrics
+            .iter()
+            .find_map(|(metric_name, value, _)| (*metric_name == name).then_some(*value))
+            .unwrap_or_default()
+    }
+
+    fn start_test_client_with_forwarded_ingress_config(
+        forwarded_ingress_fair_queue_config: ForwardedIngressFairQueueConfig,
+    ) -> EthTxPoolExecutorClient<
+        SignatureType,
+        SignatureCollectionType,
+        StateBackendType,
+        MockChainConfig,
+        MockChainRevision,
+    > {
+        const TEST_TX_EXPIRY: Duration = Duration::from_secs(24 * 60 * 60);
+
+        let block_policy = EthBlockPolicy::new(GENESIS_SEQ_NUM, u64::MAX);
+        let state_backend: StateBackendType = InMemoryStateInner::new(
+            SeqNum::MAX,
+            InMemoryBlockState::genesis(BTreeMap::from_iter([(
+                secret_to_eth_address(S1),
+                AccountState::max_balance(),
+            )])),
+        );
+        let chain_config = MockChainConfig::DEFAULT;
+        let round = GENESIS_ROUND;
+        let execution_timestamp_s = GENESIS_TIMESTAMP as u64;
+
+        let (events_tx, events) = mpsc::unbounded_channel();
+
+        let (_score_provider, score_reader) = ema::create::<
+            NodeId<CertificateSignaturePubKey<SignatureType>>,
+            StdClock,
+        >(ema::ScoreConfig::default(), StdClock);
+
+        EthTxPoolExecutorClient::new(
+            move |command_rx, forwarded_rx, event_tx| {
+                let pool = EthTxPool::new(
+                    EthTxPoolConfig {
+                        limits: TrackedTxLimitsConfig::new(
+                            None,
+                            None,
+                            None,
+                            None,
+                            TEST_TX_EXPIRY,
+                            TEST_TX_EXPIRY,
+                        ),
+                    },
+                    chain_config.chain_id(),
+                    chain_config.get_chain_revision(round),
+                    chain_config.get_execution_chain_revision(execution_timestamp_s),
+                );
+
+                ExecutorType {
+                    pool,
+                    tx_input_stream: Box::pin(NoopTxInputStream),
+                    reset: EthTxPoolResetTrigger::default(),
+                    block_policy,
+                    state_backend,
+                    chain_config,
+                    events_tx,
+                    events,
+                    forwarding_manager: Box::pin(EthTxPoolForwardingManager::default()),
+                    preload_manager: Box::pin(EthTxPoolPreloadManager::default()),
+                    metrics: Arc::new(EthTxPoolExecutorMetrics::default()),
+                    executor_metrics: ExecutorMetrics::default(),
+                    _phantom: PhantomData,
+                }
+                .run(command_rx, forwarded_rx, event_tx)
+            },
+            Box::new(|_| {}),
+            score_reader,
+            forwarded_ingress_fair_queue_config,
+        )
+    }
+
+    fn start_test_client() -> EthTxPoolExecutorClient<
+        SignatureType,
+        SignatureCollectionType,
+        StateBackendType,
+        MockChainConfig,
+        MockChainRevision,
+    > {
+        start_test_client_with_forwarded_ingress_config(ForwardedIngressFairQueueConfig::default())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_forwarded_ingress_drop_metrics_count_remaining_batch_once() {
+        let mut client =
+            start_test_client_with_forwarded_ingress_config(ForwardedIngressFairQueueConfig {
+                per_id_limit: 2,
+                max_size: 2,
+                regular_per_id_limit: 2,
+                regular_max_size: 2,
+                ..ForwardedIngressFairQueueConfig::default()
+            });
+
+        client.exec(vec![TxPoolCommand::InsertForwardedTxs {
+            sender: node_id::<SignatureType>(),
+            txs: make_forwarded_txs(0, 4),
+        }]);
+
+        let metrics = client.metrics().into_inner();
+        assert_eq!(
+            metric_value(&metrics, "monad.bft.txpool.forwarded_ingress_enqueued_txs",),
+            2
+        );
+        assert_eq!(
+            metric_value(&metrics, "monad.bft.txpool.forwarded_ingress_dropped_txs",),
+            2
+        );
+        assert_eq!(
+            metric_value(&metrics, "monad.bft.txpool.forwarded_ingress_drop_events",),
+            1
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn test_forwarded_ingress_buffering_and_executor_timers() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let mut client = start_test_client();
+                let expected_txs = make_forwarded_txs(0, INGRESS_CHUNK_MAX_SIZE);
+                let expected_txs_after_second_batch =
+                    make_forwarded_txs(INGRESS_CHUNK_MAX_SIZE as u64, INGRESS_CHUNK_MAX_SIZE);
+                let all_expected_txs = expected_txs
+                    .iter()
+                    .cloned()
+                    .chain(expected_txs_after_second_batch.iter().cloned())
+                    .collect::<Vec<_>>();
+
+                client.exec(vec![TxPoolCommand::Reset {
+                    last_delay_committed_blocks: vec![generate_block_with_txs(
+                        GENESIS_ROUND,
+                        GENESIS_SEQ_NUM,
+                        MIN_BASE_FEE,
+                        &MockChainConfig::DEFAULT,
+                        vec![],
+                    )],
+                }]);
+
+                let (proposal_tx, mut proposal_rx) = mpsc::unbounded_channel();
+                let (command_tx, mut command_rx) = mpsc::unbounded_channel::<Vec<CommandType>>();
+                let driver = tokio::task::spawn_local(async move {
+                    loop {
+                        tokio::select! {
+                            biased;
+
+                            Some(commands) = command_rx.recv() => {
+                                client.exec(commands);
+                            }
+                            event = client.next() => {
+                                let Some(event) = event else {
+                                    break;
+                                };
+
+                                proposal_tx
+                                    .send(collect_forwarded_txs(event))
+                                    .expect("proposal receiver is alive");
+                            }
+                        }
+                    }
+                });
+
+                tokio::task::yield_now().await;
+                assert_no_proposal(
+                    &mut proposal_rx,
+                    "driver should not emit a proposal on its own",
+                );
+
+                command_tx
+                    .send(vec![proposal_command(Round(1))])
+                    .expect("proposal command is queued");
+                assert_eq!(
+                    recv_proposal_with_yields(
+                        &mut proposal_rx,
+                        MAX_YIELDS,
+                        "initial proposal did not arrive within yield budget",
+                    )
+                    .await,
+                    Vec::<bytes::Bytes>::default()
+                );
+                assert_no_proposal(
+                    &mut proposal_rx,
+                    "forwarded txs should not be in the pool before the first executor timer tick",
+                );
+
+                command_tx
+                    .send(vec![TxPoolCommand::InsertForwardedTxs {
+                        sender: node_id::<SignatureType>(),
+                        txs: expected_txs.clone(),
+                    }])
+                    .expect("forwarded txs are queued");
+                tokio::task::yield_now().await;
+
+                tokio::time::advance(Duration::from_millis(4)).await;
+                command_tx
+                    .send(vec![proposal_command(Round(2))])
+                    .expect("proposal command is queued");
+                assert_eq!(
+                    recv_proposal_with_yields(
+                        &mut proposal_rx,
+                        MAX_YIELDS,
+                        "proposal after 4ms did not arrive within yield budget",
+                    )
+                    .await,
+                    Vec::<bytes::Bytes>::default()
+                );
+
+                tokio::time::advance(Duration::from_millis(INGRESS_CHUNK_INTERVAL_MS - 4)).await;
+                tokio::task::yield_now().await;
+
+                command_tx
+                    .send(vec![proposal_command(Round(3))])
+                    .expect("proposal command is queued");
+                assert_eq!(
+                    recv_proposal_with_yields(
+                        &mut proposal_rx,
+                        MAX_YIELDS,
+                        "proposal after first tick did not arrive within yield budget",
+                    )
+                    .await,
+                    expected_txs
+                );
+
+                command_tx
+                    .send(vec![TxPoolCommand::InsertForwardedTxs {
+                        sender: node_id::<SignatureType>(),
+                        txs: expected_txs_after_second_batch.clone(),
+                    }])
+                    .expect("forwarded txs are queued");
+                tokio::task::yield_now().await;
+
+                tokio::time::advance(Duration::from_millis(4)).await;
+                command_tx
+                    .send(vec![proposal_command(Round(4))])
+                    .expect("proposal command is queued");
+                assert_eq!(
+                    recv_proposal_with_yields(
+                        &mut proposal_rx,
+                        MAX_YIELDS,
+                        "proposal after second 4ms window did not arrive within yield budget",
+                    )
+                    .await,
+                    expected_txs.clone()
+                );
+
+                tokio::time::advance(Duration::from_millis(INGRESS_CHUNK_INTERVAL_MS - 4)).await;
+                tokio::task::yield_now().await;
+
+                command_tx
+                    .send(vec![proposal_command(Round(5))])
+                    .expect("proposal command is queued");
+                assert_eq!(
+                    recv_proposal_with_yields(
+                        &mut proposal_rx,
+                        MAX_YIELDS,
+                        "proposal after second full tick did not arrive within yield budget",
+                    )
+                    .await,
+                    all_expected_txs
+                );
+                assert_no_proposal(
+                    &mut proposal_rx,
+                    "unexpected extra proposal after checking buffered forwarded batches",
+                );
+
+                driver.abort();
+                let _ = driver.await;
+            })
+            .await;
+    }
+}
