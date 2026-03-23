@@ -22,7 +22,7 @@ use monad_peer_discovery::{MonadNameRecord, NameRecord};
 use monad_secp::SecpSignature;
 
 /// Example command to run the following program:
-/// sign-name-record -- --address 0.0.0.0:8888 --node-config <...> --keystore-path <...> --password ""
+/// sign-name-record -- --address 0.0.0.0:8888 --authenticated-udp-port 8889 --node-config <...> --keystore-path <...> --password ""
 #[derive(Debug, Parser)]
 #[command(name = "monad-peer-discovery", about)]
 struct Args {
@@ -30,11 +30,8 @@ struct Args {
     #[arg(long)]
     address: SocketAddrV4,
 
-    #[arg(
-        long,
-        help = "Optional authenticated UDP port. If provided, will create name record with authenticated UDP port"
-    )]
-    authenticated_udp_port: Option<u16>,
+    #[arg(long, help = "Authenticated UDP port for the name record")]
+    authenticated_udp_port: u16,
 
     #[arg(long, help = "Optional direct UDP port")]
     direct_udp_port: Option<u16>,
@@ -78,29 +75,22 @@ fn main() {
             .unwrap_or_else(|| panic!("Either node_config or self_record_seq_num must be provided"))
     };
     let self_address = args.address;
-    let name_record = match (args.authenticated_udp_port, args.direct_udp_port) {
-        (None, None) => {
-            NameRecord::new(*self_address.ip(), self_address.port(), self_record_seq_num)
-        }
-        (authenticated_udp_port, direct_udp_port) => NameRecord::new_with_ports(
-            *self_address.ip(),
-            self_address.port(),
-            self_address.port(),
-            authenticated_udp_port,
-            direct_udp_port,
-            self_record_seq_num,
-        ),
-    };
+    let name_record = NameRecord::new_with_ports(
+        *self_address.ip(),
+        self_address.port(),
+        self_address.port(),
+        Some(args.authenticated_udp_port),
+        args.direct_udp_port,
+        self_record_seq_num,
+    );
     let signed_name_record: MonadNameRecord<SecpSignature> =
         MonadNameRecord::new(name_record, &keypair);
 
     println!("self_address = {:?}", self_address.to_string());
     println!("self_record_seq_num = {}", self_record_seq_num);
-    if let Some(authenticated_udp_port) = args.authenticated_udp_port {
-        println!("authenticated_udp_port = {}", authenticated_udp_port);
-    }
+    println!("self_auth_port = {}", args.authenticated_udp_port);
     if let Some(direct_udp_port) = args.direct_udp_port {
-        println!("direct_udp_port = {}", direct_udp_port);
+        println!("self_direct_udp_auth_port = {}", direct_udp_port);
     }
     println!(
         "self_name_record_sig = {:?}",

@@ -530,10 +530,10 @@ where
         IpAddr::V4(node_config.network.bind_address_host),
         node_config.network.bind_address_port,
     );
-    let authenticated_bind_address = node_config
-        .network
-        .authenticated_bind_address_port
-        .map(|port| SocketAddr::new(IpAddr::V4(node_config.network.bind_address_host), port));
+    let authenticated_bind_address = SocketAddr::new(
+        IpAddr::V4(node_config.network.bind_address_host),
+        node_config.network.authenticated_bind_address_port,
+    );
     let Some(SocketAddr::V4(name_record_address)) = resolve_domain_v4(
         &NodeId::new(identity.pubkey()),
         &peer_discovery_config.self_address,
@@ -569,44 +569,30 @@ where
             network_config.tcp_rate_limit_burst,
         );
 
-    let mut udp_sockets: Vec<(UdpSocketId, std::net::SocketAddr)> =
-        vec![(UdpSocketId::Raptorcast, bind_address)];
-    if let Some(auth_addr) = authenticated_bind_address {
-        udp_sockets.push((UdpSocketId::AuthenticatedRaptorcast, auth_addr));
-    }
     dp_builder = dp_builder
-        .with_udp_sockets(udp_sockets)
+        .with_udp_sockets([
+            (UdpSocketId::Raptorcast, bind_address),
+            (
+                UdpSocketId::AuthenticatedRaptorcast,
+                authenticated_bind_address,
+            ),
+        ])
         .with_tcp_sockets([(TcpSocketId::Raptorcast, bind_address)]);
 
-    // auth port in peer discovery config and network config should be set and unset simultaneously
-    assert_eq!(
-        peer_discovery_config.self_auth_port.is_some(),
-        network_config.authenticated_bind_address_port.is_some()
-    );
     assert_eq!(
         peer_discovery_config.self_direct_udp_port.is_some(),
         network_config.direct_udp_bind_address_port.is_some()
     );
 
     let self_id = NodeId::new(identity.pubkey());
-    let self_record = match (
-        peer_discovery_config.self_auth_port,
+    let self_record = NameRecord::new_with_ports(
+        *name_record_address.ip(),
+        name_record_address.port(),
+        name_record_address.port(),
+        Some(peer_discovery_config.self_auth_port),
         peer_discovery_config.self_direct_udp_port,
-    ) {
-        (None, None) => NameRecord::new(
-            *name_record_address.ip(),
-            name_record_address.port(),
-            peer_discovery_config.self_record_seq_num,
-        ),
-        (auth_port, direct_udp_port) => NameRecord::new_with_ports(
-            *name_record_address.ip(),
-            name_record_address.port(),
-            name_record_address.port(),
-            auth_port,
-            direct_udp_port,
-            peer_discovery_config.self_record_seq_num,
-        ),
-    };
+        peer_discovery_config.self_record_seq_num,
+    );
     let self_record = MonadNameRecord::new(self_record, &identity);
     info!(?self_id, ?self_record, "self name record");
     assert!(
