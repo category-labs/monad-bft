@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 monad-dynamic-cap = { workspace = true }
 monad-executor = { workspace = true }
+monad-peer-score = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
