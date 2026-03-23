@@ -219,6 +219,7 @@ where
             Duration::from_millis(INGRESS_CHUNK_INTERVAL_MS),
         );
         forwarded_channel_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut forwarded_tick_credit = false;
 
         loop {
             tokio::select! {
@@ -234,6 +235,19 @@ where
 
                     self.exec(commands);
                 }
+                result = forwarded_rx.recv(), if forwarded_tick_credit => {
+                    let Some(forwarded_txs) = result else {
+                        warn!("forwarded channel was dropped, shutting down txpool executor");
+                        break;
+                    };
+
+                    debug!(
+                        batch_items = forwarded_txs.len(),
+                        "txpool executor: received forwarded batch from channel after empty timeout"
+                    );
+                    self.process_forwarded_txs(forwarded_txs);
+                    forwarded_tick_credit = false;
+                }
                 // we drain ingestion queue at a steady rate of 128 tx per 8ms, ~16k tx/s
                 // if actual processing rate is lower we will shed load in the client and here we will rely on Delay policy
                 _ = forwarded_channel_poll.tick() => {
@@ -248,8 +262,11 @@ where
                                 "txpool executor: received forwarded batch from channel on timeout"
                             );
                             self.process_forwarded_txs(forwarded_txs);
+                            forwarded_tick_credit = false;
                         }
-                        Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
+                        Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                            forwarded_tick_credit = true;
+                        }
                         Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
                             warn!("forwarded channel was dropped, shutting down txpool executor");
                             break;
@@ -1161,6 +1178,106 @@ mod test {
                 assert_no_proposal(
                     &mut proposal_rx,
                     "unexpected extra proposal after checking buffered forwarded batches",
+                );
+
+                driver.abort();
+                let _ = driver.await;
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn test_forwarded_ingress_consumes_immediately_after_empty_tick() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let mut client = start_test_client();
+                let expected_txs = make_forwarded_txs(0, INGRESS_CHUNK_MAX_SIZE);
+
+                client.exec(vec![TxPoolCommand::Reset {
+                    last_delay_committed_blocks: vec![generate_block_with_txs(
+                        GENESIS_ROUND,
+                        GENESIS_SEQ_NUM,
+                        MIN_BASE_FEE,
+                        &MockChainConfig::DEFAULT,
+                        vec![],
+                    )],
+                }]);
+
+                let (proposal_tx, mut proposal_rx) = mpsc::unbounded_channel();
+                let (command_tx, mut command_rx) = mpsc::unbounded_channel::<Vec<CommandType>>();
+                let driver = tokio::task::spawn_local(async move {
+                    loop {
+                        tokio::select! {
+                            biased;
+
+                            Some(commands) = command_rx.recv() => {
+                                client.exec(commands);
+                            }
+                            event = client.next() => {
+                                let Some(event) = event else {
+                                    break;
+                                };
+
+                                proposal_tx
+                                    .send(collect_forwarded_txs(event))
+                                    .expect("proposal receiver is alive");
+                            }
+                        }
+                    }
+                });
+
+                tokio::task::yield_now().await;
+
+                command_tx
+                    .send(vec![proposal_command(Round(1))])
+                    .expect("proposal command is queued");
+                assert_eq!(
+                    recv_proposal_with_yields(
+                        &mut proposal_rx,
+                        MAX_YIELDS,
+                        "initial proposal did not arrive within yield budget",
+                    )
+                    .await,
+                    Vec::<bytes::Bytes>::default()
+                );
+
+                tokio::time::advance(Duration::from_millis(INGRESS_CHUNK_INTERVAL_MS)).await;
+                command_tx
+                    .send(vec![proposal_command(Round(2))])
+                    .expect("proposal command is queued");
+                assert_eq!(
+                    recv_proposal_with_yields(
+                        &mut proposal_rx,
+                        MAX_YIELDS,
+                        "proposal after empty timer tick did not arrive within yield budget",
+                    )
+                    .await,
+                    Vec::<bytes::Bytes>::default()
+                );
+
+                command_tx
+                    .send(vec![TxPoolCommand::InsertForwardedTxs {
+                        sender: node_id::<SignatureType>(),
+                        txs: expected_txs.clone(),
+                    }])
+                    .expect("forwarded txs are queued");
+                tokio::task::yield_now().await;
+
+                command_tx
+                    .send(vec![proposal_command(Round(3))])
+                    .expect("proposal command is queued");
+                assert_eq!(
+                    recv_proposal_with_yields(
+                        &mut proposal_rx,
+                        MAX_YIELDS,
+                        "proposal after empty timer tick did not arrive within yield budget",
+                    )
+                    .await,
+                    expected_txs
+                );
+                assert_no_proposal(
+                    &mut proposal_rx,
+                    "unexpected extra proposal after immediate post-tick consumption",
                 );
 
                 driver.abort();
