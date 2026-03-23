@@ -36,15 +36,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     run_txpool_benches(
         c,
         "clear",
-        |controller_config| {
-            let (pending_txs, txs) = BenchController::generate_txs(
-                controller_config.accounts,
-                controller_config.txs,
-                controller_config.nonce_var,
-                0,
-            );
-            assert!(pending_txs.is_empty());
-
+        |_, _, txs| {
             let metrics = EthTxPoolMetrics::default();
 
             let pool = BenchController::create_pool(
