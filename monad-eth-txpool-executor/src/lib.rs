@@ -273,6 +273,8 @@ where
     }
 
     fn process_forwarded_txs(&mut self, forwarded_txs: Vec<ForwardedTxs<SCT>>) {
+        let mut ingress_batch = Vec::new();
+
         for ForwardedTxs { sender, txs } in forwarded_txs {
             let _span = debug_span!("processing forwarded txs").entered();
             debug!(
@@ -283,17 +285,14 @@ where
 
             let mut num_invalid_bytes = 0;
 
-            let txs = txs
-                .into_iter()
-                .filter_map(|raw_tx| {
-                    if let Ok(tx) = TxEnvelope::decode(&mut raw_tx.as_ref()) {
-                        Some(tx)
-                    } else {
-                        num_invalid_bytes += 1;
-                        None
-                    }
-                })
-                .collect::<Vec<_>>();
+            ingress_batch.extend(txs.into_iter().filter_map(|raw_tx| {
+                if let Ok(tx) = TxEnvelope::decode(&mut raw_tx.as_ref()) {
+                    Some(tx)
+                } else {
+                    num_invalid_bytes += 1;
+                    None
+                }
+            }));
 
             self.metrics
                 .reject_forwarded_invalid_bytes
@@ -302,12 +301,12 @@ where
             if num_invalid_bytes != 0 {
                 tracing::warn!(?sender, ?num_invalid_bytes, "invalid forwarded txs");
             }
-
-            self.forwarding_manager
-                .as_mut()
-                .project()
-                .add_ingress_txs(txs);
         }
+
+        self.forwarding_manager
+            .as_mut()
+            .project()
+            .add_ingress_txs(ingress_batch);
     }
 }
 
