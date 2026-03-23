@@ -40,7 +40,7 @@ const EGRESS_MIN_COMMITTED_SEQ_NUM_DIFF: u64 = 5;
 const EGRESS_MAX_RETRIES: usize = 3;
 
 pub(crate) const INGRESS_CHUNK_MAX_SIZE: usize = 128;
-const INGRESS_CHUNK_INTERVAL_MS: u64 = 8;
+pub(crate) const INGRESS_CHUNK_INTERVAL_MS: u64 = 8;
 const INGRESS_MAX_SIZE: usize = 8 * 1024;
 
 pub fn egress_max_size_bytes(execution_params: &ExecutionChainParams) -> usize {
@@ -77,6 +77,10 @@ impl Default for EthTxPoolForwardingManager {
 }
 
 impl EthTxPoolForwardingManager {
+    pub fn ingress_is_empty(&self) -> bool {
+        self.ingress.is_empty()
+    }
+
     pub fn poll_ingress(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Vec<TxEnvelope>> {
         let EthTxPoolForwardingManagerProjected {
             ingress,
@@ -93,10 +97,12 @@ impl EthTxPoolForwardingManager {
             return Poll::Pending;
         }
 
+        // TODO(dshulyak) actual pacing is implemented in txpool executor so that we can drop at the ingestion boundary (client)
         let Poll::Ready(_) = ingress_timer.poll_tick(cx) else {
             return Poll::Pending;
         };
 
+        // same as above, batching is in txpool executor
         Poll::Ready(
             ingress
                 .drain(..INGRESS_CHUNK_MAX_SIZE.min(ingress.len()))
@@ -161,6 +167,7 @@ impl EthTxPoolForwardingManager {
         }
     }
 
+    #[cfg(test)]
     pub fn complete_ingress(self: Pin<&mut Self>) {
         self.get_mut().ingress_timer.reset();
     }
@@ -173,7 +180,8 @@ impl EthTxPoolForwardingManagerProjected<'_> {
             ingress_waker,
             ..
         } = self;
-
+        // TODO(dshulyak) this limit is ineffective and can be refactored in future
+        // all txs are dropped in the client if queue fills up
         let capacity_remaining = INGRESS_MAX_SIZE.saturating_sub(ingress.len());
 
         let dropped = txs.len().saturating_sub(capacity_remaining);
