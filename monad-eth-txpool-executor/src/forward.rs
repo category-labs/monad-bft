@@ -39,7 +39,7 @@ use tracing::{debug, error};
 const EGRESS_MIN_COMMITTED_SEQ_NUM_DIFF: u64 = 5;
 const EGRESS_MAX_RETRIES: usize = 3;
 
-const INGRESS_CHUNK_MAX_SIZE: usize = 128;
+pub(crate) const INGRESS_CHUNK_MAX_SIZE: usize = 128;
 const INGRESS_CHUNK_INTERVAL_MS: u64 = 8;
 const INGRESS_MAX_SIZE: usize = 8 * 1024;
 

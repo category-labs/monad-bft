@@ -19,6 +19,8 @@ mod queue;
 
 use std::fmt::{Debug, Display};
 
+pub use monad_peer_score::{IdentityScore, PeerStatus, Score};
+
 macro_rules! ensure {
     ($condition:expr, $error:expr $(,)?) => {
         if !$condition {
@@ -28,69 +30,6 @@ macro_rules! ensure {
 }
 pub(crate) use ensure;
 pub use queue::{FairQueue, FairQueueBuilder};
-
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
-pub struct Score(f64);
-
-impl Score {
-    pub const ONE: Self = Self(1.0);
-
-    pub fn reciprocal(self) -> f64 {
-        debug_assert!(self.0.is_finite() && self.0 > 0.0);
-        1.0 / self.0
-    }
-}
-
-impl TryFrom<f64> for Score {
-    type Error = ();
-
-    fn try_from(value: f64) -> Result<Self, Self::Error> {
-        if value.is_finite() && value > 0.0 {
-            Ok(Self(value))
-        } else {
-            Err(())
-        }
-    }
-}
-
-impl TryFrom<u64> for Score {
-    type Error = ();
-
-    fn try_from(value: u64) -> Result<Self, Self::Error> {
-        let value = value as f64;
-        if value.is_finite() && value > 0.0 {
-            Ok(Self(value))
-        } else {
-            Err(())
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum PeerStatus {
-    Promoted(Score),
-    Newcomer(Score),
-    Unknown,
-}
-
-impl PeerStatus {
-    pub fn score(&self) -> Score {
-        match self {
-            PeerStatus::Promoted(s) | PeerStatus::Newcomer(s) => *s,
-            PeerStatus::Unknown => Score::ONE,
-        }
-    }
-
-    pub fn is_promoted(&self) -> bool {
-        matches!(self, PeerStatus::Promoted(_))
-    }
-}
-
-pub trait IdentityScore {
-    type Identity;
-
-    fn score(&self, identity: &Self::Identity) -> PeerStatus;
-}
 
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum PushError<Id: Debug + Display> {

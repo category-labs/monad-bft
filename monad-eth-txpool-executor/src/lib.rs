@@ -42,19 +42,23 @@ use monad_eth_txpool_types::{
 use monad_eth_types::{EthExecutionProtocol, ExtractEthAddress};
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
+use monad_peer_score::{ema, StdClock};
 use monad_secp::RecoverableAddress;
 use monad_state_backend::StateBackend;
-use monad_types::{DropTimer, Round};
+use monad_types::{DropTimer, NodeId, Round};
 use monad_validator::signature_collection::SignatureCollection;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tokio::{sync::mpsc, time::Instant};
 use tracing::{debug, debug_span, error, info, trace_span, warn};
 
-pub use self::{client::EthTxPoolExecutorClient, ipc::EthTxPoolIpcConfig};
 use self::{
     client::ForwardedTxs, forward::EthTxPoolForwardingManager, ipc::EthTxPoolIpcServer,
     metrics::EthTxPoolExecutorMetrics, preload::EthTxPoolPreloadManager,
     reset::EthTxPoolResetTrigger,
+};
+pub use self::{
+    client::{EthTxPoolExecutorClient, ForwardedIngressFairQueueConfig},
+    ipc::EthTxPoolIpcConfig,
 };
 
 mod client;
@@ -119,6 +123,10 @@ where
 
         let metrics = Arc::new(EthTxPoolExecutorMetrics::default());
         let mut executor_metrics = ExecutorMetrics::default();
+        let (_score_provider, score_reader) = ema::create::<
+            NodeId<CertificateSignaturePubKey<ST>>,
+            StdClock,
+        >(ema::ScoreConfig::default(), StdClock);
 
         metrics.update(&mut executor_metrics);
 
@@ -168,6 +176,8 @@ where
             Box::new(move |executor_metrics: &mut ExecutorMetrics| {
                 metrics.update(executor_metrics)
             }),
+            score_reader,
+            ForwardedIngressFairQueueConfig::default(),
         ))
     }
 

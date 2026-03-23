@@ -37,6 +37,7 @@ monad-eth-block-policy = { path = "./monad-eth-block-policy" }
 monad-eth-block-validator = { path = "./monad-eth-block-validator" }
 monad-eth-ledger = { path = "./monad-eth-ledger" }
 monad-eth-testutil = { path = "./monad-eth-testutil" }
+monad-fair-queue = { path = "./monad-fair-queue" }
 monad-eth-txpool = { path = "./monad-eth-txpool" }
 monad-eth-txpool-executor = { path = "./monad-eth-txpool-executor" }
 monad-eth-txpool-ipc = { path = "./monad-eth-txpool-ipc" }
@@ -53,6 +54,7 @@ monad-multi-sig = { path = "./monad-multi-sig" }
 monad-node-config = { path = "./monad-node-config" }
 monad-peer-disc-swarm = { path = "./monad-peer-disc-swarm" }
 monad-peer-discovery = { path = "./monad-peer-discovery" }
+monad-peer-score = { path = "./monad-peer-score" }
 monad-perf-util = { path = "./monad-perf-util" }
 monad-pprof = { path = "./monad-pprof" }
 monad-raptor = { path = "./monad-raptor" }
