@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{borrow::BorrowMut, collections::HashMap};
+use std::{borrow::BorrowMut, collections::BTreeMap};
 
 pub use inventory;
 pub use monad_rpc_docs_derive::rpc;
@@ -22,8 +22,8 @@ use serde::Serialize;
 
 inventory::collect!(RpcMethodInfo);
 
-pub static FUNCTION_MAP: Lazy<HashMap<String, &RpcMethodInfo>> = Lazy::new(|| {
-    let mut map = HashMap::new();
+pub static FUNCTION_MAP: Lazy<BTreeMap<String, &RpcMethodInfo>> = Lazy::new(|| {
+    let mut map = BTreeMap::new();
     for info in inventory::iter::<RpcMethodInfo> {
         map.insert(info.name.to_string(), info);
     }
@@ -85,7 +85,7 @@ pub struct MethodResult {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Components {
-    pub schemas: HashMap<String, schemars::schema::Schema>,
+    pub schemas: BTreeMap<String, schemars::schema::Schema>,
 }
 
 #[derive(Debug, Clone, Serialize)]

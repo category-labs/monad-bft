@@ -92,24 +92,18 @@ pub fn rpc(attr_args: TokenStream, decorated: TokenStream) -> TokenStream {
             fn register_components(components: &mut monad_rpc_docs::Components) {
                 // Register input schema components
                 if let Some(schema) = Self::input_schema() {
-                    let definitions = schema.definitions;
-                    let schemas: std::collections::HashMap<_, _> = definitions.into_iter().map(|(k,v)| {
-                        let mut v = v.clone();
+                    components.schemas.extend(schema.definitions.into_iter().map(|(k, mut v)| {
                         monad_rpc_docs::clean_schema_refs(&mut v);
                         (k, v)
-                     }).collect();
-                    components.schemas.extend(schemas);
+                    }));
                 };
 
                 // Register output schema components
                 if let Some(schema) = Self::output_schema() {
-                    let definitions = schema.definitions;
-                    let schemas: std::collections::HashMap<_, _> = definitions.into_iter().map(|(k,v)| {
-                        let mut v = v.clone();
+                    components.schemas.extend(schema.definitions.into_iter().map(|(k, mut v)| {
                         monad_rpc_docs::clean_schema_refs(&mut v);
                         (k, v)
-                     }).collect();
-                    components.schemas.extend(schemas);
+                    }));
                 };
             }
         }

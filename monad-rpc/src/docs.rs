@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use monad_rpc_docs::OpenRpc;
 
@@ -21,7 +21,7 @@ pub fn as_openrpc() -> OpenRpc {
     let method_map = &monad_rpc_docs::FUNCTION_MAP;
 
     let mut components = monad_rpc_docs::Components {
-        schemas: HashMap::new(),
+        schemas: BTreeMap::new(),
     };
 
     // Register components from all RPC methods
