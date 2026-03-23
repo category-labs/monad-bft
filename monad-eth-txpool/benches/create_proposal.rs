@@ -41,7 +41,14 @@ fn criterion_benchmark(c: &mut Criterion) {
     run_txpool_benches(
         c,
         "create_proposal",
-        |controller_config| BenchController::setup(&block_policy, controller_config.clone()),
+        |controller_config, pending_block_txs, pool_txs| {
+            BenchController::setup(
+                &block_policy,
+                controller_config.clone(),
+                pending_block_txs,
+                pool_txs,
+            )
+        },
         |BenchController {
              chain_config: _,
              state_backend,

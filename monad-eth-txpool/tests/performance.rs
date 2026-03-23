@@ -86,6 +86,7 @@ fn txpool_create_proposal_lookups_bound_by_tx_limit() {
         );
 
         assert_eq!(pool.num_txs(), 2);
+        assert_eq!(4, state_backend.total_db_lookups());
 
         let mock_keypair = NopKeyPair::from_bytes(&mut [5_u8; 32]).unwrap();
 
@@ -110,7 +111,7 @@ fn txpool_create_proposal_lookups_bound_by_tx_limit() {
             )
             .unwrap();
 
-        assert_eq!(state_backend.total_db_lookups(), expected_lookups);
+        assert_eq!(expected_lookups, state_backend.total_db_lookups());
     }
 }
 
@@ -170,6 +171,7 @@ fn txpool_create_proposal_no_lookup_for_unknown_authorizations() {
         );
 
         assert_eq!(pool.num_txs(), 1);
+        assert_eq!(2, state_backend.total_db_lookups());
 
         let mock_keypair = NopKeyPair::from_bytes(&mut [5_u8; 32]).unwrap();
 
@@ -194,6 +196,6 @@ fn txpool_create_proposal_no_lookup_for_unknown_authorizations() {
             )
             .unwrap();
 
-        assert_eq!(state_backend.total_db_lookups(), 4);
+        assert_eq!(4, state_backend.total_db_lookups());
     }
 }
