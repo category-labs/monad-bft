@@ -60,6 +60,7 @@ pub use self::{
     client::{EthTxPoolExecutorClient, ForwardedIngressFairQueueConfig},
     ipc::EthTxPoolIpcConfig,
 };
+use crate::forward::INGRESS_CHUNK_INTERVAL_MS;
 
 mod client;
 pub mod forward;
@@ -180,7 +181,19 @@ where
             ForwardedIngressFairQueueConfig::default(),
         ))
     }
+}
 
+impl<ST, SCT, SBT, CCT, CRT, TIS> EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT, TIS>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    SBT: StateBackend<ST, SCT>,
+    CertificateSignaturePubKey<ST>: ExtractEthAddress,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
+    TIS: EthTxPoolTxInputStream,
+    Self: Unpin,
+{
     async fn run(
         mut self,
         mut command_rx: mpsc::Receiver<
@@ -201,8 +214,16 @@ where
     ) {
         use futures::StreamExt;
 
+        let mut forwarded_channel_poll = tokio::time::interval_at(
+            Instant::now() + Duration::from_millis(INGRESS_CHUNK_INTERVAL_MS),
+            Duration::from_millis(INGRESS_CHUNK_INTERVAL_MS),
+        );
+        forwarded_channel_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
         loop {
             tokio::select! {
+                // biased is kept so that if timer and command fire at the same time we prioritize command
+                // specifically relevant for proposal creation, so that it is not delayed by 1 additional chunk
                 biased;
 
                 result = command_rx.recv() => {
@@ -212,6 +233,28 @@ where
                     };
 
                     self.exec(commands);
+                }
+                // we drain ingestion queue at a steady rate of 128 tx per 8ms, ~16k tx/s
+                // if actual processing rate is lower we will shed load in the client and here we will rely on Delay policy
+                _ = forwarded_channel_poll.tick() => {
+                    if !self.forwarding_manager.as_ref().get_ref().ingress_is_empty() {
+                        continue;
+                    }
+
+                    match forwarded_rx.try_recv() {
+                        Ok(forwarded_txs) => {
+                            debug!(
+                                batch_items = forwarded_txs.len(),
+                                "txpool executor: received forwarded batch from channel on timeout"
+                            );
+                            self.process_forwarded_txs(forwarded_txs);
+                        }
+                        Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
+                        Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                            warn!("forwarded channel was dropped, shutting down txpool executor");
+                            break;
+                        }
+                    }
                 }
 
                 result = self.next() => {
@@ -225,30 +268,10 @@ where
                         break;
                     }
                 }
-
-                result = forwarded_rx.recv() => {
-                    let Some(forwarded_txs) = result else {
-                        warn!("forwarded channel was dropped, shutting down txpool executor");
-                        break;
-                    };
-
-                    self.process_forwarded_txs(forwarded_txs);
-                }
             }
         }
     }
-}
 
-impl<ST, SCT, SBT, CCT, CRT, TIS> EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT, TIS>
-where
-    ST: CertificateSignatureRecoverable,
-    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    SBT: StateBackend<ST, SCT>,
-    CertificateSignaturePubKey<ST>: ExtractEthAddress,
-    CCT: ChainConfig<CRT>,
-    CRT: ChainRevision,
-    TIS: EthTxPoolTxInputStream,
-{
     fn process_forwarded_txs(&mut self, forwarded_txs: Vec<ForwardedTxs<SCT>>) {
         for ForwardedTxs { sender, txs } in forwarded_txs {
             let _span = debug_span!("processing forwarded txs").entered();
@@ -643,8 +666,6 @@ where
             );
 
             preload_manager.add_requests(inserted_addresses.iter());
-
-            forwarding_manager.as_mut().complete_ingress();
         }
 
         while let Poll::Ready((predicted_proposal_seqnum, addresses)) =
