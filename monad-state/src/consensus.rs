@@ -414,9 +414,10 @@ where
                         // 2. avoid serializing multiple times
                         // 3. avoid raptor coding multiple times
                         // 4. use 1 sendmmsg in the router
-                        Command::RouterCommand(RouterCommand::Publish {
-                            target: RouterTarget::PointToPoint(target),
+                        Command::RouterCommand(RouterCommand::PublishWithPriority {
+                            target: RouterTarget::DirectPointToPoint(target),
                             message: VerifiedMonadMessage::ForwardedTx(txs.clone()),
+                            priority: monad_types::UdpPriority::Regular,
                         })
                     })
                     .collect_vec()
