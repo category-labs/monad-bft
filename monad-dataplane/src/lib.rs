@@ -51,6 +51,7 @@ pub enum TcpSocketId {
 pub enum UdpSocketId {
     Raptorcast,
     AuthenticatedRaptorcast,
+    DirectUdp,
 }
 
 pub struct SocketHandles<I, H> {

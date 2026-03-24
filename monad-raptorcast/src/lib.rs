@@ -38,7 +38,7 @@ use monad_crypto::{
     signing_domain,
 };
 use monad_dataplane::{
-    udp::{DEFAULT_MTU, ETHERNET_SEGMENT_SIZE},
+    udp::{segment_size_for_mtu, DEFAULT_MTU, ETHERNET_SEGMENT_SIZE},
     DataplaneBuilder, DataplaneControl, RecvTcpMsg, TcpMsg, TcpSocketHandle, TcpSocketId,
     TcpSocketReader, TcpSocketWriter, UdpSocketHandle, UdpSocketId, UnicastMsg,
 };
@@ -68,6 +68,8 @@ use util::{
 
 use crate::{
     metrics::{
+        COUNTER_RAPTORCAST_DIRECT_UDP_FORWARD_FALLBACK,
+        COUNTER_RAPTORCAST_DIRECT_UDP_FORWARD_OVERSIZE, COUNTER_RAPTORCAST_DIRECT_UDP_FORWARD_SENT,
         GAUGE_RAPTORCAST_TOTAL_DESERIALIZE_ERRORS, GAUGE_RAPTORCAST_TOTAL_MESSAGES_RECEIVED,
         GAUGE_RAPTORCAST_TOTAL_RECV_ERRORS,
     },
@@ -91,10 +93,18 @@ pub mod util;
 
 const SIGNATURE_SIZE: usize = 65;
 const DEFAULT_RETRY_ATTEMPTS: u64 = 3;
+const TX_FORWARD_DIRECT_UDP_MAX_MESSAGE_SIZE_BYTES: usize = 512 * 1024;
 
 pub const UNICAST_MSG_BATCH_SIZE: usize = 32;
 
 pub(crate) type OwnedMessageBuilder<ST> = packet::MessageBuilder<'static, ST>;
+type DirectUdpTransport<ST, AP> = auth::FramedAuthenticatedSocketHandle<
+    AP,
+    auth::LeanUdpFramer<
+        CertificateSignaturePubKey<ST>,
+        auth::NopScore<CertificateSignaturePubKey<ST>>,
+    >,
+>;
 
 pub struct RaptorCast<ST, M, OM, SE, PD, AP>
 where
@@ -122,6 +132,7 @@ where
     tcp_reader: TcpSocketReader,
     tcp_writer: TcpSocketWriter,
     dual_socket: auth::DualSocketHandle<AP>,
+    direct_udp_transport: Option<DirectUdpTransport<ST, AP>>,
     dataplane_control: DataplaneControl,
     pending_events: VecDeque<RaptorCastEvent<M::Event, ST>>,
 
@@ -161,12 +172,12 @@ where
         config: config::RaptorCastConfig<ST>,
         secondary_mode: SecondaryRaptorCastModeConfig,
         tcp_socket: TcpSocketHandle,
-        authenticated_socket: Option<UdpSocketHandle>,
+        authenticated: Option<(UdpSocketHandle, AP)>,
+        direct_udp: Option<(UdpSocketHandle, AP)>,
         non_authenticated_socket: UdpSocketHandle,
         control: DataplaneControl,
         peer_discovery_driver: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
         current_epoch: Epoch,
-        auth_protocol: AP,
     ) -> Self {
         let (tcp_reader, tcp_writer) = tcp_socket.split();
 
@@ -200,10 +211,24 @@ where
         );
 
         let dual_socket = auth::DualSocketHandle::new(
-            authenticated_socket
-                .map(|socket| auth::AuthenticatedSocketHandle::new(socket, auth_protocol)),
+            authenticated
+                .map(|(socket, protocol)| auth::AuthenticatedSocketHandle::new(socket, protocol)),
             non_authenticated_socket,
         );
+        let direct_udp_transport = direct_udp.map(|(socket, protocol)| {
+            let max_fragment_payload =
+                usize::from(segment_size_for_mtu(config.mtu).saturating_sub(AP::HEADER_SIZE));
+            let leanudp_config = monad_leanudp::Config {
+                max_message_size: TX_FORWARD_DIRECT_UDP_MAX_MESSAGE_SIZE_BYTES,
+                max_fragment_payload,
+                ..Default::default()
+            };
+            let socket = auth::AuthenticatedSocketHandle::new(socket, protocol);
+            auth::FramedAuthenticatedSocketHandle::new(
+                socket,
+                auth::LeanUdpFramer::new(auth::NopScore::new(), leanudp_config),
+            )
+        });
 
         let redundancy = Redundancy::from_f32(config.primary_instance.raptor10_redundancy)
             .expect("primary raptor10_redundancy doesn't fit");
@@ -247,6 +272,7 @@ where
             tcp_reader,
             tcp_writer,
             dual_socket,
+            direct_udp_transport,
             dataplane_control: control,
             pending_events: Default::default(),
             channel_to_secondary: None,
@@ -495,7 +521,7 @@ where
                 );
             }
 
-            RouterTarget::PointToPoint(to) | RouterTarget::DirectPointToPoint(to) => {
+            RouterTarget::PointToPoint(to) => {
                 let outbound_message =
                     match OutboundRouterMessage::<OM, ST>::AppMessage(message).try_serialize() {
                         Ok(msg) => msg,
@@ -524,6 +550,10 @@ where
                     .unwrap_log_on_error(&outbound_message, &build_target);
             }
 
+            RouterTarget::DirectPointToPoint(target) => {
+                self.handle_direct_udp_publish(target, message, priority, self_id);
+            }
+
             RouterTarget::TcpPointToPoint { to, completion } => {
                 if to == self_id {
                     Self::enqueue_message_to_self(
@@ -544,19 +574,107 @@ where
             }
         };
     }
+
+    fn handle_direct_udp_publish(
+        &mut self,
+        target: NodeId<CertificateSignaturePubKey<ST>>,
+        message: OM,
+        priority: UdpPriority,
+        self_id: NodeId<CertificateSignaturePubKey<ST>>,
+    ) {
+        // fall back to raptorcast point-to-point when direct UDP is not configured.
+        let Some(socket) = self.direct_udp_transport.as_mut() else {
+            self.metrics[COUNTER_RAPTORCAST_DIRECT_UDP_FORWARD_FALLBACK] += 1;
+            self.handle_publish(
+                RouterTarget::PointToPoint(target),
+                message,
+                priority,
+                self_id,
+            );
+            return;
+        };
+
+        let target_pubkey = target.pubkey();
+        if !socket.has_any_session_by_public_key(&target_pubkey) {
+            let discovered_addr = self
+                .peer_discovery_driver
+                .lock()
+                .ok()
+                .and_then(|pd| pd.get_direct_udp_addr(&target));
+
+            // Fall back when peer discovery doesn't have a direct UDP address for the target.
+            let Some(discovered_addr) = discovered_addr else {
+                self.metrics[COUNTER_RAPTORCAST_DIRECT_UDP_FORWARD_FALLBACK] += 1;
+                self.handle_publish(
+                    RouterTarget::PointToPoint(target),
+                    message,
+                    priority,
+                    self_id,
+                );
+                return;
+            };
+
+            if let Err(err) =
+                socket.connect(&target_pubkey, discovered_addr, DEFAULT_RETRY_ATTEMPTS)
+            {
+                warn!(?target, ?discovered_addr, ?err, "direct udp connect failed");
+                return;
+            }
+            socket.flush();
+        }
+
+        let outbound_message =
+            match OutboundRouterMessage::<OM, ST>::AppMessage(message).try_serialize() {
+                Ok(payload) => payload,
+                Err(err) => {
+                    error!(
+                        ?target,
+                        ?err,
+                        "failed to serialize direct udp point-to-point message"
+                    );
+                    return;
+                }
+            };
+
+        let payload_len = outbound_message.len();
+        let max_message_size = TX_FORWARD_DIRECT_UDP_MAX_MESSAGE_SIZE_BYTES;
+
+        if payload_len > max_message_size {
+            self.metrics[COUNTER_RAPTORCAST_DIRECT_UDP_FORWARD_OVERSIZE] += 1;
+            warn!(
+                ?target,
+                payload_len, max_message_size, "direct udp payload exceeds max message size"
+            );
+            return;
+        }
+        // buffer will be drained when session is established or dropped on timeout
+        if socket
+            .write_buffered(&target_pubkey, outbound_message, priority)
+            .is_ok()
+        {
+            self.metrics[COUNTER_RAPTORCAST_DIRECT_UDP_FORWARD_SENT] += 1;
+        } else {
+            warn!(
+                ?target,
+                "failed to write or buffer direct udp point-to-point message"
+            );
+        }
+    }
 }
 
 pub struct DataplaneHandles {
     pub tcp_socket: monad_dataplane::TcpSocketHandle,
     pub authenticated_socket: Option<UdpSocketHandle>,
+    pub direct_udp_socket: Option<UdpSocketHandle>,
     pub non_authenticated_socket: UdpSocketHandle,
     pub control: DataplaneControl,
     pub tcp_addr: SocketAddrV4,
     pub auth_addr: Option<SocketAddrV4>,
+    pub direct_udp_addr: Option<SocketAddrV4>,
     pub non_auth_addr: SocketAddrV4,
 }
 
-pub fn create_dataplane_for_tests(with_auth: bool) -> DataplaneHandles {
+pub fn create_dataplane_for_tests(with_auth: bool, with_direct_udp: bool) -> DataplaneHandles {
     let bind_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
     let up_bandwidth_mbps = 1_000;
 
@@ -565,6 +683,9 @@ pub fn create_dataplane_for_tests(with_auth: bool) -> DataplaneHandles {
 
     if with_auth {
         udp_sockets.insert(0, (UdpSocketId::AuthenticatedRaptorcast, bind_addr));
+    }
+    if with_direct_udp {
+        udp_sockets.insert(0, (UdpSocketId::DirectUdp, bind_addr));
     }
 
     let mut dp = DataplaneBuilder::new(up_bandwidth_mbps)
@@ -592,6 +713,20 @@ pub fn create_dataplane_for_tests(with_auth: bool) -> DataplaneHandles {
         (None, None)
     };
 
+    let (direct_udp_socket, direct_udp_addr) = if with_direct_udp {
+        let socket = dp
+            .udp_sockets
+            .take(UdpSocketId::DirectUdp)
+            .expect("direct udp socket");
+        let addr = match socket.local_addr() {
+            SocketAddr::V4(addr) => addr,
+            _ => panic!("expected v4 address"),
+        };
+        (Some(socket), Some(addr))
+    } else {
+        (None, None)
+    };
+
     let non_authenticated_socket = dp
         .udp_sockets
         .take(UdpSocketId::Raptorcast)
@@ -604,10 +739,12 @@ pub fn create_dataplane_for_tests(with_auth: bool) -> DataplaneHandles {
     DataplaneHandles {
         tcp_socket,
         authenticated_socket,
+        direct_udp_socket,
         non_authenticated_socket,
         control: dp.control,
         tcp_addr,
         auth_addr,
+        direct_udp_addr,
         non_auth_addr,
     }
 }
@@ -658,17 +795,19 @@ where
     };
     let pd = PeerDiscoveryDriver::new(peer_discovery_builder);
     let shared_pd = Arc::new(Mutex::new(pd));
-    let auth_protocol = auth::NoopAuthProtocol::new();
+    let authenticated = dataplane
+        .authenticated_socket
+        .map(|socket| (socket, auth::NoopAuthProtocol::new()));
     RaptorCast::<ST, M, OM, SE, NopDiscovery<ST>, _>::new(
         config,
         SecondaryRaptorCastModeConfig::None,
         dataplane.tcp_socket,
-        dataplane.authenticated_socket,
+        authenticated,
+        None,
         dataplane.non_authenticated_socket,
         dataplane.control,
         shared_pd,
         Epoch(0),
-        auth_protocol,
     )
 }
 
@@ -712,18 +851,21 @@ where
     let pd = PeerDiscoveryDriver::new(peer_discovery_builder);
     let shared_pd = Arc::new(Mutex::new(pd));
     let wireauth_config = monad_wireauth::Config::default();
-    let auth_protocol =
-        auth::WireAuthProtocol::new(&auth::metrics::UDP_METRICS, wireauth_config, shared_key);
+    let authenticated = dataplane.authenticated_socket.map(|socket| {
+        let protocol =
+            auth::WireAuthProtocol::new(&auth::metrics::UDP_METRICS, wireauth_config, shared_key);
+        (socket, protocol)
+    });
     RaptorCast::<ST, M, OM, SE, NopDiscovery<ST>, _>::new(
         config,
         SecondaryRaptorCastModeConfig::None,
         dataplane.tcp_socket,
-        dataplane.authenticated_socket,
+        authenticated,
+        None,
         dataplane.non_authenticated_socket,
         dataplane.control,
         shared_pd,
         Epoch(0),
-        auth_protocol,
     )
 }
 
@@ -939,12 +1081,18 @@ where
     }
 
     fn metrics(&self) -> ExecutorMetricsChain<'_> {
-        ExecutorMetricsChain::default()
+        let mut chain = ExecutorMetricsChain::default()
             .push(self.metrics.as_ref())
             .push(self.peer_discovery_metrics.as_ref())
             .push(self.udp_state.metrics().executor_metrics())
             .chain(self.udp_state.decoder_metrics())
-            .chain(self.dual_socket.metrics())
+            .chain(self.dual_socket.metrics());
+
+        if let Some(socket) = &self.direct_udp_transport {
+            chain = chain.chain(socket.metrics());
+        }
+
+        chain
     }
 }
 
@@ -1120,6 +1268,53 @@ where
 
             if let Some(event) = this.pending_events.pop_front() {
                 return Poll::Ready(Some(event.into()));
+            }
+        }
+
+        if let Some(socket) = this.direct_udp_transport.as_mut() {
+            loop {
+                let mut recv_fut = pin!(socket.recv());
+                match recv_fut.poll_unpin(cx) {
+                    Poll::Ready(Ok(msg)) => {
+                        let from =
+                            NodeId::new(msg.auth_public_key.expect(
+                                "framed direct udp transport requires authenticated messages",
+                            ));
+                        match InboundRouterMessage::<M, ST>::try_deserialize(&msg.payload) {
+                            Ok(InboundRouterMessage::AppMessage(app_message)) => {
+                                this.pending_events
+                                    .push_back(RaptorCastEvent::Message(app_message.event(from)));
+                            }
+                            Ok(InboundRouterMessage::PeerDiscoveryMessage(_)) => {
+                                trace!(
+                                    ?from,
+                                    "dropping peer discovery message received over direct udp"
+                                );
+                            }
+                            Ok(InboundRouterMessage::FullNodesGroup(_)) => {
+                                trace!(
+                                    ?from,
+                                    "dropping full-nodes group message received over direct udp"
+                                );
+                            }
+                            Err(err) => {
+                                trace!(
+                                    ?from,
+                                    ?err,
+                                    "direct udp recv payload failed to deserialize, dropping"
+                                );
+                            }
+                        }
+                        if let Some(event) = this.pending_events.pop_front() {
+                            return Poll::Ready(Some(event.into()));
+                        }
+                    }
+                    Poll::Ready(Err(err)) => {
+                        trace!(error=?err, "direct udp socket recv error");
+                        continue;
+                    }
+                    Poll::Pending => break,
+                }
             }
         }
 

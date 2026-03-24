@@ -33,3 +33,4 @@ monad_executor::metric_consts! {
 }
 
 monad_wireauth::define_metric_names!(UDP_METRICS, "udp");
+monad_wireauth::define_metric_names!(DIRECT_UDP_METRICS, "direct_udp");
