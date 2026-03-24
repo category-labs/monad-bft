@@ -7,6 +7,7 @@ on:
     branches: ["master"]
     paths:
       - "monad-rpc/**"
+      - ".github/workflows/openrpc.yml"
 
 concurrency:
   group: >
@@ -23,6 +24,9 @@ env:
 jobs:
   build:
     runs-on: self-hosted
+    permissions:
+      contents: read
+      issues: write
 
     steps:
       - name: Generate a token
@@ -33,19 +37,95 @@ jobs:
           private_key: ${{ secrets.REPO_READONLY_GITHUB_APP_KEY }}
           permissions: >-
             {"contents": "read"}
+
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           submodules: recursive
           token: ${{ steps.generate_token.outputs.token }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
       - name: Generate OpenRPC documentation
-        run: cargo run --bin monad-rpc-docs > openrpc.json
+        run: cargo run --bin monad-rpc-docs | jq . > openrpc.json
+
       - name: Validate OpenRPC documentation
-        uses: philipglazman/openrpc-validation@v1
-        with:
-          file-path: openrpc.json
+        run: |
+          uvx check-jsonschema@0.37.0 \
+            --schemafile "https://github.com/open-rpc/meta-schema/releases/download/1.14.9/open-rpc-meta-schema.json" \
+            openrpc.json
+
       - name: Archive OpenRPC documentation
         uses: actions/upload-artifact@v4
         with:
           name: Monad RPC OpenRPC
           path: openrpc.json
+
+      # On pull requests, generate the master baseline and diff.
+      - name: Generate master baseline
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch origin master
+          git checkout FETCH_HEAD --detach
+          git submodule update --init --recursive
+          cargo run --bin monad-rpc-docs | jq . > openrpc-master.json
+
+      - name: Comment on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const fs = require('fs');
+            const pr = context.payload.pull_request.number;
+            const marker = '<!-- openrpc-diff -->';
+
+            const master = fs.readFileSync('openrpc-master.json', 'utf8');
+            const current = fs.readFileSync('openrpc.json', 'utf8');
+
+            let body;
+            if (master === current) {
+              body = `${marker}\n### OpenRPC Documentation\n\nNo changes detected in the OpenRPC specification.`;
+            } else {
+              const { execSync } = require('child_process');
+              let diff = execSync('diff -u openrpc-master.json openrpc.json || true', { encoding: 'utf8' });
+              if (diff.length > 32768) {
+                diff = diff.slice(0, 32768) + '\n\n... (diff truncated, see artifact for full document)';
+              }
+              body = [
+                marker,
+                '### OpenRPC Documentation',
+                '',
+                'The OpenRPC specification has changed in this PR.',
+                '',
+                '<details>',
+                '<summary>Diff (click to expand)</summary>',
+                '',
+                '```diff',
+                diff,
+                '```',
+                '',
+                '</details>',
+              ].join('\n');
+            }
+
+            const { data: comments } = await github.rest.issues.listComments({
+              ...context.repo,
+              issue_number: pr,
+              per_page: 100,
+            });
+            const existing = comments.find(c => c.body.startsWith(marker));
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                ...context.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                ...context.repo,
+                issue_number: pr,
+                body,
+              });
+            }
