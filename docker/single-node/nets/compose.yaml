@@ -1,7 +1,7 @@
 services:
   build_triedb:
     image: monad-execution-builder:latest
-    command: monad_mpt --storage /monad/triedb/test.db --create --root-offsets-chunk-count=2
+    command: monad-mpt --storage /monad/triedb/test.db --create --root-offsets-chunk-count=2
     volumes:
       - ./node:/monad
     privileged: true
