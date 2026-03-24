@@ -13,130 +13,125 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::{HashSet, VecDeque};
+use std::{
+    collections::{HashSet, VecDeque},
+    hash::Hash,
+};
 
-use monad_crypto::certificate_signature::PubKey;
-use monad_types::NodeId;
-
-pub(crate) const VALIDATOR_SESSION_PREWARM_CONNECTS_PER_TICK: usize = 10;
-
-pub(crate) trait SessionPrewarmBackend<PT: PubKey> {
-    fn has_session(&self, validator_id: &NodeId<PT>) -> bool;
-    fn connect(&mut self, validator_id: &NodeId<PT>) -> bool;
+pub(crate) trait SessionPrewarmBackend<ID> {
+    fn has_session(&self, id: &ID) -> bool;
+    fn connect(&mut self, id: &ID) -> bool;
     fn flush(&mut self);
 }
 
-pub(crate) struct ValidatorSessionPrewarmer<PT: PubKey> {
-    pending: VecDeque<NodeId<PT>>,
-    existing: HashSet<NodeId<PT>>,
+pub(crate) struct RoundRobinSessionPrewarmer<ID> {
+    max_connects_per_tick: usize,
+    pending: VecDeque<ID>,
+    existing: HashSet<ID>,
 }
 
-impl<PT: PubKey> Default for ValidatorSessionPrewarmer<PT> {
-    fn default() -> Self {
+impl<ID> RoundRobinSessionPrewarmer<ID>
+where
+    ID: Clone + Eq + Hash,
+{
+    pub(crate) fn new(max_connects_per_tick: usize) -> Self {
         Self {
+            max_connects_per_tick,
             pending: VecDeque::new(),
             existing: HashSet::new(),
         }
     }
-}
 
-impl<PT: PubKey> ValidatorSessionPrewarmer<PT> {
     pub(crate) fn clear(&mut self) {
         self.pending.clear();
         self.existing.clear();
     }
 
-    pub(crate) fn reset(&mut self, validator_ids: impl IntoIterator<Item = NodeId<PT>>) {
+    pub(crate) fn reset(&mut self, ids: impl IntoIterator<Item = ID>) {
         self.clear();
 
         let mut seen = HashSet::new();
-        self.pending.extend(
-            validator_ids
-                .into_iter()
-                .filter(|validator_id| seen.insert(*validator_id)),
-        );
+        self.pending
+            .extend(ids.into_iter().filter(|id| seen.insert(id.clone())));
     }
 
     pub(crate) fn tick<B>(&mut self, backend: &mut B)
     where
-        B: SessionPrewarmBackend<PT>,
+        B: SessionPrewarmBackend<ID>,
     {
-        self.recheck_existing(backend);
-        self.promote_established_pending(backend);
+        self.requeue_missing_existing(backend);
+        self.promote_pending_with_sessions(backend);
 
-        let mut connect_attempts = 0;
+        let mut connect_calls = 0;
+        let mut needs_flush = false;
         let pending_len = self.pending.len();
 
-        // Cap connect attempts per tick so session prewarming cannot starve the rest of the
-        // raptorcast executor when many validators are still pending.
         for _ in 0..pending_len {
-            if connect_attempts == VALIDATOR_SESSION_PREWARM_CONNECTS_PER_TICK {
+            if connect_calls == self.max_connects_per_tick {
                 break;
             }
 
-            let validator_id = self
+            let id = self
                 .pending
                 .pop_front()
                 .expect("pending length computed from the queue");
 
-            if backend.has_session(&validator_id) {
-                self.existing.insert(validator_id);
+            if backend.has_session(&id) {
+                self.existing.insert(id);
                 continue;
             }
 
-            if backend.connect(&validator_id) {
-                connect_attempts += 1;
-            }
-
-            self.pending.push_back(validator_id);
+            connect_calls += 1;
+            needs_flush |= backend.connect(&id);
+            self.pending.push_back(id);
         }
 
-        if connect_attempts > 0 {
+        if needs_flush {
             backend.flush();
         }
     }
 
-    fn recheck_existing<B>(&mut self, backend: &mut B)
+    fn requeue_missing_existing<B>(&mut self, backend: &mut B)
     where
-        B: SessionPrewarmBackend<PT>,
+        B: SessionPrewarmBackend<ID>,
     {
-        let mut disconnected = Vec::new();
-        self.existing.retain(|validator_id| {
-            let has_session = backend.has_session(validator_id);
+        let mut missing = Vec::new();
+        self.existing.retain(|id| {
+            let has_session = backend.has_session(id);
             if !has_session {
-                disconnected.push(*validator_id);
+                missing.push(id.clone());
             }
             has_session
         });
-        self.pending.extend(disconnected);
+        self.pending.extend(missing);
     }
 
-    fn promote_established_pending<B>(&mut self, backend: &mut B)
+    fn promote_pending_with_sessions<B>(&mut self, backend: &mut B)
     where
-        B: SessionPrewarmBackend<PT>,
+        B: SessionPrewarmBackend<ID>,
     {
         let pending_len = self.pending.len();
         for _ in 0..pending_len {
-            let validator_id = self
+            let id = self
                 .pending
                 .pop_front()
                 .expect("pending length computed from the queue");
 
-            if backend.has_session(&validator_id) {
-                self.existing.insert(validator_id);
+            if backend.has_session(&id) {
+                self.existing.insert(id);
             } else {
-                self.pending.push_back(validator_id);
+                self.pending.push_back(id);
             }
         }
     }
 
     #[cfg(test)]
-    fn pending_ids(&self) -> Vec<NodeId<PT>> {
-        self.pending.iter().copied().collect()
+    fn pending_ids(&self) -> Vec<ID> {
+        self.pending.iter().cloned().collect()
     }
 
     #[cfg(test)]
-    fn existing_ids(&self) -> HashSet<NodeId<PT>> {
+    fn existing_ids(&self) -> HashSet<ID> {
         self.existing.clone()
     }
 }
@@ -144,62 +139,33 @@ impl<PT: PubKey> ValidatorSessionPrewarmer<PT> {
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::{HashMap, HashSet},
-        net::{Ipv4Addr, SocketAddr, SocketAddrV4},
-        sync::Arc,
+        cell::RefCell,
+        collections::{HashMap, HashSet, VecDeque},
     };
 
-    use monad_secp::{KeyPair, PubKey};
-    use monad_types::NodeId;
-
-    use super::{
-        SessionPrewarmBackend, ValidatorSessionPrewarmer,
-        VALIDATOR_SESSION_PREWARM_CONNECTS_PER_TICK,
-    };
+    use super::{RoundRobinSessionPrewarmer, SessionPrewarmBackend};
 
     #[derive(Default)]
     struct FakeBackend {
-        sessions: HashSet<NodeId<PubKey>>,
-        connectable: HashSet<NodeId<PubKey>>,
-        connects: Vec<NodeId<PubKey>>,
+        sessions: HashSet<u8>,
+        scripted_has_session: RefCell<HashMap<u8, VecDeque<bool>>>,
+        connect_results: HashMap<u8, bool>,
+        connect_calls: Vec<u8>,
         flushes: usize,
-        _addrs: HashMap<NodeId<PubKey>, SocketAddr>,
     }
 
-    impl FakeBackend {
-        fn with_addrs(ids: &[NodeId<PubKey>]) -> Self {
-            Self {
-                connectable: ids.iter().copied().collect(),
-                _addrs: ids
-                    .iter()
-                    .enumerate()
-                    .map(|(i, id)| {
-                        (
-                            *id,
-                            SocketAddr::V4(SocketAddrV4::new(
-                                Ipv4Addr::LOCALHOST,
-                                1_000 + i as u16,
-                            )),
-                        )
-                    })
-                    .collect(),
-                ..Default::default()
-            }
-        }
-    }
-
-    impl SessionPrewarmBackend<PubKey> for FakeBackend {
-        fn has_session(&self, validator_id: &NodeId<PubKey>) -> bool {
-            self.sessions.contains(validator_id)
+    impl SessionPrewarmBackend<u8> for FakeBackend {
+        fn has_session(&self, id: &u8) -> bool {
+            self.scripted_has_session
+                .borrow_mut()
+                .get_mut(id)
+                .and_then(VecDeque::pop_front)
+                .unwrap_or_else(|| self.sessions.contains(id))
         }
 
-        fn connect(&mut self, validator_id: &NodeId<PubKey>) -> bool {
-            if self.connectable.contains(validator_id) {
-                self.connects.push(*validator_id);
-                true
-            } else {
-                false
-            }
+        fn connect(&mut self, id: &u8) -> bool {
+            self.connect_calls.push(*id);
+            self.connect_results.get(id).copied().unwrap_or(false)
         }
 
         fn flush(&mut self) {
@@ -207,77 +173,111 @@ mod tests {
         }
     }
 
-    fn validator_id(seed: u8) -> NodeId<PubKey> {
-        let keypair = Arc::new(KeyPair::from_bytes(&mut [seed; 32]).unwrap());
-        NodeId::new(keypair.pubkey())
-    }
-
     #[test]
-    fn reset_replaces_epoch_queue() {
-        let a = validator_id(1);
-        let b = validator_id(2);
-        let c = validator_id(3);
+    fn reset_replaces_queue_and_deduplicates_ids() {
+        let mut prewarmer = RoundRobinSessionPrewarmer::new(10);
+        prewarmer.reset([1, 2, 1]);
+        prewarmer.reset([3, 3, 4]);
 
-        let mut prewarmer = ValidatorSessionPrewarmer::default();
-        prewarmer.reset([a, b]);
-        prewarmer.reset([c]);
-
-        assert_eq!(prewarmer.pending_ids(), vec![c]);
+        assert_eq!(prewarmer.pending_ids(), vec![3, 4]);
         assert!(prewarmer.existing_ids().is_empty());
     }
 
     #[test]
-    fn tick_limits_connects_and_round_robins_pending_queue() {
-        let ids: Vec<_> = (1..=12).map(validator_id).collect();
-        let mut prewarmer = ValidatorSessionPrewarmer::default();
-        prewarmer.reset(ids.iter().copied());
+    fn tick_round_robins_without_starvation_when_connects_fail() {
+        let mut prewarmer = RoundRobinSessionPrewarmer::new(2);
+        prewarmer.reset(0..12);
 
-        let mut backend = FakeBackend::with_addrs(&ids);
-        prewarmer.tick(&mut backend);
+        let mut backend = FakeBackend::default();
+        for _ in 0..6 {
+            prewarmer.tick(&mut backend);
+        }
 
-        assert_eq!(
-            backend.connects,
-            ids[..VALIDATOR_SESSION_PREWARM_CONNECTS_PER_TICK].to_vec()
-        );
-        assert_eq!(backend.flushes, 1);
-        assert_eq!(
-            prewarmer.pending_ids(),
-            vec![
-                ids[10], ids[11], ids[0], ids[1], ids[2], ids[3], ids[4], ids[5], ids[6], ids[7],
-                ids[8], ids[9],
-            ]
-        );
+        assert_eq!(backend.connect_calls, (0..12).collect::<Vec<_>>());
+        assert_eq!(backend.flushes, 0);
+        assert_eq!(prewarmer.pending_ids(), (0..12).collect::<Vec<_>>());
     }
 
     #[test]
-    fn tick_moves_established_sessions_between_pending_and_existing() {
-        let a = validator_id(1);
-        let b = validator_id(2);
+    fn tick_removes_pending_id_when_session_already_exists() {
+        let mut prewarmer = RoundRobinSessionPrewarmer::new(10);
+        prewarmer.reset([1, 2]);
 
-        let mut prewarmer = ValidatorSessionPrewarmer::default();
-        prewarmer.reset([a, b]);
-
-        let mut backend = FakeBackend::with_addrs(&[a, b]);
-        backend.sessions.insert(a);
+        let mut backend = FakeBackend::default();
+        backend.sessions.insert(1);
 
         prewarmer.tick(&mut backend);
-        assert_eq!(backend.connects, vec![b]);
-        assert_eq!(prewarmer.pending_ids(), vec![b]);
-        assert_eq!(prewarmer.existing_ids(), HashSet::from([a]));
 
-        backend.sessions.insert(b);
-        backend.connects.clear();
+        assert_eq!(backend.connect_calls, vec![2]);
+        assert_eq!(prewarmer.pending_ids(), vec![2]);
+        assert_eq!(prewarmer.existing_ids(), HashSet::from([1]));
+    }
+
+    #[test]
+    fn tick_removes_pending_id_when_session_appears_during_tick() {
+        let mut prewarmer = RoundRobinSessionPrewarmer::new(10);
+        prewarmer.reset([1]);
+
+        let mut backend = FakeBackend::default();
+        backend
+            .scripted_has_session
+            .borrow_mut()
+            .insert(1, VecDeque::from([false, true]));
 
         prewarmer.tick(&mut backend);
-        assert!(backend.connects.is_empty());
+
+        assert!(backend.connect_calls.is_empty());
         assert!(prewarmer.pending_ids().is_empty());
-        assert_eq!(prewarmer.existing_ids(), HashSet::from([a, b]));
+        assert_eq!(prewarmer.existing_ids(), HashSet::from([1]));
+    }
 
-        backend.sessions.remove(&a);
+    #[test]
+    fn tick_moves_existing_id_back_to_pending_when_session_is_lost() {
+        let mut prewarmer = RoundRobinSessionPrewarmer::new(0);
+        prewarmer.reset([1]);
+
+        let mut backend = FakeBackend::default();
+        backend.sessions.insert(1);
         prewarmer.tick(&mut backend);
 
-        assert_eq!(backend.connects, vec![a]);
-        assert_eq!(prewarmer.pending_ids(), vec![a]);
-        assert_eq!(prewarmer.existing_ids(), HashSet::from([b]));
+        backend.sessions.clear();
+        prewarmer.tick(&mut backend);
+
+        assert!(backend.connect_calls.is_empty());
+        assert_eq!(prewarmer.pending_ids(), vec![1]);
+        assert!(prewarmer.existing_ids().is_empty());
+    }
+
+    #[test]
+    fn tick_keeps_existing_id_out_of_pending_when_session_still_exists() {
+        let mut prewarmer = RoundRobinSessionPrewarmer::new(0);
+        prewarmer.reset([1]);
+
+        let mut backend = FakeBackend::default();
+        backend.sessions.insert(1);
+        prewarmer.tick(&mut backend);
+        prewarmer.tick(&mut backend);
+
+        assert!(backend.connect_calls.is_empty());
+        assert!(prewarmer.pending_ids().is_empty());
+        assert_eq!(prewarmer.existing_ids(), HashSet::from([1]));
+    }
+
+    #[test]
+    fn tick_flushes_once_after_successful_connects() {
+        let mut prewarmer = RoundRobinSessionPrewarmer::new(10);
+        prewarmer.reset([1, 2, 3]);
+
+        let mut backend = FakeBackend {
+            connect_results: HashMap::from([(1, true), (2, false), (3, true)]),
+            ..Default::default()
+        };
+
+        prewarmer.tick(&mut backend);
+
+        assert_eq!(backend.connect_calls, vec![1, 2, 3]);
+        assert_eq!(backend.flushes, 1);
+        assert_eq!(prewarmer.pending_ids(), vec![1, 2, 3]);
+        assert!(prewarmer.existing_ids().is_empty());
     }
 }

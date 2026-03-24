@@ -93,6 +93,9 @@ pub mod util;
 const SIGNATURE_SIZE: usize = 65;
 const DEFAULT_RETRY_ATTEMPTS: u64 = 3;
 const VALIDATOR_SESSION_PREWARM_INTERVAL: Duration = Duration::from_secs(5);
+// Cap background session initiation work so validator prewarming cannot starve the rest of
+// the raptorcast executor when many validators are still pending.
+const VALIDATOR_SESSION_PREWARM_CONNECTS_PER_TICK: usize = 10;
 
 pub const UNICAST_MSG_BATCH_SIZE: usize = 32;
 
@@ -117,7 +120,8 @@ where
 
     current_epoch: Epoch,
     validator_session_prewarm_timer: tokio::time::Interval,
-    validator_session_prewarmer: prewarm::ValidatorSessionPrewarmer<CertificateSignaturePubKey<ST>>,
+    validator_session_prewarmer:
+        prewarm::RoundRobinSessionPrewarmer<NodeId<CertificateSignaturePubKey<ST>>>,
 
     udp_state: udp::UdpState<ST>,
     message_builder: OwnedMessageBuilder<ST>,
@@ -235,7 +239,9 @@ where
 
             current_epoch,
             validator_session_prewarm_timer: validator_session_prewarm_timer(),
-            validator_session_prewarmer: Default::default(),
+            validator_session_prewarmer: prewarm::RoundRobinSessionPrewarmer::new(
+                VALIDATOR_SESSION_PREWARM_CONNECTS_PER_TICK,
+            ),
 
             udp_state: udp::UdpState::new(
                 self_id,
@@ -1674,7 +1680,7 @@ where
     }
 }
 
-impl<'a, ST, PD, AP> prewarm::SessionPrewarmBackend<CertificateSignaturePubKey<ST>>
+impl<'a, ST, PD, AP> prewarm::SessionPrewarmBackend<NodeId<CertificateSignaturePubKey<ST>>>
     for RaptorCastSessionPrewarmBackend<'a, ST, PD, AP>
 where
     ST: CertificateSignatureRecoverable,
