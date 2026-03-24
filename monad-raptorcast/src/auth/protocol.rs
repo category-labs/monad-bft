@@ -55,6 +55,12 @@ pub trait AuthenticationProtocol {
         plaintext: &mut [u8],
     ) -> Result<Self::Header, Self::Error>;
 
+    fn buffer_message(
+        &mut self,
+        public_key: &Self::PublicKey,
+        message: Bytes,
+    ) -> Result<(), Self::Error>;
+
     fn is_connected_public_key(&self, public_key: &Self::PublicKey) -> bool;
 
     fn is_connected_socket(&self, socket_addr: &SocketAddr) -> bool;
@@ -150,6 +156,14 @@ impl AuthenticationProtocol for WireAuthProtocol {
         plaintext: &mut [u8],
     ) -> Result<Self::Header, Self::Error> {
         self.api.encrypt_by_socket(socket_addr, plaintext)
+    }
+
+    fn buffer_message(
+        &mut self,
+        public_key: &Self::PublicKey,
+        message: Bytes,
+    ) -> Result<(), Self::Error> {
+        self.api.buffer_message(public_key, message)
     }
 
     fn next_packet(&mut self) -> Option<(SocketAddr, Bytes)> {
@@ -256,6 +270,14 @@ impl<P: PubKey> AuthenticationProtocol for NoopAuthProtocol<P> {
         _plaintext: &mut [u8],
     ) -> Result<Self::Header, Self::Error> {
         Ok(NoopHeader)
+    }
+
+    fn buffer_message(
+        &mut self,
+        _public_key: &Self::PublicKey,
+        _message: Bytes,
+    ) -> Result<(), Self::Error> {
+        Ok(())
     }
 
     fn next_packet(&mut self) -> Option<(SocketAddr, Bytes)> {

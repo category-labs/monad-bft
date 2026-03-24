@@ -25,9 +25,12 @@ use bytes::{Bytes, BytesMut};
 use monad_dataplane::{UdpSocketHandle, UnicastMsg};
 use monad_executor::{ExecutorMetrics, ExecutorMetricsChain};
 use monad_types::UdpPriority;
+use thiserror::Error;
 use tokio::time::Sleep;
 use tracing::{debug, trace, warn};
 use zerocopy::IntoBytes;
+
+use super::framing::AuthPacketFramer;
 
 #[derive(Clone)]
 pub struct AuthRecvMsg<P> {
@@ -79,7 +82,7 @@ where
 
         for (addr, payload) in msg.msgs {
             if let Some(authenticated) = &self.authenticated {
-                if authenticated.auth_protocol.is_connected_socket(&addr) {
+                if authenticated.is_connected_socket(&addr) {
                     auth_bytes += payload.len() as u64;
                     auth_msgs.push((addr, payload));
                     continue;
@@ -178,26 +181,20 @@ where
         public_key: &AP::PublicKey,
     ) -> bool {
         self.authenticated.as_ref().is_some_and(|authenticated| {
-            authenticated
-                .auth_protocol
-                .is_connected_socket_and_public_key(socket_addr, public_key)
+            authenticated.is_connected_socket_and_public_key(socket_addr, public_key)
         })
     }
 
     pub fn get_socket_by_public_key(&self, public_key: &AP::PublicKey) -> Option<SocketAddr> {
-        self.authenticated.as_ref().and_then(|authenticated| {
-            authenticated
-                .auth_protocol
-                .get_socket_by_public_key(public_key)
-        })
+        self.authenticated
+            .as_ref()
+            .and_then(|authenticated| authenticated.get_socket_by_public_key(public_key))
     }
 
     pub fn has_any_session_by_public_key(&self, public_key: &AP::PublicKey) -> bool {
-        self.authenticated.as_ref().is_some_and(|authenticated| {
-            authenticated
-                .auth_protocol
-                .has_any_session_by_public_key(public_key)
-        })
+        self.authenticated
+            .as_ref()
+            .is_some_and(|authenticated| authenticated.has_any_session_by_public_key(public_key))
     }
 
     pub fn segment_size(&self, mtu: u16) -> u16 {
@@ -212,7 +209,7 @@ where
     pub fn metrics(&self) -> ExecutorMetricsChain<'_> {
         let mut chain = ExecutorMetricsChain::default().push(self.metrics.as_ref());
         if let Some(authenticated) = &self.authenticated {
-            chain = chain.chain(authenticated.auth_protocol.metrics());
+            chain = chain.chain(authenticated.metrics());
         }
         chain
     }
@@ -230,7 +227,6 @@ where
 impl<AP> AuthenticatedSocketHandle<AP>
 where
     AP: AuthenticationProtocol,
-    AP::PublicKey: Clone,
 {
     pub fn new(socket: UdpSocketHandle, auth_protocol: AP) -> Self {
         Self {
@@ -255,12 +251,12 @@ where
                 message = self.socket.recv() => {
                     let mut packet_buf = message.payload.to_vec();
                     match self.auth_protocol.dispatch(&mut packet_buf, message.src_addr) {
-                        Ok(Some((plaintext, public_key))) => {
+                        Ok(Some((plaintext, auth_public_key))) => {
                             return Ok(AuthRecvMsg {
                                 src_addr: message.src_addr,
                                 payload: plaintext,
                                 stride: message.stride,
-                                auth_public_key: public_key,
+                                auth_public_key,
                             })
                         }
                         Ok(None) => {
@@ -296,6 +292,92 @@ where
         }
     }
 
+    /// Returns `Err(())` if the message was not written.
+    #[allow(clippy::result_unit_err)]
+    pub fn write_by_public_key_with_priority(
+        &mut self,
+        public_key: &AP::PublicKey,
+        plaintext: Bytes,
+        priority: UdpPriority,
+    ) -> Result<(), ()> {
+        if !self.auth_protocol.is_connected_public_key(public_key) {
+            return Err(());
+        }
+
+        let Some(addr) = self.auth_protocol.get_socket_by_public_key(public_key) else {
+            warn!("failed to find socket for connected public key");
+            return Err(());
+        };
+
+        let Some(packet) = self.encrypt_packet_by_public_key(public_key, plaintext) else {
+            return Err(());
+        };
+
+        debug_assert!(
+            !packet.is_empty(),
+            "authenticated packets should never be empty"
+        );
+        debug_assert!(
+            packet.len() <= u16::MAX as usize,
+            "authenticated packets should fit in u16 stride"
+        );
+        let stride = packet.len() as u16;
+        self.socket.write_unicast_with_priority(
+            UnicastMsg {
+                msgs: vec![(addr, packet)],
+                stride,
+            },
+            priority,
+        );
+        Ok(())
+    }
+
+    /// Returns `Err(())` if the message was not written or buffered.
+    #[allow(clippy::result_unit_err)]
+    pub fn write_with_buffering(
+        &mut self,
+        public_key: &AP::PublicKey,
+        plaintext: Bytes,
+        priority: UdpPriority,
+    ) -> Result<(), ()> {
+        if self.auth_protocol.is_connected_public_key(public_key) {
+            return self.write_by_public_key_with_priority(public_key, plaintext, priority);
+        }
+
+        if !self.auth_protocol.has_any_session_by_public_key(public_key) {
+            return Err(());
+        }
+
+        match self.auth_protocol.buffer_message(public_key, plaintext) {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                warn!(error=?err, "failed to buffer message");
+                Err(())
+            }
+        }
+    }
+
+    pub fn is_connected_socket(&self, socket_addr: &SocketAddr) -> bool {
+        self.auth_protocol.is_connected_socket(socket_addr)
+    }
+
+    pub fn is_connected_socket_and_public_key(
+        &self,
+        socket_addr: &SocketAddr,
+        public_key: &AP::PublicKey,
+    ) -> bool {
+        self.auth_protocol
+            .is_connected_socket_and_public_key(socket_addr, public_key)
+    }
+
+    pub fn get_socket_by_public_key(&self, public_key: &AP::PublicKey) -> Option<SocketAddr> {
+        self.auth_protocol.get_socket_by_public_key(public_key)
+    }
+
+    pub fn has_any_session_by_public_key(&self, public_key: &AP::PublicKey) -> bool {
+        self.auth_protocol.has_any_session_by_public_key(public_key)
+    }
+
     pub fn connect(
         &mut self,
         remote_public_key: &AP::PublicKey,
@@ -323,6 +405,10 @@ where
         }
     }
 
+    pub fn metrics(&self) -> ExecutorMetricsChain<'_> {
+        self.auth_protocol.metrics()
+    }
+
     fn encrypt_packet(
         &mut self,
         addr: SocketAddr,
@@ -342,8 +428,34 @@ where
                 packet[..header_size].copy_from_slice(header_bytes);
                 Some((addr, packet.freeze()))
             }
-            Err(e) => {
-                warn!(addr=?addr, error=?e, "failed to encrypt message");
+            Err(err) => {
+                warn!(addr=?addr, error=?err, "failed to encrypt message");
+                None
+            }
+        }
+    }
+
+    fn encrypt_packet_by_public_key(
+        &mut self,
+        public_key: &AP::PublicKey,
+        plaintext: Bytes,
+    ) -> Option<Bytes> {
+        let header_size = AP::HEADER_SIZE as usize;
+        let mut packet = BytesMut::with_capacity(header_size + plaintext.len());
+        packet.resize(header_size, 0);
+        packet.extend_from_slice(&plaintext);
+
+        match self
+            .auth_protocol
+            .encrypt_by_public_key(public_key, &mut packet[header_size..])
+        {
+            Ok(header) => {
+                let header_bytes = header.as_bytes();
+                packet[..header_size].copy_from_slice(header_bytes);
+                Some(packet.freeze())
+            }
+            Err(err) => {
+                warn!(error=?err, "failed to encrypt message");
                 None
             }
         }
@@ -358,6 +470,153 @@ where
             },
             UdpPriority::High,
         );
+    }
+}
+
+pub struct FramedAuthenticatedSocketHandle<AP, F>
+where
+    AP: AuthenticationProtocol,
+    F: AuthPacketFramer<AP::PublicKey, Decoded = Bytes>,
+{
+    socket: AuthenticatedSocketHandle<AP>,
+    framer: F,
+}
+
+#[derive(Debug, Error)]
+pub enum FramedRecvError<E: std::fmt::Debug> {
+    #[error("authenticated socket error: {0:?}")]
+    Auth(E),
+    #[error("received unauthenticated message on framed socket")]
+    MissingAuthPublicKey,
+}
+
+impl<AP, F> FramedAuthenticatedSocketHandle<AP, F>
+where
+    AP: AuthenticationProtocol,
+    F: AuthPacketFramer<AP::PublicKey, Decoded = Bytes>,
+{
+    pub fn new(socket: AuthenticatedSocketHandle<AP>, framer: F) -> Self {
+        Self { socket, framer }
+    }
+
+    pub async fn recv(&mut self) -> Result<AuthRecvMsg<AP::PublicKey>, FramedRecvError<AP::Error>> {
+        loop {
+            let msg = self.socket.recv().await.map_err(FramedRecvError::Auth)?;
+            let Some(public_key) = msg.auth_public_key else {
+                return Err(FramedRecvError::MissingAuthPublicKey);
+            };
+
+            match self.framer.deframe(public_key, msg.payload) {
+                Ok(Some(payload)) => {
+                    return Ok(AuthRecvMsg {
+                        src_addr: msg.src_addr,
+                        payload,
+                        stride: msg.stride,
+                        auth_public_key: msg.auth_public_key,
+                    });
+                }
+                Ok(None) => continue,
+                Err(err) => {
+                    debug!(addr=?msg.src_addr, error=?err, "failed to decode authenticated packet");
+                    continue;
+                }
+            }
+        }
+    }
+
+    /// Returns `Err(())` if the message was not written.
+    #[allow(clippy::result_unit_err)]
+    pub fn write(
+        &mut self,
+        public_key: &AP::PublicKey,
+        plaintext: Bytes,
+        priority: UdpPriority,
+    ) -> Result<(), ()> {
+        let packets = match self.framer.frame(plaintext) {
+            Ok(packets) => packets,
+            Err(err) => {
+                warn!(error=?err, "failed to encode message");
+                return Err(());
+            }
+        };
+
+        for packet in packets {
+            self.socket
+                .write_by_public_key_with_priority(public_key, packet, priority)?;
+        }
+
+        Ok(())
+    }
+
+    /// Returns `Err(())` if the message was not written or buffered.
+    #[allow(clippy::result_unit_err)]
+    pub fn write_buffered(
+        &mut self,
+        public_key: &AP::PublicKey,
+        plaintext: Bytes,
+        priority: UdpPriority,
+    ) -> Result<(), ()> {
+        let packets = match self.framer.frame(plaintext) {
+            Ok(packets) => packets,
+            Err(err) => {
+                warn!(error=?err, "failed to encode message");
+                return Err(());
+            }
+        };
+
+        for packet in packets {
+            self.socket
+                .write_with_buffering(public_key, packet, priority)?;
+        }
+
+        Ok(())
+    }
+
+    pub fn is_connected_socket(&self, socket_addr: &SocketAddr) -> bool {
+        self.socket.is_connected_socket(socket_addr)
+    }
+
+    pub fn is_connected_socket_and_public_key(
+        &self,
+        socket_addr: &SocketAddr,
+        public_key: &AP::PublicKey,
+    ) -> bool {
+        self.socket
+            .is_connected_socket_and_public_key(socket_addr, public_key)
+    }
+
+    pub fn get_socket_by_public_key(&self, public_key: &AP::PublicKey) -> Option<SocketAddr> {
+        self.socket.get_socket_by_public_key(public_key)
+    }
+
+    pub fn connect(
+        &mut self,
+        remote_public_key: &AP::PublicKey,
+        remote_addr: SocketAddr,
+        retry_attempts: u64,
+    ) -> Result<(), AP::Error> {
+        self.socket
+            .connect(remote_public_key, remote_addr, retry_attempts)
+    }
+
+    pub fn disconnect(&mut self, remote_public_key: &AP::PublicKey) {
+        self.socket.disconnect(remote_public_key);
+    }
+
+    pub fn flush(&mut self) {
+        self.socket.flush();
+    }
+
+    pub fn timer(&mut self) -> AuthenticatedTimerFuture<'_, AP> {
+        self.socket.timer()
+    }
+
+    pub fn has_any_session_by_public_key(&self, public_key: &AP::PublicKey) -> bool {
+        self.socket.has_any_session_by_public_key(public_key)
+    }
+
+    pub fn metrics(&self) -> ExecutorMetricsChain<'_> {
+        self.socket.metrics().chain(self.framer.metrics())
     }
 }
 
@@ -417,6 +676,7 @@ impl<AP: AuthenticationProtocol> Future for AuthenticatedTimerFuture<'_, AP> {
 #[cfg(test)]
 mod tests {
     use std::{
+        convert::Infallible,
         net::{Ipv4Addr, SocketAddr, SocketAddrV4},
         pin::pin,
         sync::Arc,
@@ -432,8 +692,33 @@ mod tests {
     use monad_wireauth::{Config, DEFAULT_RETRY_ATTEMPTS};
     use tracing_subscriber::EnvFilter;
 
-    use super::{AuthenticatedSocketHandle, DualSocketHandle};
-    use crate::auth::protocol::WireAuthProtocol;
+    use super::{
+        AuthenticatedSocketHandle, DualSocketHandle, FramedAuthenticatedSocketHandle,
+        FramedRecvError,
+    };
+    use crate::auth::{
+        framing::AuthPacketFramer,
+        protocol::{NoopAuthProtocol, WireAuthProtocol},
+    };
+
+    struct PanicFramer;
+
+    impl AuthPacketFramer<monad_secp::PubKey> for PanicFramer {
+        type Decoded = Bytes;
+        type Error = Infallible;
+
+        fn frame(&mut self, _payload: Bytes) -> Result<impl Iterator<Item = Bytes>, Self::Error> {
+            Ok(std::iter::empty())
+        }
+
+        fn deframe(
+            &mut self,
+            _public_key: monad_secp::PubKey,
+            _packet: Bytes,
+        ) -> Result<Option<Self::Decoded>, Self::Error> {
+            unreachable!("framer should not be called for unauthenticated messages");
+        }
+    }
 
     fn init_tracing() {
         let _ = tracing_subscriber::fmt()
@@ -631,5 +916,51 @@ mod tests {
             .expect("connect failed");
         tokio::time::sleep(Duration::from_millis(5)).await;
         assert_eq!(poll!(pin!(handle.timer())), Poll::Ready(()));
+    }
+
+    #[tokio::test]
+    async fn test_framed_socket_rejects_unauthenticated_messages() {
+        init_tracing();
+
+        let bind_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+
+        let mut recv_dp = DataplaneBuilder::new(1000)
+            .with_udp_sockets([(
+                monad_dataplane::UdpSocketId::AuthenticatedRaptorcast,
+                bind_addr,
+            )])
+            .build();
+        let recv_socket = recv_dp
+            .udp_sockets
+            .take(monad_dataplane::UdpSocketId::AuthenticatedRaptorcast)
+            .expect("recv socket");
+        let recv_addr = recv_socket.local_addr();
+
+        let mut send_dp = DataplaneBuilder::new(1000)
+            .with_udp_sockets([(monad_dataplane::UdpSocketId::Raptorcast, bind_addr)])
+            .build();
+        let send_socket = send_dp
+            .udp_sockets
+            .take(monad_dataplane::UdpSocketId::Raptorcast)
+            .expect("send socket");
+
+        let auth_socket = AuthenticatedSocketHandle::new(
+            recv_socket,
+            NoopAuthProtocol::<monad_secp::PubKey>::new(),
+        );
+        let mut framed_socket = FramedAuthenticatedSocketHandle::new(auth_socket, PanicFramer);
+
+        send_socket.write_unicast_with_priority(
+            UnicastMsg {
+                msgs: vec![(recv_addr, Bytes::from_static(b"hello"))],
+                stride: 5,
+            },
+            UdpPriority::Regular,
+        );
+
+        let result = tokio::time::timeout(Duration::from_secs(2), framed_socket.recv())
+            .await
+            .expect("timeout waiting for framed recv");
+        assert!(matches!(result, Err(FramedRecvError::MissingAuthPublicKey)));
     }
 }
