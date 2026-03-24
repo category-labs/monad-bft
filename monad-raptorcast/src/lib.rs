@@ -468,7 +468,9 @@ where
                     .unwrap_log_on_error(&outbound_message, &build_target);
             }
 
-            RouterTarget::PointToPoint(to) if to == self_id => {
+            RouterTarget::PointToPoint(to) | RouterTarget::DirectPointToPoint(to)
+                if to == self_id =>
+            {
                 Self::enqueue_message_to_self(
                     message,
                     &mut self.pending_events,
@@ -477,7 +479,7 @@ where
                 );
             }
 
-            RouterTarget::PointToPoint(to) => {
+            RouterTarget::PointToPoint(to) | RouterTarget::DirectPointToPoint(to) => {
                 let outbound_message =
                     match OutboundRouterMessage::<OM, ST>::AppMessage(message).try_serialize() {
                         Ok(msg) => msg,

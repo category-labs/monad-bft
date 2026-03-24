@@ -2602,7 +2602,7 @@ mod test {
         cmds.into_iter()
             .filter_map(|c| match c {
                 ConsensusCommand::Publish {
-                    target: RouterTarget::PointToPoint(_),
+                    target: RouterTarget::PointToPoint(_) | RouterTarget::DirectPointToPoint(_),
                     message,
                 } => match message.deref().deref().message {
                     ProtocolMessage::Vote(vote) => Some(vote),
@@ -2795,7 +2795,7 @@ mod test {
     {
         cmds.iter().find(|c| match c {
             ConsensusCommand::Publish {
-                target: RouterTarget::PointToPoint(..),
+                target: RouterTarget::PointToPoint(..) | RouterTarget::DirectPointToPoint(..),
                 message,
             } => matches!(&message.deref().deref().message, ProtocolMessage::Vote(..)),
             _ => false,
