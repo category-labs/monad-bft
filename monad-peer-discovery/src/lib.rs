@@ -32,7 +32,7 @@ use monad_executor::ExecutorMetrics;
 use monad_executor_glue::PeerEntry;
 use monad_node_config::NodeBootstrapPeerConfig;
 use monad_types::{Epoch, NodeId, Round};
-use tracing::{debug, warn};
+use tracing::debug;
 
 pub mod discovery;
 pub mod driver;
@@ -226,7 +226,6 @@ impl Decodable for WireNameRecordV2 {
         let buf = &mut alloy_rlp::Header::decode_bytes(buf, true)?;
 
         let Ok(ip_bytes) = <[u8; 4]>::decode(buf) else {
-            warn!("ip address decode failed: {:?}", buf);
             return Err(alloy_rlp::Error::Custom("Invalid IPv4 address"));
         };
         let ip = Ipv4Addr::from(ip_bytes);
