@@ -91,6 +91,7 @@ where
         current_epoch: Epoch,
         epoch_validators: BTreeMap<Epoch, BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>>,
         auth_protocol: AP,
+        direct_udp_auth_protocol: Option<AP>,
     ) -> Self
     where
         B: PeerDiscoveryAlgoBuilder<PeerDiscoveryAlgoType = PD>,
@@ -103,7 +104,20 @@ where
         assert!(dp.block_until_ready(Duration::from_secs(1)));
 
         let tcp_socket = dp.tcp_sockets.take(TcpSocketId::Raptorcast).unwrap();
-        let authenticated_socket = dp.udp_sockets.take(UdpSocketId::AuthenticatedRaptorcast);
+        let authenticated = dp
+            .udp_sockets
+            .take(UdpSocketId::AuthenticatedRaptorcast)
+            .map(|socket| (socket, auth_protocol));
+        let direct_udp = match (
+            dp.udp_sockets.take(UdpSocketId::DirectUdp),
+            direct_udp_auth_protocol,
+        ) {
+            (Some(socket), Some(protocol)) => Some((socket, protocol)),
+            (None, None) => None,
+            (Some(_), None) | (None, Some(_)) => {
+                panic!("direct udp socket and auth protocol must be set or unset together");
+            }
+        };
         let non_authenticated_socket = dp
             .udp_sockets
             .take(UdpSocketId::Raptorcast)
@@ -152,12 +166,12 @@ where
             cfg.clone(),
             secondary_mode,
             tcp_socket,
-            authenticated_socket,
+            authenticated,
+            direct_udp,
             non_authenticated_socket,
             control,
             shared_pdd.clone(),
             current_epoch,
-            auth_protocol,
         );
         rc_primary.bind_channel_to_secondary_raptorcast(
             secondary_mode,
