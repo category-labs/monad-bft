@@ -387,35 +387,52 @@ async fn eth_call(
 
 #[allow(non_snake_case)]
 async fn eth_simulateV1(
-    _: RequestId,
+    request_id: TimingRequestId,
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
-    let Some(ref eth_call_executor) = app_state.eth_call_executor else {
-        return Err(JsonRpcError::method_not_supported());
-    };
-
-    // acquire the concurrent requests permit
-    let _permit = match app_state.rate_limiter.try_acquire() {
-        Ok(permit) => permit,
-        Err(_) => {
-            return Err(JsonRpcError::internal_error(
-                "eth_simulateV1 concurrent requests limit".into(),
-            ));
-        }
-    };
-
+    let chain_state = app_state.chain_state.as_ref().method_not_supported()?;
+    let eth_call_handler = app_state.eth_call_handler.as_ref().method_not_supported()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
+    let permit = eth_call_handler.acquire(request_id).await?;
 
-    monad_simulate_v1(
-        triedb_env,
-        eth_call_executor.clone(),
-        app_state.chain_id,
-        params,
-    )
-    .await
-    .map(serialize_result)?
+    permit
+        .execute(|executor| {
+            monad_simulate_v1(
+                chain_state,
+                executor,
+                app_state.chain_id,
+                // app_state.eth_call_provider_gas_limit, // TODO(dhil): Block simulation gas limit
+                params,
+            )
+        })
+        .await
+        .map(serialize_result)?
+    // let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
+    // let Some(ref eth_call_executor) = app_state.eth_call_executor else {
+    //     return Err(JsonRpcError::method_not_supported());
+    // };
+
+    // // acquire the concurrent requests permit
+    // let _permit = match app_state.rate_limiter.try_acquire() {
+    //     Ok(permit) => permit,
+    //     Err(_) => {
+    //         return Err(JsonRpcError::internal_error(
+    //             "eth_simulateV1 concurrent requests limit".into(),
+    //         ));
+    //     }
+    // };
+
+    // let params = serde_json::from_str(params.get()).invalid_params()?;
+
+    // monad_simulate_v1(
+    //     triedb_env,
+    //     eth_call_executor.clone(),
+    //     app_state.chain_id,
+    //     params,
+    // )
+    // .await
+    // .map(serialize_result)?
 }
 
 #[allow(non_snake_case)]

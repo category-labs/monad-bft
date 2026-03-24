@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use alloy_consensus::TxEnvelope;
 use alloy_primitives::U256;
 use monad_ethcall::{
@@ -14,12 +12,13 @@ use serde::Deserialize;
 use serde_json::value::RawValue;
 
 use crate::{
-    eth_json_types::BlockTagOrHash,
-    handlers::eth::{
-        block::get_block_key_from_tag_or_hash,
-        call::{fill_gas_params, CallRequest},
+    chainstate::{get_block_key_from_tag_or_hash, ChainState},
+    handlers::eth::call::{fill_gas_params, CallRequest},
+    types::{
+        eth_json::BlockTagOrHash,
+        ethhex,
+        jsonrpc::{JsonRpcError, JsonRpcResult},
     },
-    jsonrpc::{JsonRpcError, JsonRpcResult},
 };
 
 #[derive(Debug, Deserialize)]
@@ -49,12 +48,14 @@ pub struct MonadSimulateParams {
 }
 
 pub async fn monad_simulate_v1<T: Triedb + TriedbPath>(
-    triedb_env: &T,
-    eth_call_executor: Arc<EthCallExecutor>,
+    chain_state: &ChainState<T>,
+    eth_call_executor: &EthCallExecutor,
     chain_id: u64,
     params: MonadSimulateParams,
 ) -> JsonRpcResult<Box<RawValue>> {
-    let block_key = get_block_key_from_tag_or_hash(triedb_env, params.block).await?;
+    let block_key = get_block_key_from_tag_or_hash(&chain_state.triedb_env, params.block)
+        .await
+        .ok_or_else(JsonRpcError::block_not_found)?;
 
     let senders = params
         .simulation
@@ -68,7 +69,8 @@ pub async fn monad_simulate_v1<T: Triedb + TriedbPath>(
         })
         .collect();
 
-    let mut header = match triedb_env
+    let mut header = match chain_state
+        .triedb_env
         .get_block_header(block_key)
         .await
         .map_err(JsonRpcError::internal_error)?
@@ -83,26 +85,20 @@ pub async fn monad_simulate_v1<T: Triedb + TriedbPath>(
         .simulation
         .block_state_calls
         .iter()
-        .map(|bsc| {
-            bsc.calls
-                .iter()
-                .map(|call|
-                    call.clone()
-                )
-                .collect()
-        })
+        .map(|bsc| bsc.calls.iter().map(|call| call.clone()).collect())
         .collect();
 
     for call_list in &mut calls {
         for call in call_list {
             fill_gas_params(
-                triedb_env,
+                &chain_state.triedb_env,
                 block_key,
                 call,
                 &mut header.header,
                 &state_overrides,
                 U256::MAX,
-            ).await?;
+            )
+            .await?;
         }
     }
 
