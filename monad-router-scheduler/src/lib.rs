@@ -150,7 +150,7 @@ where
                         .map(|to| (time, RouterEvent::Tx(*to, message.clone()))),
                 );
             }
-            RouterTarget::PointToPoint(to) => {
+            RouterTarget::PointToPoint(to) | RouterTarget::DirectPointToPoint(to) => {
                 self.events.push_back((time, RouterEvent::Tx(to, message)));
             }
             RouterTarget::TcpPointToPoint { to, completion } => {
@@ -267,7 +267,7 @@ where
                         .map(|to| (time, RouterEvent::Tx(*to, message.clone()))),
                 );
             }
-            RouterTarget::PointToPoint(to) => {
+            RouterTarget::PointToPoint(to) | RouterTarget::DirectPointToPoint(to) => {
                 self.events.push_back((time, RouterEvent::Tx(to, message)));
             }
             RouterTarget::TcpPointToPoint { to, completion } => {

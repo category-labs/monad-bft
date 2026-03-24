@@ -145,7 +145,7 @@ where
                             tx.send((now, self.me, message.clone())).unwrap();
                         }
                     }
-                    RouterTarget::PointToPoint(peer) => {
+                    RouterTarget::PointToPoint(peer) | RouterTarget::DirectPointToPoint(peer) => {
                         self.txs
                             .get(&peer)
                             .unwrap()
@@ -174,7 +174,7 @@ where
                             tx.send((now, self.me, message.clone())).unwrap();
                         }
                     }
-                    RouterTarget::PointToPoint(peer) => {
+                    RouterTarget::PointToPoint(peer) | RouterTarget::DirectPointToPoint(peer) => {
                         self.txs
                             .get(&peer)
                             .unwrap()

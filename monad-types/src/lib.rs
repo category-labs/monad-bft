@@ -659,6 +659,7 @@ pub enum RouterTarget<P: PubKey> {
     Broadcast(Epoch),
     Raptorcast(Epoch), // sharded raptor-aware broadcast
     PointToPoint(NodeId<P>),
+    DirectPointToPoint(NodeId<P>),
     TcpPointToPoint {
         to: NodeId<P>,
         completion: Option<futures::channel::oneshot::Sender<()>>,
