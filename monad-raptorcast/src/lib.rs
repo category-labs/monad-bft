@@ -177,6 +177,22 @@ where
                 config.primary_instance.raptor10_redundancy
             );
         }
+
+        if config
+            .secondary_instance
+            .raptor10_fullnode_redundancy_factor
+            > udp::MAX_REDUNDANCY.to_f32()
+        {
+            panic!(
+                "Configuration value raptor10_fullnode_redundancy_factor must be at most {}, \
+                but got {}.",
+                udp::MAX_REDUNDANCY.to_f32(),
+                config
+                    .secondary_instance
+                    .raptor10_fullnode_redundancy_factor
+            );
+        }
+
         let self_id = NodeId::new(config.shared_key.pubkey());
         let is_dynamic_fullnode = matches!(secondary_mode, SecondaryRaptorCastModeConfig::Client);
         debug!(
