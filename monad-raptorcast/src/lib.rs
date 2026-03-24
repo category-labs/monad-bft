@@ -85,12 +85,14 @@ pub mod message;
 pub mod metrics;
 pub mod packet;
 pub mod parser;
+mod prewarm;
 pub mod raptorcast_secondary;
 pub mod udp;
 pub mod util;
 
 const SIGNATURE_SIZE: usize = 65;
 const DEFAULT_RETRY_ATTEMPTS: u64 = 3;
+const VALIDATOR_SESSION_PREWARM_INTERVAL: Duration = Duration::from_secs(5);
 
 pub const UNICAST_MSG_BATCH_SIZE: usize = 32;
 
@@ -114,6 +116,8 @@ where
     peer_discovery_driver: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
 
     current_epoch: Epoch,
+    validator_session_prewarm_timer: tokio::time::Interval,
+    validator_session_prewarmer: prewarm::ValidatorSessionPrewarmer<CertificateSignaturePubKey<ST>>,
 
     udp_state: udp::UdpState<ST>,
     message_builder: OwnedMessageBuilder<ST>,
@@ -146,6 +150,15 @@ pub enum RaptorCastEvent<E, ST: CertificateSignatureRecoverable> {
     Message(E),
     PeerManagerResponse(PeerManagerResponse<ST>),
     SecondaryRaptorcastPeersUpdate(Round, Vec<NodeId<CertificateSignaturePubKey<ST>>>),
+}
+
+fn validator_session_prewarm_timer() -> tokio::time::Interval {
+    let mut interval = tokio::time::interval_at(
+        tokio::time::Instant::now() + VALIDATOR_SESSION_PREWARM_INTERVAL,
+        VALIDATOR_SESSION_PREWARM_INTERVAL,
+    );
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    interval
 }
 
 impl<ST, M, OM, SE, PD, AP> RaptorCast<ST, M, OM, SE, PD, AP>
@@ -221,6 +234,8 @@ where
             secondary_message_builder: Some(secondary_message_builder),
 
             current_epoch,
+            validator_session_prewarm_timer: validator_session_prewarm_timer(),
+            validator_session_prewarmer: Default::default(),
 
             udp_state: udp::UdpState::new(
                 self_id,
@@ -300,6 +315,25 @@ where
     ) -> bool {
         self.dual_socket
             .is_connected_socket_and_public_key(socket_addr, public_key)
+    }
+
+    fn reset_validator_session_prewarmer(
+        &mut self,
+        self_id: NodeId<CertificateSignaturePubKey<ST>>,
+    ) {
+        if !self.dual_socket.has_authenticated_socket() {
+            self.validator_session_prewarmer.clear();
+            return;
+        }
+
+        let validator_ids = self
+            .epoch_validators
+            .get(&self.current_epoch)
+            .into_iter()
+            .flat_map(|validator_set| validator_set.get_members().keys().copied())
+            .filter(|validator_id| *validator_id != self_id);
+
+        self.validator_session_prewarmer.reset(validator_ids);
     }
 
     fn enqueue_message_to_self(
@@ -753,6 +787,7 @@ where
                         }
 
                         self.epoch_validators.retain(|e, _| *e + Epoch(1) >= epoch);
+                        self.reset_validator_session_prewarmer(self_id);
                     }
                     self.full_node_groups.delete_expired(round);
                     self.peer_discovery_driver
@@ -785,6 +820,9 @@ where
                         );
                         let removed = self.epoch_validators.insert(epoch, validators);
                         assert!(removed.is_none());
+                    }
+                    if epoch == self.current_epoch {
+                        self.reset_validator_session_prewarmer(self_id);
                     }
                     self.peer_discovery_driver.lock().unwrap().update(
                         PeerDiscoveryEvent::UpdateValidatorSet {
@@ -1102,6 +1140,20 @@ where
 
             if let Some(event) = this.pending_events.pop_front() {
                 return Poll::Ready(Some(event.into()));
+            }
+        }
+
+        if this.dual_socket.has_authenticated_socket() {
+            while this
+                .validator_session_prewarm_timer
+                .poll_tick(cx)
+                .is_ready()
+            {
+                let mut backend = RaptorCastSessionPrewarmBackend::new(
+                    &mut this.dual_socket,
+                    &this.peer_discovery_driver,
+                );
+                this.validator_session_prewarmer.tick(&mut backend);
             }
         }
 
@@ -1591,6 +1643,79 @@ fn ensure_authenticated_sessions<'a, ST, PD, AP>(
         });
 
     dual_socket.flush();
+}
+
+struct RaptorCastSessionPrewarmBackend<'a, ST, PD, AP>
+where
+    ST: CertificateSignatureRecoverable,
+    PD: PeerDiscoveryAlgo<SignatureType = ST>,
+    AP: auth::AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
+{
+    dual_socket: &'a mut auth::DualSocketHandle<AP>,
+    peer_discovery_driver: &'a Arc<Mutex<PeerDiscoveryDriver<PD>>>,
+    _phantom: PhantomData<ST>,
+}
+
+impl<'a, ST, PD, AP> RaptorCastSessionPrewarmBackend<'a, ST, PD, AP>
+where
+    ST: CertificateSignatureRecoverable,
+    PD: PeerDiscoveryAlgo<SignatureType = ST>,
+    AP: auth::AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
+{
+    fn new(
+        dual_socket: &'a mut auth::DualSocketHandle<AP>,
+        peer_discovery_driver: &'a Arc<Mutex<PeerDiscoveryDriver<PD>>>,
+    ) -> Self {
+        Self {
+            dual_socket,
+            peer_discovery_driver,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<'a, ST, PD, AP> prewarm::SessionPrewarmBackend<CertificateSignaturePubKey<ST>>
+    for RaptorCastSessionPrewarmBackend<'a, ST, PD, AP>
+where
+    ST: CertificateSignatureRecoverable,
+    PD: PeerDiscoveryAlgo<SignatureType = ST>,
+    AP: auth::AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
+{
+    fn has_session(&self, validator_id: &NodeId<CertificateSignaturePubKey<ST>>) -> bool {
+        self.dual_socket
+            .has_any_session_by_public_key(&validator_id.pubkey())
+    }
+
+    fn connect(&mut self, validator_id: &NodeId<CertificateSignaturePubKey<ST>>) -> bool {
+        let Some(auth_addr) = self
+            .peer_discovery_driver
+            .lock()
+            .unwrap()
+            .get_name_record(validator_id)
+            .and_then(|record| record.name_record.authenticated_udp_socket())
+        else {
+            return false;
+        };
+
+        if let Err(error) = self.dual_socket.connect(
+            &validator_id.pubkey(),
+            SocketAddr::V4(auth_addr),
+            DEFAULT_RETRY_ATTEMPTS,
+        ) {
+            warn!(
+                target = ?validator_id,
+                auth_addr = ?auth_addr,
+                error = ?error,
+                "failed to initiate connection to authenticated endpoint"
+            );
+        }
+
+        true
+    }
+
+    fn flush(&mut self) {
+        self.dual_socket.flush();
+    }
 }
 
 impl<PT, AP> PeerAddrLookup<PT> for auth::DualSocketHandle<AP>
