@@ -17,7 +17,6 @@ use std::{future::Future, pin::Pin, task::Poll};
 
 use bytes::Bytes;
 use futures::Stream;
-use itertools::{Either, Itertools};
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -35,12 +34,12 @@ use monad_validator::signature_collection::SignatureCollection;
 
 use crate::forward::INGRESS_CHUNK_MAX_SIZE;
 
-pub struct ForwardedTxs<SCT>
+pub struct ForwardedTx<SCT>
 where
     SCT: SignatureCollection,
 {
     pub sender: NodeId<SCT::NodeIdPubKey>,
-    pub txs: Vec<Bytes>,
+    pub tx: Bytes,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -95,7 +94,7 @@ type ForwardedPermitFuture<SCT> = Pin<
     Box<
         dyn Future<
                 Output = Result<
-                    tokio::sync::mpsc::OwnedPermit<Vec<ForwardedTxs<SCT>>>,
+                    tokio::sync::mpsc::OwnedPermit<Vec<ForwardedTx<SCT>>>,
                     tokio::sync::mpsc::error::SendError<()>,
                 >,
             > + 'static,
@@ -113,7 +112,7 @@ impl<SCT> PendingForwardedSend<SCT>
 where
     SCT: SignatureCollection,
 {
-    fn new(sender: tokio::sync::mpsc::Sender<Vec<ForwardedTxs<SCT>>>) -> Self {
+    fn new(sender: tokio::sync::mpsc::Sender<Vec<ForwardedTx<SCT>>>) -> Self {
         tracing::debug!("txpool forwarded_ingress: reserving channel slot for next batch");
         Self {
             permit_fut: Box::pin(sender.reserve_owned()),
@@ -147,7 +146,7 @@ where
             >,
         >,
     >,
-    forwarded_tx: tokio::sync::mpsc::Sender<Vec<ForwardedTxs<SCT>>>,
+    forwarded_tx: tokio::sync::mpsc::Sender<Vec<ForwardedTx<SCT>>>,
     forwarded_queue:
         FairQueue<ScoreReader<NodeId<CertificateSignaturePubKey<ST>>, StdClock>, Bytes>,
     forwarded_pending_send: Option<PendingForwardedSend<SCT>>,
@@ -178,7 +177,7 @@ where
                         >,
                     >,
                 >,
-                tokio::sync::mpsc::Receiver<Vec<ForwardedTxs<SCT>>>,
+                tokio::sync::mpsc::Receiver<Vec<ForwardedTx<SCT>>>,
                 tokio::sync::mpsc::Sender<MonadEvent<ST, SCT, EthExecutionProtocol>>,
             ) -> F
             + Send
@@ -216,7 +215,7 @@ where
                         >,
                     >,
                 >,
-                tokio::sync::mpsc::Receiver<Vec<ForwardedTxs<SCT>>>,
+                tokio::sync::mpsc::Receiver<Vec<ForwardedTx<SCT>>>,
                 tokio::sync::mpsc::Sender<MonadEvent<ST, SCT, EthExecutionProtocol>>,
             ) -> F
             + Send
@@ -274,12 +273,15 @@ where
         }
     }
 
-    fn enqueue_forwarded(&mut self, forwarded: Vec<ForwardedTxs<SCT>>) {
+    fn enqueue_forwarded(
+        &mut self,
+        forwarded: Vec<(NodeId<CertificateSignaturePubKey<ST>>, Vec<Bytes>)>,
+    ) {
         let fq_len_before = self.forwarded_queue.len();
         let mut total_txs = 0usize;
         let mut total_dropped = 0u64;
 
-        for ForwardedTxs { sender, txs } in forwarded {
+        for (sender, txs) in forwarded {
             let txs_len = txs.len();
             total_txs += txs_len;
             for (index, tx) in txs.into_iter().enumerate() {
@@ -316,17 +318,14 @@ where
         );
     }
 
-    fn pop_forwarded_batch(&mut self) -> Vec<ForwardedTxs<SCT>> {
+    fn pop_forwarded_batch(&mut self) -> Vec<ForwardedTx<SCT>> {
         let fq_len_before = self.forwarded_queue.len();
         let mut batch = Vec::with_capacity(INGRESS_CHUNK_MAX_SIZE);
         while batch.len() < INGRESS_CHUNK_MAX_SIZE {
             let Some((sender, tx)) = self.forwarded_queue.pop() else {
                 break;
             };
-            batch.push(ForwardedTxs {
-                sender,
-                txs: vec![tx],
-            });
+            batch.push(ForwardedTx { sender, tx });
         }
 
         if !batch.is_empty() {
@@ -417,17 +416,19 @@ where
     fn exec(&mut self, commands: Vec<Self::Command>) {
         self.verify_handle_liveness();
 
-        let (commands, forwarded): (Vec<Self::Command>, Vec<ForwardedTxs<SCT>>) =
-            commands.into_iter().partition_map(|command| match command {
-                TxPoolCommand::InsertForwardedTxs { sender, txs } => {
-                    Either::Right(ForwardedTxs { sender, txs })
-                }
-                command => Either::Left(command),
-            });
+        let mut regular_commands = Vec::new();
+        let mut forwarded = Vec::new();
 
-        if !commands.is_empty() {
+        for command in commands {
+            match command {
+                TxPoolCommand::InsertForwardedTxs { sender, txs } => forwarded.push((sender, txs)),
+                command => regular_commands.push(command),
+            }
+        }
+
+        if !regular_commands.is_empty() {
             self.command_tx
-                .try_send(commands)
+                .try_send(regular_commands)
                 .expect("EthTxPoolExecutorClient executor is lagging")
         }
 
