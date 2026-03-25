@@ -397,7 +397,7 @@ async fn eth_simulateV1(
     let permit = eth_call_handler.acquire(request_id).await?;
 
     permit
-        .execute(|executor| {
+        .execute(|_config, executor| {
             monad_simulate_v1(
                 chain_state,
                 executor,
@@ -408,31 +408,6 @@ async fn eth_simulateV1(
         })
         .await
         .map(serialize_result)?
-    // let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
-    // let Some(ref eth_call_executor) = app_state.eth_call_executor else {
-    //     return Err(JsonRpcError::method_not_supported());
-    // };
-
-    // // acquire the concurrent requests permit
-    // let _permit = match app_state.rate_limiter.try_acquire() {
-    //     Ok(permit) => permit,
-    //     Err(_) => {
-    //         return Err(JsonRpcError::internal_error(
-    //             "eth_simulateV1 concurrent requests limit".into(),
-    //         ));
-    //     }
-    // };
-
-    // let params = serde_json::from_str(params.get()).invalid_params()?;
-
-    // monad_simulate_v1(
-    //     triedb_env,
-    //     eth_call_executor.clone(),
-    //     app_state.chain_id,
-    //     params,
-    // )
-    // .await
-    // .map(serialize_result)?
 }
 
 #[allow(non_snake_case)]
