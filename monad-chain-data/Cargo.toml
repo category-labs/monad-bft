@@ -9,3 +9,6 @@ bench = false
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
+
+[dev-dependencies]
+futures = "0.3"

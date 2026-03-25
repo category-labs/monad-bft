@@ -4901,6 +4901,7 @@ dependencies = [
 name = "monad-chain-data"
 version = "0.1.0"
 dependencies = [
+ "futures",
  "serde",
  "thiserror 2.0.17",
 ]
