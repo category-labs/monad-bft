@@ -48,6 +48,9 @@ min_num_peers = 0
 max_num_peers = 200
 ping_rate_limit_per_second = 100
 
+[txpool_peer_score]
+promotion_threshold = 20000.0
+
 [fullnode_dedicated]
 identities = []
 # [[fullnode_dedicated.identities]]

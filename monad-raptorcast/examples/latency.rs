@@ -45,6 +45,7 @@ use monad_peer_discovery::{
     MonadNameRecord, NameRecord,
 };
 use monad_raptorcast::{
+    auth::{NopScore, WireAuthProtocol},
     config::{RaptorCastConfig, RaptorCastConfigPrimary},
     raptorcast_secondary::SecondaryRaptorCastModeConfig,
     RaptorCast, RaptorCastEvent,
@@ -526,6 +527,7 @@ struct NodeSetup {
         <MockMessage as Message>::Event,
         NopDiscovery<SignatureType>,
         monad_raptorcast::auth::WireAuthProtocol,
+        monad_raptorcast::auth::NopScore<NodeId<CertificateSignaturePubKey<SignatureType>>>,
     >,
     node_id: NodeId<CertificateSignaturePubKey<SignatureType>>,
     tcp_addr: SocketAddrV4,
@@ -660,7 +662,8 @@ fn setup_node(
         MockMessage,
         <MockMessage as Message>::Event,
         NopDiscovery<SignatureType>,
-        monad_raptorcast::auth::WireAuthProtocol,
+        WireAuthProtocol,
+        NopScore<NodeId<PubKeyType>>,
     >::new(
         create_raptorcast_config(keypair_arc),
         SecondaryRaptorCastModeConfig::None,

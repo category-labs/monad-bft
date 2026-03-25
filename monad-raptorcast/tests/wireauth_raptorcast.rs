@@ -247,6 +247,7 @@ fn spawn_noop_validator(
             MockEvent<CertificateSignaturePubKey<SecpSignature>>,
             monad_peer_discovery::mock::NopDiscovery<SecpSignature>,
             monad_raptorcast::auth::NoopAuthProtocol<CertificateSignaturePubKey<SecpSignature>>,
+            monad_raptorcast::auth::NopScore<NodeId<CertificateSignaturePubKey<SecpSignature>>>,
         >::new(
             config,
             monad_raptorcast::raptorcast_secondary::SecondaryRaptorCastModeConfig::None,
@@ -319,7 +320,13 @@ fn spawn_wireauth_validator(
                 wireauth_config.clone(),
                 keypair.clone(),
             );
-            (socket, protocol)
+            (
+                socket,
+                protocol,
+                monad_raptorcast::auth::NopScore::<
+                    NodeId<CertificateSignaturePubKey<SecpSignature>>,
+                >::new(),
+            )
         });
 
         let mut validator_rc = monad_raptorcast::RaptorCast::<
@@ -328,6 +335,7 @@ fn spawn_wireauth_validator(
             MockMessage,
             MockEvent<CertificateSignaturePubKey<SecpSignature>>,
             monad_peer_discovery::mock::NopDiscovery<SecpSignature>,
+            _,
             _,
         >::new(
             config,

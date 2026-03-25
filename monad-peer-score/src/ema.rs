@@ -24,17 +24,22 @@ use std::{
 
 use lru::LruCache;
 use monad_executor::ExecutorMetrics;
+use serde::{de::Error as _, Deserialize, Deserializer};
 use tracing::{debug, warn};
 
 use crate::{metrics::*, Clock, IdentityScore, PeerStatus, Score};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct ScoreConfig {
     pub promoted_capacity: usize,
     pub newcomer_capacity: usize,
+    #[serde(deserialize_with = "deserialize_duration")]
     pub time_weight_unit: Duration,
+    #[serde(deserialize_with = "deserialize_duration")]
     pub ema_half_life: Duration,
-    pub block_time: Duration,
+    #[serde(deserialize_with = "deserialize_duration")]
+    pub update_interval: Duration,
     pub promotion_threshold: f64,
 }
 
@@ -45,10 +50,18 @@ impl Default for ScoreConfig {
             newcomer_capacity: 10_000,
             time_weight_unit: Duration::from_secs(3600),
             ema_half_life: Duration::from_secs(24 * 3600),
-            block_time: Duration::from_millis(400),
-            promotion_threshold: 1_000_000.0,
+            update_interval: Duration::from_millis(400),
+            promotion_threshold: 20_000.0,
         }
     }
+}
+
+fn deserialize_duration<'de, D>(deserializer: D) -> Result<Duration, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    humantime::parse_duration(&value).map_err(D::Error::custom)
 }
 
 struct IdentityState {
@@ -103,14 +116,17 @@ pub fn create<I: Hash + Eq, C: Clock + Clone>(
         "time_weight_unit must be > 0"
     );
     assert!(!config.ema_half_life.is_zero(), "ema_half_life must be > 0");
-    assert!(!config.block_time.is_zero(), "block_time must be > 0");
+    assert!(
+        !config.update_interval.is_zero(),
+        "update_interval must be > 0"
+    );
     assert!(
         config.promotion_threshold.is_finite() && config.promotion_threshold > 0.0,
         "promotion_threshold must be finite and > 0"
     );
     let promoted_capacity = NonZeroUsize::new(config.promoted_capacity).unwrap();
     let newcomer_capacity = NonZeroUsize::new(config.newcomer_capacity).unwrap();
-    let alpha = ema_alpha(config.block_time, &config.ema_half_life);
+    let alpha = ema_alpha(config.update_interval, &config.ema_half_life);
     let state = Rc::new(RefCell::new(SharedState {
         promoted: LruCache::new(promoted_capacity),
         newcomers: LruCache::new(newcomer_capacity),
@@ -154,8 +170,8 @@ fn apply_ema_decay(ema_gas: f64, elapsed: Duration, half_life: &Duration) -> f64
     decayed
 }
 
-fn ema_alpha(block_time: Duration, half_life: &Duration) -> f64 {
-    let alpha = 1.0 - 0.5_f64.powf(block_time.as_secs_f64() / half_life.as_secs_f64());
+fn ema_alpha(update_interval: Duration, half_life: &Duration) -> f64 {
+    let alpha = 1.0 - 0.5_f64.powf(update_interval.as_secs_f64() / half_life.as_secs_f64());
     if alpha.is_finite() {
         alpha.clamp(0.0, 1.0)
     } else {
@@ -222,7 +238,7 @@ fn clamp_score(value: f64) -> f64 {
 }
 
 fn min_initial_time_weight(config: &ScoreConfig) -> f64 {
-    let ratio = config.block_time.as_secs_f64() / config.time_weight_unit.as_secs_f64();
+    let ratio = config.update_interval.as_secs_f64() / config.time_weight_unit.as_secs_f64();
     (ratio * ratio).min(1.0)
 }
 
@@ -607,6 +623,35 @@ mod tests {
     }
 
     #[test]
+    fn score_config_deserializes_humantime_durations() {
+        let config: ScoreConfig = toml::from_str(
+            r#"
+                time_weight_unit = "1h"
+                ema_half_life = "24h"
+                update_interval = "400ms"
+                promotion_threshold = 42.0
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(config.time_weight_unit, Duration::from_secs(3600));
+        assert_eq!(config.ema_half_life, Duration::from_secs(24 * 3600));
+        assert_eq!(config.update_interval, Duration::from_millis(400));
+        assert_eq!(config.promotion_threshold, 42.0);
+    }
+
+    #[test]
+    fn score_config_uses_struct_default_for_missing_duration_fields() {
+        let config: ScoreConfig = toml::from_str("promotion_threshold = 42.0").unwrap();
+        let default = ScoreConfig::default();
+
+        assert_eq!(config.time_weight_unit, default.time_weight_unit);
+        assert_eq!(config.ema_half_life, default.ema_half_life);
+        assert_eq!(config.update_interval, default.update_interval);
+        assert_eq!(config.promotion_threshold, 42.0);
+    }
+
+    #[test]
     fn new_identity_is_unknown() {
         let clock = MockClock::new();
         let (_, reader) = create::<u32, _>(ScoreConfig::default(), clock);
@@ -676,7 +721,7 @@ mod tests {
         let config = ScoreConfig {
             ema_half_life: Duration::from_secs(10),
             time_weight_unit: Duration::from_secs(1),
-            block_time: Duration::from_secs(1),
+            update_interval: Duration::from_secs(1),
             ..Default::default()
         };
         let clock = MockClock::new();
@@ -712,7 +757,7 @@ mod tests {
         let config = ScoreConfig {
             time_weight_unit: Duration::from_secs(1),
             ema_half_life: Duration::from_secs(3600),
-            block_time: Duration::from_secs(1),
+            update_interval: Duration::from_secs(1),
             ..Default::default()
         };
         let clock = MockClock::new();
@@ -775,7 +820,7 @@ mod tests {
         let config = ScoreConfig {
             time_weight_unit: Duration::from_secs(1),
             ema_half_life: Duration::from_secs(1800),
-            block_time: Duration::from_secs(1),
+            update_interval: Duration::from_secs(1),
             ..Default::default()
         };
         let clock = MockClock::new();
@@ -868,7 +913,7 @@ mod tests {
             promoted_capacity: 3,
             time_weight_unit: Duration::from_secs(1),
             ema_half_life: Duration::from_secs(3600),
-            block_time: Duration::from_secs(1),
+            update_interval: Duration::from_secs(1),
             promotion_threshold: 100.0,
         };
         let clock = MockClock::new();
@@ -914,7 +959,7 @@ mod tests {
             promoted_capacity: 1,
             time_weight_unit: Duration::from_secs(1),
             ema_half_life: Duration::from_secs(3600),
-            block_time: Duration::from_secs(1),
+            update_interval: Duration::from_secs(1),
             promotion_threshold: 10.0,
         };
         let clock = MockClock::new();
@@ -948,7 +993,7 @@ mod tests {
             promoted_capacity: 1,
             time_weight_unit: Duration::from_secs(1),
             ema_half_life: Duration::from_secs(3600),
-            block_time: Duration::from_secs(1),
+            update_interval: Duration::from_secs(1),
             promotion_threshold: f64::MAX,
         };
         let clock = MockClock::new();
@@ -973,7 +1018,7 @@ mod tests {
             promoted_capacity: 2,
             time_weight_unit: Duration::from_secs(1),
             ema_half_life: Duration::from_secs(3600),
-            block_time: Duration::from_secs(1),
+            update_interval: Duration::from_secs(1),
             promotion_threshold: 0.1,
         };
         let clock = MockClock::new();
@@ -1023,7 +1068,7 @@ mod tests {
             promoted_capacity: 2,
             time_weight_unit: Duration::from_secs(1),
             ema_half_life: Duration::from_secs(3600),
-            block_time: Duration::from_secs(1),
+            update_interval: Duration::from_secs(1),
             promotion_threshold: 0.1,
         };
         let clock = MockClock::new();
@@ -1057,7 +1102,7 @@ mod tests {
             promoted_capacity: 1,
             time_weight_unit: Duration::from_secs(1),
             ema_half_life: Duration::from_secs(3600),
-            block_time: Duration::from_secs(1),
+            update_interval: Duration::from_secs(1),
             promotion_threshold: 1.0,
         };
         let clock = MockClock::new();
@@ -1086,7 +1131,7 @@ mod tests {
             promoted_capacity: 10,
             time_weight_unit: Duration::from_secs(1),
             ema_half_life: Duration::from_secs(100),
-            block_time: Duration::from_secs(1),
+            update_interval: Duration::from_secs(1),
             promotion_threshold: 0.1,
         };
         let clock = MockClock::new();
@@ -1111,7 +1156,7 @@ mod tests {
             promoted_capacity: 2,
             time_weight_unit: Duration::from_secs(1),
             ema_half_life: Duration::from_secs(3600),
-            block_time: Duration::from_secs(1),
+            update_interval: Duration::from_secs(1),
             promotion_threshold: 0.1,
         };
         let clock = MockClock::new();
@@ -1186,7 +1231,7 @@ mod tests {
                 promoted_capacity: 128,
                 time_weight_unit: Duration::from_secs(1),
                 ema_half_life: Duration::from_secs(3600),
-                block_time: Duration::from_secs(1),
+                update_interval: Duration::from_secs(1),
                 promotion_threshold: 0.1,
             };
             let clock = MockClock::new();

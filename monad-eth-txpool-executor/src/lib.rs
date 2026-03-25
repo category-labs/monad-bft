@@ -198,6 +198,8 @@ where
         chain_config: CCT,
         round: Round,
         execution_timestamp_s: u64,
+        score_provider: ema::ScoreProvider<NodeId<CertificateSignaturePubKey<ST>>, StdClock>,
+        score_reader: ema::ScoreReader<NodeId<CertificateSignaturePubKey<ST>>, StdClock>,
     ) -> io::Result<EthTxPoolExecutorClient<ST, SCT, SBT, CCT, CRT>> {
         let ipc = Box::pin(EthTxPoolIpcServer::new(ipc_config)?);
 
@@ -205,10 +207,6 @@ where
 
         let metrics = Arc::new(EthTxPoolExecutorMetrics::default());
         let mut executor_metrics = ExecutorMetrics::default();
-        let (score_provider, score_reader) = ema::create::<NodeId<SCT::NodeIdPubKey>, StdClock>(
-            ema::ScoreConfig::default(),
-            StdClock,
-        );
 
         metrics.update(&mut executor_metrics);
 

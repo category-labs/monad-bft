@@ -5583,6 +5583,7 @@ dependencies = [
  "monad-ledger",
  "monad-node-config",
  "monad-peer-discovery",
+ "monad-peer-score",
  "monad-pprof",
  "monad-raptorcast",
  "monad-router-multi",
@@ -5626,6 +5627,7 @@ dependencies = [
  "monad-consensus-types",
  "monad-crypto",
  "monad-eth-types",
+ "monad-peer-score",
  "monad-secp",
  "monad-types",
  "serde",
@@ -5686,9 +5688,12 @@ dependencies = [
 name = "monad-peer-score"
 version = "0.1.0"
 dependencies = [
+ "humantime",
  "lru",
  "monad-executor",
  "proptest",
+ "serde",
+ "toml",
  "tracing",
  "tracing-subscriber",
 ]
@@ -5803,6 +5808,7 @@ dependencies = [
  "monad-executor-glue",
  "monad-node-config",
  "monad-peer-discovery",
+ "monad-peer-score",
  "monad-raptorcast",
  "monad-types",
  "tokio",
