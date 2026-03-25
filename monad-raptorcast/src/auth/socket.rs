@@ -229,6 +229,21 @@ where
         self.non_authenticated.is_some()
     }
 
+    /// Returns `Err(())` if the message was not written or buffered.
+    #[allow(clippy::result_unit_err)]
+    pub fn write_buffered_with_priority(
+        &mut self,
+        public_key: &AP::PublicKey,
+        plaintext: Bytes,
+        priority: UdpPriority,
+    ) -> Result<(), ()> {
+        let Some(authenticated) = &mut self.authenticated else {
+            return Err(());
+        };
+
+        authenticated.write_with_buffering(public_key, plaintext, priority)
+    }
+
     pub fn metrics(&self) -> ExecutorMetricsChain<'_> {
         let mut chain = ExecutorMetricsChain::default().push(self.metrics.as_ref());
         if let Some(authenticated) = &self.authenticated {

@@ -755,6 +755,197 @@ async fn test_wireauth_matrix(
         .await;
 }
 
+fn create_auth_only_name_record(
+    info: &ValidatorInfo,
+    tcp_addr: SocketAddrV4,
+    auth_addr: SocketAddrV4,
+) -> MonadNameRecord<SecpSignature> {
+    MonadNameRecord::new(
+        NameRecord::new_with_authentication(
+            Ipv4Addr::new(127, 0, 0, 1),
+            tcp_addr.port(),
+            tcp_addr.port(),
+            auth_addr.port(),
+            1,
+        ),
+        &*info.keypair,
+    )
+}
+
+async fn run_auth_only_point_to_point_uses_buffering() {
+    let alice_info = ValidatorInfo::new(1);
+    let bob_info = ValidatorInfo::new(2);
+
+    let alice_dp = create_dataplane_for_tests(true, false);
+    let bob_dp = create_dataplane_for_tests(true, false);
+
+    let alice_name_record =
+        create_auth_only_name_record(&alice_info, alice_dp.tcp_addr, alice_dp.auth_addr.unwrap());
+    let bob_name_record =
+        create_auth_only_name_record(&bob_info, bob_dp.tcp_addr, bob_dp.auth_addr.unwrap());
+
+    let name_records: HashMap<_, _> = [
+        (alice_info.nodeid, alice_name_record),
+        (bob_info.nodeid, bob_name_record),
+    ]
+    .into();
+    let known_addresses: HashMap<_, _> = [
+        (alice_info.nodeid, alice_dp.tcp_addr),
+        (bob_info.nodeid, bob_dp.tcp_addr),
+    ]
+    .into();
+
+    let alice = spawn_wireauth_validator(
+        alice_info.keypair.clone(),
+        alice_dp,
+        known_addresses.clone(),
+        name_records.clone(),
+        vec![],
+        DEFAULT_SIG_VERIFICATION_RATE_LIMIT,
+    );
+    let mut bob = spawn_wireauth_validator(
+        bob_info.keypair.clone(),
+        bob_dp,
+        known_addresses,
+        name_records,
+        vec![],
+        DEFAULT_SIG_VERIFICATION_RATE_LIMIT,
+    );
+
+    tokio::time::timeout(CONNECTION_TIMEOUT, alice.ready_rx)
+        .await
+        .expect("alice ready timeout")
+        .expect("alice ready channel closed");
+    tokio::time::timeout(CONNECTION_TIMEOUT, bob.ready_rx)
+        .await
+        .expect("bob ready timeout")
+        .expect("bob ready channel closed");
+
+    alice
+        .cmd_tx
+        .send(RouterCommand::Publish {
+            target: monad_types::RouterTarget::PointToPoint(bob_info.nodeid),
+            message: MockMessage::new(77, 1_000),
+        })
+        .unwrap();
+
+    let event = tokio::time::timeout(MESSAGE_TIMEOUT, bob.event_rx.recv())
+        .await
+        .expect("timeout waiting for buffered point-to-point message")
+        .expect("channel closed");
+
+    let MockEvent((from, msg_id)) = event;
+    assert_eq!(from, alice_info.nodeid);
+    assert_eq!(msg_id, 77);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_auth_only_point_to_point_uses_buffering() {
+    init_tracing();
+
+    tokio::task::LocalSet::new()
+        .run_until(run_auth_only_point_to_point_uses_buffering())
+        .await;
+}
+
+async fn run_send_with_record_buffers_without_non_authenticated_socket() {
+    let alice_info = ValidatorInfo::new(1);
+    let bob_info = ValidatorInfo::new(2);
+
+    let alice_dp = create_dataplane_for_tests(true, false);
+    let bob_dp = create_dataplane_for_tests(true, false);
+
+    let alice_local_name_record =
+        create_auth_only_name_record(&alice_info, alice_dp.tcp_addr, alice_dp.auth_addr.unwrap());
+    let bob_name_record = NameRecord::new_with_authentication(
+        Ipv4Addr::new(127, 0, 0, 1),
+        bob_dp.tcp_addr.port(),
+        bob_dp.tcp_addr.port(),
+        bob_dp.auth_addr.unwrap().port(),
+        1,
+    );
+
+    let name_records: HashMap<_, _> = [
+        (alice_info.nodeid, alice_local_name_record.clone()),
+        (
+            bob_info.nodeid,
+            MonadNameRecord::new(bob_name_record.clone(), &*bob_info.keypair),
+        ),
+    ]
+    .into();
+    let known_addresses: HashMap<_, _> = [
+        (alice_info.nodeid, alice_dp.tcp_addr),
+        (bob_info.nodeid, bob_dp.tcp_addr),
+    ]
+    .into();
+
+    let alice = spawn_wireauth_validator(
+        alice_info.keypair.clone(),
+        alice_dp,
+        known_addresses.clone(),
+        name_records.clone(),
+        vec![],
+        DEFAULT_SIG_VERIFICATION_RATE_LIMIT,
+    );
+    let bob = spawn_wireauth_validator(
+        bob_info.keypair.clone(),
+        bob_dp,
+        known_addresses,
+        name_records,
+        vec![],
+        DEFAULT_SIG_VERIFICATION_RATE_LIMIT,
+    );
+
+    tokio::time::timeout(CONNECTION_TIMEOUT, alice.ready_rx)
+        .await
+        .expect("alice ready timeout")
+        .expect("alice ready channel closed");
+    tokio::time::timeout(CONNECTION_TIMEOUT, bob.ready_rx)
+        .await
+        .expect("bob ready timeout")
+        .expect("bob ready channel closed");
+
+    alice
+        .pd_driver
+        .lock()
+        .unwrap()
+        .update(PeerDiscoveryEvent::SendPing {
+            to: bob_info.nodeid,
+            name_record: bob_name_record,
+            ping: Ping {
+                id: 42,
+                local_name_record: alice_local_name_record,
+            },
+        });
+
+    let start = Instant::now();
+    let mut interval = tokio::time::interval(Duration::from_millis(10));
+    loop {
+        interval.tick().await;
+
+        let bob_guard = bob.pd_driver.lock().unwrap();
+        if !bob_guard.inner().received_pings().is_empty() {
+            assert_eq!(bob_guard.inner().received_pings()[0].0, alice_info.nodeid);
+            break;
+        }
+        drop(bob_guard);
+
+        assert!(
+            start.elapsed() < CONNECTION_TIMEOUT,
+            "bob should have received the buffered ping on the authenticated address"
+        );
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_send_with_record_buffers_without_non_authenticated_socket() {
+    init_tracing();
+
+    tokio::task::LocalSet::new()
+        .run_until(run_send_with_record_buffers_without_non_authenticated_socket())
+        .await;
+}
+
 async fn run_send_with_record_uses_name_record_address() {
     let alice_info = ValidatorInfo::new(1);
     let bob_info = ValidatorInfo::new(2);

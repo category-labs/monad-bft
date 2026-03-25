@@ -516,7 +516,8 @@ where
 
                 let mut sink =
                     DualUdpPacketSender::new(&mut self.dual_socket, &self.peer_discovery_driver)
-                        .with_priority(priority);
+                        .with_priority(priority)
+                        .with_buffering_when_non_authenticated_socket_disabled();
                 self.message_builder
                     .prepare()
                     .group_id(GroupId::Primary(self.current_epoch))
@@ -1235,6 +1236,7 @@ where
                                 &mut this.dual_socket,
                                 &this.peer_discovery_driver,
                             )
+                            .with_buffering_when_non_authenticated_socket_disabled()
                             .with_target_name_record(&target, &name_record);
                             this.message_builder
                                 .prepare()
@@ -1246,7 +1248,8 @@ where
                             let mut sink = DualUdpPacketSender::new(
                                 &mut this.dual_socket,
                                 &this.peer_discovery_driver,
-                            );
+                            )
+                            .with_buffering_when_non_authenticated_socket_disabled();
                             this.message_builder
                                 .prepare()
                                 .group_id(GroupId::Primary(this.current_epoch))
@@ -1394,6 +1397,7 @@ where
     peer_disc_driver: &'a Arc<Mutex<PeerDiscoveryDriver<PD>>>,
     target_name_record: Option<TargetNameRecord<'a, ST>>,
     targets: HashSet<Recipient<CertificateSignaturePubKey<ST>>>,
+    allow_buffering: bool,
     priority: UdpPriority,
     _signature_type: PhantomData<ST>,
 }
@@ -1419,6 +1423,7 @@ where
             peer_disc_driver,
             target_name_record: None,
             targets: Default::default(),
+            allow_buffering: false,
             priority: UdpPriority::Regular,
             _signature_type: PhantomData,
         }
@@ -1441,6 +1446,80 @@ where
             name_record,
         });
         self
+    }
+
+    fn with_buffering_when_non_authenticated_socket_disabled(
+        mut self,
+    ) -> DualUdpPacketSender<'a, ST, PD, AP> {
+        self.allow_buffering = true;
+        self
+    }
+
+    fn lookup_authenticated_addr(
+        &self,
+        recipient: &Recipient<CertificateSignaturePubKey<ST>>,
+    ) -> Option<SocketAddr> {
+        if let Some(target_name_record) = self.target_name_record {
+            if recipient.node_id() != target_name_record.target {
+                return None;
+            }
+
+            return target_name_record
+                .name_record
+                .authenticated_udp_socket()
+                .map(SocketAddr::V4);
+        }
+
+        self.peer_disc_driver
+            .lock()
+            .ok()
+            .and_then(|pd| {
+                pd.get_name_record(recipient.node_id())
+                    .and_then(|record| record.name_record.authenticated_udp_socket())
+            })
+            .map(SocketAddr::V4)
+    }
+
+    fn try_write_buffered(&mut self, item: &UdpMessage<CertificateSignaturePubKey<ST>>) -> bool {
+        if !self.allow_buffering || self.dual_socket.has_non_authenticated_socket() {
+            return false;
+        }
+
+        let Some(auth_addr) = self.lookup_authenticated_addr(&item.recipient) else {
+            return false;
+        };
+        let public_key = item.recipient.node_id().pubkey();
+
+        if !self.dual_socket.has_any_session_by_public_key(&public_key) {
+            if let Err(error) =
+                self.dual_socket
+                    .connect(&public_key, auth_addr, DEFAULT_RETRY_ATTEMPTS)
+            {
+                warn!(
+                    target = ?item.recipient.node_id(),
+                    auth_addr = ?auth_addr,
+                    ?error,
+                    "failed to initiate authenticated UDP session"
+                );
+                return false;
+            }
+            self.dual_socket.flush();
+        }
+
+        match self.dual_socket.write_buffered_with_priority(
+            &public_key,
+            item.payload.clone(),
+            self.priority,
+        ) {
+            Ok(()) => true,
+            Err(()) => {
+                warn!(
+                    target = ?item.recipient.node_id(),
+                    "failed to buffer authenticated UDP packet"
+                );
+                false
+            }
+        }
     }
 
     fn lookup_addr(
@@ -1515,6 +1594,10 @@ where
     PD: PeerDiscoveryAlgo<SignatureType = ST>,
 {
     fn push(&mut self, item: UdpMessage<CertificateSignaturePubKey<ST>>) {
+        if self.try_write_buffered(&item) {
+            return;
+        }
+
         let Some(dest) = self.lookup_addr(&item.recipient) else {
             return;
         };
