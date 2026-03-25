@@ -193,7 +193,7 @@ where
                     SecondaryRaptorCastModeConfig::None,
                     tcp_socket,
                     authenticated_socket,
-                    non_authenticated_socket,
+                    Some(non_authenticated_socket),
                     control,
                     shared_peer_discovery_driver,
                     Epoch(0),

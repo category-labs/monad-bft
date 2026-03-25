@@ -425,7 +425,7 @@ async fn run_test_scenario(num_auth_nodes: usize, routing_type: RoutingType, mes
     let validator_infos: Vec<_> = (1..=NUM_NODES as u8).map(ValidatorInfo::new).collect();
 
     let dataplanes: Vec<_> = (0..NUM_NODES)
-        .map(|_| create_dataplane_for_tests(true))
+        .map(|_| create_dataplane_for_tests(true, true))
         .collect();
 
     let name_records: HashMap<_, _> = validator_infos
@@ -439,7 +439,7 @@ async fn run_test_scenario(num_auth_nodes: usize, routing_type: RoutingType, mes
                     i < num_auth_nodes,
                     dp.tcp_addr,
                     dp.auth_addr.expect("auth enabled"),
-                    dp.non_auth_addr,
+                    dp.non_auth_addr.expect("non-auth enabled"),
                 ),
             )
         })
@@ -448,7 +448,7 @@ async fn run_test_scenario(num_auth_nodes: usize, routing_type: RoutingType, mes
     let known_addresses: HashMap<_, _> = validator_infos
         .iter()
         .zip(dataplanes.iter())
-        .map(|(v, dp)| (v.nodeid, dp.non_auth_addr))
+        .map(|(v, dp)| (v.nodeid, dp.non_auth_addr.expect("non-auth enabled")))
         .collect();
 
     let peers_for_check: Vec<_> = validator_infos
@@ -574,7 +574,7 @@ async fn test_rate_limiting_basic() {
     let validator_infos: Vec<_> = (1..=NUM_TEST_NODES as u8).map(ValidatorInfo::new).collect();
 
     let dataplanes: Vec<_> = (0..NUM_TEST_NODES)
-        .map(|_| create_dataplane_for_tests(true))
+        .map(|_| create_dataplane_for_tests(true, true))
         .collect();
 
     let name_records: HashMap<_, _> = validator_infos
@@ -587,7 +587,7 @@ async fn test_rate_limiting_basic() {
                     true,
                     dp.tcp_addr,
                     dp.auth_addr.expect("auth enabled"),
-                    dp.non_auth_addr,
+                    dp.non_auth_addr.expect("non-auth enabled"),
                 ),
             )
         })
@@ -596,7 +596,7 @@ async fn test_rate_limiting_basic() {
     let known_addresses: HashMap<_, _> = validator_infos
         .iter()
         .zip(dataplanes.iter())
-        .map(|(v, dp)| (v.nodeid, dp.non_auth_addr))
+        .map(|(v, dp)| (v.nodeid, dp.non_auth_addr.expect("non-auth enabled")))
         .collect();
 
     let peers_for_check: Vec<_> = validator_infos
@@ -759,14 +759,14 @@ async fn run_send_with_record_uses_name_record_address() {
     let alice_info = ValidatorInfo::new(1);
     let bob_info = ValidatorInfo::new(2);
 
-    let alice_dp = create_dataplane_for_tests(true);
-    let bob1_dp = create_dataplane_for_tests(true);
-    let bob2_dp = create_dataplane_for_tests(true);
+    let alice_dp = create_dataplane_for_tests(true, true);
+    let bob1_dp = create_dataplane_for_tests(true, true);
+    let bob2_dp = create_dataplane_for_tests(true, true);
 
     let alice_auth_addr = alice_dp.auth_addr.expect("auth enabled");
     let bob1_auth_addr = bob1_dp.auth_addr.expect("auth enabled");
     let bob2_auth_addr = bob2_dp.auth_addr.expect("auth enabled");
-    let bob2_non_auth_addr = bob2_dp.non_auth_addr;
+    let bob2_non_auth_addr = bob2_dp.non_auth_addr.expect("non-auth enabled");
     let bob2_tcp_addr = bob2_dp.tcp_addr;
     assert_ne!(bob1_auth_addr, bob2_auth_addr);
 
@@ -777,7 +777,7 @@ async fn run_send_with_record_uses_name_record_address() {
                 true,
                 alice_dp.tcp_addr,
                 alice_auth_addr,
-                alice_dp.non_auth_addr,
+                alice_dp.non_auth_addr.expect("non-auth enabled"),
             ),
         ),
         (
@@ -786,15 +786,21 @@ async fn run_send_with_record_uses_name_record_address() {
                 true,
                 bob1_dp.tcp_addr,
                 bob1_auth_addr,
-                bob1_dp.non_auth_addr,
+                bob1_dp.non_auth_addr.expect("non-auth enabled"),
             ),
         ),
     ]
     .into();
 
     let known_addresses: HashMap<_, _> = [
-        (alice_info.nodeid, alice_dp.non_auth_addr),
-        (bob_info.nodeid, bob1_dp.non_auth_addr),
+        (
+            alice_info.nodeid,
+            alice_dp.non_auth_addr.expect("non-auth enabled"),
+        ),
+        (
+            bob_info.nodeid,
+            bob1_dp.non_auth_addr.expect("non-auth enabled"),
+        ),
     ]
     .into();
 
@@ -853,13 +859,17 @@ async fn run_send_with_record_uses_name_record_address() {
                 true,
                 bob2_dp.tcp_addr,
                 bob2_auth_addr,
-                bob2_dp.non_auth_addr,
+                bob2_dp.non_auth_addr.expect("non-auth enabled"),
             ),
         ),
     ]
     .into();
 
-    let bob2_known_addresses: HashMap<_, _> = [(bob_info.nodeid, bob2_dp.non_auth_addr)].into();
+    let bob2_known_addresses: HashMap<_, _> = [(
+        bob_info.nodeid,
+        bob2_dp.non_auth_addr.expect("non-auth enabled"),
+    )]
+    .into();
 
     let bob2 = spawn_wireauth_validator(
         bob_info.keypair.clone(),

@@ -666,7 +666,7 @@ fn setup_node(
         SecondaryRaptorCastModeConfig::None,
         tcp_socket,
         Some(authenticated_socket),
-        non_authenticated_socket,
+        Some(non_authenticated_socket),
         dataplane_control,
         Arc::new(std::sync::Mutex::new(pd)),
         Epoch(0),

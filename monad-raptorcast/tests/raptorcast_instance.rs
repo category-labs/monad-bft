@@ -294,8 +294,8 @@ pub fn set_up_test(
     };
     let rx_nodeid = NodeId::new(rx_keypair.pubkey());
 
-    let dataplane = create_dataplane_for_tests(false);
-    let rx_addr = SocketAddr::V4(dataplane.non_auth_addr);
+    let dataplane = create_dataplane_for_tests(false, true);
+    let rx_addr = SocketAddr::V4(dataplane.non_auth_addr.expect("non-auth addr"));
 
     let tx_addr = UdpSocket::bind("127.0.0.1:0")
         .unwrap()
@@ -494,14 +494,27 @@ async fn publish_to_full_nodes() {
     let validator_set = vec![(validator_nodeid, Stake::ONE)];
 
     // 2. Create dataplanes first to get bound addresses
-    let validator_dp = create_dataplane_for_tests(false);
-    let full_node1_dp = create_dataplane_for_tests(false);
-    let full_node2_dp = create_dataplane_for_tests(false);
+    let validator_dp = create_dataplane_for_tests(false, true);
+    let full_node1_dp = create_dataplane_for_tests(false, true);
+    let full_node2_dp = create_dataplane_for_tests(false, true);
 
     let known_addresses: HashMap<NodeId<PubKeyType>, SocketAddrV4> = [
-        (validator_nodeid, validator_dp.non_auth_addr),
-        (full_node1_id, full_node1_dp.non_auth_addr),
-        (full_node2_id, full_node2_dp.non_auth_addr),
+        (
+            validator_nodeid,
+            validator_dp.non_auth_addr.expect("validator non-auth addr"),
+        ),
+        (
+            full_node1_id,
+            full_node1_dp
+                .non_auth_addr
+                .expect("full node 1 non-auth addr"),
+        ),
+        (
+            full_node2_id,
+            full_node2_dp
+                .non_auth_addr
+                .expect("full node 2 non-auth addr"),
+        ),
     ]
     .into_iter()
     .collect();
@@ -570,7 +583,7 @@ async fn delete_expired_groups() {
     let node_keypair = keypair(1);
     let node_id = NodeId::new(node_keypair.pubkey());
 
-    let dataplane = create_dataplane_for_tests(false);
+    let dataplane = create_dataplane_for_tests(false, true);
     let mut raptorcast = setup_raptorcast_service(node_keypair, dataplane, HashMap::new());
     raptorcast.exec(vec![RouterCommand::UpdateCurrentRound(Epoch(1), Round(1))]);
 
@@ -629,12 +642,18 @@ async fn test_priority_messages() {
     let tx_nodeid = NodeId::new(tx_key.pubkey());
     let rx_nodeid = NodeId::new(rx_key.pubkey());
 
-    let tx_dataplane = create_dataplane_for_tests(false);
-    let rx_dataplane = create_dataplane_for_tests(false);
+    let tx_dataplane = create_dataplane_for_tests(false, true);
+    let rx_dataplane = create_dataplane_for_tests(false, true);
 
     let known_addresses = HashMap::from([
-        (tx_nodeid, tx_dataplane.non_auth_addr),
-        (rx_nodeid, rx_dataplane.non_auth_addr),
+        (
+            tx_nodeid,
+            tx_dataplane.non_auth_addr.expect("tx non-auth addr"),
+        ),
+        (
+            rx_nodeid,
+            rx_dataplane.non_auth_addr.expect("rx non-auth addr"),
+        ),
     ]);
 
     let mut tx_rc = new_defaulted_raptorcast_for_tests::<
@@ -746,16 +765,28 @@ async fn test_raptorcast_forwarding_priority() {
     let validator2_nodeid = NodeId::new(validator2_key.pubkey());
     let validator_fullnode_nodeid = NodeId::new(validator_fullnode_key.pubkey());
 
-    let validator1_dataplane = create_dataplane_for_tests(false);
-    let validator2_dataplane = create_dataplane_for_tests(false);
-    let validator_fullnode_dataplane = create_dataplane_for_tests(false);
+    let validator1_dataplane = create_dataplane_for_tests(false, true);
+    let validator2_dataplane = create_dataplane_for_tests(false, true);
+    let validator_fullnode_dataplane = create_dataplane_for_tests(false, true);
 
     let known_addresses = HashMap::from([
-        (validator1_nodeid, validator1_dataplane.non_auth_addr),
-        (validator2_nodeid, validator2_dataplane.non_auth_addr),
+        (
+            validator1_nodeid,
+            validator1_dataplane
+                .non_auth_addr
+                .expect("validator1 non-auth addr"),
+        ),
+        (
+            validator2_nodeid,
+            validator2_dataplane
+                .non_auth_addr
+                .expect("validator2 non-auth addr"),
+        ),
         (
             validator_fullnode_nodeid,
-            validator_fullnode_dataplane.non_auth_addr,
+            validator_fullnode_dataplane
+                .non_auth_addr
+                .expect("validator fullnode non-auth addr"),
         ),
     ]);
 

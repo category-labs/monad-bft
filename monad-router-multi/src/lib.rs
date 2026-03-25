@@ -104,10 +104,7 @@ where
 
         let tcp_socket = dp.tcp_sockets.take(TcpSocketId::Raptorcast).unwrap();
         let authenticated_socket = dp.udp_sockets.take(UdpSocketId::AuthenticatedRaptorcast);
-        let non_authenticated_socket = dp
-            .udp_sockets
-            .take(UdpSocketId::Raptorcast)
-            .expect("raptorcast socket");
+        let non_authenticated_socket = dp.udp_sockets.take(UdpSocketId::Raptorcast);
         let control = dp.control;
 
         // Create channels between primary and secondary raptorcast instances.
