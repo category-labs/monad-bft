@@ -286,6 +286,8 @@ async fn main() -> std::io::Result<()> {
                 tx_exec_num_fibers: args.eth_trace_tx_executor_fibers,
                 node_cache_max_mem: args.eth_call_executor_node_lru_max_mem,
                 max_concurrent_permits: args.eth_call_max_concurrent_requests as usize,
+                eth_call_provider_gas_limit: args.eth_call_provider_gas_limit,
+                eth_estimate_gas_provider_gas_limit: args.eth_estimate_gas_provider_gas_limit,
             },
             triedb_path,
         )
@@ -367,8 +369,6 @@ async fn main() -> std::io::Result<()> {
         args.max_response_size,
         args.allow_unprotected_txs,
         args.eth_get_logs_max_block_range,
-        args.eth_call_provider_gas_limit,
-        args.eth_estimate_gas_provider_gas_limit,
         args.eth_send_raw_transaction_sync_default_timeout_ms,
         args.eth_send_raw_transaction_sync_max_timeout_ms,
         args.dry_run_get_logs_index,

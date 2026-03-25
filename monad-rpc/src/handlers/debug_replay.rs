@@ -271,6 +271,6 @@ pub async fn collect_debug_trace_via_replay(
     let chain_id = app_state.chain_id;
 
     permit
-        .execute(|executor| monad_debug_trace_replay(chain_state, executor, chain_id, params))
+        .execute(|_, executor| monad_debug_trace_replay(chain_state, executor, chain_id, params))
         .await
 }
