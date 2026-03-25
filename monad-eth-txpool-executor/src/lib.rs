@@ -52,7 +52,7 @@ use tokio::{sync::mpsc, time::Instant};
 use tracing::{debug, debug_span, error, info, trace_span, warn};
 
 use self::{
-    client::ForwardedTxs, forward::EthTxPoolForwardingManager, ipc::EthTxPoolIpcServer,
+    client::ForwardedTx, forward::EthTxPoolForwardingManager, ipc::EthTxPoolIpcServer,
     metrics::EthTxPoolExecutorMetrics, preload::EthTxPoolPreloadManager,
     reset::EthTxPoolResetTrigger,
 };
@@ -196,7 +196,7 @@ where
                 >,
             >,
         >,
-        mut forwarded_rx: mpsc::Receiver<Vec<ForwardedTxs<SCT>>>,
+        mut forwarded_rx: mpsc::Receiver<Vec<ForwardedTx<SCT>>>,
         event_tx: mpsc::Sender<MonadEvent<ST, SCT, EthExecutionProtocol>>,
     ) {
         use futures::StreamExt;
@@ -249,37 +249,24 @@ where
     CRT: ChainRevision,
     TIS: EthTxPoolTxInputStream,
 {
-    fn process_forwarded_txs(&mut self, forwarded_txs: Vec<ForwardedTxs<SCT>>) {
-        for ForwardedTxs { sender, txs } in forwarded_txs {
-            let _span = debug_span!("processing forwarded txs").entered();
-            debug!(
-                ?sender,
-                num_txs = txs.len(),
-                "txpool executor received forwarded txs"
-            );
+    fn process_forwarded_txs(&mut self, forwarded_txs: Vec<ForwardedTx<SCT>>) {
+        let mut txs = Vec::with_capacity(forwarded_txs.len());
 
-            let mut num_invalid_bytes = 0;
+        for ForwardedTx { sender, tx: raw_tx } in forwarded_txs {
+            let _span = debug_span!("processing forwarded tx").entered();
+            debug!(?sender, "txpool executor received forwarded tx");
 
-            let txs = txs
-                .into_iter()
-                .filter_map(|raw_tx| {
-                    if let Ok(tx) = TxEnvelope::decode(&mut raw_tx.as_ref()) {
-                        Some(tx)
-                    } else {
-                        num_invalid_bytes += 1;
-                        None
-                    }
-                })
-                .collect::<Vec<_>>();
-
-            self.metrics
-                .reject_forwarded_invalid_bytes
-                .fetch_add(num_invalid_bytes, Ordering::SeqCst);
-
-            if num_invalid_bytes != 0 {
-                tracing::warn!(?sender, ?num_invalid_bytes, "invalid forwarded txs");
+            if let Ok(tx) = TxEnvelope::decode(&mut raw_tx.as_ref()) {
+                txs.push(tx);
+            } else {
+                self.metrics
+                    .reject_forwarded_invalid_bytes
+                    .fetch_add(1, Ordering::SeqCst);
+                tracing::warn!(?sender, "invalid forwarded tx");
             }
+        }
 
+        if !txs.is_empty() {
             self.forwarding_manager
                 .as_mut()
                 .project()
@@ -417,7 +404,7 @@ where
                         }
                     }
                 }
-                TxPoolCommand::InsertForwardedTxs { sender, txs } => {
+                TxPoolCommand::InsertForwardedTxs { sender: _, txs: _ } => {
                     // This will never happen because we separate out these commands in `EthTxPoolExecutorClient`.
                     error!("txpool executor received InsertForwardedTxs command over command rx");
                 }
