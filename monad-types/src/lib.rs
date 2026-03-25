@@ -439,6 +439,12 @@ impl<P: PubKey> NodeId<P> {
     }
 }
 
+impl<P: PubKey> From<P> for NodeId<P> {
+    fn from(pubkey: P) -> Self {
+        Self::new(pubkey)
+    }
+}
+
 impl<P: PubKey> Debug for NodeId<P> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         Debug::fmt(&self.0, f)

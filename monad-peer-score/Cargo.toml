@@ -7,10 +7,13 @@ edition = "2021"
 test-utils = []
 
 [dependencies]
+humantime = { workspace = true }
 lru = { workspace = true }
 monad-executor = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+toml = { workspace = true }
 tracing-subscriber = { workspace = true }

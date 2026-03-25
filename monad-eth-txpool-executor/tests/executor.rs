@@ -33,6 +33,7 @@ use monad_eth_txpool_ipc::EthTxPoolIpcClient;
 use monad_eth_txpool_types::{EthTxPoolIpcTx, EthTxPoolSnapshot};
 use monad_executor::Executor;
 use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
+use monad_peer_score::{ema, StdClock};
 use monad_state_backend::{AccountState, InMemoryBlockState, InMemoryState, InMemoryStateInner};
 use monad_testutil::signing::MockSignatures;
 use monad_tfm::base_fee::MIN_BASE_FEE;
@@ -64,6 +65,7 @@ async fn setup_txpool_executor_with_client() -> (
 
     let ipc_tempdir = tempfile::tempdir().unwrap();
     let bind_path = ipc_tempdir.path().join("txpool_executor_test.socket");
+    let (score_provider, score_reader) = ema::create(ema::ScoreConfig::default(), StdClock);
 
     let mut txpool_executor = EthTxPoolExecutor::start(
         eth_block_policy,
@@ -79,6 +81,8 @@ async fn setup_txpool_executor_with_client() -> (
         MockChainConfig::DEFAULT,
         GENESIS_ROUND,
         GENESIS_TIMESTAMP as u64,
+        score_provider,
+        score_reader,
     )
     .unwrap();
 

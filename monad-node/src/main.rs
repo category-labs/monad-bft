@@ -49,6 +49,7 @@ use monad_peer_discovery::{
     discovery::{PeerDiscovery, PeerDiscoveryBuilder},
     MonadNameRecord, NameRecord,
 };
+use monad_peer_score::{ema, IdentityScore, StdClock};
 use monad_pprof::start_pprof_server;
 use monad_raptorcast::{
     auth::WireAuthProtocol,
@@ -158,11 +159,17 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         .qc()
         .get_round()
         + Round(1);
+    let (score_provider, score_reader) =
+        ema::create::<NodeId<CertificateSignaturePubKey<SignatureType>>, StdClock>(
+            node_state.node_config.txpool_peer_score.clone(),
+            StdClock,
+        );
     let router = build_raptorcast_router::<
         SignatureType,
         SignatureCollectionType,
         MonadMessage<SignatureType, SignatureCollectionType, ExecutionProtocolType>,
         VerifiedMonadMessage<SignatureType, SignatureCollectionType, ExecutionProtocolType>,
+        _,
     >(
         node_state.node_config.clone(),
         node_state.node_config.peer_discovery,
@@ -173,6 +180,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         current_epoch,
         current_round,
         node_state.persisted_peers_path,
+        score_reader.clone(),
     );
 
     let statesync_threshold: usize = node_state.node_config.statesync_threshold.into();
@@ -264,6 +272,8 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
                 .get_round(),
             // TODO(andr-dev): Use timestamp from last commit in ledger
             0,
+            score_provider,
+            score_reader,
         )
         .expect("txpool ipc succeeds"),
         control_panel: ControlPanelIpcReceiver::new(
@@ -500,7 +510,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
     Ok(())
 }
 
-fn build_raptorcast_router<ST, SCT, M, OM>(
+fn build_raptorcast_router<ST, SCT, M, OM, DS>(
     node_config: NodeConfig<ST>,
     peer_discovery_config: PeerDiscoveryConfig<ST>,
     identity: ST::KeyPairType,
@@ -510,13 +520,15 @@ fn build_raptorcast_router<ST, SCT, M, OM>(
     current_epoch: Epoch,
     current_round: Round,
     persisted_peers_path: PathBuf,
+    direct_udp_peer_score_reader: DS,
 ) -> MultiRouter<
     ST,
     M,
     OM,
     MonadEvent<ST, SCT, ExecutionProtocolType>,
     PeerDiscovery<ST>,
-    monad_raptorcast::auth::WireAuthProtocol,
+    WireAuthProtocol,
+    DS,
 >
 where
     ST: CertificateSignatureRecoverable<KeyPairType = monad_secp::KeyPair>,
@@ -528,6 +540,7 @@ where
         + Sync
         + 'static,
     OM: Encodable + Clone + Send + Sync + 'static,
+    DS: IdentityScore<Identity = NodeId<CertificateSignaturePubKey<ST>>>,
 {
     let bind_address = SocketAddr::new(
         IpAddr::V4(node_config.network.bind_address_host),
@@ -738,6 +751,7 @@ where
         epoch_validators,
         auth_protocol,
         direct_udp_auth_protocol,
+        direct_udp_peer_score_reader,
     )
 }
 
