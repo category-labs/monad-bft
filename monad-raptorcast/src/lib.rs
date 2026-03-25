@@ -1541,7 +1541,16 @@ where
                 }
             }
 
-            Some(SocketAddr::V4(target_name_record.name_record.udp_socket()))
+            target_name_record
+                .name_record
+                .udp_socket_opt()
+                .map(SocketAddr::V4)
+                .or_else(|| {
+                    target_name_record
+                        .name_record
+                        .authenticated_udp_socket()
+                        .map(SocketAddr::V4)
+                })
         } else {
             // otherwise lookup address using peer-discovery
             let peer_lookup = (&*self.dual_socket, self.peer_disc_driver);

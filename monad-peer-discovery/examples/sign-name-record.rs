@@ -30,8 +30,14 @@ struct Args {
     #[arg(long)]
     address: SocketAddrV4,
 
+    #[arg(
+        long,
+        help = "Omit the non-authenticated UDP port from the name record"
+    )]
+    omit_udp_port: bool,
+
     #[arg(long, help = "Authenticated UDP port for the name record")]
-    authenticated_udp_port: u16,
+    authenticated_udp_port: Option<u16>,
 
     #[arg(long, help = "Optional direct UDP port")]
     direct_udp_port: Option<u16>,
@@ -51,6 +57,27 @@ struct Args {
     /// Keystore password
     #[arg(long)]
     password: String,
+}
+
+fn build_name_record(
+    address: SocketAddrV4,
+    omit_udp_port: bool,
+    authenticated_udp_port: Option<u16>,
+    direct_udp_port: Option<u16>,
+    seq: u64,
+) -> NameRecord {
+    if !omit_udp_port && authenticated_udp_port.is_none() && direct_udp_port.is_none() {
+        return NameRecord::new(*address.ip(), address.port(), seq);
+    }
+
+    NameRecord::new_with_optional_ports(
+        *address.ip(),
+        address.port(),
+        (!omit_udp_port).then_some(address.port()),
+        authenticated_udp_port,
+        direct_udp_port,
+        seq,
+    )
 }
 
 fn main() {
@@ -75,11 +102,10 @@ fn main() {
             .unwrap_or_else(|| panic!("Either node_config or self_record_seq_num must be provided"))
     };
     let self_address = args.address;
-    let name_record = NameRecord::new_with_ports(
-        *self_address.ip(),
-        self_address.port(),
-        self_address.port(),
-        Some(args.authenticated_udp_port),
+    let name_record = build_name_record(
+        self_address,
+        args.omit_udp_port,
+        args.authenticated_udp_port,
         args.direct_udp_port,
         self_record_seq_num,
     );
@@ -88,7 +114,12 @@ fn main() {
 
     println!("self_address = {:?}", self_address.to_string());
     println!("self_record_seq_num = {}", self_record_seq_num);
-    println!("self_auth_port = {}", args.authenticated_udp_port);
+    if args.omit_udp_port {
+        println!("omit_udp_port = true");
+    }
+    if let Some(authenticated_udp_port) = args.authenticated_udp_port {
+        println!("self_auth_port = {}", authenticated_udp_port);
+    }
     if let Some(direct_udp_port) = args.direct_udp_port {
         println!("self_direct_udp_auth_port = {}", direct_udp_port);
     }

@@ -499,10 +499,19 @@ impl<ST: CertificateSignatureRecoverable, C: governor::clock::Clock> PeerDiscove
         }
 
         // check if the peer ip address is valid
-        if let Err(err) = validate_socket_ipv4_address(
-            &name_record.udp_address(),
-            &self.self_record.udp_address(),
-        ) {
+        let Some(peer_addr) = name_record.preferred_udp_address() else {
+            warn!(
+                ?peer_id,
+                ?name_record,
+                "name record missing routable UDP address"
+            );
+            return Ok(vec![]);
+        };
+        let Some(self_addr) = self.self_record.preferred_udp_address() else {
+            warn!(self_id=?self.self_id, ?self.self_record, "self name record missing routable UDP address");
+            return Ok(vec![]);
+        };
+        if let Err(err) = validate_socket_ipv4_address(&peer_addr, &self_addr) {
             warn!(
                 ?peer_id,
                 ?name_record,
@@ -1819,19 +1828,21 @@ where
     ) -> Option<SocketAddrV4> {
         self.pending_queue
             .get(id)
-            .map(|info| info.name_record.udp_address())
+            .and_then(|info| info.name_record.preferred_udp_address())
     }
 
     fn get_addr_by_id(&self, id: &NodeId<CertificateSignaturePubKey<ST>>) -> Option<SocketAddrV4> {
         self.routing_info
             .get(id)
-            .map(|name_record| name_record.udp_address())
+            .and_then(|name_record| name_record.preferred_udp_address())
     }
 
     fn get_known_addrs(&self) -> HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddrV4> {
         self.routing_info
             .iter()
-            .map(|(id, name_record)| (*id, name_record.udp_address()))
+            .filter_map(|(id, name_record)| {
+                name_record.preferred_udp_address().map(|addr| (*id, addr))
+            })
             .collect()
     }
 
@@ -1892,7 +1903,11 @@ mod tests {
     const DUMMY_ADDR: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::new(1, 1, 1, 1), 8000);
 
     fn name_record_addr(record: &MonadNameRecord<SignatureType>) -> SocketAddr {
-        SocketAddr::V4(record.udp_address())
+        SocketAddr::V4(
+            record
+                .preferred_udp_address()
+                .expect("routable UDP address"),
+        )
     }
 
     fn peer_source(
@@ -1908,7 +1923,11 @@ mod tests {
     fn peer_source_from_record(
         keypair: &KeyPairType,
     ) -> PeerSource<CertificateSignaturePubKey<SignatureType>> {
-        let addr = SocketAddr::V4(generate_name_record(keypair, 0).udp_address());
+        let addr = SocketAddr::V4(
+            generate_name_record(keypair, 0)
+                .preferred_udp_address()
+                .expect("routable UDP address"),
+        );
         peer_source(keypair, addr)
     }
 

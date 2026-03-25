@@ -569,14 +569,16 @@ where
             network_config.tcp_rate_limit_burst,
         );
 
+    let mut udp_sockets = vec![(
+        UdpSocketId::AuthenticatedRaptorcast,
+        authenticated_bind_address,
+    )];
+    if network_config.enable_non_authenticated_udp_socket {
+        udp_sockets.push((UdpSocketId::Raptorcast, bind_address));
+    }
+
     dp_builder = dp_builder
-        .with_udp_sockets([
-            (UdpSocketId::Raptorcast, bind_address),
-            (
-                UdpSocketId::AuthenticatedRaptorcast,
-                authenticated_bind_address,
-            ),
-        ])
+        .with_udp_sockets(udp_sockets)
         .with_tcp_sockets([(TcpSocketId::Raptorcast, bind_address)]);
 
     assert_eq!(
@@ -585,10 +587,12 @@ where
     );
 
     let self_id = NodeId::new(identity.pubkey());
-    let self_record = NameRecord::new_with_ports(
+    let self_record = NameRecord::new_with_optional_ports(
         *name_record_address.ip(),
         name_record_address.port(),
-        name_record_address.port(),
+        network_config
+            .enable_non_authenticated_udp_socket
+            .then_some(name_record_address.port()),
         Some(peer_discovery_config.self_auth_port),
         peer_discovery_config.self_direct_udp_port,
         peer_discovery_config.self_record_seq_num,
@@ -624,6 +628,7 @@ where
                 record_seq_num: peer.record_seq_num,
                 auth_port: peer.auth_port,
                 direct_udp_port: peer.direct_udp_port,
+                omit_udp_port: peer.omit_udp_port,
             };
 
             match MonadNameRecord::try_from(&peer_entry) {

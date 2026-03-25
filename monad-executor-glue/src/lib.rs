@@ -58,6 +58,10 @@ use serde_with::serde_as;
 
 const STATESYNC_NETWORK_MESSAGE_NAME: &str = "StateSyncNetworkMessage";
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 /// maximum number of upserts we can send in a single response
 /// at 75 bytes per upsert, approx 1.5MB
 pub const MAX_UPSERTS_PER_RESPONSE: usize = 20_000;
@@ -294,6 +298,9 @@ pub struct PeerEntry<ST: CertificateSignatureRecoverable> {
         skip_serializing_if = "Option::is_none"
     )]
     pub direct_udp_port: Option<u16>,
+
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub omit_udp_port: bool,
 }
 
 impl<ST: CertificateSignatureRecoverable> Encodable for PeerEntry<ST> {
@@ -306,9 +313,9 @@ impl<ST: CertificateSignatureRecoverable> Encodable for PeerEntry<ST> {
             &self.record_seq_num as &dyn Encodable,
         ];
 
-        match (self.auth_port, self.direct_udp_port) {
-            (None, None) => encode_list::<_, dyn Encodable>(&base, out),
-            (Some(auth_port), None) => {
+        match (self.auth_port, self.direct_udp_port, self.omit_udp_port) {
+            (None, None, false) => encode_list::<_, dyn Encodable>(&base, out),
+            (Some(auth_port), None, false) => {
                 let enc = [
                     base[0],
                     base[1],
@@ -318,7 +325,7 @@ impl<ST: CertificateSignatureRecoverable> Encodable for PeerEntry<ST> {
                 ];
                 encode_list::<_, dyn Encodable>(&enc, out);
             }
-            (auth_port, Some(direct_udp_port)) => {
+            (auth_port, Some(direct_udp_port), false) => {
                 let auth_port = auth_port.unwrap_or_default();
                 let enc = [
                     base[0],
@@ -327,6 +334,20 @@ impl<ST: CertificateSignatureRecoverable> Encodable for PeerEntry<ST> {
                     base[3],
                     &auth_port as &dyn Encodable,
                     &direct_udp_port as &dyn Encodable,
+                ];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            (auth_port, direct_udp_port, true) => {
+                let auth_port = auth_port.unwrap_or_default();
+                let direct_udp_port = direct_udp_port.unwrap_or_default();
+                let enc = [
+                    base[0],
+                    base[1],
+                    base[2],
+                    base[3],
+                    &auth_port as &dyn Encodable,
+                    &direct_udp_port as &dyn Encodable,
+                    &self.omit_udp_port as &dyn Encodable,
                 ];
                 encode_list::<_, dyn Encodable>(&enc, out);
             }
@@ -368,6 +389,12 @@ impl<ST: CertificateSignatureRecoverable> Decodable for PeerEntry<ST> {
             None
         };
 
+        let omit_udp_port = if !payload.is_empty() {
+            bool::decode(&mut payload)?
+        } else {
+            false
+        };
+
         if !payload.is_empty() {
             return Err(alloy_rlp::Error::Custom("extra bytes in peer entry"));
         }
@@ -379,6 +406,7 @@ impl<ST: CertificateSignatureRecoverable> Decodable for PeerEntry<ST> {
             record_seq_num,
             auth_port,
             direct_udp_port,
+            omit_udp_port,
         })
     }
 }
@@ -2548,6 +2576,7 @@ mod tests {
             record_seq_num,
             auth_port: None,
             direct_udp_port: None,
+            omit_udp_port: false,
         };
         let encoded = alloy_rlp::encode(&entry);
         let decoded: PeerEntry<NopSignature> = alloy_rlp::decode_exact(&encoded).unwrap();
@@ -2566,6 +2595,7 @@ mod tests {
             record_seq_num: 7,
             auth_port: None,
             direct_udp_port: Some(9001),
+            omit_udp_port: false,
         };
 
         let encoded = alloy_rlp::encode(&entry);

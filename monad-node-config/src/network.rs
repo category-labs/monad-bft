@@ -26,6 +26,9 @@ pub struct NodeNetworkConfig {
     pub authenticated_bind_address_port: u16,
     pub direct_udp_bind_address_port: Option<u16>,
 
+    #[serde(default = "default_enable_non_authenticated_udp_socket")]
+    pub enable_non_authenticated_udp_socket: bool,
+
     pub max_rtt_ms: u64,
     pub max_mbps: u16,
 
@@ -91,5 +94,9 @@ fn default_signature_verifications_per_second() -> u32 {
 }
 
 fn default_enable_udp_mutishot() -> bool {
+    true
+}
+
+fn default_enable_non_authenticated_udp_socket() -> bool {
     true
 }

@@ -149,18 +149,30 @@ impl ValidatorInfo {
         with_auth: bool,
         tcp_addr: SocketAddrV4,
         auth_addr: SocketAddrV4,
-        non_auth_addr: SocketAddrV4,
+        non_auth_addr: Option<SocketAddrV4>,
     ) -> MonadNameRecord<SecpSignature> {
         let name_record = if with_auth {
-            NameRecord::new_with_authentication(
+            match non_auth_addr {
+                Some(non_auth_addr) => NameRecord::new_with_authentication(
+                    Ipv4Addr::new(127, 0, 0, 1),
+                    tcp_addr.port(),
+                    non_auth_addr.port(),
+                    auth_addr.port(),
+                    1,
+                ),
+                None => NameRecord::new_auth_only(
+                    Ipv4Addr::new(127, 0, 0, 1),
+                    tcp_addr.port(),
+                    auth_addr.port(),
+                    1,
+                ),
+            }
+        } else {
+            NameRecord::new(
                 Ipv4Addr::new(127, 0, 0, 1),
-                tcp_addr.port(),
-                non_auth_addr.port(),
-                auth_addr.port(),
+                non_auth_addr.expect("non-auth address").port(),
                 1,
             )
-        } else {
-            NameRecord::new(Ipv4Addr::new(127, 0, 0, 1), non_auth_addr.port(), 1)
         };
         MonadNameRecord::new(name_record, &*self.keypair)
     }
@@ -439,7 +451,7 @@ async fn run_test_scenario(num_auth_nodes: usize, routing_type: RoutingType, mes
                     i < num_auth_nodes,
                     dp.tcp_addr,
                     dp.auth_addr.expect("auth enabled"),
-                    dp.non_auth_addr.expect("non-auth enabled"),
+                    Some(dp.non_auth_addr.expect("non-auth enabled")),
                 ),
             )
         })
@@ -587,7 +599,7 @@ async fn test_rate_limiting_basic() {
                     true,
                     dp.tcp_addr,
                     dp.auth_addr.expect("auth enabled"),
-                    dp.non_auth_addr.expect("non-auth enabled"),
+                    Some(dp.non_auth_addr.expect("non-auth enabled")),
                 ),
             )
         })
@@ -761,9 +773,8 @@ fn create_auth_only_name_record(
     auth_addr: SocketAddrV4,
 ) -> MonadNameRecord<SecpSignature> {
     MonadNameRecord::new(
-        NameRecord::new_with_authentication(
+        NameRecord::new_auth_only(
             Ipv4Addr::new(127, 0, 0, 1),
-            tcp_addr.port(),
             tcp_addr.port(),
             auth_addr.port(),
             1,
@@ -857,9 +868,8 @@ async fn run_send_with_record_buffers_without_non_authenticated_socket() {
 
     let alice_local_name_record =
         create_auth_only_name_record(&alice_info, alice_dp.tcp_addr, alice_dp.auth_addr.unwrap());
-    let bob_name_record = NameRecord::new_with_authentication(
+    let bob_name_record = NameRecord::new_auth_only(
         Ipv4Addr::new(127, 0, 0, 1),
-        bob_dp.tcp_addr.port(),
         bob_dp.tcp_addr.port(),
         bob_dp.auth_addr.unwrap().port(),
         1,
@@ -968,7 +978,7 @@ async fn run_send_with_record_uses_name_record_address() {
                 true,
                 alice_dp.tcp_addr,
                 alice_auth_addr,
-                alice_dp.non_auth_addr.expect("non-auth enabled"),
+                Some(alice_dp.non_auth_addr.expect("non-auth enabled")),
             ),
         ),
         (
@@ -977,7 +987,7 @@ async fn run_send_with_record_uses_name_record_address() {
                 true,
                 bob1_dp.tcp_addr,
                 bob1_auth_addr,
-                bob1_dp.non_auth_addr.expect("non-auth enabled"),
+                Some(bob1_dp.non_auth_addr.expect("non-auth enabled")),
             ),
         ),
     ]
@@ -1041,7 +1051,7 @@ async fn run_send_with_record_uses_name_record_address() {
                 true,
                 SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 1),
                 SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 1),
-                SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 1),
+                Some(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 1)),
             ),
         ),
         (
@@ -1050,7 +1060,7 @@ async fn run_send_with_record_uses_name_record_address() {
                 true,
                 bob2_dp.tcp_addr,
                 bob2_auth_addr,
-                bob2_dp.non_auth_addr.expect("non-auth enabled"),
+                Some(bob2_dp.non_auth_addr.expect("non-auth enabled")),
             ),
         ),
     ]
@@ -1096,7 +1106,7 @@ async fn run_send_with_record_uses_name_record_address() {
         true,
         SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 1),
         SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 1),
-        SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 1),
+        Some(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 1)),
     );
 
     let ping = Ping {

@@ -19,6 +19,10 @@ use monad_crypto::certificate_signature::{
 use monad_types::{deserialize_pubkey, serialize_pubkey};
 use serde::{Deserialize, Serialize};
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct NodeBootstrapConfig<ST: CertificateSignatureRecoverable> {
@@ -49,4 +53,7 @@ pub struct NodeBootstrapPeerConfig<ST: CertificateSignatureRecoverable> {
         skip_serializing_if = "Option::is_none"
     )]
     pub direct_udp_port: Option<u16>,
+
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub omit_udp_port: bool,
 }
