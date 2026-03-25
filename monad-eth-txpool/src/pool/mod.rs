@@ -13,12 +13,16 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::time::Duration;
+use std::{
+    collections::{hash_map::Entry, BTreeMap, HashMap, HashSet},
+    time::Duration,
+};
 
 use alloy_consensus::{
-    constants::EMPTY_WITHDRAWALS, transaction::Recovered, TxEnvelope, EMPTY_OMMER_ROOT_HASH,
+    constants::EMPTY_WITHDRAWALS, transaction::Recovered, Transaction, TxEnvelope,
+    EMPTY_OMMER_ROOT_HASH,
 };
-use alloy_primitives::Address;
+use alloy_primitives::{Address, TxHash};
 use alloy_rlp::Encodable;
 use itertools::{Either, Itertools};
 use monad_chain_config::{
@@ -31,13 +35,15 @@ use monad_consensus_types::{
     payload::RoundSignature,
 };
 use monad_crypto::certificate_signature::{
-    CertificateSignaturePubKey, CertificateSignatureRecoverable,
+    CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
 use monad_eth_block_policy::{
     compute_txn_max_gas_cost, timestamp_ns_to_secs, EthBlockPolicy, EthBlockPolicyBlockValidator,
     EthValidatedBlock,
 };
-use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolInternalDropReason, EthTxPoolSnapshot};
+use monad_eth_txpool_types::{
+    EthTxPoolDropReason, EthTxPoolEventType, EthTxPoolInternalDropReason, EthTxPoolSnapshot,
+};
 use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ExtractEthAddress, ProposedEthHeader};
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_system_calls::{SystemTransactionGenerator, SYSTEM_SENDER_ETH_ADDRESS};
@@ -59,6 +65,12 @@ mod sequencer;
 mod tracked;
 mod transaction;
 
+#[derive(Clone, Copy, Debug)]
+struct ForwardedTxSenderRecord<PT: PubKey> {
+    sender: NodeId<PT>,
+    receives: usize,
+}
+
 #[derive(Clone, Debug)]
 pub struct EthTxPool<ST, SCT, SBT, CCT, CRT>
 where
@@ -69,6 +81,7 @@ where
     CRT: ChainRevision,
 {
     tracked: TrackedTxMap<ST, SCT, SBT, CCT, CRT>,
+    forwarded_tx_senders: HashMap<TxHash, ForwardedTxSenderRecord<CertificateSignaturePubKey<ST>>>,
 
     last_commit: Option<ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>>,
 
@@ -98,6 +111,7 @@ where
 
         Self {
             tracked: TrackedTxMap::new(config_limits),
+            forwarded_tx_senders: HashMap::default(),
 
             last_commit: None,
 
@@ -120,6 +134,59 @@ where
     }
 
     pub fn insert_txs(
+        &mut self,
+        event_tracker: &mut EthTxPoolEventTracker<'_>,
+        block_policy: &EthBlockPolicy<ST, SCT, CCT, CRT>,
+        state_backend: &SBT,
+        chain_config: &CCT,
+        txs: Vec<(Recovered<TxEnvelope>, PoolTxKind)>,
+        on_insert: impl FnMut(&PoolTx),
+    ) {
+        self.insert_txs_inner(
+            event_tracker,
+            block_policy,
+            state_backend,
+            chain_config,
+            txs,
+            on_insert,
+        );
+        self.update_forwarded_sender_mappings(event_tracker.events());
+    }
+
+    pub fn insert_forwarded_txs(
+        &mut self,
+        event_tracker: &mut EthTxPoolEventTracker<'_>,
+        block_policy: &EthBlockPolicy<ST, SCT, CCT, CRT>,
+        state_backend: &SBT,
+        chain_config: &CCT,
+        txs: Vec<(
+            NodeId<CertificateSignaturePubKey<ST>>,
+            Recovered<TxEnvelope>,
+        )>,
+        on_insert: impl FnMut(&PoolTx),
+    ) {
+        let mut forwarded_txs = Vec::with_capacity(txs.len());
+        let mut seen_in_batch = HashSet::with_capacity(txs.len());
+        for (sender, tx) in txs {
+            if !seen_in_batch.insert(*tx.tx_hash()) {
+                continue;
+            }
+            self.record_forwarded_tx_sender(*tx.tx_hash(), sender);
+            forwarded_txs.push((tx, PoolTxKind::Forwarded));
+        }
+
+        self.insert_txs_inner(
+            event_tracker,
+            block_policy,
+            state_backend,
+            chain_config,
+            forwarded_txs,
+            on_insert,
+        );
+        self.update_forwarded_sender_mappings(event_tracker.events());
+    }
+
+    fn insert_txs_inner(
         &mut self,
         event_tracker: &mut EthTxPoolEventTracker<'_>,
         block_policy: &EthBlockPolicy<ST, SCT, CCT, CRT>,
@@ -310,6 +377,8 @@ where
             }
         }
 
+        self.update_forwarded_sender_mappings(event_tracker.events());
+
         let self_eth_address = node_id.pubkey().get_eth_address();
         let system_transactions = self.get_system_transactions(
             epoch,
@@ -416,6 +485,8 @@ where
 
             self.static_validate_all_txs(event_tracker);
         }
+
+        self.update_forwarded_sender_mappings(event_tracker.events());
     }
 
     pub fn update_committed_block(
@@ -452,6 +523,7 @@ where
             .update_committed_nonce_usages(event_tracker, committed_block.nonce_usages);
 
         self.tracked.evict_expired_txs(event_tracker);
+        self.update_forwarded_sender_mappings(event_tracker.events());
 
         self.update_aggregate_metrics(event_tracker);
     }
@@ -482,6 +554,7 @@ where
         }
 
         self.tracked.reset();
+        self.forwarded_tx_senders.clear();
 
         self.update_aggregate_metrics(event_tracker);
     }
@@ -530,6 +603,70 @@ where
             .map(PoolTx::signer)
             .unique()
             .collect()
+    }
+
+    pub fn build_sender_gas_contributions(
+        &self,
+        txs: &[TxEnvelope],
+    ) -> Vec<(NodeId<CertificateSignaturePubKey<ST>>, u64)> {
+        let mut sender_gas = BTreeMap::<NodeId<CertificateSignaturePubKey<ST>>, u64>::new();
+
+        for tx in txs {
+            if let Some(record) = self.forwarded_tx_senders.get(tx.tx_hash()) {
+                *sender_gas.entry(record.sender).or_default() += tx.gas_limit();
+            }
+        }
+
+        sender_gas.into_iter().collect_vec()
+    }
+
+    fn record_forwarded_tx_sender(
+        &mut self,
+        tx_hash: TxHash,
+        sender: NodeId<CertificateSignaturePubKey<ST>>,
+    ) {
+        let sender_records = self.forwarded_tx_senders.len();
+        let sender_records_limit = self.tracked.max_txs_limit().saturating_mul(2);
+
+        match self.forwarded_tx_senders.entry(tx_hash) {
+            Entry::Occupied(mut entry) => {
+                entry.get_mut().receives = entry.get().receives.saturating_add(1);
+            }
+            Entry::Vacant(entry) => {
+                if sender_records >= sender_records_limit {
+                    warn!(
+                        ?tx_hash,
+                        ?sender,
+                        sender_records,
+                        sender_records_limit,
+                        "forwarded tx sender map overflow, dropping sender attribution"
+                    );
+                    return;
+                }
+
+                entry.insert(ForwardedTxSenderRecord {
+                    sender,
+                    receives: 1,
+                });
+            }
+        }
+    }
+
+    fn remove_forwarded_tx_sender(&mut self, tx_hash: &TxHash) {
+        self.forwarded_tx_senders.remove(tx_hash);
+    }
+
+    fn decrement_forwarded_tx_sender(&mut self, tx_hash: &TxHash) {
+        let Entry::Occupied(mut entry) = self.forwarded_tx_senders.entry(*tx_hash) else {
+            return;
+        };
+
+        let receives = &mut entry.get_mut().receives;
+        *receives = receives.saturating_sub(1);
+
+        if *receives == 0 {
+            entry.remove();
+        }
     }
 
     fn get_system_transactions(
@@ -699,6 +836,16 @@ where
         );
 
         Ok(proposal.txs)
+    }
+
+    fn update_forwarded_sender_mappings(&mut self, events: &BTreeMap<TxHash, EthTxPoolEventType>) {
+        for (tx_hash, event) in events {
+            match event {
+                EthTxPoolEventType::Insert { owned: false, .. } => {}
+                EthTxPoolEventType::Drop { .. } => self.decrement_forwarded_tx_sender(tx_hash),
+                _ => self.remove_forwarded_tx_sender(tx_hash),
+            }
+        }
     }
 }
 

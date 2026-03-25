@@ -601,6 +601,10 @@ where
         txs: Vec<Bytes>,
     },
 
+    Contribution {
+        sender_gas: Vec<(NodeId<SCT::NodeIdPubKey>, u64)>,
+    },
+
     EnterRound {
         epoch: Epoch,
         round: Round,
@@ -664,6 +668,10 @@ where
                 .debug_struct("InsertForwardedTxs")
                 .field("sender", sender)
                 .field("txs", txs)
+                .finish(),
+            Self::Contribution { sender_gas } => f
+                .debug_struct("Contribution")
+                .field("sender_gas", sender_gas)
                 .finish(),
             Self::EnterRound {
                 epoch,
@@ -1167,6 +1175,11 @@ where
         fresh_proposal_certificate: Option<FreshProposalCertificate<SCT>>,
     },
 
+    /// Sender contribution by proposal tx gas.
+    Contribution {
+        sender_gas: Vec<(NodeId<SCT::NodeIdPubKey>, u64)>,
+    },
+
     /// Txs that are incoming via other nodes
     ForwardedTxs {
         sender: NodeId<SCT::NodeIdPubKey>,
@@ -1176,6 +1189,12 @@ where
 
     /// Txs that should be forwarded to upcoming leaders
     ForwardTxs(#[serde_as(as = "Vec<serde_with::hex::Hex>")] Vec<Bytes>),
+}
+
+#[derive(Clone, RlpEncodable, RlpDecodable)]
+struct SenderGasContribution<P: PubKey> {
+    sender: NodeId<P>,
+    gas: u64,
 }
 
 impl<ST, SCT, EPT> Encodable for MempoolEvent<ST, SCT, EPT>
@@ -1243,6 +1262,17 @@ where
             }
             Self::ForwardTxs(txs) => {
                 let enc: [&dyn Encodable; 2] = [&3u8, txs];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::Contribution { sender_gas } => {
+                let sender_gas = sender_gas
+                    .iter()
+                    .map(|(sender, gas)| SenderGasContribution {
+                        sender: *sender,
+                        gas: *gas,
+                    })
+                    .collect::<Vec<_>>();
+                let enc: [&dyn Encodable; 2] = [&4u8, &sender_gas];
                 encode_list::<_, dyn Encodable>(&enc, out);
             }
         }
@@ -1317,6 +1347,16 @@ where
                 let txs = Vec::<Bytes>::decode(&mut payload)?;
                 Ok(Self::ForwardTxs(txs))
             }
+            4 => {
+                let sender_gas =
+                    Vec::<SenderGasContribution<SCT::NodeIdPubKey>>::decode(&mut payload)?;
+                Ok(Self::Contribution {
+                    sender_gas: sender_gas
+                        .into_iter()
+                        .map(|contribution| (contribution.sender, contribution.gas))
+                        .collect(),
+                })
+            }
             _ => Err(alloy_rlp::Error::Custom(
                 "failed to decode unknown mempool event",
             )),
@@ -1370,6 +1410,10 @@ where
             Self::ForwardTxs(txs) => f
                 .debug_struct("ForwardTxs")
                 .field("txs_len_bytes", &txs.iter().map(Bytes::len).sum::<usize>())
+                .finish(),
+            Self::Contribution { sender_gas } => f
+                .debug_struct("Contribution")
+                .field("sender_gas", sender_gas)
                 .finish(),
         }
     }
@@ -2283,6 +2327,12 @@ where
             }
             MonadEvent::MempoolEvent(MempoolEvent::ForwardTxs(txs)) => {
                 format!("MempoolEvent::ForwardTxs -- number of txns: {}", txs.len())
+            }
+            MonadEvent::MempoolEvent(MempoolEvent::Contribution { sender_gas }) => {
+                format!(
+                    "MempoolEvent::Contribution -- number of senders: {}",
+                    sender_gas.len()
+                )
             }
             MonadEvent::ControlPanelEvent(_) => "CONTROLPANELEVENT".to_string(),
             MonadEvent::TimestampUpdateEvent(t) => format!("MempoolEvent::TimestampUpdate: {t}"),

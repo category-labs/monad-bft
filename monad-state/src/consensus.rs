@@ -332,9 +332,9 @@ where
                 MempoolEvent::Proposal { .. } => {
                     unreachable!("txpool should never emit proposal while not live!")
                 }
-                MempoolEvent::ForwardedTxs { .. } | MempoolEvent::ForwardTxs(_) => {
-                    return Vec::default()
-                }
+                MempoolEvent::ForwardedTxs { .. }
+                | MempoolEvent::ForwardTxs(_)
+                | MempoolEvent::Contribution { .. } => return Vec::default(),
             }
         };
 
@@ -420,6 +420,11 @@ where
                         })
                     })
                     .collect_vec()
+            }
+            MempoolEvent::Contribution { sender_gas } => {
+                vec![Command::TxPoolCommand(TxPoolCommand::Contribution {
+                    sender_gas,
+                })]
             }
         }
     }

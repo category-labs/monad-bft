@@ -46,15 +46,15 @@ pub fn egress_max_size_bytes(execution_params: &ExecutionChainParams) -> usize {
 }
 
 #[pin_project(project = EthTxPoolForwardingManagerProjected)]
-pub struct EthTxPoolForwardingManager {
-    ingress_batch: Option<Vec<TxEnvelope>>,
+pub struct EthTxPoolForwardingManager<S = ()> {
+    ingress_batch: Option<Vec<(S, TxEnvelope)>>,
     ingress_waker: Option<Waker>,
 
     egress: VecDeque<Bytes>,
     egress_waker: Option<Waker>,
 }
 
-impl Default for EthTxPoolForwardingManager {
+impl<S> Default for EthTxPoolForwardingManager<S> {
     fn default() -> Self {
         Self {
             ingress_batch: None,
@@ -66,12 +66,12 @@ impl Default for EthTxPoolForwardingManager {
     }
 }
 
-impl EthTxPoolForwardingManager {
+impl<S> EthTxPoolForwardingManager<S> {
     pub fn ingress_is_empty(&self) -> bool {
         self.ingress_batch.is_none()
     }
 
-    pub fn poll_ingress(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Vec<TxEnvelope>> {
+    pub fn poll_ingress(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Vec<(S, TxEnvelope)>> {
         let EthTxPoolForwardingManagerProjected {
             ingress_batch,
             ingress_waker,
@@ -148,8 +148,8 @@ impl EthTxPoolForwardingManager {
     }
 }
 
-impl EthTxPoolForwardingManagerProjected<'_> {
-    pub fn add_ingress_txs(&mut self, txs: Vec<TxEnvelope>) {
+impl<S> EthTxPoolForwardingManagerProjected<'_, S> {
+    pub fn add_ingress_txs(&mut self, txs: Vec<(S, TxEnvelope)>) {
         let Self {
             ingress_batch,
             ingress_waker,
@@ -234,7 +234,7 @@ mod test {
 
     const BASE_FEE_PER_GAS: u128 = 100_000_000_000; // 100 Gwei
 
-    fn setup<'a>() -> (EthTxPoolForwardingManager, Context<'a>) {
+    fn setup<'a>() -> (EthTxPoolForwardingManager<()>, Context<'a>) {
         (
             EthTxPoolForwardingManager::default(),
             Context::from_waker(noop_waker_ref()),
@@ -245,8 +245,12 @@ mod test {
         make_legacy_tx(S1, BASE_FEE_PER_GAS, 100_000, nonce, 0)
     }
 
+    fn generate_tx_with_default_sender<S: Default>(nonce: u64) -> (S, TxEnvelope) {
+        (S::default(), generate_tx(nonce))
+    }
+
     async fn assert_pending_now_and_forever(
-        mut forwarding_manager: Pin<&mut EthTxPoolForwardingManager>,
+        mut forwarding_manager: Pin<&mut EthTxPoolForwardingManager<()>>,
         mut cx: Context<'_>,
     ) {
         assert_eq!(
@@ -295,7 +299,7 @@ mod test {
                 );
             }
 
-            let txs = vec![generate_tx(0)];
+            let txs = vec![generate_tx_with_default_sender::<()>(0)];
 
             forwarding_manager
                 .as_mut()
@@ -321,7 +325,7 @@ mod test {
             Poll::Pending
         );
 
-        let txs = vec![generate_tx(0)];
+        let txs = vec![generate_tx_with_default_sender::<()>(0)];
 
         forwarding_manager
             .as_mut()
@@ -360,21 +364,23 @@ mod test {
             Poll::Pending
         );
 
+        forwarding_manager.as_mut().project().add_ingress_txs(vec![
+            generate_tx_with_default_sender::<()>(0),
+            generate_tx_with_default_sender::<()>(1),
+        ]);
         forwarding_manager
             .as_mut()
             .project()
-            .add_ingress_txs(vec![generate_tx(0), generate_tx(1)]);
-        forwarding_manager
-            .as_mut()
-            .project()
-            .add_ingress_txs(vec![generate_tx(2)]);
+            .add_ingress_txs(vec![generate_tx_with_default_sender::<()>(2)]);
 
         let Poll::Ready(txs) = forwarding_manager.as_mut().poll_ingress(&mut cx) else {
             panic!("forwarding manager should be ready");
         };
         assert_eq!(txs.len(), 2);
         assert_eq!(
-            txs.into_iter().map(|tx| tx.nonce()).collect::<Vec<_>>(),
+            txs.into_iter()
+                .map(|(_, tx)| tx.nonce())
+                .collect::<Vec<_>>(),
             vec![0, 1]
         );
 

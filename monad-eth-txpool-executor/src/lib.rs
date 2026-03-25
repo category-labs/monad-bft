@@ -89,7 +89,8 @@ where
     events_tx: mpsc::UnboundedSender<MempoolEvent<ST, SCT, EthExecutionProtocol>>,
     events: mpsc::UnboundedReceiver<MempoolEvent<ST, SCT, EthExecutionProtocol>>,
 
-    forwarding_manager: Pin<Box<EthTxPoolForwardingManager>>,
+    forwarding_manager:
+        Pin<Box<EthTxPoolForwardingManager<NodeId<CertificateSignaturePubKey<ST>>>>>,
     preload_manager: Pin<Box<EthTxPoolPreloadManager>>,
 
     metrics: Arc<EthTxPoolExecutorMetrics>,
@@ -124,7 +125,7 @@ where
 
         let metrics = Arc::new(EthTxPoolExecutorMetrics::default());
         let mut executor_metrics = ExecutorMetrics::default();
-        let (_score_provider, score_reader) = ema::create::<
+        let (score_provider, score_reader) = ema::create::<
             NodeId<CertificateSignaturePubKey<ST>>,
             StdClock,
         >(ema::ScoreConfig::default(), StdClock);
@@ -177,6 +178,7 @@ where
             Box::new(move |executor_metrics: &mut ExecutorMetrics| {
                 metrics.update(executor_metrics)
             }),
+            score_provider,
             score_reader,
             ForwardedIngressFairQueueConfig::default(),
         ))
@@ -287,7 +289,7 @@ where
 
             ingress_batch.extend(txs.into_iter().filter_map(|raw_tx| {
                 if let Ok(tx) = TxEnvelope::decode(&mut raw_tx.as_ref()) {
-                    Some(tx)
+                    Some((sender, tx))
                 } else {
                     num_invalid_bytes += 1;
                     None
@@ -410,6 +412,9 @@ where
                     ) {
                         Ok(proposed_execution_inputs) => {
                             let elapsed = create_proposal_start.elapsed();
+                            let sender_gas = self.pool.build_sender_gas_contributions(
+                                &proposed_execution_inputs.body.transactions,
+                            );
 
                             self.metrics.create_proposal.fetch_add(1, Ordering::SeqCst);
                             self.metrics
@@ -433,6 +438,11 @@ where
                                     fresh_proposal_certificate,
                                 })
                                 .expect("events never dropped");
+                            if !sender_gas.is_empty() {
+                                self.events_tx
+                                    .send(MempoolEvent::Contribution { sender_gas })
+                                    .expect("events never dropped");
+                            }
                         }
                         Err(err) => {
                             error!(?err, "txpool executor failed to create proposal");
@@ -442,6 +452,13 @@ where
                 TxPoolCommand::InsertForwardedTxs { sender, txs } => {
                     // This will never happen because we separate out these commands in `EthTxPoolExecutorClient`.
                     error!("txpool executor received InsertForwardedTxs command over command rx");
+                }
+                TxPoolCommand::Contribution { sender_gas } => {
+                    // This will never happen because we separate out these commands in `EthTxPoolExecutorClient`.
+                    error!(
+                        sender_count = sender_gas.len(),
+                        "txpool executor received Contribution command over command rx"
+                    );
                 }
                 TxPoolCommand::EnterRound {
                     epoch: _,
@@ -632,12 +649,12 @@ where
 
             let recovered_txs = {
                 let (recovered_txs, dropped_txs): (Vec<_>, Vec<_>) =
-                    forwarded_txs.into_par_iter().partition_map(|tx| {
+                    forwarded_txs.into_par_iter().partition_map(|(sender, tx)| {
                         let _span = trace_span!("txpool: forwarded tx recover signer").entered();
                         match tx.secp256k1_recover() {
                             Ok(signer) => rayon::iter::Either::Left((
+                                sender,
                                 Recovered::new_unchecked(tx, signer),
-                                PoolTxKind::Forwarded,
                             )),
                             Err(_) => rayon::iter::Either::Right((
                                 *tx.tx_hash(),
@@ -653,7 +670,7 @@ where
 
             let mut inserted_addresses = HashSet::<Address>::default();
 
-            pool.insert_txs(
+            pool.insert_forwarded_txs(
                 &mut EthTxPoolEventTracker::new(&metrics.pool, &mut ipc_events),
                 block_policy,
                 state_backend,
@@ -926,7 +943,7 @@ mod test {
 
         let (events_tx, events) = mpsc::unbounded_channel();
 
-        let (_score_provider, score_reader) = ema::create::<
+        let (score_provider, score_reader) = ema::create::<
             NodeId<CertificateSignaturePubKey<SignatureType>>,
             StdClock,
         >(ema::ScoreConfig::default(), StdClock);
@@ -967,6 +984,7 @@ mod test {
                 .run(command_rx, forwarded_rx, event_tx)
             },
             Box::new(|_| {}),
+            score_provider,
             score_reader,
             forwarded_ingress_fair_queue_config,
         )
@@ -1052,9 +1070,14 @@ mod test {
                                     break;
                                 };
 
-                                proposal_tx
-                                    .send(collect_forwarded_txs(event))
-                                    .expect("proposal receiver is alive");
+                                match event {
+                                    MonadEvent::MempoolEvent(MempoolEvent::Contribution { .. }) => {}
+                                    event => {
+                                        proposal_tx
+                                            .send(collect_forwarded_txs(event))
+                                            .expect("proposal receiver is alive");
+                                    }
+                                }
                             }
                         }
                     }

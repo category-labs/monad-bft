@@ -93,6 +93,10 @@ impl TrackedTxLimits {
         IndexMap::with_capacity(self.config.max_addresses + 1)
     }
 
+    pub fn max_txs(&self) -> usize {
+        self.config.max_txs
+    }
+
     pub fn expiry_duration_during_evict(&self) -> Duration {
         if self.txs < self.config.soft_evict_addresses_watermark {
             self.config.hard_tx_expiry

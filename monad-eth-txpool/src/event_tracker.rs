@@ -224,4 +224,8 @@ impl<'a> EthTxPoolEventTracker<'a> {
             .create_proposal_backend_lookups
             .fetch_add(backend_lookups, Ordering::SeqCst);
     }
+
+    pub(crate) fn events(&self) -> &BTreeMap<TxHash, EthTxPoolEventType> {
+        self.events
+    }
 }

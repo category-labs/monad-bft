@@ -93,6 +93,10 @@ where
         self.txs.values().map(TrackedTxList::num_txs).sum()
     }
 
+    pub fn max_txs_limit(&self) -> usize {
+        self.limits.max_txs()
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = (&Address, &TrackedTxList)> {
         self.txs.iter()
     }
