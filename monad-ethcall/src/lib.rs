@@ -132,6 +132,7 @@ impl From<MonadTracer> for u32 {
 
 pub const ETH_CALL_SUCCESS: i32 = 0;
 pub const EVMC_OUT_OF_GAS: i32 = 3;
+pub const EVMC_MONAD_RESERVE_BALANCE_VIOLATION: i32 = 18;
 
 #[derive(Clone, Debug, Default)]
 pub enum EthCallResult {
@@ -385,6 +386,24 @@ pub async fn eth_call(
                         gas_refund,
                         output_data,
                     })
+                }
+            }
+            EVMC_MONAD_RESERVE_BALANCE_VIOLATION => {
+                if tracer_cval == bindings::monad_tracer_config_NOOP_TRACER {
+                    CallResult::Failure(FailureCallResult {
+                        error_code: EthCallResult::OtherError,
+                        message: "reserve balance violation".to_string(),
+                        data: None,
+                    })
+                } else {
+                    let output_data_len = (*result).encoded_trace_len;
+                    let output_data = if output_data_len != 0 {
+                        std::slice::from_raw_parts((*result).encoded_trace, output_data_len)
+                            .to_vec()
+                    } else {
+                        vec![]
+                    };
+                    CallResult::Revert(RevertCallResult { trace: output_data })
                 }
             }
             _ => {
