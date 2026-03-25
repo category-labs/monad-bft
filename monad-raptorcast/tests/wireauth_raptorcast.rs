@@ -42,6 +42,7 @@ use tracing_subscriber::EnvFilter;
 
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
 const MESSAGE_TIMEOUT: Duration = Duration::from_secs(10);
+const PREWARM_CONNECTION_TIMEOUT: Duration = Duration::from_secs(15);
 const NUM_NODES: usize = 10;
 
 fn init_tracing() {
@@ -577,6 +578,90 @@ async fn run_test_scenario(num_auth_nodes: usize, routing_type: RoutingType, mes
     }
 }
 
+async fn run_prewarm_establishes_validator_sessions_without_publish() {
+    let alice_info = ValidatorInfo::new(1);
+    let bob_info = ValidatorInfo::new(2);
+
+    let alice_dp = create_dataplane_for_tests(true, true);
+    let bob_dp = create_dataplane_for_tests(true, true);
+
+    let alice_auth_addr = alice_dp.auth_addr.expect("auth enabled");
+    let bob_auth_addr = bob_dp.auth_addr.expect("auth enabled");
+    let alice_non_auth_addr = alice_dp.non_auth_addr.expect("non-auth enabled");
+    let bob_non_auth_addr = bob_dp.non_auth_addr.expect("non-auth enabled");
+
+    let name_records: HashMap<_, _> = [
+        (
+            alice_info.nodeid,
+            alice_info.create_name_record(
+                true,
+                alice_dp.tcp_addr,
+                alice_auth_addr,
+                Some(alice_non_auth_addr),
+            ),
+        ),
+        (
+            bob_info.nodeid,
+            bob_info.create_name_record(
+                true,
+                bob_dp.tcp_addr,
+                bob_auth_addr,
+                Some(bob_non_auth_addr),
+            ),
+        ),
+    ]
+    .into();
+
+    let known_addresses: HashMap<_, _> = [
+        (alice_info.nodeid, alice_non_auth_addr),
+        (bob_info.nodeid, bob_non_auth_addr),
+    ]
+    .into();
+
+    let alice = spawn_wireauth_validator(
+        alice_info.keypair.clone(),
+        alice_dp,
+        known_addresses.clone(),
+        name_records.clone(),
+        vec![(bob_auth_addr, bob_info.pubkey)],
+        DEFAULT_SIG_VERIFICATION_RATE_LIMIT,
+    );
+
+    let bob = spawn_wireauth_validator(
+        bob_info.keypair.clone(),
+        bob_dp,
+        known_addresses,
+        name_records,
+        vec![(alice_auth_addr, alice_info.pubkey)],
+        DEFAULT_SIG_VERIFICATION_RATE_LIMIT,
+    );
+
+    let epoch = Epoch(0);
+    let validator_set: Vec<_> = [
+        (alice_info.nodeid, Stake::ONE),
+        (bob_info.nodeid, Stake::ONE),
+    ]
+    .into();
+
+    for cmd_tx in [&alice.cmd_tx, &bob.cmd_tx] {
+        cmd_tx
+            .send(RouterCommand::AddEpochValidatorSet {
+                epoch,
+                validator_set: validator_set.clone(),
+            })
+            .unwrap();
+    }
+
+    tokio::time::timeout(PREWARM_CONNECTION_TIMEOUT, alice.ready_rx)
+        .await
+        .expect("alice prewarm ready timeout")
+        .expect("alice ready channel closed");
+    tokio::time::timeout(PREWARM_CONNECTION_TIMEOUT, bob.ready_rx)
+        .await
+        .expect("bob prewarm ready timeout")
+        .expect("bob ready channel closed");
+}
+
 async fn test_rate_limiting_basic() {
     const NUM_TEST_NODES: usize = 3;
     const RATE_LIMIT: u32 = 10;
@@ -741,6 +826,15 @@ async fn test_rate_limiting_p2p() {
 
     tokio::task::LocalSet::new()
         .run_until(test_rate_limiting_basic())
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_prewarm_establishes_validator_sessions_without_publish() {
+    init_tracing();
+
+    tokio::task::LocalSet::new()
+        .run_until(run_prewarm_establishes_validator_sessions_without_publish())
         .await;
 }
 

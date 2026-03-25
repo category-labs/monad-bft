@@ -216,6 +216,10 @@ where
             .is_some_and(|authenticated| authenticated.has_any_session_by_public_key(public_key))
     }
 
+    pub fn has_authenticated_socket(&self) -> bool {
+        self.authenticated.is_some()
+    }
+
     pub fn segment_size(&self, mtu: u16) -> u16 {
         let base = monad_dataplane::udp::segment_size_for_mtu(mtu);
         if self.authenticated.is_some() {
