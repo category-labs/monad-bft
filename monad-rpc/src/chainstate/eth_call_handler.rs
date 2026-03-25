@@ -98,12 +98,18 @@ impl EthCallHandler {
             },
         };
 
+        if let Some(tracker) = &self.stats_tracker {
+            tracker.record_request_start(request_id);
+        }
+
         Ok(EthCallPermit {
             permit,
             request_id,
 
             executor: &self.executor,
             stats_tracker: self.stats_tracker.as_deref(),
+
+            execute_success: None,
         })
     }
 
@@ -127,24 +133,37 @@ pub struct EthCallPermit<'a> {
 
     executor: &'a EthCallExecutor,
     stats_tracker: Option<&'a EthCallStatsTracker>,
+
+    execute_success: Option<bool>,
 }
 
 impl<'a> EthCallPermit<'a> {
-    pub async fn execute<T, E, F>(self, f: impl FnOnce(&'a EthCallExecutor) -> F) -> Result<T, E>
+    pub async fn execute<T, E, F>(
+        mut self,
+        f: impl FnOnce(&'a EthCallExecutor) -> F,
+    ) -> Result<T, E>
     where
         F: Future<Output = Result<T, E>>,
     {
-        if let Some(tracker) = self.stats_tracker {
-            tracker.record_request_start(self.request_id);
-        }
-
         let result = f(self.executor).await;
 
-        if let Some(tracker) = self.stats_tracker {
-            tracker.record_request_complete(&self.request_id, result.is_err());
-        }
+        self.execute_success = Some(result.is_ok());
 
         result
+    }
+}
+
+impl<'a> Drop for EthCallPermit<'a> {
+    fn drop(&mut self) {
+        let Some(tracker) = self.stats_tracker else {
+            return;
+        };
+
+        if let Some(success) = self.execute_success.take() {
+            tracker.record_request_complete(&self.request_id, success);
+        } else {
+            tracker.record_request_dropped(&self.request_id);
+        }
     }
 }
 
@@ -195,10 +214,14 @@ impl EthCallStatsTracker {
         self.stats.total_requests.fetch_add(1, Ordering::Relaxed);
     }
 
-    fn record_request_complete(&self, request_id: &TimingRequestId, is_error: bool) {
+    fn record_request_dropped(&self, request_id: &TimingRequestId) {
+        self.active_requests.remove(request_id);
+    }
+
+    fn record_request_complete(&self, request_id: &TimingRequestId, success: bool) {
         self.active_requests.remove(request_id);
 
-        if is_error {
+        if !success {
             self.stats.total_errors.fetch_add(1, Ordering::Relaxed);
         }
     }
