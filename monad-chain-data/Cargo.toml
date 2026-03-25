@@ -7,3 +7,5 @@ edition = "2021"
 bench = false
 
 [dependencies]
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
