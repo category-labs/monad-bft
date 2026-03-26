@@ -140,7 +140,7 @@ impl FromStr for Round {
     }
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Debug, RlpEncodable)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, RlpEncodable)]
 // A non-empty span of rounds
 pub struct RoundSpan {
     pub start: Round, // inclusive
@@ -921,6 +921,40 @@ impl<T, const N: usize> IntoIterator for LimitedVec<T, N> {
 
     fn into_iter(self) -> Self::IntoIter {
         self.0.into_iter()
+    }
+}
+
+/// A `u64` that enforces a maximum value during construction and RLP deserialization.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BoundedU64<const MAX: u64>(u64);
+
+impl<const MAX: u64> BoundedU64<MAX> {
+    pub fn new(value: u64) -> Option<Self> {
+        if value > MAX {
+            return None;
+        }
+        Some(Self(value))
+    }
+
+    pub fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl<const MAX: u64> Encodable for BoundedU64<MAX> {
+    fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
+        self.0.encode(out);
+    }
+
+    fn length(&self) -> usize {
+        self.0.length()
+    }
+}
+
+impl<const MAX: u64> Decodable for BoundedU64<MAX> {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let value = u64::decode(buf)?;
+        Self::new(value).ok_or(alloy_rlp::Error::Custom("BoundedU64 value exceeds maximum"))
     }
 }
 
