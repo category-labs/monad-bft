@@ -382,6 +382,9 @@ where
                     );
                 }
             }
+            FullNodesGroupMessage::ParticipationReport(_report) => {
+                // TODO: handle participation report
+            }
             _ => {
                 debug!(
                     ?msg,

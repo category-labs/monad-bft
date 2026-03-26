@@ -446,9 +446,11 @@ where
                     }
                     FullNodesGroupMessage::PrepareGroupResponse(_) => {
                         error!(
-                            "RaptorCastSecondary client received a \
-                                PrepareGroupResponse message"
+                            "RaptorCastSecondary client received a PrepareGroupResponse message"
                         );
+                    }
+                    FullNodesGroupMessage::ParticipationReport(_) => {
+                        error!("RaptorCastSecondary client received a ParticipationReport message");
                     }
                     FullNodesGroupMessage::ConfirmGroup(confirm_msg) => {
                         let is_valid = client.handle_confirm_group_message(confirm_msg.clone());
