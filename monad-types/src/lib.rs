@@ -140,11 +140,23 @@ impl FromStr for Round {
     }
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug, RlpEncodable)]
 // A non-empty span of rounds
 pub struct RoundSpan {
     pub start: Round, // inclusive
     pub end: Round,   // exclusive
+}
+
+impl Decodable for RoundSpan {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let b = &mut alloy_rlp::Header::decode_bytes(buf, true)?;
+        let start = Round::decode(b)?;
+        let end = Round::decode(b)?;
+        if start >= end {
+            return Err(alloy_rlp::Error::Custom("RoundSpan requires start < end"));
+        }
+        Ok(Self { start, end })
+    }
 }
 
 impl RoundSpan {
@@ -1043,5 +1055,37 @@ mod test {
 
         let decoded = LimitedVec::<u32, 0>::decode(&mut buf.as_slice()).unwrap();
         assert!(decoded.is_empty());
+    }
+
+    #[test]
+    fn test_round_span_rlp_roundtrip() {
+        let span = RoundSpan::new(Round(10), Round(20)).unwrap();
+        let mut buf = Vec::new();
+        span.encode(&mut buf);
+
+        let decoded = RoundSpan::decode(&mut buf.as_slice()).unwrap();
+        assert_eq!(span, decoded);
+    }
+
+    #[test]
+    fn test_round_span_rlp_rejects_start_eq_end() {
+        let invalid = RoundSpan {
+            start: Round(10),
+            end: Round(10),
+        };
+        let mut buf = Vec::new();
+        invalid.encode(&mut buf);
+        assert!(RoundSpan::decode(&mut buf.as_slice()).is_err());
+    }
+
+    #[test]
+    fn test_round_span_rlp_rejects_start_gt_end() {
+        let invalid = RoundSpan {
+            start: Round(20),
+            end: Round(10),
+        };
+        let mut buf = Vec::new();
+        invalid.encode(&mut buf);
+        assert!(RoundSpan::decode(&mut buf.as_slice()).is_err());
     }
 }
