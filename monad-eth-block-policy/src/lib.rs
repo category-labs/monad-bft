@@ -260,18 +260,8 @@ impl ReserveBalanceUpdater {
         account_balances: &mut BTreeMap<&Address, AccountBalanceState>,
         txn: &ValidatedTx,
     ) -> Result<(), BlockPolicyError> {
-        // update delegation status of authority addresses (including self authorization)
-        // TODO: currently consensus and execution both treats invalid authorization as has_delegated
-        // this has to be updated together with execution change in the future
-        for recovered_auth in &txn.authorizations_7702 {
-            if let Some(auth_address) = recovered_auth.authority() {
-                if let Some(account_balance) = account_balances.get_mut(&auth_address) {
-                    account_balance.is_delegated = true;
-                }
-            }
-        }
-
         let eth_address = txn.signer();
+
         let maybe_account_balance = account_balances.get_mut(&eth_address);
         let Some(account_balance) = maybe_account_balance else {
             return Err(BlockPolicyError::ReserveBalanceUpdaterError(
@@ -279,11 +269,19 @@ impl ReserveBalanceUpdater {
             ));
         };
 
-        let is_emptying_transaction = is_possibly_emptying_transaction(
+        let is_possibly_emptying_transaction = is_possibly_emptying_transaction(
             self.block_seq_num,
             account_balance,
             self.execution_delay,
         );
+        // if txn is a transaction that also contains an authorization from the sender, we consider
+        // the transaction to be non emptying transaction
+        let contains_self_authorization = txn
+            .authorizations_7702
+            .iter()
+            .any(|auth| auth.authority() == Some(eth_address));
+        let is_emptying_transaction =
+            is_possibly_emptying_transaction && !contains_self_authorization;
 
         // if an account for txn T is not delegated and has no prior txns, then T can charge into reserve.
         if is_emptying_transaction {
@@ -348,7 +346,26 @@ impl ReserveBalanceUpdater {
             account_balance.block_seqnum_of_latest_txn = self.block_seq_num;
         }
 
+        self.update_delegation_status(account_balances, txn);
+
         Ok(())
+    }
+
+    // update delegation status of authority addresses (including self authorization)
+    // TODO: currently consensus and execution both treats invalid authorization as has_delegated
+    // this has to be updated together with execution change in the future
+    pub fn update_delegation_status(
+        &self,
+        account_balances: &mut BTreeMap<&Address, AccountBalanceState>,
+        txn: &ValidatedTx,
+    ) {
+        for recovered_auth in &txn.authorizations_7702 {
+            if let Some(auth_address) = recovered_auth.authority() {
+                if let Some(account_balance) = account_balances.get_mut(&auth_address) {
+                    account_balance.is_delegated = true;
+                }
+            }
+        }
     }
 }
 
@@ -667,11 +684,15 @@ where
                 for txn in &block.validated_txns {
                     match reserve_balance_updater.try_add_transaction(&mut account_balances, txn) {
                         // previous blocks may contain senders that are not relevant to the current block being validated
-                        // therefore if account balance of a sender is missing, we skip instead of erroring out
-                        Ok(())
-                        | Err(BlockPolicyError::ReserveBalanceUpdaterError(
+                        // therefore if account balance of a sender is missing (not tracked), we skip instead of erroring out
+                        // however we still need to update delegation status for the authority addresses of these transactions
+                        Ok(()) => {}
+                        Err(BlockPolicyError::ReserveBalanceUpdaterError(
                             ReserveBalanceUpdaterError::AccountBalanceMissing,
-                        )) => {}
+                        )) => {
+                            reserve_balance_updater
+                                .update_delegation_status(&mut account_balances, txn);
+                        }
                         Err(e) => return Err(e),
                     }
                 }
