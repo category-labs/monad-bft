@@ -264,6 +264,10 @@ impl EthTxPoolPreloadManager {
             );
         }
     }
+
+    pub fn get_preloaded_addresses(&self, seq_num: SeqNum) -> Option<&HashSet<Address>> {
+        self.map.get(&seq_num).map(|entry| &entry.done)
+    }
 }
 
 #[cfg(test)]

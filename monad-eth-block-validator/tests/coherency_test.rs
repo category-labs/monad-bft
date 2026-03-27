@@ -515,6 +515,7 @@ fn check_txpool_coherency(
             block_under_test.header().author,
             block_under_test.header().round_signature.clone(),
             extending_blocks.to_vec(),
+            None,
             &block_policy,
             state_backend,
             chain_config,
