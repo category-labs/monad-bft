@@ -20,7 +20,7 @@ mod test {
     };
 
     use itertools::Itertools;
-    use monad_chain_config::{revision::ChainParams, MockChainConfig};
+    use monad_chain_config::{revision::ChainParams, ChainConfig, MockChainConfig};
     use monad_consensus_types::{
         block::PassthruBlockPolicy, block_validator::MockValidator, metrics::Metrics,
     };
@@ -67,17 +67,17 @@ mod test {
     #[test]
     fn bsync_timeout_recovery() {
         let delta = Duration::from_millis(50);
+        let chain_config = MockChainConfig::new_with_execution_delay(&CHAIN_PARAMS, SeqNum::MAX);
         let state_configs = make_state_configs::<MonadMessageNoSerSwarm>(
             4, // num_nodes
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
             || MockValidator,
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(SeqNum::MAX),
-            SeqNum::MAX,                         // execution_delay
-            delta,                               // delta
-            MockChainConfig::new(&CHAIN_PARAMS), // chain config
-            SeqNum(1000),                        // state_sync_threshold
+            || InMemoryStateInner::genesis(chain_config.get_execution_delay()),
+            delta,        // delta
+            chain_config, // chain config
+            SeqNum(1000), // state_sync_threshold
         );
         let all_peers: BTreeSet<_> = state_configs
             .iter()
@@ -180,17 +180,17 @@ mod test {
     #[should_panic]
     fn lack_of_progress() {
         let delta = Duration::from_millis(50);
+        let chain_config = MockChainConfig::new_with_execution_delay(&CHAIN_PARAMS, SeqNum::MAX);
         let state_configs = make_state_configs::<NoSerSwarm>(
             4, // num_nodes
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
             || MockValidator,
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(SeqNum::MAX),
-            SeqNum::MAX,                         // execution_delay
-            delta,                               // delta
-            MockChainConfig::new(&CHAIN_PARAMS), // chain config
-            SeqNum(100),                         // state_sync_threshold
+            || InMemoryStateInner::genesis(chain_config.get_execution_delay()),
+            delta,        // delta
+            chain_config, // chain config
+            SeqNum(100),  // state_sync_threshold
         );
         let all_peers: BTreeSet<_> = state_configs
             .iter()
@@ -255,17 +255,17 @@ mod test {
     fn extreme_delay_recovery_with_block_sync() {
         let delta = Duration::from_millis(50);
 
+        let chain_config = MockChainConfig::new_with_execution_delay(&CHAIN_PARAMS, SeqNum::MAX);
         let state_configs = make_state_configs::<NoSerSwarm>(
             4, // num_nodes
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
             || MockValidator,
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(SeqNum::MAX),
-            SeqNum::MAX,                         // execution_delay
-            delta,                               // delta
-            MockChainConfig::new(&CHAIN_PARAMS), // chain config
-            SeqNum(100),                         // state_sync_threshold
+            || InMemoryStateInner::genesis(chain_config.get_execution_delay()),
+            delta,        // delta
+            chain_config, // chain config
+            SeqNum(100),  // state_sync_threshold
         );
         let all_peers: BTreeSet<_> = state_configs
             .iter()
@@ -385,17 +385,17 @@ mod test {
                 && num_nodes >= 4
         );
 
+        let chain_config = MockChainConfig::new_with_execution_delay(&CHAIN_PARAMS, SeqNum::MAX);
         let state_configs = make_state_configs::<NoSerSwarm>(
             num_nodes, // num_nodes
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
             || MockValidator,
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(SeqNum::MAX),
-            SeqNum::MAX,                         // execution_delay
-            delta,                               // delta
-            MockChainConfig::new(&CHAIN_PARAMS), // chain config
-            SeqNum(2000),                        // state_sync_threshold
+            || InMemoryStateInner::genesis(chain_config.get_execution_delay()),
+            delta,        // delta
+            chain_config, // chain config
+            SeqNum(2000), // state_sync_threshold
         );
         let all_peers: BTreeSet<_> = state_configs
             .iter()

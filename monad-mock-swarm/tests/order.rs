@@ -20,7 +20,7 @@ use std::{
 };
 
 use itertools::Itertools;
-use monad_chain_config::{revision::ChainParams, MockChainConfig};
+use monad_chain_config::{revision::ChainParams, ChainConfig, MockChainConfig};
 use monad_consensus_types::{
     block::PassthruBlockPolicy, block_validator::MockValidator, metrics::Metrics,
 };
@@ -99,22 +99,23 @@ fn all_messages_delayed(direction: TransformerReplayOrder) -> Result<(), String>
     // tracing_subscriber::fmt::init();
     let delta = Duration::from_millis(20);
     let max_blocksync_retries = 5;
+
+    // due to the burst behavior of replay-transformer, its okay to
+    // have delay as 1
+    //
+    // TODO-4?: Make Replay Transformer's stored message not burst
+    // within the same Duration
+    let chain_config = MockChainConfig::new_with_execution_delay(&CHAIN_PARAMS, SeqNum(1));
     let state_configs = make_state_configs::<NoSerSwarm>(
         4, // num_nodes
         ValidatorSetFactory::default,
         SimpleRoundRobin::default,
         || MockValidator,
         || PassthruBlockPolicy,
-        || InMemoryStateInner::genesis(SeqNum(1)),
-        // due to the burst behavior of replay-transformer, its okay to
-        // have delay as 1
-        //
-        // TODO-4?: Make Replay Transformer's stored message not burst
-        // within the same Duration
-        SeqNum(1),                           // execution_delay
-        delta,                               // delta
-        MockChainConfig::new(&CHAIN_PARAMS), // chain config
-        SeqNum(100),                         // state_sync_threshold
+        || InMemoryStateInner::genesis(chain_config.get_execution_delay()),
+        delta,        // delta
+        chain_config, // chain config
+        SeqNum(100),  // state_sync_threshold
     );
     let all_peers: BTreeSet<_> = state_configs
         .iter()

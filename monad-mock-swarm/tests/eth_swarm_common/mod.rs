@@ -25,7 +25,7 @@ use alloy_primitives::Address;
 use monad_bls::BlsSignatureCollection;
 use monad_chain_config::{
     revision::{ChainParams, MockChainRevision},
-    MockChainConfig,
+    ChainConfig, MockChainConfig,
 };
 use monad_crypto::certificate_signature::CertificateSignaturePubKey;
 use monad_eth_block_policy::EthBlockPolicy;
@@ -139,11 +139,11 @@ pub fn generate_eth_swarm_with_accounts(
     validate_reserve_balance: bool,
 ) -> Nodes<EthSwarm> {
     let epoch_length = SeqNum(2000);
-    let execution_delay = SeqNum(4);
 
-    let chain_config = MockChainConfig::new(&CHAIN_PARAMS);
+    let chain_config = MockChainConfig::new_with_execution_delay(&CHAIN_PARAMS, SeqNum(4));
 
-    let create_block_policy = || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0);
+    let create_block_policy =
+        || EthBlockPolicy::new(GENESIS_SEQ_NUM, chain_config.get_execution_delay());
 
     let state_configs = make_state_configs::<EthSwarm>(
         num_nodes,
@@ -153,7 +153,7 @@ pub fn generate_eth_swarm_with_accounts(
         create_block_policy,
         || {
             let state = InMemoryStateInner::new(
-                execution_delay,
+                chain_config.get_execution_delay(),
                 InMemoryBlockState::genesis(existing_accounts.clone()),
             );
             if validate_reserve_balance {
@@ -161,7 +161,6 @@ pub fn generate_eth_swarm_with_accounts(
             }
             state
         },
-        execution_delay,
         CONSENSUS_DELTA,
         chain_config,
         SeqNum(100),

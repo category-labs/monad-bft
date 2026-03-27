@@ -19,7 +19,7 @@ use itertools::Itertools;
 use monad_bls::BlsSignatureCollection;
 use monad_chain_config::{
     revision::{ChainParams, MockChainRevision},
-    MockChainConfig,
+    ChainConfig, MockChainConfig,
 };
 use monad_consensus_types::{
     block::{MockExecutionProtocol, PassthruBlockPolicy},
@@ -125,17 +125,17 @@ fn two_nodes_bls() {
 
     let delta = Duration::from_millis(20);
 
+    let chain_config = MockChainConfig::new(&CHAIN_PARAMS);
     let state_configs = make_state_configs::<BLSSwarm>(
         2, // num_nodes
         ValidatorSetFactory::default,
         SimpleRoundRobin::default,
         || MockValidator,
         || PassthruBlockPolicy,
-        || InMemoryStateInner::genesis(SeqNum(4)),
-        SeqNum(4),                           // execution_delay
-        delta,                               // delta
-        MockChainConfig::new(&CHAIN_PARAMS), // chain config
-        SeqNum(100),                         // state_sync_threshold
+        || InMemoryStateInner::genesis(chain_config.get_execution_delay()),
+        delta,        // delta
+        chain_config, // chain config
+        SeqNum(100),  // state_sync_threshold
     );
     let all_peers: BTreeSet<_> = state_configs
         .iter()

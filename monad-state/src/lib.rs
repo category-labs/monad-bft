@@ -1471,7 +1471,7 @@ where
         let mut commands = Vec::new();
 
         let delay = self.consensus_config.execution_delay;
-        // TFM reserve balance checking requires N-2*state_root_delay+2 blocks to validate N
+        // TFM reserve balance checking requires N-2*execution_delay+2 blocks to validate N
         // let N == root_qc_seq_num
         // n in DoneSync(n) == N - delay
         // (N-2*delay, N] have been committed

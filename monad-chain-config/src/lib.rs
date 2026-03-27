@@ -38,6 +38,7 @@ pub const MONAD_DEVNET_CHAIN_ID: u64 = 20143;
 
 pub trait ChainConfig<CR: ChainRevision>: Copy + Clone {
     fn chain_id(&self) -> u64;
+    fn get_execution_delay(&self) -> SeqNum;
     fn get_epoch_length(&self) -> SeqNum;
     fn get_epoch_start_delay(&self) -> Round;
     fn get_staking_activation(&self) -> Epoch;
@@ -50,6 +51,7 @@ pub trait ChainConfig<CR: ChainRevision>: Copy + Clone {
 #[serde(deny_unknown_fields)]
 pub struct MonadChainConfig {
     pub chain_id: u64,
+    pub execution_delay: SeqNum,
     pub epoch_length: SeqNum,
     pub epoch_start_delay: Round,
 
@@ -117,6 +119,10 @@ impl ChainConfig<MonadChainRevision> for MonadChainConfig {
         self.chain_id
     }
 
+    fn get_execution_delay(&self) -> SeqNum {
+        self.execution_delay
+    }
+
     fn get_epoch_length(&self) -> SeqNum {
         self.epoch_length
     }
@@ -163,6 +169,7 @@ impl ChainConfig<MonadChainRevision> for MonadChainConfig {
 
 const MONAD_DEVNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
     chain_id: MONAD_DEVNET_CHAIN_ID,
+    execution_delay: SeqNum(3),
     epoch_length: SeqNum(10_000),
     epoch_start_delay: Round(1_000),
 
@@ -180,6 +187,7 @@ const MONAD_DEVNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
 
 const MONAD_TESTNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
     chain_id: MONAD_TESTNET_CHAIN_ID,
+    execution_delay: SeqNum(3),
     epoch_length: SeqNum(50_000),
     epoch_start_delay: Round(5_000),
 
@@ -198,6 +206,7 @@ const MONAD_TESTNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
 // Mainnet uses latest version of testnet from genesis
 const MONAD_MAINNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
     chain_id: MONAD_MAINNET_CHAIN_ID,
+    execution_delay: SeqNum(3),
     epoch_length: SeqNum(50_000),
     epoch_start_delay: Round(5_000),
 
@@ -216,6 +225,7 @@ const MONAD_MAINNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MockChainConfig {
     chain_params: &'static ChainParams,
+    execution_delay: SeqNum,
     epoch_length: SeqNum,
     epoch_start_delay: Round,
 }
@@ -229,6 +239,7 @@ impl Default for MockChainConfig {
 impl MockChainConfig {
     pub const DEFAULT: Self = Self {
         chain_params: &CHAIN_PARAMS_LATEST,
+        execution_delay: SeqNum(3),
         epoch_length: SeqNum::MAX,
         epoch_start_delay: Round::MAX,
     };
@@ -236,8 +247,7 @@ impl MockChainConfig {
     pub const fn new(chain_params: &'static ChainParams) -> Self {
         Self {
             chain_params,
-            epoch_length: SeqNum::MAX,
-            epoch_start_delay: Round::MAX,
+            ..Self::DEFAULT
         }
     }
 
@@ -250,6 +260,18 @@ impl MockChainConfig {
             chain_params,
             epoch_length,
             epoch_start_delay,
+            ..Self::DEFAULT
+        }
+    }
+
+    pub const fn new_with_execution_delay(
+        chain_params: &'static ChainParams,
+        execution_delay: SeqNum,
+    ) -> Self {
+        Self {
+            chain_params,
+            execution_delay,
+            ..Self::DEFAULT
         }
     }
 }
@@ -257,6 +279,10 @@ impl MockChainConfig {
 impl ChainConfig<MockChainRevision> for MockChainConfig {
     fn chain_id(&self) -> u64 {
         1337
+    }
+
+    fn get_execution_delay(&self) -> SeqNum {
+        self.execution_delay
     }
 
     fn get_epoch_length(&self) -> SeqNum {

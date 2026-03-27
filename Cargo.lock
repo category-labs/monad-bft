@@ -6083,6 +6083,7 @@ name = "monad-testutil"
 version = "0.1.0"
 dependencies = [
  "alloy-rlp",
+ "monad-chain-config",
  "monad-consensus",
  "monad-consensus-state",
  "monad-consensus-types",

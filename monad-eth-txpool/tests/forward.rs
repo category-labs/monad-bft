@@ -50,7 +50,7 @@ fn with_txpool(
         SignatureCollectionType,
         MockChainConfig,
         MockChainRevision,
-    >::new(GENESIS_SEQ_NUM, 4);
+    >::new(GENESIS_SEQ_NUM, SeqNum(4));
     let state_backend = InMemoryStateInner::new(
         SeqNum(4),
         InMemoryBlockState::genesis(BTreeMap::from_iter(vec![(

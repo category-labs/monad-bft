@@ -60,7 +60,7 @@ fn txpool_create_proposal_lookups_bound_by_tx_limit() {
             ),
         );
 
-        let eth_block_policy = EthBlockPolicy::new(GENESIS_SEQ_NUM, u64::MAX);
+        let eth_block_policy = EthBlockPolicy::new(GENESIS_SEQ_NUM, SeqNum::MAX);
 
         let state_backend: StateBackendType = InMemoryStateInner::new(
             SeqNum::MAX,
@@ -140,7 +140,7 @@ fn txpool_create_proposal_no_lookup_for_unknown_authorizations() {
             ),
         );
 
-        let eth_block_policy = EthBlockPolicy::new(GENESIS_SEQ_NUM, u64::MAX);
+        let eth_block_policy = EthBlockPolicy::new(GENESIS_SEQ_NUM, SeqNum::MAX);
 
         let state_backend: StateBackendType = InMemoryStateInner::new(
             SeqNum::MAX,

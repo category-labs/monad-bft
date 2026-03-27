@@ -52,7 +52,7 @@ async fn setup_txpool_executor_with_client() -> (
     >,
     EthTxPoolIpcClient,
 ) {
-    let eth_block_policy = EthBlockPolicy::new(GENESIS_SEQ_NUM, u64::MAX);
+    let eth_block_policy = EthBlockPolicy::new(GENESIS_SEQ_NUM, SeqNum::MAX);
 
     let state_backend: StateBackendType = InMemoryStateInner::new(
         SeqNum::MAX,

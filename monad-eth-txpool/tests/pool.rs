@@ -55,7 +55,7 @@ use monad_types::{Balance, Epoch, NodeId, Round, SeqNum, GENESIS_ROUND, GENESIS_
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tracing_test::traced_test;
 
-const EXECUTION_DELAY: u64 = 4;
+const EXECUTION_DELAY: SeqNum = SeqNum(3);
 const BASE_FEE_PER_GAS: u64 = 100_000_000_000;
 const BASE_FEE: u128 = BASE_FEE_PER_GAS as u128;
 const GAS_LIMIT: u64 = 30000;
@@ -158,7 +158,7 @@ fn run_custom_iter<const N: usize>(
                 .collect()
         };
 
-        InMemoryStateInner::new(SeqNum(4), InMemoryBlockState::genesis(nonces))
+        InMemoryStateInner::new(EXECUTION_DELAY, InMemoryBlockState::genesis(nonces))
     };
 
     let metrics = EthTxPoolMetrics::default();
@@ -1388,7 +1388,7 @@ fn test_tx_invalid_chain_id() {
 
     run_custom(
         EthTxPool::default_testing,
-        || EthBlockPolicy::new(GENESIS_SEQ_NUM, 0),
+        || EthBlockPolicy::new(GENESIS_SEQ_NUM, EXECUTION_DELAY),
         Some(BTreeMap::from_iter([(
             secret_to_eth_address(S1),
             AccountState::max_balance(),
