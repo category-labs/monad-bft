@@ -83,6 +83,7 @@ monad-validator = { path = "./monad-validator" }
 monad-version = { path = "./monad-version" }
 monad-wal = { path = "./monad-wal" }
 monad-wireauth = { path = "./monad-wireauth" }
+monad-mcp = { path = "./monad-mcp" }
 
 monad-cxx = { path = "./monad-execution/rust/crates/monad-cxx" }
 monad-event-ring = { path = "./monad-execution/rust/crates/monad-event-ring" }
