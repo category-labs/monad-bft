@@ -565,9 +565,9 @@ impl CallParams {
 #[tracing::instrument(level = "debug")]
 pub async fn prepare_eth_call<T: Triedb + TriedbPath>(
     triedb_env: &T,
+    eth_call_handler_config: &EthCallHandlerConfig,
     eth_call_executor: &EthCallExecutor,
     chain_id: u64,
-    eth_call_provider_gas_limit: u64,
     mut params: CallParams,
 ) -> Result<CallResult, JsonRpcError> {
     params.tx().input.input = match (
@@ -583,7 +583,11 @@ pub async fn prepare_eth_call<T: Triedb + TriedbPath>(
         (None, data) | (data, None) => data,
     };
 
-    if params.tx().gas > Some(U256::from(eth_call_provider_gas_limit)) {
+    if params.tx().gas
+        > Some(U256::from(
+            eth_call_handler_config.provider_gas_limit_eth_call,
+        ))
+    {
         return Err(JsonRpcError::eth_call_error(
             "user-specified gas exceeds provider limit".to_string(),
             None,
@@ -611,7 +615,9 @@ pub async fn prepare_eth_call<T: Triedb + TriedbPath>(
         .tx()
         .gas
         .unwrap_or(U256::from(header.header.gas_limit));
-    let eth_call_provider_gas_limit = eth_call_provider_gas_limit.min(header.header.gas_limit);
+    let eth_call_provider_gas_limit = eth_call_handler_config
+        .provider_gas_limit_eth_call
+        .min(header.header.gas_limit);
     fill_gas_params(
         triedb_env,
         block_key,
@@ -683,22 +689,24 @@ pub async fn prepare_eth_call<T: Triedb + TriedbPath>(
 #[tracing::instrument(level = "debug", skip(chain_state))]
 #[rpc(
     method = "eth_call",
-    ignore = "eth_call_executor,chain_id,eth_call_provider_gas_limit"
+    ignore = "eth_call_handler_config",
+    ignore = "eth_call_executor",
+    ignore = "chain_id"
 )]
 pub async fn monad_eth_call<T: Triedb + TriedbPath>(
     chain_state: &ChainState<T>,
+    eth_call_handler_config: &EthCallHandlerConfig,
     eth_call_executor: &EthCallExecutor,
     chain_id: u64,
-    eth_call_provider_gas_limit: u64,
     params: MonadEthCallParams,
 ) -> JsonRpcResult<String> {
     trace!("monad_eth_call: {params:?}");
 
     match prepare_eth_call(
         &chain_state.triedb_env,
+        eth_call_handler_config,
         eth_call_executor,
         chain_id,
-        eth_call_provider_gas_limit,
         CallParams::Call(params),
     )
     .await?
@@ -716,16 +724,16 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
 /// Returns the tracing result result by executing an eth call.
 #[rpc(
     method = "debug_traceCall",
-    ignore = "chain_id",
+    ignore = "eth_call_handler_config",
     ignore = "eth_call_executor",
-    ignore = "eth_call_gas_limit"
+    ignore = "chain_id"
 )]
 #[allow(non_snake_case)]
 pub async fn monad_debug_traceCall<T: Triedb + TriedbPath>(
     chain_state: &ChainState<T>,
+    eth_call_handler_config: &EthCallHandlerConfig,
     eth_call_executor: &EthCallExecutor,
     chain_id: u64,
-    eth_call_gas_limit: u64,
     params: MonadDebugTraceCallParams,
 ) -> JsonRpcResult<Box<RawValue>> {
     debug!(?params, "monad_debug_traceCall");
@@ -738,9 +746,9 @@ pub async fn monad_debug_traceCall<T: Triedb + TriedbPath>(
 
     let raw_payload: Vec<u8> = match prepare_eth_call(
         &chain_state.triedb_env,
+        eth_call_handler_config,
         eth_call_executor,
         chain_id,
-        eth_call_gas_limit,
         CallParams::Trace(params.clone()),
     )
     .await?
@@ -784,25 +792,25 @@ pub async fn monad_debug_traceCall<T: Triedb + TriedbPath>(
 /// Returns an access list containing all addresses and storage slots accessed during a simulated transaction.
 #[rpc(
     method = "eth_createAccessList",
-    ignore = "chain_id",
+    ignore = "eth_call_handler_config",
     ignore = "eth_call_executor",
-    ignore = "eth_call_gas_limit"
+    ignore = "chain_id"
 )]
 #[allow(non_snake_case)]
 pub async fn monad_createAccessList<T: Triedb + TriedbPath>(
     chain_state: &ChainState<T>,
+    eth_call_handler_config: &EthCallHandlerConfig,
     eth_call_executor: &EthCallExecutor,
     chain_id: u64,
-    eth_call_gas_limit: u64,
     params: MonadCreateAccessListParams,
 ) -> JsonRpcResult<Box<RawValue>> {
     trace!("monad_createAccessList: {params:?}");
 
     let raw_payload: Vec<u8> = match prepare_eth_call(
         &chain_state.triedb_env,
+        eth_call_handler_config,
         eth_call_executor,
         chain_id,
-        eth_call_gas_limit,
         CallParams::AccessList(params.clone()),
     )
     .await?
@@ -844,9 +852,9 @@ pub async fn monad_createAccessList<T: Triedb + TriedbPath>(
 
     let result: AccessListResult = match prepare_eth_call(
         &chain_state.triedb_env,
+        eth_call_handler_config,
         eth_call_executor,
         chain_id,
-        eth_call_gas_limit,
         CallParams::Call(call_params),
     )
     .await?

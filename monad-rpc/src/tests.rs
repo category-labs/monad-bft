@@ -44,8 +44,6 @@ pub async fn init_server(
         max_response_size: 25_000_000,
         allow_unprotected_txs: false,
         logs_max_block_range: 1000,
-        eth_call_provider_gas_limit: u64::MAX,
-        eth_estimate_gas_provider_gas_limit: u64::MAX,
         eth_send_raw_transaction_sync_default_timeout_ms: 2_000,
         eth_send_raw_transaction_sync_max_timeout_ms: 10_000,
         dry_run_get_logs_index: false,
