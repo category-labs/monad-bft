@@ -89,3 +89,53 @@ impl EpochManager {
         epoch_start.map(|(&epoch, _)| epoch)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use monad_types::{Epoch, Round, SeqNum};
+
+    use super::EpochManager;
+
+    #[test]
+    fn get_epoch_uses_latest_epoch_start_at_or_before_round() {
+        let epoch_manager = EpochManager::new(
+            SeqNum(10),
+            Round(3),
+            &[
+                (Epoch(1), Round(5)),
+                (Epoch(2), Round(12)),
+                (Epoch(3), Round(20)),
+            ],
+        );
+
+        assert_eq!(epoch_manager.get_epoch(Round(4)), None);
+        assert_eq!(epoch_manager.get_epoch(Round(5)), Some(Epoch(1)));
+        assert_eq!(epoch_manager.get_epoch(Round(11)), Some(Epoch(1)));
+        assert_eq!(epoch_manager.get_epoch(Round(12)), Some(Epoch(2)));
+        assert_eq!(epoch_manager.get_epoch(Round(19)), Some(Epoch(2)));
+        assert_eq!(epoch_manager.get_epoch(Round(20)), Some(Epoch(3)));
+        assert_eq!(epoch_manager.get_epoch(Round(25)), Some(Epoch(3)));
+    }
+
+    #[test]
+    fn schedule_epoch_start_ignores_non_boundary_blocks() {
+        let mut epoch_manager = EpochManager::new(SeqNum(10), Round(4), &[(Epoch(1), Round(0))]);
+
+        epoch_manager.schedule_epoch_start(SeqNum(8), Round(100));
+
+        assert_eq!(epoch_manager.epoch_starts.len(), 1);
+        assert_eq!(epoch_manager.epoch_starts.get(&Epoch(1)), Some(&Round(0)));
+        assert_eq!(epoch_manager.epoch_starts.get(&Epoch(2)), None);
+    }
+
+    #[test]
+    fn schedule_epoch_start_adds_next_epoch_after_boundary_block() {
+        let mut epoch_manager = EpochManager::new(SeqNum(10), Round(4), &[(Epoch(1), Round(0))]);
+
+        epoch_manager.schedule_epoch_start(SeqNum(9), Round(100));
+
+        assert_eq!(epoch_manager.epoch_starts.get(&Epoch(2)), Some(&Round(104)));
+        assert_eq!(epoch_manager.get_epoch(Round(103)), Some(Epoch(1)));
+        assert_eq!(epoch_manager.get_epoch(Round(104)), Some(Epoch(2)));
+    }
+}

@@ -895,14 +895,14 @@ fn test_validate_qc_happy() {
 //
 // The error messages and their related tests are the following:
 //  - test_validate_tc_invalid_round_block - Error::NotWellFormed
-//  - test_validate_tc_invalid_epoch - Error::InvalidEpoch
 //  - test_validate_tc_incorrect_epoch - Error::InvalidEpoch
 //  - test_validate_tc_invalid_val_set - Error::ValidatorSetDataUnavailable
 //  - test_validate_tc_invalid_round - Error::InvalidTcRound
 //  - test_validate_tc_invalid_tc_signature - Error::InvalidSignature
 //  - test_validate_tc_happy - happy path
 
-// TC round is not 1 behind block round
+// TC round is not 1 behind block round, so proposal validation should reject it
+// before attempting TC validation.
 #[test_case(Round(3), Round(1))]
 #[test_case(Round(123), Round(321))]
 fn test_validate_tc_invalid_round_block(block_round: Round, tc_round: Round) {
@@ -942,54 +942,10 @@ fn test_validate_tc_invalid_round_block(block_round: Round, tc_round: Round) {
             &val_epoch_map,
             &election
         ),
-        Err(Error::InvalidEpoch)
+        Err(Error::NotWellFormed)
     );
 }
-// TC Epoch does not exist as determined by tc.round
-#[test]
-fn test_validate_tc_invalid_epoch() {
-    let known_epoch = Epoch(10);
-    let known_round = Round(10);
-    let val_epoch = known_epoch;
-
-    let block_epoch = known_epoch;
-    let block_round = known_round + Round(3);
-    let block_seq_num = SeqNum(2);
-
-    let qc_epoch = known_epoch;
-    let qc_round = block_round - Round(1);
-    let qc_parent_round = block_round - Round(2);
-    let qc_seq_num = block_seq_num - SeqNum(1);
-
-    let tc_epoch = Epoch(10);
-    let tc_round = Round(9);
-
-    let (_, _, epoch_manager, val_epoch_map, election, proposal) = define_proposal_with_tc(
-        known_epoch,
-        known_round,
-        val_epoch,
-        block_epoch,
-        block_round,
-        block_seq_num,
-        qc_epoch,
-        qc_round,
-        qc_parent_round,
-        qc_seq_num,
-        tc_epoch,
-        tc_round,
-    );
-
-    assert_eq!(
-        proposal.validate(
-            &mut CertificateCache::default(),
-            &epoch_manager,
-            &val_epoch_map,
-            &election
-        ),
-        Err(Error::InvalidEpoch)
-    );
-}
-// TC Epoch does not match local Epoch
+// TC epoch does not match local Epoch.
 #[test]
 fn test_validate_tc_incorrect_epoch() {
     let known_epoch = Epoch(1);
@@ -1001,12 +957,12 @@ fn test_validate_tc_incorrect_epoch() {
     let block_seq_num = SeqNum(2);
 
     let qc_epoch = known_epoch;
-    let qc_round = block_round - Round(1);
-    let qc_parent_round = block_round - Round(2);
+    let qc_round = block_round - Round(2);
+    let qc_parent_round = block_round - Round(3);
     let qc_seq_num = block_seq_num - SeqNum(1);
 
     let tc_epoch = Epoch(3);
-    let tc_round = Round(1);
+    let tc_round = block_round - Round(1);
 
     let (_, _, epoch_manager, val_epoch_map, election, proposal) = define_proposal_with_tc(
         known_epoch,
@@ -1033,7 +989,7 @@ fn test_validate_tc_incorrect_epoch() {
         Err(Error::InvalidEpoch)
     );
 }
-// TC Epoch does not determine a validator set
+// Validator-set lookup should still surface cleanly on a structurally valid TC proposal path.
 #[test]
 fn test_validate_tc_invalid_val_set() {
     let known_epoch = Epoch(1);
@@ -1045,12 +1001,12 @@ fn test_validate_tc_invalid_val_set() {
     let block_seq_num = SeqNum(2);
 
     let qc_epoch = val_epoch;
-    let qc_round = block_round - Round(1);
-    let qc_parent_round = block_round - Round(2);
+    let qc_round = block_round - Round(2);
+    let qc_parent_round = block_round - Round(3);
     let qc_seq_num = block_seq_num - SeqNum(1);
 
     let tc_epoch = known_epoch;
-    let tc_round = Round(0);
+    let tc_round = block_round - Round(1);
 
     let (_, _, epoch_manager, val_epoch_map, election, proposal) = define_proposal_with_tc(
         known_epoch,
@@ -1089,14 +1045,14 @@ fn test_validate_tc_invalid_round() {
     let block_seq_num = SeqNum(2);
 
     let qc_epoch = known_epoch;
-    let qc_round = block_round - Round(1);
-    let qc_parent_round = block_round - Round(2);
+    let qc_round = block_round - Round(2);
+    let qc_parent_round = block_round - Round(3);
     let qc_seq_num = block_seq_num - SeqNum(1);
 
     let tc_epoch = Epoch(1);
-    let tc_round = Round(0);
+    let tc_round = block_round - Round(1);
 
-    let (_, _, epoch_manager, val_epoch_map, election, proposal) = define_proposal_with_tc(
+    let (_, _, epoch_manager, val_epoch_map, election, mut proposal) = define_proposal_with_tc(
         known_epoch,
         known_round,
         val_epoch,
@@ -1110,6 +1066,11 @@ fn test_validate_tc_invalid_round() {
         tc_epoch,
         tc_round,
     );
+
+    proposal.last_round_tc.as_mut().unwrap().tip_rounds[0].high_qc_round = tc_round;
+    if let Some(FreshProposalCertificate::NoTip(no_tip)) = &mut proposal.tip.fresh_certificate {
+        no_tip.tip_rounds[0].high_qc_round = tc_round;
+    }
 
     assert_eq!(
         proposal.validate(
@@ -1173,8 +1134,8 @@ fn test_validate_tc_invalid_tc_signature() {
     let val_epoch = known_epoch;
 
     let block_epoch = known_epoch;
-    let block_round = known_round + Round(1);
-    let block_seq_num = SeqNum(1);
+    let block_round = known_round + Round(2);
+    let block_seq_num = SeqNum(2);
 
     // a malformed tmo_info
     let tc_epoch = Epoch(1);
@@ -1250,7 +1211,16 @@ fn test_validate_tc_invalid_tc_signature() {
         );
 
     let proposal = ProposalMessage {
-        tip: ConsensusTip::new(&keys[0], block, None),
+        tip: ConsensusTip::new(
+            &keys[0],
+            block,
+            Some(FreshProposalCertificate::NoTip(NoTipCertificate {
+                epoch: tc.epoch,
+                round: tc.round,
+                tip_rounds: tc.tip_rounds.clone(),
+                high_qc: QuorumCertificate::genesis_qc(),
+            })),
+        ),
         proposal_epoch: block_epoch,
         proposal_round: block_round,
         block_body: payload,

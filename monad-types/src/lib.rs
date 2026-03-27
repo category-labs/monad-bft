@@ -71,6 +71,13 @@ impl Round {
     pub fn as_u64(&self) -> u64 {
         self.0
     }
+
+    pub fn immediately_follows(self, previous_round: Self) -> bool {
+        previous_round
+            .as_u64()
+            .checked_add(1)
+            .is_some_and(|next_round| next_round == self.as_u64())
+    }
 }
 
 pub type Balance = U256;
@@ -917,9 +924,16 @@ mod test {
     #[test_case(SeqNum(100), Epoch(2), SeqNum(100); "sn_100_epoch_2")]
     #[test_case(SeqNum(199), Epoch(2), SeqNum(100); "sn_199_epoch_2")]
     #[test_case(SeqNum(200), Epoch(3), SeqNum(100); "sn_200_epoch_3")]
-
     fn test_epoch_conversion(seq_num: SeqNum, expected_epoch: Epoch, epoch_length: SeqNum) {
         assert_eq!(seq_num.to_epoch(epoch_length), expected_epoch);
+    }
+
+    #[test_case(Round(11), Round(10) => true; "normal_successor")]
+    #[test_case(Round(10), Round(10) => false; "same_round")]
+    #[test_case(Round(12), Round(10) => false; "not_immediate")]
+    #[test_case(Round::MAX, Round::MAX => false; "max_round_no_overflow")]
+    fn test_round_immediately_follows(round: Round, previous_round: Round) -> bool {
+        round.immediately_follows(previous_round)
     }
 
     #[test]
