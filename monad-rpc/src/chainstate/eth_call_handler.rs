@@ -39,6 +39,9 @@ pub struct EthCallHandlerConfig {
     pub tx_exec_num_fibers: u32,
     pub node_cache_max_mem: u64,
     pub max_concurrent_permits: usize,
+
+    pub provider_gas_limit_eth_call: u64,
+    pub provider_gas_limit_eth_estimate_gas: u64,
 }
 
 #[derive(Clone)]
@@ -106,6 +109,7 @@ impl EthCallHandler {
             permit,
             request_id,
 
+            config: &self.config,
             executor: &self.executor,
             stats_tracker: self.stats_tracker.as_deref(),
 
@@ -131,6 +135,7 @@ pub struct EthCallPermit<'a> {
     permit: SemaphorePermit<'a>,
     request_id: TimingRequestId,
 
+    config: &'a EthCallHandlerConfig,
     executor: &'a EthCallExecutor,
     stats_tracker: Option<&'a EthCallStatsTracker>,
 
@@ -140,12 +145,12 @@ pub struct EthCallPermit<'a> {
 impl<'a> EthCallPermit<'a> {
     pub async fn execute<T, E, F>(
         mut self,
-        f: impl FnOnce(&'a EthCallExecutor) -> F,
+        f: impl FnOnce(&'a EthCallHandlerConfig, &'a EthCallExecutor) -> F,
     ) -> Result<T, E>
     where
         F: Future<Output = Result<T, E>>,
     {
-        let result = f(self.executor).await;
+        let result = f(self.config, self.executor).await;
 
         self.execute_success = Some(result.is_ok());
 

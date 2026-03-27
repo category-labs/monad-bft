@@ -307,12 +307,12 @@ async fn debug_traceCall(
     let permit = eth_call_handler.acquire(request_id).await?;
 
     permit
-        .execute(|executor| {
+        .execute(|eth_call_handler_config, executor| {
             monad_debug_traceCall(
                 chain_state,
+                eth_call_handler_config,
                 executor,
                 app_state.chain_id,
-                app_state.eth_call_provider_gas_limit,
                 params,
             )
         })
@@ -352,12 +352,12 @@ async fn eth_call(
     let permit = eth_call_handler.acquire(request_id).await?;
 
     permit
-        .execute(|executor| {
+        .execute(|eth_call_handler_config, executor| {
             monad_eth_call(
                 chain_state,
+                eth_call_handler_config,
                 executor,
                 app_state.chain_id,
-                app_state.eth_call_provider_gas_limit,
                 params,
             )
         })
@@ -425,12 +425,12 @@ async fn eth_fillTransaction(
     let permit = eth_call_handler.acquire(request_id).await?;
 
     permit
-        .execute(|executor| {
+        .execute(|eth_call_handler_config, executor| {
             monad_eth_fillTransaction(
                 chain_state,
+                eth_call_handler_config,
                 executor,
                 app_state.chain_id,
-                app_state.eth_estimate_gas_provider_gas_limit,
                 params,
             )
         })
@@ -450,12 +450,12 @@ async fn eth_createAccessList(
     let permit = eth_call_handler.acquire(request_id).await?;
 
     permit
-        .execute(|executor| {
+        .execute(|eth_call_handler_config, executor| {
             monad_createAccessList(
                 chain_state,
+                eth_call_handler_config,
                 executor,
                 app_state.chain_id,
-                app_state.eth_call_provider_gas_limit,
                 params,
             )
         })
@@ -671,12 +671,12 @@ async fn eth_estimateGas(
     let permit = eth_call_handler.acquire(request_id).await?;
 
     permit
-        .execute(|executor| {
+        .execute(|eth_call_handler_config, executor| {
             monad_eth_estimateGas(
                 chain_state,
+                eth_call_handler_config,
                 executor,
                 app_state.chain_id,
-                app_state.eth_estimate_gas_provider_gas_limit,
                 params,
             )
         })

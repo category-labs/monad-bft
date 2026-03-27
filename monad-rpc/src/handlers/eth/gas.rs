@@ -30,7 +30,10 @@ use serde::Deserialize;
 use tracing::trace;
 
 use crate::{
-    chainstate::{get_block_key_from_tag, get_block_key_from_tag_or_hash, ChainState},
+    chainstate::{
+        eth_call_handler::EthCallHandlerConfig, get_block_key_from_tag,
+        get_block_key_from_tag_or_hash, ChainState,
+    },
     handlers::eth::call::{fill_gas_params, CallRequest, GasPriceDetails},
     types::{
         eth_json::{
@@ -223,15 +226,17 @@ pub struct MonadEthEstimateGasParams {
 
 #[rpc(
     method = "eth_estimateGas",
-    ignore = "chain_id,provider_gas_limit,eth_call_executor"
+    ignore = "eth_call_handler_config",
+    ignore = "eth_call_executor",
+    ignore = "chain_id"
 )]
 #[allow(non_snake_case)]
 /// Generates and returns an estimate of how much gas is necessary to allow the transaction to complete.
 pub async fn monad_eth_estimateGas<T: Triedb>(
     chain_state: &ChainState<T>,
+    eth_call_handler_config: &EthCallHandlerConfig,
     eth_call_executor: &EthCallExecutor,
     chain_id: u64,
-    provider_gas_limit: u64,
     params: MonadEthEstimateGasParams,
 ) -> JsonRpcResult<Quantity> {
     trace!("monad_eth_estimateGas: {params:?}");
@@ -248,7 +253,11 @@ pub async fn monad_eth_estimateGas<T: Triedb>(
         (None, data) | (data, None) => data,
     };
 
-    if params.tx.gas > Some(U256::from(provider_gas_limit)) {
+    if params.tx.gas
+        > Some(U256::from(
+            eth_call_handler_config.provider_gas_limit_eth_estimate_gas,
+        ))
+    {
         return Err(JsonRpcError::eth_call_error(
             "user-specified gas exceeds provider limit".to_string(),
             None,
@@ -270,7 +279,9 @@ pub async fn monad_eth_estimateGas<T: Triedb>(
     };
 
     let gas_specified = params.tx.gas.is_some();
-    let provider_gas_limit = provider_gas_limit.min(header.header.gas_limit);
+    let provider_gas_limit = eth_call_handler_config
+        .provider_gas_limit_eth_estimate_gas
+        .min(header.header.gas_limit);
     let original_tx_gas = params.tx.gas.unwrap_or(U256::from(header.header.gas_limit));
     fill_gas_params(
         &chain_state.triedb_env,
@@ -356,14 +367,16 @@ pub struct MonadEthFillTransactionParams {
 
 #[rpc(
     method = "eth_fillTransaction",
-    ignore = "chain_id,provider_gas_limit,eth_call_executor"
+    ignore = "eth_call_handler_config",
+    ignore = "eth_call_executor",
+    ignore = "chain_id"
 )]
 #[allow(non_snake_case)]
 pub async fn monad_eth_fillTransaction<T: Triedb>(
     chain_state: &ChainState<T>,
+    eth_call_handler_config: &EthCallHandlerConfig,
     eth_call_executor: &EthCallExecutor,
     chain_id: u64,
-    provider_gas_limit: u64,
     params: MonadEthFillTransactionParams,
 ) -> JsonRpcResult<FillTransactionResult> {
     trace!("monad_eth_fillTransaction: {params:?}");
@@ -432,7 +445,9 @@ pub async fn monad_eth_fillTransaction<T: Triedb>(
 
     if tx.gas.is_none() {
         let protocol_gas_limit = header.gas_limit;
-        let eth_call_provider_gas_limit = provider_gas_limit.min(protocol_gas_limit);
+        let eth_call_provider_gas_limit = eth_call_handler_config
+            .provider_gas_limit_eth_estimate_gas
+            .min(protocol_gas_limit);
         let original_tx_gas = U256::from(protocol_gas_limit);
 
         tx.gas = Some(U256::from(eth_call_provider_gas_limit));
