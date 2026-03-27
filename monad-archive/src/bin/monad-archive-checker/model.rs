@@ -117,7 +117,9 @@ impl CheckerModel {
                     "Init replicas set, no s3 replicas pre-configured but init replicas is empty"
                 );
             } else {
-                info!("Init replicas set, but already initialized. You can remove that cli arg");
+                info!("Init replicas match, updating stored config");
+                Self::set_replica_args(s3, &init_replicas).await?;
+                replica_args = init_replicas;
             }
         }
 
