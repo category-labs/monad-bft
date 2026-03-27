@@ -493,7 +493,7 @@ fn deserialize_variant<E: de::Error, T: DeserializeOwned>(
         .map_err(|err| E::custom(format!("failed to parse {label}: {err}")))
 }
 
-#[derive(Clone, Serialize, Deserialize, Default, Eq, PartialEq, Hash)]
+#[derive(Clone, Serialize, Deserialize, Default, Eq)]
 pub struct AwsCliArgs {
     pub bucket: String,
     pub region: Option<String>,
@@ -511,6 +511,22 @@ pub struct AwsCliArgs {
     pub operation_attempt_timeout_secs: u64,
     #[serde(default = "get_default_bucket_timeout")]
     pub read_timeout_secs: u64,
+}
+
+impl PartialEq for AwsCliArgs {
+    fn eq(&self, other: &Self) -> bool {
+        self.bucket == other.bucket
+            && self.region == other.region
+            && self.endpoint == other.endpoint
+    }
+}
+
+impl std::hash::Hash for AwsCliArgs {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.bucket.hash(state);
+        self.region.hash(state);
+        self.endpoint.hash(state);
+    }
 }
 
 impl std::fmt::Debug for AwsCliArgs {
