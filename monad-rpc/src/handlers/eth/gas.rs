@@ -249,10 +249,7 @@ pub async fn monad_eth_estimateGas<T: Triedb>(
     };
 
     if params.tx.gas > Some(U256::from(provider_gas_limit)) {
-        return Err(JsonRpcError::eth_call_error(
-            "user-specified gas exceeds provider limit".to_string(),
-            None,
-        ));
+        params.tx.gas = Some(U256::from(provider_gas_limit));
     }
 
     let block_key = get_block_key_from_tag_or_hash(&chain_state.triedb_env, params.block)
