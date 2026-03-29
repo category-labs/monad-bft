@@ -2957,7 +2957,14 @@ mod tests {
         let (mut state, _clock) = generate_test_state(peer0, vec![]);
 
         let peer1_record = MonadNameRecord::new(
-            NameRecord::new_with_ports(Ipv4Addr::new(8, 8, 8, 8), 8000, 8000, None, Some(9000), 1),
+            NameRecord::new_with_ports(
+                Ipv4Addr::new(8, 8, 8, 8),
+                8000,
+                8000,
+                Some(9100),
+                Some(9000),
+                1,
+            ),
             peer1,
         );
         let peer1_entry = PeerEntry::from(peer1_record.with_pubkey(peer1.pubkey()));
@@ -2982,7 +2989,14 @@ mod tests {
         assert_eq!(state.get_name_record(&peer1_pubkey), Some(&peer1_record));
 
         let peer2_record = MonadNameRecord::new(
-            NameRecord::new_with_ports(Ipv4Addr::new(8, 8, 8, 8), 8001, 8001, None, Some(9000), 1),
+            NameRecord::new_with_ports(
+                Ipv4Addr::new(8, 8, 8, 8),
+                8001,
+                8001,
+                Some(9101),
+                Some(9000),
+                1,
+            ),
             peer2,
         );
         let peer_entry = PeerEntry::from(peer2_record.with_pubkey(peer2.pubkey()));
@@ -3226,9 +3240,10 @@ mod tests {
         let peer2 = &keys[2];
         let peer2_pubkey = NodeId::new(peer2.pubkey());
 
-        // peer1 has no authenticated UDP port
+        // peer1 has an authenticated UDP port
         let peer1_name_record = {
-            let name_record = NameRecord::new(Ipv4Addr::new(8, 8, 8, 8), 8000, 1);
+            let name_record =
+                NameRecord::new_with_authentication(Ipv4Addr::new(8, 8, 8, 8), 8000, 8000, 9000, 1);
             let mut encoded = Vec::new();
             name_record.encode(&mut encoded);
             let signature = SecpSignature::sign::<signing_domain::NameRecord>(&encoded, peer1);
@@ -3363,7 +3378,7 @@ mod tests {
             "routing_info should still be empty before ping pong"
         );
 
-        // verify peer1 data (no auth port)
+        // verify peer1 data
         let loaded_peer1 = &state.pending_queue.get(&peer1_pubkey).unwrap().name_record;
         assert_eq!(
             loaded_peer1.udp_address(),
@@ -3373,8 +3388,8 @@ mod tests {
         assert_eq!(loaded_peer1.seq(), 1, "peer1 seq should match");
         assert_eq!(
             loaded_peer1.name_record.authenticated_udp_port(),
-            None,
-            "peer1 should not have auth port"
+            Some(9000),
+            "peer1 auth port should match"
         );
 
         // verify peer2 data (with auth port and direct UDP port)

@@ -633,8 +633,12 @@ where
 
             match MonadNameRecord::try_from(&peer_entry) {
                 Ok(monad_name_record) => Some((node_id, monad_name_record)),
-                Err(_) => {
-                    warn!(?node_id, "invalid name record signature in config file");
+                Err(error) => {
+                    warn!(
+                        ?node_id,
+                        ?error,
+                        "invalid bootstrap name record in config file"
+                    );
                     None
                 }
             }

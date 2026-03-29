@@ -294,7 +294,7 @@ pub fn set_up_test(
     };
     let rx_nodeid = NodeId::new(rx_keypair.pubkey());
 
-    let dataplane = create_dataplane_for_tests(false, true);
+    let dataplane = create_dataplane_for_tests(true, true);
     let rx_addr = SocketAddr::V4(dataplane.non_auth_addr.expect("non-auth addr"));
 
     let tx_addr = UdpSocket::bind("127.0.0.1:0")
@@ -494,9 +494,9 @@ async fn publish_to_full_nodes() {
     let validator_set = vec![(validator_nodeid, Stake::ONE)];
 
     // 2. Create dataplanes first to get bound addresses
-    let validator_dp = create_dataplane_for_tests(false, true);
-    let full_node1_dp = create_dataplane_for_tests(false, true);
-    let full_node2_dp = create_dataplane_for_tests(false, true);
+    let validator_dp = create_dataplane_for_tests(true, true);
+    let full_node1_dp = create_dataplane_for_tests(true, true);
+    let full_node2_dp = create_dataplane_for_tests(true, true);
 
     let known_addresses: HashMap<NodeId<PubKeyType>, SocketAddrV4> = [
         (
@@ -583,7 +583,7 @@ async fn delete_expired_groups() {
     let node_keypair = keypair(1);
     let node_id = NodeId::new(node_keypair.pubkey());
 
-    let dataplane = create_dataplane_for_tests(false, true);
+    let dataplane = create_dataplane_for_tests(true, true);
     let mut raptorcast = setup_raptorcast_service(node_keypair, dataplane, HashMap::new());
     raptorcast.exec(vec![RouterCommand::UpdateCurrentRound(Epoch(1), Round(1))]);
 
@@ -642,8 +642,8 @@ async fn test_priority_messages() {
     let tx_nodeid = NodeId::new(tx_key.pubkey());
     let rx_nodeid = NodeId::new(rx_key.pubkey());
 
-    let tx_dataplane = create_dataplane_for_tests(false, true);
-    let rx_dataplane = create_dataplane_for_tests(false, true);
+    let tx_dataplane = create_dataplane_for_tests(true, true);
+    let rx_dataplane = create_dataplane_for_tests(true, true);
 
     let known_addresses = HashMap::from([
         (
@@ -765,9 +765,9 @@ async fn test_raptorcast_forwarding_priority() {
     let validator2_nodeid = NodeId::new(validator2_key.pubkey());
     let validator_fullnode_nodeid = NodeId::new(validator_fullnode_key.pubkey());
 
-    let validator1_dataplane = create_dataplane_for_tests(false, true);
-    let validator2_dataplane = create_dataplane_for_tests(false, true);
-    let validator_fullnode_dataplane = create_dataplane_for_tests(false, true);
+    let validator1_dataplane = create_dataplane_for_tests(true, true);
+    let validator2_dataplane = create_dataplane_for_tests(true, true);
+    let validator_fullnode_dataplane = create_dataplane_for_tests(true, true);
 
     let known_addresses = HashMap::from([
         (

@@ -6,7 +6,8 @@ expression: toml_content
 address = "8.8.8.8:8000"
 record_seq_num = 1
 secp256k1_pubkey = "0x0334944627833fe16cc7e21cd5e1442b42b3eb9bbd0cdd266e449a9dc026b45a39"
-name_record_sig = "0x92cfa40bcf8f1041b6220c7e9cd96e31f024d8aa59be3a9f23126e2056bfc1735878a8a52114ec83d8c4fa24f5f3502b0362a1bf9b1bf927a3da1a031ec167cd00"
+name_record_sig = "0x22da25d0c0525eb01f8c37766439fc48f95b02eee0cba578cdbf03038114650c5ce59614af8c51f38f46e174edd7a1ebeb767f5d1d2b215998e95fac1615872f01"
+auth_port = 9000
 
 [[peers]]
 address = "8.8.4.4:8001"

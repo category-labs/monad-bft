@@ -593,23 +593,30 @@ fn reconstruct_name_record_from_peer_addr(
     authenticated_udp_port: Option<u16>,
     direct_udp_port: Option<u16>,
     seq: u64,
-) -> NameRecord {
-    if !omit_udp_port && authenticated_udp_port.is_none() && direct_udp_port.is_none() {
-        return NameRecord::new(ip, tcp_port, seq);
-    }
+) -> Result<NameRecord, MissingAuthenticatedUdpPort> {
+    let authenticated_udp_port = authenticated_udp_port.ok_or(MissingAuthenticatedUdpPort)?;
 
-    NameRecord::new_with_optional_ports(
+    Ok(NameRecord::new_with_optional_ports(
         ip,
         tcp_port,
         (!omit_udp_port).then_some(tcp_port),
-        authenticated_udp_port,
+        Some(authenticated_udp_port),
         direct_udp_port,
         seq,
-    )
+    ))
+}
+
+#[derive(Debug, Clone, Copy)]
+struct MissingAuthenticatedUdpPort;
+
+#[derive(Debug)]
+pub enum PeerEntryConversionError<E> {
+    MissingAuthenticatedUdpPort,
+    InvalidSignature(E),
 }
 
 impl<ST: CertificateSignatureRecoverable> TryFrom<&PeerEntry<ST>> for MonadNameRecord<ST> {
-    type Error = <ST as CertificateSignature>::Error;
+    type Error = PeerEntryConversionError<<ST as CertificateSignature>::Error>;
 
     fn try_from(peer: &PeerEntry<ST>) -> Result<Self, Self::Error> {
         let name_record = reconstruct_name_record_from_peer_addr(
@@ -619,13 +626,17 @@ impl<ST: CertificateSignatureRecoverable> TryFrom<&PeerEntry<ST>> for MonadNameR
             peer.auth_port,
             peer.direct_udp_port,
             peer.record_seq_num,
-        );
+        )
+        .map_err(|MissingAuthenticatedUdpPort| {
+            PeerEntryConversionError::MissingAuthenticatedUdpPort
+        })?;
 
         let mut encoded = Vec::new();
         name_record.encode(&mut encoded);
-        peer.signature
-            .verify::<signing_domain::NameRecord>(&encoded, &peer.pubkey)?;
-
+        let () = peer
+            .signature
+            .verify::<signing_domain::NameRecord>(&encoded, &peer.pubkey)
+            .map_err(PeerEntryConversionError::InvalidSignature)?;
         Ok(MonadNameRecord {
             name_record,
             signature: peer.signature,
@@ -686,6 +697,7 @@ impl<ST: CertificateSignatureRecoverable> From<MonadNameRecordWithPubkey<'_, ST>
 pub enum PeerConfigConversionError {
     InvalidSignature,
     InvalidAddress(String),
+    MissingAuthenticatedUdpPort,
 }
 
 impl<ST: CertificateSignatureRecoverable> TryFrom<&NodeBootstrapPeerConfig<ST>>
@@ -705,7 +717,10 @@ impl<ST: CertificateSignatureRecoverable> TryFrom<&NodeBootstrapPeerConfig<ST>>
             peer_config.auth_port,
             peer_config.direct_udp_port,
             peer_config.record_seq_num,
-        );
+        )
+        .map_err(|MissingAuthenticatedUdpPort| {
+            PeerConfigConversionError::MissingAuthenticatedUdpPort
+        })?;
 
         let mut encoded = Vec::new();
         name_record.encode(&mut encoded);
@@ -1455,13 +1470,14 @@ mod tests {
     fn test_peer_entry_to_monad_name_record_invalid_signature() {
         let ip = Ipv4Addr::from_str("192.168.1.200").unwrap();
         let port = 9000u16;
+        let auth_port = 9001u16;
         let seq = 10u64;
 
         let keypair = KeyPair::from_ikm(b"test invalid sig").unwrap();
         let other_keypair = KeyPair::from_ikm(b"other key").unwrap();
         let addr = SocketAddrV4::new(ip, port);
 
-        let name_record = NameRecord::new(ip, port, seq);
+        let name_record = NameRecord::new_with_authentication(ip, port, port, auth_port, seq);
         let mut encoded = Vec::new();
         name_record.encode(&mut encoded);
         let wrong_signature =
@@ -1472,38 +1488,33 @@ mod tests {
             addr,
             signature: wrong_signature,
             record_seq_num: seq,
-            auth_port: None,
+            auth_port: Some(auth_port),
             direct_udp_port: None,
             omit_udp_port: false,
         };
 
-        let result = MonadNameRecord::<SecpSignature>::try_from(&peer_entry);
-        assert!(result.is_err());
+        assert!(matches!(
+            MonadNameRecord::<SecpSignature>::try_from(&peer_entry),
+            Err(PeerEntryConversionError::InvalidSignature(_))
+        ));
     }
 
     #[test]
-    fn test_peer_entry_monad_name_record_roundtrip_v1() {
+    fn test_peer_entry_monad_name_record_requires_authenticated_udp_port() {
         let ip = Ipv4Addr::from_str("10.0.0.1").unwrap();
         let port = 5000u16;
         let seq = 1u64;
 
-        let keypair = KeyPair::from_ikm(b"test roundtrip v1").unwrap();
+        let keypair = KeyPair::from_ikm(b"test missing auth port").unwrap();
         let name_record = NameRecord::new(ip, port, seq);
         let original_monad_record = MonadNameRecord::<SecpSignature>::new(name_record, &keypair);
 
         let pubkey = original_monad_record.recover_pubkey().unwrap().pubkey();
         let peer_entry = PeerEntry::from(original_monad_record.with_pubkey(pubkey));
-        let converted_monad_record =
-            MonadNameRecord::<SecpSignature>::try_from(&peer_entry).unwrap();
-
-        assert_eq!(
-            converted_monad_record.name_record,
-            original_monad_record.name_record
-        );
-        assert_eq!(
-            converted_monad_record.signature,
-            original_monad_record.signature
-        );
+        assert!(matches!(
+            MonadNameRecord::<SecpSignature>::try_from(&peer_entry),
+            Err(PeerEntryConversionError::MissingAuthenticatedUdpPort)
+        ));
     }
 
     #[test]
@@ -1604,13 +1615,13 @@ mod tests {
     }
 
     #[test]
-    fn test_peer_entry_monad_name_record_roundtrip_with_direct_udp_only() {
+    fn test_peer_entry_monad_name_record_requires_authenticated_udp_port_for_direct_udp() {
         let ip = Ipv4Addr::from_str("172.31.0.102").unwrap();
         let port = 8893u16;
         let direct_udp_port = 8894u16;
         let seq = 101u64;
 
-        let keypair = KeyPair::from_ikm(b"test roundtrip direct udp only").unwrap();
+        let keypair = KeyPair::from_ikm(b"test direct udp missing auth").unwrap();
         let name_record =
             NameRecord::new_with_ports(ip, port, port, None, Some(direct_udp_port), seq);
         let original_monad_record = MonadNameRecord::<SecpSignature>::new(name_record, &keypair);
@@ -1620,25 +1631,10 @@ mod tests {
         assert_eq!(peer_entry.auth_port, None);
         assert_eq!(peer_entry.direct_udp_port, Some(direct_udp_port));
 
-        let converted_monad_record =
-            MonadNameRecord::<SecpSignature>::try_from(&peer_entry).unwrap();
-
-        assert_eq!(
-            converted_monad_record.name_record,
-            original_monad_record.name_record
-        );
-        assert_eq!(
-            converted_monad_record.signature,
-            original_monad_record.signature
-        );
-        assert_eq!(
-            converted_monad_record.name_record.authenticated_udp_port(),
-            None
-        );
-        assert_eq!(
-            converted_monad_record.name_record.direct_udp_port(),
-            Some(direct_udp_port)
-        );
+        assert!(matches!(
+            MonadNameRecord::<SecpSignature>::try_from(&peer_entry),
+            Err(PeerEntryConversionError::MissingAuthenticatedUdpPort)
+        ));
     }
 
     #[test]
@@ -1673,5 +1669,32 @@ mod tests {
             converted_monad_record.signature,
             original_monad_record.signature
         );
+    }
+
+    #[test]
+    fn test_bootstrap_peer_config_requires_authenticated_udp_port() {
+        let ip = Ipv4Addr::from_str("172.31.0.112").unwrap();
+        let tcp_port = 8899u16;
+        let seq = 104u64;
+
+        let keypair = KeyPair::from_ikm(b"test bootstrap missing auth").unwrap();
+        let name_record = NameRecord::new(ip, tcp_port, seq);
+        let original_monad_record = MonadNameRecord::<SecpSignature>::new(name_record, &keypair);
+
+        let pubkey = original_monad_record.recover_pubkey().unwrap().pubkey();
+        let peer_config = NodeBootstrapPeerConfig {
+            address: SocketAddrV4::new(ip, tcp_port).to_string(),
+            record_seq_num: seq,
+            secp256k1_pubkey: pubkey,
+            name_record_sig: original_monad_record.signature,
+            auth_port: None,
+            direct_udp_port: None,
+            omit_udp_port: false,
+        };
+
+        assert!(matches!(
+            MonadNameRecord::<SecpSignature>::try_from(&peer_config),
+            Err(PeerConfigConversionError::MissingAuthenticatedUdpPort)
+        ));
     }
 }

@@ -103,7 +103,10 @@ where
         assert!(dp.block_until_ready(Duration::from_secs(1)));
 
         let tcp_socket = dp.tcp_sockets.take(TcpSocketId::Raptorcast).unwrap();
-        let authenticated_socket = dp.udp_sockets.take(UdpSocketId::AuthenticatedRaptorcast);
+        let authenticated_socket = dp
+            .udp_sockets
+            .take(UdpSocketId::AuthenticatedRaptorcast)
+            .expect("authenticated raptorcast socket is required");
         let non_authenticated_socket = dp.udp_sockets.take(UdpSocketId::Raptorcast);
         let control = dp.control;
 

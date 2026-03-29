@@ -21,9 +21,9 @@ static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 pub static malloc_conf: &[u8] = b"prof:true,prof_active:true,lg_prof_sample:16,prof_leak:true\0";
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     env,
-    net::{SocketAddr, SocketAddrV4},
+    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
     sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -137,6 +137,42 @@ enum Commands {
         ip: String,
         #[arg(long, default_value = "30000")]
         port: u16,
+        #[arg(
+            long,
+            value_delimiter = ',',
+            help = "per-node socket modes: dual, auth-only, non-auth-only; one value applies to every node"
+        )]
+        socket_modes: Vec<SocketMode>,
+        #[arg(
+            long,
+            value_delimiter = ',',
+            help = "comma-separated validator indices; defaults to all participants"
+        )]
+        validator_indices: Vec<usize>,
+    },
+    GenerateHosts {
+        #[arg(long)]
+        output: String,
+        #[arg(
+            long,
+            value_delimiter = ',',
+            help = "comma-separated IPv4 hosts for the participants"
+        )]
+        hosts: Vec<String>,
+        #[arg(long, default_value = "30000")]
+        port: u16,
+        #[arg(
+            long,
+            value_delimiter = ',',
+            help = "per-node socket modes: dual, auth-only, non-auth-only; one value applies to every node"
+        )]
+        socket_modes: Vec<SocketMode>,
+        #[arg(
+            long,
+            value_delimiter = ',',
+            help = "comma-separated validator indices; defaults to all participants"
+        )]
+        validator_indices: Vec<usize>,
     },
 }
 
@@ -161,16 +197,112 @@ mod socket_addr_v4_serde {
     }
 }
 
+mod socket_addr_v4_option_serde {
+    use std::net::SocketAddrV4;
+
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S>(addr: &Option<SocketAddrV4>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        addr.as_ref().map(ToString::to_string).serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<SocketAddrV4>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = Option::<String>::deserialize(deserializer)?;
+        s.map(|value| value.parse().map_err(serde::de::Error::custom))
+            .transpose()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, clap::ValueEnum, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+enum SocketMode {
+    Dual,
+    AuthOnly,
+    NonAuthOnly,
+}
+
+impl SocketMode {
+    fn has_authenticated_socket(self) -> bool {
+        !matches!(self, Self::NonAuthOnly)
+    }
+
+    fn has_non_authenticated_socket(self) -> bool {
+        !matches!(self, Self::AuthOnly)
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Dual => "dual",
+            Self::AuthOnly => "auth-only",
+            Self::NonAuthOnly => "non-auth-only",
+        }
+    }
+}
+
+fn default_validator() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ParticipantConfig {
     public_key: String,
     private_key: String,
     #[serde(with = "socket_addr_v4_serde")]
     tcp_addr: SocketAddrV4,
-    #[serde(with = "socket_addr_v4_serde")]
-    udp_addr: SocketAddrV4,
-    #[serde(with = "socket_addr_v4_serde")]
-    authenticated_udp_addr: SocketAddrV4,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "socket_addr_v4_option_serde"
+    )]
+    udp_addr: Option<SocketAddrV4>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "socket_addr_v4_option_serde"
+    )]
+    authenticated_udp_addr: Option<SocketAddrV4>,
+    #[serde(default = "default_validator")]
+    validator: bool,
+}
+
+impl ParticipantConfig {
+    fn socket_mode(&self) -> Result<SocketMode> {
+        match (
+            self.udp_addr.is_some(),
+            self.authenticated_udp_addr.is_some(),
+        ) {
+            (true, true) => Ok(SocketMode::Dual),
+            (false, true) => Ok(SocketMode::AuthOnly),
+            (true, false) => Ok(SocketMode::NonAuthOnly),
+            (false, false) => eyre::bail!(
+                "participant {} has neither udp_addr nor authenticated_udp_addr",
+                self.tcp_addr
+            ),
+        }
+    }
+
+    fn preferred_udp_socket(&self) -> Result<SocketAddrV4> {
+        self.udp_addr
+            .or(self.authenticated_udp_addr)
+            .ok_or_else(|| eyre::eyre!("participant {} has no UDP socket", self.tcp_addr))
+    }
+
+    fn name_record(&self) -> Result<NameRecord> {
+        Ok(NameRecord::new_with_optional_ports(
+            *self.tcp_addr.ip(),
+            self.tcp_addr.port(),
+            self.udp_addr.map(|addr| addr.port()),
+            self.authenticated_udp_addr.map(|addr| addr.port()),
+            None,
+            0,
+        ))
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -483,7 +615,16 @@ async fn async_main() -> Result<()> {
             count,
             ip,
             port,
-        } => generate_config(output, count, ip, port),
+            socket_modes,
+            validator_indices,
+        } => generate_config(output, count, ip, port, socket_modes, validator_indices),
+        Commands::GenerateHosts {
+            output,
+            hosts,
+            port,
+            socket_modes,
+            validator_indices,
+        } => generate_config_from_hosts(output, hosts, port, socket_modes, validator_indices),
     }
 }
 
@@ -529,7 +670,9 @@ struct NodeSetup {
     >,
     node_id: NodeId<CertificateSignaturePubKey<SignatureType>>,
     tcp_addr: SocketAddrV4,
-    udp_addr: SocketAddr,
+    udp_addr: SocketAddrV4,
+    socket_mode: SocketMode,
+    validator: bool,
 }
 
 fn setup_node(
@@ -537,29 +680,8 @@ fn setup_node(
     cluster_size: Option<usize>,
     node_index: usize,
 ) -> Result<NodeSetup> {
-    let index = node_index;
-
     let config_str = std::fs::read_to_string(cluster_path)?;
     let cluster_config: ClusterConfig = toml::from_str(&config_str)?;
-
-    if index >= cluster_config.participants.len() {
-        eyre::bail!(
-            "index {} out of range for {} participants",
-            index,
-            cluster_config.participants.len()
-        );
-    }
-
-    let my_config = &cluster_config.participants[index];
-    let private_key_bytes = hex::decode(&my_config.private_key)?;
-    let mut privkey_array = [0u8; 32];
-    privkey_array.copy_from_slice(&private_key_bytes);
-    let keypair = KeyPair::from_bytes(&mut privkey_array)?;
-
-    let my_node_id = NodeId::new(keypair.pubkey());
-
-    let mut routing_info = BTreeMap::new();
-    let mut epoch_validators = BTreeMap::new();
 
     let participants_to_use = if let Some(size) = cluster_size {
         let limited_size = size.min(cluster_config.participants.len());
@@ -574,6 +696,24 @@ fn setup_node(
         &cluster_config.participants[..]
     };
 
+    if node_index >= participants_to_use.len() {
+        eyre::bail!(
+            "index {} out of range for {} active participants",
+            node_index,
+            participants_to_use.len()
+        );
+    }
+
+    let my_config = &participants_to_use[node_index];
+    let private_key_bytes = hex::decode(&my_config.private_key)?;
+    let mut privkey_array = [0u8; 32];
+    privkey_array.copy_from_slice(&private_key_bytes);
+    let keypair = KeyPair::from_bytes(&mut privkey_array)?;
+
+    let my_node_id = NodeId::new(keypair.pubkey());
+    let mut routing_info = BTreeMap::new();
+    let mut epoch_validators = BTreeMap::new();
+
     for participant in participants_to_use {
         let mut participant_privkey = [0u8; 32];
         participant_privkey.copy_from_slice(&hex::decode(&participant.private_key)?);
@@ -581,42 +721,45 @@ fn setup_node(
         let participant_pubkey = participant_keypair.pubkey();
         let node_id = NodeId::new(participant_pubkey);
 
-        let name_record = NameRecord::new_with_authentication(
-            *participant.tcp_addr.ip(),
-            participant.tcp_addr.port(),
-            participant.udp_addr.port(),
-            participant.authenticated_udp_addr.port(),
-            0,
-        );
+        let name_record = participant.name_record()?;
         let monad_name_record =
             MonadNameRecord::<SignatureType>::new(name_record, &participant_keypair);
 
         routing_info.insert(node_id, monad_name_record);
-        epoch_validators.insert(node_id, Stake::ONE);
+        if participant.validator {
+            epoch_validators.insert(node_id, Stake::ONE);
+        }
     }
 
-    let bind_ip = std::net::Ipv4Addr::new(0, 0, 0, 0);
+    if epoch_validators.is_empty() {
+        eyre::bail!("cluster config must define at least one validator");
+    }
+
+    let bind_ip = Ipv4Addr::new(0, 0, 0, 0);
     let tcp_addr = SocketAddr::V4(SocketAddrV4::new(bind_ip, my_config.tcp_addr.port()));
     let authenticated_udp_addr = SocketAddr::V4(SocketAddrV4::new(
         bind_ip,
-        my_config.authenticated_udp_addr.port(),
+        my_config
+            .authenticated_udp_addr
+            .map(|addr| addr.port())
+            .unwrap_or_else(|| my_config.tcp_addr.port() + 1),
     ));
-    let non_authenticated_addr =
-        SocketAddr::V4(SocketAddrV4::new(bind_ip, my_config.udp_addr.port()));
+    let non_authenticated_addr = my_config
+        .udp_addr
+        .map(|addr| SocketAddr::V4(SocketAddrV4::new(bind_ip, addr.port())));
+
+    let mut udp_sockets = vec![(
+        monad_dataplane::UdpSocketId::AuthenticatedRaptorcast,
+        authenticated_udp_addr,
+    )];
+    if let Some(addr) = non_authenticated_addr {
+        udp_sockets.push((monad_dataplane::UdpSocketId::Raptorcast, addr));
+    }
 
     let mut dataplane = DataplaneBuilder::new(UDP_BW)
         .with_udp_multishot(true)
         .with_tcp_sockets([(monad_dataplane::TcpSocketId::Raptorcast, tcp_addr)])
-        .with_udp_sockets([
-            (
-                monad_dataplane::UdpSocketId::AuthenticatedRaptorcast,
-                authenticated_udp_addr,
-            ),
-            (
-                monad_dataplane::UdpSocketId::Raptorcast,
-                non_authenticated_addr,
-            ),
-        ])
+        .with_udp_sockets(udp_sockets)
         .build();
 
     let tcp_socket = dataplane
@@ -629,13 +772,18 @@ fn setup_node(
         .expect("authenticated socket not found");
     let non_authenticated_socket = dataplane
         .udp_sockets
-        .take(monad_dataplane::UdpSocketId::Raptorcast)
-        .expect("non-authenticated socket not found");
+        .take(monad_dataplane::UdpSocketId::Raptorcast);
     let dataplane_control = dataplane.control.clone();
 
     let mut known_addresses = std::collections::HashMap::new();
     for (node_id, record) in &routing_info {
-        known_addresses.insert(*node_id, record.name_record.udp_socket());
+        known_addresses.insert(
+            *node_id,
+            record
+                .name_record
+                .preferred_udp_socket()
+                .expect("participant must have a preferred UDP socket"),
+        );
     }
 
     let noop_builder = NopDiscoveryBuilder {
@@ -665,8 +813,8 @@ fn setup_node(
         create_raptorcast_config(keypair_arc),
         SecondaryRaptorCastModeConfig::None,
         tcp_socket,
-        Some(authenticated_socket),
-        Some(non_authenticated_socket),
+        authenticated_socket,
+        non_authenticated_socket,
         dataplane_control,
         Arc::new(std::sync::Mutex::new(pd)),
         Epoch(0),
@@ -685,7 +833,9 @@ fn setup_node(
         raptorcast,
         node_id: my_node_id,
         tcp_addr: my_config.tcp_addr,
-        udp_addr: authenticated_udp_addr,
+        udp_addr: my_config.preferred_udp_socket()?,
+        socket_mode: my_config.socket_mode()?,
+        validator: my_config.validator,
     })
 }
 
@@ -704,12 +854,16 @@ async fn run_producer(
         node_id,
         tcp_addr,
         udp_addr,
+        socket_mode,
+        validator,
     } = setup_node(cluster_path, cluster_size, node_index)?;
 
     tracing::info!(
         node_id = ?node_id,
         tcp_addr = ?tcp_addr,
         udp_addr = ?udp_addr,
+        socket_mode = socket_mode.as_str(),
+        validator,
         interval = ?interval,
         message_size = size,
         otel_endpoint = ?otel_endpoint,
@@ -802,12 +956,16 @@ async fn run_consumer(
         node_id,
         tcp_addr,
         udp_addr,
+        socket_mode,
+        validator,
     } = setup_node(cluster_path, cluster_size, node_index)?;
 
     tracing::info!(
         node_id = ?node_id,
         tcp_addr = ?tcp_addr,
         udp_addr = ?udp_addr,
+        socket_mode = socket_mode.as_str(),
+        validator,
         otel_endpoint = ?otel_endpoint,
         "started consumer node"
     );
@@ -873,36 +1031,103 @@ async fn run_consumer(
     }
 }
 
-fn generate_config(output_path: String, count: usize, base_ip: String, port: u16) -> Result<()> {
-    let mut participants = Vec::new();
+fn expand_socket_modes(socket_modes: Vec<SocketMode>, count: usize) -> Result<Vec<SocketMode>> {
+    if socket_modes.is_empty() {
+        return Ok(vec![SocketMode::Dual; count]);
+    }
 
-    let base_ip_addr: std::net::Ipv4Addr = base_ip
-        .parse()
-        .map_err(|_| eyre::eyre!("invalid ip address: {}", base_ip))?;
-    let base_ip_u32 = u32::from(base_ip_addr);
+    if socket_modes.len() == 1 {
+        return Ok(vec![socket_modes[0]; count]);
+    }
 
-    for i in 0..count {
+    if socket_modes.len() != count {
+        eyre::bail!(
+            "expected either 1 socket mode or {} socket modes, got {}",
+            count,
+            socket_modes.len()
+        );
+    }
+
+    Ok(socket_modes)
+}
+
+fn resolve_validator_indices(
+    validator_indices: Vec<usize>,
+    count: usize,
+) -> Result<HashSet<usize>> {
+    if validator_indices.is_empty() {
+        return Ok((0..count).collect());
+    }
+
+    let validators: HashSet<_> = validator_indices.into_iter().collect();
+    if let Some(index) = validators.iter().copied().find(|index| *index >= count) {
+        eyre::bail!(
+            "validator index {} out of range for {} participants",
+            index,
+            count
+        );
+    }
+    Ok(validators)
+}
+
+fn build_participants(
+    node_ips: &[Ipv4Addr],
+    port: u16,
+    socket_modes: Vec<SocketMode>,
+    validator_indices: Vec<usize>,
+) -> Result<Vec<ParticipantConfig>> {
+    let socket_modes = expand_socket_modes(socket_modes, node_ips.len())?;
+    let validators = resolve_validator_indices(validator_indices, node_ips.len())?;
+    let mut participants = Vec::with_capacity(node_ips.len());
+
+    for (i, node_ip) in node_ips.iter().copied().enumerate() {
         let ikm = (i as u32).to_le_bytes();
         let keypair = KeyPair::from_ikm(&ikm)?;
         let pubkey = keypair.pubkey();
-        let pubkey_bytes = pubkey.bytes();
-        let privkey = keypair.privkey_view().to_string();
-
-        let node_ip = std::net::Ipv4Addr::from(base_ip_u32 + i as u32);
+        let socket_mode = socket_modes[i];
 
         let participant = ParticipantConfig {
-            public_key: hex::encode(pubkey_bytes),
-            private_key: privkey,
+            public_key: hex::encode(pubkey.bytes()),
+            private_key: keypair.privkey_view().to_string(),
             tcp_addr: SocketAddrV4::new(node_ip, port),
-            udp_addr: SocketAddrV4::new(node_ip, port),
-            authenticated_udp_addr: SocketAddrV4::new(node_ip, port + 1),
+            udp_addr: socket_mode
+                .has_non_authenticated_socket()
+                .then_some(SocketAddrV4::new(node_ip, port)),
+            authenticated_udp_addr: socket_mode
+                .has_authenticated_socket()
+                .then_some(SocketAddrV4::new(node_ip, port + 1)),
+            validator: validators.contains(&i),
         };
         participants.push(participant);
     }
 
+    Ok(participants)
+}
+
+fn write_cluster_config(output_path: String, participants: Vec<ParticipantConfig>) -> Result<()> {
     let cluster_config = ClusterConfig { participants };
     let toml_str = toml::to_string_pretty(&cluster_config)?;
     std::fs::write(&output_path, toml_str)?;
+    Ok(())
+}
+
+fn generate_config(
+    output_path: String,
+    count: usize,
+    base_ip: String,
+    port: u16,
+    socket_modes: Vec<SocketMode>,
+    validator_indices: Vec<usize>,
+) -> Result<()> {
+    let base_ip_addr: Ipv4Addr = base_ip
+        .parse()
+        .map_err(|_| eyre::eyre!("invalid ip address: {}", base_ip))?;
+    let base_ip_u32 = u32::from(base_ip_addr);
+    let node_ips: Vec<_> = (0..count)
+        .map(|i| Ipv4Addr::from(base_ip_u32 + i as u32))
+        .collect();
+    let participants = build_participants(&node_ips, port, socket_modes, validator_indices)?;
+    write_cluster_config(output_path.clone(), participants)?;
 
     println!(
         "Generated cluster configuration with {} nodes at {}",
@@ -913,6 +1138,37 @@ fn generate_config(output_path: String, count: usize, base_ip: String, port: u16
         base_ip_addr,
         std::net::Ipv4Addr::from(base_ip_u32 + count as u32 - 1)
     );
+    println!("Port: {}", port);
+    Ok(())
+}
+
+fn generate_config_from_hosts(
+    output_path: String,
+    hosts: Vec<String>,
+    port: u16,
+    socket_modes: Vec<SocketMode>,
+    validator_indices: Vec<usize>,
+) -> Result<()> {
+    if hosts.is_empty() {
+        eyre::bail!("at least one host must be provided");
+    }
+
+    let node_ips: Vec<Ipv4Addr> = hosts
+        .iter()
+        .map(|host| {
+            host.parse()
+                .map_err(|_| eyre::eyre!("invalid IPv4 host: {}", host))
+        })
+        .collect::<Result<_>>()?;
+    let participants = build_participants(&node_ips, port, socket_modes, validator_indices)?;
+    let count = participants.len();
+    write_cluster_config(output_path.clone(), participants)?;
+
+    println!(
+        "Generated cluster configuration with {} nodes at {}",
+        count, output_path
+    );
+    println!("Hosts: {}", hosts.join(","));
     println!("Port: {}", port);
     Ok(())
 }

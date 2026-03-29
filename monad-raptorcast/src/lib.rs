@@ -178,7 +178,7 @@ where
         config: config::RaptorCastConfig<ST>,
         secondary_mode: SecondaryRaptorCastModeConfig,
         tcp_socket: TcpSocketHandle,
-        authenticated_socket: Option<UdpSocketHandle>,
+        authenticated_socket: UdpSocketHandle,
         non_authenticated_socket: Option<UdpSocketHandle>,
         control: DataplaneControl,
         peer_discovery_driver: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
@@ -217,8 +217,10 @@ where
         );
 
         let dual_socket = auth::DualSocketHandle::new(
-            authenticated_socket
-                .map(|socket| auth::AuthenticatedSocketHandle::new(socket, auth_protocol)),
+            Some(auth::AuthenticatedSocketHandle::new(
+                authenticated_socket,
+                auth_protocol,
+            )),
             non_authenticated_socket,
         );
 
@@ -591,7 +593,7 @@ where
 
 pub struct DataplaneHandles {
     pub tcp_socket: monad_dataplane::TcpSocketHandle,
-    pub authenticated_socket: Option<UdpSocketHandle>,
+    pub authenticated_socket: UdpSocketHandle,
     pub non_authenticated_socket: Option<UdpSocketHandle>,
     pub control: DataplaneControl,
     pub tcp_addr: SocketAddrV4,
@@ -607,6 +609,7 @@ pub fn create_dataplane_for_tests(with_auth: bool, with_non_auth: bool) -> Datap
         with_auth || with_non_auth,
         "tests require at least one UDP socket"
     );
+    assert!(with_auth, "tests require an authenticated UDP socket");
 
     let mut udp_sockets: Vec<(UdpSocketId, SocketAddr)> = Vec::new();
 
@@ -629,18 +632,13 @@ pub fn create_dataplane_for_tests(with_auth: bool, with_non_auth: bool) -> Datap
         _ => panic!("expected v4 address"),
     };
 
-    let (authenticated_socket, auth_addr) = if with_auth {
-        let socket = dp
-            .udp_sockets
-            .take(UdpSocketId::AuthenticatedRaptorcast)
-            .expect("authenticated socket");
-        let addr = match socket.local_addr() {
-            SocketAddr::V4(addr) => addr,
-            _ => panic!("expected v4 address"),
-        };
-        (Some(socket), Some(addr))
-    } else {
-        (None, None)
+    let authenticated_socket = dp
+        .udp_sockets
+        .take(UdpSocketId::AuthenticatedRaptorcast)
+        .expect("authenticated socket");
+    let auth_addr = match authenticated_socket.local_addr() {
+        SocketAddr::V4(addr) => Some(addr),
+        _ => panic!("expected v4 address"),
     };
 
     let (non_authenticated_socket, non_auth_addr) =

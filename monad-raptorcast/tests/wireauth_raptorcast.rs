@@ -263,7 +263,7 @@ fn spawn_noop_validator(
             config,
             monad_raptorcast::raptorcast_secondary::SecondaryRaptorCastModeConfig::None,
             dataplane.tcp_socket,
-            None,
+            dataplane.authenticated_socket,
             dataplane.non_authenticated_socket,
             dataplane.control,
             shared_pd,
