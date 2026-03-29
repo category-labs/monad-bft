@@ -418,7 +418,8 @@ where
             return;
         };
 
-        let mut sink = DualUdpPacketSender::new(&mut self.dual_socket, &self.peer_discovery_driver);
+        let mut sink = DualUdpPacketSender::new(&mut self.dual_socket, &self.peer_discovery_driver)
+            .with_buffering_when_non_authenticated_socket_disabled();
 
         match outbound_msg {
             SecondaryOutboundMessage::SendSingle {
@@ -516,7 +517,8 @@ where
 
                 let mut sink =
                     DualUdpPacketSender::new(&mut self.dual_socket, &self.peer_discovery_driver)
-                        .with_priority(priority);
+                        .with_priority(priority)
+                        .with_buffering_when_non_authenticated_socket_disabled();
                 self.message_builder
                     .prepare()
                     .group_id(GroupId::Primary(epoch))
@@ -929,7 +931,8 @@ where
                         let mut sink = DualUdpPacketSender::new(
                             &mut self.dual_socket,
                             &self.peer_discovery_driver,
-                        );
+                        )
+                        .with_buffering_when_non_authenticated_socket_disabled();
                         self.message_builder
                             .prepare()
                             .group_id(GroupId::Primary(epoch))

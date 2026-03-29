@@ -953,6 +953,100 @@ async fn test_auth_only_point_to_point_uses_buffering() {
         .await;
 }
 
+async fn run_auth_only_broadcast_uses_buffering() {
+    let alice_info = ValidatorInfo::new(1);
+    let bob_info = ValidatorInfo::new(2);
+
+    let alice_dp = create_dataplane_for_tests(true, false);
+    let bob_dp = create_dataplane_for_tests(true, false);
+
+    let alice_name_record =
+        create_auth_only_name_record(&alice_info, alice_dp.tcp_addr, alice_dp.auth_addr.unwrap());
+    let bob_name_record =
+        create_auth_only_name_record(&bob_info, bob_dp.tcp_addr, bob_dp.auth_addr.unwrap());
+
+    let name_records: HashMap<_, _> = [
+        (alice_info.nodeid, alice_name_record),
+        (bob_info.nodeid, bob_name_record),
+    ]
+    .into();
+    let known_addresses: HashMap<_, _> = [
+        (alice_info.nodeid, alice_dp.tcp_addr),
+        (bob_info.nodeid, bob_dp.tcp_addr),
+    ]
+    .into();
+
+    let alice = spawn_wireauth_validator(
+        alice_info.keypair.clone(),
+        alice_dp,
+        known_addresses.clone(),
+        name_records.clone(),
+        vec![],
+        DEFAULT_SIG_VERIFICATION_RATE_LIMIT,
+    );
+    let mut bob = spawn_wireauth_validator(
+        bob_info.keypair.clone(),
+        bob_dp,
+        known_addresses,
+        name_records,
+        vec![],
+        DEFAULT_SIG_VERIFICATION_RATE_LIMIT,
+    );
+
+    tokio::time::timeout(CONNECTION_TIMEOUT, alice.ready_rx)
+        .await
+        .expect("alice ready timeout")
+        .expect("alice ready channel closed");
+    tokio::time::timeout(CONNECTION_TIMEOUT, bob.ready_rx)
+        .await
+        .expect("bob ready timeout")
+        .expect("bob ready channel closed");
+
+    let validator_set = vec![
+        (alice_info.nodeid, Stake::ONE),
+        (bob_info.nodeid, Stake::ONE),
+    ];
+    alice
+        .cmd_tx
+        .send(RouterCommand::AddEpochValidatorSet {
+            epoch: Epoch(0),
+            validator_set: validator_set.clone(),
+        })
+        .unwrap();
+    bob.cmd_tx
+        .send(RouterCommand::AddEpochValidatorSet {
+            epoch: Epoch(0),
+            validator_set,
+        })
+        .unwrap();
+
+    alice
+        .cmd_tx
+        .send(RouterCommand::Publish {
+            target: monad_types::RouterTarget::Broadcast(Epoch(0)),
+            message: MockMessage::new(88, 1_000),
+        })
+        .unwrap();
+
+    let event = tokio::time::timeout(MESSAGE_TIMEOUT, bob.event_rx.recv())
+        .await
+        .expect("timeout waiting for buffered broadcast message")
+        .expect("channel closed");
+
+    let MockEvent((from, msg_id)) = event;
+    assert_eq!(from, alice_info.nodeid);
+    assert_eq!(msg_id, 88);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_auth_only_broadcast_uses_buffering() {
+    init_tracing();
+
+    tokio::task::LocalSet::new()
+        .run_until(run_auth_only_broadcast_uses_buffering())
+        .await;
+}
+
 async fn run_send_with_record_buffers_without_non_authenticated_socket() {
     let alice_info = ValidatorInfo::new(1);
     let bob_info = ValidatorInfo::new(2);

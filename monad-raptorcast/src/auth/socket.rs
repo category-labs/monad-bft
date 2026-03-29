@@ -117,7 +117,7 @@ where
                     priority,
                 );
             } else {
-                warn!(
+                debug!(
                     dropped = non_auth_msgs.len(),
                     "dropping UDP messages without a non-authenticated socket"
                 );
