@@ -451,11 +451,7 @@ impl<I: Eq + Hash + Clone + Ord, R: CryptoRng + RngCore> MessagePool<I, R> {
                 .increment_identity_count(&input.identity);
         }
 
-        let result = self.decode(input);
-        if matches!(result, Ok(DecodeOutcome::Complete(_))) {
-            self.record_identity_service(&key.0);
-        }
-        (result, evicted)
+        (self.decode(input), evicted)
     }
 
     pub(crate) fn evict_stale_for_identity(&mut self, identity: &I, now: Instant) -> bool {
@@ -567,6 +563,7 @@ impl<I: Eq + Hash + Clone + Ord, R: CryptoRng + RngCore> MessagePool<I, R> {
             return Ok(DecodeOutcome::Pending);
         }
 
+        self.record_identity_service(&key.0);
         let state = self
             .remove_message(&key)
             .expect("message must exist when extracting");
@@ -593,5 +590,45 @@ impl<I: Eq + Hash + Clone + Ord, R: CryptoRng + RngCore> MessagePool<I, R> {
 
     pub(crate) fn message_count(&self) -> usize {
         self.messages.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rand::{rngs::StdRng, SeedableRng};
+
+    use super::*;
+
+    #[test]
+    fn completing_last_message_does_not_leave_dynamic_cap_state_behind() {
+        let config = Config::default();
+        let mut pool = MessagePool::new(
+            PoolConfig::from_config(&config, config.max_regular_messages),
+            StdRng::seed_from_u64(1),
+            IdentityUsage::for_regular_pool(&config),
+        );
+        let identity = 7u64;
+        let msg_id = 11u16;
+
+        let (result, evicted) = pool.decode_with_admission(
+            Instant::now(),
+            &(identity, msg_id),
+            FragmentInput {
+                identity,
+                msg_id,
+                seq_num: 0,
+                fragment_type: FragmentType::Complete,
+                payload: Bytes::from_static(b"done"),
+            },
+        );
+
+        assert_eq!(
+            result,
+            Ok(DecodeOutcome::Complete(Bytes::from_static(b"done")))
+        );
+        assert_eq!(evicted, None);
+        assert_eq!(pool.identity_usage.identity_count(&identity), 0);
+        assert!(pool.identity_usage.limit_policy.dynamic_cap.is_empty());
+        assert_eq!(pool.identity_usage.limit_policy.service_sequence, 1);
     }
 }
