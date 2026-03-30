@@ -838,6 +838,62 @@ impl<T: Triedb> ChainState<T> {
 
         Ok(logs)
     }
+
+    /// Returns raw call frame bytes for all transactions in a block, producing the block key,
+    /// transaction hashes, and raw encoded call frames.
+    pub async fn get_block_call_frames(
+        &self,
+        block: BlockTagOrHash,
+    ) -> Result<(BlockKey, Vec<TxHash>, Vec<Vec<u8>>), ChainStateError> {
+        // Try to resolve the block key and get traces from triedb
+        if let Some(block_key) =
+            try_get_block_key_from_tag_or_hash(&self.triedb_env, block.clone()).await?
+        {
+            if let Ok(transactions) = self.triedb_env.get_transactions(block_key).await {
+                if let Ok(call_frames) = self.triedb_env.get_call_frames(block_key).await {
+                    let tx_hashes = transactions
+                        .into_iter()
+                        .map(|tx| *tx.tx.tx_hash())
+                        .collect();
+                    return Ok((block_key, tx_hashes, call_frames));
+                }
+            }
+        }
+
+        // Fall back to archive reader
+        if let Some(archive_reader) = &self.archive_reader {
+            let block = match block {
+                BlockTagOrHash::BlockTags(tag) => {
+                    match get_block_key_from_tag(&self.triedb_env, tag) {
+                        Some(BlockKey::Finalized(FinalizedBlockKey(block_num))) => {
+                            archive_reader.try_get_block_by_number(block_num.0).await?
+                        }
+                        _ => None,
+                    }
+                }
+                BlockTagOrHash::Hash(hash) => {
+                    archive_reader.try_get_block_by_hash(&hash.0.into()).await?
+                }
+            };
+
+            if let Some(block) = block {
+                let block_key = BlockKey::Finalized(FinalizedBlockKey(SeqNum(block.header.number)));
+                if let Some(call_frames) = archive_reader
+                    .try_get_block_traces(block.header.number)
+                    .await?
+                {
+                    let tx_hashes = block
+                        .body
+                        .transactions()
+                        .map(|tx| *tx.tx.tx_hash())
+                        .collect();
+                    return Ok((block_key, tx_hashes, call_frames));
+                }
+            }
+        }
+
+        Err(ChainStateError::ResourceNotFound)
+    }
 }
 
 async fn try_collect_logs_stream_with_heuristic_response_limit<E>(
