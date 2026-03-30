@@ -66,7 +66,7 @@ pub struct Cli {
     pub ws_sub_per_conn_limit: u16,
 
     /// Set the max number of requests in a batch request
-    #[arg(long, default_value_t = 5000)]
+    #[arg(long, default_value_t = 1000)]
     pub batch_request_limit: u16,
 
     /// Set the max request size in bytes (default 2MB)
