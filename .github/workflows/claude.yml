@@ -8,7 +8,7 @@ on:
   pull_request_review:
     types: [submitted]
   pull_request:
-    types: [opened, synchronize, ready_for_review]
+    types: [opened, ready_for_review]
 
 concurrency:
   group: >
@@ -43,7 +43,7 @@ jobs:
             });
             return ['admin', 'write'].includes(data.permission);
 
-  # Auto-review on PR open/synchronize
+  # Auto-review on PR open
   review:
     needs: check-permission
     if: |
