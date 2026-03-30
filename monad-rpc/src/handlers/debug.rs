@@ -434,6 +434,7 @@ pub async fn monad_debug_traceBlockByHash<T: Triedb>(
             .triedb_env
             .get_block_key(SeqNum(block_num))
             .ok_or(JsonRpcError::block_not_found())?;
+
         if let Ok(result) =
             get_call_frames_from_triedb(&chain_state.triedb_env, block_key, &params.tracer).await
         {
@@ -442,7 +443,6 @@ pub async fn monad_debug_traceBlockByHash<T: Triedb>(
     }
 
     // try archive if block hash not found and archive reader specified
-    let mut resp = Vec::new();
     if let Some(archive_reader) = &chain_state.archive_reader {
         if let Some(block) = archive_reader
             .try_get_block_by_hash(&params.block_hash.0.into())
@@ -452,27 +452,20 @@ pub async fn monad_debug_traceBlockByHash<T: Triedb>(
                 .try_get_block_traces(block.header.number)
                 .await?
             {
-                let tx_ids = block.body.transactions().map(|tx| *tx.tx.tx_hash());
+                let tx_hashes = block
+                    .body
+                    .transactions()
+                    .map(|tx| *tx.tx.tx_hash())
+                    .collect::<Vec<_>>();
 
-                for (call_frame, tx_id) in call_frames.into_iter().zip(tx_ids) {
-                    let rlp_call_frame = &mut call_frame.as_slice();
-                    let Some(traces) = decode_call_frame(
-                        &chain_state.triedb_env,
-                        rlp_call_frame,
-                        BlockKey::Finalized(FinalizedBlockKey(SeqNum(block.header.number))),
-                        &params.tracer,
-                    )
-                    .await?
-                    else {
-                        return Err(JsonRpcError::internal_error("traces not found".to_string()));
-                    };
-                    resp.push(MonadDebugTraceBlockResult {
-                        tx_hash: FixedData::<32>::from(tx_id),
-                        result: traces,
-                    });
-                }
-
-                return Ok(resp);
+                return decode_block_call_frames(
+                    &chain_state.triedb_env,
+                    BlockKey::Finalized(FinalizedBlockKey(SeqNum(block.header.number))),
+                    tx_hashes,
+                    call_frames,
+                    &params.tracer,
+                )
+                .await;
             }
         }
     }
@@ -505,6 +498,7 @@ pub async fn monad_debug_traceBlockByNumber<T: Triedb>(
 
     let block_key = get_block_key_from_tag(&chain_state.triedb_env, params.block_number)
         .ok_or(JsonRpcError::block_not_found())?;
+
     if let Ok(result) =
         get_call_frames_from_triedb(&chain_state.triedb_env, block_key, &params.tracer).await
     {
@@ -512,34 +506,25 @@ pub async fn monad_debug_traceBlockByNumber<T: Triedb>(
     }
 
     // try archive if block number or transactions not found and archive reader specified
-    let mut resp = Vec::new();
     if let (Some(archive_reader), BlockKey::Finalized(FinalizedBlockKey(block_num))) =
         (&chain_state.archive_reader, block_key)
     {
         if let Some(block) = archive_reader.try_get_block_by_number(block_num.0).await? {
             if let Some(call_frames) = archive_reader.try_get_block_traces(block_num.0).await? {
-                let tx_ids = block.body.transactions().map(|tx| *tx.tx.tx_hash());
+                let tx_hashes = block
+                    .body
+                    .transactions()
+                    .map(|tx| *tx.tx.tx_hash())
+                    .collect::<Vec<_>>();
 
-                // TODO: parallelize this with stream + buffered + try_collect
-                for (call_frame, tx_id) in call_frames.into_iter().zip(tx_ids) {
-                    let rlp_call_frame = &mut call_frame.as_slice();
-                    let Some(traces) = decode_call_frame(
-                        &chain_state.triedb_env,
-                        rlp_call_frame,
-                        block_key,
-                        &params.tracer,
-                    )
-                    .await?
-                    else {
-                        return Err(JsonRpcError::internal_error("traces not found".to_string()));
-                    };
-                    resp.push(MonadDebugTraceBlockResult {
-                        tx_hash: FixedData::<32>::from(tx_id),
-                        result: traces,
-                    });
-                }
-
-                return Ok(resp);
+                return decode_block_call_frames(
+                    &chain_state.triedb_env,
+                    block_key,
+                    tx_hashes,
+                    call_frames,
+                    &params.tracer,
+                )
+                .await;
             }
         }
     }
@@ -608,13 +593,11 @@ async fn get_call_frames_from_triedb<T: Triedb>(
     block_key: BlockKey,
     tracer: &TracerObject,
 ) -> JsonRpcResult<Vec<MonadDebugTraceBlockResult>> {
-    let mut resp = Vec::new();
     let transactions = triedb_env
         .get_transactions(block_key)
         .await
         .map_err(JsonRpcError::internal_error)?;
-
-    let tx_ids = transactions
+    let tx_hashes = transactions
         .into_iter()
         .map(|tx| *tx.tx.tx_hash())
         .collect::<Vec<_>>();
@@ -624,7 +607,19 @@ async fn get_call_frames_from_triedb<T: Triedb>(
         .await
         .map_err(JsonRpcError::internal_error)?;
 
-    for (call_frame, tx_id) in call_frames.into_iter().zip(tx_ids.into_iter()) {
+    decode_block_call_frames(triedb_env, block_key, tx_hashes, call_frames, tracer).await
+}
+
+async fn decode_block_call_frames<T: Triedb>(
+    triedb_env: &T,
+    block_key: BlockKey,
+    tx_hashes: Vec<alloy_primitives::TxHash>,
+    call_frames: Vec<Vec<u8>>,
+    tracer: &TracerObject,
+) -> JsonRpcResult<Vec<MonadDebugTraceBlockResult>> {
+    let mut resp = Vec::new();
+
+    for (call_frame, tx_id) in call_frames.into_iter().zip(tx_hashes.into_iter()) {
         let rlp_call_frame = &mut call_frame.as_slice();
         let Some(traces) = decode_call_frame(triedb_env, rlp_call_frame, block_key, tracer).await?
         else {
