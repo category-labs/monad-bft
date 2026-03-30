@@ -35,6 +35,7 @@ env:
 jobs:
   build:
     runs-on: self-hosted
+    if: ${{ !github.event.pull_request.head.repo.fork || github.event_name != 'pull_request' }}
 
     container:
       image: peach10.devcore4.com/category-labs/builder

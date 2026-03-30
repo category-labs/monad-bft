@@ -18,6 +18,7 @@ permissions:
   contents: read
   pull-requests: write
   issues: write
+  checks: write
 
 jobs:
   check-command:
@@ -160,15 +161,30 @@ jobs:
             const status = '${{ job.status }}';
             const emoji = status === 'success' ? '✅' : '❌';
             const prNumber = ${{ needs.check-command.outputs.pr_number }};
-            
+            const sha = '${{ steps.pr-info.outputs.ref }}';
+
+            // Create a check run named 'Rust / build' to satisfy the required status check
+            await github.rest.checks.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              name: 'Rust / build',
+              head_sha: sha,
+              status: 'completed',
+              conclusion: status === 'success' ? 'success' : 'failure',
+              output: {
+                title: `Test suite ${status}`,
+                summary: `Full test suite triggered by /test all: **${status}**\n[View run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})`
+              }
+            });
+
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: prNumber,
               body: `${emoji} Full test suite completed: **${status}**
-              
+
               [View detailed results](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
-              
+
               Triggered by: @${{ github.event.comment.user.login }}
-              Commit tested: \`${{ steps.pr-info.outputs.ref }}\``
+              Commit tested: \`${sha}\``
             });
