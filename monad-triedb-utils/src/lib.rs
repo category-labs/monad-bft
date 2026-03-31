@@ -14,6 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
+    collections::HashSet,
     path::Path,
     sync::{
         atomic::{AtomicU64, AtomicUsize, Ordering::SeqCst},
@@ -22,13 +23,14 @@ use std::{
 };
 
 use alloy_consensus::Header;
-use alloy_primitives::Address;
+use alloy_primitives::{Address, U256};
 use alloy_rlp::Decodable;
 use futures::{channel::oneshot, executor::block_on, future::join_all, FutureExt};
 use key::Version;
 use monad_bls::{BlsPubKey, BlsSignatureCollection};
+use monad_crypto::certificate_signature::PubKey;
 use monad_eth_types::{EthAccount, EthHeader};
-use monad_secp::{PubKey, SecpSignature};
+use monad_secp::SecpSignature;
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_triedb::TriedbHandle;
 use monad_types::{BlockId, Epoch, Hash, SeqNum, Stake};
@@ -238,7 +240,7 @@ impl TriedbReader {
     }
 }
 
-impl StateBackend<SecpSignature, BlsSignatureCollection<PubKey>> for TriedbReader {
+impl StateBackend<SecpSignature, BlsSignatureCollection<monad_secp::PubKey>> for TriedbReader {
     fn get_account_statuses<'a>(
         &self,
         block_id: &BlockId,
@@ -334,8 +336,42 @@ impl StateBackend<SecpSignature, BlsSignatureCollection<PubKey>> for TriedbReade
         &self,
         block_num: SeqNum,
         requested_epoch: Epoch,
-    ) -> Vec<(PubKey, BlsPubKey, Stake)> {
-        self.handle.read_valset_at_block(block_num, requested_epoch)
+    ) -> Vec<(monad_secp::PubKey, BlsPubKey, Stake)> {
+        let validator_set_raw = self.handle.validator_set_at_block(
+            block_num
+                .0
+                .try_into()
+                .expect("block_num doesn't fit in usize"),
+            requested_epoch.0,
+        );
+
+        let mut validator_set = Vec::new();
+
+        for validator_data in validator_set_raw.data() {
+            let secp_pubkey =
+                monad_secp::PubKey::from_bytes(validator_data.secp_pubkey.as_slice()).unwrap();
+            let bls_pubkey = BlsPubKey::from_bytes(validator_data.bls_pubkey.as_slice()).unwrap();
+            let stake = Stake::from(U256::from_be_bytes(validator_data.stake));
+            validator_set.push((secp_pubkey, bls_pubkey, stake));
+        }
+
+        let mut unique_secp_keys = HashSet::new();
+        let mut unique_bls_keys = HashSet::new();
+        for (secp_key, bls_key, stake) in &validator_set {
+            assert!(!unique_secp_keys.contains(secp_key));
+            unique_secp_keys.insert(*secp_key);
+
+            assert!(!unique_bls_keys.contains(bls_key));
+            unique_bls_keys.insert(*bls_key);
+
+            assert!(
+                *stake > Stake::ZERO,
+                "validator {:?} should have non-zero stake",
+                secp_key
+            );
+        }
+
+        validator_set
     }
 
     fn total_db_lookups(&self) -> u64 {
