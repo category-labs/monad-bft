@@ -6155,7 +6155,6 @@ dependencies = [
  "alloy-rlp",
  "clap",
  "futures",
- "hex",
  "monad-bls",
  "monad-eth-testutil",
  "monad-eth-types",

@@ -30,8 +30,8 @@ use alloy_primitives::keccak256;
 use alloy_rlp::Decodable;
 use futures::{channel::oneshot, FutureExt};
 use monad_eth_types::{
-    BlockHeader, EthAccount, EthAddress, EthBlockHash, EthCodeHash, EthStorageKey, EthTxHash,
-    ReceiptWithLogIndex, TransactionLocation, TxEnvelopeWithSender,
+    BlockHeader, EthAccount, EthAddress, EthBlockHash, EthCode, EthCodeHash, EthStorageKey,
+    EthStorageSlot, EthTxHash, ReceiptWithLogIndex, TransactionLocation, TxEnvelopeWithSender,
 };
 use monad_triedb::{TraverseEntry, TriedbHandle};
 use monad_types::{BlockId, Hash, SeqNum};
@@ -456,12 +456,12 @@ pub trait Triedb: Debug {
         key: BlockKey,
         addr: EthAddress,
         at: EthStorageKey,
-    ) -> impl std::future::Future<Output = Result<String, String>> + Send;
+    ) -> impl std::future::Future<Output = Result<EthStorageSlot, String>> + Send;
     fn get_code(
         &self,
         key: BlockKey,
         code_hash: EthCodeHash,
-    ) -> impl std::future::Future<Output = Result<String, String>> + Send;
+    ) -> impl std::future::Future<Output = Result<EthCode, String>> + Send;
     fn get_receipt(
         &self,
         key: BlockKey,
@@ -926,19 +926,12 @@ impl Triedb for TriedbEnv {
         block_key: BlockKey,
         addr: EthAddress,
         at: EthStorageKey,
-    ) -> Result<String, String> {
-        match self
-            .handle_async_request(block_key, KeyInput::Storage(&addr, &at), |data| {
-                rlp_decode_storage_slot(data)
-                    .ok_or_else(|| String::from("Decoding storage slot error"))
-            })
-            .await?
-        {
-            Some(storage_slot) => Ok(format!("0x{}", hex::encode(storage_slot))),
-            None => Ok(
-                "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
-            ),
-        }
+    ) -> Result<EthStorageSlot, String> {
+        self.handle_async_request(block_key, KeyInput::Storage(&addr, &at), |data| {
+            rlp_decode_storage_slot(data).ok_or_else(|| String::from("Decoding storage slot error"))
+        })
+        .await
+        .map(Option::unwrap_or_default)
     }
 
     #[tracing::instrument(level = "debug")]
@@ -946,16 +939,10 @@ impl Triedb for TriedbEnv {
         &self,
         block_key: BlockKey,
         code_hash: EthCodeHash,
-    ) -> Result<String, String> {
-        match self
-            .handle_async_request(block_key, KeyInput::CodeHash(&code_hash), |data| {
-                Ok(format!("0x{}", hex::encode(data)))
-            })
-            .await?
-        {
-            Some(code) => Ok(code),
-            None => Ok("0x".to_string()),
-        }
+    ) -> Result<EthCode, String> {
+        self.handle_async_request(block_key, KeyInput::CodeHash(&code_hash), Ok)
+            .await
+            .map(Option::unwrap_or_default)
     }
 
     #[tracing::instrument(level = "debug")]
