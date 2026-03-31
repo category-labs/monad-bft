@@ -58,7 +58,7 @@ pub mod eth_call_handler;
 pub struct ChainState<T> {
     buffer: Option<Arc<ChainStateBuffer>>,
     pub triedb_env: T,
-    pub archive_reader: Option<ArchiveReader>,
+    archive_reader: Option<ArchiveReader>,
 }
 
 #[derive(Debug)]
@@ -893,6 +893,48 @@ impl<T: Triedb> ChainState<T> {
         }
 
         Err(ChainStateError::ResourceNotFound)
+    }
+
+    /// Returns raw call frame bytes for a single transaction, producing the block key and the raw
+    /// encoded call frame.
+    pub async fn get_transaction_call_frame(
+        &self,
+        tx_hash: [u8; 32],
+    ) -> Result<Option<(BlockKey, Vec<u8>)>, ChainStateError> {
+        let latest_block_key = get_latest_block_key(&self.triedb_env);
+        if let Some(TransactionLocation {
+            tx_index,
+            block_num,
+        }) = self
+            .triedb_env
+            .get_transaction_location_by_hash(latest_block_key, tx_hash)
+            .await
+            .map_err(ChainStateError::Triedb)?
+        {
+            let block_key = self
+                .triedb_env
+                .get_block_key(SeqNum(block_num))
+                .ok_or(ChainStateError::ResourceNotFound)?;
+            if let Some(call_frame) = self
+                .triedb_env
+                .get_call_frame(block_key, tx_index)
+                .await
+                .map_err(ChainStateError::Triedb)?
+            {
+                return Ok(Some((block_key, call_frame)));
+            }
+        }
+
+        // Fall back to archive reader
+        if let Some(archive_reader) = &self.archive_reader {
+            if let Some((trace, header_subset)) = archive_reader.get_trace(&tx_hash.into()).await? {
+                let block_key =
+                    BlockKey::Finalized(FinalizedBlockKey(SeqNum(header_subset.block_number)));
+                return Ok(Some((block_key, trace)));
+            }
+        }
+
+        Ok(None)
     }
 }
 
