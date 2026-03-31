@@ -199,7 +199,7 @@ where
                     tcp_socket,
                     authenticated,
                     None,
-                    non_authenticated_socket,
+                    Some(non_authenticated_socket),
                     control,
                     shared_peer_discovery_driver,
                     Epoch(0),

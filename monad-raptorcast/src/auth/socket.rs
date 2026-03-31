@@ -55,7 +55,7 @@ where
     AP: AuthenticationProtocol,
 {
     authenticated: AuthenticatedSocketHandle<AP>,
-    non_authenticated: UdpSocketHandle,
+    non_authenticated: Option<UdpSocketHandle>,
     metrics: ExecutorMetrics,
 }
 
@@ -65,7 +65,7 @@ where
 {
     pub fn new(
         authenticated: AuthenticatedSocketHandle<AP>,
-        non_authenticated: UdpSocketHandle,
+        non_authenticated: Option<UdpSocketHandle>,
     ) -> Self {
         Self {
             authenticated,
@@ -104,13 +104,20 @@ where
         if !non_auth_msgs.is_empty() {
             self.metrics[GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_WRITTEN] +=
                 non_auth_bytes;
-            self.non_authenticated.write_unicast_with_priority(
-                UnicastMsg {
-                    msgs: non_auth_msgs,
-                    stride: msg.stride,
-                },
-                priority,
-            );
+            if let Some(non_authenticated) = &self.non_authenticated {
+                non_authenticated.write_unicast_with_priority(
+                    UnicastMsg {
+                        msgs: non_auth_msgs,
+                        stride: msg.stride,
+                    },
+                    priority,
+                );
+            } else {
+                debug!(
+                    dropped = non_auth_msgs.len(),
+                    "dropping UDP messages without a non-authenticated socket"
+                );
+            }
         }
     }
 
@@ -133,23 +140,36 @@ where
     }
 
     pub async fn recv(&mut self) -> Result<AuthRecvMsg<AP::PublicKey>, AP::Error> {
-        tokio::select! {
-            result = self.authenticated.recv() => {
-                if let Ok(ref msg) = result {
-                    self.metrics[GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_READ] += msg.payload.len() as u64;
+        if let Some(non_authenticated) = &mut self.non_authenticated {
+            tokio::select! {
+                result = self.authenticated.recv() => {
+                    if let Ok(ref msg) = result {
+                        self.metrics[GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_READ] += msg.payload.len() as u64;
+                    }
+                    result
                 }
-                result
+                msg = non_authenticated.recv() => {
+                    self.metrics[GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_READ] += msg.payload.len() as u64;
+                    Ok(AuthRecvMsg {
+                        src_addr: msg.src_addr,
+                        payload: msg.payload,
+                        stride: msg.stride,
+                        sender: None,
+                    })
+                }
             }
-            msg = self.non_authenticated.recv() => {
-                self.metrics[GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_READ] += msg.payload.len() as u64;
-                Ok(AuthRecvMsg {
-                src_addr: msg.src_addr,
-                payload: msg.payload,
-                stride: msg.stride,
-                sender: None,
-            })
+        } else {
+            let result = self.authenticated.recv().await;
+            if let Ok(ref msg) = result {
+                self.metrics[GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_READ] +=
+                    msg.payload.len() as u64;
             }
+            result
         }
+    }
+
+    pub fn has_non_authenticated_socket(&self) -> bool {
+        self.non_authenticated.is_some()
     }
 
     pub fn is_connected_socket_and_public_key(
@@ -698,24 +718,27 @@ mod tests {
     struct PeerNode {
         socket: DualSocketHandle<WireAuthProtocol>,
         auth_addr: SocketAddr,
+        non_auth_addr: Option<SocketAddr>,
         public_key: monad_secp::PubKey,
         _tcp_socket: monad_dataplane::TcpSocketHandle,
         _control: monad_dataplane::DataplaneControl,
     }
 
     impl PeerNode {
-        fn new(seed: u8) -> Self {
+        fn new(seed: u8, with_non_authenticated: bool) -> Self {
             let bind_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+
+            let mut udp_sockets = vec![(
+                monad_dataplane::UdpSocketId::AuthenticatedRaptorcast,
+                bind_addr,
+            )];
+            if with_non_authenticated {
+                udp_sockets.push((monad_dataplane::UdpSocketId::Raptorcast, bind_addr));
+            }
 
             let mut dp = DataplaneBuilder::new(1000)
                 .with_tcp_sockets([(monad_dataplane::TcpSocketId::Raptorcast, bind_addr)])
-                .with_udp_sockets([
-                    (
-                        monad_dataplane::UdpSocketId::AuthenticatedRaptorcast,
-                        bind_addr,
-                    ),
-                    (monad_dataplane::UdpSocketId::Raptorcast, bind_addr),
-                ])
+                .with_udp_sockets(udp_sockets)
                 .build();
 
             let tcp_socket = dp
@@ -728,11 +751,13 @@ mod tests {
                 .expect("authenticated socket");
             let non_authenticated_socket = dp
                 .udp_sockets
-                .take(monad_dataplane::UdpSocketId::Raptorcast)
-                .expect("non-authenticated socket");
+                .take(monad_dataplane::UdpSocketId::Raptorcast);
             let control = dp.control.clone();
 
             let auth_addr = authenticated_socket.local_addr();
+            let non_auth_addr = non_authenticated_socket
+                .as_ref()
+                .map(monad_dataplane::UdpSocketHandle::local_addr);
 
             let keypair = keypair(seed);
             let public_key = keypair.pubkey();
@@ -749,6 +774,7 @@ mod tests {
             Self {
                 socket,
                 auth_addr,
+                non_auth_addr,
                 public_key,
                 _tcp_socket: tcp_socket,
                 _control: control,
@@ -803,8 +829,44 @@ mod tests {
     async fn test_e2e_bidirectional() {
         init_tracing();
 
-        let mut alice = PeerNode::new(1);
-        let mut bob = PeerNode::new(2);
+        let mut alice = PeerNode::new(1, true);
+        let mut bob = PeerNode::new(2, true);
+
+        let bob_addr = bob.auth_addr;
+        let alice_addr = alice.auth_addr;
+
+        alice.connect(&bob.public_key, bob_addr);
+
+        exchange_handshake(&mut alice, &mut bob).await;
+
+        alice.write_message(bob_addr, b"hello from alice");
+
+        let received_bob = tokio::time::timeout(Duration::from_secs(2), bob.socket.recv())
+            .await
+            .expect("timeout waiting for bob")
+            .expect("bob received");
+        assert_eq!(&received_bob.payload[..], b"hello from alice");
+        assert_eq!(received_bob.src_addr, alice_addr);
+
+        bob.write_message(alice_addr, b"hello from bob");
+
+        let received_alice = tokio::time::timeout(Duration::from_secs(2), alice.socket.recv())
+            .await
+            .expect("timeout waiting for alice")
+            .expect("alice received");
+        assert_eq!(&received_alice.payload[..], b"hello from bob");
+        assert_eq!(received_alice.src_addr, bob_addr);
+    }
+
+    #[tokio::test]
+    async fn test_e2e_bidirectional_without_non_authenticated_socket() {
+        init_tracing();
+
+        let mut alice = PeerNode::new(1, false);
+        let mut bob = PeerNode::new(2, false);
+
+        assert!(alice.non_auth_addr.is_none());
+        assert!(bob.non_auth_addr.is_none());
 
         let bob_addr = bob.auth_addr;
         let alice_addr = alice.auth_addr;

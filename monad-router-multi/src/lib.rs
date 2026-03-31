@@ -172,7 +172,7 @@ where
             tcp_socket,
             (authenticated_socket, auth_protocol),
             direct_udp,
-            non_authenticated_socket,
+            Some(non_authenticated_socket),
             control,
             shared_pdd.clone(),
             current_epoch,

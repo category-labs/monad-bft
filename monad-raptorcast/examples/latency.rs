@@ -671,7 +671,7 @@ fn setup_node(
         tcp_socket,
         (authenticated_socket, auth_protocol),
         None,
-        non_authenticated_socket,
+        Some(non_authenticated_socket),
         dataplane_control,
         Arc::new(std::sync::Mutex::new(pd)),
         Epoch(0),
