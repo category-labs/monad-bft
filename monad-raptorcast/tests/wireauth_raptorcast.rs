@@ -247,7 +247,10 @@ fn spawn_noop_validator(
             config,
             monad_raptorcast::raptorcast_secondary::SecondaryRaptorCastModeConfig::None,
             dataplane.tcp_socket,
-            None,
+            (
+                dataplane.authenticated_socket,
+                monad_raptorcast::auth::NoopAuthProtocol::new(),
+            ),
             None,
             dataplane.non_authenticated_socket,
             dataplane.control,
@@ -301,14 +304,14 @@ fn spawn_wireauth_validator(
     tokio::task::spawn_local(async move {
         let config = create_raptorcast_config(keypair.clone(), sig_verification_rate_limit);
         let wireauth_config = monad_wireauth::Config::default();
-        let authenticated = dataplane.authenticated_socket.map(|socket| {
-            let protocol = monad_raptorcast::auth::WireAuthProtocol::new(
+        let authenticated = (
+            dataplane.authenticated_socket,
+            monad_raptorcast::auth::WireAuthProtocol::new(
                 &monad_raptorcast::auth::metrics::UDP_METRICS,
                 wireauth_config.clone(),
                 keypair.clone(),
-            );
-            (socket, protocol)
-        });
+            ),
+        );
         let direct_udp = dataplane.direct_udp_socket.map(|socket| {
             let protocol = monad_raptorcast::auth::WireAuthProtocol::new(
                 &monad_raptorcast::auth::metrics::DIRECT_UDP_METRICS,
@@ -442,7 +445,7 @@ async fn run_test_scenario(num_auth_nodes: usize, routing_type: RoutingType, mes
     let use_direct_udp = matches!(routing_type, RoutingType::DirectPointToPoint);
 
     let dataplanes: Vec<_> = (0..NUM_NODES)
-        .map(|i| create_dataplane_for_tests(true, use_direct_udp && i < num_auth_nodes))
+        .map(|i| create_dataplane_for_tests(use_direct_udp && i < num_auth_nodes))
         .collect();
 
     let name_records: HashMap<_, _> = validator_infos
@@ -453,7 +456,7 @@ async fn run_test_scenario(num_auth_nodes: usize, routing_type: RoutingType, mes
                 v.nodeid,
                 v.create_name_record(
                     dp.tcp_addr,
-                    dp.auth_addr.expect("auth enabled"),
+                    dp.auth_addr,
                     dp.direct_udp_addr,
                     dp.non_auth_addr,
                 ),
@@ -472,7 +475,7 @@ async fn run_test_scenario(num_auth_nodes: usize, routing_type: RoutingType, mes
         .zip(dataplanes.iter())
         .enumerate()
         .filter(|(i, _)| *i < num_auth_nodes)
-        .map(|(_, (v, dp))| (dp.auth_addr.expect("auth enabled"), v.pubkey))
+        .map(|(_, (v, dp))| (dp.auth_addr, v.pubkey))
         .collect();
 
     let validators: Vec<_> = validator_infos
@@ -596,7 +599,7 @@ async fn test_rate_limiting_basic() {
     let validator_infos: Vec<_> = (1..=NUM_TEST_NODES as u8).map(ValidatorInfo::new).collect();
 
     let dataplanes: Vec<_> = (0..NUM_TEST_NODES)
-        .map(|_| create_dataplane_for_tests(true, false))
+        .map(|_| create_dataplane_for_tests(false))
         .collect();
 
     let name_records: HashMap<_, _> = validator_infos
@@ -605,12 +608,7 @@ async fn test_rate_limiting_basic() {
         .map(|(v, dp)| {
             (
                 v.nodeid,
-                v.create_name_record(
-                    dp.tcp_addr,
-                    dp.auth_addr.expect("auth enabled"),
-                    None,
-                    dp.non_auth_addr,
-                ),
+                v.create_name_record(dp.tcp_addr, dp.auth_addr, None, dp.non_auth_addr),
             )
         })
         .collect();
@@ -624,7 +622,7 @@ async fn test_rate_limiting_basic() {
     let peers_for_check: Vec<_> = validator_infos
         .iter()
         .zip(dataplanes.iter())
-        .map(|(v, dp)| (dp.auth_addr.expect("auth enabled"), v.pubkey))
+        .map(|(v, dp)| (dp.auth_addr, v.pubkey))
         .collect();
 
     let validators: Vec<_> = validator_infos
@@ -785,13 +783,13 @@ async fn run_send_with_record_uses_name_record_address() {
     let alice_info = ValidatorInfo::new(1);
     let bob_info = ValidatorInfo::new(2);
 
-    let alice_dp = create_dataplane_for_tests(true, false);
-    let bob1_dp = create_dataplane_for_tests(true, false);
-    let bob2_dp = create_dataplane_for_tests(true, false);
+    let alice_dp = create_dataplane_for_tests(false);
+    let bob1_dp = create_dataplane_for_tests(false);
+    let bob2_dp = create_dataplane_for_tests(false);
 
-    let alice_auth_addr = alice_dp.auth_addr.expect("auth enabled");
-    let bob1_auth_addr = bob1_dp.auth_addr.expect("auth enabled");
-    let bob2_auth_addr = bob2_dp.auth_addr.expect("auth enabled");
+    let alice_auth_addr = alice_dp.auth_addr;
+    let bob1_auth_addr = bob1_dp.auth_addr;
+    let bob2_auth_addr = bob2_dp.auth_addr;
     let bob2_non_auth_addr = bob2_dp.non_auth_addr;
     let bob2_tcp_addr = bob2_dp.tcp_addr;
     assert_ne!(bob1_auth_addr, bob2_auth_addr);

@@ -174,16 +174,17 @@ where
                     .tcp_sockets
                     .take(TcpSocketId::Raptorcast)
                     .expect("tcp raptorcast socket");
-                let authenticated_socket =
-                    dp.udp_sockets.take(UdpSocketId::AuthenticatedRaptorcast);
+                let authenticated_socket = dp
+                    .udp_sockets
+                    .take(UdpSocketId::AuthenticatedRaptorcast)
+                    .expect("authenticated raptorcast socket");
                 let non_authenticated_socket = dp
                     .udp_sockets
                     .take(UdpSocketId::Raptorcast)
                     .expect("raptorcast socket");
                 let control = dp.control;
 
-                let authenticated =
-                    authenticated_socket.map(|socket| (socket, NoopAuthProtocol::new()));
+                let authenticated = (authenticated_socket, NoopAuthProtocol::new());
                 Updater::boxed(RaptorCast::<
                     ST,
                     MonadMessage<ST, SCT, MockExecutionProtocol>,

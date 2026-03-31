@@ -31,17 +31,8 @@ use tokio::time::Sleep;
 use tracing::{debug, trace, warn};
 use zerocopy::IntoBytes;
 
-use super::framing::AuthPacketFramer;
-
-#[derive(Clone)]
-pub struct AuthRecvMsg<P: PubKey> {
-    pub src_addr: SocketAddr,
-    pub payload: Bytes,
-    pub stride: u16,
-    pub sender: Option<NodeId<P>>,
-}
-
 use super::{
+    framing::AuthPacketFramer,
     metrics::{
         GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_READ,
         GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_WRITTEN,
@@ -51,11 +42,19 @@ use super::{
     protocol::AuthenticationProtocol,
 };
 
+#[derive(Clone)]
+pub struct AuthRecvMsg<P: PubKey> {
+    pub src_addr: SocketAddr,
+    pub payload: Bytes,
+    pub stride: u16,
+    pub sender: Option<NodeId<P>>,
+}
+
 pub struct DualSocketHandle<AP>
 where
     AP: AuthenticationProtocol,
 {
-    authenticated: Option<AuthenticatedSocketHandle<AP>>,
+    authenticated: AuthenticatedSocketHandle<AP>,
     non_authenticated: UdpSocketHandle,
     metrics: ExecutorMetrics,
 }
@@ -65,7 +64,7 @@ where
     AP: AuthenticationProtocol,
 {
     pub fn new(
-        authenticated: Option<AuthenticatedSocketHandle<AP>>,
+        authenticated: AuthenticatedSocketHandle<AP>,
         non_authenticated: UdpSocketHandle,
     ) -> Self {
         Self {
@@ -82,28 +81,24 @@ where
         let mut non_auth_bytes = 0u64;
 
         for (addr, payload) in msg.msgs {
-            if let Some(authenticated) = &self.authenticated {
-                if authenticated.is_connected_socket(&addr) {
-                    auth_bytes += payload.len() as u64;
-                    auth_msgs.push((addr, payload));
-                    continue;
-                }
+            if self.authenticated.is_connected_socket(&addr) {
+                auth_bytes += payload.len() as u64;
+                auth_msgs.push((addr, payload));
+                continue;
             }
             non_auth_bytes += payload.len() as u64;
             non_auth_msgs.push((addr, payload));
         }
 
         if !auth_msgs.is_empty() {
-            if let Some(authenticated) = &mut self.authenticated {
-                self.metrics[GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_WRITTEN] += auth_bytes;
-                authenticated.write_unicast_with_priority(
-                    UnicastMsg {
-                        msgs: auth_msgs,
-                        stride: msg.stride,
-                    },
-                    priority,
-                );
-            }
+            self.metrics[GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_WRITTEN] += auth_bytes;
+            self.authenticated.write_unicast_with_priority(
+                UnicastMsg {
+                    msgs: auth_msgs,
+                    stride: msg.stride,
+                },
+                priority,
+            );
         }
 
         if !non_auth_msgs.is_empty() {
@@ -125,54 +120,35 @@ where
         remote_addr: SocketAddr,
         retry_attempts: u64,
     ) -> Result<(), AP::Error> {
-        if let Some(authenticated) = &mut self.authenticated {
-            authenticated.connect(remote_public_key, remote_addr, retry_attempts)
-        } else {
-            Ok(())
-        }
+        self.authenticated
+            .connect(remote_public_key, remote_addr, retry_attempts)
     }
 
     pub fn disconnect(&mut self, remote_public_key: &AP::PublicKey) {
-        if let Some(authenticated) = &mut self.authenticated {
-            authenticated.disconnect(remote_public_key);
-        }
+        self.authenticated.disconnect(remote_public_key);
     }
 
     pub fn flush(&mut self) {
-        if let Some(authenticated) = &mut self.authenticated {
-            authenticated.flush();
-        }
+        self.authenticated.flush();
     }
 
     pub async fn recv(&mut self) -> Result<AuthRecvMsg<AP::PublicKey>, AP::Error> {
-        if let Some(authenticated) = &mut self.authenticated {
-            tokio::select! {
-                result = authenticated.recv() => {
-                    if let Ok(ref msg) = result {
-                        self.metrics[GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_READ] += msg.payload.len() as u64;
-                    }
-                    result
-                },
-                msg = self.non_authenticated.recv() => {
-                    self.metrics[GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_READ] += msg.payload.len() as u64;
-                    Ok(AuthRecvMsg {
-                        src_addr: msg.src_addr,
-                        payload: msg.payload,
-                        stride: msg.stride,
-                        sender: None,
-                    })
-                },
+        tokio::select! {
+            result = self.authenticated.recv() => {
+                if let Ok(ref msg) = result {
+                    self.metrics[GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_READ] += msg.payload.len() as u64;
+                }
+                result
             }
-        } else {
-            let msg = self.non_authenticated.recv().await;
-            self.metrics[GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_READ] +=
-                msg.payload.len() as u64;
-            Ok(AuthRecvMsg {
+            msg = self.non_authenticated.recv() => {
+                self.metrics[GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_READ] += msg.payload.len() as u64;
+                Ok(AuthRecvMsg {
                 src_addr: msg.src_addr,
                 payload: msg.payload,
                 stride: msg.stride,
                 sender: None,
             })
+            }
         }
     }
 
@@ -181,38 +157,26 @@ where
         socket_addr: &SocketAddr,
         public_key: &AP::PublicKey,
     ) -> bool {
-        self.authenticated.as_ref().is_some_and(|authenticated| {
-            authenticated.is_connected_socket_and_public_key(socket_addr, public_key)
-        })
+        self.authenticated
+            .is_connected_socket_and_public_key(socket_addr, public_key)
     }
 
     pub fn get_socket_by_public_key(&self, public_key: &AP::PublicKey) -> Option<SocketAddr> {
-        self.authenticated
-            .as_ref()
-            .and_then(|authenticated| authenticated.get_socket_by_public_key(public_key))
+        self.authenticated.get_socket_by_public_key(public_key)
     }
 
     pub fn has_any_session_by_public_key(&self, public_key: &AP::PublicKey) -> bool {
-        self.authenticated
-            .as_ref()
-            .is_some_and(|authenticated| authenticated.has_any_session_by_public_key(public_key))
+        self.authenticated.has_any_session_by_public_key(public_key)
     }
 
     pub fn segment_size(&self, mtu: u16) -> u16 {
-        let base = monad_dataplane::udp::segment_size_for_mtu(mtu);
-        if self.authenticated.is_some() {
-            base - AP::HEADER_SIZE
-        } else {
-            base
-        }
+        monad_dataplane::udp::segment_size_for_mtu(mtu) - AP::HEADER_SIZE
     }
 
     pub fn metrics(&self) -> ExecutorMetricsChain<'_> {
-        let mut chain = ExecutorMetricsChain::default().push(self.metrics.as_ref());
-        if let Some(authenticated) = &self.authenticated {
-            chain = chain.chain(authenticated.metrics());
-        }
-        chain
+        ExecutorMetricsChain::default()
+            .push(self.metrics.as_ref())
+            .chain(self.authenticated.metrics())
     }
 }
 
@@ -780,8 +744,7 @@ mod tests {
             );
             let authenticated_handle =
                 AuthenticatedSocketHandle::new(authenticated_socket, auth_protocol);
-            let socket =
-                DualSocketHandle::new(Some(authenticated_handle), non_authenticated_socket);
+            let socket = DualSocketHandle::new(authenticated_handle, non_authenticated_socket);
 
             Self {
                 socket,

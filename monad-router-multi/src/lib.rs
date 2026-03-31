@@ -108,10 +108,10 @@ where
         assert!(dp.block_until_ready(Duration::from_secs(1)));
 
         let tcp_socket = dp.tcp_sockets.take(TcpSocketId::Raptorcast).unwrap();
-        let authenticated = dp
+        let authenticated_socket = dp
             .udp_sockets
             .take(UdpSocketId::AuthenticatedRaptorcast)
-            .map(|socket| (socket, auth_protocol));
+            .expect("authenticated raptorcast socket");
         let direct_udp = match (
             dp.udp_sockets.take(UdpSocketId::DirectUdp),
             direct_udp_auth_protocol,
@@ -170,7 +170,7 @@ where
             cfg.clone(),
             secondary_mode,
             tcp_socket,
-            authenticated,
+            (authenticated_socket, auth_protocol),
             direct_udp,
             non_authenticated_socket,
             control,
