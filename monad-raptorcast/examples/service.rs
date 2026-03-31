@@ -125,7 +125,7 @@ fn service(
             let me = NodeId::new(key.pubkey());
             let all_peers = peers.clone();
             let known_addresses = known_addresses.clone();
-            let dataplane = monad_raptorcast::create_dataplane_for_tests(false, false);
+            let dataplane = monad_raptorcast::create_dataplane_for_tests(false);
 
             rt.spawn(async move {
                 let mut service = new_defaulted_raptorcast_for_tests::<

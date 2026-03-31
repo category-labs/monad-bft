@@ -175,7 +175,7 @@ where
         config: config::RaptorCastConfig<ST>,
         secondary_mode: SecondaryRaptorCastModeConfig,
         tcp_socket: TcpSocketHandle,
-        authenticated: Option<(UdpSocketHandle, AP)>,
+        authenticated: (UdpSocketHandle, AP),
         direct_udp: Option<(UdpSocketHandle, AP, DS)>,
         non_authenticated_socket: UdpSocketHandle,
         control: DataplaneControl,
@@ -214,8 +214,7 @@ where
         );
 
         let dual_socket = auth::DualSocketHandle::new(
-            authenticated
-                .map(|(socket, protocol)| auth::AuthenticatedSocketHandle::new(socket, protocol)),
+            auth::AuthenticatedSocketHandle::new(authenticated.0, authenticated.1),
             non_authenticated_socket,
         );
         let direct_udp_transport = direct_udp.map(|(socket, protocol, direct_udp_peer_score)| {
@@ -669,26 +668,24 @@ where
 
 pub struct DataplaneHandles {
     pub tcp_socket: monad_dataplane::TcpSocketHandle,
-    pub authenticated_socket: Option<UdpSocketHandle>,
+    pub authenticated_socket: UdpSocketHandle,
     pub direct_udp_socket: Option<UdpSocketHandle>,
     pub non_authenticated_socket: UdpSocketHandle,
     pub control: DataplaneControl,
     pub tcp_addr: SocketAddrV4,
-    pub auth_addr: Option<SocketAddrV4>,
+    pub auth_addr: SocketAddrV4,
     pub direct_udp_addr: Option<SocketAddrV4>,
     pub non_auth_addr: SocketAddrV4,
 }
 
-pub fn create_dataplane_for_tests(with_auth: bool, with_direct_udp: bool) -> DataplaneHandles {
+pub fn create_dataplane_for_tests(with_direct_udp: bool) -> DataplaneHandles {
     let bind_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
     let up_bandwidth_mbps = 1_000;
 
-    let mut udp_sockets: Vec<(UdpSocketId, SocketAddr)> =
-        vec![(UdpSocketId::Raptorcast, bind_addr)];
-
-    if with_auth {
-        udp_sockets.insert(0, (UdpSocketId::AuthenticatedRaptorcast, bind_addr));
-    }
+    let mut udp_sockets = vec![
+        (UdpSocketId::AuthenticatedRaptorcast, bind_addr),
+        (UdpSocketId::Raptorcast, bind_addr),
+    ];
     if with_direct_udp {
         udp_sockets.insert(0, (UdpSocketId::DirectUdp, bind_addr));
     }
@@ -704,18 +701,13 @@ pub fn create_dataplane_for_tests(with_auth: bool, with_direct_udp: bool) -> Dat
         _ => panic!("expected v4 address"),
     };
 
-    let (authenticated_socket, auth_addr) = if with_auth {
-        let socket = dp
-            .udp_sockets
-            .take(UdpSocketId::AuthenticatedRaptorcast)
-            .expect("authenticated socket");
-        let addr = match socket.local_addr() {
-            SocketAddr::V4(addr) => addr,
-            _ => panic!("expected v4 address"),
-        };
-        (Some(socket), Some(addr))
-    } else {
-        (None, None)
+    let authenticated_socket = dp
+        .udp_sockets
+        .take(UdpSocketId::AuthenticatedRaptorcast)
+        .expect("authenticated socket");
+    let auth_addr = match authenticated_socket.local_addr() {
+        SocketAddr::V4(addr) => addr,
+        _ => panic!("expected v4 address"),
     };
 
     let (direct_udp_socket, direct_udp_addr) = if with_direct_udp {
@@ -805,9 +797,10 @@ where
         config,
         SecondaryRaptorCastModeConfig::None,
         dataplane.tcp_socket,
-        dataplane
-            .authenticated_socket
-            .map(|socket| (socket, auth::NoopAuthProtocol::new())),
+        (
+            dataplane.authenticated_socket,
+            auth::NoopAuthProtocol::new(),
+        ),
         None,
         dataplane.non_authenticated_socket,
         dataplane.control,
@@ -868,14 +861,10 @@ where
         config,
         SecondaryRaptorCastModeConfig::None,
         dataplane.tcp_socket,
-        dataplane.authenticated_socket.map(|socket| {
-            let protocol = auth::WireAuthProtocol::new(
-                &auth::metrics::UDP_METRICS,
-                wireauth_config,
-                shared_key,
-            );
-            (socket, protocol)
-        }),
+        (
+            dataplane.authenticated_socket,
+            auth::WireAuthProtocol::new(&auth::metrics::UDP_METRICS, wireauth_config, shared_key),
+        ),
         None,
         dataplane.non_authenticated_socket,
         dataplane.control,
