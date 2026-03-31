@@ -4898,6 +4898,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-chain-data"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-rlp",
+ "auto_impl",
+ "bytes",
+ "futures",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "monad-compress"
 version = "0.1.0"
 dependencies = [
