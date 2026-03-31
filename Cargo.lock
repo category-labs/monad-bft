@@ -6134,15 +6134,10 @@ dependencies = [
 name = "monad-triedb"
 version = "0.1.0"
 dependencies = [
- "alloy-primitives",
  "bindgen",
  "cmake",
  "futures",
- "monad-bls",
- "monad-crypto",
  "monad-cxx",
- "monad-secp",
- "monad-types",
  "tracing",
 ]
 
@@ -6156,6 +6151,7 @@ dependencies = [
  "clap",
  "futures",
  "monad-bls",
+ "monad-crypto",
  "monad-eth-testutil",
  "monad-eth-types",
  "monad-secp",
