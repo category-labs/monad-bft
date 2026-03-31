@@ -41,7 +41,8 @@ use monad_crypto::certificate_signature::{
 };
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_txpool::{
-    EthTxPool, EthTxPoolConfig, EthTxPoolEventTracker, PoolTxKind, TrackedTxLimitsConfig,
+    EthTxPool, EthTxPoolConfig, EthTxPoolEventTracker, PoolTxKind, ProposalWithSenderGas,
+    TrackedTxLimitsConfig,
 };
 use monad_eth_txpool_types::{
     EthTxPoolDropReason, EthTxPoolEventType, EthTxPoolIpcTx, EthTxPoolTxInputStream,
@@ -167,7 +168,8 @@ where
     events_tx: mpsc::UnboundedSender<TxPoolExecutorEvent<ST, SCT, EthExecutionProtocol>>,
     events: mpsc::UnboundedReceiver<TxPoolExecutorEvent<ST, SCT, EthExecutionProtocol>>,
 
-    forwarding_manager: Pin<Box<EthTxPoolForwardingManager>>,
+    forwarding_manager:
+        Pin<Box<EthTxPoolForwardingManager<NodeId<CertificateSignaturePubKey<ST>>>>>,
     preload_manager: Pin<Box<EthTxPoolPreloadManager>>,
 
     metrics: Arc<EthTxPoolExecutorMetrics>,
@@ -366,7 +368,7 @@ where
 
             ingress_batch.extend(txs.into_iter().filter_map(|raw_tx| {
                 if let Ok(tx) = TxEnvelope::decode(&mut raw_tx.as_ref()) {
-                    Some(tx)
+                    Some((sender, tx))
                 } else {
                     num_invalid_bytes += 1;
                     None
@@ -532,7 +534,10 @@ where
                         &self.state_backend,
                         &self.chain_config,
                     ) {
-                        Ok(proposed_execution_inputs) => {
+                        Ok(ProposalWithSenderGas {
+                            proposed_execution_inputs,
+                            sender_gas: _sender_gas,
+                        }) => {
                             let elapsed = create_proposal_start.elapsed();
 
                             self.metrics.create_proposal.fetch_add(1, Ordering::SeqCst);
@@ -750,12 +755,12 @@ where
 
             let recovered_txs = {
                 let (recovered_txs, dropped_txs): (Vec<_>, Vec<_>) =
-                    forwarded_txs.into_par_iter().partition_map(|tx| {
+                    forwarded_txs.into_par_iter().partition_map(|(sender, tx)| {
                         let _span = trace_span!("txpool: forwarded tx recover signer").entered();
                         match tx.secp256k1_recover() {
                             Ok(signer) => rayon::iter::Either::Left((
                                 Recovered::new_unchecked(tx, signer),
-                                PoolTxKind::Forwarded,
+                                PoolTxKind::Forwarded { sender },
                             )),
                             Err(_) => rayon::iter::Either::Right((
                                 *tx.tx_hash(),

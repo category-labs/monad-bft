@@ -20,7 +20,7 @@ use alloy_rlp::Encodable;
 use monad_chain_config::{execution_revision::ExecutionChainParams, revision::ChainParams};
 use monad_consensus_types::block::ConsensusBlockHeader;
 use monad_crypto::certificate_signature::{
-    CertificateSignaturePubKey, CertificateSignatureRecoverable,
+    CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
 use monad_eth_block_policy::{
     compute_txn_max_gas_cost, compute_txn_max_value,
@@ -30,7 +30,7 @@ use monad_eth_txpool_types::{EthTxPoolDropReason, DEFAULT_TX_PRIORITY};
 use monad_eth_types::EthExecutionProtocol;
 use monad_system_calls::{validator::SystemTransactionValidator, SYSTEM_SENDER_ETH_ADDRESS};
 use monad_tfm::base_fee::MIN_BASE_FEE;
-use monad_types::{Balance, Nonce, SeqNum};
+use monad_types::{Balance, NodeId, Nonce, SeqNum};
 use monad_validator::signature_collection::SignatureCollection;
 use tracing::trace;
 
@@ -41,12 +41,12 @@ pub const fn max_eip2718_encoded_length(execution_params: &ExecutionChainParams)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum PoolTxKind {
+pub enum PoolTxKind<PT: PubKey> {
     Owned { priority: U256, extra_data: Vec<u8> },
-    Forwarded,
+    Forwarded { sender: NodeId<PT> },
 }
 
-impl PoolTxKind {
+impl<PT: PubKey> PoolTxKind<PT> {
     pub fn owned_default() -> Self {
         Self::Owned {
             priority: DEFAULT_TX_PRIORITY,
@@ -56,9 +56,9 @@ impl PoolTxKind {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PoolTx {
+pub struct PoolTx<PT: PubKey> {
     tx: Recovered<TxEnvelope>,
-    kind: PoolTxKind,
+    kind: PoolTxKind<PT>,
     forward_last_seqnum: SeqNum,
     forward_retries: usize,
     max_value: Balance,
@@ -72,14 +72,14 @@ pub struct PoolTxRecoveredAuthorization {
     pub authorization: Authorization,
 }
 
-impl PoolTx {
+impl<PT: PubKey> PoolTx<PT> {
     pub fn validate<ST, SCT>(
         last_commit: &ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>,
         chain_id: u64,
         chain_params: &ChainParams,
         execution_params: &ExecutionChainParams,
         tx: Recovered<TxEnvelope>,
-        kind: PoolTxKind,
+        kind: PoolTxKind<PT>,
     ) -> Result<Self, (Recovered<TxEnvelope>, EthTxPoolDropReason)>
     where
         ST: CertificateSignatureRecoverable,
@@ -243,14 +243,21 @@ impl PoolTx {
     pub fn tx_kind_priority(&self) -> U256 {
         match self.kind {
             PoolTxKind::Owned { priority, .. } => priority,
-            PoolTxKind::Forwarded => DEFAULT_TX_PRIORITY,
+            PoolTxKind::Forwarded { .. } => DEFAULT_TX_PRIORITY,
+        }
+    }
+
+    pub fn tx_kind_sender(&self) -> Option<NodeId<PT>> {
+        match self.kind {
+            PoolTxKind::Owned { .. } => None,
+            PoolTxKind::Forwarded { sender } => Some(sender),
         }
     }
 
     pub fn is_owned(&self) -> bool {
         match self.kind {
             PoolTxKind::Owned { .. } => true,
-            PoolTxKind::Forwarded => false,
+            PoolTxKind::Forwarded { .. } => false,
         }
     }
 
@@ -260,7 +267,7 @@ impl PoolTx {
                 priority,
                 extra_data: _,
             } => priority <= &DEFAULT_TX_PRIORITY,
-            PoolTxKind::Forwarded => false,
+            PoolTxKind::Forwarded { .. } => false,
         }
     }
 

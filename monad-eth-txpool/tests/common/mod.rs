@@ -13,15 +13,13 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-pub use self::{
-    event_tracker::EthTxPoolEventTracker,
-    metrics::EthTxPoolMetrics,
-    pool::{
-        max_eip2718_encoded_length, EthTxPool, EthTxPoolConfig, PoolTxKind, ProposalWithSenderGas,
-        TrackedTxLimitsConfig,
-    },
-};
+use monad_crypto::{certificate_signature::PubKey, NopPubKey};
+use monad_types::NodeId;
 
-mod event_tracker;
-mod metrics;
-mod pool;
+pub(crate) fn dummy_node_id() -> NodeId<NopPubKey> {
+    test_node_id(0)
+}
+
+pub(crate) fn test_node_id(byte: u8) -> NodeId<NopPubKey> {
+    NodeId::new(NopPubKey::from_bytes(&[byte; 32]).unwrap())
+}

@@ -484,7 +484,14 @@ fn check_txpool_coherency(
             chain_config,
             block_txs
                 .into_iter()
-                .map(|tx| (tx, PoolTxKind::Forwarded))
+                .map(|tx| {
+                    (
+                        tx,
+                        PoolTxKind::Forwarded {
+                            sender: *block_under_test.get_author(),
+                        },
+                    )
+                })
                 .collect(),
             |_tx| {},
         );
@@ -519,7 +526,8 @@ fn check_txpool_coherency(
             state_backend,
             chain_config,
         )
-        .unwrap();
+        .unwrap()
+        .proposed_execution_inputs;
 
     info!(
         "Txpool created proposal with {} txs for seq_num {:?}",

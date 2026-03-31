@@ -31,6 +31,7 @@ use monad_eth_block_policy::{
     EthBlockPolicyBlockValidator, EthValidatedBlock,
 };
 use monad_eth_types::ValidatedTx;
+use monad_types::NodeId;
 use monad_validator::signature_collection::SignatureCollection;
 use rand::seq::SliceRandom;
 use tracing::{debug, error, trace};
@@ -41,13 +42,19 @@ use crate::pool::{
 };
 
 #[derive(Debug, PartialEq, Eq)]
-struct OrderedTx<'a> {
-    tx: &'a PoolTx,
+struct OrderedTx<'a, ST>
+where
+    ST: CertificateSignatureRecoverable,
+{
+    tx: &'a PoolTx<CertificateSignaturePubKey<ST>>,
     effective_tip_per_gas: u128,
 }
 
-impl<'a> OrderedTx<'a> {
-    fn new(tx: &'a PoolTx, base_fee: u64) -> Option<Self> {
+impl<'a, ST> OrderedTx<'a, ST>
+where
+    ST: CertificateSignatureRecoverable,
+{
+    fn new(tx: &'a PoolTx<CertificateSignaturePubKey<ST>>, base_fee: u64) -> Option<Self> {
         let effective_tip_per_gas = tx.raw().effective_tip_per_gas(base_fee)?;
 
         Some(Self {
@@ -57,13 +64,19 @@ impl<'a> OrderedTx<'a> {
     }
 }
 
-impl<'a> PartialOrd for OrderedTx<'a> {
+impl<ST> PartialOrd for OrderedTx<'_, ST>
+where
+    ST: CertificateSignatureRecoverable,
+{
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl<'a> Ord for OrderedTx<'a> {
+impl<ST> Ord for OrderedTx<'_, ST>
+where
+    ST: CertificateSignatureRecoverable,
+{
     fn cmp(&self, other: &Self) -> Ordering {
         (
             self.tx.tx_kind_priority(),
@@ -79,20 +92,29 @@ impl<'a> Ord for OrderedTx<'a> {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-struct OrderedTxGroup<'a> {
-    tx: OrderedTx<'a>,
+struct OrderedTxGroup<'a, ST>
+where
+    ST: CertificateSignatureRecoverable,
+{
+    tx: OrderedTx<'a, ST>,
     virtual_time: u64,
     address: &'a Address,
-    queued: VecDeque<OrderedTx<'a>>,
+    queued: VecDeque<OrderedTx<'a, ST>>,
 }
 
-impl PartialOrd for OrderedTxGroup<'_> {
+impl<ST> PartialOrd for OrderedTxGroup<'_, ST>
+where
+    ST: CertificateSignatureRecoverable,
+{
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl Ord for OrderedTxGroup<'_> {
+impl<ST> Ord for OrderedTxGroup<'_, ST>
+where
+    ST: CertificateSignatureRecoverable,
+{
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.tx
             .cmp(&other.tx)
@@ -100,20 +122,27 @@ impl Ord for OrderedTxGroup<'_> {
     }
 }
 
-pub struct ProposalSequencer<'a> {
-    heap: BinaryHeap<OrderedTxGroup<'a>>,
+pub struct ProposalSequencer<'a, ST>
+where
+    ST: CertificateSignatureRecoverable,
+{
+    heap: BinaryHeap<OrderedTxGroup<'a, ST>>,
     virtual_time: u64,
 }
 
-impl<'a> ProposalSequencer<'a> {
-    pub fn new<ST, SCT>(
-        tracked_txs: impl Iterator<Item = (&'a Address, &'a TrackedTxList)>,
+pub(super) type SenderGasContributions<ST> = BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, u64>;
+
+impl<'a, ST> ProposalSequencer<'a, ST>
+where
+    ST: CertificateSignatureRecoverable,
+{
+    pub fn new<SCT>(
+        tracked_txs: impl Iterator<Item = (&'a Address, &'a TrackedTxList<ST>)>,
         extending_blocks: &Vec<&EthValidatedBlock<ST, SCT>>,
         base_fee: u64,
         tx_limit: usize,
     ) -> Self
     where
-        ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     {
         let mut pending_nonce_usages = extending_blocks.get_nonce_usages().into_map();
@@ -177,7 +206,7 @@ impl<'a> ProposalSequencer<'a> {
         chain_config: &CCT,
         mut account_balances: BTreeMap<&Address, AccountBalanceState>,
         validator: EthBlockPolicyBlockValidator<CRT>,
-    ) -> Proposal
+    ) -> Proposal<ST>
     where
         CCT: ChainConfig<CRT>,
         CRT: ChainRevision,
@@ -230,7 +259,6 @@ impl<'a> ProposalSequencer<'a> {
                 &mut account_balances,
                 &validator,
                 &mut proposal,
-                address,
                 tx.tx,
             ) {
                 if let Some(next_tx) = queued.pop_front() {
@@ -270,9 +298,8 @@ impl<'a> ProposalSequencer<'a> {
         proposal_byte_limit: u64,
         account_balances: &mut BTreeMap<&Address, AccountBalanceState>,
         validator: &EthBlockPolicyBlockValidator<CRT>,
-        proposal: &mut Proposal,
-        address: &Address,
-        tx: &PoolTx,
+        proposal: &mut Proposal<ST>,
+        tx: &PoolTx<CertificateSignaturePubKey<ST>>,
     ) -> bool {
         if proposal
             .total_gas
@@ -318,6 +345,9 @@ impl<'a> ProposalSequencer<'a> {
         proposal.total_gas += tx.gas_limit();
         proposal.total_size += tx_size;
         proposal.txs.push(tx.raw().to_owned());
+        if let Some(sender) = tx.tx_kind_sender() {
+            *proposal.sender_gas.entry(sender).or_default() += tx.gas_limit();
+        }
 
         trace!(txn_hash = ?tx.hash(), "txn included in proposal");
 
@@ -325,7 +355,12 @@ impl<'a> ProposalSequencer<'a> {
     }
 
     #[inline]
-    fn push(&mut self, address: &'a Address, tx: OrderedTx<'a>, queued: VecDeque<OrderedTx<'a>>) {
+    fn push(
+        &mut self,
+        address: &'a Address,
+        tx: OrderedTx<'a, ST>,
+        queued: VecDeque<OrderedTx<'a, ST>>,
+    ) {
         assert_eq!(address, tx.tx.signer_ref());
 
         self.heap.push(OrderedTxGroup {
@@ -338,9 +373,26 @@ impl<'a> ProposalSequencer<'a> {
     }
 }
 
-#[derive(Default)]
-pub(super) struct Proposal {
+pub(super) struct Proposal<ST>
+where
+    ST: CertificateSignatureRecoverable,
+{
     pub txs: Vec<Recovered<TxEnvelope>>,
+    pub sender_gas: SenderGasContributions<ST>,
     pub total_gas: u64,
     pub total_size: u64,
+}
+
+impl<ST> Default for Proposal<ST>
+where
+    ST: CertificateSignatureRecoverable,
+{
+    fn default() -> Self {
+        Self {
+            txs: Default::default(),
+            sender_gas: Default::default(),
+            total_gas: Default::default(),
+            total_size: Default::default(),
+        }
+    }
 }

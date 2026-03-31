@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+mod common;
+
 use std::{
     collections::{BTreeMap, VecDeque},
     sync::Arc,
@@ -26,6 +28,7 @@ use alloy_consensus::{
 use alloy_primitives::{Address, TxKind, B256, U256};
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
+use common::dummy_node_id;
 use itertools::Itertools;
 use monad_chain_config::{revision::MockChainRevision, ChainConfig, MockChainConfig};
 use monad_consensus_types::{
@@ -34,10 +37,7 @@ use monad_consensus_types::{
     metrics::Metrics,
     payload::RoundSignature,
 };
-use monad_crypto::{
-    certificate_signature::{CertificateKeyPair, PubKey},
-    NopKeyPair, NopPubKey, NopSignature,
-};
+use monad_crypto::{certificate_signature::CertificateKeyPair, NopKeyPair, NopSignature};
 use monad_eth_block_policy::{validation::TFM_MAX_GAS_LIMIT, EthBlockPolicy};
 use monad_eth_block_validator::EthBlockValidator;
 use monad_eth_testutil::{
@@ -51,7 +51,7 @@ use monad_eth_txpool::{
 use monad_eth_txpool_types::EthTxPoolSnapshot;
 use monad_state_backend::{AccountState, InMemoryBlockState, InMemoryState, InMemoryStateInner};
 use monad_testutil::signing::MockSignatures;
-use monad_types::{Balance, Epoch, NodeId, Round, SeqNum, GENESIS_ROUND, GENESIS_SEQ_NUM};
+use monad_types::{Balance, Epoch, Round, SeqNum, GENESIS_ROUND, GENESIS_SEQ_NUM};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tracing_test::traced_test;
 
@@ -204,7 +204,9 @@ fn run_custom_iter<const N: usize>(
                             if owned {
                                 PoolTxKind::owned_default()
                             } else {
-                                PoolTxKind::Forwarded
+                                PoolTxKind::Forwarded {
+                                    sender: dummy_node_id(),
+                                }
                             },
                         )],
                         |inserted_tx| {
@@ -261,7 +263,9 @@ fn run_custom_iter<const N: usize>(
                                 if owned {
                                     PoolTxKind::owned_default()
                                 } else {
-                                    PoolTxKind::Forwarded
+                                    PoolTxKind::Forwarded {
+                                        sender: dummy_node_id(),
+                                    }
                                 },
                             )
                         })
@@ -306,7 +310,7 @@ fn run_custom_iter<const N: usize>(
                         byte_limit,
                         [0_u8; 20],
                         GENESIS_TIMESTAMP + current_seq_num as u128,
-                        NodeId::new(NopPubKey::from_bytes(&[0_u8; 32]).unwrap()),
+                        dummy_node_id(),
                         RoundSignature::new(Round(0), &mock_keypair),
                         pending_blocks.iter().cloned().collect_vec(),
                         &eth_block_policy,
@@ -315,7 +319,7 @@ fn run_custom_iter<const N: usize>(
                     )
                     .expect("create proposal succeeds");
 
-                let decoded_txns = encoded_txns.body.transactions;
+                let decoded_txns = encoded_txns.proposed_execution_inputs.body.transactions;
 
                 let expected_txs: Vec<_> = expected_txs.into_iter().cloned().collect();
 

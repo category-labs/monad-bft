@@ -53,7 +53,7 @@ where
 {
     // By using IndexMap, we can iterate through the map with Vec-like performance and are able to
     // evict expired txs through the entry API.
-    txs: IndexMap<Address, TrackedTxList>,
+    txs: IndexMap<Address, TrackedTxList<ST>>,
     priority: PriorityMap,
     limits: TrackedTxLimits,
 
@@ -93,15 +93,17 @@ where
         self.txs.values().map(TrackedTxList::num_txs).sum()
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (&Address, &TrackedTxList)> {
+    pub fn iter(&self) -> impl Iterator<Item = (&Address, &TrackedTxList<ST>)> {
         self.txs.iter()
     }
 
-    pub fn iter_txs(&self) -> impl Iterator<Item = &PoolTx> {
+    pub fn iter_txs(&self) -> impl Iterator<Item = &PoolTx<CertificateSignaturePubKey<ST>>> {
         self.txs.values().flat_map(TrackedTxList::iter)
     }
 
-    pub fn iter_mut_txs(&mut self) -> impl Iterator<Item = &mut PoolTx> {
+    pub fn iter_mut_txs(
+        &mut self,
+    ) -> impl Iterator<Item = &mut PoolTx<CertificateSignaturePubKey<ST>>> {
         self.txs.values_mut().flat_map(TrackedTxList::iter_mut)
     }
 
@@ -123,9 +125,9 @@ where
         event_tracker: &mut EthTxPoolEventTracker<'_>,
         last_commit: &ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>,
         address: Address,
-        txs: Vec<PoolTx>,
+        txs: Vec<PoolTx<CertificateSignaturePubKey<ST>>>,
         account_nonce: u64,
-        on_insert: &mut impl FnMut(&PoolTx),
+        on_insert: &mut impl FnMut(&PoolTx<CertificateSignaturePubKey<ST>>),
     ) {
         let mut inserted = false;
 
