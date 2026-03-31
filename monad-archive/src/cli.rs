@@ -496,10 +496,15 @@ fn deserialize_variant<E: de::Error, T: DeserializeOwned>(
 #[derive(Clone, Serialize, Deserialize, Default, Eq, PartialEq, Hash)]
 pub struct AwsCliArgs {
     pub bucket: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub region: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub access_key_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secret_access_key: Option<String>,
     // TODO: remove me, concurrency should be handled elsewhere
     #[serde(default = "default_aws_concurrency")]
@@ -1104,5 +1109,32 @@ mod tests {
         assert!(!debug_output.contains("SECRET_ACCESS_KEY"));
         assert!(!pretty_output.contains("SECRET_KEY_ID"));
         assert!(!pretty_output.contains("SECRET_ACCESS_KEY"));
+    }
+
+    #[test]
+    fn aws_archive_args_deserialize_with_missing_optional_fields() {
+        let json = r#"{
+            "Aws": {
+                "bucket": "archive-bucket",
+                "region": "us-east-1",
+                "concurrency": 10,
+                "operation_timeout_secs": 40,
+                "operation_attempt_timeout_secs": 10,
+                "read_timeout_secs": 10
+            }
+        }"#;
+
+        let args: ArchiveArgs = serde_json::from_str(json).unwrap();
+        match args {
+            ArchiveArgs::Aws(args) => {
+                assert_eq!(args.bucket, "archive-bucket");
+                assert_eq!(args.region.as_deref(), Some("us-east-1"));
+                assert_eq!(args.endpoint, None);
+                assert_eq!(args.profile, None);
+                assert_eq!(args.access_key_id, None);
+                assert_eq!(args.secret_access_key, None);
+            }
+            _ => panic!("expected Aws variant"),
+        }
     }
 }
