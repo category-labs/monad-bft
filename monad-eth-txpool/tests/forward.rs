@@ -24,6 +24,10 @@ use monad_state_backend::{AccountState, InMemoryBlockState, InMemoryState, InMem
 use monad_testutil::signing::MockSignatures;
 use monad_types::{Round, SeqNum, GENESIS_SEQ_NUM};
 
+use self::common::dummy_node_id;
+
+mod common;
+
 type SignatureType = NopSignature;
 type SignatureCollectionType = MockSignatures<SignatureType>;
 
@@ -101,7 +105,9 @@ fn with_txpool(
             if insert_tx_owned {
                 PoolTxKind::owned_default()
             } else {
-                PoolTxKind::Forwarded
+                PoolTxKind::Forwarded {
+                    sender: dummy_node_id(),
+                }
             },
         )],
         |_| {},
