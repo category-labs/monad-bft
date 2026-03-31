@@ -28,7 +28,10 @@ use alloy_primitives::Address;
 use alloy_rlp::Decodable;
 use futures::Stream;
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
-use monad_consensus_types::block::BlockPolicy;
+use monad_consensus_types::{
+    block::BlockPolicy, no_endorsement::FreshProposalCertificate, payload::RoundSignature,
+    quorum_certificate::QuorumCertificate, timeout::TimeoutCertificate,
+};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
@@ -41,11 +44,11 @@ use monad_eth_txpool_types::{
 };
 use monad_eth_types::{EthExecutionProtocol, ExtractEthAddress};
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
-use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
+use monad_executor_glue::{MempoolEvent, MonadEvent};
 use monad_peer_score::{ema, StdClock};
 use monad_secp::RecoverableAddress;
 use monad_state_backend::StateBackend;
-use monad_types::{DropTimer, NodeId, Round};
+use monad_types::{DropTimer, Epoch, ExecutionProtocol, NodeId, Round, SeqNum};
 use monad_validator::signature_collection::SignatureCollection;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tokio::{sync::mpsc, time::Instant};
@@ -68,6 +71,51 @@ mod ipc;
 mod metrics;
 mod preload;
 mod reset;
+
+pub enum TxPoolExecutorCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
+    SBT: StateBackend<ST, SCT>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
+{
+    /// Used to update the nonces of tracked txs
+    BlockCommit(Vec<BPT::ValidatedBlock>),
+
+    CreateProposal {
+        node_id: NodeId<CertificateSignaturePubKey<ST>>,
+        epoch: Epoch,
+        round: Round,
+        seq_num: SeqNum,
+        high_qc: QuorumCertificate<SCT>,
+        round_signature: RoundSignature<SCT::SignatureType>,
+        last_round_tc: Option<TimeoutCertificate<ST, SCT, EPT>>,
+        fresh_proposal_certificate: Option<FreshProposalCertificate<SCT>>,
+
+        tx_limit: usize,
+        proposal_gas_limit: u64,
+        proposal_byte_limit: u64,
+        beneficiary: [u8; 20],
+        timestamp_ns: u128,
+
+        extending_blocks: Vec<BPT::ValidatedBlock>,
+        delayed_execution_results: Vec<EPT::FinalizedHeader>,
+    },
+
+    EnterRound {
+        epoch: Epoch,
+        round: Round,
+        upcoming_leader_rounds: Vec<Round>,
+    },
+
+    // Emitted after statesync is completed
+    Reset {
+        last_delay_committed_blocks: Vec<BPT::ValidatedBlock>,
+    },
+}
 
 pub struct EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT, TIS>
 where
@@ -198,7 +246,7 @@ where
         mut self,
         mut command_rx: mpsc::Receiver<
             Vec<
-                TxPoolCommand<
+                TxPoolExecutorCommand<
                     ST,
                     SCT,
                     EthExecutionProtocol,
@@ -320,7 +368,7 @@ where
     CRT: ChainRevision,
     TIS: EthTxPoolTxInputStream,
 {
-    type Command = TxPoolCommand<
+    type Command = TxPoolExecutorCommand<
         ST,
         SCT,
         EthExecutionProtocol,
@@ -338,7 +386,7 @@ where
 
         for command in commands {
             match command {
-                TxPoolCommand::BlockCommit(committed_blocks) => {
+                TxPoolExecutorCommand::BlockCommit(committed_blocks) => {
                     let _span = debug_span!("block commit").entered();
                     for committed_block in committed_blocks {
                         BlockPolicy::<ST, SCT, EthExecutionProtocol, SBT, CCT, CRT>::update_committed_block(
@@ -361,7 +409,7 @@ where
                         .project()
                         .schedule_egress_txs(&mut self.pool);
                 }
-                TxPoolCommand::CreateProposal {
+                TxPoolExecutorCommand::CreateProposal {
                     node_id,
                     epoch,
                     round,
@@ -439,11 +487,7 @@ where
                         }
                     }
                 }
-                TxPoolCommand::InsertForwardedTxs { sender, txs } => {
-                    // This will never happen because we separate out these commands in `EthTxPoolExecutorClient`.
-                    error!("txpool executor received InsertForwardedTxs command over command rx");
-                }
-                TxPoolCommand::EnterRound {
+                TxPoolExecutorCommand::EnterRound {
                     epoch: _,
                     round,
                     upcoming_leader_rounds,
@@ -462,7 +506,7 @@ where
                         || self.pool.generate_sender_snapshot(),
                     );
                 }
-                TxPoolCommand::Reset {
+                TxPoolExecutorCommand::Reset {
                     last_delay_committed_blocks,
                 } => {
                     BlockPolicy::<ST, SCT, EthExecutionProtocol, SBT, CCT, CRT>::reset(
