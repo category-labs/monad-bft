@@ -49,7 +49,6 @@ use monad_eth_txpool_types::{
 };
 use monad_eth_types::{EthExecutionProtocol, ExtractEthAddress};
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
-use monad_executor_glue::{MempoolEvent, MonadEvent};
 use monad_peer_score::{ema, StdClock};
 use monad_secp::RecoverableAddress;
 use monad_state_backend::StateBackend;
@@ -142,7 +141,10 @@ where
         proposed_execution_inputs: ProposedExecutionInputs<EPT>,
         last_round_tc: Option<TimeoutCertificate<ST, SCT, EPT>>,
         fresh_proposal_certificate: Option<FreshProposalCertificate<SCT>>,
-        // TODO(dshulyak): Add sender contributions
+    },
+
+    Contribution {
+        sender_gas: BTreeMap<NodeId<SCT::NodeIdPubKey>, u64>,
     },
 
     ForwardTxs(Vec<Bytes>),
@@ -168,8 +170,7 @@ where
     events_tx: mpsc::UnboundedSender<TxPoolExecutorEvent<ST, SCT, EthExecutionProtocol>>,
     events: mpsc::UnboundedReceiver<TxPoolExecutorEvent<ST, SCT, EthExecutionProtocol>>,
 
-    forwarding_manager:
-        Pin<Box<EthTxPoolForwardingManager<NodeId<CertificateSignaturePubKey<ST>>>>>,
+    forwarding_manager: Pin<Box<EthTxPoolForwardingManager<NodeId<SCT::NodeIdPubKey>>>>,
     preload_manager: Pin<Box<EthTxPoolPreloadManager>>,
 
     metrics: Arc<EthTxPoolExecutorMetrics>,
@@ -204,10 +205,10 @@ where
 
         let metrics = Arc::new(EthTxPoolExecutorMetrics::default());
         let mut executor_metrics = ExecutorMetrics::default();
-        let (_score_provider, score_reader) = ema::create::<
-            NodeId<CertificateSignaturePubKey<ST>>,
+        let (score_provider, score_reader) = ema::create::<NodeId<SCT::NodeIdPubKey>, StdClock>(
+            ema::ScoreConfig::default(),
             StdClock,
-        >(ema::ScoreConfig::default(), StdClock);
+        );
 
         metrics.update(&mut executor_metrics);
 
@@ -257,6 +258,7 @@ where
             Box::new(move |executor_metrics: &mut ExecutorMetrics| {
                 metrics.update(executor_metrics)
             }),
+            score_provider,
             score_reader,
             ForwardedIngressFairQueueConfig::default(),
         ))
@@ -290,7 +292,7 @@ where
             >,
         >,
         mut forwarded_rx: mpsc::Receiver<Vec<ForwardedTxs<SCT>>>,
-        event_tx: mpsc::Sender<MonadEvent<ST, SCT, EthExecutionProtocol>>,
+        event_tx: mpsc::Sender<TxPoolExecutorEvent<ST, SCT, EthExecutionProtocol>>,
     ) {
         use futures::StreamExt;
 
@@ -344,7 +346,7 @@ where
                     };
 
 
-                    if let Err(err) = self.process_event(event, &event_tx).await {
+                    if let Err(err) = event_tx.send(event).await {
                         warn!(?err, "failed to send event to BFT, shutting down txpool executor");
                         break;
                     }
@@ -388,51 +390,6 @@ where
             .as_mut()
             .project()
             .add_ingress_txs(ingress_batch);
-    }
-
-    async fn process_event(
-        &mut self,
-        event: TxPoolExecutorEvent<ST, SCT, EthExecutionProtocol>,
-        event_tx: &mpsc::Sender<MonadEvent<ST, SCT, EthExecutionProtocol>>,
-    ) -> Result<(), mpsc::error::SendError<MonadEvent<ST, SCT, EthExecutionProtocol>>> {
-        let event = match event {
-            TxPoolExecutorEvent::Proposal {
-                epoch,
-                round,
-                seq_num,
-                high_qc,
-                timestamp_ns,
-                round_signature,
-                base_fee,
-                base_fee_trend,
-                base_fee_moment,
-                delayed_execution_results,
-                proposed_execution_inputs,
-                last_round_tc,
-                fresh_proposal_certificate,
-            } => {
-                // TODO(dshulyak): Add sender contributions.
-
-                MempoolEvent::Proposal {
-                    epoch,
-                    round,
-                    seq_num,
-                    high_qc,
-                    timestamp_ns,
-                    round_signature,
-                    base_fee,
-                    base_fee_trend,
-                    base_fee_moment,
-                    delayed_execution_results,
-                    proposed_execution_inputs,
-                    last_round_tc,
-                    fresh_proposal_certificate,
-                }
-            }
-            TxPoolExecutorEvent::ForwardTxs(txs) => MempoolEvent::ForwardTxs(txs),
-        };
-
-        event_tx.send(MonadEvent::MempoolEvent(event)).await
     }
 }
 
@@ -536,7 +493,7 @@ where
                     ) {
                         Ok(ProposalWithSenderGas {
                             proposed_execution_inputs,
-                            sender_gas: _sender_gas,
+                            sender_gas,
                         }) => {
                             let elapsed = create_proposal_start.elapsed();
 
@@ -562,6 +519,11 @@ where
                                     fresh_proposal_certificate,
                                 })
                                 .expect("events never dropped");
+                            if !sender_gas.is_empty() {
+                                self.events_tx
+                                    .send(TxPoolExecutorEvent::Contribution { sender_gas })
+                                    .expect("events never dropped");
+                            }
                         }
                         Err(err) => {
                             error!(?err, "txpool executor failed to create proposal");
@@ -1049,7 +1011,7 @@ mod test {
 
         let (events_tx, events) = mpsc::unbounded_channel();
 
-        let (_score_provider, score_reader) = ema::create::<
+        let (score_provider, score_reader) = ema::create::<
             NodeId<CertificateSignaturePubKey<SignatureType>>,
             StdClock,
         >(ema::ScoreConfig::default(), StdClock);
@@ -1090,6 +1052,7 @@ mod test {
                 .run(command_rx, forwarded_rx, event_tx)
             },
             Box::new(|_| {}),
+            score_provider,
             score_reader,
             forwarded_ingress_fair_queue_config,
         )

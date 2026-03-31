@@ -25,15 +25,18 @@ use monad_crypto::certificate_signature::{
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_types::EthExecutionProtocol;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
-use monad_executor_glue::{MonadEvent, TxPoolCommand};
+use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
 use monad_fair_queue::{FairQueue, FairQueueBuilder};
-use monad_peer_score::{ema::ScoreReader, StdClock};
+use monad_peer_score::{
+    ema::{ScoreProvider, ScoreReader},
+    StdClock,
+};
 use monad_secp::ExtractEthAddress;
 use monad_state_backend::StateBackend;
 use monad_types::NodeId;
 use monad_validator::signature_collection::SignatureCollection;
 
-use crate::{forward::INGRESS_CHUNK_MAX_SIZE, TxPoolExecutorCommand};
+use crate::{forward::INGRESS_CHUNK_MAX_SIZE, TxPoolExecutorCommand, TxPoolExecutorEvent};
 
 pub struct ForwardedTxs<SCT>
 where
@@ -148,10 +151,10 @@ where
         >,
     >,
     forwarded_tx: tokio::sync::mpsc::Sender<Vec<ForwardedTxs<SCT>>>,
-    forwarded_queue:
-        FairQueue<ScoreReader<NodeId<CertificateSignaturePubKey<ST>>, StdClock>, Bytes>,
+    forwarded_queue: FairQueue<ScoreReader<NodeId<SCT::NodeIdPubKey>, StdClock>, Bytes>,
     forwarded_pending_send: Option<PendingForwardedSend<SCT>>,
-    event_rx: tokio::sync::mpsc::Receiver<MonadEvent<ST, SCT, EthExecutionProtocol>>,
+    score_provider: ScoreProvider<NodeId<SCT::NodeIdPubKey>, StdClock>,
+    event_rx: tokio::sync::mpsc::Receiver<TxPoolExecutorEvent<ST, SCT, EthExecutionProtocol>>,
 }
 
 impl<ST, SCT, SBT, CCT, CRT> EthTxPoolExecutorClient<ST, SCT, SBT, CCT, CRT>
@@ -179,12 +182,13 @@ where
                     >,
                 >,
                 tokio::sync::mpsc::Receiver<Vec<ForwardedTxs<SCT>>>,
-                tokio::sync::mpsc::Sender<MonadEvent<ST, SCT, EthExecutionProtocol>>,
+                tokio::sync::mpsc::Sender<TxPoolExecutorEvent<ST, SCT, EthExecutionProtocol>>,
             ) -> F
             + Send
             + 'static,
         update_metrics: Box<dyn Fn(&mut ExecutorMetrics) + Send + 'static>,
-        score_reader: ScoreReader<NodeId<CertificateSignaturePubKey<ST>>, StdClock>,
+        score_provider: ScoreProvider<NodeId<SCT::NodeIdPubKey>, StdClock>,
+        score_reader: ScoreReader<NodeId<SCT::NodeIdPubKey>, StdClock>,
         forwarded_queue_config: ForwardedIngressFairQueueConfig,
     ) -> Self
     where
@@ -193,6 +197,7 @@ where
         Self::new_with_buffer_sizes(
             updater,
             update_metrics,
+            score_provider,
             score_reader,
             DEFAULT_COMMAND_BUFFER_SIZE,
             DEFAULT_FORWARDED_BUFFER_SIZE,
@@ -217,12 +222,13 @@ where
                     >,
                 >,
                 tokio::sync::mpsc::Receiver<Vec<ForwardedTxs<SCT>>>,
-                tokio::sync::mpsc::Sender<MonadEvent<ST, SCT, EthExecutionProtocol>>,
+                tokio::sync::mpsc::Sender<TxPoolExecutorEvent<ST, SCT, EthExecutionProtocol>>,
             ) -> F
             + Send
             + 'static,
         update_metrics: Box<dyn Fn(&mut ExecutorMetrics) + Send + 'static>,
-        score_reader: ScoreReader<NodeId<CertificateSignaturePubKey<ST>>, StdClock>,
+        score_provider: ScoreProvider<NodeId<SCT::NodeIdPubKey>, StdClock>,
+        score_reader: ScoreReader<NodeId<SCT::NodeIdPubKey>, StdClock>,
         command_buffer_size: usize,
         forwarded_buffer_size: usize,
         event_buffer_size: usize,
@@ -252,6 +258,7 @@ where
                 .regular_bandwidth_pct(forwarded_queue_config.regular_bandwidth_pct)
                 .build(score_reader),
             forwarded_pending_send: None,
+            score_provider,
             event_rx,
         }
     }
@@ -393,6 +400,50 @@ where
             cx.waker().wake_by_ref();
         }
     }
+
+    fn process_event(
+        &mut self,
+        event: TxPoolExecutorEvent<ST, SCT, EthExecutionProtocol>,
+    ) -> Option<MempoolEvent<ST, SCT, EthExecutionProtocol>> {
+        match event {
+            TxPoolExecutorEvent::Proposal {
+                epoch,
+                round,
+                seq_num,
+                high_qc,
+                timestamp_ns,
+                round_signature,
+                base_fee,
+                base_fee_trend,
+                base_fee_moment,
+                delayed_execution_results,
+                proposed_execution_inputs,
+                last_round_tc,
+                fresh_proposal_certificate,
+            } => Some(MempoolEvent::Proposal {
+                epoch,
+                round,
+                seq_num,
+                high_qc,
+                timestamp_ns,
+                round_signature,
+                base_fee,
+                base_fee_trend,
+                base_fee_moment,
+                delayed_execution_results,
+                proposed_execution_inputs,
+                last_round_tc,
+                fresh_proposal_certificate,
+            }),
+            TxPoolExecutorEvent::Contribution { sender_gas } => {
+                for (sender, gas) in sender_gas {
+                    self.score_provider.record_contribution(sender, gas);
+                }
+                None
+            }
+            TxPoolExecutorEvent::ForwardTxs(txs) => Some(MempoolEvent::ForwardTxs(txs)),
+        }
+    }
 }
 
 impl<ST, SCT, SBT, CCT, CRT> Executor for EthTxPoolExecutorClient<ST, SCT, SBT, CCT, CRT>
@@ -498,7 +549,9 @@ where
     }
 
     fn metrics(&self) -> ExecutorMetricsChain<'_> {
-        ExecutorMetricsChain::from(&self.metrics).push(self.forwarded_queue.metrics())
+        ExecutorMetricsChain::from(&self.metrics)
+            .push(self.forwarded_queue.metrics())
+            .push(self.score_provider.executor_metrics())
     }
 }
 
@@ -522,8 +575,23 @@ where
         this.verify_handle_liveness();
 
         (this.update_metrics)(&mut this.metrics);
+
+        loop {
+            let Poll::Ready(result) = this.event_rx.poll_recv(cx) else {
+                break;
+            };
+
+            let Some(event) = result else {
+                return Poll::Ready(None);
+            };
+
+            if let Some(event) = this.process_event(event) {
+                return Poll::Ready(Some(MonadEvent::MempoolEvent(event)));
+            }
+        }
+
         this.poll_forwarded_send(cx);
 
-        this.event_rx.poll_recv(cx)
+        Poll::Pending
     }
 }
