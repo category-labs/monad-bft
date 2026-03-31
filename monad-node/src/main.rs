@@ -573,18 +573,35 @@ where
     OM: Encodable + Clone + Send + Sync + 'static,
     DS: IdentityScore<Identity = NodeId<CertificateSignaturePubKey<ST>>>,
 {
-    let bind_address = SocketAddr::new(
-        IpAddr::V4(node_config.network.bind_address_host),
-        node_config.network.bind_address_port,
-    );
+    let network_config = node_config.network;
+    let self_udp_port = peer_discovery_config.udp_port();
+    let (tcp_bind_address, non_authenticated_bind_address) = if self_udp_port.is_some() {
+        let bind_address_port = network_config
+            .bind_address_port
+            .expect("network.bind_address_port must be set when peer discovery UDP is enabled");
+        let bind_address = SocketAddr::new(
+            IpAddr::V4(network_config.bind_address_host),
+            bind_address_port,
+        );
+        (bind_address, Some(bind_address))
+    } else {
+        (
+            SocketAddr::new(
+                IpAddr::V4(network_config.bind_address_host),
+                network_config.bind_address_tcp_port.expect(
+                    "network.bind_address_tcp_port must be set when peer discovery UDP is disabled",
+                ),
+            ),
+            None,
+        )
+    };
     let authenticated_bind_address = SocketAddr::new(
-        IpAddr::V4(node_config.network.bind_address_host),
-        node_config.network.authenticated_bind_address_port,
+        IpAddr::V4(network_config.bind_address_host),
+        network_config.authenticated_bind_address_port,
     );
-    let direct_udp_bind_address = node_config
-        .network
+    let direct_udp_bind_address = network_config
         .direct_udp_bind_address_port
-        .map(|port| SocketAddr::new(IpAddr::V4(node_config.network.bind_address_host), port));
+        .map(|port| SocketAddr::new(IpAddr::V4(network_config.bind_address_host), port));
     let self_id = NodeId::new(identity.pubkey());
     let self_tcp_port = peer_discovery_config.tcp_port();
     let name_record_address = if let Some(ip) = peer_discovery_config.ip() {
@@ -601,15 +618,14 @@ where
     };
 
     tracing::debug!(
-        ?bind_address,
+        ?tcp_bind_address,
+        ?non_authenticated_bind_address,
         ?authenticated_bind_address,
         ?direct_udp_bind_address,
         ?name_record_address,
         "Monad-node starting, pid: {}",
         process::id()
     );
-
-    let network_config = node_config.network;
 
     let mut dp_builder = DataplaneBuilder::new(network_config.max_mbps.into())
         .with_udp_multishot(network_config.enable_udp_multishot);
@@ -626,19 +642,19 @@ where
             network_config.tcp_rate_limit_burst,
         );
 
-    let mut udp_sockets: Vec<(UdpSocketId, std::net::SocketAddr)> = vec![
-        (UdpSocketId::Raptorcast, bind_address),
-        (
-            UdpSocketId::AuthenticatedRaptorcast,
-            authenticated_bind_address,
-        ),
-    ];
+    let mut udp_sockets: Vec<(UdpSocketId, SocketAddr)> = vec![(
+        UdpSocketId::AuthenticatedRaptorcast,
+        authenticated_bind_address,
+    )];
+    if let Some(address) = non_authenticated_bind_address {
+        udp_sockets.push((UdpSocketId::Raptorcast, address));
+    }
     if let Some(direct_addr) = direct_udp_bind_address {
         udp_sockets.push((UdpSocketId::DirectUdp, direct_addr));
     }
     dp_builder = dp_builder
         .with_udp_sockets(udp_sockets)
-        .with_tcp_sockets([(TcpSocketId::Raptorcast, bind_address)]);
+        .with_tcp_sockets([(TcpSocketId::Raptorcast, tcp_bind_address)]);
 
     assert_eq!(
         peer_discovery_config.self_direct_udp_port.is_some(),
@@ -648,7 +664,7 @@ where
     let self_record = NameRecord::new_with_ports(
         *name_record_address.ip(),
         self_tcp_port.get(),
-        peer_discovery_config.udp_port().map(NonZeroU16::get),
+        self_udp_port.map(NonZeroU16::get),
         peer_discovery_config.self_auth_port.get(),
         peer_discovery_config
             .self_direct_udp_port

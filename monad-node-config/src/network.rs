@@ -22,7 +22,8 @@ use serde::Deserialize;
 #[serde(deny_unknown_fields)]
 pub struct NodeNetworkConfig {
     pub bind_address_host: Ipv4Addr,
-    pub bind_address_port: u16,
+    pub bind_address_port: Option<u16>,
+    pub bind_address_tcp_port: Option<u16>,
     pub authenticated_bind_address_port: u16,
     pub direct_udp_bind_address_port: Option<u16>,
 

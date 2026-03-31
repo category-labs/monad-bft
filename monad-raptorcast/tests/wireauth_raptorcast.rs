@@ -253,7 +253,7 @@ fn spawn_noop_validator(
                 monad_raptorcast::auth::NoopAuthProtocol::new(),
             ),
             None,
-            dataplane.non_authenticated_socket,
+            Some(dataplane.non_authenticated_socket),
             dataplane.control,
             shared_pd,
         );
@@ -341,7 +341,7 @@ fn spawn_wireauth_validator(
             dataplane.tcp_socket,
             authenticated,
             direct_udp,
-            dataplane.non_authenticated_socket,
+            Some(dataplane.non_authenticated_socket),
             dataplane.control,
             shared_pd,
         );
