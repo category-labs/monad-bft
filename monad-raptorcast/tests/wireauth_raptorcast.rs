@@ -157,6 +157,7 @@ impl ValidatorInfo {
                 tcp_addr.port(),
                 non_auth_addr.port(),
                 auth_addr.port(),
+                None,
                 1,
             )
         } else {
@@ -888,6 +889,7 @@ async fn run_send_with_record_uses_name_record_address() {
         bob2_tcp_addr.port(),
         bob2_non_auth_addr.port(),
         bob2_auth_addr.port(),
+        None,
         1,
     );
 

@@ -25,6 +25,7 @@ pub struct NodeNetworkConfig {
     pub bind_address_port: u16,
     pub authenticated_bind_address_port: u16,
     pub direct_udp_bind_address_port: Option<u16>,
+    pub authenticated_tcp_bind_address_port: Option<u16>,
 
     pub max_rtt_ms: u64,
     pub max_mbps: u16,
