@@ -18,7 +18,7 @@ use monad_blocksync::blocksync::BlockSyncSelfRequester;
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_consensus::{
     messages::{
-        consensus_message::{ConsensusMessage, ProtocolMessage},
+        consensus_message::{ConsensusMessage, PrefilterError, ProtocolMessage},
         message::ProposalMessage,
     },
     validation::{
@@ -30,6 +30,7 @@ use monad_consensus_state::{command::ConsensusCommand, ConsensusConfig, Consensu
 use monad_consensus_types::{
     block::{BlockPolicy, ConsensusBlockHeader, OptimisticCommit, OptimisticPolicyCommit},
     block_validator::BlockValidator,
+    checkpoint::RootInfo,
     metrics::Metrics,
     payload::{ConsensusBlockBody, ConsensusBlockBodyInner},
     tip::ConsensusTip,
@@ -57,6 +58,27 @@ use crate::{
     handle_validation_error, BlockTimestamp, ConsensusMode, MonadState, MonadVersion, Role,
     VerifiedMonadMessage,
 };
+
+fn record_prefilter_error(metrics: &mut Metrics, prefilter_error: PrefilterError) {
+    match prefilter_error {
+        PrefilterError::OutdatedProposal | PrefilterError::OutdatedRoundRecovery => {}
+        PrefilterError::OutdatedVote => {
+            metrics.consensus_events.old_vote_received += 1;
+        }
+        PrefilterError::OutdatedTimeout => {
+            metrics.consensus_events.old_remote_timeout += 1;
+        }
+        PrefilterError::OutdatedNoEndorsement => {
+            metrics.consensus_events.old_no_endorsement_received += 1;
+        }
+        PrefilterError::OutdatedAdvanceRoundQc => {
+            metrics.consensus_events.process_old_qc += 1;
+        }
+        PrefilterError::OutdatedAdvanceRoundTc => {
+            metrics.consensus_events.process_old_tc += 1;
+        }
+    }
+}
 
 pub(super) struct ConsensusChildState<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
 where
@@ -142,6 +164,7 @@ where
             ConsensusMode::Live(live) => live,
             ConsensusMode::Sync {
                 block_buffer,
+                high_certificate,
                 updating_target,
                 ..
             } => {
@@ -151,7 +174,6 @@ where
                     unverified_message,
                 } = event.clone()
                 {
-                    // skip evidence collection in sync mode
                     if let Ok(verified_message) = Self::verify_and_validate_consensus_message(
                         self.certificate_cache,
                         self.epoch_manager,
@@ -159,6 +181,10 @@ where
                         self.leader_election,
                         self.version,
                         self.metrics,
+                        block_buffer.root_info().as_ref(),
+                        // This current_round can be stale, but that's ok
+                        // Prefiltering will just happen less aggressively
+                        high_certificate.round() + Round(1),
                         sender,
                         unverified_message,
                     ) {
@@ -225,6 +251,8 @@ where
                     consensus.election,
                     self.version,
                     consensus.metrics,
+                    Some(consensus.consensus.blocktree().root()),
+                    consensus.consensus.get_current_round(),
                     sender,
                     unverified_message,
                 ) {
@@ -333,7 +361,7 @@ where
                     unreachable!("txpool should never emit proposal while not live!")
                 }
                 MempoolEvent::ForwardedTxs { .. } | MempoolEvent::ForwardTxs(_) => {
-                    return Vec::default()
+                    return Vec::default();
                 }
             }
         };
@@ -503,6 +531,8 @@ where
         election: &LT,
         version: &MonadVersion,
         metrics: &mut Metrics,
+        root_info: Option<&RootInfo>,
+        current_round: Round,
 
         sender: NodeId<CertificateSignaturePubKey<ST>>,
         message: Unverified<ST, Unvalidated<ConsensusMessage<ST, SCT, EPT>>>,
@@ -517,6 +547,14 @@ where
                 // TODO-2: collect evidence
                 Vec::new()
             })?;
+
+        if let Err(prefilter_error) = verified_message
+            .as_ref()
+            .prefilter(root_info, current_round)
+        {
+            record_prefilter_error(metrics, prefilter_error);
+            return Err(Vec::new());
+        }
 
         // Validated message according to consensus protocol spec
         let validated_message = verified_message

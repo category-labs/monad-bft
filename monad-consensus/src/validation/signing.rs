@@ -20,6 +20,7 @@ use std::{
 
 use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
 use monad_consensus_types::{
+    checkpoint::RootInfo,
     no_endorsement::{FreshProposalCertificate, NoEndorsementCertificate},
     quorum_certificate::QuorumCertificate,
     timeout::{HighExtend, HighExtendRank, NoTipCertificate, TimeoutCertificate, TimeoutInfo},
@@ -47,7 +48,7 @@ use serde::Serialize;
 
 use crate::{
     messages::{
-        consensus_message::{ConsensusMessage, ProtocolMessage},
+        consensus_message::{ConsensusMessage, PrefilterError, ProtocolMessage},
         message::{
             AdvanceRoundMessage, NoEndorsementMessage, ProposalMessage, RoundRecoveryMessage,
             TimeoutMessage, VoteMessage,
@@ -146,6 +147,14 @@ where
 {
     pub fn is_proposal(&self) -> bool {
         matches!(&self.obj.obj.message, ProtocolMessage::Proposal(_))
+    }
+
+    pub fn prefilter(
+        &self,
+        root_info: Option<&RootInfo>,
+        current_round: Round,
+    ) -> Result<(), PrefilterError> {
+        self.obj.obj.prefilter(root_info, current_round)
     }
 }
 
