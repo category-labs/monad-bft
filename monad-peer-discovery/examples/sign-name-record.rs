@@ -79,7 +79,7 @@ fn main() {
         *self_address.ip(),
         self_address.port(),
         self_address.port(),
-        Some(args.authenticated_udp_port),
+        args.authenticated_udp_port,
         args.direct_udp_port,
         self_record_seq_num,
     );

@@ -1657,14 +1657,13 @@ where
                 return None;
             }
 
-            if let Some(auth_addr) = target_name_record.name_record.authenticated_udp_socket() {
-                let addr = SocketAddr::V4(auth_addr);
-                if self
-                    .dual_socket
-                    .is_connected_socket_and_public_key(&addr, &recipient.node_id().pubkey())
-                {
-                    return Some(addr);
-                }
+            let auth_addr = target_name_record.name_record.authenticated_udp_socket();
+            let addr = SocketAddr::V4(auth_addr);
+            if self
+                .dual_socket
+                .is_connected_socket_and_public_key(&addr, &recipient.node_id().pubkey())
+            {
+                return Some(addr);
             }
 
             Some(SocketAddr::V4(target_name_record.name_record.udp_socket()))
@@ -1684,26 +1683,25 @@ where
 {
     fn drop(&mut self) {
         if let Some(target_name_record) = self.target_name_record {
-            if let Some(auth_addr) = target_name_record.name_record.authenticated_udp_socket() {
-                let addr = SocketAddr::V4(auth_addr);
-                if !self
-                    .dual_socket
-                    .is_connected_socket_and_public_key(&addr, &target_name_record.target.pubkey())
-                {
-                    if let Err(e) = self.dual_socket.connect(
-                        &target_name_record.target.pubkey(),
-                        addr,
-                        DEFAULT_RETRY_ATTEMPTS,
-                    ) {
-                        warn!(
-                            target = ?target_name_record.target,
-                            auth_addr = ?auth_addr,
-                            error = ?e,
-                            "failed to initiate connection to authenticated endpoint"
-                        );
-                    }
-                    self.dual_socket.flush();
+            let auth_addr = target_name_record.name_record.authenticated_udp_socket();
+            let addr = SocketAddr::V4(auth_addr);
+            if !self
+                .dual_socket
+                .is_connected_socket_and_public_key(&addr, &target_name_record.target.pubkey())
+            {
+                if let Err(e) = self.dual_socket.connect(
+                    &target_name_record.target.pubkey(),
+                    addr,
+                    DEFAULT_RETRY_ATTEMPTS,
+                ) {
+                    warn!(
+                        target = ?target_name_record.target,
+                        auth_addr = ?auth_addr,
+                        error = ?e,
+                        "failed to initiate connection to authenticated endpoint"
+                    );
                 }
+                self.dual_socket.flush();
             }
         } else {
             let targets = self.targets.iter().map(|recipient| recipient.node_id());
@@ -1802,8 +1800,7 @@ fn ensure_authenticated_sessions<'a, ST, PD, AP>(
         .filter_map(|target| {
             pd_driver
                 .get_name_record(target)
-                .and_then(|record| record.name_record.authenticated_udp_socket())
-                .map(|addr| (target, addr))
+                .map(|record| (target, record.name_record.authenticated_udp_socket()))
         })
         .for_each(|(target, auth_addr)| {
             if dual_socket.has_any_session_by_public_key(&target.pubkey()) {

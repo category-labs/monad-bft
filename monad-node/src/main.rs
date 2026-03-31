@@ -17,6 +17,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     marker::PhantomData,
     net::{IpAddr, SocketAddr, ToSocketAddrs},
+    num::NonZeroU16,
     path::PathBuf,
     process,
     sync::Arc,
@@ -614,8 +615,10 @@ where
         *name_record_address.ip(),
         name_record_address.port(),
         name_record_address.port(),
-        Some(peer_discovery_config.self_auth_port),
-        peer_discovery_config.self_direct_udp_port,
+        peer_discovery_config.self_auth_port.get(),
+        peer_discovery_config
+            .self_direct_udp_port
+            .map(NonZeroU16::get),
         peer_discovery_config.self_record_seq_num,
     );
     let self_record = MonadNameRecord::new(self_record, &identity);

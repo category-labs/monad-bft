@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::num::NonZeroU16;
+
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
@@ -41,12 +43,11 @@ pub struct NodeBootstrapPeerConfig<ST: CertificateSignatureRecoverable> {
     #[serde(bound = "ST: CertificateSignatureRecoverable")]
     pub name_record_sig: ST,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub auth_port: Option<u16>,
+    pub auth_port: NonZeroU16,
 
     #[serde(
         alias = "direct_udp_auth_port",
         skip_serializing_if = "Option::is_none"
     )]
-    pub direct_udp_port: Option<u16>,
+    pub direct_udp_port: Option<NonZeroU16>,
 }
