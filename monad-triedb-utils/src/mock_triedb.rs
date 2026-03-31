@@ -17,8 +17,8 @@ use std::{collections::HashMap, future::ready};
 
 use alloy_consensus::{transaction::SignerRecoverable, Block, TxEnvelope};
 use monad_eth_types::{
-    BlockHeader, EthAccount, EthAddress, EthBlockHash, EthCodeHash, EthStorageKey, EthTxHash,
-    ReceiptWithLogIndex, TransactionLocation, TxEnvelopeWithSender,
+    BlockHeader, EthAccount, EthAddress, EthBlockHash, EthCode, EthCodeHash, EthStorageKey,
+    EthStorageSlot, EthTxHash, ReceiptWithLogIndex, TransactionLocation, TxEnvelopeWithSender,
 };
 use monad_types::SeqNum;
 
@@ -32,7 +32,7 @@ pub struct MockTriedb {
     accounts: HashMap<EthAddress, EthAccount>,
     tx_locations: HashMap<EthTxHash, TransactionLocation>,
     call_frames: HashMap<TransactionLocation, Vec<u8>>,
-    code: String,
+    code: Vec<u8>,
 }
 
 impl MockTriedb {
@@ -56,7 +56,7 @@ impl MockTriedb {
         self.call_frames.insert(loc, frame);
     }
 
-    pub fn set_code(&mut self, code: String) {
+    pub fn set_code(&mut self, code: Vec<u8>) {
         self.code = code;
     }
 
@@ -106,15 +106,15 @@ impl Triedb for MockTriedb {
         _block_key: BlockKey,
         _addr: EthAddress,
         _at: EthStorageKey,
-    ) -> impl std::future::Future<Output = Result<String, String>> + Send {
-        ready(Ok("0x0".to_string()))
+    ) -> impl std::future::Future<Output = Result<EthStorageSlot, String>> + Send {
+        ready(Ok(EthStorageSlot::default()))
     }
 
     fn get_code(
         &self,
         _block_key: BlockKey,
         _code_hash: EthCodeHash,
-    ) -> impl std::future::Future<Output = Result<String, String>> + Send {
+    ) -> impl std::future::Future<Output = Result<EthCode, String>> + Send {
         ready(Ok(self.code.clone()))
     }
 

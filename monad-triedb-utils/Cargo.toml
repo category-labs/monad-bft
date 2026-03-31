@@ -20,7 +20,6 @@ alloy-consensus = { workspace = true }
 alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
 futures = { workspace = true }
-hex = { workspace = true }
 tokio = { workspace = true, features = ["rt"] }
 tracing = { workspace = true, features = ["log"] }
 
@@ -29,7 +28,6 @@ monad-eth-testutil = { workspace = true }
 
 alloy-consensus = { workspace = true, features = ["k256"] }
 clap = { workspace = true, features = ["derive"] }
-hex = { workspace = true }
 rand = { workspace = true }
 rand_distr = { workspace = true }
 serde = { workspace = true, features = ["derive"] }

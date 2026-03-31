@@ -93,7 +93,7 @@ pub async fn monad_eth_getCode<T: Triedb>(
             .await
             .map_err(JsonRpcError::internal_error)?
     } else {
-        "0x".to_string()
+        Vec::default()
     };
 
     match chain_state
@@ -102,7 +102,7 @@ pub async fn monad_eth_getCode<T: Triedb>(
         .await
         .map_err(JsonRpcError::internal_error)?
     {
-        true => Ok(code),
+        true => Ok(format!("0x{}", hex::encode(code))),
         false => Err(JsonRpcError::block_not_found()),
     }
 }
@@ -138,7 +138,7 @@ pub async fn monad_eth_getStorageAt<T: Triedb>(
         .await
         .map_err(JsonRpcError::internal_error)?
     {
-        true => Ok(storage_value),
+        true => Ok(format!("0x{}", hex::encode(storage_value))),
         false => Err(JsonRpcError::block_not_found()),
     }
 }

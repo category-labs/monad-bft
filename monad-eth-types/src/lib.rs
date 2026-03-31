@@ -39,6 +39,8 @@ pub type EthStorageKey = [u8; 32];
 pub type EthCodeHash = [u8; 32];
 pub type EthTxHash = [u8; 32];
 pub type EthBlockHash = [u8; 32];
+pub type EthStorageSlot = [u8; 32];
+pub type EthCode = Vec<u8>;
 
 pub trait ExtractEthAddress {
     fn get_eth_address(&self) -> Address;
