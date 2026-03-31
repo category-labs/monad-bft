@@ -125,10 +125,7 @@ where
                 panic!("direct udp socket and auth protocol must be set or unset together");
             }
         };
-        let non_authenticated_socket = dp
-            .udp_sockets
-            .take(UdpSocketId::Raptorcast)
-            .expect("raptorcast socket");
+        let non_authenticated_socket = dp.udp_sockets.take(UdpSocketId::Raptorcast);
         let control = dp.control;
 
         // Create channels between primary and secondary raptorcast instances.
