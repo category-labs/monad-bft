@@ -146,24 +146,19 @@ impl ValidatorInfo {
 
     fn create_name_record(
         &self,
-        with_auth: bool,
         tcp_addr: SocketAddrV4,
-        auth_addr: Option<SocketAddrV4>,
+        auth_addr: SocketAddrV4,
         direct_udp_addr: Option<SocketAddrV4>,
         non_auth_addr: SocketAddrV4,
     ) -> MonadNameRecord<SecpSignature> {
-        let name_record = if with_auth || direct_udp_addr.is_some() {
-            NameRecord::new_with_ports(
-                Ipv4Addr::new(127, 0, 0, 1),
-                tcp_addr.port(),
-                non_auth_addr.port(),
-                auth_addr.map(|addr| addr.port()),
-                direct_udp_addr.map(|addr| addr.port()),
-                1,
-            )
-        } else {
-            NameRecord::new(Ipv4Addr::new(127, 0, 0, 1), non_auth_addr.port(), 1)
-        };
+        let name_record = NameRecord::new_with_ports(
+            Ipv4Addr::new(127, 0, 0, 1),
+            tcp_addr.port(),
+            non_auth_addr.port(),
+            auth_addr.port(),
+            direct_udp_addr.map(|addr| addr.port()),
+            1,
+        );
         MonadNameRecord::new(name_record, &*self.keypair)
     }
 }
@@ -453,14 +448,12 @@ async fn run_test_scenario(num_auth_nodes: usize, routing_type: RoutingType, mes
     let name_records: HashMap<_, _> = validator_infos
         .iter()
         .zip(dataplanes.iter())
-        .enumerate()
-        .map(|(i, (v, dp))| {
+        .map(|(v, dp)| {
             (
                 v.nodeid,
                 v.create_name_record(
-                    i < num_auth_nodes,
                     dp.tcp_addr,
-                    dp.auth_addr,
+                    dp.auth_addr.expect("auth enabled"),
                     dp.direct_udp_addr,
                     dp.non_auth_addr,
                 ),
@@ -612,7 +605,12 @@ async fn test_rate_limiting_basic() {
         .map(|(v, dp)| {
             (
                 v.nodeid,
-                v.create_name_record(true, dp.tcp_addr, dp.auth_addr, None, dp.non_auth_addr),
+                v.create_name_record(
+                    dp.tcp_addr,
+                    dp.auth_addr.expect("auth enabled"),
+                    None,
+                    dp.non_auth_addr,
+                ),
             )
         })
         .collect();
@@ -802,9 +800,8 @@ async fn run_send_with_record_uses_name_record_address() {
         (
             alice_info.nodeid,
             alice_info.create_name_record(
-                true,
                 alice_dp.tcp_addr,
-                Some(alice_auth_addr),
+                alice_auth_addr,
                 None,
                 alice_dp.non_auth_addr,
             ),
@@ -812,9 +809,8 @@ async fn run_send_with_record_uses_name_record_address() {
         (
             bob_info.nodeid,
             bob_info.create_name_record(
-                true,
                 bob1_dp.tcp_addr,
-                Some(bob1_auth_addr),
+                bob1_auth_addr,
                 None,
                 bob1_dp.non_auth_addr,
             ),
@@ -871,9 +867,8 @@ async fn run_send_with_record_uses_name_record_address() {
         (
             alice_info.nodeid,
             alice_info.create_name_record(
-                true,
                 SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 1),
-                Some(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 1)),
+                SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 1),
                 None,
                 SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 1),
             ),
@@ -881,9 +876,8 @@ async fn run_send_with_record_uses_name_record_address() {
         (
             bob_info.nodeid,
             bob_info.create_name_record(
-                true,
                 bob2_dp.tcp_addr,
-                Some(bob2_auth_addr),
+                bob2_auth_addr,
                 None,
                 bob2_dp.non_auth_addr,
             ),
@@ -915,18 +909,18 @@ async fn run_send_with_record_uses_name_record_address() {
         .expect("bob2 ready channel closed");
 
     // Construct a name record pointing to bob2's addresses and trigger SendPing on alice
-    let bob2_name_record = NameRecord::new_with_authentication(
+    let bob2_name_record = NameRecord::new(
         Ipv4Addr::new(127, 0, 0, 1),
         bob2_tcp_addr.port(),
         bob2_non_auth_addr.port(),
         bob2_auth_addr.port(),
+        0,
         1,
     );
 
     let alice_local_name_record = alice_info.create_name_record(
-        true,
         SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 1),
-        Some(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 1)),
+        SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 1),
         None,
         SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 1),
     );

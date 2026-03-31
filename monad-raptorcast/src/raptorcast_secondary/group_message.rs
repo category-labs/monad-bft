@@ -215,7 +215,10 @@ mod tests {
                 let ip = std::net::Ipv4Addr::new(seed as u8, 0, 0, 1);
                 let port = (seed + 16) as u16;
 
-                MonadNameRecord::<ST>::new(NameRecord::new(ip, port, (seed + 200) as u64), &key)
+                MonadNameRecord::<ST>::new(
+                    NameRecord::new(ip, port, port, port, 0, (seed + 200) as u64),
+                    &key,
+                )
             })
             .collect()
     }

@@ -1917,7 +1917,8 @@ mod tests {
         hasher.update(keypair.pubkey().bytes());
         let hash = hasher.hash();
         let ipaddr_v4 = Ipv4Addr::from_bits(u32::from_be_bytes(hash.0[28..32].try_into().unwrap()));
-        let name_record = NameRecord::new(ipaddr_v4, 8000 + seq_num as u16, seq_num);
+        let port = 8000 + seq_num as u16;
+        let name_record = NameRecord::new(ipaddr_v4, port, port, port + 1000, 0, seq_num);
         let mut encoded = Vec::new();
         name_record.encode(&mut encoded);
         let signature = SignatureType::sign::<signing_domain::NameRecord>(&encoded, keypair);
@@ -1928,7 +1929,14 @@ mod tests {
     }
 
     fn generate_dummy_name_record(keypair: &KeyPairType) -> MonadNameRecord<SignatureType> {
-        let name_record = NameRecord::new(*DUMMY_ADDR.ip(), DUMMY_ADDR.port(), 0);
+        let name_record = NameRecord::new(
+            *DUMMY_ADDR.ip(),
+            DUMMY_ADDR.port(),
+            DUMMY_ADDR.port(),
+            DUMMY_ADDR.port() + 1000,
+            0,
+            0,
+        );
         let mut encoded = Vec::new();
         name_record.encode(&mut encoded);
         let signature = SignatureType::sign::<signing_domain::NameRecord>(&encoded, keypair);
@@ -2778,11 +2786,46 @@ mod tests {
     const OLD_ADDR: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::new(7, 7, 7, 7), 8000);
     const NEW_ADDR: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::new(8, 8, 8, 8), 8000);
 
-    #[test_case(None, NameRecord::new(*NEW_ADDR.ip(), NEW_ADDR.port(), 1), true, NameRecord::new(*NEW_ADDR.ip(), NEW_ADDR.port(), 1), true; "first record")]
-    #[test_case(Some(NameRecord::new(*OLD_ADDR.ip(), OLD_ADDR.port(), 1)), NameRecord::new(*NEW_ADDR.ip(), NEW_ADDR.port(), 2), true, NameRecord::new(*NEW_ADDR.ip(), NEW_ADDR.port(), 2), true; "newer record")]
-    #[test_case(Some(NameRecord::new(*OLD_ADDR.ip(), OLD_ADDR.port(), 1)), NameRecord::new(*OLD_ADDR.ip(), OLD_ADDR.port(), 1), true, NameRecord::new(*OLD_ADDR.ip(), OLD_ADDR.port(), 1), false; "same record")]
-    #[test_case(Some(NameRecord::new(*NEW_ADDR.ip(), NEW_ADDR.port(), 2)), NameRecord::new(*OLD_ADDR.ip(), OLD_ADDR.port(), 1), false, NameRecord::new(*NEW_ADDR.ip(), NEW_ADDR.port(), 2), false; "older record")]
-    #[test_case(Some(NameRecord::new(*OLD_ADDR.ip(), OLD_ADDR.port(), 1)), NameRecord::new(*NEW_ADDR.ip(), NEW_ADDR.port(), 1), false, NameRecord::new(*OLD_ADDR.ip(), OLD_ADDR.port(), 1), false; "conflicting record")]
+    #[test_case(
+        None,
+        NameRecord::new(*NEW_ADDR.ip(), NEW_ADDR.port(), NEW_ADDR.port(), 9001, 0, 1),
+        true,
+        NameRecord::new(*NEW_ADDR.ip(), NEW_ADDR.port(), NEW_ADDR.port(), 9001, 0, 1),
+        true;
+        "first record"
+    )]
+    #[test_case(
+        Some(NameRecord::new(*OLD_ADDR.ip(), OLD_ADDR.port(), OLD_ADDR.port(), 9000, 0, 1)),
+        NameRecord::new(*NEW_ADDR.ip(), NEW_ADDR.port(), NEW_ADDR.port(), 9001, 0, 2),
+        true,
+        NameRecord::new(*NEW_ADDR.ip(), NEW_ADDR.port(), NEW_ADDR.port(), 9001, 0, 2),
+        true;
+        "newer record"
+    )]
+    #[test_case(
+        Some(NameRecord::new(*OLD_ADDR.ip(), OLD_ADDR.port(), OLD_ADDR.port(), 9000, 0, 1)),
+        NameRecord::new(*OLD_ADDR.ip(), OLD_ADDR.port(), OLD_ADDR.port(), 9000, 0, 1),
+        true,
+        NameRecord::new(*OLD_ADDR.ip(), OLD_ADDR.port(), OLD_ADDR.port(), 9000, 0, 1),
+        false;
+        "same record"
+    )]
+    #[test_case(
+        Some(NameRecord::new(*NEW_ADDR.ip(), NEW_ADDR.port(), NEW_ADDR.port(), 9001, 0, 2)),
+        NameRecord::new(*OLD_ADDR.ip(), OLD_ADDR.port(), OLD_ADDR.port(), 9000, 0, 1),
+        false,
+        NameRecord::new(*NEW_ADDR.ip(), NEW_ADDR.port(), NEW_ADDR.port(), 9001, 0, 2),
+        false;
+        "older record"
+    )]
+    #[test_case(
+        Some(NameRecord::new(*OLD_ADDR.ip(), OLD_ADDR.port(), OLD_ADDR.port(), 9000, 0, 1)),
+        NameRecord::new(*NEW_ADDR.ip(), NEW_ADDR.port(), NEW_ADDR.port(), 9001, 0, 1),
+        false,
+        NameRecord::new(*OLD_ADDR.ip(), OLD_ADDR.port(), OLD_ADDR.port(), 9000, 0, 1),
+        false;
+        "conflicting record"
+    )]
     fn test_ping_record(
         known_record: Option<NameRecord>,
         incoming_record: NameRecord,
@@ -2938,7 +2981,7 @@ mod tests {
         let (mut state, _clock) = generate_test_state(peer0, vec![]);
 
         let peer1_record = MonadNameRecord::new(
-            NameRecord::new_with_ports(Ipv4Addr::new(8, 8, 8, 8), 8000, 8000, None, Some(9000), 1),
+            NameRecord::new_with_ports(Ipv4Addr::new(8, 8, 8, 8), 8000, 8000, 9100, Some(9000), 1),
             peer1,
         );
         let peer1_entry = PeerEntry::from(peer1_record.with_pubkey(peer1.pubkey()));
@@ -2963,7 +3006,7 @@ mod tests {
         assert_eq!(state.get_name_record(&peer1_pubkey), Some(&peer1_record));
 
         let peer2_record = MonadNameRecord::new(
-            NameRecord::new_with_ports(Ipv4Addr::new(8, 8, 8, 8), 8001, 8001, None, Some(9000), 1),
+            NameRecord::new_with_ports(Ipv4Addr::new(8, 8, 8, 8), 8001, 8001, 9101, Some(9000), 1),
             peer2,
         );
         let peer_entry = PeerEntry::from(peer2_record.with_pubkey(peer2.pubkey()));
@@ -3207,9 +3250,9 @@ mod tests {
         let peer2 = &keys[2];
         let peer2_pubkey = NodeId::new(peer2.pubkey());
 
-        // peer1 has no authenticated UDP port
+        // peer1 has an authenticated UDP port
         let peer1_name_record = {
-            let name_record = NameRecord::new(Ipv4Addr::new(8, 8, 8, 8), 8000, 1);
+            let name_record = NameRecord::new(Ipv4Addr::new(8, 8, 8, 8), 8000, 8000, 9000, 0, 1);
             let mut encoded = Vec::new();
             name_record.encode(&mut encoded);
             let signature = SecpSignature::sign::<signing_domain::NameRecord>(&encoded, peer1);
@@ -3225,7 +3268,7 @@ mod tests {
                 Ipv4Addr::new(8, 8, 4, 4),
                 8001,
                 8001,
-                Some(9001),
+                9001,
                 Some(9002),
                 2,
             );
@@ -3257,7 +3300,14 @@ mod tests {
         let mut state = PeerDiscovery {
             self_id: NodeId::new(peer0.pubkey()),
             self_record: {
-                let name_record = NameRecord::new(*DUMMY_ADDR.ip(), DUMMY_ADDR.port(), 0);
+                let name_record = NameRecord::new(
+                    *DUMMY_ADDR.ip(),
+                    DUMMY_ADDR.port(),
+                    DUMMY_ADDR.port(),
+                    DUMMY_ADDR.port(),
+                    0,
+                    0,
+                );
                 let mut encoded = Vec::new();
                 name_record.encode(&mut encoded);
                 let signature = SecpSignature::sign::<signing_domain::NameRecord>(&encoded, peer0);
@@ -3344,7 +3394,7 @@ mod tests {
             "routing_info should still be empty before ping pong"
         );
 
-        // verify peer1 data (no auth port)
+        // verify peer1 data
         let loaded_peer1 = &state.pending_queue.get(&peer1_pubkey).unwrap().name_record;
         assert_eq!(
             loaded_peer1.udp_address(),
@@ -3354,8 +3404,8 @@ mod tests {
         assert_eq!(loaded_peer1.seq(), 1, "peer1 seq should match");
         assert_eq!(
             loaded_peer1.name_record.authenticated_udp_port(),
-            None,
-            "peer1 should not have auth port"
+            9000,
+            "peer1 auth port should match"
         );
 
         // verify peer2 data (with auth port and direct UDP port)
@@ -3368,7 +3418,7 @@ mod tests {
         assert_eq!(loaded_peer2.seq(), 2, "peer2 seq should match");
         assert_eq!(
             loaded_peer2.name_record.authenticated_udp_port(),
-            Some(9001),
+            9001,
             "peer2 auth port should match"
         );
         assert_eq!(

@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::num::NonZeroU16;
+
 use monad_crypto::certificate_signature::CertificateSignatureRecoverable;
 use monad_types::Round;
 use serde::{Deserialize, Serialize};
@@ -22,9 +24,9 @@ use serde::{Deserialize, Serialize};
 #[serde(bound = "ST: CertificateSignatureRecoverable")]
 pub struct PeerDiscoveryConfig<ST: CertificateSignatureRecoverable> {
     pub self_address: String,
-    pub self_auth_port: u16,
+    pub self_auth_port: NonZeroU16,
     #[serde(alias = "self_direct_udp_auth_port")]
-    pub self_direct_udp_port: Option<u16>,
+    pub self_direct_udp_port: Option<NonZeroU16>,
     pub self_record_seq_num: u64,
 
     pub self_name_record_sig: ST,

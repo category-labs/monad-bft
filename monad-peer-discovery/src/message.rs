@@ -188,6 +188,9 @@ mod test {
                 NameRecord::new(
                     *SocketAddrV4::from_str("127.0.0.1:8000").unwrap().ip(),
                     8000,
+                    8000,
+                    8000,
+                    0,
                     2,
                 ),
                 &key,
@@ -210,6 +213,9 @@ mod test {
                 NameRecord::new(
                     *SocketAddrV4::from_str("127.0.0.1:8000").unwrap().ip(),
                     8000,
+                    8000,
+                    8000,
+                    0,
                     2,
                 ),
                 &key,
@@ -266,6 +272,9 @@ mod test {
                     NameRecord::new(
                         *SocketAddrV4::from_str("192.168.1.1:8000").unwrap().ip(),
                         8000,
+                        8000,
+                        8000,
+                        0,
                         1,
                     ),
                     &key1,
@@ -274,6 +283,9 @@ mod test {
                     NameRecord::new(
                         *SocketAddrV4::from_str("192.168.1.2:8001").unwrap().ip(),
                         8001,
+                        8001,
+                        8001,
+                        0,
                         2,
                     ),
                     &key2,
@@ -282,6 +294,9 @@ mod test {
                     NameRecord::new(
                         *SocketAddrV4::from_str("192.168.1.3:8002").unwrap().ip(),
                         8002,
+                        8002,
+                        8002,
+                        0,
                         3,
                     ),
                     &key3,

@@ -583,11 +583,12 @@ fn setup_node(
         let participant_pubkey = participant_keypair.pubkey();
         let node_id = NodeId::new(participant_pubkey);
 
-        let name_record = NameRecord::new_with_authentication(
+        let name_record = NameRecord::new(
             *participant.tcp_addr.ip(),
             participant.tcp_addr.port(),
             participant.udp_addr.port(),
             participant.authenticated_udp_addr.port(),
+            0,
             0,
         );
         let monad_name_record =
