@@ -22,15 +22,13 @@ use alloy_primitives::{
     Address, Bytes, Log,
 };
 use alloy_rlp::{Decodable, Encodable, RlpDecodable};
-use monad_archive::prelude::IndexReader;
 use monad_rpc_docs::rpc;
-use monad_triedb_utils::triedb_env::{BlockKey, FinalizedBlockKey, Triedb};
-use monad_types::SeqNum;
+use monad_triedb_utils::triedb_env::{BlockKey, Triedb};
 use serde::{Deserialize, Serialize};
 use tracing::{error, trace};
 
 use crate::{
-    chainstate::{get_latest_block_key, ChainState},
+    chainstate::ChainState,
     types::{
         eth_json::{
             BlockTagOrHash, BlockTags, EthAddress, EthHash, FixedData, MonadU256, Quantity,
@@ -492,51 +490,23 @@ pub async fn monad_debug_traceTransaction<T: Triedb>(
 ) -> JsonRpcResult<Option<MonadCallFrame>> {
     trace!("monad_eth_debugTraceTransaction: {params:?}");
 
-    let latest_block_key = get_latest_block_key(&chain_state.triedb_env);
-    if let Some(tx_loc) = chain_state
-        .triedb_env
-        .get_transaction_location_by_hash(latest_block_key, params.tx_hash.0)
+    let Some((block_key, call_frame)) = chain_state
+        .get_transaction_call_frame(params.tx_hash.0)
         .await
-        .map_err(JsonRpcError::internal_error)?
-    {
-        let block_key = chain_state
-            .triedb_env
-            .get_block_key(SeqNum(tx_loc.block_num))
-            .ok_or(JsonRpcError::block_not_found())?;
-        if let Some(rlp_call_frame) = chain_state
-            .triedb_env
-            .get_call_frame(block_key, tx_loc.tx_index)
-            .await
-            .map_err(JsonRpcError::internal_error)?
-        {
-            let rlp_call_frame = &mut rlp_call_frame.as_slice();
-            return decode_call_frame(
-                &chain_state.triedb_env,
-                rlp_call_frame,
-                block_key,
-                &params.tracer,
-            )
-            .await;
-        }
-    }
+        .to_jsonrpc_result()?
+        .flatten()
+    else {
+        return Ok(None);
+    };
 
-    // try archive if transaction hash not found and archive reader specified
-    if let Some(archive_reader) = &chain_state.archive_reader {
-        if let Some((trace, header_subset)) =
-            archive_reader.get_trace(&params.tx_hash.0.into()).await?
-        {
-            let rlp_call_frame = &mut trace.as_slice();
-            return decode_call_frame(
-                &chain_state.triedb_env,
-                rlp_call_frame,
-                BlockKey::Finalized(FinalizedBlockKey(SeqNum(header_subset.block_number))),
-                &params.tracer,
-            )
-            .await;
-        }
-    }
-
-    Ok(None)
+    let rlp_call_frame = &mut call_frame.as_slice();
+    decode_call_frame(
+        &chain_state.triedb_env,
+        rlp_call_frame,
+        block_key,
+        &params.tracer,
+    )
+    .await
 }
 
 async fn decode_block_call_frames<T: Triedb>(
@@ -769,6 +739,7 @@ mod tests {
     use alloy_rlp::{BufMut, Encodable};
     use monad_eth_types::{EthTxHash, ReceiptWithLogIndex, TransactionLocation};
     use monad_triedb_utils::mock_triedb;
+    use monad_types::SeqNum;
 
     use super::*;
     use crate::types::ethhex;
