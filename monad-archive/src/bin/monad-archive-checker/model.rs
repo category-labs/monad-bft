@@ -13,7 +13,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::{BTreeSet, HashMap};
+use std::{
+    collections::{BTreeSet, HashMap},
+    hash::{Hash, Hasher},
+};
 
 use eyre::{Context, Result};
 use futures::future::try_join_all;
@@ -48,6 +51,50 @@ pub fn good_blocks_key(starting_block_num: u64) -> String {
 pub struct CheckerModel {
     pub store: KVStoreErased,
     pub block_data_readers: Arc<HashMap<String, BlockDataArchive>>,
+}
+
+#[derive(Clone, Debug)]
+struct CheckerArchiveKey(ArchiveArgs);
+
+impl PartialEq for CheckerArchiveKey {
+    fn eq(&self, other: &Self) -> bool {
+        match (&self.0, &other.0) {
+            (ArchiveArgs::Aws(lhs), ArchiveArgs::Aws(rhs)) => {
+                lhs.bucket == rhs.bucket && lhs.region == rhs.region
+            }
+            (ArchiveArgs::MongoDb(lhs), ArchiveArgs::MongoDb(rhs)) => lhs == rhs,
+            (ArchiveArgs::Fs(lhs), ArchiveArgs::Fs(rhs)) => lhs == rhs,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for CheckerArchiveKey {}
+
+impl Hash for CheckerArchiveKey {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match &self.0 {
+            ArchiveArgs::Aws(args) => {
+                "aws".hash(state);
+                args.bucket.hash(state);
+                args.region.hash(state);
+            }
+            ArchiveArgs::MongoDb(args) => {
+                "mongodb".hash(state);
+                args.hash(state);
+            }
+            ArchiveArgs::Fs(args) => {
+                "fs".hash(state);
+                args.hash(state);
+            }
+        }
+    }
+}
+
+impl From<ArchiveArgs> for CheckerArchiveKey {
+    fn from(args: ArchiveArgs) -> Self {
+        Self(args)
+    }
 }
 
 impl CheckerModel {
@@ -110,7 +157,7 @@ impl CheckerModel {
             if replica_args.is_empty() {
                 Self::set_replica_args(s3, &init_replicas).await?;
                 replica_args = init_replicas;
-            } else if init_replicas != replica_args {
+            } else if !Self::matches_checker_replica_args(&init_replicas, &replica_args) {
                 bail!("s3 replicas is non-empty and does not match init replica arg");
             } else if init_replicas.is_empty() {
                 bail!(
@@ -129,6 +176,21 @@ impl CheckerModel {
         }
 
         Ok(readers)
+    }
+
+    fn matches_checker_replica_args(
+        lhs: &HashSet<ArchiveArgs>,
+        rhs: &HashSet<ArchiveArgs>,
+    ) -> bool {
+        lhs.iter()
+            .cloned()
+            .map(CheckerArchiveKey::from)
+            .collect::<HashSet<_>>()
+            == rhs
+                .iter()
+                .cloned()
+                .map(CheckerArchiveKey::from)
+                .collect::<HashSet<_>>()
     }
 
     /// Returns the minimum latest checked block across all replicas
@@ -570,6 +632,8 @@ pub struct GoodBlocks {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use monad_archive::kvstore::memory::MemoryStorage;
 
     use super::*;
@@ -759,6 +823,69 @@ mod tests {
         assert_eq!(result.len(), 1);
         assert!(result.contains(&200));
         assert!(!result.contains(&100));
+    }
+
+    #[test]
+    fn checker_archive_key_reduces_aws_equality_to_bucket_and_region() {
+        let lhs = CheckerArchiveKey(ArchiveArgs::Aws(monad_archive::cli::AwsCliArgs {
+            bucket: "archive-a".to_string(),
+            region: Some("us-east-1".to_string()),
+            endpoint: Some("http://minio-a".to_string()),
+            profile: Some("profile-a".to_string()),
+            access_key_id: Some("key-a".to_string()),
+            secret_access_key: Some("secret-a".to_string()),
+            concurrency: 1,
+            operation_timeout_secs: 11,
+            operation_attempt_timeout_secs: 12,
+            read_timeout_secs: 13,
+        }));
+        let rhs = CheckerArchiveKey(ArchiveArgs::Aws(monad_archive::cli::AwsCliArgs {
+            bucket: "archive-a".to_string(),
+            region: Some("us-east-1".to_string()),
+            endpoint: Some("http://minio-b".to_string()),
+            profile: Some("profile-b".to_string()),
+            access_key_id: Some("key-b".to_string()),
+            secret_access_key: Some("secret-b".to_string()),
+            concurrency: 99,
+            operation_timeout_secs: 21,
+            operation_attempt_timeout_secs: 22,
+            read_timeout_secs: 23,
+        }));
+
+        assert_eq!(lhs, rhs);
+
+        let key_set = HashSet::from([lhs, rhs]);
+        assert_eq!(key_set.len(), 1);
+    }
+
+    #[test]
+    fn checker_archive_key_preserves_non_aws_identity() {
+        let fs = CheckerArchiveKey(ArchiveArgs::Fs(monad_archive::cli::FsCliArgs {
+            path: PathBuf::from("/tmp/archive"),
+        }));
+        let same_fs = CheckerArchiveKey(ArchiveArgs::Fs(monad_archive::cli::FsCliArgs {
+            path: PathBuf::from("/tmp/archive"),
+        }));
+        let different_fs = CheckerArchiveKey(ArchiveArgs::Fs(monad_archive::cli::FsCliArgs {
+            path: PathBuf::from("/tmp/archive-2"),
+        }));
+
+        assert_eq!(fs, same_fs);
+        assert_ne!(fs, different_fs);
+
+        let mongo = CheckerArchiveKey(ArchiveArgs::MongoDb(monad_archive::cli::MongoDbCliArgs {
+            url: "mongodb://host:27017".to_string(),
+            db: "db".to_string(),
+            replica_name: None,
+        }));
+        let different_mongo =
+            CheckerArchiveKey(ArchiveArgs::MongoDb(monad_archive::cli::MongoDbCliArgs {
+                url: "mongodb://host:27018".to_string(),
+                db: "db".to_string(),
+                replica_name: None,
+            }));
+
+        assert_ne!(mongo, different_mongo);
     }
 
     #[tokio::test]
