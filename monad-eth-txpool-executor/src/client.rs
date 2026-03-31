@@ -33,7 +33,7 @@ use monad_state_backend::StateBackend;
 use monad_types::NodeId;
 use monad_validator::signature_collection::SignatureCollection;
 
-use crate::forward::INGRESS_CHUNK_MAX_SIZE;
+use crate::{forward::INGRESS_CHUNK_MAX_SIZE, TxPoolExecutorCommand};
 
 pub struct ForwardedTxs<SCT>
 where
@@ -136,7 +136,7 @@ where
 
     command_tx: tokio::sync::mpsc::Sender<
         Vec<
-            TxPoolCommand<
+            TxPoolExecutorCommand<
                 ST,
                 SCT,
                 EthExecutionProtocol,
@@ -167,7 +167,7 @@ where
         updater: impl FnOnce(
                 tokio::sync::mpsc::Receiver<
                     Vec<
-                        TxPoolCommand<
+                        TxPoolExecutorCommand<
                             ST,
                             SCT,
                             EthExecutionProtocol,
@@ -205,7 +205,7 @@ where
         updater: impl FnOnce(
                 tokio::sync::mpsc::Receiver<
                     Vec<
-                        TxPoolCommand<
+                        TxPoolExecutorCommand<
                             ST,
                             SCT,
                             EthExecutionProtocol,
@@ -417,13 +417,74 @@ where
     fn exec(&mut self, commands: Vec<Self::Command>) {
         self.verify_handle_liveness();
 
-        let (commands, forwarded): (Vec<Self::Command>, Vec<ForwardedTxs<SCT>>) =
-            commands.into_iter().partition_map(|command| match command {
-                TxPoolCommand::InsertForwardedTxs { sender, txs } => {
-                    Either::Right(ForwardedTxs { sender, txs })
-                }
-                command => Either::Left(command),
-            });
+        let (commands, forwarded): (
+            Vec<
+                TxPoolExecutorCommand<
+                    ST,
+                    SCT,
+                    EthExecutionProtocol,
+                    EthBlockPolicy<ST, SCT, CCT, CRT>,
+                    SBT,
+                    CCT,
+                    CRT,
+                >,
+            >,
+            Vec<ForwardedTxs<SCT>>,
+        ) = commands.into_iter().partition_map(|command| match command {
+            TxPoolCommand::BlockCommit(block_commit) => {
+                Either::Left(TxPoolExecutorCommand::BlockCommit(block_commit))
+            }
+            TxPoolCommand::CreateProposal {
+                node_id,
+                epoch,
+                round,
+                seq_num,
+                high_qc,
+                round_signature,
+                last_round_tc,
+                fresh_proposal_certificate,
+                tx_limit,
+                proposal_gas_limit,
+                proposal_byte_limit,
+                beneficiary,
+                timestamp_ns,
+                extending_blocks,
+                delayed_execution_results,
+            } => Either::Left(TxPoolExecutorCommand::CreateProposal {
+                node_id,
+                epoch,
+                round,
+                seq_num,
+                high_qc,
+                round_signature,
+                last_round_tc,
+                fresh_proposal_certificate,
+                tx_limit,
+                proposal_gas_limit,
+                proposal_byte_limit,
+                beneficiary,
+                timestamp_ns,
+                extending_blocks,
+                delayed_execution_results,
+            }),
+            TxPoolCommand::InsertForwardedTxs { sender, txs } => {
+                Either::Right(ForwardedTxs { sender, txs })
+            }
+            TxPoolCommand::EnterRound {
+                epoch,
+                round,
+                upcoming_leader_rounds,
+            } => Either::Left(TxPoolExecutorCommand::EnterRound {
+                epoch,
+                round,
+                upcoming_leader_rounds,
+            }),
+            TxPoolCommand::Reset {
+                last_delay_committed_blocks,
+            } => Either::Left(TxPoolExecutorCommand::Reset {
+                last_delay_committed_blocks,
+            }),
+        });
 
         if !commands.is_empty() {
             self.command_tx
