@@ -18,7 +18,10 @@ use crate::{
     family::FinalizedBlock,
     kernel::tables::Tables,
     logs::{LogIngestPlan, QueryLogsRequest, QueryLogsResponse},
-    primitives::{range::ResolvedBlockWindow, state::BlockRecord},
+    primitives::{
+        range::ResolvedBlockWindow,
+        state::{BlockRecord, LogId},
+    },
     query::runner::execute_block_scan_query,
     store::{BlobStore, MetaStore},
 };
@@ -49,28 +52,26 @@ impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
     // incompletely written. Retry logic, logging, and metrics belong here once the
     // overall pipeline shape stabilizes.
     pub async fn ingest_block(&self, block: FinalizedBlock) -> Result<IngestOutcome> {
+        let blocks = self.tables.blocks();
+        let logs = self.tables.logs();
         let current_head = self.tables.publication().load_published_head().await?;
-        self.tables
-            .blocks()
-            .validate_continuity(&block, current_head)
-            .await?;
+        let previous_record = blocks.validate_continuity(&block, current_head).await?;
+        let next_log_id = match previous_record {
+            Some(previous) => previous.logs.next_log_id()?,
+            None => LogId::ZERO,
+        };
 
         let LogIngestPlan {
             block_record,
             block_log_header,
             block_log_blob,
             written_logs,
-        } = LogIngestPlan::build(&block)?;
-        self.tables
-            .logs()
-            .store_block_blob(block.block_number, block_log_blob)
+        } = LogIngestPlan::build(&block, next_log_id)?;
+        logs.store_block_blob(block.block_number, block_log_blob)
             .await?;
-        self.tables
-            .logs()
-            .store_block_header(block.block_number, &block_log_header)
+        logs.store_block_header(block.block_number, &block_log_header)
             .await?;
-        self.tables
-            .blocks()
+        blocks
             .store_record(block.block_number, &block_record)
             .await?;
         self.tables

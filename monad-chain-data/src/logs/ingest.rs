@@ -17,7 +17,7 @@ use super::{LogBlockHeader, RawLogEntry};
 use crate::{
     error::{MonadChainDataError, Result},
     family::FinalizedBlock,
-    primitives::state::BlockRecord,
+    primitives::state::{BlockRecord, FamilyWindowRecord, LogId},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,16 +29,22 @@ pub struct LogIngestPlan {
 }
 
 impl LogIngestPlan {
-    pub fn build(block: &FinalizedBlock) -> Result<Self> {
+    pub fn build(block: &FinalizedBlock, first_log_id: LogId) -> Result<Self> {
         // First pass writes only per-block payload/header artifacts plus the shared block record.
         // Later commits add global log IDs, directory fragments, and bitmap index artifacts.
         let logs = Self::flatten_logs(block)?;
+        let log_count = u32::try_from(logs.len())
+            .map_err(|_| MonadChainDataError::Decode("log count overflow"))?;
 
         let (block_log_header, block_log_blob) = Self::encode_block_logs(&logs)?;
         let block_record = BlockRecord {
             block_number: block.block_number,
             block_hash: block.block_hash,
             parent_hash: block.parent_hash,
+            logs: FamilyWindowRecord {
+                first_log_id,
+                count: log_count,
+            },
         };
 
         Ok(Self {

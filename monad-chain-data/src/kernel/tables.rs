@@ -124,7 +124,7 @@ impl<M: MetaStore> BlockTables<M> {
         &self,
         block: &FinalizedBlock,
         current_head: Option<u64>,
-    ) -> Result<()> {
+    ) -> Result<Option<BlockRecord>> {
         match current_head {
             None => {
                 if block.block_number != 1 {
@@ -132,6 +132,7 @@ impl<M: MetaStore> BlockTables<M> {
                         "first ingested block must be block 1 in the first pass",
                     ));
                 }
+                Ok(None)
             }
             Some(head) => {
                 if block.block_number != head + 1 {
@@ -148,10 +149,9 @@ impl<M: MetaStore> BlockTables<M> {
                         "parent_hash must match the previous published block",
                     ));
                 }
+                Ok(Some(previous))
             }
         }
-
-        Ok(())
     }
 }
 

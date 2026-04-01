@@ -30,7 +30,7 @@ pub use logs::{LogEntry, LogFilter, QueryLogsRequest, QueryLogsResponse};
 pub use primitives::{
     page::{QueryOrder, DEFAULT_QUERY_LIMIT},
     refs::BlockRef,
-    state::BlockRecord,
+    state::{BlockRecord, FamilyWindowRecord, LogId},
 };
 pub use store::{InMemoryBlobStore, InMemoryMetaStore};
 

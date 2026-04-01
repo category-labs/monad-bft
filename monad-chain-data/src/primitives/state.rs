@@ -20,11 +20,46 @@ use crate::{
     family::Hash32,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, RlpEncodable, RlpDecodable)]
+pub struct LogId(u64);
+
+impl LogId {
+    pub const ZERO: Self = Self(0);
+
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    pub const fn as_u64(self) -> u64 {
+        self.0
+    }
+
+    pub fn checked_add(self, rhs: u64) -> Result<Self> {
+        self.0
+            .checked_add(rhs)
+            .map(Self)
+            .ok_or(MonadChainDataError::Decode("log id overflow"))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+pub struct FamilyWindowRecord {
+    pub first_log_id: LogId,
+    pub count: u32,
+}
+
+impl FamilyWindowRecord {
+    pub fn next_log_id(self) -> Result<LogId> {
+        self.first_log_id.checked_add(u64::from(self.count))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 pub struct BlockRecord {
     pub block_number: u64,
     pub block_hash: Hash32,
     pub parent_hash: Hash32,
+    pub logs: FamilyWindowRecord,
 }
 
 impl BlockRecord {

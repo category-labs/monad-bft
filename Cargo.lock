@@ -4905,7 +4905,6 @@ dependencies = [
  "alloy-rlp",
  "auto_impl",
  "bytes",
- "roaring",
  "thiserror 1.0.69",
  "tokio",
 ]
