@@ -27,7 +27,11 @@ pub use api::{IngestOutcome, MonadChainDataService};
 pub use family::{FinalizedBlock, Hash32};
 pub use kernel::tables::Tables;
 pub use logs::{LogEntry, LogFilter, QueryLogsRequest, QueryLogsResponse};
-pub use primitives::{page::QueryOrder, refs::BlockRef, state::BlockRecord};
+pub use primitives::{
+    page::{QueryOrder, DEFAULT_QUERY_LIMIT},
+    refs::BlockRef,
+    state::BlockRecord,
+};
 pub use store::{InMemoryBlobStore, InMemoryMetaStore};
 
 pub type Topic = B256;

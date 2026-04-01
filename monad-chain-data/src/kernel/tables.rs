@@ -13,8 +13,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use bytes::Bytes;
+
 use crate::{
     error::Result,
+    family::FinalizedBlock,
     logs::LogBlockHeader,
     primitives::state::{BlockRecord, PublicationState},
     store::{BlobStore, BlobTable, BlobTableId, KvTable, MetaStore, TableId},
@@ -48,6 +51,10 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
     }
 }
 
+fn block_number_key(block_number: u64) -> [u8; 8] {
+    block_number.to_be_bytes()
+}
+
 pub struct PublicationTables<M: MetaStore> {
     publication_state: KvTable<M>,
 }
@@ -63,13 +70,24 @@ impl<M: MetaStore> PublicationTables<M> {
     }
 
     pub async fn load_published_head(&self) -> Result<Option<u64>> {
-        let _ = &self.publication_state;
-        todo!("load publication-state metadata for the current head")
+        let Some(record) = self
+            .publication_state
+            .get(Self::PUBLICATION_STATE_KEY)
+            .await?
+        else {
+            return Ok(None);
+        };
+
+        Ok(Some(
+            PublicationState::decode(&record.value)?.indexed_finalized_head,
+        ))
     }
 
     pub async fn store_state(&self, state: PublicationState) -> Result<()> {
-        let _ = (&self.publication_state, state);
-        todo!("store publication-state metadata")
+        self.publication_state
+            .put(Self::PUBLICATION_STATE_KEY, Bytes::from(state.encode()))
+            .await?;
+        Ok(())
     }
 }
 
@@ -87,13 +105,53 @@ impl<M: MetaStore> BlockTables<M> {
     }
 
     pub async fn load_record(&self, block_number: u64) -> Result<Option<BlockRecord>> {
-        let _ = (&self.block_records, block_number);
-        todo!("load a shared block record by block number")
+        let key = block_number_key(block_number);
+        let Some(record) = self.block_records.get(&key).await? else {
+            return Ok(None);
+        };
+        Ok(Some(BlockRecord::decode(&record.value)?))
     }
 
     pub async fn store_record(&self, block_number: u64, block_record: &BlockRecord) -> Result<()> {
-        let _ = (&self.block_records, block_number, block_record);
-        todo!("store a shared block record by block number")
+        let key = block_number_key(block_number);
+        self.block_records
+            .put(&key, Bytes::from(block_record.encode()))
+            .await?;
+        Ok(())
+    }
+
+    pub async fn validate_continuity(
+        &self,
+        block: &FinalizedBlock,
+        current_head: Option<u64>,
+    ) -> Result<()> {
+        match current_head {
+            None => {
+                if block.block_number != 1 {
+                    return Err(crate::error::MonadChainDataError::InvalidRequest(
+                        "first ingested block must be block 1 in the first pass",
+                    ));
+                }
+            }
+            Some(head) => {
+                if block.block_number != head + 1 {
+                    return Err(crate::error::MonadChainDataError::InvalidRequest(
+                        "block_number must extend the published head contiguously",
+                    ));
+                }
+
+                let previous = self.load_record(head).await?.ok_or(
+                    crate::error::MonadChainDataError::MissingData("missing previous block record"),
+                )?;
+                if previous.block_hash != block.parent_hash {
+                    return Err(crate::error::MonadChainDataError::InvalidRequest(
+                        "parent_hash must match the previous published block",
+                    ));
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -114,8 +172,11 @@ impl<M: MetaStore, B: BlobStore> LogTables<M, B> {
     }
 
     pub async fn load_block_header(&self, block_number: u64) -> Result<Option<LogBlockHeader>> {
-        let _ = (&self.block_headers, block_number);
-        todo!("load a logs block header by block number")
+        let key = block_number_key(block_number);
+        let Some(record) = self.block_headers.get(&key).await? else {
+            return Ok(None);
+        };
+        Ok(Some(LogBlockHeader::decode(&record.value)?))
     }
 
     pub async fn store_block_header(
@@ -123,17 +184,26 @@ impl<M: MetaStore, B: BlobStore> LogTables<M, B> {
         block_number: u64,
         block_log_header: &LogBlockHeader,
     ) -> Result<()> {
-        let _ = (&self.block_headers, block_number, block_log_header);
-        todo!("store a logs block header by block number")
+        let key = block_number_key(block_number);
+        self.block_headers
+            .put(&key, Bytes::from(block_log_header.encode()))
+            .await?;
+        Ok(())
     }
 
-    pub async fn load_block_blob(&self, block_number: u64) -> Result<Option<bytes::Bytes>> {
-        let _ = (&self.block_blobs, block_number);
-        todo!("load a logs block blob by block number")
+    pub async fn load_block_blob(
+        &self,
+        block_number: u64,
+    ) -> Result<Option<alloy_primitives::Bytes>> {
+        let key = block_number_key(block_number);
+        Ok(self.block_blobs.get(&key).await?.map(Into::into))
     }
 
     pub async fn store_block_blob(&self, block_number: u64, block_log_blob: Vec<u8>) -> Result<()> {
-        let _ = (&self.block_blobs, block_number, block_log_blob);
-        todo!("store a logs block blob by block number")
+        let key = block_number_key(block_number);
+        self.block_blobs
+            .put(&key, Bytes::from(block_log_blob))
+            .await?;
+        Ok(())
     }
 }

@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+pub const DEFAULT_QUERY_LIMIT: usize = 100;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum QueryOrder {
     #[default]

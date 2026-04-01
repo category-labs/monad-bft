@@ -14,11 +14,12 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use crate::{
-    error::Result,
+    error::{MonadChainDataError, Result},
     family::FinalizedBlock,
     kernel::tables::Tables,
-    logs::{QueryLogsRequest, QueryLogsResponse},
-    primitives::state::BlockRecord,
+    logs::{LogIngestPlan, QueryLogsRequest, QueryLogsResponse},
+    primitives::{range::ResolvedBlockWindow, state::BlockRecord},
+    query::runner::execute_block_scan_query,
     store::{BlobStore, MetaStore},
 };
 
@@ -44,13 +45,65 @@ impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
         &self.tables
     }
 
+    // TODO: Individual writes are idempotent, but a partial failure leaves the block
+    // incompletely written. Retry logic, logging, and metrics belong here once the
+    // overall pipeline shape stabilizes.
     pub async fn ingest_block(&self, block: FinalizedBlock) -> Result<IngestOutcome> {
-        let _ = block;
-        todo!("implement minimal logs-only ingest pipeline")
+        let current_head = self.tables.publication().load_published_head().await?;
+        self.tables
+            .blocks()
+            .validate_continuity(&block, current_head)
+            .await?;
+
+        let LogIngestPlan {
+            block_record,
+            block_log_header,
+            block_log_blob,
+            written_logs,
+        } = LogIngestPlan::build(&block)?;
+        self.tables
+            .logs()
+            .store_block_blob(block.block_number, block_log_blob)
+            .await?;
+        self.tables
+            .logs()
+            .store_block_header(block.block_number, &block_log_header)
+            .await?;
+        self.tables
+            .blocks()
+            .store_record(block.block_number, &block_record)
+            .await?;
+        self.tables
+            .publication()
+            .store_state(crate::primitives::state::PublicationState {
+                indexed_finalized_head: block.block_number,
+            })
+            .await?;
+
+        Ok(IngestOutcome {
+            indexed_finalized_head: block.block_number,
+            block_record,
+            written_logs,
+        })
     }
 
     pub async fn query_logs(&self, request: QueryLogsRequest) -> Result<QueryLogsResponse> {
-        let _ = request;
-        todo!("implement minimal block-scan query path")
+        if request.limit == 0 {
+            return Err(MonadChainDataError::InvalidRequest(
+                "limit must be at least 1",
+            ));
+        }
+
+        let head = self
+            .tables
+            .publication()
+            .load_published_head()
+            .await?
+            .ok_or(MonadChainDataError::MissingData("no published blocks"))?;
+        let window = ResolvedBlockWindow::resolve(&request, head, self.tables.blocks()).await?;
+
+        // First pass: all log queries use the fallback block-scan path.
+        // Indexed execution lands in later commits once log IDs and bitmap artifacts exist.
+        execute_block_scan_query(&self.tables, &request, window).await
     }
 }

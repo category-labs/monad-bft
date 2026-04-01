@@ -14,8 +14,12 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use alloy_primitives::{Address, Bytes, B256};
+use alloy_rlp::{RlpDecodable, RlpEncodable};
 
-use crate::family::Hash32;
+use crate::{
+    error::{MonadChainDataError, Result},
+    family::Hash32,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogEntry {
@@ -28,7 +32,56 @@ pub struct LogEntry {
     pub data: Bytes,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Per-log fields stored in the block blob. Block-level fields (block_number,
+/// block_hash) are reconstructed from the BlockRecord at read time.
+#[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+pub struct RawLogEntry {
+    pub tx_index: u32,
+    pub log_index: u32,
+    pub address: Address,
+    pub topics: Vec<B256>,
+    pub data: Bytes,
+}
+
+impl RawLogEntry {
+    pub fn encode(&self) -> Vec<u8> {
+        alloy_rlp::encode(self)
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
+        alloy_rlp::decode_exact(bytes)
+            .map_err(|_| MonadChainDataError::Decode("invalid log entry rlp"))
+    }
+
+    pub fn into_log_entry(self, block_number: u64, block_hash: Hash32) -> LogEntry {
+        LogEntry {
+            block_number,
+            block_hash,
+            tx_index: self.tx_index,
+            log_index: self.log_index,
+            address: self.address,
+            topics: self.topics,
+            data: self.data,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 pub struct LogBlockHeader {
     pub offsets: Vec<u32>,
+}
+
+impl LogBlockHeader {
+    pub fn log_count(&self) -> usize {
+        self.offsets.len().saturating_sub(1)
+    }
+
+    pub fn encode(&self) -> Vec<u8> {
+        alloy_rlp::encode(self)
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
+        alloy_rlp::decode_exact(bytes)
+            .map_err(|_| MonadChainDataError::Decode("invalid log header rlp"))
+    }
 }
