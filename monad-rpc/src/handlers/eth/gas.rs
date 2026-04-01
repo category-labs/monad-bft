@@ -16,9 +16,13 @@
 use std::ops::{Div, Sub};
 
 use alloy_consensus::{
-    Header, SignableTransaction, Transaction, TxEip1559, TxEip7702, TxEnvelope, TxLegacy,
+    Header, SignableTransaction, Transaction, TxEip1559, TxEip2930, TxEip7702, TxEnvelope, TxLegacy,
 };
-use alloy_primitives::{Address, TxKind, U256, U64};
+use alloy_eips::eip2718::{
+    EIP1559_TX_TYPE_ID, EIP2930_TX_TYPE_ID, EIP4844_TX_TYPE_ID, EIP7702_TX_TYPE_ID,
+    LEGACY_TX_TYPE_ID,
+};
+use alloy_primitives::{Address, Signature, TxKind, U256, U64, U8};
 use alloy_rpc_types::{FeeHistory, TransactionReceipt};
 use futures::stream::StreamExt;
 use itertools::Itertools;
@@ -30,8 +34,13 @@ use serde::Deserialize;
 use tracing::trace;
 
 use crate::{
-    chainstate::{get_block_key_from_tag, get_block_key_from_tag_or_hash, ChainState},
-    handlers::eth::call::{fill_gas_params, CallRequest, GasPriceDetails},
+    chainstate::{
+        eth_call_handler::EthCallHandlerConfig, get_block_key_from_tag,
+        get_block_key_from_tag_or_hash, ChainState,
+    },
+    handlers::eth::call::{
+        check_contract_creation_size, fill_gas_params, CallRequest, GasPriceDetails,
+    },
     types::{
         eth_json::{
             BlockTagOrHash, BlockTags, FillTransactionResult, MonadFeeHistory, Quantity,
@@ -114,6 +123,27 @@ impl EthCallProvider for GasEstimator {
     }
 }
 
+#[derive(Clone, Copy)]
+enum EstimateGasMode {
+    // Used by eth_estimateGas, which should keep searching until the simulated
+    // transaction executes successfully.
+    RequireSuccess,
+    // Used by eth_fillTransaction, which only needs a gas limit large enough to
+    // execute without running out of gas, even if execution still fails.
+    AllowExecutionFailure,
+}
+
+fn is_terminal_estimate_result(
+    mode: EstimateGasMode,
+    error: &monad_ethcall::FailureCallResult,
+) -> bool {
+    matches!(mode, EstimateGasMode::AllowExecutionFailure)
+        && matches!(
+            error.error_code,
+            monad_ethcall::EthCallResult::ExecutionError
+        )
+}
+
 async fn estimate_gas<T: EthCallProvider>(
     provider: &T,
     eth_call_executor: Option<&EthCallExecutor>,
@@ -121,8 +151,36 @@ async fn estimate_gas<T: EthCallProvider>(
     original_tx_gas: U256,
     provider_gas_limit: u64,
     protocol_gas_limit: u64,
+    mode: EstimateGasMode,
 ) -> Result<Quantity, JsonRpcError> {
-    let mut txn: TxEnvelope = call_request.clone().try_into()?;
+    estimate_gas_with_builder(
+        provider,
+        eth_call_executor,
+        call_request,
+        original_tx_gas,
+        provider_gas_limit,
+        protocol_gas_limit,
+        mode,
+        |request| request.clone().try_into(),
+    )
+    .await
+}
+
+async fn estimate_gas_with_builder<T, F>(
+    provider: &T,
+    eth_call_executor: Option<&EthCallExecutor>,
+    call_request: &mut CallRequest,
+    original_tx_gas: U256,
+    provider_gas_limit: u64,
+    protocol_gas_limit: u64,
+    mode: EstimateGasMode,
+    build_tx: F,
+) -> Result<Quantity, JsonRpcError>
+where
+    T: EthCallProvider,
+    F: Fn(&CallRequest) -> Result<TxEnvelope, JsonRpcError> + Copy,
+{
+    let mut txn = build_tx(call_request)?;
 
     let (gas_used, gas_refund) = match provider.eth_call(txn.clone(), eth_call_executor).await {
         monad_ethcall::CallResult::Success(monad_ethcall::SuccessCallResult {
@@ -130,6 +188,9 @@ async fn estimate_gas<T: EthCallProvider>(
             gas_refund,
             ..
         }) => (gas_used, gas_refund),
+        monad_ethcall::CallResult::Failure(error) if is_terminal_estimate_result(mode, &error) => {
+            (error.gas_used, error.gas_refund)
+        }
         monad_ethcall::CallResult::Failure(error) => match error.error_code {
             monad_ethcall::EthCallResult::OutOfGas => {
                 if provider_gas_limit < protocol_gas_limit
@@ -157,7 +218,7 @@ async fn estimate_gas<T: EthCallProvider>(
     let upper_bound_gas_limit = txn.gas_limit();
     // Set gas to used + refund + call stipend and apply the 63/64 rule
     call_request.gas = Some(U256::from((gas_used + gas_refund + CALL_STIPEND) * 64 / 63));
-    txn = call_request.clone().try_into()?;
+    txn = build_tx(call_request)?;
 
     let (mut lower_bound_gas_limit, mut upper_bound_gas_limit) =
         if txn.gas_limit() < upper_bound_gas_limit {
@@ -166,6 +227,11 @@ async fn estimate_gas<T: EthCallProvider>(
                     gas_used,
                     ..
                 }) => (gas_used.sub(1), txn.gas_limit()),
+                monad_ethcall::CallResult::Failure(error)
+                    if is_terminal_estimate_result(mode, &error) =>
+                {
+                    (error.gas_used.sub(1), txn.gas_limit())
+                }
                 monad_ethcall::CallResult::Failure(_error_message) => {
                     (txn.gas_limit(), upper_bound_gas_limit)
                 }
@@ -191,10 +257,15 @@ async fn estimate_gas<T: EthCallProvider>(
         let mid = (upper_bound_gas_limit + lower_bound_gas_limit) / 2;
 
         call_request.gas = Some(U256::from(mid));
-        txn = call_request.clone().try_into()?;
+        txn = build_tx(call_request)?;
 
         match provider.eth_call(txn, eth_call_executor).await {
             monad_ethcall::CallResult::Success(monad_ethcall::SuccessCallResult { .. }) => {
+                upper_bound_gas_limit = mid;
+            }
+            monad_ethcall::CallResult::Failure(error)
+                if is_terminal_estimate_result(mode, &error) =>
+            {
                 upper_bound_gas_limit = mid;
             }
             monad_ethcall::CallResult::Failure(_error_message) => {
@@ -209,6 +280,96 @@ async fn estimate_gas<T: EthCallProvider>(
     }
 
     Ok(Quantity(upper_bound_gas_limit))
+}
+
+fn requires_eip2930_encoding(tx: &CallRequest) -> bool {
+    matches!(tx.gas_price_details, GasPriceDetails::Legacy { .. })
+        && match tx.transaction_type {
+            Some(transaction_type) => transaction_type == U8::from(EIP2930_TX_TYPE_ID),
+            None => tx.access_list.is_some(),
+        }
+}
+
+fn validate_fill_transaction_type(tx: &CallRequest) -> Result<(), JsonRpcError> {
+    let Some(transaction_type) = tx.transaction_type else {
+        return Ok(());
+    };
+
+    let expected_type = match (
+        &tx.gas_price_details,
+        &tx.authorization_list,
+        &tx.access_list,
+    ) {
+        (GasPriceDetails::Legacy { .. }, _, access_list) if access_list.is_some() => {
+            Some(U8::from(EIP2930_TX_TYPE_ID))
+        }
+        (GasPriceDetails::Legacy { .. }, _, _) => Some(U8::from(LEGACY_TX_TYPE_ID)),
+        (GasPriceDetails::Eip1559 { .. }, Some(_), _) => Some(U8::from(EIP7702_TX_TYPE_ID)),
+        (GasPriceDetails::Eip1559 { .. }, None, _) => Some(U8::from(EIP1559_TX_TYPE_ID)),
+    };
+
+    if expected_type == Some(transaction_type) {
+        return Ok(());
+    }
+
+    Err(JsonRpcError::invalid_params())
+}
+
+fn validate_fill_transaction_contract_creation_size(tx: &CallRequest) -> Result<(), JsonRpcError> {
+    if tx.to.is_none() {
+        check_contract_creation_size(tx)?;
+    }
+    Ok(())
+}
+
+fn build_fill_transaction_eip2930(
+    tx: &CallRequest,
+    chain_id: u64,
+) -> Result<TxEip2930, JsonRpcError> {
+    validate_fill_transaction_contract_creation_size(tx)?;
+
+    let GasPriceDetails::Legacy { gas_price } = tx.gas_price_details else {
+        unreachable!("EIP-2930 fill transaction builder requires legacy gas price details");
+    };
+
+    Ok(TxEip2930 {
+        chain_id,
+        nonce: tx
+            .nonce
+            .unwrap_or_default()
+            .try_into()
+            .map_err(|_| JsonRpcError::invalid_params())?,
+        gas_price: gas_price
+            .try_into()
+            .map_err(|_| JsonRpcError::invalid_params())?,
+        gas_limit: tx
+            .gas
+            .unwrap_or_default()
+            .try_into()
+            .map_err(|_| JsonRpcError::invalid_params())?,
+        to: if let Some(to) = tx.to {
+            TxKind::Call(to)
+        } else {
+            TxKind::Create
+        },
+        value: tx.value.unwrap_or_default(),
+        access_list: tx.access_list.clone().unwrap_or_default(),
+        input: tx.input.input.clone().unwrap_or_default(),
+    })
+}
+
+fn build_fill_transaction_envelope(
+    tx: &CallRequest,
+    chain_id: u64,
+) -> Result<TxEnvelope, JsonRpcError> {
+    if !requires_eip2930_encoding(tx) {
+        return tx.clone().try_into();
+    }
+
+    let signature = Signature::new(U256::from(0), U256::from(0), false);
+    let transaction = build_fill_transaction_eip2930(tx, chain_id)?;
+
+    Ok(transaction.into_signed(signature).into())
 }
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
@@ -345,6 +506,7 @@ pub async fn monad_eth_estimateGas<T: Triedb>(
         original_tx_gas,
         provider_gas_limit,
         protocol_gas_limit,
+        EstimateGasMode::RequireSuccess,
     )
     .await
 }
@@ -369,16 +531,7 @@ pub async fn monad_eth_fillTransaction<T: Triedb>(
     trace!("monad_eth_fillTransaction: {params:?}");
 
     let mut tx = params.tx;
-
-    tx.input.input = match (tx.input.input.take(), tx.input.data.take()) {
-        (Some(input), Some(data)) => {
-            if input != data {
-                return Err(JsonRpcError::invalid_params());
-            }
-            Some(input)
-        }
-        (None, data) | (data, None) => data,
-    };
+    normalize_fill_transaction_request(&mut tx)?;
 
     let from = tx.from.ok_or_else(JsonRpcError::invalid_params)?;
 
@@ -405,30 +558,17 @@ pub async fn monad_eth_fillTransaction<T: Triedb>(
         tx.nonce = Some(U64::from(account.nonce));
     }
 
-    match &tx.gas_price_details {
-        GasPriceDetails::Legacy { .. } => {}
-        GasPriceDetails::Eip1559 {
-            max_fee_per_gas,
-            max_priority_fee_per_gas: None,
-        } => {
-            let priority_fee = suggested_priority_fee().await.unwrap_or_default();
-            tx.gas_price_details = GasPriceDetails::Eip1559 {
-                max_fee_per_gas: *max_fee_per_gas,
-                max_priority_fee_per_gas: Some(U256::from(priority_fee)),
-            };
-        }
-        GasPriceDetails::Eip1559 {
-            max_priority_fee_per_gas: Some(_),
-            ..
-        } => {}
-    }
-
     let base_fee = U256::from(header.base_fee_per_gas.unwrap_or_default());
-    let fill_base_fee = match &tx.gas_price_details {
-        GasPriceDetails::Eip1559 { .. } => base_fee.saturating_mul(U256::from(3)) / U256::from(2),
-        _ => base_fee,
+    let (fill_base_fee, suggested_priority_fee) = match &tx.gas_price_details {
+        GasPriceDetails::Legacy { .. } => (base_fee, None),
+        GasPriceDetails::Eip1559 { .. } => (
+            base_fee.saturating_mul(U256::from(3)) / U256::from(2),
+            Some(U256::from(
+                suggested_priority_fee().await.unwrap_or_default(),
+            )),
+        ),
     };
-    tx.fill_gas_prices(fill_base_fee)?;
+    fill_transaction_gas_price_details(&mut tx, base_fee, fill_base_fee, suggested_priority_fee)?;
 
     if tx.gas.is_none() {
         let protocol_gas_limit = header.gas_limit;
@@ -446,13 +586,15 @@ pub async fn monad_eth_fillTransaction<T: Triedb>(
             false,
         );
 
-        let Quantity(estimated_gas) = estimate_gas(
+        let Quantity(estimated_gas) = estimate_gas_with_builder(
             &gas_estimator,
             Some(eth_call_executor),
             &mut tx,
             original_tx_gas,
             eth_call_provider_gas_limit,
             protocol_gas_limit,
+            EstimateGasMode::AllowExecutionFailure,
+            |request| build_fill_transaction_envelope(request, chain_id),
         )
         .await?;
 
@@ -462,6 +604,92 @@ pub async fn monad_eth_fillTransaction<T: Triedb>(
     let (raw, filled_tx) = build_unsigned_transaction(&tx, chain_id)?;
 
     Ok(FillTransactionResult { raw, tx: filled_tx })
+}
+
+fn normalize_fill_transaction_request(tx: &mut CallRequest) -> Result<(), JsonRpcError> {
+    tx.input.input = match (tx.input.input.take(), tx.input.data.take()) {
+        (Some(input), Some(data)) => {
+            if input != data {
+                return Err(JsonRpcError::invalid_params());
+            }
+            Some(input)
+        }
+        (None, data) | (data, None) => data,
+    };
+
+    if tx.transaction_type == Some(U8::from(EIP4844_TX_TYPE_ID))
+        || tx.max_fee_per_blob_gas.is_some()
+        || tx.blob_versioned_hashes.is_some()
+    {
+        return Err(JsonRpcError::invalid_params());
+    }
+
+    if matches!(tx.gas, Some(gas) if gas.is_zero()) {
+        tx.gas = None;
+    }
+
+    if matches!(tx.gas_price_details, GasPriceDetails::Legacy { .. })
+        && tx.authorization_list.is_some()
+    {
+        return Err(JsonRpcError::invalid_params());
+    }
+
+    validate_fill_transaction_type(tx)?;
+
+    Ok(())
+}
+
+/// Fill fee fields for `eth_fillTransaction` without clamping a user cap down.
+///
+/// For EIP-1559 transactions:
+/// - preserve a nonzero user `maxFeePerGas` when it is already high enough
+/// - fill a missing `maxPriorityFeePerGas`
+/// - raise `maxFeePerGas` to at least the current base fee and priority fee so the tx is signable now
+///
+/// Missing or zero `maxFeePerGas` follows the existing default-fill path.
+fn fill_transaction_gas_price_details(
+    tx: &mut CallRequest,
+    current_base_fee: U256,
+    default_fill_base_fee: U256,
+    suggested_priority_fee: Option<U256>,
+) -> Result<(), JsonRpcError> {
+    match &tx.gas_price_details {
+        GasPriceDetails::Legacy { .. } => tx.fill_gas_prices(default_fill_base_fee),
+        GasPriceDetails::Eip1559 {
+            max_fee_per_gas: Some(max_fee_per_gas),
+            max_priority_fee_per_gas,
+        } if *max_fee_per_gas != U256::ZERO => {
+            let max_priority_fee_per_gas =
+                (*max_priority_fee_per_gas).unwrap_or(suggested_priority_fee.unwrap_or_default());
+            let max_fee_per_gas = max_fee_per_gas
+                .to_owned()
+                .max(current_base_fee)
+                .max(max_priority_fee_per_gas);
+
+            tx.gas_price_details = GasPriceDetails::Eip1559 {
+                max_fee_per_gas: Some(max_fee_per_gas),
+                max_priority_fee_per_gas: Some(max_priority_fee_per_gas),
+            };
+            Ok(())
+        }
+        GasPriceDetails::Eip1559 {
+            max_fee_per_gas,
+            max_priority_fee_per_gas,
+        } => {
+            let max_fee_per_gas = match max_fee_per_gas {
+                Some(max_fee_per_gas) if max_fee_per_gas.is_zero() => None,
+                other => *other,
+            };
+            tx.gas_price_details = GasPriceDetails::Eip1559 {
+                max_fee_per_gas,
+                max_priority_fee_per_gas: Some(
+                    (*max_priority_fee_per_gas)
+                        .unwrap_or(suggested_priority_fee.unwrap_or_default()),
+                ),
+            };
+            tx.fill_gas_prices(default_fill_base_fee)
+        }
+    }
 }
 
 fn build_unsigned_transaction(
@@ -482,8 +710,15 @@ fn build_unsigned_transaction(
     let value = tx.value.unwrap_or_default();
     let input = tx.input.input.clone().unwrap_or_default();
     let to = tx.to;
+    let is_eip2930 = requires_eip2930_encoding(tx);
 
     let raw_bytes = match &tx.gas_price_details {
+        GasPriceDetails::Legacy { .. } if is_eip2930 => {
+            let unsigned = build_fill_transaction_eip2930(tx, chain_id)?;
+            let mut buf = Vec::new();
+            unsigned.encode_for_signing(&mut buf);
+            buf
+        }
         GasPriceDetails::Legacy { gas_price } => {
             let unsigned = TxLegacy {
                 chain_id: Some(chain_id),
@@ -560,6 +795,11 @@ fn build_unsigned_transaction(
         input: tx.input.clone(),
         nonce: Some(tx.nonce.unwrap_or_default()),
         chain_id: Some(tx.chain_id.unwrap_or(U64::from(chain_id))),
+        transaction_type: if is_eip2930 {
+            Some(U8::from(EIP2930_TX_TYPE_ID))
+        } else {
+            tx.transaction_type
+        },
         ..tx.clone()
     };
 
@@ -833,33 +1073,54 @@ where
 mod tests {
     use alloy_consensus::{
         transaction::Recovered, Block, Eip658Value, Receipt, ReceiptEnvelope, ReceiptWithBloom,
-        SignableTransaction, TxEip1559,
+        SignableTransaction, TxEip1559, TxEip2930,
     };
-    use alloy_primitives::{Bloom, Bytes, FixedBytes, Log, LogData};
+    use alloy_primitives::{Bloom, Bytes, FixedBytes, Log, LogData, B256};
+    use alloy_rpc_types::{AccessList, AccessListItem};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
+    use monad_chain_config::execution_revision::MonadExecutionRevision;
     use monad_eth_types::ReceiptWithLogIndex;
-    use monad_ethcall::{FailureCallResult, SuccessCallResult};
+    use monad_ethcall::{EthCallResult, FailureCallResult, SuccessCallResult};
     use monad_triedb_utils::mock_triedb::MockTriedb;
 
     use super::*;
     use crate::handlers::eth::call::{CallInput, CallRequest, GasPriceDetails};
 
+    #[derive(Clone, Copy)]
+    enum MockTerminalResult {
+        Success,
+        ExecutionError,
+    }
+
     struct MockGasEstimator {
         gas_used: u64,
         gas_refund: u64,
+        terminal_result: MockTerminalResult,
     }
 
     impl EthCallProvider for MockGasEstimator {
         async fn eth_call(&self, txn: TxEnvelope, _: Option<&EthCallExecutor>) -> CallResult {
             if txn.gas_limit() >= self.gas_used + self.gas_refund {
-                CallResult::Success(SuccessCallResult {
-                    gas_used: self.gas_used,
-                    gas_refund: self.gas_refund,
-                    ..Default::default()
-                })
+                match self.terminal_result {
+                    MockTerminalResult::Success => CallResult::Success(SuccessCallResult {
+                        gas_used: self.gas_used,
+                        gas_refund: self.gas_refund,
+                        ..Default::default()
+                    }),
+                    MockTerminalResult::ExecutionError => CallResult::Failure(FailureCallResult {
+                        error_code: EthCallResult::ExecutionError,
+                        gas_used: self.gas_used,
+                        gas_refund: self.gas_refund,
+                        message: "execution reverted".to_string(),
+                        data: Some("0x".to_string()),
+                    }),
+                }
             } else {
                 CallResult::Failure(FailureCallResult {
+                    error_code: EthCallResult::OutOfGas,
+                    message: "out of gas".to_string(),
+                    data: Some("0x".to_string()),
                     ..Default::default()
                 })
             }
@@ -876,6 +1137,7 @@ mod tests {
         let provider = MockGasEstimator {
             gas_used: 50_000,
             gas_refund: 10_000,
+            terminal_result: MockTerminalResult::Success,
         };
 
         // should return gas estimation failure
@@ -886,6 +1148,7 @@ mod tests {
             U256::from(30_000),
             u64::MAX,
             u64::MAX,
+            EstimateGasMode::RequireSuccess,
         )
         .await;
         assert!(result.is_err());
@@ -898,6 +1161,7 @@ mod tests {
         let provider = MockGasEstimator {
             gas_used: 50_000,
             gas_refund: 10_000,
+            terminal_result: MockTerminalResult::Success,
         };
 
         // should return correct gas estimation
@@ -908,6 +1172,7 @@ mod tests {
             U256::MAX,
             u64::MAX,
             u64::MAX,
+            EstimateGasMode::RequireSuccess,
         )
         .await;
         assert!(result.is_ok());
@@ -924,6 +1189,7 @@ mod tests {
         let provider = MockGasEstimator {
             gas_used: 50_000,
             gas_refund: 10_000,
+            terminal_result: MockTerminalResult::Success,
         };
 
         // should return correct gas estimation
@@ -934,6 +1200,7 @@ mod tests {
             U256::from(70_000),
             u64::MAX,
             u64::MAX,
+            EstimateGasMode::RequireSuccess,
         )
         .await;
         assert!(result.is_ok());
@@ -950,6 +1217,7 @@ mod tests {
         let provider = MockGasEstimator {
             gas_used: 50_000,
             gas_refund: 10_000,
+            terminal_result: MockTerminalResult::Success,
         };
 
         // should return correct gas estimation
@@ -960,10 +1228,56 @@ mod tests {
             U256::from(60_000),
             u64::MAX,
             u64::MAX,
+            EstimateGasMode::RequireSuccess,
         )
         .await;
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), Quantity(60_000));
+    }
+
+    #[tokio::test]
+    async fn test_gas_limit_unspecified_allows_execution_failure_for_fill_transaction() {
+        let mut call_request = CallRequest::default();
+        let provider = MockGasEstimator {
+            gas_used: 50_000,
+            gas_refund: 10_000,
+            terminal_result: MockTerminalResult::ExecutionError,
+        };
+
+        let result = estimate_gas(
+            &provider,
+            None,
+            &mut call_request,
+            U256::MAX,
+            u64::MAX,
+            u64::MAX,
+            EstimateGasMode::AllowExecutionFailure,
+        )
+        .await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Quantity(60795));
+    }
+
+    #[tokio::test]
+    async fn test_gas_limit_unspecified_rejects_execution_failure_for_estimate_gas() {
+        let mut call_request = CallRequest::default();
+        let provider = MockGasEstimator {
+            gas_used: 50_000,
+            gas_refund: 10_000,
+            terminal_result: MockTerminalResult::ExecutionError,
+        };
+
+        let result = estimate_gas(
+            &provider,
+            None,
+            &mut call_request,
+            U256::MAX,
+            u64::MAX,
+            u64::MAX,
+            EstimateGasMode::RequireSuccess,
+        )
+        .await;
+        assert!(result.is_err());
     }
 
     fn make_block(num: u64, base_fee: u64, txns: Vec<TxEnvelope>) -> Block<TxEnvelope> {
@@ -1246,6 +1560,441 @@ mod tests {
             }
             _ => panic!("Expected EIP-1559 gas price details"),
         }
+    }
+
+    #[test]
+    fn test_fill_transaction_gas_price_details_preserves_user_max_fee_per_gas() {
+        let mut call_request = CallRequest {
+            gas_price_details: GasPriceDetails::Eip1559 {
+                max_fee_per_gas: Some(U256::from(200)),
+                max_priority_fee_per_gas: None,
+            },
+            ..Default::default()
+        };
+
+        fill_transaction_gas_price_details(
+            &mut call_request,
+            U256::from(100),
+            U256::from(150),
+            Some(U256::from(2)),
+        )
+        .unwrap();
+
+        match call_request.gas_price_details {
+            GasPriceDetails::Eip1559 {
+                max_fee_per_gas,
+                max_priority_fee_per_gas,
+            } => {
+                assert_eq!(max_fee_per_gas, Some(U256::from(200)));
+                assert_eq!(max_priority_fee_per_gas, Some(U256::from(2)));
+            }
+            _ => panic!("Expected EIP-1559 gas price details"),
+        }
+    }
+
+    #[test]
+    fn test_fill_transaction_gas_price_details_uses_existing_defaults_when_cap_missing() {
+        let mut call_request = CallRequest {
+            gas_price_details: GasPriceDetails::Eip1559 {
+                max_fee_per_gas: None,
+                max_priority_fee_per_gas: None,
+            },
+            ..Default::default()
+        };
+
+        fill_transaction_gas_price_details(
+            &mut call_request,
+            U256::from(100),
+            U256::from(150),
+            Some(U256::from(2)),
+        )
+        .unwrap();
+
+        match call_request.gas_price_details {
+            GasPriceDetails::Eip1559 {
+                max_fee_per_gas,
+                max_priority_fee_per_gas,
+            } => {
+                assert_eq!(max_fee_per_gas, Some(U256::from(152)));
+                assert_eq!(max_priority_fee_per_gas, Some(U256::from(2)));
+            }
+            _ => panic!("Expected EIP-1559 gas price details"),
+        }
+    }
+
+    #[test]
+    fn test_fill_transaction_gas_price_details_raises_user_cap_to_current_base_fee() {
+        let mut call_request = CallRequest {
+            gas_price_details: GasPriceDetails::Eip1559 {
+                max_fee_per_gas: Some(U256::from(50)),
+                max_priority_fee_per_gas: None,
+            },
+            ..Default::default()
+        };
+
+        fill_transaction_gas_price_details(
+            &mut call_request,
+            U256::from(100),
+            U256::from(150),
+            Some(U256::from(2)),
+        )
+        .unwrap();
+
+        match call_request.gas_price_details {
+            GasPriceDetails::Eip1559 {
+                max_fee_per_gas,
+                max_priority_fee_per_gas,
+            } => {
+                assert_eq!(max_fee_per_gas, Some(U256::from(100)));
+                assert_eq!(max_priority_fee_per_gas, Some(U256::from(2)));
+            }
+            _ => panic!("Expected EIP-1559 gas price details"),
+        }
+    }
+
+    #[test]
+    fn test_fill_transaction_gas_price_details_raises_user_cap_to_priority_fee() {
+        let mut call_request = CallRequest {
+            gas_price_details: GasPriceDetails::Eip1559 {
+                max_fee_per_gas: Some(U256::from(50)),
+                max_priority_fee_per_gas: Some(U256::from(75)),
+            },
+            ..Default::default()
+        };
+
+        fill_transaction_gas_price_details(
+            &mut call_request,
+            U256::from(10),
+            U256::from(15),
+            Some(U256::from(2)),
+        )
+        .unwrap();
+
+        match call_request.gas_price_details {
+            GasPriceDetails::Eip1559 {
+                max_fee_per_gas,
+                max_priority_fee_per_gas,
+            } => {
+                assert_eq!(max_fee_per_gas, Some(U256::from(75)));
+                assert_eq!(max_priority_fee_per_gas, Some(U256::from(75)));
+            }
+            _ => panic!("Expected EIP-1559 gas price details"),
+        }
+    }
+
+    #[test]
+    fn test_fill_transaction_gas_price_details_treats_zero_cap_as_missing() {
+        let mut without_cap = CallRequest {
+            gas_price_details: GasPriceDetails::Eip1559 {
+                max_fee_per_gas: None,
+                max_priority_fee_per_gas: None,
+            },
+            ..Default::default()
+        };
+        let mut zero_cap = CallRequest {
+            gas_price_details: GasPriceDetails::Eip1559 {
+                max_fee_per_gas: Some(U256::ZERO),
+                max_priority_fee_per_gas: None,
+            },
+            ..Default::default()
+        };
+
+        fill_transaction_gas_price_details(
+            &mut without_cap,
+            U256::from(100),
+            U256::from(150),
+            Some(U256::from(2)),
+        )
+        .unwrap();
+        fill_transaction_gas_price_details(
+            &mut zero_cap,
+            U256::from(100),
+            U256::from(150),
+            Some(U256::from(2)),
+        )
+        .unwrap();
+
+        match (without_cap.gas_price_details, zero_cap.gas_price_details) {
+            (
+                GasPriceDetails::Eip1559 {
+                    max_fee_per_gas: without_cap_max_fee,
+                    max_priority_fee_per_gas: without_cap_priority_fee,
+                },
+                GasPriceDetails::Eip1559 {
+                    max_fee_per_gas: zero_cap_max_fee,
+                    max_priority_fee_per_gas: zero_cap_priority_fee,
+                },
+            ) => {
+                assert_eq!(without_cap_max_fee, zero_cap_max_fee);
+                assert_eq!(without_cap_priority_fee, zero_cap_priority_fee);
+            }
+            _ => panic!("Expected EIP-1559 gas price details"),
+        }
+    }
+
+    #[test]
+    fn test_normalize_fill_transaction_request_treats_zero_gas_as_missing() {
+        let mut without_gas = CallRequest::default();
+        let mut zero_gas = CallRequest {
+            gas: Some(U256::ZERO),
+            ..Default::default()
+        };
+
+        normalize_fill_transaction_request(&mut without_gas).unwrap();
+        normalize_fill_transaction_request(&mut zero_gas).unwrap();
+
+        assert_eq!(without_gas.gas, None);
+        assert_eq!(zero_gas.gas, None);
+    }
+
+    #[test]
+    fn test_normalize_fill_transaction_request_rejects_mismatched_input_and_data() {
+        let mut request = CallRequest {
+            input: CallInput {
+                input: Some(Bytes::from(vec![0xde, 0xad])),
+                data: Some(Bytes::from(vec![0xbe, 0xef])),
+            },
+            ..Default::default()
+        };
+
+        assert!(normalize_fill_transaction_request(&mut request).is_err());
+    }
+
+    #[test]
+    fn test_normalize_fill_transaction_request_rejects_blob_transaction_type() {
+        let mut request = CallRequest {
+            transaction_type: Some(U8::from(EIP4844_TX_TYPE_ID)),
+            ..Default::default()
+        };
+
+        let err = normalize_fill_transaction_request(&mut request).unwrap_err();
+        assert_eq!(err, JsonRpcError::invalid_params());
+    }
+
+    #[test]
+    fn test_normalize_fill_transaction_request_rejects_blob_fields() {
+        let mut request = CallRequest {
+            max_fee_per_blob_gas: Some(U256::from(1)),
+            blob_versioned_hashes: Some(vec![U256::from(1)]),
+            ..Default::default()
+        };
+
+        let err = normalize_fill_transaction_request(&mut request).unwrap_err();
+        assert_eq!(err, JsonRpcError::invalid_params());
+    }
+
+    #[test]
+    fn test_normalize_fill_transaction_request_rejects_legacy_type_mismatch() {
+        let mut request = CallRequest {
+            gas_price_details: GasPriceDetails::Legacy {
+                gas_price: U256::from(1),
+            },
+            transaction_type: Some(U8::from(EIP1559_TX_TYPE_ID)),
+            ..Default::default()
+        };
+
+        let err = normalize_fill_transaction_request(&mut request).unwrap_err();
+        assert_eq!(err, JsonRpcError::invalid_params());
+    }
+
+    #[test]
+    fn test_normalize_fill_transaction_request_rejects_legacy_zero_type_with_access_list() {
+        let mut request = CallRequest {
+            gas_price_details: GasPriceDetails::Legacy {
+                gas_price: U256::from(1),
+            },
+            access_list: Some(AccessList::default()),
+            transaction_type: Some(U8::from(LEGACY_TX_TYPE_ID)),
+            ..Default::default()
+        };
+
+        let err = normalize_fill_transaction_request(&mut request).unwrap_err();
+        assert_eq!(err, JsonRpcError::invalid_params());
+    }
+
+    #[test]
+    fn test_normalize_fill_transaction_request_rejects_eip1559_type_mismatch() {
+        let mut request = CallRequest {
+            gas_price_details: GasPriceDetails::Eip1559 {
+                max_fee_per_gas: Some(U256::from(1)),
+                max_priority_fee_per_gas: Some(U256::from(1)),
+            },
+            transaction_type: Some(U8::from(EIP2930_TX_TYPE_ID)),
+            ..Default::default()
+        };
+
+        let err = normalize_fill_transaction_request(&mut request).unwrap_err();
+        assert_eq!(err, JsonRpcError::invalid_params());
+    }
+
+    #[test]
+    fn test_normalize_fill_transaction_request_rejects_eip7702_type_mismatch() {
+        let mut request = CallRequest {
+            gas_price_details: GasPriceDetails::Eip1559 {
+                max_fee_per_gas: Some(U256::from(1)),
+                max_priority_fee_per_gas: Some(U256::from(1)),
+            },
+            authorization_list: Some(vec![]),
+            transaction_type: Some(U8::from(EIP1559_TX_TYPE_ID)),
+            ..Default::default()
+        };
+
+        let err = normalize_fill_transaction_request(&mut request).unwrap_err();
+        assert_eq!(err, JsonRpcError::invalid_params());
+    }
+
+    #[test]
+    fn test_normalize_fill_transaction_request_rejects_legacy_authorization_list() {
+        let mut request = CallRequest {
+            gas_price_details: GasPriceDetails::Legacy {
+                gas_price: U256::from(1),
+            },
+            authorization_list: Some(vec![]),
+            ..Default::default()
+        };
+
+        let err = normalize_fill_transaction_request(&mut request).unwrap_err();
+        assert_eq!(err, JsonRpcError::invalid_params());
+    }
+
+    #[test]
+    fn test_build_fill_transaction_envelope_uses_eip2930_for_legacy_access_list() {
+        let chain_id = 12345u64;
+        let request = CallRequest {
+            to: Some(Address::repeat_byte(0x22)),
+            gas: Some(U256::from(21_000)),
+            gas_price_details: GasPriceDetails::Legacy {
+                gas_price: U256::from(2_000_000_000u64),
+            },
+            nonce: Some(U64::from(0)),
+            access_list: Some(AccessList(vec![AccessListItem {
+                address: Address::repeat_byte(0x33),
+                storage_keys: vec![B256::ZERO],
+            }])),
+            ..Default::default()
+        };
+
+        let envelope = build_fill_transaction_envelope(&request, chain_id).unwrap();
+
+        match envelope {
+            TxEnvelope::Eip2930(tx) => assert_eq!(tx.tx().chain_id, chain_id),
+            _ => panic!("expected EIP-2930 envelope"),
+        }
+    }
+
+    #[test]
+    fn test_build_fill_transaction_envelope_rejects_oversized_eip2930_initcode() {
+        let max_code_size = MonadExecutionRevision::LATEST
+            .execution_chain_params()
+            .max_code_size;
+        let chain_id = 12345u64;
+        let request = CallRequest {
+            to: None,
+            gas: Some(U256::from(100_000)),
+            gas_price_details: GasPriceDetails::Legacy {
+                gas_price: U256::from(2_000_000_000u64),
+            },
+            nonce: Some(U64::from(0)),
+            transaction_type: Some(U8::from(EIP2930_TX_TYPE_ID)),
+            input: CallInput {
+                input: Some(Bytes::from(vec![0x60; 2 * max_code_size + 1])),
+                data: None,
+            },
+            ..Default::default()
+        };
+
+        let err = build_fill_transaction_envelope(&request, chain_id).unwrap_err();
+        assert_eq!(
+            err,
+            JsonRpcError::code_size_too_large(2 * max_code_size + 1)
+        );
+    }
+
+    #[test]
+    fn test_build_unsigned_transaction_legacy_access_list_uses_eip2930() {
+        let chain_id = 12345u64;
+        let from_addr = Address::repeat_byte(0x11);
+        let to_addr = Address::repeat_byte(0x22);
+        let access_list = AccessList(vec![AccessListItem {
+            address: Address::repeat_byte(0x33),
+            storage_keys: vec![B256::ZERO],
+        }]);
+        let gas_price = U256::from(2_000_000_000u64);
+
+        let call_request = CallRequest {
+            from: Some(from_addr),
+            to: Some(to_addr),
+            gas: Some(U256::from(21_000)),
+            gas_price_details: GasPriceDetails::Legacy { gas_price },
+            value: Some(U256::ZERO),
+            input: CallInput {
+                input: Some(Bytes::new()),
+                data: None,
+            },
+            nonce: Some(U64::from(0)),
+            chain_id: Some(U64::from(chain_id)),
+            access_list: Some(access_list.clone()),
+            authorization_list: None,
+            max_fee_per_blob_gas: None,
+            blob_versioned_hashes: None,
+            transaction_type: None,
+        };
+
+        let unsigned = TxEip2930 {
+            chain_id,
+            nonce: 0,
+            gas_price: gas_price.try_into().unwrap(),
+            gas_limit: 21_000,
+            to: TxKind::Call(to_addr),
+            value: U256::ZERO,
+            access_list,
+            input: Bytes::new(),
+        };
+        let mut expected_raw = Vec::new();
+        unsigned.encode_for_signing(&mut expected_raw);
+
+        let (raw, filled_tx) = build_unsigned_transaction(&call_request, chain_id).unwrap();
+
+        assert_eq!(raw.0, expected_raw);
+        assert_eq!(
+            filled_tx.transaction_type,
+            Some(U8::from(EIP2930_TX_TYPE_ID))
+        );
+    }
+
+    #[test]
+    fn test_build_unsigned_transaction_rejects_oversized_eip2930_initcode() {
+        let chain_id = 12345u64;
+        let max_code_size = MonadExecutionRevision::LATEST
+            .execution_chain_params()
+            .max_code_size;
+
+        let call_request = CallRequest {
+            from: Some(Address::repeat_byte(0x11)),
+            to: None,
+            gas: Some(U256::from(100_000)),
+            gas_price_details: GasPriceDetails::Legacy {
+                gas_price: U256::from(2_000_000_000u64),
+            },
+            value: Some(U256::ZERO),
+            input: CallInput {
+                input: Some(Bytes::from(vec![0x60; 2 * max_code_size + 1])),
+                data: None,
+            },
+            nonce: Some(U64::from(0)),
+            chain_id: Some(U64::from(chain_id)),
+            access_list: Some(AccessList::default()),
+            authorization_list: None,
+            max_fee_per_blob_gas: None,
+            blob_versioned_hashes: None,
+            transaction_type: None,
+        };
+
+        let err = build_unsigned_transaction(&call_request, chain_id).unwrap_err();
+        assert_eq!(
+            err,
+            JsonRpcError::code_size_too_large(2 * max_code_size + 1)
+        );
     }
 
     #[test]
