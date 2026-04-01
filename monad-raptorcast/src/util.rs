@@ -276,10 +276,16 @@ where
     ST: CertificateSignatureRecoverable,
 {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let other_peers_str = self
+            .sorted_other_peers
+            .iter()
+            .map(|peer| peer.to_string())
+            .join(", ");
         fmt.debug_struct("Group")
             .field("start", &self.round_span.start.0)
             .field("end", &self.round_span.end.0)
-            .field("other_peers", &self.sorted_other_peers.len())
+            .field("number of other peers", &self.sorted_other_peers.len())
+            .field("other_peers", &other_peers_str)
             .finish()
     }
 }
@@ -304,12 +310,14 @@ where
 {
     // For the use case where we re-raptorcast to validators
     pub fn new_validator_group(
-        all_peers: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
+        validator_stake_map: Vec<(NodeId<CertificateSignaturePubKey<ST>>, Stake)>,
         self_id: &NodeId<CertificateSignaturePubKey<ST>>,
     ) -> Self {
         // We will call `check_author_node_id()` often, so sorting here will
         // allow us to use binary search instead of linear search.
-        let sorted_other_peers: Vec<_> = all_peers
+        let (validators, _validator_stakes): (Vec<_>, Vec<_>) =
+            validator_stake_map.into_iter().unzip();
+        let sorted_other_peers: Vec<_> = validators
             .into_iter()
             .filter(|peer| peer != self_id)
             .sorted()
@@ -412,7 +420,7 @@ where
             usize::MAX
         } else {
             // Case for validator-to-validator raptorcasting.
-            // We are a validator and we are re-raptorcasting to full-nodes.
+            // We are a validator and we are re-raptorcasting to full-nodes. //TK: ???
             // We do a scan for author ID upfront because we don't want to yield
             // any nodeID before we know for sure the author_id is among them.
             let maybe_pos_author_id = self.sorted_other_peers.binary_search(author_id);
@@ -433,6 +441,16 @@ where
             num_consumed: 0,
             author_id_ix,
             start_ix,
+        }
+    }
+
+    // Returns an iterator without skipping over any destinations in the group.
+    pub fn iter(&self, seed: usize) -> GroupIterator<ST> {
+        GroupIterator {
+            group: self,
+            num_consumed: 0,
+            author_id_ix: usize::MAX, // Not used in this case
+            start_ix: seed,
         }
     }
 
@@ -462,6 +480,7 @@ where
 // Intended to be used in the recv leg of re-raptorcasting to validators, or for
 // both the recv & send leg of (re-) raptorcasting to fullnodes, as these do
 // not need Stake information for each validator.
+#[derive(Clone, Debug)]
 pub struct GroupIterator<'a, ST>
 where
     ST: CertificateSignatureRecoverable,
@@ -592,8 +611,7 @@ where
         validator_set: Vec<(NodeId<CertificateSignaturePubKey<ST>>, Stake)>,
         epoch: Epoch,
     ) {
-        let (all_peers, _validator_stakes): (Vec<_>, Vec<_>) = validator_set.into_iter().unzip();
-        let new_group = Group::new_validator_group(all_peers, &self.our_node_id);
+        let new_group = Group::new_validator_group(validator_set, &self.our_node_id);
         if let Some(existing_group) = self.validator_map.get(&epoch) {
             assert_eq!(existing_group, &new_group);
             tracing::warn!("duplicate validator set update (this is safe but unexpected)")
@@ -821,7 +839,11 @@ mod tests {
     #[test]
     fn test_validator_iterator_self_on() {
         let group = Group::<ST>::new_validator_group(
-            vec![nid(0), nid(1), nid(2)],
+            vec![
+                (nid(0), Stake::from(1)),
+                (nid(1), Stake::from(1)),
+                (nid(2), Stake::from(1)),
+            ],
             &nid(1), // self_id
         );
         assert_eq!(group.size_excl_self(), 2);
@@ -881,7 +903,11 @@ mod tests {
     #[should_panic]
     fn test_no_validator_id_in_validator_group() {
         let group = Group::<ST>::new_validator_group(
-            vec![nid(0), nid(1), nid(2)],
+            vec![
+                (nid(0), Stake::from(1)),
+                (nid(1), Stake::from(1)),
+                (nid(2), Stake::from(1)),
+            ],
             &nid(1), // self_id
         );
         group.get_validator_id(); // should panic
