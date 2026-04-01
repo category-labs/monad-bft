@@ -20,7 +20,7 @@ use std::{
 
 use alloy_consensus::{Header, SignableTransaction, TxEip1559, TxEip7702, TxEnvelope, TxLegacy};
 use alloy_eips::eip7702::SignedAuthorization;
-use alloy_primitives::{Address, Signature, TxKind, Uint, B256, U256, U64, U8};
+use alloy_primitives::{Address, Bytes, Signature, TxKind, Uint, B256, U256, U64, U8};
 use alloy_rpc_types::{AccessList, AccessListItem, AccessListResult};
 use monad_chain_config::execution_revision::MonadExecutionRevision;
 use monad_ethcall::{eth_call, CallResult, EthCallExecutor, MonadTracer, StateOverrideSet};
@@ -208,157 +208,139 @@ impl Default for GasPriceDetails {
 impl TryFrom<CallRequest> for TxEnvelope {
     type Error = JsonRpcError;
     fn try_from(call_request: CallRequest) -> Result<Self, JsonRpcError> {
-        match call_request {
-            CallRequest {
-                gas_price_details: GasPriceDetails::Legacy { gas_price },
-                ..
-            } => {
-                // Legacy
+        let CallRequest {
+            from,
+            to,
+            gas,
+            gas_price_details,
+            value,
+            input: CallInput { input, data },
+            nonce,
+            chain_id,
+            access_list,
+            authorization_list,
+            max_fee_per_blob_gas,
+            blob_versioned_hashes,
+            transaction_type,
+        } = call_request;
 
-                // default signature as eth_call doesn't require it
-                let signature = Signature::new(U256::from(0), U256::from(0), false);
+        let nonce = nonce
+            .unwrap_or_default()
+            .try_into()
+            .map_err(|_| JsonRpcError::invalid_params())?;
+
+        let gas_limit = gas
+            .unwrap_or(Uint::from(u64::MAX))
+            .try_into()
+            .map_err(|_| JsonRpcError::invalid_params())?;
+
+        let value = value.unwrap_or_default();
+        let input = input.unwrap_or_default();
+
+        // default signature as eth_call doesn't require it
+        let signature = Signature::new(U256::from(0), U256::from(0), false);
+
+        match gas_price_details {
+            GasPriceDetails::Legacy { gas_price } => {
                 let transaction = TxLegacy {
-                    chain_id: call_request
-                        .chain_id
+                    chain_id: chain_id
                         .map(|id| id.try_into())
                         .transpose()
                         .map_err(|_| JsonRpcError::invalid_params())?,
-                    nonce: call_request
-                        .nonce
-                        .unwrap_or_default()
-                        .try_into()
-                        .map_err(|_| JsonRpcError::invalid_params())?,
+                    nonce,
                     gas_price: gas_price
                         .try_into()
                         .map_err(|_| JsonRpcError::invalid_params())?,
-                    gas_limit: call_request
-                        .gas
-                        .unwrap_or(Uint::from(u64::MAX))
-                        .try_into()
-                        .map_err(|_| JsonRpcError::invalid_params())?,
-                    to: if let Some(to) = call_request.to {
+                    gas_limit,
+                    to: if let Some(to) = to {
                         TxKind::Call(to)
                     } else {
                         // EIP-3860
-                        check_contract_creation_size(&call_request)?;
+                        check_contract_creation_size(Some(&input))?;
                         TxKind::Create
                     },
-                    value: call_request.value.unwrap_or_default(),
-                    input: call_request.input.input.unwrap_or_default(),
+                    value,
+                    input,
                 };
 
                 Ok(transaction.into_signed(signature).into())
             }
-            CallRequest {
-                authorization_list: Some(auth_list),
-                gas_price_details:
-                    GasPriceDetails::Eip1559 {
+            GasPriceDetails::Eip1559 {
+                max_fee_per_gas,
+                max_priority_fee_per_gas,
+            } => {
+                let chain_id = chain_id
+                    .unwrap_or_default()
+                    .try_into()
+                    .map_err(|_| JsonRpcError::invalid_params())?;
+
+                let max_fee_per_gas = max_fee_per_gas
+                    .unwrap_or_default()
+                    .try_into()
+                    .map_err(|_| JsonRpcError::invalid_params())?;
+
+                let max_priority_fee_per_gas = max_priority_fee_per_gas
+                    .unwrap_or_default()
+                    .try_into()
+                    .map_err(|_| JsonRpcError::invalid_params())?;
+
+                let access_list = access_list.unwrap_or_default();
+
+                if let Some(authorization_list) = authorization_list {
+                    let transaction = TxEip7702 {
+                        chain_id,
+                        nonce,
+                        gas_limit,
                         max_fee_per_gas,
                         max_priority_fee_per_gas,
-                    },
-                ..
-            } => {
-                // EIP-7702
+                        to: to.ok_or(JsonRpcError::invalid_params())?,
+                        value,
+                        access_list,
+                        authorization_list,
+                        input,
+                    };
 
-                // default signature as eth_call doesn't require it
-                let signature = Signature::new(U256::from(0), U256::from(0), false);
-                let transaction = TxEip7702 {
-                    chain_id: call_request
-                        .chain_id
-                        .unwrap_or_default()
-                        .try_into()
-                        .map_err(|_| JsonRpcError::invalid_params())?,
-                    nonce: call_request
-                        .nonce
-                        .unwrap_or_default()
-                        .try_into()
-                        .map_err(|_| JsonRpcError::invalid_params())?,
-                    max_fee_per_gas: max_fee_per_gas
-                        .unwrap_or_default()
-                        .try_into()
-                        .map_err(|_| JsonRpcError::invalid_params())?,
-                    max_priority_fee_per_gas: max_priority_fee_per_gas
-                        .unwrap_or_default()
-                        .try_into()
-                        .map_err(|_| JsonRpcError::invalid_params())?,
-                    gas_limit: call_request
-                        .gas
-                        .unwrap_or(Uint::from(u64::MAX))
-                        .try_into()
-                        .map_err(|_| JsonRpcError::invalid_params())?,
-                    access_list: call_request.access_list.unwrap_or_default(),
-                    authorization_list: auth_list,
-                    to: call_request.to.ok_or(JsonRpcError::invalid_params())?,
-                    value: call_request.value.unwrap_or_default(),
-                    input: call_request.input.input.unwrap_or_default(),
-                };
-
-                Ok(transaction.into_signed(signature).into())
-            }
-            CallRequest {
-                gas_price_details:
-                    GasPriceDetails::Eip1559 {
+                    Ok(transaction.into_signed(signature).into())
+                } else {
+                    let transaction = TxEip1559 {
+                        chain_id,
+                        nonce,
+                        gas_limit,
                         max_fee_per_gas,
                         max_priority_fee_per_gas,
-                    },
-                ..
-            } => {
-                // EIP-1559
+                        value,
+                        to: if let Some(to) = to {
+                            TxKind::Call(to)
+                        } else {
+                            // EIP-3860
+                            check_contract_creation_size(Some(&input))?;
+                            TxKind::Create
+                        },
+                        access_list,
+                        input,
+                    };
 
-                // default signature as eth_call doesn't require it
-                let signature = Signature::new(U256::from(0), U256::from(0), false);
-                let transaction = TxEip1559 {
-                    chain_id: call_request
-                        .chain_id
-                        .unwrap_or_default()
-                        .try_into()
-                        .map_err(|_| JsonRpcError::invalid_params())?,
-                    nonce: call_request
-                        .nonce
-                        .unwrap_or_default()
-                        .try_into()
-                        .map_err(|_| JsonRpcError::invalid_params())?,
-                    max_fee_per_gas: max_fee_per_gas
-                        .unwrap_or_default()
-                        .try_into()
-                        .map_err(|_| JsonRpcError::invalid_params())?,
-                    max_priority_fee_per_gas: max_priority_fee_per_gas
-                        .unwrap_or_default()
-                        .try_into()
-                        .map_err(|_| JsonRpcError::invalid_params())?,
-                    gas_limit: call_request
-                        .gas
-                        .unwrap_or(Uint::from(u64::MAX))
-                        .try_into()
-                        .map_err(|_| JsonRpcError::invalid_params())?,
-                    to: if let Some(to) = call_request.to {
-                        TxKind::Call(to)
-                    } else {
-                        // EIP-3860
-                        check_contract_creation_size(&call_request)?;
-                        TxKind::Create
-                    },
-                    value: call_request.value.unwrap_or_default(),
-                    input: call_request.input.input.unwrap_or_default(),
-                    access_list: call_request.access_list.unwrap_or_default(),
-                };
-
-                Ok(transaction.into_signed(signature).into())
+                    Ok(transaction.into_signed(signature).into())
+                }
             }
         }
     }
 }
 
-pub fn check_contract_creation_size(call_request: &CallRequest) -> Result<(), JsonRpcError> {
-    // EIP-3860
+// EIP-3860
+pub fn check_contract_creation_size(input: Option<&Bytes>) -> Result<(), JsonRpcError> {
+    let Some(code) = input else {
+        return Ok(());
+    };
+
     let max_code_size = MonadExecutionRevision::LATEST
         .execution_chain_params()
         .max_code_size;
-    if let Some(code) = call_request.input.input.as_ref() {
-        if code.len() > 2 * max_code_size {
-            return Err(JsonRpcError::code_size_too_large(code.len()));
-        }
+
+    if code.len() > 2 * max_code_size {
+        return Err(JsonRpcError::code_size_too_large(code.len()));
     }
+
     Ok(())
 }
 

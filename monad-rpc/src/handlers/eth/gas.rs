@@ -315,18 +315,13 @@ fn validate_fill_transaction_type(tx: &CallRequest) -> Result<(), JsonRpcError> 
     Err(JsonRpcError::invalid_params())
 }
 
-fn validate_fill_transaction_contract_creation_size(tx: &CallRequest) -> Result<(), JsonRpcError> {
-    if tx.to.is_none() {
-        check_contract_creation_size(tx)?;
-    }
-    Ok(())
-}
-
 fn build_fill_transaction_eip2930(
     tx: &CallRequest,
     chain_id: u64,
 ) -> Result<TxEip2930, JsonRpcError> {
-    validate_fill_transaction_contract_creation_size(tx)?;
+    if tx.to.is_none() {
+        check_contract_creation_size(tx.input.input.as_ref())?;
+    }
 
     let GasPriceDetails::Legacy { gas_price } = tx.gas_price_details else {
         unreachable!("EIP-2930 fill transaction builder requires legacy gas price details");
