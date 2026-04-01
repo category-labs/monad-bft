@@ -13,18 +13,67 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use crate::{error::Result, logs::QueryLogsRequest, primitives::refs::BlockRef};
+use crate::{
+    error::{MonadChainDataError, Result},
+    kernel::tables::BlockTables,
+    logs::QueryLogsRequest,
+    primitives::refs::BlockRef,
+    store::MetaStore,
+};
 
+/// Inclusive block range clipped to the published head.
+///
+/// `from_block.number <= to_block.number` always holds, regardless of query
+/// order. Callers choose iteration direction based on `QueryOrder`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ResolvedBlockWindow {
     pub from_block: BlockRef,
     pub to_block: BlockRef,
 }
 
-pub async fn resolve_block_window(
-    request: &QueryLogsRequest,
-    published_head: u64,
-) -> Result<ResolvedBlockWindow> {
-    let _ = (request, published_head);
-    todo!("resolve the published block window for the current query request")
+impl ResolvedBlockWindow {
+    pub async fn resolve<M: MetaStore>(
+        request: &QueryLogsRequest,
+        published_head: u64,
+        blocks: &BlockTables<M>,
+    ) -> Result<Self> {
+        let (from_number, to_number) = Self::resolve_query_block_numbers(request, published_head)?;
+
+        let from_record =
+            blocks
+                .load_record(from_number)
+                .await?
+                .ok_or(MonadChainDataError::MissingData(
+                    "missing from_block record",
+                ))?;
+        let to_record = blocks
+            .load_record(to_number)
+            .await?
+            .ok_or(MonadChainDataError::MissingData("missing to_block record"))?;
+
+        Ok(Self {
+            from_block: BlockRef::from(&from_record),
+            to_block: BlockRef::from(&to_record),
+        })
+    }
+
+    /// Resolves and validates the block range. Always returns (low, high) with
+    /// `low <= high`, independent of query order.
+    fn resolve_query_block_numbers(
+        request: &QueryLogsRequest,
+        published_head: u64,
+    ) -> Result<(u64, u64)> {
+        let from = request.from_block.unwrap_or(1).max(1).min(published_head);
+        let to = request
+            .to_block
+            .unwrap_or(published_head)
+            .min(published_head);
+
+        if from > to {
+            return Err(MonadChainDataError::InvalidRequest(
+                "from_block must be <= to_block",
+            ));
+        }
+        Ok((from, to))
+    }
 }

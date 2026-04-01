@@ -16,4 +16,4 @@ bytes = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-futures = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt"] }

@@ -13,16 +13,43 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use crate::family::Hash32;
+use alloy_rlp::{RlpDecodable, RlpEncodable};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+use crate::{
+    error::{MonadChainDataError, Result},
+    family::Hash32,
+};
+
+#[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 pub struct BlockRecord {
     pub block_number: u64,
     pub block_hash: Hash32,
     pub parent_hash: Hash32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+impl BlockRecord {
+    pub fn encode(&self) -> Vec<u8> {
+        alloy_rlp::encode(self)
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
+        alloy_rlp::decode_exact(bytes)
+            .map_err(|_| MonadChainDataError::Decode("invalid block record rlp"))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 pub struct PublicationState {
     pub indexed_finalized_head: u64,
+}
+
+impl PublicationState {
+    pub fn encode(self) -> Vec<u8> {
+        alloy_rlp::encode(self)
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
+        alloy_rlp::decode_exact(bytes)
+            .map_err(|_| MonadChainDataError::Decode("invalid publication state rlp"))
+    }
 }
