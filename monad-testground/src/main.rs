@@ -278,12 +278,17 @@ where
     .take(addresses.len())
     .collect::<Vec<_>>();
 
+    // Heterogeneous stakes for proportional multicast testing.
+    // Indices correspond to the order of --addresses on the command line.
+    let stakes = [7u64, 2, 3, 1, 5, 4, 6, 8];
+
     let validators = ValidatorSetData(
         configs
             .iter()
-            .map(|(keypair, _, cert_keypair)| ValidatorData {
+            .enumerate()
+            .map(|(i, (keypair, _, cert_keypair))| ValidatorData {
                 node_id: NodeId::new(keypair.pubkey()),
-                stake: Stake::ONE,
+                stake: Stake::from(stakes[i % stakes.len()]),
                 cert_pubkey: cert_keypair.pubkey(),
             })
             .collect::<Vec<_>>(),

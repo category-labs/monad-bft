@@ -526,6 +526,10 @@ where
     // For Validator->fullnode re-raptorcasting
     fullnode_map: BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, Group<ST>>,
 
+    // Full validator stake map per epoch (all validators including self and leader).
+    // Used by Phase 2 proportional multicast to reproduce the leader's chunk assignment.
+    validator_stake_map: BTreeMap<Epoch, Vec<(NodeId<CertificateSignaturePubKey<ST>>, Stake)>>,
+
     // Regarding re-raptorcasting from primary instance, if this.is_fullnode =
     // = true,  then we are a full-node re-raptorcasting to other full-nodes.
     // = false, then we are a validator re-raptorcasting to other validators,
@@ -545,6 +549,7 @@ where
             our_node_id,
             validator_map: BTreeMap::new(),
             fullnode_map: BTreeMap::new(),
+            validator_stake_map: BTreeMap::new(),
             is_dynamic_fullnode,
         }
     }
@@ -605,18 +610,40 @@ where
         None
     }
 
+    /// Returns the full validator stake map for an epoch (all validators including self
+    /// and leader), sorted by NodeId. Returns None if the epoch is not known.
+    /// Used by Phase 2 proportional multicast to reproduce the leader's chunk assignment.
+    pub fn get_validator_stake_map(
+        &self,
+        epoch: Epoch,
+    ) -> Option<&Vec<(NodeId<CertificateSignaturePubKey<ST>>, Stake)>> {
+        self.validator_stake_map.get(&epoch)
+    }
+
     // As Validator: When we get an AddEpochValidatorSet.
     pub fn push_group_validator_set(
         &mut self,
         validator_set: Vec<(NodeId<CertificateSignaturePubKey<ST>>, Stake)>,
         epoch: Epoch,
     ) {
-        let new_group = Group::new_validator_group(validator_set, &self.our_node_id);
+        let new_group = Group::new_validator_group(validator_set.clone(), &self.our_node_id);
         if let Some(existing_group) = self.validator_map.get(&epoch) {
             assert_eq!(existing_group, &new_group);
             tracing::warn!("duplicate validator set update (this is safe but unexpected)")
         } else {
             let replaced = self.validator_map.insert(epoch, new_group);
+            assert!(replaced.is_none());
+        }
+
+        // Store the full validator set (including self and leader) for Phase 2 proportional
+        // multicast. Sorted by NodeId so both sender and receiver compute the same order.
+        if let Some(existing_stakes) = self.validator_stake_map.get(&epoch) {
+            assert_eq!(validator_set, *existing_stakes);
+            tracing::warn!("duplicate validator stake map update (this is safe but unexpected)")
+        } else {
+            let mut sorted = validator_set;
+            sorted.sort_by_key(|(id, _)| *id);
+            let replaced = self.validator_stake_map.insert(epoch, sorted);
             assert!(replaced.is_none());
         }
     }

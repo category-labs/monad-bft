@@ -248,8 +248,10 @@ pub fn zero_sized_packet() {
     std::thread::sleep(Duration::from_millis(100));
 }
 
-// Verify that all received encoded symbols that are valid are rebroadcast
-// exactly once.
+// Verify that received encoded symbols are rebroadcast according to Phase 2
+// proportional multicast rules:
+//   - Initial chunks (ic_count per validator) are broadcast to all validators.
+//   - The rounding chunk is multicast to proportional targets (may be empty if frac=0).
 #[test]
 pub fn valid_rebroadcast() {
     let tx_addr = "127.0.0.1:10009".parse().unwrap();
@@ -258,6 +260,16 @@ pub fn valid_rebroadcast() {
 
     let (tx_nodeid, tx_keypair, rx_nodeid, known_addresses) =
         set_up_test(&tx_addr, &rx_addr, Some(&rebroadcast_addr));
+
+    // The RaptorCast instance at rx_addr was registered with 3 validators
+    // (tx, rx, rebroadcast). The sender must use the same validator set so that
+    // the sender's chunk assignment and the receiver's forwarding-spec computation
+    // agree on ic_count. Look up rebroadcast_nodeid from known_addresses.
+    let rebroadcast_nodeid = *known_addresses
+        .iter()
+        .find(|(_, addr)| **addr == rebroadcast_addr)
+        .map(|(id, _)| id)
+        .unwrap();
 
     let message: Bytes = vec![0; 4 * 1000].into();
 
@@ -269,7 +281,11 @@ pub fn valid_rebroadcast() {
         .unwrap();
 
     let validators = EpochValidators {
-        validators: BTreeMap::from([(rx_nodeid, Stake::ONE), (tx_nodeid, Stake::ONE)]),
+        validators: BTreeMap::from([
+            (rx_nodeid, Stake::ONE),
+            (tx_nodeid, Stake::ONE),
+            (rebroadcast_nodeid, Stake::ONE),
+        ]),
     };
 
     let epoch_validators = validators.view_without(vec![&tx_nodeid]);
@@ -285,13 +301,29 @@ pub fn valid_rebroadcast() {
         &known_addresses,
     );
 
+    // Count chunks sent to rx_addr (received by our RaptorCast instance) and
+    // chunks sent to rebroadcast_addr (received directly by rebroadcast_socket).
+    let mut num_chunks_to_rx = 0;
+    let mut num_chunks_to_rebroadcast = 0;
+    for message in &messages {
+        let count = message.1.len() / usize::from(DEFAULT_SEGMENT_SIZE);
+        if message.0 == rx_addr {
+            num_chunks_to_rx += count;
+        } else if message.0 == rebroadcast_addr {
+            num_chunks_to_rebroadcast += count;
+        }
+    }
+
+    // With equal stakes (1:1:1) and integer obligations, ic_count = num_packets / 2.
+    // The rounding chunk has frac=0 so no proportional multicast targets; it is NOT
+    // forwarded. Only ic_count initial chunks from rx_nodeid reach rebroadcast_addr.
+    let num_expected_rebroadcast =
+        num_chunks_to_rebroadcast + (num_chunks_to_rx.saturating_sub(1));
+
     for i in 0..=1 {
-        let mut num_chunks = 0;
         for message in &messages {
             for chunk in message.1.chunks(usize::from(DEFAULT_SEGMENT_SIZE)) {
                 tx_socket.send_to(chunk, message.0).unwrap();
-
-                num_chunks += 1;
             }
         }
 
@@ -299,12 +331,17 @@ pub fn valid_rebroadcast() {
         std::thread::sleep(Duration::from_millis(100));
 
         if i == 0 {
-            for _ in 0..num_chunks {
-                // Verify that the rebroadcast target receives a copy of every symbol.
+            for _ in 0..num_expected_rebroadcast {
+                // Verify that the rebroadcast target receives the expected symbols.
                 let _ = rebroadcast_socket.recv(&mut []).unwrap();
             }
         } else {
-            // Verify that the rebroadcast target has nothing more to receive.
+            // Second iteration: the leader's direct chunks to rebroadcast_nodeid arrive
+            // as usual, but the rx instance no longer forwards (all ESIs already seen).
+            for _ in 0..num_chunks_to_rebroadcast {
+                let _ = rebroadcast_socket.recv(&mut []).unwrap();
+            }
+            // No forwarded chunks from the rx instance.
             assert_eq!(
                 rebroadcast_socket.recv(&mut []).unwrap_err().kind(),
                 ErrorKind::WouldBlock

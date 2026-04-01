@@ -73,6 +73,15 @@ const MAX_NUM_PACKETS: usize = 65535;
 // can be at most 8192, and there can be at most 65521 encoding symbol IDs.
 pub const MAX_REDUNDANCY: Redundancy = Redundancy::from_u8(7);
 
+/// The redundancy factor used for primary (validator-to-validator) RaptorCast.
+///
+/// IMPORTANT: This value must be identical across all validators in the network.
+/// Phase 2 proportional multicast relies on every validator independently reproducing
+/// the same chunk assignment that the leader computed. If any validator uses a different
+/// redundancy factor, its computed chunk ranges will diverge, and the proportional
+/// multicast targets for rounding chunks will be incorrect, breaking BFT guarantees.
+pub const PRIMARY_V2V_REDUNDANCY: Redundancy = Redundancy::from_u8(3);
+
 // For a tree depth of 1, every encoded symbol is its own Merkle tree, and there will be no
 // Merkle proof section in the constructed RaptorCast packets.
 //
@@ -86,6 +95,13 @@ struct DecoderState {
     recipient_chunks: BTreeMap<NodeIdHash, usize>,
     encoded_symbol_capacity: usize,
     seen_esis: BitVec<usize, Lsb0>,
+    /// Number of initial chunks (ic) assigned to this validator. Chunks at indices
+    /// [0, num_assigned_chunks) are initial chunks (broadcast to all). The chunk at
+    /// index num_assigned_chunks is the rounding chunk (multicast to proportional targets).
+    num_assigned_chunks: usize,
+    /// Counter of chunks already rebroadcasted for this message. Used to determine
+    /// whether an incoming chunk is initial, rounding, or excess.
+    num_rebroadcasted_chunks: usize,
 }
 
 struct RecentlyDecodedState {
@@ -93,6 +109,8 @@ struct RecentlyDecodedState {
     encoded_symbol_capacity: usize,
     seen_esis: BitVec<usize, Lsb0>,
     excess_chunk_count: usize,
+    num_assigned_chunks: usize,
+    num_rebroadcasted_chunks: usize,
 }
 
 pub(crate) struct UdpState<ST: CertificateSignatureRecoverable> {
@@ -242,9 +260,59 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                 app_message_len,
             };
 
-            let mut try_rebroadcast_symbol = || {
-                // rebroadcast raptorcast chunks if necessary
-                if parsed_message.broadcast && self_hash == parsed_message.recipient_hash {
+            // Phase 2 proportional multicast:
+            // Attempts to rebroadcast the chunk according to its role:
+            //   - initial chunk (< ic_count received): broadcast to all validators
+            //   - rounding chunk (== ic_count received): multicast to proportional targets
+            //   - excess chunk (> ic_count received): do not rebroadcast
+            // Returns true if the chunk was rebroadcasted (and num_rebroadcasted_chunks
+            // should be incremented), false otherwise.
+            let try_rebroadcast_symbol =
+                |num_assigned_chunks: usize,
+                 num_rebroadcasted_chunks: usize,
+                 batch_guard: &mut BatcherGuard<'_, '_, _, _>| -> bool {
+                    if !parsed_message.broadcast || self_hash != parsed_message.recipient_hash {
+                        return false;
+                    }
+                    if num_rebroadcasted_chunks > num_assigned_chunks {
+                        return false;
+                    }
+                    if num_rebroadcasted_chunks == num_assigned_chunks {
+                        // This is the rounding chunk: multicast to proportional targets.
+                        let targets: Vec<_> = if let Some(all_validators) =
+                            group_map.get_validator_stake_map(Epoch(parsed_message.epoch))
+                        {
+                            let (_, rounding_targets) = compute_forwarding_spec::<ST>(
+                                self_id,
+                                parsed_message.author,
+                                all_validators,
+                                parsed_message.app_message_hash,
+                                parsed_message.app_message_len,
+                                parsed_message.chunk.len() as u16,
+                            );
+                            tracing::trace!(
+                                ?self_id,
+                                author =? parsed_message.author,
+                                num_rebroadcasted_chunks,
+                                num_assigned_chunks,
+                                targets = ?rounding_targets,
+                                "[Proportional Multicast] multicasting rounding chunk"
+                            );
+                            rounding_targets
+                        } else {
+                            return false;
+                        };
+                        if !targets.is_empty() {
+                            batch_guard.queue_broadcast(
+                                payload_start_idx,
+                                payload_end_idx,
+                                &parsed_message.author,
+                                || targets,
+                            );
+                        }
+                        return true;
+                    }
+                    // Initial chunk: broadcast to all validators.
                     let maybe_targets = group_map.iterate_rebroadcast_peers(
                         Epoch(parsed_message.epoch),
                         &parsed_message.author,
@@ -255,10 +323,11 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                             payload_end_idx,
                             &parsed_message.author,
                             || targets.cloned().collect(),
-                        )
+                        );
+                        return true;
                     }
-                }
-            };
+                    false
+                };
 
             if let Some(recently_decoded_state) = self.recently_decoded_cache.get_mut(&key) {
                 if is_valid_symbol::<ST>(
@@ -274,11 +343,36 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                         .set(encoding_symbol_id, true);
                     recently_decoded_state.excess_chunk_count += 1;
 
-                    try_rebroadcast_symbol();
+                    if try_rebroadcast_symbol(
+                        recently_decoded_state.num_assigned_chunks,
+                        recently_decoded_state.num_rebroadcasted_chunks,
+                        &mut batch_guard,
+                    ) {
+                        recently_decoded_state.num_rebroadcasted_chunks += 1;
+                    }
                 }
 
                 continue;
             }
+
+            // Fetch the validator stake map for proportional multicast. If unavailable
+            // (e.g., epoch not yet known), fall back to ic_count = 0 (treat first chunk
+            // as rounding chunk — conservative, won't broadcast excess).
+            let ic_count = if let Some(all_validators) =
+                group_map.get_validator_stake_map(Epoch(parsed_message.epoch))
+            {
+                let (ic, _) = compute_forwarding_spec::<ST>(
+                    self_id,
+                    parsed_message.author,
+                    all_validators,
+                    parsed_message.app_message_hash,
+                    parsed_message.app_message_len,
+                    parsed_message.chunk.len() as u16,
+                );
+                ic
+            } else {
+                0
+            };
 
             let decoder_state_result =
                 self.pending_message_cache.try_get_or_insert_mut(key, || {
@@ -297,6 +391,8 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                             recipient_chunks: BTreeMap::new(),
                             encoded_symbol_capacity,
                             seen_esis: bitvec![usize, Lsb0; 0; encoded_symbol_capacity],
+                            num_assigned_chunks: ic_count,
+                            num_rebroadcasted_chunks: 0,
                         })
                 });
 
@@ -320,7 +416,13 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
             }
             decoder_state.seen_esis.set(encoding_symbol_id, true);
 
-            try_rebroadcast_symbol();
+            if try_rebroadcast_symbol(
+                decoder_state.num_assigned_chunks,
+                decoder_state.num_rebroadcasted_chunks,
+                &mut batch_guard,
+            ) {
+                decoder_state.num_rebroadcasted_chunks += 1;
+            }
 
             // can we assert!(!decoder_state.decoder.decoding_done()) ?
 
@@ -383,6 +485,8 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                         encoded_symbol_capacity: decoded_state.encoded_symbol_capacity,
                         seen_esis: decoded_state.seen_esis,
                         excess_chunk_count: 0,
+                        num_assigned_chunks: decoded_state.num_assigned_chunks,
+                        num_rebroadcasted_chunks: decoded_state.num_rebroadcasted_chunks,
                     },
                 );
 
@@ -527,6 +631,121 @@ fn compute_num_packets(
         num_packets = 0;
     }
     num_packets
+}
+
+// For the validator at position `self_idx` in the sorted-by-NodeId validator set
+// (leader excluded), compute which of the other validators should receive the
+// rounding chunk forwarded by `self_idx`.
+//
+// `rc[i] = N * frac_i` where `frac_i` is the fractional part of validator i's
+// obligation and `N` is the number of non-leader validators.
+//
+// Uses a round-robin modular schedule: the first receiver of self_idx's rounding
+// chunk is at position `left = sum_{j < self_idx} ceil(rc[j]) mod N`, and
+// `ceil(rc[self_idx])` consecutive validators starting there are selected (modulo N),
+// excluding self.
+fn validator_assign_rc(rc: &[f64], self_idx: usize) -> Vec<usize> {
+    let n = rc.len();
+    let left = rc[..self_idx]
+        .iter()
+        .map(|&x| x.ceil() as usize)
+        .sum::<usize>()
+        % n;
+    let count = rc[self_idx].ceil() as usize;
+    (0..count)
+        .map(|j| (left + j) % n)
+        .filter(|&r| r != self_idx)
+        .collect()
+}
+
+// Given the full validator stake map (including leader and self), compute:
+//   - `ic_count`: number of initial chunks assigned to `self_id`
+//   - `rounding_targets`: NodeIds that should receive the rounding chunk from `self_id`
+//
+// The sorted-by-NodeId non-leader validator order is used for the round-robin
+// rounding-target schedule (same on every validator). The shuffle of that same
+// set (seeded by `app_message_hash`) determines the actual chunk-ID assignment order.
+//
+// Returns `(ic_count, rounding_targets)`. Returns `(0, vec![])` if `self_id` is
+// not found in the validator set (should not happen for a participating validator).
+fn compute_forwarding_spec<ST: CertificateSignatureRecoverable>(
+    self_id: NodeId<CertificateSignaturePubKey<ST>>,
+    leader: NodeId<CertificateSignaturePubKey<ST>>,
+    all_validators: &[(NodeId<CertificateSignaturePubKey<ST>>, Stake)],
+    app_message_hash: AppMessageHash,
+    app_message_len: u32,
+    data_size: u16,
+) -> (usize, Vec<NodeId<CertificateSignaturePubKey<ST>>>) {
+    // Build validator set without leader, sorted by NodeId.
+    let mut without_leader: Vec<(NodeId<CertificateSignaturePubKey<ST>>, Stake)> = all_validators
+        .iter()
+        .filter(|(id, _)| *id != leader)
+        .cloned()
+        .collect();
+    without_leader.sort_by_key(|(id, _)| *id);
+
+    let n = without_leader.len();
+    if n == 0 {
+        return (0, vec![]);
+    }
+
+    let Some(self_idx) = without_leader.iter().position(|(id, _)| *id == self_id) else {
+        return (0, vec![]);
+    };
+
+    // Reproduce the sender's obligation computation.
+    let num_packets_without_rounding = compute_num_packets(
+        app_message_len,
+        data_size,
+        PRIMARY_V2V_REDUNDANCY,
+        1,
+        &None,
+    );
+    if num_packets_without_rounding == 0 {
+        return (0, vec![]);
+    }
+
+    let total_weight: U256 = without_leader
+        .iter()
+        .map(|(_, stake)| stake.0)
+        .sum();
+
+    let unit_bias: f64 = 10_000_000.0;
+    let obligations: Vec<f64> = without_leader
+        .iter()
+        .map(|(_, stake)| {
+            let scaled_stake = stake.0 * U256::from(unit_bias);
+            let normalized_stake = scaled_stake.div_ceil(total_weight);
+            let total_obligation: U256 =
+                normalized_stake * U256::from(num_packets_without_rounding);
+            (total_obligation.to::<u64>() as f64) / unit_bias
+        })
+        .collect();
+
+    let ic_count = obligations[self_idx].floor() as usize;
+
+    // rc[i] = N * frac_i — input to validator_assign_rc.
+    let rc: Vec<f64> = obligations
+        .iter()
+        .map(|o| (n as f64) * (o - o.floor()))
+        .collect();
+
+    let target_indices = validator_assign_rc(&rc, self_idx);
+    let rounding_targets = target_indices
+        .into_iter()
+        .map(|i| without_leader[i].0)
+        .collect();
+
+    tracing::trace!(
+        ?self_id,
+        ?leader,
+        ?app_message_hash,
+        ic_count,
+        rounding_targets = ?rounding_targets,
+        "[Proportional Multicast] compute_forwarding_spec"
+    );
+
+    (ic_count, rounding_targets)
 }
 
 // Return the vector `ic`, which, for each validator, contains the number of
