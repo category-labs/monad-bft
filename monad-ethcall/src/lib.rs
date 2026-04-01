@@ -134,10 +134,11 @@ pub const ETH_CALL_SUCCESS: i32 = 0;
 pub const EVMC_OUT_OF_GAS: i32 = 3;
 pub const EVMC_MONAD_RESERVE_BALANCE_VIOLATION: i32 = 18;
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum EthCallResult {
     Success,
     OutOfGas,
+    ExecutionError,
     #[default]
     OtherError,
 }
@@ -160,6 +161,8 @@ pub struct SuccessCallResult {
 #[derive(Clone, Debug, Default)]
 pub struct FailureCallResult {
     pub error_code: EthCallResult,
+    pub gas_used: u64,
+    pub gas_refund: u64,
     pub message: String,
     pub data: Option<String>,
 }
@@ -207,6 +210,7 @@ pub async fn eth_call(
             error_code: EthCallResult::OtherError,
             message: "gas limit too high".into(),
             data: None,
+            ..Default::default()
         });
     }
 
@@ -302,6 +306,7 @@ pub async fn eth_call(
                 error_code: EthCallResult::OtherError,
                 message: "unsupported chain id".to_string(),
                 data: Some(chain_id.to_string()),
+                ..Default::default()
             });
         }
     };
@@ -346,6 +351,7 @@ pub async fn eth_call(
                 error_code: EthCallResult::OtherError,
                 message: "internal eth_call error".to_string(),
                 data: None,
+                ..Default::default()
             });
         }
     };
@@ -392,6 +398,8 @@ pub async fn eth_call(
                 if tracer_cval == bindings::monad_tracer_config_NOOP_TRACER {
                     CallResult::Failure(FailureCallResult {
                         error_code: EthCallResult::OtherError,
+                        gas_used: (*result).gas_used as u64,
+                        gas_refund: (*result).gas_refund as u64,
                         message: "reserve balance violation".to_string(),
                         data: None,
                     })
@@ -428,8 +436,10 @@ pub async fn eth_call(
                             error_code: if status_code == EVMC_OUT_OF_GAS {
                                 EthCallResult::OutOfGas
                             } else {
-                                EthCallResult::OtherError
+                                EthCallResult::ExecutionError
                             },
+                            gas_used: (*result).gas_used as u64,
+                            gas_refund: (*result).gas_refund as u64,
                             message: formatted_message,
                             data: Some(format!("0x{}", hex::encode(&output_data))),
                         })
@@ -455,6 +465,7 @@ pub async fn eth_call(
                         error_code: EthCallResult::OtherError,
                         message,
                         data: None,
+                        ..Default::default()
                     })
                 }
             }
@@ -504,6 +515,7 @@ pub async fn eth_trace_block_or_transaction(
                 error_code: EthCallResult::OtherError,
                 message: "unsupported chain id".to_string(),
                 data: Some(chain_id.to_string()),
+                ..Default::default()
             });
         }
     };
@@ -554,6 +566,7 @@ pub async fn eth_trace_block_or_transaction(
                 error_code: EthCallResult::OtherError,
                 message: "internal eth_trace_block_or_transaction error".to_string(),
                 data: None,
+                ..Default::default()
             });
         }
     };
@@ -593,6 +606,7 @@ pub async fn eth_trace_block_or_transaction(
                     error_code: EthCallResult::OtherError,
                     message,
                     data: None,
+                    ..Default::default()
                 })
             }
         };
