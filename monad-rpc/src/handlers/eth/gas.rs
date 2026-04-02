@@ -26,7 +26,9 @@ use alloy_primitives::{Address, Signature, TxKind, U256, U64, U8};
 use alloy_rpc_types::{FeeHistory, TransactionReceipt};
 use futures::stream::StreamExt;
 use itertools::Itertools;
-use monad_ethcall::{CallResult, EthCallExecutor, MonadTracer, StateOverrideSet};
+use monad_ethcall::{
+    CallResult, EthCallExecutor, MonadTracer, StateOverrideObject, StateOverrideSet,
+};
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{BlockKey, FinalizedBlockKey, ProposedBlockKey, Triedb};
 use monad_types::{BlockId, Hash, SeqNum};
@@ -141,6 +143,7 @@ fn is_terminal_estimate_result(
         && matches!(
             error.error_code,
             monad_ethcall::EthCallResult::ExecutionError
+                | monad_ethcall::EthCallResult::ReserveBalanceViolation
         )
 }
 
@@ -528,6 +531,51 @@ pub async fn monad_eth_fillTransaction<T: Triedb>(
     provider_gas_limit: u64,
     params: MonadEthFillTransactionParams,
 ) -> JsonRpcResult<FillTransactionResult> {
+    fill_transaction_with_provider(
+        chain_state,
+        eth_call_handler_config,
+        Some(eth_call_executor),
+        chain_id,
+        params,
+        |chain_id, header, from, block_key| {
+            GasEstimator::new(
+                chain_id,
+                header,
+                from,
+                block_key,
+                fill_transaction_state_overrides(from),
+                true,
+            )
+        },
+    )
+    .await
+}
+
+fn fill_transaction_state_overrides(from: Address) -> StateOverrideSet {
+    let mut state_overrides = StateOverrideSet::default();
+    state_overrides.insert(
+        from,
+        StateOverrideObject {
+            balance: Some(U256::MAX),
+            ..Default::default()
+        },
+    );
+    state_overrides
+}
+
+async fn fill_transaction_with_provider<T, P, F>(
+    chain_state: &ChainState<T>,
+    eth_call_handler_config: &EthCallHandlerConfig,
+    eth_call_executor: Option<&EthCallExecutor>,
+    chain_id: u64,
+    params: MonadEthFillTransactionParams,
+    make_provider: F,
+) -> JsonRpcResult<FillTransactionResult>
+where
+    T: Triedb,
+    P: EthCallProvider,
+    F: FnOnce(u64, Header, Address, BlockKey) -> P,
+{
     trace!("monad_eth_fillTransaction: {params:?}");
 
     let mut tx = params.tx;
@@ -577,18 +625,11 @@ pub async fn monad_eth_fillTransaction<T: Triedb>(
 
         tx.gas = Some(U256::from(eth_call_provider_gas_limit));
 
-        let gas_estimator = GasEstimator::new(
-            chain_id,
-            header.clone(),
-            from,
-            block_key,
-            StateOverrideSet::default(),
-            false,
-        );
+        let gas_provider = make_provider(chain_id, header.clone(), from, block_key);
 
         let Quantity(estimated_gas) = estimate_gas_with_builder(
-            &gas_estimator,
-            Some(eth_call_executor),
+            &gas_provider,
+            eth_call_executor,
             &mut tx,
             original_tx_gas,
             eth_call_provider_gas_limit,
@@ -1080,17 +1121,21 @@ mod tests {
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use monad_chain_config::execution_revision::MonadExecutionRevision;
-    use monad_eth_types::ReceiptWithLogIndex;
+    use monad_eth_types::{EthAccount, ReceiptWithLogIndex};
     use monad_ethcall::{EthCallResult, FailureCallResult, SuccessCallResult};
     use monad_triedb_utils::mock_triedb::MockTriedb;
 
     use super::*;
-    use crate::handlers::eth::call::{CallInput, CallRequest, GasPriceDetails};
+    use crate::{
+        chainstate::eth_call_handler::EthCallHandlerConfig,
+        handlers::eth::call::{CallInput, CallRequest, GasPriceDetails},
+    };
 
     #[derive(Clone, Copy)]
     enum MockTerminalResult {
         Success,
         ExecutionError,
+        ReserveBalanceViolation,
     }
 
     struct MockGasEstimator {
@@ -1115,6 +1160,15 @@ mod tests {
                         message: "execution reverted".to_string(),
                         data: Some("0x".to_string()),
                     }),
+                    MockTerminalResult::ReserveBalanceViolation => {
+                        CallResult::Failure(FailureCallResult {
+                            error_code: EthCallResult::ReserveBalanceViolation,
+                            gas_used: self.gas_used,
+                            gas_refund: self.gas_refund,
+                            message: "reserve balance violation".to_string(),
+                            data: None,
+                        })
+                    }
                 }
             } else {
                 CallResult::Failure(FailureCallResult {
@@ -1125,6 +1179,60 @@ mod tests {
                 })
             }
         }
+    }
+
+    fn mock_eth_call_handler_config() -> EthCallHandlerConfig {
+        EthCallHandlerConfig {
+            enable_stats: false,
+            pool_low: monad_ethcall::PoolConfig {
+                num_threads: 0,
+                num_fibers: 0,
+                timeout_sec: 0,
+                queue_limit: 0,
+            },
+            pool_high: monad_ethcall::PoolConfig {
+                num_threads: 0,
+                num_fibers: 0,
+                timeout_sec: 0,
+                queue_limit: 0,
+            },
+            pool_block: monad_ethcall::PoolConfig {
+                num_threads: 0,
+                num_fibers: 0,
+                timeout_sec: 0,
+                queue_limit: 0,
+            },
+            tx_exec_num_fibers: 0,
+            node_cache_max_mem: 0,
+            max_concurrent_permits: 0,
+            provider_gas_limit_eth_call: 30_000_000,
+            provider_gas_limit_eth_estimate_gas: 30_000_000,
+        }
+    }
+
+    fn make_fill_chain_state(
+        from: Address,
+        nonce: u64,
+        balance: u128,
+        latest_block: u64,
+        base_fee: u64,
+    ) -> ChainState<MockTriedb> {
+        let mut mock_triedb = MockTriedb::default();
+        mock_triedb.set_latest_block(latest_block);
+        mock_triedb.set_account(
+            from.into(),
+            EthAccount {
+                nonce,
+                balance: U256::from(balance),
+                ..Default::default()
+            },
+        );
+        mock_triedb.set_finalized_block(
+            SeqNum(latest_block),
+            make_block(latest_block, base_fee, vec![]),
+        );
+
+        ChainState::new(None, mock_triedb, None)
     }
 
     #[tokio::test]
@@ -1242,6 +1350,29 @@ mod tests {
             gas_used: 50_000,
             gas_refund: 10_000,
             terminal_result: MockTerminalResult::ExecutionError,
+        };
+
+        let result = estimate_gas(
+            &provider,
+            None,
+            &mut call_request,
+            U256::MAX,
+            u64::MAX,
+            u64::MAX,
+            EstimateGasMode::AllowExecutionFailure,
+        )
+        .await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Quantity(60795));
+    }
+
+    #[tokio::test]
+    async fn test_gas_limit_unspecified_allows_reserve_balance_failure_for_fill_transaction() {
+        let mut call_request = CallRequest::default();
+        let provider = MockGasEstimator {
+            gas_used: 50_000,
+            gas_refund: 10_000,
+            terminal_result: MockTerminalResult::ReserveBalanceViolation,
         };
 
         let result = estimate_gas(
@@ -1562,6 +1693,207 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn test_fill_transaction_happy_path_end_to_end() {
+        let chain_id = 12345u64;
+        let from = Address::repeat_byte(0x11);
+        let to = Address::repeat_byte(0x22);
+        let chain_state = make_fill_chain_state(from, 7, 0, 1000, 100);
+        let config = mock_eth_call_handler_config();
+        let provider = MockGasEstimator {
+            gas_used: 50_000,
+            gas_refund: 10_000,
+            terminal_result: MockTerminalResult::Success,
+        };
+
+        let result = fill_transaction_with_provider(
+            &chain_state,
+            &config,
+            None,
+            chain_id,
+            MonadEthFillTransactionParams {
+                tx: CallRequest {
+                    from: Some(from),
+                    to: Some(to),
+                    ..Default::default()
+                },
+            },
+            |_, _, _, _| provider,
+        )
+        .await
+        .unwrap();
+
+        assert!(!result.raw.0.is_empty());
+        assert_eq!(result.tx.from, Some(from));
+        assert_eq!(result.tx.to, Some(to));
+        assert_eq!(result.tx.nonce, Some(U64::from(7)));
+        assert_eq!(result.tx.chain_id, Some(U64::from(chain_id)));
+        assert_eq!(result.tx.value, Some(U256::ZERO));
+        assert_eq!(result.tx.gas, Some(U256::from(60795)));
+        match result.tx.gas_price_details {
+            GasPriceDetails::Eip1559 {
+                max_fee_per_gas,
+                max_priority_fee_per_gas,
+            } => {
+                assert_eq!(max_fee_per_gas, Some(U256::from(2_000_000_150u64)));
+                assert_eq!(max_priority_fee_per_gas, Some(U256::from(2_000_000_000u64)));
+            }
+            _ => panic!("Expected EIP-1559 gas price details"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_fill_transaction_revert_without_gas_succeeds() {
+        let chain_id = 12345u64;
+        let from = Address::repeat_byte(0x11);
+        let to = Address::repeat_byte(0x22);
+        let chain_state = make_fill_chain_state(from, 3, 0, 1000, 100);
+        let config = mock_eth_call_handler_config();
+        let provider = MockGasEstimator {
+            gas_used: 50_000,
+            gas_refund: 10_000,
+            terminal_result: MockTerminalResult::ExecutionError,
+        };
+
+        let result = fill_transaction_with_provider(
+            &chain_state,
+            &config,
+            None,
+            chain_id,
+            MonadEthFillTransactionParams {
+                tx: CallRequest {
+                    from: Some(from),
+                    to: Some(to),
+                    input: CallInput {
+                        input: Some(Bytes::from(vec![0xde, 0xad, 0xbe, 0xef])),
+                        data: None,
+                    },
+                    ..Default::default()
+                },
+            },
+            |_, _, _, _| provider,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.tx.gas, Some(U256::from(60795)));
+        assert_eq!(
+            result.tx.input.input,
+            Some(Bytes::from(vec![0xde, 0xad, 0xbe, 0xef]))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_fill_transaction_ignores_sender_affordability_and_reserve_balance() {
+        let chain_id = 12345u64;
+        let from = Address::repeat_byte(0x11);
+        let to = Address::repeat_byte(0x22);
+        let chain_state = make_fill_chain_state(from, 0, 0, 1000, 100);
+        let config = mock_eth_call_handler_config();
+        let provider = MockGasEstimator {
+            gas_used: 50_000,
+            gas_refund: 10_000,
+            terminal_result: MockTerminalResult::ReserveBalanceViolation,
+        };
+
+        let result = fill_transaction_with_provider(
+            &chain_state,
+            &config,
+            None,
+            chain_id,
+            MonadEthFillTransactionParams {
+                tx: CallRequest {
+                    from: Some(from),
+                    to: Some(to),
+                    ..Default::default()
+                },
+            },
+            |_, _, _, _| provider,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.tx.gas, Some(U256::from(60795)));
+        assert_eq!(result.tx.nonce, Some(U64::from(0)));
+    }
+
+    #[tokio::test]
+    async fn test_fill_transaction_rejects_eip7702_without_to() {
+        let chain_id = 12345u64;
+        let from = Address::repeat_byte(0x11);
+        let chain_state = make_fill_chain_state(from, 1, 0, 1000, 100);
+        let config = mock_eth_call_handler_config();
+        let provider = MockGasEstimator {
+            gas_used: 50_000,
+            gas_refund: 10_000,
+            terminal_result: MockTerminalResult::Success,
+        };
+
+        let err = fill_transaction_with_provider(
+            &chain_state,
+            &config,
+            None,
+            chain_id,
+            MonadEthFillTransactionParams {
+                tx: CallRequest {
+                    from: Some(from),
+                    gas: Some(U256::from(21_000)),
+                    authorization_list: Some(vec![]),
+                    ..Default::default()
+                },
+            },
+            |_, _, _, _| provider,
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(err, JsonRpcError::invalid_params());
+    }
+
+    #[tokio::test]
+    async fn test_fill_transaction_canonicalizes_input_and_fills_returned_fields() {
+        let chain_id = 12345u64;
+        let from = Address::repeat_byte(0x11);
+        let to = Address::repeat_byte(0x22);
+        let chain_state = make_fill_chain_state(from, 42, 0, 1000, 100);
+        let config = mock_eth_call_handler_config();
+        let provider = MockGasEstimator {
+            gas_used: 50_000,
+            gas_refund: 10_000,
+            terminal_result: MockTerminalResult::Success,
+        };
+
+        let result = fill_transaction_with_provider(
+            &chain_state,
+            &config,
+            None,
+            chain_id,
+            MonadEthFillTransactionParams {
+                tx: CallRequest {
+                    from: Some(from),
+                    to: Some(to),
+                    gas: Some(U256::from(21_000)),
+                    chain_id: Some(U64::from(chain_id + 1)),
+                    input: CallInput {
+                        input: None,
+                        data: Some(Bytes::from(vec![0xca, 0xfe])),
+                    },
+                    ..Default::default()
+                },
+            },
+            |_, _, _, _| provider,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.tx.value, Some(U256::ZERO));
+        assert_eq!(result.tx.nonce, Some(U64::from(42)));
+        assert_eq!(result.tx.chain_id, Some(U64::from(chain_id)));
+        assert_eq!(result.tx.input.input, Some(Bytes::from(vec![0xca, 0xfe])));
+        assert_eq!(result.tx.input.data, None);
+        assert_eq!(result.tx.gas, Some(U256::from(21_000)));
+    }
+
     #[test]
     fn test_fill_transaction_gas_price_details_preserves_user_max_fee_per_gas() {
         let mut call_request = CallRequest {
@@ -1680,6 +2012,48 @@ mod tests {
             }
             _ => panic!("Expected EIP-1559 gas price details"),
         }
+    }
+
+    #[test]
+    fn test_fill_transaction_gas_price_details_preserves_user_cap_above_base_fee_below_default() {
+        let mut call_request = CallRequest {
+            gas_price_details: GasPriceDetails::Eip1559 {
+                max_fee_per_gas: Some(U256::from(120)),
+                max_priority_fee_per_gas: None,
+            },
+            ..Default::default()
+        };
+
+        fill_transaction_gas_price_details(
+            &mut call_request,
+            U256::from(100),
+            U256::from(150),
+            Some(U256::from(2)),
+        )
+        .unwrap();
+
+        match call_request.gas_price_details {
+            GasPriceDetails::Eip1559 {
+                max_fee_per_gas,
+                max_priority_fee_per_gas,
+            } => {
+                assert_eq!(max_fee_per_gas, Some(U256::from(120)));
+                assert_eq!(max_priority_fee_per_gas, Some(U256::from(2)));
+            }
+            _ => panic!("Expected EIP-1559 gas price details"),
+        }
+    }
+
+    #[test]
+    fn test_fill_transaction_state_overrides_ignore_sender_affordability() {
+        let sender = Address::repeat_byte(0x11);
+        let state_overrides = fill_transaction_state_overrides(sender);
+
+        assert_eq!(state_overrides.len(), 1);
+        assert_eq!(
+            state_overrides.get(&sender).and_then(|state| state.balance),
+            Some(U256::MAX)
+        );
     }
 
     #[test]
