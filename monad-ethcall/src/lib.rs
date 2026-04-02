@@ -139,6 +139,7 @@ pub enum EthCallResult {
     Success,
     OutOfGas,
     ExecutionError,
+    ReserveBalanceViolation,
     #[default]
     OtherError,
 }
@@ -397,7 +398,7 @@ pub async fn eth_call(
             EVMC_MONAD_RESERVE_BALANCE_VIOLATION => {
                 if tracer_cval == bindings::monad_tracer_config_NOOP_TRACER {
                     CallResult::Failure(FailureCallResult {
-                        error_code: EthCallResult::OtherError,
+                        error_code: EthCallResult::ReserveBalanceViolation,
                         gas_used: (*result).gas_used as u64,
                         gas_refund: (*result).gas_refund as u64,
                         message: "reserve balance violation".to_string(),
