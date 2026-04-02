@@ -15,6 +15,7 @@
 
 use std::{collections::BTreeMap, marker::PhantomData, time::Duration};
 
+use monad_chain_config::ChainConfig;
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
     block::ConsensusFullBlock,
@@ -40,7 +41,6 @@ pub fn make_state_configs<S: SwarmRelation>(
     block_policy: impl Fn() -> S::BlockPolicyType,
     state_backend: impl Fn() -> S::StateBackendType,
 
-    execution_delay: SeqNum,
     delta: Duration,
     chain_config: S::ChainConfigType,
     statesync_threshold: SeqNum,
@@ -107,7 +107,7 @@ pub fn make_state_configs<S: SwarmRelation>(
             maybe_blocksync_rng_seed: Some(123456),
 
             consensus_config: ConsensusConfig {
-                execution_delay,
+                execution_delay: chain_config.get_execution_delay(),
                 delta,
                 // StateSync -> Live transition happens here
                 statesync_to_live_threshold: statesync_threshold,

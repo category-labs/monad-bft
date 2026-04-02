@@ -18,7 +18,7 @@ use std::{
     time::Duration,
 };
 
-use monad_chain_config::{revision::ChainParams, MockChainConfig};
+use monad_chain_config::{revision::ChainParams, ChainConfig, MockChainConfig};
 use monad_consensus_types::{block::PassthruBlockPolicy, block_validator::MockValidator};
 use monad_crypto::certificate_signature::CertificateKeyPair;
 use monad_mock_swarm::{
@@ -50,17 +50,17 @@ static CHAIN_PARAMS: ChainParams = ChainParams {
 };
 
 fn random_latency_test(latency_seed: u64) {
+    let chain_config = MockChainConfig::new(&CHAIN_PARAMS);
     let state_configs = make_state_configs::<NoSerSwarm>(
         4, // num_nodes
         ValidatorSetFactory::default,
         SimpleRoundRobin::default,
         || MockValidator,
         || PassthruBlockPolicy,
-        || InMemoryStateInner::genesis(SeqNum(4)),
-        SeqNum(4),                           // execution_delay
-        Duration::from_millis(250),          // delta
-        MockChainConfig::new(&CHAIN_PARAMS), // chain config
-        SeqNum(100),                         // state_sync_threshold
+        || InMemoryStateInner::genesis(chain_config.get_execution_delay()),
+        Duration::from_millis(250), // delta
+        chain_config,               // chain config
+        SeqNum(100),                // state_sync_threshold
     );
     let all_peers: BTreeSet<_> = state_configs
         .iter()
@@ -109,17 +109,17 @@ static CHAIN_PARAMS_NO_VOTE_PACE: ChainParams = ChainParams {
 };
 
 fn delayed_message_test(latency_seed: u64) {
+    let chain_config = MockChainConfig::new(&CHAIN_PARAMS_NO_VOTE_PACE);
     let state_configs = make_state_configs::<NoSerSwarm>(
         4, // num_nodes
         ValidatorSetFactory::default,
         SimpleRoundRobin::default,
         || MockValidator,
         || PassthruBlockPolicy,
-        || InMemoryStateInner::genesis(SeqNum(4)),
-        SeqNum(4),                                        // execution_delay
-        Duration::from_millis(2),                         // delta
-        MockChainConfig::new(&CHAIN_PARAMS_NO_VOTE_PACE), // chain config
-        SeqNum(100),                                      // state_sync_threshold
+        || InMemoryStateInner::genesis(chain_config.get_execution_delay()),
+        Duration::from_millis(2), // delta
+        chain_config,             // chain config
+        SeqNum(100),              // state_sync_threshold
     );
     let all_peers: BTreeSet<_> = state_configs
         .iter()

@@ -65,6 +65,7 @@ type TestTxPool = EthTxPool<
 >;
 
 const ONE_ETHER: u128 = 1_000_000_000_000_000_000;
+const EXECUTION_DELAY: SeqNum = SeqNum(3);
 
 #[test]
 fn sanity_check_coherency() {
@@ -450,7 +451,7 @@ fn check_txpool_coherency(
     state_backend: &NopStateBackend,
     root_info: RootInfo,
 ) {
-    let mut block_policy = TestBlockPolicy::new(GENESIS_SEQ_NUM, 3);
+    let mut block_policy = TestBlockPolicy::new(GENESIS_SEQ_NUM, EXECUTION_DELAY);
 
     let mut txpool = create_test_txpool(chain_config);
     let metrics = EthTxPoolMetrics::default();
@@ -534,7 +535,7 @@ fn check_txpool_coherency(
         .cloned()
         .map(recover_tx)
         .collect::<Vec<Recovered<TxEnvelope>>>();
-    let block_policy = TestBlockPolicy::new(GENESIS_SEQ_NUM, 3);
+    let block_policy = TestBlockPolicy::new(GENESIS_SEQ_NUM, EXECUTION_DELAY);
     let created_block = create_test_block_helper(
         chain_config,
         &block_policy,
@@ -604,7 +605,7 @@ fn genesis_setup() -> (Round, SeqNum, TestBlockPolicy, MonadChainConfig) {
     let round = GENESIS_ROUND + Round(1);
     let seq_num = GENESIS_SEQ_NUM + SeqNum(1);
 
-    let block_policy = TestBlockPolicy::new(GENESIS_SEQ_NUM, 3);
+    let block_policy = TestBlockPolicy::new(GENESIS_SEQ_NUM, EXECUTION_DELAY);
 
     let chain_config = MonadChainConfig::new(MONAD_DEVNET_CHAIN_ID, None).unwrap();
 

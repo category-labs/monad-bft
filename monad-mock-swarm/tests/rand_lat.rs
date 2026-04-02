@@ -20,7 +20,7 @@ use std::{
 };
 
 use itertools::Itertools;
-use monad_chain_config::{revision::ChainParams, MockChainConfig};
+use monad_chain_config::{revision::ChainParams, ChainConfig, MockChainConfig};
 use monad_consensus_types::{
     block::PassthruBlockPolicy, block_validator::MockValidator, metrics::Metrics,
 };
@@ -113,19 +113,19 @@ fn nodes_with_random_latency(latency_seed: u64) -> Result<(), String> {
     use monad_transformer::RandLatencyTransformer;
 
     let delta = Duration::from_millis(200);
+    // avoid state_root trigger in rand latency setting
+    // TODO-1, cover cases with low execution_delay once state_sync is done
+    let chain_config = MockChainConfig::new_with_execution_delay(&CHAIN_PARAMS, SeqNum::MAX);
     let state_configs = make_state_configs::<NoSerSwarm>(
         4, // num_nodes
         ValidatorSetFactory::default,
         SimpleRoundRobin::default,
         || MockValidator,
         || PassthruBlockPolicy,
-        || InMemoryStateInner::genesis(SeqNum::MAX),
-        // avoid state_root trigger in rand latency setting
-        // TODO-1, cover cases with low state_root_delay once state_sync is done
-        SeqNum::MAX,                         // execution_delay
-        delta,                               // delta
-        MockChainConfig::new(&CHAIN_PARAMS), // chain config
-        SeqNum(100),                         // state_sync_threshold
+        || InMemoryStateInner::genesis(chain_config.get_execution_delay()),
+        delta,        // delta
+        chain_config, // chain config
+        SeqNum(100),  // state_sync_threshold
     );
     let all_peers: BTreeSet<_> = state_configs
         .iter()

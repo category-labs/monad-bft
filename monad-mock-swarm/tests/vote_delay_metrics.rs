@@ -15,7 +15,7 @@
 
 use std::{collections::BTreeSet, time::Duration};
 
-use monad_chain_config::{revision::ChainParams, MockChainConfig};
+use monad_chain_config::{revision::ChainParams, ChainConfig, MockChainConfig};
 use monad_consensus_types::{block::PassthruBlockPolicy, block_validator::MockValidator};
 use monad_crypto::certificate_signature::CertificateKeyPair;
 use monad_mock_swarm::{
@@ -60,8 +60,7 @@ fn build_two_node_swarm(chain_params: &'static ChainParams, delta: Duration) -> 
         SimpleRoundRobin::default,
         || MockValidator,
         || PassthruBlockPolicy,
-        || InMemoryStateInner::genesis(SeqNum(4)),
-        SeqNum(4),
+        || InMemoryStateInner::genesis(chain_config.get_execution_delay()),
         delta,
         chain_config,
         SeqNum(100),

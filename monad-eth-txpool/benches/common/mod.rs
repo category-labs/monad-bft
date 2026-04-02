@@ -21,6 +21,7 @@ use monad_chain_config::MockChainConfig;
 use monad_crypto::NopSignature;
 use monad_perf_util::PerfController;
 use monad_testutil::signing::MockSignatures;
+use monad_types::SeqNum;
 
 pub use self::controller::BenchController;
 use self::controller::BenchControllerConfig;
@@ -29,7 +30,7 @@ use crate::common::txs::{generate_txs, BenchTxSetup};
 mod controller;
 pub mod txs;
 
-pub const EXECUTION_DELAY: u64 = 4;
+pub const EXECUTION_DELAY: SeqNum = SeqNum(3);
 pub const RESERVE_BALANCE: u128 = 10_000_000_000_000_000_000;
 
 pub type SignatureType = NopSignature;

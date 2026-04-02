@@ -605,14 +605,14 @@ where
 {
     pub fn new(
         last_commit: SeqNum, // TODO deprecate
-        execution_delay: u64,
+        execution_delay: SeqNum,
     ) -> Self {
-        let cache_max_size = execution_delay.saturating_mul(2);
+        let cache_max_size = execution_delay.0.saturating_mul(2);
         Self {
             // Needs to be at least 2 * execution_delay to detect emptying transactions
             committed_cache: CommittedBlkBuffer::new((cache_max_size) as usize),
             last_commit,
-            execution_delay: SeqNum(execution_delay),
+            execution_delay,
         }
     }
 
@@ -1341,7 +1341,7 @@ mod test {
     type ChainRevisionType = MockChainRevision;
 
     const RESERVE_BALANCE: u128 = 10_000_000_000_000_000_000; // 10 MON
-    const EXEC_DELAY: SeqNum = SeqNum(3);
+    const EXECUTION_DELAY: SeqNum = SeqNum(3);
 
     const ONE_ETHER: u128 = 1_000_000_000_000_000_000;
     const HALF_ETHER: u128 = 500_000_000_000_000_000;
@@ -1523,7 +1523,7 @@ mod test {
             SignatureCollectionType,
             ChainConfigType,
             ChainRevisionType,
-        >::new(SeqNum(17), EXEC_DELAY.0);
+        >::new(SeqNum(17), EXECUTION_DELAY);
 
         // Build 5 sequential blocks (n-4 .. n)
         let seq_num = 18;
@@ -2665,7 +2665,7 @@ mod test {
         let res = buffer.update_account_balance(
             &mut account_balance_address_1,
             &address1,
-            EXEC_DELAY,
+            EXECUTION_DELAY,
             SeqNum(4)..SeqNum(5),
             SeqNum(5)..,
             &MockChainConfig::DEFAULT,
@@ -2685,7 +2685,7 @@ mod test {
         let res = buffer.update_account_balance(
             &mut account_balance_address_2,
             &address2,
-            EXEC_DELAY,
+            EXECUTION_DELAY,
             emptying_txn_check_block_range.clone(),
             reserve_balance_check_block_range.clone(),
             &MockChainConfig::DEFAULT,
@@ -2709,7 +2709,7 @@ mod test {
         let res = buffer.update_account_balance(
             &mut account_balance_address_3,
             &address3,
-            EXEC_DELAY,
+            EXECUTION_DELAY,
             emptying_txn_check_block_range,
             reserve_balance_check_block_range,
             &MockChainConfig::DEFAULT,
@@ -2760,7 +2760,7 @@ mod test {
         let reserve_balance = Balance::from(RESERVE_BALANCE);
         let latest_seq_num = SeqNum(1000);
         let txn_value = 1000;
-        let block_seq_num = latest_seq_num + EXEC_DELAY;
+        let block_seq_num = latest_seq_num + EXECUTION_DELAY;
 
         let tx = make_test_tx(50000, txn_value, 0, S1);
         let tx = make_validated_tx(tx);
@@ -2782,7 +2782,7 @@ mod test {
 
         let validator = EthBlockPolicyBlockValidator::new(
             block_seq_num,
-            EXEC_DELAY,
+            EXECUTION_DELAY,
             BASE_FEE,
             &MockChainRevision::DEFAULT,
         )
@@ -2808,7 +2808,7 @@ mod test {
 
         let validator = EthBlockPolicyBlockValidator::new(
             block_seq_num,
-            EXEC_DELAY,
+            EXECUTION_DELAY,
             BASE_FEE,
             &MockChainRevision::DEFAULT,
         )
@@ -2829,7 +2829,7 @@ mod test {
         let reserve_balance = Balance::from(RESERVE_BALANCE);
         let latest_seq_num = SeqNum(1000);
         let txn_value = 1000;
-        let block_seq_num = latest_seq_num + EXEC_DELAY - SeqNum(1);
+        let block_seq_num = latest_seq_num + EXECUTION_DELAY - SeqNum(1);
 
         let tx = make_test_tx(50000, txn_value, 0, S1);
         let tx = make_validated_tx(tx);
@@ -2851,7 +2851,7 @@ mod test {
 
         let validator = EthBlockPolicyBlockValidator::new(
             block_seq_num,
-            EXEC_DELAY,
+            EXECUTION_DELAY,
             BASE_FEE,
             &MockChainRevision::DEFAULT,
         )
@@ -2877,7 +2877,7 @@ mod test {
 
         let validator = EthBlockPolicyBlockValidator::new(
             block_seq_num,
-            EXEC_DELAY,
+            EXECUTION_DELAY,
             BASE_FEE,
             &MockChainRevision::DEFAULT,
         )
@@ -2898,7 +2898,7 @@ mod test {
         let reserve_balance = Balance::from(RESERVE_BALANCE);
         let latest_seq_num = SeqNum(1000);
         let txn_value = 1000;
-        let block_seq_num = latest_seq_num + EXEC_DELAY;
+        let block_seq_num = latest_seq_num + EXECUTION_DELAY;
 
         let tx = make_test_tx(50000, txn_value, 0, S1);
         let tx = make_validated_tx(tx);
@@ -2921,7 +2921,7 @@ mod test {
 
         let validator = EthBlockPolicyBlockValidator::new(
             block_seq_num,
-            EXEC_DELAY,
+            EXECUTION_DELAY,
             BASE_FEE,
             &MockChainRevision::DEFAULT,
         )
@@ -2942,7 +2942,7 @@ mod test {
         let reserve_balance = Balance::from(RESERVE_BALANCE);
         let latest_seq_num = SeqNum(1000);
         let txn_value = 1000;
-        let block_seq_num = latest_seq_num + EXEC_DELAY;
+        let block_seq_num = latest_seq_num + EXECUTION_DELAY;
 
         let tx = make_test_tx(50000, txn_value, 0, S1);
         let tx = make_validated_tx(tx);
@@ -2965,7 +2965,7 @@ mod test {
 
         let validator = EthBlockPolicyBlockValidator::new(
             block_seq_num,
-            EXEC_DELAY,
+            EXECUTION_DELAY,
             BASE_FEE,
             &MockChainRevision::DEFAULT,
         )
@@ -2994,7 +2994,7 @@ mod test {
 
         let validator = EthBlockPolicyBlockValidator::new(
             block_seq_num,
-            EXEC_DELAY,
+            EXECUTION_DELAY,
             BASE_FEE,
             &MockChainRevision::DEFAULT,
         )
@@ -3012,7 +3012,7 @@ mod test {
         let reserve_balance = Balance::from(RESERVE_BALANCE);
         let latest_seq_num = SeqNum(1000);
         let txn_value = 1000;
-        let block_seq_num = latest_seq_num + EXEC_DELAY;
+        let block_seq_num = latest_seq_num + EXECUTION_DELAY;
 
         let tx1 = make_test_tx(50000, txn_value, 0, S1);
         let tx1 = make_validated_tx(tx1);
@@ -3038,7 +3038,7 @@ mod test {
 
         let validator = EthBlockPolicyBlockValidator::new(
             block_seq_num,
-            EXEC_DELAY,
+            EXECUTION_DELAY,
             BASE_FEE,
             &MockChainRevision::DEFAULT,
         )
@@ -3067,7 +3067,7 @@ mod test {
 
         let validator = EthBlockPolicyBlockValidator::new(
             latest_seq_num,
-            EXEC_DELAY,
+            EXECUTION_DELAY,
             BASE_FEE,
             &MockChainRevision::DEFAULT,
         )
@@ -3148,7 +3148,7 @@ mod test {
 
         let validator = EthBlockPolicyBlockValidator::new(
             block_seq_num,
-            EXEC_DELAY,
+            EXECUTION_DELAY,
             BASE_FEE,
             &MockChainRevision::DEFAULT,
         )
@@ -3392,7 +3392,7 @@ mod test {
         let txn = &make_validated_tx(txn.clone());
         let validator = EthBlockPolicyBlockValidator::new(
             block_seq_num,
-            EXEC_DELAY,
+            EXECUTION_DELAY,
             BASE_FEE,
             &MockChainRevision::DEFAULT,
         )
@@ -3444,7 +3444,7 @@ mod test {
     ) {
         let validator = EthBlockPolicyBlockValidator::new(
             block_seq_num,
-            EXEC_DELAY,
+            EXECUTION_DELAY,
             BASE_FEE,
             &MockChainRevision::DEFAULT,
         )
@@ -3565,7 +3565,7 @@ mod test {
             SignatureCollectionType,
             ChainConfigType,
             ChainRevisionType,
-        >::new(GENESIS_SEQ_NUM, EXEC_DELAY.0);
+        >::new(GENESIS_SEQ_NUM, EXECUTION_DELAY);
 
         let state_backend = NopStateBackend::default();
 
@@ -3835,7 +3835,7 @@ mod test {
             SignatureCollectionType,
             ChainConfigType,
             ChainRevisionType,
-        >::new(GENESIS_SEQ_NUM, EXEC_DELAY.0);
+        >::new(GENESIS_SEQ_NUM, EXECUTION_DELAY);
 
         let txs = Vec::new();
         let block = make_test_block(Round(1), GENESIS_SEQ_NUM, txs);

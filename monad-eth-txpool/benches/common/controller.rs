@@ -31,6 +31,8 @@ use monad_testutil::signing::MockSignatures;
 use monad_tfm::base_fee::MIN_BASE_FEE;
 use monad_types::{Round, SeqNum};
 
+use crate::common::EXECUTION_DELAY;
+
 pub type SignatureType = NopSignature;
 pub type SignatureCollectionType = MockSignatures<NopSignature>;
 pub type BlockPolicyType =
@@ -140,7 +142,7 @@ impl<'a> BenchController<'a> {
 
     pub fn generate_state_backend_for_txs(txs: &[Recovered<TxEnvelope>]) -> StateBackendType {
         InMemoryStateInner::new(
-            SeqNum(4),
+            EXECUTION_DELAY,
             InMemoryBlockState::genesis(
                 txs.iter()
                     .map(|tx| {

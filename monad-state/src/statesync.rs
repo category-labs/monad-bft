@@ -46,7 +46,7 @@ where
     /// trigger resync once passively observe new_root > current_root + resync_threshold
     resync_threshold: SeqNum,
     /// minimum blocks requirement is for TFM reserve balance checking which
-    /// requires N-2*state_root_delay blocks to validate N
+    /// requires N-2*execution_delay blocks to validate N
     min_num_blocks: SeqNum,
 
     root: BlockId,

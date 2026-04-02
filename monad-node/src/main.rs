@@ -95,8 +95,6 @@ pub static malloc_conf: &[u8] = b"prof:true,prof_active:true,lg_prof_sample:19\0
 const MONAD_NODE_VERSION: Option<&str> = option_env!("MONAD_VERSION");
 const STATESYNC_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
-const EXECUTION_DELAY: u64 = 3;
-
 fn main() {
     let mut cmd = Cli::command();
 
@@ -211,7 +209,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
     let create_block_policy = || {
         EthBlockPolicy::new(
             GENESIS_SEQ_NUM, // FIXME: MonadStateBuilder is responsible for updating this to forkpoint root if necessary
-            EXECUTION_DELAY,
+            node_state.chain_config.get_execution_delay(),
         )
     };
 
@@ -222,7 +220,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
             let triedb_handle =
                 TriedbReader::try_new(triedb_path.as_path()).expect("triedb should exist in path");
 
-            StateBackendCache::new(triedb_handle, SeqNum(EXECUTION_DELAY))
+            StateBackendCache::new(triedb_handle, node_state.chain_config.get_execution_delay())
         }
     });
 
@@ -346,7 +344,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         block_sync_override_peers,
         maybe_blocksync_rng_seed: None,
         consensus_config: ConsensusConfig {
-            execution_delay: SeqNum(EXECUTION_DELAY),
+            execution_delay: node_state.chain_config.get_execution_delay(),
             delta: Duration::from_millis(100),
             // StateSync -> Live transition happens here
             statesync_to_live_threshold: SeqNum(statesync_threshold as u64),

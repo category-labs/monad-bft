@@ -956,7 +956,7 @@ mod test {
     > {
         const TEST_TX_EXPIRY: Duration = Duration::from_secs(24 * 60 * 60);
 
-        let block_policy = EthBlockPolicy::new(GENESIS_SEQ_NUM, u64::MAX);
+        let block_policy = EthBlockPolicy::new(GENESIS_SEQ_NUM, SeqNum::MAX);
         let state_backend: StateBackendType = InMemoryStateInner::new(
             SeqNum::MAX,
             InMemoryBlockState::genesis(BTreeMap::from_iter([(
