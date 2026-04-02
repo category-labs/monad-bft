@@ -76,6 +76,7 @@ fn criterion_benchmark(c: &mut Criterion) {
                 NodeId::new(NopPubKey::from_bytes(&[0_u8; 32]).unwrap()),
                 RoundSignature::new(Round(0), &mock_keypair),
                 pending_blocks.to_owned(),
+                None,
                 block_policy,
                 state_backend,
                 &MockChainConfig::DEFAULT,

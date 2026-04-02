@@ -361,6 +361,7 @@ where
                             node_id,
                             round_signature.clone(),
                             extending_blocks,
+                            None,
                             block_policy,
                             state_backend,
                             &self.chain_config,
