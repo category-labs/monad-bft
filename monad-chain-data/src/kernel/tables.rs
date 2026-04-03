@@ -217,6 +217,18 @@ impl<M: MetaStore, B: BlobStore> LogTables<M, B> {
         Ok(self.block_blobs.get(&key).await?.map(Into::into))
     }
 
+    pub async fn read_block_blob_range(
+        &self,
+        block_number: u64,
+        start: usize,
+        end_exclusive: usize,
+    ) -> Result<Option<bytes::Bytes>> {
+        let key = block_number_key(block_number);
+        self.block_blobs
+            .read_range(&key, start, end_exclusive)
+            .await
+    }
+
     pub async fn store_block_blob(&self, block_number: u64, block_log_blob: Vec<u8>) -> Result<()> {
         let key = block_number_key(block_number);
         self.block_blobs

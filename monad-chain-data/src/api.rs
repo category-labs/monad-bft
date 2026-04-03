@@ -22,7 +22,7 @@ use crate::{
         range::ResolvedBlockWindow,
         state::{BlockRecord, LogId},
     },
-    query::runner::execute_block_scan_query,
+    query::{indexed::execute_indexed_log_query, runner::execute_block_scan_query},
     store::{BlobStore, MetaStore},
 };
 
@@ -115,8 +115,10 @@ impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
             .ok_or(MonadChainDataError::MissingData("no published blocks"))?;
         let window = ResolvedBlockWindow::resolve(&request, head, self.tables.blocks()).await?;
 
-        // First pass: all log queries use the fallback block-scan path.
-        // Indexed execution lands in later commits once log IDs and bitmap artifacts exist.
+        if request.filter.has_indexed_clause() {
+            return execute_indexed_log_query(&self.tables, &request, window).await;
+        }
+
         execute_block_scan_query(&self.tables, &request, window).await
     }
 }
