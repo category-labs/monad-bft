@@ -48,7 +48,6 @@ use monad_eth_txpool_types::{
 };
 use monad_eth_types::{EthExecutionProtocol, ExtractEthAddress};
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
-use monad_executor_glue::{MempoolEvent, MonadEvent};
 use monad_peer_score::{ema, StdClock};
 use monad_secp::RecoverableAddress;
 use monad_state_backend::StateBackend;
@@ -288,7 +287,7 @@ where
             >,
         >,
         mut forwarded_rx: mpsc::Receiver<Vec<ForwardedTxs<SCT>>>,
-        event_tx: mpsc::Sender<MonadEvent<ST, SCT, EthExecutionProtocol>>,
+        event_tx: mpsc::Sender<TxPoolExecutorEvent<ST, SCT, EthExecutionProtocol>>,
     ) {
         use futures::StreamExt;
 
@@ -342,7 +341,7 @@ where
                     };
 
 
-                    if let Err(err) = self.process_event(event, &event_tx).await {
+                    if let Err(err) = event_tx.send(event).await {
                         warn!(?err, "failed to send event to BFT, shutting down txpool executor");
                         break;
                     }
@@ -386,51 +385,6 @@ where
             .as_mut()
             .project()
             .add_ingress_txs(ingress_batch);
-    }
-
-    async fn process_event(
-        &mut self,
-        event: TxPoolExecutorEvent<ST, SCT, EthExecutionProtocol>,
-        event_tx: &mpsc::Sender<MonadEvent<ST, SCT, EthExecutionProtocol>>,
-    ) -> Result<(), mpsc::error::SendError<MonadEvent<ST, SCT, EthExecutionProtocol>>> {
-        let event = match event {
-            TxPoolExecutorEvent::Proposal {
-                epoch,
-                round,
-                seq_num,
-                high_qc,
-                timestamp_ns,
-                round_signature,
-                base_fee,
-                base_fee_trend,
-                base_fee_moment,
-                delayed_execution_results,
-                proposed_execution_inputs,
-                last_round_tc,
-                fresh_proposal_certificate,
-            } => {
-                // TODO(dshulyak): Add sender contributions.
-
-                MempoolEvent::Proposal {
-                    epoch,
-                    round,
-                    seq_num,
-                    high_qc,
-                    timestamp_ns,
-                    round_signature,
-                    base_fee,
-                    base_fee_trend,
-                    base_fee_moment,
-                    delayed_execution_results,
-                    proposed_execution_inputs,
-                    last_round_tc,
-                    fresh_proposal_certificate,
-                }
-            }
-            TxPoolExecutorEvent::ForwardTxs(txs) => MempoolEvent::ForwardTxs(txs),
-        };
-
-        event_tx.send(MonadEvent::MempoolEvent(event)).await
     }
 }
 
