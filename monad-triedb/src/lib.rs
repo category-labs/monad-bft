@@ -15,7 +15,6 @@
 
 use std::{
     cmp::Ordering,
-    collections::HashSet,
     ffi::CString,
     path::Path,
     ptr::{null, null_mut, slice_from_raw_parts},
@@ -25,12 +24,10 @@ use std::{
     },
 };
 
-use alloy_primitives::U256;
 use futures::channel::oneshot::Sender;
-use monad_bls::BlsPubKey;
-use monad_crypto::certificate_signature::PubKey;
-use monad_types::{Epoch, SeqNum, Stake};
 use tracing::{debug, error};
+
+use crate::bindings::{validator_data, validator_set};
 
 #[allow(dead_code, non_camel_case_types, non_upper_case_globals)]
 mod bindings {
@@ -494,66 +491,19 @@ impl TriedbHandle {
         }
     }
 
-    pub fn read_valset_at_block(
+    pub fn validator_set_at_block(
         &self,
-        block_num: SeqNum,
-        requested_epoch: Epoch,
-    ) -> Vec<(monad_secp::PubKey, BlsPubKey, Stake)> {
-        let result_ptr = unsafe {
-            bindings::read_valset(
-                self.db_ptr,
-                block_num
-                    .0
-                    .try_into()
-                    .expect("block_num doesn't fit in usize"),
-                requested_epoch.0,
-            )
-        };
+        block_num: usize,
+        requested_epoch: u64,
+    ) -> ValidatorSet<'_> {
+        let result_ptr = unsafe { bindings::read_valset(self.db_ptr, block_num, requested_epoch) };
 
         // assert read valset didn't fail
         assert!(!result_ptr.is_null());
 
-        let val_set_ptr = unsafe { (*result_ptr).validators };
-        let val_set_length: usize = unsafe {
-            (*result_ptr)
-                .length
-                .try_into()
-                .expect("val_set_length doesn't fit in usize")
-        };
-        let val_set = unsafe {
-            slice_from_raw_parts(val_set_ptr, val_set_length)
-                .as_ref()
-                .unwrap()
-        };
-
-        let mut validator_set = Vec::new();
-        for validator_data in val_set {
-            let secp_pubkey =
-                monad_secp::PubKey::from_bytes(validator_data.secp_pubkey.as_slice()).unwrap();
-            let bls_pubkey = BlsPubKey::from_bytes(validator_data.bls_pubkey.as_slice()).unwrap();
-            let stake = Stake::from(U256::from_be_bytes(validator_data.stake));
-            validator_set.push((secp_pubkey, bls_pubkey, stake));
+        ValidatorSet {
+            validator_set: unsafe { &mut *result_ptr },
         }
-
-        unsafe { bindings::free_valset(result_ptr) };
-
-        let mut unique_secp_keys = HashSet::new();
-        let mut unique_bls_keys = HashSet::new();
-        for (secp_key, bls_key, stake) in &validator_set {
-            assert!(!unique_secp_keys.contains(secp_key));
-            unique_secp_keys.insert(*secp_key);
-
-            assert!(!unique_bls_keys.contains(bls_key));
-            unique_bls_keys.insert(*bls_key);
-
-            assert!(
-                *stake > Stake::ZERO,
-                "validator {:?} should have non-zero stake",
-                secp_key
-            );
-        }
-
-        validator_set
     }
 }
 
@@ -563,5 +513,33 @@ impl Drop for TriedbHandle {
         if result != 0 {
             error!("Unexpected result from triedb close: {}", result);
         }
+    }
+}
+
+pub struct ValidatorSet<'s> {
+    validator_set: &'s mut validator_set,
+}
+
+impl<'s> ValidatorSet<'s> {
+    pub fn data(&self) -> &[validator_data] {
+        let val_set_ptr = self.validator_set.validators;
+
+        let val_set_length: usize = self
+            .validator_set
+            .length
+            .try_into()
+            .expect("val_set_length doesn't fit in usize");
+
+        unsafe {
+            slice_from_raw_parts(val_set_ptr, val_set_length)
+                .as_ref()
+                .unwrap()
+        }
+    }
+}
+
+impl Drop for ValidatorSet<'_> {
+    fn drop(&mut self) {
+        unsafe { bindings::free_valset(self.validator_set) }
     }
 }

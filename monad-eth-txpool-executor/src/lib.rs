@@ -26,11 +26,15 @@ use std::{
 use alloy_consensus::{transaction::Recovered, TxEnvelope};
 use alloy_primitives::Address;
 use alloy_rlp::Decodable;
+use bytes::Bytes;
 use futures::Stream;
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_consensus_types::{
-    block::BlockPolicy, no_endorsement::FreshProposalCertificate, payload::RoundSignature,
-    quorum_certificate::QuorumCertificate, timeout::TimeoutCertificate,
+    block::{BlockPolicy, ProposedExecutionInputs},
+    no_endorsement::FreshProposalCertificate,
+    payload::RoundSignature,
+    quorum_certificate::QuorumCertificate,
+    timeout::TimeoutCertificate,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -117,6 +121,32 @@ where
     },
 }
 
+pub enum TxPoolExecutorEvent<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    Proposal {
+        epoch: Epoch,
+        round: Round,
+        seq_num: SeqNum,
+        high_qc: QuorumCertificate<SCT>,
+        timestamp_ns: u128,
+        round_signature: RoundSignature<SCT::SignatureType>,
+        base_fee: u64,
+        base_fee_trend: u64,
+        base_fee_moment: u64,
+        delayed_execution_results: Vec<EPT::FinalizedHeader>,
+        proposed_execution_inputs: ProposedExecutionInputs<EPT>,
+        last_round_tc: Option<TimeoutCertificate<ST, SCT, EPT>>,
+        fresh_proposal_certificate: Option<FreshProposalCertificate<SCT>>,
+        // TODO(dshulyak): Add sender contributions
+    },
+
+    ForwardTxs(Vec<Bytes>),
+}
+
 pub struct EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT, TIS>
 where
     ST: CertificateSignatureRecoverable,
@@ -134,8 +164,8 @@ where
     state_backend: SBT,
     chain_config: CCT,
 
-    events_tx: mpsc::UnboundedSender<MempoolEvent<ST, SCT, EthExecutionProtocol>>,
-    events: mpsc::UnboundedReceiver<MempoolEvent<ST, SCT, EthExecutionProtocol>>,
+    events_tx: mpsc::UnboundedSender<TxPoolExecutorEvent<ST, SCT, EthExecutionProtocol>>,
+    events: mpsc::UnboundedReceiver<TxPoolExecutorEvent<ST, SCT, EthExecutionProtocol>>,
 
     forwarding_manager: Pin<Box<EthTxPoolForwardingManager>>,
     preload_manager: Pin<Box<EthTxPoolPreloadManager>>,
@@ -311,7 +341,8 @@ where
                         continue;
                     };
 
-                    if let Err(err) = event_tx.send(event).await {
+
+                    if let Err(err) = self.process_event(event, &event_tx).await {
                         warn!(?err, "failed to send event to BFT, shutting down txpool executor");
                         break;
                     }
@@ -355,6 +386,51 @@ where
             .as_mut()
             .project()
             .add_ingress_txs(ingress_batch);
+    }
+
+    async fn process_event(
+        &mut self,
+        event: TxPoolExecutorEvent<ST, SCT, EthExecutionProtocol>,
+        event_tx: &mpsc::Sender<MonadEvent<ST, SCT, EthExecutionProtocol>>,
+    ) -> Result<(), mpsc::error::SendError<MonadEvent<ST, SCT, EthExecutionProtocol>>> {
+        let event = match event {
+            TxPoolExecutorEvent::Proposal {
+                epoch,
+                round,
+                seq_num,
+                high_qc,
+                timestamp_ns,
+                round_signature,
+                base_fee,
+                base_fee_trend,
+                base_fee_moment,
+                delayed_execution_results,
+                proposed_execution_inputs,
+                last_round_tc,
+                fresh_proposal_certificate,
+            } => {
+                // TODO(dshulyak): Add sender contributions.
+
+                MempoolEvent::Proposal {
+                    epoch,
+                    round,
+                    seq_num,
+                    high_qc,
+                    timestamp_ns,
+                    round_signature,
+                    base_fee,
+                    base_fee_trend,
+                    base_fee_moment,
+                    delayed_execution_results,
+                    proposed_execution_inputs,
+                    last_round_tc,
+                    fresh_proposal_certificate,
+                }
+            }
+            TxPoolExecutorEvent::ForwardTxs(txs) => MempoolEvent::ForwardTxs(txs),
+        };
+
+        event_tx.send(MonadEvent::MempoolEvent(event)).await
     }
 }
 
@@ -465,7 +541,7 @@ where
                                 .fetch_add(elapsed.as_nanos() as u64, Ordering::SeqCst);
 
                             self.events_tx
-                                .send(MempoolEvent::Proposal {
+                                .send(TxPoolExecutorEvent::Proposal {
                                     epoch,
                                     round,
                                     seq_num,
@@ -549,7 +625,7 @@ where
 
     Self: Unpin,
 {
-    type Item = MonadEvent<ST, SCT, EthExecutionProtocol>;
+    type Item = TxPoolExecutorEvent<ST, SCT, EthExecutionProtocol>;
 
     fn poll_next(
         self: Pin<&mut Self>,
@@ -584,7 +660,7 @@ where
         if let Poll::Ready(result) = events.poll_recv(cx) {
             let event = result.expect("events_tx never dropped");
 
-            return Poll::Ready(Some(MonadEvent::MempoolEvent(event)));
+            return Poll::Ready(Some(event));
         };
 
         if !reset.poll_is_ready(cx) {
@@ -664,9 +740,7 @@ where
             .as_mut()
             .poll_egress(pool.current_revision().1.execution_chain_params(), cx)
         {
-            return Poll::Ready(Some(MonadEvent::MempoolEvent(MempoolEvent::ForwardTxs(
-                forward_txs,
-            ))));
+            return Poll::Ready(Some(TxPoolExecutorEvent::ForwardTxs(forward_txs)));
         }
 
         let mut ipc_events = BTreeMap::default();
