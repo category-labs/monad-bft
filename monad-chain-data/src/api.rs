@@ -71,6 +71,13 @@ impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
             .await?;
         logs.store_block_header(block.block_number, &block_log_header)
             .await?;
+        logs.dir()
+            .persist_block_fragment(
+                block.block_number,
+                block_record.logs.first_log_id.as_u64(),
+                block_record.logs.count,
+            )
+            .await?;
         blocks
             .store_record(block.block_number, &block_record)
             .await?;
