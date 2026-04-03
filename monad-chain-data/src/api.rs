@@ -72,6 +72,7 @@ impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
             block_record,
             block_log_header,
             block_log_blob,
+            bitmap_fragments,
             written_logs,
         } = LogIngestPlan::build(&block, next_log_id)?;
         logs.store_block_blob(block.block_number, block_log_blob)
@@ -85,6 +86,10 @@ impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
                 block_record.logs.count,
             )
             .await?;
+        for fragment in &bitmap_fragments {
+            logs.store_bitmap_fragment(fragment, block.block_number)
+                .await?;
+        }
         blocks
             .store_record(block.block_number, &block_record)
             .await?;
