@@ -18,10 +18,16 @@ use bytes::Bytes;
 use crate::{
     error::Result,
     family::FinalizedBlock,
-    kernel::primary_dir::{PrimaryDirFragment, PrimaryDirTables},
+    kernel::{
+        bitmap::{stream_page_key, BitmapFragmentWrite},
+        primary_dir::{PrimaryDirFragment, PrimaryDirTables},
+    },
     logs::LogBlockHeader,
     primitives::state::{BlockRecord, PublicationState},
-    store::{BlobStore, BlobTable, BlobTableId, KvTable, MetaStore, ScannableTableId, TableId},
+    store::{
+        BlobStore, BlobTable, BlobTableId, KvTable, MetaStore, ScannableKvTable, ScannableTableId,
+        TableId,
+    },
 };
 
 pub struct Tables<M: MetaStore, B: BlobStore> {
@@ -160,18 +166,22 @@ pub struct LogTables<M: MetaStore, B: BlobStore> {
     block_headers: KvTable<M>,
     block_blobs: BlobTable<B>,
     dir: PrimaryDirTables<M>,
+    bitmap_fragments: ScannableKvTable<M>,
 }
 
 impl<M: MetaStore, B: BlobStore> LogTables<M, B> {
     pub const BLOCK_LOG_HEADER_TABLE: TableId = TableId::new("block_log_header");
     pub const BLOCK_LOG_BLOB_TABLE: BlobTableId = BlobTableId::new("block_log_blob");
     pub const LOG_DIR_BY_BLOCK_TABLE: ScannableTableId = ScannableTableId::new("log_dir_by_block");
+    pub const LOG_BITMAP_BY_BLOCK_TABLE: ScannableTableId =
+        ScannableTableId::new("log_bitmap_by_block");
 
     fn new(meta_store: M, blob_store: B) -> Self {
         Self {
             block_headers: meta_store.table(Self::BLOCK_LOG_HEADER_TABLE),
             block_blobs: blob_store.table(Self::BLOCK_LOG_BLOB_TABLE),
             dir: PrimaryDirTables::new(meta_store.scannable_table(Self::LOG_DIR_BY_BLOCK_TABLE)),
+            bitmap_fragments: meta_store.scannable_table(Self::LOG_BITMAP_BY_BLOCK_TABLE),
         }
     }
 
@@ -220,5 +230,44 @@ impl<M: MetaStore, B: BlobStore> LogTables<M, B> {
         sub_bucket_start: u64,
     ) -> Result<Vec<PrimaryDirFragment>> {
         self.dir.load_sub_bucket_fragments(sub_bucket_start).await
+    }
+
+    pub async fn store_bitmap_fragment(
+        &self,
+        fragment: &BitmapFragmentWrite,
+        block_number: u64,
+    ) -> Result<()> {
+        let partition = stream_page_key(&fragment.stream_id, fragment.page_start_local);
+        let clustering = block_number_key(block_number);
+        self.bitmap_fragments
+            .put(&partition, &clustering, fragment.bitmap_blob.clone())
+            .await?;
+        Ok(())
+    }
+
+    pub async fn load_bitmap_fragments(
+        &self,
+        stream_id: &str,
+        page_start_local: u32,
+    ) -> Result<Vec<Bytes>> {
+        let partition = stream_page_key(stream_id, page_start_local);
+        let page = self
+            .bitmap_fragments
+            .list_prefix(&partition, &[], None, usize::MAX)
+            .await?;
+        let mut fragments = Vec::with_capacity(page.keys.len());
+
+        for clustering in page.keys {
+            let record = self
+                .bitmap_fragments
+                .get(&partition, &clustering)
+                .await?
+                .ok_or(crate::error::MonadChainDataError::MissingData(
+                    "missing log bitmap fragment",
+                ))?;
+            fragments.push(record.value);
+        }
+
+        Ok(fragments)
     }
 }

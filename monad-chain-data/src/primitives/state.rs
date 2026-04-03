@@ -25,6 +25,8 @@ pub struct LogId(u64);
 
 impl LogId {
     pub const ZERO: Self = Self(0);
+    pub const LOCAL_ID_BITS: u32 = 24;
+    const LOCAL_ID_MASK: u64 = (1u64 << Self::LOCAL_ID_BITS) - 1;
 
     pub const fn new(value: u64) -> Self {
         Self(value)
@@ -39,6 +41,14 @@ impl LogId {
             .checked_add(rhs)
             .map(Self)
             .ok_or(MonadChainDataError::Decode("log id overflow"))
+    }
+
+    pub const fn shard(self) -> u64 {
+        self.0 >> Self::LOCAL_ID_BITS
+    }
+
+    pub const fn local(self) -> u32 {
+        (self.0 & Self::LOCAL_ID_MASK) as u32
     }
 }
 
