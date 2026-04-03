@@ -50,6 +50,10 @@ impl LogId {
     pub const fn local(self) -> u32 {
         (self.0 & Self::LOCAL_ID_MASK) as u32
     }
+
+    pub const fn from_parts(shard: u64, local: u32) -> Self {
+        Self((shard << Self::LOCAL_ID_BITS) | (local as u64))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, RlpEncodable, RlpDecodable)]
