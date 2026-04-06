@@ -13,11 +13,27 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use alloy_consensus::TxEnvelope;
 use alloy_primitives::FixedBytes;
+use alloy_rlp::Encodable;
 use alloy_rpc_types::Log;
 
 pub trait HeuristicSize {
     fn heuristic_json_len(&self) -> usize;
+}
+
+impl HeuristicSize for String {
+    fn heuristic_json_len(&self) -> usize {
+        // 2 enclosing double quotes + string
+        2 + self.len()
+    }
+}
+
+impl HeuristicSize for TxEnvelope {
+    fn heuristic_json_len(&self) -> usize {
+        // 2 bytes per input byte
+        2 * self.length()
+    }
 }
 
 impl HeuristicSize for Log {
