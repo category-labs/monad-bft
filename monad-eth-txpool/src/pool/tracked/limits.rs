@@ -17,6 +17,7 @@ use std::time::Duration;
 
 use alloy_primitives::Address;
 use indexmap::IndexMap;
+use monad_crypto::certificate_signature::PubKey;
 use tracing::{error, info};
 
 use crate::pool::transaction::PoolTx;
@@ -112,12 +113,12 @@ impl TrackedTxLimits {
             || self.eip2718_bytes > self.config.max_eip2718_bytes
     }
 
-    pub fn add_tx(&mut self, tx: &PoolTx) {
+    pub fn add_tx<PT: PubKey>(&mut self, tx: &PoolTx<PT>) {
         self.txs += 1;
         self.eip2718_bytes += tx.raw().eip2718_encoded_length() as u64;
     }
 
-    pub fn remove_tx(&mut self, tx: &PoolTx) {
+    pub fn remove_tx<PT: PubKey>(&mut self, tx: &PoolTx<PT>) {
         self.txs = self.txs.checked_sub(1).unwrap_or_else(|| {
             error!("txpool txs limit underflowed, detected during remove_tx");
             0
@@ -132,7 +133,7 @@ impl TrackedTxLimits {
             });
     }
 
-    pub fn remove_txs<'a>(&mut self, txs: impl Iterator<Item = &'a PoolTx>) {
+    pub fn remove_txs<'a, PT: PubKey>(&mut self, txs: impl Iterator<Item = &'a PoolTx<PT>>) {
         for tx in txs {
             self.remove_tx(tx)
         }

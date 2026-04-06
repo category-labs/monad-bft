@@ -365,7 +365,8 @@ where
                             state_backend,
                             &self.chain_config,
                         )
-                        .expect("proposal succeeds");
+                        .expect("proposal succeeds")
+                        .proposed_execution_inputs;
 
                     let seq_num = if self.byzantine_config.no_increment_seq_num {
                         seq_num - SeqNum(1)
@@ -431,7 +432,7 @@ where
                         last_delay_committed_blocks,
                     );
                 }
-                TxPoolCommand::InsertForwardedTxs { sender: _, txs } => {
+                TxPoolCommand::InsertForwardedTxs { sender, txs } => {
                     pool.insert_txs(
                         &mut event_tracker,
                         block_policy,
@@ -441,7 +442,10 @@ where
                             .filter_map(|raw_tx| {
                                 let tx = TxEnvelope::decode_2718_exact(raw_tx.as_ref()).ok()?;
                                 let signer = tx.recover_signer().ok()?;
-                                Some((Recovered::new_unchecked(tx, signer), PoolTxKind::Forwarded))
+                                Some((
+                                    Recovered::new_unchecked(tx, signer),
+                                    PoolTxKind::Forwarded { sender },
+                                ))
                             })
                             .collect(),
                         |_| {},
