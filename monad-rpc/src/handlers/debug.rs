@@ -15,7 +15,7 @@
 
 use std::{cell::RefCell, rc::Rc};
 
-use alloy_consensus::{Block, BlockBody, Header, ReceiptEnvelope, TxEnvelope};
+use alloy_consensus::{Block, BlockBody, Header, TxEnvelope};
 use alloy_eips::eip2718::Encodable2718;
 use alloy_primitives::{
     aliases::{U256, U64, U8},
@@ -35,6 +35,7 @@ use crate::{
             UnformattedData,
         },
         ethhex,
+        heuristic_size::HeuristicSize,
         jsonrpc::{ChainStateResultExt, JsonRpcError, JsonRpcResult},
     },
 };
@@ -44,11 +45,12 @@ pub struct DebugBlockParams {
     block: BlockTags,
 }
 
-#[rpc(method = "debug_getRawBlock")]
+#[rpc(method = "debug_getRawBlock", ignore = "max_response_size")]
 #[allow(non_snake_case)]
 /// Returns an RLP-encoded block.
 pub async fn monad_debug_getRawBlock<T: Triedb>(
     chain_state: &ChainState<T>,
+    max_response_size: usize,
     params: DebugBlockParams,
 ) -> JsonRpcResult<String> {
     trace!("monad_debug_getRawBlock: {params:?}");
@@ -63,18 +65,35 @@ pub async fn monad_debug_getRawBlock<T: Triedb>(
         .get_block(BlockTagOrHash::BlockTags(params.block), true)
         .await
     {
-        Ok(block) => encode_block(Block {
-            header: block.header.inner,
-            body: BlockBody {
-                transactions: block
-                    .transactions
-                    .into_transactions()
-                    .map(|tx| tx.into())
-                    .collect(),
-                ommers: vec![],
-                withdrawals: None,
-            },
-        }),
+        Ok(block) => {
+            let alloy_rpc_types::Block {
+                header,
+                transactions,
+                ..
+            } = block;
+            let header = header.inner;
+
+            let mut txs_heuristic_response_size = 0usize;
+            let mut raw_transactions = Vec::new();
+
+            for tx in transactions.into_transactions() {
+                let tx = tx.into_inner();
+                txs_heuristic_response_size += tx.heuristic_json_len();
+                if txs_heuristic_response_size > max_response_size {
+                    return Err(JsonRpcError::max_size_exceeded());
+                }
+                raw_transactions.push(tx);
+            }
+
+            encode_block(Block {
+                header,
+                body: BlockBody {
+                    transactions: raw_transactions,
+                    ommers: vec![],
+                    withdrawals: None,
+                },
+            })
+        }
         Err(_) => Err(JsonRpcError::internal_error("block data not found".into())),
     }
 }
@@ -109,31 +128,36 @@ pub struct MonadDebugGetRawReceiptsResult {
     receipts: Vec<String>,
 }
 
-#[rpc(method = "debug_getRawReceipts")]
+#[rpc(method = "debug_getRawReceipts", ignore = "max_response_size")]
 #[allow(non_snake_case)]
 /// Returns an array of EIP-2718 binary-encoded receipts.
 pub async fn monad_debug_getRawReceipts<T: Triedb>(
     chain_state: &ChainState<T>,
+    max_response_size: usize,
     params: DebugBlockParams,
 ) -> JsonRpcResult<MonadDebugGetRawReceiptsResult> {
     trace!("monad_debug_getRawReceipts: {params:?}");
 
-    let encode_receipts = |receipts: Vec<ReceiptEnvelope<alloy_primitives::Log>>| {
-        let receipts = receipts
-            .into_iter()
-            .map(|r| {
-                let mut res = Vec::new();
-                r.encode_2718(&mut res);
-                ethhex::encode_bytes(&res)
-            })
-            .collect();
-        Ok(MonadDebugGetRawReceiptsResult { receipts })
-    };
+    let raw_receipts = chain_state
+        .get_raw_receipts(params.block)
+        .await
+        .map_err(|_| JsonRpcError::internal_error("block data not found".into()))?;
 
-    match chain_state.get_raw_receipts(params.block).await {
-        Ok(receipts) => encode_receipts(receipts),
-        Err(_) => Err(JsonRpcError::internal_error("block data not found".into())),
+    let mut heuristic_response_size = 0usize;
+    let mut receipts = Vec::with_capacity(raw_receipts.len());
+
+    for r in raw_receipts {
+        let mut res = Vec::new();
+        r.encode_2718(&mut res);
+        let receipt = ethhex::encode_bytes(&res);
+        heuristic_response_size += receipt.heuristic_json_len();
+        if heuristic_response_size > max_response_size {
+            return Err(JsonRpcError::max_size_exceeded());
+        }
+        receipts.push(receipt);
     }
+
+    Ok(MonadDebugGetRawReceiptsResult { receipts })
 }
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
@@ -734,9 +758,10 @@ fn assign_log_indices(root: &Rc<RefCell<MonadCallFrame>>) {
 
 #[cfg(test)]
 mod tests {
-    use alloy_consensus::ReceiptWithBloom;
+    use alloy_consensus::{BlockBody, ReceiptEnvelope, ReceiptWithBloom};
     use alloy_primitives::Bloom;
     use alloy_rlp::{BufMut, Encodable};
+    use monad_archive::test_utils::mock_tx;
     use monad_eth_types::{EthTxHash, ReceiptWithLogIndex, TransactionLocation};
     use monad_triedb_utils::mock_triedb;
     use monad_types::SeqNum;
@@ -1228,6 +1253,7 @@ mod tests {
         let chain_state = ChainState::new(None, mock_triedb, None);
         let result = monad_debug_getRawReceipts(
             &chain_state,
+            25_000_000,
             DebugBlockParams {
                 block: BlockTags::Number(Quantity(1)),
             },
@@ -1238,6 +1264,42 @@ mod tests {
         assert_eq!(result.receipts.len(), 1);
         let expected_receipt = "0x02f9010801825208b9010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000c0";
         assert_eq!(result.receipts[0], expected_receipt);
+    }
+
+    #[tokio::test]
+    async fn debug_raw_block_max_size_exceeded() {
+        let mut mock_triedb = mock_triedb::MockTriedb::default();
+        mock_triedb.set_latest_block(1);
+
+        let tx = mock_tx(12345);
+        let txs_payload_limit = 2 * tx.tx.length() - 1;
+        let block = Block {
+            header: Header {
+                number: 1,
+                base_fee_per_gas: Some(100),
+                ..Default::default()
+            },
+            body: BlockBody {
+                transactions: vec![tx.tx.clone()],
+                ommers: vec![],
+                withdrawals: None,
+            },
+        };
+
+        mock_triedb.set_finalized_block(SeqNum(1), block.clone());
+
+        let chain_state = ChainState::new(None, mock_triedb, None);
+        let error = monad_debug_getRawBlock(
+            &chain_state,
+            txs_payload_limit,
+            DebugBlockParams {
+                block: BlockTags::Number(Quantity(1)),
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(error, JsonRpcError::max_size_exceeded());
     }
 
     #[tokio::test]

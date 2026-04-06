@@ -212,7 +212,7 @@ async fn debug_getRawBlock(
 ) -> Result<Box<RawValue>, JsonRpcError> {
     let chain_state = app_state.chain_state.as_ref().method_not_supported()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
-    monad_debug_getRawBlock(chain_state, params)
+    monad_debug_getRawBlock(chain_state, app_state.max_response_size as usize, params)
         .await
         .map(serialize_result)?
 }
@@ -238,7 +238,7 @@ async fn debug_getRawReceipts(
 ) -> Result<Box<RawValue>, JsonRpcError> {
     let chain_state = app_state.chain_state.as_ref().method_not_supported()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
-    monad_debug_getRawReceipts(chain_state, params)
+    monad_debug_getRawReceipts(chain_state, app_state.max_response_size as usize, params)
         .await
         .map(serialize_result)?
 }
