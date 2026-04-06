@@ -41,6 +41,7 @@ pub trait ChainConfig<CR: ChainRevision>: Copy + Clone {
     fn get_epoch_length(&self) -> SeqNum;
     fn get_epoch_start_delay(&self) -> Round;
     fn get_staking_activation(&self) -> Epoch;
+    fn get_tinyvm_activation(&self) -> SeqNum;
     fn get_block_reward_mon(&self, epoch: Epoch) -> u64;
     fn get_chain_revision(&self, round: Round) -> CR;
     fn get_execution_chain_revision(&self, execution_timestamp_s: u64) -> MonadExecutionRevision;
@@ -60,9 +61,11 @@ pub struct MonadChainConfig {
 
     pub staking_config: MonadStakingConfig,
 
+    pub tinyvm_activation: SeqNum,
     pub execution_v_one_activation: u64,
     pub execution_v_two_activation: u64,
     pub execution_v_four_activation: u64,
+    pub execution_v_tinyvm_activation: u64,
 }
 
 #[derive(Debug, Error)]
@@ -129,6 +132,10 @@ impl ChainConfig<MonadChainRevision> for MonadChainConfig {
         self.staking_config.get_staking_activation()
     }
 
+    fn get_tinyvm_activation(&self) -> SeqNum {
+        self.tinyvm_activation
+    }
+
     fn get_block_reward_mon(&self, epoch: Epoch) -> u64 {
         self.staking_config.get_block_reward_mon(epoch)
     }
@@ -149,7 +156,9 @@ impl ChainConfig<MonadChainRevision> for MonadChainConfig {
     }
 
     fn get_execution_chain_revision(&self, execution_timestamp_s: u64) -> MonadExecutionRevision {
-        if execution_timestamp_s >= self.execution_v_four_activation {
+        if execution_timestamp_s >= self.execution_v_tinyvm_activation {
+            MonadExecutionRevision::V_TINYVM
+        } else if execution_timestamp_s >= self.execution_v_four_activation {
             MonadExecutionRevision::V_FOUR
         } else if execution_timestamp_s >= self.execution_v_two_activation {
             MonadExecutionRevision::V_TWO
@@ -173,9 +182,11 @@ const MONAD_DEVNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
 
     staking_config: MONAD_DEVNET_STAKING_CONFIG,
 
+    tinyvm_activation: SeqNum(1), // active from first block
     execution_v_one_activation: 0,
     execution_v_two_activation: 0,
     execution_v_four_activation: 0,
+    execution_v_tinyvm_activation: 0,
 };
 
 const MONAD_TESTNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
@@ -190,9 +201,11 @@ const MONAD_TESTNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
 
     staking_config: MONAD_TESTNET_STAKING_CONFIG,
 
+    tinyvm_activation: SeqNum::MAX, // activation TBD
     execution_v_one_activation: 0,
     execution_v_two_activation: 0,
     execution_v_four_activation: 0,
+    execution_v_tinyvm_activation: u64::MAX, // activation TBD
 };
 
 // Mainnet uses latest version of testnet from genesis
@@ -208,9 +221,11 @@ const MONAD_MAINNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
 
     staking_config: MONAD_MAINNET_STAKING_CONFIG,
 
+    tinyvm_activation: SeqNum::MAX, // activation TBD
     execution_v_one_activation: 0,
     execution_v_two_activation: 0,
     execution_v_four_activation: 1762266600, // 2025-11-04T14:30:00.000Z
+    execution_v_tinyvm_activation: u64::MAX, // activation TBD
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -269,6 +284,10 @@ impl ChainConfig<MockChainRevision> for MockChainConfig {
 
     fn get_staking_activation(&self) -> Epoch {
         Epoch::MAX
+    }
+
+    fn get_tinyvm_activation(&self) -> SeqNum {
+        SeqNum(1)
     }
 
     fn get_block_reward_mon(&self, _epoch: Epoch) -> u64 {

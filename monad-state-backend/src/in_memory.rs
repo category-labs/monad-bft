@@ -34,9 +34,13 @@ use monad_types::{
 };
 use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionPubKeyType};
 use serde::{Deserialize, Serialize};
-use tracing::trace;
 
-use crate::{MockExecution, StateBackend, StateBackendError};
+use tracing::{trace, warn};
+
+use crate::{
+    MockExecution, StateBackend, StateBackendError,
+    tinyvm::{TinyVmState, is_tinyvm_tx},
+};
 
 pub type InMemoryState<ST, SCT> = Arc<Mutex<InMemoryStateInner<ST, SCT>>>;
 
@@ -122,6 +126,9 @@ pub struct InMemoryBlockState {
     txns: Vec<TxEnvelope>,
     /// account states after executing this block seq_num
     accounts: BTreeMap<Address, AccountState>,
+    /// TinyVM state (tokens, accounts, escrow) — backend-opaque.
+    #[serde(default)]
+    tinyvm: TinyVmState,
     /// all transaction senders and authority addresses in this block
     /// used for reserve balance validation
     senders_and_authorities: HashSet<Address>,
@@ -136,8 +143,17 @@ impl InMemoryBlockState {
             parent_id: GENESIS_BLOCK_ID,
             txns: Vec::new(),
             accounts,
+            tinyvm: TinyVmState::new(),
             senders_and_authorities: HashSet::new(),
         }
+    }
+
+    pub fn tinyvm_mut(&mut self) -> &mut TinyVmState {
+        &mut self.tinyvm
+    }
+
+    pub fn tinyvm(&self) -> &TinyVmState {
+        &self.tinyvm
     }
 }
 
@@ -182,6 +198,10 @@ where
 
     pub fn committed_state(&self, block: &SeqNum) -> Option<&InMemoryBlockState> {
         self.commits.get(block)
+    }
+
+    pub fn proposed_state(&self, block_id: &BlockId) -> Option<&InMemoryBlockState> {
+        self.proposals.get(block_id)
     }
 
     pub fn reset_state(&mut self, state: InMemoryBlockState) {
@@ -236,6 +256,7 @@ where
             });
 
         let mut accounts = parent_state.accounts.clone();
+        let mut tinyvm = parent_state.tinyvm.clone();
 
         trace!(
             "block N={:?}, parent account state: {:?}",
@@ -384,6 +405,13 @@ where
                 }
             }
 
+            // Mock execution only — production BFT delegates to C++ EVM via StateBackend.
+            if is_tinyvm_tx(tx) {
+                if let Err(err) = tinyvm.process_tx(addr, tx.value(), tx.input()) {
+                    warn!("tinyvm tx reverted: sender={addr}, err={err:#}");
+                }
+            }
+
             block_senders_and_authorities.insert(addr);
             for &auth_addr in &txn_authorities {
                 block_senders_and_authorities.insert(auth_addr);
@@ -399,6 +427,7 @@ where
                 parent_id,
                 txns,
                 accounts,
+                tinyvm,
                 senders_and_authorities: block_senders_and_authorities,
             },
         );

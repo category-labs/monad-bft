@@ -128,6 +128,9 @@ impl EthTxPoolDropReason {
                 StaticValidationError::AuthorizationListLengthLimitExceeded => {
                     "EIP7702 authorization list length limit exceeded"
                 }
+                StaticValidationError::InvalidTinyVmCall => {
+                    "Invalid TinyVM confidential transaction payload"
+                }
             },
             EthTxPoolDropReason::InvalidSignature => "Transaction signature is invalid",
             EthTxPoolDropReason::NonceTooLow => "Transaction nonce too low",

@@ -19,6 +19,7 @@ ignored = [
 ]
 
 [workspace.dependencies]
+anyhow = "1.0"
 monad-archive = { path = "./monad-archive" }
 monad-block-persist = { path = "./monad-block-persist" }
 monad-blocksync = { path = "./monad-blocksync" }
@@ -87,6 +88,8 @@ monad-wireauth = { path = "./monad-wireauth" }
 monad-cxx = { path = "./monad-execution/rust/crates/monad-cxx" }
 monad-event-ring = { path = "./monad-execution/rust/crates/monad-event-ring" }
 monad-exec-events = { path = "./monad-execution/rust/crates/monad-exec-events" }
+tiny-privacy-vm-runtime = { path = "./monad-execution/monad-tinyvm/crates/tiny-privacy-vm-runtime" }
+tiny-privacy-vm-confidential-backend = { path = "./monad-execution/monad-tinyvm/crates/backends/confidential-balance" }
 
 actix = "0.13"
 actix-http = "3.11.1"

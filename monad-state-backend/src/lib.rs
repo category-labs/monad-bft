@@ -27,11 +27,21 @@ use monad_validator::signature_collection::{SignatureCollection, SignatureCollec
 pub use self::{
     in_memory::{AccountState, InMemoryBlockState, InMemoryState, InMemoryStateInner},
     mock::NopStateBackend,
+    tinyvm::{
+        inflight_check as inflight_check_tinyvm_call,
+        is_tinyvm_tx,
+        tinyvm_entrypoint,
+        encode_register_token_call, encode_register_native_token,
+        encode_shield_public_call, encode_transfer_call,
+        encode_transfer_call_with_sidecars, encode_unshield_public_call,
+    },
     thread::StateBackendThreadClient,
 };
+pub use tiny_privacy_vm_runtime::TinyVmCall;
 
 mod in_memory;
 mod mock;
+mod tinyvm;
 mod thread;
 
 #[derive(Debug, PartialEq)]

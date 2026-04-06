@@ -15,6 +15,7 @@
 
 use alloy_consensus::{Transaction, TxEnvelope};
 use monad_chain_config::{execution_revision::ExecutionChainParams, revision::ChainParams};
+use monad_state_backend::{inflight_check_tinyvm_call, is_tinyvm_tx};
 use serde::{Deserialize, Serialize};
 
 // allow for more fine grain debugging if needed
@@ -52,6 +53,7 @@ pub enum StaticValidationError {
     UnsupportedTransactionType,
     AuthorizationListEmpty,
     AuthorizationListLengthLimitExceeded,
+    InvalidTinyVmCall,
 }
 
 /// Stateless helper function to check validity of an Ethereum transaction
@@ -85,6 +87,12 @@ pub fn static_validate_transaction(
     // post Ethereum Prague fork validation
     // includes EIP-7623 validation
     EthPragueForkValidation::validate(tx, execution_chain_params)?;
+
+    // TinyVM: dispatch to registered backend's inflight_check via registry
+    if is_tinyvm_tx(tx) {
+        inflight_check_tinyvm_call(tx.input())
+            .map_err(|_| StaticValidationError::InvalidTinyVmCall)?;
+    }
 
     Ok(())
 }

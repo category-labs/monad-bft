@@ -26,6 +26,7 @@ itertools = { workspace = true }
 serde = { workspace = true }
 sorted_vector_map = { workspace = true }
 tracing = { workspace = true }
+tiny-privacy-vm-runtime = { workspace = true }
 
 [dev-dependencies]
 monad-eth-testutil = { workspace = true }

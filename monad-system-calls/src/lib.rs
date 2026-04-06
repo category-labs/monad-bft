@@ -30,9 +30,11 @@ use monad_chain_config::{ChainConfig, revision::ChainRevision};
 use monad_eth_types::ValidatedTx;
 use monad_types::{Epoch, GENESIS_SEQ_NUM, SeqNum};
 use staking_contract::{StakingContractCall, StakingContractTransaction};
+use tinyvm_contract::{TinyVmContractCall, TinyVmContractTransaction};
 use validator::SystemTransactionError;
 
 pub mod staking_contract;
+pub mod tinyvm_contract;
 pub mod validator;
 
 // Private key used to sign system transactions.
@@ -59,12 +61,14 @@ fn sign_with_system_sender(transaction: TxLegacy) -> Recovered<TxEnvelope> {
 #[derive(Debug)]
 enum SystemCall {
     StakingContractCall(StakingContractCall),
+    TinyVmContractCall(TinyVmContractCall),
 }
 
 impl SystemCall {
     // Used to validate inputs of user transactions in RPC and TxPool
     pub fn is_restricted_system_call(txn: &Recovered<TxEnvelope>) -> bool {
         StakingContractCall::is_restricted_staking_contract_call(txn)
+            || TinyVmContractCall::is_restricted_tinyvm_contract_call(txn)
     }
 
     // Used to validate inputs of the expected system transactions
@@ -76,6 +80,9 @@ impl SystemCall {
             Self::StakingContractCall(staking_sys_call) => {
                 staking_sys_call.validate_system_transaction_input(sys_txn)
             }
+            Self::TinyVmContractCall(tinyvm_sys_call) => {
+                tinyvm_sys_call.validate_system_transaction_input(sys_txn)
+            }
         }
     }
 
@@ -86,6 +93,11 @@ impl SystemCall {
                     staking_sys_call.into_signed_transaction(chain_id, nonce),
                 )
             }
+            Self::TinyVmContractCall(tinyvm_sys_call) => {
+                SystemTransaction::TinyVmContractTransaction(
+                    tinyvm_sys_call.into_signed_transaction(chain_id, nonce),
+                )
+            }
         }
     }
 }
@@ -93,14 +105,14 @@ impl SystemCall {
 #[derive(Debug, Clone)]
 pub enum SystemTransaction {
     StakingContractTransaction(StakingContractTransaction),
+    TinyVmContractTransaction(TinyVmContractTransaction),
 }
 
 impl SystemTransaction {
     pub fn signer(&self) -> Address {
         let signer = match &self {
-            Self::StakingContractTransaction(staking_transaction) => {
-                staking_transaction.inner().signer()
-            }
+            Self::StakingContractTransaction(t) => t.inner().signer(),
+            Self::TinyVmContractTransaction(t) => t.inner().signer(),
         };
         assert_eq!(signer, SYSTEM_SENDER_ETH_ADDRESS);
 
@@ -108,17 +120,15 @@ impl SystemTransaction {
     }
     pub fn nonce(&self) -> u64 {
         match &self {
-            Self::StakingContractTransaction(staking_transaction) => {
-                staking_transaction.inner().nonce()
-            }
+            Self::StakingContractTransaction(t) => t.inner().nonce(),
+            Self::TinyVmContractTransaction(t) => t.inner().nonce(),
         }
     }
 
     pub fn length(&self) -> usize {
         match &self {
-            Self::StakingContractTransaction(staking_transaction) => {
-                staking_transaction.inner().length()
-            }
+            Self::StakingContractTransaction(t) => t.inner().length(),
+            Self::TinyVmContractTransaction(t) => t.inner().length(),
         }
     }
 }
@@ -126,7 +136,8 @@ impl SystemTransaction {
 impl From<SystemTransaction> for Recovered<TxEnvelope> {
     fn from(sys_txn: SystemTransaction) -> Self {
         match sys_txn {
-            SystemTransaction::StakingContractTransaction(staking_txn) => staking_txn.into_inner(),
+            SystemTransaction::StakingContractTransaction(t) => t.into_inner(),
+            SystemTransaction::TinyVmContractTransaction(t) => t.into_inner(),
         }
     }
 }
@@ -186,6 +197,14 @@ where
                 block_author_address,
                 block_reward,
             },
+        ));
+    }
+
+    // TinyVM: register native MON token at the activation block height.
+    let tinyvm_activation = chain_config.get_tinyvm_activation();
+    if proposed_seq_num == tinyvm_activation {
+        system_calls.push(SystemCall::TinyVmContractCall(
+            TinyVmContractCall::RegisterNativeToken,
         ));
     }
 
