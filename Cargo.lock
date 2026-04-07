@@ -5461,6 +5461,7 @@ dependencies = [
  "monad-executor",
  "rand 0.8.5",
  "thiserror 1.0.69",
+ "tikv-jemallocator",
  "zerocopy",
 ]
 

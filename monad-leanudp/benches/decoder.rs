@@ -24,6 +24,16 @@ use monad_leanudp::{
     Clock, Config, Decoder, Encoder, FragmentPolicy, IdentityScore, PacketHeader,
     MAX_CONCURRENT_MESSAGES_PER_IDENTITY,
 };
+use rand::{rngs::StdRng, seq::SliceRandom, SeedableRng};
+
+#[cfg(all(not(target_env = "msvc"), feature = "jemallocator"))]
+#[global_allocator]
+static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
+#[cfg(feature = "jemallocator")]
+#[allow(non_upper_case_globals)]
+#[export_name = "malloc_conf"]
+pub static malloc_conf: &[u8] = b"prof:true,prof_active:true,lg_prof_sample:19\0";
 
 #[derive(Clone, Copy)]
 struct FixedClock(Instant);
@@ -90,6 +100,68 @@ fn encode_packets(encoder: &mut Encoder, size: usize) -> Vec<Bytes> {
         .unwrap()
         .map(|(header, data)| make_packet(&header, &data))
         .collect()
+}
+
+#[derive(Clone, Copy)]
+enum Order {
+    InOrder,
+    Shuffled,
+}
+
+impl Order {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::InOrder => "in_order",
+            Self::Shuffled => "shuffled",
+        }
+    }
+}
+
+struct WorstCaseBenchCase {
+    name: &'static str,
+    payload_size: usize,
+    max_fragment_payload: usize,
+}
+
+fn worst_case_bench_config(case: &WorstCaseBenchCase) -> Config {
+    Config {
+        max_message_size: case.payload_size,
+        max_priority_messages: 8,
+        max_regular_messages: 8,
+        max_messages_per_identity: MAX_CONCURRENT_MESSAGES_PER_IDENTITY,
+        message_timeout: Duration::from_secs(60),
+        max_fragment_payload: case.max_fragment_payload,
+    }
+}
+
+fn make_worst_case_bench_packets(case: &WorstCaseBenchCase, order: Order) -> Vec<Bytes> {
+    let config = worst_case_bench_config(case);
+    let clock = FixedClock(Instant::now());
+    let (mut encoder, _decoder) = config.build_with_clock(AllRegular, clock);
+    let mut packets = encode_packets(&mut encoder, case.payload_size);
+    if matches!(order, Order::Shuffled) {
+        let mut rng = StdRng::seed_from_u64(7);
+        packets.shuffle(&mut rng);
+    }
+    packets
+}
+
+fn bench_worst_case_case(
+    b: &mut criterion::Bencher<'_>,
+    packets: &[Bytes],
+    case: &WorstCaseBenchCase,
+) {
+    let config = worst_case_bench_config(case);
+    let clock = FixedClock(Instant::now());
+    let (_encoder, mut decoder) = config.build_with_clock(AllRegular, clock);
+    let mut identity = 0u64;
+
+    b.iter(|| {
+        for packet in packets {
+            let _ = black_box(decoder.decode(identity, packet.clone()));
+        }
+        identity += 1;
+    });
 }
 
 fn bench_decode(c: &mut Criterion) {
@@ -164,5 +236,44 @@ fn bench_encode(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_decode, bench_encode);
+fn bench_worst_case_bench(c: &mut Criterion) {
+    let cases = [
+        WorstCaseBenchCase {
+            name: "512frags_1byte",
+            payload_size: 512,
+            max_fragment_payload: PacketHeader::SIZE + 1,
+        },
+        WorstCaseBenchCase {
+            name: "366frags_default",
+            payload_size: 512 * 1024,
+            max_fragment_payload: 1440,
+        },
+        WorstCaseBenchCase {
+            name: "512frags_worst",
+            payload_size: 512 * 1024,
+            max_fragment_payload: 1030,
+        },
+    ];
+
+    for order in [Order::InOrder, Order::Shuffled] {
+        let mut group = c.benchmark_group(format!("worst_case_bench/{}", order.as_str()));
+        group.sample_size(30);
+        group.measurement_time(Duration::from_secs(8));
+
+        for case in &cases {
+            let packets = make_worst_case_bench_packets(case, order);
+            group.throughput(Throughput::Bytes(case.payload_size as u64));
+
+            group.bench_with_input(
+                BenchmarkId::new(case.name, packets.len()),
+                &packets,
+                |b, packets| bench_worst_case_case(b, packets, case),
+            );
+        }
+
+        group.finish();
+    }
+}
+
+criterion_group!(benches, bench_decode, bench_encode, bench_worst_case_bench);
 criterion_main!(benches);
