@@ -337,13 +337,16 @@ impl StateBackend<SecpSignature, BlsSignatureCollection<monad_secp::PubKey>> for
         block_num: SeqNum,
         requested_epoch: Epoch,
     ) -> Vec<(monad_secp::PubKey, BlsPubKey, Stake)> {
-        let validator_set_raw = self.handle.validator_set_at_block(
-            block_num
-                .0
-                .try_into()
-                .expect("block_num doesn't fit in usize"),
-            requested_epoch.0,
-        );
+        let validator_set_raw = self
+            .handle
+            .validator_set_at_block(
+                block_num
+                    .0
+                    .try_into()
+                    .expect("block_num doesn't fit in usize"),
+                requested_epoch.0,
+            )
+            .expect("valset is present");
 
         let mut validator_set = Vec::new();
 
