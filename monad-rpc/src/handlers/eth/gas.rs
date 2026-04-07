@@ -55,74 +55,34 @@ use crate::{
 /// Additional gas added during a CALL.
 const CALL_STIPEND: u64 = 2_300;
 
-trait EthCallProvider {
-    async fn eth_call(
-        &self,
-        txn: TxEnvelope,
-        eth_call_executor: Option<&EthCallExecutor>,
-    ) -> CallResult;
-}
-
-struct GasEstimator {
+async fn execute_eth_call(
     chain_id: u64,
-    block_header: Header,
+    block_header: &Header,
     sender: Address,
     block_key: BlockKey,
-    state_override: StateOverrideSet,
+    state_override: &StateOverrideSet,
     gas_specified: bool,
-}
+    eth_call_executor: &EthCallExecutor,
+    txn: TxEnvelope,
+) -> CallResult {
+    let (block_number, block_id) = match block_key {
+        BlockKey::Finalized(FinalizedBlockKey(SeqNum(n))) => (n, None),
+        BlockKey::Proposed(ProposedBlockKey(SeqNum(n), BlockId(Hash(id)))) => (n, Some(id)),
+    };
 
-impl GasEstimator {
-    fn new(
-        chain_id: u64,
-        block_header: Header,
-        sender: Address,
-        block_key: BlockKey,
-        state_override: StateOverrideSet,
-        gas_specified: bool,
-    ) -> Self {
-        Self {
-            chain_id,
-            block_header,
-            sender,
-            block_key,
-            state_override,
-            gas_specified,
-        }
-    }
-}
-
-impl EthCallProvider for GasEstimator {
-    async fn eth_call(
-        &self,
-        txn: TxEnvelope,
-        eth_call_executor: Option<&EthCallExecutor>,
-    ) -> CallResult {
-        let (block_number, block_id) = match self.block_key {
-            BlockKey::Finalized(FinalizedBlockKey(SeqNum(n))) => (n, None),
-            BlockKey::Proposed(ProposedBlockKey(SeqNum(n), BlockId(Hash(id)))) => (n, Some(id)),
-        };
-
-        let chain_id = self.chain_id;
-        let header = self.block_header.clone();
-        let sender = self.sender;
-        let state_override = self.state_override.clone();
-        let gas_specified = self.gas_specified;
-
-        monad_ethcall::eth_call(
-            chain_id,
-            txn,
-            header,
-            sender,
-            block_number,
-            block_id,
-            eth_call_executor.unwrap(),
-            &state_override,
-            MonadTracer::NoopTracer,
-            gas_specified,
-        )
-        .await
-    }
+    monad_ethcall::eth_call(
+        chain_id,
+        txn,
+        block_header.clone(),
+        sender,
+        block_number,
+        block_id,
+        eth_call_executor,
+        state_override,
+        MonadTracer::NoopTracer,
+        gas_specified,
+    )
+    .await
 }
 
 #[derive(Clone, Copy)]
@@ -147,9 +107,8 @@ fn is_terminal_estimate_result(
         )
 }
 
-async fn estimate_gas<T: EthCallProvider>(
-    provider: &T,
-    eth_call_executor: Option<&EthCallExecutor>,
+async fn estimate_gas(
+    eth_call_fn: impl AsyncFn(TxEnvelope) -> CallResult,
     call_request: &mut CallRequest,
     original_tx_gas: U256,
     provider_gas_limit: u64,
@@ -157,8 +116,7 @@ async fn estimate_gas<T: EthCallProvider>(
     mode: EstimateGasMode,
 ) -> Result<Quantity, JsonRpcError> {
     estimate_gas_with_builder(
-        provider,
-        eth_call_executor,
+        eth_call_fn,
         call_request,
         original_tx_gas,
         provider_gas_limit,
@@ -169,23 +127,18 @@ async fn estimate_gas<T: EthCallProvider>(
     .await
 }
 
-async fn estimate_gas_with_builder<T, F>(
-    provider: &T,
-    eth_call_executor: Option<&EthCallExecutor>,
+async fn estimate_gas_with_builder(
+    eth_call_fn: impl AsyncFn(TxEnvelope) -> CallResult,
     call_request: &mut CallRequest,
     original_tx_gas: U256,
     provider_gas_limit: u64,
     protocol_gas_limit: u64,
     mode: EstimateGasMode,
-    build_tx: F,
-) -> Result<Quantity, JsonRpcError>
-where
-    T: EthCallProvider,
-    F: Fn(&CallRequest) -> Result<TxEnvelope, JsonRpcError> + Copy,
-{
+    build_tx: impl Fn(&CallRequest) -> Result<TxEnvelope, JsonRpcError> + Copy,
+) -> Result<Quantity, JsonRpcError> {
     let mut txn = build_tx(call_request)?;
 
-    let (gas_used, gas_refund) = match provider.eth_call(txn.clone(), eth_call_executor).await {
+    let (gas_used, gas_refund) = match eth_call_fn(txn.clone()).await {
         monad_ethcall::CallResult::Success(monad_ethcall::SuccessCallResult {
             gas_used,
             gas_refund,
@@ -225,7 +178,7 @@ where
 
     let (mut lower_bound_gas_limit, mut upper_bound_gas_limit) =
         if txn.gas_limit() < upper_bound_gas_limit {
-            match provider.eth_call(txn.clone(), eth_call_executor).await {
+            match eth_call_fn(txn.clone()).await {
                 monad_ethcall::CallResult::Success(monad_ethcall::SuccessCallResult {
                     gas_used,
                     ..
@@ -262,7 +215,7 @@ where
         call_request.gas = Some(U256::from(mid));
         txn = build_tx(call_request)?;
 
-        match provider.eth_call(txn, eth_call_executor).await {
+        match eth_call_fn(txn).await {
             monad_ethcall::CallResult::Success(monad_ethcall::SuccessCallResult { .. }) => {
                 upper_bound_gas_limit = mid;
             }
@@ -468,14 +421,19 @@ pub async fn monad_eth_estimateGas<T: Triedb>(
         .to::<u64>();
 
     let protocol_gas_limit = header.header.gas_limit;
-    let eth_call_provider = GasEstimator::new(
-        tx_chain_id,
-        header.header,
-        sender,
-        block_key,
-        params.state_override_set,
-        gas_specified,
-    );
+
+    let eth_call_fn = |txn: TxEnvelope| {
+        execute_eth_call(
+            tx_chain_id,
+            &header.header,
+            sender,
+            block_key,
+            &params.state_override_set,
+            gas_specified,
+            eth_call_executor,
+            txn,
+        )
+    };
 
     // If the transaction is a regular value transfer, execute the transaction with a 21000 gas limit and return that gas limit if executes successfully.
     // Returning 21000 without execution is risky since some transaction field combinations can increase the price even for regular transfers.
@@ -494,9 +452,7 @@ pub async fn monad_eth_estimateGas<T: Triedb>(
             // If the account has no code, then execute the call with gas limit 21000
             if acct.code_hash.is_none()
                 && matches!(
-                    eth_call_provider
-                        .eth_call(txn.clone(), Some(eth_call_executor))
-                        .await,
+                    eth_call_fn(txn.clone()).await,
                     monad_ethcall::CallResult::Success(_)
                 )
             {
@@ -506,8 +462,7 @@ pub async fn monad_eth_estimateGas<T: Triedb>(
     };
 
     estimate_gas(
-        &eth_call_provider,
-        Some(eth_call_executor),
+        eth_call_fn,
         &mut params.tx,
         original_tx_gas,
         provider_gas_limit,
@@ -536,22 +491,30 @@ pub async fn monad_eth_fillTransaction<T: Triedb>(
     chain_id: u64,
     params: MonadEthFillTransactionParams,
 ) -> JsonRpcResult<FillTransactionResult> {
-    fill_transaction_with_provider(
-        chain_state,
-        eth_call_handler_config,
-        Some(eth_call_executor),
-        chain_id,
-        params,
-        |chain_id, header, from, block_key| {
-            GasEstimator::new(
+    let from = params.tx.from.unwrap_or_default();
+    let state_override = fill_transaction_state_overrides(from);
+
+    let eth_call_fn =
+        async |header: &Header, from: Address, block_key: BlockKey, txn: TxEnvelope| {
+            execute_eth_call(
                 chain_id,
                 header,
                 from,
                 block_key,
-                fill_transaction_state_overrides(from),
+                &state_override,
                 true,
+                eth_call_executor,
+                txn,
             )
-        },
+            .await
+        };
+
+    fill_transaction_with_provider(
+        chain_state,
+        eth_call_handler_config,
+        chain_id,
+        params,
+        eth_call_fn,
     )
     .await
 }
@@ -568,19 +531,13 @@ fn fill_transaction_state_overrides(from: Address) -> StateOverrideSet {
     state_overrides
 }
 
-async fn fill_transaction_with_provider<T, P, F>(
+async fn fill_transaction_with_provider<T: Triedb>(
     chain_state: &ChainState<T>,
     eth_call_handler_config: &EthCallHandlerConfig,
-    eth_call_executor: Option<&EthCallExecutor>,
     chain_id: u64,
     params: MonadEthFillTransactionParams,
-    make_provider: F,
-) -> JsonRpcResult<FillTransactionResult>
-where
-    T: Triedb,
-    P: EthCallProvider,
-    F: FnOnce(u64, Header, Address, BlockKey) -> P,
-{
+    eth_call_fn: impl AsyncFn(&Header, Address, BlockKey, TxEnvelope) -> CallResult,
+) -> JsonRpcResult<FillTransactionResult> {
     trace!("monad_eth_fillTransaction: {params:?}");
 
     let mut tx = params.tx;
@@ -632,11 +589,10 @@ where
 
         tx.gas = Some(U256::from(eth_call_provider_gas_limit));
 
-        let gas_provider = make_provider(chain_id, header.clone(), from, block_key);
+        let estimate_eth_call_fn = |txn: TxEnvelope| eth_call_fn(&header, from, block_key, txn);
 
         let Quantity(estimated_gas) = estimate_gas_with_builder(
-            &gas_provider,
-            eth_call_executor,
+            estimate_eth_call_fn,
             &mut tx,
             original_tx_gas,
             eth_call_provider_gas_limit,
@@ -1145,33 +1101,31 @@ mod tests {
         ReserveBalanceViolation,
     }
 
-    struct MockGasEstimator {
+    fn mock_eth_call(
         gas_used: u64,
         gas_refund: u64,
         terminal_result: MockTerminalResult,
-    }
-
-    impl EthCallProvider for MockGasEstimator {
-        async fn eth_call(&self, txn: TxEnvelope, _: Option<&EthCallExecutor>) -> CallResult {
-            if txn.gas_limit() >= self.gas_used + self.gas_refund {
-                match self.terminal_result {
+    ) -> impl AsyncFn(TxEnvelope) -> CallResult {
+        move |txn: TxEnvelope| async move {
+            if txn.gas_limit() >= gas_used + gas_refund {
+                match terminal_result {
                     MockTerminalResult::Success => CallResult::Success(SuccessCallResult {
-                        gas_used: self.gas_used,
-                        gas_refund: self.gas_refund,
+                        gas_used,
+                        gas_refund,
                         ..Default::default()
                     }),
                     MockTerminalResult::ExecutionError => CallResult::Failure(FailureCallResult {
                         error_code: EthCallResult::ExecutionError,
-                        gas_used: self.gas_used,
-                        gas_refund: self.gas_refund,
+                        gas_used,
+                        gas_refund,
                         message: "execution reverted".to_string(),
                         data: Some("0x".to_string()),
                     }),
                     MockTerminalResult::ReserveBalanceViolation => {
                         CallResult::Failure(FailureCallResult {
                             error_code: EthCallResult::ReserveBalanceViolation,
-                            gas_used: self.gas_used,
-                            gas_refund: self.gas_refund,
+                            gas_used,
+                            gas_refund,
                             message: "reserve balance violation".to_string(),
                             data: None,
                         })
@@ -1249,16 +1203,11 @@ mod tests {
             gas: Some(U256::from(30_000)),
             ..Default::default()
         };
-        let provider = MockGasEstimator {
-            gas_used: 50_000,
-            gas_refund: 10_000,
-            terminal_result: MockTerminalResult::Success,
-        };
+        let eth_call_fn = mock_eth_call(50_000, 10_000, MockTerminalResult::Success);
 
         // should return gas estimation failure
         let result = estimate_gas(
-            &provider,
-            None,
+            eth_call_fn,
             &mut call_request,
             U256::from(30_000),
             u64::MAX,
@@ -1273,16 +1222,11 @@ mod tests {
     async fn test_gas_limit_unspecified() {
         // user did not specify gas limit
         let mut call_request = CallRequest::default();
-        let provider = MockGasEstimator {
-            gas_used: 50_000,
-            gas_refund: 10_000,
-            terminal_result: MockTerminalResult::Success,
-        };
+        let eth_call_fn = mock_eth_call(50_000, 10_000, MockTerminalResult::Success);
 
         // should return correct gas estimation
         let result = estimate_gas(
-            &provider,
-            None,
+            eth_call_fn,
             &mut call_request,
             U256::MAX,
             u64::MAX,
@@ -1301,16 +1245,11 @@ mod tests {
             gas: Some(U256::from(70_000)),
             ..Default::default()
         };
-        let provider = MockGasEstimator {
-            gas_used: 50_000,
-            gas_refund: 10_000,
-            terminal_result: MockTerminalResult::Success,
-        };
+        let eth_call_fn = mock_eth_call(50_000, 10_000, MockTerminalResult::Success);
 
         // should return correct gas estimation
         let result = estimate_gas(
-            &provider,
-            None,
+            eth_call_fn,
             &mut call_request,
             U256::from(70_000),
             u64::MAX,
@@ -1329,16 +1268,11 @@ mod tests {
             gas: Some(U256::from(60_000)),
             ..Default::default()
         };
-        let provider = MockGasEstimator {
-            gas_used: 50_000,
-            gas_refund: 10_000,
-            terminal_result: MockTerminalResult::Success,
-        };
+        let eth_call_fn = mock_eth_call(50_000, 10_000, MockTerminalResult::Success);
 
         // should return correct gas estimation
         let result = estimate_gas(
-            &provider,
-            None,
+            eth_call_fn,
             &mut call_request,
             U256::from(60_000),
             u64::MAX,
@@ -1353,15 +1287,10 @@ mod tests {
     #[tokio::test]
     async fn test_gas_limit_unspecified_allows_execution_failure_for_fill_transaction() {
         let mut call_request = CallRequest::default();
-        let provider = MockGasEstimator {
-            gas_used: 50_000,
-            gas_refund: 10_000,
-            terminal_result: MockTerminalResult::ExecutionError,
-        };
+        let eth_call_fn = mock_eth_call(50_000, 10_000, MockTerminalResult::ExecutionError);
 
         let result = estimate_gas(
-            &provider,
-            None,
+            eth_call_fn,
             &mut call_request,
             U256::MAX,
             u64::MAX,
@@ -1376,15 +1305,11 @@ mod tests {
     #[tokio::test]
     async fn test_gas_limit_unspecified_allows_reserve_balance_failure_for_fill_transaction() {
         let mut call_request = CallRequest::default();
-        let provider = MockGasEstimator {
-            gas_used: 50_000,
-            gas_refund: 10_000,
-            terminal_result: MockTerminalResult::ReserveBalanceViolation,
-        };
+        let eth_call_fn =
+            mock_eth_call(50_000, 10_000, MockTerminalResult::ReserveBalanceViolation);
 
         let result = estimate_gas(
-            &provider,
-            None,
+            eth_call_fn,
             &mut call_request,
             U256::MAX,
             u64::MAX,
@@ -1399,15 +1324,10 @@ mod tests {
     #[tokio::test]
     async fn test_gas_limit_unspecified_rejects_execution_failure_for_estimate_gas() {
         let mut call_request = CallRequest::default();
-        let provider = MockGasEstimator {
-            gas_used: 50_000,
-            gas_refund: 10_000,
-            terminal_result: MockTerminalResult::ExecutionError,
-        };
+        let eth_call_fn = mock_eth_call(50_000, 10_000, MockTerminalResult::ExecutionError);
 
         let result = estimate_gas(
-            &provider,
-            None,
+            eth_call_fn,
             &mut call_request,
             U256::MAX,
             u64::MAX,
@@ -1707,16 +1627,11 @@ mod tests {
         let to = Address::repeat_byte(0x22);
         let chain_state = make_fill_chain_state(from, 7, 0, 1000, 100);
         let config = mock_eth_call_handler_config();
-        let provider = MockGasEstimator {
-            gas_used: 50_000,
-            gas_refund: 10_000,
-            terminal_result: MockTerminalResult::Success,
-        };
 
+        let eth_call_fn = mock_eth_call(50_000, 10_000, MockTerminalResult::Success);
         let result = fill_transaction_with_provider(
             &chain_state,
             &config,
-            None,
             chain_id,
             MonadEthFillTransactionParams {
                 tx: CallRequest {
@@ -1725,7 +1640,7 @@ mod tests {
                     ..Default::default()
                 },
             },
-            |_, _, _, _| provider,
+            async |_, _, _, txn| eth_call_fn(txn).await,
         )
         .await
         .unwrap();
@@ -1756,16 +1671,11 @@ mod tests {
         let to = Address::repeat_byte(0x22);
         let chain_state = make_fill_chain_state(from, 3, 0, 1000, 100);
         let config = mock_eth_call_handler_config();
-        let provider = MockGasEstimator {
-            gas_used: 50_000,
-            gas_refund: 10_000,
-            terminal_result: MockTerminalResult::ExecutionError,
-        };
 
+        let eth_call_fn = mock_eth_call(50_000, 10_000, MockTerminalResult::ExecutionError);
         let result = fill_transaction_with_provider(
             &chain_state,
             &config,
-            None,
             chain_id,
             MonadEthFillTransactionParams {
                 tx: CallRequest {
@@ -1778,7 +1688,7 @@ mod tests {
                     ..Default::default()
                 },
             },
-            |_, _, _, _| provider,
+            async |_, _, _, txn| eth_call_fn(txn).await,
         )
         .await
         .unwrap();
@@ -1797,16 +1707,12 @@ mod tests {
         let to = Address::repeat_byte(0x22);
         let chain_state = make_fill_chain_state(from, 0, 0, 1000, 100);
         let config = mock_eth_call_handler_config();
-        let provider = MockGasEstimator {
-            gas_used: 50_000,
-            gas_refund: 10_000,
-            terminal_result: MockTerminalResult::ReserveBalanceViolation,
-        };
 
+        let eth_call_fn =
+            mock_eth_call(50_000, 10_000, MockTerminalResult::ReserveBalanceViolation);
         let result = fill_transaction_with_provider(
             &chain_state,
             &config,
-            None,
             chain_id,
             MonadEthFillTransactionParams {
                 tx: CallRequest {
@@ -1815,7 +1721,7 @@ mod tests {
                     ..Default::default()
                 },
             },
-            |_, _, _, _| provider,
+            async |_, _, _, txn| eth_call_fn(txn).await,
         )
         .await
         .unwrap();
@@ -1830,16 +1736,11 @@ mod tests {
         let from = Address::repeat_byte(0x11);
         let chain_state = make_fill_chain_state(from, 1, 0, 1000, 100);
         let config = mock_eth_call_handler_config();
-        let provider = MockGasEstimator {
-            gas_used: 50_000,
-            gas_refund: 10_000,
-            terminal_result: MockTerminalResult::Success,
-        };
 
+        let eth_call_fn = mock_eth_call(50_000, 10_000, MockTerminalResult::Success);
         let err = fill_transaction_with_provider(
             &chain_state,
             &config,
-            None,
             chain_id,
             MonadEthFillTransactionParams {
                 tx: CallRequest {
@@ -1849,7 +1750,7 @@ mod tests {
                     ..Default::default()
                 },
             },
-            |_, _, _, _| provider,
+            async |_, _, _, txn| eth_call_fn(txn).await,
         )
         .await
         .unwrap_err();
@@ -1864,16 +1765,11 @@ mod tests {
         let to = Address::repeat_byte(0x22);
         let chain_state = make_fill_chain_state(from, 42, 0, 1000, 100);
         let config = mock_eth_call_handler_config();
-        let provider = MockGasEstimator {
-            gas_used: 50_000,
-            gas_refund: 10_000,
-            terminal_result: MockTerminalResult::Success,
-        };
 
+        let eth_call_fn = mock_eth_call(50_000, 10_000, MockTerminalResult::Success);
         let result = fill_transaction_with_provider(
             &chain_state,
             &config,
-            None,
             chain_id,
             MonadEthFillTransactionParams {
                 tx: CallRequest {
@@ -1888,7 +1784,7 @@ mod tests {
                     ..Default::default()
                 },
             },
-            |_, _, _, _| provider,
+            async |_, _, _, txn| eth_call_fn(txn).await,
         )
         .await
         .unwrap();
