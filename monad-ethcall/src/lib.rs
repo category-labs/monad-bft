@@ -132,6 +132,7 @@ impl From<MonadTracer> for u32 {
 
 pub const ETH_CALL_SUCCESS: i32 = 0;
 pub const EVMC_OUT_OF_GAS: i32 = 3;
+pub const EVMC_MONAD_RESERVE_BALANCE_VIOLATION: i32 = 18;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum EthCallResult {

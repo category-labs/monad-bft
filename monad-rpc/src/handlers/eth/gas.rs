@@ -36,10 +36,7 @@ use serde::Deserialize;
 use tracing::trace;
 
 use crate::{
-    chainstate::{
-        eth_call_handler::EthCallHandlerConfig, get_block_key_from_tag,
-        get_block_key_from_tag_or_hash, ChainState,
-    },
+    chainstate::{get_block_key_from_tag, get_block_key_from_tag_or_hash, ChainState},
     handlers::eth::call::{
         check_contract_creation_size, fill_gas_params, CallRequest, GasPriceDetails,
     },
@@ -533,7 +530,7 @@ pub async fn monad_eth_fillTransaction<T: Triedb>(
 ) -> JsonRpcResult<FillTransactionResult> {
     fill_transaction_with_provider(
         chain_state,
-        eth_call_handler_config,
+        provider_gas_limit,
         Some(eth_call_executor),
         chain_id,
         params,
@@ -565,7 +562,7 @@ fn fill_transaction_state_overrides(from: Address) -> StateOverrideSet {
 
 async fn fill_transaction_with_provider<T, P, F>(
     chain_state: &ChainState<T>,
-    eth_call_handler_config: &EthCallHandlerConfig,
+    provider_gas_limit: u64,
     eth_call_executor: Option<&EthCallExecutor>,
     chain_id: u64,
     params: MonadEthFillTransactionParams,
@@ -1126,10 +1123,9 @@ mod tests {
     use monad_triedb_utils::mock_triedb::MockTriedb;
 
     use super::*;
-    use crate::{
-        chainstate::eth_call_handler::EthCallHandlerConfig,
-        handlers::eth::call::{CallInput, CallRequest, GasPriceDetails},
-    };
+    use crate::handlers::eth::call::{CallInput, CallRequest, GasPriceDetails};
+
+    const TEST_PROVIDER_GAS_LIMIT: u64 = 30_000_000;
 
     #[derive(Clone, Copy)]
     enum MockTerminalResult {
@@ -1178,35 +1174,6 @@ mod tests {
                     ..Default::default()
                 })
             }
-        }
-    }
-
-    fn mock_eth_call_handler_config() -> EthCallHandlerConfig {
-        EthCallHandlerConfig {
-            enable_stats: false,
-            pool_low: monad_ethcall::PoolConfig {
-                num_threads: 0,
-                num_fibers: 0,
-                timeout_sec: 0,
-                queue_limit: 0,
-            },
-            pool_high: monad_ethcall::PoolConfig {
-                num_threads: 0,
-                num_fibers: 0,
-                timeout_sec: 0,
-                queue_limit: 0,
-            },
-            pool_block: monad_ethcall::PoolConfig {
-                num_threads: 0,
-                num_fibers: 0,
-                timeout_sec: 0,
-                queue_limit: 0,
-            },
-            tx_exec_num_fibers: 0,
-            node_cache_max_mem: 0,
-            max_concurrent_permits: 0,
-            provider_gas_limit_eth_call: 30_000_000,
-            provider_gas_limit_eth_estimate_gas: 30_000_000,
         }
     }
 
@@ -1699,7 +1666,6 @@ mod tests {
         let from = Address::repeat_byte(0x11);
         let to = Address::repeat_byte(0x22);
         let chain_state = make_fill_chain_state(from, 7, 0, 1000, 100);
-        let config = mock_eth_call_handler_config();
         let provider = MockGasEstimator {
             gas_used: 50_000,
             gas_refund: 10_000,
@@ -1708,7 +1674,7 @@ mod tests {
 
         let result = fill_transaction_with_provider(
             &chain_state,
-            &config,
+            TEST_PROVIDER_GAS_LIMIT,
             None,
             chain_id,
             MonadEthFillTransactionParams {
@@ -1748,7 +1714,6 @@ mod tests {
         let from = Address::repeat_byte(0x11);
         let to = Address::repeat_byte(0x22);
         let chain_state = make_fill_chain_state(from, 3, 0, 1000, 100);
-        let config = mock_eth_call_handler_config();
         let provider = MockGasEstimator {
             gas_used: 50_000,
             gas_refund: 10_000,
@@ -1757,7 +1722,7 @@ mod tests {
 
         let result = fill_transaction_with_provider(
             &chain_state,
-            &config,
+            TEST_PROVIDER_GAS_LIMIT,
             None,
             chain_id,
             MonadEthFillTransactionParams {
@@ -1789,7 +1754,6 @@ mod tests {
         let from = Address::repeat_byte(0x11);
         let to = Address::repeat_byte(0x22);
         let chain_state = make_fill_chain_state(from, 0, 0, 1000, 100);
-        let config = mock_eth_call_handler_config();
         let provider = MockGasEstimator {
             gas_used: 50_000,
             gas_refund: 10_000,
@@ -1798,7 +1762,7 @@ mod tests {
 
         let result = fill_transaction_with_provider(
             &chain_state,
-            &config,
+            TEST_PROVIDER_GAS_LIMIT,
             None,
             chain_id,
             MonadEthFillTransactionParams {
@@ -1822,7 +1786,6 @@ mod tests {
         let chain_id = 12345u64;
         let from = Address::repeat_byte(0x11);
         let chain_state = make_fill_chain_state(from, 1, 0, 1000, 100);
-        let config = mock_eth_call_handler_config();
         let provider = MockGasEstimator {
             gas_used: 50_000,
             gas_refund: 10_000,
@@ -1831,7 +1794,7 @@ mod tests {
 
         let err = fill_transaction_with_provider(
             &chain_state,
-            &config,
+            TEST_PROVIDER_GAS_LIMIT,
             None,
             chain_id,
             MonadEthFillTransactionParams {
@@ -1856,7 +1819,6 @@ mod tests {
         let from = Address::repeat_byte(0x11);
         let to = Address::repeat_byte(0x22);
         let chain_state = make_fill_chain_state(from, 42, 0, 1000, 100);
-        let config = mock_eth_call_handler_config();
         let provider = MockGasEstimator {
             gas_used: 50_000,
             gas_refund: 10_000,
@@ -1865,7 +1827,7 @@ mod tests {
 
         let result = fill_transaction_with_provider(
             &chain_state,
-            &config,
+            TEST_PROVIDER_GAS_LIMIT,
             None,
             chain_id,
             MonadEthFillTransactionParams {
