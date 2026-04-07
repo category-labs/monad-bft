@@ -1070,9 +1070,7 @@ mod test {
     async fn test_forwarded_ingress_drop_metrics_count_remaining_batch_once() {
         let mut client =
             start_test_client_with_forwarded_ingress_config(ForwardedIngressFairQueueConfig {
-                per_id_limit: 2,
                 max_size: 2,
-                regular_per_id_limit: 2,
                 regular_max_size: 2,
                 ..ForwardedIngressFairQueueConfig::default()
             });
