@@ -74,7 +74,6 @@ monad-testutil = { path = "./monad-testutil" }
 monad-tfm = { path = "./monad-tfm" }
 monad-tracing-timing = { path = "./monad-tracing-timing" }
 monad-transformer = { path = "./monad-transformer" }
-monad-triedb = { path = "./monad-triedb" }
 monad-triedb-utils = { path = "./monad-triedb-utils" }
 monad-twins-utils = { path = "./monad-twins/utils" }
 monad-types = { path = "./monad-types" }
@@ -87,6 +86,7 @@ monad-wireauth = { path = "./monad-wireauth" }
 monad-cxx = { path = "./monad-execution/rust/crates/monad-cxx" }
 monad-event-ring = { path = "./monad-execution/rust/crates/monad-event-ring" }
 monad-exec-events = { path = "./monad-execution/rust/crates/monad-exec-events" }
+monad-triedb = { path = "./monad-execution/rust/crates/monad-triedb" }
 
 actix = "0.13"
 actix-http = "3.11.1"
@@ -136,7 +136,6 @@ byte-unit = "5.1"
 bytes = "1.5"
 chrono = "0.4.34"
 clap = "4.2"
-cmake = "0.1"
 codespan-reporting = "0.11.1"
 console_error_panic_hook = "0.1"
 criterion = { version = "0.8", features = ["html_reports"] }
