@@ -16,7 +16,7 @@
 use std::{collections::HashMap, hint::black_box};
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use monad_fair_queue::{FairQueue, FairQueueBuilder, IdentityScore, PeerStatus, Score};
+use monad_fair_queue::{FairQueue, FairQueueBuilder, IdentityScore, Len, PeerStatus, Score};
 
 const NUM_IDENTITIES: u32 = 100_000;
 
@@ -38,12 +38,20 @@ impl IdentityScore for TestScorer {
     }
 }
 
-type TestQueue = FairQueue<TestScorer, u32>;
+#[derive(Clone, Copy)]
+struct BenchItem(u32);
+
+impl Len for BenchItem {
+    fn len(&self) -> usize {
+        std::mem::size_of::<u32>()
+    }
+}
+
+type TestQueue = FairQueue<TestScorer, BenchItem>;
 
 fn make_queue(scorer: TestScorer) -> TestQueue {
     FairQueueBuilder::new()
-        .per_id_limit(1000)
-        .max_size(10_000_000)
+        .max_size(1_000_000)
         .regular_bandwidth_pct(0)
         .build(scorer)
 }
@@ -64,7 +72,7 @@ fn bench_push(c: &mut Criterion) {
                 b.iter(|| {
                     let mut queue = make_queue(scorer.clone());
                     for identity in 0..num_ids {
-                        let _ = queue.push(black_box(identity), black_box(identity));
+                        let _ = queue.push(black_box(identity), black_box(BenchItem(identity)));
                     }
                     assert_eq!(queue.len(), num_ids as usize);
                 })
@@ -93,13 +101,13 @@ fn bench_push_pop_interleaved(c: &mut Criterion) {
                     || {
                         let mut queue = make_queue(scorer.clone());
                         for identity in 0..num_ids {
-                            let _ = queue.push(identity, identity);
+                            let _ = queue.push(identity, BenchItem(identity));
                         }
                         queue
                     },
                     |mut queue| {
                         for identity in 0..num_ids {
-                            let _ = queue.push(black_box(identity), black_box(identity));
+                            let _ = queue.push(black_box(identity), black_box(BenchItem(identity)));
                             black_box(queue.pop());
                         }
                     },
@@ -129,7 +137,7 @@ fn bench_pop_heavy(c: &mut Criterion) {
                     || {
                         let mut queue = make_queue(scorer.clone());
                         for identity in 0..num_ids {
-                            let _ = queue.push(identity, identity);
+                            let _ = queue.push(identity, BenchItem(identity));
                         }
                         queue
                     },
@@ -165,7 +173,10 @@ fn bench_mixed_workload(c: &mut Criterion) {
             |mut queue| {
                 for identity in 0..num_ids {
                     for item in 0..items_per_id {
-                        let _ = queue.push(black_box(identity), black_box(identity * 1000 + item));
+                        let _ = queue.push(
+                            black_box(identity),
+                            black_box(BenchItem(identity * 1000 + item)),
+                        );
                     }
                 }
                 assert_eq!(queue.len(), total_items as usize);
@@ -198,7 +209,7 @@ fn bench_skewed_scores(c: &mut Criterion) {
             || {
                 let mut queue = make_queue(scorer.clone());
                 for identity in 0..num_ids {
-                    let _ = queue.push(identity, identity);
+                    let _ = queue.push(identity, BenchItem(identity));
                 }
                 queue
             },

@@ -18,13 +18,20 @@ use std::{
     hash::Hash,
 };
 
-use monad_dynamic_cap::DynamicCapConfig;
 use monad_executor::{ExecutorMetrics, MetricDef};
 
-use crate::{metrics::*, pool::Pool, IdentityScore, PeerStatus, PushError, Score};
+use crate::{metrics::*, pool::Pool, IdentityScore, Len, PeerStatus, PushError, Score};
 
 const DEFAULT_REGULAR_SCORE: Score = Score::ONE;
 const POP_COUNTER_WINDOW: u8 = 100;
+const KIB: usize = 1024;
+const MIB: usize = 1024 * 1024;
+const GIB: usize = 1024 * MIB;
+const DEFAULT_MAX_SIZE: usize = 1_000_000;
+const DEFAULT_PRIORITY_PER_ID_BYTE_LIMIT: usize = 512 * KIB;
+const DEFAULT_REGULAR_PER_ID_BYTE_LIMIT: usize = MIB;
+const DEFAULT_PRIORITY_POOL_MAX_BYTES: usize = 4 * GIB;
+const DEFAULT_REGULAR_POOL_MAX_BYTES: usize = 2 * GIB;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PoolKind {
@@ -50,20 +57,24 @@ fn pool_and_score(status: PeerStatus) -> (PoolKind, Score) {
 
 #[derive(Debug, Clone)]
 pub struct FairQueueBuilder {
-    per_id_limit: usize,
     max_size: usize,
-    regular_per_id_limit: usize,
+    per_id_byte_limit: usize,
+    max_bytes: usize,
     regular_max_size: usize,
+    regular_per_id_byte_limit: usize,
+    regular_max_bytes: usize,
     regular_bandwidth_pct: u8,
 }
 
 impl Default for FairQueueBuilder {
     fn default() -> Self {
         Self {
-            per_id_limit: 4_000,
-            max_size: 40_000,
-            regular_per_id_limit: 4_000,
-            regular_max_size: 40_000,
+            max_size: DEFAULT_MAX_SIZE,
+            per_id_byte_limit: DEFAULT_PRIORITY_PER_ID_BYTE_LIMIT,
+            max_bytes: DEFAULT_PRIORITY_POOL_MAX_BYTES,
+            regular_max_size: DEFAULT_MAX_SIZE,
+            regular_per_id_byte_limit: DEFAULT_REGULAR_PER_ID_BYTE_LIMIT,
+            regular_max_bytes: DEFAULT_REGULAR_POOL_MAX_BYTES,
             regular_bandwidth_pct: 10,
         }
     }
@@ -74,23 +85,33 @@ impl FairQueueBuilder {
         Self::default()
     }
 
-    pub fn per_id_limit(mut self, limit: usize) -> Self {
-        self.per_id_limit = limit;
-        self
-    }
-
     pub fn max_size(mut self, size: usize) -> Self {
         self.max_size = size;
         self
     }
 
-    pub fn regular_per_id_limit(mut self, limit: usize) -> Self {
-        self.regular_per_id_limit = limit;
+    pub fn per_id_byte_limit(mut self, limit: usize) -> Self {
+        self.per_id_byte_limit = limit;
+        self
+    }
+
+    pub fn max_bytes(mut self, size: usize) -> Self {
+        self.max_bytes = size;
         self
     }
 
     pub fn regular_max_size(mut self, size: usize) -> Self {
         self.regular_max_size = size;
+        self
+    }
+
+    pub fn regular_per_id_byte_limit(mut self, limit: usize) -> Self {
+        self.regular_per_id_byte_limit = limit;
+        self
+    }
+
+    pub fn regular_max_bytes(mut self, size: usize) -> Self {
+        self.regular_max_bytes = size;
         self
     }
 
@@ -102,46 +123,43 @@ impl FairQueueBuilder {
     pub fn build<S: IdentityScore, T>(self, scorer: S) -> FairQueue<S, T>
     where
         S::Identity: Hash + Eq + Clone + Debug + Display,
+        T: Len,
     {
-        assert!(self.per_id_limit > 0, "per_id_limit must be > 0");
         assert!(self.max_size > 0, "max_size must be > 0");
-        assert!(
-            self.regular_per_id_limit > 0,
-            "regular_per_id_limit must be > 0"
-        );
+        assert!(self.per_id_byte_limit > 0, "per_id_byte_limit must be > 0");
+        assert!(self.max_bytes > 0, "max_bytes must be > 0");
         assert!(self.regular_max_size > 0, "regular_max_size must be > 0");
-        let priority_dynamic_cap_cfg = DynamicCapConfig::default();
-        priority_dynamic_cap_cfg.validate();
-        let regular_dynamic_cap_cfg = DynamicCapConfig::default();
-        regular_dynamic_cap_cfg.validate();
+        assert!(
+            self.regular_per_id_byte_limit > 0,
+            "regular_per_id_byte_limit must be > 0"
+        );
+        assert!(self.regular_max_bytes > 0, "regular_max_bytes must be > 0");
 
         FairQueue {
-            priority_pool: Pool::new(self.per_id_limit, self.max_size, priority_dynamic_cap_cfg),
+            priority_pool: Pool::new(self.max_size, self.per_id_byte_limit, self.max_bytes),
             regular_pool: Pool::new(
-                self.regular_per_id_limit,
                 self.regular_max_size,
-                regular_dynamic_cap_cfg,
+                self.regular_per_id_byte_limit,
+                self.regular_max_bytes,
             ),
             scorer,
             regular_bandwidth_pct: self.regular_bandwidth_pct,
             pop_counter: 0,
-            service_sequence: 0,
             metrics: ExecutorMetrics::default(),
         }
     }
 }
 
-pub struct FairQueue<S: IdentityScore, T> {
+pub struct FairQueue<S: IdentityScore, T: Len> {
     priority_pool: Pool<S::Identity, T>,
     regular_pool: Pool<S::Identity, T>,
     scorer: S,
     regular_bandwidth_pct: u8,
     pop_counter: u8,
-    service_sequence: u64,
     metrics: ExecutorMetrics,
 }
 
-impl<S: IdentityScore, T> FairQueue<S, T>
+impl<S: IdentityScore, T: Len> FairQueue<S, T>
 where
     S::Identity: Hash + Eq + Clone + Debug + Display,
 {
@@ -155,8 +173,8 @@ where
                     PoolKind::Regular => self.metrics[COUNTER_FAIR_QUEUE_PUSH_REGULAR] += 1,
                 }
             }
-            Err(PushError::PerIdLimitExceeded { .. }) => {
-                self.metrics[COUNTER_FAIR_QUEUE_PUSH_ERROR_PER_ID_LIMIT] += 1;
+            Err(PushError::PerIdByteLimitExceeded { .. }) => {
+                self.metrics[COUNTER_FAIR_QUEUE_PUSH_ERROR_PER_ID_BYTE_LIMIT] += 1;
             }
             Err(PushError::Full { .. }) => {
                 self.metrics[COUNTER_FAIR_QUEUE_PUSH_ERROR_FULL] += 1;
@@ -204,9 +222,7 @@ where
 
     fn push_inner(&mut self, id: S::Identity, item: T) -> Result<PoolKind, PushError<S::Identity>> {
         if let Some(pool_kind) = self.pool_containing_identity(&id) {
-            let service_sequence = self.service_sequence;
-            self.pool_mut(pool_kind)
-                .push_existing(&id, item, service_sequence)?;
+            self.pool_mut(pool_kind).push_existing(&id, item)?;
             return Ok(pool_kind);
         }
 
@@ -219,10 +235,9 @@ where
         item: T,
     ) -> Result<PoolKind, PushError<S::Identity>> {
         let (desired_pool, score) = pool_and_score(self.scorer.score(&id));
-        let service_sequence = self.service_sequence;
 
         self.pool_mut(desired_pool)
-            .push_new(id, item, score, service_sequence)
+            .push_new(id, item, score)
             .map(|_| desired_pool)
             .map_err(|(err, _)| err)
     }
@@ -234,10 +249,6 @@ where
 
     fn pop_from_pool(&mut self, pool_kind: PoolKind) -> Option<(S::Identity, T)> {
         let popped = self.pool_mut(pool_kind).pop_next()?;
-        self.service_sequence += 1;
-        let service_sequence = self.service_sequence;
-        self.pool_mut(pool_kind)
-            .observe_service(&popped.id, service_sequence);
         Some((popped.id, popped.item))
     }
 
@@ -321,23 +332,24 @@ mod tests {
 
     fn make_queue_with_limits<S: IdentityScore<Identity = u32>>(
         scorer: S,
-        per_id_limit: usize,
         max_size: usize,
-        regular_per_id_limit: usize,
         regular_max_size: usize,
         regular_bandwidth_pct: u8,
     ) -> FairQueue<S, u32> {
+        let item_len = std::mem::size_of::<u32>();
         FairQueueBuilder::new()
-            .per_id_limit(per_id_limit)
             .max_size(max_size)
-            .regular_per_id_limit(regular_per_id_limit)
+            .per_id_byte_limit(max_size.saturating_add(1).saturating_mul(item_len))
+            .max_bytes(max_size * item_len)
             .regular_max_size(regular_max_size)
+            .regular_per_id_byte_limit(regular_max_size.saturating_add(1).saturating_mul(item_len))
+            .regular_max_bytes(regular_max_size * item_len)
             .regular_bandwidth_pct(regular_bandwidth_pct)
             .build(scorer)
     }
 
     fn make_queue(scorer: TestScorer) -> TestQueue {
-        make_queue_with_limits(scorer, 100, 10000, 100, 10000, 10)
+        make_queue_with_limits(scorer, 10000, 10000, 10)
     }
 
     fn pop_all_counts<S: IdentityScore<Identity = u32>>(
@@ -368,7 +380,7 @@ mod tests {
     fn newcomer_and_unknown_route_to_regular() {
         // id=0: newcomer (score 0.3, below threshold 0.5), id=1: unknown
         let scorer = make_test_scorer([(0, 0.3)]);
-        let mut queue: TestQueue = make_queue_with_limits(scorer, 100, 10000, 100, 10000, 100);
+        let mut queue: TestQueue = make_queue_with_limits(scorer, 10000, 10000, 100);
 
         for i in 0..30u32 {
             queue.push(0, i).unwrap();
@@ -385,7 +397,7 @@ mod tests {
         // All three ids are unknown (not in scores map).
         // With regular_bandwidth_pct=100, regular is always tried first.
         let scorer = make_test_scorer([]);
-        let mut queue: TestQueue = make_queue_with_limits(scorer, 100, 10000, 100, 10000, 100);
+        let mut queue: TestQueue = make_queue_with_limits(scorer, 10000, 10000, 100);
 
         for i in 0..30u32 {
             queue.push(i % 3, i).unwrap();
@@ -401,8 +413,7 @@ mod tests {
     #[test]
     fn newcomer_uses_constant_regular_score() {
         let scorer = make_test_scorer_with_threshold([(0, 2.0), (1, 1.0)], 10.0);
-        let mut queue: TestQueue =
-            make_queue_with_limits(scorer, 10000, 100000, 10000, 100000, 100);
+        let mut queue: TestQueue = make_queue_with_limits(scorer, 100000, 100000, 100);
 
         for i in 0..5000u32 {
             queue.push(0, i).unwrap();
@@ -422,7 +433,7 @@ mod tests {
     fn first_item_prefers_higher_score() {
         let scores: HashMap<u32, f64> = [(0, 10.0), (1, 1.0)].into_iter().collect();
         let scorer = make_test_scorer(scores);
-        let mut queue: TestQueue = make_queue_with_limits(scorer, 100, 1000, 2000, 40000, 0);
+        let mut queue: TestQueue = make_queue_with_limits(scorer, 1000, 40000, 0);
 
         queue.push(1, 10).unwrap();
         queue.push(0, 20).unwrap();
@@ -440,7 +451,7 @@ mod tests {
     #[test]
     fn second_attempt_does_not_consume_regular_share() {
         let scorer = make_test_scorer([(0, 1.0)]);
-        let mut queue: TestQueue = make_queue_with_limits(scorer, 1000, 1000, 1000, 1000, 10);
+        let mut queue: TestQueue = make_queue_with_limits(scorer, 1000, 1000, 10);
 
         for i in 0..30u32 {
             queue.push(0, i).unwrap();
@@ -487,7 +498,7 @@ mod tests {
     fn existing_identity_remains_in_assigned_pool_after_score_change() {
         let (scores, scorer) = make_mutable_scorer([(0, 0.1), (1, 10.0)]);
         let mut queue: FairQueue<MutableScorer, u32> =
-            make_queue_with_limits(scorer, 100, 1000, 100, 1000, 100);
+            make_queue_with_limits(scorer, 1000, 1000, 100);
 
         queue.push(0, 10).unwrap();
         queue.push(0, 11).unwrap();
@@ -513,7 +524,7 @@ mod tests {
     fn existing_identity_push_is_routed_by_pool_membership() {
         let (scores, scorer) = make_mutable_scorer([(0, 0.1)]);
         let mut queue: FairQueue<MutableScorer, u32> =
-            make_queue_with_limits(scorer, 100, 1000, 100, 1000, 100);
+            make_queue_with_limits(scorer, 1000, 1000, 100);
 
         queue.push(0, 10).unwrap();
         {
@@ -531,8 +542,7 @@ mod tests {
     #[test]
     fn score_change_does_not_drop_items_when_regular_limit_is_small() {
         let (scores, scorer) = make_mutable_scorer([(0, 10.0)]);
-        let mut queue: FairQueue<MutableScorer, u32> =
-            make_queue_with_limits(scorer, 100, 1000, 2, 1000, 0);
+        let mut queue: FairQueue<MutableScorer, u32> = make_queue_with_limits(scorer, 1000, 2, 0);
 
         for i in 0..5 {
             queue.push(0, i).unwrap();
@@ -552,7 +562,7 @@ mod tests {
         // Scores 6:3:1 — expect ~60%, ~30%, ~10% of bandwidth
         let scores: HashMap<u32, f64> = [(0, 6.0), (1, 3.0), (2, 1.0)].into_iter().collect();
         let scorer = make_test_scorer(scores);
-        let mut queue: TestQueue = make_queue_with_limits(scorer, 100000, 1000000, 2000, 40000, 0);
+        let mut queue: TestQueue = make_queue_with_limits(scorer, 1000000, 40000, 0);
 
         let items_per_id = 100_000;
         for i in 0..items_per_id as u32 {
@@ -579,7 +589,7 @@ mod tests {
     #[test]
     fn promoted_identity_is_rejected_when_priority_pool_is_full() {
         let scorer = make_test_scorer([(0, 1.0), (2, 1.0)]);
-        let mut queue: TestQueue = make_queue_with_limits(scorer, 1, 1, 1000, 1000, 100);
+        let mut queue: TestQueue = make_queue_with_limits(scorer, 1, 1000, 100);
 
         queue.push(0, 1_000).unwrap();
         queue.push(1, 2_000).unwrap();
@@ -601,80 +611,53 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_cap_is_inactive_when_pool_undersaturated() {
+    fn identity_can_fill_pool_until_total_item_limit() {
         let scorer = make_test_scorer([]);
-        let mut queue: TestQueue = make_queue_with_limits(scorer, 20, 100, 20, 100, 100);
+        let mut queue: TestQueue = make_queue_with_limits(scorer, 10, 3, 100);
 
-        for i in 0..20u32 {
+        for i in 0..3u32 {
             queue.push(0, i).unwrap();
         }
+
         let err = queue.push(0, 999).unwrap_err();
         assert!(
-            matches!(err, PushError::PerIdLimitExceeded { limit: 20, .. }),
-            "expected static per-id limit while undersaturated, got {err:?}"
+            matches!(
+                err,
+                PushError::Full {
+                    size: 3,
+                    max_size: 3
+                }
+            ),
+            "expected total item limit after one identity filled the pool, got {err:?}"
         );
     }
 
     #[test]
-    fn pressure_mode_uses_bootstrap_for_new_identity_and_clamps_growth() {
+    fn identity_byte_limit_is_enforced() {
         let scorer = make_test_scorer([]);
-        let per_id_limit = 200;
-        let mut queue: TestQueue =
-            make_queue_with_limits(scorer, per_id_limit, 1000, per_id_limit, 1000, 100);
+        let mut queue: FairQueue<TestScorer, Vec<u8>> = FairQueueBuilder::new()
+            .max_size(10)
+            .max_bytes(100)
+            .per_id_byte_limit(4)
+            .regular_max_size(10)
+            .regular_max_bytes(100)
+            .regular_per_id_byte_limit(4)
+            .regular_bandwidth_pct(100)
+            .build(scorer);
 
-        for i in 0..800u32 {
-            queue.push(i + 1, i).unwrap();
-        }
+        queue.push(0, vec![0; 2]).unwrap();
+        queue.push(0, vec![0; 2]).unwrap();
 
-        for i in 0..DynamicCapConfig::DEFAULT_BOOTSTRAP_LIMIT as u32 {
-            queue.push(999, i).unwrap();
-        }
-        let err = queue.push(999, 9999).unwrap_err();
+        let err = queue.push(0, vec![0; 1]).unwrap_err();
         assert!(
-            matches!(
-                err,
-                PushError::PerIdLimitExceeded {
-                    limit,
-                    ..
-                } if limit == DynamicCapConfig::DEFAULT_BOOTSTRAP_LIMIT
-            ),
-            "expected bootstrap dynamic cap for new identity under pressure, got {err:?}"
+            matches!(err, PushError::PerIdByteLimitExceeded { limit: 4, .. }),
+            "expected per-identity byte limit for existing identity, got {err:?}"
         );
-    }
 
-    #[test]
-    fn recently_served_identity_is_still_capped_by_configured_per_id_limit() {
-        let scorer = make_test_scorer([]);
-        let per_id_limit = 200;
-        let mut queue: TestQueue =
-            make_queue_with_limits(scorer, per_id_limit, 1000, per_id_limit, 1000, 100);
-
-        for i in 0..per_id_limit as u32 {
-            queue.push(0, i).unwrap();
-        }
-        for _ in 0..140 {
-            assert_eq!(queue.pop().unwrap().0, 0);
-        }
-        for i in 1..=740u32 {
-            queue.push(i, 10_000 + i).unwrap();
-        }
-
-        let existing_items_for_id0 = 60u32;
-        let remaining_budget = per_id_limit as u32 - existing_items_for_id0;
-        for i in 0..remaining_budget {
-            queue.push(0, 20_000 + i).unwrap();
-        }
-
-        let err = queue.push(0, 39_999).unwrap_err();
+        let err = queue.push(1, vec![0; 5]).unwrap_err();
         assert!(
-            matches!(
-                err,
-                PushError::PerIdLimitExceeded {
-                    limit,
-                    ..
-                } if limit == per_id_limit
-            ),
-            "expected configured per-id limit for recently served identity under pressure, got {err:?}"
+            matches!(err, PushError::PerIdByteLimitExceeded { limit: 4, .. }),
+            "expected per-identity byte limit for new identity, got {err:?}"
         );
     }
 
@@ -706,7 +689,7 @@ mod tests {
             let scores: HashMap<u32, f64> = [(0, score_ratio as f64), (1, 1.0)].into_iter().collect();
             let scorer = make_test_scorer(scores);
             let mut queue: TestQueue =
-                make_queue_with_limits(scorer, 10000, 100000, 2000, 40000, 0);
+                make_queue_with_limits(scorer, 100000, 40000, 0);
 
             let items = cycles * (score_ratio as usize + 1) * 10;
             for i in 0..items {
@@ -735,7 +718,7 @@ mod tests {
             // id=0 is promoted (score 1.0 >= threshold 0.5), id=1 is unknown (not in scores)
             let scorer = make_test_scorer([(0, 1.0)]);
             let mut queue: TestQueue =
-                make_queue_with_limits(scorer, 10000, 100000, 10000, 100000, regular_pct);
+                make_queue_with_limits(scorer, 100000, 100000, regular_pct);
 
             for i in 0..10000u32 {
                 queue.push(0, i).unwrap();

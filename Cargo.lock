@@ -5417,8 +5417,8 @@ dependencies = [
 name = "monad-fair-queue"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "criterion",
- "monad-dynamic-cap",
  "monad-executor",
  "monad-peer-score",
  "proptest",

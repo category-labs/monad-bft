@@ -30,9 +30,9 @@ monad_executor::metric_consts! {
         name: "monad.fair_queue.push.error.full",
         help: "Total push attempts rejected because the destination pool was full",
     }
-    pub COUNTER_FAIR_QUEUE_PUSH_ERROR_PER_ID_LIMIT {
-        name: "monad.fair_queue.push.error.per_id_limit",
-        help: "Total push attempts rejected because an identity exceeded its item limit",
+    pub COUNTER_FAIR_QUEUE_PUSH_ERROR_PER_ID_BYTE_LIMIT {
+        name: "monad.fair_queue.push.error.per_id_byte_limit",
+        help: "Total push attempts rejected because an identity exceeded its byte limit",
     }
     pub COUNTER_FAIR_QUEUE_POP_TOTAL {
         name: "monad.fair_queue.pop.total",
