@@ -75,6 +75,14 @@ pub trait AuthenticationProtocol {
 
     fn has_any_session_by_public_key(&self, public_key: &Self::PublicKey) -> bool;
 
+    fn has_initiator_session_by_public_key(&self, public_key: &Self::PublicKey) -> bool;
+
+    fn has_initiator_session_by_socket_and_public_key(
+        &self,
+        socket_addr: &SocketAddr,
+        public_key: &Self::PublicKey,
+    ) -> bool;
+
     fn next_packet(&mut self) -> Option<(SocketAddr, Bytes)>;
 
     fn tick(&mut self);
@@ -203,6 +211,19 @@ impl AuthenticationProtocol for WireAuthProtocol {
         self.api.has_any_session_by_public_key(public_key)
     }
 
+    fn has_initiator_session_by_public_key(&self, public_key: &Self::PublicKey) -> bool {
+        self.api.has_initiator_session_by_public_key(public_key)
+    }
+
+    fn has_initiator_session_by_socket_and_public_key(
+        &self,
+        socket_addr: &SocketAddr,
+        public_key: &Self::PublicKey,
+    ) -> bool {
+        self.api
+            .has_initiator_session_by_socket_and_public_key(socket_addr, public_key)
+    }
+
     fn metrics(&self) -> ExecutorMetricsChain<'_> {
         self.api.metrics()
     }
@@ -311,6 +332,18 @@ impl<P: PubKey> AuthenticationProtocol for NoopAuthProtocol<P> {
     }
 
     fn has_any_session_by_public_key(&self, _public_key: &Self::PublicKey) -> bool {
+        false
+    }
+
+    fn has_initiator_session_by_public_key(&self, _public_key: &Self::PublicKey) -> bool {
+        false
+    }
+
+    fn has_initiator_session_by_socket_and_public_key(
+        &self,
+        _socket_addr: &SocketAddr,
+        _public_key: &Self::PublicKey,
+    ) -> bool {
         false
     }
 
