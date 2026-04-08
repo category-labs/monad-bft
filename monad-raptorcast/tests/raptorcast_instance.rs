@@ -32,9 +32,9 @@ use monad_crypto::certificate_signature::{
 use monad_dataplane::udp::DEFAULT_SEGMENT_SIZE;
 use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand};
-use monad_peer_discovery::mock::NopDiscovery;
+use monad_peer_discovery::{mock::NopDiscovery, MonadNameRecord, NameRecord};
 use monad_raptorcast::{
-    create_dataplane_for_tests, new_defaulted_raptorcast_for_tests,
+    create_dataplane_for_tests, new_defaulted_raptorcast_for_tests_with_name_records,
     packet::{build_messages, regular},
     raptorcast_secondary::{
         group_message::FullNodesGroupMessage, SecondaryOutboundMessage,
@@ -300,15 +300,23 @@ pub fn set_up_test(
     let rx_nodeid = NodeId::new(rx_keypair.pubkey());
 
     let dataplane = create_dataplane_for_tests(false);
-    let rx_addr = SocketAddr::V4(dataplane.non_auth_addr);
+    let rx_addr_v4 = dataplane.non_auth_addr;
+    let rx_addr = SocketAddr::V4(rx_addr_v4);
 
-    let tx_addr = UdpSocket::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap();
+    let tx_addr = socket_addr_v4(
+        UdpSocket::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap(),
+    );
 
     let mut known_addresses: HashMap<NodeId<PubKeyType>, SocketAddr> =
-        HashMap::from([(tx_nodeid, tx_addr), (rx_nodeid, rx_addr)]);
+        HashMap::from([(tx_nodeid, SocketAddr::V4(tx_addr)), (rx_nodeid, rx_addr)]);
+    let mut name_records: HashMap<NodeId<PubKeyType>, MonadNameRecord<SignatureType>> =
+        HashMap::from([
+            (tx_nodeid, test_name_record(&tx_keypair, tx_addr)),
+            (rx_nodeid, test_name_record(&rx_keypair, rx_addr_v4)),
+        ]);
 
     let mut validator_set = vec![(tx_nodeid, Stake::ONE), (rx_nodeid, Stake::ONE)];
 
@@ -320,8 +328,13 @@ pub fn set_up_test(
             .unwrap()
         };
         let rebroadcast_nodeid = NodeId::new(rebroadcast_keypair.pubkey());
+        let rebroadcast_addr = socket_addr_v4(rebroadcast_addr);
 
-        known_addresses.insert(rebroadcast_nodeid, rebroadcast_addr);
+        known_addresses.insert(rebroadcast_nodeid, SocketAddr::V4(rebroadcast_addr));
+        name_records.insert(
+            rebroadcast_nodeid,
+            test_name_record(&rebroadcast_keypair, rebroadcast_addr),
+        );
 
         validator_set.push((rebroadcast_nodeid, Stake::ONE));
     }
@@ -348,12 +361,17 @@ pub fn set_up_test(
         ));
 
         rt.spawn(async move {
-            let mut service = new_defaulted_raptorcast_for_tests::<
+            let mut service = new_defaulted_raptorcast_for_tests_with_name_records::<
                 SignatureType,
                 MockMessage,
                 MockMessage,
                 <MockMessage as Message>::Event,
-            >(dataplane, peer_addresses, Arc::new(rx_keypair));
+            >(
+                dataplane,
+                peer_addresses,
+                name_records,
+                Arc::new(rx_keypair),
+            );
 
             service.exec(vec![RouterCommand::AddEpochValidatorSet {
                 epoch: Epoch(0),
@@ -372,6 +390,42 @@ pub fn set_up_test(
     std::thread::sleep(Duration::from_millis(100));
 
     (tx_nodeid, tx_keypair, rx_nodeid, known_addresses, rx_addr)
+}
+
+fn socket_addr_v4(addr: SocketAddr) -> SocketAddrV4 {
+    match addr {
+        SocketAddr::V4(addr) => addr,
+        SocketAddr::V6(_) => panic!("IPv6 addresses not supported"),
+    }
+}
+
+fn test_name_record(keypair: &KeyPair, addr: SocketAddrV4) -> MonadNameRecord<SignatureType> {
+    let name_record = NameRecord::new_with_ports(
+        *addr.ip(),
+        addr.port(),
+        Some(addr.port()),
+        addr.port(),
+        None,
+        1,
+    );
+    MonadNameRecord::new(name_record, keypair)
+}
+
+fn test_peer_maps<const N: usize>(
+    peers: [(NodeId<PubKeyType>, &KeyPair, SocketAddrV4); N],
+) -> (
+    HashMap<NodeId<PubKeyType>, SocketAddrV4>,
+    HashMap<NodeId<PubKeyType>, MonadNameRecord<SignatureType>>,
+) {
+    let mut known_addresses = HashMap::new();
+    let mut name_records = HashMap::new();
+
+    for (id, keypair, addr) in peers {
+        known_addresses.insert(id, addr);
+        name_records.insert(id, test_name_record(keypair, addr));
+    }
+
+    (known_addresses, name_records)
 }
 
 #[derive(Clone, Copy, RlpEncodable, RlpDecodable)]
@@ -460,13 +514,14 @@ fn setup_raptorcast_service(
     keypair: KeyPair,
     dataplane: DataplaneHandles,
     known_addresses: HashMap<NodeId<PubKeyType>, SocketAddrV4>,
+    name_records: HashMap<NodeId<PubKeyType>, MonadNameRecord<SignatureType>>,
 ) -> MockRaptorCast {
-    new_defaulted_raptorcast_for_tests::<
+    new_defaulted_raptorcast_for_tests_with_name_records::<
         SignatureType,
         MockMessage,
         MockMessage,
         <MockMessage as Message>::Event,
-    >(dataplane, known_addresses, Arc::new(keypair))
+    >(dataplane, known_addresses, name_records, Arc::new(keypair))
 }
 
 #[cfg(test)]
@@ -504,24 +559,46 @@ async fn publish_to_full_nodes() {
     let full_node1_dp = create_dataplane_for_tests(false);
     let full_node2_dp = create_dataplane_for_tests(false);
 
-    let known_addresses: HashMap<NodeId<PubKeyType>, SocketAddrV4> = [
-        (validator_nodeid, validator_dp.non_auth_addr),
-        (full_node1_id, full_node1_dp.non_auth_addr),
-        (full_node2_id, full_node2_dp.non_auth_addr),
-    ]
-    .into_iter()
-    .collect();
+    let (known_addresses, name_records) = test_peer_maps([
+        (
+            validator_nodeid,
+            &validator_keypair,
+            validator_dp.non_auth_addr,
+        ),
+        (
+            full_node1_id,
+            &full_node1_keypair,
+            full_node1_dp.non_auth_addr,
+        ),
+        (
+            full_node2_id,
+            &full_node2_keypair,
+            full_node2_dp.non_auth_addr,
+        ),
+    ]);
 
     // 3. Create services with known addresses
-    let mut validator_rc =
-        setup_raptorcast_service(validator_keypair, validator_dp, known_addresses.clone());
+    let mut validator_rc = setup_raptorcast_service(
+        validator_keypair,
+        validator_dp,
+        known_addresses.clone(),
+        name_records.clone(),
+    );
     validator_rc.set_dedicated_full_nodes(vec![full_node1_id, full_node2_id]);
 
-    let mut full_node1_rc =
-        setup_raptorcast_service(full_node1_keypair, full_node1_dp, known_addresses.clone());
+    let mut full_node1_rc = setup_raptorcast_service(
+        full_node1_keypair,
+        full_node1_dp,
+        known_addresses.clone(),
+        name_records.clone(),
+    );
 
-    let mut full_node2_rc =
-        setup_raptorcast_service(full_node2_keypair, full_node2_dp, known_addresses.clone());
+    let mut full_node2_rc = setup_raptorcast_service(
+        full_node2_keypair,
+        full_node2_dp,
+        known_addresses.clone(),
+        name_records,
+    );
 
     // 4. Set validator set for all nodes
     for service in [&mut validator_rc, &mut full_node1_rc, &mut full_node2_rc] {
@@ -577,7 +654,8 @@ async fn delete_expired_groups() {
     let node_id = NodeId::new(node_keypair.pubkey());
 
     let dataplane = create_dataplane_for_tests(false);
-    let mut raptorcast = setup_raptorcast_service(node_keypair, dataplane, HashMap::new());
+    let mut raptorcast =
+        setup_raptorcast_service(node_keypair, dataplane, HashMap::new(), HashMap::new());
     raptorcast.exec(vec![RouterCommand::UpdateCurrentRound(Epoch(1), Round(1))]);
 
     // setup
@@ -638,24 +716,34 @@ async fn test_priority_messages() {
     let tx_dataplane = create_dataplane_for_tests(false);
     let rx_dataplane = create_dataplane_for_tests(false);
 
-    let known_addresses = HashMap::from([
-        (tx_nodeid, tx_dataplane.non_auth_addr),
-        (rx_nodeid, rx_dataplane.non_auth_addr),
+    let (known_addresses, name_records) = test_peer_maps([
+        (tx_nodeid, tx_key.as_ref(), tx_dataplane.non_auth_addr),
+        (rx_nodeid, rx_key.as_ref(), rx_dataplane.non_auth_addr),
     ]);
 
-    let mut tx_rc = new_defaulted_raptorcast_for_tests::<
+    let mut tx_rc = new_defaulted_raptorcast_for_tests_with_name_records::<
         SignatureType,
         MockMessage,
         MockMessage,
         MockEvent<PubKeyType>,
-    >(tx_dataplane, known_addresses.clone(), tx_key.clone());
+    >(
+        tx_dataplane,
+        known_addresses.clone(),
+        name_records.clone(),
+        tx_key.clone(),
+    );
 
-    let mut rx_rc = new_defaulted_raptorcast_for_tests::<
+    let mut rx_rc = new_defaulted_raptorcast_for_tests_with_name_records::<
         SignatureType,
         MockMessage,
         MockMessage,
         MockEvent<PubKeyType>,
-    >(rx_dataplane, known_addresses.clone(), rx_key.clone());
+    >(
+        rx_dataplane,
+        known_addresses.clone(),
+        name_records,
+        rx_key.clone(),
+    );
 
     let epoch = Epoch(0);
     let validator_set = vec![(tx_nodeid, Stake::ONE), (rx_nodeid, Stake::ONE)];
@@ -756,16 +844,25 @@ async fn test_raptorcast_forwarding_priority() {
     let validator2_dataplane = create_dataplane_for_tests(false);
     let validator_fullnode_dataplane = create_dataplane_for_tests(false);
 
-    let known_addresses = HashMap::from([
-        (validator1_nodeid, validator1_dataplane.non_auth_addr),
-        (validator2_nodeid, validator2_dataplane.non_auth_addr),
+    let (known_addresses, name_records) = test_peer_maps([
+        (
+            validator1_nodeid,
+            validator1_key.as_ref(),
+            validator1_dataplane.non_auth_addr,
+        ),
+        (
+            validator2_nodeid,
+            validator2_key.as_ref(),
+            validator2_dataplane.non_auth_addr,
+        ),
         (
             validator_fullnode_nodeid,
+            validator_fullnode_key.as_ref(),
             validator_fullnode_dataplane.non_auth_addr,
         ),
     ]);
 
-    let mut validator1_rc = new_defaulted_raptorcast_for_tests::<
+    let mut validator1_rc = new_defaulted_raptorcast_for_tests_with_name_records::<
         SignatureType,
         MockMessage,
         MockMessage,
@@ -773,10 +870,11 @@ async fn test_raptorcast_forwarding_priority() {
     >(
         validator1_dataplane,
         known_addresses.clone(),
+        name_records.clone(),
         validator1_key.clone(),
     );
 
-    let mut validator2_rc = new_defaulted_raptorcast_for_tests::<
+    let mut validator2_rc = new_defaulted_raptorcast_for_tests_with_name_records::<
         SignatureType,
         MockMessage,
         MockMessage,
@@ -784,10 +882,11 @@ async fn test_raptorcast_forwarding_priority() {
     >(
         validator2_dataplane,
         known_addresses.clone(),
+        name_records.clone(),
         validator2_key.clone(),
     );
 
-    let mut validator_fullnode_rc = new_defaulted_raptorcast_for_tests::<
+    let mut validator_fullnode_rc = new_defaulted_raptorcast_for_tests_with_name_records::<
         SignatureType,
         MockMessage,
         MockMessage,
@@ -795,6 +894,7 @@ async fn test_raptorcast_forwarding_priority() {
     >(
         validator_fullnode_dataplane,
         known_addresses.clone(),
+        name_records,
         validator_fullnode_key.clone(),
     );
 

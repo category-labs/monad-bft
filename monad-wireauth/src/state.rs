@@ -184,6 +184,22 @@ impl State {
             .is_some()
     }
 
+    pub fn has_initiator_session_by_public_key(&self, public_key: &monad_secp::PubKey) -> bool {
+        self.initiated_session_by_peer.contains_key(public_key)
+    }
+
+    pub fn has_initiator_session_by_socket_and_public_key(
+        &self,
+        socket_addr: &SocketAddr,
+        public_key: &monad_secp::PubKey,
+    ) -> bool {
+        self.initiated_session_by_peer
+            .get(public_key)
+            .and_then(|session_id| self.initiating_sessions.get(session_id))
+            .map(|initiator| initiator.remote_addr == *socket_addr)
+            .unwrap_or(false)
+    }
+
     pub fn has_transport_by_socket(&self, socket_addr: &SocketAddr) -> bool {
         self.last_established_session_by_socket
             .get(socket_addr)
