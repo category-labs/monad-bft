@@ -1636,6 +1636,72 @@ where
         }
     }
 
+    fn try_write_buffered(&mut self, item: &UdpMessage<CertificateSignaturePubKey<ST>>) -> bool {
+        let addrs = if let Some(target_name_record) = self.target_name_record {
+            if item.recipient.node_id() != target_name_record.target {
+                None
+            } else {
+                Some((
+                    target_name_record
+                        .name_record
+                        .udp_socket()
+                        .map(SocketAddr::V4),
+                    SocketAddr::V4(target_name_record.name_record.authenticated_udp_socket()),
+                ))
+            }
+        } else {
+            self.peer_disc_driver.lock().ok().and_then(|pd| {
+                pd.get_name_record(item.recipient.node_id()).map(|record| {
+                    (
+                        record.name_record.udp_socket().map(SocketAddr::V4),
+                        SocketAddr::V4(record.name_record.authenticated_udp_socket()),
+                    )
+                })
+            })
+        };
+
+        let Some((udp_addr, auth_addr)) = addrs else {
+            return false;
+        };
+
+        if self.dual_socket.has_non_authenticated_socket() && udp_addr.is_some() {
+            return false;
+        }
+
+        let public_key = item.recipient.node_id().pubkey();
+
+        if !self.dual_socket.has_any_session_by_public_key(&public_key) {
+            if let Err(error) =
+                self.dual_socket
+                    .connect(&public_key, auth_addr, DEFAULT_RETRY_ATTEMPTS)
+            {
+                warn!(
+                    target = ?item.recipient.node_id(),
+                    auth_addr = ?auth_addr,
+                    ?error,
+                    "failed to initiate authenticated UDP session"
+                );
+                return false;
+            }
+            self.dual_socket.flush();
+        }
+
+        match self.dual_socket.write_buffered_with_priority(
+            &public_key,
+            item.payload.clone(),
+            self.priority,
+        ) {
+            Ok(()) => true,
+            Err(()) => {
+                warn!(
+                    target = ?item.recipient.node_id(),
+                    "failed to buffer authenticated UDP packet"
+                );
+                false
+            }
+        }
+    }
+
     fn lookup_addr(
         &self,
         recipient: &Recipient<CertificateSignaturePubKey<ST>>,
@@ -1709,6 +1775,10 @@ where
     PD: PeerDiscoveryAlgo<SignatureType = ST>,
 {
     fn push(&mut self, item: UdpMessage<CertificateSignaturePubKey<ST>>) {
+        if self.try_write_buffered(&item) {
+            return;
+        }
+
         let Some(dest) = self.lookup_addr(&item.recipient) else {
             return;
         };

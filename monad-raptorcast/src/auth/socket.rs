@@ -193,6 +193,18 @@ where
         monad_dataplane::udp::segment_size_for_mtu(mtu) - AP::HEADER_SIZE
     }
 
+    /// Returns `Err(())` if the message was not written or buffered.
+    #[allow(clippy::result_unit_err)]
+    pub fn write_buffered_with_priority(
+        &mut self,
+        public_key: &AP::PublicKey,
+        plaintext: Bytes,
+        priority: UdpPriority,
+    ) -> Result<(), ()> {
+        self.authenticated
+            .write_with_buffering(public_key, plaintext, priority)
+    }
+
     pub fn metrics(&self) -> ExecutorMetricsChain<'_> {
         ExecutorMetricsChain::default()
             .push(self.metrics.as_ref())
