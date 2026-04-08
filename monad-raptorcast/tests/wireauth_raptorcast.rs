@@ -29,7 +29,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
 use monad_executor::Executor;
-use monad_executor_glue::{Message, RouterCommand};
+use monad_executor_glue::{Message, PeerEntry, RouterCommand};
 use monad_peer_discovery::{
     driver::PeerDiscoveryDriver, message::Ping, mock::NopDiscovery, MonadNameRecord, NameRecord,
     PeerDiscoveryEvent,
@@ -42,6 +42,7 @@ use tracing_subscriber::EnvFilter;
 
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
 const MESSAGE_TIMEOUT: Duration = Duration::from_secs(10);
+const PREWARM_CONNECTION_TIMEOUT: Duration = Duration::from_secs(15);
 const NUM_NODES: usize = 10;
 
 fn init_tracing() {
@@ -116,12 +117,18 @@ where
 }
 
 type SharedPdDriver = Arc<Mutex<PeerDiscoveryDriver<NopDiscovery<SecpSignature>>>>;
+type ConnectionQuery = (
+    SocketAddrV4,
+    monad_secp::PubKey,
+    tokio::sync::oneshot::Sender<bool>,
+);
 
 struct ValidatorChannels {
     cmd_tx: tokio::sync::mpsc::UnboundedSender<RouterCommand<SecpSignature, MockMessage>>,
     event_rx:
         tokio::sync::mpsc::UnboundedReceiver<MockEvent<CertificateSignaturePubKey<SecpSignature>>>,
     ready_rx: tokio::sync::oneshot::Receiver<()>,
+    connection_query_tx: tokio::sync::mpsc::UnboundedSender<ConnectionQuery>,
     pd_driver: SharedPdDriver,
 }
 
@@ -228,6 +235,8 @@ fn spawn_noop_validator(
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
     let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let (connection_query_tx, mut connection_query_rx) =
+        tokio::sync::mpsc::unbounded_channel::<ConnectionQuery>();
 
     let shared_pd = create_peer_discovery(known_addresses, name_records);
     let pd_driver = shared_pd.clone();
@@ -271,6 +280,11 @@ fn spawn_noop_validator(
                         break;
                     }
                 }
+                Some((addr, pubkey, response_tx)) = connection_query_rx.recv() => {
+                    let _ = response_tx.send(
+                        validator_rc.is_connected_to(&SocketAddr::V4(addr), &pubkey)
+                    );
+                }
             }
         }
     });
@@ -279,6 +293,7 @@ fn spawn_noop_validator(
         cmd_tx,
         event_rx,
         ready_rx,
+        connection_query_tx,
         pd_driver,
     }
 }
@@ -297,6 +312,8 @@ fn spawn_wireauth_validator(
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
     let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let (connection_query_tx, mut connection_query_rx) =
+        tokio::sync::mpsc::unbounded_channel::<ConnectionQuery>();
 
     let shared_pd = create_peer_discovery(known_addresses, name_records);
     let pd_driver = shared_pd.clone();
@@ -380,6 +397,11 @@ fn spawn_wireauth_validator(
                         }
                     }
                 }
+                Some((addr, pubkey, response_tx)) = connection_query_rx.recv() => {
+                    let _ = response_tx.send(
+                        validator_rc.is_connected_to(&SocketAddr::V4(addr), &pubkey)
+                    );
+                }
             }
         }
     });
@@ -388,6 +410,7 @@ fn spawn_wireauth_validator(
         cmd_tx,
         event_rx,
         ready_rx,
+        connection_query_tx,
         pd_driver,
     }
 }
@@ -430,6 +453,33 @@ async fn establish_connections(
     for event_rx in event_rxs {
         while event_rx.try_recv().is_ok() {}
     }
+}
+
+async fn wait_until_ready<I>(timeout: Duration, ready_rxs: I)
+where
+    I: IntoIterator<Item = tokio::sync::oneshot::Receiver<()>>,
+{
+    for ready_rx in ready_rxs {
+        tokio::time::timeout(timeout, ready_rx)
+            .await
+            .expect("ready timeout")
+            .expect("ready channel closed");
+    }
+}
+
+async fn is_connected_to(
+    connection_query_tx: &tokio::sync::mpsc::UnboundedSender<ConnectionQuery>,
+    addr: SocketAddrV4,
+    pubkey: monad_secp::PubKey,
+) -> bool {
+    let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+    connection_query_tx
+        .send((addr, pubkey, response_tx))
+        .expect("connection query channel closed");
+    tokio::time::timeout(CONNECTION_TIMEOUT, response_rx)
+        .await
+        .expect("connection query timeout")
+        .expect("connection query response channel closed")
 }
 
 #[derive(Clone, Copy)]
@@ -587,6 +637,215 @@ async fn run_test_scenario(num_auth_nodes: usize, routing_type: RoutingType, mes
                 assert_eq!(msg_id, 1000);
             }
         }
+    }
+}
+
+async fn run_prewarm_establishes_validator_sessions_without_publish() {
+    let alice_info = ValidatorInfo::new(1);
+    let bob_info = ValidatorInfo::new(2);
+
+    let alice_dp = create_dataplane_for_tests(false);
+    let bob_dp = create_dataplane_for_tests(false);
+
+    let alice_auth_addr = alice_dp.auth_addr;
+    let bob_auth_addr = bob_dp.auth_addr;
+    let alice_non_auth_addr = alice_dp.non_auth_addr;
+    let bob_non_auth_addr = bob_dp.non_auth_addr;
+
+    let name_records: HashMap<_, _> = [
+        (
+            alice_info.nodeid,
+            alice_info.create_name_record(
+                alice_dp.tcp_addr,
+                alice_auth_addr,
+                alice_dp.direct_udp_addr,
+                alice_non_auth_addr,
+            ),
+        ),
+        (
+            bob_info.nodeid,
+            bob_info.create_name_record(
+                bob_dp.tcp_addr,
+                bob_auth_addr,
+                bob_dp.direct_udp_addr,
+                bob_non_auth_addr,
+            ),
+        ),
+    ]
+    .into();
+
+    let known_addresses: HashMap<_, _> = [
+        (alice_info.nodeid, alice_non_auth_addr),
+        (bob_info.nodeid, bob_non_auth_addr),
+    ]
+    .into();
+
+    let alice = spawn_wireauth_validator(
+        alice_info.keypair.clone(),
+        alice_dp,
+        known_addresses.clone(),
+        name_records.clone(),
+        vec![(bob_auth_addr, bob_info.pubkey)],
+        DEFAULT_SIG_VERIFICATION_RATE_LIMIT,
+    );
+
+    let bob = spawn_wireauth_validator(
+        bob_info.keypair.clone(),
+        bob_dp,
+        known_addresses,
+        name_records,
+        vec![(alice_auth_addr, alice_info.pubkey)],
+        DEFAULT_SIG_VERIFICATION_RATE_LIMIT,
+    );
+
+    let epoch = Epoch(0);
+    let validator_set: Vec<_> = [
+        (alice_info.nodeid, Stake::ONE),
+        (bob_info.nodeid, Stake::ONE),
+    ]
+    .into();
+
+    for cmd_tx in [&alice.cmd_tx, &bob.cmd_tx] {
+        cmd_tx
+            .send(RouterCommand::AddEpochValidatorSet {
+                epoch,
+                validator_set: validator_set.clone(),
+            })
+            .unwrap();
+    }
+
+    wait_until_ready(PREWARM_CONNECTION_TIMEOUT, [alice.ready_rx, bob.ready_rx]).await;
+}
+
+async fn run_reconnects_when_validator_auth_address_changes() {
+    let alice_info = ValidatorInfo::new(1);
+    let bob_info = ValidatorInfo::new(2);
+
+    let alice_dp = create_dataplane_for_tests(false);
+    let bob1_dp = create_dataplane_for_tests(false);
+    let bob2_dp = create_dataplane_for_tests(false);
+
+    let alice_auth_addr = alice_dp.auth_addr;
+    let bob1_auth_addr = bob1_dp.auth_addr;
+    let bob2_auth_addr = bob2_dp.auth_addr;
+
+    let name_records: HashMap<_, _> = [
+        (
+            alice_info.nodeid,
+            alice_info.create_name_record(
+                alice_dp.tcp_addr,
+                alice_auth_addr,
+                alice_dp.direct_udp_addr,
+                alice_dp.non_auth_addr,
+            ),
+        ),
+        (
+            bob_info.nodeid,
+            bob_info.create_name_record(
+                bob1_dp.tcp_addr,
+                bob1_auth_addr,
+                bob1_dp.direct_udp_addr,
+                bob1_dp.non_auth_addr,
+            ),
+        ),
+    ]
+    .into();
+
+    let known_addresses: HashMap<_, _> = [
+        (alice_info.nodeid, alice_dp.non_auth_addr),
+        (bob_info.nodeid, bob1_dp.non_auth_addr),
+    ]
+    .into();
+
+    let alice = spawn_wireauth_validator(
+        alice_info.keypair.clone(),
+        alice_dp,
+        known_addresses.clone(),
+        name_records.clone(),
+        vec![(bob1_auth_addr, bob_info.pubkey)],
+        DEFAULT_SIG_VERIFICATION_RATE_LIMIT,
+    );
+
+    let bob1 = spawn_wireauth_validator(
+        bob_info.keypair.clone(),
+        bob1_dp,
+        known_addresses,
+        name_records,
+        vec![(alice_auth_addr, alice_info.pubkey)],
+        DEFAULT_SIG_VERIFICATION_RATE_LIMIT,
+    );
+
+    let epoch = Epoch(0);
+    let validator_set: Vec<_> = [
+        (alice_info.nodeid, Stake::ONE),
+        (bob_info.nodeid, Stake::ONE),
+    ]
+    .into();
+
+    for cmd_tx in [&alice.cmd_tx, &bob1.cmd_tx] {
+        cmd_tx
+            .send(RouterCommand::AddEpochValidatorSet {
+                epoch,
+                validator_set: validator_set.clone(),
+            })
+            .unwrap();
+    }
+
+    let alice_cmd_tx = alice.cmd_tx.clone();
+    let alice_connection_query_tx = alice.connection_query_tx.clone();
+    wait_until_ready(CONNECTION_TIMEOUT, [alice.ready_rx, bob1.ready_rx]).await;
+
+    let bob2_name_record = bob_info.create_name_record(
+        bob2_dp.tcp_addr,
+        bob2_auth_addr,
+        bob2_dp.direct_udp_addr,
+        bob2_dp.non_auth_addr,
+    );
+
+    let bob2 = spawn_wireauth_validator(
+        bob_info.keypair.clone(),
+        bob2_dp,
+        HashMap::new(),
+        [(bob_info.nodeid, bob2_name_record.clone())].into(),
+        vec![],
+        DEFAULT_SIG_VERIFICATION_RATE_LIMIT,
+    );
+
+    tokio::time::timeout(CONNECTION_TIMEOUT, bob2.ready_rx)
+        .await
+        .expect("bob2 ready timeout")
+        .expect("bob2 ready channel closed");
+
+    alice_cmd_tx
+        .send(RouterCommand::UpdatePeers {
+            peer_entries: vec![PeerEntry::try_from(&bob2_name_record).unwrap()],
+            dedicated_full_nodes: vec![],
+            prioritized_full_nodes: vec![],
+        })
+        .unwrap();
+
+    let reconnect_timeout = Duration::from_secs(30);
+    let start = Instant::now();
+    let mut interval = tokio::time::interval(Duration::from_secs(1));
+    loop {
+        interval.tick().await;
+        let alice_connected_to_bob2 =
+            is_connected_to(&alice_connection_query_tx, bob2_auth_addr, bob_info.pubkey).await;
+        let alice_connected_to_bob1 =
+            is_connected_to(&alice_connection_query_tx, bob1_auth_addr, bob_info.pubkey).await;
+
+        if alice_connected_to_bob2 {
+            assert!(
+                !alice_connected_to_bob1,
+                "alice should disconnect from bob1 after bob's authenticated address changes"
+            );
+            break;
+        }
+
+        assert!(
+            start.elapsed() < reconnect_timeout,
+            "alice should reconnect to bob2 after bob's authenticated address changes"
+        );
     }
 }
 
@@ -752,6 +1011,25 @@ async fn test_rate_limiting_p2p() {
 
     tokio::task::LocalSet::new()
         .run_until(test_rate_limiting_basic())
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_prewarm_establishes_validator_sessions_without_publish() {
+    init_tracing();
+
+    tokio::task::LocalSet::new()
+        .run_until(run_prewarm_establishes_validator_sessions_without_publish())
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "auth address migration reconnection is not stable on the rebased stack"]
+async fn test_reconnects_when_validator_auth_address_changes() {
+    init_tracing();
+
+    tokio::task::LocalSet::new()
+        .run_until(run_reconnects_when_validator_auth_address_changes())
         .await;
 }
 

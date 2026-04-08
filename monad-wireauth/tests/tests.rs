@@ -13,11 +13,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{convert::TryFrom, net::SocketAddr, time::Duration};
+use std::{collections::BTreeSet, convert::TryFrom, net::SocketAddr, time::Duration};
 
 use monad_wireauth::{
     messages::{CookieReply, DataPacketHeader, HandshakeInitiation, HandshakeResponse, Packet},
-    Config, Context, TestContext, API, DEFAULT_METRICS, DEFAULT_RETRY_ATTEMPTS,
+    Config, Context, TestContext, API, DEFAULT_METRICS, DEFAULT_RETRY_ATTEMPTS, RETRY_ALWAYS,
 };
 use secp256k1::rand::rng;
 use tracing_subscriber::EnvFilter;
@@ -180,6 +180,64 @@ fn test_retries() {
     let packet3 = encrypt(&mut peer1, &peer2_pubkey, &mut plaintext3);
     let decrypted3 = decrypt(&mut peer2, &packet3, peer1_addr);
     assert_eq!(decrypted3, b"message3");
+}
+
+#[test]
+fn test_tick_eventually_triggers_all_expired_timers() {
+    init_tracing();
+
+    const NUM_SESSIONS: usize = 5;
+    const MAX_EXPIRED_TIMERS_PER_TICK: usize = 2;
+
+    let config = Config {
+        max_expired_timers_per_tick: MAX_EXPIRED_TIMERS_PER_TICK,
+        max_initiated_sessions: NUM_SESSIONS,
+        session_timeout: Duration::from_secs(10),
+        session_timeout_jitter: Duration::ZERO,
+        ..Config::default()
+    };
+
+    let mut rng = rng();
+    let keypair = monad_secp::KeyPair::generate(&mut rng);
+    let context = TestContext::new();
+    let mut peer = API::new(DEFAULT_METRICS, config.clone(), keypair, context.clone());
+
+    let mut expected_retry_addrs = BTreeSet::new();
+    for i in 0..NUM_SESSIONS {
+        let remote_keypair = monad_secp::KeyPair::generate(&mut rng);
+        let remote_pubkey = remote_keypair.pubkey();
+        let remote_addr: SocketAddr = format!("127.0.0.1:8{i:03}").parse().unwrap();
+        peer.connect(remote_pubkey, remote_addr, RETRY_ALWAYS)
+            .unwrap();
+        expected_retry_addrs.insert(remote_addr);
+    }
+
+    for _ in 0..NUM_SESSIONS {
+        let _ = collect::<HandshakeInitiation>(&mut peer);
+    }
+    assert!(peer.next_packet().is_none());
+
+    context.advance_time(config.session_timeout + Duration::from_secs(1));
+
+    let mut observed_retry_addrs = BTreeSet::new();
+    let mut remaining = NUM_SESSIONS;
+    while remaining > 0 {
+        peer.tick();
+
+        let mut triggered_this_tick = 0;
+        while let Some((addr, packet)) = peer.next_packet() {
+            let bytes = packet.to_vec();
+            let _ = <&HandshakeInitiation>::try_from(&bytes[..]).unwrap();
+            observed_retry_addrs.insert(addr);
+            triggered_this_tick += 1;
+        }
+
+        let expected_this_tick = remaining.min(MAX_EXPIRED_TIMERS_PER_TICK);
+        assert_eq!(triggered_this_tick, expected_this_tick);
+        remaining -= triggered_this_tick;
+    }
+
+    assert_eq!(observed_retry_addrs, expected_retry_addrs);
 }
 
 #[test]

@@ -98,7 +98,7 @@ impl Default for Config {
             max_initiated_sessions: 1000,
             max_buffered_bytes_per_session: 128 * 1024,
             gc_idle_timeout: Duration::from_secs(120),
-            max_expired_timers_per_tick: 10_000,
+            max_expired_timers_per_tick: 20,
         }
     }
 }
