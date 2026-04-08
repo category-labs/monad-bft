@@ -890,6 +890,20 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
         self.state.has_any_session_by_public_key(public_key)
     }
 
+    /// Checks if there is an initiator session for the given public key.
+    pub fn has_initiator_session_by_public_key(&self, public_key: &monad_secp::PubKey) -> bool {
+        self.state.has_initiator_session_by_public_key(public_key)
+    }
+
+    pub fn has_initiator_session_by_socket_and_public_key(
+        &self,
+        socket_addr: &SocketAddr,
+        public_key: &monad_secp::PubKey,
+    ) -> bool {
+        self.state
+            .has_initiator_session_by_socket_and_public_key(socket_addr, public_key)
+    }
+
     pub fn is_connected_socket_and_public_key(
         &self,
         socket_addr: &SocketAddr,
