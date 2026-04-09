@@ -40,8 +40,9 @@ use crate::{
         eth_call_handler::EthCallHandlerConfig, get_block_key_from_tag,
         get_block_key_from_tag_or_hash, ChainState,
     },
-    handlers::eth::call::{
-        check_contract_creation_size, fill_gas_params, CallRequest, GasPriceDetails,
+    handlers::{
+        eth::call::{check_contract_creation_size, fill_gas_params, CallRequest, GasPriceDetails},
+        parse_ethcall_chain_id,
     },
     types::{
         eth_json::{
@@ -396,13 +397,14 @@ pub async fn monad_eth_estimateGas<T: Triedb>(
 
     let sender = tx.from.unwrap_or_default();
     let tx_chain_id = tx.chain_id.expect("chain id must be populated").to::<u64>();
+    let ethcall_chain_id = parse_ethcall_chain_id(tx_chain_id)?;
     let protocol_gas_limit = header.header.gas_limit;
     let (block_number, block_id) = block_key_to_parts(block_key);
 
     let eth_call_fn = async |transaction: &TxEnvelope| {
         monad_ethcall::eth_call(
             EthCallRequest {
-                chain_id: tx_chain_id,
+                chain_id: ethcall_chain_id,
                 transaction,
                 block_header: &header.header,
                 sender,
@@ -471,6 +473,7 @@ pub async fn monad_eth_fillTransaction<T: Triedb>(
     chain_id: u64,
     params: MonadEthFillTransactionParams,
 ) -> JsonRpcResult<FillTransactionResult> {
+    let ethcall_chain_id = parse_ethcall_chain_id(chain_id)?;
     let from = params.tx.from.unwrap_or_default();
     let state_override = fill_transaction_state_overrides(from);
 
@@ -479,7 +482,7 @@ pub async fn monad_eth_fillTransaction<T: Triedb>(
             let (block_number, block_id) = block_key_to_parts(block_key);
             monad_ethcall::eth_call(
                 EthCallRequest {
-                    chain_id,
+                    chain_id: ethcall_chain_id,
                     transaction,
                     block_header: header,
                     sender: from,

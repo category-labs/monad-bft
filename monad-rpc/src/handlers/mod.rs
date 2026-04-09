@@ -65,8 +65,8 @@ use crate::{
     types::{
         eth_json::serialize_result,
         jsonrpc::{
-            serialize_with_size_limit, JsonRpcError, JsonRpcResultExt, Request, RequestId,
-            RequestParams, RequestWrapper, Response, ResponseWrapper,
+            serialize_with_size_limit, JsonRpcError, JsonRpcResult, JsonRpcResultExt, Request,
+            RequestId, RequestParams, RequestWrapper, Response, ResponseWrapper,
         },
     },
 };
@@ -77,6 +77,25 @@ pub mod eth;
 mod meta;
 pub mod resources;
 mod txpool;
+
+use monad_chain_config::{
+    ETHEREUM_MAINNET_CHAIN_ID, MONAD_DEVNET_CHAIN_ID, MONAD_MAINNET_CHAIN_ID,
+    MONAD_TESTNET_CHAIN_ID,
+};
+use monad_ethcall::ChainId;
+
+pub(crate) fn parse_ethcall_chain_id(chain_id: u64) -> JsonRpcResult<ChainId> {
+    match chain_id {
+        ETHEREUM_MAINNET_CHAIN_ID => Ok(ChainId::EthereumMainnet),
+        MONAD_MAINNET_CHAIN_ID => Ok(ChainId::MonadMainnet),
+        MONAD_TESTNET_CHAIN_ID => Ok(ChainId::MonadTestnet),
+        MONAD_DEVNET_CHAIN_ID => Ok(ChainId::MonadDevnet),
+        other => Err(JsonRpcError::eth_call_error(
+            "unsupported chain id".to_string(),
+            Some(other.to_string()),
+        )),
+    }
+}
 
 pub async fn rpc_handler(
     root_span: RootSpan,

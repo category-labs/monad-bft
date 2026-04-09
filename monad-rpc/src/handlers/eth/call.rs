@@ -40,7 +40,10 @@ use crate::{
         eth_call_handler::{EthCallHandlerConfig, EthCallStatsTracker},
         get_block_key_from_tag_or_hash, ChainState,
     },
-    handlers::debug::{decode_call_frame, TracerObject},
+    handlers::{
+        debug::{decode_call_frame, TracerObject},
+        parse_ethcall_chain_id,
+    },
     types::{
         eth_json::BlockTagOrHash,
         ethhex,
@@ -593,6 +596,7 @@ pub async fn prepare_eth_call<T: Triedb + TriedbPath>(
 
     let sender = tx.from.unwrap_or_default();
     let tx_chain_id = tx.chain_id.expect("chain_id was set above").to::<u64>();
+    let ethcall_chain_id = parse_ethcall_chain_id(tx_chain_id)?;
     let txn: TxEnvelope = tx.try_into()?;
     let (block_number, block_id) = match block_key {
         BlockKey::Finalized(FinalizedBlockKey(SeqNum(n))) => (n, None),
@@ -603,7 +607,7 @@ pub async fn prepare_eth_call<T: Triedb + TriedbPath>(
 
     match eth_call(
         EthCallRequest {
-            chain_id: tx_chain_id,
+            chain_id: ethcall_chain_id,
             transaction: &txn,
             block_header: &header.header,
             sender,

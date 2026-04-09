@@ -26,10 +26,6 @@ use alloy_rlp::Encodable;
 use alloy_sol_types::decode_revert_reason;
 use bindings::monad_executor_result;
 use futures::channel::oneshot::{channel, Sender};
-use monad_chain_config::{
-    ETHEREUM_MAINNET_CHAIN_ID, MONAD_DEVNET_CHAIN_ID, MONAD_MAINNET_CHAIN_ID,
-    MONAD_TESTNET_CHAIN_ID,
-};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
@@ -39,6 +35,25 @@ pub mod bindings {
 }
 
 pub use bindings::monad_executor_pool_config as PoolConfig;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ChainId {
+    EthereumMainnet,
+    MonadMainnet,
+    MonadTestnet,
+    MonadDevnet,
+}
+
+impl ChainId {
+    fn to_ffi_chain_config(self) -> bindings::monad_chain_config {
+        match self {
+            Self::EthereumMainnet => bindings::monad_chain_config_CHAIN_CONFIG_ETHEREUM_MAINNET,
+            Self::MonadMainnet => bindings::monad_chain_config_CHAIN_CONFIG_MONAD_MAINNET,
+            Self::MonadTestnet => bindings::monad_chain_config_CHAIN_CONFIG_MONAD_TESTNET,
+            Self::MonadDevnet => bindings::monad_chain_config_CHAIN_CONFIG_MONAD_DEVNET,
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct EthCallExecutor {
@@ -194,7 +209,7 @@ pub unsafe extern "C" fn eth_call_submit_callback(
 pub type StateOverrideSet = HashMap<Address, StateOverrideObject>;
 
 pub struct EthCallRequest<'a> {
-    pub chain_id: u64,
+    pub chain_id: ChainId,
     pub transaction: &'a TxEnvelope,
     pub block_header: &'a Header,
     pub sender: Address,
@@ -310,22 +325,7 @@ pub async fn eth_call(
         }
     }
 
-    let chain_config = match chain_id {
-        ETHEREUM_MAINNET_CHAIN_ID => bindings::monad_chain_config_CHAIN_CONFIG_ETHEREUM_MAINNET,
-        MONAD_DEVNET_CHAIN_ID => bindings::monad_chain_config_CHAIN_CONFIG_MONAD_DEVNET,
-        MONAD_TESTNET_CHAIN_ID => bindings::monad_chain_config_CHAIN_CONFIG_MONAD_TESTNET,
-        MONAD_MAINNET_CHAIN_ID => bindings::monad_chain_config_CHAIN_CONFIG_MONAD_MAINNET,
-        _ => {
-            unsafe { bindings::monad_state_override_destroy(override_ctx) };
-
-            return CallResult::Failure(FailureCallResult {
-                error_code: EthCallResult::OtherError,
-                message: "unsupported chain id".to_string(),
-                data: Some(chain_id.to_string()),
-                ..Default::default()
-            });
-        }
-    };
+    let chain_config = chain_id.to_ffi_chain_config();
 
     let block_id = block_id.unwrap_or([0_u8; 32]);
     let rlp_encoded_block_id = alloy_rlp::encode(block_id);
@@ -511,7 +511,7 @@ pub fn decode_revert_message(output_data: &[u8]) -> Option<String> {
 }
 
 pub async fn eth_trace_block_or_transaction(
-    chain_id: u64,
+    chain_id: ChainId,
     block_header: Header,
     block_number: u64,
     block_id: Option<[u8; 32]>,
@@ -521,20 +521,7 @@ pub async fn eth_trace_block_or_transaction(
     eth_call_executor: &EthCallExecutor,
     tracer: MonadTracer,
 ) -> CallResult {
-    let chain_config = match chain_id {
-        ETHEREUM_MAINNET_CHAIN_ID => bindings::monad_chain_config_CHAIN_CONFIG_ETHEREUM_MAINNET,
-        MONAD_DEVNET_CHAIN_ID => bindings::monad_chain_config_CHAIN_CONFIG_MONAD_DEVNET,
-        MONAD_TESTNET_CHAIN_ID => bindings::monad_chain_config_CHAIN_CONFIG_MONAD_TESTNET,
-        MONAD_MAINNET_CHAIN_ID => bindings::monad_chain_config_CHAIN_CONFIG_MONAD_MAINNET,
-        _ => {
-            return CallResult::Failure(FailureCallResult {
-                error_code: EthCallResult::OtherError,
-                message: "unsupported chain id".to_string(),
-                data: Some(chain_id.to_string()),
-                ..Default::default()
-            });
-        }
-    };
+    let chain_config = chain_id.to_ffi_chain_config();
 
     let mut rlp_encoded_block_header = vec![];
     block_header.encode(&mut rlp_encoded_block_header);
