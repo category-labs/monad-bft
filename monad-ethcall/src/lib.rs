@@ -193,19 +193,34 @@ pub unsafe extern "C" fn eth_call_submit_callback(
 
 pub type StateOverrideSet = HashMap<Address, StateOverrideObject>;
 
+pub struct EthCallRequest<'a> {
+    pub chain_id: u64,
+    pub transaction: &'a TxEnvelope,
+    pub block_header: &'a Header,
+    pub sender: Address,
+    pub block_number: u64,
+    pub block_id: Option<[u8; 32]>,
+    pub state_override_set: &'a StateOverrideSet,
+    pub tracer: MonadTracer,
+    pub gas_specified: bool,
+}
+
 pub async fn eth_call(
-    chain_id: u64,
-    transaction: TxEnvelope,
-    block_header: Header,
-    sender: Address,
-    block_number: u64,
-    block_id: Option<[u8; 32]>,
+    request: EthCallRequest<'_>,
     eth_call_executor: &EthCallExecutor,
-    state_override_set: &StateOverrideSet,
-    tracer: MonadTracer,
-    gas_specified: bool,
 ) -> CallResult {
-    // upper bound gas limit of transaction to block gas limit to prevent abuse of eth_call
+    let EthCallRequest {
+        chain_id,
+        transaction,
+        block_header,
+        sender,
+        block_number,
+        block_id,
+        state_override_set,
+        tracer,
+        gas_specified,
+    } = request;
+
     if transaction.gas_limit() > block_header.gas_limit {
         return CallResult::Failure(FailureCallResult {
             error_code: EthCallResult::OtherError,

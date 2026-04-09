@@ -23,7 +23,9 @@ use alloy_eips::eip7702::SignedAuthorization;
 use alloy_primitives::{Address, Bytes, Signature, TxKind, Uint, B256, U256, U64, U8};
 use alloy_rpc_types::{AccessList, AccessListItem, AccessListResult};
 use monad_chain_config::execution_revision::MonadExecutionRevision;
-use monad_ethcall::{eth_call, CallResult, EthCallExecutor, MonadTracer, StateOverrideSet};
+use monad_ethcall::{
+    eth_call, CallResult, EthCallExecutor, EthCallRequest, MonadTracer, StateOverrideSet,
+};
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{
     BlockKey, FinalizedBlockKey, ProposedBlockKey, Triedb, TriedbPath,
@@ -598,17 +600,20 @@ pub async fn prepare_eth_call<T: Triedb + TriedbPath>(
     };
 
     let header_gas_limit = header.header.gas_limit;
+
     match eth_call(
-        tx_chain_id,
-        txn,
-        header.header,
-        sender,
-        block_number,
-        block_id,
+        EthCallRequest {
+            chain_id: tx_chain_id,
+            transaction: &txn,
+            block_header: &header.header,
+            sender,
+            block_number,
+            block_id,
+            state_override_set: &state_overrides,
+            tracer,
+            gas_specified,
+        },
         eth_call_executor,
-        &state_overrides,
-        tracer,
-        gas_specified,
     )
     .await
     {
