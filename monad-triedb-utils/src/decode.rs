@@ -15,7 +15,7 @@
 
 use alloy_primitives::U256;
 use alloy_rlp::Decodable;
-use monad_eth_types::EthAccount;
+use monad_eth_types::{AccountCode, EthAccount};
 use tracing::warn;
 
 pub fn rlp_decode_account(account_rlp: Vec<u8>) -> Option<EthAccount> {
@@ -47,14 +47,13 @@ pub fn rlp_decode_account(account_rlp: Vec<u8>) -> Option<EthAccount> {
         return None;
     };
 
-    let is_delegated = false;
-    let code_hash = if buf.is_empty() {
-        None
+    let code = if buf.is_empty() {
+        AccountCode::None
     } else {
-        match <[u8; 32]>::decode(&mut buf) {
-            Ok(x) => Some(x),
+        match AccountCode::decode(&mut buf) {
+            Ok(c) => c,
             Err(e) => {
-                warn!("rlp code_hash decode failed: {:?}", e);
+                warn!("rlp code field decode failed: {:?}", e);
                 return None;
             }
         }
@@ -63,8 +62,8 @@ pub fn rlp_decode_account(account_rlp: Vec<u8>) -> Option<EthAccount> {
     Some(EthAccount {
         nonce,
         balance,
-        code_hash,
-        is_delegated,
+        is_delegated: code.is_inline_delegated(),
+        code,
     })
 }
 

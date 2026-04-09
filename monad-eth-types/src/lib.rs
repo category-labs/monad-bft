@@ -42,6 +42,67 @@ pub type EthBlockHash = [u8; 32];
 pub type EthStorageSlot = [u8; 32];
 pub type EthCode = Vec<u8>;
 
+/// EIP-7702 delegation designation prefix: 0xef0100
+pub const DELEGATION_PREFIX: [u8; 3] = [0xef, 0x01, 0x00];
+/// Size of inline delegated code: 3-byte prefix + 20-byte address
+pub const DELEGATED_CODE_SIZE: usize = 23;
+
+/// Represents the code field of an account, which can be:
+/// - No code
+/// - Inline delegated code (23 bytes: 0xef0100 + 20-byte target address)
+/// - A 32 bytes code hash referencing code stored separately
+#[derive(Debug, Copy, Clone)]
+pub enum AccountCode {
+    None,
+    InlineDelegated([u8; DELEGATED_CODE_SIZE]),
+    CodeHash(EthCodeHash),
+}
+
+impl Default for AccountCode {
+    fn default() -> Self {
+        Self::None
+    }
+}
+
+impl AccountCode {
+    pub fn has_code(&self) -> bool {
+        !matches!(self, Self::None)
+    }
+
+    pub fn is_inline_delegated(&self) -> bool {
+        matches!(self, Self::InlineDelegated(_))
+    }
+}
+
+impl Decodable for AccountCode {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let bytes = alloy_rlp::Header::decode_bytes(buf, false)?;
+        match bytes.len() {
+            0 => Ok(Self::None),
+            DELEGATED_CODE_SIZE => {
+                if bytes[..3] != DELEGATION_PREFIX {
+                    return Err(alloy_rlp::Error::Custom(
+                        "23-byte code field missing delegation prefix",
+                    ));
+                }
+                let code: [u8; DELEGATED_CODE_SIZE] = bytes
+                    .try_into()
+                    .map_err(|_| alloy_rlp::Error::InputTooShort)?;
+                Ok(Self::InlineDelegated(code))
+            }
+            32 => {
+                let hash: [u8; 32] = bytes
+                    .try_into()
+                    .map_err(|_| alloy_rlp::Error::InputTooShort)?;
+                Ok(Self::CodeHash(hash))
+            }
+            _ => Err(alloy_rlp::Error::Custom(
+                "unexpected code field length (expected 0, 23, or 32)",
+            )),
+        }
+    }
+}
+
 pub trait ExtractEthAddress {
     fn get_eth_address(&self) -> Address;
 }
@@ -56,7 +117,7 @@ impl ExtractEthAddress for NopPubKey {
 pub struct EthAccount {
     pub nonce: Nonce,
     pub balance: Balance,
-    pub code_hash: Option<EthCodeHash>,
+    pub code: AccountCode,
     pub is_delegated: bool,
 }
 
