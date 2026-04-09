@@ -5349,7 +5349,6 @@ dependencies = [
  "bindgen",
  "futures",
  "hex",
- "monad-chain-config",
  "monad-cxx",
  "serde",
  "tracing",

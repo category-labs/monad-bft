@@ -9,7 +9,6 @@ edition = "2021"
 bench = false
 
 [dependencies]
-monad-chain-config = { workspace = true }
 monad-cxx = { workspace = true }
 
 alloy-consensus = { workspace = true }

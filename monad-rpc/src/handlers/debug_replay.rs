@@ -15,7 +15,9 @@
 
 use std::num::TryFromIntError;
 
-use monad_ethcall::{eth_trace_block_or_transaction, CallResult, EthCallExecutor, MonadTracer};
+use monad_ethcall::{
+    eth_trace_block_or_transaction, CallResult, ChainId, EthCallExecutor, MonadTracer,
+};
 use monad_triedb_utils::triedb_env::{BlockKey, Triedb};
 use monad_types::SeqNum;
 use serde_json::value::RawValue;
@@ -27,7 +29,7 @@ use crate::{
             MonadDebugTraceBlockByHashParams, MonadDebugTraceBlockByNumberParams,
             MonadDebugTraceTransactionParams, Tracer, TracerObject,
         },
-        MonadRpcResources,
+        parse_ethcall_chain_id, MonadRpcResources,
     },
     middleware::TimingRequestId,
     types::{
@@ -135,7 +137,7 @@ impl TryFrom<BlockTagOrHash> for EthHash {
 pub async fn monad_debug_trace_replay<T: Triedb>(
     chain_state: &ChainState<T>,
     eth_call_executor: &EthCallExecutor,
-    chain_id: u64,
+    chain_id: ChainId,
     params: &impl DebugTraceParams,
 ) -> JsonRpcResult<Box<RawValue>> {
     let block_key =
@@ -268,7 +270,7 @@ pub async fn collect_debug_trace_via_replay(
 ) -> Result<Box<RawValue>, JsonRpcError> {
     let eth_call_handler = app_state.eth_call_handler.as_ref().method_not_supported()?;
     let permit = eth_call_handler.acquire(request_id).await?;
-    let chain_id = app_state.chain_id;
+    let chain_id = parse_ethcall_chain_id(app_state.chain_id)?;
 
     permit
         .execute(|_, executor| monad_debug_trace_replay(chain_state, executor, chain_id, params))
