@@ -125,10 +125,8 @@ where
     fn exec(&mut self, commands: Vec<Self::Command>) {
         for command in commands {
             match command {
-                LedgerCommand::LedgerCommit(OptimisticCommit::Proposed {
-                    block,
-                    is_canonical: _,
-                }) => {
+                LedgerCommand::LedgerCommit(OptimisticCommit::Coherent(block))
+                | LedgerCommand::LedgerCommit(OptimisticCommit::ProposedHead(block)) => {
                     let _span = debug_span!("optimistic commit proposed").entered();
 
                     let mut state = self.state.lock().unwrap();
@@ -142,9 +140,9 @@ where
 
                     self.blocks.insert(block.get_id(), block);
                 }
-                LedgerCommand::LedgerCommit(OptimisticCommit::Voted(block)) => {
-                    let _span = debug_span!("optimistic commit voted").entered();
-                    // Voted blocks are already persisted from Proposed state.
+                LedgerCommand::LedgerCommit(OptimisticCommit::VotedHead(block)) => {
+                    let _span = debug_span!("optimistic commit voted head").entered();
+                    // Voted-head blocks are already persisted from the proposal path.
                     // Just ensure the block is in the cache.
                     self.blocks.insert(block.get_id(), block);
                 }

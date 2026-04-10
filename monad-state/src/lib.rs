@@ -1506,10 +1506,7 @@ where
         // commit blocks
         for block in last_two_delay_committed_blocks {
             commands.push(Command::LedgerCommand(LedgerCommand::LedgerCommit(
-                OptimisticCommit::Proposed {
-                    block: block.deref().to_owned(),
-                    is_canonical: true,
-                },
+                OptimisticCommit::ProposedHead(block.deref().to_owned()),
             )));
             commands.push(Command::LedgerCommand(LedgerCommand::LedgerCommit(
                 OptimisticCommit::Finalized(block.deref().to_owned()),

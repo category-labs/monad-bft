@@ -102,8 +102,8 @@ where
 
     block_sync_requests: BTreeMap<BlockId, BlockSyncRequestStatus>,
 
-    /// Last canonical coherent tip emitted
-    canonical_proposed_tip: Option<BlockId>,
+    /// Last proposed-head update emitted
+    last_emitted_proposed_head: Option<BlockId>,
     vote_delay_timer_start: Option<VoteDelayTimerStart>,
     vote_delay_metrics: VoteDelayMetricsWindow,
 }
@@ -283,7 +283,7 @@ where
                 None,
             ),
             block_sync_requests: Default::default(),
-            canonical_proposed_tip: None,
+            last_emitted_proposed_head: None,
             vote_delay_timer_start: None,
             vote_delay_metrics: VoteDelayMetricsWindow::default(),
         }
@@ -1247,7 +1247,7 @@ where
 
         let mut cmds = Vec::new();
 
-        // Emit Voted commit for the highest coherent block on the path to the QC block.
+        // Emit a voted-head update for the highest coherent block on the path to the QC block.
         let qc_block_id = qc.get_block_id();
         if let Some(voted_block) = self
             .consensus
@@ -1255,7 +1255,7 @@ where
             .get_highest_coherent_block_on_path_from_root(&qc_block_id)
         {
             cmds.push(ConsensusCommand::CommitBlocks(
-                OptimisticPolicyCommit::Voted(voted_block.to_owned()),
+                OptimisticPolicyCommit::VotedHead(voted_block.to_owned()),
             ));
         }
 
@@ -1302,7 +1302,7 @@ where
                 }),
         );
 
-        cmds.extend(self.update_proposed_head());
+        cmds.extend(self.maybe_emit_proposed_head());
 
         // retrieve missing blocks if processed QC is highest and points at an
         // unknown block
@@ -1508,17 +1508,14 @@ where
             debug!(
                 seq_num =? newly_coherent_block.header().seq_num,
                 block_round =? newly_coherent_block.header().block_round,
-                "committing block proposed"
+                "emitting coherent optimistic commit"
             );
             cmds.push(ConsensusCommand::CommitBlocks(
-                OptimisticPolicyCommit::Proposed {
-                    block: newly_coherent_block.to_owned(),
-                    is_canonical: false,
-                },
+                OptimisticPolicyCommit::Coherent(newly_coherent_block.to_owned()),
             ));
         }
 
-        cmds.extend(self.update_proposed_head());
+        cmds.extend(self.maybe_emit_proposed_head());
 
         let high_commit_qc = self.consensus.pending_block_tree.get_high_committable_qc();
         if let Some(qc) = high_commit_qc {
@@ -1529,7 +1526,7 @@ where
     }
 
     #[must_use]
-    fn update_proposed_head(
+    fn maybe_emit_proposed_head(
         &mut self,
     ) -> Option<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
         let high_cert_qc = self.consensus.pacemaker.high_certificate().qc();
@@ -1538,7 +1535,7 @@ where
             .pending_block_tree
             .get_canonical_coherent_tip(high_cert_qc);
 
-        if self.consensus.canonical_proposed_tip == Some(canonical_tip_id) {
+        if self.consensus.last_emitted_proposed_head == Some(canonical_tip_id) {
             return None;
         }
 
@@ -1547,19 +1544,16 @@ where
             .pending_block_tree
             .get_block(&canonical_tip_id)?;
 
-        self.consensus.canonical_proposed_tip = Some(canonical_tip_id);
+        self.consensus.last_emitted_proposed_head = Some(canonical_tip_id);
 
         debug!(
             seq_num =? block.header().seq_num,
             block_round =? block.header().block_round,
-            "updating proposed head"
+            "emitting proposed-head update"
         );
 
         Some(ConsensusCommand::CommitBlocks(
-            OptimisticPolicyCommit::Proposed {
-                block: block.to_owned(),
-                is_canonical: true,
-            },
+            OptimisticPolicyCommit::ProposedHead(block.to_owned()),
         ))
     }
 
@@ -2802,9 +2796,17 @@ mod test {
         })
     }
 
-    fn extract_proposal_commit_rounds<ST, SCT, EPT, BPT, SBT>(
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum OptimisticCommitKind {
+        Coherent,
+        ProposedHead,
+        VotedHead,
+        Finalized,
+    }
+
+    fn extract_optimistic_commit_rounds<ST, SCT, EPT, BPT, SBT>(
         cmds: Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, MockChainConfig, MockChainRevision>>,
-    ) -> Vec<Round>
+    ) -> Vec<(OptimisticCommitKind, Round)>
     where
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -2814,9 +2816,18 @@ mod test {
     {
         cmds.iter()
             .filter_map(|c| match c {
-                ConsensusCommand::CommitBlocks(OptimisticPolicyCommit::Proposed {
-                    block, ..
-                }) => Some(block.get_block_round()),
+                ConsensusCommand::CommitBlocks(OptimisticPolicyCommit::Coherent(block)) => {
+                    Some((OptimisticCommitKind::Coherent, block.get_block_round()))
+                }
+                ConsensusCommand::CommitBlocks(OptimisticPolicyCommit::ProposedHead(block)) => {
+                    Some((OptimisticCommitKind::ProposedHead, block.get_block_round()))
+                }
+                ConsensusCommand::CommitBlocks(OptimisticPolicyCommit::VotedHead(block)) => {
+                    Some((OptimisticCommitKind::VotedHead, block.get_block_round()))
+                }
+                ConsensusCommand::CommitBlocks(OptimisticPolicyCommit::Finalized(block)) => {
+                    Some((OptimisticCommitKind::Finalized, block.get_block_round()))
+                }
                 _ => None,
             })
             .collect()
@@ -3276,8 +3287,8 @@ mod test {
             matches!(wrapped_state.consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.round == Round(1))
         );
 
-        let rounds = extract_proposal_commit_rounds(cmds);
-        assert_eq!(rounds, vec![Round(1)]);
+        let rounds = extract_optimistic_commit_rounds(cmds);
+        assert_eq!(rounds, vec![(OptimisticCommitKind::Coherent, Round(1))]);
 
         // second proposal
         let p2 = env.next_proposal_empty();
@@ -3288,10 +3299,18 @@ mod test {
             matches!(wrapped_state.consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.round == Round(2))
         );
 
-        // Round 1 emitted as canonical from process_qc's update_proposed_head,
-        // Round 2 emitted as non-canonical from loop and canonical from try_update_coherency's update_proposed_head
-        let rounds = extract_proposal_commit_rounds(cmds);
-        assert_eq!(rounds, vec![Round(1), Round(2), Round(2)]);
+        // Round 1 is emitted as a voted-head update and then a proposed-head update from
+        // process_qc, then round 2 is emitted as coherent followed by a proposed-head update.
+        let rounds = extract_optimistic_commit_rounds(cmds);
+        assert_eq!(
+            rounds,
+            vec![
+                (OptimisticCommitKind::VotedHead, Round(1)),
+                (OptimisticCommitKind::ProposedHead, Round(1)),
+                (OptimisticCommitKind::Coherent, Round(2)),
+                (OptimisticCommitKind::ProposedHead, Round(2)),
+            ]
+        );
 
         let mut missing_proposals = Vec::new();
         for _ in 0..5 {
@@ -3302,9 +3321,9 @@ mod test {
         let p_fut = env.next_proposal_empty();
         let (author, _, verified_message) = p_fut.destructure();
         let cmds = wrapped_state.handle_proposal_message(author, verified_message);
-        let rounds = extract_proposal_commit_rounds(cmds);
+        let rounds = extract_optimistic_commit_rounds(cmds);
         // No newly coherent blocks (parent missing due to gap) and canonical tip (block 2)
-        // hasn't changed, so update_proposed_head is a no-op
+        // hasn't changed, so maybe_emit_proposed_head is a no-op.
         assert_eq!(rounds, vec![]);
 
         // was in Round(2) and skipped over 5 proposals. Handling
@@ -3320,22 +3339,39 @@ mod test {
             let (author, _, verified_message) = p.clone().destructure();
             cmds.extend(wrapped_state.handle_proposal_message(author, verified_message));
         }
-        let rounds = extract_proposal_commit_rounds(cmds);
-        // Each newly coherent block emitted from loop (is_canonical=false), then update_proposed_head
-        // emits the canonical tip (is_canonical=true). Round 7 appears once because update_proposed_head
-        // sees block 8 as canonical tip at that point.
+        let rounds = extract_optimistic_commit_rounds(cmds);
+        // Newly coherent blocks are emitted as Coherent, maybe_emit_proposed_head emits
+        // proposed-head updates, and QC processing finalizes earlier rounds once the skipped
+        // chain becomes connected again. Round 7 appears once because block 8 is already the
+        // proposed head by the time round 7 becomes coherent.
         assert_eq!(
             rounds,
-            vec![3, 3, 4, 4, 5, 5, 6, 6, 7, 8, 8]
-                .into_iter()
-                .map(Round)
-                .collect::<Vec<_>>()
+            vec![
+                (OptimisticCommitKind::Coherent, Round(3)),
+                (OptimisticCommitKind::ProposedHead, Round(3)),
+                (OptimisticCommitKind::Finalized, Round(1)),
+                (OptimisticCommitKind::Coherent, Round(4)),
+                (OptimisticCommitKind::ProposedHead, Round(4)),
+                (OptimisticCommitKind::Finalized, Round(2)),
+                (OptimisticCommitKind::Coherent, Round(5)),
+                (OptimisticCommitKind::ProposedHead, Round(5)),
+                (OptimisticCommitKind::Finalized, Round(3)),
+                (OptimisticCommitKind::Coherent, Round(6)),
+                (OptimisticCommitKind::ProposedHead, Round(6)),
+                (OptimisticCommitKind::Finalized, Round(4)),
+                (OptimisticCommitKind::Coherent, Round(7)),
+                (OptimisticCommitKind::Coherent, Round(8)),
+                (OptimisticCommitKind::ProposedHead, Round(8)),
+                (OptimisticCommitKind::Finalized, Round(5)),
+                (OptimisticCommitKind::Finalized, Round(6)),
+            ]
         );
     }
 
-    /// Test that `Voted` commits only occur when a QC is observed, not at proposal time.
-    /// - First proposal: emits `Proposed` for block 1, no `Voted`
-    /// - Second proposal (contains QC for block 1): emits `Proposed` for block 2, `Voted` for block 1
+    /// Test that `VotedHead` commits only occur when a QC is observed, not at proposal time.
+    /// - First proposal: emits `Coherent` for block 1, no `VotedHead`
+    /// - Second proposal (contains QC for block 1): emits `ProposedHead` for block 1,
+    ///   then `Coherent` and `ProposedHead` for block 2, plus `VotedHead` for block 1
     #[test]
     fn test_voted_commit_requires_qc() {
         let num_state = 4;
@@ -3359,75 +3395,31 @@ mod test {
         );
         let mut wrapped_state = ctx[0].wrapped_state();
 
-        // First proposal - block becomes coherent (Proposed) but has no QC yet
+        // First proposal - block becomes coherent but has no QC yet.
         let p1 = env.next_proposal_empty();
         let (author, _, verified_message) = p1.destructure();
         let block_1_round = verified_message.tip.block_header.block_round;
         let cmds = wrapped_state.handle_proposal_message(author, verified_message);
 
-        // Should have Proposed commit for block 1
-        let proposed_rounds: Vec<_> = cmds
-            .iter()
-            .filter_map(|c| match c {
-                ConsensusCommand::CommitBlocks(OptimisticPolicyCommit::Proposed {
-                    block, ..
-                }) => Some(block.get_block_round()),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(proposed_rounds, vec![block_1_round]);
-
-        // Should NOT have Voted commit yet (no QC observed)
-        let voted_rounds: Vec<_> = cmds
-            .iter()
-            .filter_map(|c| match c {
-                ConsensusCommand::CommitBlocks(OptimisticPolicyCommit::Voted(block)) => {
-                    Some(block.get_block_round())
-                }
-                _ => None,
-            })
-            .collect();
-        assert!(
-            voted_rounds.is_empty(),
-            "No Voted commit expected before QC is observed"
+        assert_eq!(
+            extract_optimistic_commit_rounds(cmds),
+            vec![(OptimisticCommitKind::Coherent, block_1_round)]
         );
 
-        // Second proposal - contains QC for block 1
+        // Second proposal - contains QC for block 1.
         let p2 = env.next_proposal_empty();
         let (author, _, verified_message) = p2.destructure();
         let block_2_round = verified_message.tip.block_header.block_round;
         let cmds = wrapped_state.handle_proposal_message(author, verified_message);
 
-        // Round 1 canonical from process_qc's update_proposed_head,
-        // Round 2 non-canonical from loop + canonical from try_update_coherency's update_proposed_head
-        let proposed_rounds: Vec<_> = cmds
-            .iter()
-            .filter_map(|c| match c {
-                ConsensusCommand::CommitBlocks(OptimisticPolicyCommit::Proposed {
-                    block, ..
-                }) => Some(block.get_block_round()),
-                _ => None,
-            })
-            .collect();
         assert_eq!(
-            proposed_rounds,
-            vec![block_1_round, block_2_round, block_2_round]
-        );
-
-        // Should have Voted commit for block 1 (QC observed via child proposal)
-        let voted_rounds: Vec<_> = cmds
-            .iter()
-            .filter_map(|c| match c {
-                ConsensusCommand::CommitBlocks(OptimisticPolicyCommit::Voted(block)) => {
-                    Some(block.get_block_round())
-                }
-                _ => None,
-            })
-            .collect();
-        assert_eq!(
-            voted_rounds,
-            vec![block_1_round],
-            "Voted commit expected for block 1 when QC is observed via child proposal"
+            extract_optimistic_commit_rounds(cmds),
+            vec![
+                (OptimisticCommitKind::VotedHead, block_1_round),
+                (OptimisticCommitKind::ProposedHead, block_1_round),
+                (OptimisticCommitKind::Coherent, block_2_round),
+                (OptimisticCommitKind::ProposedHead, block_2_round),
+            ]
         );
     }
 
@@ -3823,7 +3815,7 @@ mod test {
         assert_eq!(cmds.len(), 5);
         assert!(matches!(
             cmds[0],
-            ConsensusCommand::CommitBlocks(OptimisticPolicyCommit::Voted(_))
+            ConsensusCommand::CommitBlocks(OptimisticPolicyCommit::VotedHead(_))
         ));
         assert!(matches!(
             cmds[1],
