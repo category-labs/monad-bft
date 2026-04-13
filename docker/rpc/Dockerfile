@@ -2,70 +2,25 @@ FROM ubuntu:25.04 AS base
 
 WORKDIR /usr/src/monad-bft
 
-RUN apt update && apt install -y \
-  binutils \
-  ca-certificates \
-  curl \
-  iproute2 \
-  pkg-config \
-  gnupg \
-  software-properties-common \
-  wget \
-  git \
-  python-is-python3 \
-  cgroup-tools \
-  libstdc++-15-dev \
-  gcc-15 \
-  g++-15
+COPY monad-execution/scripts/ubuntu-build /opt
 
-RUN apt update && apt install -y \
-  libboost-atomic1.83.0 \
-  libboost-container1.83.0 \
-  libboost-fiber1.83.0 \
-  libboost-filesystem1.83.0 \
-  libboost-graph1.83.0 \
-  libboost-json1.83.0 \
-  libboost-regex1.83.0 \
-  libboost-stacktrace1.83.0
+RUN apt update && \
+    apt install -y \
+      binutils \
+      cgroup-tools \
+      iproute2 \
+      libmimalloc-dev \
+      libquill-dev \
+      rustup && \
+    /opt/install-boost.sh && \
+    /opt/install-deps.sh && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* && \
+    rm -rf /opt
 
-RUN apt update && apt install -y \
-  libabsl-dev \
-  libarchive-dev \
-  libbenchmark-dev \
-  libbrotli-dev \
-  libcap-dev \
-  libcgroup-dev \
-  libcli11-dev \
-  libcrypto++-dev \
-  libgmock-dev \
-  libgmp-dev \
-  libgtest-dev \
-  libhugetlbfs-dev \
-  libmagicenum-dev \
-  libmimalloc-dev \
-  libtbb-dev \
-  liburing-dev \
-  libzstd-dev
+RUN rustup toolchain install 1.91.1 --profile minimal
 
 FROM base AS builder
-
-RUN apt update && apt install -y \
-  cmake \
-  clang \
-  libssl-dev
-
-RUN apt update && apt install -y \
-  libboost-fiber1.83-dev \
-  libboost-graph1.83-dev \
-  libboost-json1.83-dev \
-  libboost-stacktrace1.83-dev \
-  libboost1.83-dev
-
-# install cargo
-ARG CARGO_ROOT="/root/.cargo"
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | bash -s -- -y
-ENV PATH="${CARGO_ROOT}/bin:$PATH"
-RUN rustup toolchain install 1.91.1-x86_64-unknown-linux-gnu
 
 ENV TRIEDB_TARGET=triedb_driver
 
