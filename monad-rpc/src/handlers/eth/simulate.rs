@@ -13,7 +13,10 @@ use serde_json::value::RawValue;
 
 use crate::{
     chainstate::{get_block_key_from_tag_or_hash, ChainState},
-    handlers::eth::call::{fill_gas_params, CallRequest},
+    handlers::{
+        eth::call::{fill_gas_params, CallRequest},
+        parse_ethcall_chain_id,
+    },
     types::{
         eth_json::BlockTagOrHash,
         ethhex,
@@ -125,7 +128,7 @@ pub async fn monad_simulate_v1<T: Triedb + TriedbPath>(
         .collect();
 
     let result = eth_simulate_v1(
-        chain_id,
+        parse_ethcall_chain_id(chain_id)?,
         &senders,
         &calls,
         header.header,
