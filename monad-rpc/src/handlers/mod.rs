@@ -17,7 +17,7 @@ use actix_web::{web, HttpResponse};
 use monad_tracing_timing::TimingSpanExtension;
 use monad_triedb_utils::triedb_env::Triedb;
 use serde_json::value::RawValue;
-use tracing::{debug, info, trace_span, Instrument, Span};
+use tracing::{debug, trace_span, Instrument, Span};
 use tracing_actix_web::RootSpan;
 
 use self::{
@@ -192,7 +192,7 @@ pub async fn rpc_handler(
     // log the request and response based on the response content
     match &response {
         ResponseWrapper::Single(resp) => match resp.error {
-            Some(_) => info!(?body, ?response, "rpc_request/response error"),
+            Some(_) => debug!(?body, ?response, "rpc_request/response error"),
             None => debug!(
                 ?body,
                 ?response,
