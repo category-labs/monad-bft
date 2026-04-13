@@ -41,8 +41,8 @@ use monad_triedb_utils::triedb_env::{BlockKey, FinalizedBlockKey, Triedb};
 use monad_types::SeqNum;
 use tracing::{debug, error, trace, warn};
 
+use self::buffer::{block_height_from_tag, ExecEventsBuffer};
 use crate::{
-    chainstate::buffer::{block_height_from_tag, ChainStateBuffer},
     handlers::eth::txn::FilterError,
     types::{
         eth_json::{BlockTagOrHash, BlockTags, FixedData, MonadLog, MonadTransactionReceipt},
@@ -55,8 +55,8 @@ pub mod buffer;
 pub mod eth_call_handler;
 
 #[derive(Clone)]
-pub struct ChainState<T> {
-    buffer: Option<Arc<ChainStateBuffer>>,
+pub struct DataProvider<T> {
+    buffer: Option<Arc<ExecEventsBuffer>>,
     pub triedb_env: T,
     archive_reader: Option<ArchiveReader>,
 }
@@ -129,7 +129,7 @@ pub async fn get_block_key_from_tag_or_hash(
 }
 
 fn resolve_block_height_from_buffer(
-    buffer: &ChainStateBuffer,
+    buffer: &ExecEventsBuffer,
     block: &BlockTagOrHash,
 ) -> Option<u64> {
     match block {
@@ -140,13 +140,13 @@ fn resolve_block_height_from_buffer(
     }
 }
 
-impl<T: Triedb> ChainState<T> {
+impl<T: Triedb> DataProvider<T> {
     pub fn new(
-        buffer: Option<Arc<ChainStateBuffer>>,
+        buffer: Option<Arc<ExecEventsBuffer>>,
         triedb_env: T,
         archive_reader: Option<ArchiveReader>,
     ) -> Self {
-        ChainState {
+        DataProvider {
             buffer,
             triedb_env,
             archive_reader,
@@ -1625,7 +1625,7 @@ mod tests {
     use monad_triedb_utils::mock_triedb::MockTriedb;
 
     use crate::{
-        chainstate::{calculate_block_size, ChainState},
+        data::{calculate_block_size, DataProvider},
         types::eth_json::{BlockTagOrHash, BlockTags, FixedData, Quantity},
     };
 
@@ -1725,16 +1725,16 @@ mod tests {
                 None,
             );
 
-        let chain_state = ChainState::new(None, mock_triedb, Some(reader));
+        let data_provider = DataProvider::new(None, mock_triedb, Some(reader));
 
         let block_hash = block.header.hash_slow().0;
 
-        let found = chain_state
+        let found = data_provider
             .get_block(BlockTagOrHash::Hash(FixedData(block_hash)), false)
             .await;
         assert!(found.is_ok());
 
-        let found = chain_state
+        let found = data_provider
             .get_block(
                 BlockTagOrHash::BlockTags(BlockTags::Number(Quantity(10))),
                 false,
@@ -1742,37 +1742,37 @@ mod tests {
             .await;
         assert!(found.is_ok());
 
-        chain_state
+        data_provider
             .get_block_header(BlockTagOrHash::Hash(FixedData(block_hash)))
             .await
             .unwrap();
-        chain_state
+        data_provider
             .get_block_header(BlockTagOrHash::BlockTags(BlockTags::Number(Quantity(10))))
             .await
             .unwrap();
         assert!(found.is_ok());
 
-        chain_state
+        data_provider
             .get_transaction(tx.tx.tx_hash().0)
             .await
             .unwrap();
 
-        chain_state
+        data_provider
             .get_transaction_receipt(tx.tx.tx_hash().0)
             .await
             .unwrap();
 
-        chain_state
+        data_provider
             .get_block_receipts(BlockTagOrHash::Hash(FixedData(block_hash)))
             .await
             .unwrap();
 
-        chain_state
+        data_provider
             .get_block_receipts(BlockTagOrHash::BlockTags(BlockTags::Number(Quantity(10))))
             .await
             .unwrap();
 
-        chain_state
+        data_provider
             .get_transaction_with_block_and_index(
                 BlockTagOrHash::Hash(crate::types::eth_json::FixedData(block_hash)),
                 0,
@@ -1780,7 +1780,7 @@ mod tests {
             .await
             .unwrap();
 
-        chain_state
+        data_provider
             .get_transaction_with_block_and_index(
                 BlockTagOrHash::BlockTags(BlockTags::Number(Quantity(10))),
                 0,
@@ -1788,7 +1788,7 @@ mod tests {
             .await
             .unwrap();
 
-        chain_state
+        data_provider
             .get_raw_receipts(BlockTags::Number(Quantity(10)))
             .await
             .unwrap();
@@ -1800,7 +1800,7 @@ mod tests {
             },
             ..Default::default()
         };
-        let logs = chain_state
+        let logs = data_provider
             .get_logs(filter, u32::MAX, 1, false, false, 1)
             .await
             .unwrap();
@@ -1810,7 +1810,7 @@ mod tests {
             block_option: FilterBlockOption::AtBlockHash(block_hash.into()),
             ..Default::default()
         };
-        let logs = chain_state
+        let logs = data_provider
             .get_logs(filter, u32::MAX, 1, false, false, 1)
             .await
             .unwrap();

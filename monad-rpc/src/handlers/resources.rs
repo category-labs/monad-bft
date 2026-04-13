@@ -22,8 +22,8 @@ use monad_triedb_utils::triedb_env::TriedbEnv;
 use tracing_actix_web::RootSpanBuilder;
 
 use crate::{
-    chainstate::{eth_call_handler::EthCallHandler, ChainState},
     comparator::RpcComparator,
+    data::{eth_call_handler::EthCallHandler, DataProvider},
     middleware::Metrics,
     txpool::EthTxPoolBridgeClient,
 };
@@ -33,7 +33,7 @@ pub struct MonadRpcResources {
     pub txpool_bridge_client: Option<EthTxPoolBridgeClient>,
     pub eth_call_handler: Option<EthCallHandler>,
     pub chain_id: u64,
-    pub chain_state: Option<ChainState<TriedbEnv>>,
+    pub data_provider: Option<DataProvider<TriedbEnv>>,
     pub batch_request_limit: u16,
     pub max_response_size: u32,
     pub allow_unprotected_txs: bool,
@@ -53,7 +53,7 @@ impl MonadRpcResources {
         txpool_bridge_client: Option<EthTxPoolBridgeClient>,
         eth_call_handler: Option<EthCallHandler>,
         chain_id: u64,
-        chain_state: Option<ChainState<TriedbEnv>>,
+        data_provider: Option<DataProvider<TriedbEnv>>,
         batch_request_limit: u16,
         max_response_size: u32,
         allow_unprotected_txs: bool,
@@ -70,7 +70,7 @@ impl MonadRpcResources {
             txpool_bridge_client,
             eth_call_handler,
             chain_id,
-            chain_state,
+            data_provider,
             batch_request_limit,
             max_response_size,
             allow_unprotected_txs,

@@ -36,9 +36,9 @@ use serde_json::value::RawValue;
 use tracing::{debug, trace};
 
 use crate::{
-    chainstate::{
+    data::{
         eth_call_handler::{EthCallHandlerConfig, EthCallStatsTracker},
-        get_block_key_from_tag_or_hash, ChainState,
+        get_block_key_from_tag_or_hash, DataProvider,
     },
     handlers::{
         debug::{decode_call_frame, TracerObject},
@@ -639,7 +639,7 @@ pub async fn prepare_eth_call<T: Triedb + TriedbPath>(
 }
 
 /// Executes a new message call immediately without creating a transaction on the block chain.
-#[tracing::instrument(level = "debug", skip(chain_state))]
+#[tracing::instrument(level = "debug", skip(data_provider))]
 #[rpc(
     method = "eth_call",
     ignore = "eth_call_handler_config",
@@ -647,7 +647,7 @@ pub async fn prepare_eth_call<T: Triedb + TriedbPath>(
     ignore = "chain_id"
 )]
 pub async fn monad_eth_call<T: Triedb + TriedbPath>(
-    chain_state: &ChainState<T>,
+    data_provider: &DataProvider<T>,
     eth_call_handler_config: &EthCallHandlerConfig,
     eth_call_executor: &EthCallExecutor,
     chain_id: u64,
@@ -656,7 +656,7 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
     trace!("monad_eth_call: {params:?}");
 
     let (_, result) = prepare_eth_call(
-        &chain_state.triedb_env,
+        &data_provider.triedb_env,
         eth_call_handler_config,
         eth_call_executor,
         chain_id,
@@ -683,7 +683,7 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
 )]
 #[allow(non_snake_case)]
 pub async fn monad_debug_traceCall<T: Triedb + TriedbPath>(
-    chain_state: &ChainState<T>,
+    data_provider: &DataProvider<T>,
     eth_call_handler_config: &EthCallHandlerConfig,
     eth_call_executor: &EthCallExecutor,
     chain_id: u64,
@@ -695,7 +695,7 @@ pub async fn monad_debug_traceCall<T: Triedb + TriedbPath>(
     let tracer: MonadTracer = tracer_params.into();
 
     let (block_key, call_result) = prepare_eth_call(
-        &chain_state.triedb_env,
+        &data_provider.triedb_env,
         eth_call_handler_config,
         eth_call_executor,
         chain_id,
@@ -714,7 +714,7 @@ pub async fn monad_debug_traceCall<T: Triedb + TriedbPath>(
         MonadTracer::CallTracer => {
             let mut slice: &[u8] = raw_payload.as_slice();
             let frame = decode_call_frame(
-                &chain_state.triedb_env,
+                &data_provider.triedb_env,
                 &mut slice,
                 block_key,
                 &tracer_params,
@@ -748,7 +748,7 @@ pub async fn monad_debug_traceCall<T: Triedb + TriedbPath>(
 )]
 #[allow(non_snake_case)]
 pub async fn monad_createAccessList<T: Triedb + TriedbPath>(
-    chain_state: &ChainState<T>,
+    data_provider: &DataProvider<T>,
     eth_call_handler_config: &EthCallHandlerConfig,
     eth_call_executor: &EthCallExecutor,
     chain_id: u64,
@@ -761,7 +761,7 @@ pub async fn monad_createAccessList<T: Triedb + TriedbPath>(
     let block = params.block.clone();
 
     let (_, call_result) = prepare_eth_call(
-        &chain_state.triedb_env,
+        &data_provider.triedb_env,
         eth_call_handler_config,
         eth_call_executor,
         chain_id,
@@ -804,7 +804,7 @@ pub async fn monad_createAccessList<T: Triedb + TriedbPath>(
     };
 
     let (_, call_result) = prepare_eth_call(
-        &chain_state.triedb_env,
+        &data_provider.triedb_env,
         eth_call_handler_config,
         eth_call_executor,
         chain_id,

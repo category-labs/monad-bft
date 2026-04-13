@@ -727,7 +727,7 @@ mod tests {
             txpool_bridge_client: Some(EthTxPoolBridgeClient::for_testing()),
             eth_call_handler: None,
             chain_id: 1337,
-            chain_state: None,
+            data_provider: None,
             batch_request_limit: 5,
             max_response_size: 25_000_000,
             allow_unprotected_txs: false,

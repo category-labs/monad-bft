@@ -23,12 +23,12 @@ use monad_event_ring::{EventRing, EventRingPath};
 use monad_node_config::MonadNodeConfig;
 use monad_pprof::start_pprof_server;
 use monad_rpc::{
-    chainstate::{
-        buffer::ChainStateBuffer,
-        eth_call_handler::{EthCallHandler, EthCallHandlerConfig},
-        ChainState,
-    },
     comparator::RpcComparator,
+    data::{
+        buffer::ExecEventsBuffer,
+        eth_call_handler::{EthCallHandler, EthCallHandlerConfig},
+        DataProvider,
+    },
     event::EventServer,
     handlers::{
         resources::{MonadJsonRootSpanBuilder, MonadRpcResources},
@@ -327,7 +327,7 @@ async fn main() -> std::io::Result<()> {
     };
 
     let event_buffer = if let Some(mut events_for_cache) = events_for_cache {
-        let event_buffer = Arc::new(ChainStateBuffer::new(1024));
+        let event_buffer = Arc::new(ExecEventsBuffer::new(1024));
 
         let event_buffer2 = event_buffer.clone();
         tokio::spawn(async move {
@@ -353,7 +353,7 @@ async fn main() -> std::io::Result<()> {
         None
     };
 
-    let chain_state = triedb_env.map(|t| ChainState::new(event_buffer, t, archive_reader));
+    let data_provider = triedb_env.map(|t| DataProvider::new(event_buffer, t, archive_reader));
 
     let rpc_comparator: Option<RpcComparator> = args
         .rpc_comparison_endpoint
@@ -364,7 +364,7 @@ async fn main() -> std::io::Result<()> {
         txpool_bridge_client,
         eth_call_handler,
         node_config.chain_id,
-        chain_state,
+        data_provider,
         args.batch_request_limit,
         args.max_response_size,
         args.allow_unprotected_txs,
