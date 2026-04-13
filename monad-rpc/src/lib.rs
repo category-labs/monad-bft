@@ -13,8 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-pub mod chainstate;
 pub mod comparator;
+pub mod data;
 pub mod docs;
 pub mod event;
 pub mod handlers;

@@ -19,7 +19,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{value::RawValue, Value};
 use tracing::error;
 
-use crate::chainstate::ChainStateError;
+use crate::data::ChainStateError;
 
 pub const JSONRPC_VERSION: &str = "2.0";
 

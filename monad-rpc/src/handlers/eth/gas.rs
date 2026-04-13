@@ -36,9 +36,9 @@ use serde::Deserialize;
 use tracing::trace;
 
 use crate::{
-    chainstate::{
+    data::{
         eth_call_handler::EthCallHandlerConfig, get_block_key_from_tag,
-        get_block_key_from_tag_or_hash, ChainState,
+        get_block_key_from_tag_or_hash, DataProvider,
     },
     handlers::{
         eth::call::{check_contract_creation_size, fill_gas_params, CallRequest, GasPriceDetails},
@@ -320,7 +320,7 @@ pub struct MonadEthEstimateGasParams {
 #[allow(non_snake_case)]
 /// Generates and returns an estimate of how much gas is necessary to allow the transaction to complete.
 pub async fn monad_eth_estimateGas<T: Triedb>(
-    chain_state: &ChainState<T>,
+    data_provider: &DataProvider<T>,
     eth_call_handler_config: &EthCallHandlerConfig,
     eth_call_executor: &EthCallExecutor,
     chain_id: u64,
@@ -355,11 +355,11 @@ pub async fn monad_eth_estimateGas<T: Triedb>(
         ));
     }
 
-    let block_key = get_block_key_from_tag_or_hash(&chain_state.triedb_env, block)
+    let block_key = get_block_key_from_tag_or_hash(&data_provider.triedb_env, block)
         .await
         .ok_or_else(JsonRpcError::block_not_found)?;
 
-    let mut header = match chain_state
+    let mut header = match data_provider
         .triedb_env
         .get_block_header(block_key)
         .await
@@ -375,7 +375,7 @@ pub async fn monad_eth_estimateGas<T: Triedb>(
         .min(header.header.gas_limit);
     let original_tx_gas = tx.gas.unwrap_or(U256::from(header.header.gas_limit));
     fill_gas_params(
-        &chain_state.triedb_env,
+        &data_provider.triedb_env,
         block_key,
         &mut tx,
         &mut header.header,
@@ -423,7 +423,7 @@ pub async fn monad_eth_estimateGas<T: Triedb>(
     // Returning 21000 without execution is risky since some transaction field combinations can increase the price even for regular transfers.
     if let Some(to) = tx.to {
         if tx.input.input.as_ref().is_none_or(|b| b.is_empty())
-            && chain_state
+            && data_provider
                 .triedb_env
                 .get_account(block_key, to.into())
                 .await
@@ -467,7 +467,7 @@ pub struct MonadEthFillTransactionParams {
 )]
 #[allow(non_snake_case)]
 pub async fn monad_eth_fillTransaction<T: Triedb>(
-    chain_state: &ChainState<T>,
+    data_provider: &DataProvider<T>,
     eth_call_handler_config: &EthCallHandlerConfig,
     eth_call_executor: &EthCallExecutor,
     chain_id: u64,
@@ -498,7 +498,7 @@ pub async fn monad_eth_fillTransaction<T: Triedb>(
         };
 
     fill_transaction_with_provider(
-        chain_state,
+        data_provider,
         eth_call_handler_config,
         chain_id,
         params,
@@ -520,7 +520,7 @@ fn fill_transaction_state_overrides(from: Address) -> StateOverrideSet {
 }
 
 async fn fill_transaction_with_provider<T: Triedb>(
-    chain_state: &ChainState<T>,
+    data_provider: &DataProvider<T>,
     eth_call_handler_config: &EthCallHandlerConfig,
     chain_id: u64,
     params: MonadEthFillTransactionParams,
@@ -539,16 +539,16 @@ async fn fill_transaction_with_provider<T: Triedb>(
 
     tx.chain_id = Some(U64::from(chain_id));
 
-    let header = chain_state
+    let header = data_provider
         .get_block_header(BlockTagOrHash::BlockTags(BlockTags::Latest))
         .await
         .map_err(|_| JsonRpcError::block_not_found())?;
 
-    let block_key = get_block_key_from_tag(&chain_state.triedb_env, BlockTags::Latest)
+    let block_key = get_block_key_from_tag(&data_provider.triedb_env, BlockTags::Latest)
         .ok_or(JsonRpcError::block_not_found())?;
 
     if tx.nonce.is_none() {
-        let account = chain_state
+        let account = data_provider
             .triedb_env
             .get_account(block_key, from.into())
             .await
@@ -809,10 +809,12 @@ async fn suggested_priority_fee() -> Result<u64, JsonRpcError> {
 #[rpc(method = "eth_gasPrice")]
 #[allow(non_snake_case)]
 /// Returns the current price per gas in wei.
-pub async fn monad_eth_gasPrice<T: Triedb>(chain_state: &ChainState<T>) -> JsonRpcResult<Quantity> {
+pub async fn monad_eth_gasPrice<T: Triedb>(
+    data_provider: &DataProvider<T>,
+) -> JsonRpcResult<Quantity> {
     trace!("monad_eth_gasPrice");
 
-    let header = chain_state
+    let header = data_provider
         .get_block_header(BlockTagOrHash::BlockTags(BlockTags::Latest))
         .await
         .map_err(|_| JsonRpcError::internal_error("could not get block data".into()))?;
@@ -849,7 +851,7 @@ pub struct MonadEthHistoryParams {
 /// Transaction fee history
 /// Returns transaction base fee per gas and effective priority fee per gas for the requested/supported block range.
 pub async fn monad_eth_feeHistory<T: Triedb>(
-    chain_state: &ChainState<T>,
+    data_provider: &DataProvider<T>,
     params: MonadEthHistoryParams,
 ) -> JsonRpcResult<MonadFeeHistory> {
     trace!("monad_eth_feeHistory");
@@ -865,7 +867,7 @@ pub async fn monad_eth_feeHistory<T: Triedb>(
         }
     }
 
-    let header = chain_state
+    let header = data_provider
         .get_block_header(BlockTagOrHash::BlockTags(params.newest_block))
         .await
         .map_err(|_| JsonRpcError::internal_error("could not get block data".into()))?;
@@ -909,7 +911,7 @@ pub async fn monad_eth_feeHistory<T: Triedb>(
     let block_range = oldest_block..=header.number;
 
     let block_data_futures = block_range.map(|blk_num| async move {
-        let block = chain_state
+        let block = data_provider
             .get_block(
                 BlockTagOrHash::BlockTags(BlockTags::Number(Quantity(blk_num))),
                 true,
@@ -917,7 +919,7 @@ pub async fn monad_eth_feeHistory<T: Triedb>(
             .await
             .map_err(|_| JsonRpcError::internal_error("could not get block data".into()))?;
 
-        let receipts = chain_state
+        let receipts = data_provider
             .get_block_receipts(BlockTagOrHash::BlockTags(BlockTags::Number(Quantity(
                 blk_num,
             ))))
@@ -965,7 +967,7 @@ pub async fn monad_eth_feeHistory<T: Triedb>(
 
     // Get the newest block after the last block in the range
     let next_block_base_fee =
-        get_next_block_base_fee(chain_state, params.newest_block, last_base_fee).await?;
+        get_next_block_base_fee(data_provider, params.newest_block, last_base_fee).await?;
     base_fee_per_gas_history.push(next_block_base_fee.into());
 
     let rewards = if percentiles.is_some() {
@@ -1032,7 +1034,7 @@ fn calculate_fee_history_rewards(
 }
 
 pub async fn get_next_block_base_fee<T>(
-    chain_state: &ChainState<T>,
+    data_provider: &DataProvider<T>,
     latest: BlockTags,
     previous_base_fee: u64,
 ) -> JsonRpcResult<u64>
@@ -1046,7 +1048,7 @@ where
             return Ok(previous_base_fee);
         }
         BlockTags::Number(num) => {
-            let latest_block_num = chain_state.get_latest_block_number();
+            let latest_block_num = data_provider.get_latest_block_number();
             if num.0 + 1 > latest_block_num {
                 return Ok(previous_base_fee);
             }
@@ -1055,7 +1057,7 @@ where
         BlockTags::Finalized => BlockTags::Latest,
     };
 
-    let header = chain_state
+    let header = data_provider
         .get_block_header(BlockTagOrHash::BlockTags(latest_plus_one))
         .await
         .map_err(|_| JsonRpcError::internal_error("could not get block data".into()))?;
@@ -1080,7 +1082,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        chainstate::eth_call_handler::EthCallHandlerConfig,
+        data::eth_call_handler::EthCallHandlerConfig,
         handlers::eth::call::{CallInput, CallRequest, GasPriceDetails},
     };
 
@@ -1161,13 +1163,13 @@ mod tests {
         }
     }
 
-    fn make_fill_chain_state(
+    fn make_fill_data_provider(
         from: Address,
         nonce: u64,
         balance: u128,
         latest_block: u64,
         base_fee: u64,
-    ) -> ChainState<MockTriedb> {
+    ) -> DataProvider<MockTriedb> {
         let mut mock_triedb = MockTriedb::default();
         mock_triedb.set_latest_block(latest_block);
         mock_triedb.set_account(
@@ -1183,7 +1185,7 @@ mod tests {
             make_block(latest_block, base_fee, vec![]),
         );
 
-        ChainState::new(None, mock_triedb, None)
+        DataProvider::new(None, mock_triedb, None)
     }
 
     #[tokio::test]
@@ -1402,9 +1404,9 @@ mod tests {
         // Fetch fee history for an empty block.
         mock_triedb.set_finalized_block(SeqNum(1000), make_block(1000, 1_000, vec![]));
 
-        let chain_state = ChainState::new(None, mock_triedb, None);
+        let data_provider = DataProvider::new(None, mock_triedb, None);
         let res = monad_eth_feeHistory(
-            &chain_state,
+            &data_provider,
             MonadEthHistoryParams {
                 block_count: Quantity(1),
                 newest_block: BlockTags::Latest,
@@ -1450,9 +1452,9 @@ mod tests {
         mock_triedb.set_receipts(SeqNum(1000), receipts.clone());
         mock_triedb.set_receipts(SeqNum(999), receipts);
 
-        let chain_state = ChainState::new(None, mock_triedb, None);
+        let data_provider = DataProvider::new(None, mock_triedb, None);
         let res = monad_eth_feeHistory(
-            &chain_state,
+            &data_provider,
             MonadEthHistoryParams {
                 block_count: Quantity(1),
                 newest_block: BlockTags::Latest,
@@ -1471,7 +1473,7 @@ mod tests {
 
         // Fetch block history with explicit block heights
         let res = monad_eth_feeHistory(
-            &chain_state,
+            &data_provider,
             MonadEthHistoryParams {
                 block_count: Quantity(1),
                 newest_block: BlockTags::Number(Quantity(999)),
@@ -1486,7 +1488,7 @@ mod tests {
         assert_eq!(res.0.reward, Some(vec![]));
 
         let res = monad_eth_feeHistory(
-            &chain_state,
+            &data_provider,
             MonadEthHistoryParams {
                 block_count: Quantity(2),
                 newest_block: BlockTags::Number(Quantity(999)),
@@ -1615,12 +1617,12 @@ mod tests {
         let chain_id = 12345u64;
         let from = Address::repeat_byte(0x11);
         let to = Address::repeat_byte(0x22);
-        let chain_state = make_fill_chain_state(from, 7, 0, 1000, 100);
+        let data_provider = make_fill_data_provider(from, 7, 0, 1000, 100);
         let config = mock_eth_call_handler_config();
 
         let eth_call_fn = mock_eth_call(50_000, 10_000, MockTerminalResult::Success);
         let result = fill_transaction_with_provider(
-            &chain_state,
+            &data_provider,
             &config,
             chain_id,
             MonadEthFillTransactionParams {
@@ -1659,12 +1661,12 @@ mod tests {
         let chain_id = 12345u64;
         let from = Address::repeat_byte(0x11);
         let to = Address::repeat_byte(0x22);
-        let chain_state = make_fill_chain_state(from, 3, 0, 1000, 100);
+        let data_provider = make_fill_data_provider(from, 3, 0, 1000, 100);
         let config = mock_eth_call_handler_config();
 
         let eth_call_fn = mock_eth_call(50_000, 10_000, MockTerminalResult::ExecutionError);
         let result = fill_transaction_with_provider(
-            &chain_state,
+            &data_provider,
             &config,
             chain_id,
             MonadEthFillTransactionParams {
@@ -1695,13 +1697,13 @@ mod tests {
         let chain_id = 12345u64;
         let from = Address::repeat_byte(0x11);
         let to = Address::repeat_byte(0x22);
-        let chain_state = make_fill_chain_state(from, 0, 0, 1000, 100);
+        let data_provider = make_fill_data_provider(from, 0, 0, 1000, 100);
         let config = mock_eth_call_handler_config();
 
         let eth_call_fn =
             mock_eth_call(50_000, 10_000, MockTerminalResult::ReserveBalanceViolation);
         let result = fill_transaction_with_provider(
-            &chain_state,
+            &data_provider,
             &config,
             chain_id,
             MonadEthFillTransactionParams {
@@ -1724,12 +1726,12 @@ mod tests {
     async fn test_fill_transaction_rejects_eip7702_without_to() {
         let chain_id = 12345u64;
         let from = Address::repeat_byte(0x11);
-        let chain_state = make_fill_chain_state(from, 1, 0, 1000, 100);
+        let data_provider = make_fill_data_provider(from, 1, 0, 1000, 100);
         let config = mock_eth_call_handler_config();
 
         let eth_call_fn = mock_eth_call(50_000, 10_000, MockTerminalResult::Success);
         let err = fill_transaction_with_provider(
-            &chain_state,
+            &data_provider,
             &config,
             chain_id,
             MonadEthFillTransactionParams {
@@ -1753,12 +1755,12 @@ mod tests {
         let chain_id = 12345u64;
         let from = Address::repeat_byte(0x11);
         let to = Address::repeat_byte(0x22);
-        let chain_state = make_fill_chain_state(from, 42, 0, 1000, 100);
+        let data_provider = make_fill_data_provider(from, 42, 0, 1000, 100);
         let config = mock_eth_call_handler_config();
 
         let eth_call_fn = mock_eth_call(50_000, 10_000, MockTerminalResult::Success);
         let result = fill_transaction_with_provider(
-            &chain_state,
+            &data_provider,
             &config,
             chain_id,
             MonadEthFillTransactionParams {

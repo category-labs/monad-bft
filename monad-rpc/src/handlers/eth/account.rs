@@ -20,7 +20,7 @@ use serde::Deserialize;
 use tracing::trace;
 
 use crate::{
-    chainstate::{get_block_key_from_tag_or_hash, ChainState},
+    data::{get_block_key_from_tag_or_hash, DataProvider},
     types::{
         eth_json::{BlockTagOrHash, EthAddress, MonadU256},
         jsonrpc::{JsonRpcError, JsonRpcResult},
@@ -37,21 +37,21 @@ pub struct MonadEthGetBalanceParams {
 #[allow(non_snake_case)]
 /// Returns the balance of the account of given address.
 pub async fn monad_eth_getBalance<T: Triedb>(
-    chain_state: &ChainState<T>,
+    data_provider: &DataProvider<T>,
     params: MonadEthGetBalanceParams,
 ) -> JsonRpcResult<String> {
     trace!("monad_eth_getBalance: {params:?}");
 
-    let block_key = get_block_key_from_tag_or_hash(&chain_state.triedb_env, params.block_number)
+    let block_key = get_block_key_from_tag_or_hash(&data_provider.triedb_env, params.block_number)
         .await
         .ok_or_else(JsonRpcError::block_not_found)?;
-    let account = chain_state
+    let account = data_provider
         .triedb_env
         .get_account(block_key, params.account.0)
         .await
         .map_err(JsonRpcError::internal_error)?;
 
-    match chain_state
+    match data_provider
         .triedb_env
         .get_state_availability(block_key)
         .await
@@ -72,22 +72,22 @@ pub struct MonadEthGetCodeParams {
 #[allow(non_snake_case)]
 /// Returns code at a given address.
 pub async fn monad_eth_getCode<T: Triedb>(
-    chain_state: &ChainState<T>,
+    data_provider: &DataProvider<T>,
     params: MonadEthGetCodeParams,
 ) -> JsonRpcResult<String> {
     trace!("monad_eth_getCode: {params:?}");
 
-    let block_key = get_block_key_from_tag_or_hash(&chain_state.triedb_env, params.block)
+    let block_key = get_block_key_from_tag_or_hash(&data_provider.triedb_env, params.block)
         .await
         .ok_or_else(JsonRpcError::block_not_found)?;
-    let account = chain_state
+    let account = data_provider
         .triedb_env
         .get_account(block_key, params.account.0)
         .await
         .map_err(JsonRpcError::internal_error)?;
 
     let code = if let Some(code_hash) = account.code_hash {
-        chain_state
+        data_provider
             .triedb_env
             .get_code(block_key, code_hash)
             .await
@@ -96,7 +96,7 @@ pub async fn monad_eth_getCode<T: Triedb>(
         Vec::default()
     };
 
-    match chain_state
+    match data_provider
         .triedb_env
         .get_state_availability(block_key)
         .await
@@ -118,21 +118,21 @@ pub struct MonadEthGetStorageAtParams {
 #[allow(non_snake_case)]
 /// Returns the value from a storage position at a given address.
 pub async fn monad_eth_getStorageAt<T: Triedb>(
-    chain_state: &ChainState<T>,
+    data_provider: &DataProvider<T>,
     params: MonadEthGetStorageAtParams,
 ) -> JsonRpcResult<String> {
     trace!("monad_eth_getStorageAt: {params:?}");
 
-    let block_key = get_block_key_from_tag_or_hash(&chain_state.triedb_env, params.block)
+    let block_key = get_block_key_from_tag_or_hash(&data_provider.triedb_env, params.block)
         .await
         .ok_or_else(JsonRpcError::block_not_found)?;
-    let storage_value = chain_state
+    let storage_value = data_provider
         .triedb_env
         .get_storage_at(block_key, params.account.0, B256::from(params.position.0).0)
         .await
         .map_err(JsonRpcError::internal_error)?;
 
-    match chain_state
+    match data_provider
         .triedb_env
         .get_state_availability(block_key)
         .await
@@ -153,21 +153,21 @@ pub struct MonadEthGetTransactionCountParams {
 #[allow(non_snake_case)]
 /// Returns the number of transactions sent from an address.
 pub async fn monad_eth_getTransactionCount<T: Triedb>(
-    chain_state: &ChainState<T>,
+    data_provider: &DataProvider<T>,
     params: MonadEthGetTransactionCountParams,
 ) -> JsonRpcResult<String> {
     trace!("monad_eth_getTransactionCount: {params:?}");
 
-    let block_key = get_block_key_from_tag_or_hash(&chain_state.triedb_env, params.block)
+    let block_key = get_block_key_from_tag_or_hash(&data_provider.triedb_env, params.block)
         .await
         .ok_or_else(JsonRpcError::block_not_found)?;
-    let account = chain_state
+    let account = data_provider
         .triedb_env
         .get_account(block_key, params.account.0)
         .await
         .map_err(JsonRpcError::internal_error)?;
 
-    match chain_state
+    match data_provider
         .triedb_env
         .get_state_availability(block_key)
         .await

@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{error, trace};
 
 use crate::{
-    chainstate::ChainState,
+    data::DataProvider,
     types::{
         eth_json::{
             BlockTagOrHash, BlockTags, EthAddress, EthHash, FixedData, MonadU256, Quantity,
@@ -49,7 +49,7 @@ pub struct DebugBlockParams {
 #[allow(non_snake_case)]
 /// Returns an RLP-encoded block.
 pub async fn monad_debug_getRawBlock<T: Triedb>(
-    chain_state: &ChainState<T>,
+    data_provider: &DataProvider<T>,
     max_response_size: usize,
     params: DebugBlockParams,
 ) -> JsonRpcResult<String> {
@@ -61,7 +61,7 @@ pub async fn monad_debug_getRawBlock<T: Triedb>(
         Ok(ethhex::encode_bytes(&res))
     };
 
-    match chain_state
+    match data_provider
         .get_block(BlockTagOrHash::BlockTags(params.block), true)
         .await
     {
@@ -102,7 +102,7 @@ pub async fn monad_debug_getRawBlock<T: Triedb>(
 #[allow(non_snake_case)]
 /// Returns an RLP-encoded header.
 pub async fn monad_debug_getRawHeader<T: Triedb>(
-    chain_state: &ChainState<T>,
+    data_provider: &DataProvider<T>,
     params: DebugBlockParams,
 ) -> JsonRpcResult<String> {
     trace!("monad_debug_getRawHeader: {params:?}");
@@ -113,7 +113,7 @@ pub async fn monad_debug_getRawHeader<T: Triedb>(
         Ok(ethhex::encode_bytes(&res))
     };
 
-    match chain_state
+    match data_provider
         .get_block_header(BlockTagOrHash::BlockTags(params.block))
         .await
     {
@@ -132,13 +132,13 @@ pub struct MonadDebugGetRawReceiptsResult {
 #[allow(non_snake_case)]
 /// Returns an array of EIP-2718 binary-encoded receipts.
 pub async fn monad_debug_getRawReceipts<T: Triedb>(
-    chain_state: &ChainState<T>,
+    data_provider: &DataProvider<T>,
     max_response_size: usize,
     params: DebugBlockParams,
 ) -> JsonRpcResult<MonadDebugGetRawReceiptsResult> {
     trace!("monad_debug_getRawReceipts: {params:?}");
 
-    let raw_receipts = chain_state
+    let raw_receipts = data_provider
         .get_raw_receipts(params.block)
         .await
         .map_err(|_| JsonRpcError::internal_error("block data not found".into()))?;
@@ -169,12 +169,12 @@ pub struct MonadDebugGetRawTransactionParams {
 #[allow(non_snake_case)]
 /// Returns an array of EIP-2718 binary-encoded transactions.
 pub async fn monad_debug_getRawTransaction<T: Triedb>(
-    chain_state: &ChainState<T>,
+    data_provider: &DataProvider<T>,
     params: MonadDebugGetRawTransactionParams,
 ) -> JsonRpcResult<String> {
     trace!("monad_debug_getRawTransaction: {params:?}");
 
-    match chain_state.get_transaction(params.tx_hash.0).await {
+    match data_provider.get_transaction(params.tx_hash.0).await {
         Ok(tx) => {
             let mut res = Vec::new();
             let tx: TxEnvelope = tx.into();
@@ -445,19 +445,19 @@ pub struct MonadDebugTraceBlockByHashParams {
 #[allow(non_snake_case)]
 /// Returns the tracing result by executing all transactions in the block specified by the block hash with a tracer.
 pub async fn monad_debug_traceBlockByHash<T: Triedb>(
-    chain_state: &ChainState<T>,
+    data_provider: &DataProvider<T>,
     params: MonadDebugTraceBlockByHashParams,
 ) -> JsonRpcResult<Vec<MonadDebugTraceBlockResult>> {
     trace!("monad_debugTraceBlockByHash: {params:?}");
 
-    let (block_key, tx_hashes, call_frames) = chain_state
+    let (block_key, tx_hashes, call_frames) = data_provider
         .get_block_call_frames(BlockTagOrHash::Hash(params.block_hash))
         .await
         .to_jsonrpc_result()?
         .ok_or(JsonRpcError::internal_error("block not found".into()))?;
 
     decode_block_call_frames(
-        &chain_state.triedb_env,
+        &data_provider.triedb_env,
         block_key,
         tx_hashes,
         call_frames,
@@ -484,19 +484,19 @@ pub struct MonadDebugTraceBlockResult {
 #[allow(non_snake_case)]
 /// Returns the tracing result by executing all transactions in the block specified by the block number with a tracer.
 pub async fn monad_debug_traceBlockByNumber<T: Triedb>(
-    chain_state: &ChainState<T>,
+    data_provider: &DataProvider<T>,
     params: MonadDebugTraceBlockByNumberParams,
 ) -> JsonRpcResult<Vec<MonadDebugTraceBlockResult>> {
     trace!("monad_debugTraceBlockByNumber: {params:?}");
 
-    let (block_key, tx_hashes, call_frames) = chain_state
+    let (block_key, tx_hashes, call_frames) = data_provider
         .get_block_call_frames(BlockTagOrHash::BlockTags(params.block_number))
         .await
         .to_jsonrpc_result()?
         .ok_or(JsonRpcError::block_not_found())?;
 
     decode_block_call_frames(
-        &chain_state.triedb_env,
+        &data_provider.triedb_env,
         block_key,
         tx_hashes,
         call_frames,
@@ -509,12 +509,12 @@ pub async fn monad_debug_traceBlockByNumber<T: Triedb>(
 #[allow(non_snake_case)]
 /// Returns all traces of a given transaction.
 pub async fn monad_debug_traceTransaction<T: Triedb>(
-    chain_state: &ChainState<T>,
+    data_provider: &DataProvider<T>,
     params: MonadDebugTraceTransactionParams,
 ) -> JsonRpcResult<Option<MonadCallFrame>> {
     trace!("monad_eth_debugTraceTransaction: {params:?}");
 
-    let Some((block_key, call_frame)) = chain_state
+    let Some((block_key, call_frame)) = data_provider
         .get_transaction_call_frame(params.tx_hash.0)
         .await
         .to_jsonrpc_result()?
@@ -525,7 +525,7 @@ pub async fn monad_debug_traceTransaction<T: Triedb>(
 
     let rlp_call_frame = &mut call_frame.as_slice();
     decode_call_frame(
-        &chain_state.triedb_env,
+        &data_provider.triedb_env,
         rlp_call_frame,
         block_key,
         &params.tracer,
@@ -895,9 +895,9 @@ mod tests {
             frame,
         );
 
-        let chain_state = ChainState::new(None, mock_triedb, None);
+        let data_provider = DataProvider::new(None, mock_triedb, None);
         let resp = monad_debug_traceTransaction(
-            &chain_state,
+            &data_provider,
             MonadDebugTraceTransactionParams {
                 tx_hash: FixedData::<32>([0u8; 32]),
                 tracer: TracerObject::default(),
@@ -952,9 +952,9 @@ mod tests {
 
         mock_triedb.set_code(hex::decode("608060405260043610603f5760003560e01c80635c60da1b146044575b600080fd5b605060048036036020811015605857600080fd5b5035606e565b005b6000548156fea2646970667358221220a0f2af6f9a7d2b0c8c3c32bd2d8a4f3d856c7f8a8888a1e0dc8b9a8a2a47e2ea64736f6c634300080000330000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000").unwrap());
 
-        let chain_state = ChainState::new(None, mock_triedb, None);
+        let data_provider = DataProvider::new(None, mock_triedb, None);
         let resp: Option<MonadCallFrame> = monad_debug_traceTransaction(
-            &chain_state,
+            &data_provider,
             MonadDebugTraceTransactionParams {
                 tx_hash: FixedData::<32>([0u8; 32]),
                 tracer: TracerObject::default(),
@@ -1005,9 +1005,9 @@ mod tests {
             frame,
         );
 
-        let chain_state = ChainState::new(None, mock_triedb, None);
+        let data_provider = DataProvider::new(None, mock_triedb, None);
         let resp: Option<MonadCallFrame> = monad_debug_traceTransaction(
-            &chain_state,
+            &data_provider,
             MonadDebugTraceTransactionParams {
                 tx_hash: FixedData::<32>([0u8; 32]),
                 tracer: TracerObject {
@@ -1111,9 +1111,9 @@ mod tests {
             frame,
         );
 
-        let chain_state = ChainState::new(None, mock_triedb, None);
+        let data_provider = DataProvider::new(None, mock_triedb, None);
         let resp: Option<MonadCallFrame> = monad_debug_traceTransaction(
-            &chain_state,
+            &data_provider,
             MonadDebugTraceTransactionParams {
                 tx_hash: FixedData::<32>([0u8; 32]),
                 tracer: TracerObject {
@@ -1164,9 +1164,9 @@ mod tests {
             frame,
         );
 
-        let chain_state = ChainState::new(None, mock_triedb, None);
+        let data_provider = DataProvider::new(None, mock_triedb, None);
         let with_logs_resp = monad_debug_traceTransaction(
-            &chain_state,
+            &data_provider,
             MonadDebugTraceTransactionParams {
                 tx_hash: FixedData::<32>([0u8; 32]),
                 tracer: TracerObject {
@@ -1188,7 +1188,7 @@ mod tests {
         );
 
         let no_logs_resp = monad_debug_traceTransaction(
-            &chain_state,
+            &data_provider,
             MonadDebugTraceTransactionParams {
                 tx_hash: FixedData::<32>([0u8; 32]),
                 tracer: TracerObject {
@@ -1250,9 +1250,9 @@ mod tests {
             }],
         );
 
-        let chain_state = ChainState::new(None, mock_triedb, None);
+        let data_provider = DataProvider::new(None, mock_triedb, None);
         let result = monad_debug_getRawReceipts(
-            &chain_state,
+            &data_provider,
             25_000_000,
             DebugBlockParams {
                 block: BlockTags::Number(Quantity(1)),
@@ -1288,9 +1288,9 @@ mod tests {
 
         mock_triedb.set_finalized_block(SeqNum(1), block.clone());
 
-        let chain_state = ChainState::new(None, mock_triedb, None);
+        let data_provider = DataProvider::new(None, mock_triedb, None);
         let error = monad_debug_getRawBlock(
-            &chain_state,
+            &data_provider,
             txs_payload_limit,
             DebugBlockParams {
                 block: BlockTags::Number(Quantity(1)),

@@ -43,7 +43,7 @@ struct TxLoc {
 
 /// Buffer maintains a capped buffer of blocks.
 #[derive(Clone)]
-pub struct ChainStateBuffer {
+pub struct ExecEventsBuffer {
     // Ring buffer holding SeqNums
     block_heights: Arc<Mutex<VecDeque<u64>>>,
     // Capacity of the ring buffer
@@ -64,7 +64,7 @@ pub struct ChainStateBuffer {
     latest_proposed: Arc<AtomicU64>,
 }
 
-impl ChainStateBuffer {
+impl ExecEventsBuffer {
     pub fn new(capacity: usize) -> Self {
         Self {
             block_heights: Arc::new(Mutex::new(VecDeque::with_capacity(capacity))),
@@ -114,7 +114,7 @@ impl ChainStateBuffer {
                     warn!(
                         ?voted_block_height,
                         event_block_height = block_height,
-                        "ChainStateBuffer received voted block event with lower height than existing voted block height"
+                        "ExecEventsBuffer received voted block event with lower height than existing voted block height"
                     );
                 }
 
@@ -146,7 +146,7 @@ impl ChainStateBuffer {
                 ?block_height,
                 old_hash = ?old_block.header.hash,
                 new_hash = ?block_hash,
-                "ChainStateBuffer received block event for existing block height, replacing old block"
+                "ExecEventsBuffer received block event for existing block height, replacing old block"
             );
 
             // Remove old block's hash from by_hash
@@ -162,7 +162,7 @@ impl ChainStateBuffer {
                 error!(
                     ?block_height,
                     old_hash =?old_block.header.hash,
-                    "ChainStateBuffer stored block without full transactions"
+                    "ExecEventsBuffer stored block without full transactions"
                 );
             }
         }
@@ -174,7 +174,7 @@ impl ChainStateBuffer {
         {
             warn!(
                 ?block_hash,
-                "ChainStateBuffer received block event for existing block hash"
+                "ExecEventsBuffer received block event for existing block hash"
             );
         }
 
@@ -201,7 +201,7 @@ impl ChainStateBuffer {
             {
                 warn!(
                     ?tx_hash,
-                    "ChainStateBuffer received block event with existing transaction hash"
+                    "ExecEventsBuffer received block event with existing transaction hash"
                 );
             }
         }
@@ -223,10 +223,10 @@ impl ChainStateBuffer {
                         });
                     }
                     alloy_rpc_types::BlockTransactions::Hashes(_) => {
-                        error!("ChainStateBuffer evicted block transactions contained hashes");
+                        error!("ExecEventsBuffer evicted block transactions contained hashes");
                     }
                     alloy_rpc_types::BlockTransactions::Uncle => {
-                        error!("ChainStateBuffer evicted block transactions were uncle");
+                        error!("ExecEventsBuffer evicted block transactions were uncle");
                     }
                 }
 
@@ -310,7 +310,7 @@ impl ChainStateBuffer {
             _ => {
                 error!(
                     ?height,
-                    "ChainStateBuffer stored block without full transactions"
+                    "ExecEventsBuffer stored block without full transactions"
                 );
 
                 return None;
@@ -328,7 +328,7 @@ impl ChainStateBuffer {
                     error!(
                         ?height,
                         ?tx_hash,
-                        "ChainStateBuffer stored block but transaction was not stored"
+                        "ExecEventsBuffer stored block but transaction was not stored"
                     );
                     return Err(());
                 };
@@ -342,7 +342,7 @@ impl ChainStateBuffer {
                         error!(
                             ?height,
                             expected_log_index = ?starting_log_index,
-                            "ChainStateBuffer stored receipt in block where log does not have log_index"
+                            "ExecEventsBuffer stored receipt in block where log does not have log_index"
                         );
                         return Err(());
                     };
@@ -352,7 +352,7 @@ impl ChainStateBuffer {
                             ?height,
                             expected_log_index = ?starting_log_index,
                             ?first_log_index,
-                            "ChainStateBuffer stored receipt block with invalid log indexing"
+                            "ExecEventsBuffer stored receipt block with invalid log indexing"
                         );
                         return Err(());
                     }
@@ -406,7 +406,7 @@ impl ChainStateBuffer {
     }
 }
 
-pub(super) fn block_height_from_tag(buffer: &ChainStateBuffer, tag: &BlockTags) -> u64 {
+pub(super) fn block_height_from_tag(buffer: &ExecEventsBuffer, tag: &BlockTags) -> u64 {
     match tag {
         BlockTags::Number(n) => n.0,
         BlockTags::Latest => buffer.get_latest_proposed_block_num(),
@@ -437,7 +437,7 @@ mod tests {
         // Buffer receives many proposed blocks in a row and should handle it correctly.
         // Make sure that the ring buffer is correctly updated and the cached values are correctly updated and removed.
         let capacity = 3;
-        let buffer = ChainStateBuffer::new(capacity);
+        let buffer = ExecEventsBuffer::new(capacity);
 
         // Generate and propose (capacity + 2) blocks, so oldest blocks are evicted from the ring.
         let total_blocks = capacity + 2;
@@ -547,7 +547,7 @@ mod tests {
         // Test inserting two proposed blocks with the same height but different hashes.
 
         let capacity = 5;
-        let buffer = ChainStateBuffer::new(capacity);
+        let buffer = ExecEventsBuffer::new(capacity);
 
         let height = 1u64;
 
@@ -646,7 +646,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_bloom_mismatch_returns_empty_txs_and_receipts() {
-        let buffer = ChainStateBuffer::new(5);
+        let buffer = ExecEventsBuffer::new(5);
         let height = 1u64;
         let block_hash = B256::from([1u8; 32]);
 
@@ -665,7 +665,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_bloom_match_returns_receipts_with_correct_log_indices() {
-        let buffer = ChainStateBuffer::new(5);
+        let buffer = ExecEventsBuffer::new(5);
         let height = 1u64;
         let block_hash = B256::from([1u8; 32]);
 
@@ -693,7 +693,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_bloom_filter_returns_none_for_unknown_height() {
-        let buffer = ChainStateBuffer::new(5);
+        let buffer = ExecEventsBuffer::new(5);
 
         let unknown_height = 999;
         let result =

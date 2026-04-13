@@ -23,7 +23,7 @@ use monad_types::SeqNum;
 use serde_json::value::RawValue;
 
 use crate::{
-    chainstate::{get_block_key_from_tag, ChainState},
+    data::{get_block_key_from_tag, DataProvider},
     handlers::{
         debug::{
             MonadDebugTraceBlockByHashParams, MonadDebugTraceBlockByNumberParams,
@@ -135,20 +135,20 @@ impl TryFrom<BlockTagOrHash> for EthHash {
 
 /// A generic handler for debug trace requests that requires transaction replay (e.g., PreStateTracer).
 pub async fn monad_debug_trace_replay<T: Triedb>(
-    chain_state: &ChainState<T>,
+    data_provider: &DataProvider<T>,
     eth_call_executor: &EthCallExecutor,
     chain_id: ChainId,
     params: &impl DebugTraceParams,
 ) -> JsonRpcResult<Box<RawValue>> {
     let block_key =
-        get_block_key_from_tag(&chain_state.triedb_env, params.into()).ok_or_else(|| {
+        get_block_key_from_tag(&data_provider.triedb_env, params.into()).ok_or_else(|| {
             JsonRpcError::internal_error("error getting block key from tag: found none".into())
         })?;
     let tracer: MonadTracer = params.tracer().into();
     let (block_key, block_number, transaction_index) = match params.trace_target() {
         TraceTarget::Transaction => {
             let tx_hash: EthHash = params.block_tag_or_hash().try_into()?;
-            let tx_loc = chain_state
+            let tx_loc = data_provider
                 .triedb_env
                 .get_transaction_location_by_hash(block_key, tx_hash.0)
                 .await
@@ -156,7 +156,7 @@ pub async fn monad_debug_trace_replay<T: Triedb>(
                 .ok_or_else(|| {
                     JsonRpcError::internal_error(format!("transaction not found: {:?}", tx_hash))
                 })?;
-            let block_key = chain_state
+            let block_key = data_provider
                 .triedb_env
                 .get_block_key(SeqNum(tx_loc.block_num))
                 .ok_or_else(|| {
@@ -176,13 +176,13 @@ pub async fn monad_debug_trace_replay<T: Triedb>(
         TraceTarget::Block => {
             let block_key = match params.block_tag_or_hash() {
                 BlockTagOrHash::Hash(block_hash) => {
-                    if let Some(block_num) = chain_state
+                    if let Some(block_num) = data_provider
                         .triedb_env
                         .get_block_number_by_hash(block_key, block_hash.0)
                         .await
                         .map_err(JsonRpcError::internal_error)?
                     {
-                        chain_state
+                        data_provider
                             .triedb_env
                             .get_block_key(SeqNum(block_num))
                             .ok_or_else(|| {
@@ -207,7 +207,7 @@ pub async fn monad_debug_trace_replay<T: Triedb>(
             "cannot trace the genesis block".into(),
         ));
     }
-    let header = chain_state
+    let header = data_provider
         .triedb_env
         .get_block_header(block_key)
         .await
@@ -215,7 +215,7 @@ pub async fn monad_debug_trace_replay<T: Triedb>(
         .ok_or_else(|| {
             JsonRpcError::internal_error("error getting block header: found none".into())
         })?;
-    let parent_key = chain_state
+    let parent_key = data_provider
         .triedb_env
         .get_block_key(SeqNum(block_number - 1))
         .ok_or_else(|| {
@@ -225,7 +225,7 @@ pub async fn monad_debug_trace_replay<T: Triedb>(
         })?;
     let grandparent_key = if block_number > 1 {
         Some(
-            chain_state
+            data_provider
                 .triedb_env
                 .get_block_key(SeqNum(block_number - 2))
                 .ok_or_else(|| {
@@ -264,7 +264,7 @@ pub async fn monad_debug_trace_replay<T: Triedb>(
 
 pub async fn collect_debug_trace_via_replay(
     request_id: TimingRequestId,
-    chain_state: &ChainState<impl Triedb>,
+    data_provider: &DataProvider<impl Triedb>,
     app_state: &MonadRpcResources,
     params: &impl DebugTraceParams,
 ) -> Result<Box<RawValue>, JsonRpcError> {
@@ -273,6 +273,6 @@ pub async fn collect_debug_trace_via_replay(
     let chain_id = parse_ethcall_chain_id(app_state.chain_id)?;
 
     permit
-        .execute(|_, executor| monad_debug_trace_replay(chain_state, executor, chain_id, params))
+        .execute(|_, executor| monad_debug_trace_replay(data_provider, executor, chain_id, params))
         .await
 }
