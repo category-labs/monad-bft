@@ -13,7 +13,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{collections::HashMap, ops::Range};
+use std::{
+    collections::{HashMap, VecDeque},
+    ops::Range,
+};
 
 use bytes::BytesMut;
 use monad_crypto::certificate_signature::PubKey;
@@ -445,10 +448,18 @@ impl<PT: PubKey> ChunkAssigner<PT> for Partitioned<PT> {
     }
 }
 
-// each validator gets an additional rounding chunk
+// Proportional to stake, plus each validator gets an optional
+// rounding chunk
 pub(crate) struct StakeBasedWithRC<PT: PubKey> {
     validator_set: Vec<(Recipient<PT>, Stake)>,
     total_stake: Stake,
+}
+
+// The number of chunks each validator is obligated to rebroadcast.
+pub struct Obligation {
+    total: usize,
+    ic: Vec<usize>, // whole chunks
+    rc: Vec<bool>,  // rounding chunks
 }
 
 impl<PT: PubKey> StakeBasedWithRC<PT> {
@@ -479,49 +490,107 @@ impl<PT: PubKey> StakeBasedWithRC<PT> {
             total_stake,
         }
     }
+
+    pub fn calc_obligation(&self, num_symbols: usize) -> Obligation {
+        let num_validators = self.validator_set.len();
+        let mut ic = vec![0usize; num_validators];
+        let mut rc = vec![false; num_validators];
+
+        let obligations = self
+            .validator_set
+            .iter()
+            .map(|(_, s)| num_symbols as f64 * (*s / self.total_stake));
+
+        let mut total = 0;
+        for (i, o) in obligations.enumerate() {
+            ic[i] = o as usize; // ic := floor(o)
+            rc[i] = o.fract() > 0.0; // rc := ceil(o - floor(o))
+            total += ic[i] + rc[i] as usize;
+        }
+
+        Obligation { total, ic, rc }
+    }
+
+    fn assign_chunks_proportional(
+        &self,
+        obligation: Obligation,
+    ) -> Result<ChunkAssignment<'_, PT>> {
+        let mut assignment = ChunkAssignment::with_capacity(obligation.total);
+        assignment.hint_order(ChunkOrder::GsoFriendly);
+        assignment.hint_num_recipients(self.validator_set.len());
+        assignment.hint_unique_symbol_id(true);
+
+        let mut curr_chunk_id = 0;
+        for (i, (recipient, _stake)) in self.validator_set.iter().enumerate() {
+            let next_chunk_id = curr_chunk_id + obligation.ic[i] + obligation.rc[i] as usize;
+            assignment.push(recipient, curr_chunk_id..next_chunk_id);
+            curr_chunk_id = next_chunk_id;
+        }
+
+        Ok(assignment)
+    }
+
+    fn assign_chunks_round_robin(&self, obligation: Obligation) -> Result<ChunkAssignment<'_, PT>> {
+        let mut assignment = ChunkAssignment::with_capacity(obligation.total);
+        assignment.hint_order(ChunkOrder::RoundRobin);
+        assignment.hint_num_recipients(self.validator_set.len());
+        assignment.hint_unique_symbol_id(true);
+
+        let mut remaining: VecDeque<_> = obligation
+            .ic
+            .iter()
+            .zip(obligation.rc.iter())
+            .enumerate()
+            .map(|(val_idx, (ic, rc))| (val_idx, *ic + *rc as usize))
+            .collect();
+
+        let mut chunk_id = 0;
+        while !remaining.is_empty() {
+            // optimization to avoid iterating over the whole list
+            // when only one validator has remaining obligation
+            if remaining.len() == 1 {
+                let (val_idx, rem) = remaining.pop_front().unwrap();
+                let recipient = &self.validator_set[val_idx].0;
+                assignment.push(recipient, chunk_id..(chunk_id + rem));
+                break;
+            }
+
+            remaining.retain_mut(|(val_idx, rem)| {
+                if *rem == 0 {
+                    return false;
+                }
+                let recipient = &self.validator_set[*val_idx].0;
+                assignment.push(recipient, chunk_id..(chunk_id + 1));
+                *rem -= 1;
+                chunk_id += 1;
+                *rem > 0
+            })
+        }
+
+        Ok(assignment)
+    }
 }
 
 impl<PT: PubKey> ChunkAssigner<PT> for StakeBasedWithRC<PT> {
     fn assign_chunks(
         &self,
         num_symbols: usize,
-        _preferred_order: Option<ChunkOrder>,
+        preferred_order: Option<ChunkOrder>,
     ) -> Result<ChunkAssignment<'_, PT>> {
         if self.validator_set.is_empty() {
-            tracing::warn!("no nodes specified for partitioned chunk assigner");
+            tracing::warn!("no nodes specified for stake proportional chunk assigner");
             return Ok(ChunkAssignment::empty());
         }
         if self.total_stake == Stake::ZERO {
             return Err(BuildError::ZeroTotalStake);
         }
 
-        let num_validators = self.validator_set.len();
-        let obligations = self
-            .validator_set
-            .iter()
-            .map(|(_, s)| num_symbols as f64 * (*s / self.total_stake));
+        let obligation = self.calc_obligation(num_symbols);
 
-        let mut ic = vec![0usize; num_validators];
-        let mut rc = vec![false; num_validators];
-
-        for (i, o) in obligations.enumerate() {
-            ic[i] = o as usize; // ic := floor(o)
-            rc[i] = o.fract() > 0.0; // rc := ceil(o - floor(o))
+        match preferred_order {
+            Some(ChunkOrder::GsoFriendly) | None => self.assign_chunks_proportional(obligation),
+            Some(ChunkOrder::RoundRobin) => self.assign_chunks_round_robin(obligation),
         }
-
-        let mut assignment = ChunkAssignment::with_capacity(num_validators * 2);
-        assignment.hint_order(ChunkOrder::GsoFriendly);
-        assignment.hint_num_recipients(num_validators);
-        assignment.hint_unique_symbol_id(true);
-
-        let mut curr_chunk_id = 0;
-        for (i, (recipient, _stake)) in self.validator_set.iter().enumerate() {
-            let next_chunk_id = curr_chunk_id + ic[i] + rc[i] as usize;
-            assignment.push(recipient, curr_chunk_id..next_chunk_id);
-            curr_chunk_id = next_chunk_id;
-        }
-
-        Ok(assignment)
     }
 }
 
@@ -741,6 +810,87 @@ mod tests {
                 expected_assignment.normalized_chunks()
             );
         }
+    }
+
+    #[test]
+    fn test_stake_with_rc_round_robin_equivalent_to_proportional() {
+        // Verify round-robin produces the same per-validator chunk counts
+        // as proportional, and that chunk_ids are contiguous.
+        let rng = &mut rand::thread_rng();
+        for _ in 0..10 {
+            let validator_set = rand_validator_set(rng, 200);
+            let assigner = StakeBasedWithRC::from_validator_set(validator_set);
+            let num_symbols = rng.gen_range(1..1000);
+
+            let proportional = assigner
+                .assign_chunks(num_symbols, Some(ChunkOrder::GsoFriendly))
+                .expect("proportional should succeed");
+            let round_robin = assigner
+                .assign_chunks(num_symbols, Some(ChunkOrder::RoundRobin))
+                .expect("round_robin should succeed");
+
+            // Same total chunks
+            assert_eq!(proportional.total_chunks(), round_robin.total_chunks());
+
+            // Same per-validator chunk counts
+            let prop_counts: HashMap<_, _> = proportional
+                .assignments
+                .iter()
+                .map(|s| (*s.recipient.node_hash(), s.chunk_id_range.len()))
+                .collect();
+            let mut rr_counts: HashMap<[u8; 20], usize> = HashMap::new();
+            for s in &round_robin.assignments {
+                *rr_counts.entry(*s.recipient.node_hash()).or_default() += s.chunk_id_range.len();
+            }
+            assert_eq!(prop_counts, rr_counts);
+
+            // Round-robin chunk_ids are contiguous from 0
+            let rr_chunk_ids: BTreeSet<_> = round_robin
+                .assignments
+                .iter()
+                .flat_map(|s| s.chunk_id_range.clone())
+                .collect();
+            assert_eq!(rr_chunk_ids.len(), round_robin.total_chunks());
+            assert_eq!(rr_chunk_ids.first().cloned(), Some(0));
+            assert_eq!(
+                rr_chunk_ids.last().cloned(),
+                Some(round_robin.total_chunks() - 1)
+            );
+        }
+    }
+
+    #[test]
+    fn test_stake_with_rc_round_robin() {
+        let validator_set = vec![
+            (node_id(1), Stake::from(U256::from(1))), // gets 1/3 of the chunks
+            (node_id(2), Stake::from(U256::from(2))), // gets 2/3 of the chunks
+        ];
+
+        let assigner = StakeBasedWithRC::from_validator_set(validator_set);
+        // 4 source symbols:
+        // validator 1 gets symbol 0, 2 (rc)
+        // validator 2 gets symbol 1, 3, 4 (rc)
+        let assignment = assigner
+            .assign_chunks(4, Some(ChunkOrder::RoundRobin))
+            .expect("should succeed");
+
+        let slices = &assignment.assignments;
+        assert_eq!(slices.len(), 5);
+
+        assert_eq!(slices[0].recipient.node_id(), &node_id(1));
+        assert_eq!(slices[0].chunk_id_range, 0..1);
+
+        assert_eq!(slices[1].recipient.node_id(), &node_id(2));
+        assert_eq!(slices[1].chunk_id_range, 1..2);
+
+        assert_eq!(slices[2].recipient.node_id(), &node_id(1));
+        assert_eq!(slices[2].chunk_id_range, 2..3);
+
+        assert_eq!(slices[3].recipient.node_id(), &node_id(2));
+        assert_eq!(slices[3].chunk_id_range, 3..4);
+
+        assert_eq!(slices[4].recipient.node_id(), &node_id(2));
+        assert_eq!(slices[4].chunk_id_range, 4..5);
     }
 
     #[test]
