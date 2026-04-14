@@ -12,7 +12,7 @@ use serde::Deserialize;
 use serde_json::value::RawValue;
 
 use crate::{
-    chainstate::{get_block_key_from_tag_or_hash, ChainState},
+    data::{get_block_key_from_tag_or_hash, DataProvider},
     handlers::{
         eth::call::{fill_gas_params, CallRequest},
         parse_ethcall_chain_id,
@@ -51,12 +51,12 @@ pub struct MonadSimulateParams {
 }
 
 pub async fn monad_simulate_v1<T: Triedb + TriedbPath>(
-    chain_state: &ChainState<T>,
+    data_provider: &DataProvider<T>,
     eth_call_executor: &EthCallExecutor,
     chain_id: u64,
     params: MonadSimulateParams,
 ) -> JsonRpcResult<Box<RawValue>> {
-    let block_key = get_block_key_from_tag_or_hash(&chain_state.triedb_env, params.block)
+    let block_key = get_block_key_from_tag_or_hash(&data_provider.triedb_env, params.block)
         .await
         .ok_or_else(JsonRpcError::block_not_found)?;
 
@@ -72,7 +72,7 @@ pub async fn monad_simulate_v1<T: Triedb + TriedbPath>(
         })
         .collect();
 
-    let mut header = match chain_state
+    let mut header = match data_provider
         .triedb_env
         .get_block_header(block_key)
         .await
@@ -93,8 +93,20 @@ pub async fn monad_simulate_v1<T: Triedb + TriedbPath>(
 
     for call_list in &mut calls {
         for call in call_list {
+            // Merge `data` and `input` fields (compatible with
+            // go-ethereum, see https://github.com/ethereum/go-ethereum/issues/15628).
+            call.input.input = match (call.input.input.take(), call.input.data.take()) {
+                (Some(input), Some(data)) => {
+                    if input != data {
+                        return Err(JsonRpcError::invalid_params());
+                    }
+                    Some(input)
+                }
+                (None, data) | (data, None) => data,
+            };
+
             fill_gas_params(
-                &chain_state.triedb_env,
+                &data_provider.triedb_env,
                 block_key,
                 call,
                 &mut header.header,

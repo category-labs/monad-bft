@@ -391,7 +391,7 @@ async fn eth_simulateV1(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    let chain_state = app_state.chain_state.as_ref().method_not_supported()?;
+    let data_provider = app_state.data_provider.as_ref().method_not_supported()?;
     let eth_call_handler = app_state.eth_call_handler.as_ref().method_not_supported()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
     let permit = eth_call_handler.acquire(request_id).await?;
@@ -399,7 +399,7 @@ async fn eth_simulateV1(
     permit
         .execute(|_config, executor| {
             monad_simulate_v1(
-                chain_state,
+                data_provider,
                 executor,
                 app_state.chain_id,
                 // app_state.eth_call_provider_gas_limit, // TODO(dhil): Block simulation gas limit
