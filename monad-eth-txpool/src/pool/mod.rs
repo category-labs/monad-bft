@@ -13,7 +13,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{collections::BTreeMap, time::Duration};
+use std::{
+    collections::{BTreeMap, HashSet},
+    time::Duration,
+};
 
 use alloy_consensus::{
     constants::EMPTY_WITHDRAWALS, transaction::Recovered, TxEnvelope, EMPTY_OMMER_ROOT_HASH,
@@ -280,6 +283,7 @@ where
         node_id: NodeId<CertificateSignaturePubKey<ST>>,
         round_signature: RoundSignature<SCT::SignatureType>,
         extending_blocks: Vec<EthValidatedBlock<ST, SCT>>,
+        maybe_preloaded_addresses: Option<&HashSet<Address>>,
 
         block_policy: &EthBlockPolicy<ST, SCT, CCT, CRT>,
         state_backend: &SBT,
@@ -349,6 +353,7 @@ where
             proposal_gas_limit,
             proposal_byte_limit - system_txs_size,
             extending_blocks.iter().collect(),
+            maybe_preloaded_addresses,
             block_policy,
             state_backend,
             chain_config,
@@ -618,6 +623,7 @@ where
         proposal_gas_limit: u64,
         proposal_byte_limit: u64,
         extending_blocks: Vec<&EthValidatedBlock<ST, SCT>>,
+        maybe_preloaded_addresses: Option<&HashSet<Address>>,
         block_policy: &EthBlockPolicy<ST, SCT, CCT, CRT>,
         state_backend: &SBT,
         chain_config: &CCT,
@@ -652,8 +658,11 @@ where
             return Ok(Proposal::default());
         }
 
+        let schedulable_txs = self.tracked.iter().filter(|&(address, _)| {
+            maybe_preloaded_addresses.is_none_or(|preloaded| preloaded.contains(address))
+        });
         let sequencer =
-            ProposalSequencer::new(self.tracked.iter(), &extending_blocks, base_fee, tx_limit);
+            ProposalSequencer::new(schedulable_txs, &extending_blocks, base_fee, tx_limit);
         let sequencer_len = sequencer.len();
 
         if sequencer.is_empty() {
