@@ -13,26 +13,4 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-pub mod api;
-pub mod error;
-pub mod family;
-pub mod ingest;
-pub mod kernel;
-pub mod logs;
-pub mod primitives;
-pub mod query;
-pub mod store;
-
-pub use alloy_primitives::{Address, Bytes, Log, LogData, B256};
-pub use api::{IngestOutcome, MonadChainDataService};
-pub use family::{FinalizedBlock, Hash32};
-pub use kernel::tables::Tables;
-pub use logs::{LogEntry, LogFilter, QueryLogsRequest, QueryLogsResponse};
-pub use primitives::{
-    page::{QueryOrder, DEFAULT_QUERY_LIMIT},
-    refs::BlockRef,
-    state::{BlockRecord, FamilyWindowRecord, LogId},
-};
-pub use store::{InMemoryBlobStore, InMemoryMetaStore};
-
-pub type Topic = B256;
+pub(crate) mod directory_compaction;

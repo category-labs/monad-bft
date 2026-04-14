@@ -16,8 +16,7 @@
 use roaring::RoaringBitmap;
 
 use super::{
-    bitmap::load_clause_bitmap_for_shard,
-    directory_resolver::LogIdResolver,
+    bitmap::load_clause_bitmap_for_shard, directory_resolver::LogIdResolver,
     window::resolve_log_window,
 };
 use crate::{

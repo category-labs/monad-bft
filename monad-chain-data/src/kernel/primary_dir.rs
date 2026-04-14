@@ -16,11 +16,30 @@
 use bytes::Bytes;
 
 use crate::{
-    error::Result,
-    store::{MetaStore, ScannableKvTable},
+    error::{MonadChainDataError, Result},
+    store::{KvTable, MetaStore, ScannableKvTable},
 };
 
 pub const DIRECTORY_BUCKET_SIZE: u64 = 10_000;
+
+#[derive(Debug, Clone, PartialEq, Eq, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable)]
+pub struct PrimaryDirBucket {
+    pub start_block: u64,
+    pub first_primary_ids: Vec<u64>,
+}
+
+impl PrimaryDirBucket {
+    pub fn encode(&self) -> Vec<u8> {
+        alloy_rlp::encode(self)
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
+        let bucket = alloy_rlp::decode_exact(bytes)
+            .map_err(|_| MonadChainDataError::Decode("invalid primary directory bucket rlp"))?;
+        validate_bucket(&bucket)?;
+        Ok(bucket)
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable)]
 pub struct PrimaryDirFragment {
@@ -43,11 +62,12 @@ impl PrimaryDirFragment {
 
 pub struct PrimaryDirTables<M: MetaStore> {
     fragments: ScannableKvTable<M>,
+    buckets: KvTable<M>,
 }
 
 impl<M: MetaStore> PrimaryDirTables<M> {
-    pub fn new(fragments: ScannableKvTable<M>) -> Self {
-        Self { fragments }
+    pub fn new(fragments: ScannableKvTable<M>, buckets: KvTable<M>) -> Self {
+        Self { fragments, buckets }
     }
 
     /// Writes a directory fragment for the given block into every 10k bucket
@@ -85,6 +105,17 @@ impl<M: MetaStore> PrimaryDirTables<M> {
         Ok(())
     }
 
+    /// Loads the compacted summary for one sealed 10k bucket.
+    pub async fn load_bucket(&self, bucket_start: u64) -> Result<Option<PrimaryDirBucket>> {
+        let key = u64_key(bucket_start);
+        let Some(record) = self.buckets.get(&key).await? else {
+            return Ok(None);
+        };
+
+        Ok(Some(PrimaryDirBucket::decode(&record.value)?))
+    }
+
+    /// Loads all retained fragments for one 10k bucket.
     pub async fn load_bucket_fragments(
         &self,
         bucket_start: u64,
@@ -108,6 +139,12 @@ impl<M: MetaStore> PrimaryDirTables<M> {
         Ok(fragments)
     }
 
+    pub async fn put_bucket(&self, bucket_start: u64, bucket: &PrimaryDirBucket) -> Result<()> {
+        let key = u64_key(bucket_start);
+        self.buckets.put(&key, Bytes::from(bucket.encode())).await?;
+        Ok(())
+    }
+
     async fn put_fragment(
         &self,
         bucket_start: u64,
@@ -125,6 +162,25 @@ impl<M: MetaStore> PrimaryDirTables<M> {
 
 pub fn bucket_start(primary_id: u64) -> u64 {
     aligned_u64_start(primary_id, DIRECTORY_BUCKET_SIZE)
+}
+
+fn validate_bucket(bucket: &PrimaryDirBucket) -> Result<()> {
+    if bucket.first_primary_ids.len() < 2 {
+        return Err(MonadChainDataError::Decode(
+            "primary directory bucket missing sentinel",
+        ));
+    }
+    if bucket
+        .first_primary_ids
+        .windows(2)
+        .any(|window| window[0] > window[1])
+    {
+        return Err(MonadChainDataError::Decode(
+            "primary directory bucket ids must be nondecreasing",
+        ));
+    }
+
+    Ok(())
 }
 
 fn aligned_u64_start(value: u64, alignment: u64) -> u64 {
