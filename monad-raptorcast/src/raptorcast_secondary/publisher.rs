@@ -53,6 +53,10 @@ monad_executor::metric_consts! {
 type FullNodesST<ST> = Vec<NodeId<CertificateSignaturePubKey<ST>>>;
 type TimePoint = Round;
 
+/// Minimum median participation score (0-100) a peer must maintain to stay
+/// in the candidate pool. Peers below this threshold are permanently dropped.
+const MIN_PARTICIPATION_SCORE: u64 = 70;
+
 enum CurrentGroup<PT: PubKey> {
     Init,
     Active {
@@ -182,6 +186,25 @@ impl<ST: CertificateSignatureRecoverable> PendingGroupScores<ST> {
                 .push(score.participation_score);
         }
     }
+
+    fn compute_median_scores(self) -> BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, u64> {
+        self.scores
+            .into_iter()
+            .filter_map(|(peer, mut scores)| {
+                if scores.is_empty() {
+                    return None;
+                }
+                scores.sort_unstable();
+                let mid = scores.len() / 2;
+                let median = if scores.len() % 2 == 0 {
+                    scores[mid - 1].get().saturating_add(scores[mid].get()) / 2
+                } else {
+                    scores[mid].get()
+                };
+                Some((peer, median))
+            })
+            .collect()
+    }
 }
 
 // This is for when the router is playing the role of a Publisher
@@ -206,6 +229,11 @@ where
 
     // This is the group we are curr. broadcasting to, popped off group_schedule.
     curr_group: CurrentGroup<CertificateSignaturePubKey<ST>>,
+
+    // Peers whose median participation score fell below the threshold.
+    // Permanently excluded from future group candidates.
+    // Node IDs that no longer exists in peer discovery are pruned.
+    dropped_peers: BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>,
 
     // Collects participation reports keyed by the group's round span.
     // An entry is created when a group becomes active and cleaned up after
@@ -262,6 +290,7 @@ where
             group_schedule: BTreeMap::new(),
             always_ask_full_nodes,
             peer_disc_full_nodes: Vec::new(),
+            dropped_peers: BTreeSet::new(),
             rng,
             curr_round: Round::MIN,
             curr_group: CurrentGroup::Init,
@@ -380,8 +409,25 @@ where
                 // Clean up entries for groups older than the previous one.
                 // We keep at most two: the current and the one before it.
                 while self.pending_scores.len() > 2 {
-                    self.pending_scores.pop_first();
-                    // TODO: handle the collected scores
+                    let Some((round_span, pending)) = self.pending_scores.pop_first() else {
+                        break;
+                    };
+                    let medians = pending.compute_median_scores();
+                    for (peer, median_score) in &medians {
+                        // Do not drop prioritized full nodes
+                        if self.always_ask_full_nodes.contains(peer) {
+                            continue;
+                        }
+                        if *median_score < MIN_PARTICIPATION_SCORE {
+                            info!(
+                                ?peer,
+                                median_score,
+                                ?round_span,
+                                "Dropping peer due to low participation score",
+                            );
+                            self.dropped_peers.insert(*peer);
+                        }
+                    }
                 }
             }
             CurrentGroup::Init => unreachable!(),
@@ -540,11 +586,16 @@ where
     }
 
     pub fn upsert_peer_disc_full_nodes(&mut self, additional_fn: FullNodesST<ST>) {
+        // Clean up dropped_peers for nodes no longer advertised by peer discovery
+        self.dropped_peers.retain(|node| {
+            additional_fn.contains(node) || self.always_ask_full_nodes.contains(node)
+        });
+
         let mut full_nodes = Vec::new();
         for node in additional_fn {
             if self.always_ask_full_nodes.contains(&node) || // already in priority list
-               node == self.validator_node_id
-            // we can't be a candidate
+               node == self.validator_node_id || // we can't be a candidate
+               self.dropped_peers.contains(&node)
             {
                 continue;
             }
@@ -1447,7 +1498,7 @@ mod tests {
         // 1st group accept (now nid_13, in addition to old nid_11)
         //----------------------------------------------------------------------
         let accept_msg = make_invite_response(nid(0), nid(13), true, Round(8), &sched_cfg);
-        v0_fsm.on_candidate_response(accept_msg);
+        let _ = v0_fsm.on_candidate_response(accept_msg);
 
         // Received response from an odd note which wasn't invited for the round
         // The FSM should ignore this response.
@@ -2414,7 +2465,7 @@ mod tests {
         let uninvited_node = nid(14); // nid(14) was not in invitees
         let attacker_response =
             make_invite_response(nid(0), uninvited_node, true, start_round, &sched_cfg);
-        v0_fsm.on_candidate_response(attacker_response);
+        let _ = v0_fsm.on_candidate_response(attacker_response);
 
         // Verify the uninvited node was not accepted into the group
         let group = v0_fsm.group_schedule.get(&start_round).unwrap();
@@ -2584,7 +2635,7 @@ mod tests {
         // Full node accepts both groups. enter_round_and_step_until drives the
         // state machine to confirm those groups
         let accept_msg = make_invite_response(nid(0), nid(10), true, Round(21), &sched_cfg);
-        v0_fsm.on_candidate_response(accept_msg);
+        let _ = v0_fsm.on_candidate_response(accept_msg);
         // Confirm first group
         let (group_msg, _invitees) = v0_fsm
             .enter_round_and_step_until(Round(3))
@@ -2595,7 +2646,7 @@ mod tests {
         assert_eq!(confirm_group.prepare.start_round, Round(21));
 
         let accept_msg = make_invite_response(nid(0), nid(10), true, Round(26), &sched_cfg);
-        v0_fsm.on_candidate_response(accept_msg);
+        let _ = v0_fsm.on_candidate_response(accept_msg);
 
         // Confirm second group
         let (group_msg, _invitees) = v0_fsm
@@ -2621,37 +2672,45 @@ mod tests {
         );
     }
 
-    // Helper: create a publisher with one active group [3, 6).
-    // Returns the publisher advanced to round 3 (group is active).
-    fn make_publisher_with_active_group() -> Publisher<ST> {
-        let sched_cfg = GroupSchedulingConfig {
+    fn make_scoring_config() -> GroupSchedulingConfig {
+        GroupSchedulingConfig {
             max_group_size: 3,
             round_span: Round(3),
             invite_lookahead: Round(100),
             max_invite_wait: Round(1),
             deadline_round_dist: Round(1),
             init_empty_round_span: Round(2),
-        };
+        }
+    }
 
-        let mut fsm: Publisher<ST> = Publisher::new(
+    fn make_publisher(
+        prioritized: Vec<NodeId<PubKeyType>>,
+    ) -> (Publisher<ST>, GroupSchedulingConfig) {
+        let sched_cfg = make_scoring_config();
+        let fsm: Publisher<ST> = Publisher::new(
             nid(0),
             RaptorCastConfigSecondaryPublisher {
-                full_nodes_prioritized: vec![nid(10), nid(11), nid(12)],
+                full_nodes_prioritized: prioritized,
                 group_scheduling: sched_cfg,
             },
             ChaCha8Rng::seed_from_u64(42),
         );
+        (fsm, sched_cfg)
+    }
+
+    // Helper: create a publisher with one active group [3, 6).
+    // Returns the publisher advanced to round 3 (group is active).
+    fn make_publisher_with_active_group() -> Publisher<ST> {
+        let (mut fsm, sched_cfg) = make_publisher(vec![nid(10), nid(11), nid(12)]);
 
         // Trigger invite for group [3, 6)
         fsm.enter_round_and_step_until(Round(1));
 
         // Accept all three full nodes
-        let accept = make_invite_response(nid(0), nid(10), true, Round(3), &sched_cfg);
-        fsm.on_candidate_response(accept);
-        let accept = make_invite_response(nid(0), nid(11), true, Round(3), &sched_cfg);
-        fsm.on_candidate_response(accept);
-        let accept = make_invite_response(nid(0), nid(12), true, Round(3), &sched_cfg);
-        fsm.on_candidate_response(accept);
+        for peer in [nid(10), nid(11), nid(12)] {
+            let accept = make_invite_response(nid(0), peer, true, Round(3), &sched_cfg);
+            let _ = fsm.on_candidate_response(accept);
+        }
 
         // Confirm group and advance to round 3 (group becomes active)
         fsm.enter_round_and_step_until(Round(2));
@@ -2884,7 +2943,7 @@ mod tests {
             round_span.end,
             vec![(nid(11), 80), (nid(12), 100)],
         );
-        fsm.on_candidate_response(FullNodesGroupMessage::ParticipationReport(report));
+        let _ = fsm.on_candidate_response(FullNodesGroupMessage::ParticipationReport(report));
 
         let pending = fsm.pending_scores.get(&round_span).unwrap();
         assert_eq!(pending.reporters.len(), 1);
@@ -2913,7 +2972,7 @@ mod tests {
             round_span.end,
             vec![(nid(11), 80)],
         );
-        fsm.on_candidate_response(FullNodesGroupMessage::ParticipationReport(report));
+        let _ = fsm.on_candidate_response(FullNodesGroupMessage::ParticipationReport(report));
 
         let pending = fsm.pending_scores.get(&round_span).unwrap();
         assert!(pending.reporters.is_empty());
@@ -2927,7 +2986,7 @@ mod tests {
 
         // Report for a round span that doesn't exist
         let report = make_report(nid(10), nid(0), Round(100), Round(200), vec![(nid(11), 80)]);
-        fsm.on_candidate_response(FullNodesGroupMessage::ParticipationReport(report));
+        let _ = fsm.on_candidate_response(FullNodesGroupMessage::ParticipationReport(report));
 
         // Nothing stored anywhere
         for pending in fsm.pending_scores.values() {
@@ -2949,7 +3008,7 @@ mod tests {
             round_span.end,
             vec![(nid(11), 80)],
         );
-        fsm.on_candidate_response(FullNodesGroupMessage::ParticipationReport(report));
+        let _ = fsm.on_candidate_response(FullNodesGroupMessage::ParticipationReport(report));
 
         let pending = fsm.pending_scores.get(&round_span).unwrap();
         assert!(pending.reporters.is_empty());
@@ -2970,7 +3029,7 @@ mod tests {
             round_span.end,
             vec![(nid(99), 50)],
         );
-        fsm.on_candidate_response(FullNodesGroupMessage::ParticipationReport(report));
+        let _ = fsm.on_candidate_response(FullNodesGroupMessage::ParticipationReport(report));
 
         let pending = fsm.pending_scores.get(&round_span).unwrap();
         assert!(pending.scores.is_empty());
@@ -2990,7 +3049,7 @@ mod tests {
             round_span.end,
             vec![(nid(11), 80)],
         );
-        fsm.on_candidate_response(FullNodesGroupMessage::ParticipationReport(report));
+        let _ = fsm.on_candidate_response(FullNodesGroupMessage::ParticipationReport(report));
 
         // Second report from nid(10) - rejected as duplicate
         let report = make_report(
@@ -3000,7 +3059,7 @@ mod tests {
             round_span.end,
             vec![(nid(11), 50)],
         );
-        fsm.on_candidate_response(FullNodesGroupMessage::ParticipationReport(report));
+        let _ = fsm.on_candidate_response(FullNodesGroupMessage::ParticipationReport(report));
 
         let pending = fsm.pending_scores.get(&round_span).unwrap();
         assert_eq!(pending.reporters.len(), 1);
@@ -3025,7 +3084,7 @@ mod tests {
             round_span.end,
             vec![(nid(11), 80), (nid(12), 60)],
         );
-        fsm.on_candidate_response(FullNodesGroupMessage::ParticipationReport(report));
+        let _ = fsm.on_candidate_response(FullNodesGroupMessage::ParticipationReport(report));
 
         // Report from nid(11)
         let report = make_report(
@@ -3035,7 +3094,7 @@ mod tests {
             round_span.end,
             vec![(nid(10), 90), (nid(12), 70)],
         );
-        fsm.on_candidate_response(FullNodesGroupMessage::ParticipationReport(report));
+        let _ = fsm.on_candidate_response(FullNodesGroupMessage::ParticipationReport(report));
 
         let pending = fsm.pending_scores.get(&round_span).unwrap();
         assert_eq!(pending.reporters.len(), 2);
@@ -3119,9 +3178,9 @@ mod tests {
         // Build first group [3, 6) with two members
         fsm.enter_round_and_step_until(Round(1));
         let accept = make_invite_response(nid(0), nid(10), true, Round(3), &sched_cfg);
-        fsm.on_candidate_response(accept);
+        let _ = fsm.on_candidate_response(accept);
         let accept = make_invite_response(nid(0), nid(11), true, Round(3), &sched_cfg);
-        fsm.on_candidate_response(accept);
+        let _ = fsm.on_candidate_response(accept);
         fsm.enter_round_and_step_until(Round(2));
         fsm.enter_round_and_step_until(Round(3));
 
@@ -3130,9 +3189,9 @@ mod tests {
 
         // Build second group [6, 9) — rotates out the first
         let accept = make_invite_response(nid(0), nid(10), true, Round(6), &sched_cfg);
-        fsm.on_candidate_response(accept);
+        let _ = fsm.on_candidate_response(accept);
         let accept = make_invite_response(nid(0), nid(11), true, Round(6), &sched_cfg);
-        fsm.on_candidate_response(accept);
+        let _ = fsm.on_candidate_response(accept);
         fsm.enter_round_and_step_until(Round(5));
         fsm.enter_round_and_step_until(Round(6));
 
@@ -3151,13 +3210,244 @@ mod tests {
             first_span.end,
             vec![(nid(11), 95)],
         );
-        fsm.on_candidate_response(FullNodesGroupMessage::ParticipationReport(report));
+        let _ = fsm.on_candidate_response(FullNodesGroupMessage::ParticipationReport(report));
 
         let pending = fsm.pending_scores.get(&first_span).unwrap();
         assert_eq!(pending.reporters.len(), 1);
         assert_eq!(
             *pending.scores.get(&nid(11)).unwrap(),
             vec![BoundedU64::new(95).unwrap()]
+        );
+    }
+
+    #[test]
+    fn compute_median_scores_multiple_reporters() {
+        let members: BTreeSet<_> = [nid(10), nid(11), nid(12)].into_iter().collect();
+        let mut pending = PendingGroupScores::<ST>::new(SecondaryGroup::new_unchecked(members));
+        let round_span = RoundSpan::new(Round(3), Round(6)).unwrap();
+
+        pending.validate_and_store(
+            nid(10),
+            vec![
+                PeerParticipation {
+                    peer: nid(11),
+                    participation_score: BoundedU64::new(30).unwrap(),
+                },
+                PeerParticipation {
+                    peer: nid(12),
+                    participation_score: BoundedU64::new(60).unwrap(),
+                },
+            ],
+            round_span,
+        );
+        pending.validate_and_store(
+            nid(11),
+            vec![
+                PeerParticipation {
+                    peer: nid(10),
+                    participation_score: BoundedU64::new(80).unwrap(),
+                },
+                PeerParticipation {
+                    peer: nid(12),
+                    participation_score: BoundedU64::new(20).unwrap(),
+                },
+            ],
+            round_span,
+        );
+        pending.validate_and_store(
+            nid(12),
+            vec![
+                PeerParticipation {
+                    peer: nid(10),
+                    participation_score: BoundedU64::new(50).unwrap(),
+                },
+                PeerParticipation {
+                    peer: nid(11),
+                    participation_score: BoundedU64::new(90).unwrap(),
+                },
+            ],
+            round_span,
+        );
+
+        let medians = pending.compute_median_scores();
+        // nid(10): [80, 50] -> sorted [50, 80] -> median = 65
+        assert_eq!(*medians.get(&nid(10)).unwrap(), 65);
+        // nid(11): [30, 90] -> sorted [30, 90] -> median = 60
+        assert_eq!(*medians.get(&nid(11)).unwrap(), 60);
+        // nid(12): [60, 20] -> sorted [20, 60] -> median = 40
+        assert_eq!(*medians.get(&nid(12)).unwrap(), 40);
+    }
+
+    #[test]
+    fn compute_median_scores_single_reporter() {
+        let members: BTreeSet<_> = [nid(10), nid(11)].into_iter().collect();
+        let mut pending = PendingGroupScores::<ST>::new(SecondaryGroup::new_unchecked(members));
+        let round_span = RoundSpan::new(Round(3), Round(6)).unwrap();
+
+        pending.validate_and_store(
+            nid(10),
+            vec![PeerParticipation {
+                peer: nid(11),
+                participation_score: BoundedU64::new(42).unwrap(),
+            }],
+            round_span,
+        );
+
+        let medians = pending.compute_median_scores();
+        assert_eq!(*medians.get(&nid(11)).unwrap(), 42);
+        // nid(10) has no scores (nobody reported on them)
+        assert!(!medians.contains_key(&nid(10)));
+    }
+
+    // Helper: run one full cycle of group build → reports → rotate so that
+    // a group's scores get processed. Returns the round the next group starts at.
+    fn run_group_cycle(
+        fsm: &mut Publisher<ST>,
+        sched_cfg: &GroupSchedulingConfig,
+        peers: &[NodeId<PubKeyType>],
+        start_round: Round,
+        reports_fn: impl FnOnce(&mut Publisher<ST>, RoundSpan),
+    ) -> Round {
+        let span = sched_cfg.round_span;
+        let end_round = start_round + span;
+
+        for &peer in peers {
+            let accept = make_invite_response(nid(0), peer, true, start_round, sched_cfg);
+            let _ = fsm.on_candidate_response(accept);
+        }
+        // Confirm group
+        fsm.enter_round_and_step_until(start_round - Round(1));
+        fsm.enter_round_and_step_until(start_round);
+
+        let round_span = *fsm.curr_group.unwrap_active().1;
+        reports_fn(fsm, round_span);
+
+        end_round
+    }
+
+    fn submit_low_score_for_nid12(fsm: &mut Publisher<ST>, span: RoundSpan) {
+        let report1 = make_report(
+            nid(10),
+            nid(0),
+            span.start,
+            span.end,
+            vec![(nid(11), 90), (nid(12), 10)],
+        );
+        let _ = fsm.on_candidate_response(FullNodesGroupMessage::ParticipationReport(report1));
+
+        let report2 = make_report(
+            nid(11),
+            nid(0),
+            span.start,
+            span.end,
+            vec![(nid(10), 80), (nid(12), 20)],
+        );
+        let _ = fsm.on_candidate_response(FullNodesGroupMessage::ParticipationReport(report2));
+
+        let report3 = make_report(
+            nid(12),
+            nid(0),
+            span.start,
+            span.end,
+            vec![(nid(10), 70), (nid(11), 85)],
+        );
+        let _ = fsm.on_candidate_response(FullNodesGroupMessage::ParticipationReport(report3));
+    }
+
+    #[test]
+    fn low_score_peer_dropped() {
+        enable_tracer();
+        let (mut fsm, sched_cfg) = make_publisher(vec![]);
+        fsm.upsert_peer_disc_full_nodes(vec![nid(10), nid(11), nid(12)]);
+        let peers = [nid(10), nid(11), nid(12)];
+
+        // Trigger initial invite
+        fsm.enter_round_and_step_until(Round(1));
+
+        // Scores are processed with a 2-group lag (when pending_scores > 2).
+        // Run 3 group cycles so the first group's scores get processed.
+        let mut next = Round(3);
+        for _ in 0..3 {
+            next = run_group_cycle(
+                &mut fsm,
+                &sched_cfg,
+                &peers,
+                next,
+                submit_low_score_for_nid12,
+            );
+        }
+
+        // nid(12) had low median score — should be dropped
+        assert!(
+            fsm.dropped_peers.contains(&nid(12)),
+            "nid(12) should be in dropped_peers"
+        );
+        // nid(10) and nid(11) scored well — not dropped
+        assert!(!fsm.dropped_peers.contains(&nid(10)));
+        assert!(!fsm.dropped_peers.contains(&nid(11)));
+
+        // Verify dropped peer is filtered out when peer discovery re-advertises
+        fsm.upsert_peer_disc_full_nodes(vec![nid(10), nid(11), nid(12)]);
+        assert!(
+            !fsm.peer_disc_full_nodes.contains(&nid(12)),
+            "nid(12) should be filtered from peer_disc_full_nodes"
+        );
+    }
+
+    #[test]
+    fn dropped_entries_pruned_when_peer_leaves_network() {
+        enable_tracer();
+        let (mut fsm, sched_cfg) = make_publisher(vec![]);
+        fsm.upsert_peer_disc_full_nodes(vec![nid(10), nid(11), nid(12)]);
+        let peers = [nid(10), nid(11), nid(12)];
+
+        fsm.enter_round_and_step_until(Round(1));
+
+        // 3 cycles to flush first group's scores through the 2-group lag
+        let mut next = Round(3);
+        for _ in 0..3 {
+            next = run_group_cycle(
+                &mut fsm,
+                &sched_cfg,
+                &peers,
+                next,
+                submit_low_score_for_nid12,
+            );
+        }
+        assert!(fsm.dropped_peers.contains(&nid(12)));
+
+        // Peer discovery stops advertising nid(12)
+        fsm.upsert_peer_disc_full_nodes(vec![nid(10), nid(11)]);
+        assert!(
+            !fsm.dropped_peers.contains(&nid(12)),
+            "dropped entry should be pruned for node no longer in peer discovery"
+        );
+    }
+
+    #[test]
+    fn prioritized_peers_never_dropped() {
+        enable_tracer();
+        let (mut fsm, sched_cfg) = make_publisher(vec![nid(10), nid(11), nid(12)]);
+        let peers = [nid(10), nid(11), nid(12)];
+
+        fsm.enter_round_and_step_until(Round(1));
+
+        // Run 3 bad rounds for nid(12), but it's prioritized
+        let mut next = Round(3);
+        for _ in 0..3 {
+            next = run_group_cycle(
+                &mut fsm,
+                &sched_cfg,
+                &peers,
+                next,
+                submit_low_score_for_nid12,
+            );
+        }
+
+        // nid(12) is prioritized — should never be dropped
+        assert!(
+            !fsm.dropped_peers.contains(&nid(12)),
+            "prioritized nid(12) must never be dropped"
         );
     }
 }
