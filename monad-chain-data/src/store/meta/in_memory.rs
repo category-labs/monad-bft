@@ -52,6 +52,14 @@ impl InMemoryMetaStore {
                 .map(|guard| guard.len())
                 .unwrap_or_default()
     }
+
+    /// Test-only: remove a kv row from the fixture to simulate missing data.
+    /// Not exposed on the [`MetaStore`] trait — real backends are append-only.
+    pub fn clear_key(&self, table: TableId, key: &[u8]) {
+        if let Ok(mut guard) = self.kv_records.write() {
+            guard.remove(&(table, key.to_vec()));
+        }
+    }
 }
 
 impl MetaStore for InMemoryMetaStore {
