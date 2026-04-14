@@ -485,6 +485,7 @@ where
                         node_id,
                         round_signature.clone(),
                         extending_blocks,
+                        self.preload_manager.get_preloaded_addresses(seq_num),
                         &self.block_policy,
                         &self.state_backend,
                         &self.chain_config,
@@ -1224,7 +1225,7 @@ mod test {
                         "proposal after second 4ms window did not arrive within yield budget",
                     )
                     .await,
-                    expected_txs.clone()
+                    expected_txs
                 );
 
                 tokio::time::advance(Duration::from_millis(INGRESS_CHUNK_INTERVAL_MS - 4)).await;
