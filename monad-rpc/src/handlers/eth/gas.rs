@@ -1137,19 +1137,19 @@ mod tests {
     fn mock_eth_call_handler_config() -> EthCallHandlerConfig {
         EthCallHandlerConfig {
             enable_stats: false,
-            pool_low: monad_ethcall::PoolConfig {
+            pool_low: monad_ethcall::ffi::PoolConfig {
                 num_threads: 0,
                 num_fibers: 0,
                 timeout_sec: 0,
                 queue_limit: 0,
             },
-            pool_high: monad_ethcall::PoolConfig {
+            pool_high: monad_ethcall::ffi::PoolConfig {
                 num_threads: 0,
                 num_fibers: 0,
                 timeout_sec: 0,
                 queue_limit: 0,
             },
-            pool_block: monad_ethcall::PoolConfig {
+            pool_block: monad_ethcall::ffi::PoolConfig {
                 num_threads: 0,
                 num_fibers: 0,
                 timeout_sec: 0,

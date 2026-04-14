@@ -43,7 +43,6 @@ monad-eth-txpool-executor = { path = "./monad-eth-txpool-executor" }
 monad-eth-txpool-ipc = { path = "./monad-eth-txpool-ipc" }
 monad-eth-txpool-types = { path = "./monad-eth-txpool-types" }
 monad-eth-types = { path = "./monad-eth-types" }
-monad-ethcall = { path = "./monad-ethcall" }
 monad-executor = { path = "./monad-executor" }
 monad-executor-glue = { path = "./monad-executor-glue" }
 monad-keystore = { path = "./monad-keystore" }
@@ -84,6 +83,7 @@ monad-wal = { path = "./monad-wal" }
 monad-wireauth = { path = "./monad-wireauth" }
 
 monad-cxx = { path = "./monad-execution/rust/crates/monad-cxx" }
+monad-ethcall = { path = "./monad-execution/rust/crates/monad-ethcall" }
 monad-event-ring = { path = "./monad-execution/rust/crates/monad-event-ring" }
 monad-exec-events = { path = "./monad-execution/rust/crates/monad-exec-events" }
 monad-triedb = { path = "./monad-execution/rust/crates/monad-triedb" }

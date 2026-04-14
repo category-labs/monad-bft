@@ -15,7 +15,7 @@ def main():
   for line in sys.stdin.readlines():
     if m := pattern.match(line):
       location = m.groups(0)[0]
-      if 'build/monad-cxx-' in location:
+      if 'build/monad-' in location:
         print(location)
 
 if __name__ == '__main__':
