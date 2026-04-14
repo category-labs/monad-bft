@@ -44,6 +44,14 @@ impl InMemoryBlobStore {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    /// Test-only: remove a blob from the fixture to simulate missing data.
+    /// Not exposed on the [`BlobStore`] trait — real backends are append-only.
+    pub fn clear_blob(&self, table: BlobTableId, key: &[u8]) {
+        if let Ok(mut guard) = self.blobs.write() {
+            guard.remove(&(table, key.to_vec()));
+        }
+    }
 }
 
 impl BlobStore for InMemoryBlobStore {

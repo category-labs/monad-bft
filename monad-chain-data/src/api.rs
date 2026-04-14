@@ -16,7 +16,10 @@
 use crate::{
     error::{MonadChainDataError, Result},
     family::FinalizedBlock,
-    ingest::directory_compaction::compact_newly_sealed_log_directory_buckets,
+    ingest::{
+        bitmap_compaction::compact_newly_sealed_log_bitmap_pages,
+        directory_compaction::compact_newly_sealed_log_directory_buckets,
+    },
     kernel::tables::Tables,
     logs::{LogIngestPlan, QueryLogsRequest, QueryLogsResponse},
     primitives::{
@@ -89,16 +92,23 @@ impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
                 block_record.logs.count,
             )
             .await?;
+        for fragment in &bitmap_fragments {
+            logs.store_bitmap_fragment(fragment, block.block_number)
+                .await?;
+        }
         compact_newly_sealed_log_directory_buckets(
             logs,
             next_log_id.as_u64(),
             next_log_id_exclusive.as_u64(),
         )
         .await?;
-        for fragment in &bitmap_fragments {
-            logs.store_bitmap_fragment(fragment, block.block_number)
-                .await?;
-        }
+        compact_newly_sealed_log_bitmap_pages(
+            logs,
+            &bitmap_fragments,
+            next_log_id.as_u64(),
+            next_log_id_exclusive.as_u64(),
+        )
+        .await?;
         blocks
             .store_record(block.block_number, &block_record)
             .await?;

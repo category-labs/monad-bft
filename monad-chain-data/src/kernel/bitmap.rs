@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use bytes::Bytes;
 use roaring::RoaringBitmap;
@@ -21,7 +21,7 @@ use roaring::RoaringBitmap;
 use crate::{
     error::{MonadChainDataError, Result},
     primitives::state::LogId,
-    store::{MetaStore, ScannableKvTable},
+    store::{KvTable, MetaStore, ScannableKvTable},
 };
 
 pub const LOCAL_ID_BITS: u32 = 24;
@@ -46,11 +46,24 @@ pub struct BitmapFragmentWrite {
 
 pub struct BitmapTables<M: MetaStore> {
     fragments: ScannableKvTable<M>,
+    page_meta: KvTable<M>,
+    page_blobs: KvTable<M>,
+    open_streams: ScannableKvTable<M>,
 }
 
 impl<M: MetaStore> BitmapTables<M> {
-    pub fn new(fragments: ScannableKvTable<M>) -> Self {
-        Self { fragments }
+    pub fn new(
+        fragments: ScannableKvTable<M>,
+        page_meta: KvTable<M>,
+        page_blobs: KvTable<M>,
+        open_streams: ScannableKvTable<M>,
+    ) -> Self {
+        Self {
+            fragments,
+            page_meta,
+            page_blobs,
+            open_streams,
+        }
     }
 
     /// Stores one bitmap fragment for a block within the stream page it covers.
@@ -88,6 +101,110 @@ impl<M: MetaStore> BitmapTables<M> {
         }
 
         Ok(fragments)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable)]
+pub struct BitmapPageMeta {
+    pub min_local: u32,
+    pub max_local: u32,
+    pub count: u32,
+}
+
+impl BitmapPageMeta {
+    pub fn encode(&self) -> Vec<u8> {
+        alloy_rlp::encode(self)
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
+        alloy_rlp::decode_exact(bytes)
+            .map_err(|_| MonadChainDataError::Decode("invalid bitmap page meta rlp"))
+    }
+}
+
+impl<M: MetaStore> BitmapTables<M> {
+    /// Loads the compacted page metadata for one sealed stream page.
+    pub async fn load_page_meta(
+        &self,
+        stream_id: &str,
+        page_start_local: u32,
+    ) -> Result<Option<BitmapPageMeta>> {
+        let key = stream_page_key(stream_id, page_start_local);
+        let Some(record) = self.page_meta.get(&key).await? else {
+            return Ok(None);
+        };
+
+        Ok(Some(BitmapPageMeta::decode(&record.value)?))
+    }
+
+    pub async fn store_page_meta(
+        &self,
+        stream_id: &str,
+        page_start_local: u32,
+        meta: &BitmapPageMeta,
+    ) -> Result<()> {
+        let key = stream_page_key(stream_id, page_start_local);
+        self.page_meta.put(&key, Bytes::from(meta.encode())).await?;
+        Ok(())
+    }
+
+    /// Loads the compacted bitmap blob for one sealed stream page.
+    pub async fn load_page_blob(
+        &self,
+        stream_id: &str,
+        page_start_local: u32,
+    ) -> Result<Option<Bytes>> {
+        let key = stream_page_key(stream_id, page_start_local);
+        Ok(self.page_blobs.get(&key).await?.map(|record| record.value))
+    }
+
+    pub async fn store_page_blob(
+        &self,
+        stream_id: &str,
+        page_start_local: u32,
+        bitmap_blob: Bytes,
+    ) -> Result<()> {
+        let key = stream_page_key(stream_id, page_start_local);
+        self.page_blobs.put(&key, bitmap_blob).await?;
+        Ok(())
+    }
+
+    /// Loads the open stream inventory for one frontier page.
+    pub async fn load_open_streams(&self, global_page_start: u64) -> Result<Vec<String>> {
+        let partition = global_page_start.to_be_bytes();
+        let page = self
+            .open_streams
+            .list_prefix(&partition, &[], None, usize::MAX)
+            .await?;
+        let mut streams = Vec::with_capacity(page.keys.len());
+
+        for key in page.keys {
+            let stream = String::from_utf8(key)
+                .map_err(|_| MonadChainDataError::Decode("invalid open stream id"))?;
+            streams.push(stream);
+        }
+
+        Ok(streams)
+    }
+
+    /// Records any newly touched streams in the open inventory for one page.
+    ///
+    /// This is intentionally append-only in the current slice so replay can
+    /// never lose open-stream membership through a partial delete+rewrite.
+    pub async fn record_open_streams(
+        &self,
+        global_page_start: u64,
+        streams: &BTreeSet<String>,
+    ) -> Result<()> {
+        let partition = global_page_start.to_be_bytes();
+
+        for stream_id in streams {
+            self.open_streams
+                .put(&partition, stream_id.as_bytes(), Bytes::new())
+                .await?;
+        }
+
+        Ok(())
     }
 }
 
@@ -183,6 +300,33 @@ pub fn encode_grouped_bitmap_fragments(
     Ok(out)
 }
 
+/// Merges retained bitmap fragments for one page into the compacted page meta
+/// and blob artifacts written once that page seals.
+pub(crate) fn compact_bitmap_page<I, T>(
+    page_start_local: u32,
+    fragments: I,
+) -> Result<Option<(BitmapPageMeta, Bytes)>>
+where
+    I: IntoIterator<Item = T>,
+    T: AsRef<[u8]>,
+{
+    let mut merged = RoaringBitmap::new();
+    for fragment in fragments {
+        merged |= decode_bitmap_blob(fragment.as_ref())?.bitmap;
+    }
+
+    let Some(bitmap_blob) = compacted_bitmap_blob(merged, page_start_local)? else {
+        return Ok(None);
+    };
+    let meta = BitmapPageMeta {
+        min_local: bitmap_blob.min_local,
+        max_local: bitmap_blob.max_local,
+        count: bitmap_blob.count,
+    };
+
+    Ok(Some((meta, encode_bitmap_blob(&bitmap_blob)?)))
+}
+
 pub fn page_start_local(local_id: u32) -> u32 {
     (local_id / STREAM_PAGE_LOCAL_ID_SPAN) * STREAM_PAGE_LOCAL_ID_SPAN
 }
@@ -201,6 +345,19 @@ pub fn stream_page_key(stream_id: &str, page_start_local: u32) -> Vec<u8> {
     let mut key = format!("{stream_id}/").into_bytes();
     key.extend_from_slice(&u64::from(page_start_local).to_be_bytes());
     key
+}
+
+pub(crate) fn global_page_start(primary_id: u64) -> u64 {
+    (primary_id / u64::from(STREAM_PAGE_LOCAL_ID_SPAN)) * u64::from(STREAM_PAGE_LOCAL_ID_SPAN)
+}
+
+pub(crate) fn stream_page_global_start(stream_id: &str, page_start_local: u32) -> Result<u64> {
+    let shard = parse_stream_shard(stream_id)?;
+    Ok((shard << LOCAL_ID_BITS) + u64::from(page_start_local))
+}
+
+pub(crate) fn local_page_start(global_page_start: u64) -> u32 {
+    (global_page_start % (1u64 << LOCAL_ID_BITS)) as u32
 }
 
 /// Expands one log into the indexed stream entries written at ingest time.
@@ -245,4 +402,10 @@ fn compacted_bitmap_blob(
 
 fn block_number_key(block_number: u64) -> [u8; 8] {
     block_number.to_be_bytes()
+}
+
+pub(crate) fn parse_stream_shard(stream_id: &str) -> Result<u64> {
+    let shard_hex = stream_id.rsplit('/').next().unwrap_or_default();
+    u64::from_str_radix(shard_hex, 16)
+        .map_err(|_| MonadChainDataError::Decode("invalid stream id shard"))
 }
