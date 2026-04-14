@@ -127,6 +127,7 @@ impl<M: MetaStore> BlockTables<M> {
         Ok(())
     }
 
+    /// Validates that a new block extends the currently published chain.
     pub async fn validate_continuity(
         &self,
         block: &FinalizedBlock,
@@ -237,11 +238,11 @@ impl<M: MetaStore, B: BlobStore> LogTables<M, B> {
         Ok(())
     }
 
-    pub async fn load_sub_bucket_fragments(
+    pub async fn load_bucket_fragments(
         &self,
-        sub_bucket_start: u64,
+        bucket_start: u64,
     ) -> Result<Vec<PrimaryDirFragment>> {
-        self.dir.load_sub_bucket_fragments(sub_bucket_start).await
+        self.dir.load_bucket_fragments(bucket_start).await
     }
 
     pub async fn store_bitmap_fragment(

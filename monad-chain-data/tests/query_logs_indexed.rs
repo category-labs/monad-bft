@@ -16,7 +16,7 @@
 use std::collections::HashSet;
 
 use monad_chain_data::{
-    kernel::{bitmap::STREAM_PAGE_LOCAL_ID_SPAN, primary_dir::DIRECTORY_SUB_BUCKET_SIZE},
+    kernel::{bitmap::STREAM_PAGE_LOCAL_ID_SPAN, primary_dir::DIRECTORY_BUCKET_SIZE},
     Address, Bytes, FinalizedBlock, InMemoryBlobStore, InMemoryMetaStore, Log, LogData, LogFilter,
     MonadChainDataService, QueryLogsRequest, QueryOrder, Topic, B256,
 };
@@ -208,7 +208,7 @@ async fn indexed_query_logs_paginates_at_block_boundaries() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn indexed_query_logs_scans_across_sub_bucket_and_page_boundaries() {
+async fn indexed_query_logs_scans_across_bucket_and_page_boundaries() {
     let service =
         MonadChainDataService::new(InMemoryMetaStore::default(), InMemoryBlobStore::default());
 
@@ -234,7 +234,7 @@ async fn indexed_query_logs_scans_across_sub_bucket_and_page_boundaries() {
             logs_by_tx: vec![repeated_logs(
                 Address::repeat_byte(7),
                 vec![B256::repeat_byte(9)],
-                usize::try_from(DIRECTORY_SUB_BUCKET_SIZE + 4)
+                usize::try_from(DIRECTORY_BUCKET_SIZE + 4)
                     .expect("directory bucket size fits usize"),
             )],
         })
@@ -262,7 +262,7 @@ async fn indexed_query_logs_scans_across_sub_bucket_and_page_boundaries() {
 
     assert_eq!(
         page.logs.len(),
-        usize::try_from(DIRECTORY_SUB_BUCKET_SIZE + 4).expect("directory bucket size fits usize")
+        usize::try_from(DIRECTORY_BUCKET_SIZE + 4).expect("directory bucket size fits usize")
     );
     assert!(page.logs.iter().all(|log| log.block_number == 2));
     assert_eq!(page.cursor_block.number, 2);

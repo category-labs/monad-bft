@@ -13,67 +13,20 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::{hash_map::Entry, HashMap};
-
 use roaring::RoaringBitmap;
 
-use super::{bitmap::load_clause_bitmap_for_shard, window::resolve_log_window};
+use super::{
+    bitmap::load_clause_bitmap_for_shard,
+    directory_resolver::LogIdResolver,
+    window::resolve_log_window,
+};
 use crate::{
     error::{MonadChainDataError, Result},
-    kernel::{
-        primary_dir::{sub_bucket_start, PrimaryDirFragment},
-        tables::Tables,
-    },
+    kernel::tables::Tables,
     logs::{LogMaterializer, QueryLogsRequest, QueryLogsResponse},
     primitives::{page::QueryOrder, range::ResolvedBlockWindow, state::LogId},
     store::{BlobStore, MetaStore},
 };
-
-/// Resolves a global log ID to its block number and position within that block.
-///
-/// Caches directory sub-bucket fragments to avoid redundant lookups when
-/// resolving many IDs from the same region.
-struct LogIdResolver<'a, M: MetaStore, B: BlobStore> {
-    tables: &'a Tables<M, B>,
-    fragment_cache: HashMap<u64, Vec<PrimaryDirFragment>>,
-}
-
-impl<'a, M: MetaStore, B: BlobStore> LogIdResolver<'a, M, B> {
-    fn new(tables: &'a Tables<M, B>) -> Self {
-        Self {
-            tables,
-            fragment_cache: HashMap::new(),
-        }
-    }
-
-    async fn resolve(&mut self, log_id: LogId) -> Result<Option<ResolvedLogLocation>> {
-        let bucket = sub_bucket_start(log_id.as_u64());
-        if let Entry::Vacant(entry) = self.fragment_cache.entry(bucket) {
-            entry.insert(self.tables.logs().load_sub_bucket_fragments(bucket).await?);
-        }
-
-        let Some(fragments) = self.fragment_cache.get(&bucket) else {
-            return Ok(None);
-        };
-        let Some(fragment) = fragments.iter().find(|f| {
-            log_id.as_u64() >= f.first_primary_id && log_id.as_u64() < f.end_primary_id_exclusive
-        }) else {
-            return Ok(None);
-        };
-
-        Ok(Some(ResolvedLogLocation {
-            block_number: fragment.block_number,
-            log_block_idx: usize::try_from(log_id.as_u64() - fragment.first_primary_id)
-                .map_err(|_| MonadChainDataError::Decode("log block index overflow"))?,
-        }))
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ResolvedLogLocation {
-    block_number: u64,
-    log_block_idx: usize,
-}
 
 pub(crate) async fn execute_indexed_log_query<M: MetaStore, B: BlobStore>(
     tables: &Tables<M, B>,

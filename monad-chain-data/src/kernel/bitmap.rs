@@ -43,6 +43,7 @@ pub struct BitmapFragmentWrite {
     pub bitmap_blob: Bytes,
 }
 
+/// Encodes one bitmap blob into the stored fragment/page format.
 pub fn encode_bitmap_blob(blob: &BitmapBlob) -> Result<Bytes> {
     let mut payload = Vec::new();
     blob.bitmap
@@ -58,6 +59,7 @@ pub fn encode_bitmap_blob(blob: &BitmapBlob) -> Result<Bytes> {
     Ok(Bytes::from(out))
 }
 
+/// Decodes one stored bitmap blob and validates its framing header.
 pub fn decode_bitmap_blob(bytes: &[u8]) -> Result<BitmapBlob> {
     let header = bytes
         .get(..BITMAP_BLOB_HEADER_LEN)
@@ -153,6 +155,7 @@ pub fn stream_page_key(stream_id: &str, page_start_local: u32) -> Vec<u8> {
     key
 }
 
+/// Expands one log into the indexed stream entries written at ingest time.
 pub fn stream_entries_for_log(
     address: &[u8],
     topics: &[alloy_primitives::B256],

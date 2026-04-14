@@ -32,6 +32,7 @@ pub struct ResolvedBlockWindow {
 }
 
 impl ResolvedBlockWindow {
+    /// Resolves a query's inclusive block range against the published head.
     pub async fn resolve<M: MetaStore>(
         request: &QueryLogsRequest,
         published_head: u64,

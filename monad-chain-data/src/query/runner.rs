@@ -22,6 +22,7 @@ use crate::{
     QueryOrder,
 };
 
+/// Executes the block-scan fallback path for unindexed log queries.
 pub async fn execute_unfiltered_block_query<M: MetaStore, B: BlobStore>(
     tables: &Tables<M, B>,
     request: &QueryLogsRequest,

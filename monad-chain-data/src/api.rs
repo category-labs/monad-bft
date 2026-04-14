@@ -51,6 +51,7 @@ impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
     // TODO: Individual writes are idempotent, but a partial failure leaves the block
     // incompletely written. Retry logic, logging, and metrics belong here once the
     // overall pipeline shape stabilizes.
+    /// Persists one finalized block and advances the published head on success.
     pub async fn ingest_block(&self, block: FinalizedBlock) -> Result<IngestOutcome> {
         let blocks = self.tables.blocks();
         let logs = self.tables.logs();
@@ -107,6 +108,7 @@ impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
         })
     }
 
+    /// Executes a finalized logs query over the current published head.
     pub async fn query_logs(&self, request: QueryLogsRequest) -> Result<QueryLogsResponse> {
         if request.limit == 0 {
             return Err(MonadChainDataError::InvalidRequest(
