@@ -358,6 +358,14 @@ impl<'a, PT: PubKey> PrimaryBroadcastGroup<'a, PT> {
         self.group.is_member(node_id)
     }
 
+    pub fn author(&self) -> &NodeId<PT> {
+        self.author
+    }
+
+    pub fn len(&self) -> NonZero<usize> {
+        NonZero::new(self.group.len()).expect("A validator set must be non-empty")
+    }
+
     // For Primary RC, the sender can be any one of the validators.
     pub fn is_sender_valid(&self, sender: &NodeId<PT>) -> bool {
         self.is_member(sender)
