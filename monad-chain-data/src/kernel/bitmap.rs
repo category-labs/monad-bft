@@ -21,6 +21,7 @@ use roaring::RoaringBitmap;
 use crate::{
     error::{MonadChainDataError, Result},
     primitives::state::LogId,
+    store::{MetaStore, ScannableKvTable},
 };
 
 pub const LOCAL_ID_BITS: u32 = 24;
@@ -41,6 +42,53 @@ pub struct BitmapFragmentWrite {
     pub stream_id: String,
     pub page_start_local: u32,
     pub bitmap_blob: Bytes,
+}
+
+pub struct BitmapTables<M: MetaStore> {
+    fragments: ScannableKvTable<M>,
+}
+
+impl<M: MetaStore> BitmapTables<M> {
+    pub fn new(fragments: ScannableKvTable<M>) -> Self {
+        Self { fragments }
+    }
+
+    /// Stores one bitmap fragment for a block within the stream page it covers.
+    pub async fn store_fragment(
+        &self,
+        fragment: &BitmapFragmentWrite,
+        block_number: u64,
+    ) -> Result<()> {
+        let partition = stream_page_key(&fragment.stream_id, fragment.page_start_local);
+        let clustering = block_number_key(block_number);
+        self.fragments
+            .put(&partition, &clustering, fragment.bitmap_blob.clone())
+            .await?;
+        Ok(())
+    }
+
+    /// Loads all retained fragments for one stream page.
+    pub async fn load_fragments(
+        &self,
+        stream_id: &str,
+        page_start_local: u32,
+    ) -> Result<Vec<Bytes>> {
+        let partition = stream_page_key(stream_id, page_start_local);
+        let page = self
+            .fragments
+            .list_prefix(&partition, &[], None, usize::MAX)
+            .await?;
+        let mut fragments = Vec::with_capacity(page.keys.len());
+
+        for clustering in page.keys {
+            let record = self.fragments.get(&partition, &clustering).await?.ok_or(
+                MonadChainDataError::MissingData("missing log bitmap fragment"),
+            )?;
+            fragments.push(record.value);
+        }
+
+        Ok(fragments)
+    }
 }
 
 /// Encodes one bitmap blob into the stored fragment/page format.
@@ -193,4 +241,8 @@ fn compacted_bitmap_blob(
         count,
         bitmap,
     }))
+}
+
+fn block_number_key(block_number: u64) -> [u8; 8] {
+    block_number.to_be_bytes()
 }
