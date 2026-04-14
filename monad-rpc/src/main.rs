@@ -265,19 +265,19 @@ async fn main() -> std::io::Result<()> {
         EthCallHandler::new(
             EthCallHandlerConfig {
                 enable_stats: args.enable_admin_eth_call_statistics,
-                pool_low: monad_ethcall::PoolConfig {
+                pool_low: monad_ethcall::ffi::PoolConfig {
                     num_threads: args.eth_call_executor_threads,
                     num_fibers: args.eth_call_executor_fibers,
                     timeout_sec: args.eth_call_executor_queuing_timeout,
                     queue_limit: args.eth_call_max_concurrent_requests,
                 },
-                pool_high: monad_ethcall::PoolConfig {
+                pool_high: monad_ethcall::ffi::PoolConfig {
                     num_threads: args.eth_call_high_executor_threads,
                     num_fibers: args.eth_call_high_executor_fibers,
                     timeout_sec: args.eth_call_high_executor_queuing_timeout,
                     queue_limit: args.eth_call_high_max_concurrent_requests,
                 },
-                pool_block: monad_ethcall::PoolConfig {
+                pool_block: monad_ethcall::ffi::PoolConfig {
                     num_threads: args.eth_trace_block_executor_threads,
                     num_fibers: args.eth_trace_block_executor_fibers,
                     timeout_sec: args.eth_trace_block_executor_queuing_timeout,

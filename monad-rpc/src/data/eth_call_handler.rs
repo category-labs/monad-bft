@@ -24,7 +24,7 @@ use std::{
 };
 
 use dashmap::DashMap;
-use monad_ethcall::{EthCallExecutor, PoolConfig};
+use monad_ethcall::{ffi::PoolConfig, EthCallExecutor};
 use tokio::sync::{Semaphore, SemaphorePermit, TryAcquireError};
 use tracing::error;
 
