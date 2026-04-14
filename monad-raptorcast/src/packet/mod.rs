@@ -26,7 +26,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_types::NodeId;
 
-pub(crate) use self::{assigner::ChunkAssigner, builder::MessageBuilder, chunk::Chunk};
+pub(crate) use self::{builder::MessageBuilder, chunk::Chunk};
 use crate::util::{BuildTarget, Redundancy};
 
 #[derive(Debug)]
