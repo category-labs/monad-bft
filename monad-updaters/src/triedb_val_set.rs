@@ -33,7 +33,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_eth_types::EthExecutionProtocol;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
-use monad_executor_glue::{MonadEvent, ValSetCommand};
+use monad_executor_glue::{MonadEvent, SharedMonadEvent, ValSetCommand};
 use monad_secp::{PubKey, SecpSignature};
 use monad_state_backend::StateBackend;
 use monad_types::{Epoch, SeqNum};
@@ -152,7 +152,7 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    type Item = MonadEvent<ST, SCT, EthExecutionProtocol>;
+    type Item = SharedMonadEvent<ST, SCT, EthExecutionProtocol>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.deref_mut();
@@ -182,7 +182,8 @@ where
                     monad_executor_glue::ValidatorEvent::UpdateValidators(
                         validator_set_data_with_epoch,
                     ),
-                )))
+                )
+                .shared()))
             }
         }
     }

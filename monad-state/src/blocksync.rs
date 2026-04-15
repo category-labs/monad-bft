@@ -27,7 +27,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_executor_glue::{
     BlockSyncEvent, Command, ConsensusEvent, LedgerCommand, LoopbackCommand, MonadEvent,
-    RouterCommand, StateSyncEvent, TimeoutVariant, TimerCommand,
+    RouterCommand, SharedMonadEvent, StateSyncEvent, TimeoutVariant, TimerCommand,
 };
 use monad_state_backend::StateBackend;
 use monad_types::{ExecutionProtocol, NodeId, Round, RouterTarget};
@@ -162,7 +162,7 @@ where
 impl<ST, SCT, EPT, BPT, SBT, CCT, CRT> From<WrappedBlockSyncCommand<ST, SCT, EPT>>
     for Vec<
         Command<
-            MonadEvent<ST, SCT, EPT>,
+            SharedMonadEvent<ST, SCT, EPT>,
             VerifiedMonadMessage<ST, SCT, EPT>,
             ST,
             SCT,
@@ -197,7 +197,8 @@ where
                 vec![Command::TimerCommand(TimerCommand::Schedule {
                     duration: wrapped.request_timeout,
                     variant: TimeoutVariant::BlockSync(request),
-                    on_timeout: MonadEvent::BlockSyncEvent(BlockSyncEvent::Timeout(request)),
+                    on_timeout: MonadEvent::BlockSyncEvent(BlockSyncEvent::Timeout(request))
+                        .shared(),
                 })]
             }
             BlockSyncCommand::ResetTimeout(block_id) => {
@@ -239,7 +240,8 @@ where
                                 full_blocks,
                             })
                         }
-                    },
+                    }
+                    .shared(),
                 ))]
             }
         }

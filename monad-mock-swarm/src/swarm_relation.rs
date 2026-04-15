@@ -27,7 +27,7 @@ use monad_crypto::{
     NopSignature,
 };
 use monad_executor_glue::{
-    LedgerCommand, MonadEvent, StateSyncCommand, TxPoolCommand, ValSetCommand,
+    LedgerCommand, SharedMonadEvent, StateSyncCommand, TxPoolCommand, ValSetCommand,
 };
 use monad_multi_sig::MultiSig;
 use monad_router_scheduler::{BytesRouterScheduler, NoSerRouterScheduler, RouterScheduler};
@@ -114,7 +114,7 @@ where
             Signature = Self::SignatureType,
             SignatureCollection = Self::SignatureCollectionType,
             ExecutionProtocol = Self::ExecutionProtocolType,
-            Event = MonadEvent<
+            Event = SharedMonadEvent<
                 Self::SignatureType,
                 Self::SignatureCollectionType,
                 Self::ExecutionProtocolType,
@@ -145,7 +145,7 @@ where
         + Unpin;
 
     type ValSetUpdater: MockableValSetUpdater<
-            Event = MonadEvent<
+            Event = SharedMonadEvent<
                 Self::SignatureType,
                 Self::SignatureCollectionType,
                 Self::ExecutionProtocolType,
@@ -160,7 +160,7 @@ where
             ExecutionProtocol = Self::ExecutionProtocolType,
             BlockPolicy = Self::BlockPolicyType,
             StateBackend = Self::StateBackendType,
-            Event = MonadEvent<
+            Event = SharedMonadEvent<
                 Self::SignatureType,
                 Self::SignatureCollectionType,
                 Self::ExecutionProtocolType,
@@ -207,7 +207,7 @@ impl SwarmRelation for DebugSwarmRelation {
                 Signature = Self::SignatureType,
                 SignatureCollection = Self::SignatureCollectionType,
                 ExecutionProtocol = Self::ExecutionProtocolType,
-                Event = MonadEvent<
+                Event = SharedMonadEvent<
                     Self::SignatureType,
                     Self::SignatureCollectionType,
                     Self::ExecutionProtocolType,
@@ -217,7 +217,7 @@ impl SwarmRelation for DebugSwarmRelation {
                     Self::SignatureCollectionType,
                     Self::ExecutionProtocolType,
                 >,
-                Item = MonadEvent<
+                Item = SharedMonadEvent<
                     Self::SignatureType,
                     Self::SignatureCollectionType,
                     Self::ExecutionProtocolType,
@@ -252,14 +252,14 @@ impl SwarmRelation for DebugSwarmRelation {
 
     type ValSetUpdater = Box<
         dyn MockableValSetUpdater<
-                Event = MonadEvent<
+                Event = SharedMonadEvent<
                     Self::SignatureType,
                     Self::SignatureCollectionType,
                     Self::ExecutionProtocolType,
                 >,
                 SignatureCollection = Self::SignatureCollectionType,
                 Command = ValSetCommand,
-                Item = MonadEvent<
+                Item = SharedMonadEvent<
                     Self::SignatureType,
                     Self::SignatureCollectionType,
                     Self::ExecutionProtocolType,
@@ -276,7 +276,7 @@ impl SwarmRelation for DebugSwarmRelation {
                 StateBackend = Self::StateBackendType,
                 ChainConfig = Self::ChainConfigType,
                 ChainRevision = Self::ChainRevisionType,
-                Event = MonadEvent<
+                Event = SharedMonadEvent<
                     Self::SignatureType,
                     Self::SignatureCollectionType,
                     Self::ExecutionProtocolType,
@@ -290,7 +290,7 @@ impl SwarmRelation for DebugSwarmRelation {
                     Self::ChainConfigType,
                     Self::ChainRevisionType,
                 >,
-                Item = MonadEvent<
+                Item = SharedMonadEvent<
                     Self::SignatureType,
                     Self::SignatureCollectionType,
                     Self::ExecutionProtocolType,

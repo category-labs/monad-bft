@@ -17,12 +17,12 @@ use std::{
     fmt::Debug,
     net::{SocketAddr, SocketAddrV4},
     num::NonZeroU16,
+    sync::Arc,
 };
 
 use alloy_rlp::{encode_list, Decodable, Encodable, Header, RlpDecodable, RlpEncodable};
 use bytes::{BufMut, Bytes, BytesMut};
 use chrono::{DateTime, Utc};
-use futures::channel::oneshot;
 use monad_blocksync::{
     blocksync::BlockSyncSelfRequester,
     messages::message::{BlockSyncRequestMessage, BlockSyncResponseMessage},
@@ -51,7 +51,7 @@ use monad_crypto::certificate_signature::{
 use monad_state_backend::StateBackend;
 use monad_types::{
     deserialize_pubkey, serialize_pubkey, Epoch, ExecutionProtocol, LimitedVec, NodeId, Round,
-    RouterTarget, SeqNum, Stake, UdpPriority,
+    RouterTarget, SeqNum, Stake, TcpCompletionHandle, UdpPriority,
 };
 use monad_validator::signature_collection::SignatureCollection;
 use serde::{Deserialize, Serialize};
@@ -1769,7 +1769,7 @@ impl Decodable for StateSyncNetworkMessage {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub enum StateSyncEvent<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
@@ -1780,7 +1780,7 @@ where
     Outbound(
         NodeId<SCT::NodeIdPubKey>,
         StateSyncNetworkMessage,
-        #[serde(skip)] Option<oneshot::Sender<()>>, // completion
+        #[serde(skip)] Option<TcpCompletionHandle>, // completion
     ),
 
     /// Execution done syncing
@@ -2020,7 +2020,7 @@ where
 }
 
 /// MonadEvent are inputs to MonadState
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub enum MonadEvent<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
@@ -2050,6 +2050,8 @@ where
     },
 }
 
+pub type SharedMonadEvent<ST, SCT, EPT> = Arc<MonadEvent<ST, SCT, EPT>>;
+
 impl<ST, SCT, EPT> MonadEvent<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
@@ -2061,6 +2063,10 @@ where
     ///
     /// Currently, the only inconsistency is that the lossy_clone won't clone the statesync
     /// completion.
+    pub fn shared(self) -> SharedMonadEvent<ST, SCT, EPT> {
+        Arc::new(self)
+    }
+
     pub fn lossy_clone(&self) -> Self {
         match self {
             MonadEvent::ConsensusEvent(event) => MonadEvent::ConsensusEvent(event.clone()),
@@ -2108,6 +2114,10 @@ where
                 confirm_group_peers: confirm_group_peers.clone(),
             },
         }
+    }
+
+    pub fn lossy_clone_arc(&self) -> SharedMonadEvent<ST, SCT, EPT> {
+        Arc::new(self.lossy_clone())
     }
 }
 
@@ -2290,7 +2300,21 @@ where
     EPT: ExecutionProtocol,
 {
     pub timestamp: DateTime<Utc>,
-    pub event: MonadEvent<ST, SCT, EPT>,
+    #[serde(serialize_with = "serialize_shared_monad_event")]
+    pub event: SharedMonadEvent<ST, SCT, EPT>,
+}
+
+fn serialize_shared_monad_event<S, ST, SCT, EPT>(
+    event: &SharedMonadEvent<ST, SCT, EPT>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    event.as_ref().serialize(serializer)
 }
 
 impl<ST, SCT, EPT> LogFriendlyMonadEvent<ST, SCT, EPT>
@@ -2334,7 +2358,7 @@ where
 
         Ok(LogFriendlyMonadEvent {
             timestamp: ts,
-            event,
+            event: Arc::new(event),
         })
     }
 }
@@ -2354,7 +2378,7 @@ where
         b.put(&len[..]);
         b.put(&ts[..]);
 
-        self.event.encode(&mut b);
+        self.event.as_ref().encode(&mut b);
 
         b.into()
     }

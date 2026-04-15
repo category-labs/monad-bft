@@ -37,7 +37,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_eth_types::EthExecutionProtocol;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
-use monad_executor_glue::{BlockSyncEvent, LedgerCommand, MonadEvent};
+use monad_executor_glue::{BlockSyncEvent, LedgerCommand, MonadEvent, SharedMonadEvent};
 use monad_types::{BlockId, Round, SeqNum, GENESIS_ROUND};
 use monad_validator::signature_collection::SignatureCollection;
 use tracing::{info, trace, warn};
@@ -335,14 +335,12 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    type Item = MonadEvent<ST, SCT, EthExecutionProtocol>;
+    type Item = SharedMonadEvent<ST, SCT, EthExecutionProtocol>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         self.fetches.poll_recv(cx).map(|response| {
             let response = response.expect("fetches_tx never dropped");
-            Some(MonadEvent::BlockSyncEvent(BlockSyncEvent::SelfResponse {
-                response,
-            }))
+            Some(MonadEvent::BlockSyncEvent(BlockSyncEvent::SelfResponse { response }).shared())
         })
     }
 }

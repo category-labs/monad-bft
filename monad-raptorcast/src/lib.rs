@@ -27,7 +27,7 @@ use std::{
 
 use alloy_rlp::{Decodable, Encodable};
 use bytes::{Bytes, BytesMut};
-use futures::{channel::oneshot, FutureExt, Stream, StreamExt};
+use futures::{FutureExt, Stream, StreamExt};
 use itertools::Itertools;
 use message::{InboundRouterMessage, OutboundRouterMessage};
 use monad_crypto::{
@@ -45,6 +45,7 @@ use monad_dataplane::{
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{
     ControlPanelEvent, GetFullNodes, GetPeers, Message, MonadEvent, PeerEntry, RouterCommand,
+    SharedMonadEvent,
 };
 use monad_node_config::{FullNodeConfig, FullNodeRaptorCastConfig};
 use monad_peer_discovery::{
@@ -54,7 +55,10 @@ use monad_peer_discovery::{
     NameRecord, PeerDiscoveryAlgo, PeerDiscoveryEvent,
 };
 use monad_peer_score::IdentityScore;
-use monad_types::{DropTimer, Epoch, ExecutionProtocol, NodeId, Round, RouterTarget, UdpPriority};
+use monad_types::{
+    DropTimer, Epoch, ExecutionProtocol, NodeId, Round, RouterTarget, TcpCompletionHandle,
+    UdpPriority,
+};
 use monad_validator::{
     signature_collection::SignatureCollection,
     validator_set::{ValidatorSet, ValidatorSetType as _},
@@ -159,6 +163,13 @@ pub enum RaptorCastEvent<E, ST: CertificateSignatureRecoverable> {
     Message(E),
     PeerManagerResponse(PeerManagerResponse<ST>),
     SecondaryRaptorcastPeersUpdate(Round, Vec<NodeId<CertificateSignaturePubKey<ST>>>),
+}
+
+pub trait FromRaptorCastEvent<E, ST>: Sized
+where
+    ST: CertificateSignatureRecoverable,
+{
+    fn from_raptorcast_event(value: RaptorCastEvent<E, ST>) -> Self;
 }
 
 impl<ST, M, OM, SE, PD, AP, DS> RaptorCast<ST, M, OM, SE, PD, AP, DS>
@@ -362,7 +373,7 @@ where
         &mut self,
         to: &NodeId<CertificateSignaturePubKey<ST>>,
         make_app_message: impl FnOnce() -> Bytes,
-        completion: Option<oneshot::Sender<()>>,
+        completion: Option<TcpCompletionHandle>,
     ) {
         match self.peer_discovery_driver.lock().unwrap().get_addr(to) {
             None => {
@@ -389,7 +400,7 @@ where
                     address,
                     TcpMsg {
                         msg: signed_message.freeze(),
-                        completion,
+                        completion: completion.and_then(|completion| completion.take_sender()),
                     },
                 );
             }
@@ -1111,7 +1122,7 @@ where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Decodable,
     OM: Encodable + Into<M> + Clone,
-    E: From<RaptorCastEvent<M::Event, ST>>,
+    E: FromRaptorCastEvent<M::Event, ST>,
     PD: PeerDiscoveryAlgo<SignatureType = ST>,
     AP: auth::AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
     DS: IdentityScore<Identity = NodeId<CertificateSignaturePubKey<ST>>>,
@@ -1131,7 +1142,7 @@ where
         }
 
         if let Some(event) = this.pending_events.pop_front() {
-            return Poll::Ready(Some(event.into()));
+            return Poll::Ready(Some(E::from_raptorcast_event(event)));
         }
 
         loop {
@@ -1267,7 +1278,7 @@ where
             }
 
             if let Some(event) = this.pending_events.pop_front() {
-                return Poll::Ready(Some(event.into()));
+                return Poll::Ready(Some(E::from_raptorcast_event(event)));
             }
         }
 
@@ -1305,7 +1316,7 @@ where
                             }
                         }
                         if let Some(event) = this.pending_events.pop_front() {
-                            return Poll::Ready(Some(event.into()));
+                            return Poll::Ready(Some(E::from_raptorcast_event(event)));
                         }
                     }
                     Poll::Ready(Err(err)) => {
@@ -1365,9 +1376,9 @@ where
             // Dispatch messages received via TCP
             match deserialized_message {
                 InboundRouterMessage::AppMessage(message) => {
-                    return Poll::Ready(Some(
-                        RaptorCastEvent::Message(message.event(NodeId::new(from))).into(),
-                    ));
+                    return Poll::Ready(Some(E::from_raptorcast_event(
+                        RaptorCastEvent::Message(message.event(NodeId::new(from))),
+                    )));
                 }
                 InboundRouterMessage::PeerDiscoveryMessage(message) => {
                     // peer discovery message should come through udp
@@ -1515,13 +1526,14 @@ where
     }
 }
 
-impl<ST, SCT, EPT> From<RaptorCastEvent<MonadEvent<ST, SCT, EPT>, ST>> for MonadEvent<ST, SCT, EPT>
+impl<ST, SCT, EPT> FromRaptorCastEvent<MonadEvent<ST, SCT, EPT>, ST>
+    for MonadEvent<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-    fn from(value: RaptorCastEvent<MonadEvent<ST, SCT, EPT>, ST>) -> Self {
+    fn from_raptorcast_event(value: RaptorCastEvent<MonadEvent<ST, SCT, EPT>, ST>) -> Self {
         match value {
             RaptorCastEvent::Message(event) => event,
             RaptorCastEvent::PeerManagerResponse(peer_manager_response) => {
@@ -1539,6 +1551,41 @@ where
                     expiry_round,
                     confirm_group_peers,
                 }
+            }
+        }
+    }
+}
+
+impl<ST, SCT, EPT> FromRaptorCastEvent<SharedMonadEvent<ST, SCT, EPT>, ST>
+    for SharedMonadEvent<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    fn from_raptorcast_event(value: RaptorCastEvent<SharedMonadEvent<ST, SCT, EPT>, ST>) -> Self {
+        match value {
+            RaptorCastEvent::Message(event) => event,
+            RaptorCastEvent::PeerManagerResponse(peer_manager_response) => {
+                match peer_manager_response {
+                    PeerManagerResponse::PeerList(peer) => MonadEvent::ControlPanelEvent(
+                        ControlPanelEvent::GetPeers(GetPeers::Response(peer)),
+                    )
+                    .shared(),
+                    PeerManagerResponse::FullNodes(full_nodes) => {
+                        MonadEvent::ControlPanelEvent(ControlPanelEvent::GetFullNodes(
+                            GetFullNodes::Response(full_nodes),
+                        ))
+                        .shared()
+                    }
+                }
+            }
+            RaptorCastEvent::SecondaryRaptorcastPeersUpdate(expiry_round, confirm_group_peers) => {
+                MonadEvent::SecondaryRaptorcastPeersUpdate {
+                    expiry_round,
+                    confirm_group_peers,
+                }
+                .shared()
             }
         }
     }

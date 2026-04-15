@@ -30,7 +30,8 @@ use monad_consensus_types::checkpoint::Checkpoint;
 use monad_crypto::certificate_signature::{CertificateSignaturePubKey, PubKey};
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{
-    Command, Message, MonadEvent, RouterCommand, TimeoutVariant, TimerCommand, TimestampCommand,
+    Command, Message, MonadEvent, RouterCommand, SharedMonadEvent, TimeoutVariant, TimerCommand,
+    TimestampCommand,
 };
 use monad_router_scheduler::{RouterEvent, RouterScheduler};
 use monad_state::VerifiedMonadMessage;
@@ -50,7 +51,11 @@ pub struct MockExecutor<S: SwarmRelation> {
         MockConfigFile<S::SignatureType, S::SignatureCollectionType, S::ExecutionProtocolType>,
     val_set: S::ValSetUpdater,
     loopback: LoopbackExecutor<
-        MonadEvent<S::SignatureType, S::SignatureCollectionType, S::ExecutionProtocolType>,
+        SharedMonadEvent<
+            S::SignatureType,
+            S::SignatureCollectionType,
+            S::ExecutionProtocolType,
+        >,
     >,
     txpool: S::TxPoolExecutor,
     statesync: S::StateSyncExecutor,
@@ -59,7 +64,11 @@ pub struct MockExecutor<S: SwarmRelation> {
 
     timer: PriorityQueue<
         TimerEvent<
-            MonadEvent<S::SignatureType, S::SignatureCollectionType, S::ExecutionProtocolType>,
+            SharedMonadEvent<
+                S::SignatureType,
+                S::SignatureCollectionType,
+                S::ExecutionProtocolType,
+            >,
         >,
         Reverse<Duration>,
     >,
@@ -307,7 +316,11 @@ impl<S: SwarmRelation> MockExecutor<S> {
 
 impl<S: SwarmRelation> Executor for MockExecutor<S> {
     type Command = Command<
-        MonadEvent<S::SignatureType, S::SignatureCollectionType, S::ExecutionProtocolType>,
+        SharedMonadEvent<
+            S::SignatureType,
+            S::SignatureCollectionType,
+            S::ExecutionProtocolType,
+        >,
         VerifiedMonadMessage<
             S::SignatureType,
             S::SignatureCollectionType,
@@ -428,7 +441,11 @@ impl<S: SwarmRelation> MockExecutor<S> {
         until: Duration,
     ) -> Option<
         MockExecutorEvent<
-            MonadEvent<S::SignatureType, S::SignatureCollectionType, S::ExecutionProtocolType>,
+            SharedMonadEvent<
+                S::SignatureType,
+                S::SignatureCollectionType,
+                S::ExecutionProtocolType,
+            >,
             CertificateSignaturePubKey<S::SignatureType>,
             S::TransportMessage,
         >,
@@ -473,7 +490,9 @@ impl<S: SwarmRelation> MockExecutor<S> {
                 }
                 ExecutorEventType::Timestamp => {
                     let event = self.timestamper.next_tick();
-                    MockExecutorEvent::Event(MonadEvent::TimestampUpdateEvent(event.as_nanos()))
+                    MockExecutorEvent::Event(
+                        MonadEvent::TimestampUpdateEvent(event.as_nanos()).shared(),
+                    )
                 }
                 ExecutorEventType::StateSync => {
                     return self.statesync.pop().map(MockExecutorEvent::Event)

@@ -18,6 +18,7 @@ use std::{
     fmt::Debug,
     marker::PhantomData,
     ops::Deref,
+    sync::Arc,
 };
 
 use alloy_primitives::U256;
@@ -57,8 +58,8 @@ use monad_executor_glue::{
     BlockSyncEvent, ClearMetrics, Command, ConfigEvent, ConfigFileCommand, ConfigReloadCommand,
     ConsensusEvent, ControlPanelCommand, ControlPanelEvent, GetFullNodes, GetMetrics, GetPeers,
     LedgerCommand, MempoolEvent, Message, MonadEvent, ReadCommand, ReloadConfig, RouterCommand,
-    StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage, StateSyncRequest, TxPoolCommand,
-    ValSetCommand, ValidatorEvent, WriteCommand,
+    SharedMonadEvent, StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage,
+    StateSyncRequest, TxPoolCommand, ValSetCommand, ValidatorEvent, WriteCommand,
 };
 use monad_state_backend::StateBackend;
 use monad_types::{
@@ -788,7 +789,7 @@ where
     EPT: ExecutionProtocol,
 {
     type NodeIdPubKey = CertificateSignaturePubKey<ST>;
-    type Event = MonadEvent<ST, SCT, EPT>;
+    type Event = SharedMonadEvent<ST, SCT, EPT>;
 
     // FIXME-2: from: NodeId is immediately converted to pubkey. All other msgs
     // put the NodeId wrap back on again, except ConsensusMessage when verifying
@@ -801,28 +802,32 @@ where
             MonadMessage::Consensus(msg) => MonadEvent::ConsensusEvent(ConsensusEvent::Message {
                 sender: from,
                 unverified_message: msg,
-            }),
+            })
+            .shared(),
 
             MonadMessage::BlockSyncRequest(request) => {
                 MonadEvent::BlockSyncEvent(BlockSyncEvent::Request {
                     sender: from,
                     request,
                 })
+                .shared()
             }
             MonadMessage::BlockSyncResponse(response) => {
                 MonadEvent::BlockSyncEvent(BlockSyncEvent::Response {
                     sender: from,
                     response,
                 })
+                .shared()
             }
             MonadMessage::ForwardedTx(msg) => {
                 MonadEvent::MempoolEvent(MempoolEvent::ForwardedTxs {
                     sender: from,
                     txs: msg,
                 })
+                .shared()
             }
             MonadMessage::StateSyncMessage(msg) => {
-                MonadEvent::StateSyncEvent(StateSyncEvent::Inbound(from, msg))
+                MonadEvent::StateSyncEvent(StateSyncEvent::Inbound(from, msg)).shared()
             }
         }
     }
@@ -880,7 +885,7 @@ where
         MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>,
         Vec<
             Command<
-                MonadEvent<ST, SCT, EPT>,
+                SharedMonadEvent<ST, SCT, EPT>,
                 VerifiedMonadMessage<ST, SCT, EPT>,
                 ST,
                 SCT,
@@ -964,9 +969,9 @@ where
         }) = self.forkpoint;
 
         for vset in self.locked_epoch_validators {
-            init_cmds.extend(monad_state.update(MonadEvent::ValidatorEvent(
-                ValidatorEvent::UpdateValidators(vset),
-            )));
+            init_cmds.extend(monad_state.update(
+                MonadEvent::ValidatorEvent(ValidatorEvent::UpdateValidators(vset)).shared(),
+            ));
         }
 
         tracing::info!(?root, ?high_certificate, "starting up, syncing");
@@ -992,10 +997,10 @@ where
 {
     pub fn update(
         &mut self,
-        event: MonadEvent<ST, SCT, EPT>,
+        event: SharedMonadEvent<ST, SCT, EPT>,
     ) -> Vec<
         Command<
-            MonadEvent<ST, SCT, EPT>,
+            SharedMonadEvent<ST, SCT, EPT>,
             VerifiedMonadMessage<ST, SCT, EPT>,
             ST,
             SCT,
@@ -1006,7 +1011,7 @@ where
             CRT,
         >,
     > {
-        match event {
+        match Arc::unwrap_or_clone(event) {
             MonadEvent::ConsensusEvent(consensus_event) => {
                 let consensus_cmds = ConsensusChildState::new(self).update(consensus_event);
 
@@ -1341,7 +1346,7 @@ where
         &mut self,
     ) -> Vec<
         Command<
-            MonadEvent<ST, SCT, EPT>,
+            SharedMonadEvent<ST, SCT, EPT>,
             VerifiedMonadMessage<ST, SCT, EPT>,
             ST,
             SCT,
@@ -1376,10 +1381,13 @@ where
                 root_seq_num =? block_buffer.root_seq_num(),
                 "still syncing..."
             );
-            return self.update(MonadEvent::BlockSyncEvent(BlockSyncEvent::SelfRequest {
-                requester: BlockSyncSelfRequester::StateSync,
-                block_range,
-            }));
+            return self.update(
+                MonadEvent::BlockSyncEvent(BlockSyncEvent::SelfRequest {
+                    requester: BlockSyncSelfRequester::StateSync,
+                    block_range,
+                })
+                .shared(),
+            );
         }
 
         let root_info = block_buffer
@@ -1421,9 +1429,9 @@ where
 
             if delay_executed {
                 // TODO assert state root matches?
-                return self.update(MonadEvent::StateSyncEvent(StateSyncEvent::DoneSync(
-                    delay_seq_num,
-                )));
+                return self.update(
+                    MonadEvent::StateSyncEvent(StateSyncEvent::DoneSync(delay_seq_num)).shared(),
+                );
             }
 
             let delayed_execution_result = block_buffer
@@ -1579,14 +1587,10 @@ where
         // would need to restart at the exact same time and finish
         // statesyncing/blocksyncing within the vote pacing window
         commands.extend(
-            self.update(MonadEvent::ConsensusEvent(ConsensusEvent::SendVote(
-                current_round,
-            ))),
+            self.update(MonadEvent::ConsensusEvent(ConsensusEvent::SendVote(current_round)).shared()),
         );
         commands.extend(
-            self.update(MonadEvent::ConsensusEvent(ConsensusEvent::Timeout(
-                current_round,
-            ))),
+            self.update(MonadEvent::ConsensusEvent(ConsensusEvent::Timeout(current_round)).shared()),
         );
         for (sender, proposal) in cached_proposals {
             let mut consensus = ConsensusChildState::new(self);

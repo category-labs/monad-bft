@@ -41,7 +41,7 @@ use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthBlockValidator;
 use monad_eth_txpool_executor::{EthTxPoolExecutor, EthTxPoolIpcConfig};
 use monad_executor::{Executor, ExecutorMetricsChain};
-use monad_executor_glue::{LogFriendlyMonadEvent, Message, MonadEvent};
+use monad_executor_glue::{LogFriendlyMonadEvent, Message, SharedMonadEvent};
 use monad_ledger::MonadBlockFileLedger;
 use monad_node_config::{
     ExecutionProtocolType, FullNodeIdentityConfig, NodeBootstrapConfig, NodeConfig,
@@ -253,7 +253,11 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
             node_state.chain_config.get_staking_activation(),
             state_backend.clone(),
         ),
-        timestamp: TokioTimestamp::new(Duration::from_millis(5), 100, 10001),
+        timestamp: TokioTimestamp::<
+            SignatureType,
+            SignatureCollectionType,
+            ExecutionProtocolType,
+        >::new(Duration::from_millis(5), 100, 10001),
         txpool: EthTxPoolExecutor::start(
             create_block_policy(),
             state_backend.clone(),
@@ -279,7 +283,11 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
             score_reader,
         )
         .expect("txpool ipc succeeds"),
-        control_panel: ControlPanelIpcReceiver::new(
+        control_panel: ControlPanelIpcReceiver::<
+            SignatureType,
+            SignatureCollectionType,
+            ExecutionProtocolType,
+        >::new(
             node_state.control_panel_ipc_path,
             node_state.reload_handle,
             1000,
@@ -302,10 +310,16 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
                 .expect("invalid file name")
                 .to_owned(),
         ),
-        config_loader: ConfigLoader::new(node_state.node_config_path),
+        config_loader: ConfigLoader::<
+            SignatureType,
+            SignatureCollectionType,
+            ExecutionProtocolType,
+        >::new(node_state.node_config_path),
     };
 
-    let logger_config: WALoggerConfig<LogFriendlyMonadEvent<_, _, _>> = WALoggerConfig::new(
+    let logger_config: WALoggerConfig<
+        LogFriendlyMonadEvent<SignatureType, SignatureCollectionType, ExecutionProtocolType>,
+    > = WALoggerConfig::new(
         node_state.wal_path.clone(), // output wal path
         false,                       // flush on every write
     );
@@ -479,7 +493,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
                     let _ledger_span = ledger_span.enter();
                     let wal_event = LogFriendlyMonadEvent {
                         timestamp: Utc::now(),
-                        event: event.lossy_clone(),
+                        event: Arc::clone(&event),
                     };
                     match waltrace_tx.try_send(wal_event) {
                         Ok(()) => {}
@@ -552,7 +566,7 @@ fn build_raptorcast_router<ST, SCT, M, OM, DS>(
     ST,
     M,
     OM,
-    MonadEvent<ST, SCT, ExecutionProtocolType>,
+    SharedMonadEvent<ST, SCT, ExecutionProtocolType>,
     PeerDiscovery<ST>,
     WireAuthProtocol,
     DS,

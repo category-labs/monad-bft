@@ -26,7 +26,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
-use monad_executor_glue::{MonadEvent, TimestampCommand};
+use monad_executor_glue::{MonadEvent, SharedMonadEvent, TimestampCommand};
 use monad_types::ExecutionProtocol;
 use monad_validator::signature_collection::SignatureCollection;
 use tokio::time::{Duration, Interval};
@@ -74,7 +74,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-    type Item = MonadEvent<ST, SCT, EPT>;
+    type Item = SharedMonadEvent<ST, SCT, EPT>;
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.deref_mut();
 
@@ -86,7 +86,7 @@ where
                     .expect("Clock may have gone backwards");
                 let t = epoch_time.as_nanos();
                 // t += self.adjuster.get_adjustment();
-                Poll::Ready(Some(MonadEvent::TimestampUpdateEvent(t)))
+                Poll::Ready(Some(MonadEvent::TimestampUpdateEvent(t).shared()))
             }
             Poll::Pending => Poll::Pending,
         }

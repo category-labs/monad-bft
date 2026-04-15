@@ -40,7 +40,7 @@ use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics, PoolTxKind};
 use monad_eth_types::{EthExecutionProtocol, ExtractEthAddress};
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
-use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
+use monad_executor_glue::{MempoolEvent, MonadEvent, SharedMonadEvent, TxPoolCommand};
 use monad_state_backend::StateBackend;
 use monad_types::{ExecutionProtocol, SeqNum};
 use monad_validator::signature_collection::SignatureCollection;
@@ -478,14 +478,14 @@ where
 
     Self: Unpin,
 {
-    type Item = MonadEvent<ST, SCT, EPT>;
+    type Item = SharedMonadEvent<ST, SCT, EPT>;
 
     fn poll_next(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Option<Self::Item>> {
         if let Some(event) = self.events.pop_front() {
-            return Poll::Ready(Some(MonadEvent::MempoolEvent(event)));
+            return Poll::Ready(Some(MonadEvent::MempoolEvent(event).shared()));
         }
 
         if let Some(waker) = self.waker.as_mut() {
@@ -519,7 +519,7 @@ where
     type ChainConfig = CCT;
     type ChainRevision = CRT;
 
-    type Event = MonadEvent<ST, SCT, MockExecutionProtocol>;
+    type Event = SharedMonadEvent<ST, SCT, MockExecutionProtocol>;
 
     fn ready(&self) -> bool {
         !self.events.is_empty()
@@ -568,7 +568,7 @@ where
     type ChainConfig = MockChainConfig;
     type ChainRevision = MockChainRevision;
 
-    type Event = MonadEvent<ST, SCT, EthExecutionProtocol>;
+    type Event = SharedMonadEvent<ST, SCT, EthExecutionProtocol>;
 
     fn ready(&self) -> bool {
         !self.events.is_empty()

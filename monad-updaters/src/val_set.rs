@@ -26,7 +26,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
-use monad_executor_glue::{MonadEvent, ValSetCommand};
+use monad_executor_glue::{MonadEvent, SharedMonadEvent, ValSetCommand};
 use monad_types::{Epoch, ExecutionProtocol, SeqNum};
 use monad_validator::signature_collection::SignatureCollection;
 use tracing::error;
@@ -124,7 +124,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-    type Event = MonadEvent<ST, SCT, EPT>;
+    type Event = SharedMonadEvent<ST, SCT, EPT>;
     type SignatureCollection = SCT;
 
     fn ready(&self) -> bool {
@@ -175,7 +175,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-    type Item = MonadEvent<ST, SCT, EPT>;
+    type Item = SharedMonadEvent<ST, SCT, EPT>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.deref_mut();
@@ -187,7 +187,8 @@ where
         if let Some(next_val_data) = this.next_val_data.take() {
             return Poll::Ready(Some(MonadEvent::ValidatorEvent(
                 monad_executor_glue::ValidatorEvent::<SCT>::UpdateValidators(next_val_data),
-            )));
+            )
+            .shared()));
         }
 
         if let Some(waker) = this.waker.as_mut() {
@@ -275,7 +276,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-    type Event = MonadEvent<ST, SCT, EPT>;
+    type Event = SharedMonadEvent<ST, SCT, EPT>;
     type SignatureCollection = SCT;
 
     fn ready(&self) -> bool {
@@ -340,7 +341,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-    type Item = MonadEvent<ST, SCT, EPT>;
+    type Item = SharedMonadEvent<ST, SCT, EPT>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.deref_mut();
@@ -348,7 +349,8 @@ where
         if let Some(next_val_data) = this.next_val_data.take() {
             return Poll::Ready(Some(MonadEvent::ValidatorEvent(
                 monad_executor_glue::ValidatorEvent::<SCT>::UpdateValidators(next_val_data),
-            )));
+            )
+            .shared()));
         }
 
         if let Some(waker) = this.waker.as_mut() {

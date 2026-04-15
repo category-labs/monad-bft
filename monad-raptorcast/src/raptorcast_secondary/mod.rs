@@ -46,7 +46,7 @@ use crate::{
     config::{RaptorCastConfig, SecondaryRaptorCastMode},
     message::OutboundRouterMessage,
     util::{SecondaryGroup, SecondaryGroupAssignment},
-    RaptorCastEvent,
+    FromRaptorCastEvent, RaptorCastEvent,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -396,7 +396,7 @@ where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Decodable,
     OM: Encodable + Into<M> + Clone,
-    E: From<RaptorCastEvent<M::Event, ST>>,
+    E: FromRaptorCastEvent<M::Event, ST>,
     PD: PeerDiscoveryAlgo<SignatureType = ST>,
     Self: Unpin,
 {
@@ -483,11 +483,12 @@ where
                                 );
 
                                 ret = Poll::Ready(Some(
-                                    RaptorCastEvent::SecondaryRaptorcastPeersUpdate(
-                                        confirm_msg.prepare.end_round,
-                                        participated_nodes.into_iter().collect(),
-                                    )
-                                    .into(),
+                                    E::from_raptorcast_event(
+                                        RaptorCastEvent::SecondaryRaptorcastPeersUpdate(
+                                            confirm_msg.prepare.end_round,
+                                            participated_nodes.into_iter().collect(),
+                                        ),
+                                    ),
                                 ));
                             } else if num_mappings > 0 {
                                 warn!(?confirm_msg, num_peers =? confirm_msg.peers.len(), num_name_recs =? confirm_msg.name_records.len(),

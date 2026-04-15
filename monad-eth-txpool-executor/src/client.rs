@@ -25,7 +25,7 @@ use monad_crypto::certificate_signature::{
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_types::EthExecutionProtocol;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
-use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
+use monad_executor_glue::{MempoolEvent, MonadEvent, SharedMonadEvent, TxPoolCommand};
 use monad_fair_queue::{FairQueue, FairQueueBuilder};
 use monad_peer_score::{
     ema::{ScoreProvider, ScoreReader},
@@ -564,7 +564,7 @@ where
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
-    type Item = MonadEvent<ST, SCT, EthExecutionProtocol>;
+    type Item = SharedMonadEvent<ST, SCT, EthExecutionProtocol>;
 
     fn poll_next(
         self: Pin<&mut Self>,
@@ -586,7 +586,7 @@ where
             };
 
             if let Some(event) = this.process_event(event) {
-                return Poll::Ready(Some(MonadEvent::MempoolEvent(event)));
+                return Poll::Ready(Some(MonadEvent::MempoolEvent(event).shared()));
             }
         }
 

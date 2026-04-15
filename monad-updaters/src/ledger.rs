@@ -33,7 +33,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_executor::{Executor, ExecutorMetricsChain};
-use monad_executor_glue::{BlockSyncEvent, LedgerCommand, MonadEvent};
+use monad_executor_glue::{BlockSyncEvent, LedgerCommand, MonadEvent, SharedMonadEvent};
 use monad_state_backend::{InMemoryState, MockExecution};
 use monad_types::{BlockId, ExecutionProtocol, SeqNum};
 use monad_validator::signature_collection::SignatureCollection;
@@ -248,13 +248,13 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-    type Item = MonadEvent<ST, SCT, EPT>;
+    type Item = SharedMonadEvent<ST, SCT, EPT>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.deref_mut();
 
         if let Some(event) = this.events.pop_front() {
-            return Poll::Ready(Some(MonadEvent::BlockSyncEvent(event)));
+            return Poll::Ready(Some(MonadEvent::BlockSyncEvent(event).shared()));
         }
 
         if let Some(waker) = this.waker.as_mut() {
@@ -276,7 +276,7 @@ where
     type Signature = ST;
     type SignatureCollection = SCT;
     type ExecutionProtocol = EPT;
-    type Event = MonadEvent<ST, SCT, EPT>;
+    type Event = SharedMonadEvent<ST, SCT, EPT>;
 
     fn ready(&self) -> bool {
         !self.events.is_empty()

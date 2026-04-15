@@ -25,8 +25,9 @@ use monad_crypto::certificate_signature::{
 };
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{
-    MonadEvent, StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage, StateSyncRequest,
-    StateSyncResponse, StateSyncUpsertType, StateSyncUpsertV1, SELF_STATESYNC_VERSION,
+    MonadEvent, SharedMonadEvent, StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage,
+    StateSyncRequest, StateSyncResponse, StateSyncUpsertType, StateSyncUpsertV1,
+    SELF_STATESYNC_VERSION,
 };
 use monad_state_backend::{InMemoryState, StateBackend};
 use monad_types::{ExecutionProtocol, FinalizedHeader, NodeId, SeqNum, GENESIS_SEQ_NUM};
@@ -44,7 +45,9 @@ pub trait MockableStateSync:
     fn ready(&self) -> bool;
     fn pop(
         &mut self,
-    ) -> Option<MonadEvent<Self::Signature, Self::SignatureCollection, Self::ExecutionProtocol>>;
+    ) -> Option<
+        SharedMonadEvent<Self::Signature, Self::SignatureCollection, Self::ExecutionProtocol>,
+    >;
 }
 
 impl<T: MockableStateSync + ?Sized> MockableStateSync for Box<T> {
@@ -57,7 +60,9 @@ impl<T: MockableStateSync + ?Sized> MockableStateSync for Box<T> {
     }
     fn pop(
         &mut self,
-    ) -> Option<MonadEvent<Self::Signature, Self::SignatureCollection, Self::ExecutionProtocol>>
+    ) -> Option<
+        SharedMonadEvent<Self::Signature, Self::SignatureCollection, Self::ExecutionProtocol>,
+    >
     {
         (**self).pop()
     }
@@ -69,7 +74,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-    events: VecDeque<MonadEvent<ST, SCT, EPT>>,
+    events: VecDeque<SharedMonadEvent<ST, SCT, EPT>>,
 
     state_backend: InMemoryState<ST, SCT>,
     peers: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
@@ -107,9 +112,10 @@ where
                     if eth_header.seq_num() == GENESIS_SEQ_NUM =>
                 {
                     self.events
-                        .push_back(MonadEvent::StateSyncEvent(StateSyncEvent::DoneSync(
-                            GENESIS_SEQ_NUM,
-                        )));
+                        .push_back(
+                            MonadEvent::StateSyncEvent(StateSyncEvent::DoneSync(GENESIS_SEQ_NUM))
+                                .shared(),
+                        );
                 }
                 StateSyncCommand::RequestSync(eth_header) => {
                     assert!(!self.started_execution);
@@ -130,6 +136,7 @@ where
                             StateSyncNetworkMessage::Request(request),
                             None, // don't care about completion for mock
                         ))
+                        .shared()
                     }))
                 }
                 StateSyncCommand::Message((from, message)) => match message {
@@ -164,11 +171,14 @@ where
                             response_n: 1,
                         };
                         self.events
-                            .push_back(MonadEvent::StateSyncEvent(StateSyncEvent::Outbound(
-                                from,
-                                StateSyncNetworkMessage::Response(response),
-                                None, // don't care about completion for mock
-                            )))
+                            .push_back(
+                                MonadEvent::StateSyncEvent(StateSyncEvent::Outbound(
+                                    from,
+                                    StateSyncNetworkMessage::Response(response),
+                                    None, // don't care about completion for mock
+                                ))
+                                .shared(),
+                            )
                     }
                     StateSyncNetworkMessage::Response(response) => {
                         if !self.started_execution
@@ -181,9 +191,12 @@ where
                                 serde_json::from_slice(&response.response[0].data).unwrap();
                             let mut old_state = self.state_backend.lock().unwrap();
                             old_state.reset_state(deserialized);
-                            self.events.push_back(MonadEvent::StateSyncEvent(
-                                StateSyncEvent::DoneSync(SeqNum(response.request.target)),
-                            ));
+                            self.events.push_back(
+                                MonadEvent::StateSyncEvent(StateSyncEvent::DoneSync(SeqNum(
+                                    response.request.target,
+                                )))
+                                .shared(),
+                            );
                         }
                     }
                     StateSyncNetworkMessage::BadVersion(_) => {}
@@ -244,7 +257,7 @@ where
         !self.events.is_empty()
     }
 
-    fn pop(&mut self) -> Option<MonadEvent<ST, SCT, EPT>> {
+    fn pop(&mut self) -> Option<SharedMonadEvent<ST, SCT, EPT>> {
         self.events.pop_front()
     }
 }
@@ -255,7 +268,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-    type Item = MonadEvent<ST, SCT, EPT>;
+    type Item = SharedMonadEvent<ST, SCT, EPT>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         if let Some(event) = self.events.pop_front() {

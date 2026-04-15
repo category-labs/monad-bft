@@ -47,7 +47,7 @@ use monad_raptorcast::{
         SecondaryRaptorCastModeConfig,
     },
     util::SecondaryGroupAssignment,
-    RaptorCast, RaptorCastEvent,
+    FromRaptorCastEvent, RaptorCast,
 };
 use monad_types::{Epoch, NodeId};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
@@ -478,7 +478,7 @@ where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Decodable,
     OM: Encodable + Into<M> + Clone,
-    E: From<RaptorCastEvent<M::Event, ST>>,
+    E: FromRaptorCastEvent<M::Event, ST>,
     Self: Unpin,
     AP: AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
     DS: IdentityScore<Identity = NodeId<CertificateSignaturePubKey<ST>>>,

@@ -40,8 +40,8 @@ use monad_crypto::certificate_signature::{
 };
 use monad_executor_glue::{
     BlockSyncEvent, Command, ConfigFileCommand, ConsensusEvent, LedgerCommand, LoopbackCommand,
-    MempoolEvent, MonadEvent, RouterCommand, StateSyncEvent, TimeoutVariant, TimerCommand,
-    TimestampCommand, TxPoolCommand, ValSetCommand,
+    MempoolEvent, MonadEvent, RouterCommand, SharedMonadEvent, StateSyncEvent,
+    TimeoutVariant, TimerCommand, TimestampCommand, TxPoolCommand, ValSetCommand,
 };
 use monad_state_backend::StateBackend;
 use monad_types::{ExecutionProtocol, NodeId, Round, RouterTarget};
@@ -344,7 +344,7 @@ where
         event: MempoolEvent<ST, SCT, EPT>,
     ) -> Vec<
         Command<
-            MonadEvent<ST, SCT, EPT>,
+            SharedMonadEvent<ST, SCT, EPT>,
             VerifiedMonadMessage<ST, SCT, EPT>,
             ST,
             SCT,
@@ -657,7 +657,7 @@ impl<ST, SCT, EPT, BPT, SBT, CCT, CRT>
     From<WrappedConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>>
     for Vec<
         Command<
-            MonadEvent<ST, SCT, EPT>,
+            SharedMonadEvent<ST, SCT, EPT>,
             VerifiedMonadMessage<ST, SCT, EPT>,
             ST,
             SCT,
@@ -716,7 +716,7 @@ where
                 parent_cmds.push(Command::TimerCommand(TimerCommand::Schedule {
                     duration,
                     variant: TimeoutVariant::Pacemaker,
-                    on_timeout: MonadEvent::ConsensusEvent(ConsensusEvent::Timeout(round)),
+                    on_timeout: MonadEvent::ConsensusEvent(ConsensusEvent::Timeout(round)).shared(),
                 }))
             }
             ConsensusCommand::ScheduleReset => parent_cmds.push(Command::TimerCommand(
@@ -791,7 +791,8 @@ where
                     MonadEvent::BlockSyncEvent(BlockSyncEvent::SelfRequest {
                         requester: BlockSyncSelfRequester::Consensus,
                         block_range,
-                    }),
+                    })
+                    .shared(),
                 )));
             }
             ConsensusCommand::CancelSync(block_range) => {
@@ -799,12 +800,14 @@ where
                     MonadEvent::BlockSyncEvent(BlockSyncEvent::SelfCancelRequest {
                         requester: BlockSyncSelfRequester::Consensus,
                         block_range,
-                    }),
+                    })
+                    .shared(),
                 )));
             }
             ConsensusCommand::RequestStateSync { root, high_qc } => {
                 parent_cmds.push(Command::LoopbackCommand(LoopbackCommand::Forward(
-                    MonadEvent::StateSyncEvent(StateSyncEvent::RequestSync { root, high_qc }),
+                    MonadEvent::StateSyncEvent(StateSyncEvent::RequestSync { root, high_qc })
+                        .shared(),
                 )));
             }
             ConsensusCommand::TimestampUpdate(t) => {
@@ -814,7 +817,8 @@ where
                 parent_cmds.push(Command::TimerCommand(TimerCommand::Schedule {
                     duration,
                     variant: TimeoutVariant::SendVote,
-                    on_timeout: MonadEvent::ConsensusEvent(ConsensusEvent::SendVote(round)),
+                    on_timeout: MonadEvent::ConsensusEvent(ConsensusEvent::SendVote(round))
+                        .shared(),
                 }))
             }
         }

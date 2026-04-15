@@ -22,6 +22,7 @@ use monad_crypto::certificate_signature::{
 use monad_executor::Executor;
 use monad_executor_glue::{
     ConfigEvent, ConfigReloadCommand, ConfigUpdate, KnownPeersUpdate, MonadEvent, PeerEntry,
+    SharedMonadEvent,
 };
 use monad_node_config::{NodeBootstrapPeerConfig, NodeConfig};
 use monad_types::{ExecutionProtocol, NodeId};
@@ -50,7 +51,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-    type Item = MonadEvent<ST, SCT, EPT>;
+    type Item = SharedMonadEvent<ST, SCT, EPT>;
 
     fn poll_next(
         self: std::pin::Pin<&mut Self>,
@@ -232,7 +233,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-    type Item = MonadEvent<ST, SCT, EPT>;
+    type Item = SharedMonadEvent<ST, SCT, EPT>;
 
     fn poll_next(
         mut self: std::pin::Pin<&mut Self>,
@@ -240,7 +241,7 @@ where
     ) -> std::task::Poll<Option<Self::Item>> {
         let this = self.deref_mut();
         this.response_rx.poll_recv(cx).map(|maybe_event| {
-            maybe_event.map(|config_event| MonadEvent::ConfigEvent(config_event))
+            maybe_event.map(|config_event| MonadEvent::ConfigEvent(config_event).shared())
         })
     }
 }

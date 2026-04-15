@@ -26,7 +26,7 @@ use monad_crypto::certificate_signature::{
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{
     ClearMetrics, ControlPanelCommand, ControlPanelEvent, GetFullNodes, GetMetrics, GetPeers,
-    MonadEvent, ReadCommand, ReloadConfig, WriteCommand,
+    MonadEvent, ReadCommand, ReloadConfig, SharedMonadEvent, WriteCommand,
 };
 use monad_types::ExecutionProtocol;
 use monad_validator::signature_collection::SignatureCollection;
@@ -46,7 +46,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-    receiver: mpsc::Receiver<MonadEvent<ST, SCT, EPT>>,
+    receiver: mpsc::Receiver<SharedMonadEvent<ST, SCT, EPT>>,
     client_sender: broadcast::Sender<ControlPanelCommand<ST>>,
 
     metrics: ExecutorMetrics,
@@ -60,7 +60,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-    type Item = MonadEvent<ST, SCT, EPT>;
+    type Item = SharedMonadEvent<ST, SCT, EPT>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         self.receiver.poll_recv(cx)
@@ -134,7 +134,7 @@ where
 
     async fn new_connection(
         mut read: FramedRead<OwnedReadHalf, LengthDelimitedCodec>,
-        event_channel: mpsc::Sender<MonadEvent<ST, SCT, EPT>>,
+        event_channel: mpsc::Sender<SharedMonadEvent<ST, SCT, EPT>>,
     ) {
         while let Some(Ok(bytes)) = read.next().await {
             debug!("control panel ipc server bytes: {:?}", &bytes);
@@ -163,7 +163,7 @@ where
                         GetMetrics::Request => {
                             let event = ControlPanelEvent::GetMetricsEvent;
                             let Ok(_) = event_channel
-                                .send(MonadEvent::ControlPanelEvent(event.clone()))
+                                .send(MonadEvent::ControlPanelEvent(event.clone()).shared())
                                 .await
                             else {
                                 error!("failed to forward request {:?} to executor, closing connection", &event);
@@ -176,7 +176,7 @@ where
                         GetPeers::Request => {
                             let event = ControlPanelEvent::GetPeers(GetPeers::Request);
                             let Ok(_) = event_channel
-                                .send(MonadEvent::ControlPanelEvent(event.clone()))
+                                .send(MonadEvent::ControlPanelEvent(event.clone()).shared())
                                 .await
                             else {
                                 error!("failed to forward request {:?} to executor, closing connection", &event);
@@ -189,7 +189,7 @@ where
                         GetFullNodes::Request => {
                             let event = ControlPanelEvent::GetFullNodes(GetFullNodes::Request);
                             let Ok(_) = event_channel
-                                .send(MonadEvent::ControlPanelEvent(event.clone()))
+                                .send(MonadEvent::ControlPanelEvent(event.clone()).shared())
                                 .await
                             else {
                                 error!("failed to forward request {:?} to executor, closing connection", &event);
@@ -204,7 +204,7 @@ where
                         ClearMetrics::Request => {
                             let event = ControlPanelEvent::ClearMetricsEvent;
                             let Ok(_) = event_channel
-                                .send(MonadEvent::ControlPanelEvent(event.clone()))
+                                .send(MonadEvent::ControlPanelEvent(event.clone()).shared())
                                 .await
                             else {
                                 error!("failed to forward request {:?} to executor, closing connection", &event);
@@ -216,7 +216,7 @@ where
                     WriteCommand::UpdateLogFilter(filter) => {
                         let event = ControlPanelEvent::UpdateLogFilter(filter);
                         let Ok(_) = event_channel
-                            .send(MonadEvent::ControlPanelEvent(event.clone()))
+                            .send(MonadEvent::ControlPanelEvent(event.clone()).shared())
                             .await
                         else {
                             error!(
@@ -230,7 +230,7 @@ where
                         ReloadConfig::Request => {
                             let event = ControlPanelEvent::ReloadConfig(ReloadConfig::Request);
                             let Ok(_) = event_channel
-                                .send(MonadEvent::ControlPanelEvent(event.clone()))
+                                .send(MonadEvent::ControlPanelEvent(event.clone()).shared())
                                 .await
                             else {
                                 error!("failed to forward request {:?} to executor, closing connection", &event);
