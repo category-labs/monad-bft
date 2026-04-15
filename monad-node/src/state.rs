@@ -59,6 +59,8 @@ pub struct NodeState {
     pub forkpoint_path: PathBuf,
     pub validators_path: PathBuf,
     pub wal_path: PathBuf,
+    pub wal_chunks: u64,
+    pub wal_chunk_size_bytes: u64,
     pub ledger_path: PathBuf,
     pub mempool_ipc_path: PathBuf,
     pub control_panel_ipc_path: PathBuf,
@@ -85,6 +87,8 @@ impl NodeState {
             validators_path: validators_config_path,
             devnet_chain_config_override: maybe_devnet_chain_config_override_path,
             wal_path,
+            wal_chunks,
+            wal_chunk_size_bytes,
             ledger_path,
             mempool_ipc_path,
             triedb_path,
@@ -154,20 +158,6 @@ impl NodeState {
         let chain_config =
             MonadChainConfig::new(node_config.chain_id, devnet_chain_config_override)?;
 
-        let wal_path = wal_path.with_file_name(format!(
-            "{}_{}",
-            wal_path
-                .file_name()
-                .expect("no wal file name")
-                .to_owned()
-                .into_string()
-                .expect("invalid wal path"),
-            std::time::UNIX_EPOCH
-                .elapsed()
-                .expect("time went backwards")
-                .as_millis()
-        ));
-
         let otel_endpoint_interval = match (otel_endpoint, record_metrics_interval_seconds) {
             (Some(otel_endpoint), Some(record_metrics_interval_seconds)) => Some((
                 otel_endpoint,
@@ -191,6 +181,8 @@ impl NodeState {
             forkpoint_path: forkpoint_config_path,
             validators_path: validators_config_path,
             wal_path,
+            wal_chunks,
+            wal_chunk_size_bytes,
             ledger_path,
             triedb_path,
             mempool_ipc_path,

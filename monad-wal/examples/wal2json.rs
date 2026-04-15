@@ -28,7 +28,10 @@ use monad_eth_types::EthExecutionProtocol;
 use monad_executor_glue::LogFriendlyMonadEvent;
 use monad_secp::SecpSignature;
 use monad_types::Deserializable;
-use monad_wal::reader::{events_iter_in_range, events_iter_raw, WALReader, WALReaderConfig};
+use monad_wal::{
+    reader::{events_iter_raw, WALReader},
+    wal::discover_chunks,
+};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
 #[derive(Parser, Debug)]
@@ -84,17 +87,20 @@ fn main() {
         .build_global()
         .unwrap();
 
-    let timestamp_range = args.after.0..=args.before.0;
+    let after_ms = args.after.0.timestamp_millis().max(0) as u64;
+    let before_ms = args.before.0.timestamp_millis().max(0) as u64;
 
-    let raw_events_iter = events_iter_in_range(
-        args.paths.into_iter().map(|path| {
-            let config = WALReaderConfig::new(path);
-            let reader: WALReader<WrappedEvent> = config.build().unwrap();
-            events_iter_raw(reader)
-        }),
-        |event| WrappedEvent::deserialize_timestamp(event),
-        timestamp_range,
-    );
+    let raw_events_iter = args.paths.into_iter().flat_map(|path| {
+        let filtered_chunks = discover_chunks(&path)
+            .unwrap()
+            .into_iter()
+            .filter(|chunk| (after_ms..=before_ms).contains(&chunk.timestamp))
+            .sorted_by_key(|chunk| (chunk.timestamp, chunk.generation))
+            .collect();
+        let reader: WALReader<WrappedEvent> =
+            WALReader::from_discovered_chunks(filtered_chunks).unwrap();
+        events_iter_raw(reader)
+    });
 
     let mut num_events = 0usize;
     let mut stdout = std::io::stdout().lock();
