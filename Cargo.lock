@@ -5561,6 +5561,7 @@ dependencies = [
  "alloy-rlp",
  "chrono",
  "clap",
+ "crossbeam-channel",
  "futures-util",
  "hex",
  "inotify",
