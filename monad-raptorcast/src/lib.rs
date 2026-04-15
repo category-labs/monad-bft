@@ -91,6 +91,7 @@ pub mod metrics;
 pub mod packet;
 pub mod parser;
 pub mod raptorcast_secondary;
+mod round_info;
 pub mod udp;
 pub mod util;
 
@@ -915,6 +916,7 @@ where
 
                         self.epoch_validators.retain(|e, _| *e + Epoch(1) >= epoch);
                     }
+                    self.udp_state.update_current_round(round);
                     self.full_node_groups.delete_expired(round);
                     self.peer_discovery_driver
                         .lock()
