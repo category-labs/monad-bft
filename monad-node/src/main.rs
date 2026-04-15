@@ -27,6 +27,7 @@ use std::{
 use alloy_rlp::{Decodable, Encodable};
 use chrono::Utc;
 use clap::CommandFactory;
+use crossbeam_channel::TrySendError;
 use futures_util::{FutureExt, StreamExt};
 use monad_chain_config::ChainConfig;
 use monad_consensus_state::ConsensusConfig;
@@ -98,6 +99,7 @@ const MONAD_NODE_VERSION: Option<&str> = option_env!("MONAD_VERSION");
 const STATESYNC_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 const EXECUTION_DELAY: u64 = 3;
+const WALTRACE_CHANNEL_CAPACITY: usize = 1024;
 
 fn main() {
     let mut cmd = Cli::command();
@@ -307,13 +309,33 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         node_state.wal_path.clone(), // output wal path
         false,                       // flush on every write
     );
-    let Ok(mut wal) = logger_config.build() else {
+    let Ok(wal) = logger_config.build() else {
         event!(
             Level::ERROR,
             path = node_state.wal_path.as_path().display().to_string(),
             "failed to initialize wal",
         );
         return Err(());
+    };
+    let (waltrace_tx, waltrace_rx) = crossbeam_channel::bounded(WALTRACE_CHANNEL_CAPACITY);
+    let waltrace_thread = std::thread::Builder::new()
+        .name("monad_bft_waltrace".to_string())
+        .spawn(move || {
+            let mut wal = wal;
+            while let Ok(event) = waltrace_rx.recv() {
+                let _wal_event_span = tracing::trace_span!("wal_event_span").entered();
+                if let Err(err) = wal.push(&event) {
+                    event!(Level::ERROR, ?err, "failed to push to wal");
+                    return;
+                }
+            }
+        });
+    let _waltrace_thread = match waltrace_thread {
+        Ok(thread) => thread,
+        Err(err) => {
+            event!(Level::ERROR, ?err, "failed to spawn waltrace thread");
+            return Err(());
+        }
     };
 
     let block_sync_override_peers = node_state
@@ -453,19 +475,23 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
                     format!("{:?}", event)
                 };
 
-                let event = LogFriendlyMonadEvent {
-                    timestamp: Utc::now(),
-                    event,
-                };
-
                 {
                     let _ledger_span = ledger_span.enter();
-                    let _wal_event_span = tracing::trace_span!("wal_event_span").entered();
-                    if let Err(err) = wal.push(&event) {
-                        event!(Level::ERROR, ?err, "failed to push to wal",);
-                        return Err(());
+                    let wal_event = LogFriendlyMonadEvent {
+                        timestamp: Utc::now(),
+                        event: event.lossy_clone(),
+                    };
+                    match waltrace_tx.try_send(wal_event) {
+                        Ok(()) => {}
+                        Err(TrySendError::Full(_)) => {
+                            warn!("waltrace is lagging; dropping wal event");
+                        }
+                        Err(TrySendError::Disconnected(_)) => {
+                            event!(Level::ERROR, "waltrace thread stopped");
+                            return Err(());
+                        }
                     }
-                };
+                }
 
                 let commands = {
                     let _timer = DropTimer::start(Duration::from_millis(50), |elapsed| {
@@ -476,9 +502,9 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
                         )
                     });
                     let _ledger_span = ledger_span.enter();
-                    let _event_span = tracing::trace_span!("event_span", ?event.event).entered();
+                    let _event_span = tracing::trace_span!("event_span", ?event).entered();
                     let start = Instant::now();
-                    let cmds = state.update(event.event);
+                    let cmds = state.update(event);
                     total_state_update_elapsed += start.elapsed();
                     cmds
                 };
