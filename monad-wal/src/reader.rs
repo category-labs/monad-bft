@@ -14,6 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
+    collections::VecDeque,
     fmt::Debug,
     fs::{File, OpenOptions},
     io::{BufReader, Read},
@@ -25,11 +26,75 @@ use std::{
 use monad_types::Deserializable;
 
 use crate::{
-    wal::{EventHeaderType, EVENT_HEADER_LEN},
+    wal::{
+        discover_chunk_used_len, discover_chunks, DiscoveredChunk, EventHeaderType,
+        EVENT_HEADER_LEN,
+    },
     WALError,
 };
 
 const WAL_READ_BUFFER_SIZE: usize = 1024 * 1024; // 1MB
+
+fn unexpected_eof() -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "wal reader exhausted")
+}
+
+fn deserialize_one<M>(buf: &[u8]) -> Result<M, WALError>
+where
+    M: Deserializable<[u8]> + Debug,
+{
+    M::deserialize(buf).map_err(|e| WALError::DeserError(Box::new(e)))
+}
+
+#[derive(Debug)]
+struct ChunkReader {
+    reader: BufReader<File>,
+    remaining: u64,
+}
+
+impl ChunkReader {
+    fn from_file(file: File, remaining: u64) -> Self {
+        Self {
+            reader: BufReader::with_capacity(WAL_READ_BUFFER_SIZE, file),
+            remaining,
+        }
+    }
+
+    fn from_chunk(chunk: DiscoveredChunk) -> Result<Self, WALError> {
+        let file = OpenOptions::new().read(true).open(chunk.path)?;
+        Ok(Self::from_file(file, chunk.used_len))
+    }
+
+    fn is_exhausted(&self) -> bool {
+        self.remaining == 0
+    }
+
+    fn load_one_raw(&mut self) -> Result<Vec<u8>, std::io::Error> {
+        if self.remaining < EVENT_HEADER_LEN as u64 {
+            self.remaining = 0;
+            return Err(unexpected_eof());
+        }
+
+        let mut len_buf = [0u8; EVENT_HEADER_LEN];
+        self.reader.read_exact(&mut len_buf)?;
+        self.remaining -= EVENT_HEADER_LEN as u64;
+
+        let len = EventHeaderType::from_le_bytes(len_buf) as u64;
+        if len == 0 || len > self.remaining {
+            self.remaining = 0;
+            return Err(unexpected_eof());
+        }
+
+        let mut buf = vec![0u8; len as usize];
+        self.reader.read_exact(&mut buf)?;
+        self.remaining -= len;
+        Ok(buf)
+    }
+}
+
+pub trait WALReadRaw {
+    fn load_one_raw(&mut self) -> Result<Vec<u8>, std::io::Error>;
+}
 
 /// Config for a write-ahead-log
 #[derive(Clone)]
@@ -51,11 +116,13 @@ where
     }
 
     pub fn build(self) -> Result<WALReader<M>, WALError> {
-        let file = OpenOptions::new().read(true).open(self.file_path)?;
-
         Ok(WALReader {
             _marker: PhantomData,
-            reader: BufReader::with_capacity(WAL_READ_BUFFER_SIZE, file),
+            reader: ChunkReader::from_chunk(DiscoveredChunk {
+                used_len: discover_chunk_used_len(&self.file_path)?,
+                path: self.file_path,
+                generation: 0,
+            })?,
         })
     }
 }
@@ -63,7 +130,7 @@ where
 #[derive(Debug)]
 pub struct WALReader<M> {
     _marker: PhantomData<M>,
-    reader: BufReader<File>,
+    reader: ChunkReader,
 }
 
 impl<M> WALReader<M>
@@ -71,24 +138,104 @@ where
     M: Deserializable<[u8]> + Debug,
 {
     pub fn load_one_raw(&mut self) -> Result<Vec<u8>, std::io::Error> {
-        let mut len_buf = [0u8; EVENT_HEADER_LEN];
-        self.reader.read_exact(&mut len_buf)?;
-        let len = EventHeaderType::from_le_bytes(len_buf);
-        let mut buf = vec![0u8; len as usize];
-        self.reader.read_exact(&mut buf)?;
-        Ok(buf)
+        self.reader.load_one_raw()
     }
 
     pub fn load_one(&mut self) -> Result<M, WALError> {
         let buf = self.load_one_raw()?;
-        let msg = M::deserialize(&buf).map_err(|e| WALError::DeserError(Box::new(e)))?;
-        Ok(msg)
+        deserialize_one(&buf)
     }
 }
 
-pub fn events_iter_raw<M>(mut reader: WALReader<M>) -> impl Iterator<Item = Vec<u8>>
+impl<M> WALReadRaw for WALReader<M>
 where
     M: Deserializable<[u8]> + Debug,
+{
+    fn load_one_raw(&mut self) -> Result<Vec<u8>, std::io::Error> {
+        WALReader::load_one_raw(self)
+    }
+}
+
+/// Config for a multi-chunk write-ahead-log reader.
+#[derive(Clone)]
+pub struct WALClientConfig<M> {
+    file_path: PathBuf,
+
+    _marker: PhantomData<M>,
+}
+
+impl<M> WALClientConfig<M>
+where
+    M: Deserializable<[u8]> + Debug,
+{
+    pub fn new(file_path: PathBuf) -> Self {
+        Self {
+            file_path,
+            _marker: PhantomData,
+        }
+    }
+
+    pub fn build(self) -> Result<WALClient<M>, WALError> {
+        let readers = discover_chunks(&self.file_path)?
+            .into_iter()
+            .map(ChunkReader::from_chunk)
+            .collect::<Result<VecDeque<_>, _>>()?;
+
+        Ok(WALClient {
+            _marker: PhantomData,
+            readers,
+        })
+    }
+}
+
+#[derive(Debug)]
+pub struct WALClient<M> {
+    _marker: PhantomData<M>,
+    readers: VecDeque<ChunkReader>,
+}
+
+impl<M> WALClient<M>
+where
+    M: Deserializable<[u8]> + Debug,
+{
+    pub fn load_one_raw(&mut self) -> Result<Vec<u8>, std::io::Error> {
+        loop {
+            let Some(reader) = self.readers.front_mut() else {
+                return Err(unexpected_eof());
+            };
+            if reader.is_exhausted() {
+                self.readers.pop_front();
+                continue;
+            }
+
+            match reader.load_one_raw() {
+                Ok(buf) => return Ok(buf),
+                Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof => {
+                    self.readers.pop_front();
+                }
+                Err(err) => return Err(err),
+            }
+        }
+    }
+
+    pub fn load_one(&mut self) -> Result<M, WALError> {
+        let buf = self.load_one_raw()?;
+        deserialize_one(&buf)
+    }
+}
+
+impl<M> WALReadRaw for WALClient<M>
+where
+    M: Deserializable<[u8]> + Debug,
+{
+    fn load_one_raw(&mut self) -> Result<Vec<u8>, std::io::Error> {
+        WALClient::load_one_raw(self)
+    }
+}
+
+pub fn events_iter_raw<R>(mut reader: R) -> impl Iterator<Item = Vec<u8>>
+where
+    R: WALReadRaw,
 {
     std::iter::repeat(()).map_while(move |()| match reader.load_one_raw() {
         Ok(event) => Some(event),
@@ -97,13 +244,14 @@ where
     })
 }
 
-pub fn events_iter<M>(mut reader: WALReader<M>) -> impl Iterator<Item = M>
+pub fn events_iter<M, R>(mut reader: R) -> impl Iterator<Item = M>
 where
     M: Deserializable<[u8]> + Debug,
+    R: WALReadRaw,
 {
-    std::iter::repeat(()).map_while(move |()| match reader.load_one() {
-        Ok(event) => Some(event),
-        Err(WALError::IOError(err)) if err.kind() == std::io::ErrorKind::UnexpectedEof => None,
+    std::iter::repeat(()).map_while(move |()| match reader.load_one_raw() {
+        Ok(event) => Some(deserialize_one::<M>(&event).unwrap()),
+        Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof => None,
         Err(err) => panic!("error reading WAL: {:?}", err),
     })
 }

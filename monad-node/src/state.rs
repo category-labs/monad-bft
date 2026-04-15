@@ -154,20 +154,6 @@ impl NodeState {
         let chain_config =
             MonadChainConfig::new(node_config.chain_id, devnet_chain_config_override)?;
 
-        let wal_path = wal_path.with_file_name(format!(
-            "{}_{}",
-            wal_path
-                .file_name()
-                .expect("no wal file name")
-                .to_owned()
-                .into_string()
-                .expect("invalid wal path"),
-            std::time::UNIX_EPOCH
-                .elapsed()
-                .expect("time went backwards")
-                .as_millis()
-        ));
-
         let otel_endpoint_interval = match (otel_endpoint, record_metrics_interval_seconds) {
             (Some(otel_endpoint), Some(record_metrics_interval_seconds)) => Some((
                 otel_endpoint,
