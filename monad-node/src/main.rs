@@ -20,7 +20,7 @@ use std::{
     num::NonZeroU16,
     path::PathBuf,
     process,
-    sync::Arc,
+    sync::{mpsc::TrySendError, Arc},
     time::{Duration, Instant},
 };
 
@@ -98,6 +98,7 @@ const MONAD_NODE_VERSION: Option<&str> = option_env!("MONAD_VERSION");
 const STATESYNC_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 const EXECUTION_DELAY: u64 = 3;
+const WALTRACE_CHANNEL_CAPACITY: usize = 1024;
 
 fn main() {
     let mut cmd = Cli::command();
@@ -303,7 +304,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         config_loader: ConfigLoader::new(node_state.node_config_path),
     };
 
-    let mut wal = if node_state.wal_chunks == 0 {
+    let waltrace_tx = if node_state.wal_chunks == 0 {
         info!("wal is disabled");
         None
     } else {
@@ -315,16 +316,48 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         )
         .with_chunks(node_state.wal_chunks)
         .with_chunk_size(node_state.wal_chunk_size_bytes);
-        match logger_config.build() {
-            Ok(wal) => Some(wal),
+        let (waltrace_tx, waltrace_rx) = std::sync::mpsc::sync_channel(WALTRACE_CHANNEL_CAPACITY);
+        let (init_tx, init_rx) = std::sync::mpsc::sync_channel(1);
+        let _waltrace_thread = std::thread::Builder::new()
+            .name("monad_bft_waltrace".to_string())
+            .spawn(move || {
+                let mut wal = match logger_config.build() {
+                    Ok(wal) => wal,
+                    Err(err) => {
+                        let err = format!("{err:?}");
+                        error!(%err, "failed to initialize wal");
+                        let _ = init_tx.send(Err(err));
+                        return;
+                    }
+                };
+                let _ = init_tx.send(Ok(()));
+                while let Ok(event) = waltrace_rx.recv() {
+                    let _wal_event_span = tracing::trace_span!("wal_event_span").entered();
+                    if let Err(err) = wal.push(&event) {
+                        event!(Level::ERROR, ?err, "failed to push to wal");
+                        return;
+                    }
+                }
+            })
+            .expect("failed to spawn waltrace thread");
+        match init_rx.recv() {
+            Ok(Ok(())) => Some(waltrace_tx),
+            Ok(Err(err)) => {
+                event!(
+                    Level::ERROR,
+                    %err,
+                    path = node_state.wal_path.as_path().display().to_string(),
+                    "failed to initialize waltrace thread",
+                );
+                return Err(());
+            }
             Err(err) => {
                 event!(
                     Level::ERROR,
                     ?err,
-                    path = node_state.wal_path.as_path().display().to_string(),
-                    "failed to initialize wal",
+                    "waltrace thread stopped during initialization",
                 );
-                return Err(());
+                None
             }
         }
     };
@@ -466,21 +499,24 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
                     format!("{:?}", event)
                 };
 
-                let event = LogFriendlyMonadEvent {
-                    timestamp: Utc::now(),
-                    event,
-                };
-
                 {
                     let _ledger_span = ledger_span.enter();
-                    if let Some(wal) = wal.as_mut() {
-                        let _wal_event_span = tracing::trace_span!("wal_event_span").entered();
-                        if let Err(err) = wal.push(&event) {
-                            event!(Level::ERROR, ?err, "failed to push to wal",);
-                            return Err(());
+                    if let Some(waltrace_tx) = waltrace_tx.as_ref() {
+                        let wal_event = LogFriendlyMonadEvent {
+                            timestamp: Utc::now(),
+                            event: event.lossy_clone(),
+                        };
+                        match waltrace_tx.try_send(wal_event) {
+                            Ok(()) => {}
+                            Err(TrySendError::Full(_)) => {
+                                warn!("waltrace is lagging; dropping wal event");
+                            }
+                            Err(TrySendError::Disconnected(_)) => {
+                                event!(Level::ERROR, "waltrace thread stopped");
+                            }
                         }
                     }
-                };
+                }
 
                 let commands = {
                     let _timer = DropTimer::start(Duration::from_millis(50), |elapsed| {
@@ -491,9 +527,9 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
                         )
                     });
                     let _ledger_span = ledger_span.enter();
-                    let _event_span = tracing::trace_span!("event_span", ?event.event).entered();
+                    let _event_span = tracing::trace_span!("event_span", ?event).entered();
                     let start = Instant::now();
-                    let cmds = state.update(event.event);
+                    let cmds = state.update(event);
                     total_state_update_elapsed += start.elapsed();
                     cmds
                 };
