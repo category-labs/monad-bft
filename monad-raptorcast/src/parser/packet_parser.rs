@@ -44,7 +44,7 @@ struct ChunkMeta {
     group_id: GroupId,
     app_message_hash: Option<HexBytes<HASH_SIZE>>,
     merkle_root: HexBytes<MERKLE_HASH_SIZE>,
-    recipient_hash: HexBytes<HASH_SIZE>,
+    recipient_hash: Option<HexBytes<HASH_SIZE>>,
     signed_over_data: SignedOverData,
 }
 
@@ -262,23 +262,19 @@ impl RaptorcastHeaderV1 {
 
 /// Raptorcast V1 chunk header layout (follows header and merkle proof):
 /// - 20 bytes * (merkle_tree_depth - 1) => merkle proof (leaves include everything that follows,
-///   eg hash(chunk_recipient + chunk_byte_offset + symbol_len + payload))
-/// - 20 bytes => first 20 bytes of hash of chunk's first hop recipient
-///   - we set this even if broadcast bit is not set so that it's known if a message was intended
-///     to be sent to self
+///   eg hash(reserved + chunk_id + payload))
 /// - 2 bytes => reserved
 /// - 2 bytes (u16) => This chunk's id, also used as the merkle leaf index
 /// - rest => data
 #[repr(C, packed)]
 #[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Clone, Copy)]
 pub struct RaptorcastChunkHeaderV1 {
-    recipient_hash: [u8; MERKLE_HASH_SIZE],
     reserved: U16<LE>,
     chunk_id: U16<LE>,
 }
 
 impl RaptorcastChunkHeaderV1 {
-    const SIZE: usize = MERKLE_HASH_SIZE + 2 + 2;
+    const SIZE: usize = 2 + 2;
 
     fn merkle_leaf_index(&self) -> u16 {
         self.chunk_id.get()
@@ -489,7 +485,7 @@ impl<'a> RaptorcastPacketV0<'a> {
         let group_id = self.header.group_id()?;
         let signed_over_data = self.signed_over_data(common_header, &merkle_root);
         let app_message_hash = Some(HexBytes(self.header.app_message_hash));
-        let recipient_hash = HexBytes(self.chunk_header.recipient_hash);
+        let recipient_hash = Some(HexBytes(self.chunk_header.recipient_hash));
 
         Ok(ChunkMeta {
             app_message_len,
@@ -639,7 +635,6 @@ impl<'a> RaptorcastPacketV1<'a> {
         let group_id = self.header.group_id()?;
         let signed_over_data = self.signed_over_data(common_header);
         let merkle_root = self.validate_merkle_root()?;
-        let recipient_hash = HexBytes(self.chunk_header.recipient_hash);
 
         Ok(ChunkMeta {
             app_message_len,
@@ -652,7 +647,7 @@ impl<'a> RaptorcastPacketV1<'a> {
             group_id,
             app_message_hash: None,
             merkle_root: HexBytes(merkle_root),
-            recipient_hash,
+            recipient_hash: None,
             signed_over_data,
         })
     }

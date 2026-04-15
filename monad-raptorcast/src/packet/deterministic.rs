@@ -85,7 +85,6 @@ impl PacketLayout {
         + 4; // App message length
 
     pub const CHUNK_HEADER_LEN: usize = 0
-        + 20 // Chunk recipient hash
         + 2  // Reserved
         + 2; // Chunk idx
 
@@ -171,7 +170,6 @@ impl PacketLayout {
     }
 
     pub fn write_chunk_header<PT: PubKey>(&self, chunk: &mut Chunk<PT>) -> Result<(), BuildError> {
-        let recipient_hash = *chunk.recipient().node_hash();
         let chunk_id: [u8; 2] = u16::try_from(chunk.chunk_id())
             .map_err(|_| BuildError::ChunkIdOverflow)?
             .to_le_bytes();
@@ -179,10 +177,9 @@ impl PacketLayout {
         let buffer = &mut chunk.payload_mut()[self.chunk_header_range()];
         debug_assert_eq!(buffer.len(), Self::CHUNK_HEADER_LEN);
 
-        buffer[0..20].copy_from_slice(&recipient_hash); // node_id hash
-        buffer[20] = 0; // reserved
-        buffer[21] = 0; // reserved
-        buffer[22..24].copy_from_slice(&chunk_id);
+        buffer[0] = 0; // reserved
+        buffer[1] = 0; // reserved
+        buffer[2..4].copy_from_slice(&chunk_id);
 
         Ok(())
     }
@@ -413,7 +410,6 @@ impl<PT: PubKey> PrimaryEncoding<PT> {
         Ok(assignment)
     }
 
-    #[expect(unused)]
     pub fn partition(&self) -> &StakePartition<PT> {
         &self.partition
     }
@@ -624,8 +620,8 @@ mod tests {
         DEFAULT_SEGMENT_LEN == 1440,
         "DEFAULT_SEGMENT_LEN must be set to 1440"
     );
-    const _: () = assert!(MIN_SYMBOL_LEN == 1019);
-    const _: () = assert!(MAX_SYMBOL_LEN == 1259);
+    const _: () = assert!(MIN_SYMBOL_LEN == 1039);
+    const _: () = assert!(MAX_SYMBOL_LEN == 1279);
 
     fn validate_d25_layout(app_msg_len: usize, val_set_size: usize) {
         let depth = calc_tree_depth(
