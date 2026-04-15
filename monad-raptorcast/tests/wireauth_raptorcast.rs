@@ -154,7 +154,7 @@ impl ValidatorInfo {
         let name_record = NameRecord::new_with_ports(
             Ipv4Addr::new(127, 0, 0, 1),
             tcp_addr.port(),
-            non_auth_addr.port(),
+            Some(non_auth_addr.port()),
             auth_addr.port(),
             direct_udp_addr.map(|addr| addr.port()),
             1,
@@ -910,7 +910,7 @@ async fn run_send_with_record_uses_name_record_address() {
     let bob2_name_record = NameRecord::new(
         Ipv4Addr::new(127, 0, 0, 1),
         bob2_tcp_addr.port(),
-        bob2_non_auth_addr.port(),
+        Some(bob2_non_auth_addr.port()),
         bob2_auth_addr.port(),
         0,
         1,

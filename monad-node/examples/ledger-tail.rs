@@ -117,7 +117,7 @@ async fn main() {
             config
                 .peers
                 .into_iter()
-                .map(|peer| (peer.secp256k1_pubkey, peer.address))
+                .map(|peer| (peer.secp256k1_pubkey, peer.address()))
                 .collect()
         })
         .unwrap_or_default();

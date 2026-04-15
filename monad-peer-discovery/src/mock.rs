@@ -238,7 +238,8 @@ where
 
         for peer in peers {
             let node_id = NodeId::new(peer.pubkey);
-            self.known_addresses.insert(node_id, peer.addr);
+            let addr = SocketAddrV4::new(peer.address, peer.auth_port.get());
+            self.known_addresses.insert(node_id, addr);
         }
 
         Vec::new()
