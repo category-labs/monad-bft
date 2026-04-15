@@ -485,7 +485,7 @@ where
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Option<Self::Item>> {
         if let Some(event) = self.events.pop_front() {
-            return Poll::Ready(Some(MonadEvent::MempoolEvent(event)));
+            return Poll::Ready(Some(MonadEvent::mempool_event(event)));
         }
 
         if let Some(waker) = self.waker.as_mut() {

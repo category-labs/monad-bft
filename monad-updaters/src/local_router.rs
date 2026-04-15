@@ -154,7 +154,7 @@ where
                     }
                     RouterTarget::TcpPointToPoint { to, completion } => {
                         if let Some(completion) = completion {
-                            let _ = completion.send(());
+                            completion.notify();
                         }
                         self.txs
                             .get(&to)
@@ -183,7 +183,7 @@ where
                     }
                     RouterTarget::TcpPointToPoint { to, completion } => {
                         if let Some(completion) = completion {
-                            let _ = completion.send(());
+                            completion.notify();
                         }
                         self.txs
                             .get(&to)

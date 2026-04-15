@@ -44,7 +44,7 @@ use monad_raptorcast::{
         BuildTarget, PrimaryBroadcastGroup, Redundancy, SecondaryGroup, SecondaryGroupAssignment,
         ValidatorGroupMap,
     },
-    DataplaneHandles, RaptorCast, RaptorCastEvent,
+    DataplaneHandles, FromRaptorCastEvent, RaptorCast, RaptorCastEvent,
 };
 use monad_secp::{KeyPair, SecpSignature};
 use monad_types::{
@@ -421,12 +421,14 @@ impl Deserializable<Bytes> for MockMessage {
 #[derive(Clone, Copy, Debug)]
 struct MockEvent<P: PubKey>((NodeId<P>, u32));
 
-impl<ST> From<RaptorCastEvent<MockEvent<CertificateSignaturePubKey<ST>>, ST>>
+impl<ST> FromRaptorCastEvent<MockEvent<CertificateSignaturePubKey<ST>>, ST>
     for MockEvent<CertificateSignaturePubKey<ST>>
 where
     ST: CertificateSignatureRecoverable,
 {
-    fn from(value: RaptorCastEvent<MockEvent<CertificateSignaturePubKey<ST>>, ST>) -> Self {
+    fn from_raptorcast_event(
+        value: RaptorCastEvent<MockEvent<CertificateSignaturePubKey<ST>>, ST>,
+    ) -> Self {
         match value {
             RaptorCastEvent::Message(event) => event,
             RaptorCastEvent::PeerManagerResponse(_peer_manager_response) => {

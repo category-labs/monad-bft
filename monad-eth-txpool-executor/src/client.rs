@@ -586,7 +586,7 @@ where
             };
 
             if let Some(event) = this.process_event(event) {
-                return Poll::Ready(Some(MonadEvent::MempoolEvent(event)));
+                return Poll::Ready(Some(MonadEvent::mempool_event(event)));
             }
         }
 

@@ -18,6 +18,7 @@ use std::{
     fmt::{Debug, Display},
     io,
     ops::{Add, AddAssign, Div, Rem, Sub, SubAssign},
+    sync::{Arc, Mutex},
     str::FromStr,
     time::{Duration, Instant},
 };
@@ -687,6 +688,34 @@ impl<S: Clone> Deserializable<S> for S {
 // FIXME-4: move to monad-executor-glue after spaghetti fixed
 /// RouterTarget specifies the particular node(s) that the router should send
 /// the message toward
+#[derive(Clone, Default)]
+pub struct TcpCompletionHandle(Arc<Mutex<Option<futures::channel::oneshot::Sender<()>>>>);
+
+impl TcpCompletionHandle {
+    pub fn new(sender: futures::channel::oneshot::Sender<()>) -> Self {
+        Self(Arc::new(Mutex::new(Some(sender))))
+    }
+
+    pub fn take_sender(&self) -> Option<futures::channel::oneshot::Sender<()>> {
+        self.0
+            .lock()
+            .expect("tcp completion mutex poisoned")
+            .take()
+    }
+
+    pub fn notify(&self) {
+        if let Some(sender) = self.take_sender() {
+            let _ = sender.send(());
+        }
+    }
+}
+
+impl Debug for TcpCompletionHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("TcpCompletionHandle")
+    }
+}
+
 #[derive(Debug)]
 pub enum RouterTarget<P: PubKey> {
     Broadcast(Epoch),
@@ -698,7 +727,7 @@ pub enum RouterTarget<P: PubKey> {
     DirectPointToPoint(NodeId<P>),
     TcpPointToPoint {
         to: NodeId<P>,
-        completion: Option<futures::channel::oneshot::Sender<()>>,
+        completion: Option<TcpCompletionHandle>,
     },
 }
 

@@ -34,7 +34,9 @@ use monad_peer_discovery::{
     driver::PeerDiscoveryDriver, message::Ping, mock::NopDiscovery, MonadNameRecord, NameRecord,
     PeerDiscoveryEvent,
 };
-use monad_raptorcast::{create_dataplane_for_tests, DataplaneHandles, RaptorCastEvent};
+use monad_raptorcast::{
+    create_dataplane_for_tests, DataplaneHandles, FromRaptorCastEvent, RaptorCastEvent,
+};
 use monad_secp::{KeyPair, SecpSignature};
 use monad_types::{Deserializable, Epoch, NodeId, Round, Serializable, Stake};
 use rstest::rstest;
@@ -101,12 +103,14 @@ impl Deserializable<Bytes> for MockMessage {
 #[derive(Clone, Copy, Debug)]
 struct MockEvent<P: PubKey>((NodeId<P>, u32));
 
-impl<ST> From<RaptorCastEvent<MockEvent<CertificateSignaturePubKey<ST>>, ST>>
+impl<ST> FromRaptorCastEvent<MockEvent<CertificateSignaturePubKey<ST>>, ST>
     for MockEvent<CertificateSignaturePubKey<ST>>
 where
     ST: CertificateSignatureRecoverable,
 {
-    fn from(value: RaptorCastEvent<MockEvent<CertificateSignaturePubKey<ST>>, ST>) -> Self {
+    fn from_raptorcast_event(
+        value: RaptorCastEvent<MockEvent<CertificateSignaturePubKey<ST>>, ST>,
+    ) -> Self {
         match value {
             RaptorCastEvent::Message(event) => event,
             RaptorCastEvent::PeerManagerResponse(_) => unimplemented!(),

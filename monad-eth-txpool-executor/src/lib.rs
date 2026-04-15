@@ -822,7 +822,7 @@ mod test {
     };
     use monad_eth_types::EthExecutionProtocol;
     use monad_executor::{Executor, ExecutorMetrics};
-    use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
+    use monad_executor_glue::{InnerMonadEvent, MempoolEvent, MonadEvent, TxPoolCommand};
     use monad_peer_score::{ema, StdClock};
     use monad_state_backend::{
         AccountState, InMemoryBlockState, InMemoryState, InMemoryStateInner,
@@ -917,14 +917,14 @@ mod test {
     ) -> Vec<bytes::Bytes> {
         let expected_signer = secret_to_eth_address(S1);
 
-        match event {
-            MonadEvent::MempoolEvent(MempoolEvent::Proposal {
+        match event.as_ref() {
+            InnerMonadEvent::MempoolEvent(MempoolEvent::Proposal {
                 proposed_execution_inputs,
                 ..
             }) => proposed_execution_inputs
                 .body
                 .transactions
-                .into_iter()
+                .iter()
                 .filter_map(|tx| {
                     let signer = tx.recover_signer().expect("proposal tx signer recovers");
                     (signer == expected_signer).then(|| alloy_rlp::encode(tx).into())

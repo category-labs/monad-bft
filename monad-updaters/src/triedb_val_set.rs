@@ -178,7 +178,7 @@ where
                     "received validator set data"
                 );
 
-                Poll::Ready(Some(MonadEvent::ValidatorEvent(
+                Poll::Ready(Some(MonadEvent::validator_event(
                     monad_executor_glue::ValidatorEvent::UpdateValidators(
                         validator_set_data_with_epoch,
                     ),

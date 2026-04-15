@@ -48,7 +48,7 @@ use monad_raptorcast::{
     auth::{NopScore, WireAuthProtocol},
     config::{RaptorCastConfig, RaptorCastConfigPrimary},
     raptorcast_secondary::SecondaryRaptorCastModeConfig,
-    RaptorCast, RaptorCastEvent,
+    FromRaptorCastEvent, RaptorCast, RaptorCastEvent,
 };
 use monad_secp::{KeyPair, SecpSignature};
 use monad_types::{Deserializable, Epoch, NodeId, Round, RouterTarget, Serializable, Stake};
@@ -254,12 +254,14 @@ struct MockEvent<P: monad_crypto::certificate_signature::PubKey> {
     message: MockMessage,
 }
 
-impl<ST> From<RaptorCastEvent<MockEvent<CertificateSignaturePubKey<ST>>, ST>>
+impl<ST> FromRaptorCastEvent<MockEvent<CertificateSignaturePubKey<ST>>, ST>
     for MockEvent<CertificateSignaturePubKey<ST>>
 where
     ST: CertificateSignatureRecoverable,
 {
-    fn from(value: RaptorCastEvent<MockEvent<CertificateSignaturePubKey<ST>>, ST>) -> Self {
+    fn from_raptorcast_event(
+        value: RaptorCastEvent<MockEvent<CertificateSignaturePubKey<ST>>, ST>,
+    ) -> Self {
         match value {
             RaptorCastEvent::Message(event) => event,
             RaptorCastEvent::PeerManagerResponse(_) => unimplemented!(),

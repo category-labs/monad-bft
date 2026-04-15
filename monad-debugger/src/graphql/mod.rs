@@ -24,8 +24,8 @@ use bytes::Bytes;
 use monad_consensus_types::metrics::Metrics;
 use monad_crypto::certificate_signature::{CertificateSignaturePubKey, PubKey};
 use monad_executor_glue::{
-    BlockSyncEvent, ConfigEvent, ConsensusEvent, ControlPanelEvent, MempoolEvent, MonadEvent,
-    StateSyncEvent, ValidatorEvent,
+    BlockSyncEvent, ConfigEvent, ConsensusEvent, ControlPanelEvent, InnerMonadEvent, MempoolEvent,
+    MonadEvent, StateSyncEvent, ValidatorEvent,
 };
 use monad_mock_swarm::{
     node::Node,
@@ -381,21 +381,29 @@ enum GraphQLMonadEvent<'s> {
 
 impl<'s> From<&'s MonadEventType> for GraphQLMonadEvent<'s> {
     fn from(event: &'s MonadEventType) -> Self {
-        match event {
-            MonadEvent::ConsensusEvent(event) => Self::ConsensusEvent(GraphQLConsensusEvent(event)),
-            MonadEvent::BlockSyncEvent(event) => Self::BlockSyncEvent(GraphQLBlockSyncEvent(event)),
-            MonadEvent::ValidatorEvent(event) => Self::ValidatorEvent(GraphQLValidatorEvent(event)),
-            MonadEvent::MempoolEvent(event) => Self::MempoolEvent(GraphQLMempoolEvent(event)),
-            MonadEvent::ControlPanelEvent(event) => {
+        match event.as_ref() {
+            InnerMonadEvent::ConsensusEvent(event) => {
+                Self::ConsensusEvent(GraphQLConsensusEvent(event))
+            }
+            InnerMonadEvent::BlockSyncEvent(event) => {
+                Self::BlockSyncEvent(GraphQLBlockSyncEvent(event))
+            }
+            InnerMonadEvent::ValidatorEvent(event) => {
+                Self::ValidatorEvent(GraphQLValidatorEvent(event))
+            }
+            InnerMonadEvent::MempoolEvent(event) => Self::MempoolEvent(GraphQLMempoolEvent(event)),
+            InnerMonadEvent::ControlPanelEvent(event) => {
                 Self::ControlPanelEvent(GraphQLControlPanelEvent(event))
             }
-            MonadEvent::TimestampUpdateEvent(event) => {
+            InnerMonadEvent::TimestampUpdateEvent(event) => {
                 Self::TimestampEvent(GraphQLTimestampEvent(*event as u64)) // TODO: this is wrong but protobuf is not used in
                                                                            // protocol and will be deleted
             }
-            MonadEvent::StateSyncEvent(event) => Self::StateSyncEvent(GraphQLStateSyncEvent(event)),
-            MonadEvent::ConfigEvent(event) => Self::ConfigEvent(GraphQLConfigEvent(event)),
-            MonadEvent::SecondaryRaptorcastPeersUpdate { .. } => todo!(),
+            InnerMonadEvent::StateSyncEvent(event) => {
+                Self::StateSyncEvent(GraphQLStateSyncEvent(event))
+            }
+            InnerMonadEvent::ConfigEvent(event) => Self::ConfigEvent(GraphQLConfigEvent(event)),
+            InnerMonadEvent::SecondaryRaptorcastPeersUpdate { .. } => todo!(),
         }
     }
 }

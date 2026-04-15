@@ -185,7 +185,7 @@ where
         }
 
         if let Some(next_val_data) = this.next_val_data.take() {
-            return Poll::Ready(Some(MonadEvent::ValidatorEvent(
+            return Poll::Ready(Some(MonadEvent::validator_event(
                 monad_executor_glue::ValidatorEvent::<SCT>::UpdateValidators(next_val_data),
             )));
         }
@@ -346,7 +346,7 @@ where
         let this = self.deref_mut();
 
         if let Some(next_val_data) = this.next_val_data.take() {
-            return Poll::Ready(Some(MonadEvent::ValidatorEvent(
+            return Poll::Ready(Some(MonadEvent::validator_event(
                 monad_executor_glue::ValidatorEvent::<SCT>::UpdateValidators(next_val_data),
             )));
         }

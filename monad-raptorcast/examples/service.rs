@@ -31,7 +31,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand};
-use monad_raptorcast::{new_defaulted_raptorcast_for_tests, RaptorCastEvent};
+use monad_raptorcast::{new_defaulted_raptorcast_for_tests, FromRaptorCastEvent, RaptorCastEvent};
 use monad_secp::SecpSignature;
 use monad_types::{Deserializable, Epoch, NodeId, Round, RouterTarget, Serializable, Stake};
 use tracing_subscriber::fmt::format::FmtSpan;
@@ -249,12 +249,14 @@ impl Deserializable<Bytes> for MockMessage {
 #[derive(Clone, Copy)]
 struct MockEvent<P: PubKey>((NodeId<P>, u32));
 
-impl<ST> From<RaptorCastEvent<MockEvent<CertificateSignaturePubKey<ST>>, ST>>
+impl<ST> FromRaptorCastEvent<MockEvent<CertificateSignaturePubKey<ST>>, ST>
     for MockEvent<CertificateSignaturePubKey<ST>>
 where
     ST: CertificateSignatureRecoverable,
 {
-    fn from(value: RaptorCastEvent<MockEvent<CertificateSignaturePubKey<ST>>, ST>) -> Self {
+    fn from_raptorcast_event(
+        value: RaptorCastEvent<MockEvent<CertificateSignaturePubKey<ST>>, ST>,
+    ) -> Self {
         match value {
             RaptorCastEvent::Message(event) => event,
             RaptorCastEvent::PeerManagerResponse(_peer_manager_response) => {
