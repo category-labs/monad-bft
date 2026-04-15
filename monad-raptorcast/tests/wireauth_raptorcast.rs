@@ -110,7 +110,7 @@ where
         match value {
             RaptorCastEvent::Message(event) => event,
             RaptorCastEvent::PeerManagerResponse(_) => unimplemented!(),
-            RaptorCastEvent::SecondaryRaptorcastPeersUpdate { .. } => unimplemented!(),
+            RaptorCastEvent::SecondaryRaptorcastPeersUpdate(..) => unimplemented!(),
         }
     }
 }

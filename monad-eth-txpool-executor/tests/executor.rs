@@ -32,7 +32,7 @@ use monad_eth_txpool_executor::{
 use monad_eth_txpool_ipc::EthTxPoolIpcClient;
 use monad_eth_txpool_types::{EthTxPoolIpcTx, EthTxPoolSnapshot};
 use monad_executor::Executor;
-use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
+use monad_executor_glue::{InnerMonadEvent, MempoolEvent, TxPoolCommand};
 use monad_peer_score::{ema, StdClock};
 use monad_state_backend::{AccountState, InMemoryBlockState, InMemoryState, InMemoryStateInner};
 use monad_testutil::signing::MockSignatures;
@@ -150,8 +150,8 @@ async fn test_ipc_tx_forwarding_pacing() {
             .expect("TxpoolExecutor does not timeout")
             .unwrap();
 
-        match event {
-            MonadEvent::MempoolEvent(mempool_event) => match mempool_event {
+        match event.as_ref() {
+            InnerMonadEvent::MempoolEvent(mempool_event) => match mempool_event {
                 MempoolEvent::ForwardTxs(vec) => {
                     assert!(!vec.is_empty());
                     assert!(vec.len() <= 2, "vec len was {}", vec.len());

@@ -716,7 +716,7 @@ where
                 parent_cmds.push(Command::TimerCommand(TimerCommand::Schedule {
                     duration,
                     variant: TimeoutVariant::Pacemaker,
-                    on_timeout: MonadEvent::ConsensusEvent(ConsensusEvent::Timeout(round)),
+                    on_timeout: MonadEvent::consensus_event(ConsensusEvent::Timeout(round)),
                 }))
             }
             ConsensusCommand::ScheduleReset => parent_cmds.push(Command::TimerCommand(
@@ -788,7 +788,7 @@ where
             }
             ConsensusCommand::RequestSync(block_range) => {
                 parent_cmds.push(Command::LoopbackCommand(LoopbackCommand::Forward(
-                    MonadEvent::BlockSyncEvent(BlockSyncEvent::SelfRequest {
+                    MonadEvent::block_sync_event(BlockSyncEvent::SelfRequest {
                         requester: BlockSyncSelfRequester::Consensus,
                         block_range,
                     }),
@@ -796,7 +796,7 @@ where
             }
             ConsensusCommand::CancelSync(block_range) => {
                 parent_cmds.push(Command::LoopbackCommand(LoopbackCommand::Forward(
-                    MonadEvent::BlockSyncEvent(BlockSyncEvent::SelfCancelRequest {
+                    MonadEvent::block_sync_event(BlockSyncEvent::SelfCancelRequest {
                         requester: BlockSyncSelfRequester::Consensus,
                         block_range,
                     }),
@@ -804,7 +804,7 @@ where
             }
             ConsensusCommand::RequestStateSync { root, high_qc } => {
                 parent_cmds.push(Command::LoopbackCommand(LoopbackCommand::Forward(
-                    MonadEvent::StateSyncEvent(StateSyncEvent::RequestSync { root, high_qc }),
+                    MonadEvent::state_sync_event(StateSyncEvent::RequestSync { root, high_qc }),
                 )));
             }
             ConsensusCommand::TimestampUpdate(t) => {
@@ -814,7 +814,7 @@ where
                 parent_cmds.push(Command::TimerCommand(TimerCommand::Schedule {
                     duration,
                     variant: TimeoutVariant::SendVote,
-                    on_timeout: MonadEvent::ConsensusEvent(ConsensusEvent::SendVote(round)),
+                    on_timeout: MonadEvent::consensus_event(ConsensusEvent::SendVote(round)),
                 }))
             }
         }

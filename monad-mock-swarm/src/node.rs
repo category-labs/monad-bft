@@ -275,7 +275,7 @@ impl<S: SwarmRelation> Node<S> {
                             let node_span =
                                 tracing::trace_span!("node", id = format!("{}", self.id));
                             let _guard = node_span.enter();
-                            let event_clone = event.lossy_clone();
+                            let event_clone = event.clone();
                             let commands = self.state.update(event);
 
                             self.executor.exec(commands);

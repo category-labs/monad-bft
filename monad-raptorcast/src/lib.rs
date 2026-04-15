@@ -27,7 +27,7 @@ use std::{
 
 use alloy_rlp::{Decodable, Encodable};
 use bytes::{Bytes, BytesMut};
-use futures::{channel::oneshot, FutureExt, Stream, StreamExt};
+use futures::{FutureExt, Stream, StreamExt};
 use itertools::Itertools;
 use message::{InboundRouterMessage, OutboundRouterMessage};
 use monad_crypto::{
@@ -54,7 +54,10 @@ use monad_peer_discovery::{
     NameRecord, PeerDiscoveryAlgo, PeerDiscoveryEvent,
 };
 use monad_peer_score::IdentityScore;
-use monad_types::{DropTimer, Epoch, ExecutionProtocol, NodeId, Round, RouterTarget, UdpPriority};
+use monad_types::{
+    DropTimer, Epoch, ExecutionProtocol, NodeId, Round, RouterTarget, TcpCompletionHandle,
+    UdpPriority,
+};
 use monad_validator::{
     signature_collection::SignatureCollection,
     validator_set::{ValidatorSet, ValidatorSetType as _},
@@ -362,7 +365,7 @@ where
         &mut self,
         to: &NodeId<CertificateSignaturePubKey<ST>>,
         make_app_message: impl FnOnce() -> Bytes,
-        completion: Option<oneshot::Sender<()>>,
+        completion: Option<TcpCompletionHandle>,
     ) {
         match self.peer_discovery_driver.lock().unwrap().get_addr(to) {
             None => {
@@ -389,7 +392,7 @@ where
                     address,
                     TcpMsg {
                         msg: signed_message.freeze(),
-                        completion,
+                        completion: completion.and_then(|completion| completion.take_sender()),
                     },
                 );
             }
@@ -1111,7 +1114,7 @@ where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Decodable,
     OM: Encodable + Into<M> + Clone,
-    E: From<RaptorCastEvent<M::Event, ST>>,
+    RaptorCastEvent<M::Event, ST>: Into<E>,
     PD: PeerDiscoveryAlgo<SignatureType = ST>,
     AP: auth::AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
     DS: IdentityScore<Identity = NodeId<CertificateSignaturePubKey<ST>>>,
@@ -1526,19 +1529,16 @@ where
             RaptorCastEvent::Message(event) => event,
             RaptorCastEvent::PeerManagerResponse(peer_manager_response) => {
                 match peer_manager_response {
-                    PeerManagerResponse::PeerList(peer) => MonadEvent::ControlPanelEvent(
+                    PeerManagerResponse::PeerList(peer) => MonadEvent::control_panel_event(
                         ControlPanelEvent::GetPeers(GetPeers::Response(peer)),
                     ),
-                    PeerManagerResponse::FullNodes(full_nodes) => MonadEvent::ControlPanelEvent(
+                    PeerManagerResponse::FullNodes(full_nodes) => MonadEvent::control_panel_event(
                         ControlPanelEvent::GetFullNodes(GetFullNodes::Response(full_nodes)),
                     ),
                 }
             }
             RaptorCastEvent::SecondaryRaptorcastPeersUpdate(expiry_round, confirm_group_peers) => {
-                MonadEvent::SecondaryRaptorcastPeersUpdate {
-                    expiry_round,
-                    confirm_group_peers,
-                }
+                MonadEvent::secondary_raptorcast_peers_update(expiry_round, confirm_group_peers)
             }
         }
     }

@@ -5399,7 +5399,6 @@ dependencies = [
  "bytes",
  "chrono",
  "criterion",
- "futures",
  "monad-blocksync",
  "monad-chain-config",
  "monad-consensus",

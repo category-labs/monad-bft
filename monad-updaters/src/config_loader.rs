@@ -239,9 +239,9 @@ where
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
         let this = self.deref_mut();
-        this.response_rx.poll_recv(cx).map(|maybe_event| {
-            maybe_event.map(|config_event| MonadEvent::ConfigEvent(config_event))
-        })
+        this.response_rx
+            .poll_recv(cx)
+            .map(|maybe_event| maybe_event.map(MonadEvent::config_event))
     }
 }
 

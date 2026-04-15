@@ -30,7 +30,7 @@ use monad_crypto::certificate_signature::{
 use monad_eth_types::EthExecutionProtocol;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MonadEvent, StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage};
-use monad_types::{NodeId, SeqNum};
+use monad_types::{NodeId, SeqNum, TcpCompletionHandle};
 use monad_validator::signature_collection::SignatureCollection;
 
 #[allow(dead_code, non_camel_case_types, non_upper_case_globals)]
@@ -326,7 +326,7 @@ where
                             )
                         }
                     };
-                    return Poll::Ready(Some(MonadEvent::StateSyncEvent(event)));
+                    return Poll::Ready(Some(MonadEvent::state_sync_event(event)));
                 }
             }
             StateSyncMode::Live(execution_ipc) => {
@@ -350,8 +350,12 @@ where
                         },
                         "sending response"
                     );
-                    return Poll::Ready(Some(MonadEvent::StateSyncEvent(
-                        StateSyncEvent::Outbound(to, message, Some(completion)),
+                    return Poll::Ready(Some(MonadEvent::state_sync_event(
+                        StateSyncEvent::Outbound(
+                            to,
+                            message,
+                            Some(TcpCompletionHandle::new(completion)),
+                        ),
                     )));
                 }
             }

@@ -432,7 +432,7 @@ where
             RaptorCastEvent::PeerManagerResponse(_peer_manager_response) => {
                 unimplemented!()
             }
-            RaptorCastEvent::SecondaryRaptorcastPeersUpdate { .. } => {
+            RaptorCastEvent::SecondaryRaptorcastPeersUpdate(..) => {
                 unimplemented!()
             }
         }

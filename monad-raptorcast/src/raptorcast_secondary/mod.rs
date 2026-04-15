@@ -396,7 +396,7 @@ where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Decodable,
     OM: Encodable + Into<M> + Clone,
-    E: From<RaptorCastEvent<M::Event, ST>>,
+    RaptorCastEvent<M::Event, ST>: Into<E>,
     PD: PeerDiscoveryAlgo<SignatureType = ST>,
     Self: Unpin,
 {
