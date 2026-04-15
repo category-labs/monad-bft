@@ -20,7 +20,6 @@ macro_rules! ensure {
         }
     };
 }
-pub(crate) use ensure; // export the macro for use in other modules
 use std::{
     cell::OnceCell,
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -32,6 +31,7 @@ use std::{
 };
 
 use bytes::Bytes;
+pub(crate) use ensure; // export the macro for use in other modules
 use fixed::{types::extra::U11, FixedU16};
 use iset::IntervalMap;
 use monad_crypto::{
@@ -423,6 +423,10 @@ impl<'a, PT: PubKey> PrimaryBroadcastGroup<'a, PT> {
             members: Box::new(self.group.get_members().keys()),
             excluded: [Some(self_id), Some(self.author)],
         })
+    }
+
+    pub fn validator_set(&self) -> &ValidatorSet<PT> {
+        self.group
     }
 
     pub fn group_id(&self) -> GroupId {
