@@ -197,7 +197,7 @@ where
                 vec![Command::TimerCommand(TimerCommand::Schedule {
                     duration: wrapped.request_timeout,
                     variant: TimeoutVariant::BlockSync(request),
-                    on_timeout: MonadEvent::BlockSyncEvent(BlockSyncEvent::Timeout(request)),
+                    on_timeout: MonadEvent::block_sync_event(BlockSyncEvent::Timeout(request)),
                 })]
             }
             BlockSyncCommand::ResetTimeout(block_id) => {
@@ -228,13 +228,13 @@ where
                 vec![Command::LoopbackCommand(LoopbackCommand::Forward(
                     match requester {
                         BlockSyncSelfRequester::StateSync => {
-                            MonadEvent::StateSyncEvent(StateSyncEvent::BlockSync {
+                            MonadEvent::state_sync_event(StateSyncEvent::BlockSync {
                                 block_range,
                                 full_blocks,
                             })
                         }
                         BlockSyncSelfRequester::Consensus => {
-                            MonadEvent::ConsensusEvent(ConsensusEvent::BlockSync {
+                            MonadEvent::consensus_event(ConsensusEvent::BlockSync {
                                 block_range,
                                 full_blocks,
                             })

@@ -254,7 +254,7 @@ where
         let this = self.deref_mut();
 
         if let Some(event) = this.events.pop_front() {
-            return Poll::Ready(Some(MonadEvent::BlockSyncEvent(event)));
+            return Poll::Ready(Some(MonadEvent::block_sync_event(event)));
         }
 
         if let Some(waker) = this.waker.as_mut() {

@@ -17,12 +17,11 @@ use std::{
     fmt::Debug,
     net::{SocketAddr, SocketAddrV4},
     num::NonZeroU16,
+    sync::Arc,
 };
 
 use alloy_rlp::{encode_list, Decodable, Encodable, Header, RlpDecodable, RlpEncodable};
 use bytes::{BufMut, Bytes, BytesMut};
-use futures::channel::oneshot;
-use futures::channel::oneshot;
 use monad_blocksync::{
     blocksync::BlockSyncSelfRequester,
     messages::message::{BlockSyncRequestMessage, BlockSyncResponseMessage},
@@ -51,7 +50,7 @@ use monad_crypto::certificate_signature::{
 use monad_state_backend::StateBackend;
 use monad_types::{
     deserialize_pubkey, serialize_pubkey, Epoch, ExecutionProtocol, LimitedVec, NodeId, Round,
-    RouterTarget, SeqNum, Stake, UdpPriority,
+    RouterTarget, SeqNum, Stake, TcpCompletionHandle, UdpPriority,
 };
 use monad_validator::signature_collection::SignatureCollection;
 use serde::{Deserialize, Serialize};
@@ -1769,7 +1768,7 @@ impl Decodable for StateSyncNetworkMessage {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub enum StateSyncEvent<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
@@ -1780,7 +1779,7 @@ where
     Outbound(
         NodeId<SCT::NodeIdPubKey>,
         StateSyncNetworkMessage,
-        #[serde(skip)] Option<oneshot::Sender<()>>, // completion
+        #[serde(skip)] Option<TcpCompletionHandle>, // completion
     ),
 
     /// Execution done syncing
@@ -2020,8 +2019,8 @@ where
 }
 
 /// MonadEvent are inputs to MonadState
-#[derive(Debug, Serialize)]
-pub enum MonadEvent<ST, SCT, EPT>
+#[derive(Debug, Clone, Serialize)]
+pub enum InnerMonadEvent<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -2050,38 +2049,89 @@ where
     },
 }
 
+#[derive(Clone)]
+pub struct MonadEvent<ST, SCT, EPT>(Arc<InnerMonadEvent<ST, SCT, EPT>>)
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol;
+
 impl<ST, SCT, EPT> MonadEvent<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-    /// We don't implement the normal Clone::clone because it's unnecessary in the general case.
-    /// Clone is only used in mock-swarm for added observability.
-    ///
-    /// Currently, the only inconsistency is that the lossy_clone won't clone the statesync
-    /// completion.
+    pub fn new(inner: InnerMonadEvent<ST, SCT, EPT>) -> Self {
+        Self(Arc::new(inner))
+    }
+
+    pub fn consensus_event(event: ConsensusEvent<ST, SCT, EPT>) -> Self {
+        Self::new(InnerMonadEvent::ConsensusEvent(event))
+    }
+
+    pub fn block_sync_event(event: BlockSyncEvent<ST, SCT, EPT>) -> Self {
+        Self::new(InnerMonadEvent::BlockSyncEvent(event))
+    }
+
+    pub fn validator_event(event: ValidatorEvent<SCT>) -> Self {
+        Self::new(InnerMonadEvent::ValidatorEvent(event))
+    }
+
+    pub fn mempool_event(event: MempoolEvent<ST, SCT, EPT>) -> Self {
+        Self::new(InnerMonadEvent::MempoolEvent(event))
+    }
+
+    pub fn control_panel_event(event: ControlPanelEvent<ST>) -> Self {
+        Self::new(InnerMonadEvent::ControlPanelEvent(event))
+    }
+
+    pub fn timestamp_update_event(timestamp: u128) -> Self {
+        Self::new(InnerMonadEvent::TimestampUpdateEvent(timestamp))
+    }
+
+    pub fn state_sync_event(event: StateSyncEvent<ST, SCT, EPT>) -> Self {
+        Self::new(InnerMonadEvent::StateSyncEvent(event))
+    }
+
+    pub fn config_event(event: ConfigEvent<ST, SCT>) -> Self {
+        Self::new(InnerMonadEvent::ConfigEvent(event))
+    }
+
+    pub fn secondary_raptorcast_peers_update(
+        expiry_round: Round,
+        confirm_group_peers: Vec<NodeId<SCT::NodeIdPubKey>>,
+    ) -> Self {
+        Self::new(InnerMonadEvent::SecondaryRaptorcastPeersUpdate {
+            expiry_round,
+            confirm_group_peers,
+        })
+    }
+
     pub fn lossy_clone(&self) -> Self {
-        match self {
-            MonadEvent::ConsensusEvent(event) => MonadEvent::ConsensusEvent(event.clone()),
-            MonadEvent::BlockSyncEvent(event) => MonadEvent::BlockSyncEvent(event.clone()),
-            MonadEvent::ValidatorEvent(event) => MonadEvent::ValidatorEvent(event.clone()),
-            MonadEvent::MempoolEvent(event) => MonadEvent::MempoolEvent(event.clone()),
-            MonadEvent::ControlPanelEvent(event) => MonadEvent::ControlPanelEvent(event.clone()),
-            MonadEvent::TimestampUpdateEvent(timestamp) => {
-                MonadEvent::TimestampUpdateEvent(*timestamp)
+        Self::new(match self.as_ref() {
+            InnerMonadEvent::ConsensusEvent(event) => {
+                InnerMonadEvent::ConsensusEvent(event.clone())
             }
-            MonadEvent::StateSyncEvent(event) => {
+            InnerMonadEvent::BlockSyncEvent(event) => {
+                InnerMonadEvent::BlockSyncEvent(event.clone())
+            }
+            InnerMonadEvent::ValidatorEvent(event) => {
+                InnerMonadEvent::ValidatorEvent(event.clone())
+            }
+            InnerMonadEvent::MempoolEvent(event) => InnerMonadEvent::MempoolEvent(event.clone()),
+            InnerMonadEvent::ControlPanelEvent(event) => {
+                InnerMonadEvent::ControlPanelEvent(event.clone())
+            }
+            InnerMonadEvent::TimestampUpdateEvent(timestamp) => {
+                InnerMonadEvent::TimestampUpdateEvent(*timestamp)
+            }
+            InnerMonadEvent::StateSyncEvent(event) => {
                 let event = match event {
                     StateSyncEvent::Inbound(node_id, state_sync_network_message) => {
                         StateSyncEvent::Inbound(*node_id, state_sync_network_message.clone())
                     }
-                    StateSyncEvent::Outbound(
-                        node_id,
-                        state_sync_network_message,
-                        // completion is NOT cloned
-                        _completion,
-                    ) => {
+                    StateSyncEvent::Outbound(node_id, state_sync_network_message, _completion) => {
                         StateSyncEvent::Outbound(*node_id, state_sync_network_message.clone(), None)
                     }
                     StateSyncEvent::DoneSync(seq_num) => StateSyncEvent::DoneSync(*seq_num),
@@ -2097,21 +2147,57 @@ where
                         high_qc: high_qc.clone(),
                     },
                 };
-                MonadEvent::StateSyncEvent(event)
+                InnerMonadEvent::StateSyncEvent(event)
             }
-            MonadEvent::ConfigEvent(event) => MonadEvent::ConfigEvent(event.clone()),
-            MonadEvent::SecondaryRaptorcastPeersUpdate {
+            InnerMonadEvent::ConfigEvent(event) => InnerMonadEvent::ConfigEvent(event.clone()),
+            InnerMonadEvent::SecondaryRaptorcastPeersUpdate {
                 expiry_round,
                 confirm_group_peers,
-            } => MonadEvent::SecondaryRaptorcastPeersUpdate {
+            } => InnerMonadEvent::SecondaryRaptorcastPeersUpdate {
                 expiry_round: *expiry_round,
                 confirm_group_peers: confirm_group_peers.clone(),
             },
-        }
+        })
     }
 }
 
-impl<ST, SCT, EPT> Encodable for MonadEvent<ST, SCT, EPT>
+impl<ST, SCT, EPT> AsRef<InnerMonadEvent<ST, SCT, EPT>> for MonadEvent<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    fn as_ref(&self) -> &InnerMonadEvent<ST, SCT, EPT> {
+        self.0.as_ref()
+    }
+}
+
+impl<ST, SCT, EPT> std::fmt::Debug for MonadEvent<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Debug::fmt(self.as_ref(), f)
+    }
+}
+
+impl<ST, SCT, EPT> Serialize for MonadEvent<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.as_ref().serialize(serializer)
+    }
+}
+
+impl<ST, SCT, EPT> Encodable for InnerMonadEvent<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -2162,7 +2248,7 @@ where
     }
 }
 
-impl<ST, SCT, EPT> Decodable for MonadEvent<ST, SCT, EPT>
+impl<ST, SCT, EPT> Decodable for InnerMonadEvent<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -2208,6 +2294,28 @@ where
     }
 }
 
+impl<ST, SCT, EPT> Encodable for MonadEvent<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    fn encode(&self, out: &mut dyn BufMut) {
+        self.as_ref().encode(out)
+    }
+}
+
+impl<ST, SCT, EPT> Decodable for MonadEvent<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        InnerMonadEvent::<ST, SCT, EPT>::decode(buf).map(Self::new)
+    }
+}
+
 impl<ST, SCT, EPT> monad_types::Deserializable<[u8]> for MonadEvent<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
@@ -2217,7 +2325,7 @@ where
     type ReadError = alloy_rlp::Error;
 
     fn deserialize(data: &[u8]) -> Result<Self, Self::ReadError> {
-        MonadEvent::<ST, SCT, EPT>::decode(&mut data.as_ref())
+        Self::decode(&mut data.as_ref())
     }
 }
 
@@ -2234,49 +2342,61 @@ where
     }
 }
 
+impl<ST, SCT, EPT> std::fmt::Display for InnerMonadEvent<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s: String = match self {
+            InnerMonadEvent::ConsensusEvent(ConsensusEvent::Message {
+                sender,
+                unverified_message: _,
+            }) => {
+                format!("ConsensusEvent::Message from {sender}")
+            }
+            InnerMonadEvent::ConsensusEvent(ConsensusEvent::Timeout(round)) => {
+                format!("ConsensusEvent::Timeout Pacemaker local timeout round {round:?}")
+            }
+            InnerMonadEvent::ConsensusEvent(_) => "CONSENSUS".to_string(),
+            InnerMonadEvent::BlockSyncEvent(_) => "BLOCKSYNC".to_string(),
+            InnerMonadEvent::ValidatorEvent(_) => "VALIDATOR".to_string(),
+            InnerMonadEvent::MempoolEvent(MempoolEvent::Proposal { round, seq_num, .. }) => {
+                format!("MempoolEvent::Proposal -- round {round:?}, seq_num {seq_num:?}")
+            }
+            InnerMonadEvent::MempoolEvent(MempoolEvent::ForwardedTxs { sender, txs: txns }) => {
+                format!(
+                    "MempoolEvent::ForwardedTxns -- from {sender} number of txns: {}",
+                    txns.len()
+                )
+            }
+            InnerMonadEvent::MempoolEvent(MempoolEvent::ForwardTxs(txs)) => {
+                format!("MempoolEvent::ForwardTxs -- number of txns: {}", txs.len())
+            }
+            InnerMonadEvent::ControlPanelEvent(_) => "CONTROLPANELEVENT".to_string(),
+            InnerMonadEvent::TimestampUpdateEvent(t) => {
+                format!("MempoolEvent::TimestampUpdate: {t}")
+            }
+            InnerMonadEvent::StateSyncEvent(_) => "STATESYNC".to_string(),
+            InnerMonadEvent::ConfigEvent(_) => "CONFIGEVENT".to_string(),
+            InnerMonadEvent::SecondaryRaptorcastPeersUpdate { .. } => {
+                "SecondaryRaptorcastPeersUpdate".to_string()
+            }
+        };
+
+        write!(f, "{}", s)
+    }
+}
+
 impl<ST, SCT, EPT> std::fmt::Display for MonadEvent<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-    // TODO impl Display for each individual event instead
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let s: String = match self {
-            MonadEvent::ConsensusEvent(ConsensusEvent::Message {
-                sender,
-                unverified_message: _,
-            }) => {
-                format!("ConsensusEvent::Message from {sender}")
-            }
-            MonadEvent::ConsensusEvent(ConsensusEvent::Timeout(round)) => {
-                format!("ConsensusEvent::Timeout Pacemaker local timeout round {round:?}")
-            }
-            MonadEvent::ConsensusEvent(_) => "CONSENSUS".to_string(),
-            MonadEvent::BlockSyncEvent(_) => "BLOCKSYNC".to_string(),
-            MonadEvent::ValidatorEvent(_) => "VALIDATOR".to_string(),
-            MonadEvent::MempoolEvent(MempoolEvent::Proposal { round, seq_num, .. }) => {
-                format!("MempoolEvent::Proposal -- round {round:?}, seq_num {seq_num:?}")
-            }
-            MonadEvent::MempoolEvent(MempoolEvent::ForwardedTxs { sender, txs: txns }) => {
-                format!(
-                    "MempoolEvent::ForwardedTxns -- from {sender} number of txns: {}",
-                    txns.len()
-                )
-            }
-            MonadEvent::MempoolEvent(MempoolEvent::ForwardTxs(txs)) => {
-                format!("MempoolEvent::ForwardTxs -- number of txns: {}", txs.len())
-            }
-            MonadEvent::ControlPanelEvent(_) => "CONTROLPANELEVENT".to_string(),
-            MonadEvent::TimestampUpdateEvent(t) => format!("MempoolEvent::TimestampUpdate: {t}"),
-            MonadEvent::StateSyncEvent(_) => "STATESYNC".to_string(),
-            MonadEvent::ConfigEvent(_) => "CONFIGEVENT".to_string(),
-            MonadEvent::SecondaryRaptorcastPeersUpdate { .. } => {
-                "SecondaryRaptorcastPeersUpdate".to_string()
-            }
-        };
-
-        write!(f, "{}", s)
+        std::fmt::Display::fmt(self.as_ref(), f)
     }
 }
 

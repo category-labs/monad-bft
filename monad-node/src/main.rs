@@ -252,7 +252,12 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
             node_state.chain_config.get_staking_activation(),
             state_backend.clone(),
         ),
-        timestamp: TokioTimestamp::new(Duration::from_millis(5), 100, 10001),
+        timestamp:
+            TokioTimestamp::<SignatureType, SignatureCollectionType, ExecutionProtocolType>::new(
+                Duration::from_millis(5),
+                100,
+                10001,
+            ),
         txpool: EthTxPoolExecutor::start(
             create_block_policy(),
             state_backend.clone(),
@@ -278,7 +283,11 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
             score_reader,
         )
         .expect("txpool ipc succeeds"),
-        control_panel: ControlPanelIpcReceiver::new(
+        control_panel: ControlPanelIpcReceiver::<
+            SignatureType,
+            SignatureCollectionType,
+            ExecutionProtocolType,
+        >::new(
             node_state.control_panel_ipc_path,
             node_state.reload_handle,
             1000,
@@ -301,7 +310,10 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
                 .expect("invalid file name")
                 .to_owned(),
         ),
-        config_loader: ConfigLoader::new(node_state.node_config_path),
+        config_loader:
+            ConfigLoader::<SignatureType, SignatureCollectionType, ExecutionProtocolType>::new(
+                node_state.node_config_path,
+            ),
     };
 
     let waltrace_tx = if node_state.wal_chunks == 0 {
@@ -480,7 +492,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
                     let _ledger_span = ledger_span.enter();
                     if let Some(waltrace_tx) = waltrace_tx.as_ref() {
                         let wal_event = LogFriendlyMonadEvent {
-                            event: event.lossy_clone(),
+                            event: event.clone(),
                         };
                         match waltrace_tx.try_send(wal_event) {
                             Ok(()) => {}

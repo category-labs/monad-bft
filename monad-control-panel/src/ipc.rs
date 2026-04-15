@@ -163,7 +163,7 @@ where
                         GetMetrics::Request => {
                             let event = ControlPanelEvent::GetMetricsEvent;
                             let Ok(_) = event_channel
-                                .send(MonadEvent::ControlPanelEvent(event.clone()))
+                                .send(MonadEvent::control_panel_event(event.clone()))
                                 .await
                             else {
                                 error!("failed to forward request {:?} to executor, closing connection", &event);
@@ -176,7 +176,7 @@ where
                         GetPeers::Request => {
                             let event = ControlPanelEvent::GetPeers(GetPeers::Request);
                             let Ok(_) = event_channel
-                                .send(MonadEvent::ControlPanelEvent(event.clone()))
+                                .send(MonadEvent::control_panel_event(event.clone()))
                                 .await
                             else {
                                 error!("failed to forward request {:?} to executor, closing connection", &event);
@@ -189,7 +189,7 @@ where
                         GetFullNodes::Request => {
                             let event = ControlPanelEvent::GetFullNodes(GetFullNodes::Request);
                             let Ok(_) = event_channel
-                                .send(MonadEvent::ControlPanelEvent(event.clone()))
+                                .send(MonadEvent::control_panel_event(event.clone()))
                                 .await
                             else {
                                 error!("failed to forward request {:?} to executor, closing connection", &event);
@@ -204,7 +204,7 @@ where
                         ClearMetrics::Request => {
                             let event = ControlPanelEvent::ClearMetricsEvent;
                             let Ok(_) = event_channel
-                                .send(MonadEvent::ControlPanelEvent(event.clone()))
+                                .send(MonadEvent::control_panel_event(event.clone()))
                                 .await
                             else {
                                 error!("failed to forward request {:?} to executor, closing connection", &event);
@@ -216,7 +216,7 @@ where
                     WriteCommand::UpdateLogFilter(filter) => {
                         let event = ControlPanelEvent::UpdateLogFilter(filter);
                         let Ok(_) = event_channel
-                            .send(MonadEvent::ControlPanelEvent(event.clone()))
+                            .send(MonadEvent::control_panel_event(event.clone()))
                             .await
                         else {
                             error!(
@@ -230,7 +230,7 @@ where
                         ReloadConfig::Request => {
                             let event = ControlPanelEvent::ReloadConfig(ReloadConfig::Request);
                             let Ok(_) = event_channel
-                                .send(MonadEvent::ControlPanelEvent(event.clone()))
+                                .send(MonadEvent::control_panel_event(event.clone()))
                                 .await
                             else {
                                 error!("failed to forward request {:?} to executor, closing connection", &event);

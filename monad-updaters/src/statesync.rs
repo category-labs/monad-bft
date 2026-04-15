@@ -107,7 +107,7 @@ where
                     if eth_header.seq_num() == GENESIS_SEQ_NUM =>
                 {
                     self.events
-                        .push_back(MonadEvent::StateSyncEvent(StateSyncEvent::DoneSync(
+                        .push_back(MonadEvent::state_sync_event(StateSyncEvent::DoneSync(
                             GENESIS_SEQ_NUM,
                         )));
                 }
@@ -125,7 +125,7 @@ where
                     };
                     self.request = Some(request);
                     self.events.extend(self.peers.iter().map(|peer| {
-                        MonadEvent::StateSyncEvent(StateSyncEvent::Outbound(
+                        MonadEvent::state_sync_event(StateSyncEvent::Outbound(
                             *peer,
                             StateSyncNetworkMessage::Request(request),
                             None, // don't care about completion for mock
@@ -163,12 +163,13 @@ where
                             )],
                             response_n: 1,
                         };
-                        self.events
-                            .push_back(MonadEvent::StateSyncEvent(StateSyncEvent::Outbound(
+                        self.events.push_back(MonadEvent::state_sync_event(
+                            StateSyncEvent::Outbound(
                                 from,
                                 StateSyncNetworkMessage::Response(response),
                                 None, // don't care about completion for mock
-                            )))
+                            ),
+                        ))
                     }
                     StateSyncNetworkMessage::Response(response) => {
                         if !self.started_execution
@@ -181,7 +182,7 @@ where
                                 serde_json::from_slice(&response.response[0].data).unwrap();
                             let mut old_state = self.state_backend.lock().unwrap();
                             old_state.reset_state(deserialized);
-                            self.events.push_back(MonadEvent::StateSyncEvent(
+                            self.events.push_back(MonadEvent::state_sync_event(
                                 StateSyncEvent::DoneSync(SeqNum(response.request.target)),
                             ));
                         }

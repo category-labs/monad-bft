@@ -56,9 +56,9 @@ use monad_crypto::certificate_signature::{
 use monad_executor_glue::{
     BlockSyncEvent, ClearMetrics, Command, ConfigEvent, ConfigFileCommand, ConfigReloadCommand,
     ConsensusEvent, ControlPanelCommand, ControlPanelEvent, GetFullNodes, GetMetrics, GetPeers,
-    LedgerCommand, MempoolEvent, Message, MonadEvent, ReadCommand, ReloadConfig, RouterCommand,
-    StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage, StateSyncRequest, TxPoolCommand,
-    ValSetCommand, ValidatorEvent, WriteCommand,
+    InnerMonadEvent, LedgerCommand, MempoolEvent, Message, MonadEvent, ReadCommand, ReloadConfig,
+    RouterCommand, StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage, StateSyncRequest,
+    TxPoolCommand, ValSetCommand, ValidatorEvent, WriteCommand,
 };
 use monad_state_backend::StateBackend;
 use monad_types::{
@@ -798,31 +798,30 @@ where
         // `from` must somehow be guaranteed to be staked at this point so that subsequent
         // malformed stuff (that gets added to event log) can be slashed? TODO
         match self {
-            MonadMessage::Consensus(msg) => MonadEvent::ConsensusEvent(ConsensusEvent::Message {
+            MonadMessage::Consensus(msg) => MonadEvent::consensus_event(ConsensusEvent::Message {
                 sender: from,
                 unverified_message: msg,
             }),
-
             MonadMessage::BlockSyncRequest(request) => {
-                MonadEvent::BlockSyncEvent(BlockSyncEvent::Request {
+                MonadEvent::block_sync_event(BlockSyncEvent::Request {
                     sender: from,
                     request,
                 })
             }
             MonadMessage::BlockSyncResponse(response) => {
-                MonadEvent::BlockSyncEvent(BlockSyncEvent::Response {
+                MonadEvent::block_sync_event(BlockSyncEvent::Response {
                     sender: from,
                     response,
                 })
             }
             MonadMessage::ForwardedTx(msg) => {
-                MonadEvent::MempoolEvent(MempoolEvent::ForwardedTxs {
+                MonadEvent::mempool_event(MempoolEvent::ForwardedTxs {
                     sender: from,
                     txs: msg,
                 })
             }
             MonadMessage::StateSyncMessage(msg) => {
-                MonadEvent::StateSyncEvent(StateSyncEvent::Inbound(from, msg))
+                MonadEvent::state_sync_event(StateSyncEvent::Inbound(from, msg))
             }
         }
     }
@@ -964,7 +963,7 @@ where
         }) = self.forkpoint;
 
         for vset in self.locked_epoch_validators {
-            init_cmds.extend(monad_state.update(MonadEvent::ValidatorEvent(
+            init_cmds.extend(monad_state.update(MonadEvent::validator_event(
                 ValidatorEvent::UpdateValidators(vset),
             )));
         }
@@ -1006,9 +1005,9 @@ where
             CRT,
         >,
     > {
-        match event {
-            MonadEvent::ConsensusEvent(consensus_event) => {
-                let consensus_cmds = ConsensusChildState::new(self).update(consensus_event);
+        match event.as_ref() {
+            InnerMonadEvent::ConsensusEvent(consensus_event) => {
+                let consensus_cmds = ConsensusChildState::new(self).update(consensus_event.clone());
 
                 let take_checkpoint = consensus_cmds
                     .iter()
@@ -1044,8 +1043,9 @@ where
                 cmds
             }
 
-            MonadEvent::BlockSyncEvent(block_sync_event) => {
-                let block_sync_cmds = BlockSyncChildState::new(self).update(block_sync_event);
+            InnerMonadEvent::BlockSyncEvent(block_sync_event) => {
+                let block_sync_cmds =
+                    BlockSyncChildState::new(self).update(block_sync_event.clone());
 
                 block_sync_cmds
                     .into_iter()
@@ -1053,7 +1053,10 @@ where
                     .collect::<Vec<_>>()
             }
 
-            MonadEvent::ValidatorEvent(ValidatorEvent::UpdateValidators(validator_set_data)) => {
+            InnerMonadEvent::ValidatorEvent(ValidatorEvent::UpdateValidators(
+                validator_set_data,
+            )) => {
+                let validator_set_data = validator_set_data.clone();
                 let val_ids = validator_set_data.validators.get_pubkeys();
 
                 self.val_epoch_map.insert(
@@ -1090,15 +1093,15 @@ where
                 cmds
             }
 
-            MonadEvent::MempoolEvent(event) => {
+            InnerMonadEvent::MempoolEvent(event) => {
                 // TODO(andr-dev): Don't allow ConsensusChildState to produce Command<...> directly (requires IPC->TxPool refactor)
-                ConsensusChildState::new(self).handle_mempool_event(event)
+                ConsensusChildState::new(self).handle_mempool_event(event.clone())
             }
-            MonadEvent::StateSyncEvent(state_sync_event) => match state_sync_event {
+            InnerMonadEvent::StateSyncEvent(state_sync_event) => match state_sync_event {
                 StateSyncEvent::Inbound(sender, message) => {
                     // Filter statesync requests based on sender
                     if let StateSyncNetworkMessage::Request(request) = message {
-                        if !self.should_service_statesync_request(&sender, &request) {
+                        if !self.should_service_statesync_request(sender, request) {
                             tracing::debug!(
                                 ?sender,
                                 "dropping statesync request from non-whitelisted sender"
@@ -1107,7 +1110,7 @@ where
                             // Send NotWhitelisted response to sender so that it can look for other peers
                             return vec![Command::RouterCommand(RouterCommand::Publish {
                                 target: RouterTarget::TcpPointToPoint {
-                                    to: sender,
+                                    to: *sender,
                                     completion: None,
                                 },
                                 message: VerifiedMonadMessage::StateSyncMessage(
@@ -1118,13 +1121,17 @@ where
                     }
 
                     vec![Command::StateSyncCommand(StateSyncCommand::Message((
-                        sender, message,
+                        *sender,
+                        message.clone(),
                     )))]
                 }
                 StateSyncEvent::Outbound(to, message, completion) => {
                     vec![Command::RouterCommand(RouterCommand::Publish {
-                        target: RouterTarget::TcpPointToPoint { to, completion },
-                        message: VerifiedMonadMessage::StateSyncMessage(message),
+                        target: RouterTarget::TcpPointToPoint {
+                            to: *to,
+                            completion: completion.clone(),
+                        },
+                        message: VerifiedMonadMessage::StateSyncMessage(message.clone()),
                     })]
                 }
                 StateSyncEvent::RequestSync {
@@ -1142,8 +1149,8 @@ where
                         unreachable!("Live -> RequestSync is an invalid state transition")
                     };
 
-                    *high_certificate = RoundCertificate::Qc(new_high_qc);
-                    block_buffer.re_root(new_root);
+                    *high_certificate = RoundCertificate::Qc(new_high_qc.clone());
+                    block_buffer.re_root(new_root.clone());
                     *db_status = DbSyncStatus::Waiting;
                     *updating_target = false;
 
@@ -1173,17 +1180,17 @@ where
                         .root_seq_num()
                         .map(|root| root.max(delay) - delay);
                     match maybe_target {
-                        Some(target) if n >= target => {
-                            assert_eq!(n, target);
+                        Some(target) if *n >= target => {
+                            assert_eq!(*n, target);
                             assert_eq!(db_status, &DbSyncStatus::Started);
 
-                            tracing::info!(?target, ?n, "done db statesync");
+                            tracing::info!(?target, n = ?*n, "done db statesync");
                             *db_status = DbSyncStatus::Done;
 
                             self.maybe_start_consensus()
                         }
                         _ => {
-                            tracing::debug!(?n, ?maybe_target, "dropping DoneSync, n < target");
+                            tracing::debug!(n = ?*n, ?maybe_target, "dropping DoneSync, n < target");
                             Vec::new()
                         }
                     }
@@ -1198,7 +1205,7 @@ where
 
                     let mut commands = Vec::new();
 
-                    for full_block in full_blocks {
+                    for full_block in full_blocks.iter().cloned() {
                         block_buffer.handle_blocksync(full_block);
                     }
 
@@ -1206,7 +1213,7 @@ where
                     commands
                 }
             },
-            MonadEvent::ControlPanelEvent(control_panel_event) => match control_panel_event {
+            InnerMonadEvent::ControlPanelEvent(control_panel_event) => match control_panel_event {
                 ControlPanelEvent::GetMetricsEvent => {
                     vec![Command::ControlPanelCommand(ControlPanelCommand::Read(
                         ReadCommand::GetMetrics(GetMetrics::Response(self.metrics)),
@@ -1220,7 +1227,7 @@ where
                 }
                 ControlPanelEvent::UpdateLogFilter(filter) => {
                     vec![Command::ControlPanelCommand(ControlPanelCommand::Write(
-                        WriteCommand::UpdateLogFilter(filter),
+                        WriteCommand::UpdateLogFilter(filter.clone()),
                     ))]
                 }
                 ControlPanelEvent::GetPeers(req_resp) => match req_resp {
@@ -1229,7 +1236,7 @@ where
                     }
                     GetPeers::Response(resp) => {
                         vec![Command::ControlPanelCommand(ControlPanelCommand::Read(
-                            ReadCommand::GetPeers(GetPeers::Response(resp)),
+                            ReadCommand::GetPeers(GetPeers::Response(resp.clone())),
                         ))]
                     }
                 },
@@ -1239,7 +1246,7 @@ where
                     }
                     GetFullNodes::Response(vec) => {
                         vec![Command::ControlPanelCommand(ControlPanelCommand::Read(
-                            ReadCommand::GetFullNodes(GetFullNodes::Response(vec)),
+                            ReadCommand::GetFullNodes(GetFullNodes::Response(vec.clone())),
                         ))]
                     }
                 },
@@ -1251,20 +1258,21 @@ where
                     }
                     ReloadConfig::Response(resp) => {
                         vec![Command::ControlPanelCommand(ControlPanelCommand::Write(
-                            WriteCommand::ReloadConfig(ReloadConfig::Response(resp)),
+                            WriteCommand::ReloadConfig(ReloadConfig::Response(resp.clone())),
                         ))]
                     }
                 },
             },
-            MonadEvent::TimestampUpdateEvent(t) => {
-                self.block_timestamp.update_time(t);
+            InnerMonadEvent::TimestampUpdateEvent(t) => {
+                self.block_timestamp.update_time(*t);
                 if let ConsensusMode::Live(consensus) = &mut self.consensus {
-                    consensus.refresh_vote_delay_metrics(t, &mut self.metrics);
+                    consensus.refresh_vote_delay_metrics(*t, &mut self.metrics);
                 }
                 vec![]
             }
-            MonadEvent::ConfigEvent(config_event) => match config_event {
+            InnerMonadEvent::ConfigEvent(config_event) => match config_event {
                 ConfigEvent::ConfigUpdate(config_update) => {
+                    let config_update = config_update.clone();
                     self.block_sync
                         .set_override_peers(config_update.blocksync_override_peers);
 
@@ -1290,10 +1298,11 @@ where
                 }
                 ConfigEvent::LoadError(err_msg) => {
                     vec![Command::ControlPanelCommand(ControlPanelCommand::Write(
-                        WriteCommand::ReloadConfig(ReloadConfig::Response(err_msg)),
+                        WriteCommand::ReloadConfig(ReloadConfig::Response(err_msg.clone())),
                     ))]
                 }
                 ConfigEvent::KnownPeersUpdate(known_peers_update) => {
+                    let known_peers_update = known_peers_update.clone();
                     vec![Command::RouterCommand(RouterCommand::UpdatePeers {
                         peer_entries: known_peers_update.known_peers,
                         dedicated_full_nodes: known_peers_update.dedicated_full_nodes,
@@ -1301,12 +1310,13 @@ where
                     })]
                 }
             },
-            MonadEvent::SecondaryRaptorcastPeersUpdate {
+            InnerMonadEvent::SecondaryRaptorcastPeersUpdate {
                 expiry_round,
                 confirm_group_peers,
             } => {
                 let peers_excl_self: Vec<_> = confirm_group_peers
-                    .into_iter()
+                    .iter()
+                    .cloned()
                     .filter(|peer| peer != &self.nodeid)
                     .collect();
 
@@ -1320,8 +1330,8 @@ where
                 for &peer in &peers_excl_self {
                     self.secondary_raptorcast_peers
                         .entry(peer)
-                        .and_modify(|expiry| *expiry = (*expiry).max(expiry_round))
-                        .or_insert(expiry_round);
+                        .and_modify(|expiry| *expiry = (*expiry).max(*expiry_round))
+                        .or_insert(*expiry_round);
                 }
 
                 // if expand_to_group and not live, emit secondary raptorcast
@@ -1376,7 +1386,7 @@ where
                 root_seq_num =? block_buffer.root_seq_num(),
                 "still syncing..."
             );
-            return self.update(MonadEvent::BlockSyncEvent(BlockSyncEvent::SelfRequest {
+            return self.update(MonadEvent::block_sync_event(BlockSyncEvent::SelfRequest {
                 requester: BlockSyncSelfRequester::StateSync,
                 block_range,
             }));
@@ -1421,7 +1431,7 @@ where
 
             if delay_executed {
                 // TODO assert state root matches?
-                return self.update(MonadEvent::StateSyncEvent(StateSyncEvent::DoneSync(
+                return self.update(MonadEvent::state_sync_event(StateSyncEvent::DoneSync(
                     delay_seq_num,
                 )));
             }
@@ -1579,12 +1589,12 @@ where
         // would need to restart at the exact same time and finish
         // statesyncing/blocksyncing within the vote pacing window
         commands.extend(
-            self.update(MonadEvent::ConsensusEvent(ConsensusEvent::SendVote(
+            self.update(MonadEvent::consensus_event(ConsensusEvent::SendVote(
                 current_round,
             ))),
         );
         commands.extend(
-            self.update(MonadEvent::ConsensusEvent(ConsensusEvent::Timeout(
+            self.update(MonadEvent::consensus_event(ConsensusEvent::Timeout(
                 current_round,
             ))),
         );

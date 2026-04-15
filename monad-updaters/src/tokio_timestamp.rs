@@ -86,7 +86,7 @@ where
                     .expect("Clock may have gone backwards");
                 let t = epoch_time.as_nanos();
                 // t += self.adjuster.get_adjustment();
-                Poll::Ready(Some(MonadEvent::TimestampUpdateEvent(t)))
+                Poll::Ready(Some(MonadEvent::timestamp_update_event(t)))
             }
             Poll::Pending => Poll::Pending,
         }
