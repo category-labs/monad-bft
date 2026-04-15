@@ -12,6 +12,8 @@ bench = false
 monad-types = { workspace = true }
 
 bytes = { workspace = true }
+libc = { workspace = true }
+tracing = { workspace = true }
 
 [build-dependencies]
 monad-version = { workspace = true }

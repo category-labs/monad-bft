@@ -6283,6 +6283,7 @@ dependencies = [
  "criterion",
  "dateparser",
  "itertools 0.13.0",
+ "libc",
  "monad-bls",
  "monad-crypto",
  "monad-eth-types",
@@ -6294,6 +6295,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "test-case",
+ "tracing",
 ]
 
 [[package]]
