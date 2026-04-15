@@ -426,6 +426,10 @@ impl<'a, PT: PubKey> PrimaryBroadcastGroup<'a, PT> {
         })
     }
 
+    pub fn validator_set(&self) -> &ValidatorSet<PT> {
+        self.group
+    }
+
     pub fn group_id(&self) -> GroupId {
         GroupId::Primary(self.epoch)
     }
