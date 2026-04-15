@@ -21,7 +21,7 @@ use std::{
 
 use alloy_rlp::{encode_list, Decodable, Encodable, Header, RlpDecodable, RlpEncodable};
 use bytes::{BufMut, Bytes, BytesMut};
-use chrono::{DateTime, Utc};
+use futures::channel::oneshot;
 use futures::channel::oneshot;
 use monad_blocksync::{
     blocksync::BlockSyncSelfRequester,
@@ -2289,30 +2289,8 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-    pub timestamp: DateTime<Utc>,
     pub event: MonadEvent<ST, SCT, EPT>,
 }
-
-impl<ST, SCT, EPT> LogFriendlyMonadEvent<ST, SCT, EPT>
-where
-    ST: CertificateSignatureRecoverable,
-    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    EPT: ExecutionProtocol,
-{
-    pub fn deserialize_timestamp(data: &[u8]) -> DateTime<Utc> {
-        // TODO consolidate with the similar code in deserialize impl
-        let mut offset = 0;
-        let header: [u8; 4] = data[0..EVENT_HEADER_LEN].try_into().unwrap();
-        let ts_size = EventHeaderType::from_le_bytes(header) as usize;
-        offset += EVENT_HEADER_LEN;
-
-        let ts: DateTime<Utc> = bincode::deserialize(&data[offset..offset + ts_size]).unwrap();
-        ts
-    }
-}
-
-type EventHeaderType = u32;
-const EVENT_HEADER_LEN: usize = std::mem::size_of::<EventHeaderType>();
 
 impl<ST, SCT, EPT> monad_types::Deserializable<[u8]> for LogFriendlyMonadEvent<ST, SCT, EPT>
 where
@@ -2322,20 +2300,8 @@ where
 {
     type ReadError = alloy_rlp::Error;
     fn deserialize(data: &[u8]) -> Result<Self, Self::ReadError> {
-        let mut offset = 0;
-        let header: [u8; 4] = data[0..EVENT_HEADER_LEN].try_into().unwrap();
-        let ts_size = EventHeaderType::from_le_bytes(header) as usize;
-        offset += EVENT_HEADER_LEN;
-
-        let ts: DateTime<Utc> = bincode::deserialize(&data[offset..offset + ts_size]).unwrap();
-        offset += ts_size;
-
-        let event = MonadEvent::<ST, SCT, EPT>::decode(&mut &data[offset..])?;
-
-        Ok(LogFriendlyMonadEvent {
-            timestamp: ts,
-            event,
-        })
+        let event = MonadEvent::<ST, SCT, EPT>::decode(&mut &data[..])?;
+        Ok(LogFriendlyMonadEvent { event })
     }
 }
 
@@ -2347,15 +2313,7 @@ where
 {
     fn serialize(&self) -> Bytes {
         let mut b = BytesMut::new();
-
-        let ts = bincode::serialize(&self.timestamp).unwrap();
-        let len = (ts.len() as EventHeaderType).to_le_bytes();
-
-        b.put(&len[..]);
-        b.put(&ts[..]);
-
         self.event.encode(&mut b);
-
         b.into()
     }
 }

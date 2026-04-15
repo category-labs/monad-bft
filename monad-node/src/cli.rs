@@ -51,7 +51,7 @@ pub struct Cli {
     #[arg(long)]
     pub wal_path: PathBuf,
 
-    /// Set the maximum number of WAL chunks to retain
+    /// Set the maximum number of WAL chunks to retain. Set to 0 to disable WAL.
     #[arg(long, default_value_t = DEFAULT_WAL_CHUNKS)]
     pub wal_chunks: u64,
 
