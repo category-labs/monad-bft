@@ -284,6 +284,12 @@ impl BlockDataReader for ArchiveReader {
             .await
     }
 
+    async fn get_block_number_by_hash(&self, block_hash: &BlockHash) -> Result<u64> {
+        self.block_data_executor
+            .execute(|bdr| bdr.get_block_number_by_hash(block_hash))
+            .await
+    }
+
     async fn get_block_by_number(&self, block_num: u64) -> Result<Block> {
         self.block_data_executor
             .execute(|bdr| bdr.get_block_by_number(block_num))
@@ -311,6 +317,13 @@ impl BlockDataReader for ArchiveReader {
     async fn get_block_data_with_offsets(&self, block_num: u64) -> Result<BlockDataWithOffsets> {
         self.block_data_executor
             .execute(|bdr| bdr.get_block_data_with_offsets(block_num))
+            .await
+    }
+
+    #[doc = " Get a block number by its hash, or return None if not found"]
+    async fn try_get_block_number_by_hash(&self, block_hash: &BlockHash) -> Result<Option<u64>> {
+        self.block_data_executor
+            .execute(|bdr| bdr.try_get_block_number_by_hash(block_hash))
             .await
     }
 
