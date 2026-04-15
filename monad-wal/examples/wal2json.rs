@@ -28,7 +28,7 @@ use monad_eth_types::EthExecutionProtocol;
 use monad_executor_glue::LogFriendlyMonadEvent;
 use monad_secp::SecpSignature;
 use monad_types::Deserializable;
-use monad_wal::reader::{events_iter_in_range, events_iter_raw, WALReader, WALReaderConfig};
+use monad_wal::reader::{events_iter_in_range, events_iter_raw, WALReader};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
 #[derive(Parser, Debug)]
@@ -88,8 +88,7 @@ fn main() {
 
     let raw_events_iter = events_iter_in_range(
         args.paths.into_iter().map(|path| {
-            let config = WALReaderConfig::new(path);
-            let reader: WALReader<WrappedEvent> = config.build().unwrap();
+            let reader: WALReader<WrappedEvent> = WALReader::new(path).unwrap();
             events_iter_raw(reader)
         }),
         |event| WrappedEvent::deserialize_timestamp(event),

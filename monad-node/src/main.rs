@@ -303,17 +303,30 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         config_loader: ConfigLoader::new(node_state.node_config_path),
     };
 
-    let logger_config: WALoggerConfig<LogFriendlyMonadEvent<_, _, _>> = WALoggerConfig::new(
-        node_state.wal_path.clone(), // output wal path
-        false,                       // flush on every write
-    );
-    let Ok(mut wal) = logger_config.build() else {
-        event!(
-            Level::ERROR,
-            path = node_state.wal_path.as_path().display().to_string(),
-            "failed to initialize wal",
-        );
-        return Err(());
+    let mut wal = if node_state.wal_chunks == 0 {
+        info!("wal is disabled");
+        None
+    } else {
+        let logger_config: WALoggerConfig<
+            LogFriendlyMonadEvent<SignatureType, SignatureCollectionType, ExecutionProtocolType>,
+        > = WALoggerConfig::new(
+            node_state.wal_path.clone(), // output wal directory
+            false,                       // flush on every write
+        )
+        .with_chunks(node_state.wal_chunks)
+        .with_chunk_size(node_state.wal_chunk_size_bytes);
+        match logger_config.build() {
+            Ok(wal) => Some(wal),
+            Err(err) => {
+                event!(
+                    Level::ERROR,
+                    ?err,
+                    path = node_state.wal_path.as_path().display().to_string(),
+                    "failed to initialize wal",
+                );
+                return Err(());
+            }
+        }
     };
 
     let block_sync_override_peers = node_state
@@ -460,10 +473,12 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
 
                 {
                     let _ledger_span = ledger_span.enter();
-                    let _wal_event_span = tracing::trace_span!("wal_event_span").entered();
-                    if let Err(err) = wal.push(&event) {
-                        event!(Level::ERROR, ?err, "failed to push to wal",);
-                        return Err(());
+                    if let Some(wal) = wal.as_mut() {
+                        let _wal_event_span = tracing::trace_span!("wal_event_span").entered();
+                        if let Err(err) = wal.push(&event) {
+                            event!(Level::ERROR, ?err, "failed to push to wal",);
+                            return Err(());
+                        }
                     }
                 };
 
