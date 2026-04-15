@@ -41,7 +41,10 @@ use monad_triedb_utils::triedb_env::{BlockKey, FinalizedBlockKey, Triedb};
 use monad_types::SeqNum;
 use tracing::{debug, error, trace, warn};
 
-use self::buffer::{block_height_from_tag, ExecEventsBuffer};
+use self::{
+    buffer::{block_height_from_tag, ExecEventsBuffer},
+    source::{ArchiveDataSource, DataSourceStack, HistoricalDataSourceStack},
+};
 use crate::{
     handlers::eth::txn::FilterError,
     types::{
@@ -53,12 +56,15 @@ use crate::{
 
 pub mod buffer;
 pub mod eth_call_handler;
+mod source;
 
 #[derive(Clone)]
 pub struct DataProvider<T> {
     buffer: Option<Arc<ExecEventsBuffer>>,
     pub triedb_env: T,
     archive_reader: Option<ArchiveReader>,
+
+    historical: HistoricalDataSourceStack,
 }
 
 #[derive(Debug)]
@@ -149,7 +155,17 @@ impl<T: Triedb> DataProvider<T> {
         DataProvider {
             buffer,
             triedb_env,
-            archive_reader,
+            archive_reader: archive_reader.clone(),
+
+            historical: DataSourceStack::new(
+                archive_reader
+                    .into_iter()
+                    .map(|archive_reader| {
+                        Box::new(ArchiveDataSource::new(archive_reader)) as Box<_>
+                    })
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice(),
+            ),
         }
     }
 
