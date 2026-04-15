@@ -6295,6 +6295,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "test-case",
+ "tracing",
 ]
 
 [[package]]
