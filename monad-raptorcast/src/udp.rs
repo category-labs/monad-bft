@@ -35,6 +35,7 @@ use crate::{
         packet_parser::{ChunkValidationEnv, MalformedPacket, RaptorcastPacket, SignedOverData},
         signature_verifier::{SignatureVerifier, SignatureVerifierError},
     },
+    round_info::RoundInfoCache,
     util::{
         compute_app_message_hash, compute_hash, unix_ts_ms_now, AppMessageHash, BroadcastMode,
         EncodingScheme, FullNodeGroupMap, GlobalMerkleRoot, MerkleRoot, NodeIdHash,
@@ -70,6 +71,8 @@ pub(crate) struct UdpState<ST: CertificateSignatureRecoverable> {
     // generate a bunch of linearly dependent chunks and cause unbounded memory usage.
     decoder_cache: DecoderCache<CertificateSignaturePubKey<ST>>,
 
+    round_info_cache: RoundInfoCache<CertificateSignaturePubKey<ST>>,
+
     signature_verifier: ChunkSignatureVerifier<ST>,
 
     metrics: UdpStateMetrics,
@@ -93,6 +96,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
 
             decoder_cache: DecoderCache::default(),
             signature_verifier,
+            round_info_cache: RoundInfoCache::new(),
 
             metrics: UdpStateMetrics::new(),
         }
@@ -106,13 +110,17 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
         self.decoder_cache.metrics()
     }
 
+    pub fn update_current_round(&mut self, round: Round) {
+        self.round_info_cache.update_current_round(round);
+    }
+
     pub fn handle_unicast(
         &mut self,
         epoch_validators: &BTreeMap<Epoch, ValidatorSet<CertificateSignaturePubKey<ST>>>,
         chunk: &ValidatedChunk<CertificateSignaturePubKey<ST>>,
         _sender: Option<&NodeId<CertificateSignaturePubKey<ST>>>,
     ) -> Option<(NodeId<CertificateSignaturePubKey<ST>>, Bytes)> {
-        if chunk.recipient_hash != self.self_id_hash {
+        if chunk.recipient_hash != Some(self.self_id_hash) {
             tracing::debug!(
                 ?self.self_id,
                 recipient_hash =? chunk.recipient_hash,
@@ -156,7 +164,6 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
             GroupId::Primary(epoch) => epoch,
             GroupId::Secondary(_round) => unreachable!(),
         };
-
         let Ok(group) = PrimaryBroadcastGroup::of_epoch(epoch, &chunk.author, epoch_validators)
         else {
             tracing::debug!(
@@ -177,16 +184,61 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                 );
                 return None;
             }
-
-            // Future: check if author (proposer) is valid for round.
         }
 
-        let validator_set = epoch_validators.get(&epoch);
-        let decoding_context = DecodingContext::new(validator_set, unix_ts_ms_now());
-        let message = self.try_decode(chunk, &decoding_context)?;
+        let validator_set = group.validator_set();
+        let decoding_context = DecodingContext::new(Some(validator_set), unix_ts_ms_now());
 
+        match chunk.encoding_scheme {
+            EncodingScheme::Deterministic25(round) => self.handle_deterministic_primary(
+                &group,
+                round,
+                chunk,
+                &decoding_context,
+                rebroadcast_to,
+            ),
+            _ => self.handle_regular_primary(&group, chunk, &decoding_context, rebroadcast_to),
+        }
+    }
+
+    fn handle_deterministic_primary(
+        &mut self,
+        group: &PrimaryBroadcastGroup<'_, CertificateSignaturePubKey<ST>>,
+        round: Round,
+        chunk: &ValidatedChunk<CertificateSignaturePubKey<ST>>,
+        decoding_context: &DecodingContext<CertificateSignaturePubKey<ST>>,
+        rebroadcast_to: &mut impl FnMut(Vec<NodeId<CertificateSignaturePubKey<ST>>>),
+    ) -> Option<(NodeId<CertificateSignaturePubKey<ST>>, Bytes)> {
+        let Some(round_info) = self.round_info_cache.get_or_insert_primary(round) else {
+            tracing::debug!(
+                ?chunk.group_id,
+                ?chunk.chunk_id,
+                author =? chunk.author,
+                "dropping primary chunk for round that is too far in the past or future"
+            );
+            return None;
+        };
+
+        let Some(routing) = round_info.chunk_routing(group, chunk) else {
+            tracing::debug!(
+                ?chunk.group_id,
+                ?chunk.chunk_id,
+                author =? chunk.author,
+                "dropping chunk that is not routed to self or any peers"
+            );
+            return None;
+        };
+
+        let is_recipient = *routing.recipient() == self.self_id;
+        let rebroadcast_targets = if is_recipient {
+            Some(routing.rebroadcast_targets())
+        } else {
+            None
+        };
+
+        let message = self.try_decode(chunk, decoding_context)?;
         if let Some((_author, message)) = &message {
-            if let Some(encoding_valid) = chunk.check_deterministic_encoding(message, &group) {
+            if let Some(encoding_valid) = chunk.check_deterministic_encoding(message, group) {
                 if !encoding_valid {
                     self.decoder_cache.mark_tainted(chunk);
                     tracing::warn!(
@@ -196,7 +248,25 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                     return None;
                 }
             }
+        }
 
+        if let Some(targets) = rebroadcast_targets {
+            rebroadcast_to(targets);
+        }
+
+        message
+    }
+
+    fn handle_regular_primary(
+        &mut self,
+        group: &PrimaryBroadcastGroup<'_, CertificateSignaturePubKey<ST>>,
+        chunk: &ValidatedChunk<CertificateSignaturePubKey<ST>>,
+        decoding_context: &DecodingContext<CertificateSignaturePubKey<ST>>,
+        rebroadcast_to: &mut impl FnMut(Vec<NodeId<CertificateSignaturePubKey<ST>>>),
+    ) -> Option<(NodeId<CertificateSignaturePubKey<ST>>, Bytes)> {
+        let message = self.try_decode(chunk, decoding_context)?;
+
+        if let Some((_author, message)) = &message {
             if let Some(hash_valid) = chunk.check_message_hash(message) {
                 if !hash_valid {
                     self.decoder_cache.mark_tainted(chunk);
@@ -209,9 +279,8 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
             }
         }
 
-        let is_first_hop_recipient = chunk.recipient_hash == self.self_id_hash;
+        let is_first_hop_recipient = chunk.recipient_hash == Some(self.self_id_hash);
         if let Some(ctx) = group.try_rebroadcast(&self.self_id, is_first_hop_recipient) {
-            // TODO: cap rebroadcast symbols based on some multiple of esis.
             rebroadcast_to(ctx.peers().cloned().collect());
         }
 
@@ -274,7 +343,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
             }
         }
 
-        let is_first_hop_recipient = chunk.recipient_hash == self.self_id_hash;
+        let is_first_hop_recipient = chunk.recipient_hash == Some(self.self_id_hash);
         if let Some(ctx) = group.try_rebroadcast(&self.self_id, is_first_hop_recipient) {
             // TODO: cap rebroadcast symbols based on some multiple of esis.
             rebroadcast_to(ctx.peers().cloned().collect());
@@ -484,7 +553,7 @@ where
     pub app_message_len: u32,
     pub encoding_scheme: EncodingScheme,
     pub broadcast_mode: BroadcastMode,
-    pub recipient_hash: NodeIdHash, // if this matches our node_id, then we need to re-broadcast RaptorCast chunks
+    pub recipient_hash: Option<NodeIdHash>, // V0: hash of first-hop recipient; V1 (deterministic): None
     pub chunk_id: u16,
     pub num_source_symbols: usize,
     pub encoded_symbol_capacity: usize,
@@ -1293,8 +1362,8 @@ mod tests_deterministic {
         },
         udp::SIGNATURE_CACHE_SIZE,
         util::{
-            compute_hash, BroadcastMode, BuildTarget, EncodingScheme, FullNodeGroupMap,
-            PrimaryBroadcastGroup, UdpMessage, ValidatorGroupMap,
+            BroadcastMode, BuildTarget, EncodingScheme, FullNodeGroupMap, PrimaryBroadcastGroup,
+            UdpMessage, ValidatorGroupMap,
         },
     };
 
@@ -1680,8 +1749,6 @@ mod tests_deterministic {
             .find(|id| **id != sender_id)
             .copied()
             .unwrap();
-        let receiver_id_hash = compute_hash(&receiver_id);
-
         let epoch_validators: BTreeMap<_, _> = [(EPOCH, validators)].into();
         let full_node_groups = FullNodeGroupMap::default();
         let mut udp_state = UdpState::<SignatureType>::new(receiver_id, u64::MAX, 10_000);
@@ -1711,14 +1778,20 @@ mod tests_deterministic {
         assert_eq!(*author, sender_id);
         assert_eq!(*decoded, app_message);
 
-        // Chunks addressed to receiver should trigger rebroadcast
-        let mut parser = ChunkParser::new();
-        let addressed_to_receiver = packets
+        // Reconstruct chunk assignment to count chunks addressed to receiver
+        let group = PrimaryBroadcastGroup::of_epoch(EPOCH, &sender_id, &epoch_validators).unwrap();
+        let encoding_scheme = EncodingScheme::Deterministic25(ROUND);
+        let encoding = deterministic::PrimaryEncoding::new(
+            encoding_scheme,
+            &group,
+            app_message.len(),
+            UNIX_TS_MS,
+        )
+        .unwrap();
+        let chunks = encoding.make_chunks().unwrap();
+        let addressed_to_receiver = chunks
             .iter()
-            .filter(|p| {
-                let parsed = parser.parse(&p.payload).unwrap();
-                parsed.recipient_hash == receiver_id_hash
-            })
+            .filter(|c| *c.recipient().node_id() == receiver_id)
             .count();
         assert_eq!(rebroadcast_count, addressed_to_receiver);
         assert!(

@@ -16,7 +16,7 @@
 #![allow(clippy::manual_range_contains)]
 #![allow(clippy::identity_op)]
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     hash::Hash,
     num::NonZero,
     sync::Arc,
@@ -1516,7 +1516,6 @@ impl InvalidSymbol {
 
 struct DecoderState {
     decoder: ManagedDecoder,
-    recipient_chunks: BTreeMap<NodeIdHash, usize>,
     app_message_len: usize,
     seen_esis: BitVec<usize, Lsb0>,
 }
@@ -1538,7 +1537,6 @@ impl DecoderState {
 
         let mut decoder_state = DecoderState {
             decoder,
-            recipient_chunks: BTreeMap::new(),
             app_message_len,
             seen_esis: bitvec![usize, Lsb0; 0; encoded_symbol_capacity],
         };
@@ -1558,10 +1556,6 @@ impl DecoderState {
         self.seen_esis.set(symbol_id, true);
         self.decoder
             .received_encoded_symbol(&message.chunk, symbol_id);
-        *self
-            .recipient_chunks
-            .entry(message.recipient_hash)
-            .or_insert(0) += 1;
 
         Ok(())
     }
@@ -1704,6 +1698,8 @@ fn quota_policy_from_config<PT: PubKey>(config: &SoftQuotaCacheConfig) -> Box<dy
 
 #[cfg(test)]
 mod test {
+    use std::collections::BTreeMap;
+
     use bytes::BytesMut;
     use itertools::Itertools;
     use monad_types::{Epoch, Stake};
@@ -1779,7 +1775,7 @@ mod test {
                 broadcast_mode: BroadcastMode::Unspecified,
                 chunk: chunk.freeze(),
                 // these fields are never touched in this module
-                recipient_hash: HexBytes([0; 20]),
+                recipient_hash: None,
                 message: Bytes::new(),
                 group_id: GroupId::Primary(EPOCH),
                 unix_ts_ms,

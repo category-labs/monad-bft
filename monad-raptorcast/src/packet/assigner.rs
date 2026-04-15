@@ -145,7 +145,6 @@ impl ChunkAssignment {
     //
     // The provided nodes must be the same OrderedNodes instance that
     // produced this assignment.
-    #[cfg_attr(not(test), expect(unused))]
     pub fn resolve_chunk_id<'a, PT, N>(
         &'a self,
         chunk_id: usize,
@@ -218,12 +217,10 @@ pub struct ChunkRouting<'a, PT: PubKey, N> {
 }
 
 impl<'a, PT: PubKey, N: OrderedNodes<PT>> ChunkRouting<'a, PT, N> {
-    #[cfg_attr(not(test), expect(unused))]
     pub fn recipient(&self) -> &NodeId<PT> {
         self.recipient
     }
 
-    #[cfg_attr(not(test), expect(unused))]
     pub fn rebroadcast_targets(&self) -> Vec<NodeId<PT>> {
         let recipient_idx = self.target.node_index;
         match &self.target.rebroadcast_targets {
