@@ -490,31 +490,23 @@ impl<ST: CertificateSignatureRecoverable> From<MonadNameRecordWithPubkey<'_, ST>
     for NodeBootstrapPeerConfig<ST>
 {
     fn from(record_with_pubkey: MonadNameRecordWithPubkey<'_, ST>) -> Self {
+        let peer = PeerEntry::from(record_with_pubkey);
         NodeBootstrapPeerConfig {
-            address: record_with_pubkey.record.udp_address().to_string(),
-            record_seq_num: record_with_pubkey.record.seq(),
-            secp256k1_pubkey: record_with_pubkey.pubkey,
-            name_record_sig: record_with_pubkey.record.signature,
-            auth_port: NonZeroU16::new(
-                record_with_pubkey
-                    .record
-                    .name_record
-                    .authenticated_udp_port(),
-            )
-            .expect("name record authenticated UDP port must be non-zero"),
-            direct_udp_port: record_with_pubkey
-                .record
-                .name_record
-                .direct_udp_port()
-                .map(|port| {
-                    NonZeroU16::new(port).expect("name record direct UDP port must be non-zero")
-                }),
+            address: peer.ip().to_string(),
+            tcp_port: Some(peer.tcp_port()),
+            udp_port: peer.udp_port(),
+            secp256k1_pubkey: peer.pubkey,
+            name_record_sig: peer.signature,
+            record_seq_num: peer.record_seq_num,
+            auth_port: peer.auth_port,
+            direct_udp_port: peer.direct_udp_port,
         }
     }
 }
 
 #[derive(Debug)]
 pub enum PeerConfigConversionError {
+    MissingUdpPort,
     InvalidSignature,
     InvalidAddress(String),
 }
@@ -525,29 +517,34 @@ impl<ST: CertificateSignatureRecoverable> TryFrom<&NodeBootstrapPeerConfig<ST>>
     type Error = PeerConfigConversionError;
 
     fn try_from(peer_config: &NodeBootstrapPeerConfig<ST>) -> Result<Self, Self::Error> {
-        let addr = peer_config
-            .address
-            .parse::<SocketAddrV4>()
-            .map_err(|_| PeerConfigConversionError::InvalidAddress(peer_config.address.clone()))?;
-        let name_record = NameRecord::new_with_ports(
-            *addr.ip(),
-            addr.port(),
-            addr.port(),
-            peer_config.auth_port.get(),
-            peer_config.direct_udp_port.map(NonZeroU16::get),
-            peer_config.record_seq_num,
-        );
-
-        let mut encoded = Vec::new();
-        name_record.encode(&mut encoded);
-        peer_config
-            .name_record_sig
-            .verify::<signing_domain::NameRecord>(&encoded, &peer_config.secp256k1_pubkey)
-            .map_err(|_| PeerConfigConversionError::InvalidSignature)?;
-
-        Ok(MonadNameRecord {
-            name_record,
+        let invalid_address = || {
+            let domain = peer_config
+                .domain()
+                .expect("bootstrap peer address must be an IP address or domain");
+            PeerConfigConversionError::InvalidAddress(format!(
+                "{}:{}",
+                domain,
+                peer_config.tcp_port()
+            ))
+        };
+        let peer_entry = PeerEntry {
+            pubkey: peer_config.secp256k1_pubkey,
+            address: PeerEntryAddress::new(
+                peer_config.ip().ok_or_else(invalid_address)?,
+                peer_config.tcp_port(),
+                peer_config.udp_port(),
+            ),
             signature: peer_config.name_record_sig,
+            record_seq_num: peer_config.record_seq_num,
+            auth_port: peer_config.auth_port,
+            direct_udp_port: peer_config.direct_udp_port,
+        };
+
+        MonadNameRecord::try_from(&peer_entry).map_err(|err| match err {
+            PeerEntryConversionError::MissingUdpPort => PeerConfigConversionError::MissingUdpPort,
+            PeerEntryConversionError::InvalidSignature(_) => {
+                PeerConfigConversionError::InvalidSignature
+            }
         })
     }
 }
