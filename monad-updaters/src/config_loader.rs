@@ -15,8 +15,7 @@
 
 use std::{
     marker::PhantomData,
-    net::SocketAddr,
-    num::NonZeroU16,
+    net::{Ipv4Addr, SocketAddr},
     ops::DerefMut,
     path::PathBuf,
     task::Poll,
@@ -212,41 +211,47 @@ where
     ) -> Vec<PeerEntry<ST>> {
         let mut peer_entries = Vec::new();
         for peer in bootstrap_peers {
-            let addr = match resolve_domain_v4(&peer.address).await {
-                Ok(Some(SocketAddr::V4(addr))) => addr,
-                _ => {
-                    warn!("config loader: cannot resolve: {:?}", &peer.address);
-                    continue;
-                }
+            let Some(peer_entry) = bootstrap_peer_entry(&peer).await else {
+                warn!(
+                    address = %peer.address,
+                    tcp_port = %peer.tcp_port,
+                    udp_port = ?peer.udp_port,
+                    "config loader: cannot resolve bootstrap peer",
+                );
+                continue;
             };
-            peer_entries.push(PeerEntry {
-                pubkey: peer.secp256k1_pubkey,
-                address: *addr.ip(),
-                tcp_port: NonZeroU16::new(addr.port()).expect("resolved port must be non-zero"),
-                udp_port: Some(
-                    NonZeroU16::new(addr.port()).expect("resolved port must be non-zero"),
-                ),
-                signature: peer.name_record_sig,
-                record_seq_num: peer.record_seq_num,
-                auth_port: peer.auth_port,
-                direct_udp_port: peer.direct_udp_port,
-            });
+            peer_entries.push(peer_entry);
         }
         peer_entries
     }
 }
 
-async fn resolve_domain_v4(domain: &String) -> Result<Option<SocketAddr>, std::io::Error> {
-    let dns_response = lookup_host(domain).await?;
+async fn bootstrap_peer_entry<ST: CertificateSignatureRecoverable>(
+    peer: &NodeBootstrapPeerConfig<ST>,
+) -> Option<PeerEntry<ST>> {
+    let address = if let Ok(address) = peer.address.parse::<Ipv4Addr>() {
+        address
+    } else {
+        let SocketAddr::V4(address) = resolve_domain_v4(&peer.address, peer.tcp_port.get())
+            .await
+            .ok()
+            .flatten()?
+        else {
+            return None;
+        };
+        *address.ip()
+    };
 
-    for entry in dns_response {
-        match entry {
-            SocketAddr::V4(_) => return Ok(Some(entry)),
-            SocketAddr::V6(_) => continue,
-        }
-    }
-
-    Ok(None)
+    Some(PeerEntry {
+        pubkey: peer.secp256k1_pubkey,
+        address,
+        tcp_port: peer.tcp_port,
+        udp_port: peer.udp_port.or(Some(peer.tcp_port)),
+        signature: peer.name_record_sig,
+        record_seq_num: peer.record_seq_num,
+        auth_port: peer.auth_port,
+        direct_udp_port: peer.direct_udp_port,
+    })
 }
 
 impl<ST, SCT, EPT> Stream for ConfigLoader<ST, SCT, EPT>
@@ -289,4 +294,17 @@ where
     fn metrics(&self) -> monad_executor::ExecutorMetricsChain<'_> {
         Default::default()
     }
+}
+
+async fn resolve_domain_v4(domain: &str, port: u16) -> Result<Option<SocketAddr>, std::io::Error> {
+    let dns_response = lookup_host((domain, port)).await?;
+
+    for entry in dns_response {
+        match entry {
+            SocketAddr::V4(_) => return Ok(Some(entry)),
+            SocketAddr::V6(_) => continue,
+        }
+    }
+
+    Ok(None)
 }
