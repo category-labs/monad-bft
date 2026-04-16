@@ -647,7 +647,11 @@ where
 
             let peer_entry = monad_executor_glue::PeerEntry {
                 pubkey: peer.secp256k1_pubkey,
-                addr: address,
+                address: *address.ip(),
+                tcp_port: NonZeroU16::new(address.port()).expect("resolved port must be non-zero"),
+                udp_port: Some(
+                    NonZeroU16::new(address.port()).expect("resolved port must be non-zero"),
+                ),
                 signature: peer.name_record_sig,
                 record_seq_num: peer.record_seq_num,
                 auth_port: peer.auth_port,
@@ -777,7 +781,6 @@ fn resolve_domain_v4<P: PubKey>(node_id: &NodeId<P>, domain: &String) -> Option<
     warn!(?node_id, ?domain, "No IPv4 DNS record");
     None
 }
-
 monad_executor::metric_consts! {
     GAUGE_TOTAL_UPTIME_US {
         name: "monad.total_uptime_us",

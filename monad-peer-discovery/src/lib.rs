@@ -277,15 +277,15 @@ impl NameRecord {
             .get()
     }
 
+    pub fn tcp_socket(&self) -> SocketAddrV4 {
+        SocketAddrV4::new(self.ip(), self.tcp_port())
+    }
+
     pub fn udp_port(&self) -> u16 {
         self.ports
             .udp_port()
             .expect("name record must have UDP port")
             .get()
-    }
-
-    pub fn tcp_socket(&self) -> SocketAddrV4 {
-        SocketAddrV4::new(self.ip(), self.tcp_port())
     }
 
     pub fn udp_socket(&self) -> SocketAddrV4 {
@@ -429,9 +429,9 @@ impl<ST: CertificateSignatureRecoverable> TryFrom<&PeerEntry<ST>> for MonadNameR
 
     fn try_from(peer: &PeerEntry<ST>) -> Result<Self, Self::Error> {
         let name_record = NameRecord::new_with_ports(
-            *peer.addr.ip(),
-            peer.addr.port(),
-            peer.addr.port(),
+            peer.address,
+            peer.tcp_port.get(),
+            peer.udp_port.expect("peer entry must have udp port").get(),
             peer.auth_port.get(),
             peer.direct_udp_port.map(NonZeroU16::get),
             peer.record_seq_num,
@@ -457,7 +457,13 @@ impl<ST: CertificateSignatureRecoverable> TryFrom<&MonadNameRecord<ST>> for Peer
 
         Ok(PeerEntry {
             pubkey,
-            addr: record.name_record.udp_socket(),
+            address: record.name_record.ip(),
+            tcp_port: NonZeroU16::new(record.name_record.tcp_port())
+                .expect("name record TCP port must be non-zero"),
+            udp_port: Some(
+                NonZeroU16::new(record.name_record.udp_port())
+                    .expect("name record UDP port must be non-zero"),
+            ),
             signature: record.signature,
             record_seq_num: record.name_record.seq(),
             auth_port: NonZeroU16::new(record.name_record.authenticated_udp_port())
@@ -546,7 +552,13 @@ impl<ST: CertificateSignatureRecoverable> From<MonadNameRecordWithPubkey<'_, ST>
     fn from(record_with_pubkey: MonadNameRecordWithPubkey<'_, ST>) -> Self {
         PeerEntry {
             pubkey: record_with_pubkey.pubkey,
-            addr: record_with_pubkey.record.name_record.udp_socket(),
+            address: record_with_pubkey.record.name_record.ip(),
+            tcp_port: NonZeroU16::new(record_with_pubkey.record.name_record.tcp_port())
+                .expect("name record TCP port must be non-zero"),
+            udp_port: Some(
+                NonZeroU16::new(record_with_pubkey.record.name_record.udp_port())
+                    .expect("name record UDP port must be non-zero"),
+            ),
             signature: record_with_pubkey.record.signature,
             record_seq_num: record_with_pubkey.record.name_record.seq(),
             auth_port: NonZeroU16::new(
@@ -1117,7 +1129,6 @@ mod tests {
 
         let keypair = KeyPair::from_ikm(b"test invalid sig").unwrap();
         let other_keypair = KeyPair::from_ikm(b"other key").unwrap();
-        let addr = SocketAddrV4::new(ip, port);
 
         let name_record = NameRecord::new(ip, port, port, port, 0, seq);
         let mut encoded = Vec::new();
@@ -1127,7 +1138,9 @@ mod tests {
 
         let peer_entry = PeerEntry {
             pubkey: keypair.pubkey(),
-            addr,
+            address: ip,
+            tcp_port: NonZeroU16::new(port).unwrap(),
+            udp_port: Some(NonZeroU16::new(port).unwrap()),
             signature: wrong_signature,
             record_seq_num: seq,
             auth_port: NonZeroU16::new(port).unwrap(),

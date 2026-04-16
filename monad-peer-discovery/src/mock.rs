@@ -238,7 +238,11 @@ where
 
         for peer in peers {
             let node_id = NodeId::new(peer.pubkey);
-            self.known_addresses.insert(node_id, peer.addr);
+            let addr = SocketAddrV4::new(
+                peer.address,
+                peer.udp_port.expect("peer entry must have udp port").get(),
+            );
+            self.known_addresses.insert(node_id, addr);
         }
 
         Vec::new()
@@ -282,7 +286,6 @@ where
     fn get_addr_by_id(&self, id: &NodeId<CertificateSignaturePubKey<ST>>) -> Option<SocketAddrV4> {
         self.known_addresses.get(id).copied()
     }
-
     fn get_known_addrs(&self) -> HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddrV4> {
         self.known_addresses.clone()
     }

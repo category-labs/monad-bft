@@ -13,7 +13,14 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{marker::PhantomData, net::SocketAddr, ops::DerefMut, path::PathBuf, task::Poll};
+use std::{
+    marker::PhantomData,
+    net::SocketAddr,
+    num::NonZeroU16,
+    ops::DerefMut,
+    path::PathBuf,
+    task::Poll,
+};
 
 use futures::Stream;
 use monad_crypto::certificate_signature::{
@@ -214,7 +221,11 @@ where
             };
             peer_entries.push(PeerEntry {
                 pubkey: peer.secp256k1_pubkey,
-                addr,
+                address: *addr.ip(),
+                tcp_port: NonZeroU16::new(addr.port()).expect("resolved port must be non-zero"),
+                udp_port: Some(
+                    NonZeroU16::new(addr.port()).expect("resolved port must be non-zero"),
+                ),
                 signature: peer.name_record_sig,
                 record_seq_num: peer.record_seq_num,
                 auth_port: peer.auth_port,
@@ -223,6 +234,19 @@ where
         }
         peer_entries
     }
+}
+
+async fn resolve_domain_v4(domain: &String) -> Result<Option<SocketAddr>, std::io::Error> {
+    let dns_response = lookup_host(domain).await?;
+
+    for entry in dns_response {
+        match entry {
+            SocketAddr::V4(_) => return Ok(Some(entry)),
+            SocketAddr::V6(_) => continue,
+        }
+    }
+
+    Ok(None)
 }
 
 impl<ST, SCT, EPT> Stream for ConfigLoader<ST, SCT, EPT>
@@ -265,17 +289,4 @@ where
     fn metrics(&self) -> monad_executor::ExecutorMetricsChain<'_> {
         Default::default()
     }
-}
-
-async fn resolve_domain_v4(domain: &String) -> Result<Option<SocketAddr>, std::io::Error> {
-    let dns_response = lookup_host(domain).await?;
-
-    for entry in dns_response {
-        match entry {
-            SocketAddr::V4(_) => return Ok(Some(entry)),
-            SocketAddr::V6(_) => continue,
-        }
-    }
-
-    Ok(None)
 }
