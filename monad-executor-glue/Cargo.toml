@@ -17,6 +17,7 @@ monad-crypto = { workspace = true }
 monad-state-backend = { workspace = true }
 monad-types = { workspace = true }
 monad-validator = { workspace = true }
+monad-wal = { workspace = true }
 
 alloy-rlp = { workspace = true }
 bincode = { workspace = true }
@@ -28,6 +29,8 @@ serde_with = { workspace = true, features = ["hex"] }
 
 [dev-dependencies]
 criterion = { workspace = true }
+monad-eth-types = { workspace = true }
+monad-multi-sig = { workspace = true }
 
 [[bench]]
 name = "rlp_bench"

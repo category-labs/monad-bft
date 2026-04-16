@@ -31,6 +31,16 @@ use tracing::{debug, info};
 
 use crate::WALError;
 
+pub use monad_wal_derive::{NotLogged, WALLogged};
+
+pub trait WALLoggable {
+    fn is_wal_logged(&self) -> bool;
+}
+
+pub trait WALLogged: WALLoggable {}
+
+pub trait NotLogged: WALLoggable {}
+
 /// Header prepended to each event in the log
 pub(crate) type EventHeaderType = u32;
 pub(crate) const EVENT_HEADER_LEN: usize = std::mem::size_of::<EventHeaderType>();

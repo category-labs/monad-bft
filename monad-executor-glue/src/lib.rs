@@ -54,6 +54,7 @@ use monad_types::{
     RouterTarget, SeqNum, Stake, TcpCompletionHandle, UdpPriority,
 };
 use monad_validator::signature_collection::SignatureCollection;
+use monad_wal::wal::WALLoggable;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
@@ -795,24 +796,28 @@ where
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Serialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, monad_wal::WALLogged)]
 pub enum ConsensusEvent<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
+    #[wal_logged]
     Message {
         sender: NodeId<SCT::NodeIdPubKey>,
         unverified_message: Unverified<ST, Unvalidated<ConsensusMessage<ST, SCT, EPT>>>,
     },
+    #[wal_logged]
     Timeout(Round),
     /// a block that was previously requested
     /// this is an invariant
+    #[wal_logged]
     BlockSync {
         block_range: BlockRange,
         full_blocks: Vec<ConsensusFullBlock<ST, SCT, EPT>>,
     },
+    #[wal_logged]
     SendVote(Round),
 }
 
@@ -924,7 +929,7 @@ where
 }
 
 /// BlockSync related events
-#[derive(Clone, PartialEq, Eq, Serialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, monad_wal::WALLogged)]
 pub enum BlockSyncEvent<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
@@ -932,29 +937,35 @@ where
     EPT: ExecutionProtocol,
 {
     /// A peer (not self) requesting for a missing block
+    #[wal_logged]
     Request {
         sender: NodeId<SCT::NodeIdPubKey>,
         request: BlockSyncRequestMessage,
     },
     /// Outbound request timed out
+    #[wal_logged]
     Timeout(BlockSyncRequestMessage),
     /// self requesting for a missing block
     /// this request must be retried if necessary
+    #[wal_logged]
     SelfRequest {
         requester: BlockSyncSelfRequester,
         block_range: BlockRange,
     },
     /// cancel request for block
+    #[wal_logged]
     SelfCancelRequest {
         requester: BlockSyncSelfRequester,
         block_range: BlockRange,
     },
     /// A peer (not self) sending us a block
+    #[wal_logged]
     Response {
         sender: NodeId<SCT::NodeIdPubKey>,
         response: BlockSyncResponseMessage<ST, SCT, EPT>,
     },
     /// self sending us missing block (from ledger)
+    #[wal_logged]
     SelfResponse {
         response: BlockSyncResponseMessage<ST, SCT, EPT>,
     },
@@ -1094,8 +1105,9 @@ where
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, monad_wal::WALLogged)]
 pub enum ValidatorEvent<SCT: SignatureCollection> {
+    #[wal_logged]
     UpdateValidators(ValidatorSetDataWithEpoch<SCT>),
 }
 
@@ -1126,13 +1138,14 @@ impl<SCT: SignatureCollection> Decodable for ValidatorEvent<SCT> {
 }
 
 #[serde_as]
-#[derive(Clone, PartialEq, Eq, Serialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, monad_wal::WALLogged)]
 pub enum MempoolEvent<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
+    #[wal_logged]
     Proposal {
         epoch: Epoch,
         round: Round,
@@ -1769,7 +1782,7 @@ impl Decodable for StateSyncNetworkMessage {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, monad_wal::WALLogged)]
 pub enum StateSyncEvent<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
@@ -1784,15 +1797,18 @@ where
     ),
 
     /// Execution done syncing
+    #[wal_logged]
     DoneSync(SeqNum),
 
     // Statesync-requested block
+    #[wal_logged]
     BlockSync {
         block_range: BlockRange,
         full_blocks: Vec<ConsensusFullBlock<ST, SCT, EPT>>,
     },
 
     // Statesync re-sync request
+    #[wal_logged]
     RequestSync {
         root: ConsensusBlockHeader<ST, SCT, EPT>,
         high_qc: QuorumCertificate<SCT>,
@@ -1876,7 +1892,7 @@ where
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, monad_wal::WALLogged)]
 pub enum ControlPanelEvent<ST>
 where
     ST: CertificateSignatureRecoverable,
@@ -1963,7 +1979,7 @@ where
     pub prioritized_full_nodes: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, monad_wal::WALLogged)]
 pub enum ConfigEvent<ST, SCT>
 where
     ST: CertificateSignatureRecoverable,
@@ -2109,6 +2125,10 @@ where
         })
     }
 
+    pub fn is_wal_logged(&self) -> bool {
+        self.as_ref().is_wal_logged()
+    }
+
     pub fn lossy_clone(&self) -> Self {
         Self::new(match self.as_ref() {
             InnerMonadEvent::ConsensusEvent(event) => {
@@ -2159,6 +2179,27 @@ where
                 confirm_group_peers: confirm_group_peers.clone(),
             },
         })
+    }
+}
+
+impl<ST, SCT, EPT> WALLoggable for InnerMonadEvent<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    fn is_wal_logged(&self) -> bool {
+        match self {
+            Self::ConsensusEvent(event) => event.is_wal_logged(),
+            Self::BlockSyncEvent(event) => event.is_wal_logged(),
+            Self::ValidatorEvent(event) => event.is_wal_logged(),
+            Self::MempoolEvent(event) => event.is_wal_logged(),
+            Self::ControlPanelEvent(event) => event.is_wal_logged(),
+            Self::TimestampUpdateEvent(_) => false,
+            Self::StateSyncEvent(event) => event.is_wal_logged(),
+            Self::ConfigEvent(event) => event.is_wal_logged(),
+            Self::SecondaryRaptorcastPeersUpdate { .. } => false,
+        }
     }
 }
 
@@ -2481,20 +2522,56 @@ where
     }
 }
 
+impl<ST, SCT, EPT> WALLoggable for MonadEvent<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    fn is_wal_logged(&self) -> bool {
+        self.as_ref().is_wal_logged()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{net::SocketAddrV4, num::NonZeroU16};
 
     use alloy_rlp::{encode_list, Encodable};
+    use monad_blocksync::messages::message::BlockSyncRequestMessage;
+    use monad_consensus_types::block::BlockRange;
     use monad_crypto::{
         certificate_signature::{CertificateSignaturePubKey, PubKey},
         NopSignature,
     };
+    use monad_eth_types::EthExecutionProtocol;
+    use monad_multi_sig::MultiSig;
+    use monad_types::{NodeId, SeqNum, GENESIS_BLOCK_ID};
+    use monad_wal::wal::WALLoggable;
 
     use crate::{
-        PeerEntry, StateSyncRequest, StateSyncResponse, StateSyncUpsertType, StateSyncUpsertV1,
-        StateSyncVersion, SELF_STATESYNC_VERSION, STATESYNC_VERSION_V0, STATESYNC_VERSION_V1,
+        BlockSyncEvent, MempoolEvent, MonadEvent, PeerEntry, StateSyncEvent,
+        StateSyncNetworkMessage, StateSyncRequest, StateSyncResponse, StateSyncUpsertType,
+        StateSyncUpsertV1, StateSyncVersion, SELF_STATESYNC_VERSION, STATESYNC_VERSION_V0,
+        STATESYNC_VERSION_V1,
     };
+
+    type TestSignature = NopSignature;
+    type TestSignatureCollection = MultiSig<TestSignature>;
+    type TestExecutionProtocol = EthExecutionProtocol;
+
+    #[derive(monad_wal::WALLogged)]
+    enum VariantLoggedTestEvent {
+        #[wal_logged]
+        Logged,
+        NotLogged,
+    }
+
+    #[derive(monad_wal::WALLogged)]
+    enum UnannotatedLoggedTestEvent {
+        First,
+        Second,
+    }
 
     #[test]
     fn statesync_version_is_compatible() {
@@ -2757,5 +2834,54 @@ mod tests {
 
         let decoded = alloy_rlp::decode_exact::<PeerEntry<NopSignature>>(&encoded);
         assert!(decoded.is_err());
+    }
+
+    #[test]
+    fn wal_logging_only_keeps_traceable_events() {
+        assert!(VariantLoggedTestEvent::Logged.is_wal_logged());
+        assert!(!VariantLoggedTestEvent::NotLogged.is_wal_logged());
+        assert!(!UnannotatedLoggedTestEvent::First.is_wal_logged());
+        assert!(!UnannotatedLoggedTestEvent::Second.is_wal_logged());
+
+        let logged_event = MonadEvent::<
+            TestSignature,
+            TestSignatureCollection,
+            TestExecutionProtocol,
+        >::block_sync_event(BlockSyncEvent::Timeout(
+            BlockSyncRequestMessage::Headers(BlockRange {
+                last_block_id: GENESIS_BLOCK_ID,
+                num_blocks: SeqNum(1),
+            }),
+        ));
+        assert!(logged_event.is_wal_logged());
+        let _ = logged_event.clone();
+
+        let mempool_event = MonadEvent::<
+            TestSignature,
+            TestSignatureCollection,
+            TestExecutionProtocol,
+        >::mempool_event(MempoolEvent::ForwardTxs(Vec::new()));
+        assert!(!mempool_event.is_wal_logged());
+
+        let state_sync_event = MonadEvent::<
+            TestSignature,
+            TestSignatureCollection,
+            TestExecutionProtocol,
+        >::state_sync_event(StateSyncEvent::DoneSync(SeqNum(2)));
+        assert!(state_sync_event.is_wal_logged());
+        let _ = state_sync_event.clone();
+
+        let sender = NodeId::new(
+            CertificateSignaturePubKey::<TestSignature>::from_bytes(&[8u8; 32]).unwrap(),
+        );
+        let inbound_statesync = MonadEvent::<
+            TestSignature,
+            TestSignatureCollection,
+            TestExecutionProtocol,
+        >::state_sync_event(StateSyncEvent::Inbound(
+            sender,
+            StateSyncNetworkMessage::NotWhitelisted,
+        ));
+        assert!(!inbound_statesync.is_wal_logged());
     }
 }

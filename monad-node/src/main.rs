@@ -491,18 +491,20 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
 
                 {
                     let _ledger_span = ledger_span.enter();
-                    let wal_event = LogFriendlyMonadEvent {
-                        timestamp: Utc::now(),
-                        event: event.clone(),
-                    };
-                    match waltrace_tx.try_send(wal_event) {
-                        Ok(()) => {}
-                        Err(TrySendError::Full(_)) => {
-                            warn!("waltrace is lagging; dropping wal event");
-                        }
-                        Err(TrySendError::Disconnected(_)) => {
-                            event!(Level::ERROR, "waltrace thread stopped");
-                            return Err(());
+                    if event.is_wal_logged() {
+                        let wal_event = LogFriendlyMonadEvent {
+                            timestamp: Utc::now(),
+                            event: event.clone(),
+                        };
+                        match waltrace_tx.try_send(wal_event) {
+                            Ok(()) => {}
+                            Err(TrySendError::Full(_)) => {
+                                warn!("waltrace is lagging; dropping wal event");
+                            }
+                            Err(TrySendError::Disconnected(_)) => {
+                                event!(Level::ERROR, "waltrace thread stopped");
+                                return Err(());
+                            }
                         }
                     }
                 }

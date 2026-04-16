@@ -9,6 +9,7 @@ edition = "2021"
 bench = false
 
 [dependencies]
+monad-wal-derive = { workspace = true }
 monad-types = { workspace = true }
 
 bytes = { workspace = true }
