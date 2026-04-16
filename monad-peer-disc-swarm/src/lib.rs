@@ -516,8 +516,8 @@ where
                     .peer_disc_driver
                     .get_peer_disc_state();
                 let Some(peer_addr) = peer_disc_state
-                    .get_pending_addr_by_id(message.to.get_peer_id())
-                    .or_else(|| peer_disc_state.get_addr_by_id(message.to.get_peer_id()))
+                    .get_pending_udp_addr_by_id(message.to.get_peer_id())
+                    .or_else(|| peer_disc_state.get_udp_addr_by_id(message.to.get_peer_id()))
                 else {
                     debug!(to=?message.to.get_peer_id(), "dropping outbound message: peer addr not found");
                     continue;

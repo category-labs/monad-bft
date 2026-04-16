@@ -389,7 +389,7 @@ where
         make_app_message: impl FnOnce() -> Bytes,
         completion: Option<oneshot::Sender<()>>,
     ) {
-        match self.peer_discovery_driver.lock().unwrap().get_addr(to) {
+        match self.peer_discovery_driver.lock().unwrap().get_tcp_addr(to) {
             None => {
                 warn!(
                     ?to,
@@ -1016,11 +1016,11 @@ where
                         }
                     };
 
-                    let node_addrs = self
+                    let node_auth_addrs = self
                         .peer_discovery_driver
                         .lock()
                         .unwrap()
-                        .get_known_addresses();
+                        .get_known_auth_udp_addrs();
 
                     let _timer = DropTimer::start(Duration::from_millis(20), |elapsed| {
                         warn!(
@@ -1035,7 +1035,7 @@ where
                             // No need to send to self. TODO: maybe loopback the message.
                             continue;
                         }
-                        if !node_addrs.contains_key(node) {
+                        if !node_auth_addrs.contains_key(node) {
                             continue;
                         }
 
@@ -1129,8 +1129,7 @@ fn iter_ips<'a, ST: CertificateSignatureRecoverable, PD: PeerDiscoveryAlgo<Signa
     validators
         .get_members()
         .keys()
-        .filter_map(|node_id| peer_discovery.get_addr(node_id))
-        .map(|socket| socket.ip())
+        .filter_map(|node_id| peer_discovery.get_ip(node_id))
 }
 
 impl<ST, M, OM, E, PD, AP, DS> Stream for RaptorCast<ST, M, OM, E, PD, AP, DS>
@@ -1681,7 +1680,10 @@ where
                 return Some(addr);
             }
 
-            Some(SocketAddr::V4(target_name_record.name_record.udp_socket()))
+            target_name_record
+                .name_record
+                .udp_socket()
+                .map(SocketAddr::V4)
         } else {
             // otherwise lookup address using peer-discovery
             let peer_lookup = (&*self.dual_socket, self.peer_disc_driver);
@@ -1775,13 +1777,13 @@ fn rebroadcast_packet<ST, PD, AP>(
                 peer_discovery_driver
                     .lock()
                     .ok()
-                    .and_then(|pd| pd.get_addr(target))
+                    .and_then(|pd| pd.get_udp_addr(target))
             })
     } else {
         peer_discovery_driver
             .lock()
             .ok()
-            .and_then(|pd| pd.get_addr(target))
+            .and_then(|pd| pd.get_udp_addr(target))
     };
 
     let Some(target_addr) = target_addr else {
