@@ -134,7 +134,7 @@ fn generate_name_record(keypair: &KeyPairType) -> MonadNameRecord<SignatureType>
     let ipaddr_v4 = Ipv4Addr::from_bits(u32::from_be_bytes(hash.0[28..32].try_into().unwrap()));
     assert_ne!(ipaddr_v4, Ipv4Addr::UNSPECIFIED);
 
-    let name_record = NameRecord::new(ipaddr_v4, 8000, 8000, 8000, 0, 0);
+    let name_record = NameRecord::new(ipaddr_v4, 8000, Some(8000), 8000, 0, 0);
     let mut encoded = Vec::new();
     name_record.encode(&mut encoded);
     let signature = SignatureType::sign::<signing_domain::NameRecord>(&encoded, keypair);
@@ -202,7 +202,9 @@ fn setup_keys_and_swarm_builder(
                         .collect::<BTreeSet<_>>();
                     NodeBuilder {
                         id: NodeId::new(key.pubkey()),
-                        addr: generate_name_record(key).udp_address(),
+                        addr: generate_name_record(key)
+                            .udp_address()
+                            .expect("generated record must have udp address"),
                         algo_builder: PeerDiscoveryBuilder {
                             self_id,
                             self_record: generate_name_record(key),
@@ -374,7 +376,7 @@ fn test_update_name_record() {
     let new_name_record = NameRecord::new(
         *SocketAddrV4::from_str("2.2.2.2:8000").unwrap().ip(),
         8000,
-        8000,
+        Some(8000),
         8000,
         0,
         1,
@@ -389,7 +391,9 @@ fn test_update_name_record() {
 
     let new_node_0_builder = NodeBuilder {
         id: node_0,
-        addr: new_name_record.udp_address(),
+        addr: new_name_record
+            .udp_address()
+            .expect("new name record must have udp address"),
         algo_builder: PeerDiscoveryBuilder {
             self_id: node_0,
             self_record: new_name_record.clone(),
@@ -1248,7 +1252,7 @@ fn test_validator_name_record_change_propagation_to_full_node() {
     let new_name_record = NameRecord::new(
         *SocketAddrV4::from_str("8.8.8.8:8000").unwrap().ip(),
         8000,
-        8000,
+        Some(8000),
         8000,
         0,
         1,
@@ -1263,7 +1267,9 @@ fn test_validator_name_record_change_propagation_to_full_node() {
 
     let new_node_1_builder = NodeBuilder {
         id: node_1,
-        addr: new_node_1_name_record.udp_address(),
+        addr: new_node_1_name_record
+            .udp_address()
+            .expect("new node 1 name record must have udp address"),
         algo_builder: PeerDiscoveryBuilder {
             self_id: node_1,
             self_record: new_node_1_name_record.clone(),

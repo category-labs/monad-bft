@@ -69,6 +69,7 @@ pub struct NodeConfig<ST: CertificateSignatureRecoverable> {
     pub statesync: StateSyncPeersConfig<CertificateSignaturePubKey<ST>>,
     pub network: NodeNetworkConfig,
 
+    #[serde(deserialize_with = "peers::deserialize_peer_discovery_config")]
     pub peer_discovery: PeerDiscoveryConfig<ST>,
     #[serde(default)]
     pub txpool_peer_score: ema::ScoreConfig,

@@ -778,7 +778,7 @@ where
     PD: monad_peer_discovery::PeerDiscoveryAlgo<SignatureType = ST>,
 {
     fn lookup(&self, node_id: &NodeId<CertificateSignaturePubKey<ST>>) -> Option<SocketAddr> {
-        self.get_addr(node_id)
+        self.get_udp_addr(node_id)
     }
 }
 
