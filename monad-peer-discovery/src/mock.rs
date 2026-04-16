@@ -16,7 +16,7 @@
 use std::{
     collections::{BTreeSet, HashMap},
     marker::PhantomData,
-    net::SocketAddrV4,
+    net::{Ipv4Addr, SocketAddrV4},
 };
 
 use monad_crypto::certificate_signature::{
@@ -238,12 +238,7 @@ where
 
         for peer in peers {
             let node_id = NodeId::new(peer.pubkey);
-            let addr = SocketAddrV4::new(
-                peer.ip(),
-                peer.udp_port()
-                    .expect("peer entry must have udp port")
-                    .get(),
-            );
+            let addr = SocketAddrV4::new(peer.ip(), peer.auth_port.get());
             self.known_addresses.insert(node_id, addr);
         }
 
@@ -278,19 +273,45 @@ where
         &self.metrics
     }
 
-    fn get_pending_addr_by_id(
+    fn get_pending_udp_addr_by_id(
         &self,
         _id: &NodeId<CertificateSignaturePubKey<ST>>,
     ) -> Option<SocketAddrV4> {
         None
     }
 
-    fn get_addr_by_id(&self, id: &NodeId<CertificateSignaturePubKey<ST>>) -> Option<SocketAddrV4> {
+    fn get_udp_addr_by_id(
+        &self,
+        id: &NodeId<CertificateSignaturePubKey<ST>>,
+    ) -> Option<SocketAddrV4> {
         self.known_addresses.get(id).copied()
     }
 
-    fn get_known_addrs(&self) -> HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddrV4> {
-        self.known_addresses.clone()
+    fn get_tcp_addr_by_id(
+        &self,
+        id: &NodeId<CertificateSignaturePubKey<ST>>,
+    ) -> Option<SocketAddrV4> {
+        self.name_records
+            .get(id)
+            .map(|record| record.name_record.tcp_socket())
+    }
+
+    fn get_ip_by_id(&self, id: &NodeId<CertificateSignaturePubKey<ST>>) -> Option<Ipv4Addr> {
+        self.name_records
+            .get(id)
+            .map(|record| record.name_record.ip())
+    }
+
+    fn get_known_auth_udp_addrs(
+        &self,
+    ) -> HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddrV4> {
+        let mut addresses = self.known_addresses.clone();
+        addresses.extend(
+            self.name_records
+                .iter()
+                .map(|(id, record)| (*id, record.authenticated_udp_address())),
+        );
+        addresses
     }
 
     fn get_secondary_fullnodes(&self) -> Vec<NodeId<CertificateSignaturePubKey<ST>>> {

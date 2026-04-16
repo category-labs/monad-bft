@@ -77,7 +77,7 @@ where
         .collect()
 }
 
-fn parse_address_fields(
+pub(crate) fn parse_address_fields(
     address: &str,
     tcp_port: Option<NonZeroU16>,
     udp_port: Option<NonZeroU16>,

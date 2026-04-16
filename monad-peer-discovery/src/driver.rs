@@ -15,7 +15,7 @@
 
 use std::{
     collections::{HashMap, VecDeque},
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
     task::{Context, Poll, Waker},
     time::Duration,
 };
@@ -277,11 +277,25 @@ impl<PD: PeerDiscoveryAlgo> PeerDiscoveryDriver<PD> {
         self.timer.exec(timer_cmds);
     }
 
-    pub fn get_addr(
+    pub fn get_udp_addr(
         &self,
         node_id: &NodeId<CertificateSignaturePubKey<PD::SignatureType>>,
     ) -> Option<SocketAddr> {
-        self.pd.get_addr_by_id(node_id).map(SocketAddr::V4)
+        self.pd.get_udp_addr_by_id(node_id).map(SocketAddr::V4)
+    }
+
+    pub fn get_tcp_addr(
+        &self,
+        node_id: &NodeId<CertificateSignaturePubKey<PD::SignatureType>>,
+    ) -> Option<SocketAddr> {
+        self.pd.get_tcp_addr_by_id(node_id).map(SocketAddr::V4)
+    }
+
+    pub fn get_ip(
+        &self,
+        node_id: &NodeId<CertificateSignaturePubKey<PD::SignatureType>>,
+    ) -> Option<IpAddr> {
+        self.pd.get_ip_by_id(node_id).map(IpAddr::V4)
     }
 
     pub fn get_direct_udp_addr(
@@ -294,11 +308,11 @@ impl<PD: PeerDiscoveryAlgo> PeerDiscoveryDriver<PD> {
             .map(SocketAddr::V4)
     }
 
-    pub fn get_known_addresses(
+    pub fn get_known_auth_udp_addrs(
         &self,
     ) -> HashMap<NodeId<CertificateSignaturePubKey<PD::SignatureType>>, SocketAddr> {
         self.pd
-            .get_known_addrs()
+            .get_known_auth_udp_addrs()
             .into_iter()
             .map(|(k, v)| (k, SocketAddr::V4(v)))
             .collect()
