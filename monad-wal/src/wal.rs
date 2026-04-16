@@ -25,9 +25,14 @@ use std::{
 
 use bytes::Bytes;
 use monad_types::Serializable;
+pub use monad_wal_derive::WALLog;
 use tracing::debug;
 
 use crate::WALError;
+
+pub trait WALLog {
+    fn is_wal_logged(&self) -> bool;
+}
 
 /// Header prepended to each event in the log
 pub(crate) type EventHeaderType = u32;

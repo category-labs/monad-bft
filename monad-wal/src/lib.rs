@@ -18,6 +18,10 @@ pub mod wal;
 
 use std::{error::Error, fmt::Debug, io};
 
+extern crate self as monad_wal;
+
+pub use monad_wal_derive::WALLog;
+
 #[derive(Debug)]
 pub enum WALError {
     IOError(io::Error),
