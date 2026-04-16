@@ -117,7 +117,17 @@ async fn main() {
             config
                 .peers
                 .into_iter()
-                .map(|peer| (peer.secp256k1_pubkey, peer.address))
+                .map(|peer| {
+                    (
+                        peer.secp256k1_pubkey,
+                        format!(
+                            "{}:{}",
+                            peer.ip()
+                                .expect("ledger tail bootstrap peer address must be an IP address"),
+                            peer.tcp_port()
+                        ),
+                    )
+                })
                 .collect()
         })
         .unwrap_or_default();
