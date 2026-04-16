@@ -172,7 +172,7 @@ fn main() -> Result<(), Error> {
                 let mut peer_configs = Vec::new();
                 for peer in peers {
                     let peer_config = NodeBootstrapPeerConfig {
-                        address: peer.addr.to_string(),
+                        address: format!("{}:{}", peer.address, peer.tcp_port),
                         secp256k1_pubkey: peer.pubkey,
                         name_record_sig: peer.signature,
                         record_seq_num: peer.record_seq_num,

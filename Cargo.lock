@@ -5406,6 +5406,7 @@ dependencies = [
  "monad-validator",
  "serde",
  "serde_with",
+ "toml",
 ]
 
 [[package]]
