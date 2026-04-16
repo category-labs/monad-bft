@@ -29,6 +29,10 @@ use tracing::debug;
 
 use crate::WALError;
 
+pub trait WALLog {
+    fn is_wal_logged(&self) -> bool;
+}
+
 /// Header prepended to each event in the log
 pub(crate) type EventHeaderType = u32;
 pub(crate) const EVENT_HEADER_LEN: usize = std::mem::size_of::<EventHeaderType>();

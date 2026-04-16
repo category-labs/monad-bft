@@ -10,6 +10,7 @@ bench = false
 
 [dependencies]
 monad-types = { workspace = true }
+monad-wal-derive = { workspace = true }
 
 bytes = { workspace = true }
 tracing = { workspace = true }
