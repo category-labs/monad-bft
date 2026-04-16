@@ -14,7 +14,11 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    marker::PhantomData, net::SocketAddr, num::NonZeroU16, ops::DerefMut, path::PathBuf, task::Poll,
+    marker::PhantomData,
+    net::{Ipv4Addr, SocketAddr},
+    ops::DerefMut,
+    path::PathBuf,
+    task::Poll,
 };
 
 use futures::Stream;
@@ -207,20 +211,29 @@ where
     ) -> Vec<PeerEntry<ST>> {
         let mut peer_entries = Vec::new();
         for peer in bootstrap_peers {
-            let addr = match resolve_domain_v4(&peer.address).await {
-                Ok(Some(SocketAddr::V4(addr))) => addr,
-                _ => {
-                    warn!("config loader: cannot resolve: {:?}", &peer.address);
-                    continue;
+            let address = if let Ok(address) = peer.address.parse::<Ipv4Addr>() {
+                address
+            } else {
+                let domain = peer.address();
+                match resolve_domain_v4(&domain).await {
+                    Ok(Some(SocketAddr::V4(addr))) => *addr.ip(),
+                    _ => {
+                        warn!(
+                            address = %peer.address,
+                            tcp_port = %peer.tcp_port,
+                            udp_port = ?peer.udp_port,
+                            "config loader: cannot resolve bootstrap peer",
+                        );
+                        continue;
+                    }
                 }
             };
+
             peer_entries.push(PeerEntry {
                 pubkey: peer.secp256k1_pubkey,
-                address: *addr.ip(),
-                tcp_port: NonZeroU16::new(addr.port()).expect("resolved port must be non-zero"),
-                udp_port: Some(
-                    NonZeroU16::new(addr.port()).expect("resolved port must be non-zero"),
-                ),
+                address,
+                tcp_port: peer.tcp_port,
+                udp_port: peer.udp_port,
                 signature: peer.name_record_sig,
                 record_seq_num: peer.record_seq_num,
                 auth_port: peer.auth_port,

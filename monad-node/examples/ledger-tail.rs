@@ -16,6 +16,7 @@
 use std::{
     collections::{BTreeMap, HashMap},
     io::ErrorKind,
+    net::Ipv4Addr,
     num::NonZero,
     path::{Path, PathBuf},
 };
@@ -117,7 +118,13 @@ async fn main() {
             config
                 .peers
                 .into_iter()
-                .map(|peer| (peer.secp256k1_pubkey, peer.address))
+                .map(|peer| {
+                    let address = match peer.address.parse::<Ipv4Addr>() {
+                        Ok(address) => format!("{address}:{}", peer.auth_port),
+                        Err(_) => peer.address,
+                    };
+                    (peer.secp256k1_pubkey, address)
+                })
                 .collect()
         })
         .unwrap_or_default();
