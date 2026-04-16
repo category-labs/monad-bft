@@ -364,7 +364,7 @@ where
         make_app_message: impl FnOnce() -> Bytes,
         completion: Option<oneshot::Sender<()>>,
     ) {
-        match self.peer_discovery_driver.lock().unwrap().get_addr(to) {
+        match self.peer_discovery_driver.lock().unwrap().get_tcp_addr(to) {
             None => {
                 warn!(
                     ?to,
@@ -1654,7 +1654,17 @@ where
                 return Some(addr);
             }
 
-            Some(SocketAddr::V4(target_name_record.name_record.udp_socket()))
+            let addr = target_name_record
+                .name_record
+                .udp_socket()
+                .map(SocketAddr::V4);
+            if addr.is_none() {
+                debug!(
+                    target = ?target_name_record.target,
+                    "target has no unauthenticated UDP socket"
+                );
+            }
+            addr
         } else {
             // otherwise lookup address using peer-discovery
             let peer_lookup = (&*self.dual_socket, self.peer_disc_driver);

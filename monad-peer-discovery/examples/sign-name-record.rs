@@ -78,7 +78,7 @@ fn main() {
     let name_record = NameRecord::new_with_ports(
         *self_address.ip(),
         self_address.port(),
-        self_address.port(),
+        Some(self_address.port()),
         args.authenticated_udp_port,
         args.direct_udp_port,
         self_record_seq_num,

@@ -246,7 +246,7 @@ async fn bootstrap_peer_entry<ST: CertificateSignatureRecoverable>(
         pubkey: peer.secp256k1_pubkey,
         address,
         tcp_port: peer.tcp_port,
-        udp_port: peer.udp_port.or(Some(peer.tcp_port)),
+        udp_port: peer.udp_port,
         signature: peer.name_record_sig,
         record_seq_num: peer.record_seq_num,
         auth_port: peer.auth_port,
