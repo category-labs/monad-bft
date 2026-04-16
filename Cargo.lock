@@ -5412,6 +5412,7 @@ dependencies = [
  "monad-wal",
  "serde",
  "serde_with",
+ "toml",
 ]
 
 [[package]]

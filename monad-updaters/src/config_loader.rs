@@ -13,7 +13,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{marker::PhantomData, net::SocketAddr, ops::DerefMut, path::PathBuf, task::Poll};
+use std::{
+    marker::PhantomData, net::SocketAddr, num::NonZeroU16, ops::DerefMut, path::PathBuf, task::Poll,
+};
 
 use futures::Stream;
 use monad_crypto::certificate_signature::{
@@ -22,6 +24,7 @@ use monad_crypto::certificate_signature::{
 use monad_executor::Executor;
 use monad_executor_glue::{
     ConfigEvent, ConfigReloadCommand, ConfigUpdate, KnownPeersUpdate, MonadEvent, PeerEntry,
+    PeerEntryAddress,
 };
 use monad_node_config::{NodeBootstrapPeerConfig, NodeConfig};
 use monad_types::{ExecutionProtocol, NodeId};
@@ -214,7 +217,11 @@ where
             };
             peer_entries.push(PeerEntry {
                 pubkey: peer.secp256k1_pubkey,
-                addr,
+                address: PeerEntryAddress::new(
+                    *addr.ip(),
+                    NonZeroU16::new(addr.port()).expect("resolved port must be non-zero"),
+                    Some(NonZeroU16::new(addr.port()).expect("resolved port must be non-zero")),
+                ),
                 signature: peer.name_record_sig,
                 record_seq_num: peer.record_seq_num,
                 auth_port: peer.auth_port,
