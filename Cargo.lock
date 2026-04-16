@@ -5405,9 +5405,12 @@ dependencies = [
  "monad-consensus",
  "monad-consensus-types",
  "monad-crypto",
+ "monad-eth-types",
+ "monad-multi-sig",
  "monad-state-backend",
  "monad-types",
  "monad-validator",
+ "monad-wal",
  "serde",
  "serde_with",
 ]
@@ -6291,11 +6294,20 @@ dependencies = [
  "monad-secp",
  "monad-types",
  "monad-version",
+ "monad-wal-derive",
  "rayon",
  "serde_json",
  "tempfile",
  "test-case",
  "tracing",
+]
+
+[[package]]
+name = "monad-wal-derive"
+version = "0.1.0"
+dependencies = [
+ "quote",
+ "syn 1.0.109",
 ]
 
 [[package]]
