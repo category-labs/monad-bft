@@ -615,7 +615,7 @@ where
     let self_record = NameRecord::new_with_ports(
         *name_record_address.ip(),
         name_record_address.port(),
-        name_record_address.port(),
+        Some(name_record_address.port()),
         peer_discovery_config.self_auth_port.get(),
         peer_discovery_config
             .self_direct_udp_port
@@ -787,13 +787,14 @@ fn bootstrap_peer_entry<ST: CertificateSignatureRecoverable>(
         pubkey: peer.secp256k1_pubkey,
         address,
         tcp_port: peer.tcp_port,
-        udp_port: peer.udp_port.or(Some(peer.tcp_port)),
+        udp_port: peer.udp_port,
         signature: peer.name_record_sig,
         record_seq_num: peer.record_seq_num,
         auth_port: peer.auth_port,
         direct_udp_port: peer.direct_udp_port,
     })
 }
+
 monad_executor::metric_consts! {
     GAUGE_TOTAL_UPTIME_US {
         name: "monad.total_uptime_us",

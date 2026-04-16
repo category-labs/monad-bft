@@ -215,7 +215,7 @@ mod tests {
                 let port = (seed + 16) as u16;
 
                 MonadNameRecord::<ST>::new(
-                    NameRecord::new(ip, port, port, port, 0, (seed + 200) as u64),
+                    NameRecord::new(ip, port, Some(port), port, 0, (seed + 200) as u64),
                     &key,
                 )
             })
