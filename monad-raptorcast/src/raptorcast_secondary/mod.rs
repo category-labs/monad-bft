@@ -207,29 +207,29 @@ where
         group_msg: FullNodesGroupMessage<ST>,
         dest_node_ids: &[NodeId<CertificateSignaturePubKey<ST>>],
     ) -> FullNodesGroupMessage<ST> {
-        if let FullNodesGroupMessage::ConfirmGroup(confirm_msg) = &group_msg {
-            let name_records = {
-                self.peer_discovery_driver
+        match group_msg {
+            FullNodesGroupMessage::ConfirmGroup(mut confirm_msg) => {
+                let name_records = self
+                    .peer_discovery_driver
                     .lock()
                     .unwrap()
-                    .get_name_records()
-            };
-            let mut filled_confirm_msg = confirm_msg.clone();
-            filled_confirm_msg.name_records = Default::default();
-            for node_id in dest_node_ids.iter() {
-                if let Some(name_record) = name_records.get(node_id) {
-                    filled_confirm_msg.name_records.push(name_record.clone());
-                } else {
-                    // Maybe can happen if peer discovery gets pruned just
-                    // before sending a ConfirmGroup message.
-                    warn!( ?node_id, ?group_msg,
-                        "RaptorCastSecondary: No name record found for node_id when sending out ConfirmGroup message",
-                    );
+                    .get_name_records();
+                confirm_msg.name_records = Default::default();
+                for node_id in dest_node_ids.iter() {
+                    if let Some(name_record) = name_records.get(node_id) {
+                        confirm_msg.name_records.push(name_record.clone());
+                    } else {
+                        // Maybe can happen if peer discovery gets pruned just
+                        // before sending a ConfirmGroup message.
+                        warn!( ?node_id,
+                            "RaptorCastSecondary: No name record found for node_id when sending out ConfirmGroup message",
+                        );
+                    }
                 }
+                FullNodesGroupMessage::ConfirmGroup(confirm_msg)
             }
-            return FullNodesGroupMessage::ConfirmGroup(filled_confirm_msg);
+            other => other,
         }
-        group_msg
     }
 }
 
@@ -319,7 +319,7 @@ where
                             if let FullNodesGroupMessage::ConfirmGroup(confirm_msg) = &group_msg {
                                 let mut participated_nodes: BTreeSet<
                                     NodeId<CertificateSignaturePubKey<ST>>,
-                                > = confirm_msg.peers.clone().into_iter().collect();
+                                > = confirm_msg.peers.iter().copied().collect();
                                 participated_nodes.insert(confirm_msg.prepare.validator_id);
                                 self.peer_discovery_driver.lock().unwrap().update(
                                     PeerDiscoveryEvent::UpdateConfirmGroup {
@@ -473,19 +473,21 @@ where
                                 // participated_nodes contains the validator and all full nodes in the group
                                 let mut participated_nodes: BTreeSet<
                                     NodeId<CertificateSignaturePubKey<ST>>,
-                                > = confirm_msg.peers.clone().into_iter().collect();
+                                > = confirm_msg.peers.iter().copied().collect();
                                 participated_nodes.insert(confirm_msg.prepare.validator_id);
+                                let participated_vec: Vec<_> =
+                                    participated_nodes.iter().copied().collect();
                                 this.peer_discovery_driver.lock().unwrap().update(
                                     PeerDiscoveryEvent::UpdateConfirmGroup {
                                         end_round: confirm_msg.prepare.end_round,
-                                        peers: participated_nodes.clone(),
+                                        peers: participated_nodes,
                                     },
                                 );
 
                                 ret = Poll::Ready(Some(
                                     RaptorCastEvent::SecondaryRaptorcastPeersUpdate(
                                         confirm_msg.prepare.end_round,
-                                        participated_nodes.into_iter().collect(),
+                                        participated_vec,
                                     )
                                     .into(),
                                 ));
