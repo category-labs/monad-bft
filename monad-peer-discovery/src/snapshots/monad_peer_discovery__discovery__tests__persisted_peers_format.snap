@@ -4,14 +4,18 @@ assertion_line: 3344
 expression: written_content
 ---
 [[peers]]
-address = "8.8.8.8:8000"
+address = "8.8.8.8"
+tcp_port = 8000
+udp_port = 8000
 record_seq_num = 1
 secp256k1_pubkey = "0x0334944627833fe16cc7e21cd5e1442b42b3eb9bbd0cdd266e449a9dc026b45a39"
 name_record_sig = "0x22da25d0c0525eb01f8c37766439fc48f95b02eee0cba578cdbf03038114650c5ce59614af8c51f38f46e174edd7a1ebeb767f5d1d2b215998e95fac1615872f01"
 auth_port = 9000
 
 [[peers]]
-address = "8.8.4.4:8001"
+address = "8.8.4.4"
+tcp_port = 8001
+udp_port = 8001
 record_seq_num = 2
 secp256k1_pubkey = "0x03efb87e9679dd855714c66e0e262b8a73b359cf4ff92124b3f7f556fd3cf15441"
 name_record_sig = "0x9c09a47314535aafd2f51686f0c832fd2acada022f2776f7db157ea15a2b7fe63e080f276a0f6b9b841897a878dcd43f05589fac60689a4bd16bf4b367e3488f00"

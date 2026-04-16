@@ -16,7 +16,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     marker::PhantomData,
-    net::{IpAddr, SocketAddr, ToSocketAddrs},
+    net::{IpAddr, SocketAddr, SocketAddrV4, ToSocketAddrs},
     num::NonZeroU16,
     path::PathBuf,
     process,
@@ -43,8 +43,8 @@ use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{LogFriendlyMonadEvent, Message, MonadEvent};
 use monad_ledger::MonadBlockFileLedger;
 use monad_node_config::{
-    ExecutionProtocolType, FullNodeIdentityConfig, NodeBootstrapConfig, NodeConfig,
-    PeerDiscoveryConfig, SignatureCollectionType, SignatureType,
+    ExecutionProtocolType, FullNodeIdentityConfig, NodeBootstrapConfig, NodeBootstrapPeerConfig,
+    NodeConfig, PeerDiscoveryConfig, SignatureCollectionType, SignatureType,
 };
 use monad_peer_discovery::{
     discovery::{PeerDiscovery, PeerDiscoveryBuilder},
@@ -585,7 +585,7 @@ where
         .network
         .direct_udp_bind_address_port
         .map(|port| SocketAddr::new(IpAddr::V4(node_config.network.bind_address_host), port));
-    let Some(SocketAddr::V4(name_record_address)) = resolve_domain_v4(
+    let Some(name_record_address) = resolve_domain_v4(
         &NodeId::new(identity.pubkey()),
         &peer_discovery_config.self_address,
     ) else {
@@ -667,26 +667,7 @@ where
             if node_id == self_id {
                 return None;
             }
-            let address = match resolve_domain_v4(&node_id, &peer.address) {
-                Some(SocketAddr::V4(addr)) => addr,
-                _ => {
-                    warn!(?node_id, ?peer.address, "Unable to resolve");
-                    return None;
-                }
-            };
-
-            let peer_entry = monad_executor_glue::PeerEntry {
-                pubkey: peer.secp256k1_pubkey,
-                address: monad_executor_glue::PeerEntryAddress::new(
-                    *address.ip(),
-                    NonZeroU16::new(address.port()).expect("resolved port must be non-zero"),
-                    Some(NonZeroU16::new(address.port()).expect("resolved port must be non-zero")),
-                ),
-                signature: peer.name_record_sig,
-                record_seq_num: peer.record_seq_num,
-                auth_port: peer.auth_port,
-                direct_udp_port: peer.direct_udp_port,
-            };
+            let peer_entry = bootstrap_peer_entry(&node_id, peer)?;
 
             match MonadNameRecord::try_from(&peer_entry) {
                 Ok(monad_name_record) => Some((node_id, monad_name_record)),
@@ -797,24 +778,55 @@ where
     )
 }
 
-fn resolve_domain_v4<P: PubKey>(node_id: &NodeId<P>, domain: &String) -> Option<SocketAddr> {
-    let resolved = match domain.to_socket_addrs() {
+fn resolve_domain_v4<P, T>(node_id: &NodeId<P>, address: T) -> Option<SocketAddrV4>
+where
+    P: PubKey,
+    T: ToSocketAddrs + std::fmt::Debug,
+{
+    let resolved = match address.to_socket_addrs() {
         Ok(resolved) => resolved,
         Err(err) => {
-            warn!(?node_id, ?domain, ?err, "Unable to resolve");
+            warn!(?node_id, ?address, ?err, "Unable to resolve");
             return None;
         }
     };
 
     for entry in resolved {
         match entry {
-            SocketAddr::V4(_) => return Some(entry),
+            SocketAddr::V4(addr) => return Some(addr),
             SocketAddr::V6(_) => continue,
         }
     }
 
-    warn!(?node_id, ?domain, "No IPv4 DNS record");
+    warn!(?node_id, ?address, "No IPv4 DNS record");
     None
+}
+
+fn bootstrap_peer_entry<ST: CertificateSignatureRecoverable>(
+    node_id: &NodeId<CertificateSignaturePubKey<ST>>,
+    peer: &NodeBootstrapPeerConfig<ST>,
+) -> Option<monad_executor_glue::PeerEntry<ST>> {
+    let address = if let Some(address) = peer.ip() {
+        address
+    } else {
+        let domain = peer
+            .domain()
+            .expect("bootstrap peer address must be an IP address or domain");
+        *resolve_domain_v4(node_id, (domain, peer.tcp_port().get()))?.ip()
+    };
+
+    Some(monad_executor_glue::PeerEntry {
+        pubkey: peer.secp256k1_pubkey,
+        address: monad_executor_glue::PeerEntryAddress::new(
+            address,
+            peer.tcp_port(),
+            peer.udp_port(),
+        ),
+        signature: peer.name_record_sig,
+        record_seq_num: peer.record_seq_num,
+        auth_port: peer.auth_port,
+        direct_udp_port: peer.direct_udp_port,
+    })
 }
 
 monad_executor::metric_consts! {
