@@ -48,7 +48,7 @@ use monad_node_config::{
 };
 use monad_peer_discovery::{
     discovery::{PeerDiscovery, PeerDiscoveryBuilder},
-    MonadNameRecord, NameRecord, PeerEntryConversionError,
+    MonadNameRecord, NameRecord,
 };
 use monad_peer_score::{ema, IdentityScore, StdClock};
 use monad_pprof::start_pprof_server;
@@ -585,14 +585,19 @@ where
         .network
         .direct_udp_bind_address_port
         .map(|port| SocketAddr::new(IpAddr::V4(node_config.network.bind_address_host), port));
-    let Some(name_record_address) = resolve_domain_v4(
-        &NodeId::new(identity.pubkey()),
-        &peer_discovery_config.self_address,
-    ) else {
-        panic!(
-            "Unable to resolve self address: {:?}",
-            peer_discovery_config.self_address
-        );
+    let self_id = NodeId::new(identity.pubkey());
+    let self_tcp_port = peer_discovery_config.tcp_port();
+    let name_record_address = if let Some(ip) = peer_discovery_config.ip() {
+        SocketAddrV4::new(ip, self_tcp_port.get())
+    } else {
+        let domain = peer_discovery_config
+            .domain()
+            .expect("self endpoint must be an IP address or domain");
+        let Some(name_record_address) = resolve_domain_v4(&self_id, (domain, self_tcp_port.get()))
+        else {
+            panic!("Unable to resolve self address: {domain}:{self_tcp_port}");
+        };
+        name_record_address
     };
 
     tracing::debug!(
@@ -640,11 +645,10 @@ where
         network_config.direct_udp_bind_address_port.is_some()
     );
 
-    let self_id = NodeId::new(identity.pubkey());
     let self_record = NameRecord::new_with_ports(
         *name_record_address.ip(),
-        name_record_address.port(),
-        name_record_address.port(),
+        self_tcp_port.get(),
+        peer_discovery_config.udp_port().map(NonZeroU16::get),
         peer_discovery_config.self_auth_port.get(),
         peer_discovery_config
             .self_direct_udp_port
@@ -671,11 +675,7 @@ where
 
             match MonadNameRecord::try_from(&peer_entry) {
                 Ok(monad_name_record) => Some((node_id, monad_name_record)),
-                Err(PeerEntryConversionError::MissingUdpPort) => {
-                    warn!(?node_id, "missing UDP port in config file");
-                    None
-                }
-                Err(PeerEntryConversionError::InvalidSignature(_)) => {
+                Err(_) => {
                     warn!(?node_id, "invalid name record signature in config file");
                     None
                 }
