@@ -16,13 +16,16 @@
 use monad_chain_data::{
     kernel::primary_dir::{PrimaryDirBucket, PrimaryDirFragment, DIRECTORY_BUCKET_SIZE},
     Address, Bytes, FinalizedBlock, InMemoryBlobStore, InMemoryMetaStore, Log, LogData,
-    MonadChainDataService, B256,
+    MonadChainDataService, QueryLimits, B256,
 };
 
 #[tokio::test(flavor = "current_thread")]
 async fn ingest_compacts_a_sealed_directory_bucket_when_crossing_the_boundary() {
-    let service =
-        MonadChainDataService::new(InMemoryMetaStore::default(), InMemoryBlobStore::default());
+    let service = MonadChainDataService::new(
+        InMemoryMetaStore::default(),
+        InMemoryBlobStore::default(),
+        QueryLimits::UNLIMITED,
+    );
 
     service
         .ingest_block(FinalizedBlock {

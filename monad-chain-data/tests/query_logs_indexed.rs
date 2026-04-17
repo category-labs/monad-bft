@@ -18,13 +18,16 @@ use std::collections::HashSet;
 use monad_chain_data::{
     kernel::{bitmap::STREAM_PAGE_LOCAL_ID_SPAN, primary_dir::DIRECTORY_BUCKET_SIZE},
     Address, Bytes, FinalizedBlock, InMemoryBlobStore, InMemoryMetaStore, Log, LogData, LogFilter,
-    MonadChainDataService, QueryLogsRequest, QueryOrder, Topic, B256,
+    MonadChainDataService, QueryLimits, QueryLogsRequest, QueryOrder, Topic, B256,
 };
 
 #[tokio::test(flavor = "current_thread")]
 async fn indexed_query_logs_respects_and_or_filter_semantics() {
-    let service =
-        MonadChainDataService::new(InMemoryMetaStore::default(), InMemoryBlobStore::default());
+    let service = MonadChainDataService::new(
+        InMemoryMetaStore::default(),
+        InMemoryBlobStore::default(),
+        QueryLimits::UNLIMITED,
+    );
 
     service
         .ingest_block(FinalizedBlock {
@@ -75,8 +78,11 @@ async fn indexed_query_logs_respects_and_or_filter_semantics() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn indexed_query_logs_descending_returns_newest_first() {
-    let service =
-        MonadChainDataService::new(InMemoryMetaStore::default(), InMemoryBlobStore::default());
+    let service = MonadChainDataService::new(
+        InMemoryMetaStore::default(),
+        InMemoryBlobStore::default(),
+        QueryLimits::UNLIMITED,
+    );
 
     service
         .ingest_block(FinalizedBlock {
@@ -135,8 +141,11 @@ async fn indexed_query_logs_descending_returns_newest_first() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn indexed_query_logs_paginates_at_block_boundaries() {
-    let service =
-        MonadChainDataService::new(InMemoryMetaStore::default(), InMemoryBlobStore::default());
+    let service = MonadChainDataService::new(
+        InMemoryMetaStore::default(),
+        InMemoryBlobStore::default(),
+        QueryLimits::UNLIMITED,
+    );
 
     service
         .ingest_block(FinalizedBlock {
@@ -211,8 +220,11 @@ async fn indexed_query_logs_paginates_at_block_boundaries() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn indexed_query_logs_scans_across_bucket_and_page_boundaries() {
-    let service =
-        MonadChainDataService::new(InMemoryMetaStore::default(), InMemoryBlobStore::default());
+    let service = MonadChainDataService::new(
+        InMemoryMetaStore::default(),
+        InMemoryBlobStore::default(),
+        QueryLimits::UNLIMITED,
+    );
 
     service
         .ingest_block(FinalizedBlock {
@@ -272,8 +284,11 @@ async fn indexed_query_logs_scans_across_bucket_and_page_boundaries() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn indexed_query_completes_current_block_when_limit_reached_mid_block() {
-    let service =
-        MonadChainDataService::new(InMemoryMetaStore::default(), InMemoryBlobStore::default());
+    let service = MonadChainDataService::new(
+        InMemoryMetaStore::default(),
+        InMemoryBlobStore::default(),
+        QueryLimits::UNLIMITED,
+    );
 
     service
         .ingest_block(FinalizedBlock {
@@ -344,8 +359,11 @@ async fn indexed_query_completes_current_block_when_limit_reached_mid_block() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn indexed_query_completes_current_block_when_limit_reached_mid_block_descending() {
-    let service =
-        MonadChainDataService::new(InMemoryMetaStore::default(), InMemoryBlobStore::default());
+    let service = MonadChainDataService::new(
+        InMemoryMetaStore::default(),
+        InMemoryBlobStore::default(),
+        QueryLimits::UNLIMITED,
+    );
 
     service
         .ingest_block(FinalizedBlock {
@@ -416,8 +434,11 @@ async fn indexed_query_completes_current_block_when_limit_reached_mid_block_desc
 
 #[tokio::test(flavor = "current_thread")]
 async fn indexed_query_stops_at_block_when_limit_equals_block_match_count() {
-    let service =
-        MonadChainDataService::new(InMemoryMetaStore::default(), InMemoryBlobStore::default());
+    let service = MonadChainDataService::new(
+        InMemoryMetaStore::default(),
+        InMemoryBlobStore::default(),
+        QueryLimits::UNLIMITED,
+    );
 
     service
         .ingest_block(FinalizedBlock {
@@ -471,8 +492,11 @@ async fn indexed_query_stops_at_block_when_limit_equals_block_match_count() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn unindexed_query_logs_still_uses_block_scan_fallback() {
-    let service =
-        MonadChainDataService::new(InMemoryMetaStore::default(), InMemoryBlobStore::default());
+    let service = MonadChainDataService::new(
+        InMemoryMetaStore::default(),
+        InMemoryBlobStore::default(),
+        QueryLimits::UNLIMITED,
+    );
 
     service
         .ingest_block(FinalizedBlock {

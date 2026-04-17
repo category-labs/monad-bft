@@ -16,13 +16,16 @@
 use monad_chain_data::{
     kernel::primary_dir::{PrimaryDirFragment, DIRECTORY_BUCKET_SIZE},
     Address, Bytes, FinalizedBlock, InMemoryBlobStore, InMemoryMetaStore, Log, LogData,
-    MonadChainDataService, B256,
+    MonadChainDataService, QueryLimits, B256,
 };
 
 #[tokio::test(flavor = "current_thread")]
 async fn ingest_persists_log_dir_fragment_for_single_bucket_block() {
-    let service =
-        MonadChainDataService::new(InMemoryMetaStore::default(), InMemoryBlobStore::default());
+    let service = MonadChainDataService::new(
+        InMemoryMetaStore::default(),
+        InMemoryBlobStore::default(),
+        QueryLimits::UNLIMITED,
+    );
 
     service
         .ingest_block(FinalizedBlock {
@@ -53,8 +56,11 @@ async fn ingest_persists_log_dir_fragment_for_single_bucket_block() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn ingest_persists_zero_width_fragment_for_empty_block() {
-    let service =
-        MonadChainDataService::new(InMemoryMetaStore::default(), InMemoryBlobStore::default());
+    let service = MonadChainDataService::new(
+        InMemoryMetaStore::default(),
+        InMemoryBlobStore::default(),
+        QueryLimits::UNLIMITED,
+    );
 
     service
         .ingest_block(FinalizedBlock {
@@ -85,8 +91,11 @@ async fn ingest_persists_zero_width_fragment_for_empty_block() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn ingest_persists_spanning_fragment_in_each_covered_bucket() {
-    let service =
-        MonadChainDataService::new(InMemoryMetaStore::default(), InMemoryBlobStore::default());
+    let service = MonadChainDataService::new(
+        InMemoryMetaStore::default(),
+        InMemoryBlobStore::default(),
+        QueryLimits::UNLIMITED,
+    );
 
     service
         .ingest_block(FinalizedBlock {
