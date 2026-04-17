@@ -25,6 +25,7 @@ pub mod store;
 
 pub use alloy_primitives::{Address, Bytes, Log, LogData, B256};
 pub use api::{IngestOutcome, MonadChainDataService};
+pub use error::MonadChainDataError;
 pub use family::{FinalizedBlock, Hash32};
 pub use kernel::tables::Tables;
 pub use logs::{LogEntry, LogFilter, QueryLogsRequest, QueryLogsResponse};

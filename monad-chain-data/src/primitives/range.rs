@@ -21,6 +21,10 @@ use crate::{
     store::MetaStore,
 };
 
+/// Floor for the lower numeric bound. The current ingest path requires the
+/// chain to start at block 1, so block 0 has no record to load.
+const EARLIEST_QUERYABLE_BLOCK: u64 = 1;
+
 /// Inclusive block range clipped to the published head.
 ///
 /// `from_block.number <= to_block.number` always holds, regardless of query
@@ -58,19 +62,18 @@ impl ResolvedBlockWindow {
         })
     }
 
-    /// Resolves and validates the block range. Always returns (low, high) with
-    /// `low <= high`, independent of query order.
     fn resolve_query_block_numbers(
         request: &QueryLogsRequest,
         published_head: u64,
     ) -> Result<(u64, u64)> {
-        if request.from_block.is_some_and(|from| from > published_head) {
+        let from = request.from_block.unwrap_or(EARLIEST_QUERYABLE_BLOCK);
+        if from > published_head {
             return Err(MonadChainDataError::InvalidRequest(
                 "from_block must be <= published head",
             ));
         }
-
-        let from = request.from_block.unwrap_or(1).max(1);
+        // Floors an explicit `from_block = 0` to avoid loading a nonexistent record.
+        let from = from.max(EARLIEST_QUERYABLE_BLOCK);
         let to = request
             .to_block
             .unwrap_or(published_head)
