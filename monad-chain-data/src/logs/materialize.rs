@@ -42,17 +42,17 @@ pub(crate) enum IndexedLogClause {
     Topic { position: usize, values: Vec<B256> },
 }
 
+/// Public log query in queryX spec semantics: `from_block`/`to_block` are
+/// the inclusive range start/end, with the lower/upper roles depending on
+/// `order`. Omitted bounds default to `"earliest"`/`"latest"` per order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueryLogsRequest {
     pub from_block: Option<u64>,
     pub to_block: Option<u64>,
     pub order: QueryOrder,
-    /// Target number of primary log objects to return.
-    ///
-    /// The server always completes the current block before stopping, so the
-    /// actual count may exceed this value. The server may also return fewer if
-    /// an internal constraint is reached. Defaults to
-    /// [`DEFAULT_QUERY_LIMIT`] (100).
+    /// Target log count. The server completes the current block before
+    /// stopping, so the actual count may exceed this. Defaults to
+    /// [`DEFAULT_QUERY_LIMIT`].
     pub limit: usize,
     pub filter: LogFilter,
 }
@@ -69,6 +69,9 @@ impl Default for QueryLogsRequest {
     }
 }
 
+/// `from_block`/`to_block` mirror the request's spec semantics. `cursor_block`
+/// is the last block scanned; pagination resumes from `cursor_block.number ± 1`
+/// per order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueryLogsResponse {
     pub logs: Vec<LogEntry>,

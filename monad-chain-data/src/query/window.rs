@@ -62,14 +62,8 @@ pub(crate) async fn resolve_log_window<M: MetaStore, B: BlobStore>(
     tables: &Tables<M, B>,
     block_window: &ResolvedBlockWindow,
 ) -> Result<Option<ResolvedLogWindow>> {
-    let start_block = block_window
-        .from_block
-        .number
-        .min(block_window.to_block.number);
-    let end_block = block_window
-        .from_block
-        .number
-        .max(block_window.to_block.number);
+    let start_block = block_window.low.number;
+    let end_block = block_window.high.number;
 
     let Some(start) = first_log_id_in_range(tables, start_block, end_block).await? else {
         return Ok(None);
