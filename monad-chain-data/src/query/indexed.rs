@@ -91,10 +91,6 @@ pub(crate) async fn execute_indexed_log_query<M: MetaStore, B: BlobStore>(
                 location.log_block_idx,
             );
 
-            if stop_after_block.is_none() && logs.len() >= request.limit {
-                stop_after_block = Some(location.block_number);
-            }
-
             logs.push(log);
 
             if stop_after_block.is_none() && logs.len() >= request.limit {

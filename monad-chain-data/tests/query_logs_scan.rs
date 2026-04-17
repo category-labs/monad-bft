@@ -206,6 +206,51 @@ async fn ingest_assigns_contiguous_log_id_windows_across_empty_blocks() {
     assert_eq!(block_3.logs.count, 1);
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn block_scan_completes_current_block_when_limit_reached_mid_block() {
+    let service =
+        MonadChainDataService::new(InMemoryMetaStore::default(), InMemoryBlobStore::default());
+
+    service
+        .ingest_block(FinalizedBlock {
+            block_number: 1,
+            block_hash: B256::repeat_byte(1),
+            parent_hash: B256::ZERO,
+            logs_by_tx: vec![vec![
+                log(Address::repeat_byte(5), B256::repeat_byte(8)),
+                log(Address::repeat_byte(5), B256::repeat_byte(8)),
+                log(Address::repeat_byte(5), B256::repeat_byte(8)),
+            ]],
+        })
+        .await
+        .expect("ingest block 1");
+
+    service
+        .ingest_block(FinalizedBlock {
+            block_number: 2,
+            block_hash: B256::repeat_byte(2),
+            parent_hash: B256::repeat_byte(1),
+            logs_by_tx: vec![vec![log(Address::repeat_byte(5), B256::repeat_byte(8))]],
+        })
+        .await
+        .expect("ingest block 2");
+
+    let page = service
+        .query_logs(QueryLogsRequest {
+            from_block: Some(1),
+            to_block: Some(2),
+            order: QueryOrder::Ascending,
+            limit: 1,
+            filter: LogFilter::default(),
+        })
+        .await
+        .expect("query");
+
+    assert_eq!(page.logs.len(), 3);
+    assert!(page.logs.iter().all(|l| l.block_number == 1));
+    assert_eq!(page.cursor_block.number, 1);
+}
+
 fn log(address: Address, topic0: B256) -> Log {
     Log {
         address,

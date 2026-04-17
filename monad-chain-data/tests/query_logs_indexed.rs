@@ -269,6 +269,133 @@ async fn indexed_query_logs_scans_across_bucket_and_page_boundaries() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn indexed_query_completes_current_block_when_limit_reached_mid_block() {
+    let service =
+        MonadChainDataService::new(InMemoryMetaStore::default(), InMemoryBlobStore::default());
+
+    service
+        .ingest_block(FinalizedBlock {
+            block_number: 1,
+            block_hash: B256::repeat_byte(1),
+            parent_hash: B256::ZERO,
+            logs_by_tx: vec![vec![log(
+                Address::repeat_byte(7),
+                vec![B256::repeat_byte(9)],
+            )]],
+        })
+        .await
+        .expect("ingest block 1");
+
+    service
+        .ingest_block(FinalizedBlock {
+            block_number: 2,
+            block_hash: B256::repeat_byte(2),
+            parent_hash: B256::repeat_byte(1),
+            logs_by_tx: vec![vec![
+                log(Address::repeat_byte(7), vec![B256::repeat_byte(9)]),
+                log(Address::repeat_byte(7), vec![B256::repeat_byte(9)]),
+                log(Address::repeat_byte(7), vec![B256::repeat_byte(9)]),
+                log(Address::repeat_byte(7), vec![B256::repeat_byte(9)]),
+                log(Address::repeat_byte(7), vec![B256::repeat_byte(9)]),
+            ]],
+        })
+        .await
+        .expect("ingest block 2");
+
+    service
+        .ingest_block(FinalizedBlock {
+            block_number: 3,
+            block_hash: B256::repeat_byte(3),
+            parent_hash: B256::repeat_byte(2),
+            logs_by_tx: vec![vec![log(
+                Address::repeat_byte(7),
+                vec![B256::repeat_byte(9)],
+            )]],
+        })
+        .await
+        .expect("ingest block 3");
+
+    let page = service
+        .query_logs(QueryLogsRequest {
+            from_block: Some(1),
+            to_block: Some(3),
+            order: QueryOrder::Ascending,
+            limit: 2,
+            filter: LogFilter {
+                address: Some(HashSet::from([Address::repeat_byte(7)])),
+                topics: [
+                    Some(HashSet::from([B256::repeat_byte(9)])),
+                    None,
+                    None,
+                    None,
+                ],
+            },
+        })
+        .await
+        .expect("query");
+
+    assert_eq!(page.logs.len(), 6);
+    assert!(page.logs.iter().take(1).all(|l| l.block_number == 1));
+    assert!(page.logs.iter().skip(1).all(|l| l.block_number == 2));
+    assert_eq!(page.cursor_block.number, 2);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn indexed_query_stops_at_block_when_limit_equals_block_match_count() {
+    let service =
+        MonadChainDataService::new(InMemoryMetaStore::default(), InMemoryBlobStore::default());
+
+    service
+        .ingest_block(FinalizedBlock {
+            block_number: 1,
+            block_hash: B256::repeat_byte(1),
+            parent_hash: B256::ZERO,
+            logs_by_tx: vec![vec![
+                log(Address::repeat_byte(7), vec![B256::repeat_byte(9)]),
+                log(Address::repeat_byte(7), vec![B256::repeat_byte(9)]),
+            ]],
+        })
+        .await
+        .expect("ingest block 1");
+
+    service
+        .ingest_block(FinalizedBlock {
+            block_number: 2,
+            block_hash: B256::repeat_byte(2),
+            parent_hash: B256::repeat_byte(1),
+            logs_by_tx: vec![vec![log(
+                Address::repeat_byte(7),
+                vec![B256::repeat_byte(9)],
+            )]],
+        })
+        .await
+        .expect("ingest block 2");
+
+    let page = service
+        .query_logs(QueryLogsRequest {
+            from_block: Some(1),
+            to_block: Some(2),
+            order: QueryOrder::Ascending,
+            limit: 2,
+            filter: LogFilter {
+                address: Some(HashSet::from([Address::repeat_byte(7)])),
+                topics: [
+                    Some(HashSet::from([B256::repeat_byte(9)])),
+                    None,
+                    None,
+                    None,
+                ],
+            },
+        })
+        .await
+        .expect("query");
+
+    assert_eq!(page.logs.len(), 2);
+    assert!(page.logs.iter().all(|l| l.block_number == 1));
+    assert_eq!(page.cursor_block.number, 1);
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn unindexed_query_logs_still_uses_block_scan_fallback() {
     let service =
         MonadChainDataService::new(InMemoryMetaStore::default(), InMemoryBlobStore::default());
