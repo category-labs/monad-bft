@@ -19,10 +19,7 @@ use crate::{
     engine::{
         clause::IndexedFilter,
         family::Family,
-        query::{
-            bitmap::load_intersection_bitmap_for_shard, directory_resolver::PrimaryIdResolver,
-            window::resolve_primary_id_window,
-        },
+        query::{directory_resolver::PrimaryIdResolver, window::resolve_primary_id_window},
         tables::Tables,
     },
     error::{MonadChainDataError, Result},
@@ -67,14 +64,10 @@ pub(crate) async fn execute_indexed_log_query<M: MetaStore, B: BlobStore>(
     for shard in window.shard_iter(request.envelope.order) {
         let (local_from, local_to) = window.local_range_for_shard(shard);
 
-        let Some(candidate_bitmap) = load_intersection_bitmap_for_shard(
-            tables.logs(),
-            &clauses,
-            shard,
-            local_from,
-            local_to,
-        )
-        .await?
+        let Some(candidate_bitmap) = tables
+            .logs()
+            .load_intersection_bitmap(&clauses, shard, local_from, local_to)
+            .await?
         else {
             continue;
         };

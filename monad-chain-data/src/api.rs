@@ -17,13 +17,7 @@ use bytes::Bytes;
 
 use crate::{
     blocks::{execute_query_blocks, load_blocks_for_logs, QueryBlocksRequest, QueryBlocksResponse},
-    engine::{
-        ingest::{
-            bitmap_compaction::compact_newly_sealed_log_bitmap_pages,
-            directory_compaction::compact_newly_sealed_log_directory_buckets,
-        },
-        tables::Tables,
-    },
+    engine::tables::Tables,
     error::{MonadChainDataError, Result},
     family::FinalizedBlock,
     logs::{
@@ -108,14 +102,12 @@ impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
             logs.store_bitmap_fragment(fragment, block.block_number())
                 .await?;
         }
-        compact_newly_sealed_log_directory_buckets(
-            logs,
+        logs.compact_newly_sealed_directory_buckets(
             next_log_id.as_u64(),
             next_log_id_exclusive.as_u64(),
         )
         .await?;
-        compact_newly_sealed_log_bitmap_pages(
-            logs,
+        logs.compact_newly_sealed_bitmap_pages(
             &bitmap_fragments,
             next_log_id.as_u64(),
             next_log_id_exclusive.as_u64(),

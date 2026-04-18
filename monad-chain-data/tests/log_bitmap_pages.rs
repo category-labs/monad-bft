@@ -206,10 +206,7 @@ async fn query_errors_when_compacted_page_meta_exists_but_blob_is_missing() {
         .await
         .expect_err("missing page blob should error");
 
-    assert_eq!(
-        error.to_string(),
-        "missing data: missing log bitmap page blob"
-    );
+    assert_eq!(error.to_string(), "missing data: missing bitmap page blob");
 }
 
 fn repeated_logs(address: Address, topics: Vec<Topic>, count: usize) -> Vec<Log> {

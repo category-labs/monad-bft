@@ -25,13 +25,15 @@ use crate::{
     store::{BlobStore, MetaStore},
 };
 
-/// Compacts every directory bucket sealed by the given ingest transition.
-pub(crate) async fn compact_newly_sealed_log_directory_buckets<M: MetaStore, B: BlobStore>(
-    logs: &FamilyTables<M, B>,
-    from_next_primary_id: u64,
-    next_primary_id: u64,
-) -> Result<()> {
-    compact_newly_sealed_buckets(logs.dir(), from_next_primary_id, next_primary_id).await
+impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
+    /// Compacts every directory bucket sealed by the given ingest transition.
+    pub async fn compact_newly_sealed_directory_buckets(
+        &self,
+        from_next_primary_id: u64,
+        next_primary_id: u64,
+    ) -> Result<()> {
+        compact_newly_sealed_buckets(self.dir(), from_next_primary_id, next_primary_id).await
+    }
 }
 
 async fn compact_newly_sealed_buckets<M: MetaStore>(
