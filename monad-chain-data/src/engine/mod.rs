@@ -13,8 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-pub(crate) mod bitmap;
-pub(crate) mod directory_resolver;
-pub(crate) mod indexed;
-pub mod runner;
-pub(crate) mod window;
+pub mod bitmap;
+pub(crate) mod ingest;
+pub mod primary_dir;
+pub(crate) mod query;
+pub mod tables;

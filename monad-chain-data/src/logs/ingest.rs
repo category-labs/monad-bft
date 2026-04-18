@@ -15,11 +15,11 @@
 
 use super::{LogBlockHeader, RawLogEntry};
 use crate::{
-    error::{MonadChainDataError, Result},
-    family::FinalizedBlock,
-    kernel::bitmap::{
+    engine::bitmap::{
         encode_grouped_bitmap_fragments, stream_entries_for_log, BitmapFragmentWrite,
     },
+    error::{MonadChainDataError, Result},
+    family::FinalizedBlock,
     primitives::state::{BlockRecord, FamilyWindowRecord, LogId},
 };
 

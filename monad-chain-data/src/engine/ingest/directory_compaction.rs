@@ -14,14 +14,14 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use crate::{
-    error::{MonadChainDataError, Result},
-    kernel::{
+    engine::{
         primary_dir::{
             bucket_start, PrimaryDirBucket, PrimaryDirFragment, PrimaryDirTables,
             DIRECTORY_BUCKET_SIZE,
         },
         tables::LogTables,
     },
+    error::{MonadChainDataError, Result},
     store::{BlobStore, MetaStore},
 };
 

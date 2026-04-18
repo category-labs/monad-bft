@@ -16,11 +16,11 @@
 use roaring::RoaringBitmap;
 
 use crate::{
-    error::{MonadChainDataError, Result},
-    kernel::{
+    engine::{
         bitmap::{decode_bitmap_blob, page_start_local, STREAM_PAGE_LOCAL_ID_SPAN},
         tables::LogTables,
     },
+    error::{MonadChainDataError, Result},
     logs::IndexedLogClause,
     primitives::state::LogId,
     store::{BlobStore, MetaStore},

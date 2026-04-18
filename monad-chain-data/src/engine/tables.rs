@@ -17,12 +17,12 @@ use alloy_rlp::Decodable;
 use bytes::Bytes;
 
 use crate::{
-    error::{MonadChainDataError, Result},
-    family::{FinalizedBlock, Hash32},
-    kernel::{
+    engine::{
         bitmap::{BitmapFragmentWrite, BitmapPageMeta, BitmapTables},
         primary_dir::{PrimaryDirBucket, PrimaryDirFragment, PrimaryDirTables},
     },
+    error::{MonadChainDataError, Result},
+    family::{FinalizedBlock, Hash32},
     logs::LogBlockHeader,
     primitives::{
         state::{BlockRecord, PublicationState},

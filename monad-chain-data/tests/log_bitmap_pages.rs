@@ -17,7 +17,7 @@ use std::{collections::HashSet, convert::TryFrom};
 
 use bytes::Bytes as StorageBytes;
 use monad_chain_data::{
-    kernel::{
+    engine::{
         bitmap::{sharded_stream_id, stream_page_key, STREAM_PAGE_LOCAL_ID_SPAN},
         tables::LogTables,
     },

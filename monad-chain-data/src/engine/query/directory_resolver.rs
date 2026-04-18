@@ -16,11 +16,11 @@
 use std::collections::{hash_map::Entry, HashMap};
 
 use crate::{
-    error::{MonadChainDataError, Result},
-    kernel::{
+    engine::{
         primary_dir::{bucket_start, PrimaryDirBucket, PrimaryDirFragment},
         tables::Tables,
     },
+    error::{MonadChainDataError, Result},
     primitives::state::LogId,
     store::{BlobStore, MetaStore},
 };
@@ -29,20 +29,20 @@ use crate::{
 ///
 /// Caches the chosen directory source for each 10k bucket so repeated log-id
 /// lookups do not re-read summaries or fragments.
-pub(super) struct LogIdResolver<'a, M: MetaStore, B: BlobStore> {
+pub(crate) struct LogIdResolver<'a, M: MetaStore, B: BlobStore> {
     tables: &'a Tables<M, B>,
     bucket_cache: HashMap<u64, CachedBucket>,
 }
 
 impl<'a, M: MetaStore, B: BlobStore> LogIdResolver<'a, M, B> {
-    pub(super) fn new(tables: &'a Tables<M, B>) -> Self {
+    pub(crate) fn new(tables: &'a Tables<M, B>) -> Self {
         Self {
             tables,
             bucket_cache: HashMap::new(),
         }
     }
 
-    pub(super) async fn resolve(&mut self, log_id: LogId) -> Result<Option<ResolvedLogLocation>> {
+    pub(crate) async fn resolve(&mut self, log_id: LogId) -> Result<Option<ResolvedLogLocation>> {
         let bucket = bucket_start(log_id.as_u64());
         if let Entry::Vacant(entry) = self.bucket_cache.entry(bucket) {
             let cached = if let Some(summary) = self.tables.logs().load_bucket(bucket).await? {
@@ -64,9 +64,9 @@ impl<'a, M: MetaStore, B: BlobStore> LogIdResolver<'a, M, B> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct ResolvedLogLocation {
-    pub(super) block_number: u64,
-    pub(super) log_block_idx: usize,
+pub(crate) struct ResolvedLogLocation {
+    pub(crate) block_number: u64,
+    pub(crate) log_block_idx: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -145,7 +145,7 @@ mod tests {
     use super::{
         containing_bucket_entry, resolved_location_from_bucket, CachedBucket, PrimaryDirFragment,
     };
-    use crate::{kernel::primary_dir::PrimaryDirBucket, primitives::state::LogId};
+    use crate::{engine::primary_dir::PrimaryDirBucket, primitives::state::LogId};
 
     #[test]
     fn bucket_lookup_uses_last_duplicate_boundary() {

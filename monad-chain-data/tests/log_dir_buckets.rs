@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use monad_chain_data::{
-    kernel::primary_dir::{PrimaryDirBucket, PrimaryDirFragment, DIRECTORY_BUCKET_SIZE},
+    engine::primary_dir::{PrimaryDirBucket, PrimaryDirFragment, DIRECTORY_BUCKET_SIZE},
     Address, Bytes, FinalizedBlock, InMemoryBlobStore, InMemoryMetaStore, Log, LogData,
     MonadChainDataService, QueryLimits, B256,
 };

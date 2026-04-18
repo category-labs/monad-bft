@@ -20,9 +20,9 @@ use alloy_primitives::{Address, Bytes, B256};
 use super::{LogBlockHeader, LogEntry, RawLogEntry};
 use crate::{
     blocks::Block,
+    engine::{bitmap::sharded_stream_id, tables::Tables},
     error::{MonadChainDataError, Result},
     family::Hash32,
-    kernel::{bitmap::sharded_stream_id, tables::Tables},
     primitives::{
         limits::QueryEnvelope,
         page::QueryOrder,

@@ -15,20 +15,24 @@
 
 use crate::{
     blocks::{execute_query_blocks, load_blocks_for_logs, QueryBlocksRequest, QueryBlocksResponse},
+    engine::{
+        ingest::{
+            bitmap_compaction::compact_newly_sealed_log_bitmap_pages,
+            directory_compaction::compact_newly_sealed_log_directory_buckets,
+        },
+        tables::Tables,
+    },
     error::{MonadChainDataError, Result},
     family::FinalizedBlock,
-    ingest::{
-        bitmap_compaction::compact_newly_sealed_log_bitmap_pages,
-        directory_compaction::compact_newly_sealed_log_directory_buckets,
+    logs::{
+        execute_block_scan_query, execute_indexed_log_query, LogIngestPlan, QueryLogsRequest,
+        QueryLogsResponse,
     },
-    kernel::tables::Tables,
-    logs::{LogIngestPlan, QueryLogsRequest, QueryLogsResponse},
     primitives::{
         limits::QueryLimits,
         range::ResolvedBlockWindow,
         state::{BlockRecord, LogId},
     },
-    query::{indexed::execute_indexed_log_query, runner::execute_block_scan_query},
     store::{BlobStore, MetaStore},
 };
 

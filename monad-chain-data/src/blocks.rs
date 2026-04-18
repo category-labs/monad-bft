@@ -16,9 +16,9 @@
 use std::collections::BTreeSet;
 
 use crate::{
+    engine::tables::{BlockTables, Tables},
     error::{MonadChainDataError, Result},
     family::Hash32,
-    kernel::tables::{BlockTables, Tables},
     logs::LogEntry,
     primitives::{
         limits::QueryEnvelope,
