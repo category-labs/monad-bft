@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use bytes::Bytes;
+
 use crate::{
     blocks::{execute_query_blocks, load_blocks_for_logs, QueryBlocksRequest, QueryBlocksResponse},
     engine::{
@@ -93,7 +95,7 @@ impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
             .await?;
         logs.store_block_blob(block.block_number(), block_log_blob)
             .await?;
-        logs.store_block_header(block.block_number(), &block_log_header)
+        logs.store_block_header(block.block_number(), Bytes::from(block_log_header.encode()))
             .await?;
         logs.dir()
             .persist_block_fragment(

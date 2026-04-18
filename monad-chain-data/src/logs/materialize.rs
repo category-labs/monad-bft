@@ -165,12 +165,13 @@ impl<'a, M: MetaStore, B: BlobStore> LogMaterializer<'a, M, B> {
             .load_record(block_number)
             .await?
             .ok_or(MonadChainDataError::MissingData("missing block record"))?;
-        let header = self
+        let header_bytes = self
             .tables
             .logs()
             .load_block_header(block_number)
             .await?
             .ok_or(MonadChainDataError::MissingData("missing block log header"))?;
+        let header = LogBlockHeader::decode(&header_bytes)?;
 
         if log_idx + 1 >= header.offsets.len() {
             return Err(MonadChainDataError::Decode("log index out of range"));
@@ -203,12 +204,13 @@ impl<'a, M: MetaStore, B: BlobStore> LogMaterializer<'a, M, B> {
             .ok_or(MonadChainDataError::MissingData("missing block record"))?;
         let block_ref = BlockRef::from(&block_record);
 
-        let header = self
+        let header_bytes = self
             .tables
             .logs()
             .load_block_header(block_number)
             .await?
             .ok_or(MonadChainDataError::MissingData("missing block log header"))?;
+        let header = LogBlockHeader::decode(&header_bytes)?;
         let blob = self
             .tables
             .logs()

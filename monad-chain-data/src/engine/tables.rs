@@ -24,7 +24,6 @@ use crate::{
     },
     error::{MonadChainDataError, Result},
     family::{FinalizedBlock, Hash32},
-    logs::LogBlockHeader,
     primitives::{
         state::{BlockRecord, PublicationState},
         EvmBlockHeader,
@@ -260,23 +259,16 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
         self.bitmap.fragments_table()
     }
 
-    pub async fn load_block_header(&self, block_number: u64) -> Result<Option<LogBlockHeader>> {
+    /// Loads the raw per-block header bytes for this family. The codec is
+    /// the consumer's responsibility; the engine treats the value as opaque.
+    pub async fn load_block_header(&self, block_number: u64) -> Result<Option<Bytes>> {
         let key = block_number_key(block_number);
-        let Some(record) = self.block_headers.get(&key).await? else {
-            return Ok(None);
-        };
-        Ok(Some(LogBlockHeader::decode(&record.value)?))
+        Ok(self.block_headers.get(&key).await?.map(|r| r.value))
     }
 
-    pub async fn store_block_header(
-        &self,
-        block_number: u64,
-        block_log_header: &LogBlockHeader,
-    ) -> Result<()> {
+    pub async fn store_block_header(&self, block_number: u64, bytes: Bytes) -> Result<()> {
         let key = block_number_key(block_number);
-        self.block_headers
-            .put(&key, Bytes::from(block_log_header.encode()))
-            .await?;
+        self.block_headers.put(&key, bytes).await?;
         Ok(())
     }
 
