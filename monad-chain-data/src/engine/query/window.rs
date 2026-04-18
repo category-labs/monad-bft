@@ -15,23 +15,23 @@
 
 use super::bitmap::max_local_id;
 use crate::{
-    engine::tables::Tables,
+    engine::{family::Family, tables::BlockTables},
     error::Result,
     primitives::{
         page::QueryOrder,
         range::ResolvedBlockWindow,
-        state::{FamilyWindowRecord, LogId},
+        state::{FamilyWindowRecord, PrimaryId},
     },
-    store::{BlobStore, MetaStore},
+    store::MetaStore,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ResolvedLogWindow {
-    pub start: LogId,
-    pub end_inclusive: LogId,
+pub(crate) struct ResolvedPrimaryIdWindow {
+    pub start: PrimaryId,
+    pub end_inclusive: PrimaryId,
 }
 
-impl ResolvedLogWindow {
+impl ResolvedPrimaryIdWindow {
     /// Returns the local-ID range within the given shard, clipped to this
     /// window's boundaries.
     pub fn local_range_for_shard(&self, shard: u64) -> (u32, u32) {
@@ -58,39 +58,43 @@ impl ResolvedLogWindow {
     }
 }
 
-pub(crate) async fn resolve_log_window<M: MetaStore, B: BlobStore>(
-    tables: &Tables<M, B>,
+pub(crate) async fn resolve_primary_id_window<M: MetaStore>(
+    blocks: &BlockTables<M>,
+    family: Family,
     block_window: &ResolvedBlockWindow,
-) -> Result<Option<ResolvedLogWindow>> {
+) -> Result<Option<ResolvedPrimaryIdWindow>> {
     let start_block = block_window.low.number;
     let end_block = block_window.high.number;
 
-    let Some(start) = first_log_id_in_range(tables, start_block, end_block).await? else {
+    let Some(start) = first_primary_id_in_range(blocks, family, start_block, end_block).await?
+    else {
         return Ok(None);
     };
-    let Some(end_exclusive) = end_log_id_exclusive_in_range(tables, start_block, end_block).await?
+    let Some(end_exclusive) =
+        end_primary_id_exclusive_in_range(blocks, family, start_block, end_block).await?
     else {
         return Ok(None);
     };
 
-    Ok(Some(ResolvedLogWindow {
+    Ok(Some(ResolvedPrimaryIdWindow {
         start,
-        end_inclusive: LogId::new(end_exclusive.as_u64().saturating_sub(1)),
+        end_inclusive: PrimaryId::new(end_exclusive.as_u64().saturating_sub(1)),
     }))
 }
 
-async fn first_log_id_in_range<M: MetaStore, B: BlobStore>(
-    tables: &Tables<M, B>,
+async fn first_primary_id_in_range<M: MetaStore>(
+    blocks: &BlockTables<M>,
+    family: Family,
     start_block: u64,
     end_block: u64,
-) -> Result<Option<LogId>> {
+) -> Result<Option<PrimaryId>> {
     let mut block_number = start_block;
     while block_number <= end_block {
-        let Some(record) = tables.blocks().load_record(block_number).await? else {
+        let Some(record) = blocks.load_record(block_number).await? else {
             return Ok(None);
         };
-        if let Some(first_log_id) = non_empty_window_start(record.logs) {
-            return Ok(Some(first_log_id));
+        if let Some(first) = family.window_in(&record).and_then(non_empty_window_start) {
+            return Ok(Some(first));
         }
         block_number = block_number.saturating_add(1);
     }
@@ -98,18 +102,21 @@ async fn first_log_id_in_range<M: MetaStore, B: BlobStore>(
     Ok(None)
 }
 
-async fn end_log_id_exclusive_in_range<M: MetaStore, B: BlobStore>(
-    tables: &Tables<M, B>,
+async fn end_primary_id_exclusive_in_range<M: MetaStore>(
+    blocks: &BlockTables<M>,
+    family: Family,
     start_block: u64,
     end_block: u64,
-) -> Result<Option<LogId>> {
+) -> Result<Option<PrimaryId>> {
     let mut block_number = end_block;
     loop {
-        let Some(record) = tables.blocks().load_record(block_number).await? else {
+        let Some(record) = blocks.load_record(block_number).await? else {
             return Ok(None);
         };
-        if let Some(end_log_id_exclusive) = non_empty_window_end(record.logs)? {
-            return Ok(Some(end_log_id_exclusive));
+        if let Some(window) = family.window_in(&record) {
+            if let Some(end_exclusive) = non_empty_window_end(window)? {
+                return Ok(Some(end_exclusive));
+            }
         }
         if block_number == start_block {
             break;
@@ -120,14 +127,14 @@ async fn end_log_id_exclusive_in_range<M: MetaStore, B: BlobStore>(
     Ok(None)
 }
 
-fn non_empty_window_start(window: FamilyWindowRecord) -> Option<LogId> {
-    (window.count > 0).then_some(window.first_log_id)
+fn non_empty_window_start(window: FamilyWindowRecord) -> Option<PrimaryId> {
+    (window.count > 0).then(|| window.first_primary_id())
 }
 
-fn non_empty_window_end(window: FamilyWindowRecord) -> Result<Option<LogId>> {
+fn non_empty_window_end(window: FamilyWindowRecord) -> Result<Option<PrimaryId>> {
     if window.count == 0 {
         return Ok(None);
     }
 
-    window.next_log_id().map(Some)
+    window.next_primary_id_exclusive().map(Some)
 }

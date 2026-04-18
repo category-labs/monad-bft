@@ -18,9 +18,10 @@ use roaring::RoaringBitmap;
 use crate::{
     engine::{
         clause::IndexedFilter,
+        family::Family,
         query::{
             bitmap::load_intersection_bitmap_for_shard, directory_resolver::LogIdResolver,
-            window::resolve_log_window,
+            window::resolve_primary_id_window,
         },
         tables::Tables,
     },
@@ -37,7 +38,9 @@ pub(crate) async fn execute_indexed_log_query<M: MetaStore, B: BlobStore>(
 ) -> Result<QueryLogsResponse> {
     let (request_from, request_to) = block_window.request_endpoints(request.envelope.order);
 
-    let Some(log_window) = resolve_log_window(tables, &block_window).await? else {
+    let Some(window) =
+        resolve_primary_id_window(tables.blocks(), Family::Log, &block_window).await?
+    else {
         return Ok(QueryLogsResponse {
             logs: Vec::new(),
             blocks: None,
@@ -61,8 +64,8 @@ pub(crate) async fn execute_indexed_log_query<M: MetaStore, B: BlobStore>(
     let mut logs = Vec::new();
     let mut stop_after_block = None;
 
-    for shard in log_window.shard_iter(request.envelope.order) {
-        let (local_from, local_to) = log_window.local_range_for_shard(shard);
+    for shard in window.shard_iter(request.envelope.order) {
+        let (local_from, local_to) = window.local_range_for_shard(shard);
 
         let Some(candidate_bitmap) = load_intersection_bitmap_for_shard(
             tables.logs(),
