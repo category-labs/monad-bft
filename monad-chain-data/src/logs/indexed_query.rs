@@ -17,6 +17,7 @@ use roaring::RoaringBitmap;
 
 use crate::{
     engine::{
+        clause::IndexedFilter,
         query::{
             bitmap::load_clause_bitmap_for_shard, directory_resolver::LogIdResolver,
             window::resolve_log_window,

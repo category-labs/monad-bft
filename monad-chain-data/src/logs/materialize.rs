@@ -21,7 +21,10 @@ use bytes::Bytes as RawBytes;
 use super::{LogBlockHeader, LogEntry, RawLogEntry};
 use crate::{
     blocks::Block,
-    engine::{clause::IndexedClause, tables::Tables},
+    engine::{
+        clause::{IndexedClause, IndexedFilter},
+        tables::Tables,
+    },
     error::{MonadChainDataError, Result},
     family::Hash32,
     primitives::{
@@ -77,7 +80,30 @@ impl LogFilter {
         self.address.is_some() || self.topics.iter().any(Option::is_some)
     }
 
-    pub(crate) fn indexed_clauses(&self) -> Vec<IndexedClause> {
+    pub fn matches(&self, log: &LogEntry) -> bool {
+        if let Some(addresses) = &self.address {
+            if !addresses.contains(&log.address) {
+                return false;
+            }
+        }
+
+        for (i, candidates) in self.topics.iter().enumerate() {
+            if let Some(candidates) = candidates {
+                match log.topics.get(i) {
+                    Some(actual) if candidates.contains(actual) => {}
+                    _ => return false,
+                }
+            }
+        }
+
+        true
+    }
+}
+
+impl IndexedFilter for LogFilter {
+    type Record = LogEntry;
+
+    fn indexed_clauses(&self) -> Vec<IndexedClause> {
         const TOPIC_KINDS: [&str; 4] = ["topic0", "topic1", "topic2", "topic3"];
 
         let mut clauses = Vec::new();
@@ -107,23 +133,8 @@ impl LogFilter {
         clauses
     }
 
-    pub fn matches(&self, log: &LogEntry) -> bool {
-        if let Some(addresses) = &self.address {
-            if !addresses.contains(&log.address) {
-                return false;
-            }
-        }
-
-        for (i, candidates) in self.topics.iter().enumerate() {
-            if let Some(candidates) = candidates {
-                match log.topics.get(i) {
-                    Some(actual) if candidates.contains(actual) => {}
-                    _ => return false,
-                }
-            }
-        }
-
-        true
+    fn matches(&self, log: &LogEntry) -> bool {
+        LogFilter::matches(self, log)
     }
 }
 

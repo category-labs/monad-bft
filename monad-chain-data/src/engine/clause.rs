@@ -34,3 +34,14 @@ impl IndexedClause {
             .collect()
     }
 }
+
+/// Per-domain indexed query contract. Implementers translate filters
+/// that are fully represented by indexed clauses into engine clauses.
+/// `matches` is an invariant check for materialized records from those
+/// clauses, not a release-mode post-filter.
+pub trait IndexedFilter {
+    type Record;
+
+    fn indexed_clauses(&self) -> Vec<IndexedClause>;
+    fn matches(&self, record: &Self::Record) -> bool;
+}
