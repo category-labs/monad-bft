@@ -17,11 +17,8 @@ use std::{collections::HashSet, convert::TryFrom};
 
 use bytes::Bytes as StorageBytes;
 use monad_chain_data::{
-    engine::{
-        bitmap::{sharded_stream_id, stream_page_key, STREAM_PAGE_LOCAL_ID_SPAN},
-        tables::LogTables,
-    },
-    store::MetaStore,
+    engine::bitmap::{sharded_stream_id, stream_page_key, STREAM_PAGE_LOCAL_ID_SPAN},
+    store::{MetaStore, TableId},
     Address, Bytes, FinalizedBlock, InMemoryBlobStore, InMemoryMetaStore, Log, LogData, LogFilter,
     LogsRelations, MonadChainDataService, QueryEnvelope, QueryLimits, QueryLogsRequest, QueryOrder,
     Topic, B256,
@@ -102,7 +99,7 @@ async fn ingest_compacts_sealed_pages_and_query_prefers_compacted_page_blobs() {
     let partition = stream_page_key(&old_stream, 0);
     meta_store
         .scan_put(
-            LogTables::<InMemoryMetaStore, InMemoryBlobStore>::LOG_BITMAP_BY_BLOCK_TABLE,
+            service.tables().logs().bitmap_by_block_table(),
             &partition,
             &1u64.to_be_bytes(),
             StorageBytes::from_static(b"corrupt-fragment"),
@@ -188,7 +185,7 @@ async fn query_errors_when_compacted_page_meta_exists_but_blob_is_missing() {
 
     let stream = sharded_stream_id("addr", address.as_slice(), 0);
     meta_store.clear_key(
-        LogTables::<InMemoryMetaStore, InMemoryBlobStore>::LOG_BITMAP_PAGE_BLOB_TABLE,
+        TableId::new("log_bitmap_page_blob"),
         &stream_page_key(&stream, 0),
     );
 

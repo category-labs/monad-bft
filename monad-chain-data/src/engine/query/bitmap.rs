@@ -17,17 +17,16 @@ use roaring::RoaringBitmap;
 
 use crate::{
     engine::{
-        bitmap::{decode_bitmap_blob, page_start_local, STREAM_PAGE_LOCAL_ID_SPAN},
-        tables::LogTables,
+        bitmap::{decode_bitmap_blob, page_start_local, LOCAL_ID_BITS, STREAM_PAGE_LOCAL_ID_SPAN},
+        tables::FamilyTables,
     },
     error::{MonadChainDataError, Result},
     logs::IndexedLogClause,
-    primitives::state::LogId,
     store::{BlobStore, MetaStore},
 };
 
 pub(crate) async fn load_clause_bitmap_for_shard<M: MetaStore, B: BlobStore>(
-    logs: &LogTables<M, B>,
+    logs: &FamilyTables<M, B>,
     clause: &IndexedLogClause,
     shard: u64,
     local_from: u32,
@@ -60,7 +59,7 @@ pub(crate) async fn load_clause_bitmap_for_shard<M: MetaStore, B: BlobStore>(
 }
 
 async fn load_bitmap_page<M: MetaStore, B: BlobStore>(
-    logs: &LogTables<M, B>,
+    logs: &FamilyTables<M, B>,
     stream_id: &str,
     page_start_local: u32,
     local_from: u32,
@@ -100,7 +99,7 @@ async fn load_bitmap_page<M: MetaStore, B: BlobStore>(
 }
 
 pub(crate) const fn max_local_id() -> u32 {
-    (1u32 << LogId::LOCAL_ID_BITS) - 1
+    (1u32 << LOCAL_ID_BITS) - 1
 }
 
 fn overlaps(start: u32, end: u32, query_start: u32, query_end: u32) -> bool {

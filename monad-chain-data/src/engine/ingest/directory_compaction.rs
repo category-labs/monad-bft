@@ -19,7 +19,7 @@ use crate::{
             bucket_start, PrimaryDirBucket, PrimaryDirFragment, PrimaryDirTables,
             DIRECTORY_BUCKET_SIZE,
         },
-        tables::LogTables,
+        tables::FamilyTables,
     },
     error::{MonadChainDataError, Result},
     store::{BlobStore, MetaStore},
@@ -27,7 +27,7 @@ use crate::{
 
 /// Compacts every directory bucket sealed by the given ingest transition.
 pub(crate) async fn compact_newly_sealed_log_directory_buckets<M: MetaStore, B: BlobStore>(
-    logs: &LogTables<M, B>,
+    logs: &FamilyTables<M, B>,
     from_next_primary_id: u64,
     next_primary_id: u64,
 ) -> Result<()> {

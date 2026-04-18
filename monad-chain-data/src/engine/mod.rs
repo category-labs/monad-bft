@@ -14,6 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 pub mod bitmap;
+pub mod family;
 pub(crate) mod ingest;
 pub mod primary_dir;
 pub(crate) mod query;
