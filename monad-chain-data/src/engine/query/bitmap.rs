@@ -25,7 +25,7 @@ use crate::{
     store::{BlobStore, MetaStore},
 };
 
-pub(crate) async fn load_clause_bitmap_for_shard<M: MetaStore, B: BlobStore>(
+async fn load_clause_bitmap_for_shard<M: MetaStore, B: BlobStore>(
     logs: &FamilyTables<M, B>,
     clause: &IndexedClause,
     shard: u64,
@@ -56,6 +56,39 @@ pub(crate) async fn load_clause_bitmap_for_shard<M: MetaStore, B: BlobStore>(
 
     clip_bitmap_to_local_range(&mut clause_bitmap, local_from, local_to);
     Ok(clause_bitmap)
+}
+
+/// Loads the AND-intersection of all clauses for one shard, clipped to
+/// the local-id range. Returns `None` if any clause yields an empty
+/// bitmap, meaning the shard cannot contribute candidates.
+pub(crate) async fn load_intersection_bitmap_for_shard<M: MetaStore, B: BlobStore>(
+    family: &FamilyTables<M, B>,
+    clauses: &[IndexedClause],
+    shard: u64,
+    local_from: u32,
+    local_to: u32,
+) -> Result<Option<RoaringBitmap>> {
+    let mut accumulator: Option<RoaringBitmap> = None;
+
+    for clause in clauses {
+        let clause_bitmap =
+            load_clause_bitmap_for_shard(family, clause, shard, local_from, local_to).await?;
+        if clause_bitmap.is_empty() {
+            return Ok(None);
+        }
+
+        match accumulator.as_mut() {
+            Some(current) => {
+                *current &= &clause_bitmap;
+                if current.is_empty() {
+                    return Ok(None);
+                }
+            }
+            None => accumulator = Some(clause_bitmap),
+        }
+    }
+
+    Ok(accumulator.filter(|bitmap| !bitmap.is_empty()))
 }
 
 async fn load_bitmap_page<M: MetaStore, B: BlobStore>(
