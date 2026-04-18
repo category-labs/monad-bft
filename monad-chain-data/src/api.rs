@@ -24,7 +24,7 @@ use crate::{
     kernel::tables::Tables,
     logs::{LogIngestPlan, QueryLogsRequest, QueryLogsResponse},
     primitives::{
-        limits::{LimitExceededKind, QueryLimits},
+        limits::QueryLimits,
         range::ResolvedBlockWindow,
         state::{BlockRecord, LogId},
     },
@@ -139,28 +139,16 @@ impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
     /// The service's configured `QueryLimits` bound the request shape and
     /// the resolved block-range span.
     pub async fn query_logs(&self, request: QueryLogsRequest) -> Result<QueryLogsResponse> {
-        if request.limit == 0 {
-            return Err(MonadChainDataError::InvalidRequest(
-                "limit must be at least 1",
-            ));
-        }
-        if request.limit > self.limits.max_limit {
-            return Err(MonadChainDataError::LimitExceeded {
-                kind: LimitExceededKind::Limit,
-                max_limit: self.limits.max_limit,
-                max_block_range: self.limits.max_block_range,
-            });
-        }
+        self.limits.check_limit(request.envelope.limit)?;
 
-        let head = self
-            .tables
-            .publication()
-            .load_published_head()
-            .await?
-            .ok_or(MonadChainDataError::MissingData("no published blocks"))?;
-        let window =
-            ResolvedBlockWindow::resolve(&request, head, &self.limits, self.tables.blocks())
-                .await?;
+        let head = self.load_published_head().await?;
+        let window = ResolvedBlockWindow::resolve(
+            &request.envelope,
+            head,
+            &self.limits,
+            self.tables.blocks(),
+        )
+        .await?;
 
         let mut response = if request.filter.has_indexed_clause() {
             execute_indexed_log_query(&self.tables, &request, window).await?
@@ -174,5 +162,13 @@ impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
         }
 
         Ok(response)
+    }
+
+    async fn load_published_head(&self) -> Result<u64> {
+        self.tables
+            .publication()
+            .load_published_head()
+            .await?
+            .ok_or(MonadChainDataError::MissingData("no published blocks"))
     }
 }

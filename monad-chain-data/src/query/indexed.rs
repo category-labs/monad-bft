@@ -23,7 +23,7 @@ use crate::{
     error::{MonadChainDataError, Result},
     kernel::tables::Tables,
     logs::{LogMaterializer, QueryLogsRequest, QueryLogsResponse},
-    primitives::{page::QueryOrder, range::ResolvedBlockWindow, state::LogId},
+    primitives::{page::QueryOrder, range::ResolvedBlockWindow, refs::BlockSpan, state::LogId},
     store::{BlobStore, MetaStore},
 };
 
@@ -32,15 +32,17 @@ pub(crate) async fn execute_indexed_log_query<M: MetaStore, B: BlobStore>(
     request: &QueryLogsRequest,
     block_window: ResolvedBlockWindow,
 ) -> Result<QueryLogsResponse> {
-    let (request_from, request_to) = block_window.request_endpoints(request.order);
+    let (request_from, request_to) = block_window.request_endpoints(request.envelope.order);
 
     let Some(log_window) = resolve_log_window(tables, &block_window).await? else {
         return Ok(QueryLogsResponse {
             logs: Vec::new(),
             blocks: None,
-            from_block: request_from,
-            to_block: request_to,
-            cursor_block: request_to,
+            span: BlockSpan {
+                from_block: request_from,
+                to_block: request_to,
+                cursor_block: request_to,
+            },
         });
     };
 
@@ -56,7 +58,7 @@ pub(crate) async fn execute_indexed_log_query<M: MetaStore, B: BlobStore>(
     let mut logs = Vec::new();
     let mut stop_after_block = None;
 
-    for shard in log_window.shard_iter(request.order) {
+    for shard in log_window.shard_iter(request.envelope.order) {
         let (local_from, local_to) = log_window.local_range_for_shard(shard);
 
         let Some(candidate_bitmap) =
@@ -65,7 +67,7 @@ pub(crate) async fn execute_indexed_log_query<M: MetaStore, B: BlobStore>(
             continue;
         };
 
-        let locals = locals_in_query_order(candidate_bitmap, request.order);
+        let locals = locals_in_query_order(candidate_bitmap, request.envelope.order);
         for local in locals {
             let id = LogId::from_parts(shard, local);
             let Some(location) = resolver.resolve(id).await? else {
@@ -78,9 +80,11 @@ pub(crate) async fn execute_indexed_log_query<M: MetaStore, B: BlobStore>(
                     return Ok(QueryLogsResponse {
                         logs,
                         blocks: None,
-                        from_block: request_from,
-                        to_block: request_to,
-                        cursor_block,
+                        span: BlockSpan {
+                            from_block: request_from,
+                            to_block: request_to,
+                            cursor_block,
+                        },
                     });
                 }
             }
@@ -97,7 +101,7 @@ pub(crate) async fn execute_indexed_log_query<M: MetaStore, B: BlobStore>(
 
             logs.push(log);
 
-            if stop_after_block.is_none() && logs.len() >= request.limit {
+            if stop_after_block.is_none() && logs.len() >= request.envelope.limit {
                 stop_after_block = Some(location.block_number);
             }
         }
@@ -106,9 +110,11 @@ pub(crate) async fn execute_indexed_log_query<M: MetaStore, B: BlobStore>(
     Ok(QueryLogsResponse {
         logs,
         blocks: None,
-        from_block: request_from,
-        to_block: request_to,
-        cursor_block: request_to,
+        span: BlockSpan {
+            from_block: request_from,
+            to_block: request_to,
+            cursor_block: request_to,
+        },
     })
 }
 

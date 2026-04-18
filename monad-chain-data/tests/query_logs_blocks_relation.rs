@@ -17,8 +17,8 @@ use std::collections::HashSet;
 
 use monad_chain_data::{
     Address, Bytes, EvmBlockHeader, FinalizedBlock, InMemoryBlobStore, InMemoryMetaStore, Log,
-    LogData, LogFilter, LogsRelations, MonadChainDataService, QueryLimits, QueryLogsRequest,
-    QueryOrder, B256,
+    LogData, LogFilter, LogsRelations, MonadChainDataService, QueryEnvelope, QueryLimits,
+    QueryLogsRequest, QueryOrder, B256,
 };
 
 mod common;
@@ -31,10 +31,12 @@ async fn include_blocks_false_omits_block_headers() {
 
     let page = service
         .query_logs(QueryLogsRequest {
-            from_block: Some(1),
-            to_block: Some(3),
-            order: QueryOrder::Ascending,
-            limit: 100,
+            envelope: QueryEnvelope {
+                from_block: Some(1),
+                to_block: Some(3),
+                order: QueryOrder::Ascending,
+                limit: 100,
+            },
             filter: LogFilter::default(),
             relations: LogsRelations::default(),
         })
@@ -69,10 +71,12 @@ async fn include_blocks_true_returns_deduped_headers_for_matched_blocks() {
 
     let page = service
         .query_logs(QueryLogsRequest {
-            from_block: Some(1),
-            to_block: Some(3),
-            order: QueryOrder::Ascending,
-            limit: 100,
+            envelope: QueryEnvelope {
+                from_block: Some(1),
+                to_block: Some(3),
+                order: QueryOrder::Ascending,
+                limit: 100,
+            },
             filter: LogFilter {
                 address: Some(HashSet::from([matching])),
                 topics: [None, None, None, None],
@@ -98,10 +102,12 @@ async fn descending_query_still_returns_blocks_ascending() {
 
     let page = service
         .query_logs(QueryLogsRequest {
-            from_block: Some(3),
-            to_block: Some(1),
-            order: QueryOrder::Descending,
-            limit: 100,
+            envelope: QueryEnvelope {
+                from_block: Some(3),
+                to_block: Some(1),
+                order: QueryOrder::Descending,
+                limit: 100,
+            },
             filter: LogFilter::default(),
             relations: LogsRelations { blocks: true },
         })
@@ -119,10 +125,12 @@ async fn include_blocks_empty_result_returns_empty_blocks() {
 
     let page = service
         .query_logs(QueryLogsRequest {
-            from_block: Some(1),
-            to_block: Some(3),
-            order: QueryOrder::Ascending,
-            limit: 100,
+            envelope: QueryEnvelope {
+                from_block: Some(1),
+                to_block: Some(3),
+                order: QueryOrder::Ascending,
+                limit: 100,
+            },
             filter: LogFilter {
                 address: Some(HashSet::from([Address::repeat_byte(0xEE)])),
                 topics: [None, None, None, None],

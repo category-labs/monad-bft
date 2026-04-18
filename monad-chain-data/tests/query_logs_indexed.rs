@@ -18,7 +18,8 @@ use std::collections::HashSet;
 use monad_chain_data::{
     kernel::{bitmap::STREAM_PAGE_LOCAL_ID_SPAN, primary_dir::DIRECTORY_BUCKET_SIZE},
     Address, Bytes, FinalizedBlock, InMemoryBlobStore, InMemoryMetaStore, Log, LogData, LogFilter,
-    LogsRelations, MonadChainDataService, QueryLimits, QueryLogsRequest, QueryOrder, Topic, B256,
+    LogsRelations, MonadChainDataService, QueryEnvelope, QueryLimits, QueryLogsRequest, QueryOrder,
+    Topic, B256,
 };
 
 mod common;
@@ -53,10 +54,12 @@ async fn indexed_query_logs_respects_and_or_filter_semantics() {
 
     let page = service
         .query_logs(QueryLogsRequest {
-            from_block: Some(1),
-            to_block: Some(1),
-            order: QueryOrder::Ascending,
-            limit: 10,
+            envelope: QueryEnvelope {
+                from_block: Some(1),
+                to_block: Some(1),
+                order: QueryOrder::Ascending,
+                limit: 10,
+            },
             filter: LogFilter {
                 address: Some(HashSet::from([
                     Address::repeat_byte(2),
@@ -76,7 +79,7 @@ async fn indexed_query_logs_respects_and_or_filter_semantics() {
 
     assert_eq!(page.logs.len(), 1);
     assert_eq!(page.logs[0].address, Address::repeat_byte(2));
-    assert_eq!(page.cursor_block.number, 1);
+    assert_eq!(page.span.cursor_block.number, 1);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -114,12 +117,14 @@ async fn indexed_query_logs_descending_returns_newest_first() {
 
     let page = service
         .query_logs(QueryLogsRequest {
-            // Spec semantics: in descending order from_block is the upper
-            // bound and to_block is the lower bound.
-            from_block: Some(2),
-            to_block: Some(1),
-            order: QueryOrder::Descending,
-            limit: 1,
+            envelope: QueryEnvelope {
+                // Spec semantics: in descending order from_block is the upper
+                // bound and to_block is the lower bound.
+                from_block: Some(2),
+                to_block: Some(1),
+                order: QueryOrder::Descending,
+                limit: 1,
+            },
             filter: LogFilter {
                 address: Some(HashSet::from([Address::repeat_byte(7)])),
                 topics: [
@@ -139,7 +144,7 @@ async fn indexed_query_logs_descending_returns_newest_first() {
     assert_eq!(page.logs[0].log_index, 1);
     assert_eq!(page.logs[1].block_number, 2);
     assert_eq!(page.logs[1].log_index, 0);
-    assert_eq!(page.cursor_block.number, 2);
+    assert_eq!(page.span.cursor_block.number, 2);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -177,10 +182,12 @@ async fn indexed_query_logs_paginates_at_block_boundaries() {
 
     let first_page = service
         .query_logs(QueryLogsRequest {
-            from_block: Some(1),
-            to_block: Some(2),
-            order: QueryOrder::Ascending,
-            limit: 1,
+            envelope: QueryEnvelope {
+                from_block: Some(1),
+                to_block: Some(2),
+                order: QueryOrder::Ascending,
+                limit: 1,
+            },
             filter: LogFilter {
                 address: Some(HashSet::from([Address::repeat_byte(7)])),
                 topics: [
@@ -196,14 +203,16 @@ async fn indexed_query_logs_paginates_at_block_boundaries() {
         .expect("first page");
 
     assert_eq!(first_page.logs.len(), 2);
-    assert_eq!(first_page.cursor_block.number, 1);
+    assert_eq!(first_page.span.cursor_block.number, 1);
 
     let second_page = service
         .query_logs(QueryLogsRequest {
-            from_block: Some(first_page.cursor_block.number + 1),
-            to_block: Some(2),
-            order: QueryOrder::Ascending,
-            limit: 1,
+            envelope: QueryEnvelope {
+                from_block: Some(first_page.span.cursor_block.number + 1),
+                to_block: Some(2),
+                order: QueryOrder::Ascending,
+                limit: 1,
+            },
             filter: LogFilter {
                 address: Some(HashSet::from([Address::repeat_byte(7)])),
                 topics: [
@@ -219,7 +228,7 @@ async fn indexed_query_logs_paginates_at_block_boundaries() {
         .expect("second page");
 
     assert_eq!(second_page.logs.len(), 1);
-    assert_eq!(second_page.cursor_block.number, 2);
+    assert_eq!(second_page.span.cursor_block.number, 2);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -260,10 +269,12 @@ async fn indexed_query_logs_scans_across_bucket_and_page_boundaries() {
 
     let page = service
         .query_logs(QueryLogsRequest {
-            from_block: Some(1),
-            to_block: Some(2),
-            order: QueryOrder::Ascending,
-            limit: 10,
+            envelope: QueryEnvelope {
+                from_block: Some(1),
+                to_block: Some(2),
+                order: QueryOrder::Ascending,
+                limit: 10,
+            },
             filter: LogFilter {
                 address: Some(HashSet::from([Address::repeat_byte(7)])),
                 topics: [
@@ -283,7 +294,7 @@ async fn indexed_query_logs_scans_across_bucket_and_page_boundaries() {
         usize::try_from(DIRECTORY_BUCKET_SIZE + 4).expect("directory bucket size fits usize")
     );
     assert!(page.logs.iter().all(|log| log.block_number == 2));
-    assert_eq!(page.cursor_block.number, 2);
+    assert_eq!(page.span.cursor_block.number, 2);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -336,10 +347,12 @@ async fn indexed_query_completes_current_block_when_limit_reached_mid_block() {
 
     let page = service
         .query_logs(QueryLogsRequest {
-            from_block: Some(1),
-            to_block: Some(3),
-            order: QueryOrder::Ascending,
-            limit: 2,
+            envelope: QueryEnvelope {
+                from_block: Some(1),
+                to_block: Some(3),
+                order: QueryOrder::Ascending,
+                limit: 2,
+            },
             filter: LogFilter {
                 address: Some(HashSet::from([Address::repeat_byte(7)])),
                 topics: [
@@ -357,7 +370,7 @@ async fn indexed_query_completes_current_block_when_limit_reached_mid_block() {
     assert_eq!(page.logs.len(), 6);
     assert!(page.logs.iter().take(1).all(|l| l.block_number == 1));
     assert!(page.logs.iter().skip(1).all(|l| l.block_number == 2));
-    assert_eq!(page.cursor_block.number, 2);
+    assert_eq!(page.span.cursor_block.number, 2);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -410,10 +423,12 @@ async fn indexed_query_completes_current_block_when_limit_reached_mid_block_desc
 
     let page = service
         .query_logs(QueryLogsRequest {
-            from_block: Some(3),
-            to_block: Some(1),
-            order: QueryOrder::Descending,
-            limit: 2,
+            envelope: QueryEnvelope {
+                from_block: Some(3),
+                to_block: Some(1),
+                order: QueryOrder::Descending,
+                limit: 2,
+            },
             filter: LogFilter {
                 address: Some(HashSet::from([Address::repeat_byte(7)])),
                 topics: [
@@ -431,7 +446,7 @@ async fn indexed_query_completes_current_block_when_limit_reached_mid_block_desc
     assert_eq!(page.logs.len(), 6);
     assert!(page.logs.iter().take(1).all(|l| l.block_number == 3));
     assert!(page.logs.iter().skip(1).all(|l| l.block_number == 2));
-    assert_eq!(page.cursor_block.number, 2);
+    assert_eq!(page.span.cursor_block.number, 2);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -469,10 +484,12 @@ async fn indexed_query_stops_at_block_when_limit_equals_block_match_count() {
 
     let page = service
         .query_logs(QueryLogsRequest {
-            from_block: Some(1),
-            to_block: Some(2),
-            order: QueryOrder::Ascending,
-            limit: 2,
+            envelope: QueryEnvelope {
+                from_block: Some(1),
+                to_block: Some(2),
+                order: QueryOrder::Ascending,
+                limit: 2,
+            },
             filter: LogFilter {
                 address: Some(HashSet::from([Address::repeat_byte(7)])),
                 topics: [
@@ -489,7 +506,7 @@ async fn indexed_query_stops_at_block_when_limit_equals_block_match_count() {
 
     assert_eq!(page.logs.len(), 2);
     assert!(page.logs.iter().all(|l| l.block_number == 1));
-    assert_eq!(page.cursor_block.number, 1);
+    assert_eq!(page.span.cursor_block.number, 1);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -513,10 +530,12 @@ async fn unindexed_query_logs_still_uses_block_scan_fallback() {
 
     let page = service
         .query_logs(QueryLogsRequest {
-            from_block: Some(1),
-            to_block: Some(1),
-            order: QueryOrder::Ascending,
-            limit: 1,
+            envelope: QueryEnvelope {
+                from_block: Some(1),
+                to_block: Some(1),
+                order: QueryOrder::Ascending,
+                limit: 1,
+            },
             filter: LogFilter::default(),
             relations: LogsRelations::default(),
         })
@@ -524,7 +543,7 @@ async fn unindexed_query_logs_still_uses_block_scan_fallback() {
         .expect("query");
 
     assert_eq!(page.logs.len(), 2);
-    assert_eq!(page.cursor_block.number, 1);
+    assert_eq!(page.span.cursor_block.number, 1);
 }
 
 fn repeated_logs(address: Address, topics: Vec<Topic>, count: usize) -> Vec<Log> {
