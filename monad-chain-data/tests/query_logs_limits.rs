@@ -15,8 +15,8 @@
 
 use monad_chain_data::{
     Address, Bytes, FinalizedBlock, InMemoryBlobStore, InMemoryMetaStore, LimitExceededKind, Log,
-    LogData, LogFilter, MonadChainDataError, MonadChainDataService, QueryLimits, QueryLogsRequest,
-    QueryOrder, B256,
+    LogData, LogFilter, LogsRelations, MonadChainDataError, MonadChainDataService, QueryLimits,
+    QueryLogsRequest, QueryOrder, B256,
 };
 
 mod common;
@@ -34,6 +34,7 @@ async fn limit_above_max_limit_returns_limit_exceeded() {
             order: QueryOrder::Ascending,
             limit: 10,
             filter: LogFilter::default(),
+            relations: LogsRelations::default(),
         })
         .await
         .expect_err("limit above max_limit should error");
@@ -63,6 +64,7 @@ async fn block_range_above_max_block_range_returns_limit_exceeded() {
             order: QueryOrder::Ascending,
             limit: 10,
             filter: LogFilter::default(),
+            relations: LogsRelations::default(),
         })
         .await
         .expect_err("block range above max_block_range should error");
@@ -92,6 +94,7 @@ async fn block_range_at_max_block_range_succeeds() {
             order: QueryOrder::Ascending,
             limit: 10,
             filter: LogFilter::default(),
+            relations: LogsRelations::default(),
         })
         .await
         .expect("query at max should succeed");
@@ -113,6 +116,7 @@ async fn defaulted_block_range_is_bounded_by_max_block_range() {
             order: QueryOrder::Ascending,
             limit: 10,
             filter: LogFilter::default(),
+            relations: LogsRelations::default(),
         })
         .await
         .expect_err("defaulted full-chain range should be bounded");

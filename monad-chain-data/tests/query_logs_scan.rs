@@ -17,8 +17,8 @@ use std::collections::HashSet;
 
 use monad_chain_data::{
     Address, Bytes, FinalizedBlock, InMemoryBlobStore, InMemoryMetaStore, Log, LogData, LogFilter,
-    LogId, MonadChainDataError, MonadChainDataService, QueryLimits, QueryLogsRequest, QueryOrder,
-    B256,
+    LogId, LogsRelations, MonadChainDataError, MonadChainDataService, QueryLimits,
+    QueryLogsRequest, QueryOrder, B256,
 };
 
 mod common;
@@ -70,6 +70,7 @@ async fn query_logs_paginates_at_block_boundaries() {
                     None,
                 ],
             },
+            relations: LogsRelations::default(),
         })
         .await
         .expect("first page");
@@ -94,6 +95,7 @@ async fn query_logs_paginates_at_block_boundaries() {
                     None,
                 ],
             },
+            relations: LogsRelations::default(),
         })
         .await
         .expect("second page");
@@ -137,6 +139,7 @@ async fn query_logs_descending_returns_newest_first() {
                     None,
                 ],
             },
+            relations: LogsRelations::default(),
         })
         .await
         .expect("query");
@@ -284,6 +287,7 @@ async fn block_scan_completes_current_block_when_limit_reached_mid_block() {
             order: QueryOrder::Ascending,
             limit: 1,
             filter: LogFilter::default(),
+            relations: LogsRelations::default(),
         })
         .await
         .expect("query");

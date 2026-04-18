@@ -23,7 +23,7 @@ use monad_chain_data::{
     },
     store::MetaStore,
     Address, Bytes, FinalizedBlock, InMemoryBlobStore, InMemoryMetaStore, Log, LogData, LogFilter,
-    MonadChainDataService, QueryLimits, QueryLogsRequest, QueryOrder, Topic, B256,
+    LogsRelations, MonadChainDataService, QueryLimits, QueryLogsRequest, QueryOrder, Topic, B256,
 };
 
 mod common;
@@ -119,6 +119,7 @@ async fn ingest_compacts_sealed_pages_and_query_prefers_compacted_page_blobs() {
                 address: Some(HashSet::from([old_address])),
                 topics: [Some(HashSet::from([old_topic])), None, None, None],
             },
+            relations: LogsRelations::default(),
         })
         .await
         .expect("query compacted page");
@@ -137,6 +138,7 @@ async fn ingest_compacts_sealed_pages_and_query_prefers_compacted_page_blobs() {
                 address: Some(HashSet::from([frontier_address])),
                 topics: [Some(HashSet::from([frontier_topic])), None, None, None],
             },
+            relations: LogsRelations::default(),
         })
         .await
         .expect("query live frontier page");
@@ -195,6 +197,7 @@ async fn query_errors_when_compacted_page_meta_exists_but_blob_is_missing() {
                 address: Some(HashSet::from([address])),
                 topics: [Some(HashSet::from([topic])), None, None, None],
             },
+            relations: LogsRelations::default(),
         })
         .await
         .expect_err("missing page blob should error");

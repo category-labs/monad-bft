@@ -15,7 +15,8 @@
 
 use monad_chain_data::{
     Address, Bytes, FinalizedBlock, InMemoryBlobStore, InMemoryMetaStore, Log, LogData, LogFilter,
-    MonadChainDataError, MonadChainDataService, QueryLimits, QueryLogsRequest, QueryOrder, B256,
+    LogsRelations, MonadChainDataError, MonadChainDataService, QueryLimits, QueryLogsRequest,
+    QueryOrder, B256,
 };
 
 mod common;
@@ -33,6 +34,7 @@ async fn from_block_above_head_returns_invalid_request() {
             order: QueryOrder::Ascending,
             limit: 10,
             filter: LogFilter::default(),
+            relations: LogsRelations::default(),
         })
         .await
         .expect_err("from_block above head should not silently collapse");
@@ -54,6 +56,7 @@ async fn to_block_above_head_clips_to_head() {
             order: QueryOrder::Ascending,
             limit: 100,
             filter: LogFilter::default(),
+            relations: LogsRelations::default(),
         })
         .await
         .expect("query");
@@ -74,6 +77,7 @@ async fn inverted_range_returns_invalid_request() {
             order: QueryOrder::Ascending,
             limit: 10,
             filter: LogFilter::default(),
+            relations: LogsRelations::default(),
         })
         .await
         .expect_err("from > to should error");
@@ -99,6 +103,7 @@ async fn descending_to_block_above_head_returns_invalid_request() {
             order: QueryOrder::Descending,
             limit: 10,
             filter: LogFilter::default(),
+            relations: LogsRelations::default(),
         })
         .await
         .expect_err("to_block above head in desc should not silently collapse");
@@ -123,6 +128,7 @@ async fn descending_from_above_head_clips_to_head() {
             order: QueryOrder::Descending,
             limit: 100,
             filter: LogFilter::default(),
+            relations: LogsRelations::default(),
         })
         .await
         .expect("query");
@@ -143,6 +149,7 @@ async fn from_block_zero_floors_to_earliest_queryable_block() {
             order: QueryOrder::Ascending,
             limit: 100,
             filter: LogFilter::default(),
+            relations: LogsRelations::default(),
         })
         .await
         .expect("query");
@@ -164,6 +171,7 @@ async fn descending_inverted_range_returns_invalid_request() {
             order: QueryOrder::Descending,
             limit: 10,
             filter: LogFilter::default(),
+            relations: LogsRelations::default(),
         })
         .await
         .expect_err("descending from < to should error");
@@ -185,6 +193,7 @@ async fn descending_defaulted_range_inverts_endpoints() {
             order: QueryOrder::Descending,
             limit: 100,
             filter: LogFilter::default(),
+            relations: LogsRelations::default(),
         })
         .await
         .expect("query");
@@ -204,6 +213,7 @@ async fn defaulted_range_resolves_to_full_chain() {
             order: QueryOrder::Ascending,
             limit: 100,
             filter: LogFilter::default(),
+            relations: LogsRelations::default(),
         })
         .await
         .expect("query");

@@ -14,6 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use crate::{
+    blocks::load_blocks_for_logs,
     error::{MonadChainDataError, Result},
     family::FinalizedBlock,
     ingest::{
@@ -161,10 +162,17 @@ impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
             ResolvedBlockWindow::resolve(&request, head, &self.limits, self.tables.blocks())
                 .await?;
 
-        if request.filter.has_indexed_clause() {
-            return execute_indexed_log_query(&self.tables, &request, window).await;
+        let mut response = if request.filter.has_indexed_clause() {
+            execute_indexed_log_query(&self.tables, &request, window).await?
+        } else {
+            execute_block_scan_query(&self.tables, &request, window).await?
+        };
+
+        if request.relations.blocks {
+            response.blocks =
+                Some(load_blocks_for_logs(self.tables.blocks(), &response.logs).await?);
         }
 
-        execute_block_scan_query(&self.tables, &request, window).await
+        Ok(response)
     }
 }

@@ -19,5 +19,5 @@ mod types;
 
 pub use ingest::LogIngestPlan;
 pub(crate) use materialize::{IndexedLogClause, LogMaterializer};
-pub use materialize::{LogFilter, QueryLogsRequest, QueryLogsResponse};
+pub use materialize::{LogFilter, LogsRelations, QueryLogsRequest, QueryLogsResponse};
 pub use types::{LogBlockHeader, LogEntry, RawLogEntry};
