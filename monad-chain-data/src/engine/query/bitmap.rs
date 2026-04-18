@@ -18,16 +18,16 @@ use roaring::RoaringBitmap;
 use crate::{
     engine::{
         bitmap::{decode_bitmap_blob, page_start_local, LOCAL_ID_BITS, STREAM_PAGE_LOCAL_ID_SPAN},
+        clause::IndexedClause,
         tables::FamilyTables,
     },
     error::{MonadChainDataError, Result},
-    logs::IndexedLogClause,
     store::{BlobStore, MetaStore},
 };
 
 pub(crate) async fn load_clause_bitmap_for_shard<M: MetaStore, B: BlobStore>(
     logs: &FamilyTables<M, B>,
-    clause: &IndexedLogClause,
+    clause: &IndexedClause,
     shard: u64,
     local_from: u32,
     local_to: u32,

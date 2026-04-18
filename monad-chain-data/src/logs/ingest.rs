@@ -13,11 +13,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use alloy_primitives::B256;
+
 use super::{LogBlockHeader, RawLogEntry};
 use crate::{
-    engine::bitmap::{
-        encode_grouped_bitmap_fragments, stream_entries_for_log, BitmapFragmentWrite,
-    },
+    engine::bitmap::{encode_grouped_bitmap_fragments, sharded_stream_id, BitmapFragmentWrite},
     error::{MonadChainDataError, Result},
     family::FinalizedBlock,
     primitives::state::{BlockRecord, FamilyWindowRecord, LogId},
@@ -125,4 +125,24 @@ impl LogIngestPlan {
 
         encode_grouped_bitmap_fragments(stream_values)
     }
+}
+
+/// Expands one log into the indexed stream entries written at ingest time.
+fn stream_entries_for_log(
+    address: &[u8],
+    topics: &[B256],
+    global_log_id: LogId,
+) -> Vec<(String, u32)> {
+    let shard = global_log_id.shard();
+    let local = global_log_id.local();
+
+    let mut entries = Vec::with_capacity(5);
+    entries.push((sharded_stream_id("addr", address, shard), local));
+
+    let topic_kinds = ["topic0", "topic1", "topic2", "topic3"];
+    for (topic, kind) in topics.iter().zip(topic_kinds) {
+        entries.push((sharded_stream_id(kind, topic.as_slice(), shard), local));
+    }
+
+    entries
 }

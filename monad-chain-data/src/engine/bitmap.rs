@@ -20,7 +20,7 @@ use roaring::RoaringBitmap;
 
 use crate::{
     error::{MonadChainDataError, Result},
-    primitives::state::{LogId, PrimaryId},
+    primitives::state::PrimaryId,
     store::{KvTable, MetaStore, ScannableKvTable, ScannableTableId},
 };
 
@@ -365,26 +365,6 @@ pub(crate) fn stream_page_global_start(stream_id: &str, page_start_local: u32) -
 
 pub(crate) fn local_page_start(global_page_start: u64) -> u32 {
     (global_page_start % (1u64 << PrimaryId::LOCAL_ID_BITS)) as u32
-}
-
-/// Expands one log into the indexed stream entries written at ingest time.
-pub fn stream_entries_for_log(
-    address: &[u8],
-    topics: &[alloy_primitives::B256],
-    global_log_id: LogId,
-) -> Vec<(String, u32)> {
-    let shard = global_log_id.shard();
-    let local = global_log_id.local();
-
-    let mut entries = Vec::with_capacity(5);
-    entries.push((sharded_stream_id("addr", address, shard), local));
-
-    let topic_kinds = ["topic0", "topic1", "topic2", "topic3"];
-    for (topic, kind) in topics.iter().zip(topic_kinds) {
-        entries.push((sharded_stream_id(kind, topic.as_slice(), shard), local));
-    }
-
-    entries
 }
 
 fn compacted_bitmap_blob(

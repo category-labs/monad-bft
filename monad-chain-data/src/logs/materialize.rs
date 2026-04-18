@@ -16,11 +16,12 @@
 use std::collections::HashSet;
 
 use alloy_primitives::{Address, Bytes, B256};
+use bytes::Bytes as RawBytes;
 
 use super::{LogBlockHeader, LogEntry, RawLogEntry};
 use crate::{
     blocks::Block,
-    engine::{bitmap::sharded_stream_id, tables::Tables},
+    engine::{clause::IndexedClause, tables::Tables},
     error::{MonadChainDataError, Result},
     family::Hash32,
     primitives::{
@@ -47,12 +48,6 @@ pub struct LogsRelations {
     /// headers (sorted ascending by number) for the blocks that
     /// contributed logs in this page.
     pub blocks: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum IndexedLogClause {
-    Address(Vec<Address>),
-    Topic { position: usize, values: Vec<B256> },
 }
 
 /// Public log query in queryX spec semantics: `from_block`/`to_block` are
@@ -82,20 +77,29 @@ impl LogFilter {
         self.address.is_some() || self.topics.iter().any(Option::is_some)
     }
 
-    pub(crate) fn indexed_clauses(&self) -> Vec<IndexedLogClause> {
+    pub(crate) fn indexed_clauses(&self) -> Vec<IndexedClause> {
+        const TOPIC_KINDS: [&str; 4] = ["topic0", "topic1", "topic2", "topic3"];
+
         let mut clauses = Vec::new();
 
         if let Some(addresses) = &self.address {
-            clauses.push(IndexedLogClause::Address(
-                addresses.iter().copied().collect(),
-            ));
+            clauses.push(IndexedClause {
+                kind: "addr",
+                values: addresses
+                    .iter()
+                    .map(|a| RawBytes::copy_from_slice(a.as_slice()))
+                    .collect(),
+            });
         }
 
         for (position, topics) in self.topics.iter().enumerate() {
             if let Some(values) = topics {
-                clauses.push(IndexedLogClause::Topic {
-                    position,
-                    values: values.iter().copied().collect(),
+                clauses.push(IndexedClause {
+                    kind: TOPIC_KINDS[position],
+                    values: values
+                        .iter()
+                        .map(|t| RawBytes::copy_from_slice(t.as_slice()))
+                        .collect(),
                 });
             }
         }
@@ -120,31 +124,6 @@ impl LogFilter {
         }
 
         true
-    }
-}
-
-impl IndexedLogClause {
-    pub(crate) fn stream_ids_for_shard(&self, shard: u64) -> Vec<String> {
-        match self {
-            Self::Address(addresses) => addresses
-                .iter()
-                .map(|address| sharded_stream_id("addr", address.as_slice(), shard))
-                .collect(),
-            Self::Topic { position, values } => {
-                let index_kind = match position {
-                    0 => "topic0",
-                    1 => "topic1",
-                    2 => "topic2",
-                    3 => "topic3",
-                    _ => return Vec::new(),
-                };
-
-                values
-                    .iter()
-                    .map(|topic| sharded_stream_id(index_kind, topic.as_slice(), shard))
-                    .collect()
-            }
-        }
     }
 }
 

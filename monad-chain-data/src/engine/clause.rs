@@ -13,15 +13,24 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-mod indexed_query;
-mod ingest;
-mod materialize;
-mod scan_query;
-mod types;
+use bytes::Bytes;
 
-pub(crate) use indexed_query::execute_indexed_log_query;
-pub use ingest::LogIngestPlan;
-pub(crate) use materialize::LogMaterializer;
-pub use materialize::{LogFilter, LogsRelations, QueryLogsRequest, QueryLogsResponse};
-pub(crate) use scan_query::execute_block_scan_query;
-pub use types::{LogBlockHeader, LogEntry, RawLogEntry};
+use crate::engine::bitmap::sharded_stream_id;
+
+/// One AND-term of an indexed query. `kind` names the indexed field
+/// (e.g. `"addr"`, `"topic0"`, `"from"`); `values` are the accepted
+/// byte values for that field, combined with OR semantics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexedClause {
+    pub kind: &'static str,
+    pub values: Vec<Bytes>,
+}
+
+impl IndexedClause {
+    pub fn stream_ids_for_shard(&self, shard: u64) -> Vec<String> {
+        self.values
+            .iter()
+            .map(|value| sharded_stream_id(self.kind, value, shard))
+            .collect()
+    }
+}

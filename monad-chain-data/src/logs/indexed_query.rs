@@ -122,7 +122,7 @@ pub(crate) async fn execute_indexed_log_query<M: MetaStore, B: BlobStore>(
 
 async fn load_candidate_bitmap_for_shard<M: MetaStore, B: BlobStore>(
     tables: &Tables<M, B>,
-    clauses: &[crate::logs::IndexedLogClause],
+    clauses: &[crate::engine::clause::IndexedClause],
     shard: u64,
     local_from: u32,
     local_to: u32,
