@@ -115,6 +115,9 @@ impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
         )
         .await?;
         blocks
+            .store_hash_index(&block.block_hash(), block.block_number())
+            .await?;
+        blocks
             .store_record(block.block_number(), &block_record)
             .await?;
         self.tables
