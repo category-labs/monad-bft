@@ -17,8 +17,8 @@ use std::collections::HashSet;
 
 use monad_chain_data::{
     Address, Bytes, FinalizedBlock, InMemoryBlobStore, InMemoryMetaStore, Log, LogData, LogFilter,
-    LogId, LogsRelations, MonadChainDataError, MonadChainDataService, QueryEnvelope, QueryLimits,
-    QueryLogsRequest, QueryOrder, B256,
+    LogsRelations, MonadChainDataError, MonadChainDataService, PrimaryId, QueryEnvelope,
+    QueryLimits, QueryLogsRequest, QueryOrder, B256,
 };
 
 mod common;
@@ -250,11 +250,11 @@ async fn ingest_assigns_contiguous_log_id_windows_across_empty_blocks() {
         .expect("load block 3")
         .expect("block 3 record");
 
-    assert_eq!(block_1.logs.first_log_id, LogId::new(0));
+    assert_eq!(block_1.logs.first_primary_id, PrimaryId::new(0));
     assert_eq!(block_1.logs.count, 2);
-    assert_eq!(block_2.logs.first_log_id, LogId::new(2));
+    assert_eq!(block_2.logs.first_primary_id, PrimaryId::new(2));
     assert_eq!(block_2.logs.count, 0);
-    assert_eq!(block_3.logs.first_log_id, LogId::new(2));
+    assert_eq!(block_3.logs.first_primary_id, PrimaryId::new(2));
     assert_eq!(block_3.logs.count, 1);
 }
 

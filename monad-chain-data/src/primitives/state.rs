@@ -115,21 +115,13 @@ impl From<LogId> for PrimaryId {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 pub struct FamilyWindowRecord {
-    pub first_log_id: LogId,
+    pub first_primary_id: PrimaryId,
     pub count: u32,
 }
 
 impl FamilyWindowRecord {
-    pub fn next_log_id(self) -> Result<LogId> {
-        self.first_log_id.checked_add(u64::from(self.count))
-    }
-
-    pub fn first_primary_id(self) -> PrimaryId {
-        self.first_log_id.into()
-    }
-
     pub fn next_primary_id_exclusive(self) -> Result<PrimaryId> {
-        self.first_primary_id().checked_add(u64::from(self.count))
+        self.first_primary_id.checked_add(u64::from(self.count))
     }
 }
 

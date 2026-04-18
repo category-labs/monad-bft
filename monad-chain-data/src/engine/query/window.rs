@@ -128,7 +128,7 @@ async fn end_primary_id_exclusive_in_range<M: MetaStore>(
 }
 
 fn non_empty_window_start(window: FamilyWindowRecord) -> Option<PrimaryId> {
-    (window.count > 0).then(|| window.first_primary_id())
+    (window.count > 0).then_some(window.first_primary_id)
 }
 
 fn non_empty_window_end(window: FamilyWindowRecord) -> Result<Option<PrimaryId>> {

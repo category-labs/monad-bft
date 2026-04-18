@@ -72,7 +72,7 @@ impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
         let current_head = self.tables.publication().load_published_head().await?;
         let previous_record = blocks.validate_continuity(&block, current_head).await?;
         let next_log_id = match previous_record {
-            Some(previous) => previous.logs.next_log_id()?,
+            Some(previous) => LogId::from(previous.logs.next_primary_id_exclusive()?),
             None => LogId::ZERO,
         };
 
@@ -83,7 +83,7 @@ impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
             bitmap_fragments,
             written_logs,
         } = LogIngestPlan::build(&block, next_log_id)?;
-        let next_log_id_exclusive = block_record.logs.next_log_id()?;
+        let next_log_id_exclusive = block_record.logs.next_primary_id_exclusive()?;
         blocks
             .store_header(block.block_number(), &block.header)
             .await?;
@@ -94,7 +94,7 @@ impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
         logs.dir()
             .persist_block_fragment(
                 block.block_number(),
-                block_record.logs.first_log_id.as_u64(),
+                block_record.logs.first_primary_id.as_u64(),
                 block_record.logs.count,
             )
             .await?;
