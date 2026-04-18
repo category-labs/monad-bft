@@ -20,14 +20,14 @@ use crate::{
         clause::IndexedFilter,
         family::Family,
         query::{
-            bitmap::load_intersection_bitmap_for_shard, directory_resolver::LogIdResolver,
+            bitmap::load_intersection_bitmap_for_shard, directory_resolver::PrimaryIdResolver,
             window::resolve_primary_id_window,
         },
         tables::Tables,
     },
     error::{MonadChainDataError, Result},
     logs::{LogMaterializer, QueryLogsRequest, QueryLogsResponse},
-    primitives::{page::QueryOrder, range::ResolvedBlockWindow, refs::BlockSpan, state::LogId},
+    primitives::{page::QueryOrder, range::ResolvedBlockWindow, refs::BlockSpan, state::PrimaryId},
     store::{BlobStore, MetaStore},
 };
 
@@ -60,7 +60,7 @@ pub(crate) async fn execute_indexed_log_query<M: MetaStore, B: BlobStore>(
     }
 
     let materializer = LogMaterializer::new(tables);
-    let mut resolver = LogIdResolver::new(tables);
+    let mut resolver = PrimaryIdResolver::new(tables.logs());
     let mut logs = Vec::new();
     let mut stop_after_block = None;
 
@@ -81,7 +81,7 @@ pub(crate) async fn execute_indexed_log_query<M: MetaStore, B: BlobStore>(
 
         let locals = locals_in_query_order(candidate_bitmap, request.envelope.order);
         for local in locals {
-            let id = LogId::from_parts(shard, local);
+            let id = PrimaryId::from_parts(shard, local);
             let Some(location) = resolver.resolve(id).await? else {
                 continue;
             };
@@ -102,13 +102,13 @@ pub(crate) async fn execute_indexed_log_query<M: MetaStore, B: BlobStore>(
             }
 
             let log = materializer
-                .load_log_at(location.block_number, location.log_block_idx)
+                .load_log_at(location.block_number, location.idx_in_block)
                 .await?;
             debug_assert!(
                 request.filter.matches(&log),
                 "indexed candidate at block {} idx {} should match filter",
                 location.block_number,
-                location.log_block_idx,
+                location.idx_in_block,
             );
 
             logs.push(log);

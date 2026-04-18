@@ -58,12 +58,13 @@ impl PrimaryId {
         Self((shard << Self::LOCAL_ID_BITS) | (local as u64))
     }
 
-    pub fn idx_in_block(self, first: LogId) -> Result<usize> {
+    pub fn idx_in_block(self, first: PrimaryId) -> Result<usize> {
         let delta = self
             .0
-            .checked_sub(first.as_u64())
-            .ok_or(MonadChainDataError::Decode("log id below block start"))?;
-        usize::try_from(delta).map_err(|_| MonadChainDataError::Decode("log block index overflow"))
+            .checked_sub(first.0)
+            .ok_or(MonadChainDataError::Decode("primary id below block start"))?;
+        usize::try_from(delta)
+            .map_err(|_| MonadChainDataError::Decode("primary block index overflow"))
     }
 }
 
@@ -97,10 +98,6 @@ impl LogId {
 
     pub const fn from_parts(shard: u64, local: u32) -> Self {
         Self(PrimaryId::from_parts(shard, local))
-    }
-
-    pub fn idx_in_block(self, first: LogId) -> Result<usize> {
-        self.0.idx_in_block(first)
     }
 }
 
