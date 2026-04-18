@@ -17,7 +17,7 @@ use bytes::Bytes;
 
 use crate::{
     blocks::{execute_query_blocks, load_blocks_for_logs, QueryBlocksRequest, QueryBlocksResponse},
-    engine::tables::Tables,
+    engine::{family::Family, tables::Tables},
     error::{MonadChainDataError, Result},
     family::FinalizedBlock,
     logs::{
@@ -68,7 +68,7 @@ impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
     /// Persists one finalized block and advances the published head on success.
     pub async fn ingest_block(&self, block: FinalizedBlock) -> Result<IngestOutcome> {
         let blocks = self.tables.blocks();
-        let logs = self.tables.logs();
+        let logs = self.tables.family(Family::Log);
         let current_head = self.tables.publication().load_published_head().await?;
         let previous_record = blocks.validate_continuity(&block, current_head).await?;
         let next_log_id = match previous_record {

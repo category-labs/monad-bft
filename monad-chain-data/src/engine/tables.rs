@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::collections::BTreeMap;
+
 use alloy_rlp::Decodable;
 use bytes::Bytes;
 
@@ -34,15 +36,20 @@ use crate::{
 pub struct Tables<M: MetaStore, B: BlobStore> {
     publication: PublicationTables<M>,
     blocks: BlockTables<M>,
-    logs: FamilyTables<M, B>,
+    families: BTreeMap<Family, FamilyTables<M, B>>,
 }
 
 impl<M: MetaStore, B: BlobStore> Tables<M, B> {
     pub fn new(meta_store: M, blob_store: B) -> Self {
+        let mut families = BTreeMap::new();
+        families.insert(
+            Family::Log,
+            FamilyTables::new(meta_store.clone(), blob_store, Family::Log),
+        );
         Self {
             publication: PublicationTables::new(meta_store.clone()),
-            blocks: BlockTables::new(meta_store.clone()),
-            logs: FamilyTables::new(meta_store, blob_store, Family::Log),
+            blocks: BlockTables::new(meta_store),
+            families,
         }
     }
 
@@ -54,8 +61,13 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
         &self.blocks
     }
 
-    pub fn logs(&self) -> &FamilyTables<M, B> {
-        &self.logs
+    /// Returns the table set for a family. Panics if the family was not
+    /// registered at construction; the `Family` enum is closed, so missing
+    /// a variant here is a programmer error, not a data error.
+    pub fn family(&self, family: Family) -> &FamilyTables<M, B> {
+        self.families
+            .get(&family)
+            .expect("family registered at construction")
     }
 }
 

@@ -15,7 +15,7 @@
 
 use monad_chain_data::{
     engine::bitmap::{decode_bitmap_blob, sharded_stream_id, STREAM_PAGE_LOCAL_ID_SPAN},
-    Address, Bytes, FinalizedBlock, InMemoryBlobStore, InMemoryMetaStore, Log, LogData,
+    Address, Bytes, Family, FinalizedBlock, InMemoryBlobStore, InMemoryMetaStore, Log, LogData,
     MonadChainDataService, QueryLimits, Topic, B256,
 };
 
@@ -48,7 +48,7 @@ async fn ingest_persists_log_bitmap_fragments_for_address_and_topics() {
     let addr_stream = sharded_stream_id("addr", Address::repeat_byte(7).as_slice(), 0);
     let addr_fragments = service
         .tables()
-        .logs()
+        .family(Family::Log)
         .load_bitmap_fragments(&addr_stream, 0)
         .await
         .expect("load address fragments");
@@ -63,7 +63,7 @@ async fn ingest_persists_log_bitmap_fragments_for_address_and_topics() {
     let topic0_stream = sharded_stream_id("topic0", B256::repeat_byte(9).as_slice(), 0);
     let topic0_fragments = service
         .tables()
-        .logs()
+        .family(Family::Log)
         .load_bitmap_fragments(&topic0_stream, 0)
         .await
         .expect("load topic0 fragments");
@@ -75,7 +75,7 @@ async fn ingest_persists_log_bitmap_fragments_for_address_and_topics() {
     let topic1_stream = sharded_stream_id("topic1", B256::repeat_byte(10).as_slice(), 0);
     let topic1_fragments = service
         .tables()
-        .logs()
+        .family(Family::Log)
         .load_bitmap_fragments(&topic1_stream, 0)
         .await
         .expect("load topic1 fragments");
@@ -123,13 +123,13 @@ async fn ingest_persists_log_bitmap_fragments_across_page_boundaries() {
     let target_stream = sharded_stream_id("addr", Address::repeat_byte(7).as_slice(), 0);
     let first_page = service
         .tables()
-        .logs()
+        .family(Family::Log)
         .load_bitmap_fragments(&target_stream, 0)
         .await
         .expect("load first page");
     let second_page = service
         .tables()
-        .logs()
+        .family(Family::Log)
         .load_bitmap_fragments(&target_stream, STREAM_PAGE_LOCAL_ID_SPAN)
         .await
         .expect("load second page");
@@ -173,7 +173,7 @@ async fn ingest_empty_block_writes_no_log_bitmap_fragments() {
     let addr_stream = sharded_stream_id("addr", Address::repeat_byte(7).as_slice(), 0);
     let fragments = service
         .tables()
-        .logs()
+        .family(Family::Log)
         .load_bitmap_fragments(&addr_stream, 0)
         .await
         .expect("load fragments");

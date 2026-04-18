@@ -23,6 +23,7 @@ use crate::{
     blocks::Block,
     engine::{
         clause::{IndexedClause, IndexedFilter},
+        family::Family,
         tables::Tables,
     },
     error::{MonadChainDataError, Result},
@@ -167,7 +168,7 @@ impl<'a, M: MetaStore, B: BlobStore> LogMaterializer<'a, M, B> {
             .ok_or(MonadChainDataError::MissingData("missing block record"))?;
         let header_bytes = self
             .tables
-            .logs()
+            .family(Family::Log)
             .load_block_header(block_number)
             .await?
             .ok_or(MonadChainDataError::MissingData("missing block log header"))?;
@@ -181,7 +182,7 @@ impl<'a, M: MetaStore, B: BlobStore> LogMaterializer<'a, M, B> {
 
         let bytes = self
             .tables
-            .logs()
+            .family(Family::Log)
             .read_block_blob_range(block_number, start, end)
             .await?
             .ok_or(MonadChainDataError::MissingData("missing block log blob"))?;
@@ -206,14 +207,14 @@ impl<'a, M: MetaStore, B: BlobStore> LogMaterializer<'a, M, B> {
 
         let header_bytes = self
             .tables
-            .logs()
+            .family(Family::Log)
             .load_block_header(block_number)
             .await?
             .ok_or(MonadChainDataError::MissingData("missing block log header"))?;
         let header = LogBlockHeader::decode(&header_bytes)?;
         let blob = self
             .tables
-            .logs()
+            .family(Family::Log)
             .load_block_blob(block_number)
             .await?
             .ok_or(MonadChainDataError::MissingData("missing block log blob"))?;

@@ -57,7 +57,7 @@ pub(crate) async fn execute_indexed_log_query<M: MetaStore, B: BlobStore>(
     }
 
     let materializer = LogMaterializer::new(tables);
-    let mut resolver = PrimaryIdResolver::new(tables.logs());
+    let mut resolver = PrimaryIdResolver::new(tables.family(Family::Log));
     let mut logs = Vec::new();
     let mut stop_after_block = None;
 
@@ -65,7 +65,7 @@ pub(crate) async fn execute_indexed_log_query<M: MetaStore, B: BlobStore>(
         let (local_from, local_to) = window.local_range_for_shard(shard);
 
         let Some(candidate_bitmap) = tables
-            .logs()
+            .family(Family::Log)
             .load_intersection_bitmap(&clauses, shard, local_from, local_to)
             .await?
         else {

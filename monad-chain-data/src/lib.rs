@@ -25,7 +25,7 @@ pub mod store;
 pub use alloy_primitives::{Address, Bytes, Log, LogData, B256};
 pub use api::{IngestOutcome, MonadChainDataService};
 pub use blocks::{Block, QueryBlocksRequest, QueryBlocksResponse};
-pub use engine::tables::Tables;
+pub use engine::{family::Family, tables::Tables};
 pub use error::MonadChainDataError;
 pub use family::{FinalizedBlock, Hash32};
 pub use logs::{LogEntry, LogFilter, LogsRelations, QueryLogsRequest, QueryLogsResponse};
