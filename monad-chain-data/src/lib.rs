@@ -34,6 +34,7 @@ pub use primitives::{
     page::{QueryOrder, DEFAULT_QUERY_LIMIT},
     refs::BlockRef,
     state::{BlockRecord, FamilyWindowRecord, LogId},
+    EvmBlockHeader,
 };
 pub use store::{InMemoryBlobStore, InMemoryMetaStore};
 

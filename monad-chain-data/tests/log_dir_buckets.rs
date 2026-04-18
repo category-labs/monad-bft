@@ -19,6 +19,10 @@ use monad_chain_data::{
     MonadChainDataService, QueryLimits, B256,
 };
 
+mod common;
+
+use common::{chain_header, test_header};
+
 #[tokio::test(flavor = "current_thread")]
 async fn ingest_compacts_a_sealed_directory_bucket_when_crossing_the_boundary() {
     let service = MonadChainDataService::new(
@@ -27,11 +31,12 @@ async fn ingest_compacts_a_sealed_directory_bucket_when_crossing_the_boundary() 
         QueryLimits::UNLIMITED,
     );
 
+    let h1 = test_header(1, B256::ZERO);
+    let h2 = chain_header(2, &h1);
+
     service
         .ingest_block(FinalizedBlock {
-            block_number: 1,
-            block_hash: B256::repeat_byte(1),
-            parent_hash: B256::ZERO,
+            header: h1,
             logs_by_tx: vec![repeated_logs(
                 usize::try_from(DIRECTORY_BUCKET_SIZE - 2).expect("bucket size fits usize"),
             )],
@@ -41,9 +46,7 @@ async fn ingest_compacts_a_sealed_directory_bucket_when_crossing_the_boundary() 
 
     service
         .ingest_block(FinalizedBlock {
-            block_number: 2,
-            block_hash: B256::repeat_byte(2),
-            parent_hash: B256::repeat_byte(1),
+            header: h2,
             logs_by_tx: vec![repeated_logs(4)],
         })
         .await

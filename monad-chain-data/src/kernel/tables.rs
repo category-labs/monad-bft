@@ -13,17 +13,21 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use alloy_rlp::Decodable;
 use bytes::Bytes;
 
 use crate::{
-    error::Result,
+    error::{MonadChainDataError, Result},
     family::FinalizedBlock,
     kernel::{
         bitmap::{BitmapFragmentWrite, BitmapPageMeta, BitmapTables},
         primary_dir::{PrimaryDirBucket, PrimaryDirFragment, PrimaryDirTables},
     },
     logs::LogBlockHeader,
-    primitives::state::{BlockRecord, PublicationState},
+    primitives::{
+        state::{BlockRecord, PublicationState},
+        EvmBlockHeader,
+    },
     store::{BlobStore, BlobTable, BlobTableId, KvTable, MetaStore, ScannableTableId, TableId},
 };
 
@@ -97,14 +101,17 @@ impl<M: MetaStore> PublicationTables<M> {
 
 pub struct BlockTables<M: MetaStore> {
     block_records: KvTable<M>,
+    block_headers: KvTable<M>,
 }
 
 impl<M: MetaStore> BlockTables<M> {
     pub const BLOCK_RECORD_TABLE: TableId = TableId::new("block_record");
+    pub const BLOCK_HEADER_TABLE: TableId = TableId::new("block_header");
 
     fn new(meta_store: M) -> Self {
         Self {
             block_records: meta_store.table(Self::BLOCK_RECORD_TABLE),
+            block_headers: meta_store.table(Self::BLOCK_HEADER_TABLE),
         }
     }
 
@@ -124,6 +131,24 @@ impl<M: MetaStore> BlockTables<M> {
         Ok(())
     }
 
+    pub async fn load_header(&self, block_number: u64) -> Result<Option<EvmBlockHeader>> {
+        let key = block_number_key(block_number);
+        let Some(record) = self.block_headers.get(&key).await? else {
+            return Ok(None);
+        };
+        let header = EvmBlockHeader::decode(&mut record.value.as_ref())
+            .map_err(|_| MonadChainDataError::Decode("invalid block header rlp"))?;
+        Ok(Some(header))
+    }
+
+    pub async fn store_header(&self, block_number: u64, header: &EvmBlockHeader) -> Result<()> {
+        let key = block_number_key(block_number);
+        self.block_headers
+            .put(&key, Bytes::from(alloy_rlp::encode(header)))
+            .await?;
+        Ok(())
+    }
+
     /// Validates that a new block extends the currently published chain.
     pub async fn validate_continuity(
         &self,
@@ -132,7 +157,7 @@ impl<M: MetaStore> BlockTables<M> {
     ) -> Result<Option<BlockRecord>> {
         match current_head {
             None => {
-                if block.block_number != 1 {
+                if block.block_number() != 1 {
                     return Err(crate::error::MonadChainDataError::InvalidRequest(
                         "first ingested block must be block 1 in the first pass",
                     ));
@@ -140,7 +165,7 @@ impl<M: MetaStore> BlockTables<M> {
                 Ok(None)
             }
             Some(head) => {
-                if block.block_number != head + 1 {
+                if block.block_number() != head + 1 {
                     return Err(crate::error::MonadChainDataError::InvalidRequest(
                         "block_number must extend the published head contiguously",
                     ));
@@ -149,7 +174,7 @@ impl<M: MetaStore> BlockTables<M> {
                 let previous = self.load_record(head).await?.ok_or(
                     crate::error::MonadChainDataError::MissingData("missing previous block record"),
                 )?;
-                if previous.block_hash != block.parent_hash {
+                if previous.block_hash != block.parent_hash() {
                     return Err(crate::error::MonadChainDataError::InvalidRequest(
                         "parent_hash must match the previous published block",
                     ));
