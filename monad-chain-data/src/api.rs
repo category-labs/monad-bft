@@ -33,8 +33,8 @@ use crate::{
     },
     store::{BlobStore, MetaStore},
     txs::{
-        execute_block_scan_tx_query, execute_indexed_tx_query, QueryTransactionsRequest,
-        QueryTransactionsResponse, TxIngestPlan,
+        execute_block_scan_tx_query, execute_indexed_tx_query, load_txs_by_positions,
+        QueryTransactionsRequest, QueryTransactionsResponse, TxIngestPlan,
     },
 };
 
@@ -184,6 +184,16 @@ impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
                 load_blocks_by_numbers(
                     self.tables.blocks(),
                     response.logs.iter().map(|l| l.block_number),
+                )
+                .await?,
+            );
+        }
+
+        if request.relations.transactions {
+            response.transactions = Some(
+                load_txs_by_positions(
+                    &self.tables,
+                    response.logs.iter().map(|l| (l.block_number, l.tx_index)),
                 )
                 .await?,
             );

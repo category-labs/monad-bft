@@ -81,7 +81,10 @@ async fn include_blocks_true_returns_deduped_headers_for_matched_blocks() {
                 address: Some(HashSet::from([matching])),
                 topics: [None, None, None, None],
             },
-            relations: LogsRelations { blocks: true },
+            relations: LogsRelations {
+                blocks: true,
+                transactions: false,
+            },
         })
         .await
         .expect("query");
@@ -109,7 +112,10 @@ async fn descending_query_still_returns_blocks_ascending() {
                 limit: 100,
             },
             filter: LogFilter::default(),
-            relations: LogsRelations { blocks: true },
+            relations: LogsRelations {
+                blocks: true,
+                transactions: false,
+            },
         })
         .await
         .expect("query");
@@ -135,7 +141,10 @@ async fn include_blocks_empty_result_returns_empty_blocks() {
                 address: Some(HashSet::from([Address::repeat_byte(0xEE)])),
                 topics: [None, None, None, None],
             },
-            relations: LogsRelations { blocks: true },
+            relations: LogsRelations {
+                blocks: true,
+                transactions: false,
+            },
         })
         .await
         .expect("query");

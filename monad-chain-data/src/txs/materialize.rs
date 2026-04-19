@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 
 use alloy_consensus::Transaction;
 use alloy_primitives::{Address, Bytes};
@@ -277,6 +277,29 @@ fn load_filtered_block_txs(
     }
 
     Ok(txs)
+}
+
+/// Loads txs for the given `(block_number, tx_index)` pairs in ascending
+/// order, deduped. Used to fulfill the `transactions` relation on logs
+/// queries.
+pub(crate) async fn load_txs_by_positions<M: MetaStore, B: BlobStore, I>(
+    tables: &Tables<M, B>,
+    positions: I,
+) -> Result<Vec<TxEntry>>
+where
+    I: IntoIterator<Item = (u64, u32)>,
+{
+    let distinct: BTreeSet<(u64, u32)> = positions.into_iter().collect();
+    let materializer = TxMaterializer::new(tables);
+    let mut out = Vec::with_capacity(distinct.len());
+    for (block_number, tx_idx) in distinct {
+        out.push(
+            materializer
+                .load_record_at(block_number, tx_idx as usize)
+                .await?,
+        );
+    }
+    Ok(out)
 }
 
 pub(crate) fn decode_tx_at(

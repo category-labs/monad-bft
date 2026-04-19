@@ -21,7 +21,7 @@ mod types;
 
 pub(crate) use indexed_query::execute_indexed_tx_query;
 pub use ingest::TxIngestPlan;
-pub(crate) use materialize::TxMaterializer;
+pub(crate) use materialize::{load_txs_by_positions, TxMaterializer};
 pub use materialize::{
     QueryTransactionsRequest, QueryTransactionsResponse, TxFilter, TxsRelations,
 };
