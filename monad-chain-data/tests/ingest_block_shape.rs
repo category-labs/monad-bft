@@ -20,7 +20,7 @@ use monad_chain_data::{
 
 mod common;
 
-use common::test_header;
+use common::{minimal_ingest_tx, test_header};
 
 #[tokio::test(flavor = "current_thread")]
 async fn ingest_rejects_mismatched_txs_and_logs_by_tx_lengths() {
@@ -57,7 +57,7 @@ async fn ingest_accepts_matching_txs_and_logs_by_tx_lengths() {
         .ingest_block(FinalizedBlock {
             header: test_header(1, B256::ZERO),
             logs_by_tx: vec![vec![], vec![]],
-            txs: vec![IngestTx::default(), IngestTx::default()],
+            txs: vec![minimal_ingest_tx(), minimal_ingest_tx()],
         })
         .await
         .expect("matching lengths should ingest");

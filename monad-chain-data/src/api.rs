@@ -27,9 +27,10 @@ use crate::{
     primitives::{
         limits::QueryLimits,
         range::ResolvedBlockWindow,
-        state::{BlockRecord, LogId},
+        state::{BlockRecord, LogId, TxId},
     },
     store::{BlobStore, MetaStore},
+    txs::TxIngestPlan,
 };
 
 pub struct MonadChainDataService<M: MetaStore, B: BlobStore> {
@@ -42,6 +43,7 @@ pub struct IngestOutcome {
     pub indexed_finalized_head: u64,
     pub block_record: BlockRecord,
     pub written_logs: usize,
+    pub written_txs: usize,
 }
 
 impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
@@ -69,25 +71,48 @@ impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
     pub async fn ingest_block(&self, block: FinalizedBlock) -> Result<IngestOutcome> {
         let blocks = self.tables.blocks();
         let logs = self.tables.family(Family::Log);
+        let txs = self.tables.family(Family::Tx);
         let current_head = self.tables.publication().load_published_head().await?;
         let previous_record = blocks.validate_continuity(&block, current_head).await?;
+        // Lenient: log-only fixtures pass `txs: vec![]` alongside non-empty
+        // `logs_by_tx`. When callers do provide txs, the count must line up
+        // with the per-tx log grouping.
         if !block.txs.is_empty() && block.txs.len() != block.logs_by_tx.len() {
             return Err(MonadChainDataError::InvalidRequest(
                 "txs and logs_by_tx lengths must match when txs are provided",
             ));
         }
-        let next_log_id = match previous_record {
-            Some(previous) => LogId::from(previous.logs.next_primary_id_exclusive()?),
-            None => LogId::ZERO,
+        let (next_log_id, next_tx_id) = match previous_record {
+            Some(previous) => (
+                LogId::from(previous.logs.next_primary_id_exclusive()?),
+                TxId::from(previous.txs.next_primary_id_exclusive()?),
+            ),
+            None => (LogId::ZERO, TxId::ZERO),
         };
 
         let LogIngestPlan {
-            block_record,
+            log_window,
             block_log_header,
             block_log_blob,
-            bitmap_fragments,
+            bitmap_fragments: log_bitmap_fragments,
             written_logs,
         } = LogIngestPlan::build(&block, next_log_id)?;
+        let TxIngestPlan {
+            tx_window,
+            block_tx_header,
+            block_tx_blob,
+            bitmap_fragments: tx_bitmap_fragments,
+            written_txs,
+        } = TxIngestPlan::build(&block, next_tx_id)?;
+
+        let block_record = BlockRecord {
+            block_number: block.block_number(),
+            block_hash: block.block_hash(),
+            parent_hash: block.parent_hash(),
+            logs: log_window,
+            txs: tx_window,
+        };
+
         blocks
             .store_header(block.block_number(), &block.header)
             .await?;
@@ -95,8 +120,16 @@ impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
             block.block_number(),
             block_log_blob,
             Bytes::from(block_log_header.encode()),
-            block_record.logs,
-            &bitmap_fragments,
+            log_window,
+            &log_bitmap_fragments,
+        )
+        .await?;
+        txs.persist_indexed_family_ingest(
+            block.block_number(),
+            block_tx_blob,
+            Bytes::from(block_tx_header.encode()),
+            tx_window,
+            &tx_bitmap_fragments,
         )
         .await?;
         blocks
@@ -116,6 +149,7 @@ impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
             indexed_finalized_head: block.block_number(),
             block_record,
             written_logs,
+            written_txs,
         })
     }
 

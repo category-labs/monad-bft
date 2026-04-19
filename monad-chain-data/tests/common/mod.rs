@@ -15,7 +15,7 @@
 
 #![allow(dead_code)]
 
-use monad_chain_data::{EvmBlockHeader, B256};
+use monad_chain_data::{EvmBlockHeader, IngestTx, B256};
 
 pub fn test_header(number: u64, parent_hash: B256) -> EvmBlockHeader {
     EvmBlockHeader {
@@ -27,4 +27,33 @@ pub fn test_header(number: u64, parent_hash: B256) -> EvmBlockHeader {
 
 pub fn chain_header(number: u64, parent: &EvmBlockHeader) -> EvmBlockHeader {
     test_header(number, parent.hash_slow())
+}
+
+/// Valid, minimal EIP-2718-encoded signed tx envelope (legacy, contract
+/// creation, empty calldata). Tests use it when they need `TxIngestPlan`
+/// to decode the envelope successfully but don't care about the contents.
+pub fn minimal_ingest_tx() -> IngestTx {
+    use alloy_consensus::{SignableTransaction, TxEnvelope, TxLegacy};
+    use alloy_eips::eip2718::Encodable2718;
+    use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
+
+    let signed = TxLegacy {
+        chain_id: Some(1),
+        nonce: 0,
+        gas_price: 0,
+        gas_limit: 21_000,
+        to: TxKind::Create,
+        value: U256::ZERO,
+        input: Bytes::new(),
+    }
+    .into_signed(Signature::test_signature());
+
+    let mut signed_tx_bytes = Vec::new();
+    TxEnvelope::Legacy(signed).encode_2718(&mut signed_tx_bytes);
+
+    IngestTx {
+        tx_hash: B256::ZERO,
+        sender: Address::ZERO,
+        signed_tx_bytes: signed_tx_bytes.into(),
+    }
 }

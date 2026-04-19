@@ -20,12 +20,12 @@ use crate::{
     engine::bitmap::{encode_grouped_bitmap_fragments, sharded_stream_id, BitmapFragmentWrite},
     error::{MonadChainDataError, Result},
     family::FinalizedBlock,
-    primitives::state::{BlockRecord, FamilyWindowRecord, LogId, PrimaryId},
+    primitives::state::{FamilyWindowRecord, LogId},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogIngestPlan {
-    pub block_record: BlockRecord,
+    pub log_window: FamilyWindowRecord,
     pub block_log_header: LogBlockHeader,
     pub block_log_blob: Vec<u8>,
     pub bitmap_fragments: Vec<BitmapFragmentWrite>,
@@ -35,35 +35,37 @@ pub struct LogIngestPlan {
 impl LogIngestPlan {
     /// Derives the per-block log artifacts and index fragments for one finalized block.
     pub fn build(block: &FinalizedBlock, first_log_id: LogId) -> Result<Self> {
-        // First pass writes only per-block payload/header artifacts plus the shared block record.
-        // Later commits add global log IDs, directory fragments, and bitmap index artifacts.
+        Self::validate_logs(block)?;
         let logs = Self::flatten_logs(block)?;
         let log_count = u32::try_from(logs.len())
             .map_err(|_| MonadChainDataError::Decode("log count overflow"))?;
 
         let (block_log_header, block_log_blob) = Self::encode_block_logs(&logs)?;
         let bitmap_fragments = Self::collect_bitmap_fragments(&logs, first_log_id)?;
-        let block_record = BlockRecord {
-            block_number: block.block_number(),
-            block_hash: block.block_hash(),
-            parent_hash: block.parent_hash(),
-            logs: FamilyWindowRecord {
-                first_primary_id: first_log_id.into(),
-                count: log_count,
-            },
-            txs: FamilyWindowRecord {
-                first_primary_id: PrimaryId::ZERO,
-                count: 0,
-            },
+        let log_window = FamilyWindowRecord {
+            first_primary_id: first_log_id.into(),
+            count: log_count,
         };
 
         Ok(Self {
-            block_record,
+            log_window,
             block_log_header,
             block_log_blob,
             bitmap_fragments,
             written_logs: logs.len(),
         })
+    }
+
+    fn validate_logs(block: &FinalizedBlock) -> Result<()> {
+        for tx_logs in &block.logs_by_tx {
+            for log in tx_logs {
+                if log.data.topics().len() > 4 {
+                    return Err(MonadChainDataError::InvalidRequest("log topics exceed 4"));
+                }
+            }
+        }
+
+        Ok(())
     }
 
     fn flatten_logs(block: &FinalizedBlock) -> Result<Vec<RawLogEntry>> {
