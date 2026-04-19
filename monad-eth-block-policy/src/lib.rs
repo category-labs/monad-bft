@@ -220,6 +220,45 @@ where
     }
 }
 
+fn compute_check_ranges(base_seq_num: SeqNum, execution_delay: SeqNum) -> (SeqNum, SeqNum) {
+    // N - k + 1 (inclusive) to N (non inclusive)
+    let reserve_balance_check_start = base_seq_num + SeqNum(1);
+    // N - 2k + 2 (inclusive) to N - k + 1 (non inclusive)
+    let mut emptying_txn_check_start =
+        (reserve_balance_check_start + SeqNum(1)).max(execution_delay) - execution_delay;
+
+    if emptying_txn_check_start == GENESIS_SEQ_NUM {
+        emptying_txn_check_start += SeqNum(1);
+    }
+
+    (reserve_balance_check_start, emptying_txn_check_start)
+}
+
+fn update_latest_txn_seqnums<ST, SCT>(
+    account_balances: &mut BTreeMap<&Address, AccountBalanceState>,
+    block: &EthValidatedBlock<ST, SCT>,
+) where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
+    for txn in &block.validated_txns {
+        if let Some(account_balance) = account_balances.get_mut(&txn.signer()) {
+            if account_balance.block_seqnum_of_latest_txn < block.get_seq_num() {
+                account_balance.block_seqnum_of_latest_txn = block.get_seq_num();
+            }
+        }
+        for recovered_auth in &txn.authorizations_7702 {
+            if let Some(auth_address) = recovered_auth.authority() {
+                if let Some(account_balance) = account_balances.get_mut(&auth_address) {
+                    if account_balance.block_seqnum_of_latest_txn < block.get_seq_num() {
+                        account_balance.block_seqnum_of_latest_txn = block.get_seq_num();
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn is_possibly_emptying_transaction(
     block_seq_num_of_curr_txn: SeqNum,
     balance_state: &AccountBalanceState,
@@ -550,6 +589,36 @@ where
         }
     }
 
+    fn collect_blocks_in_range<'a>(
+        &'a self,
+        emptying_txn_check_start: SeqNum,
+        extending_blocks: Option<&[&'a EthValidatedBlock<ST, SCT>]>,
+    ) -> Vec<&'a EthValidatedBlock<ST, SCT>> {
+        let mut blocks_in_range = Vec::new();
+        let mut next_validate = emptying_txn_check_start;
+        for (_, block) in self
+            .committed_cache
+            .blocks
+            .range(emptying_txn_check_start..)
+        {
+            assert_eq!(next_validate, block.get_seq_num());
+            blocks_in_range.push(block);
+            next_validate += SeqNum(1);
+        }
+        if let Some(extending_blocks) = extending_blocks {
+            let next_blocks = extending_blocks
+                .iter()
+                .skip_while(move |block| block.get_seq_num() < next_validate);
+
+            for extending_block in next_blocks {
+                assert_eq!(next_validate, extending_block.get_seq_num());
+                blocks_in_range.push(extending_block);
+                next_validate += SeqNum(1);
+            }
+        }
+        blocks_in_range
+    }
+
     fn get_account_statuses<'a>(
         &self,
         state_backend: &impl StateBackend<ST, SCT>,
@@ -590,16 +659,8 @@ where
                 .max_reserve_balance,
         );
 
-        // N - k + 1 (inclusive) to N (non inclusive)
-        let reserve_balance_check_start = base_seq_num + SeqNum(1);
-        // N - 2k + 2 (inclusive) to N - k + 1 (non inclusive)
-        let mut emptying_txn_check_start = (reserve_balance_check_start + SeqNum(1))
-            .max(self.execution_delay)
-            - self.execution_delay;
-
-        if emptying_txn_check_start == GENESIS_SEQ_NUM {
-            emptying_txn_check_start += SeqNum(1);
-        }
+        let (reserve_balance_check_start, emptying_txn_check_start) =
+            compute_check_ranges(base_seq_num, self.execution_delay);
 
         let addresses = addresses.unique().collect_vec();
         let mut account_balances: BTreeMap<&Address, AccountBalanceState> = addresses
@@ -626,29 +687,10 @@ where
             })
             .collect();
 
-        // collect all blocks that are in range
-        let mut blocks_in_range = Vec::new();
-        let mut next_validate = emptying_txn_check_start;
-        for (_, block) in self
-            .committed_cache
-            .blocks
-            .range(emptying_txn_check_start..)
-        {
-            assert_eq!(next_validate, block.get_seq_num());
-            blocks_in_range.push(block);
-            next_validate += SeqNum(1);
-        }
-        if let Some(extending_blocks) = extending_blocks {
-            let next_blocks = extending_blocks
-                .iter()
-                .skip_while(move |block| block.get_seq_num() < next_validate);
-
-            for extending_block in next_blocks {
-                assert_eq!(next_validate, extending_block.get_seq_num());
-                blocks_in_range.push(extending_block);
-                next_validate += SeqNum(1);
-            }
-        }
+        let blocks_in_range = self.collect_blocks_in_range(
+            emptying_txn_check_start,
+            extending_blocks.map(Vec::as_slice),
+        );
 
         // update account balances by iterating through blocks in range
         let mut next_validate = emptying_txn_check_start;
@@ -656,24 +698,7 @@ where
             // if still within check emptying range, update latest tx seq num
             // otherwise update reserve balance
             if next_validate < reserve_balance_check_start {
-                for txn in &block.validated_txns {
-                    if let Some(account_balance) = account_balances.get_mut(&txn.signer()) {
-                        if account_balance.block_seqnum_of_latest_txn < block.get_seq_num() {
-                            account_balance.block_seqnum_of_latest_txn = block.get_seq_num();
-                        }
-                    }
-                    for recovered_auth in &txn.authorizations_7702 {
-                        if let Some(auth_address) = recovered_auth.authority() {
-                            if let Some(account_balance) = account_balances.get_mut(&auth_address) {
-                                if account_balance.block_seqnum_of_latest_txn < block.get_seq_num()
-                                {
-                                    account_balance.block_seqnum_of_latest_txn =
-                                        block.get_seq_num();
-                                }
-                            }
-                        }
-                    }
-                }
+                update_latest_txn_seqnums(&mut account_balances, block);
             } else {
                 let reserve_balance_updater = ReserveBalanceUpdater::new(
                     block.get_seq_num(),
@@ -3064,5 +3089,206 @@ mod test {
             &MockChainConfig::default(),
         );
         assert_eq!(result, Err(BlockPolicyError::BlockNotCoherent));
+    }
+
+    #[test]
+    fn test_compute_check_ranges_normal() {
+        // base_seq_num = 10, execution_delay = 3
+        // reserve_start = 11, emptying_start = 9
+        assert_eq!(
+            compute_check_ranges(SeqNum(10), SeqNum(3)),
+            (SeqNum(11), SeqNum(9))
+        );
+    }
+
+    #[test]
+    fn test_compute_check_ranges_genesis() {
+        // base_seq_num = 0, execution_delay = 3
+        // genesis excluded
+        assert_eq!(
+            compute_check_ranges(SeqNum(0), SeqNum(3)),
+            (SeqNum(1), SeqNum(1))
+        );
+    }
+
+    #[test]
+    fn test_compute_check_ranges_clamped_to_execution_delay() {
+        // base_seq_num = 1, execution_delay = 3
+        // reserve_start = 2, emptying_start = max(2, 3) - 3 = 0 -> bumped to 1
+        assert_eq!(
+            compute_check_ranges(SeqNum(1), SeqNum(3)),
+            (SeqNum(2), SeqNum(1))
+        );
+        // base_seq_num = 2, execution_delay = 3
+        // reserve_start = 3, emptying_start = max(4, 3) - 3 = 1 (no bump)
+        assert_eq!(
+            compute_check_ranges(SeqNum(2), SeqNum(3)),
+            (SeqNum(3), SeqNum(1))
+        );
+    }
+
+    fn make_block_policy_with_committed(
+        committed_seqs: impl IntoIterator<Item = u64>,
+    ) -> EthBlockPolicy<SignatureType, SignatureCollectionType, ChainConfigType, ChainRevisionType>
+    {
+        let mut block_policy = EthBlockPolicy::<
+            SignatureType,
+            SignatureCollectionType,
+            ChainConfigType,
+            ChainRevisionType,
+        >::new(GENESIS_SEQ_NUM, EXEC_DELAY.0);
+
+        for seq in committed_seqs {
+            let block: EthValidatedBlock<NopSignature, _> =
+                make_test_block(Round(seq), SeqNum(seq), Vec::new());
+            BlockPolicy::<_, _, _, StateBackendType, _, _>::update_committed_block(
+                &mut block_policy,
+                &block,
+            );
+        }
+        block_policy
+    }
+
+    fn collected_seq_nums(
+        blocks: Vec<&EthValidatedBlock<SignatureType, SignatureCollectionType>>,
+    ) -> Vec<u64> {
+        blocks.iter().map(|b| b.get_seq_num().0).collect()
+    }
+
+    #[test]
+    fn test_collect_blocks_in_range_empty() {
+        let block_policy = make_block_policy_with_committed([]);
+        let collected = block_policy.collect_blocks_in_range(SeqNum(1), None);
+        assert!(collected.is_empty());
+    }
+
+    #[test]
+    fn test_collect_blocks_in_range_committed_only_full() {
+        let block_policy = make_block_policy_with_committed(1..=4);
+        let collected = block_policy.collect_blocks_in_range(SeqNum(1), None);
+        assert_eq!(collected_seq_nums(collected), vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn test_collect_blocks_in_range_committed_only_partial() {
+        let block_policy = make_block_policy_with_committed(1..=4);
+        let collected = block_policy.collect_blocks_in_range(SeqNum(3), None);
+        assert_eq!(collected_seq_nums(collected), vec![3, 4]);
+    }
+
+    #[test]
+    fn test_collect_blocks_in_range_committed_and_extending() {
+        let block_policy = make_block_policy_with_committed(1..=3);
+        let ext_blocks: Vec<_> = (4..=6)
+            .map(|s| make_test_block(Round(s), SeqNum(s), Vec::new()))
+            .collect();
+        let ext_refs: Vec<&_> = ext_blocks.iter().collect();
+
+        let collected = block_policy.collect_blocks_in_range(SeqNum(2), Some(ext_refs.as_slice()));
+        assert_eq!(collected_seq_nums(collected), vec![2, 3, 4, 5, 6]);
+    }
+
+    #[test]
+    fn test_collect_blocks_in_range_extending_only() {
+        let block_policy = make_block_policy_with_committed([]);
+        let ext_blocks: Vec<_> = (1..=3)
+            .map(|s| make_test_block(Round(s), SeqNum(s), Vec::new()))
+            .collect();
+        let ext_refs: Vec<&_> = ext_blocks.iter().collect();
+
+        let collected = block_policy.collect_blocks_in_range(SeqNum(1), Some(ext_refs.as_slice()));
+        assert_eq!(collected_seq_nums(collected), vec![1, 2, 3]);
+    }
+
+    fn make_default_balance_state(latest_seq: SeqNum) -> AccountBalanceState {
+        AccountBalanceState {
+            balance: Balance::from(RESERVE_BALANCE),
+            remaining_reserve_balance: Balance::from(RESERVE_BALANCE),
+            max_reserve_balance: Balance::from(RESERVE_BALANCE),
+            block_seqnum_of_latest_txn: latest_seq,
+            is_delegated: false,
+        }
+    }
+
+    #[test]
+    fn test_update_latest_txn_seqnums_updates_signer() {
+        let signer = secret_to_eth_address(S1);
+        let block = make_test_block(Round(5), SeqNum(5), vec![make_test_tx(50000, 0, 0, S1)]);
+
+        let mut balances = BTreeMap::new();
+        balances.insert(&signer, make_default_balance_state(SeqNum(2)));
+
+        update_latest_txn_seqnums(&mut balances, &block);
+
+        assert_eq!(balances[&signer].block_seqnum_of_latest_txn, SeqNum(5));
+    }
+
+    #[test]
+    fn test_update_latest_txn_seqnums_skips_unknown_signer() {
+        let block = make_test_block(Round(5), SeqNum(5), vec![make_test_tx(50000, 0, 0, S1)]);
+
+        let other = secret_to_eth_address(S2);
+        let mut balances = BTreeMap::new();
+        balances.insert(&other, make_default_balance_state(SeqNum(2)));
+
+        update_latest_txn_seqnums(&mut balances, &block);
+
+        assert_eq!(balances[&other].block_seqnum_of_latest_txn, SeqNum(2));
+    }
+
+    #[test]
+    fn test_update_latest_txn_seqnums_keeps_newer_value() {
+        let signer = secret_to_eth_address(S1);
+        let block = make_test_block(Round(5), SeqNum(5), vec![make_test_tx(50000, 0, 0, S1)]);
+
+        let mut balances = BTreeMap::new();
+        balances.insert(&signer, make_default_balance_state(SeqNum(10)));
+
+        update_latest_txn_seqnums(&mut balances, &block);
+
+        assert_eq!(balances[&signer].block_seqnum_of_latest_txn, SeqNum(10));
+    }
+
+    #[test]
+    fn test_update_latest_txn_seqnums_updates_7702_authority() {
+        let authority = secret_to_eth_address(S1);
+        let block = make_test_block(
+            Round(7),
+            SeqNum(7),
+            vec![make_test_delegation_tx(
+                50000,
+                0,
+                0,
+                S2,
+                HashMap::from([(
+                    S1,
+                    Authorization {
+                        chain_id: U256::from(CHAIN_ID),
+                        nonce: 0,
+                        address: Address(FixedBytes([0x11; 20])),
+                    },
+                )]),
+            )],
+        );
+
+        let mut balances = BTreeMap::new();
+        balances.insert(&authority, make_default_balance_state(SeqNum(1)));
+
+        update_latest_txn_seqnums(&mut balances, &block);
+
+        assert_eq!(balances[&authority].block_seqnum_of_latest_txn, SeqNum(7));
+    }
+
+    #[test]
+    fn test_update_latest_txn_seqnums_empty_block() {
+        let signer = secret_to_eth_address(S1);
+        let block = make_test_block(Round(5), SeqNum(5), Vec::new());
+
+        let mut balances = BTreeMap::new();
+        balances.insert(&signer, make_default_balance_state(SeqNum(2)));
+
+        update_latest_txn_seqnums(&mut balances, &block);
+
+        assert_eq!(balances[&signer].block_seqnum_of_latest_txn, SeqNum(2));
     }
 }
