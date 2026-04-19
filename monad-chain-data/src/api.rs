@@ -19,9 +19,9 @@ use crate::{
     blocks::{
         execute_query_blocks, load_blocks_by_numbers, QueryBlocksRequest, QueryBlocksResponse,
     },
-    engine::{family::Family, tables::Tables},
+    engine::{family::Family, query::family_runner::IndexedFamilyQuery, tables::Tables},
     error::{MonadChainDataError, Result},
-    family::FinalizedBlock,
+    family::{FinalizedBlock, Hash32},
     logs::{
         execute_block_scan_query, execute_indexed_log_query, LogIngestPlan, QueryLogsRequest,
         QueryLogsResponse,
@@ -34,7 +34,7 @@ use crate::{
     store::{BlobStore, MetaStore},
     txs::{
         execute_block_scan_tx_query, execute_indexed_tx_query, load_txs_by_positions,
-        QueryTransactionsRequest, QueryTransactionsResponse, TxIngestPlan,
+        QueryTransactionsRequest, QueryTransactionsResponse, TxEntry, TxIngestPlan, TxMaterializer,
     },
 };
 
@@ -107,6 +107,7 @@ impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
             block_tx_header,
             block_tx_blob,
             bitmap_fragments: tx_bitmap_fragments,
+            hash_locations: tx_hash_locations,
             written_txs,
         } = TxIngestPlan::build(&block, next_tx_id)?;
 
@@ -140,6 +141,9 @@ impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
         blocks
             .store_hash_index(&block.block_hash(), block.block_number())
             .await?;
+        for (tx_hash, location) in tx_hash_locations {
+            self.tables.tx_hash_index().put(&tx_hash, location).await?;
+        }
         blocks
             .store_record(block.block_number(), &block_record)
             .await?;
@@ -237,6 +241,29 @@ impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
         }
 
         Ok(response)
+    }
+
+    /// Resolves a finalized transaction by hash. Returns `None` if the
+    /// hash was never indexed. A hit in the index that fails to
+    /// materialize inside the published range indicates a data-layer
+    /// inconsistency and surfaces as `MissingData`; it is not silently
+    /// flattened to `None`.
+    pub async fn get_transaction(&self, tx_hash: Hash32) -> Result<Option<TxEntry>> {
+        let Some(location) = self.tables.tx_hash_index().get(&tx_hash).await? else {
+            return Ok(None);
+        };
+        let Some(head) = self.tables.publication().load_published_head().await? else {
+            return Ok(None);
+        };
+        if location.block_number > head {
+            return Ok(None);
+        }
+
+        let materializer = TxMaterializer::new(&self.tables);
+        let entry = materializer
+            .load_record_at(location.block_number, location.tx_idx as usize)
+            .await?;
+        Ok(Some(entry))
     }
 
     /// Executes a finalized blocks query over the current published head.

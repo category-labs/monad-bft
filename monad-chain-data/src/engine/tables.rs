@@ -31,11 +31,13 @@ use crate::{
         EvmBlockHeader,
     },
     store::{BlobStore, BlobTable, KvTable, MetaStore, ScannableTableId, TableId},
+    txs::TxHashIndexTable,
 };
 
 pub struct Tables<M: MetaStore, B: BlobStore> {
     publication: PublicationTables<M>,
     blocks: BlockTables<M>,
+    tx_hash_index: TxHashIndexTable<M>,
     families: BTreeMap<Family, FamilyTables<M, B>>,
 }
 
@@ -52,7 +54,8 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
         );
         Self {
             publication: PublicationTables::new(meta_store.clone()),
-            blocks: BlockTables::new(meta_store),
+            blocks: BlockTables::new(meta_store.clone()),
+            tx_hash_index: TxHashIndexTable::new(meta_store),
             families,
         }
     }
@@ -63,6 +66,10 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
 
     pub fn blocks(&self) -> &BlockTables<M> {
         &self.blocks
+    }
+
+    pub fn tx_hash_index(&self) -> &TxHashIndexTable<M> {
+        &self.tx_hash_index
     }
 
     /// Returns the table set for a family. Panics if the family was not

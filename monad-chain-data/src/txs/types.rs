@@ -74,6 +74,39 @@ impl TxEntry {
     }
 }
 
+/// Fixed 12-byte address of a transaction in the block-tx blobs:
+/// 8 bytes big-endian `block_number` followed by 4 bytes big-endian
+/// `tx_idx`. Written at ingest, keyed by `tx_hash`, and resolved by
+/// `get_transaction` into a `TxEntry` via the tx materializer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TxLocation {
+    pub block_number: u64,
+    pub tx_idx: u32,
+}
+
+impl TxLocation {
+    pub const ENCODED_LEN: usize = 12;
+
+    pub fn encode(&self) -> [u8; Self::ENCODED_LEN] {
+        let mut out = [0u8; Self::ENCODED_LEN];
+        out[..8].copy_from_slice(&self.block_number.to_be_bytes());
+        out[8..].copy_from_slice(&self.tx_idx.to_be_bytes());
+        out
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
+        let bytes: [u8; Self::ENCODED_LEN] = bytes
+            .try_into()
+            .map_err(|_| MonadChainDataError::Decode("invalid tx_location length"))?;
+        let block_number = u64::from_be_bytes(bytes[..8].try_into().expect("8-byte prefix"));
+        let tx_idx = u32::from_be_bytes(bytes[8..].try_into().expect("4-byte suffix"));
+        Ok(Self {
+            block_number,
+            tx_idx,
+        })
+    }
+}
+
 /// Per-tx fields stored in the block blob. Block-level fields
 /// (block_number, block_hash, tx_idx) are reconstructed from the
 /// `BlockRecord` and `BlockTxHeader` at read time.

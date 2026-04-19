@@ -13,12 +13,14 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+mod hash_index;
 mod indexed_query;
 mod ingest;
 mod materialize;
 mod scan_query;
 mod types;
 
+pub use hash_index::TxHashIndexTable;
 pub(crate) use indexed_query::execute_indexed_tx_query;
 pub use ingest::TxIngestPlan;
 pub(crate) use materialize::{load_txs_by_positions, TxMaterializer};

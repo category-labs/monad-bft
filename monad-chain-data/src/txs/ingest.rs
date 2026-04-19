@@ -19,8 +19,9 @@ use super::types::{decode_envelope, selector_from_envelope, BlockTxHeader, Store
 use crate::{
     engine::bitmap::{encode_grouped_bitmap_fragments, sharded_stream_id, BitmapFragmentWrite},
     error::{MonadChainDataError, Result},
-    family::{FinalizedBlock, IngestTx},
+    family::{FinalizedBlock, Hash32, IngestTx},
     primitives::state::{FamilyWindowRecord, TxId},
+    txs::types::TxLocation,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,6 +30,9 @@ pub struct TxIngestPlan {
     pub block_tx_header: BlockTxHeader,
     pub block_tx_blob: Vec<u8>,
     pub bitmap_fragments: Vec<BitmapFragmentWrite>,
+    /// (tx_hash, location) pairs to write into `tx_hash_index` for this
+    /// block. Caller-authoritative `tx_hash`; collisions last-write-win.
+    pub(crate) hash_locations: Vec<(Hash32, TxLocation)>,
     pub written_txs: usize,
 }
 
@@ -40,6 +44,7 @@ impl TxIngestPlan {
 
         let (block_tx_header, block_tx_blob) = Self::encode_block_txs(&block.txs)?;
         let bitmap_fragments = Self::collect_bitmap_fragments(&block.txs, first_tx_id)?;
+        let hash_locations = Self::collect_hash_locations(block)?;
         let tx_window = FamilyWindowRecord {
             first_primary_id: first_tx_id.into(),
             count: tx_count,
@@ -50,8 +55,28 @@ impl TxIngestPlan {
             block_tx_header,
             block_tx_blob,
             bitmap_fragments,
+            hash_locations,
             written_txs: block.txs.len(),
         })
+    }
+
+    fn collect_hash_locations(block: &FinalizedBlock) -> Result<Vec<(Hash32, TxLocation)>> {
+        block
+            .txs
+            .iter()
+            .enumerate()
+            .map(|(idx, tx)| {
+                let tx_idx = u32::try_from(idx)
+                    .map_err(|_| MonadChainDataError::Decode("tx index overflow"))?;
+                Ok((
+                    tx.tx_hash,
+                    TxLocation {
+                        block_number: block.block_number(),
+                        tx_idx,
+                    },
+                ))
+            })
+            .collect()
     }
 
     fn encode_block_txs(txs: &[IngestTx]) -> Result<(BlockTxHeader, Vec<u8>)> {
