@@ -21,6 +21,7 @@ pub mod family;
 pub mod logs;
 pub mod primitives;
 pub mod store;
+pub mod txs;
 
 pub use alloy_primitives::{Address, Bytes, Log, LogData, B256};
 pub use api::{IngestOutcome, MonadChainDataService};
@@ -37,5 +38,8 @@ pub use primitives::{
     EvmBlockHeader,
 };
 pub use store::{InMemoryBlobStore, InMemoryMetaStore};
+pub use txs::{
+    QueryTransactionsRequest, QueryTransactionsResponse, TxEntry, TxFilter, TxsRelations,
+};
 
 pub type Topic = B256;
