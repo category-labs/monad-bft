@@ -42,6 +42,7 @@ async fn ingest_persists_block_header() {
         .ingest_block(FinalizedBlock {
             header: header.clone(),
             logs_by_tx: vec![vec![]],
+            txs: Vec::new(),
         })
         .await
         .expect("ingest block 1");
@@ -111,6 +112,7 @@ async fn block_header_roundtrips_with_all_optional_fields_populated() {
         .ingest_block(FinalizedBlock {
             header: header.clone(),
             logs_by_tx: vec![vec![]],
+            txs: Vec::new(),
         })
         .await
         .expect("ingest block 1");

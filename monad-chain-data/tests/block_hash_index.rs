@@ -36,6 +36,7 @@ async fn ingest_persists_block_hash_index_entry() {
         .ingest_block(FinalizedBlock {
             header,
             logs_by_tx: vec![vec![]],
+            txs: Vec::new(),
         })
         .await
         .expect("ingest block 1");
@@ -89,6 +90,7 @@ async fn multi_block_chain_indexes_each_hash_distinctly() {
             .ingest_block(FinalizedBlock {
                 header,
                 logs_by_tx: vec![vec![]],
+                txs: Vec::new(),
             })
             .await
             .expect("ingest");

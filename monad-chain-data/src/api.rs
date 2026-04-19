@@ -71,6 +71,11 @@ impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
         let logs = self.tables.family(Family::Log);
         let current_head = self.tables.publication().load_published_head().await?;
         let previous_record = blocks.validate_continuity(&block, current_head).await?;
+        if !block.txs.is_empty() && block.txs.len() != block.logs_by_tx.len() {
+            return Err(MonadChainDataError::InvalidRequest(
+                "txs and logs_by_tx lengths must match when txs are provided",
+            ));
+        }
         let next_log_id = match previous_record {
             Some(previous) => LogId::from(previous.logs.next_primary_id_exclusive()?),
             None => LogId::ZERO,

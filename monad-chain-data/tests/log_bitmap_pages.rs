@@ -51,6 +51,7 @@ async fn ingest_compacts_sealed_pages_and_query_prefers_compacted_page_blobs() {
                 vec![old_topic],
                 usize::try_from(STREAM_PAGE_LOCAL_ID_SPAN - 2).expect("page span fits usize"),
             )],
+            txs: Vec::new(),
         })
         .await
         .expect("ingest block 1");
@@ -61,6 +62,7 @@ async fn ingest_compacts_sealed_pages_and_query_prefers_compacted_page_blobs() {
         .ingest_block(FinalizedBlock {
             header: h2,
             logs_by_tx: vec![repeated_logs(frontier_address, vec![frontier_topic], 4)],
+            txs: Vec::new(),
         })
         .await
         .expect("ingest block 2");
@@ -168,6 +170,7 @@ async fn query_errors_when_compacted_page_meta_exists_but_blob_is_missing() {
                 vec![topic],
                 usize::try_from(STREAM_PAGE_LOCAL_ID_SPAN - 2).expect("page span fits usize"),
             )],
+            txs: Vec::new(),
         })
         .await
         .expect("ingest block 1");
@@ -179,6 +182,7 @@ async fn query_errors_when_compacted_page_meta_exists_but_blob_is_missing() {
                 vec![B256::repeat_byte(10)],
                 4,
             )],
+            txs: Vec::new(),
         })
         .await
         .expect("ingest block 2");

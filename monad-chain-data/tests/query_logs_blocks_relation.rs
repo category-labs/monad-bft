@@ -176,6 +176,7 @@ async fn ingest(
         .ingest_block(FinalizedBlock {
             header,
             logs_by_tx: vec![logs],
+            txs: Vec::new(),
         })
         .await
         .expect("ingest");
