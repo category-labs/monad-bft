@@ -14,10 +14,10 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use crate::{
-    engine::tables::Tables,
+    engine::{query::family_runner::execute_block_scan_family_query, tables::Tables},
     error::Result,
     logs::{LogMaterializer, QueryLogsRequest, QueryLogsResponse},
-    primitives::{range::ResolvedBlockWindow, refs::BlockSpan},
+    primitives::range::ResolvedBlockWindow,
     store::{BlobStore, MetaStore},
 };
 
@@ -28,29 +28,17 @@ pub async fn execute_block_scan_query<M: MetaStore, B: BlobStore>(
     window: ResolvedBlockWindow,
 ) -> Result<QueryLogsResponse> {
     let materializer = LogMaterializer::new(tables);
-    let target_log_count = request.envelope.limit;
-    let (request_from, request_to) = window.request_endpoints(request.envelope.order);
-    let mut logs = Vec::new();
-    let mut cursor_block = request_from;
-
-    for block_number in window.iter(request.envelope.order) {
-        let (block_ref, block_logs) = materializer
-            .load_filtered_block_logs_for_block(block_number, request)
-            .await?;
-        logs.extend(block_logs);
-        cursor_block = block_ref;
-        if logs.len() >= target_log_count {
-            break;
-        }
-    }
-
+    let outcome = execute_block_scan_family_query(
+        &materializer,
+        &request.filter,
+        window,
+        request.envelope.order,
+        request.envelope.limit,
+    )
+    .await?;
     Ok(QueryLogsResponse {
-        logs,
+        logs: outcome.records,
         blocks: None,
-        span: BlockSpan {
-            from_block: request_from,
-            to_block: request_to,
-            cursor_block,
-        },
+        span: outcome.span,
     })
 }

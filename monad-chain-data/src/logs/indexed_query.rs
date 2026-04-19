@@ -13,18 +13,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use roaring::RoaringBitmap;
-
 use crate::{
-    engine::{
-        clause::IndexedFilter,
-        family::Family,
-        query::{directory_resolver::PrimaryIdResolver, window::resolve_primary_id_window},
-        tables::Tables,
-    },
-    error::{MonadChainDataError, Result},
+    engine::{query::family_runner::execute_indexed_family_query, tables::Tables},
+    error::Result,
     logs::{LogMaterializer, QueryLogsRequest, QueryLogsResponse},
-    primitives::{page::QueryOrder, range::ResolvedBlockWindow, refs::BlockSpan, state::PrimaryId},
+    primitives::range::ResolvedBlockWindow,
     store::{BlobStore, MetaStore},
 };
 
@@ -33,100 +26,19 @@ pub(crate) async fn execute_indexed_log_query<M: MetaStore, B: BlobStore>(
     request: &QueryLogsRequest,
     block_window: ResolvedBlockWindow,
 ) -> Result<QueryLogsResponse> {
-    let (request_from, request_to) = block_window.request_endpoints(request.envelope.order);
-
-    let Some(window) =
-        resolve_primary_id_window(tables.blocks(), Family::Log, &block_window).await?
-    else {
-        return Ok(QueryLogsResponse {
-            logs: Vec::new(),
-            blocks: None,
-            span: BlockSpan {
-                from_block: request_from,
-                to_block: request_to,
-                cursor_block: request_to,
-            },
-        });
-    };
-
-    let clauses = request.filter.indexed_clauses();
-    if clauses.is_empty() {
-        return Err(MonadChainDataError::InvalidRequest(
-            "indexed query requires at least one indexed clause",
-        ));
-    }
-
     let materializer = LogMaterializer::new(tables);
-    let mut resolver = PrimaryIdResolver::new(tables.family(Family::Log));
-    let mut logs = Vec::new();
-    let mut stop_after_block = None;
-
-    for shard in window.shard_iter(request.envelope.order) {
-        let (local_from, local_to) = window.local_range_for_shard(shard);
-
-        let Some(candidate_bitmap) = tables
-            .family(Family::Log)
-            .load_intersection_bitmap(&clauses, shard, local_from, local_to)
-            .await?
-        else {
-            continue;
-        };
-
-        let locals = locals_in_query_order(candidate_bitmap, request.envelope.order);
-        for local in locals {
-            let id = PrimaryId::from_parts(shard, local);
-            let Some(location) = resolver.resolve(id).await? else {
-                continue;
-            };
-
-            if let Some(stop_block) = stop_after_block {
-                if location.block_number != stop_block {
-                    let cursor_block = materializer.load_block_ref(stop_block).await?;
-                    return Ok(QueryLogsResponse {
-                        logs,
-                        blocks: None,
-                        span: BlockSpan {
-                            from_block: request_from,
-                            to_block: request_to,
-                            cursor_block,
-                        },
-                    });
-                }
-            }
-
-            let log = materializer
-                .load_log_at(location.block_number, location.idx_in_block)
-                .await?;
-            debug_assert!(
-                request.filter.matches(&log),
-                "indexed candidate at block {} idx {} should match filter",
-                location.block_number,
-                location.idx_in_block,
-            );
-
-            logs.push(log);
-
-            if stop_after_block.is_none() && logs.len() >= request.envelope.limit {
-                stop_after_block = Some(location.block_number);
-            }
-        }
-    }
-
+    let outcome = execute_indexed_family_query(
+        tables,
+        &materializer,
+        &request.filter,
+        block_window,
+        request.envelope.order,
+        request.envelope.limit,
+    )
+    .await?;
     Ok(QueryLogsResponse {
-        logs,
+        logs: outcome.records,
         blocks: None,
-        span: BlockSpan {
-            from_block: request_from,
-            to_block: request_to,
-            cursor_block: request_to,
-        },
+        span: outcome.span,
     })
-}
-
-fn locals_in_query_order(bitmap: RoaringBitmap, order: QueryOrder) -> Vec<u32> {
-    let mut locals: Vec<u32> = bitmap.into_iter().collect();
-    if order == QueryOrder::Descending {
-        locals.reverse();
-    }
-    locals
 }
