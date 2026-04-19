@@ -83,34 +83,15 @@ impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
             bitmap_fragments,
             written_logs,
         } = LogIngestPlan::build(&block, next_log_id)?;
-        let next_log_id_exclusive = block_record.logs.next_primary_id_exclusive()?;
         blocks
             .store_header(block.block_number(), &block.header)
             .await?;
-        logs.store_block_blob(block.block_number(), block_log_blob)
-            .await?;
-        logs.store_block_header(block.block_number(), Bytes::from(block_log_header.encode()))
-            .await?;
-        logs.dir()
-            .persist_block_fragment(
-                block.block_number(),
-                block_record.logs.first_primary_id.as_u64(),
-                block_record.logs.count,
-            )
-            .await?;
-        for fragment in &bitmap_fragments {
-            logs.store_bitmap_fragment(fragment, block.block_number())
-                .await?;
-        }
-        logs.compact_newly_sealed_directory_buckets(
-            next_log_id.as_u64(),
-            next_log_id_exclusive.as_u64(),
-        )
-        .await?;
-        logs.compact_newly_sealed_bitmap_pages(
+        logs.persist_indexed_family_ingest(
+            block.block_number(),
+            block_log_blob,
+            Bytes::from(block_log_header.encode()),
+            block_record.logs,
             &bitmap_fragments,
-            next_log_id.as_u64(),
-            next_log_id_exclusive.as_u64(),
         )
         .await?;
         blocks

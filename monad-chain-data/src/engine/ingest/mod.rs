@@ -15,3 +15,4 @@
 
 pub(crate) mod bitmap_compaction;
 pub(crate) mod directory_compaction;
+pub(crate) mod persist;
