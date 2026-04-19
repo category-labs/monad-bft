@@ -19,9 +19,7 @@ use alloy_consensus::Transaction;
 use alloy_primitives::Address;
 use bytes::Bytes as RawBytes;
 
-use super::types::{
-    decode_envelope, selector_from_envelope, BlockTxHeader, StoredTxEnvelope, TxEntry,
-};
+use super::types::{selector_from_envelope, BlockTxHeader, StoredTxEnvelope, TxEntry};
 use crate::{
     blocks::Block,
     engine::{
@@ -31,8 +29,8 @@ use crate::{
     },
     error::{MonadChainDataError, Result},
     primitives::{
-        page::{QueryOrder, DEFAULT_QUERY_LIMIT},
-        refs::BlockRef,
+        limits::QueryEnvelope,
+        refs::{BlockRef, BlockSpan},
     },
     store::{BlobStore, MetaStore},
 };
@@ -59,37 +57,23 @@ pub struct TxsRelations {
 }
 
 /// Public transactions query in queryX spec semantics.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct QueryTransactionsRequest {
-    pub from_block: Option<u64>,
-    pub to_block: Option<u64>,
-    pub order: QueryOrder,
-    /// Target tx count. Defaults to [`DEFAULT_QUERY_LIMIT`].
-    pub limit: usize,
+    pub envelope: QueryEnvelope,
     pub filter: TxFilter,
     pub relations: TxsRelations,
-}
-
-impl Default for QueryTransactionsRequest {
-    fn default() -> Self {
-        Self {
-            from_block: None,
-            to_block: None,
-            order: QueryOrder::default(),
-            limit: DEFAULT_QUERY_LIMIT,
-            filter: TxFilter::default(),
-            relations: TxsRelations::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueryTransactionsResponse {
     pub txs: Vec<TxEntry>,
-    pub blocks: Vec<Block>,
-    pub from_block: BlockRef,
-    pub to_block: BlockRef,
-    pub cursor_block: BlockRef,
+    /// Deduped blocks for the `txs` in this page, sorted ascending by
+    /// block number. `None` unless `QueryTransactionsRequest::relations.blocks`.
+    pub blocks: Option<Vec<Block>>,
+    /// The span mirrors the resolved request bounds and records the last
+    /// block scanned. When `txs` is empty there is no next page; callers
+    /// should treat the response as terminal rather than advance the cursor.
+    pub span: BlockSpan,
 }
 
 impl IndexedFilter for TxFilter {
@@ -137,9 +121,9 @@ impl IndexedFilter for TxFilter {
         }
 
         // Contract-creation txs and bad envelopes do not match a `to` or
-        // `selector` filter; parse once and reuse for both.
+        // `selector` filter; decode once and reuse for both.
         if self.to.is_some() || self.selector.is_some() {
-            let Ok(envelope) = decode_envelope(&tx.signed_tx_bytes) else {
+            let Ok(envelope) = tx.envelope() else {
                 return false;
             };
 

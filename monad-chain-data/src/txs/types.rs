@@ -35,17 +35,42 @@ pub struct TxEntry {
 }
 
 impl TxEntry {
+    /// Decodes the stored signed-tx bytes into the consensus envelope.
+    /// Callers that need multiple fields should decode once and work
+    /// with the `TxEnvelope`; the per-field accessors each re-parse.
+    pub fn envelope(&self) -> Result<TxEnvelope> {
+        decode_envelope(&self.signed_tx_bytes)
+    }
+
     /// Recipient address; `None` for contract-creation transactions.
     pub fn to(&self) -> Result<Option<Address>> {
-        Ok(decode_envelope(&self.signed_tx_bytes)?.to())
+        Ok(self.envelope()?.to())
     }
 
     /// 4-byte function selector; `None` for contract-creation transactions
     /// or when the calldata is shorter than 4 bytes.
     pub fn selector(&self) -> Result<Option<[u8; 4]>> {
-        Ok(selector_from_envelope(&decode_envelope(
-            &self.signed_tx_bytes,
-        )?))
+        Ok(selector_from_envelope(&self.envelope()?))
+    }
+
+    /// Assembles the queryX-spec `alloy_rpc_types_eth::Transaction` shape
+    /// from the stored envelope, sender, and block context.
+    ///
+    /// `effective_gas_price` is left as `None`: it depends on the block's
+    /// `base_fee_per_gas`, which is not carried on `TxEntry`. RPC layers
+    /// returning this shape directly must load the block header and
+    /// populate it via `envelope.effective_gas_price(Some(base_fee))`.
+    #[cfg(feature = "alloy-rpc-types-eth")]
+    pub fn to_rpc_transaction(&self) -> Result<alloy_rpc_types_eth::Transaction> {
+        use alloy_consensus::transaction::Recovered;
+
+        Ok(alloy_rpc_types_eth::Transaction {
+            inner: Recovered::new_unchecked(self.envelope()?, self.sender),
+            block_hash: Some(self.block_hash),
+            block_number: Some(self.block_number),
+            transaction_index: Some(u64::from(self.tx_idx)),
+            effective_gas_price: None,
+        })
     }
 }
 

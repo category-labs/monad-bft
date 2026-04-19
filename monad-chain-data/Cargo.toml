@@ -13,10 +13,18 @@ alloy-consensus = { workspace = true }
 alloy-eips = { workspace = true }
 alloy-primitives = { workspace = true, features = ["rlp"] }
 alloy-rlp = { workspace = true, features = ["derive"] }
+alloy-rpc-types-eth = { workspace = true, optional = true }
 auto_impl = { workspace = true }
 bytes = { workspace = true }
 roaring = "0.11"
 thiserror = { workspace = true }
+
+[features]
+default = []
+# Enables `TxEntry::to_rpc_transaction`, converting a stored tx into an
+# `alloy_rpc_types_eth::Transaction`. Off by default so the crate stays
+# narrow; the consensus envelope is always accessible via `TxEntry::envelope`.
+alloy-rpc-types-eth = ["dep:alloy-rpc-types-eth"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }
