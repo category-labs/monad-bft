@@ -44,7 +44,11 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
         let mut families = BTreeMap::new();
         families.insert(
             Family::Log,
-            FamilyTables::new(meta_store.clone(), blob_store, Family::Log),
+            FamilyTables::new(meta_store.clone(), blob_store.clone(), Family::Log),
+        );
+        families.insert(
+            Family::Tx,
+            FamilyTables::new(meta_store.clone(), blob_store, Family::Tx),
         );
         Self {
             publication: PublicationTables::new(meta_store.clone()),

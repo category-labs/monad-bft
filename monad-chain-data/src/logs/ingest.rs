@@ -20,7 +20,7 @@ use crate::{
     engine::bitmap::{encode_grouped_bitmap_fragments, sharded_stream_id, BitmapFragmentWrite},
     error::{MonadChainDataError, Result},
     family::FinalizedBlock,
-    primitives::state::{BlockRecord, FamilyWindowRecord, LogId},
+    primitives::state::{BlockRecord, FamilyWindowRecord, LogId, PrimaryId},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,6 +50,10 @@ impl LogIngestPlan {
             logs: FamilyWindowRecord {
                 first_primary_id: first_log_id.into(),
                 count: log_count,
+            },
+            txs: FamilyWindowRecord {
+                first_primary_id: PrimaryId::ZERO,
+                count: 0,
             },
         };
 
