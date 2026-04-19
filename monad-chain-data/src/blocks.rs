@@ -19,7 +19,6 @@ use crate::{
     engine::tables::{BlockTables, Tables},
     error::{MonadChainDataError, Result},
     family::Hash32,
-    logs::LogEntry,
     primitives::{
         limits::QueryEnvelope,
         range::ResolvedBlockWindow,
@@ -85,14 +84,13 @@ pub async fn execute_query_blocks<M: MetaStore, B: BlobStore>(
     })
 }
 
-/// Loads the blocks referenced by `logs` in ascending block-number order,
-/// deduped. Used to fulfill the `blocks` relation on a logs query when the
-/// caller opts in.
-pub async fn load_blocks_for_logs<M: MetaStore>(
+/// Loads the blocks for the given numbers in ascending order, deduped.
+/// Used to fulfill the `blocks` relation on family queries.
+pub async fn load_blocks_by_numbers<M: MetaStore, I: IntoIterator<Item = u64>>(
     blocks: &BlockTables<M>,
-    logs: &[LogEntry],
+    numbers: I,
 ) -> Result<Vec<Block>> {
-    let distinct: BTreeSet<u64> = logs.iter().map(|l| l.block_number).collect();
+    let distinct: BTreeSet<u64> = numbers.into_iter().collect();
     let mut out = Vec::with_capacity(distinct.len());
     for number in distinct {
         out.push(load_block(blocks, number).await?);

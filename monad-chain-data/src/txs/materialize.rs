@@ -16,7 +16,7 @@
 use std::collections::HashSet;
 
 use alloy_consensus::Transaction;
-use alloy_primitives::Address;
+use alloy_primitives::{Address, Bytes};
 use bytes::Bytes as RawBytes;
 
 use super::types::{selector_from_envelope, BlockTxHeader, StoredTxEnvelope, TxEntry};
@@ -25,12 +25,16 @@ use crate::{
     engine::{
         clause::{IndexedClause, IndexedFilter},
         family::Family,
+        query::family_runner::IndexedFamilyQuery,
         tables::Tables,
     },
     error::{MonadChainDataError, Result},
+    family::Hash32,
     primitives::{
         limits::QueryEnvelope,
+        page::QueryOrder,
         refs::{BlockRef, BlockSpan},
+        state::BlockRecord,
     },
     store::{BlobStore, MetaStore},
 };
@@ -145,18 +149,25 @@ impl IndexedFilter for TxFilter {
     }
 }
 
-#[allow(dead_code)]
 pub struct TxMaterializer<'a, M: MetaStore, B: BlobStore> {
     tables: &'a Tables<M, B>,
 }
 
-#[allow(dead_code)]
 impl<'a, M: MetaStore, B: BlobStore> TxMaterializer<'a, M, B> {
     pub fn new(tables: &'a Tables<M, B>) -> Self {
         Self { tables }
     }
+}
 
-    pub async fn load_block_ref(&self, block_number: u64) -> Result<BlockRef> {
+impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery<M, B> for TxMaterializer<'a, M, B> {
+    type Filter = TxFilter;
+    type Record = TxEntry;
+
+    fn family() -> Family {
+        Family::Tx
+    }
+
+    async fn load_block_ref(&self, block_number: u64) -> Result<BlockRef> {
         let block_record = self
             .tables
             .blocks()
@@ -166,8 +177,7 @@ impl<'a, M: MetaStore, B: BlobStore> TxMaterializer<'a, M, B> {
         Ok(BlockRef::from(&block_record))
     }
 
-    /// Resolves and materializes one tx by block number and block-local index.
-    pub async fn load_tx_at(&self, block_number: u64, tx_idx: usize) -> Result<TxEntry> {
+    async fn load_record_at(&self, block_number: u64, idx_in_block: usize) -> Result<TxEntry> {
         let block_record = self
             .tables
             .blocks()
@@ -182,11 +192,11 @@ impl<'a, M: MetaStore, B: BlobStore> TxMaterializer<'a, M, B> {
             .ok_or(MonadChainDataError::MissingData("missing block tx header"))?;
         let header = BlockTxHeader::decode(&header_bytes)?;
 
-        if tx_idx + 1 >= header.offsets.len() {
+        if idx_in_block + 1 >= header.offsets.len() {
             return Err(MonadChainDataError::Decode("tx index out of range"));
         }
-        let start = header.offsets[tx_idx] as usize;
-        let end = header.offsets[tx_idx + 1] as usize;
+        let start = header.offsets[idx_in_block] as usize;
+        let end = header.offsets[idx_in_block + 1] as usize;
 
         let bytes = self
             .tables
@@ -196,12 +206,98 @@ impl<'a, M: MetaStore, B: BlobStore> TxMaterializer<'a, M, B> {
             .ok_or(MonadChainDataError::MissingData("missing block tx blob"))?;
 
         let stored = StoredTxEnvelope::decode(&bytes)?;
-        let tx_idx_u32 =
-            u32::try_from(tx_idx).map_err(|_| MonadChainDataError::Decode("tx index overflow"))?;
+        let tx_idx_u32 = u32::try_from(idx_in_block)
+            .map_err(|_| MonadChainDataError::Decode("tx index overflow"))?;
         Ok(stored.into_tx_entry(
             block_record.block_number,
             block_record.block_hash,
             tx_idx_u32,
         ))
     }
+
+    async fn load_filtered_block_records(
+        &self,
+        block_number: u64,
+        order: QueryOrder,
+        filter: &TxFilter,
+    ) -> Result<(BlockRef, Vec<TxEntry>)> {
+        let block_record = self
+            .tables
+            .blocks()
+            .load_record(block_number)
+            .await?
+            .ok_or(MonadChainDataError::MissingData("missing block record"))?;
+        let block_ref = BlockRef::from(&block_record);
+
+        let header_bytes = self
+            .tables
+            .family(Family::Tx)
+            .load_block_header(block_number)
+            .await?
+            .ok_or(MonadChainDataError::MissingData("missing block tx header"))?;
+        let header = BlockTxHeader::decode(&header_bytes)?;
+        let blob = self
+            .tables
+            .family(Family::Tx)
+            .load_block_blob(block_number)
+            .await?
+            .ok_or(MonadChainDataError::MissingData("missing block tx blob"))?;
+
+        let txs = load_filtered_block_txs(&header, &blob, &block_record, order, filter)?;
+
+        Ok((block_ref, txs))
+    }
+}
+
+fn load_filtered_block_txs(
+    header: &BlockTxHeader,
+    blob: &Bytes,
+    block_record: &BlockRecord,
+    order: QueryOrder,
+    filter: &TxFilter,
+) -> Result<Vec<TxEntry>> {
+    let count = header.tx_count();
+    let indices: Box<dyn Iterator<Item = usize>> = match order {
+        QueryOrder::Ascending => Box::new(0..count),
+        QueryOrder::Descending => Box::new((0..count).rev()),
+    };
+
+    let mut txs = Vec::new();
+    for tx_idx in indices {
+        let tx = decode_tx_at(
+            header,
+            blob.as_ref(),
+            tx_idx,
+            block_record.block_number,
+            block_record.block_hash,
+        )?;
+        if filter.matches(&tx) {
+            txs.push(tx);
+        }
+    }
+
+    Ok(txs)
+}
+
+pub(crate) fn decode_tx_at(
+    header: &BlockTxHeader,
+    blob: &[u8],
+    tx_idx: usize,
+    block_number: u64,
+    block_hash: Hash32,
+) -> Result<TxEntry> {
+    if tx_idx + 1 >= header.offsets.len() {
+        return Err(MonadChainDataError::Decode("tx index out of range"));
+    }
+
+    let start = header.offsets[tx_idx] as usize;
+    let end = header.offsets[tx_idx + 1] as usize;
+    if start > end || end > blob.len() {
+        return Err(MonadChainDataError::Decode("invalid tx range"));
+    }
+
+    let stored = StoredTxEnvelope::decode(&blob[start..end])?;
+    let tx_idx_u32 =
+        u32::try_from(tx_idx).map_err(|_| MonadChainDataError::Decode("tx index overflow"))?;
+    Ok(stored.into_tx_entry(block_number, block_hash, tx_idx_u32))
 }

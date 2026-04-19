@@ -16,7 +16,9 @@
 use bytes::Bytes;
 
 use crate::{
-    blocks::{execute_query_blocks, load_blocks_for_logs, QueryBlocksRequest, QueryBlocksResponse},
+    blocks::{
+        execute_query_blocks, load_blocks_by_numbers, QueryBlocksRequest, QueryBlocksResponse,
+    },
     engine::{family::Family, tables::Tables},
     error::{MonadChainDataError, Result},
     family::FinalizedBlock,
@@ -30,7 +32,10 @@ use crate::{
         state::{BlockRecord, LogId, TxId},
     },
     store::{BlobStore, MetaStore},
-    txs::TxIngestPlan,
+    txs::{
+        execute_block_scan_tx_query, execute_indexed_tx_query, QueryTransactionsRequest,
+        QueryTransactionsResponse, TxIngestPlan,
+    },
 };
 
 pub struct MonadChainDataService<M: MetaStore, B: BlobStore> {
@@ -175,8 +180,50 @@ impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
         };
 
         if request.relations.blocks {
-            response.blocks =
-                Some(load_blocks_for_logs(self.tables.blocks(), &response.logs).await?);
+            response.blocks = Some(
+                load_blocks_by_numbers(
+                    self.tables.blocks(),
+                    response.logs.iter().map(|l| l.block_number),
+                )
+                .await?,
+            );
+        }
+
+        Ok(response)
+    }
+
+    /// Executes a finalized transactions query over the current published
+    /// head. The service's configured `QueryLimits` bound the request
+    /// shape and the resolved block-range span.
+    pub async fn query_transactions(
+        &self,
+        request: QueryTransactionsRequest,
+    ) -> Result<QueryTransactionsResponse> {
+        self.limits.check_limit(request.envelope.limit)?;
+
+        let head = self.load_published_head().await?;
+        let window = ResolvedBlockWindow::resolve(
+            &request.envelope,
+            head,
+            &self.limits,
+            self.tables.blocks(),
+        )
+        .await?;
+
+        let mut response = if request.filter.has_indexed_clause() {
+            execute_indexed_tx_query(&self.tables, &request, window).await?
+        } else {
+            execute_block_scan_tx_query(&self.tables, &request, window).await?
+        };
+
+        if request.relations.blocks {
+            response.blocks = Some(
+                load_blocks_by_numbers(
+                    self.tables.blocks(),
+                    response.txs.iter().map(|t| t.block_number),
+                )
+                .await?,
+            );
         }
 
         Ok(response)

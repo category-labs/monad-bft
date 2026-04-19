@@ -33,18 +33,34 @@ pub fn chain_header(number: u64, parent: &EvmBlockHeader) -> EvmBlockHeader {
 /// creation, empty calldata). Tests use it when they need `TxIngestPlan`
 /// to decode the envelope successfully but don't care about the contents.
 pub fn minimal_ingest_tx() -> IngestTx {
+    use alloy_primitives::Address;
+
+    ingest_tx(Address::ZERO, None, Vec::new())
+}
+
+/// Builds an `IngestTx` with the given `sender`, recipient, and calldata.
+/// `to = None` produces a contract-creation envelope. The signed-tx bytes
+/// always use `Signature::test_signature`; the recovered address of the
+/// envelope signer therefore does NOT equal `sender`. Filter semantics
+/// read `IngestTx::sender` (the ingest-declared `from`), not the
+/// envelope-recovered signer, so tests can set `sender` freely.
+pub fn ingest_tx(
+    sender: alloy_primitives::Address,
+    to: Option<alloy_primitives::Address>,
+    input: Vec<u8>,
+) -> IngestTx {
     use alloy_consensus::{SignableTransaction, TxEnvelope, TxLegacy};
     use alloy_eips::eip2718::Encodable2718;
-    use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
+    use alloy_primitives::{Signature, TxKind, U256};
 
     let signed = TxLegacy {
         chain_id: Some(1),
         nonce: 0,
         gas_price: 0,
         gas_limit: 21_000,
-        to: TxKind::Create,
+        to: to.map_or(TxKind::Create, TxKind::Call),
         value: U256::ZERO,
-        input: Bytes::new(),
+        input: input.into(),
     }
     .into_signed(Signature::test_signature());
 
@@ -53,7 +69,7 @@ pub fn minimal_ingest_tx() -> IngestTx {
 
     IngestTx {
         tx_hash: B256::ZERO,
-        sender: Address::ZERO,
+        sender,
         signed_tx_bytes: signed_tx_bytes.into(),
     }
 }
