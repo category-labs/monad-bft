@@ -2,7 +2,7 @@
 
 ## Overview
 
-This repository contains implementation for the Monad consensus client and JsonRpc server. Monad consensus collects transactions and produces blocks which are written to a ledger filestream. These blocks are consumed by Monad execution, which then updates the state of the blockchain. The [triedb](monad-triedb/README.md) is a database which stores block information and the blockchain state.
+This repository contains implementation for the Monad consensus client and JsonRpc server. Monad consensus collects transactions and produces blocks which are written to a ledger filestream. These blocks are consumed by Monad execution, which then updates the state of the blockchain. The [triedb](https://github.com/category-labs/monad/blob/38f91f93efcdec8bad56fc07004bb982c9327d81/rust/crates/monad-triedb/README.md) is a database which stores block information and the blockchain state.
 
 ## Getting Started
 
