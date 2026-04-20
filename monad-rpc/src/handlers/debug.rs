@@ -19,7 +19,7 @@ use alloy_consensus::{Block, BlockBody, Header, TxEnvelope};
 use alloy_eips::eip2718::Encodable2718;
 use alloy_primitives::{
     aliases::{U256, U64, U8},
-    Address, Bytes, Log,
+    Address, Bytes, FixedBytes, Log,
 };
 use alloy_rlp::{Decodable, Encodable, RlpDecodable};
 use monad_rpc_docs::rpc;
@@ -174,7 +174,10 @@ pub async fn monad_debug_getRawTransaction<T: Triedb>(
 ) -> JsonRpcResult<String> {
     trace!("monad_debug_getRawTransaction: {params:?}");
 
-    match data_provider.get_transaction(params.tx_hash.0).await {
+    match data_provider
+        .get_transaction(&FixedBytes(params.tx_hash.0))
+        .await
+    {
         Ok(tx) => {
             let mut res = Vec::new();
             let tx: TxEnvelope = tx.into();

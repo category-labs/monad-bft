@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use alloy_consensus::{Transaction as _, TxEnvelope};
 use alloy_eips::Decodable2718;
-use alloy_primitives::{Address, FixedBytes};
+use alloy_primitives::{Address, FixedBytes, TxHash};
 use alloy_rpc_types::{Filter, TransactionReceipt};
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::Triedb;
@@ -246,7 +246,7 @@ const RECEIPT_POLL_INTERVAL_MS: u64 = 100;
 /// Polls for transaction receipt with timeout
 async fn poll_for_receipt<T: Triedb>(
     data_provider: &DataProvider<T>,
-    tx_hash: FixedBytes<32>,
+    tx_hash: TxHash,
     timeout_ms: u64,
 ) -> Result<TransactionReceipt, JsonRpcError> {
     let start_time = tokio::time::Instant::now();
@@ -254,7 +254,7 @@ async fn poll_for_receipt<T: Triedb>(
     let poll_interval = Duration::from_millis(RECEIPT_POLL_INTERVAL_MS);
 
     loop {
-        match data_provider.get_transaction_receipt(*tx_hash).await {
+        match data_provider.get_transaction_receipt(&tx_hash).await {
             Ok(receipt) => return Ok(receipt),
             Err(ChainStateError::ResourceNotFound) => {
                 // Not found yet, check timeout
@@ -332,7 +332,7 @@ pub async fn monad_eth_getTransactionReceipt<T: Triedb>(
     trace!("monad_eth_getTransactionReceipt: {params:?}");
 
     data_provider
-        .get_transaction_receipt(params.tx_hash.0)
+        .get_transaction_receipt(&FixedBytes(params.tx_hash.0))
         .await
         .map_present_and_no_err(MonadTransactionReceipt)
 }
@@ -353,7 +353,7 @@ pub async fn monad_eth_getTransactionByHash<T: Triedb>(
     trace!("monad_eth_getTransactionByHash: {params:?}");
 
     data_provider
-        .get_transaction(params.tx_hash.0)
+        .get_transaction(&FixedBytes(params.tx_hash.0))
         .await
         .map_present_and_no_err(MonadTransaction)
 }
