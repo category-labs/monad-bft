@@ -39,7 +39,7 @@ macro_rules! chain_params {
     }};
 }
 
-pub const CHAIN_PARAMS_LATEST: ChainParams = CHAIN_PARAMS_V_0_11_0;
+pub const CHAIN_PARAMS_LATEST: ChainParams = CHAIN_PARAMS_V_0_12_0;
 
 pub trait ChainRevision: Copy + Clone {
     fn chain_params(&self) -> &'static ChainParams;
@@ -52,6 +52,7 @@ pub enum MonadChainRevision {
     V_0_8_0,
     V_0_10_0,
     V_0_11_0,
+    V_0_12_0,
 }
 
 impl ChainRevision for MonadChainRevision {
@@ -61,6 +62,7 @@ impl ChainRevision for MonadChainRevision {
             MonadChainRevision::V_0_8_0 => &CHAIN_PARAMS_V_0_8_0,
             MonadChainRevision::V_0_10_0 => &CHAIN_PARAMS_V_0_10_0,
             MonadChainRevision::V_0_11_0 => &CHAIN_PARAMS_V_0_11_0,
+            MonadChainRevision::V_0_12_0 => &CHAIN_PARAMS_V_0_12_0,
         }
     }
 }
@@ -124,6 +126,14 @@ const CHAIN_PARAMS_V_0_11_0: ChainParams = chain_params! {
     vote_pace: Duration::from_millis(400),
 };
 
+const CHAIN_PARAMS_V_0_12_0: ChainParams = chain_params! {
+    tx_limit: 3_500,
+    proposal_gas_limit: 150_000_000,
+    proposal_byte_limit: 1_500_000,
+    max_reserve_balance: 10_000_000_000_000_000_000, // 10 MON
+    vote_pace: Duration::from_millis(300),
+};
+
 // NOTE: when adding a new revision, chain_params! asserts that tx_limit is <= MAX_TRANSACTIONS_PER_BLOCK
 
 #[cfg(test)]
@@ -135,5 +145,6 @@ mod test {
         assert!(MonadChainRevision::V_0_7_0 < MonadChainRevision::V_0_8_0);
         assert!(MonadChainRevision::V_0_8_0 < MonadChainRevision::V_0_10_0);
         assert!(MonadChainRevision::V_0_10_0 < MonadChainRevision::V_0_11_0);
+        assert!(MonadChainRevision::V_0_11_0 < MonadChainRevision::V_0_12_0);
     }
 }
