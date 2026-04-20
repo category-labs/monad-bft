@@ -122,9 +122,17 @@ where
     fn eq(&self, other: &Self) -> bool {
         self.pending_block_tree.eq(&other.pending_block_tree)
             && self.vote_state.eq(&other.vote_state)
-            && self.pacemaker.eq(&other.pacemaker)
+            && self.no_endorsement_state.eq(&other.no_endorsement_state)
+            && self.scheduled_vote.eq(&other.scheduled_vote)
             && self.safety.eq(&other.safety)
             && self.pacemaker.eq(&other.pacemaker)
+            && self.block_sync_requests.eq(&other.block_sync_requests)
+            && self
+                .canonical_proposed_tip
+                .eq(&other.canonical_proposed_tip)
+            && self
+                .vote_delay_timer_start
+                .eq(&other.vote_delay_timer_start)
     }
 }
 
@@ -142,9 +150,13 @@ where
         f.debug_struct("ConsensusState")
             .field("pending_block_tree", &self.pending_block_tree)
             .field("vote_state", &self.vote_state)
-            .field("pacemaker", &self.pacemaker)
+            .field("no_endorsement_state", &self.no_endorsement_state)
+            .field("scheduled_vote", &self.scheduled_vote)
             .field("safety", &self.safety)
             .field("pacemaker", &self.pacemaker)
+            .field("block_sync_requests", &self.block_sync_requests)
+            .field("canonical_proposed_tip", &self.canonical_proposed_tip)
+            .field("vote_delay_timer_start", &self.vote_delay_timer_start)
             .finish()
     }
 }
@@ -152,13 +164,14 @@ where
 // The bound on future rounds/NEs that we'll buffer
 const FUTURE_VOTE_BOUND: Round = Round(10);
 
+#[derive(Debug, PartialEq, Eq)]
 struct BlockSyncRequestStatus {
     range: BlockRange,
     // once a block with round >= cancel_round is committed, this request will be canceled.
     cancel_round: Round,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum OutgoingVoteStatus {
     TimerFired,
     VoteReady(Vote),

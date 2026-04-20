@@ -24,7 +24,7 @@ pub(crate) fn ns_to_ms(timestamp_ns: u128) -> u64 {
     u64::try_from(timestamp_ns / 1_000_000).unwrap_or(u64::MAX)
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct VoteDelayTimerStart {
     pub(crate) round: Round,
     pub(crate) started_at_ms: u64,
