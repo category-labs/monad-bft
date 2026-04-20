@@ -22,7 +22,7 @@ use std::{
 };
 
 use alloy_consensus::TxEnvelope;
-use alloy_primitives::Bloom;
+use alloy_primitives::{BlockHash, Bloom, TxHash};
 use alloy_rpc_types::{Block, BlockTransactions, Transaction, TransactionReceipt};
 use dashmap::DashMap;
 use itertools::Itertools;
@@ -31,10 +31,7 @@ use monad_exec_events::BlockCommitState;
 use tokio::sync::Mutex;
 use tracing::{error, warn};
 
-use crate::{
-    event::EventServerEvent,
-    types::eth_json::{BlockTags, FixedData},
-};
+use crate::{event::EventServerEvent, types::eth_json::BlockTags};
 
 struct TxLoc {
     block_height: u64,
@@ -52,9 +49,9 @@ pub struct ExecEventsBuffer {
     // Maps a block by its SeqNum
     block_by_height: Arc<DashMap<u64, Block>>,
     // Maps a block by its blockhash
-    block_height_by_hash: Arc<DashMap<FixedData<32>, u64>>,
+    block_height_by_hash: Arc<DashMap<BlockHash, u64>>,
     // Maps a transaction hash to its block location and receipt
-    tx_by_hash: Arc<DashMap<FixedData<32>, (TxLoc, TransactionReceipt)>>,
+    tx_by_hash: Arc<DashMap<TxHash, (TxLoc, TransactionReceipt)>>,
 
     // The latest voted block's SeqNum
     latest_voted: Arc<AtomicU64>,
@@ -92,7 +89,6 @@ impl ExecEventsBuffer {
 
         let block_height = header.data.number;
         let block_hash = header.data.hash;
-        let block_hash_key = FixedData(block_hash.0);
 
         match commit_state {
             BlockCommitState::Verified => {
@@ -102,7 +98,7 @@ impl ExecEventsBuffer {
                 self.latest_finalized
                     .fetch_max(block_height, Ordering::SeqCst);
 
-                if self.block_height_by_hash.contains_key(&block_hash_key) {
+                if self.block_height_by_hash.contains_key(&block_hash) {
                     return;
                 }
             }
@@ -118,7 +114,7 @@ impl ExecEventsBuffer {
                     );
                 }
 
-                if self.block_height_by_hash.contains_key(&block_hash_key) {
+                if self.block_height_by_hash.contains_key(&block_hash) {
                     return;
                 }
             }
@@ -150,13 +146,12 @@ impl ExecEventsBuffer {
             );
 
             // Remove old block's hash from by_hash
-            self.block_height_by_hash
-                .remove(&FixedData(old_block.header.hash.0));
+            self.block_height_by_hash.remove(&old_block.header.hash);
 
             // Remove old block's transactions from tx_loc_by_hash
             if let alloy_rpc_types::BlockTransactions::Full(txs) = &old_block.transactions {
                 for tx in txs {
-                    self.tx_by_hash.remove(&FixedData(tx.inner.tx_hash().0));
+                    self.tx_by_hash.remove(tx.inner.tx_hash());
                 }
             } else {
                 error!(
@@ -169,7 +164,7 @@ impl ExecEventsBuffer {
 
         if self
             .block_height_by_hash
-            .insert(FixedData(block_hash.0), block_height)
+            .insert(block_hash, block_height)
             .is_some()
         {
             warn!(
@@ -188,7 +183,7 @@ impl ExecEventsBuffer {
             if self
                 .tx_by_hash
                 .insert(
-                    FixedData(tx_receipt.transaction_hash.0),
+                    tx_receipt.transaction_hash,
                     (
                         TxLoc {
                             block_height,
@@ -219,7 +214,7 @@ impl ExecEventsBuffer {
                     alloy_rpc_types::BlockTransactions::Full(v) => {
                         v.into_iter().for_each(|tx| {
                             let id = tx.inner.tx_hash();
-                            self.tx_by_hash.remove(&FixedData(id.0));
+                            self.tx_by_hash.remove(id);
                         });
                     }
                     alloy_rpc_types::BlockTransactions::Hashes(_) => {
@@ -230,30 +225,34 @@ impl ExecEventsBuffer {
                     }
                 }
 
-                self.block_height_by_hash
-                    .remove(&FixedData(evicted_block.header.hash.0));
+                self.block_height_by_hash.remove(&evicted_block.header.hash);
             }
         }
     }
 
     pub fn get_block_by_height(&self, height: u64) -> Option<Block> {
-        Some(self.block_by_height.get(&height)?.clone())
+        Some(self.block_by_height.get(&height)?.value().clone())
     }
 
-    pub fn get_block_by_hash(&self, hash: &FixedData<32>) -> Option<Block> {
-        let block_height = *self.block_height_by_hash.get(hash)?;
+    pub fn get_block_by_hash(&self, block_hash: &BlockHash) -> Option<Block> {
+        let block_height: u64 = *self.block_height_by_hash.get(block_hash)?.value();
 
-        Some(self.block_by_height.get(&block_height)?.clone())
+        Some(self.block_by_height.get(&block_height)?.value().clone())
     }
 
     pub fn latest_block(&self) -> Option<Block> {
         let finalized_block_height = self.get_latest_finalized_block_num();
 
-        Some(self.block_by_height.get(&finalized_block_height)?.clone())
+        Some(
+            self.block_by_height
+                .get(&finalized_block_height)?
+                .value()
+                .clone(),
+        )
     }
 
-    pub fn get_receipt_by_tx_hash(&self, hash: &FixedData<32>) -> Option<TransactionReceipt> {
-        Some(self.tx_by_hash.get(hash)?.1.clone())
+    pub fn get_receipt_by_tx_hash(&self, tx_hash: &TxHash) -> Option<TransactionReceipt> {
+        Some(self.tx_by_hash.get(tx_hash)?.value().1.clone())
     }
 
     pub fn get_receipts_by_block_height(&self, height: u64) -> Option<Vec<TransactionReceipt>> {
@@ -269,7 +268,7 @@ impl ExecEventsBuffer {
         let mut receipts = Vec::with_capacity(tx_hashes.len());
 
         for tx_hash in tx_hashes {
-            let receipt = self.tx_by_hash.get(&FixedData(tx_hash.0))?.1.clone();
+            let receipt = self.tx_by_hash.get(tx_hash)?.1.clone();
             receipts.push(receipt);
         }
 
@@ -324,7 +323,7 @@ impl ExecEventsBuffer {
             .map(|transaction| {
                 let tx_hash = transaction.tx.tx_hash();
 
-                let Some(transaction_data) = self.tx_by_hash.get(&FixedData(tx_hash.0)) else {
+                let Some(transaction_data) = self.tx_by_hash.get(tx_hash) else {
                     error!(
                         ?height,
                         ?tx_hash,
@@ -373,8 +372,8 @@ impl ExecEventsBuffer {
         }
     }
 
-    pub fn get_transaction_by_hash(&self, hash: &FixedData<32>) -> Option<Transaction<TxEnvelope>> {
-        let tx_loc = &self.tx_by_hash.get(hash)?.0;
+    pub fn get_transaction_by_hash(&self, tx_hash: &TxHash) -> Option<Transaction<TxEnvelope>> {
+        let tx_loc = &self.tx_by_hash.get(tx_hash)?.0;
 
         self.get_transaction_by_location(tx_loc.block_height, tx_loc.tx_idx)
     }
@@ -579,9 +578,7 @@ mod tests {
             "Should have 1 entry in tx_loc_by_hash after first insert"
         );
         assert!(
-            buffer
-                .get_transaction_by_hash(&FixedData(tx_hash_a.0))
-                .is_some(),
+            buffer.get_transaction_by_hash(&tx_hash_a).is_some(),
             "Block A's transaction should be findable by hash"
         );
 
@@ -612,14 +609,8 @@ mod tests {
             "Block at height 1 should be the most recently inserted block (hash B)"
         );
 
-        let hash_a_exists = buffer
-            .block_height_by_hash
-            .get(&FixedData(block_hash_a.0))
-            .is_some();
-        let hash_b_exists = buffer
-            .block_height_by_hash
-            .get(&FixedData(block_hash_b.0))
-            .is_some();
+        let hash_a_exists = buffer.block_height_by_hash.get(&block_hash_a).is_some();
+        let hash_b_exists = buffer.block_height_by_hash.get(&block_hash_b).is_some();
 
         assert!(!hash_a_exists, "Old hash A should be removed from by_hash");
         assert!(hash_b_exists, "New hash B should exist in by_hash");
@@ -631,15 +622,11 @@ mod tests {
             "tx_loc_by_hash should have exactly 1 entry after replacement"
         );
         assert!(
-            buffer
-                .get_transaction_by_hash(&FixedData(tx_hash_a.0))
-                .is_none(),
+            buffer.get_transaction_by_hash(&tx_hash_a).is_none(),
             "Block A's transaction should be removed from tx_loc_by_hash after replacement"
         );
         assert!(
-            buffer
-                .get_transaction_by_hash(&FixedData(tx_hash_b.0))
-                .is_some(),
+            buffer.get_transaction_by_hash(&tx_hash_b).is_some(),
             "Block B's transaction should be findable by hash after replacement"
         );
     }

@@ -45,7 +45,7 @@ use self::buffer::{block_height_from_tag, ExecEventsBuffer};
 use crate::{
     handlers::eth::txn::FilterError,
     types::{
-        eth_json::{BlockTagOrHash, BlockTags, FixedData, MonadLog, MonadTransactionReceipt},
+        eth_json::{BlockTagOrHash, BlockTags, MonadLog, MonadTransactionReceipt},
         heuristic_size::HeuristicSize,
         jsonrpc::{ArchiveErrorExt, JsonRpcError, JsonRpcResult},
     },
@@ -135,7 +135,7 @@ fn resolve_block_height_from_buffer(
     match block {
         BlockTagOrHash::BlockTags(tag) => Some(block_height_from_tag(buffer, tag)),
         BlockTagOrHash::Hash(hash) => buffer
-            .get_block_by_hash(hash)
+            .get_block_by_hash(&FixedBytes(hash.0))
             .map(|block| block.header.number),
     }
 }
@@ -163,10 +163,10 @@ impl<T: Triedb> DataProvider<T> {
 
     pub async fn get_transaction_receipt(
         &self,
-        hash: [u8; 32],
+        tx_hash: &TxHash,
     ) -> Result<TransactionReceipt, ChainStateError> {
         if let Some(buffer) = &self.buffer {
-            if let Some(receipt) = buffer.get_receipt_by_tx_hash(&FixedData(hash)) {
+            if let Some(receipt) = buffer.get_receipt_by_tx_hash(tx_hash) {
                 return Ok(receipt);
             }
         }
@@ -177,7 +177,7 @@ impl<T: Triedb> DataProvider<T> {
             block_num,
         }) = self
             .triedb_env
-            .get_transaction_location_by_hash(latest_block_key, hash)
+            .get_transaction_location_by_hash(latest_block_key, tx_hash.0)
             .await
             .map_err(ChainStateError::Triedb)?
         {
@@ -199,7 +199,7 @@ impl<T: Triedb> DataProvider<T> {
                 trace: _,
                 receipt,
                 header_subset,
-            }) = archive_reader.get_tx_indexed_data(&hash.into()).await?
+            }) = archive_reader.get_tx_indexed_data(tx_hash).await?
             {
                 return Ok(parse_tx_receipt(
                     header_subset.block_hash,
@@ -299,9 +299,9 @@ impl<T: Triedb> DataProvider<T> {
         Err(ChainStateError::ResourceNotFound)
     }
 
-    pub async fn get_transaction(&self, hash: [u8; 32]) -> Result<Transaction, ChainStateError> {
+    pub async fn get_transaction(&self, tx_hash: &TxHash) -> Result<Transaction, ChainStateError> {
         if let Some(buffer) = &self.buffer {
-            if let Some(tx) = buffer.get_transaction_by_hash(&FixedData(hash)) {
+            if let Some(tx) = buffer.get_transaction_by_hash(tx_hash) {
                 return Ok(tx);
             }
         }
@@ -312,7 +312,7 @@ impl<T: Triedb> DataProvider<T> {
             block_num,
         }) = self
             .triedb_env
-            .get_transaction_location_by_hash(latest_block_key, hash)
+            .get_transaction_location_by_hash(latest_block_key, tx_hash.0)
             .await
             .map_err(ChainStateError::Triedb)?
         {
@@ -329,7 +329,7 @@ impl<T: Triedb> DataProvider<T> {
 
         // try archive if transaction hash not found and archive reader specified
         if let Some(archive_reader) = &self.archive_reader {
-            if let Some((tx, header_subset)) = archive_reader.get_tx(&hash.into()).await? {
+            if let Some((tx, header_subset)) = archive_reader.get_tx(tx_hash).await? {
                 return Ok(parse_tx_content(
                     header_subset.block_hash,
                     header_subset.block_number,
@@ -1753,12 +1753,12 @@ mod tests {
         assert!(found.is_ok());
 
         data_provider
-            .get_transaction(tx.tx.tx_hash().0)
+            .get_transaction(tx.tx.tx_hash())
             .await
             .unwrap();
 
         data_provider
-            .get_transaction_receipt(tx.tx.tx_hash().0)
+            .get_transaction_receipt(tx.tx.tx_hash())
             .await
             .unwrap();
 
