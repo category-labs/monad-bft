@@ -28,10 +28,7 @@ use monad_crypto::certificate_signature::{
 use monad_types::NodeId;
 
 pub(crate) use self::{builder::MessageBuilder, chunk::Chunk};
-use crate::{
-    udp::GroupId,
-    util::{BroadcastMode, BuildTarget, Redundancy},
-};
+use crate::util::{BroadcastMode, BuildTarget, Redundancy};
 
 #[derive(Debug)]
 pub enum BuildError {
@@ -55,8 +52,6 @@ pub enum BuildError {
     ZeroTotalStake,
     // redundancy is too high
     RedundancyTooHigh,
-    // group id not supported with the broadcast mode
-    InvalidGroupId(GroupId),
     // broadcast mode not supported
     InvalidBroadcastMode(BroadcastMode),
     // encoding scheme not supported
