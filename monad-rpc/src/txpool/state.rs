@@ -19,10 +19,10 @@ use std::{
     time::Duration,
 };
 
-use alloy_consensus::TxEnvelope;
 use alloy_primitives::{Address, TxHash};
 use dashmap::{DashMap, Entry};
 use monad_eth_txpool_types::{EthTxPoolEvent, EthTxPoolEventType, EthTxPoolSnapshot};
+use monad_eth_types::EthTxEnvelope;
 use tokio::time::Instant;
 
 use super::TxStatus;
@@ -101,7 +101,7 @@ impl EthTxPoolBridgeState {
     pub(super) fn add_tx(
         &self,
         eviction_queue: &mut EthTxPoolBridgeEvictionQueue,
-        tx: &TxEnvelope,
+        tx: &EthTxEnvelope,
         tx_status_recv_send: TxStatusReceiverSender,
     ) -> bool {
         let hash = *tx.tx_hash();
@@ -256,8 +256,9 @@ impl EthTxPoolBridgeState {
 mod test {
     use std::{collections::HashSet, time::Duration};
 
-    use alloy_consensus::{transaction::SignerRecoverable, TxEnvelope};
+    use alloy_consensus::transaction::SignerRecoverable;
     use monad_eth_testutil::{make_legacy_tx, S1};
+    use monad_eth_types::EthTxEnvelope;
     use monad_eth_txpool_types::{
         EthTxPoolDropReason, EthTxPoolEvent, EthTxPoolEventType, EthTxPoolEvictReason,
         EthTxPoolSnapshot,
@@ -276,7 +277,7 @@ mod test {
         EthTxPoolBridgeState,
         EthTxPoolBridgeStateView,
         EthTxPoolBridgeEvictionQueue,
-        TxEnvelope,
+        EthTxEnvelope,
     ) {
         let mut eviction_queue = EthTxPoolBridgeEvictionQueue::default();
         let state = EthTxPoolBridgeState::new(

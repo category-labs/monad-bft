@@ -15,9 +15,9 @@
 
 use std::time::Duration;
 
-use alloy_primitives::Address;
 use indexmap::IndexMap;
 use monad_crypto::certificate_signature::PubKey;
+use monad_eth_types::AccountKey;
 use tracing::{error, info};
 
 use crate::pool::transaction::PoolTx;
@@ -89,7 +89,7 @@ impl TrackedTxLimits {
         }
     }
 
-    pub fn build_txs_map<V>(&self) -> IndexMap<Address, V> {
+    pub fn build_txs_map<V>(&self) -> IndexMap<AccountKey, V> {
         // During insertion, the map can temporarily surpass its max size by 1 address
         IndexMap::with_capacity(self.config.max_addresses + 1)
     }

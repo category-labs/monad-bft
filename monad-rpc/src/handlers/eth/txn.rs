@@ -15,12 +15,13 @@
 
 use std::{pin::pin, time::Duration};
 
-use alloy_consensus::{Transaction as _, TxEnvelope};
+use alloy_consensus::Transaction as _;
 use alloy_eips::Decodable2718;
 use alloy_primitives::{Address, FixedBytes};
 use alloy_rpc_types::Filter;
 use monad_exec_events::BlockCommitState;
 use monad_rpc_docs::rpc;
+use monad_eth_types::EthTxEnvelope;
 use monad_triedb_utils::triedb_env::Triedb;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -151,8 +152,8 @@ fn validate_and_decode_tx(
     chain_id: u64,
     allow_unprotected_txs: bool,
     decode_error_fn: impl FnOnce() -> JsonRpcError,
-) -> Result<TxEnvelope, JsonRpcError> {
-    let tx = TxEnvelope::decode_2718_exact(hex_tx).map_err(|err| {
+) -> Result<EthTxEnvelope, JsonRpcError> {
+    let tx = EthTxEnvelope::decode_2718_exact(hex_tx).map_err(|err| {
         debug!(?err, "eth txn decode failed");
         decode_error_fn()
     })?;
@@ -175,7 +176,7 @@ fn validate_and_decode_tx(
 
 async fn submit_to_txpool(
     txpool_bridge_client: &EthTxPoolBridgeClient,
-    tx: TxEnvelope,
+    tx: EthTxEnvelope,
 ) -> Result<(), JsonRpcError> {
     let Some(_tx_inflight_guard) = txpool_bridge_client.acquire_tx_inflight_guard() else {
         warn!("txpool overloaded");

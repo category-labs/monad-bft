@@ -18,20 +18,18 @@ use std::{
     sync::{mpsc, Arc},
 };
 
-use alloy_primitives::Address;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_types::{EthAccount, EthHeader};
+use monad_eth_types::{AccountKey, EthAccount, EthHeader};
 use monad_types::{BlockId, Epoch, SeqNum, Stake};
 use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionPubKeyType};
 use tracing::warn;
 
 use crate::{ExecutionStateRead, ExecutionStateReadError};
 
-// Since the ExecutionStateReadThreadClient is synchronous, it will only allow one inflight request
-// per sync context so a value of 16 allows 16 threads to simulatneously make execution state read
-// requests.
+// Since the ExecutionStateReadThreadClient is synchronous, it will only allow one inflight request per
+// sync context so a value of 16 allows 16 threads to simulatneously make state read requests.
 const MAX_INFLIGHT_REQUESTS: usize = 16;
 
 enum ExecutionStateReadThreadRequest<ST, SCT>
@@ -43,7 +41,7 @@ where
         block_id: BlockId,
         seq_num: SeqNum,
         is_finalized: bool,
-        addresses: Vec<Address>,
+        account_keys: Vec<AccountKey>,
         tx: mpsc::SyncSender<Result<Vec<Option<EthAccount>>, ExecutionStateReadError>>,
     },
     GetExecutionResult {
@@ -89,9 +87,9 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    pub fn new<ESRT>(state_read: impl FnOnce() -> ESRT + Send + 'static) -> Self
+    pub fn new<SBT>(state_read: impl FnOnce() -> SBT + Send + 'static) -> Self
     where
-        ESRT: ExecutionStateRead<ST, SCT>,
+        SBT: ExecutionStateRead<ST, SCT>,
     {
         let (request_tx, request_rx) = mpsc::sync_channel(MAX_INFLIGHT_REQUESTS);
 
@@ -130,13 +128,13 @@ where
         block_id: &BlockId,
         seq_num: &SeqNum,
         is_finalized: bool,
-        addresses: impl Iterator<Item = &'a Address>,
+        account_keys: impl Iterator<Item = &'a AccountKey>,
     ) -> Result<Vec<Option<EthAccount>>, ExecutionStateReadError> {
         self.send_and_recv_request(|tx| ExecutionStateReadThreadRequest::GetAccountStatuses {
             block_id: block_id.to_owned(),
             seq_num: seq_num.to_owned(),
             is_finalized,
-            addresses: addresses.cloned().collect(),
+            account_keys: account_keys.cloned().collect(),
             tx,
         })
     }
@@ -156,15 +154,15 @@ where
     }
 
     fn raw_read_earliest_finalized_block(&self) -> Option<SeqNum> {
-        self.send_and_recv_request(|tx| {
-            ExecutionStateReadThreadRequest::RawReadEarliestFinalizedBlock { tx }
-        })
+        self.send_and_recv_request(
+            |tx| ExecutionStateReadThreadRequest::RawReadEarliestFinalizedBlock { tx },
+        )
     }
 
     fn raw_read_latest_finalized_block(&self) -> Option<SeqNum> {
-        self.send_and_recv_request(|tx| {
-            ExecutionStateReadThreadRequest::RawReadLatestFinalizedBlock { tx }
-        })
+        self.send_and_recv_request(
+            |tx| ExecutionStateReadThreadRequest::RawReadLatestFinalizedBlock { tx },
+        )
     }
 
     fn read_valset_at_block(
@@ -172,13 +170,11 @@ where
         block_num: SeqNum,
         requested_epoch: Epoch,
     ) -> Vec<(SCT::NodeIdPubKey, SignatureCollectionPubKeyType<SCT>, Stake)> {
-        self.send_and_recv_request(
-            |tx| ExecutionStateReadThreadRequest::ReadValidatorSetAtBlock {
-                block_num,
-                requested_epoch,
-                tx,
-            },
-        )
+        self.send_and_recv_request(|tx| ExecutionStateReadThreadRequest::ReadValidatorSetAtBlock {
+            block_num,
+            requested_epoch,
+            tx,
+        })
     }
 
     fn total_db_lookups(&self) -> u64 {
@@ -186,26 +182,26 @@ where
     }
 }
 
-struct ExecutionStateReadThread<ST, SCT, ESRT>
+struct ExecutionStateReadThread<ST, SCT, SBT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    ESRT: ExecutionStateRead<ST, SCT>,
+    SBT: ExecutionStateRead<ST, SCT>,
 {
-    state_read: ESRT,
+    state_read: SBT,
     request_rx: mpsc::Receiver<ExecutionStateReadThreadRequest<ST, SCT>>,
 
     _phantom: PhantomData<(ST, SCT)>,
 }
 
-impl<ST, SCT, ESRT> ExecutionStateReadThread<ST, SCT, ESRT>
+impl<ST, SCT, SBT> ExecutionStateReadThread<ST, SCT, SBT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    ESRT: ExecutionStateRead<ST, SCT>,
+    SBT: ExecutionStateRead<ST, SCT>,
 {
     fn new(
-        state_read: impl FnOnce() -> ESRT + Send + 'static,
+        state_read: impl FnOnce() -> SBT + Send + 'static,
         request_rx: mpsc::Receiver<ExecutionStateReadThreadRequest<ST, SCT>>,
     ) -> Self {
         let state_read = state_read();
@@ -220,7 +216,7 @@ where
 
     fn run(self) {
         let Self {
-            mut state_read,
+            state_read,
             request_rx,
             ..
         } = self;
@@ -231,14 +227,14 @@ where
                     block_id,
                     seq_num,
                     is_finalized,
-                    addresses,
+                    account_keys,
                     tx,
                 } => {
                     tx.send(state_read.get_account_statuses(
                         &block_id,
                         &seq_num,
                         is_finalized,
-                        addresses.iter(),
+                        account_keys.iter(),
                     ))
                     .expect("ExecutionStateReadThreadClient is alive");
                 }
@@ -286,11 +282,11 @@ mod test {
     use monad_multi_sig::MultiSig;
     use monad_types::{SeqNum, GENESIS_BLOCK_ID, GENESIS_SEQ_NUM};
 
-    use crate::{ExecutionStateRead, ExecutionStateReadThreadClient, InMemoryStateInner};
+    use crate::{InMemoryStateInner, ExecutionStateRead, ExecutionStateReadThreadClient};
 
     #[test]
     fn all_requests() {
-        let mut client = ExecutionStateReadThreadClient::new(|| {
+        let client = ExecutionStateReadThreadClient::new(|| {
             InMemoryStateInner::<NopSignature, MultiSig<NopSignature>>::genesis(SeqNum(4))
         });
 

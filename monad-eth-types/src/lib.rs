@@ -16,9 +16,13 @@
 use std::{fmt::Debug, ops::Deref};
 
 use ::serde::{Deserialize, Serialize};
-use alloy_consensus::{transaction::Recovered, Header, ReceiptEnvelope, TxEnvelope};
-use alloy_eips::eip7702::RecoveredAuthorization;
-use alloy_primitives::{Address, FixedBytes};
+use alloy_consensus::{
+    crypto::{secp256k1, RecoveryError},
+    transaction::{Recovered, SignerRecoverable, Transaction, TxHashRef},
+    Header, ReceiptEnvelope, SignableTransaction, TxEnvelope,
+};
+use alloy_eips::{eip7702::RecoveredAuthorization, Decodable2718, Encodable2718, Typed2718};
+use alloy_primitives::{keccak256, Address, Bytes, ChainId, FixedBytes, Signature, TxHash, TxKind, B256, U256};
 use alloy_rlp::{
     encode_list, BytesMut, Decodable, Encodable, RlpDecodable, RlpDecodableWrapper, RlpEncodable,
     RlpEncodableWrapper,
@@ -41,6 +45,347 @@ pub type EthTxHash = [u8; 32];
 pub type EthBlockHash = [u8; 32];
 pub type EthStorageSlot = [u8; 32];
 pub type EthCode = Vec<u8>;
+
+pub const NAMESPACED_TX_PREFIX: u8 = 0x80;
+pub const NAMESPACE_LENGTH: usize = 20;
+
+#[derive(
+    Debug, Copy, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+pub struct AccountKey {
+    pub namespace: Option<Address>,
+    pub address: Address,
+}
+
+impl AccountKey {
+    pub const fn global(address: Address) -> Self {
+        Self {
+            namespace: None,
+            address,
+        }
+    }
+
+    pub const fn namespaced(namespace: Address, address: Address) -> Self {
+        Self {
+            namespace: Some(namespace),
+            address,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EthTxEnvelope {
+    Global(TxEnvelope),
+    Namespaced {
+        namespace: Address,
+        tx: TxEnvelope,
+        hash: TxHash,
+    },
+}
+
+impl EthTxEnvelope {
+    pub fn global(tx: TxEnvelope) -> Self {
+        Self::Global(tx)
+    }
+
+    pub fn namespaced(namespace: Address, tx: TxEnvelope) -> Self {
+        let hash = Self::compute_namespaced_tx_hash(namespace, &tx);
+        Self::Namespaced {
+            namespace,
+            tx,
+            hash,
+        }
+    }
+
+    pub const fn namespace(&self) -> Option<Address> {
+        match self {
+            Self::Global(_) => None,
+            Self::Namespaced { namespace, .. } => Some(*namespace),
+        }
+    }
+
+    pub const fn is_namespaced(&self) -> bool {
+        matches!(self, Self::Namespaced { .. })
+    }
+
+    pub const fn inner(&self) -> &TxEnvelope {
+        match self {
+            Self::Global(tx) | Self::Namespaced { tx, .. } => tx,
+        }
+    }
+
+    pub fn into_inner(self) -> TxEnvelope {
+        match self {
+            Self::Global(tx) | Self::Namespaced { tx, .. } => tx,
+        }
+    }
+
+    pub fn account_key(&self, signer: Address) -> AccountKey {
+        AccountKey {
+            namespace: self.namespace(),
+            address: signer,
+        }
+    }
+
+    pub fn signature_hash(&self) -> B256 {
+        match self {
+            Self::Global(tx) => tx.signature_hash(),
+            Self::Namespaced { namespace, tx, .. } => {
+                let mut payload = Vec::with_capacity(1 + NAMESPACE_LENGTH + tx.length());
+                payload.push(NAMESPACED_TX_PREFIX);
+                payload.extend_from_slice(namespace.as_ref());
+                Self::encode_inner_for_signing(tx, &mut payload);
+                keccak256(payload)
+            }
+        }
+    }
+
+    pub fn tx_hash(&self) -> &TxHash {
+        match self {
+            Self::Global(tx) => tx.tx_hash(),
+            Self::Namespaced { hash, .. } => hash,
+        }
+    }
+
+    pub fn hash(&self) -> &TxHash {
+        self.tx_hash()
+    }
+
+    pub const fn signature(&self) -> &Signature {
+        self.inner().signature()
+    }
+
+    pub const fn is_legacy(&self) -> bool {
+        self.inner().is_legacy()
+    }
+
+    pub const fn is_eip2930(&self) -> bool {
+        self.inner().is_eip2930()
+    }
+
+    pub const fn is_eip1559(&self) -> bool {
+        self.inner().is_eip1559()
+    }
+
+    pub const fn is_eip4844(&self) -> bool {
+        self.inner().is_eip4844()
+    }
+
+    pub const fn is_eip7702(&self) -> bool {
+        self.inner().is_eip7702()
+    }
+
+    pub const fn as_eip7702(&self) -> Option<&alloy_consensus::Signed<alloy_consensus::TxEip7702>> {
+        self.inner().as_eip7702()
+    }
+
+    pub fn eip2718_encoded_length(&self) -> usize {
+        self.encode_2718_len()
+    }
+
+    pub fn encoded_2718(&self) -> Vec<u8> {
+        Encodable2718::encoded_2718(self)
+    }
+
+    fn compute_namespaced_tx_hash(namespace: Address, tx: &TxEnvelope) -> TxHash {
+        let mut encoded = Vec::with_capacity(1 + NAMESPACE_LENGTH + tx.encode_2718_len());
+        encoded.push(NAMESPACED_TX_PREFIX);
+        encoded.extend_from_slice(namespace.as_ref());
+        tx.encode_2718(&mut encoded);
+        keccak256(encoded)
+    }
+
+    fn encode_inner_for_signing(tx: &TxEnvelope, out: &mut dyn alloy_rlp::BufMut) {
+        match tx {
+            TxEnvelope::Legacy(tx) => tx.tx().encode_for_signing(out),
+            TxEnvelope::Eip2930(tx) => tx.tx().encode_for_signing(out),
+            TxEnvelope::Eip1559(tx) => tx.tx().encode_for_signing(out),
+            TxEnvelope::Eip4844(tx) => tx.tx().encode_for_signing(out),
+            TxEnvelope::Eip7702(tx) => tx.tx().encode_for_signing(out),
+        }
+    }
+}
+
+impl From<TxEnvelope> for EthTxEnvelope {
+    fn from(value: TxEnvelope) -> Self {
+        Self::global(value)
+    }
+}
+
+impl Deref for EthTxEnvelope {
+    type Target = TxEnvelope;
+
+    fn deref(&self) -> &Self::Target {
+        self.inner()
+    }
+}
+
+impl Typed2718 for EthTxEnvelope {
+    fn ty(&self) -> u8 {
+        match self {
+            Self::Global(tx) => tx.ty(),
+            Self::Namespaced { .. } => NAMESPACED_TX_PREFIX,
+        }
+    }
+}
+
+impl Encodable2718 for EthTxEnvelope {
+    fn encode_2718_len(&self) -> usize {
+        match self {
+            Self::Global(tx) => tx.encode_2718_len(),
+            Self::Namespaced { tx, .. } => 1 + NAMESPACE_LENGTH + tx.encode_2718_len(),
+        }
+    }
+
+    fn encode_2718(&self, out: &mut dyn alloy_rlp::BufMut) {
+        match self {
+            Self::Global(tx) => tx.encode_2718(out),
+            Self::Namespaced { namespace, tx, .. } => {
+                out.put_u8(NAMESPACED_TX_PREFIX);
+                out.put_slice(namespace.as_ref());
+                tx.encode_2718(out);
+            }
+        }
+    }
+}
+
+impl Decodable2718 for EthTxEnvelope {
+    fn typed_decode(ty: u8, buf: &mut &[u8]) -> alloy_eips::eip2718::Eip2718Result<Self> {
+        TxEnvelope::typed_decode(ty, buf).map(Self::global)
+    }
+
+    fn fallback_decode(buf: &mut &[u8]) -> alloy_eips::eip2718::Eip2718Result<Self> {
+        TxEnvelope::fallback_decode(buf).map(Self::global)
+    }
+
+    fn decode_2718(buf: &mut &[u8]) -> alloy_eips::eip2718::Eip2718Result<Self> {
+        if buf.first().copied() == Some(NAMESPACED_TX_PREFIX) {
+            if buf.len() < 1 + NAMESPACE_LENGTH {
+                return Err(alloy_rlp::Error::InputTooShort.into());
+            }
+
+            *buf = &buf[1..];
+            let namespace = Address::from_slice(&buf[..NAMESPACE_LENGTH]);
+            *buf = &buf[NAMESPACE_LENGTH..];
+            let tx = TxEnvelope::decode_2718(buf)?;
+            return Ok(Self::namespaced(namespace, tx));
+        }
+
+        TxEnvelope::decode_2718(buf).map(Self::global)
+    }
+}
+
+impl Encodable for EthTxEnvelope {
+    fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
+        self.encode_2718(out);
+    }
+
+    fn length(&self) -> usize {
+        self.encode_2718_len()
+    }
+}
+
+impl Decodable for EthTxEnvelope {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        Self::decode_2718(buf).map_err(Into::into)
+    }
+}
+
+impl TxHashRef for EthTxEnvelope {
+    fn tx_hash(&self) -> &TxHash {
+        self.tx_hash()
+    }
+}
+
+impl SignerRecoverable for EthTxEnvelope {
+    fn recover_signer(&self) -> Result<Address, RecoveryError> {
+        match self {
+            Self::Global(tx) => tx.recover_signer(),
+            Self::Namespaced { .. } => {
+                secp256k1::recover_signer(self.signature(), self.signature_hash())
+            }
+        }
+    }
+
+    fn recover_signer_unchecked(&self) -> Result<Address, RecoveryError> {
+        match self {
+            Self::Global(tx) => tx.recover_signer_unchecked(),
+            Self::Namespaced { .. } => {
+                secp256k1::recover_signer_unchecked(self.signature(), self.signature_hash())
+            }
+        }
+    }
+}
+
+impl Transaction for EthTxEnvelope {
+    fn chain_id(&self) -> Option<ChainId> {
+        self.inner().chain_id()
+    }
+
+    fn nonce(&self) -> u64 {
+        self.inner().nonce()
+    }
+
+    fn gas_limit(&self) -> u64 {
+        self.inner().gas_limit()
+    }
+
+    fn gas_price(&self) -> Option<u128> {
+        self.inner().gas_price()
+    }
+
+    fn max_fee_per_gas(&self) -> u128 {
+        self.inner().max_fee_per_gas()
+    }
+
+    fn max_priority_fee_per_gas(&self) -> Option<u128> {
+        self.inner().max_priority_fee_per_gas()
+    }
+
+    fn max_fee_per_blob_gas(&self) -> Option<u128> {
+        self.inner().max_fee_per_blob_gas()
+    }
+
+    fn priority_fee_or_price(&self) -> u128 {
+        self.inner().priority_fee_or_price()
+    }
+
+    fn effective_gas_price(&self, base_fee: Option<u64>) -> u128 {
+        self.inner().effective_gas_price(base_fee)
+    }
+
+    fn is_dynamic_fee(&self) -> bool {
+        self.inner().is_dynamic_fee()
+    }
+
+    fn kind(&self) -> TxKind {
+        self.inner().kind()
+    }
+
+    fn is_create(&self) -> bool {
+        self.inner().is_create()
+    }
+
+    fn value(&self) -> U256 {
+        self.inner().value()
+    }
+
+    fn input(&self) -> &Bytes {
+        self.inner().input()
+    }
+
+    fn access_list(&self) -> Option<&alloy_eips::eip2930::AccessList> {
+        self.inner().access_list()
+    }
+
+    fn blob_versioned_hashes(&self) -> Option<&[B256]> {
+        self.inner().blob_versioned_hashes()
+    }
+
+    fn authorization_list(&self) -> Option<&[alloy_eips::eip7702::SignedAuthorization]> {
+        self.inner().authorization_list()
+    }
+}
 
 pub trait ExtractEthAddress {
     fn get_eth_address(&self) -> Address;
@@ -217,7 +562,7 @@ impl FinalizedHeader for EthHeader {
 #[derive(Clone, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize, Deserialize, Default)]
 pub struct EthBlockBody {
     // TODO consider storing recovered txs inline here
-    pub transactions: LimitedVec<TxEnvelope, MAX_TRANSACTIONS_PER_BLOCK>,
+    pub transactions: LimitedVec<EthTxEnvelope, MAX_TRANSACTIONS_PER_BLOCK>,
     pub ommers: LimitedVec<Ommer, MAX_OMMERS>,
     pub withdrawals: LimitedVec<Withdrawal, MAX_WITHDRAWALS>,
 }
@@ -245,12 +590,12 @@ impl ExecutionProtocol for EthExecutionProtocol {
 
 #[derive(Clone, Debug)]
 pub struct ValidatedTx {
-    pub tx: Recovered<TxEnvelope>,
+    pub tx: Recovered<EthTxEnvelope>,
     pub authorizations_7702: Vec<RecoveredAuthorization>,
 }
 
 impl Deref for ValidatedTx {
-    type Target = Recovered<TxEnvelope>;
+    type Target = Recovered<EthTxEnvelope>;
 
     fn deref(&self) -> &Self::Target {
         &self.tx
@@ -354,10 +699,56 @@ impl Decodable for TxEnvelopeWithSender {
 mod test {
     use alloy_consensus::{
         constants::{EMPTY_TRANSACTIONS, EMPTY_WITHDRAWALS},
+        proofs::calculate_transaction_root,
+        transaction::SignerRecoverable,
+        SignableTransaction, TxLegacy,
         EMPTY_OMMER_ROOT_HASH,
     };
+    use alloy_eips::Decodable2718;
+    use alloy_signer::SignerSync;
+    use alloy_signer_local::PrivateKeySigner;
 
     use super::*;
+
+    fn make_legacy_tx(sender: B256, nonce: u64) -> TxEnvelope {
+        let transaction = TxLegacy {
+            chain_id: Some(1337),
+            nonce,
+            gas_price: 100,
+            gas_limit: 21_000,
+            to: TxKind::Call(Address::repeat_byte(0x11)),
+            value: U256::from(7_u64),
+            input: vec![0x44, 0x55].into(),
+        };
+
+        let signer = PrivateKeySigner::from_bytes(&sender).unwrap();
+        let signature = signer
+            .sign_hash_sync(&transaction.signature_hash())
+            .unwrap();
+
+        transaction.into_signed(signature).into()
+    }
+
+    fn make_namespaced_legacy_tx(namespace: Address, sender: B256, nonce: u64) -> EthTxEnvelope {
+        let transaction = TxLegacy {
+            chain_id: Some(1337),
+            nonce,
+            gas_price: 100,
+            gas_limit: 21_000,
+            to: TxKind::Call(Address::repeat_byte(0x22)),
+            value: U256::from(9_u64),
+            input: vec![0x66, 0x77].into(),
+        };
+
+        let signer = PrivateKeySigner::from_bytes(&sender).unwrap();
+        let mut payload = Vec::new();
+        payload.push(NAMESPACED_TX_PREFIX);
+        payload.extend_from_slice(namespace.as_ref());
+        transaction.encode_for_signing(&mut payload);
+        let signature = signer.sign_hash_sync(&keccak256(payload)).unwrap();
+
+        EthTxEnvelope::namespaced(namespace, transaction.into_signed(signature).into())
+    }
 
     #[derive(Debug, RlpEncodable, RlpDecodable)]
     struct ProposedEthHeaderCancun {
@@ -493,5 +884,54 @@ mod test {
         let re_encoded = toml::to_string_pretty(&decoded).unwrap();
         assert_eq!(re_encoded, encoded);
         assert_eq!(decoded, header);
+    }
+
+    #[test]
+    fn test_eth_tx_envelope_roundtrip_global_and_namespaced() {
+        let global = EthTxEnvelope::global(make_legacy_tx(B256::repeat_byte(0x11), 0));
+        let namespaced = make_namespaced_legacy_tx(Address::repeat_byte(0xaa), B256::repeat_byte(0x22), 1);
+
+        for tx in [global, namespaced] {
+            let encoded = tx.encoded_2718();
+            let decoded = EthTxEnvelope::decode_2718_exact(&encoded).unwrap();
+            assert_eq!(decoded, tx);
+        }
+    }
+
+    #[test]
+    fn test_namespaced_signature_recovery_is_namespace_bound() {
+        let namespace = Address::repeat_byte(0xaa);
+        let other_namespace = Address::repeat_byte(0xbb);
+        let tx = make_namespaced_legacy_tx(namespace, B256::repeat_byte(0x33), 0);
+
+        let signer = tx.recover_signer().unwrap();
+        let rebound = EthTxEnvelope::namespaced(other_namespace, tx.inner().clone());
+        let rebound_signer = rebound.recover_signer().unwrap();
+
+        assert_ne!(tx.signature_hash(), rebound.signature_hash());
+        assert_ne!(signer, rebound_signer);
+    }
+
+    #[test]
+    fn test_namespaced_hash_and_transaction_root_include_namespace_prefix() {
+        let namespace = Address::repeat_byte(0xcc);
+        let inner = make_legacy_tx(B256::repeat_byte(0x44), 2);
+        let global = EthTxEnvelope::global(inner.clone());
+        let namespaced = EthTxEnvelope::namespaced(namespace, inner);
+        let encoded = namespaced.encoded_2718();
+
+        assert_eq!(encoded[0], NAMESPACED_TX_PREFIX);
+        assert_eq!(&encoded[1..1 + NAMESPACE_LENGTH], namespace.0.as_slice());
+        assert_eq!(*namespaced.tx_hash(), keccak256(encoded.clone()));
+        assert_ne!(
+            calculate_transaction_root(&[global]),
+            calculate_transaction_root(&[namespaced.clone()])
+        );
+
+        let decoded = EthTxEnvelope::decode_2718_exact(&encoded).unwrap();
+        assert_eq!(
+            calculate_transaction_root(&[decoded]),
+            calculate_transaction_root(&[namespaced])
+        );
     }
 }

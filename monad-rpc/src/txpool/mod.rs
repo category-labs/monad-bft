@@ -19,9 +19,9 @@ use std::{
     time::Duration,
 };
 
-use alloy_consensus::TxEnvelope;
 use flume::Receiver;
 use futures::{SinkExt, StreamExt};
+use monad_eth_types::EthTxEnvelope;
 use monad_eth_txpool_ipc::EthTxPoolIpcClient;
 use monad_eth_txpool_types::EthTxPoolIpcTx;
 use state::TxStatusReceiverSender;
@@ -85,7 +85,7 @@ impl EthTxPoolBridge {
         Ok((client, handle))
     }
 
-    async fn run(mut self, tx_receiver: Receiver<(TxEnvelope, TxStatusReceiverSender)>) {
+    async fn run(mut self, tx_receiver: Receiver<(EthTxEnvelope, TxStatusReceiverSender)>) {
         let mut cleanup_timer = tokio::time::interval(Duration::from_secs(5));
 
         cleanup_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
