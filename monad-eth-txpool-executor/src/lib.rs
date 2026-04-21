@@ -23,9 +23,8 @@ use std::{
     time::Duration,
 };
 
-use alloy_consensus::{transaction::Recovered, TxEnvelope};
+use alloy_consensus::transaction::Recovered;
 use alloy_eips::Decodable2718;
-use alloy_primitives::Address;
 use bytes::Bytes;
 use futures::Stream;
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
@@ -44,10 +43,8 @@ use monad_eth_txpool::{
     EthTxPool, EthTxPoolConfig, EthTxPoolEventTracker, PoolTxKind, ProposalWithSenderGas,
     TrackedTxLimitsConfig,
 };
-use monad_eth_txpool_types::{
-    EthTxPoolDropReason, EthTxPoolEventType, EthTxPoolIpcTx, EthTxPoolTxInputStream,
-};
-use monad_eth_types::{EthExecutionProtocol, ExtractEthAddress};
+use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolEventType, EthTxPoolTxInputStream};
+use monad_eth_types::{AccountKey, EthExecutionProtocol, EthTxEnvelope, ExtractEthAddress};
 use monad_execution_state_read::ExecutionStateRead;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_peer_score::{ema, StdClock};
@@ -366,7 +363,7 @@ where
             let mut num_invalid_bytes = 0;
 
             ingress_batch.extend(txs.into_iter().filter_map(|raw_tx| {
-                if let Ok(tx) = TxEnvelope::decode_2718_exact(raw_tx.as_ref()) {
+                if let Ok(tx) = EthTxEnvelope::decode_2718_exact(raw_tx.as_ref()) {
                     Some((sender, tx))
                 } else {
                     num_invalid_bytes += 1;
@@ -636,37 +633,37 @@ where
 
             let mut ipc_events = BTreeMap::default();
 
+            let unvalidated_owned_txs = unvalidated_txs
+                .into_iter()
+                .map(|ipc_tx| (ipc_tx.tx, ipc_tx.priority, ipc_tx.extra_data))
+                .collect::<Vec<_>>();
+
             let recovered_txs = {
-                let (recovered_txs, dropped_txs): (Vec<_>, BTreeMap<_, _>) =
-                    unvalidated_txs.into_par_iter().partition_map(
-                        |EthTxPoolIpcTx {
-                             tx,
-                             priority,
-                             extra_data,
-                         }| {
-                            let _span = trace_span!("txpool: ipc tx recover signer").entered();
-                            match tx.secp256k1_recover() {
-                                Ok(signer) => rayon::iter::Either::Left((
-                                    Recovered::new_unchecked(tx, signer),
-                                    PoolTxKind::Owned {
-                                        priority,
-                                        extra_data,
-                                    },
-                                )),
-                                Err(_) => rayon::iter::Either::Right((
-                                    *tx.tx_hash(),
-                                    EthTxPoolEventType::Drop {
-                                        reason: EthTxPoolDropReason::InvalidSignature,
-                                    },
-                                )),
-                            }
-                        },
-                    );
+                let (recovered_txs, dropped_txs): (Vec<_>, BTreeMap<_, _>) = unvalidated_owned_txs
+                    .into_par_iter()
+                    .partition_map(|(tx, priority, extra_data)| {
+                        let _span = trace_span!("txpool: ipc tx recover signer").entered();
+                        match tx.secp256k1_recover() {
+                            Ok(signer) => rayon::iter::Either::Left((
+                                Recovered::new_unchecked(tx, signer),
+                                PoolTxKind::Owned {
+                                    priority,
+                                    extra_data,
+                                },
+                            )),
+                            Err(_) => rayon::iter::Either::Right((
+                                *tx.tx_hash(),
+                                EthTxPoolEventType::Drop {
+                                    reason: EthTxPoolDropReason::InvalidSignature,
+                                },
+                            )),
+                        }
+                    });
                 ipc_events.extend(dropped_txs);
                 recovered_txs
             };
 
-            let mut inserted_addresses = HashSet::<Address>::default();
+            let mut inserted_addresses = HashSet::<AccountKey>::default();
             let mut immediately_forwardable_txs = Vec::default();
 
             pool.insert_txs(
@@ -676,7 +673,7 @@ where
                 chain_config,
                 recovered_txs,
                 |tx| {
-                    inserted_addresses.insert(tx.signer());
+                    inserted_addresses.insert(tx.account_key());
 
                     if tx.is_owned_and_forwardable() {
                         immediately_forwardable_txs.push(tx.raw().clone_inner());
@@ -729,7 +726,7 @@ where
                 recovered_txs
             };
 
-            let mut inserted_addresses = HashSet::<Address>::default();
+            let mut inserted_addresses = HashSet::<AccountKey>::default();
 
             pool.insert_txs(
                 &mut EthTxPoolEventTracker::new(&metrics.pool, &mut ipc_events),
@@ -738,7 +735,7 @@ where
                 chain_config,
                 recovered_txs,
                 |tx| {
-                    inserted_addresses.insert(tx.signer());
+                    inserted_addresses.insert(tx.account_key());
                 },
             );
 

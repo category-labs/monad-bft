@@ -16,7 +16,10 @@
 use std::{fmt::Debug, ops::Deref};
 
 use ::serde::{Deserialize, Serialize};
-use alloy_consensus::{transaction::Recovered, Header, ReceiptEnvelope, TxEnvelope};
+use alloy_consensus::{
+    transaction::{Recovered, Transaction},
+    Header, ReceiptEnvelope, TxEnvelope,
+};
 use alloy_eips::eip7702::RecoveredAuthorization;
 use alloy_primitives::{Address, FixedBytes};
 use alloy_rlp::{
@@ -41,6 +44,149 @@ pub type EthTxHash = [u8; 32];
 pub type EthBlockHash = [u8; 32];
 pub type EthStorageSlot = [u8; 32];
 pub type EthCode = Vec<u8>;
+
+#[derive(
+    Debug, Copy, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+pub struct AccountKey {
+    pub domain: Option<Address>,
+    pub address: Address,
+}
+
+impl AccountKey {
+    pub const fn global(address: Address) -> Self {
+        Self {
+            domain: None,
+            address,
+        }
+    }
+
+    pub const fn domain(domain: Address, address: Address) -> Self {
+        Self {
+            domain: Some(domain),
+            address,
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WrongChainId {
+    InvalidDomainSuffix {
+        tx_chain_id: u64,
+        network_chain_id: u64,
+    },
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DomainNotRepresentable {
+    DomainTooWide {
+        domain: Address,
+    },
+    InvalidDomainSuffix {
+        domain: Address,
+        network_chain_id: u64,
+    },
+    GlobalChainId {
+        domain: Address,
+        network_chain_id: u64,
+    },
+}
+
+pub type EthTxEnvelope = TxEnvelope;
+
+pub fn domain_for_chain_id(
+    chain_id: Option<u64>,
+    network_chain_id: u64,
+) -> Result<Option<Address>, WrongChainId> {
+    let Some(chain_id) = chain_id else {
+        return Ok(None);
+    };
+
+    if chain_id == network_chain_id {
+        return Ok(None);
+    }
+
+    if (chain_id & 0xffff) != network_chain_id {
+        return Err(WrongChainId::InvalidDomainSuffix {
+            tx_chain_id: chain_id,
+            network_chain_id,
+        });
+    }
+
+    Ok(Some(domain_address_from_u64(chain_id)))
+}
+
+pub fn chain_id_for_domain(
+    domain: Address,
+    network_chain_id: u64,
+) -> Result<u64, DomainNotRepresentable> {
+    let domain_bytes = domain.as_slice();
+    if domain_bytes[..12].iter().any(|byte| *byte != 0) {
+        return Err(DomainNotRepresentable::DomainTooWide { domain });
+    }
+
+    let mut chain_id_bytes = [0u8; 8];
+    chain_id_bytes.copy_from_slice(&domain_bytes[12..]);
+    let chain_id = u64::from_be_bytes(chain_id_bytes);
+
+    if chain_id == network_chain_id {
+        return Err(DomainNotRepresentable::GlobalChainId {
+            domain,
+            network_chain_id,
+        });
+    }
+
+    if (chain_id & 0xffff) != network_chain_id {
+        return Err(DomainNotRepresentable::InvalidDomainSuffix {
+            domain,
+            network_chain_id,
+        });
+    }
+
+    Ok(chain_id)
+}
+
+pub fn account_key_for_tx(
+    tx: &TxEnvelope,
+    network_chain_id: u64,
+    signer: Address,
+) -> Result<AccountKey, WrongChainId> {
+    Ok(AccountKey {
+        domain: domain_for_chain_id(tx.chain_id(), network_chain_id)?,
+        address: signer,
+    })
+}
+
+pub trait DomainTx {
+    fn domain(&self, network_chain_id: u64) -> Result<Option<Address>, WrongChainId>;
+
+    fn is_domain(&self, network_chain_id: u64) -> Result<bool, WrongChainId> {
+        Ok(self.domain(network_chain_id)?.is_some())
+    }
+
+    fn account_key(
+        &self,
+        network_chain_id: u64,
+        signer: Address,
+    ) -> Result<AccountKey, WrongChainId> {
+        Ok(AccountKey {
+            domain: self.domain(network_chain_id)?,
+            address: signer,
+        })
+    }
+}
+
+impl DomainTx for TxEnvelope {
+    fn domain(&self, network_chain_id: u64) -> Result<Option<Address>, WrongChainId> {
+        domain_for_chain_id(self.chain_id(), network_chain_id)
+    }
+}
+
+fn domain_address_from_u64(chain_id: u64) -> Address {
+    let mut domain = [0_u8; 20];
+    domain[12..].copy_from_slice(&chain_id.to_be_bytes());
+    Address::from(domain)
+}
 
 pub trait ExtractEthAddress {
     fn get_eth_address(&self) -> Address;
@@ -214,10 +360,10 @@ impl FinalizedHeader for EthHeader {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize, Deserialize, Default)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, Default, RlpEncodable, RlpDecodable)]
 pub struct EthBlockBody {
     // TODO consider storing recovered txs inline here
-    pub transactions: LimitedVec<TxEnvelope, MAX_TRANSACTIONS_PER_BLOCK>,
+    pub transactions: LimitedVec<EthTxEnvelope, MAX_TRANSACTIONS_PER_BLOCK>,
     pub ommers: LimitedVec<Ommer, MAX_OMMERS>,
     pub withdrawals: LimitedVec<Withdrawal, MAX_WITHDRAWALS>,
 }
@@ -245,12 +391,12 @@ impl ExecutionProtocol for EthExecutionProtocol {
 
 #[derive(Clone, Debug)]
 pub struct ValidatedTx {
-    pub tx: Recovered<TxEnvelope>,
+    pub tx: Recovered<EthTxEnvelope>,
     pub authorizations_7702: Vec<RecoveredAuthorization>,
 }
 
 impl Deref for ValidatedTx {
-    type Target = Recovered<TxEnvelope>;
+    type Target = Recovered<EthTxEnvelope>;
 
     fn deref(&self) -> &Self::Target {
         &self.tx
@@ -354,10 +500,73 @@ impl Decodable for TxEnvelopeWithSender {
 mod test {
     use alloy_consensus::{
         constants::{EMPTY_TRANSACTIONS, EMPTY_WITHDRAWALS},
-        EMPTY_OMMER_ROOT_HASH,
+        proofs::calculate_transaction_root,
+        transaction::{SignerRecoverable, Transaction},
+        SignableTransaction, TxLegacy, EMPTY_OMMER_ROOT_HASH,
     };
+    use alloy_eips::{Decodable2718, Encodable2718};
+    use alloy_primitives::{keccak256, TxKind, B256, U256};
+    use alloy_signer::SignerSync;
+    use alloy_signer_local::PrivateKeySigner;
 
     use super::*;
+
+    const CHAIN_ID: u64 = 1337;
+
+    fn make_representable_domain(tag: u64) -> Address {
+        let chain_id = (tag << 16) | CHAIN_ID;
+        let mut bytes = [0u8; 20];
+        bytes[12..].copy_from_slice(&chain_id.to_be_bytes());
+        Address::from(bytes)
+    }
+
+    fn make_legacy_tx(sender: B256, nonce: u64) -> TxEnvelope {
+        make_legacy_tx_with_chain_id(sender, nonce, Some(CHAIN_ID), Address::repeat_byte(0x11))
+    }
+
+    fn make_legacy_tx_with_chain_id(
+        sender: B256,
+        nonce: u64,
+        chain_id: Option<u64>,
+        to: Address,
+    ) -> TxEnvelope {
+        let transaction = TxLegacy {
+            chain_id,
+            nonce,
+            gas_price: 100,
+            gas_limit: 21_000,
+            to: TxKind::Call(to),
+            value: U256::from(7_u64),
+            input: vec![0x44, 0x55].into(),
+        };
+
+        let signer = PrivateKeySigner::from_bytes(&sender).unwrap();
+        let signature = signer
+            .sign_hash_sync(&transaction.signature_hash())
+            .unwrap();
+
+        transaction.into_signed(signature).into()
+    }
+
+    fn make_domain_legacy_tx(domain: Address, sender: B256, nonce: u64) -> EthTxEnvelope {
+        let chain_id = chain_id_for_domain(domain, CHAIN_ID).unwrap();
+        let transaction = TxLegacy {
+            chain_id: Some(chain_id),
+            nonce,
+            gas_price: 100,
+            gas_limit: 21_000,
+            to: TxKind::Call(Address::repeat_byte(0x22)),
+            value: U256::from(9_u64),
+            input: vec![0x66, 0x77].into(),
+        };
+
+        let signer = PrivateKeySigner::from_bytes(&sender).unwrap();
+        let signature = signer
+            .sign_hash_sync(&transaction.signature_hash())
+            .unwrap();
+
+        transaction.into_signed(signature).into()
+    }
 
     #[derive(Debug, RlpEncodable, RlpDecodable)]
     struct ProposedEthHeaderCancun {
@@ -493,5 +702,116 @@ mod test {
         let re_encoded = toml::to_string_pretty(&decoded).unwrap();
         assert_eq!(re_encoded, encoded);
         assert_eq!(decoded, header);
+    }
+
+    #[test]
+    fn test_eth_block_body_rlp_roundtrip() {
+        let body = EthBlockBody {
+            transactions: Default::default(),
+            ommers: Default::default(),
+            withdrawals: Default::default(),
+        };
+
+        let encoded = alloy_rlp::encode(&body);
+        assert_eq!(encoded, vec![0xc3, 0xc0, 0xc0, 0xc0]);
+
+        let decoded: EthBlockBody = alloy_rlp::decode_exact(&encoded).unwrap();
+        assert_eq!(decoded, body);
+    }
+
+    #[test]
+    fn test_eth_tx_envelope_roundtrip_global_and_domain() {
+        let global = make_legacy_tx(B256::repeat_byte(0x11), 0);
+        let domain =
+            make_domain_legacy_tx(make_representable_domain(1), B256::repeat_byte(0x22), 1);
+
+        for tx in [global, domain] {
+            let encoded = tx.encoded_2718();
+            let decoded = TxEnvelope::decode_2718_exact(&encoded).unwrap();
+            assert_eq!(decoded, tx);
+        }
+    }
+
+    #[test]
+    fn test_domain_for_chain_id_handles_global_and_domain() {
+        let domain = make_representable_domain(2);
+        let tx = make_domain_legacy_tx(domain, B256::repeat_byte(0x33), 0);
+
+        assert_eq!(domain_for_chain_id(None, CHAIN_ID).unwrap(), None);
+        assert_eq!(domain_for_chain_id(Some(CHAIN_ID), CHAIN_ID).unwrap(), None);
+        assert_eq!(
+            domain_for_chain_id(tx.chain_id(), CHAIN_ID).unwrap(),
+            Some(domain)
+        );
+        assert!(matches!(
+            domain_for_chain_id(Some(CHAIN_ID + 1), CHAIN_ID),
+            Err(WrongChainId::InvalidDomainSuffix { .. })
+        ));
+    }
+
+    #[test]
+    fn test_chain_id_for_domain_rejects_unrepresentable_domain() {
+        let too_wide = Address::from([0x11; 20]);
+        assert!(matches!(
+            chain_id_for_domain(too_wide, CHAIN_ID),
+            Err(DomainNotRepresentable::DomainTooWide { .. })
+        ));
+
+        let mut global = [0u8; 20];
+        global[12..].copy_from_slice(&CHAIN_ID.to_be_bytes());
+        let global = Address::from(global);
+        assert!(matches!(
+            chain_id_for_domain(global, CHAIN_ID),
+            Err(DomainNotRepresentable::GlobalChainId { .. })
+        ));
+
+        let mut invalid_suffix = [0u8; 20];
+        invalid_suffix[12..].copy_from_slice(&0x1_0000u64.to_be_bytes());
+        let invalid_suffix = Address::from(invalid_suffix);
+        assert!(matches!(
+            chain_id_for_domain(invalid_suffix, CHAIN_ID),
+            Err(DomainNotRepresentable::InvalidDomainSuffix { .. })
+        ));
+    }
+
+    #[test]
+    fn test_domain_signer_recovery_uses_standard_eth_payload() {
+        let domain = make_representable_domain(3);
+        let secret = B256::repeat_byte(0x44);
+        let signer = PrivateKeySigner::from_bytes(&secret).unwrap();
+        let tx = make_domain_legacy_tx(domain, secret, 2);
+
+        assert_eq!(tx.recover_signer().unwrap(), signer.address());
+    }
+
+    #[test]
+    fn test_domain_hash_and_transaction_root_use_standard_encoding() {
+        let global = make_legacy_tx(B256::repeat_byte(0x44), 2);
+        let domain =
+            make_domain_legacy_tx(make_representable_domain(4), B256::repeat_byte(0x55), 2);
+        let encoded = domain.encoded_2718();
+
+        assert_eq!(*domain.tx_hash(), keccak256(encoded.clone()));
+        assert_ne!(
+            calculate_transaction_root(&[global]),
+            calculate_transaction_root(&[domain.clone()])
+        );
+
+        let decoded = TxEnvelope::decode_2718_exact(&encoded).unwrap();
+        assert_eq!(
+            calculate_transaction_root(&[decoded]),
+            calculate_transaction_root(&[domain.clone()])
+        );
+
+        let legacy_without_chain_id = make_legacy_tx_with_chain_id(
+            B256::repeat_byte(0x66),
+            0,
+            None,
+            Address::repeat_byte(0x33),
+        );
+        assert_eq!(
+            domain_for_chain_id(legacy_without_chain_id.chain_id(), CHAIN_ID).unwrap(),
+            None
+        );
     }
 }

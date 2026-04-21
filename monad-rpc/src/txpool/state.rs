@@ -19,10 +19,10 @@ use std::{
     time::Duration,
 };
 
-use alloy_consensus::TxEnvelope;
-use alloy_primitives::{Address, TxHash};
+use alloy_primitives::TxHash;
 use dashmap::{DashMap, Entry};
 use monad_eth_txpool_types::{EthTxPoolEvent, EthTxPoolEventType, EthTxPoolSnapshot};
+use monad_eth_types::{account_key_for_tx, AccountKey, EthTxEnvelope};
 use tokio::time::Instant;
 
 use super::TxStatus;
@@ -36,7 +36,7 @@ pub(super) type TxStatusReceiverSender =
 #[derive(Clone)]
 pub struct EthTxPoolBridgeStateView {
     status: Arc<DashMap<TxHash, tokio::sync::watch::Sender<TxStatus>>>,
-    address_hashes: Arc<DashMap<Address, HashSet<TxHash>>>,
+    address_hashes: Arc<DashMap<AccountKey, HashSet<TxHash>>>,
 }
 
 impl EthTxPoolBridgeStateView {
@@ -46,9 +46,9 @@ impl EthTxPoolBridgeStateView {
 
     pub(super) fn get_status_by_address(
         &self,
-        address: &Address,
+        account_key: &AccountKey,
     ) -> Option<HashMap<TxHash, TxStatus>> {
-        let hashes = self.address_hashes.get(address)?.value().to_owned();
+        let hashes = self.address_hashes.get(account_key)?.value().to_owned();
 
         let statuses = hashes
             .into_iter()
@@ -70,17 +70,20 @@ impl EthTxPoolBridgeStateView {
 }
 
 pub struct EthTxPoolBridgeState {
+    chain_id: u64,
     status: Arc<DashMap<TxHash, tokio::sync::watch::Sender<TxStatus>>>,
-    hash_address: Arc<DashMap<TxHash, Address>>,
-    address_hashes: Arc<DashMap<Address, HashSet<TxHash>>>,
+    hash_address: Arc<DashMap<TxHash, AccountKey>>,
+    address_hashes: Arc<DashMap<AccountKey, HashSet<TxHash>>>,
 }
 
 impl EthTxPoolBridgeState {
     pub fn new(
         eviction_queue: &mut EthTxPoolBridgeEvictionQueue,
         snapshot: EthTxPoolSnapshot,
+        chain_id: u64,
     ) -> Self {
         let this = Self {
+            chain_id,
             status: Default::default(),
             hash_address: Default::default(),
             address_hashes: Default::default(),
@@ -101,7 +104,7 @@ impl EthTxPoolBridgeState {
     pub(super) fn add_tx(
         &self,
         eviction_queue: &mut EthTxPoolBridgeEvictionQueue,
-        tx: &TxEnvelope,
+        tx: &EthTxEnvelope,
         tx_status_recv_send: TxStatusReceiverSender,
     ) -> bool {
         let hash = *tx.tx_hash();
@@ -204,13 +207,15 @@ impl EthTxPoolBridgeState {
                 EthTxPoolEventType::Insert {
                     address,
                     owned: _,
-                    tx: _,
+                    tx,
                 } => {
                     insert(tx_hash, TxStatus::Tracked);
 
-                    self.hash_address.entry(tx_hash).insert(address);
+                    let account_key = account_key_for_tx(&tx, self.chain_id, address)
+                        .unwrap_or_else(|_| AccountKey::global(address));
+                    self.hash_address.entry(tx_hash).insert(account_key);
                     self.address_hashes
-                        .entry(address)
+                        .entry(account_key)
                         .or_default()
                         .insert(tx_hash);
                 }
@@ -256,12 +261,13 @@ impl EthTxPoolBridgeState {
 mod test {
     use std::{collections::HashSet, time::Duration};
 
-    use alloy_consensus::{transaction::SignerRecoverable, TxEnvelope};
+    use alloy_consensus::transaction::SignerRecoverable;
     use monad_eth_testutil::{make_legacy_tx, S1};
     use monad_eth_txpool_types::{
         EthTxPoolDropReason, EthTxPoolEvent, EthTxPoolEventType, EthTxPoolEvictReason,
         EthTxPoolSnapshot,
     };
+    use monad_eth_types::EthTxEnvelope;
     use tokio::time::Instant;
 
     use super::EthTxPoolBridgeStateView;
@@ -276,7 +282,7 @@ mod test {
         EthTxPoolBridgeState,
         EthTxPoolBridgeStateView,
         EthTxPoolBridgeEvictionQueue,
-        TxEnvelope,
+        EthTxEnvelope,
     ) {
         let mut eviction_queue = EthTxPoolBridgeEvictionQueue::default();
         let state = EthTxPoolBridgeState::new(
@@ -284,6 +290,7 @@ mod test {
             EthTxPoolSnapshot {
                 txs: HashSet::default(),
             },
+            1,
         );
         let state_view = state.create_view();
 

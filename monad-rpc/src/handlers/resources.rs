@@ -20,6 +20,7 @@ use actix_web::{
     dev::{ServiceRequest, ServiceResponse},
     Error,
 };
+use alloy_primitives::Address;
 use monad_triedb_utils::triedb_env::TriedbEnv;
 use tokio::sync::Semaphore;
 use tracing_actix_web::RootSpanBuilder;
@@ -36,7 +37,9 @@ use crate::{
 pub struct MonadRpcResources {
     pub txpool_bridge_client: Option<EthTxPoolBridgeClient>,
     pub eth_call_handler: Option<EthCallHandler>,
+    pub base_chain_id: u64,
     pub chain_id: u64,
+    pub domain: Option<Address>,
     pub data_provider: Option<DataProvider<TriedbEnv>>,
     pub event_server_client: Option<EventServerClient>,
     pub batch_request_limit: u16,
@@ -81,7 +84,9 @@ impl MonadRpcResources {
         Self {
             txpool_bridge_client,
             eth_call_handler,
+            base_chain_id: chain_id,
             chain_id,
+            domain: None,
             data_provider,
             event_server_client,
             batch_request_limit,
@@ -101,6 +106,13 @@ impl MonadRpcResources {
                 feehistory_max_concurrent_requests as usize,
             )),
         }
+    }
+
+    pub fn with_domain_context(&self, chain_id: u64, domain: Address) -> Self {
+        let mut resources = self.clone();
+        resources.chain_id = chain_id;
+        resources.domain = Some(domain);
+        resources
     }
 }
 
