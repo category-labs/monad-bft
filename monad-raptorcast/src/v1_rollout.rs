@@ -91,7 +91,7 @@ mod tests {
         hasher::{Hasher, HasherType},
     };
     use monad_secp::{KeyPair, SecpSignature};
-    use monad_types::{Epoch, NodeId, Round, Stake};
+    use monad_types::{Epoch, NodeId, Round, RoundSpan, Stake};
     use monad_validator::validator_set::{ValidatorSet, ValidatorSetType as _};
 
     use super::{build_target, secondary_build_target, DeterministicProtocolRolloutStage};
@@ -101,7 +101,7 @@ mod tests {
         udp::UdpState,
         util::{
             BuildTarget, FullNodeGroupMap, PrimaryBroadcastGroup, RaptorcastMode, Redundancy,
-            SecondaryBroadcastGroup, SecondaryGroup,
+            SecondaryBroadcastGroup, SecondaryGroup, SecondaryGroupAssignment,
         },
     };
 
@@ -205,6 +205,91 @@ mod tests {
         for (a, b) in NON_ADJACENT_PAIRS {
             let count1 = rollout_publish_and_receive(*a, *b);
             let count2 = rollout_publish_and_receive(*b, *a);
+            assert!(count1 == 0 || count2 == 0);
+        }
+    }
+
+    // Secondary-rollout analogue of rollout_publish_and_receive:
+    // publisher is a validator, receiver is a full node in the
+    // publisher's secondary group.
+    fn rollout_secondary_publish_and_receive(
+        publisher_stage: DeterministicProtocolRolloutStage,
+        receiver_stage: DeterministicProtocolRolloutStage,
+    ) -> usize {
+        let publisher_key = make_key_pair(0);
+        let publisher_id = NodeId::new(publisher_key.pubkey());
+
+        let full_nodes: BTreeSet<NodeId<PubKeyType>> = (1_u8..=20)
+            .map(|n| NodeId::new(make_key_pair(n).pubkey()))
+            .collect();
+        let group = SecondaryGroup::new(full_nodes.clone()).unwrap();
+
+        let bg = SecondaryBroadcastGroup::as_publisher(&publisher_id, ROUND, &group);
+        let build_target = secondary_build_target(publisher_stage, EPOCH, ROUND, bg);
+
+        let app_message: Bytes = vec![0xAB_u8; 64 * 1024].into();
+        let packets = MessageBuilder::<SignatureType>::new(&publisher_key)
+            .redundancy(Redundancy::from_u8(2))
+            .build_vec(&app_message, &build_target)
+            .expect("build should succeed");
+        assert!(!packets.is_empty());
+
+        // Set up receiver (a full node in the group).
+        let receiver_id = *full_nodes.iter().next().unwrap();
+        let group_map: std::collections::BTreeMap<_, _> = std::collections::BTreeMap::new();
+        let mut fn_group_map = FullNodeGroupMap::<PubKeyType>::default();
+        let round_span = RoundSpan::new(Round(0), Round(u64::MAX)).unwrap();
+        fn_group_map
+            .try_insert(SecondaryGroupAssignment::new(
+                publisher_id,
+                round_span,
+                group.clone(),
+            ))
+            .expect("group insert");
+
+        let mut udp_state = UdpState::<SignatureType>::new(receiver_id, u64::MAX, 10_000);
+        udp_state.set_v1_rollout(receiver_stage);
+
+        let mut decoded_count = 0;
+        for packet in &packets {
+            let recv_msg = AuthRecvMsg {
+                src_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8000),
+                payload: packet.payload.clone(),
+                stride: packet.stride as u16,
+                sender: None,
+            };
+            let decoded =
+                udp_state.handle_message(&group_map, &fn_group_map, |_, _, _| {}, recv_msg);
+            decoded_count += decoded.len();
+        }
+        decoded_count
+    }
+
+    #[test]
+    fn test_rollout_secondary_adjacent_stages_compatible() {
+        use DeterministicProtocolRolloutStage::*;
+        let stages = [AlwaysV0, AcceptBothPublishV0, AcceptBothPublishV1, AlwaysV1];
+
+        for window in stages.windows(2) {
+            let (a, b) = (window[0], window[1]);
+            assert_eq!(rollout_secondary_publish_and_receive(a, b), 1);
+            assert_eq!(rollout_secondary_publish_and_receive(b, a), 1);
+        }
+    }
+
+    #[test]
+    fn test_rollout_secondary_non_adjacent_stages_incompatible() {
+        use DeterministicProtocolRolloutStage::{self as Stage, *};
+
+        const NON_ADJACENT_PAIRS: &[(Stage, Stage)] = &[
+            (AlwaysV0, AcceptBothPublishV1),
+            (AcceptBothPublishV0, AlwaysV1),
+            (AlwaysV0, AlwaysV1),
+        ];
+
+        for (a, b) in NON_ADJACENT_PAIRS {
+            let count1 = rollout_secondary_publish_and_receive(*a, *b);
+            let count2 = rollout_secondary_publish_and_receive(*b, *a);
             assert!(count1 == 0 || count2 == 0);
         }
     }
