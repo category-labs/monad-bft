@@ -13,18 +13,18 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use monad_crypto::certificate_signature::PubKey;
-use monad_types::Round;
+use monad_types::{NodeId, Round};
 
 use crate::{
     packet::{
-        assigner::{ChunkAssignment, ChunkRouting, StakePartition},
+        assigner::{ChunkAssignment, ChunkRouting, EvenPartition, StakePartition},
         deterministic,
     },
     udp::ValidatedChunk,
-    util::{EncodingScheme, GlobalMerkleRoot, PrimaryBroadcastGroup},
+    util::{EncodingScheme, GlobalMerkleRoot, PrimaryBroadcastGroup, SecondaryBroadcastGroup},
     SIGNATURE_SIZE,
 };
 
@@ -35,6 +35,10 @@ const CACHE_MAX_PAST_ROUNDS: Round = Round(100);
 pub struct RoundInfoCache<PT: PubKey> {
     current_round: Option<Round>,
     primary: BTreeMap<Round, PrimaryRoundInfo<PT>>,
+    // Per-publisher secondary round info. Multiple validators can
+    // publish secondary broadcasts in the same round to independent
+    // full-node groups, so we key by publisher as well.
+    secondary: HashMap<NodeId<PT>, BTreeMap<Round, SecondaryGroupRoundInfo<PT>>>,
 }
 
 impl<PT: PubKey> RoundInfoCache<PT> {
@@ -42,6 +46,7 @@ impl<PT: PubKey> RoundInfoCache<PT> {
         Self {
             current_round: None,
             primary: BTreeMap::new(),
+            secondary: HashMap::new(),
         }
     }
 
@@ -60,11 +65,19 @@ impl<PT: PubKey> RoundInfoCache<PT> {
         // Evict rounds from the cache
         if let Some(cutoff_future) = round.checked_add(CACHE_MAX_FUTURE_ROUNDS) {
             drop(self.primary.split_off(&cutoff_future));
+            for by_round in self.secondary.values_mut() {
+                drop(by_round.split_off(&cutoff_future));
+            }
         };
         if let Some(cutoff_past) = round.checked_sub(CACHE_MAX_PAST_ROUNDS) {
             let mut active = self.primary.split_off(&cutoff_past);
             std::mem::swap(&mut self.primary, &mut active);
+            for by_round in self.secondary.values_mut() {
+                let mut active = by_round.split_off(&cutoff_past);
+                std::mem::swap(by_round, &mut active);
+            }
         }
+        self.secondary.retain(|_, by_round| !by_round.is_empty());
     }
 
     // Returns None on out-of-window round
@@ -76,9 +89,29 @@ impl<PT: PubKey> RoundInfoCache<PT> {
         self.primary.get_mut(&round)
     }
 
+    // Returns None on out-of-window round
+    pub fn get_or_insert_secondary(
+        &mut self,
+        publisher: NodeId<PT>,
+        round: Round,
+    ) -> Option<&mut SecondaryGroupRoundInfo<PT>> {
+        self.check_round(round)?;
+        let by_round = self.secondary.entry(publisher).or_default();
+        Some(by_round.entry(round).or_default())
+    }
+
     #[cfg(test)]
     fn get_primary(&self, round: Round) -> Option<&PrimaryRoundInfo<PT>> {
         self.primary.get(&round)
+    }
+
+    #[cfg(test)]
+    fn get_secondary(
+        &self,
+        publisher: &NodeId<PT>,
+        round: Round,
+    ) -> Option<&SecondaryGroupRoundInfo<PT>> {
+        self.secondary.get(publisher)?.get(&round)
     }
 
     fn check_round(&self, round: Round) -> Option<()> {
@@ -149,36 +182,90 @@ impl<PT: PubKey> PrimaryRoundInfo<PT> {
     // publisher equivocation.
     #[must_use]
     pub fn try_commit(&mut self, chunk: &ValidatedChunk<PT>) -> Option<()> {
-        let Ok(claim) = ChunkCommitmentClaim::try_from(chunk) else {
-            // not applicable, so we ignore this chunk for commitment.
-            return Some(());
-        };
+        try_commit_into(&mut self.commitment, chunk)
+    }
+}
 
-        let Some(commitment) = &mut self.commitment else {
-            // no commitment for this round yet, so we will commit to
-            // the first claim we see.
-            self.commitment = Some(EncodingCommitment::from(claim));
-            return Some(());
-        };
-        if commitment.is_compatible_with(claim) {
-            return Some(());
+pub struct SecondaryGroupRoundInfo<PT: PubKey> {
+    encoding: Option<(deterministic::SecondaryEncoding<PT>, ChunkAssignment)>,
+    commitment: Option<EncodingCommitment>,
+}
+
+impl<PT: PubKey> Default for SecondaryGroupRoundInfo<PT> {
+    fn default() -> Self {
+        Self {
+            encoding: None,
+            commitment: None,
+        }
+    }
+}
+
+impl<PT: PubKey> SecondaryGroupRoundInfo<PT> {
+    pub fn chunk_routing(
+        &mut self,
+        group: &SecondaryBroadcastGroup<'_, PT>,
+        chunk: &ValidatedChunk<PT>,
+    ) -> Option<ChunkRouting<'_, PT, EvenPartition<PT>>> {
+        if self.encoding.is_none() {
+            let encoding = deterministic::SecondaryEncoding::new(
+                chunk.encoding_scheme,
+                group,
+                chunk.app_message_len as usize,
+                chunk.unix_ts_ms,
+            )
+            .ok()?;
+            let assignment = encoding.make_assignment().ok()?;
+            self.encoding = Some((encoding, assignment));
         }
 
-        // log conflicting commitment once
-        if !commitment.conflict_logged {
-            tracing::error!(
-                author = ?chunk.author,
-                round = ?claim.round,
-                chunk_merkle_root = ?claim.global_merkle_root,
-                commit_merkle_root = ?commitment.global_merkle_root,
-                chunk_signature = ?claim.signature,
-                commit_signature = ?commitment.signature,
-                "Conflicting commitment"
-            );
-            commitment.conflict_logged = true;
+        if let Some((encoding, assignment)) = &self.encoding {
+            return assignment.resolve_chunk_id(chunk.chunk_id as usize, encoding.partition());
         }
+
         None
     }
+
+    // Returns None if there is a conflicting commitment suggesting
+    // publisher equivocation.
+    #[must_use]
+    pub fn try_commit(&mut self, chunk: &ValidatedChunk<PT>) -> Option<()> {
+        try_commit_into(&mut self.commitment, chunk)
+    }
+}
+
+fn try_commit_into<PT: PubKey>(
+    slot: &mut Option<EncodingCommitment>,
+    chunk: &ValidatedChunk<PT>,
+) -> Option<()> {
+    let Ok(claim) = ChunkCommitmentClaim::try_from(chunk) else {
+        // not applicable, so we ignore this chunk for commitment.
+        return Some(());
+    };
+
+    let Some(commitment) = slot else {
+        // no commitment for this round yet, so we will commit to the
+        // first claim we see.
+        *slot = Some(EncodingCommitment::from(claim));
+        return Some(());
+    };
+    if commitment.is_compatible_with(claim) {
+        return Some(());
+    }
+
+    // log conflicting commitment once
+    if !commitment.conflict_logged {
+        tracing::error!(
+            author = ?chunk.author,
+            round = ?claim.round,
+            chunk_merkle_root = ?claim.global_merkle_root,
+            commit_merkle_root = ?commitment.global_merkle_root,
+            chunk_signature = ?claim.signature,
+            commit_signature = ?commitment.signature,
+            "Conflicting commitment"
+        );
+        commitment.conflict_logged = true;
+    }
+    None
 }
 
 type Signature = [u8; SIGNATURE_SIZE];

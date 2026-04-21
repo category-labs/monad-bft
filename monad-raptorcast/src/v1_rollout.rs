@@ -328,4 +328,167 @@ mod tests {
             ));
         }
     }
+
+    #[test]
+    fn test_v1_secondary_rebroadcast_matches_deterministic_assignment() {
+        use crate::{packet::deterministic::SecondaryEncoding, util::EncodingScheme};
+
+        let publisher_key = make_key_pair(0);
+        let publisher_id = NodeId::new(publisher_key.pubkey());
+
+        let full_nodes: BTreeSet<NodeId<PubKeyType>> = (1_u8..=20)
+            .map(|n| NodeId::new(make_key_pair(n).pubkey()))
+            .collect();
+        let group = SecondaryGroup::new(full_nodes.clone()).unwrap();
+
+        let bg = SecondaryBroadcastGroup::as_publisher(&publisher_id, ROUND, &group);
+        let build_target = secondary_build_target(
+            DeterministicProtocolRolloutStage::AlwaysV1,
+            EPOCH,
+            ROUND,
+            bg,
+        );
+
+        let app_message: Bytes = vec![0xCD_u8; 64 * 1024].into();
+        let unix_ts_ms = 1_700_000_000_000_u64;
+        let packets = MessageBuilder::<SignatureType>::new(&publisher_key)
+            .unix_ts_ms(unix_ts_ms)
+            .redundancy(Redundancy::from_u8(2))
+            .build_vec(&app_message, &build_target)
+            .expect("build should succeed");
+        assert!(!packets.is_empty());
+
+        let receiver_id = *full_nodes.iter().next().unwrap();
+        let mut fn_group_map = FullNodeGroupMap::<PubKeyType>::default();
+        let round_span = RoundSpan::new(Round(0), Round(u64::MAX)).unwrap();
+        fn_group_map
+            .try_insert(SecondaryGroupAssignment::new(
+                publisher_id,
+                round_span,
+                group.clone(),
+            ))
+            .expect("group insert");
+
+        let mut udp_state = UdpState::<SignatureType>::new(receiver_id, u64::MAX, 10_000);
+        udp_state.set_v1_rollout(DeterministicProtocolRolloutStage::AlwaysV1);
+
+        let group_map: std::collections::BTreeMap<_, _> = std::collections::BTreeMap::new();
+        let mut rebroadcast_count = 0usize;
+        for packet in &packets {
+            let recv_msg = AuthRecvMsg {
+                src_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8000),
+                payload: packet.payload.clone(),
+                stride: packet.stride as u16,
+                sender: None,
+            };
+            udp_state.handle_message(
+                &group_map,
+                &fn_group_map,
+                |_targets, _payload, _stride| rebroadcast_count += 1,
+                recv_msg,
+            );
+        }
+
+        // Reconstruct the deterministic chunk assignment to count how
+        // many chunks were addressed to the receiver.
+        let bg2 = SecondaryBroadcastGroup::as_publisher(&publisher_id, ROUND, &group);
+        let encoding = SecondaryEncoding::new(
+            EncodingScheme::Deterministic25(ROUND),
+            &bg2,
+            app_message.len(),
+            unix_ts_ms,
+        )
+        .unwrap();
+        let chunks = encoding.make_chunks().unwrap();
+        let addressed_to_receiver = chunks
+            .iter()
+            .filter(|c| *c.recipient().node_id() == receiver_id)
+            .count();
+
+        assert_eq!(rebroadcast_count, addressed_to_receiver);
+        assert!(
+            rebroadcast_count > 0,
+            "receiver should be assigned some chunks"
+        );
+    }
+
+    #[test]
+    fn test_v1_secondary_conflicting_commitment_rejected() {
+        let publisher_key = make_key_pair(0);
+        let publisher_id = NodeId::new(publisher_key.pubkey());
+
+        let full_nodes: BTreeSet<NodeId<PubKeyType>> = (1_u8..=20)
+            .map(|n| NodeId::new(make_key_pair(n).pubkey()))
+            .collect();
+        let group = SecondaryGroup::new(full_nodes.clone()).unwrap();
+
+        let bg1 = SecondaryBroadcastGroup::as_publisher(&publisher_id, ROUND, &group);
+        let build_target_a = secondary_build_target(
+            DeterministicProtocolRolloutStage::AlwaysV1,
+            EPOCH,
+            ROUND,
+            bg1,
+        );
+        let bg2 = SecondaryBroadcastGroup::as_publisher(&publisher_id, ROUND, &group);
+        let build_target_b = secondary_build_target(
+            DeterministicProtocolRolloutStage::AlwaysV1,
+            EPOCH,
+            ROUND,
+            bg2,
+        );
+
+        // Two different messages at the same round, both signed by the
+        // same publisher: the second must not decode.
+        let app_a: Bytes = vec![0xAA_u8; 64 * 1024].into();
+        let app_b: Bytes = vec![0xBB_u8; 64 * 1024].into();
+        let unix_ts_ms = 1_700_000_000_000_u64;
+
+        let packets_a = MessageBuilder::<SignatureType>::new(&publisher_key)
+            .unix_ts_ms(unix_ts_ms)
+            .redundancy(Redundancy::from_u8(2))
+            .build_vec(&app_a, &build_target_a)
+            .expect("build a");
+        let packets_b = MessageBuilder::<SignatureType>::new(&publisher_key)
+            .unix_ts_ms(unix_ts_ms)
+            .redundancy(Redundancy::from_u8(2))
+            .build_vec(&app_b, &build_target_b)
+            .expect("build b");
+
+        let receiver_id = *full_nodes.iter().next().unwrap();
+        let mut fn_group_map = FullNodeGroupMap::<PubKeyType>::default();
+        let round_span = RoundSpan::new(Round(0), Round(u64::MAX)).unwrap();
+        fn_group_map
+            .try_insert(SecondaryGroupAssignment::new(
+                publisher_id,
+                round_span,
+                group.clone(),
+            ))
+            .expect("group insert");
+
+        let mut udp_state = UdpState::<SignatureType>::new(receiver_id, u64::MAX, 10_000);
+        udp_state.set_v1_rollout(DeterministicProtocolRolloutStage::AlwaysV1);
+
+        let group_map: std::collections::BTreeMap<_, _> = std::collections::BTreeMap::new();
+        let mut decoded = Vec::new();
+        for packet in packets_a.iter().chain(packets_b.iter()) {
+            let recv_msg = AuthRecvMsg {
+                src_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8000),
+                payload: packet.payload.clone(),
+                stride: packet.stride as u16,
+                sender: None,
+            };
+            decoded.extend(udp_state.handle_message(
+                &group_map,
+                &fn_group_map,
+                |_, _, _| {},
+                recv_msg,
+            ));
+        }
+
+        // Only one of the two broadcasts should decode, whichever the
+        // receiver committed to first.
+        assert_eq!(decoded.len(), 1);
+        let (_, msg) = &decoded[0];
+        assert!(*msg == app_a || *msg == app_b);
+    }
 }
