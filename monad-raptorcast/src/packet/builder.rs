@@ -208,7 +208,7 @@ where
     {
         if let BuildTarget::Raptorcast {
             group,
-            mode: RaptorcastMode::Deterministic { round },
+            mode: RaptorcastMode::Deterministic { round, .. },
         } = build_target
         {
             let unix_ts_ms = self.unwrap_unix_ts_ms()?;
@@ -217,6 +217,23 @@ where
                 unix_ts_ms,
                 app_message,
                 group,
+                EncodingScheme::Deterministic25(*round),
+                collector,
+            );
+        }
+
+        if let BuildTarget::FullNodeRaptorCast {
+            group,
+            mode: RaptorcastMode::Deterministic { round, epoch },
+        } = build_target
+        {
+            let unix_ts_ms = self.unwrap_unix_ts_ms()?;
+            return deterministic::build_secondary::<ST, C>(
+                self.key.as_ref(),
+                unix_ts_ms,
+                app_message,
+                group,
+                *epoch,
                 EncodingScheme::Deterministic25(*round),
                 collector,
             );
