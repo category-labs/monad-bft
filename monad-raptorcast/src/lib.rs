@@ -439,6 +439,7 @@ where
             }
             SecondaryOutboundMessage::SendToGroup {
                 msg_bytes,
+                epoch,
                 round,
                 group,
             } => {
@@ -447,7 +448,12 @@ where
                 // consistent with the round.
                 let broadcast_group =
                     SecondaryBroadcastGroup::as_publisher(&self.self_id, round, &group);
-                let build_target = BuildTarget::FullNodeRaptorCast(broadcast_group);
+                let build_target = v1_rollout::secondary_build_target(
+                    self.v1_rollout,
+                    epoch,
+                    round,
+                    broadcast_group,
+                );
                 builder
                     .build_into(&msg_bytes, &build_target, &mut sink)
                     .unwrap_log_on_error(&msg_bytes, &build_target)

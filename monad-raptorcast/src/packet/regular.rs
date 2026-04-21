@@ -643,7 +643,10 @@ fn generate_chunks<PT: PubKey>(
             assignment.materialize(segment_len, &partition)?
         }
 
-        BuildTarget::FullNodeRaptorCast(secondary_group) => {
+        BuildTarget::FullNodeRaptorCast {
+            group: secondary_group,
+            ..
+        } => {
             let seed = rand::thread_rng().gen::<[u8; 32]>();
             let mut partition = EvenPartition::from_group(secondary_group);
             partition.shuffle(seed);
