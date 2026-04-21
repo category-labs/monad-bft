@@ -28,7 +28,10 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Ref, LE, U16, U32, 
 
 use crate::{
     message::MAX_MESSAGE_SIZE,
-    packet::{assigner::stake_partition_num_chunks_hint, deterministic, regular},
+    packet::{
+        assigner::{even_partition_num_chunks, stake_partition_num_chunks_hint},
+        deterministic, regular,
+    },
     udp::{ChunkSignatureVerifier, ChunkVersion, GroupId, InvalidChunk, ValidatedChunk},
     util::{ensure, BroadcastMode, EncodingScheme, HexBytes},
     SIGNATURE_SIZE,
@@ -269,6 +272,10 @@ impl RaptorcastHeaderV1 {
 
     pub fn raw_epoch(&self) -> u64 {
         self.epoch.get()
+    }
+
+    pub fn global_merkle_root(&self) -> MerkleHash {
+        self.global_merkle_root
     }
 }
 
@@ -632,11 +639,17 @@ impl<'a> RaptorcastPacketV1<'a> {
         );
 
         let broadcast_mode = self.header.broadcast_mode()?;
-        let chunk_id_cap = stake_partition_num_chunks_hint(
-            num_source_symbols,
-            deterministic::DEFAULT_REDUNDANCY,
-            MAX_VALIDATOR_SET_SIZE,
-        )
+        let chunk_id_cap = match broadcast_mode {
+            BroadcastMode::Primary => stake_partition_num_chunks_hint(
+                num_source_symbols,
+                deterministic::DEFAULT_REDUNDANCY,
+                MAX_VALIDATOR_SET_SIZE,
+            ),
+            BroadcastMode::Secondary => {
+                even_partition_num_chunks(num_source_symbols, deterministic::DEFAULT_REDUNDANCY)
+            }
+            BroadcastMode::Unspecified => None,
+        }
         .ok_or(InvalidChunk::InvalidChunkId)?;
         let chunk_id = self.chunk_header.chunk_id.get() as usize;
         ensure!(chunk_id < chunk_id_cap, InvalidChunk::InvalidChunkId);
