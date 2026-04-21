@@ -308,25 +308,37 @@ where
     Ok(buffer.freeze())
 }
 
-pub(super) struct GlobalMerkleTree<'a, PT: PubKey> {
-    chunks: &'a mut [Chunk<PT>],
-    tree: MerkleTree,
+// Shared inner pipeline for deterministic raptorcast encoding. Given
+// an assigned set of chunks for a group, this struct encodes Raptor
+// symbols into them and builds the global merkle tree, yielding the
+// global merkle root. Callers can then compute a header, write
+// headers and merkle proofs into each chunk, and emit them.
+pub(super) struct InnerDeterministicEncoding<PT: PubKey> {
     layout: PacketLayout,
+    chunks: Vec<Chunk<PT>>,
+    tree: MerkleTree,
 }
 
-impl<'a, PT: PubKey> GlobalMerkleTree<'a, PT> {
-    fn build(chunks: &'a mut [Chunk<PT>], layout: PacketLayout) -> Result<Self, BuildError> {
+impl<PT: PubKey> InnerDeterministicEncoding<PT> {
+    pub fn new(
+        layout: PacketLayout,
+        mut chunks: Vec<Chunk<PT>>,
+        app_message: &[u8],
+    ) -> Result<Self, BuildError> {
+        // Encode Raptor symbols into each chunk's payload.
+        encode_unique_symbols(app_message, &mut chunks, layout)?;
+
+        // Build the global merkle tree over (chunk header + symbol).
         chunks.sort_by_key(|c| c.chunk_id());
 
-        let mut hashes = Vec::with_capacity(chunks.len());
         let depth = layout.merkle_tree_depth();
         debug_assert!(chunks.len() <= 2usize.pow((depth - 1) as u32));
 
+        let mut hashes = Vec::with_capacity(chunks.len());
         for (leaf_index, chunk) in chunks.iter_mut().enumerate() {
             if chunk.chunk_id() != leaf_index {
                 return Err(BuildError::NonContiguousChunkIds);
             }
-
             layout.write_chunk_header(chunk)?;
             let hash = layout.chunk_hash(chunk);
             hashes.push(hash);
@@ -334,21 +346,23 @@ impl<'a, PT: PubKey> GlobalMerkleTree<'a, PT> {
 
         let tree = MerkleTree::new_with_depth(&hashes, depth);
         Ok(Self {
+            layout,
             chunks,
             tree,
-            layout,
         })
     }
 
-    fn write_header_and_proofs(&mut self, header: &[u8]) -> Result<(), BuildError> {
+    pub fn root(&self) -> &MerkleHash {
+        self.tree.root()
+    }
+
+    pub fn write_header_and_proofs(&mut self, header: &[u8]) -> Result<(), BuildError> {
         for (leaf_idx, chunk) in self.chunks.iter_mut().enumerate() {
             // for deterministic rc, leaf_idx === chunk_id
             debug_assert_eq!(leaf_idx, chunk.chunk_id());
 
-            // write header
             self.layout.write_header(chunk, header);
 
-            // write merkle proof
             let leaf_idx: u16 = leaf_idx
                 .try_into()
                 .map_err(|_| BuildError::ChunkIdOverflow)?;
@@ -358,8 +372,14 @@ impl<'a, PT: PubKey> GlobalMerkleTree<'a, PT> {
         Ok(())
     }
 
-    fn root(&self) -> &MerkleHash {
-        self.tree.root()
+    pub fn finalize_into<C>(self, collector: &mut C)
+    where
+        C: Collector<UdpMessage<PT>>,
+    {
+        collector.reserve(self.chunks.len());
+        for chunk in self.chunks.into_iter() {
+            collector.push(chunk.into());
+        }
     }
 }
 
@@ -470,23 +490,13 @@ where
     PT: PubKey,
     C: Collector<UdpMessage<PT>>,
 {
-    // step 1: chunk assignment
     let encoding = PrimaryEncoding::new(encoding_scheme, group, app_message.len(), unix_ts_ms)?;
     let layout = encoding.layout();
-    let mut chunks = encoding.make_chunks()?;
+    let chunks = encoding.make_chunks()?;
 
-    // step 2: write the encoded symbols into chunk's payload
-    encode_unique_symbols(app_message, &mut chunks, layout)?;
-
-    // step 3: build merkle tree & write chunk header
-    let mut merkle_tree = GlobalMerkleTree::build(&mut chunks[..], layout)?;
-    merkle_tree.write_header_and_proofs(header)?;
-
-    // step 4: send out the chunks
-    collector.reserve(chunks.len());
-    for chunk in chunks.into_iter() {
-        collector.push(chunk.into());
-    }
+    let mut inner = InnerDeterministicEncoding::new(layout, chunks, app_message)?;
+    inner.write_header_and_proofs(header)?;
+    inner.finalize_into(collector);
 
     Ok(())
 }
@@ -503,18 +513,12 @@ where
     ST: CertificateSignatureRecoverable,
     C: Collector<UdpMessage<CertificateSignaturePubKey<ST>>>,
 {
-    // step 1: chunk assignment
     let encoding = PrimaryEncoding::new(encoding_scheme, group, app_message.len(), unix_ts_ms)?;
     let layout = encoding.layout();
-    let mut chunks = encoding.make_chunks()?;
+    let chunks = encoding.make_chunks()?;
 
-    // step 2: write the encoded symbols into chunk's payload
-    encode_unique_symbols(app_message, &mut chunks, layout)?;
+    let mut inner = InnerDeterministicEncoding::new(layout, chunks, app_message)?;
 
-    // step 3: build merkle tree & write chunk header
-    let mut merkle_tree = GlobalMerkleTree::build(&mut chunks[..], layout)?;
-
-    // step 4: write header
     let group_id = group.group_id();
     let header = build_header::<ST>(
         key,
@@ -524,16 +528,11 @@ where
         group_id,
         group.epoch(),
         unix_ts_ms,
-        merkle_tree.root(),
+        inner.root(),
         app_message.len(),
     )?;
-    merkle_tree.write_header_and_proofs(&header)?;
-
-    // step 5: send out the chunks
-    collector.reserve(chunks.len());
-    for chunk in chunks.into_iter() {
-        collector.push(chunk.into());
-    }
+    inner.write_header_and_proofs(&header)?;
+    inner.finalize_into(collector);
 
     Ok(())
 }
@@ -546,19 +545,12 @@ pub(crate) fn calc_global_merkle_root<PT: PubKey>(
     encoding_scheme: EncodingScheme,
     unix_ts_ms: u64,
 ) -> Result<MerkleHash, BuildError> {
-    // step 1: chunk assignment
     let encoding = PrimaryEncoding::new(encoding_scheme, group, app_message.len(), unix_ts_ms)?;
     let layout = encoding.layout();
-    let mut chunks = encoding.make_chunks()?;
+    let chunks = encoding.make_chunks()?;
 
-    // step 2: write the encoded symbols into chunk's payload
-    encode_unique_symbols(app_message, &mut chunks, layout)?;
-
-    // step 3: write the chunk header & build a global merkle tree
-    let merkle_tree = GlobalMerkleTree::build(&mut chunks[..], layout)?;
-
-    // step 4: find the merkle root
-    Ok(*merkle_tree.root())
+    let inner = InnerDeterministicEncoding::new(layout, chunks, app_message)?;
+    Ok(*inner.root())
 }
 
 fn encode_unique_symbols<PT: PubKey>(
