@@ -269,6 +269,10 @@ impl RaptorcastHeaderV1 {
     pub fn raw_epoch(&self) -> u64 {
         self.epoch.get()
     }
+
+    pub fn global_merkle_root(&self) -> MerkleHash {
+        self.global_merkle_root
+    }
 }
 
 /// Raptorcast V1 chunk header layout (follows header and merkle proof):

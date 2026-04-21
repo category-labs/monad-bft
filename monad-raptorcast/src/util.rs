@@ -516,6 +516,18 @@ impl<'a, PT: PubKey> SecondaryBroadcastGroup<'a, PT> {
     pub fn group_id(&self) -> GroupId {
         GroupId::Secondary(self.round)
     }
+
+    pub fn publisher(&self) -> &NodeId<PT> {
+        self.publisher
+    }
+
+    pub fn round(&self) -> Round {
+        self.round
+    }
+
+    pub fn len(&self) -> NonZero<usize> {
+        self.group.len()
+    }
 }
 
 pub struct RebroadcastContext<'a, PT: PubKey> {

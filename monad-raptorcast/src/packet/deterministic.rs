@@ -28,7 +28,10 @@ use monad_types::{Epoch, NodeId, Round, ETHERNET_MTU};
 use monad_wireauth::messages::DataPacketHeader;
 
 use super::{
-    assigner::{stake_partition_num_chunks_hint, ChunkAssignment, StakePartition},
+    assigner::{
+        even_partition_num_chunks, stake_partition_num_chunks_hint, ChunkAssignment, EvenPartition,
+        StakePartition,
+    },
     Chunk,
 };
 use crate::{
@@ -37,7 +40,7 @@ use crate::{
     udp::GroupId,
     util::{
         ensure, BroadcastMode, Collector, EncodingScheme, PrimaryBroadcastGroup, Redundancy,
-        UdpMessage,
+        SecondaryBroadcastGroup, UdpMessage,
     },
     SIGNATURE_SIZE,
 };
@@ -455,6 +458,76 @@ impl<PT: PubKey> PrimaryEncoding<PT> {
     }
 }
 
+pub(crate) struct SecondaryEncoding<PT: PubKey> {
+    layout: PacketLayout,
+    redundancy: Redundancy,
+    app_message_len: usize,
+    partition: EvenPartition<PT>,
+}
+
+impl<PT: PubKey> SecondaryEncoding<PT> {
+    pub fn new<'a>(
+        encoding_scheme: EncodingScheme,
+        group: &'a SecondaryBroadcastGroup<'a, PT>,
+        app_message_len: usize,
+        unix_ts_ms: u64,
+    ) -> Result<Self, BuildError> {
+        let EncodingScheme::Deterministic25(round) = encoding_scheme else {
+            return Err(BuildError::InvalidEncodingScheme);
+        };
+
+        ensure!(app_message_len > 0, BuildError::AppMessageEmpty);
+        ensure!(
+            app_message_len <= MAX_MESSAGE_SIZE,
+            BuildError::AppMessageTooLarge
+        );
+
+        let mut partition = EvenPartition::from_group(group);
+        let redundancy = DEFAULT_REDUNDANCY;
+        let segment_len = DEFAULT_SEGMENT_LEN;
+
+        // Search for optimal tree depth.
+        let depth = optimal_merkle_tree_depth(|d| {
+            let layout = PacketLayout::new(segment_len, d);
+            let num_base_symbols = layout.num_base_symbols(app_message_len);
+            partition.num_chunks(num_base_symbols, redundancy)
+        })
+        .ok_or(BuildError::MerkleTreeTooDeep)?;
+        let layout = PacketLayout::new(segment_len, depth);
+
+        // Shuffle the full-node group members.
+        let seed = derive_seed(group.publisher(), round, unix_ts_ms);
+        partition.shuffle(seed);
+
+        Ok(Self {
+            redundancy,
+            layout,
+            app_message_len,
+            partition,
+        })
+    }
+
+    pub fn layout(&self) -> PacketLayout {
+        self.layout
+    }
+
+    pub fn make_chunks(&self) -> Result<Vec<Chunk<PT>>, BuildError> {
+        let assignment = self.make_assignment()?;
+        let chunks = assignment.materialize(self.layout.segment_len(), &self.partition)?;
+        Ok(chunks)
+    }
+
+    pub fn make_assignment(&self) -> Result<ChunkAssignment, BuildError> {
+        let num_base_symbols = self.layout.num_base_symbols(self.app_message_len);
+        let assignment = self.partition.assign(num_base_symbols, self.redundancy)?;
+        Ok(assignment)
+    }
+
+    pub fn partition(&self) -> &EvenPartition<PT> {
+        &self.partition
+    }
+}
+
 pub fn calc_tree_depth(
     encoding_scheme: EncodingScheme,
     app_message_len: usize,
@@ -475,6 +548,26 @@ pub fn calc_tree_depth(
     })?;
 
     Some(depth)
+}
+
+pub fn calc_tree_depth_secondary(
+    encoding_scheme: EncodingScheme,
+    app_message_len: usize,
+) -> Option<u8> {
+    let EncodingScheme::Deterministic25(_) = encoding_scheme else {
+        return None;
+    };
+
+    let redundancy = DEFAULT_REDUNDANCY;
+    let segment_len = DEFAULT_SEGMENT_LEN;
+
+    // For an even partition the total chunks are independent of the
+    // group size so we don't need to pass the group size in here.
+    optimal_merkle_tree_depth(|d| {
+        let layout = PacketLayout::new(segment_len, d);
+        let num_base_symbols = layout.num_base_symbols(app_message_len);
+        even_partition_num_chunks(num_base_symbols, redundancy)
+    })
 }
 
 #[cfg(test)]
@@ -553,6 +646,60 @@ pub(crate) fn calc_global_merkle_root<PT: PubKey>(
     Ok(*inner.root())
 }
 
+pub(crate) fn build_secondary<ST, C>(
+    key: &ST::KeyPairType,
+    unix_ts_ms: u64,
+    app_message: &[u8],
+    group: &SecondaryBroadcastGroup<'_, CertificateSignaturePubKey<ST>>,
+    epoch: Epoch,
+    encoding_scheme: EncodingScheme,
+    collector: &mut C,
+) -> Result<(), BuildError>
+where
+    ST: CertificateSignatureRecoverable,
+    C: Collector<UdpMessage<CertificateSignaturePubKey<ST>>>,
+{
+    let encoding = SecondaryEncoding::new(encoding_scheme, group, app_message.len(), unix_ts_ms)?;
+    let layout = encoding.layout();
+    let chunks = encoding.make_chunks()?;
+
+    let mut inner = InnerDeterministicEncoding::new(layout, chunks, app_message)?;
+
+    let group_id = group.group_id();
+    let header = build_header::<ST>(
+        key,
+        BroadcastMode::Secondary,
+        encoding_scheme,
+        layout.merkle_tree_depth(),
+        group_id,
+        epoch,
+        unix_ts_ms,
+        inner.root(),
+        app_message.len(),
+    )?;
+    inner.write_header_and_proofs(&header)?;
+    inner.finalize_into(collector);
+
+    Ok(())
+}
+
+// Calculate the deterministic global merkle root of a given app
+// message for a secondary (validator-to-fullnode) broadcast, without
+// actually building the packets.
+pub(crate) fn calc_global_merkle_root_secondary<PT: PubKey>(
+    app_message: &[u8],
+    group: &SecondaryBroadcastGroup<'_, PT>,
+    encoding_scheme: EncodingScheme,
+    unix_ts_ms: u64,
+) -> Result<MerkleHash, BuildError> {
+    let encoding = SecondaryEncoding::new(encoding_scheme, group, app_message.len(), unix_ts_ms)?;
+    let layout = encoding.layout();
+    let chunks = encoding.make_chunks()?;
+
+    let inner = InnerDeterministicEncoding::new(layout, chunks, app_message)?;
+    Ok(*inner.root())
+}
+
 fn encode_unique_symbols<PT: PubKey>(
     app_message: &[u8],
     chunks: &mut [Chunk<PT>],
@@ -596,15 +743,18 @@ fn optimal_merkle_tree_depth(calc_total_symbols: impl Fn(u8) -> Option<usize>) -
 
 #[cfg(test)]
 mod tests {
-    use monad_crypto::hasher::Hasher as _;
+    use std::collections::BTreeSet;
+
+    use monad_crypto::{certificate_signature::CertificateSignaturePubKey, hasher::Hasher as _};
     use monad_merkle::{MerkleHash, MerkleTree};
     use monad_raptor::r10::lt::MAX_TRIPLES;
     use monad_secp::{KeyPair, SecpSignature};
-    use monad_types::{Epoch, Round};
+    use monad_types::{Epoch, NodeId, Round};
     use zerocopy::Ref;
 
     use super::{
-        build_header, calc_tree_depth, PacketLayout, DEFAULT_REDUNDANCY, DEFAULT_SEGMENT_LEN,
+        build_header, build_secondary, calc_global_merkle_root_secondary, calc_tree_depth,
+        calc_tree_depth_secondary, PacketLayout, DEFAULT_REDUNDANCY, DEFAULT_SEGMENT_LEN,
         MAX_MERKLE_TREE_DEPTH, MAX_SYMBOL_LEN, MIN_MERKLE_TREE_DEPTH, MIN_SYMBOL_LEN,
     };
     use crate::{
@@ -612,10 +762,13 @@ mod tests {
         packet::{assigner::stake_partition_num_chunks_hint, BuildError},
         parser::packet_parser::RaptorcastHeaderV1,
         udp::{GroupId, MAX_NUM_PACKETS, MAX_VALIDATOR_SET_SIZE},
-        util::{BroadcastMode, EncodingScheme},
+        util::{
+            BroadcastMode, EncodingScheme, SecondaryBroadcastGroup, SecondaryGroup, UdpMessage,
+        },
         SIGNATURE_SIZE,
     };
 
+    type PubKeyType = CertificateSignaturePubKey<ST>;
     type ST = SecpSignature;
 
     // Statically asserted properties
@@ -855,5 +1008,112 @@ mod tests {
         )
         .expect_err("primary mode with mismatched epoch should fail");
         assert!(matches!(err, BuildError::InvalidGroupId(_)));
+    }
+
+    fn fullnode_id(n: u8) -> NodeId<PubKeyType> {
+        let mut hasher = monad_crypto::hasher::HasherType::new();
+        hasher.update([0xF0_u8, n]);
+        let mut hash = hasher.hash();
+        let key = KeyPair::from_bytes(&mut hash.0).unwrap();
+        NodeId::new(key.pubkey())
+    }
+
+    fn make_secondary_group(num_full_nodes: u8) -> SecondaryGroup<PubKeyType> {
+        let nodes: BTreeSet<_> = (0..num_full_nodes).map(fullnode_id).collect();
+        SecondaryGroup::new(nodes).expect("non-empty group")
+    }
+
+    #[test]
+    fn test_build_secondary_is_deterministic() {
+        let key = test_keypair();
+        let publisher = NodeId::new(key.pubkey());
+        let round = Round(42);
+        let epoch = Epoch(3);
+        let unix_ts_ms = 1_700_000_000_000_u64;
+        let app_message: Vec<u8> = (0..8192).map(|i| (i % 251) as u8).collect();
+
+        let group = make_secondary_group(16);
+        let bg1 = SecondaryBroadcastGroup::as_publisher(&publisher, round, &group);
+        let bg2 = SecondaryBroadcastGroup::as_publisher(&publisher, round, &group);
+
+        let mut packets_a: Vec<UdpMessage<_>> = Vec::new();
+        build_secondary::<ST, _>(
+            &key,
+            unix_ts_ms,
+            &app_message,
+            &bg1,
+            epoch,
+            EncodingScheme::Deterministic25(round),
+            &mut packets_a,
+        )
+        .expect("first build");
+
+        let mut packets_b: Vec<UdpMessage<_>> = Vec::new();
+        build_secondary::<ST, _>(
+            &key,
+            unix_ts_ms,
+            &app_message,
+            &bg2,
+            epoch,
+            EncodingScheme::Deterministic25(round),
+            &mut packets_b,
+        )
+        .expect("second build");
+
+        assert!(!packets_a.is_empty());
+        assert_eq!(packets_a.len(), packets_b.len());
+        for (a, b) in packets_a.iter().zip(packets_b.iter()) {
+            assert_eq!(a.payload, b.payload, "chunk payloads must be identical");
+            assert_eq!(a.recipient.node_id(), b.recipient.node_id());
+        }
+    }
+
+    #[test]
+    fn test_calc_global_merkle_root_secondary_matches_build() {
+        let key = test_keypair();
+        let publisher = NodeId::new(key.pubkey());
+        let round = Round(99);
+        let epoch = Epoch(11);
+        let unix_ts_ms = 1_700_000_000_000_u64;
+        let app_message: Vec<u8> = (0..4096).map(|i| (i % 241) as u8).collect();
+
+        let group = make_secondary_group(10);
+        let bg = SecondaryBroadcastGroup::as_publisher(&publisher, round, &group);
+
+        let mut packets: Vec<UdpMessage<_>> = Vec::new();
+        build_secondary::<ST, _>(
+            &key,
+            unix_ts_ms,
+            &app_message,
+            &bg,
+            epoch,
+            EncodingScheme::Deterministic25(round),
+            &mut packets,
+        )
+        .expect("build");
+
+        let standalone_root = calc_global_merkle_root_secondary(
+            &app_message,
+            &bg,
+            EncodingScheme::Deterministic25(round),
+            unix_ts_ms,
+        )
+        .expect("calc root");
+
+        // The global merkle root is the first 20 bytes of the root
+        // field inside the V1 header. Extract it from any built chunk.
+        let first_packet = &packets[0].payload;
+        let v1 = parse_v1_header(&first_packet[..PacketLayout::HEADER_LEN]);
+        assert_eq!(v1.global_merkle_root(), standalone_root);
+    }
+
+    #[test]
+    fn test_calc_tree_depth_secondary_in_range() {
+        for app_msg_len in [1_usize, 1024, 64 * 1024, MAX_MESSAGE_SIZE] {
+            let depth =
+                calc_tree_depth_secondary(EncodingScheme::Deterministic25(Round(0)), app_msg_len)
+                    .expect("should find a valid depth");
+            assert!((MIN_MERKLE_TREE_DEPTH..=MAX_MERKLE_TREE_DEPTH).contains(&depth));
+        }
     }
 }
