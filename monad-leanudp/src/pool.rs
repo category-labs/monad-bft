@@ -61,7 +61,8 @@ pub(crate) struct FragmentInput<I> {
 }
 
 struct MessageState {
-    fragments: BTreeMap<u16, Bytes>,
+    fragments: Box<[Option<Bytes>; MAX_FRAGMENTS]>,
+    fragment_count: u16,
     total_size: usize,
     total_frags: Option<u16>,
     eviction_deadline: Instant,
@@ -70,7 +71,8 @@ struct MessageState {
 impl MessageState {
     fn new(eviction_deadline: Instant) -> Self {
         Self {
-            fragments: BTreeMap::new(),
+            fragments: Box::new(std::array::from_fn(|_| None)),
+            fragment_count: 0,
             total_size: 0,
             total_frags: None,
             eviction_deadline,
@@ -79,7 +81,10 @@ impl MessageState {
 
     fn extract(self) -> Bytes {
         let mut buf = BytesMut::with_capacity(self.total_size);
-        for frag in self.fragments.into_values() {
+        let total_frags =
+            self.total_frags
+                .expect("complete message must have declared fragment count") as usize;
+        for frag in self.fragments.into_iter().take(total_frags).flatten() {
             buf.extend_from_slice(&frag);
         }
         buf.freeze()
@@ -511,7 +516,7 @@ impl<I: Eq + Hash + Clone + Ord, R: CryptoRng + RngCore> MessagePool<I, R> {
             // NOTE(dshulyak): duplicate fragments should only happen when a sender is buggy
             // or malicious and resends the same chunk.
             ensure!(
-                !state.fragments.contains_key(&seq_num),
+                state.fragments[seq_num as usize].is_none(),
                 DecodeError::DuplicateFragment { msg_id, seq_num }
             );
 
@@ -555,9 +560,10 @@ impl<I: Eq + Hash + Clone + Ord, R: CryptoRng + RngCore> MessagePool<I, R> {
                 }
             );
             state.total_size = total_size.expect("total_size validated above");
-            state.fragments.insert(seq_num, data);
+            state.fragments[seq_num as usize] = Some(data);
+            state.fragment_count += 1;
 
-            state.total_frags == Some(state.fragments.len() as u16)
+            state.total_frags == Some(state.fragment_count)
         };
         if !is_complete {
             return Ok(DecodeOutcome::Pending);
