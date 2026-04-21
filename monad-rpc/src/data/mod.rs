@@ -22,7 +22,7 @@ use alloy_consensus::{
     transaction::Recovered, Header as RlpHeader, ReceiptEnvelope, ReceiptWithBloom,
     Transaction as _,
 };
-use alloy_primitives::{Bloom, FixedBytes, TxHash, TxKind, U256};
+use alloy_primitives::{Address, Bloom, FixedBytes, TxHash, TxKind, U256};
 use alloy_rlp::Encodable;
 use alloy_rpc_types::{
     Block, BlockTransactions, Filter, FilterBlockOption, FilteredParams, Header, Log, Receipt,
@@ -35,7 +35,8 @@ use monad_archive::{
     prelude::{ArchiveReader, Context, ContextCompat, IndexReader},
 };
 use monad_eth_types::{
-    BlockHeader, ReceiptWithLogIndex, TransactionLocation, TxEnvelopeWithSender,
+    domain_for_chain_id, BlockHeader, EthTxEnvelope, ReceiptWithLogIndex, TransactionLocation,
+    TxEnvelopeWithSender,
 };
 use monad_triedb_utils::triedb_env::{BlockKey, FinalizedBlockKey, ProposedBlockKey, Triedb};
 use monad_types::{BlockId, Hash, SeqNum};
@@ -77,6 +78,24 @@ pub enum ChainStateError {
     Archive(String),
     DataSource(DataSourceError),
     ResourceNotFound,
+}
+
+#[derive(Clone, Copy)]
+struct DomainFilter {
+    base_chain_id: u64,
+    domain: Option<Address>,
+}
+
+fn transaction_matches_domain_filter(
+    tx: &EthTxEnvelope,
+    domain_filter: Option<DomainFilter>,
+) -> bool {
+    let Some(domain_filter) = domain_filter else {
+        return true;
+    };
+
+    domain_for_chain_id(tx.chain_id(), domain_filter.base_chain_id)
+        .is_ok_and(|domain| domain == domain_filter.domain)
 }
 
 impl From<monad_archive::prelude::Report> for ChainStateError {
@@ -249,6 +268,54 @@ where
         Err(ChainStateError::ResourceNotFound)
     }
 
+    pub async fn get_transaction_receipt_for_domain(
+        &self,
+        tx_hash: &TxHash,
+        base_chain_id: u64,
+        domain: Option<Address>,
+    ) -> Result<TransactionReceipt, ChainStateError> {
+        if let Some(domain) = domain {
+            let domain_bytes = domain.into_array();
+            let latest_block_key = get_latest_block_key(&self.triedb_env);
+            if let Some(TransactionLocation {
+                tx_index,
+                block_num,
+            }) = self
+                .triedb_env
+                .get_domain_transaction_location_by_hash(latest_block_key, domain_bytes, tx_hash.0)
+                .await
+                .map_err(ChainStateError::Triedb)?
+            {
+                let block_key = self
+                    .triedb_env
+                    .get_block_key(SeqNum(block_num))
+                    .ok_or(ChainStateError::ResourceNotFound)?;
+                if let Some(receipt) = get_domain_receipt_from_triedb(
+                    &self.triedb_env,
+                    block_key,
+                    domain_bytes,
+                    tx_index,
+                )
+                .await?
+                {
+                    return Ok(receipt);
+                }
+            }
+        }
+
+        let transaction = self.get_transaction(tx_hash).await?;
+        let domain_filter = DomainFilter {
+            base_chain_id,
+            domain,
+        };
+
+        if !transaction_matches_domain_filter(transaction.inner.inner(), Some(domain_filter)) {
+            return Err(ChainStateError::ResourceNotFound);
+        }
+
+        self.get_transaction_receipt(tx_hash).await
+    }
+
     pub async fn get_transaction_with_block_and_index(
         &self,
         block: BlockTagOrHash,
@@ -378,6 +445,59 @@ where
         Err(ChainStateError::ResourceNotFound)
     }
 
+    pub async fn get_transaction_for_domain(
+        &self,
+        tx_hash: &TxHash,
+        base_chain_id: u64,
+        domain: Option<Address>,
+    ) -> Result<Transaction, ChainStateError> {
+        let domain_filter = DomainFilter {
+            base_chain_id,
+            domain,
+        };
+
+        if let Some(domain) = domain {
+            let domain_bytes = domain.into_array();
+            let latest_block_key = get_latest_block_key(&self.triedb_env);
+            if let Some(TransactionLocation {
+                tx_index,
+                block_num,
+            }) = self
+                .triedb_env
+                .get_domain_transaction_location_by_hash(latest_block_key, domain_bytes, tx_hash.0)
+                .await
+                .map_err(ChainStateError::Triedb)?
+            {
+                let block_key = self
+                    .triedb_env
+                    .get_block_key(SeqNum(block_num))
+                    .ok_or(ChainStateError::ResourceNotFound)?;
+                if let Some(transaction) = get_domain_transaction_from_triedb(
+                    &self.triedb_env,
+                    block_key,
+                    domain_bytes,
+                    tx_index,
+                )
+                .await?
+                {
+                    if transaction_matches_domain_filter(
+                        transaction.inner.inner(),
+                        Some(domain_filter),
+                    ) {
+                        return Ok(transaction);
+                    }
+                }
+            }
+        }
+
+        let transaction = self.get_transaction(tx_hash).await?;
+        if !transaction_matches_domain_filter(transaction.inner.inner(), Some(domain_filter)) {
+            return Err(ChainStateError::ResourceNotFound);
+        }
+
+        Ok(transaction)
+    }
+
     pub async fn get_block_header(
         &self,
         block: BlockTagOrHash,
@@ -494,10 +614,88 @@ where
         &self,
         block: BlockTagOrHash,
     ) -> Result<Vec<MonadTransactionReceipt>, ChainStateError> {
+        self.get_block_receipts_inner(block, None).await
+    }
+
+    pub async fn get_block_receipts_for_domain(
+        &self,
+        block: BlockTagOrHash,
+        base_chain_id: u64,
+        domain: Option<Address>,
+    ) -> Result<Vec<MonadTransactionReceipt>, ChainStateError> {
+        self.get_block_receipts_inner(
+            block,
+            Some(DomainFilter {
+                base_chain_id,
+                domain,
+            }),
+        )
+        .await
+    }
+
+    async fn get_block_receipts_inner(
+        &self,
+        block: BlockTagOrHash,
+        domain_filter: Option<DomainFilter>,
+    ) -> Result<Vec<MonadTransactionReceipt>, ChainStateError> {
+        if let Some(DomainFilter {
+            domain: Some(domain),
+            ..
+        }) = domain_filter
+        {
+            if let Some(block_key) =
+                get_block_key_from_tag_or_hash(&self.triedb_env, block.clone()).await
+            {
+                let domain_bytes = domain.into_array();
+                let transactions = self
+                    .triedb_env
+                    .get_domain_transactions(block_key, domain_bytes)
+                    .await
+                    .map_err(ChainStateError::Triedb)?;
+                if !transactions.is_empty() {
+                    let header = self
+                        .triedb_env
+                        .get_block_header(block_key)
+                        .await
+                        .map_err(ChainStateError::Triedb)?
+                        .ok_or(ChainStateError::ResourceNotFound)?;
+                    let receipts = self
+                        .triedb_env
+                        .get_domain_receipts(block_key, domain_bytes)
+                        .await
+                        .map_err(ChainStateError::Triedb)?;
+                    return map_block_receipts_inner(
+                        transactions,
+                        receipts,
+                        &header.header,
+                        header.hash,
+                        None,
+                        MonadTransactionReceipt,
+                    )
+                    .map_err(|_| ChainStateError::ResourceNotFound);
+                }
+            }
+        }
+
         if let Some(buffer) = &self.buffer {
             if let Some(height) = resolve_block_height_from_buffer(buffer, &block) {
-                if let Some(receipts) = buffer.get_receipts_by_block_height(height) {
-                    return Ok(receipts.into_iter().map(MonadTransactionReceipt).collect());
+                if domain_filter.is_none() {
+                    if let Some(receipts) = buffer.get_receipts_by_block_height(height) {
+                        return Ok(receipts.into_iter().map(MonadTransactionReceipt).collect());
+                    }
+                } else if let Some((header, transactions, receipts)) =
+                    buffer.get_bloom_filtered_header_transactions_receipts(height, |_| true)
+                {
+                    let block_receipts = map_block_receipts_inner(
+                        transactions,
+                        receipts,
+                        &header.header,
+                        header.hash,
+                        domain_filter,
+                        MonadTransactionReceipt,
+                    )
+                    .map_err(|_| ChainStateError::ResourceNotFound)?;
+                    return Ok(block_receipts);
                 }
             }
         }
@@ -514,11 +712,12 @@ where
                 // if block header is present but transactions are not, the block is statesynced
                 if let Ok(transactions) = self.triedb_env.get_transactions(block_key).await {
                     if let Ok(receipts) = self.triedb_env.get_receipts(block_key).await {
-                        let block_receipts = map_block_receipts(
+                        let block_receipts = map_block_receipts_inner(
                             transactions,
                             receipts,
                             &header.header,
                             header.hash,
+                            domain_filter,
                             MonadTransactionReceipt,
                         )
                         .map_err(|_| ChainStateError::ResourceNotFound)?;
@@ -550,11 +749,12 @@ where
                     .try_get_block_receipts(block.header.number)
                     .await?
                 {
-                    let block_receipts = map_block_receipts(
+                    let block_receipts = map_block_receipts_inner(
                         block.body.transactions,
                         receipts_with_log_index,
                         &block.header,
                         block.header.hash_slow(),
+                        domain_filter,
                         MonadTransactionReceipt,
                     )
                     .map_err(|_| ChainStateError::ResourceNotFound)?;
@@ -574,6 +774,55 @@ where
         use_eth_get_logs_index: bool,
         dry_run_get_logs_index: bool,
         max_finalized_block_cache_len: u64,
+    ) -> JsonRpcResult<Vec<MonadLog>> {
+        self.get_logs_inner(
+            filter,
+            max_response_size,
+            max_block_range,
+            use_eth_get_logs_index,
+            dry_run_get_logs_index,
+            max_finalized_block_cache_len,
+            None,
+        )
+        .await
+    }
+
+    pub async fn get_logs_for_domain(
+        &self,
+        filter: Filter,
+        max_response_size: u32,
+        max_block_range: u64,
+        use_eth_get_logs_index: bool,
+        dry_run_get_logs_index: bool,
+        max_finalized_block_cache_len: u64,
+        base_chain_id: u64,
+        domain: Option<Address>,
+    ) -> JsonRpcResult<Vec<MonadLog>> {
+        self.get_logs_inner(
+            filter,
+            max_response_size,
+            max_block_range,
+            use_eth_get_logs_index,
+            dry_run_get_logs_index,
+            max_finalized_block_cache_len,
+            Some(DomainFilter {
+                base_chain_id,
+                domain,
+            }),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn get_logs_inner(
+        &self,
+        filter: Filter,
+        max_response_size: u32,
+        max_block_range: u64,
+        use_eth_get_logs_index: bool,
+        dry_run_get_logs_index: bool,
+        max_finalized_block_cache_len: u64,
+        domain_filter: Option<DomainFilter>,
     ) -> JsonRpcResult<Vec<MonadLog>> {
         let latest_block_number = self.get_latest_block_number();
 
@@ -665,6 +914,13 @@ where
             && self.archive_reader.is_some()
             && to_block_outside_cache
             && has_filters
+            && !matches!(
+                domain_filter,
+                Some(DomainFilter {
+                    domain: Some(_),
+                    ..
+                })
+            )
         {
             let archive_reader = self.archive_reader.as_ref().unwrap();
             trace!("Using eth_getLogs index");
@@ -674,6 +930,7 @@ where
                 to_block,
                 &filter,
                 &filtered_params,
+                domain_filter,
             )
             .await
             {
@@ -711,11 +968,20 @@ where
         };
 
         let stream_with_buffer = stream::iter(from_block..=to_block).map(|block_num| {
-            if let Some(buffer) = &self.buffer {
-                if let Some(data) =
-                    buffer.get_bloom_filtered_header_transactions_receipts(block_num, filter_match)
-                {
-                    return Either::Left(data);
+            let private_domain = matches!(
+                domain_filter,
+                Some(DomainFilter {
+                    domain: Some(_),
+                    ..
+                })
+            );
+            if !private_domain {
+                if let Some(buffer) = &self.buffer {
+                    if let Some(data) = buffer
+                        .get_bloom_filtered_header_transactions_receipts(block_num, filter_match)
+                    {
+                        return Either::Left(data);
+                    }
                 }
             }
 
@@ -742,6 +1008,27 @@ where
                     // pass block number to try for archive
                     return Ok(Either::Right(block_number));
                 };
+
+                if let Some(DomainFilter {
+                    domain: Some(domain),
+                    ..
+                }) = domain_filter
+                {
+                    let domain_bytes = domain.into_array();
+                    let transactions = self
+                        .triedb_env
+                        .get_domain_transactions(block_key, domain_bytes)
+                        .await
+                        .map_err(JsonRpcError::internal_error)?;
+                    if !transactions.is_empty() {
+                        let receipts = self
+                            .triedb_env
+                            .get_domain_receipts(block_key, domain_bytes)
+                            .await
+                            .map_err(JsonRpcError::internal_error)?;
+                        return Ok(Either::Left((header, transactions, receipts)));
+                    }
+                }
 
                 if !filter_match(header.header.logs_bloom) {
                     return Ok(Either::Left((header, vec![], vec![])));
@@ -802,6 +1089,7 @@ where
                         transactions,
                         receipts,
                         filtered_params,
+                        domain_filter,
                     )
                 })
             }
@@ -815,7 +1103,15 @@ where
         )
         .await??;
 
-        if dry_run_get_logs_index {
+        if dry_run_get_logs_index
+            && !matches!(
+                domain_filter,
+                Some(DomainFilter {
+                    domain: Some(_),
+                    ..
+                })
+            )
+        {
             if let Some(archive_reader) = self.archive_reader.clone() {
                 let non_indexed =
                     HashSet::from_iter(logs.iter().map(|monad_log| &monad_log.0).cloned());
@@ -828,6 +1124,7 @@ where
                         filter,
                         filtered_params,
                         non_indexed,
+                        domain_filter,
                     )
                     .await
                     {
@@ -1096,6 +1393,7 @@ async fn check_dry_run_get_logs_index(
     filter: Filter,
     filtered_params: FilteredParams,
     non_indexed: HashSet<Log>,
+    domain_filter: Option<DomainFilter>,
 ) -> monad_archive::prelude::Result<()> {
     let indexed = HashSet::from_iter(
         try_create_logs_stream_using_index(
@@ -1104,6 +1402,7 @@ async fn check_dry_run_get_logs_index(
             to_block,
             &filter,
             &filtered_params,
+            domain_filter,
         )
         .await
         .wrap_err("Error getting logs with index")?
@@ -1154,6 +1453,7 @@ async fn get_receipts_stream_using_index<'a>(
     from_block: u64,
     to_block: u64,
     filter: &'a Filter,
+    domain_filter: Option<DomainFilter>,
 ) -> monad_archive::prelude::Result<
     impl Stream<Item = monad_archive::prelude::Result<(u64, Vec<ReceiptEnvelope<Log>>)>> + 'a,
 > {
@@ -1175,32 +1475,40 @@ async fn get_receipts_stream_using_index<'a>(
         );
     }
 
-    let mut stream = log_index
+    let stream = log_index
         .query_logs(from_block, to_block, filter.address.iter(), &filter.topics)
         .await?
-        .map_ok(
-            |TxIndexedData {
-                 tx,
-                 trace: _,
-                 receipt,
-                 header_subset,
-             }| {
-                (
+        .filter_map(move |result| async move {
+            let TxIndexedData {
+                tx,
+                trace: _,
+                receipt,
+                header_subset,
+            } = match result {
+                Ok(data) => data,
+                Err(err) => return Some(Err(err)),
+            };
+
+            if !transaction_matches_domain_filter(&tx.tx, domain_filter) {
+                return None;
+            }
+
+            Some(Ok((
+                header_subset.block_number,
+                header_subset.tx_index,
+                parse_receipt_envelope(
+                    header_subset.block_hash,
                     header_subset.block_number,
+                    header_subset.block_timestamp,
                     header_subset.tx_index,
-                    parse_receipt_envelope(
-                        header_subset.block_hash,
-                        header_subset.block_number,
-                        header_subset.block_timestamp,
-                        header_subset.tx_index,
-                        *tx.tx.tx_hash(),
-                        receipt,
-                    ),
-                )
-            },
-        );
+                    *tx.tx.tx_hash(),
+                    receipt,
+                ),
+            )))
+        });
 
     Ok(async_stream::stream! {
+        let mut stream = std::pin::pin!(stream);
         let mut block_number = None;
         let mut block_receipts = BTreeMap::<u64, ReceiptEnvelope<Log>>::default();
 
@@ -1249,11 +1557,12 @@ async fn try_create_logs_stream_using_index<'a>(
     to_block: u64,
     filter: &'a Filter,
     filtered_params: &'a FilteredParams,
+    domain_filter: Option<DomainFilter>,
 ) -> monad_archive::prelude::Result<
     impl Stream<Item = monad_archive::prelude::Result<(u64, impl Iterator<Item = Log> + 'a)>> + 'a,
 > {
     Ok(
-        get_receipts_stream_using_index(reader, from_block, to_block, filter)
+        get_receipts_stream_using_index(reader, from_block, to_block, filter, domain_filter)
             .await?
             .map_ok(move |(block_number, receipts)| {
                 (
@@ -1453,6 +1762,17 @@ pub fn map_block_receipts<R>(
     block_hash: FixedBytes<32>,
     f: impl Fn(TransactionReceipt) -> R,
 ) -> Result<Vec<R>, JsonRpcError> {
+    map_block_receipts_inner(transactions, receipts, block_header, block_hash, None, f)
+}
+
+fn map_block_receipts_inner<R>(
+    transactions: Vec<TxEnvelopeWithSender>,
+    receipts: Vec<ReceiptWithLogIndex>,
+    block_header: &RlpHeader,
+    block_hash: FixedBytes<32>,
+    domain_filter: Option<DomainFilter>,
+    f: impl Fn(TransactionReceipt) -> R,
+) -> Result<Vec<R>, JsonRpcError> {
     let block_num: u64 = block_header.number;
 
     if transactions.len() != receipts.len() {
@@ -1467,11 +1787,15 @@ pub fn map_block_receipts<R>(
         .into_iter()
         .zip(receipts)
         .enumerate()
-        .map(|(tx_index, (tx, receipt))| {
+        .filter_map(|(tx_index, (tx, receipt))| {
             let new_cumulative_gas_used = receipt.receipt.cumulative_gas_used();
 
             let tx_gas_used = new_cumulative_gas_used - cumulative_gas_used;
             cumulative_gas_used = new_cumulative_gas_used;
+
+            if !transaction_matches_domain_filter(&tx.tx, domain_filter) {
+                return None;
+            }
 
             let parsed_receipt = parse_tx_receipt(
                 block_hash,
@@ -1484,7 +1808,7 @@ pub fn map_block_receipts<R>(
                 tx_gas_used,
             );
 
-            f(parsed_receipt)
+            Some(f(parsed_receipt))
         })
         .collect())
 }
@@ -1494,6 +1818,7 @@ fn header_transactions_receipts_to_block_number_logs<'a>(
     transactions: Vec<TxEnvelopeWithSender>,
     receipts: Vec<ReceiptWithLogIndex>,
     filtered_params: &'a FilteredParams,
+    domain_filter: Option<DomainFilter>,
 ) -> JsonRpcResult<(u64, impl Iterator<Item = Log> + 'a)> {
     if transactions.len() != receipts.len() {
         return Err(JsonRpcError::internal_error(
@@ -1505,7 +1830,11 @@ fn header_transactions_receipts_to_block_number_logs<'a>(
         header.header.number,
         transactions.into_iter().zip(receipts).enumerate().flat_map(
             move |(tx_index, (transaction, receipt))| {
-                receipt_envelope_to_logs_iter(
+                if !transaction_matches_domain_filter(&transaction.tx, domain_filter) {
+                    return Either::Left(std::iter::empty());
+                }
+
+                Either::Right(receipt_envelope_to_logs_iter(
                     parse_receipt_envelope(
                         header.hash,
                         header.header.number,
@@ -1515,7 +1844,7 @@ fn header_transactions_receipts_to_block_number_logs<'a>(
                         receipt,
                     ),
                     filtered_params,
-                )
+                ))
             },
         ),
     ))
@@ -1617,12 +1946,100 @@ async fn get_receipt_from_triedb<T: Triedb>(
     }
 }
 
+#[tracing::instrument(level = "debug")]
+async fn get_domain_transaction_from_triedb<T: Triedb>(
+    triedb_env: &T,
+    block_key: BlockKey,
+    domain: [u8; 20],
+    tx_index: u64,
+) -> Result<Option<Transaction>, ChainStateError> {
+    let header = match triedb_env
+        .get_block_header(block_key)
+        .await
+        .map_err(ChainStateError::Triedb)?
+    {
+        Some(header) => header,
+        None => return Ok(None),
+    };
+
+    match triedb_env
+        .get_domain_transaction(block_key, domain, tx_index)
+        .await
+        .map_err(ChainStateError::Triedb)?
+    {
+        Some(tx) => Ok(Some(parse_tx_content(
+            header.hash,
+            header.header.number,
+            header.header.timestamp,
+            header.header.base_fee_per_gas,
+            tx,
+            tx_index,
+        ))),
+        None => Ok(None),
+    }
+}
+
+#[tracing::instrument(level = "debug")]
+async fn get_domain_receipt_from_triedb<T: Triedb>(
+    triedb_env: &T,
+    block_key: BlockKey,
+    domain: [u8; 20],
+    tx_index: u64,
+) -> Result<Option<TransactionReceipt>, ChainStateError> {
+    let header = match triedb_env
+        .get_block_header(block_key)
+        .await
+        .map_err(ChainStateError::Triedb)?
+    {
+        Some(header) => header,
+        None => return Ok(None),
+    };
+    let tx = match triedb_env
+        .get_domain_transaction(block_key, domain, tx_index)
+        .await
+        .map_err(ChainStateError::Triedb)?
+    {
+        Some(tx) => tx,
+        None => return Ok(None),
+    };
+    let receipt = match triedb_env
+        .get_domain_receipt(block_key, domain, tx_index)
+        .await
+        .map_err(ChainStateError::Triedb)?
+    {
+        Some(receipt) => receipt,
+        None => return Ok(None),
+    };
+    let gas_used = if tx_index > 0 {
+        let previous = triedb_env
+            .get_domain_receipt(block_key, domain, tx_index - 1)
+            .await
+            .map_err(ChainStateError::Triedb)?
+            .ok_or_else(|| ChainStateError::Triedb("error getting domain receipt".into()))?;
+        receipt.receipt.cumulative_gas_used() - previous.receipt.cumulative_gas_used()
+    } else {
+        receipt.receipt.cumulative_gas_used()
+    };
+
+    Ok(Some(parse_tx_receipt(
+        header.hash,
+        block_key.seq_num().0,
+        header.header.timestamp,
+        header.header.base_fee_per_gas,
+        tx_index,
+        tx,
+        receipt,
+        gas_used,
+    )))
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
 
     use alloy_consensus::{Block as ConsensusBlock, BlockBody, Header, TxEnvelope};
     use alloy_eips::BlockNumberOrTag;
+    use alloy_primitives::{Address, FixedBytes};
     use alloy_rlp::Encodable;
     use alloy_rpc_types::{Filter, FilterBlockOption};
     use monad_archive::{
@@ -1630,13 +2047,97 @@ mod tests {
         prelude::{ArchiveReader, BlockDataArchive, IndexReaderImpl, TxIndexArchiver},
         test_utils::{mock_block, mock_rx, mock_tx, MemoryStorage},
     };
-    use monad_eth_types::TxEnvelopeWithSender;
+    use monad_eth_testutil::{
+        make_domain_legacy_tx, make_legacy_tx, make_representable_domain, S1,
+    };
+    use monad_eth_types::{TransactionLocation, TxEnvelopeWithSender};
     use monad_triedb_utils::mock_triedb::MockTriedb;
+    use monad_types::SeqNum;
 
     use crate::{
-        data::{calculate_block_size, DataProvider},
+        data::{
+            calculate_block_size, map_block_receipts_inner, transaction_matches_domain_filter,
+            ChainStateError, DataProvider, DomainFilter,
+        },
         types::eth_json::{BlockTagOrHash, BlockTags, FixedData, Quantity},
     };
+
+    const BASE_CHAIN_ID: u64 = 1337;
+
+    #[test]
+    fn domain_filter_matches_transaction_chain_id() {
+        let domain = make_representable_domain(1);
+        let other_domain = make_representable_domain(2);
+        let global_tx = make_legacy_tx(S1, 1, 21_000, 0, 0);
+        let domain_tx = make_domain_legacy_tx(domain, S1, 1, 21_000, 0, 0);
+
+        let global_filter = Some(DomainFilter {
+            base_chain_id: BASE_CHAIN_ID,
+            domain: None,
+        });
+        let domain_filter = Some(DomainFilter {
+            base_chain_id: BASE_CHAIN_ID,
+            domain: Some(domain),
+        });
+        let other_domain_filter = Some(DomainFilter {
+            base_chain_id: BASE_CHAIN_ID,
+            domain: Some(other_domain),
+        });
+
+        assert!(transaction_matches_domain_filter(&global_tx, global_filter));
+        assert!(!transaction_matches_domain_filter(
+            &domain_tx,
+            global_filter
+        ));
+        assert!(transaction_matches_domain_filter(&domain_tx, domain_filter));
+        assert!(!transaction_matches_domain_filter(
+            &domain_tx,
+            other_domain_filter
+        ));
+    }
+
+    #[test]
+    fn domain_block_receipts_keep_canonical_indices() {
+        let domain = make_representable_domain(1);
+        let global_tx = make_legacy_tx(S1, 1, 21_000, 0, 0);
+        let domain_tx = make_domain_legacy_tx(domain, S1, 1, 21_000, 0, 0);
+        let transactions = vec![
+            TxEnvelopeWithSender {
+                tx: global_tx,
+                sender: Address::ZERO,
+            },
+            TxEnvelopeWithSender {
+                tx: domain_tx,
+                sender: Address::ZERO,
+            },
+        ];
+        let mut second_receipt = mock_rx(1, 30);
+        second_receipt.starting_log_index = 1;
+        let receipts = vec![mock_rx(1, 10), second_receipt];
+        let header = Header {
+            number: 7,
+            timestamp: 11,
+            ..Default::default()
+        };
+
+        let filtered = map_block_receipts_inner(
+            transactions,
+            receipts,
+            &header,
+            FixedBytes::ZERO,
+            Some(DomainFilter {
+                base_chain_id: BASE_CHAIN_ID,
+                domain: Some(domain),
+            }),
+            |receipt| receipt,
+        )
+        .unwrap();
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].transaction_index, Some(1));
+        assert_eq!(filtered[0].gas_used, 20);
+        assert_eq!(filtered[0].logs()[0].log_index, Some(1));
+    }
 
     #[test]
     fn test_calculate_block_size_empty_block() {

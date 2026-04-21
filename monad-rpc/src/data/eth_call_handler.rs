@@ -14,6 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
+    collections::HashMap,
     future::Future,
     path::Path,
     sync::{
@@ -23,6 +24,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use alloy_primitives::Address;
 use dashmap::DashMap;
 use monad_ethcall::{ffi::PoolConfig, EthCallExecutor};
 use tokio::sync::{Semaphore, SemaphorePermit, TryAcquireError};
@@ -57,15 +59,27 @@ pub struct EthCallHandler {
 }
 
 impl EthCallHandler {
-    pub fn new(config: EthCallHandlerConfig, triedb_path: &Path) -> Self {
-        let executor = Arc::new(EthCallExecutor::new(
-            config.pool_low,
-            config.pool_high,
-            config.pool_block,
-            config.tx_exec_num_fibers,
-            config.node_cache_max_mem,
-            triedb_path,
-        ));
+    /// `domain_spokes` maps each private domain chain id to the DomainSpoke whose
+    /// `canCall` the executor consults on every call frame of a domain-routed eth_call.
+    /// A domain without an entry is rejected by the executor as unconfigured,
+    /// mirroring the execution client, which refuses to run a domain it has no spoke for.
+    pub fn new(
+        config: EthCallHandlerConfig,
+        triedb_path: &Path,
+        domain_spokes: &HashMap<u64, Address>,
+    ) -> Self {
+        let executor = Arc::new(
+            EthCallExecutor::new_with_domain_spokes(
+                config.pool_low,
+                config.pool_high,
+                config.pool_block,
+                config.tx_exec_num_fibers,
+                config.node_cache_max_mem,
+                triedb_path,
+                domain_spokes,
+            )
+            .expect("failed to create eth_call executor"),
+        );
 
         let rate_limiter = Arc::new(Semaphore::new(config.max_concurrent_permits));
 

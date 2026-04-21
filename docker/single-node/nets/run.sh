@@ -109,7 +109,7 @@ if [ -z "$CACHED_VOL_ROOT" ]; then
 
     # Create fresh triedb file
     mkdir -p "$vol_root/node/triedb"
-    truncate -s 4GB "$vol_root/node/triedb/test.db"
+    truncate -s 16G "$vol_root/node/triedb/test.db"
 
     cd "$vol_root"
 

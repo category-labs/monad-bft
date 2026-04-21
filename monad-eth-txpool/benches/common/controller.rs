@@ -26,6 +26,7 @@ use monad_crypto::NopSignature;
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
 use monad_eth_testutil::generate_block_with_txs;
 use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics};
+use monad_eth_types::EthTxEnvelope;
 use monad_execution_state_read::{
     AccountState, InMemoryBlockState, InMemoryState, InMemoryStateInner,
 };
@@ -68,8 +69,8 @@ impl<'a> BenchController<'a> {
     pub fn setup(
         block_policy: &'a BlockPolicyType,
         config: BenchControllerConfig,
-        pending_block_txs: Vec<Vec<Recovered<TxEnvelope>>>,
-        pool_txs: Vec<Recovered<TxEnvelope>>,
+        pending_block_txs: Vec<Vec<Recovered<EthTxEnvelope>>>,
+        pool_txs: Vec<Recovered<EthTxEnvelope>>,
     ) -> Self {
         let BenchControllerConfig {
             chain_config,
@@ -120,7 +121,7 @@ impl<'a> BenchController<'a> {
     pub fn create_pool(
         block_policy: &BlockPolicyType,
         chain_config: &MockChainConfig,
-        txs: Vec<Recovered<TxEnvelope>>,
+        txs: Vec<Recovered<EthTxEnvelope>>,
         metrics: &EthTxPoolMetrics,
     ) -> Pool {
         let mut pool = Pool::default_testing();
@@ -140,7 +141,7 @@ impl<'a> BenchController<'a> {
         pool
     }
 
-    pub fn generate_state_read_for_txs(txs: &[Recovered<TxEnvelope>]) -> ExecutionStateReadType {
+    pub fn generate_state_read_for_txs(txs: &[Recovered<EthTxEnvelope>]) -> ExecutionStateReadType {
         InMemoryStateInner::new(
             SeqNum(4),
             InMemoryBlockState::genesis(

@@ -15,12 +15,12 @@
 
 use std::sync::{Arc, Mutex};
 
-use alloy_consensus::TxEnvelope;
-use alloy_primitives::Address;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_types::{EthAccount, EthHeader};
+use monad_eth_types::{
+    AccountKey, EthAccount, EthHeader, EthStorageKey, EthStorageSlot, EthTxEnvelope,
+};
 use monad_types::{BlockId, Epoch, Round, SeqNum, Stake};
 use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionPubKeyType};
 
@@ -42,7 +42,7 @@ pub enum ExecutionStateReadError {
     NeverAvailable,
 }
 
-/// A read-only view of block state.
+/// Backend provider of account data: balance and nonce
 pub trait ExecutionStateRead<ST, SCT>
 where
     ST: CertificateSignatureRecoverable,
@@ -53,7 +53,7 @@ where
         block_id: &BlockId,
         seq_num: &SeqNum,
         is_finalized: bool,
-        addresses: impl Iterator<Item = &'a Address>,
+        account_keys: impl Iterator<Item = &'a AccountKey>,
     ) -> Result<Vec<Option<EthAccount>>, ExecutionStateReadError>;
 
     fn get_execution_result(
@@ -62,6 +62,15 @@ where
         seq_num: &SeqNum,
         is_finalized: bool,
     ) -> Result<EthHeader, ExecutionStateReadError>;
+
+    fn get_storage_at_by_key(
+        &mut self,
+        block_id: &BlockId,
+        seq_num: &SeqNum,
+        is_finalized: bool,
+        account_key: AccountKey,
+        storage_key: EthStorageKey,
+    ) -> Result<EthStorageSlot, ExecutionStateReadError>;
 
     /// Fetches earliest block from storage backend
     fn raw_read_earliest_finalized_block(&self) -> Option<SeqNum>;
@@ -88,7 +97,7 @@ where
         seq_num: SeqNum,
         round: Round,
         parent_id: BlockId,
-        txns: Vec<TxEnvelope>,
+        txns: Vec<EthTxEnvelope>,
     );
 
     fn ledger_commit(&mut self, block_id: &BlockId, seq_num: &SeqNum);
@@ -105,10 +114,10 @@ where
         block_id: &BlockId,
         seq_num: &SeqNum,
         is_finalized: bool,
-        addresses: impl Iterator<Item = &'a Address>,
+        account_keys: impl Iterator<Item = &'a AccountKey>,
     ) -> Result<Vec<Option<EthAccount>>, ExecutionStateReadError> {
         let mut state = self.lock().unwrap();
-        state.get_account_statuses(block_id, seq_num, is_finalized, addresses)
+        state.get_account_statuses(block_id, seq_num, is_finalized, account_keys)
     }
 
     fn get_execution_result(
@@ -119,6 +128,18 @@ where
     ) -> Result<EthHeader, ExecutionStateReadError> {
         let mut state = self.lock().unwrap();
         state.get_execution_result(block_id, seq_num, is_finalized)
+    }
+
+    fn get_storage_at_by_key(
+        &mut self,
+        block_id: &BlockId,
+        seq_num: &SeqNum,
+        is_finalized: bool,
+        account_key: AccountKey,
+        storage_key: EthStorageKey,
+    ) -> Result<EthStorageSlot, ExecutionStateReadError> {
+        let mut state = self.lock().unwrap();
+        state.get_storage_at_by_key(block_id, seq_num, is_finalized, account_key, storage_key)
     }
 
     fn raw_read_earliest_finalized_block(&self) -> Option<SeqNum> {
@@ -166,7 +187,7 @@ where
         seq_num: SeqNum,
         round: Round,
         parent_id: BlockId,
-        txns: Vec<TxEnvelope>,
+        txns: Vec<EthTxEnvelope>,
     ) {
         let mut state = self.lock().unwrap();
         state.ledger_propose(block_id, seq_num, round, parent_id, txns);

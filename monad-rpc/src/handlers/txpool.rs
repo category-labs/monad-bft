@@ -17,6 +17,7 @@ use std::collections::BTreeMap;
 
 use alloy_primitives::{Address, TxHash};
 use monad_eth_txpool_types::EthTxPoolEvictReason;
+use monad_eth_types::AccountKey;
 use monad_rpc_docs::rpc;
 use serde::{Deserialize, Serialize};
 
@@ -84,15 +85,20 @@ pub struct TxPoolStatusByAddressParams {
 #[derive(Serialize, Debug, schemars::JsonSchema)]
 pub struct TxPoolStatusByAddressResult(BTreeMap<EthHash, TxPoolStatusResult>);
 
-#[rpc(method = "txpool_statusByAddress")]
+#[rpc(method = "txpool_statusByAddress", ignore = "domain")]
 #[allow(non_snake_case)]
 pub async fn monad_txpool_statusByAddress(
     txpool_bridge_client: &EthTxPoolBridgeClient,
+    domain: Option<Address>,
     params: TxPoolStatusByAddressParams,
 ) -> JsonRpcResult<TxPoolStatusByAddressResult> {
-    let Some(statuses) =
-        txpool_bridge_client.get_status_by_address(&Address::new(params.address.0))
-    else {
+    let address = Address::new(params.address.0);
+    let account_key = match domain {
+        Some(domain) => AccountKey::domain(domain, address),
+        None => AccountKey::global(address),
+    };
+
+    let Some(statuses) = txpool_bridge_client.get_status_by_address(&account_key) else {
         return Err(JsonRpcError::custom("No transactions ".to_string()));
     };
 

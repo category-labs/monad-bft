@@ -15,10 +15,11 @@
 
 use std::{pin::pin, time::Duration};
 
-use alloy_consensus::{Transaction as _, TxEnvelope};
+use alloy_consensus::Transaction as _;
 use alloy_eips::Decodable2718;
-use alloy_primitives::{Address, FixedBytes};
+use alloy_primitives::{Address, FixedBytes, TxHash};
 use alloy_rpc_types::Filter;
+use monad_eth_types::{domain_for_chain_id, EthTxEnvelope};
 use monad_exec_events::BlockCommitState;
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::Triedb;
@@ -78,7 +79,7 @@ fn schema_for_filter(_: &mut schemars::gen::SchemaGenerator) -> schemars::schema
 
 #[rpc(
     method = "eth_getLogs",
-    ignore = "max_response_size,max_block_range,use_eth_get_logs_index,dry_run_get_logs_index,max_finalized_block_cache_len"
+    ignore = "max_response_size,max_block_range,use_eth_get_logs_index,dry_run_get_logs_index,max_finalized_block_cache_len,base_chain_id,domain"
 )]
 #[allow(non_snake_case)]
 /// Returns an array of all logs matching filter with given id.
@@ -91,19 +92,23 @@ pub async fn monad_eth_getLogs<T: Triedb>(
     use_eth_get_logs_index: bool,
     dry_run_get_logs_index: bool,
     max_finalized_block_cache_len: u64,
+    base_chain_id: u64,
+    domain: Option<Address>,
 ) -> JsonRpcResult<MonadEthGetLogsResult> {
     trace!("monad_eth_getLogs: {p:?}");
 
     let MonadEthGetLogsParams { filters } = p;
 
     let logs = data_provider
-        .get_logs(
+        .get_logs_for_domain(
             filters,
             max_response_size,
             max_block_range,
             use_eth_get_logs_index,
             dry_run_get_logs_index,
             max_finalized_block_cache_len,
+            base_chain_id,
+            domain,
         )
         .await?;
 
@@ -118,7 +123,7 @@ pub struct MonadEthSendRawTransactionParams {
 // TODO: need to support EIP-4844 transactions
 #[rpc(
     method = "eth_sendRawTransaction",
-    ignore = "tx_pool,ipc,chain_id,allow_unprotected_txs"
+    ignore = "tx_pool,ipc,txpool_bridge_client,base_chain_id,route_chain_id,route_domain,allow_unprotected_txs"
 )]
 #[allow(non_snake_case)]
 #[tracing::instrument(level = "debug", skip_all)]
@@ -127,20 +132,25 @@ pub struct MonadEthSendRawTransactionParams {
 pub async fn monad_eth_sendRawTransaction(
     txpool_bridge_client: &EthTxPoolBridgeClient,
     params: MonadEthSendRawTransactionParams,
-    chain_id: u64,
+    base_chain_id: u64,
+    route_chain_id: u64,
+    route_domain: Option<Address>,
     allow_unprotected_txs: bool,
 ) -> JsonRpcResult<String> {
     trace!("monad_eth_sendRawTransaction: {params:?}");
 
     let tx = validate_and_decode_tx(
         &params.hex_tx.0,
-        chain_id,
+        base_chain_id,
+        route_chain_id,
+        route_domain,
         allow_unprotected_txs,
         JsonRpcError::txn_decode_error,
     )?;
 
     let tx_hash = *tx.tx_hash();
     debug!(name = "sendRawTransaction", txn_hash = ?tx_hash);
+
     submit_to_txpool(txpool_bridge_client, tx).await?;
 
     Ok(tx_hash.to_string())
@@ -148,11 +158,13 @@ pub async fn monad_eth_sendRawTransaction(
 
 fn validate_and_decode_tx(
     hex_tx: &[u8],
-    chain_id: u64,
+    base_chain_id: u64,
+    route_chain_id: u64,
+    route_domain: Option<Address>,
     allow_unprotected_txs: bool,
     decode_error_fn: impl FnOnce() -> JsonRpcError,
-) -> Result<TxEnvelope, JsonRpcError> {
-    let tx = TxEnvelope::decode_2718_exact(hex_tx).map_err(|err| {
+) -> Result<EthTxEnvelope, JsonRpcError> {
+    let tx = EthTxEnvelope::decode_2718_exact(hex_tx).map_err(|err| {
         debug!(?err, "eth txn decode failed");
         decode_error_fn()
     })?;
@@ -164,10 +176,23 @@ fn validate_and_decode_tx(
         ));
     }
 
-    if let Some(tx_chain_id) = tx.chain_id() {
-        if tx_chain_id != chain_id {
-            return Err(JsonRpcError::invalid_chain_id(chain_id, tx_chain_id));
+    let tx_domain = match domain_for_chain_id(tx.chain_id(), base_chain_id) {
+        Ok(tx_domain) => tx_domain,
+        Err(err) => {
+            let tx_chain_id = match err {
+                monad_eth_types::WrongChainId::InvalidDomainSuffix { tx_chain_id, .. } => {
+                    tx_chain_id
+                }
+            };
+            return Err(JsonRpcError::invalid_chain_id(base_chain_id, tx_chain_id));
         }
+    };
+
+    if route_domain.is_some() && tx_domain != route_domain {
+        return Err(JsonRpcError::invalid_chain_id(
+            route_chain_id,
+            tx.chain_id().unwrap_or(base_chain_id),
+        ));
     }
 
     Ok(tx)
@@ -175,7 +200,7 @@ fn validate_and_decode_tx(
 
 async fn submit_to_txpool(
     txpool_bridge_client: &EthTxPoolBridgeClient,
-    tx: TxEnvelope,
+    tx: EthTxEnvelope,
 ) -> Result<(), JsonRpcError> {
     let Some(_tx_inflight_guard) = txpool_bridge_client.acquire_tx_inflight_guard() else {
         warn!("txpool overloaded");
@@ -243,9 +268,12 @@ pub struct MonadEthSendRawTransactionSyncParams {
     timeout_ms: Option<u64>,
 }
 
+/// Poll interval in milliseconds for checking receipt availability
+const RECEIPT_POLL_INTERVAL_MS: u64 = 100;
+
 #[rpc(
     method = "eth_sendRawTransactionSync",
-    ignore = "txpool_bridge_client,event_server_client,chain_id,allow_unprotected_txs,eth_send_raw_transaction_sync_default_timeout_ms,eth_send_raw_transaction_sync_max_timeout_ms"
+    ignore = "txpool_bridge_client,event_server_client,base_chain_id,route_chain_id,route_domain,allow_unprotected_txs,eth_send_raw_transaction_sync_default_timeout_ms,eth_send_raw_transaction_sync_max_timeout_ms"
 )]
 #[allow(non_snake_case)]
 #[tracing::instrument(level = "debug", skip_all)]
@@ -253,7 +281,9 @@ pub async fn monad_eth_sendRawTransactionSync(
     txpool_bridge_client: &EthTxPoolBridgeClient,
     event_server_client: &EventServerClient,
     params: MonadEthSendRawTransactionSyncParams,
-    chain_id: u64,
+    base_chain_id: u64,
+    route_chain_id: u64,
+    route_domain: Option<Address>,
     allow_unprotected_txs: bool,
     eth_send_raw_transaction_sync_default_timeout_ms: u64,
     eth_send_raw_transaction_sync_max_timeout_ms: u64,
@@ -267,7 +297,9 @@ pub async fn monad_eth_sendRawTransactionSync(
 
     let tx = validate_and_decode_tx(
         &params.hex_tx.0,
-        chain_id,
+        base_chain_id,
+        route_chain_id,
+        route_domain,
         allow_unprotected_txs,
         JsonRpcError::tx_sync_unready,
     )?;
@@ -329,18 +361,20 @@ pub struct MonadEthGetTransactionReceiptParams {
     tx_hash: EthHash,
 }
 
-#[rpc(method = "eth_getTransactionReceipt")]
+#[rpc(method = "eth_getTransactionReceipt", ignore = "base_chain_id,domain")]
 #[allow(non_snake_case)]
 /// Returns the receipt of a transaction by transaction hash.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn monad_eth_getTransactionReceipt<T: Triedb>(
     data_provider: &DataProvider<T>,
+    base_chain_id: u64,
+    domain: Option<Address>,
     params: MonadEthGetTransactionReceiptParams,
 ) -> JsonRpcResult<Option<MonadTransactionReceipt>> {
     trace!("monad_eth_getTransactionReceipt: {params:?}");
 
     data_provider
-        .get_transaction_receipt(&FixedBytes(params.tx_hash.0))
+        .get_transaction_receipt_for_domain(&FixedBytes(params.tx_hash.0), base_chain_id, domain)
         .await
         .map_present_and_no_err(MonadTransactionReceipt)
 }
@@ -350,18 +384,20 @@ pub struct MonadEthGetTransactionByHashParams {
     tx_hash: EthHash,
 }
 
-#[rpc(method = "eth_getTransactionByHash")]
+#[rpc(method = "eth_getTransactionByHash", ignore = "base_chain_id,domain")]
 #[allow(non_snake_case)]
 /// Returns the information about a transaction requested by transaction hash.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn monad_eth_getTransactionByHash<T: Triedb>(
     data_provider: &DataProvider<T>,
+    base_chain_id: u64,
+    domain: Option<Address>,
     params: MonadEthGetTransactionByHashParams,
 ) -> JsonRpcResult<Option<MonadTransaction>> {
     trace!("monad_eth_getTransactionByHash: {params:?}");
 
     data_provider
-        .get_transaction(&FixedBytes(params.tx_hash.0))
+        .get_transaction_for_domain(&FixedBytes(params.tx_hash.0), base_chain_id, domain)
         .await
         .map_present_and_no_err(MonadTransaction)
 }
@@ -418,13 +454,14 @@ pub async fn monad_eth_getTransactionByBlockNumberAndIndex<T: Triedb>(
 
 #[cfg(test)]
 mod tests {
-    use alloy_consensus::{SignableTransaction, TxEip1559, TxEnvelope};
+    use alloy_consensus::{SignableTransaction, Transaction as _, TxEip1559, TxEnvelope};
     use alloy_eips::eip2718::Encodable2718;
     use alloy_primitives::{Address, FixedBytes, TxKind};
     use alloy_rlp::Encodable;
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
-    use monad_eth_types::EthAccount;
+    use monad_eth_testutil::{make_domain_legacy_tx, make_representable_domain};
+    use monad_eth_types::{chain_id_for_domain, EthAccount};
     use monad_event_ring::SnapshotEventRing;
     use monad_triedb_utils::mock_triedb::MockTriedb;
 
@@ -433,7 +470,9 @@ mod tests {
         MonadEthSendRawTransactionParams, MonadEthSendRawTransactionSyncParams,
     };
     use crate::{
-        event::EventServer, txpool::EthTxPoolBridgeClient, types::eth_json::UnformattedData,
+        event::EventServer,
+        txpool::EthTxPoolBridgeClient,
+        types::{eth_json::UnformattedData, jsonrpc::JsonRpcError},
     };
 
     fn serialize_tx(tx: impl Encodable + Encodable2718) -> UnformattedData {
@@ -501,9 +540,10 @@ mod tests {
             },
         ];
 
+        let txpool_bridge_client = EthTxPoolBridgeClient::for_testing();
         for (idx, case) in expected_failures.into_iter().enumerate() {
             assert!(
-                monad_eth_sendRawTransaction(&EthTxPoolBridgeClient::for_testing(), case, 1, true)
+                monad_eth_sendRawTransaction(&txpool_bridge_client, case, 1, 1, None, true,)
                     .await
                     .is_err(),
                 "Expected error for case: {:?}",
@@ -569,6 +609,8 @@ mod tests {
                     &event_server_client,
                     case,
                     1,
+                    1,
+                    None,
                     true,
                     2000,
                     30000,
@@ -579,5 +621,31 @@ mod tests {
                 idx + 1
             );
         }
+    }
+
+    #[tokio::test]
+    async fn eth_send_raw_transaction_domain_route_still_uses_txpool() {
+        let domain = make_representable_domain(1);
+        let route_chain_id = chain_id_for_domain(domain, 1337).unwrap();
+        let tx = make_domain_legacy_tx(domain, FixedBytes::repeat_byte(0x11), 1_000, 21_000, 0, 0);
+        let txpool_bridge_client = EthTxPoolBridgeClient::for_testing();
+
+        let result = monad_eth_sendRawTransaction(
+            &txpool_bridge_client,
+            MonadEthSendRawTransactionParams {
+                hex_tx: serialize_tx(tx),
+            },
+            1337,
+            route_chain_id,
+            Some(domain),
+            true,
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().message,
+            JsonRpcError::overloaded().message
+        );
     }
 }

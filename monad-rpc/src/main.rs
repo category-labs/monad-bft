@@ -13,12 +13,14 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashMap, io, sync::Arc, time::Duration};
 
 use actix_web::{web, App, HttpServer};
 use agent::AgentBuilder;
+use alloy_primitives::Address;
 use clap::Parser;
 use monad_archive::archive_reader::{redact_mongo_url, ArchiveReader};
+use monad_eth_types::domain_for_chain_id;
 use monad_event_ring::{EventRing, EventRingPath};
 use monad_node_config::MonadNodeConfig;
 use monad_pprof::start_pprof_server;
@@ -31,6 +33,7 @@ use monad_rpc::{
     },
     event::EventServer,
     handlers::{
+        domain_rpc_handler,
         resources::{MonadJsonRootSpanBuilder, MonadRpcResources},
         rpc_handler,
     },
@@ -136,7 +139,7 @@ async fn main() -> std::io::Result<()> {
                     info!("Waiting for statesync to complete");
                 }
                 _= retry_timer.tick() => {
-                    match EthTxPoolBridge::start(&ipc_path).await  {
+                    match EthTxPoolBridge::start(&ipc_path, node_config.chain_id).await {
                         Ok((client, handle)) => {
                             info!("Statesync complete, starting RPC server");
                             break (client, handle)
@@ -261,6 +264,20 @@ async fn main() -> std::io::Result<()> {
         }
     };
 
+    let domain_spokes: HashMap<u64, Address> = args.private_domain_spokes.iter().copied().collect();
+    if domain_spokes.len() != args.private_domain_spokes.len() {
+        panic!("duplicate --private-domain-spoke chain id");
+    }
+    for (chain_id, spoke) in &domain_spokes {
+        match domain_for_chain_id(Some(*chain_id), node_config.chain_id) {
+            Ok(Some(_)) => info!("private domain {} uses DomainSpoke {}", chain_id, spoke),
+            _ => panic!(
+                "--private-domain-spoke {chain_id}={spoke}: not a private domain chain id of network {}",
+                node_config.chain_id
+            ),
+        }
+    }
+
     let eth_call_handler = args.triedb_path.clone().as_deref().map(|triedb_path| {
         EthCallHandler::new(
             EthCallHandlerConfig {
@@ -293,6 +310,7 @@ async fn main() -> std::io::Result<()> {
                 provider_max_blocks_eth_simulate: args.eth_simulate_max_blocks,
             },
             triedb_path,
+            &domain_spokes,
         )
     });
 
@@ -413,6 +431,9 @@ async fn main() -> std::io::Result<()> {
                 .app_data(web::PayloadConfig::default().limit(args.max_request_size))
                 .app_data(web::Data::new(app_state.clone()))
                 .service(web::resource("/").route(web::post().to(rpc_handler)))
+                .service(
+                    web::resource("/domain/{chain_id}").route(web::post().to(domain_rpc_handler)),
+                )
         })
         .bind((args.rpc_addr, args.rpc_port))?
         .shutdown_timeout(1)
@@ -426,6 +447,9 @@ async fn main() -> std::io::Result<()> {
                 .app_data(web::PayloadConfig::default().limit(args.max_request_size))
                 .app_data(web::Data::new(app_state.clone()))
                 .service(web::resource("/").route(web::post().to(rpc_handler)))
+                .service(
+                    web::resource("/domain/{chain_id}").route(web::post().to(domain_rpc_handler)),
+                )
         })
         .bind((args.rpc_addr, args.rpc_port))?
         .shutdown_timeout(1)

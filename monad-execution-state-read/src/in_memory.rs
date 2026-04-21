@@ -22,12 +22,14 @@ use std::{
     },
 };
 
-use alloy_consensus::{transaction::SignerRecoverable as _, Header, Transaction, TxEnvelope};
+use alloy_consensus::{transaction::SignerRecoverable as _, Header, Transaction};
 use alloy_primitives::Address;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_types::{EthAccount, EthHeader};
+use monad_eth_types::{
+    AccountKey, DomainTx, EthAccount, EthHeader, EthStorageKey, EthStorageSlot, EthTxEnvelope,
+};
 use monad_types::{
     Balance, BlockId, Epoch, Nonce, Round, SeqNum, Stake, GENESIS_BLOCK_ID, GENESIS_ROUND,
     GENESIS_SEQ_NUM,
@@ -41,6 +43,7 @@ use crate::{ExecutionStateRead, ExecutionStateReadError, MockExecution};
 pub type InMemoryState<ST, SCT> = Arc<Mutex<InMemoryStateInner<ST, SCT>>>;
 
 const DEFAULT_RESERVE_BALANCE: u128 = 10_000_000_000_000_000_000; // 10 MON
+const MOCK_CHAIN_ID: u64 = 1337;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountState {
@@ -119,16 +122,27 @@ pub struct InMemoryBlockState {
     round: Round,
     parent_id: BlockId,
     /// the txns to execute for this seq_num
-    txns: Vec<TxEnvelope>,
+    txns: Vec<EthTxEnvelope>,
     /// account states after executing this block seq_num
-    accounts: BTreeMap<Address, AccountState>,
+    accounts: BTreeMap<AccountKey, AccountState>,
+    /// storage slots after executing this block seq_num
+    storage: BTreeMap<(AccountKey, EthStorageKey), EthStorageSlot>,
     /// all transaction senders and authority addresses in this block
     /// used for reserve balance validation
-    senders_and_authorities: HashSet<Address>,
+    senders_and_authorities: HashSet<AccountKey>,
 }
 
 impl InMemoryBlockState {
     pub fn genesis(accounts: BTreeMap<Address, AccountState>) -> Self {
+        Self::genesis_with_account_keys(
+            accounts
+                .into_iter()
+                .map(|(address, account)| (AccountKey::global(address), account))
+                .collect(),
+        )
+    }
+
+    pub fn genesis_with_account_keys(accounts: BTreeMap<AccountKey, AccountState>) -> Self {
         Self {
             block_id: GENESIS_BLOCK_ID,
             seq_num: GENESIS_SEQ_NUM,
@@ -136,6 +150,23 @@ impl InMemoryBlockState {
             parent_id: GENESIS_BLOCK_ID,
             txns: Vec::new(),
             accounts,
+            storage: BTreeMap::new(),
+            senders_and_authorities: HashSet::new(),
+        }
+    }
+
+    pub fn genesis_with_account_keys_and_storage(
+        accounts: BTreeMap<AccountKey, AccountState>,
+        storage: BTreeMap<(AccountKey, EthStorageKey), EthStorageSlot>,
+    ) -> Self {
+        Self {
+            block_id: GENESIS_BLOCK_ID,
+            seq_num: GENESIS_SEQ_NUM,
+            round: GENESIS_ROUND,
+            parent_id: GENESIS_BLOCK_ID,
+            txns: Vec::new(),
+            accounts,
+            storage,
             senders_and_authorities: HashSet::new(),
         }
     }
@@ -201,7 +232,7 @@ where
         seq_num: SeqNum,
         round: Round,
         parent_id: BlockId,
-        txns: Vec<TxEnvelope>,
+        txns: Vec<EthTxEnvelope>,
     ) {
         if self
             .commits
@@ -236,6 +267,7 @@ where
             });
 
         let mut accounts = parent_state.accounts.clone();
+        let storage = parent_state.storage.clone();
 
         trace!(
             "block N={:?}, parent account state: {:?}",
@@ -244,7 +276,7 @@ where
         );
 
         // collect senders and authorities from recent blocks within execution delay
-        let mut recent_senders_and_authorities: HashSet<Address> = HashSet::new();
+        let mut recent_senders_and_authorities: HashSet<AccountKey> = HashSet::new();
         if self.validate_reserve_balance {
             // walk back up to execution_delay - 1 ancestor blocks
             let mut lookup_id = parent_id;
@@ -263,24 +295,31 @@ where
         }
 
         // track senders and authorities for the current block
-        let mut block_senders_and_authorities: HashSet<Address> = HashSet::new();
+        let mut block_senders_and_authorities: HashSet<AccountKey> = HashSet::new();
 
         for tx in txns.iter() {
             let addr = tx.recover_signer().expect("invalid eth tx in block");
+            let account_key = tx
+                .account_key(MOCK_CHAIN_ID, addr)
+                .expect("mock execution only supports statically valid chain ids");
 
             // recover 7702 authorities of current block
-            let txn_authorities: Vec<Address> = if self.validate_reserve_balance && tx.is_eip7702()
-            {
-                tx.authorization_list()
-                    .expect("valid 7702 must have auth list")
-                    .iter()
-                    .filter_map(|tuple| tuple.recover_authority().ok())
-                    .collect()
-            } else {
-                Vec::new()
-            };
+            let txn_authorities: Vec<AccountKey> =
+                if self.validate_reserve_balance && tx.is_eip7702() {
+                    tx.authorization_list()
+                        .expect("valid 7702 must have auth list")
+                        .iter()
+                        .filter_map(|tuple| tuple.recover_authority().ok())
+                        .map(|authority| {
+                            tx.account_key(MOCK_CHAIN_ID, authority)
+                                .expect("mock execution only supports statically valid chain ids")
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
 
-            let account_entry = accounts.entry(addr).or_insert(AccountState {
+            let account_entry = accounts.entry(account_key).or_insert(AccountState {
                 balance: Balance::default(),
                 reserve_balance: self.default_reserve_balance,
                 nonce: 0,
@@ -290,8 +329,8 @@ where
             // validate the nonce
             if account_entry.nonce != tx.nonce() {
                 panic!(
-                    "tfm execution state read executed invalid nonce: account={}, expected={}, got={}",
-                    addr,
+                    "tfm state read executed invalid nonce: account={}, expected={}, got={}",
+                    account_key.address,
                     account_entry.nonce,
                     tx.nonce()
                 );
@@ -322,7 +361,7 @@ where
                     account_entry.balance >= gas_cost,
                     "execution pre-check violation: balance < gas_fee. \
                      account={}, balance={}, gas_cost={}, nonce={}",
-                    addr,
+                    account_key.address,
                     account_entry.balance,
                     gas_cost,
                     tx.nonce()
@@ -335,9 +374,9 @@ where
                 //   - not an authority in any txn up to and including this one
                 //   - not in execution delay window's senders/authorities
                 let can_dip = !account_entry.is_delegated
-                    && !block_senders_and_authorities.contains(&addr)
-                    && !txn_authorities.contains(&addr)
-                    && !recent_senders_and_authorities.contains(&addr);
+                    && !block_senders_and_authorities.contains(&account_key)
+                    && !txn_authorities.contains(&account_key)
+                    && !recent_senders_and_authorities.contains(&account_key);
 
                 // post-execution reserve balance check
                 // in execution, if the sender dips into reserve without
@@ -367,8 +406,11 @@ where
                     .expect("valid 7702 must have auth list");
                 for tuple in auth_list {
                     if let Ok(auth_addr) = tuple.recover_authority() {
+                        let auth_account_key = tx
+                            .account_key(MOCK_CHAIN_ID, auth_addr)
+                            .expect("mock execution only supports statically valid chain ids");
                         let auth_account_entry =
-                            accounts.entry(auth_addr).or_insert(AccountState {
+                            accounts.entry(auth_account_key).or_insert(AccountState {
                                 balance: Balance::default(),
                                 reserve_balance: self.default_reserve_balance,
                                 nonce: 0,
@@ -384,9 +426,9 @@ where
                 }
             }
 
-            block_senders_and_authorities.insert(addr);
-            for &auth_addr in &txn_authorities {
-                block_senders_and_authorities.insert(auth_addr);
+            block_senders_and_authorities.insert(account_key);
+            for &auth_account_key in &txn_authorities {
+                block_senders_and_authorities.insert(auth_account_key);
             }
         }
 
@@ -399,6 +441,7 @@ where
                 parent_id,
                 txns,
                 accounts,
+                storage,
                 senders_and_authorities: block_senders_and_authorities,
             },
         );
@@ -463,7 +506,7 @@ where
         block_id: &BlockId,
         seq_num: &SeqNum,
         is_finalized: bool,
-        addresses: impl Iterator<Item = &'a Address>,
+        account_keys: impl Iterator<Item = &'a AccountKey>,
     ) -> Result<Vec<Option<EthAccount>>, ExecutionStateReadError> {
         let state = if is_finalized
             && self
@@ -490,10 +533,10 @@ where
             proposal
         };
 
-        Ok(addresses
-            .map(|address| {
+        Ok(account_keys
+            .map(|account_key| {
                 self.total_mock_lookups.fetch_add(1, Ordering::SeqCst);
-                let account = state.accounts.get(address)?;
+                let account = state.accounts.get(account_key)?;
                 Some(EthAccount {
                     nonce: account.nonce,
                     balance: account.balance,
@@ -538,6 +581,44 @@ where
         }))
     }
 
+    fn get_storage_at_by_key(
+        &mut self,
+        block_id: &BlockId,
+        seq_num: &SeqNum,
+        is_finalized: bool,
+        account_key: AccountKey,
+        storage_key: EthStorageKey,
+    ) -> Result<EthStorageSlot, ExecutionStateReadError> {
+        let state = if is_finalized
+            && self
+                .raw_read_latest_finalized_block()
+                .is_some_and(|latest_seq_num| &latest_seq_num >= seq_num)
+        {
+            if self
+                .raw_read_earliest_finalized_block()
+                .is_some_and(|earliest_finalized| &earliest_finalized > seq_num)
+            {
+                return Err(ExecutionStateReadError::NeverAvailable);
+            }
+            let state = self.commits.get(seq_num).unwrap();
+            assert_eq!(&state.block_id, block_id);
+            state
+        } else {
+            let Some(proposal) = self.proposals.get(block_id) else {
+                trace!(?seq_num, ?block_id, ?is_finalized, "NotAvailableYet");
+                return Err(ExecutionStateReadError::NotAvailableYet);
+            };
+            proposal
+        };
+
+        self.total_mock_lookups.fetch_add(1, Ordering::SeqCst);
+        Ok(state
+            .storage
+            .get(&(account_key, storage_key))
+            .copied()
+            .unwrap_or_default())
+    }
+
     fn raw_read_earliest_finalized_block(&self) -> Option<SeqNum> {
         self.commits
             .first_key_value()
@@ -564,5 +645,69 @@ where
 
     fn total_db_lookups(&self) -> u64 {
         self.total_mock_lookups.load(Ordering::SeqCst)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::collections::BTreeMap;
+
+    use alloy_primitives::Address;
+    use monad_crypto::NopSignature;
+    use monad_multi_sig::MultiSig;
+    use monad_types::{Balance, SeqNum, GENESIS_BLOCK_ID, GENESIS_SEQ_NUM};
+
+    use super::*;
+
+    #[test]
+    fn in_memory_state_separates_global_and_domain_accounts() {
+        let address = Address::repeat_byte(0x11);
+        let domain = Address::repeat_byte(0x22);
+        let global_key = AccountKey::global(address);
+        let domain_key = AccountKey::domain(domain, address);
+
+        let state = InMemoryStateInner::<NopSignature, MultiSig<NopSignature>>::new(
+            SeqNum(4),
+            InMemoryBlockState::genesis_with_account_keys(BTreeMap::from([
+                (
+                    global_key,
+                    AccountState {
+                        balance: Balance::from(7_u64),
+                        reserve_balance: Balance::from(3_u64),
+                        nonce: 1,
+                        is_delegated: false,
+                    },
+                ),
+                (
+                    domain_key,
+                    AccountState {
+                        balance: Balance::from(9_u64),
+                        reserve_balance: Balance::from(4_u64),
+                        nonce: 5,
+                        is_delegated: true,
+                    },
+                ),
+            ])),
+        );
+
+        let account_keys = [global_key, domain_key];
+        let statuses = state
+            .get_account_statuses(
+                &GENESIS_BLOCK_ID,
+                &GENESIS_SEQ_NUM,
+                true,
+                account_keys.iter(),
+            )
+            .unwrap();
+
+        let global = statuses[0].as_ref().unwrap();
+        assert_eq!(global.balance, Balance::from(7_u64));
+        assert_eq!(global.nonce, 1);
+        assert!(!global.is_delegated);
+
+        let domain = statuses[1].as_ref().unwrap();
+        assert_eq!(domain.balance, Balance::from(9_u64));
+        assert_eq!(domain.nonce, 5);
+        assert!(domain.is_delegated);
     }
 }

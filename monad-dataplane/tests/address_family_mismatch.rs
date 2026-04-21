@@ -23,9 +23,9 @@ const UP_BANDWIDTH_MBPS: u64 = 1_000;
 
 const BIND_ADDRS: [&str; 2] = ["0.0.0.0:0", "127.0.0.1:0"];
 
-fn find_ipv6_address() -> std::net::SocketAddr {
-    let socket = std::net::UdpSocket::bind("[::1]:0").unwrap();
-    socket.local_addr().unwrap()
+fn find_ipv6_address() -> std::io::Result<std::net::SocketAddr> {
+    let socket = std::net::UdpSocket::bind("[::1]:0")?;
+    socket.local_addr()
 }
 
 #[test]
@@ -34,6 +34,15 @@ fn address_family_mismatch() {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
+    let ipv4_target: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let ipv6_target = match find_ipv6_address() {
+        Ok(addr) => addr,
+        Err(err) => {
+            eprintln!("skipping address_family_mismatch: IPv6 loopback is unavailable: {err}");
+            return;
+        }
+    };
+
     // Cause the test to fail if any of the Dataplane threads panic.  Taken from:
     // https://stackoverflow.com/questions/35988775/how-can-i-cause-a-panic-on-a-thread-to-immediately-end-the-main-thread/36031130#36031130
     let orig_panic_hook = std::panic::take_hook();
@@ -41,9 +50,6 @@ fn address_family_mismatch() {
         orig_panic_hook(panic_info);
         std::process::exit(1);
     }));
-
-    let ipv4_target: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let ipv6_target = find_ipv6_address();
 
     for addr in BIND_ADDRS {
         let bind_addr = addr.parse().unwrap();

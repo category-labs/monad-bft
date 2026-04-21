@@ -13,10 +13,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use alloy_consensus::{transaction::Recovered, TxEnvelope};
+use alloy_consensus::transaction::Recovered;
 use alloy_primitives::{Uint, B256};
 use itertools::Itertools;
 use monad_eth_testutil::{make_legacy_tx, recover_tx};
+use monad_eth_types::EthTxEnvelope;
 use monad_tfm::base_fee::MIN_BASE_FEE;
 use rand::{seq::SliceRandom, Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
@@ -35,7 +36,7 @@ pub fn generate_txs(
     txs: usize,
     nonce_var: usize,
     pending_blocks: usize,
-) -> (Vec<Vec<Recovered<TxEnvelope>>>, Vec<Recovered<TxEnvelope>>) {
+) -> (Vec<Vec<Recovered<EthTxEnvelope>>>, Vec<Recovered<EthTxEnvelope>>) {
     assert!(
         accounts > 0,
         "accounts must be > 0 to generate transactions"

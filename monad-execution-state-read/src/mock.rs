@@ -20,7 +20,7 @@ use alloy_primitives::Address;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_types::{EthAccount, EthHeader};
+use monad_eth_types::{AccountKey, EthAccount, EthHeader, EthStorageKey, EthStorageSlot};
 use monad_types::{Balance, BlockId, Nonce, SeqNum, Stake};
 use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionPubKeyType};
 
@@ -30,6 +30,7 @@ use crate::{ExecutionStateRead, ExecutionStateReadError};
 pub struct NopExecutionStateRead {
     pub nonces: BTreeMap<Address, Nonce>,
     pub balances: BTreeMap<Address, Balance>,
+    pub storage: BTreeMap<(AccountKey, EthStorageKey), EthStorageSlot>,
 }
 
 impl<ST, SCT> ExecutionStateRead<ST, SCT> for NopExecutionStateRead
@@ -42,13 +43,23 @@ where
         _block_id: &BlockId,
         _seq_num: &SeqNum,
         _is_finalized: bool,
-        addresses: impl Iterator<Item = &'a Address>,
+        account_keys: impl Iterator<Item = &'a AccountKey>,
     ) -> Result<Vec<Option<EthAccount>>, ExecutionStateReadError> {
-        Ok(addresses
-            .map(|address| {
+        Ok(account_keys
+            .map(|account_key| {
                 Some(EthAccount {
-                    balance: self.balances.get(address).cloned().unwrap_or_default(),
-                    nonce: self.nonces.get(address).cloned().unwrap_or_default(),
+                    balance: account_key
+                        .domain
+                        .is_none()
+                        .then(|| self.balances.get(&account_key.address).cloned())
+                        .flatten()
+                        .unwrap_or_default(),
+                    nonce: account_key
+                        .domain
+                        .is_none()
+                        .then(|| self.nonces.get(&account_key.address).cloned())
+                        .flatten()
+                        .unwrap_or_default(),
                     code_hash: None,
                     is_delegated: false,
                 })
@@ -63,6 +74,21 @@ where
         _is_finalized: bool,
     ) -> Result<EthHeader, ExecutionStateReadError> {
         Ok(EthHeader(Header::default()))
+    }
+
+    fn get_storage_at_by_key(
+        &mut self,
+        _block_id: &BlockId,
+        _seq_num: &SeqNum,
+        _is_finalized: bool,
+        account_key: AccountKey,
+        storage_key: EthStorageKey,
+    ) -> Result<EthStorageSlot, ExecutionStateReadError> {
+        Ok(self
+            .storage
+            .get(&(account_key, storage_key))
+            .copied()
+            .unwrap_or_default())
     }
 
     /// Fetches earliest block from storage backend

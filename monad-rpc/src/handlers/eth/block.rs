@@ -13,6 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use alloy_primitives::Address;
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::Triedb;
 use serde::{Deserialize, Serialize};
@@ -22,7 +23,8 @@ use crate::{
     data::DataProvider,
     types::{
         eth_json::{
-            BlockTagOrHash, BlockTags, EthHash, MonadBlock, MonadTransactionReceipt, Quantity,
+            BlockTagOrHash, BlockTags, EthHash, FixedData, MonadBlock, MonadTransactionReceipt,
+            Quantity,
         },
         jsonrpc::{ChainStateResultMap, JsonRpcResult},
     },
@@ -110,6 +112,56 @@ pub async fn monad_eth_getBlockByNumber<T: Triedb>(
 }
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
+pub struct MonadGetDomainHeaderParams {
+    block_number: BlockTagOrHash,
+}
+
+#[derive(Serialize, Debug, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MonadDomainHeader {
+    pub number: Quantity,
+    pub state_root: EthHash,
+    pub parent_hash: EthHash,
+    pub timestamp: Quantity,
+}
+
+#[rpc(method = "monad_getDomainHeader", ignore = "domain")]
+#[allow(non_snake_case)]
+#[tracing::instrument(level = "debug", skip_all)]
+/// Returns the domain's latest committed block header as of the given L1
+/// block: its number (the L1 height it committed at) and its state root.
+/// Only available on the /domain/<chain id> RPC route.
+pub async fn monad_eth_getDomainHeader<T: Triedb>(
+    data_provider: &DataProvider<T>,
+    domain: Option<Address>,
+    params: MonadGetDomainHeaderParams,
+) -> JsonRpcResult<Option<MonadDomainHeader>> {
+    trace!("monad_getDomainHeader: {params:?}");
+
+    let Some(domain) = domain else {
+        return Err(crate::types::jsonrpc::JsonRpcError::method_not_found());
+    };
+
+    let block_key =
+        crate::data::get_block_key_from_tag_or_hash(&data_provider.triedb_env, params.block_number)
+            .await
+            .ok_or_else(crate::types::jsonrpc::JsonRpcError::block_not_found)?;
+
+    let header = data_provider
+        .triedb_env
+        .get_domain_block_header(block_key, domain.0 .0)
+        .await
+        .map_err(crate::types::jsonrpc::JsonRpcError::internal_error)?;
+
+    Ok(header.map(|header| MonadDomainHeader {
+        number: Quantity(header.header.number),
+        state_root: FixedData(header.header.state_root.0),
+        parent_hash: FixedData(header.header.parent_hash.0),
+        timestamp: Quantity(header.header.timestamp),
+    }))
+}
+
+#[derive(Deserialize, Debug, schemars::JsonSchema)]
 pub struct MonadEthGetBlockTransactionCountByHashParams {
     block_hash: EthHash,
 }
@@ -157,18 +209,20 @@ pub struct MonadEthGetBlockReceiptsParams {
 #[derive(Serialize, Debug, schemars::JsonSchema)]
 pub struct MonadEthGetBlockReceiptsResult(Vec<MonadTransactionReceipt>);
 
-#[rpc(method = "eth_getBlockReceipts")]
+#[rpc(method = "eth_getBlockReceipts", ignore = "base_chain_id,domain")]
 #[allow(non_snake_case)]
 #[tracing::instrument(level = "debug", skip_all)]
 /// Returns the receipts of a block by number or hash.
 pub async fn monad_eth_getBlockReceipts<T: Triedb>(
     data_provider: &DataProvider<T>,
+    base_chain_id: u64,
+    domain: Option<Address>,
     params: MonadEthGetBlockReceiptsParams,
 ) -> JsonRpcResult<Option<MonadEthGetBlockReceiptsResult>> {
     trace!("monad_eth_getBlockReceipts: {params:?}");
 
     data_provider
-        .get_block_receipts(params.block)
+        .get_block_receipts_for_domain(params.block, base_chain_id, domain)
         .await
         .map_present_and_no_err(MonadEthGetBlockReceiptsResult)
 }

@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use alloy_consensus::{transaction::Recovered, Transaction, TxEnvelope};
+use alloy_consensus::{transaction::Recovered, Transaction};
 use alloy_eips::eip7702::Authorization;
 use alloy_primitives::{Address, TxHash, U256};
 use alloy_rlp::Encodable;
@@ -27,7 +27,7 @@ use monad_eth_block_policy::{
     validation::{static_validate_transaction, StaticValidationError},
 };
 use monad_eth_txpool_types::{EthTxPoolDropReason, DEFAULT_TX_PRIORITY};
-use monad_eth_types::EthExecutionProtocol;
+use monad_eth_types::{AccountKey, DomainTx, EthExecutionProtocol, EthTxEnvelope};
 use monad_system_calls::{validator::SystemTransactionValidator, SYSTEM_SENDER_ETH_ADDRESS};
 use monad_tfm::base_fee::MIN_BASE_FEE;
 use monad_types::{Balance, NodeId, Nonce, SeqNum};
@@ -37,7 +37,7 @@ use tracing::trace;
 const MAX_EIP7702_AUTHORIZATION_LIST_LENGTH: usize = 4;
 
 pub const fn max_eip2718_encoded_length(execution_params: &ExecutionChainParams) -> usize {
-    2 * execution_params.max_code_size + 128 * 1024
+    1 + 2 * execution_params.max_code_size + 128 * 1024
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -57,7 +57,8 @@ impl<PT: PubKey> PoolTxKind<PT> {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PoolTx<PT: PubKey> {
-    tx: Recovered<TxEnvelope>,
+    tx: Recovered<EthTxEnvelope>,
+    account_key: AccountKey,
     kind: PoolTxKind<PT>,
     forward_last_seqnum: SeqNum,
     forward_retries: usize,
@@ -78,9 +79,9 @@ impl<PT: PubKey> PoolTx<PT> {
         chain_id: u64,
         chain_params: &ChainParams,
         execution_params: &ExecutionChainParams,
-        tx: Recovered<TxEnvelope>,
+        tx: Recovered<EthTxEnvelope>,
         kind: PoolTxKind<PT>,
-    ) -> Result<Self, (Recovered<TxEnvelope>, EthTxPoolDropReason)>
+    ) -> Result<Self, (Recovered<EthTxEnvelope>, EthTxPoolDropReason)>
     where
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -108,14 +109,26 @@ impl<PT: PubKey> PoolTx<PT> {
         }
 
         let last_commit_base_fee = last_commit.base_fee;
-        let max_value = compute_txn_max_value(&tx, last_commit_base_fee);
-        let max_gas_cost = compute_txn_max_gas_cost(&tx, last_commit_base_fee);
+        let max_value = compute_txn_max_value(tx.inner(), last_commit_base_fee);
+        let max_gas_cost = compute_txn_max_gas_cost(tx.inner(), last_commit_base_fee);
 
         if let Err(error) =
-            static_validate_transaction(&tx, chain_id, chain_params, execution_params)
+            static_validate_transaction(tx.inner(), chain_id, chain_params, execution_params)
         {
             return Err((tx, EthTxPoolDropReason::NotWellFormed(error)));
         }
+
+        let account_key = match tx.account_key(chain_id, tx.signer()) {
+            Ok(account_key) => account_key,
+            Err(monad_eth_types::WrongChainId::InvalidDomainSuffix { tx_chain_id, .. }) => {
+                return Err((
+                    tx,
+                    EthTxPoolDropReason::NotWellFormed(StaticValidationError::InvalidChainId {
+                        tx_chain_id,
+                    }),
+                ));
+            }
+        };
 
         let valid_recovered_authorizations =
             if let Some(signed_authorizations) = tx.authorization_list() {
@@ -161,6 +174,7 @@ impl<PT: PubKey> PoolTx<PT> {
 
         Ok(Self {
             tx,
+            account_key,
             kind,
             forward_last_seqnum: last_commit.seq_num,
             forward_retries: 0,
@@ -176,7 +190,7 @@ impl<PT: PubKey> PoolTx<PT> {
         chain_params: &ChainParams,
         execution_params: &ExecutionChainParams,
     ) -> Result<(), StaticValidationError> {
-        static_validate_transaction(&self.tx, chain_id, chain_params, execution_params)
+        static_validate_transaction(self.tx.inner(), chain_id, chain_params, execution_params)
     }
 
     pub fn apply_max_value(&self, account_balance: Balance) -> Option<Balance> {
@@ -208,6 +222,17 @@ impl<PT: PubKey> PoolTx<PT> {
         self.tx.signer_ref()
     }
 
+    pub fn account_key(&self) -> AccountKey {
+        self.account_key
+    }
+
+    pub fn authority_account_key(&self, authority: Address) -> AccountKey {
+        AccountKey {
+            domain: self.account_key.domain,
+            address: authority,
+        }
+    }
+
     pub fn nonce(&self) -> Nonce {
         self.tx.nonce()
     }
@@ -232,11 +257,11 @@ impl<PT: PubKey> PoolTx<PT> {
         self.tx.length() as u64
     }
 
-    pub const fn raw(&self) -> &Recovered<TxEnvelope> {
+    pub const fn raw(&self) -> &Recovered<EthTxEnvelope> {
         &self.tx
     }
 
-    pub fn into_raw(self) -> Recovered<TxEnvelope> {
+    pub fn into_raw(self) -> Recovered<EthTxEnvelope> {
         self.tx
     }
 
@@ -310,7 +335,7 @@ impl<PT: PubKey> PoolTx<PT> {
         &mut self,
         last_commit_seq_num: SeqNum,
         last_commit_base_fee: u64,
-    ) -> Option<&TxEnvelope> {
+    ) -> Option<&EthTxEnvelope> {
         if !self.is_owned_and_forwardable() {
             return None;
         }
@@ -334,6 +359,6 @@ impl<PT: PubKey> PoolTx<PT> {
         self.forward_last_seqnum = last_commit_seq_num;
         self.forward_retries += 1;
 
-        Some(&self.tx)
+        Some(self.tx.inner())
     }
 }

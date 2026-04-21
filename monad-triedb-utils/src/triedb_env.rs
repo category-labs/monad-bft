@@ -31,8 +31,9 @@ use alloy_rlp::Decodable;
 use auto_impl::auto_impl;
 use futures::{channel::oneshot, FutureExt};
 use monad_eth_types::{
-    BlockHeader, EthAccount, EthAddress, EthBlockHash, EthCode, EthCodeHash, EthStorageKey,
-    EthStorageSlot, EthTxHash, ReceiptWithLogIndex, TransactionLocation, TxEnvelopeWithSender,
+    AccountKey, BlockHeader, EthAccount, EthAddress, EthBlockHash, EthCode, EthCodeHash,
+    EthStorageKey, EthStorageSlot, EthTxHash, ReceiptWithLogIndex, TransactionLocation,
+    TxEnvelopeWithSender,
 };
 use monad_triedb::{
     compute_page_key, compute_slot_offset, decode_storage_page_slot, TraverseEntry, TriedbHandle,
@@ -45,7 +46,7 @@ use crate::{
         rlp_decode_account, rlp_decode_block_num, rlp_decode_storage_slot,
         rlp_decode_transaction_location,
     },
-    key::{create_range_key, create_triedb_key, KeyInput, Version},
+    key::{create_range_key, create_triedb_key, KeyInput, KeyLenNibbles, Version},
 };
 
 enum TriedbRequest {
@@ -59,13 +60,13 @@ struct RangeGetRequest {
     request_sender: oneshot::Sender<Option<Vec<TraverseEntry>>>,
     // prefix key is used to get the root of the subtrie
     prefix_key: Vec<u8>,
-    prefix_key_len_nibbles: u8,
+    prefix_key_len_nibbles: KeyLenNibbles,
     // min key is inclusive in the range we want to retrieve
     min_triedb_key: Vec<u8>,
-    min_key_len_nibbles: u8,
+    min_key_len_nibbles: KeyLenNibbles,
     // max key is not inclusive in the range we want to retrieve
     max_triedb_key: Vec<u8>,
-    max_key_len_nibbles: u8,
+    max_key_len_nibbles: KeyLenNibbles,
     block_key: BlockKey,
 }
 
@@ -74,7 +75,7 @@ struct TraverseRequest {
     request_sender: oneshot::Sender<Option<Vec<TraverseEntry>>>,
     // triedb_key and key_len_nibbles are used to read items from triedb
     triedb_key: Vec<u8>,
-    key_len_nibbles: u8,
+    key_len_nibbles: KeyLenNibbles,
     block_key: BlockKey,
 }
 
@@ -87,7 +88,7 @@ struct AsyncRequest {
     completed_counter: Arc<AtomicUsize>,
     // triedb_key and key_len_nibbles are used to read items from triedb
     triedb_key: Vec<u8>,
-    key_len_nibbles: u8,
+    key_len_nibbles: KeyLenNibbles,
     block_key: BlockKey,
 }
 
@@ -455,10 +456,21 @@ pub trait Triedb: Debug {
         key: BlockKey,
         addr: EthAddress,
     ) -> impl std::future::Future<Output = Result<EthAccount, String>> + Send;
+    fn get_account_by_key(
+        &self,
+        key: BlockKey,
+        account_key: AccountKey,
+    ) -> impl std::future::Future<Output = Result<EthAccount, String>> + Send;
     fn get_storage_at(
         &self,
         key: BlockKey,
         addr: EthAddress,
+        at: EthStorageKey,
+    ) -> impl std::future::Future<Output = Result<EthStorageSlot, String>> + Send;
+    fn get_storage_at_by_key(
+        &self,
+        key: BlockKey,
+        account_key: AccountKey,
         at: EthStorageKey,
     ) -> impl std::future::Future<Output = Result<EthStorageSlot, String>> + Send;
     fn get_code(
@@ -475,6 +487,17 @@ pub trait Triedb: Debug {
         &self,
         key: BlockKey,
     ) -> impl std::future::Future<Output = Result<Vec<ReceiptWithLogIndex>, String>> + Send + Sync;
+    fn get_domain_receipt(
+        &self,
+        key: BlockKey,
+        domain: EthAddress,
+        txn_index: u64,
+    ) -> impl std::future::Future<Output = Result<Option<ReceiptWithLogIndex>, String>> + Send;
+    fn get_domain_receipts(
+        &self,
+        key: BlockKey,
+        domain: EthAddress,
+    ) -> impl std::future::Future<Output = Result<Vec<ReceiptWithLogIndex>, String>> + Send + Sync;
     fn get_transaction(
         &self,
         key: BlockKey,
@@ -484,13 +507,35 @@ pub trait Triedb: Debug {
         &self,
         key: BlockKey,
     ) -> impl std::future::Future<Output = Result<Vec<TxEnvelopeWithSender>, String>> + Send + Sync;
+    fn get_domain_transaction(
+        &self,
+        key: BlockKey,
+        domain: EthAddress,
+        txn_index: u64,
+    ) -> impl std::future::Future<Output = Result<Option<TxEnvelopeWithSender>, String>> + Send;
+    fn get_domain_transactions(
+        &self,
+        key: BlockKey,
+        domain: EthAddress,
+    ) -> impl std::future::Future<Output = Result<Vec<TxEnvelopeWithSender>, String>> + Send + Sync;
     fn get_block_header(
         &self,
         key: BlockKey,
     ) -> impl std::future::Future<Output = Result<Option<BlockHeader>, String>> + Send + Sync;
+    fn get_domain_block_header(
+        &self,
+        key: BlockKey,
+        domain: EthAddress,
+    ) -> impl std::future::Future<Output = Result<Option<BlockHeader>, String>> + Send + Sync;
     fn get_transaction_location_by_hash(
         &self,
         key: BlockKey,
+        tx_hash: EthTxHash,
+    ) -> impl std::future::Future<Output = Result<Option<TransactionLocation>, String>> + Send;
+    fn get_domain_transaction_location_by_hash(
+        &self,
+        key: BlockKey,
+        domain: EthAddress,
         tx_hash: EthTxHash,
     ) -> impl std::future::Future<Output = Result<Option<TransactionLocation>, String>> + Send;
     fn get_block_number_by_hash(
@@ -877,6 +922,20 @@ impl TriedbPath for TriedbEnv {
     }
 }
 
+fn key_input_for_account(account_key: &AccountKey) -> KeyInput<'_> {
+    match account_key.domain.as_ref() {
+        Some(domain) => KeyInput::DomainAddress(domain.as_ref(), account_key.address.as_ref()),
+        None => KeyInput::Address(account_key.address.as_ref()),
+    }
+}
+
+fn key_input_for_storage<'a>(account_key: &'a AccountKey, at: &'a EthStorageKey) -> KeyInput<'a> {
+    match account_key.domain.as_ref() {
+        Some(domain) => KeyInput::DomainStorage(domain.as_ref(), account_key.address.as_ref(), at),
+        None => KeyInput::Storage(account_key.address.as_ref(), at),
+    }
+}
+
 impl Triedb for TriedbEnv {
     fn get_latest_finalized_block_key(&self) -> FinalizedBlockKey {
         let meta = self.meta.lock().expect("mutex poisoned");
@@ -926,7 +985,17 @@ impl Triedb for TriedbEnv {
         block_key: BlockKey,
         addr: EthAddress,
     ) -> Result<EthAccount, String> {
-        self.handle_async_request(block_key, KeyInput::Address(&addr), |data| {
+        self.get_account_by_key(block_key, AccountKey::global(addr.into()))
+            .await
+    }
+
+    #[tracing::instrument(level = "debug")]
+    async fn get_account_by_key(
+        &self,
+        block_key: BlockKey,
+        account_key: AccountKey,
+    ) -> Result<EthAccount, String> {
+        self.handle_async_request(block_key, key_input_for_account(&account_key), |data| {
             rlp_decode_account(data).ok_or_else(|| String::from("Decoding account error"))
         })
         .await
@@ -940,6 +1009,17 @@ impl Triedb for TriedbEnv {
         addr: EthAddress,
         at: EthStorageKey,
     ) -> Result<EthStorageSlot, String> {
+        self.get_storage_at_by_key(block_key, AccountKey::global(addr.into()), at)
+            .await
+    }
+
+    #[tracing::instrument(level = "debug")]
+    async fn get_storage_at_by_key(
+        &self,
+        block_key: BlockKey,
+        account_key: AccountKey,
+        at: EthStorageKey,
+    ) -> Result<EthStorageSlot, String> {
         if self.page_encoded {
             // Page-encoded: storage is keyed by keccak(page_key) where
             // page_key = slot >> 7, and the leaf is an encoded page. Look up the
@@ -950,7 +1030,7 @@ impl Triedb for TriedbEnv {
             let offset = compute_slot_offset(at);
             self.handle_async_request(
                 block_key,
-                KeyInput::Storage(&addr, &page_key),
+                key_input_for_storage(&account_key, &page_key),
                 move |data| {
                     decode_storage_page_slot(&data, offset)
                         .ok_or_else(|| String::from("Decoding storage page error"))
@@ -959,10 +1039,14 @@ impl Triedb for TriedbEnv {
             .await
             .map(Option::unwrap_or_default)
         } else {
-            self.handle_async_request(block_key, KeyInput::Storage(&addr, &at), |data| {
-                rlp_decode_storage_slot(data)
-                    .ok_or_else(|| String::from("Decoding storage slot error"))
-            })
+            self.handle_async_request(
+                block_key,
+                key_input_for_storage(&account_key, &at),
+                |data| {
+                    rlp_decode_storage_slot(data)
+                        .ok_or_else(|| String::from("Decoding storage slot error"))
+                },
+            )
             .await
             .map(Option::unwrap_or_default)
         }
@@ -1013,6 +1097,38 @@ impl Triedb for TriedbEnv {
     }
 
     #[tracing::instrument(level = "debug")]
+    async fn get_domain_receipt(
+        &self,
+        block_key: BlockKey,
+        domain: EthAddress,
+        receipt_index: u64,
+    ) -> Result<Option<ReceiptWithLogIndex>, String> {
+        self.handle_async_request(
+            block_key,
+            KeyInput::DomainReceiptIndex(&domain, Some(receipt_index)),
+            |data| {
+                let mut rlp_buf = data.as_slice();
+                ReceiptWithLogIndex::decode(&mut rlp_buf)
+                    .map_err(|e| format!("decode domain receipt failed: {e}"))
+            },
+        )
+        .await
+    }
+
+    async fn get_domain_receipts(
+        &self,
+        block_key: BlockKey,
+        domain: EthAddress,
+    ) -> Result<Vec<ReceiptWithLogIndex>, String> {
+        self.handle_traverse_request(
+            block_key,
+            KeyInput::DomainReceiptIndex(&domain, None),
+            parse_rlp_entries,
+        )
+        .await
+    }
+
+    #[tracing::instrument(level = "debug")]
     async fn get_transaction(
         &self,
         block_key: BlockKey,
@@ -1046,11 +1162,62 @@ impl Triedb for TriedbEnv {
     }
 
     #[tracing::instrument(level = "debug")]
+    async fn get_domain_transaction(
+        &self,
+        block_key: BlockKey,
+        domain: EthAddress,
+        txn_index: u64,
+    ) -> Result<Option<TxEnvelopeWithSender>, String> {
+        self.handle_async_request(
+            block_key,
+            KeyInput::DomainTxIndex(&domain, Some(txn_index)),
+            |data| {
+                let mut rlp_buf = data.as_slice();
+                TxEnvelopeWithSender::decode(&mut rlp_buf)
+                    .map_err(|e| format!("decode domain transaction failed: {e}"))
+            },
+        )
+        .await
+    }
+
+    #[tracing::instrument(level = "debug")]
+    async fn get_domain_transactions(
+        &self,
+        block_key: BlockKey,
+        domain: EthAddress,
+    ) -> Result<Vec<TxEnvelopeWithSender>, String> {
+        self.handle_traverse_request(
+            block_key,
+            KeyInput::DomainTxIndex(&domain, None),
+            parse_rlp_entries,
+        )
+        .await
+    }
+
+    #[tracing::instrument(level = "debug")]
     async fn get_block_header(&self, block_key: BlockKey) -> Result<Option<BlockHeader>, String> {
         self.handle_async_request(block_key, KeyInput::BlockHeader, |data| {
             let mut rlp_buf = data.as_slice();
             let block_header = Header::decode(&mut rlp_buf)
                 .map_err(|e| format!("decode block header failed: {}", e))?;
+            Ok(BlockHeader {
+                hash: keccak256(&data),
+                header: block_header,
+            })
+        })
+        .await
+    }
+
+    #[tracing::instrument(level = "debug")]
+    async fn get_domain_block_header(
+        &self,
+        block_key: BlockKey,
+        domain: EthAddress,
+    ) -> Result<Option<BlockHeader>, String> {
+        self.handle_async_request(block_key, KeyInput::DomainBlockHeader(&domain), |data| {
+            let mut rlp_buf = data.as_slice();
+            let block_header = Header::decode(&mut rlp_buf)
+                .map_err(|e| format!("decode domain block header failed: {}", e))?;
             Ok(BlockHeader {
                 hash: keccak256(&data),
                 header: block_header,
@@ -1070,6 +1237,32 @@ impl Triedb for TriedbEnv {
                 rlp_decode_transaction_location(data)
                     .ok_or_else(|| String::from("decode transaction location error"))
             })
+            .await?
+        {
+            Some((block_num, tx_index)) => Ok(Some(TransactionLocation {
+                block_num,
+                tx_index,
+            })),
+            None => Ok(None),
+        }
+    }
+
+    #[tracing::instrument(level = "debug")]
+    async fn get_domain_transaction_location_by_hash(
+        &self,
+        block_key: BlockKey,
+        domain: EthAddress,
+        tx_hash: EthTxHash,
+    ) -> Result<Option<TransactionLocation>, String> {
+        match self
+            .handle_async_request(
+                block_key,
+                KeyInput::DomainTxHash(&domain, &tx_hash),
+                |data| {
+                    rlp_decode_transaction_location(data)
+                        .ok_or_else(|| String::from("decode domain transaction location error"))
+                },
+            )
             .await?
         {
             Some((block_num, tx_index)) => Ok(Some(TransactionLocation {

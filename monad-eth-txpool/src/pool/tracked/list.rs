@@ -19,7 +19,6 @@ use std::{
 };
 
 use alloy_consensus::Transaction;
-use alloy_primitives::Address;
 use indexmap::map::VacantEntry;
 use monad_chain_config::{execution_revision::MonadExecutionRevision, revision::ChainRevision};
 use monad_crypto::certificate_signature::{
@@ -27,6 +26,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_eth_block_policy::nonce_usage::NonceUsage;
 use monad_eth_txpool_types::EthTxPoolDropReason;
+use monad_eth_types::AccountKey;
 use monad_tfm::base_fee::MIN_BASE_FEE;
 use monad_types::Nonce;
 use tracing::error;
@@ -52,7 +52,7 @@ where
     ST: CertificateSignatureRecoverable,
 {
     pub fn try_new(
-        this_entry: VacantEntry<'_, Address, Self>,
+        this_entry: VacantEntry<'_, AccountKey, Self>,
         event_tracker: &mut EthTxPoolEventTracker<'_>,
         limit_tracker: &mut TrackedTxLimits,
         txs: Vec<PoolTx<CertificateSignaturePubKey<ST>>>,
@@ -186,7 +186,7 @@ where
     pub fn update_committed_nonce_usage(
         event_tracker: &mut EthTxPoolEventTracker<'_>,
         limit_tracker: &mut TrackedTxLimits,
-        mut this: indexmap::map::OccupiedEntry<'_, Address, Self>,
+        mut this: indexmap::map::OccupiedEntry<'_, AccountKey, Self>,
         nonce_usage: NonceUsage,
     ) -> bool {
         let account_nonce = nonce_usage.apply_to_account_nonce(this.get().account_nonce);
@@ -224,7 +224,7 @@ where
     pub fn evict_expired_txs(
         event_tracker: &mut EthTxPoolEventTracker<'_>,
         limit_tracker: &mut TrackedTxLimits,
-        mut this: indexmap::map::IndexedEntry<'_, Address, Self>,
+        mut this: indexmap::map::IndexedEntry<'_, AccountKey, Self>,
         tx_expiry: Duration,
     ) -> bool {
         let now = Instant::now();
@@ -285,7 +285,7 @@ where
     pub(crate) fn evict_pool_full(
         event_tracker: &mut EthTxPoolEventTracker<'_>,
         limit_tracker: &mut TrackedTxLimits,
-        this: indexmap::map::OccupiedEntry<'_, Address, Self>,
+        this: indexmap::map::OccupiedEntry<'_, AccountKey, Self>,
     ) {
         let this = this.swap_remove();
 
