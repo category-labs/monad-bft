@@ -29,8 +29,11 @@ use crate::{
     decoding::{DecoderCache, DecodingContext, TryDecodeError, TryDecodeStatus},
     metrics::{
         UdpStateMetrics, COUNTER_RAPTORCAST_CHUNKS_DROPPED_INCOMPATIBLE_VERSION,
+        COUNTER_RAPTORCAST_SECONDARY_CHUNKS_DROPPED_INCOMPATIBLE_VERSION,
         COUNTER_RAPTORCAST_V0_PRIMARY_CHUNKS_ACCEPTED,
+        COUNTER_RAPTORCAST_V0_SECONDARY_CHUNKS_ACCEPTED,
         COUNTER_RAPTORCAST_V1_PRIMARY_CHUNKS_ACCEPTED,
+        COUNTER_RAPTORCAST_V1_SECONDARY_CHUNKS_ACCEPTED,
         GAUGE_RAPTORCAST_DECODING_CACHE_SIGNATURE_VERIFICATIONS_RATE_LIMITED,
         GAUGE_RAPTORCAST_DETERMINISTIC_ROLLOUT_STAGE,
     },
@@ -529,13 +532,25 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                     )
                 }
 
-                BroadcastMode::Secondary => self.handle_secondary_raptorcast(
-                    epoch_validators,
-                    full_node_group_map,
-                    &chunk,
-                    rebroadcast_to,
-                    message.sender.as_ref(),
-                ),
+                BroadcastMode::Secondary => {
+                    if !v1_rollout::should_accept(self.v1_rollout, &chunk) {
+                        self.metrics.executor_metrics_mut()
+                            [COUNTER_RAPTORCAST_SECONDARY_CHUNKS_DROPPED_INCOMPATIBLE_VERSION] += 1;
+                        continue;
+                    }
+                    let accepted_metric = match chunk.version {
+                        1 => COUNTER_RAPTORCAST_V1_SECONDARY_CHUNKS_ACCEPTED,
+                        _ => COUNTER_RAPTORCAST_V0_SECONDARY_CHUNKS_ACCEPTED,
+                    };
+                    self.metrics.executor_metrics_mut()[accepted_metric] += 1;
+                    self.handle_secondary_raptorcast(
+                        epoch_validators,
+                        full_node_group_map,
+                        &chunk,
+                        rebroadcast_to,
+                        message.sender.as_ref(),
+                    )
+                }
             };
 
             if let Some((author, decoded_message)) = maybe_decoded_message {

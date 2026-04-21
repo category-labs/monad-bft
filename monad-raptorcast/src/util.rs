@@ -67,8 +67,9 @@ pub enum BuildTarget<'a, PT: PubKey> {
         group_id: GroupId,
         recipient: &'a NodeId<PT>,
     },
-    // raptorcast to a set of full nodes, assuming equal stake
-    // distribution
+    // raptorcast to a set of full nodes. In regular mode, chunks are
+    // assigned round-robin; in deterministic mode, chunks are
+    // assigned by the seeded shuffle of the full-node group.
     FullNodeRaptorCast {
         group: SecondaryBroadcastGroup<'a, PT>,
         mode: RaptorcastMode,
