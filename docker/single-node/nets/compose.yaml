@@ -1,7 +1,7 @@
 services:
   build_triedb:
     image: monad-execution-builder:latest
-    command: monad-mpt --storage /monad/triedb/test.db --create --root-offsets-chunk-count=2
+    command: monad-mpt --storage /monad/triedb/test.db --create --state-machine monad --root-offsets-chunk-count 2 --yes
     volumes:
       - ./node:/monad
     privileged: true
@@ -39,6 +39,7 @@ services:
         condition: service_completed_successfully
     volumes:
       - ./node:/monad
+      - ./keys:/keys:ro
     privileged: true
     command: |
       monad
@@ -47,6 +48,9 @@ services:
       --block_db /monad/ledger
       --statesync /monad/statesync.sock
       --log_level ERROR
+      --private-domain 85679 0x5FbDB2315678afecb367f032d93F642f64180aa3 /keys/domain-85679.pem
+      --private-domain 151215 0x5FbDB2315678afecb367f032d93F642f64180aa3 /keys/domain-151215.pem
+      --private-domain-sequencer 0x5FbDB2315678afecb367f032d93F642f64180aa3
     ulimits: *ulimits
 
   monad_node:
@@ -100,4 +104,6 @@ services:
       --ipc-path /monad/mempool.sock
       --triedb-path /monad/triedb
       --node-config /monad/config/node.toml
+      --private-domain-spoke 85679=0x5FbDB2315678afecb367f032d93F642f64180aa3
+      --private-domain-spoke 151215=0x5FbDB2315678afecb367f032d93F642f64180aa3
     ulimits: *ulimits

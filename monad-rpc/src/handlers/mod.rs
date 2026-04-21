@@ -37,6 +37,7 @@ use self::{
             monad_eth_blockNumber, monad_eth_chainId, monad_eth_getBlockByHash,
             monad_eth_getBlockByNumber, monad_eth_getBlockReceipts,
             monad_eth_getBlockTransactionCountByHash, monad_eth_getBlockTransactionCountByNumber,
+            monad_eth_getDomainHeader,
         },
         call::{monad_admin_ethCallStatistics, monad_debug_traceCall, monad_eth_call},
         gas::{
@@ -85,6 +86,7 @@ use monad_chain_config::{
     ETHEREUM_MAINNET_CHAIN_ID, HIVE_CHAIN_ID, MONAD_DEVNET_CHAIN_ID, MONAD_MAINNET_CHAIN_ID,
     MONAD_TESTNET_CHAIN_ID,
 };
+use monad_eth_types::{domain_for_chain_id, WrongChainId};
 use monad_ethcall::ChainId;
 
 pub(crate) fn parse_ethcall_chain_id(chain_id: u64) -> JsonRpcResult<ChainId> {
@@ -102,6 +104,68 @@ pub(crate) fn parse_ethcall_chain_id(chain_id: u64) -> JsonRpcResult<ChainId> {
 }
 
 pub async fn rpc_handler(
+    root_span: RootSpan,
+    body: bytes::Bytes,
+    app_state: web::Data<MonadRpcResources>,
+    request_id: TimingRequestId,
+) -> HttpResponse {
+    rpc_handler_inner(root_span, body, app_state, request_id).await
+}
+
+pub async fn domain_rpc_handler(
+    root_span: RootSpan,
+    path: web::Path<String>,
+    body: bytes::Bytes,
+    app_state: web::Data<MonadRpcResources>,
+    request_id: TimingRequestId,
+) -> HttpResponse {
+    let route_chain_id = match parse_domain_route_chain_id(path.as_str()) {
+        Ok(chain_id) => chain_id,
+        Err(err) => return HttpResponse::Ok().json(Response::from_error(err)),
+    };
+    let domain = match domain_for_route_chain_id(route_chain_id, app_state.base_chain_id) {
+        Ok(domain) => domain,
+        Err(err) => return HttpResponse::Ok().json(Response::from_error(err)),
+    };
+    let app_state = web::Data::new(app_state.with_domain_context(route_chain_id, domain));
+
+    rpc_handler_inner(root_span, body, app_state, request_id).await
+}
+
+fn parse_domain_route_chain_id(chain_id: &str) -> Result<u64, JsonRpcError> {
+    if chain_id.is_empty() {
+        return Err(JsonRpcError::invalid_params());
+    }
+
+    if let Some(hex) = chain_id
+        .strip_prefix("0x")
+        .or_else(|| chain_id.strip_prefix("0X"))
+    {
+        if hex.is_empty() {
+            return Err(JsonRpcError::invalid_params());
+        }
+        return u64::from_str_radix(hex, 16).map_err(|_| JsonRpcError::invalid_params());
+    }
+
+    chain_id
+        .parse::<u64>()
+        .map_err(|_| JsonRpcError::invalid_params())
+}
+
+fn domain_for_route_chain_id(
+    route_chain_id: u64,
+    base_chain_id: u64,
+) -> Result<alloy_primitives::Address, JsonRpcError> {
+    match domain_for_chain_id(Some(route_chain_id), base_chain_id) {
+        Ok(Some(domain)) => Ok(domain),
+        Ok(None) => Err(JsonRpcError::invalid_params()),
+        Err(WrongChainId::InvalidDomainSuffix { tx_chain_id, .. }) => {
+            Err(JsonRpcError::invalid_chain_id(base_chain_id, tx_chain_id))
+        }
+    }
+}
+
+async fn rpc_handler_inner(
     root_span: RootSpan,
     body: bytes::Bytes,
     app_state: web::Data<MonadRpcResources>,
@@ -369,6 +433,8 @@ async fn debug_traceCall(
                 eth_call_handler_config,
                 executor,
                 app_state.chain_id,
+                app_state.base_chain_id,
+                app_state.domain,
                 app_state.max_response_size as usize,
                 params,
             )
@@ -415,6 +481,8 @@ async fn eth_call(
                 eth_call_handler_config,
                 executor,
                 app_state.chain_id,
+                app_state.base_chain_id,
+                app_state.domain,
                 params,
             )
         })
@@ -442,6 +510,7 @@ async fn eth_simulateV1(
                 data_provider,
                 executor,
                 app_state.chain_id,
+                app_state.domain,
                 // TODO(dhil): We use the eth call gas limit for individual calls within the simulation. We should consider adding more granular gas limits in the future.
                 config.provider_gas_limit_eth_call,
                 config.provider_gas_limit_eth_simulate,
@@ -465,7 +534,9 @@ async fn eth_sendRawTransaction(
     monad_eth_sendRawTransaction(
         txpool_bridge_client,
         params,
+        app_state.base_chain_id,
         app_state.chain_id,
+        app_state.domain,
         app_state.allow_unprotected_txs,
     )
     .await
@@ -486,7 +557,9 @@ async fn eth_sendRawTransactionSync(
         txpool_bridge_client,
         event_server_client,
         params,
+        app_state.base_chain_id,
         app_state.chain_id,
+        app_state.domain,
         app_state.allow_unprotected_txs,
         app_state.eth_send_raw_transaction_sync_default_timeout_ms,
         app_state.eth_send_raw_transaction_sync_max_timeout_ms,
@@ -513,6 +586,8 @@ async fn eth_fillTransaction(
                 eth_call_handler_config,
                 executor,
                 app_state.chain_id,
+                app_state.base_chain_id,
+                app_state.domain,
                 params,
             )
         })
@@ -538,6 +613,8 @@ async fn eth_createAccessList(
                 eth_call_handler_config,
                 executor,
                 app_state.chain_id,
+                app_state.base_chain_id,
+                app_state.domain,
                 params,
             )
         })
@@ -561,6 +638,8 @@ async fn eth_getLogs(
         app_state.use_eth_get_logs_index,
         app_state.dry_run_get_logs_index,
         app_state.max_finalized_block_cache_len,
+        app_state.base_chain_id,
+        app_state.domain,
     )
     .await
     .map(serialize_result)?
@@ -574,9 +653,14 @@ async fn eth_getTransactionByHash(
 ) -> Result<Box<RawValue>, JsonRpcError> {
     let data_provider = app_state.data_provider.as_ref().method_not_found()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
-    monad_eth_getTransactionByHash(data_provider, params)
-        .await
-        .map(serialize_result)?
+    monad_eth_getTransactionByHash(
+        data_provider,
+        app_state.base_chain_id,
+        app_state.domain,
+        params,
+    )
+    .await
+    .map(serialize_result)?
 }
 
 #[allow(non_snake_case)]
@@ -665,7 +749,7 @@ async fn eth_getBalance(
 ) -> Result<Box<RawValue>, JsonRpcError> {
     let data_provider = app_state.data_provider.as_ref().method_not_found()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
-    monad_eth_getBalance(data_provider, params)
+    monad_eth_getBalance(data_provider, app_state.domain, params)
         .await
         .map(serialize_result)?
 }
@@ -678,7 +762,7 @@ async fn eth_getCode(
 ) -> Result<Box<RawValue>, JsonRpcError> {
     let data_provider = app_state.data_provider.as_ref().method_not_found()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
-    monad_eth_getCode(data_provider, params)
+    monad_eth_getCode(data_provider, app_state.domain, params)
         .await
         .map(serialize_result)?
 }
@@ -691,7 +775,7 @@ async fn eth_getStorageAt(
 ) -> Result<Box<RawValue>, JsonRpcError> {
     let data_provider = app_state.data_provider.as_ref().method_not_found()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
-    monad_eth_getStorageAt(data_provider, params)
+    monad_eth_getStorageAt(data_provider, app_state.domain, params)
         .await
         .map(serialize_result)?
 }
@@ -704,7 +788,7 @@ async fn eth_getTransactionCount(
 ) -> Result<Box<RawValue>, JsonRpcError> {
     let data_provider = app_state.data_provider.as_ref().method_not_found()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
-    monad_eth_getTransactionCount(data_provider, params)
+    monad_eth_getTransactionCount(data_provider, app_state.domain, params)
         .await
         .map(serialize_result)?
 }
@@ -759,6 +843,8 @@ async fn eth_estimateGas(
                 eth_call_handler_config,
                 executor,
                 app_state.chain_id,
+                app_state.base_chain_id,
+                app_state.domain,
                 params,
             )
         })
@@ -813,9 +899,14 @@ async fn eth_getTransactionReceipt(
 ) -> Result<Box<RawValue>, JsonRpcError> {
     let data_provider = app_state.data_provider.as_ref().method_not_found()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
-    monad_eth_getTransactionReceipt(data_provider, params)
-        .await
-        .map(serialize_result)?
+    monad_eth_getTransactionReceipt(
+        data_provider,
+        app_state.base_chain_id,
+        app_state.domain,
+        params,
+    )
+    .await
+    .map(serialize_result)?
 }
 
 #[allow(non_snake_case)]
@@ -826,7 +917,25 @@ async fn eth_getBlockReceipts(
 ) -> Result<Box<RawValue>, JsonRpcError> {
     let data_provider = app_state.data_provider.as_ref().method_not_found()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
-    monad_eth_getBlockReceipts(data_provider, params)
+    monad_eth_getBlockReceipts(
+        data_provider,
+        app_state.base_chain_id,
+        app_state.domain,
+        params,
+    )
+    .await
+    .map(serialize_result)?
+}
+
+#[allow(non_snake_case)]
+async fn monad_getDomainHeader(
+    _: TimingRequestId,
+    app_state: &MonadRpcResources,
+    params: RequestParams<'_>,
+) -> Result<Box<RawValue>, JsonRpcError> {
+    let data_provider = app_state.data_provider.as_ref().method_not_found()?;
+    let params = serde_json::from_str(params.get()).invalid_params()?;
+    monad_eth_getDomainHeader(data_provider, app_state.domain, params)
         .await
         .map(serialize_result)?
 }
@@ -861,7 +970,7 @@ async fn txpool_statusByAddress(
 ) -> Result<Box<RawValue>, JsonRpcError> {
     let txpool_bridge_client = app_state.txpool_bridge_client.as_ref().method_not_found()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
-    monad_txpool_statusByAddress(txpool_bridge_client, params)
+    monad_txpool_statusByAddress(txpool_bridge_client, app_state.domain, params)
         .await
         .map(serialize_result)?
 }
@@ -961,6 +1070,7 @@ enabled_methods!(
     eth_feeHistory,
     eth_getTransactionReceipt,
     eth_getBlockReceipts,
+    monad_getDomainHeader,
     net_version,
     txpool_statusByHash,
     txpool_statusByAddress,

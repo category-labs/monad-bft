@@ -20,13 +20,13 @@ use std::{
     time::Duration,
 };
 
-use alloy_primitives::Address;
 use futures::FutureExt;
 use indexmap::IndexSet;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_block_policy::EthValidatedBlock;
+use monad_eth_types::AccountKey;
 use monad_types::{Round, SeqNum};
 use monad_validator::signature_collection::SignatureCollection;
 use tokio::time::Sleep;
@@ -41,8 +41,8 @@ pub struct EthTxPoolPreloadEntry {
     // On insertion, we set preload to true. After that, if the SeqNum associated with the entry
     // is no longer in the upcoming predicted leader seqnums then preload is set to false.
     preload: bool,
-    pending: IndexSet<Address>,
-    done: HashSet<Address>,
+    pending: IndexSet<AccountKey>,
+    done: HashSet<AccountKey>,
 }
 
 pub struct EthTxPoolPreloadManager {
@@ -67,7 +67,7 @@ impl EthTxPoolPreloadManager {
         round: Round,
         last_commit_seqnum: SeqNum,
         upcoming_leader_rounds: Vec<Round>,
-        generate_requests: impl FnOnce() -> Vec<Address>,
+        generate_requests: impl FnOnce() -> Vec<AccountKey>,
     ) {
         self.map = self.map.split_off(&(last_commit_seqnum + SeqNum(1)));
 
@@ -156,7 +156,7 @@ impl EthTxPoolPreloadManager {
         }
     }
 
-    pub fn add_requests<'a>(&mut self, requests: impl Iterator<Item = &'a Address> + Clone) {
+    pub fn add_requests<'a>(&mut self, requests: impl Iterator<Item = &'a AccountKey> + Clone) {
         for entry in self.map.values_mut() {
             Self::_add_requests(entry, requests.clone(), &mut self.waker);
         }
@@ -164,19 +164,19 @@ impl EthTxPoolPreloadManager {
 
     fn _add_requests<'a>(
         entry: &mut EthTxPoolPreloadEntry,
-        requests: impl Iterator<Item = &'a Address>,
+        requests: impl Iterator<Item = &'a AccountKey>,
         waker: &mut Option<Waker>,
     ) {
         if !entry.preload {
             return;
         }
 
-        for address in requests {
-            if entry.done.contains(address) {
+        for account_key in requests {
+            if entry.done.contains(account_key) {
                 continue;
             }
 
-            entry.pending.insert(*address);
+            entry.pending.insert(*account_key);
         }
 
         if let Some(waker) = waker.take() {
@@ -204,7 +204,7 @@ impl EthTxPoolPreloadManager {
     pub fn poll_requests(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-    ) -> Poll<(SeqNum, IndexSet<Address>)> {
+    ) -> Poll<(SeqNum, IndexSet<AccountKey>)> {
         if let Some(waker) = self.waker.as_mut() {
             waker.clone_from(cx.waker());
             return Poll::Pending;
@@ -238,7 +238,7 @@ impl EthTxPoolPreloadManager {
     pub fn complete_polled_requests(
         &mut self,
         predicted_proposal_seqnum: SeqNum,
-        requests: impl Iterator<Item = Address>,
+        requests: impl Iterator<Item = AccountKey>,
     ) {
         self.timer.set(tokio::time::sleep(Duration::from_millis(
             PRELOAD_INTERVAL_MS,
@@ -274,9 +274,9 @@ mod test {
         time::Duration,
     };
 
-    use alloy_primitives::Address;
     use futures::task::noop_waker_ref;
     use itertools::Itertools;
+    use monad_eth_types::AccountKey;
     use monad_types::{Round, SeqNum};
 
     use super::EthTxPoolPreloadManager;
@@ -323,14 +323,15 @@ mod test {
         let (preload_manager, _) = setup();
         let mut preload_manager = pin!(preload_manager);
 
-        preload_manager.add_requests([&Address::default()].into_iter());
+        let account_key = AccountKey::global(Default::default());
+        preload_manager.add_requests([&account_key].into_iter());
 
         let map_entry = preload_manager.map.get(&SeqNum(2)).unwrap();
 
         assert!(map_entry.done.is_empty());
         assert!(map_entry.preload);
         assert_eq!(map_entry.pending.len(), 1);
-        assert!(map_entry.pending.contains(&Address::default()));
+        assert!(map_entry.pending.contains(&account_key));
     }
 
     #[tokio::test(start_paused = true)]
@@ -338,7 +339,8 @@ mod test {
         let (preload_manager, mut cx) = setup();
         let mut preload_manager = pin!(preload_manager);
 
-        preload_manager.add_requests([&Address::default()].into_iter());
+        let account_key = AccountKey::global(Default::default());
+        preload_manager.add_requests([&account_key].into_iter());
 
         let Poll::Ready((seqnum, accounts)) = preload_manager.as_mut().poll_requests(&mut cx)
         else {
@@ -347,7 +349,7 @@ mod test {
 
         assert_eq!(seqnum, SeqNum(2));
         assert_eq!(accounts.len(), 1);
-        assert!(accounts.contains(&Address::default()));
+        assert!(accounts.contains(&account_key));
 
         preload_manager
             .as_mut()
@@ -374,15 +376,15 @@ mod test {
         let (preload_manager, mut cx) = setup();
         let mut preload_manager = pin!(preload_manager);
 
-        let addresses = (0..PRELOAD_CHUNK_MAX_ADDRESSES + 1)
+        let account_keys = (0..PRELOAD_CHUNK_MAX_ADDRESSES + 1)
             .map(|x| {
                 let mut bytes = [0u8; 20];
                 bytes[12..].copy_from_slice(&x.to_be_bytes());
-                Address::new(bytes)
+                AccountKey::global(alloy_primitives::Address::new(bytes))
             })
             .collect_vec();
 
-        preload_manager.add_requests(addresses.iter());
+        preload_manager.add_requests(account_keys.iter());
 
         let Poll::Ready((seqnum, accounts)) = preload_manager.as_mut().poll_requests(&mut cx)
         else {
@@ -391,8 +393,8 @@ mod test {
 
         assert_eq!(seqnum, SeqNum(2));
         assert_eq!(accounts.len(), PRELOAD_CHUNK_MAX_ADDRESSES);
-        for address in addresses.iter().skip(1) {
-            assert!(accounts.contains(address));
+        for account_key in account_keys.iter().skip(1) {
+            assert!(accounts.contains(account_key));
         }
 
         preload_manager
@@ -419,7 +421,7 @@ mod test {
 
         assert_eq!(seqnum, SeqNum(2));
         assert_eq!(accounts.len(), 1);
-        assert!(accounts.contains(addresses.first().unwrap()));
+        assert!(accounts.contains(account_keys.first().unwrap()));
 
         preload_manager
             .as_mut()

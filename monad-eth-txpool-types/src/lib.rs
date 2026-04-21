@@ -19,10 +19,10 @@ use std::{
     task::{Context, Poll},
 };
 
-use alloy_consensus::TxEnvelope;
 use alloy_primitives::{Address, TxHash, U256};
 use alloy_rlp::{RlpDecodable, RlpEncodable};
 use monad_eth_block_policy::validation::StaticValidationError;
+use monad_eth_types::EthTxEnvelope;
 use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_TX_PRIORITY: U256 = U256::from_limbs([0xFFFFu64, 0, 0, 0]);
@@ -46,7 +46,7 @@ pub enum EthTxPoolEventType {
         owned: bool,
 
         #[serde(with = "eth_tx_pool_event_type_tx_serde")]
-        tx: TxEnvelope,
+        tx: EthTxEnvelope,
     },
 
     /// The tx was committed and is thus finalized.
@@ -60,10 +60,10 @@ pub enum EthTxPoolEventType {
 }
 
 mod eth_tx_pool_event_type_tx_serde {
-    use alloy_consensus::TxEnvelope;
+    use monad_eth_types::EthTxEnvelope;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-    pub(super) fn serialize<S>(tx: &TxEnvelope, serializer: S) -> Result<S::Ok, S::Error>
+    pub(super) fn serialize<S>(tx: &EthTxEnvelope, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
@@ -72,7 +72,7 @@ mod eth_tx_pool_event_type_tx_serde {
         <Vec<u8> as Serialize>::serialize(&bytes, serializer)
     }
 
-    pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<TxEnvelope, D::Error>
+    pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<EthTxEnvelope, D::Error>
     where
         D: Deserializer<'de>,
     {
@@ -159,7 +159,7 @@ pub struct EthTxPoolSnapshot {
 
 #[derive(RlpEncodable, RlpDecodable)]
 pub struct EthTxPoolIpcTx {
-    pub tx: TxEnvelope,
+    pub tx: EthTxEnvelope,
     pub priority: U256,
 
     // TODO(andr-dev): Pass extra_data to custom sequencers
@@ -167,7 +167,7 @@ pub struct EthTxPoolIpcTx {
 }
 
 impl EthTxPoolIpcTx {
-    pub fn new_with_default_priority(tx: TxEnvelope, extra_data: Vec<u8>) -> Self {
+    pub fn new_with_default_priority(tx: EthTxEnvelope, extra_data: Vec<u8>) -> Self {
         Self {
             tx,
             priority: DEFAULT_TX_PRIORITY,
