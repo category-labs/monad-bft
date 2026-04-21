@@ -226,6 +226,7 @@ impl RaptorcastHeaderV1 {
     pub fn broadcast_mode(&self) -> Result<BroadcastMode, MalformedPacket> {
         match (self.broadcast_tree_depth & 0b1100_0000) >> 6 {
             0b10 => Ok(BroadcastMode::Primary),
+            0b01 => Ok(BroadcastMode::Secondary),
             bits => Err(MalformedPacket::InvalidBroadcastBits(bits)),
         }
     }
@@ -251,12 +252,22 @@ impl RaptorcastHeaderV1 {
     }
 
     pub fn group_id(&self) -> Result<GroupId, MalformedPacket> {
-        let epoch = Epoch(self.epoch.get());
         match self.broadcast_mode()? {
-            BroadcastMode::Primary => Ok(GroupId::Primary(epoch)),
-            // broadcast_mode() only returns Primary for v1
+            BroadcastMode::Primary => {
+                let epoch = Epoch(self.epoch.get());
+                Ok(GroupId::Primary(epoch))
+            }
+            BroadcastMode::Secondary => {
+                let round = Round(self.round.get());
+                Ok(GroupId::Secondary(round))
+            }
+            // broadcast_mode() only returns Primary or Secondary for v1
             _broadcast_mode => unreachable!(),
         }
+    }
+
+    pub fn raw_epoch(&self) -> u64 {
+        self.epoch.get()
     }
 }
 

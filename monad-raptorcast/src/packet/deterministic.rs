@@ -24,7 +24,7 @@ use monad_crypto::{
 use monad_dataplane::udp::segment_size_for_mtu;
 use monad_merkle::{MerkleHash, MerkleTree};
 use monad_raptor::Encoder;
-use monad_types::{NodeId, Round, ETHERNET_MTU};
+use monad_types::{Epoch, NodeId, Round, ETHERNET_MTU};
 use monad_wireauth::messages::DataPacketHeader;
 
 use super::{
@@ -208,6 +208,7 @@ fn build_header<ST>(
     encoding_scheme: EncodingScheme,
     merkle_tree_depth: u8,
     group_id: GroupId,
+    epoch: Epoch,
     unix_ts_ms: u64,
     global_merkle_root: &MerkleHash,
     app_message_len: usize,
@@ -237,6 +238,7 @@ where
 
     let broadcast_bits: u8 = match broadcast_mode {
         BroadcastMode::Primary => 0b10 << 6,
+        BroadcastMode::Secondary => 0b01 << 6,
         _ => return Err(BuildError::InvalidBroadcastMode(broadcast_mode)),
     };
     if (merkle_tree_depth & 0b1111_0000) != 0 {
@@ -251,14 +253,32 @@ where
     };
     cursor_encoding_scheme[0] = 0x1; // Deterministic25
 
-    let GroupId::Primary(epoch) = group_id else {
-        return Err(BuildError::InvalidGroupId(group_id));
+    // For both Primary and Secondary, the header's epoch field
+    // carries the group's epoch. For Primary, the epoch is also the
+    // group identifier; for Secondary, the group is identified by the
+    // (publisher, round) pair, and the epoch is the publisher's epoch
+    // at the time of publication.
+    let epoch_bytes: [u8; 8] = match (broadcast_mode, group_id) {
+        (BroadcastMode::Primary, GroupId::Primary(group_epoch)) => {
+            if group_epoch != epoch {
+                return Err(BuildError::InvalidGroupId(group_id));
+            }
+            epoch.0.to_le_bytes()
+        }
+        (BroadcastMode::Secondary, GroupId::Secondary(group_round)) => {
+            // The group_id's round must match the encoding scheme's round.
+            if group_round != round {
+                return Err(BuildError::InvalidGroupId(group_id));
+            }
+            epoch.0.to_le_bytes()
+        }
+        _ => return Err(BuildError::InvalidGroupId(group_id)),
     };
     let (cursor_round, cursor) = cursor.split_at_mut_checked(8).expect("header too short");
     cursor_round.copy_from_slice(&round.0.to_le_bytes());
 
     let (cursor_epoch, cursor) = cursor.split_at_mut_checked(8).expect("header too short");
-    cursor_epoch.copy_from_slice(&epoch.0.to_le_bytes());
+    cursor_epoch.copy_from_slice(&epoch_bytes);
 
     let (cursor_unix_ts_ms, cursor) = cursor.split_at_mut_checked(8).expect("header too short");
     cursor_unix_ts_ms.copy_from_slice(&unix_ts_ms.to_le_bytes());
@@ -502,6 +522,7 @@ where
         encoding_scheme,
         layout.merkle_tree_depth(),
         group_id,
+        group.epoch(),
         unix_ts_ms,
         merkle_tree.root(),
         app_message.len(),
@@ -583,18 +604,27 @@ fn optimal_merkle_tree_depth(calc_total_symbols: impl Fn(u8) -> Option<usize>) -
 
 #[cfg(test)]
 mod tests {
-    use monad_merkle::MerkleTree;
+    use monad_crypto::hasher::Hasher as _;
+    use monad_merkle::{MerkleHash, MerkleTree};
     use monad_raptor::r10::lt::MAX_TRIPLES;
+    use monad_secp::{KeyPair, SecpSignature};
+    use monad_types::{Epoch, Round};
+    use zerocopy::Ref;
 
     use super::{
-        calc_tree_depth, PacketLayout, DEFAULT_REDUNDANCY, DEFAULT_SEGMENT_LEN,
+        build_header, calc_tree_depth, PacketLayout, DEFAULT_REDUNDANCY, DEFAULT_SEGMENT_LEN,
         MAX_MERKLE_TREE_DEPTH, MAX_SYMBOL_LEN, MIN_MERKLE_TREE_DEPTH, MIN_SYMBOL_LEN,
     };
     use crate::{
         message::MAX_MESSAGE_SIZE,
-        packet::assigner::stake_partition_num_chunks_hint,
-        udp::{MAX_NUM_PACKETS, MAX_VALIDATOR_SET_SIZE},
+        packet::{assigner::stake_partition_num_chunks_hint, BuildError},
+        parser::packet_parser::RaptorcastHeaderV1,
+        udp::{GroupId, MAX_NUM_PACKETS, MAX_VALIDATOR_SET_SIZE},
+        util::{BroadcastMode, EncodingScheme},
+        SIGNATURE_SIZE,
     };
+
+    type ST = SecpSignature;
 
     // Statically asserted properties
     const _: () = assert!(
@@ -671,5 +701,167 @@ mod tests {
                 validate_d25_layout(app_msg_len, val_set_size);
             }
         }
+    }
+
+    fn test_keypair() -> KeyPair {
+        let mut hasher = monad_crypto::hasher::HasherType::new();
+        hasher.update(b"deterministic-header-test");
+        let mut hash = hasher.hash();
+        KeyPair::from_bytes(&mut hash.0).unwrap()
+    }
+
+    fn parse_v1_header(header: &[u8]) -> Ref<&[u8], RaptorcastHeaderV1> {
+        assert_eq!(header.len(), PacketLayout::HEADER_LEN);
+        // Common header = signature (SIGNATURE_SIZE) + version (2 bytes).
+        let common_size = SIGNATURE_SIZE + 2;
+        let (_common_bytes, rest) = header.split_at(common_size);
+        Ref::from_bytes(rest).expect("v1 header")
+    }
+
+    #[test]
+    fn test_primary_header_round_trip() {
+        let key = test_keypair();
+        let merkle_root: MerkleHash = [7u8; 20];
+        let round = Round(123);
+        let epoch = Epoch(9);
+        let depth = 6u8;
+        let unix_ts_ms = 1_700_000_000_000;
+        let app_message_len = 4242;
+
+        let header = build_header::<ST>(
+            &key,
+            BroadcastMode::Primary,
+            EncodingScheme::Deterministic25(round),
+            depth,
+            GroupId::Primary(epoch),
+            epoch,
+            unix_ts_ms,
+            &merkle_root,
+            app_message_len,
+        )
+        .expect("primary header build");
+
+        let v1 = parse_v1_header(&header);
+        assert_eq!(v1.broadcast_mode().unwrap(), BroadcastMode::Primary);
+        assert_eq!(
+            v1.encoding_scheme().unwrap(),
+            EncodingScheme::Deterministic25(round)
+        );
+        assert_eq!(v1.tree_depth().unwrap(), depth);
+        assert_eq!(v1.group_id().unwrap(), GroupId::Primary(epoch));
+    }
+
+    #[test]
+    fn test_secondary_header_round_trip() {
+        let key = test_keypair();
+        let merkle_root: MerkleHash = [3u8; 20];
+        let round = Round(555);
+        let epoch = Epoch(7);
+        let depth = 4u8;
+        let unix_ts_ms = 1_700_000_000_000;
+        let app_message_len = 1_234_567;
+
+        let header = build_header::<ST>(
+            &key,
+            BroadcastMode::Secondary,
+            EncodingScheme::Deterministic25(round),
+            depth,
+            GroupId::Secondary(round),
+            epoch,
+            unix_ts_ms,
+            &merkle_root,
+            app_message_len,
+        )
+        .expect("secondary header build");
+
+        let v1 = parse_v1_header(&header);
+        assert_eq!(v1.broadcast_mode().unwrap(), BroadcastMode::Secondary);
+        assert_eq!(
+            v1.encoding_scheme().unwrap(),
+            EncodingScheme::Deterministic25(round)
+        );
+        assert_eq!(v1.tree_depth().unwrap(), depth);
+        assert_eq!(v1.group_id().unwrap(), GroupId::Secondary(round));
+
+        // Secondary headers carry the publisher's epoch on the wire,
+        // even though the group is identified by (publisher, round).
+        assert_eq!(v1.raw_epoch(), epoch.0);
+    }
+
+    #[test]
+    fn test_secondary_group_id_round_mismatch_rejected() {
+        let key = test_keypair();
+        let merkle_root: MerkleHash = [0u8; 20];
+
+        let err = build_header::<ST>(
+            &key,
+            BroadcastMode::Secondary,
+            EncodingScheme::Deterministic25(Round(10)),
+            4,
+            GroupId::Secondary(Round(11)),
+            Epoch(1),
+            0,
+            &merkle_root,
+            100,
+        )
+        .expect_err("mismatched round/group_id should fail");
+        assert!(matches!(err, BuildError::InvalidGroupId(_)));
+    }
+
+    #[test]
+    fn test_primary_with_secondary_group_id_rejected() {
+        let key = test_keypair();
+        let merkle_root: MerkleHash = [0u8; 20];
+        let err = build_header::<ST>(
+            &key,
+            BroadcastMode::Primary,
+            EncodingScheme::Deterministic25(Round(1)),
+            4,
+            GroupId::Secondary(Round(1)),
+            Epoch(1),
+            0,
+            &merkle_root,
+            100,
+        )
+        .expect_err("primary mode with secondary group_id should fail");
+        assert!(matches!(err, BuildError::InvalidGroupId(_)));
+    }
+
+    #[test]
+    fn test_secondary_with_primary_group_id_rejected() {
+        let key = test_keypair();
+        let merkle_root: MerkleHash = [0u8; 20];
+        let err = build_header::<ST>(
+            &key,
+            BroadcastMode::Secondary,
+            EncodingScheme::Deterministic25(Round(1)),
+            4,
+            GroupId::Primary(Epoch(1)),
+            Epoch(1),
+            0,
+            &merkle_root,
+            100,
+        )
+        .expect_err("secondary mode with primary group_id should fail");
+        assert!(matches!(err, BuildError::InvalidGroupId(_)));
+    }
+
+    #[test]
+    fn test_primary_header_epoch_mismatch_rejected() {
+        let key = test_keypair();
+        let merkle_root: MerkleHash = [0u8; 20];
+        let err = build_header::<ST>(
+            &key,
+            BroadcastMode::Primary,
+            EncodingScheme::Deterministic25(Round(1)),
+            4,
+            GroupId::Primary(Epoch(5)),
+            Epoch(6),
+            0,
+            &merkle_root,
+            100,
+        )
+        .expect_err("primary mode with mismatched epoch should fail");
+        assert!(matches!(err, BuildError::InvalidGroupId(_)));
     }
 }

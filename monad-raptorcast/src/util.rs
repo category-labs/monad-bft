@@ -433,6 +433,10 @@ impl<'a, PT: PubKey> PrimaryBroadcastGroup<'a, PT> {
     pub fn group_id(&self) -> GroupId {
         GroupId::Primary(self.epoch)
     }
+
+    pub fn epoch(&self) -> Epoch {
+        self.epoch
+    }
 }
 
 // Invariances:
