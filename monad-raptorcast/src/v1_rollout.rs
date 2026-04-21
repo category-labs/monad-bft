@@ -15,11 +15,11 @@
 
 use monad_crypto::certificate_signature::PubKey;
 pub use monad_node_config::raptorcast::{DeterministicProtocolRolloutStage, CURRENT_STAGE};
-use monad_types::Round;
+use monad_types::{Epoch, Round};
 
 use crate::{
     udp::ValidatedChunk,
-    util::{BuildTarget, PrimaryBroadcastGroup},
+    util::{BuildTarget, PrimaryBroadcastGroup, SecondaryBroadcastGroup},
 };
 
 // should only be called on receiving a v0 or v1 primary raptorcast chunk
@@ -47,6 +47,20 @@ pub(crate) fn build_target<'a, PT: PubKey>(
     }
 }
 
+// should only be called when building secondary raptorcast message
+pub(crate) fn secondary_build_target<'a, PT: PubKey>(
+    stage: DeterministicProtocolRolloutStage,
+    epoch: Epoch,
+    message_round: Round,
+    group: SecondaryBroadcastGroup<'a, PT>,
+) -> BuildTarget<'a, PT> {
+    if should_publish_v1(stage) {
+        BuildTarget::deterministic_fullnode_raptorcast(group, epoch, message_round)
+    } else {
+        BuildTarget::fullnode_raptorcast(group)
+    }
+}
+
 fn should_accept_v0(stage: DeterministicProtocolRolloutStage) -> bool {
     !matches!(stage, DeterministicProtocolRolloutStage::AlwaysV1)
 }
@@ -65,7 +79,10 @@ fn should_publish_v1(stage: DeterministicProtocolRolloutStage) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use std::{
+        collections::BTreeSet,
+        net::{IpAddr, Ipv4Addr, SocketAddr},
+    };
 
     use bytes::Bytes;
     use itertools::Itertools as _;
@@ -77,12 +94,15 @@ mod tests {
     use monad_types::{Epoch, NodeId, Round, Stake};
     use monad_validator::validator_set::{ValidatorSet, ValidatorSetType as _};
 
-    use super::{build_target, DeterministicProtocolRolloutStage};
+    use super::{build_target, secondary_build_target, DeterministicProtocolRolloutStage};
     use crate::{
         auth::AuthRecvMsg,
         packet::MessageBuilder,
         udp::UdpState,
-        util::{FullNodeGroupMap, PrimaryBroadcastGroup, Redundancy},
+        util::{
+            BuildTarget, FullNodeGroupMap, PrimaryBroadcastGroup, RaptorcastMode, Redundancy,
+            SecondaryBroadcastGroup, SecondaryGroup,
+        },
     };
 
     type SignatureType = SecpSignature;
@@ -186,6 +206,41 @@ mod tests {
             let count1 = rollout_publish_and_receive(*a, *b);
             let count2 = rollout_publish_and_receive(*b, *a);
             assert!(count1 == 0 || count2 == 0);
+        }
+    }
+
+    #[test]
+    fn test_secondary_build_target_picks_mode_by_stage() {
+        use DeterministicProtocolRolloutStage::*;
+
+        let publisher = NodeId::new(make_key_pair(0).pubkey());
+        let full_nodes: BTreeSet<_> = (1_u8..=4)
+            .map(|n| NodeId::new(make_key_pair(n).pubkey()))
+            .collect();
+        let group = SecondaryGroup::new(full_nodes).unwrap();
+
+        for stage in [AlwaysV0, AcceptBothPublishV0] {
+            let bg = SecondaryBroadcastGroup::as_publisher(&publisher, ROUND, &group);
+            let target = secondary_build_target(stage, EPOCH, ROUND, bg);
+            assert!(matches!(
+                target,
+                BuildTarget::FullNodeRaptorCast {
+                    mode: RaptorcastMode::Regular,
+                    ..
+                }
+            ));
+        }
+
+        for stage in [AcceptBothPublishV1, AlwaysV1] {
+            let bg = SecondaryBroadcastGroup::as_publisher(&publisher, ROUND, &group);
+            let target = secondary_build_target(stage, EPOCH, ROUND, bg);
+            assert!(matches!(
+                target,
+                BuildTarget::FullNodeRaptorCast {
+                    mode: RaptorcastMode::Deterministic { .. },
+                    ..
+                }
+            ));
         }
     }
 }

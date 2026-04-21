@@ -1068,7 +1068,7 @@ mod tests {
         let app_message: Bytes = vec![1_u8; 1024 * 1024].into();
         let build_targets = vec![
             BuildTarget::raptorcast(primary_group),
-            BuildTarget::FullNodeRaptorCast(secondary_group),
+            BuildTarget::fullnode_raptorcast(secondary_group),
         ];
 
         let mut parser = ChunkParser::new();
@@ -1092,7 +1092,7 @@ mod tests {
                         BuildTarget::Raptorcast { .. } => {
                             assert!(matches!(chunk.broadcast_mode, BroadcastMode::Primary));
                         }
-                        BuildTarget::FullNodeRaptorCast(_) => {
+                        BuildTarget::FullNodeRaptorCast { .. } => {
                             assert!(matches!(chunk.broadcast_mode, BroadcastMode::Secondary));
                         }
                         _ => unreachable!(),

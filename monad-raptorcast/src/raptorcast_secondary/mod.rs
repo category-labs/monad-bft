@@ -65,6 +65,7 @@ pub enum SecondaryOutboundMessage<PT: PubKey> {
     },
     SendToGroup {
         msg_bytes: bytes::Bytes,
+        epoch: Epoch,
         round: Round,
         group: SecondaryGroup<PT>,
     },
@@ -335,7 +336,7 @@ where
                 },
 
                 Self::Command::PublishToFullNodes {
-                    epoch: _,
+                    epoch,
                     round,
                     message,
                 } => {
@@ -372,6 +373,7 @@ where
 
                     let outbound = SecondaryOutboundMessage::SendToGroup {
                         msg_bytes: outbound_message,
+                        epoch,
                         round,
                         group,
                     };

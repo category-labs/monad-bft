@@ -47,7 +47,7 @@ use crate::udp::GroupId;
 #[derive(Debug, Clone, Copy)]
 pub enum RaptorcastMode {
     Regular,
-    Deterministic { round: Round },
+    Deterministic { round: Round, epoch: Epoch },
 }
 
 // Argument for raptorcast send
@@ -69,7 +69,10 @@ pub enum BuildTarget<'a, PT: PubKey> {
     },
     // raptorcast to a set of full nodes, assuming equal stake
     // distribution
-    FullNodeRaptorCast(SecondaryBroadcastGroup<'a, PT>),
+    FullNodeRaptorCast {
+        group: SecondaryBroadcastGroup<'a, PT>,
+        mode: RaptorcastMode,
+    },
 }
 
 impl<'a, PT: PubKey> BuildTarget<'a, PT> {
@@ -81,9 +84,28 @@ impl<'a, PT: PubKey> BuildTarget<'a, PT> {
     }
 
     pub fn deterministic_raptorcast(group: PrimaryBroadcastGroup<'a, PT>, round: Round) -> Self {
+        let epoch = group.epoch();
         BuildTarget::Raptorcast {
             group,
-            mode: RaptorcastMode::Deterministic { round },
+            mode: RaptorcastMode::Deterministic { round, epoch },
+        }
+    }
+
+    pub fn fullnode_raptorcast(group: SecondaryBroadcastGroup<'a, PT>) -> Self {
+        BuildTarget::FullNodeRaptorCast {
+            group,
+            mode: RaptorcastMode::Regular,
+        }
+    }
+
+    pub fn deterministic_fullnode_raptorcast(
+        group: SecondaryBroadcastGroup<'a, PT>,
+        epoch: Epoch,
+        round: Round,
+    ) -> Self {
+        BuildTarget::FullNodeRaptorCast {
+            group,
+            mode: RaptorcastMode::Deterministic { round, epoch },
         }
     }
 
@@ -100,7 +122,7 @@ impl<'a, PT: PubKey> BuildTarget<'a, PT> {
                 Box::new(group.iter().map(|(n, _)| n))
             }
             BuildTarget::PointToPoint { recipient, .. } => Box::new(std::iter::once(*recipient)),
-            BuildTarget::FullNodeRaptorCast(group) => Box::new(group.iter()),
+            BuildTarget::FullNodeRaptorCast { group, .. } => Box::new(group.iter()),
         }
     }
 
@@ -109,7 +131,7 @@ impl<'a, PT: PubKey> BuildTarget<'a, PT> {
             BuildTarget::Broadcast(group) | BuildTarget::Raptorcast { group, .. } => {
                 group.group_id()
             }
-            BuildTarget::FullNodeRaptorCast(group) => group.group_id(),
+            BuildTarget::FullNodeRaptorCast { group, .. } => group.group_id(),
             BuildTarget::PointToPoint { group_id, .. } => *group_id,
         }
     }
