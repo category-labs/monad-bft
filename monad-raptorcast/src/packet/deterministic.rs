@@ -478,6 +478,7 @@ impl<PT: PubKey> SecondaryEncoding<PT> {
         let layout = PacketLayout::new(segment_len, depth);
 
         // Shuffle the full-node group members.
+        // Seed derivation does not have to be the same as primary raptorcast
         let seed = derive_seed(group.publisher(), round, unix_ts_ms);
         partition.shuffle(seed);
 
