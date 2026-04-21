@@ -75,6 +75,8 @@ pub async fn monad_simulate_v1<T: Triedb + TriedbPath>(
         .await
         .ok_or_else(JsonRpcError::block_not_found)?;
 
+    let trace_transfers = params.simulation.trace_transfers;
+
     let senders = params
         .simulation
         .block_state_calls
@@ -161,6 +163,7 @@ pub async fn monad_simulate_v1<T: Triedb + TriedbPath>(
         header.header,
         block_number,
         block_id,
+        trace_transfers,
         eth_call_executor,
         &overrides,
     )
