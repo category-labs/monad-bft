@@ -21,7 +21,7 @@ use std::{
 
 use alloy_consensus::{
     transaction::{Recovered, SignerRecoverable},
-    SignableTransaction, Transaction, TxEnvelope, TxLegacy,
+    SignableTransaction, Transaction, TxLegacy,
 };
 use alloy_primitives::{Address, TxKind, B256, U256};
 use alloy_signer::SignerSync;
@@ -48,6 +48,7 @@ use monad_eth_txpool::{
     EthTxPoolMetrics, PoolTxKind, TrackedTxLimitsConfig,
 };
 use monad_eth_txpool_types::EthTxPoolSnapshot;
+use monad_eth_types::{AccountKey, EthTxEnvelope};
 use monad_state_backend::{AccountState, InMemoryBlockState, InMemoryState, InMemoryStateInner};
 use monad_testutil::signing::MockSignatures;
 use monad_types::{Balance, Epoch, NodeId, Round, SeqNum, GENESIS_ROUND, GENESIS_SEQ_NUM};
@@ -86,15 +87,15 @@ fn make_test_block_policy() -> BlockPolicyType {
 #[derive(Clone)]
 enum TxPoolTestEvent<'a> {
     InsertTxs {
-        txs: Vec<(&'a TxEnvelope, bool)>,
+        txs: Vec<(&'a EthTxEnvelope, bool)>,
         expected_pool_size_change: usize,
     },
     InsertTxBatch {
-        txs: Vec<&'a TxEnvelope>,
+        txs: Vec<&'a EthTxEnvelope>,
         should_insert: bool,
     },
     InsertTxsWithKind {
-        txs: Vec<(&'a TxEnvelope, PoolTxKind<NopPubKey>)>,
+        txs: Vec<(&'a EthTxEnvelope, PoolTxKind<NopPubKey>)>,
         should_insert: bool,
     },
     CreateProposal {
@@ -102,7 +103,7 @@ enum TxPoolTestEvent<'a> {
         tx_limit: usize,
         gas_limit: u64,
         byte_limit: u64,
-        expected_txs: Vec<&'a TxEnvelope>,
+        expected_txs: Vec<&'a EthTxEnvelope>,
         expected_sender_gas: Option<Vec<(NodeId<NopPubKey>, u64)>>,
         add_to_blocktree: bool,
     },
@@ -447,17 +448,18 @@ fn run_custom_iter<const N: usize>(
                 address,
                 nonce: expected_nonce,
             } => {
+                let account_key = AccountKey::global(address);
                 let mut nonces = eth_block_policy
                     .get_account_base_nonces(
                         SeqNum(current_seq_num),
                         &state_backend,
                         &pending_blocks.iter().collect_vec(),
-                        [&address].into_iter(),
+                        [&account_key].into_iter(),
                     )
                     .unwrap();
 
-                let (lookup_address, nonce) = nonces.pop_first().unwrap();
-                assert_eq!(&address, lookup_address);
+                let (lookup_account_key, nonce) = nonces.pop_first().unwrap();
+                assert_eq!(&account_key, lookup_account_key);
 
                 assert!(nonces.is_empty());
 
@@ -512,7 +514,7 @@ fn run_simple<const N: usize>(account: &[B256], events: [TxPoolTestEvent<'_>; N]
     );
 }
 
-fn make_forwarded_test_txs(gas_limits: impl IntoIterator<Item = u64>) -> Vec<TxEnvelope> {
+fn make_forwarded_test_txs(gas_limits: impl IntoIterator<Item = u64>) -> Vec<EthTxEnvelope> {
     gas_limits
         .into_iter()
         .enumerate()
@@ -1467,7 +1469,7 @@ fn test_tx_invalid_chain_id() {
             .sign_hash_sync(&transaction.signature_hash())
             .unwrap();
 
-        transaction.into_signed(signature).into()
+        EthTxEnvelope::global(transaction.into_signed(signature).into())
     };
 
     run_custom(
@@ -1580,7 +1582,7 @@ fn test_eip1559_proposal_base_fee() {
 
 #[test]
 fn test_missing_chain_id() {
-    let tx: TxEnvelope = {
+    let tx: EthTxEnvelope = {
         let tx = TxLegacy {
             chain_id: None,
             nonce: 0,
@@ -1594,7 +1596,7 @@ fn test_missing_chain_id() {
         let signer = PrivateKeySigner::from_bytes(&S1).unwrap();
         let signature = signer.sign_hash_sync(&tx.signature_hash()).unwrap();
 
-        tx.into_signed(signature).into()
+        EthTxEnvelope::global(tx.into_signed(signature).into())
     };
 
     run_simple(
@@ -1803,7 +1805,7 @@ fn test_eviction_policy() {
         let a_idx = txs.iter().position(|tx| *tx == &tx_a).unwrap();
         let b_idx = txs.iter().position(|tx| *tx == &tx_b).unwrap();
         let c_idx = txs.iter().position(|tx| *tx == &tx_c).unwrap();
-        let d_idx = txs.iter().position(|tx| *tx == &tx_d).unwrap();
+        let _d_idx = txs.iter().position(|tx| *tx == &tx_d).unwrap();
 
         let a_eviction_condition =
             // tx_b will be evicted so tx_a will not have priority

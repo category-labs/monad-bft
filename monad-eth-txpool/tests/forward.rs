@@ -15,11 +15,15 @@
 
 use std::collections::BTreeMap;
 
+use alloy_eips::Decodable2718;
 use monad_chain_config::{revision::MockChainRevision, MockChainConfig};
 use monad_crypto::NopSignature;
 use monad_eth_block_policy::EthBlockPolicy;
-use monad_eth_testutil::{generate_block_with_txs, make_legacy_tx, recover_tx, S1};
+use monad_eth_testutil::{
+    generate_block_with_txs, make_legacy_tx, make_namespaced_legacy_tx, recover_tx, S1,
+};
 use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics, PoolTxKind};
+use monad_eth_types::{AccountKey, EthTxEnvelope, NAMESPACED_TX_PREFIX};
 use monad_state_backend::{AccountState, InMemoryBlockState, InMemoryState, InMemoryStateInner};
 use monad_testutil::signing::MockSignatures;
 use monad_types::{Round, SeqNum, GENESIS_SEQ_NUM};
@@ -230,6 +234,118 @@ fn test_multiple_sequential_commits() {
             }
         }
     });
+}
+
+#[test]
+fn test_namespaced_forwarded_bytes_roundtrip_and_insert() {
+    let namespace = alloy_primitives::Address::repeat_byte(0xaa);
+    let tx = recover_tx(make_namespaced_legacy_tx(
+        namespace,
+        S1,
+        (BASE_FEE + 1).into(),
+        100_000,
+        0,
+        10,
+    ));
+    let signer_key = AccountKey::namespaced(namespace, tx.signer());
+    let state_backend = InMemoryStateInner::new(
+        SeqNum(4),
+        InMemoryBlockState::genesis_with_account_keys(BTreeMap::from([(
+            signer_key,
+            AccountState::max_balance(),
+        )])),
+    );
+    let eth_block_policy = EthBlockPolicy::<
+        SignatureType,
+        SignatureCollectionType,
+        MockChainConfig,
+        MockChainRevision,
+    >::new(GENESIS_SEQ_NUM, 4);
+
+    let mut source_pool = EthTxPool::default_testing();
+    let source_metrics = EthTxPoolMetrics::default();
+    let mut source_ipc_events = BTreeMap::default();
+    let mut source_tracker = EthTxPoolEventTracker::new(&source_metrics, &mut source_ipc_events);
+    source_pool.update_committed_block(
+        &mut source_tracker,
+        &MockChainConfig::DEFAULT,
+        generate_block_with_txs(
+            Round(0),
+            SeqNum(0),
+            BASE_FEE,
+            &MockChainConfig::DEFAULT,
+            Vec::default(),
+        ),
+    );
+    let mut inserted = 0;
+    source_pool.insert_txs(
+        &mut source_tracker,
+        &eth_block_policy,
+        &state_backend,
+        &MockChainConfig::DEFAULT,
+        vec![(tx.clone(), PoolTxKind::owned_default())],
+        |_| inserted += 1,
+    );
+    assert_eq!(inserted, 1);
+
+    for idx in 1..=3 {
+        source_pool.update_committed_block(
+            &mut source_tracker,
+            &MockChainConfig::DEFAULT,
+            generate_block_with_txs(
+                Round(idx),
+                SeqNum(idx),
+                BASE_FEE,
+                &MockChainConfig::DEFAULT,
+                Vec::default(),
+            ),
+        );
+    }
+
+    let forwardable = source_pool
+        .get_forwardable_txs::<FORWARD_MIN_SEQ_NUM_DIFF, FORWARD_MAX_RETRIES>()
+        .unwrap()
+        .next()
+        .unwrap()
+        .clone();
+    let raw = forwardable.encoded_2718();
+    assert_eq!(raw[0], NAMESPACED_TX_PREFIX);
+    assert_eq!(&raw[1..21], namespace.0.as_slice());
+
+    let decoded = EthTxEnvelope::decode_2718_exact(&raw).unwrap();
+    assert_eq!(decoded, forwardable);
+
+    let mut dest_pool = EthTxPool::default_testing();
+    let dest_metrics = EthTxPoolMetrics::default();
+    let mut dest_ipc_events = BTreeMap::default();
+    let mut dest_tracker = EthTxPoolEventTracker::new(&dest_metrics, &mut dest_ipc_events);
+    dest_pool.update_committed_block(
+        &mut dest_tracker,
+        &MockChainConfig::DEFAULT,
+        generate_block_with_txs(
+            Round(0),
+            SeqNum(0),
+            BASE_FEE,
+            &MockChainConfig::DEFAULT,
+            Vec::default(),
+        ),
+    );
+    let mut forwarded_inserted = 0;
+    dest_pool.insert_txs(
+        &mut dest_tracker,
+        &eth_block_policy,
+        &state_backend,
+        &MockChainConfig::DEFAULT,
+        vec![(
+            recover_tx(decoded.clone()),
+            PoolTxKind::Forwarded {
+                sender: dummy_node_id(),
+            },
+        )],
+        |_| forwarded_inserted += 1,
+    );
+    assert_eq!(forwarded_inserted, 1);
+    assert_eq!(dest_pool.num_txs(), 1);
 }
 
 #[test]

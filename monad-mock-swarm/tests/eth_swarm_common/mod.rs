@@ -20,7 +20,7 @@ use std::{
     time::Duration,
 };
 
-use alloy_consensus::{Transaction, TxEnvelope};
+use alloy_consensus::Transaction;
 use alloy_primitives::Address;
 use monad_bls::BlsSignatureCollection;
 use monad_chain_config::{
@@ -31,7 +31,7 @@ use monad_crypto::certificate_signature::CertificateSignaturePubKey;
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthBlockValidator;
 use monad_eth_ledger::MockEthLedger;
-use monad_eth_types::EthExecutionProtocol;
+use monad_eth_types::{AccountKey, EthExecutionProtocol, EthTxEnvelope};
 use monad_mock_swarm::{
     mock::TimestamperConfig,
     mock_swarm::{Nodes, SwarmBuilder},
@@ -138,6 +138,24 @@ pub fn generate_eth_swarm_with_accounts(
     txpool_byzantine_config: impl Fn(usize) -> ByzantineConfig,
     validate_reserve_balance: bool,
 ) -> Nodes<EthSwarm> {
+    let existing_accounts = existing_accounts
+        .into_iter()
+        .map(|(address, account_state)| (AccountKey::global(address), account_state))
+        .collect();
+    generate_eth_swarm_with_account_keys(
+        num_nodes,
+        existing_accounts,
+        txpool_byzantine_config,
+        validate_reserve_balance,
+    )
+}
+
+pub fn generate_eth_swarm_with_account_keys(
+    num_nodes: u16,
+    existing_accounts: BTreeMap<AccountKey, AccountState>,
+    txpool_byzantine_config: impl Fn(usize) -> ByzantineConfig,
+    validate_reserve_balance: bool,
+) -> Nodes<EthSwarm> {
     let epoch_length = SeqNum(2000);
     let execution_delay = SeqNum(4);
 
@@ -154,7 +172,7 @@ pub fn generate_eth_swarm_with_accounts(
         || {
             let state = InMemoryStateInner::new(
                 execution_delay,
-                InMemoryBlockState::genesis(existing_accounts.clone()),
+                InMemoryBlockState::genesis_with_account_keys(existing_accounts.clone()),
             );
             if validate_reserve_balance {
                 state.lock().unwrap().validate_reserve_balance = true;
@@ -216,7 +234,7 @@ pub fn generate_eth_swarm(
 pub fn verify_transactions_in_ledger(
     swarm: &Nodes<EthSwarm>,
     node_ids: Vec<ID<PubKey>>,
-    txns: Vec<TxEnvelope>,
+    txns: Vec<EthTxEnvelope>,
 ) -> bool {
     let txns: HashSet<_> = HashSet::from_iter(txns.iter().map(|t| *t.tx_hash()));
     for node_id in node_ids {

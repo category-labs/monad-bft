@@ -20,7 +20,7 @@ use alloy_primitives::Address;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_types::{EthAccount, EthHeader};
+use monad_eth_types::{AccountKey, EthAccount, EthHeader};
 use monad_types::{Balance, BlockId, Nonce, SeqNum, Stake};
 use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionPubKeyType};
 
@@ -42,13 +42,23 @@ where
         _block_id: &BlockId,
         _seq_num: &SeqNum,
         _is_finalized: bool,
-        addresses: impl Iterator<Item = &'a Address>,
+        account_keys: impl Iterator<Item = &'a AccountKey>,
     ) -> Result<Vec<Option<EthAccount>>, StateBackendError> {
-        Ok(addresses
-            .map(|address| {
+        Ok(account_keys
+            .map(|account_key| {
                 Some(EthAccount {
-                    balance: self.balances.get(address).cloned().unwrap_or_default(),
-                    nonce: self.nonces.get(address).cloned().unwrap_or_default(),
+                    balance: account_key
+                        .namespace
+                        .is_none()
+                        .then(|| self.balances.get(&account_key.address).cloned())
+                        .flatten()
+                        .unwrap_or_default(),
+                    nonce: account_key
+                        .namespace
+                        .is_none()
+                        .then(|| self.nonces.get(&account_key.address).cloned())
+                        .flatten()
+                        .unwrap_or_default(),
                     code_hash: None,
                     is_delegated: false,
                 })

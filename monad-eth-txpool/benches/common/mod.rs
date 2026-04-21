@@ -15,10 +15,11 @@
 
 use std::hint::black_box;
 
-use alloy_consensus::{transaction::Recovered, TxEnvelope};
+use alloy_consensus::transaction::Recovered;
 use criterion::{BatchSize, Criterion};
 use monad_chain_config::MockChainConfig;
 use monad_crypto::NopSignature;
+use monad_eth_types::EthTxEnvelope;
 use monad_perf_util::PerfController;
 use monad_testutil::signing::MockSignatures;
 
@@ -88,8 +89,8 @@ pub fn run_txpool_benches<T>(
     func_name: &'static str,
     mut setup: impl FnMut(
         &BenchControllerConfig,
-        Vec<Vec<Recovered<TxEnvelope>>>,
-        Vec<Recovered<TxEnvelope>>,
+        Vec<Vec<Recovered<EthTxEnvelope>>>,
+        Vec<Recovered<EthTxEnvelope>>,
     ) -> T,
     mut routine: impl FnMut(&mut T),
 ) {

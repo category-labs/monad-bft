@@ -27,7 +27,7 @@ use alloy_rlp::Encodable;
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
 use monad_chain_config::{ChainConfig, revision::ChainRevision};
-use monad_eth_types::ValidatedTx;
+use monad_eth_types::{EthTxEnvelope, ValidatedTx};
 use monad_types::{Epoch, GENESIS_SEQ_NUM, SeqNum};
 use staking_contract::{StakingContractCall, StakingContractTransaction};
 use validator::SystemTransactionError;
@@ -46,14 +46,17 @@ const SYSTEM_SENDER_PRIV_KEY: B256 = B256::new(hex!(
 pub const SYSTEM_SENDER_ETH_ADDRESS: Address =
     Address::new(hex!("0x6f49a8F621353f12378d0046E7d7e4b9B249DC9e"));
 
-fn sign_with_system_sender(transaction: TxLegacy) -> Recovered<TxEnvelope> {
+fn sign_with_system_sender(transaction: TxLegacy) -> Recovered<EthTxEnvelope> {
     let signer = PrivateKeySigner::from_bytes(&SYSTEM_SENDER_PRIV_KEY).unwrap();
     let signature = signer
         .sign_hash_sync(&transaction.signature_hash())
         .unwrap();
     let signed = transaction.into_signed(signature);
 
-    Recovered::new_unchecked(TxEnvelope::Legacy(signed), SYSTEM_SENDER_ETH_ADDRESS)
+    Recovered::new_unchecked(
+        EthTxEnvelope::global(TxEnvelope::Legacy(signed)),
+        SYSTEM_SENDER_ETH_ADDRESS,
+    )
 }
 
 #[derive(Debug)]
@@ -63,7 +66,7 @@ enum SystemCall {
 
 impl SystemCall {
     // Used to validate inputs of user transactions in RPC and TxPool
-    pub fn is_restricted_system_call(txn: &Recovered<TxEnvelope>) -> bool {
+    pub fn is_restricted_system_call(txn: &Recovered<EthTxEnvelope>) -> bool {
         StakingContractCall::is_restricted_staking_contract_call(txn)
     }
 
@@ -123,7 +126,7 @@ impl SystemTransaction {
     }
 }
 
-impl From<SystemTransaction> for Recovered<TxEnvelope> {
+impl From<SystemTransaction> for Recovered<EthTxEnvelope> {
     fn from(sys_txn: SystemTransaction) -> Self {
         match sys_txn {
             SystemTransaction::StakingContractTransaction(staking_txn) => staking_txn.into_inner(),

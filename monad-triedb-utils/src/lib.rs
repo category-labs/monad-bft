@@ -29,7 +29,7 @@ use futures::{channel::oneshot, executor::block_on, future::join_all, FutureExt}
 use key::Version;
 use monad_bls::{BlsPubKey, BlsSignatureCollection};
 use monad_crypto::certificate_signature::PubKey;
-use monad_eth_types::{EthAccount, EthHeader};
+use monad_eth_types::{AccountKey, EthAccount, EthHeader};
 use monad_secp::SecpSignature;
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_triedb::TriedbHandle;
@@ -158,19 +158,28 @@ impl TriedbReader {
         rlp_decode_account(account_rlp)
     }
 
+    fn key_input_for_account(account_key: &AccountKey) -> KeyInput<'_> {
+        match account_key.namespace.as_ref() {
+            Some(namespace) => {
+                KeyInput::NamespacedAddress(namespace.as_ref(), account_key.address.as_ref())
+            }
+            None => KeyInput::Address(account_key.address.as_ref()),
+        }
+    }
+
     pub fn get_accounts_async<'a>(
         &self,
         seq_num: &SeqNum,
         version: Version,
-        eth_addresses: impl Iterator<Item = &'a Address>,
+        account_keys: impl Iterator<Item = &'a AccountKey>,
     ) -> Option<Vec<Option<EthAccount>>> {
         // Counter which is updated when TrieDB processes a single async read to completion
         let completed_counter = Arc::new(AtomicUsize::new(0));
         let mut num_accounts = 0;
-        let eth_account_receivers = eth_addresses.map(|eth_address| {
+        let eth_account_receivers = account_keys.map(|account_key| {
             num_accounts += 1;
             let (triedb_key, key_len_nibbles) =
-                create_triedb_key(version, KeyInput::Address(eth_address.as_ref()));
+                create_triedb_key(version, Self::key_input_for_account(account_key));
             let (sender, receiver) = oneshot::channel();
             self.handle.read_async(
                 triedb_key.as_ref(),
@@ -246,7 +255,7 @@ impl StateBackend<SecpSignature, BlsSignatureCollection<monad_secp::PubKey>> for
         block_id: &BlockId,
         seq_num: &SeqNum,
         is_finalized: bool,
-        eth_addresses: impl Iterator<Item = &'a Address>,
+        account_keys: impl Iterator<Item = &'a AccountKey>,
     ) -> Result<Vec<Option<EthAccount>>, StateBackendError> {
         let statuses = if is_finalized
             && self
@@ -258,7 +267,7 @@ impl StateBackend<SecpSignature, BlsSignatureCollection<monad_secp::PubKey>> for
 
             // block <= latest
             let Some(statuses) =
-                self.get_accounts_async(seq_num, Version::Finalized, eth_addresses)
+                self.get_accounts_async(seq_num, Version::Finalized, account_keys)
             else {
                 return Err(StateBackendError::NotAvailableYet);
             };
@@ -281,7 +290,7 @@ impl StateBackend<SecpSignature, BlsSignatureCollection<monad_secp::PubKey>> for
             };
 
             let Some(statuses) =
-                self.get_accounts_async(seq_num, Version::Proposal(*block_id), eth_addresses)
+                self.get_accounts_async(seq_num, Version::Proposal(*block_id), account_keys)
             else {
                 return Err(StateBackendError::NotAvailableYet);
             };

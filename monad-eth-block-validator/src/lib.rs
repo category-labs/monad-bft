@@ -22,7 +22,7 @@ use alloy_consensus::{
     constants::EMPTY_WITHDRAWALS,
     proofs::calculate_transaction_root,
     transaction::{Recovered, Transaction},
-    TxEnvelope, EMPTY_OMMER_ROOT_HASH,
+    EMPTY_OMMER_ROOT_HASH,
 };
 use alloy_eips::eip7702::{RecoveredAuthority, RecoveredAuthorization};
 use alloy_primitives::U256;
@@ -50,7 +50,8 @@ use monad_eth_block_policy::{
     EthBlockPolicy, EthValidatedBlock,
 };
 use monad_eth_types::{
-    EthBlockBody, EthExecutionProtocol, ExtractEthAddress, ProposedEthHeader, ValidatedTx,
+    EthBlockBody, EthExecutionProtocol, EthTxEnvelope, ExtractEthAddress, ProposedEthHeader,
+    ValidatedTx,
 };
 use monad_secp::RecoverableAddress;
 use monad_state_backend::StateBackend;
@@ -373,7 +374,7 @@ where
         }
 
         // recovering the signers verifies that these are valid signatures
-        let recovered_txns: VecDeque<Recovered<TxEnvelope>> = transactions
+        let recovered_txns: VecDeque<Recovered<EthTxEnvelope>> = transactions
             .par_iter()
             .map(|tx| {
                 let _span = trace_span!("validator: recover signer").entered();
@@ -419,7 +420,8 @@ where
         let mut nonce_usages = NonceUsageMap::default();
 
         for sys_txn in &system_txns {
-            let maybe_old_nonce_usage = nonce_usages.add_known(sys_txn.signer(), sys_txn.nonce());
+            let maybe_old_nonce_usage =
+                nonce_usages.add_known(sys_txn.account_key(sys_txn.signer()), sys_txn.nonce());
             // A block is invalid if we see a smaller or equal nonce
             // after the first or if there is a nonce gap
             if let Some(old_nonce_usage) = maybe_old_nonce_usage {
@@ -453,8 +455,13 @@ where
 
         // early return if any user transaction fails static validation
         for eth_txn in eth_txns.iter() {
+            if eth_txn.is_namespaced() && eth_txn.signer() == SYSTEM_SENDER_ETH_ADDRESS {
+                debug!(?eth_txn, "namespaced system sender transaction is not allowed");
+                return Err(TxnError::InvalidSystemAccountAuthorization.into());
+            }
+
             if let Err(txn_err) =
-                static_validate_transaction(eth_txn, chain_id, chain_params, execution_chain_params)
+                static_validate_transaction(eth_txn.inner().inner(), chain_id, chain_params, execution_chain_params)
             {
                 debug!(?eth_txn, ?txn_err, "transaction static validation failed");
                 return Err(TxnError::StaticValidationError(txn_err).into());
@@ -502,7 +509,8 @@ where
                 return Err(TxnError::MaxFeeLessThanBaseFee.into());
             }
 
-            let maybe_old_nonce_usage = nonce_usages.add_known(eth_txn.signer(), eth_txn.nonce());
+            let txn_account_key = eth_txn.account_key(eth_txn.signer());
+            let maybe_old_nonce_usage = nonce_usages.add_known(txn_account_key, eth_txn.nonce());
             // txn iteration is following the same order as they are in the
             // block. A block is invalid if we see a smaller or equal nonce
             // after the first or if there is a nonce gap
@@ -545,8 +553,9 @@ where
 
                     // TODO: currently consensus and execution both treats invalid authorization as has_delegated
                     // this has to be updated together with execution change in the future
+                    let authority_key = eth_txn.account_key(authority);
                     txn_fees
-                        .entry(authority)
+                        .entry(authority_key)
                         .and_modify(|e| e.is_delegated = true)
                         .or_insert(TxnFee {
                             first_txn_value: Balance::ZERO,
@@ -569,7 +578,7 @@ where
                     // It is deemed impractical for an authority to find a hash collision to deploy code on its own address
 
                     // update nonce usage for authority
-                    match nonce_usages.entry(authority) {
+                    match nonce_usages.entry(authority_key) {
                         BTreeMapEntry::Occupied(nonce_usage) => match nonce_usage.into_mut() {
                             NonceUsage::Known(nonce) => {
                                 if let Some(next) = nonce.checked_add(1) {
@@ -596,15 +605,15 @@ where
             }
 
             let txn_fee_entry = txn_fees
-                .entry(eth_txn.signer())
+                .entry(txn_account_key)
                 .and_modify(|e| {
                     e.max_gas_cost = e
                         .max_gas_cost
-                        .saturating_add(compute_txn_max_gas_cost(eth_txn, block_base_fee));
+                        .saturating_add(compute_txn_max_gas_cost(eth_txn.inner().inner(), block_base_fee));
                 })
                 .or_insert(TxnFee {
                     first_txn_value: eth_txn.value(),
-                    first_txn_gas: compute_txn_max_gas_cost(eth_txn, block_base_fee),
+                    first_txn_gas: compute_txn_max_gas_cost(eth_txn.inner().inner(), block_base_fee),
                     max_gas_cost: Balance::ZERO,
                     is_delegated: false,
                     delegation_before_first_txn: false,
@@ -639,6 +648,7 @@ mod test {
         make_legacy_tx, make_signed_authorization, recover_tx, secret_to_eth_address,
         ConsensusTestBlock,
     };
+    use monad_eth_types::AccountKey;
     use monad_state_backend::InMemoryStateInner;
     use monad_testutil::signing::MockSignatures;
     use monad_types::{Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
@@ -774,9 +784,9 @@ mod test {
 
         let (_, _, _, txn_fees) = result.unwrap();
         assert_eq!(txn_fees.len(), 3);
-        let signer_a = secret_to_eth_address(B256::repeat_byte(0xAu8));
-        let signer_b = secret_to_eth_address(B256::repeat_byte(0xBu8));
-        let signer_c = secret_to_eth_address(B256::repeat_byte(0xCu8));
+        let signer_a = AccountKey::global(secret_to_eth_address(B256::repeat_byte(0xAu8)));
+        let signer_b = AccountKey::global(secret_to_eth_address(B256::repeat_byte(0xBu8)));
+        let signer_c = AccountKey::global(secret_to_eth_address(B256::repeat_byte(0xCu8)));
 
         assert!(txn_fees.get(&signer_a).unwrap().is_delegated);
         assert!(txn_fees.get(&signer_a).unwrap().delegation_before_first_txn);
@@ -1028,8 +1038,9 @@ mod test {
             !original_signature.v(),
         );
         let inner_tx = valid_txn.as_legacy().unwrap().tx();
-        let invalid_txn: TxEnvelope =
-            Signed::new_unchecked(inner_tx.clone(), invalid_signature, *valid_txn.tx_hash()).into();
+        let invalid_txn = EthTxEnvelope::global(
+            Signed::new_unchecked(inner_tx.clone(), invalid_signature, *valid_txn.tx_hash()).into(),
+        );
 
         // both transactions recover to the same signer
         assert_eq!(
@@ -1319,7 +1330,7 @@ mod test {
     fn eip7702_tx_strategy(
         tx_signer: FixedBytes<32>,
         nonce: u64,
-    ) -> impl Strategy<Value = Recovered<TxEnvelope>> {
+    ) -> impl Strategy<Value = Recovered<EthTxEnvelope>> {
         (1..=8usize)
             .prop_flat_map(|authorizations| {
                 prop::collection::vec(signed_authorization_strategy(), authorizations)
@@ -1404,7 +1415,7 @@ mod test {
             Vec::new(),
             ProposedEthHeader {
                 ommers_hash: *EMPTY_OMMER_ROOT_HASH,
-                transactions_root: *calculate_transaction_root::<TxEnvelope>(&[]),
+                transactions_root: *calculate_transaction_root::<EthTxEnvelope>(&[]),
                 withdrawals_root: *EMPTY_WITHDRAWALS,
                 difficulty: 0,
                 number: seq_num.0,
@@ -1510,7 +1521,7 @@ mod test {
                 Ok(block) => {
                     assert!(expect_success);
 
-                    let txns: Vec<Recovered<TxEnvelope>> = block
+                    let txns: Vec<Recovered<EthTxEnvelope>> = block
                         .validated_txns
                         .iter()
                         .map(|vtx| vtx.tx.clone())

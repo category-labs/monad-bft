@@ -15,6 +15,7 @@
 
 use alloy_consensus::TxEnvelope;
 use alloy_primitives::{keccak256, Address};
+use monad_eth_types::EthTxEnvelope;
 use secp256k1::{
     ecdsa::{RecoverableSignature, RecoveryId},
     Message, Secp256k1,
@@ -28,24 +29,40 @@ pub trait RecoverableAddress {
 
 impl RecoverableAddress for TxEnvelope {
     fn secp256k1_recover(&self) -> Result<Address, Error> {
-        let signature_hash = self.signature_hash();
-        let secp_message = Message::from_digest(*signature_hash.as_ref());
-
-        let secp = Secp256k1::new();
-
-        let signature = self.signature().as_bytes();
-        let recid = self.signature().recid().to_byte();
-
-        let recoverable_sig = RecoverableSignature::from_compact(
-            &signature[0..64],
-            RecoveryId::try_from(recid as i32)?,
-        )?;
-
-        let recovered_pubkey = secp.recover_ecdsa(secp_message, &recoverable_sig)?;
-        let recovered_pubkey_bytes = recovered_pubkey.serialize_uncompressed();
-        let recovered_hash = keccak256(&recovered_pubkey_bytes[1..]);
-        Ok(Address::from_slice(&recovered_hash[12..]))
+        recover_signature(
+            self.signature_hash(),
+            &self.signature().as_bytes(),
+            self.signature().recid().to_byte(),
+        )
     }
+}
+
+impl RecoverableAddress for EthTxEnvelope {
+    fn secp256k1_recover(&self) -> Result<Address, Error> {
+        recover_signature(
+            self.signature_hash(),
+            &self.signature().as_bytes(),
+            self.signature().recid().to_byte(),
+        )
+    }
+}
+
+fn recover_signature(
+    signature_hash: alloy_primitives::B256,
+    signature: &[u8],
+    recid: u8,
+) -> Result<Address, Error> {
+    let secp_message = Message::from_digest(*signature_hash.as_ref());
+
+    let secp = Secp256k1::new();
+
+    let recoverable_sig =
+        RecoverableSignature::from_compact(&signature[0..64], RecoveryId::try_from(recid as i32)?)?;
+
+    let recovered_pubkey = secp.recover_ecdsa(secp_message, &recoverable_sig)?;
+    let recovered_pubkey_bytes = recovered_pubkey.serialize_uncompressed();
+    let recovered_hash = keccak256(&recovered_pubkey_bytes[1..]);
+    Ok(Address::from_slice(&recovered_hash[12..]))
 }
 
 #[cfg(test)]

@@ -18,11 +18,10 @@ use std::{
     sync::{mpsc, Arc},
 };
 
-use alloy_primitives::Address;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_types::{EthAccount, EthHeader};
+use monad_eth_types::{AccountKey, EthAccount, EthHeader};
 use monad_types::{BlockId, Epoch, SeqNum, Stake};
 use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionPubKeyType};
 use tracing::warn;
@@ -42,7 +41,7 @@ where
         block_id: BlockId,
         seq_num: SeqNum,
         is_finalized: bool,
-        addresses: Vec<Address>,
+        account_keys: Vec<AccountKey>,
         tx: mpsc::SyncSender<Result<Vec<Option<EthAccount>>, StateBackendError>>,
     },
     GetExecutionResult {
@@ -129,13 +128,13 @@ where
         block_id: &BlockId,
         seq_num: &SeqNum,
         is_finalized: bool,
-        addresses: impl Iterator<Item = &'a Address>,
+        account_keys: impl Iterator<Item = &'a AccountKey>,
     ) -> Result<Vec<Option<EthAccount>>, StateBackendError> {
         self.send_and_recv_request(|tx| StateBackendThreadRequest::GetAccountStatuses {
             block_id: block_id.to_owned(),
             seq_num: seq_num.to_owned(),
             is_finalized,
-            addresses: addresses.cloned().collect(),
+            account_keys: account_keys.cloned().collect(),
             tx,
         })
     }
@@ -228,14 +227,14 @@ where
                     block_id,
                     seq_num,
                     is_finalized,
-                    addresses,
+                    account_keys,
                     tx,
                 } => {
                     tx.send(state_backend.get_account_statuses(
                         &block_id,
                         &seq_num,
                         is_finalized,
-                        addresses.iter(),
+                        account_keys.iter(),
                     ))
                     .expect("StateBackendThreadClient is alive");
                 }

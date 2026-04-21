@@ -22,12 +22,12 @@ use std::{
     },
 };
 
-use alloy_consensus::{transaction::SignerRecoverable as _, Header, Transaction, TxEnvelope};
+use alloy_consensus::{transaction::SignerRecoverable as _, Header, Transaction};
 use alloy_primitives::Address;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_types::{EthAccount, EthHeader};
+use monad_eth_types::{AccountKey, EthAccount, EthHeader, EthTxEnvelope};
 use monad_types::{
     Balance, BlockId, Epoch, Nonce, Round, SeqNum, Stake, GENESIS_BLOCK_ID, GENESIS_ROUND,
     GENESIS_SEQ_NUM,
@@ -119,16 +119,25 @@ pub struct InMemoryBlockState {
     round: Round,
     parent_id: BlockId,
     /// the txns to execute for this seq_num
-    txns: Vec<TxEnvelope>,
+    txns: Vec<EthTxEnvelope>,
     /// account states after executing this block seq_num
-    accounts: BTreeMap<Address, AccountState>,
+    accounts: BTreeMap<AccountKey, AccountState>,
     /// all transaction senders and authority addresses in this block
     /// used for reserve balance validation
-    senders_and_authorities: HashSet<Address>,
+    senders_and_authorities: HashSet<AccountKey>,
 }
 
 impl InMemoryBlockState {
     pub fn genesis(accounts: BTreeMap<Address, AccountState>) -> Self {
+        Self::genesis_with_account_keys(
+            accounts
+                .into_iter()
+                .map(|(address, account)| (AccountKey::global(address), account))
+                .collect(),
+        )
+    }
+
+    pub fn genesis_with_account_keys(accounts: BTreeMap<AccountKey, AccountState>) -> Self {
         Self {
             block_id: GENESIS_BLOCK_ID,
             seq_num: GENESIS_SEQ_NUM,
@@ -201,7 +210,7 @@ where
         seq_num: SeqNum,
         round: Round,
         parent_id: BlockId,
-        txns: Vec<TxEnvelope>,
+        txns: Vec<EthTxEnvelope>,
     ) {
         if self
             .commits
@@ -244,7 +253,7 @@ where
         );
 
         // collect senders and authorities from recent blocks within execution delay
-        let mut recent_senders_and_authorities: HashSet<Address> = HashSet::new();
+        let mut recent_senders_and_authorities: HashSet<AccountKey> = HashSet::new();
         if self.validate_reserve_balance {
             // walk back up to execution_delay - 1 ancestor blocks
             let mut lookup_id = parent_id;
@@ -263,24 +272,26 @@ where
         }
 
         // track senders and authorities for the current block
-        let mut block_senders_and_authorities: HashSet<Address> = HashSet::new();
+        let mut block_senders_and_authorities: HashSet<AccountKey> = HashSet::new();
 
         for tx in txns.iter() {
             let addr = tx.recover_signer().expect("invalid eth tx in block");
+            let account_key = tx.account_key(addr);
 
             // recover 7702 authorities of current block
-            let txn_authorities: Vec<Address> = if self.validate_reserve_balance && tx.is_eip7702()
-            {
-                tx.authorization_list()
-                    .expect("valid 7702 must have auth list")
-                    .iter()
-                    .filter_map(|tuple| tuple.recover_authority().ok())
-                    .collect()
-            } else {
-                Vec::new()
-            };
+            let txn_authorities: Vec<AccountKey> =
+                if self.validate_reserve_balance && tx.is_eip7702() {
+                    tx.authorization_list()
+                        .expect("valid 7702 must have auth list")
+                        .iter()
+                        .filter_map(|tuple| tuple.recover_authority().ok())
+                        .map(|authority| tx.account_key(authority))
+                        .collect()
+                } else {
+                    Vec::new()
+                };
 
-            let account_entry = accounts.entry(addr).or_insert(AccountState {
+            let account_entry = accounts.entry(account_key).or_insert(AccountState {
                 balance: Balance::default(),
                 reserve_balance: self.default_reserve_balance,
                 nonce: 0,
@@ -291,7 +302,7 @@ where
             if account_entry.nonce != tx.nonce() {
                 panic!(
                     "tfm state backend executed invalid nonce: account={}, expected={}, got={}",
-                    addr,
+                    account_key.address,
                     account_entry.nonce,
                     tx.nonce()
                 );
@@ -322,7 +333,7 @@ where
                     account_entry.balance >= gas_cost,
                     "execution pre-check violation: balance < gas_fee. \
                      account={}, balance={}, gas_cost={}, nonce={}",
-                    addr,
+                    account_key.address,
                     account_entry.balance,
                     gas_cost,
                     tx.nonce()
@@ -335,9 +346,9 @@ where
                 //   - not an authority in any txn up to and including this one
                 //   - not in execution delay window's senders/authorities
                 let can_dip = !account_entry.is_delegated
-                    && !block_senders_and_authorities.contains(&addr)
-                    && !txn_authorities.contains(&addr)
-                    && !recent_senders_and_authorities.contains(&addr);
+                    && !block_senders_and_authorities.contains(&account_key)
+                    && !txn_authorities.contains(&account_key)
+                    && !recent_senders_and_authorities.contains(&account_key);
 
                 // post-execution reserve balance check
                 // in execution, if the sender dips into reserve without
@@ -367,8 +378,9 @@ where
                     .expect("valid 7702 must have auth list");
                 for tuple in auth_list {
                     if let Ok(auth_addr) = tuple.recover_authority() {
+                        let auth_account_key = tx.account_key(auth_addr);
                         let auth_account_entry =
-                            accounts.entry(auth_addr).or_insert(AccountState {
+                            accounts.entry(auth_account_key).or_insert(AccountState {
                                 balance: Balance::default(),
                                 reserve_balance: self.default_reserve_balance,
                                 nonce: 0,
@@ -384,9 +396,9 @@ where
                 }
             }
 
-            block_senders_and_authorities.insert(addr);
-            for &auth_addr in &txn_authorities {
-                block_senders_and_authorities.insert(auth_addr);
+            block_senders_and_authorities.insert(account_key);
+            for &auth_account_key in &txn_authorities {
+                block_senders_and_authorities.insert(auth_account_key);
             }
         }
 
@@ -463,7 +475,7 @@ where
         block_id: &BlockId,
         seq_num: &SeqNum,
         is_finalized: bool,
-        addresses: impl Iterator<Item = &'a Address>,
+        account_keys: impl Iterator<Item = &'a AccountKey>,
     ) -> Result<Vec<Option<EthAccount>>, StateBackendError> {
         let state = if is_finalized
             && self
@@ -490,10 +502,10 @@ where
             proposal
         };
 
-        Ok(addresses
-            .map(|address| {
+        Ok(account_keys
+            .map(|account_key| {
                 self.total_mock_lookups.fetch_add(1, Ordering::SeqCst);
-                let account = state.accounts.get(address)?;
+                let account = state.accounts.get(account_key)?;
                 Some(EthAccount {
                     nonce: account.nonce,
                     balance: account.balance,
@@ -564,5 +576,69 @@ where
 
     fn total_db_lookups(&self) -> u64 {
         self.total_mock_lookups.load(Ordering::SeqCst)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::collections::BTreeMap;
+
+    use alloy_primitives::Address;
+    use monad_crypto::NopSignature;
+    use monad_multi_sig::MultiSig;
+    use monad_types::{Balance, SeqNum, GENESIS_BLOCK_ID, GENESIS_SEQ_NUM};
+
+    use super::*;
+
+    #[test]
+    fn in_memory_state_separates_global_and_namespaced_accounts() {
+        let address = Address::repeat_byte(0x11);
+        let namespace = Address::repeat_byte(0x22);
+        let global_key = AccountKey::global(address);
+        let namespaced_key = AccountKey::namespaced(namespace, address);
+
+        let state = InMemoryStateInner::<NopSignature, MultiSig<NopSignature>>::new(
+            SeqNum(4),
+            InMemoryBlockState::genesis_with_account_keys(BTreeMap::from([
+                (
+                    global_key,
+                    AccountState {
+                        balance: Balance::from(7_u64),
+                        reserve_balance: Balance::from(3_u64),
+                        nonce: 1,
+                        is_delegated: false,
+                    },
+                ),
+                (
+                    namespaced_key,
+                    AccountState {
+                        balance: Balance::from(9_u64),
+                        reserve_balance: Balance::from(4_u64),
+                        nonce: 5,
+                        is_delegated: true,
+                    },
+                ),
+            ])),
+        );
+
+        let account_keys = [global_key, namespaced_key];
+        let statuses = state
+            .get_account_statuses(
+                &GENESIS_BLOCK_ID,
+                &GENESIS_SEQ_NUM,
+                true,
+                account_keys.iter(),
+            )
+            .unwrap();
+
+        let global = statuses[0].as_ref().unwrap();
+        assert_eq!(global.balance, Balance::from(7_u64));
+        assert_eq!(global.nonce, 1);
+        assert!(!global.is_delegated);
+
+        let namespaced = statuses[1].as_ref().unwrap();
+        assert_eq!(namespaced.balance, Balance::from(9_u64));
+        assert_eq!(namespaced.nonce, 5);
+        assert!(namespaced.is_delegated);
     }
 }

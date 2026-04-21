@@ -23,14 +23,14 @@
 
 use std::collections::VecDeque;
 
-use alloy_consensus::{Transaction, TxEnvelope, transaction::Recovered};
+use alloy_consensus::{transaction::Recovered, Transaction};
 use alloy_primitives::{Address, Bytes, TxKind, U256};
 use monad_chain_config::{ChainConfig, revision::ChainRevision};
 use monad_consensus_types::block::ConsensusBlockHeader;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_types::{EthExecutionProtocol, ExtractEthAddress, ValidatedTx};
+use monad_eth_types::{EthExecutionProtocol, EthTxEnvelope, ExtractEthAddress, ValidatedTx};
 use monad_types::Epoch;
 use monad_validator::signature_collection::SignatureCollection;
 use tracing::{debug, info, warn};
@@ -77,13 +77,13 @@ impl SystemTransactionValidator {
     }
 
     // Used to validate inputs of user transactions in RPC and TxPool
-    pub fn is_restricted_system_call(txn: &Recovered<TxEnvelope>) -> bool {
+    pub fn is_restricted_system_call(txn: &Recovered<EthTxEnvelope>) -> bool {
         SystemCall::is_restricted_system_call(txn)
     }
 
     /// Set as a public function for fuzzer integration but does not need to be called externally otherwise
     pub fn static_validate_system_transaction<CCT, CRT>(
-        txn: &Recovered<TxEnvelope>,
+        txn: &Recovered<EthTxEnvelope>,
         chain_config: &CCT,
     ) -> Result<(), SystemTransactionError>
     where
@@ -94,7 +94,7 @@ impl SystemTransactionValidator {
             return Err(SystemTransactionError::UnexpectedSenderAddress);
         }
 
-        if !txn.inner().is_legacy() {
+        if !txn.inner().inner().is_legacy() {
             return Err(SystemTransactionError::InvalidTxType);
         }
 
@@ -126,9 +126,9 @@ impl SystemTransactionValidator {
     // Used to extract statically validated system transactions in block validator
     pub fn extract_system_transactions<ST, SCT, CCT, CRT>(
         block_header: &ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>,
-        mut recovered_txns: VecDeque<Recovered<TxEnvelope>>,
+        mut recovered_txns: VecDeque<Recovered<EthTxEnvelope>>,
         chain_config: &CCT,
-    ) -> Result<(Vec<ValidatedTx>, Vec<Recovered<TxEnvelope>>), SystemTransactionValidationError>
+    ) -> Result<(Vec<ValidatedTx>, Vec<Recovered<EthTxEnvelope>>), SystemTransactionValidationError>
     where
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,

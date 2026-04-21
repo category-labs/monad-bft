@@ -18,8 +18,8 @@ use std::{
     time::Instant,
 };
 
-use alloy_primitives::Address;
 use monad_crypto::certificate_signature::CertificateSignatureRecoverable;
+use monad_eth_types::AccountKey;
 use tracing::error;
 
 use crate::{pool::tracked::TrackedTxList, EthTxPoolEventTracker};
@@ -32,15 +32,15 @@ pub(super) struct Priority {
 
 #[derive(Clone, Debug, Default)]
 pub(super) struct PriorityMap {
-    by_address: HashMap<Address, (Priority, Instant)>,
-    sorted: BTreeSet<(Priority, Instant, Address)>,
+    by_address: HashMap<AccountKey, (Priority, Instant)>,
+    sorted: BTreeSet<(Priority, Instant, AccountKey)>,
 }
 
 impl PriorityMap {
     pub fn update_priority<ST>(
         &mut self,
         event_tracker: &EthTxPoolEventTracker<'_>,
-        address: Address,
+        address: AccountKey,
         tx_list: &TrackedTxList<ST>,
     ) where
         ST: CertificateSignatureRecoverable,
@@ -64,7 +64,7 @@ impl PriorityMap {
         self.sorted.insert((priority, time, address));
     }
 
-    pub fn pop_eviction_address(&mut self) -> Option<Address> {
+    pub fn pop_eviction_address(&mut self) -> Option<AccountKey> {
         let (_, _, eviction_address) = self.sorted.pop_last()?;
 
         if self.by_address.remove(&eviction_address).is_none() {
@@ -77,7 +77,7 @@ impl PriorityMap {
         Some(eviction_address)
     }
 
-    pub fn remove(&mut self, address: Address) {
+    pub fn remove(&mut self, address: AccountKey) {
         let Some((priority, time)) = self.by_address.remove(&address) else {
             error!(
                 ?address,

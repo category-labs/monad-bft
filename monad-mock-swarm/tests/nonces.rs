@@ -17,19 +17,21 @@ mod eth_swarm_common;
 
 #[cfg(test)]
 mod test {
-    use std::collections::HashSet;
+    use std::collections::{BTreeMap, HashSet};
 
-    use alloy_eips::eip2718::Encodable2718;
-    use alloy_primitives::B256;
+    use alloy_primitives::{Address, B256};
     use itertools::Itertools;
     use monad_consensus_types::{timeout::HighExtend, RoundCertificate};
     use monad_eth_testutil::{
-        make_eip7702_tx, make_legacy_tx, make_signed_authorization, secret_to_eth_address,
+        make_eip7702_tx, make_legacy_tx, make_namespaced_legacy_tx, make_signed_authorization,
+        secret_to_eth_address,
     };
+    use monad_eth_types::AccountKey;
     use monad_mock_swarm::{
         terminator::UntilTerminator,
         verifier::{happy_path_tick_by_block, MockSwarmVerifier},
     };
+    use monad_state_backend::{AccountState, StateBackend};
     use monad_testutil::swarm::swarm_ledger_verification;
     use monad_transformer::{
         DropTransformer, GenericTransformer, LatencyTransformer, PartitionTransformer,
@@ -41,8 +43,86 @@ mod test {
     use tracing::info;
 
     use crate::eth_swarm_common::{
-        generate_eth_swarm, verify_transactions_in_ledger, BASE_FEE, CONSENSUS_DELTA, GAS_LIMIT,
+        generate_eth_swarm, generate_eth_swarm_with_account_keys, verify_transactions_in_ledger,
+        BASE_FEE, CONSENSUS_DELTA, GAS_LIMIT,
     };
+
+    #[test]
+    fn namespaced_global_and_namespaced_nonce_zero_can_coexist() {
+        let sender_key = B256::repeat_byte(0xAB);
+        let sender_address = secret_to_eth_address(sender_key);
+        let namespace = Address::repeat_byte(0x42);
+        let mut swarm = generate_eth_swarm_with_account_keys(
+            2,
+            BTreeMap::from([
+                (AccountKey::global(sender_address), AccountState::max_balance()),
+                (
+                    AccountKey::namespaced(namespace, sender_address),
+                    AccountState::max_balance(),
+                ),
+            ]),
+            |_| ByzantineConfig::default(),
+            false,
+        );
+        let node_ids = swarm.states().keys().copied().collect_vec();
+        let node_1_id = node_ids[0];
+
+        while swarm
+            .step_until(&mut UntilTerminator::new().until_block(1))
+            .is_some()
+        {}
+
+        let global_tx = make_legacy_tx(sender_key, BASE_FEE, GAS_LIMIT, 0, 10);
+        let namespaced_tx =
+            make_namespaced_legacy_tx(namespace, sender_key, BASE_FEE, GAS_LIMIT, 0, 10);
+
+        swarm.send_transaction(node_1_id, global_tx.encoded_2718().into());
+        swarm.send_transaction(node_1_id, namespaced_tx.encoded_2718().into());
+
+        while swarm
+            .step_until(&mut UntilTerminator::new().until_block(5))
+            .is_some()
+        {}
+
+        let mut verifier = MockSwarmVerifier::default().tick_range(
+            happy_path_tick_by_block(5, CONSENSUS_DELTA),
+            CONSENSUS_DELTA,
+        );
+        verifier.metrics_happy_path(&node_ids, &swarm);
+        assert!(verifier.verify(&swarm));
+        assert!(verify_transactions_in_ledger(
+            &swarm,
+            swarm.states().keys().cloned().collect_vec(),
+            vec![global_tx.clone(), namespaced_tx.clone()],
+        ));
+        swarm_ledger_verification(&swarm, 2);
+
+        let account_keys = [
+            AccountKey::global(sender_address),
+            AccountKey::namespaced(namespace, sender_address),
+        ];
+        for node_id in node_ids {
+            let node = swarm.states().get(&node_id).unwrap();
+            let state_backend = node.state.state_backend();
+            let (_, latest_block) = node
+                .executor
+                .ledger()
+                .get_finalized_blocks()
+                .last_key_value()
+                .unwrap();
+            let statuses = state_backend
+                .get_account_statuses(
+                    &latest_block.get_id(),
+                    &latest_block.get_seq_num(),
+                    true,
+                    account_keys.iter(),
+                )
+                .unwrap();
+
+            assert_eq!(statuses[0].as_ref().unwrap().nonce, 1);
+            assert_eq!(statuses[1].as_ref().unwrap().nonce, 1);
+        }
+    }
 
     #[test]
     fn non_sequential_nonces() {

@@ -15,11 +15,12 @@
 
 use std::{collections::BTreeMap, sync::atomic::Ordering, time::Instant};
 
-use alloy_consensus::{transaction::Recovered, TxEnvelope};
+use alloy_consensus::transaction::Recovered;
 use alloy_primitives::TxHash;
 use monad_eth_txpool_types::{
     EthTxPoolDropReason, EthTxPoolEventType, EthTxPoolEvictReason, EthTxPoolInternalDropReason,
 };
+use monad_eth_types::EthTxEnvelope;
 
 use crate::EthTxPoolMetrics;
 
@@ -43,7 +44,7 @@ impl<'a> EthTxPoolEventTracker<'a> {
         }
     }
 
-    pub fn insert(&mut self, tx: &Recovered<TxEnvelope>, owned: bool) {
+    pub fn insert(&mut self, tx: &Recovered<EthTxEnvelope>, owned: bool) {
         if owned {
             self.metrics.insert_owned_txs.fetch_add(1, Ordering::SeqCst);
         } else {
@@ -62,12 +63,7 @@ impl<'a> EthTxPoolEventTracker<'a> {
         );
     }
 
-    pub fn replace(
-        &mut self,
-        old_tx_hash: TxHash,
-        new_tx: &Recovered<TxEnvelope>,
-        new_owned: bool,
-    ) {
+    pub fn replace(&mut self, old_tx_hash: TxHash, new_tx: &Recovered<EthTxEnvelope>, new_owned: bool) {
         self.drop(
             old_tx_hash,
             EthTxPoolDropReason::ReplacedByHigherPriority {
@@ -139,7 +135,7 @@ impl<'a> EthTxPoolEventTracker<'a> {
 
     pub fn drop_all(
         &mut self,
-        txs: impl Iterator<Item = Recovered<TxEnvelope>>,
+        txs: impl Iterator<Item = Recovered<EthTxEnvelope>>,
         reason: EthTxPoolDropReason,
     ) {
         for tx in txs {

@@ -27,6 +27,7 @@ use monad_crypto::{
     certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable},
     hasher::{Hasher, HasherType},
 };
+use monad_eth_types::AccountKey;
 use monad_state_backend::{InMemoryState, StateBackend, StateBackendError};
 use monad_types::{
     Balance, BlockId, Epoch, ExecutionProtocol, FinalizedHeader, LimitedVec, NodeId, Round, SeqNum,
@@ -334,7 +335,7 @@ pub struct TxnFee {
     pub delegation_before_first_txn: bool,
 }
 
-pub type TxnFees = BTreeMap<Address, TxnFee>;
+pub type TxnFees = BTreeMap<AccountKey, TxnFee>;
 
 /// Trait that represents how inner contents of a block should be validated
 #[auto_impl(Box)]

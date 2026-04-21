@@ -20,12 +20,11 @@ use std::{
     time::Duration,
 };
 
-use alloy_primitives::Address;
 use itertools::Itertools;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_types::{EthAccount, EthHeader};
+use monad_eth_types::{AccountKey, EthAccount, EthHeader};
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::{BlockId, DropTimer, Epoch, SeqNum, Stake};
 use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionPubKeyType};
@@ -34,7 +33,7 @@ use tracing::warn;
 #[derive(Debug)]
 struct BlockCache {
     seq_num: SeqNum,
-    accounts: BTreeMap<Address, Option<EthAccount>>,
+    accounts: BTreeMap<AccountKey, Option<EthAccount>>,
     execution_result: Option<EthHeader>,
 }
 
@@ -80,10 +79,10 @@ where
         block_id: &BlockId,
         seq_num: &SeqNum,
         is_finalized: bool,
-        addresses: impl Iterator<Item = &'a Address>,
+        account_keys: impl Iterator<Item = &'a AccountKey>,
     ) -> Result<Vec<Option<EthAccount>>, StateBackendError> {
-        let addresses = addresses.collect_vec();
-        if addresses.is_empty() {
+        let account_keys = account_keys.collect_vec();
+        if account_keys.is_empty() {
             return Ok(Vec::new());
         }
 
@@ -91,12 +90,12 @@ where
 
         // TODO consider removing this uniqueness filter... the callers we have so far already only
         // pass in a unique set of accounts
-        let unique_addresses = addresses.iter().unique().copied();
+        let unique_account_keys = account_keys.iter().unique().copied();
         // find accounts that are missing from cache
         let cache_misses: Vec<_> = match cache.get(block_id) {
-            None => unique_addresses.collect(),
-            Some(block_cache) => unique_addresses
-                .filter(|&address| !block_cache.accounts.contains_key(address))
+            None => unique_account_keys.collect(),
+            Some(block_cache) => unique_account_keys
+                .filter(|&account_key| !block_cache.accounts.contains_key(account_key))
                 .collect(),
         };
 
@@ -128,7 +127,7 @@ where
                 .extend(
                     cache_misses
                         .iter()
-                        .map(|&&address| address)
+                        .map(|&&account_key| account_key)
                         .zip_eq(cache_misses_data),
                 )
         }
@@ -137,12 +136,12 @@ where
             .get(block_id)
             .expect("cache must be populated... we asserted nonzero addresses at the start");
 
-        let accounts_data = addresses
+        let accounts_data = account_keys
             .iter()
-            .map(|&address| {
+            .map(|&account_key| {
                 block_cache
                     .accounts
-                    .get(address)
+                    .get(account_key)
                     .expect("cache was hydrated")
             })
             .cloned()

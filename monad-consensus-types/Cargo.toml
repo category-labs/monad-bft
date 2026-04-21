@@ -11,6 +11,7 @@ bench = false
 [dependencies]
 monad-chain-config = { workspace = true }
 monad-crypto = { workspace = true }
+monad-eth-types = { workspace = true }
 monad-state-backend = { workspace = true }
 monad-types = { workspace = true }
 monad-validator = { workspace = true }

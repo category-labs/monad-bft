@@ -20,7 +20,6 @@ use std::{
 
 use alloy_consensus::{
     transaction::{Recovered, SignerRecoverable},
-    TxEnvelope,
 };
 use alloy_eips::eip2718::{Decodable2718, Encodable2718};
 use bytes::Bytes;
@@ -38,7 +37,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics, PoolTxKind};
-use monad_eth_types::{EthExecutionProtocol, ExtractEthAddress};
+use monad_eth_types::{EthExecutionProtocol, EthTxEnvelope, ExtractEthAddress};
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
 use monad_state_backend::StateBackend;
@@ -440,7 +439,7 @@ where
                         &self.chain_config,
                         txs.into_iter()
                             .filter_map(|raw_tx| {
-                                let tx = TxEnvelope::decode_2718_exact(raw_tx.as_ref()).ok()?;
+                                let tx = EthTxEnvelope::decode_2718_exact(raw_tx.as_ref()).ok()?;
                                 let signer = tx.recover_signer().ok()?;
                                 Some((
                                     Recovered::new_unchecked(tx, signer),
@@ -577,7 +576,7 @@ where
     fn send_transaction(&mut self, tx: Bytes) {
         let (pool, block_policy, state_backend) = self.eth.as_mut().unwrap();
 
-        let Ok(tx) = TxEnvelope::decode_2718_exact(tx.as_ref()) else {
+        let Ok(tx) = EthTxEnvelope::decode_2718_exact(tx.as_ref()) else {
             panic!("MockableTxPool received invalid tx bytes!");
         };
 

@@ -4965,6 +4965,7 @@ dependencies = [
  "monad-bls",
  "monad-chain-config",
  "monad-crypto",
+ "monad-eth-types",
  "monad-secp",
  "monad-state-backend",
  "monad-testutil",
@@ -5319,6 +5320,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-rlp",
  "monad-eth-block-policy",
+ "monad-eth-types",
  "serde",
 ]
 
@@ -5330,6 +5332,8 @@ dependencies = [
  "alloy-eips",
  "alloy-primitives",
  "alloy-rlp",
+ "alloy-signer",
+ "alloy-signer-local",
  "monad-crypto",
  "monad-types",
  "serde",
