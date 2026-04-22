@@ -20,10 +20,6 @@ use std::{
     hash::Hash,
 };
 
-use monad_dynamic_cap::{
-    effective_limit as dynamic_cap_effective_limit, update_pressure_mode, DynamicCapConfig,
-    DynamicCapIdentity,
-};
 use tracing::warn;
 
 use crate::{ensure, PushError, Score};
@@ -60,7 +56,6 @@ struct IdentityState<T> {
     queue: VecDeque<T>,
     score: Score,
     finish_time: f64,
-    dynamic_cap: DynamicCapIdentity,
 }
 
 pub(crate) struct PopItem<Id, T> {
@@ -75,19 +70,13 @@ pub(crate) struct Pool<Id, T> {
     total_items: usize,
     max_size: usize,
     per_id_limit: usize,
-    dynamic_cap_cfg: DynamicCapConfig,
-    dynamic_cap_enforced: bool,
 }
 
 impl<Id, T> Pool<Id, T>
 where
     Id: Eq + Hash + Clone + Debug + Display,
 {
-    pub(crate) fn new(
-        per_id_limit: usize,
-        max_size: usize,
-        dynamic_cap_cfg: DynamicCapConfig,
-    ) -> Self {
+    pub(crate) fn new(per_id_limit: usize, max_size: usize) -> Self {
         Self {
             heap: BinaryHeap::new(),
             identities: HashMap::new(),
@@ -95,8 +84,6 @@ where
             total_items: 0,
             max_size,
             per_id_limit,
-            dynamic_cap_cfg,
-            dynamic_cap_enforced: false,
         }
     }
 
@@ -123,60 +110,17 @@ where
         self.total_items = self.total_items.saturating_sub(count);
     }
 
-    fn pressure_mode_for(&self, incoming_items: usize) -> bool {
-        update_pressure_mode(
-            self.dynamic_cap_enforced,
-            self.total_items,
-            self.max_size,
-            incoming_items,
-            &self.dynamic_cap_cfg,
-        )
-    }
-
-    fn refresh_pressure_mode(&mut self) -> bool {
-        self.dynamic_cap_enforced = update_pressure_mode(
-            self.dynamic_cap_enforced,
-            self.total_items,
-            self.max_size,
-            0,
-            &self.dynamic_cap_cfg,
-        );
-        self.dynamic_cap_enforced
-    }
-
-    pub(crate) fn decayed_service_share(&mut self, id: &Id, service_sequence: u64) -> f64 {
-        self.identities.get_mut(id).map_or(0.0, |state| {
-            state
-                .dynamic_cap
-                .decayed_share(service_sequence, &self.dynamic_cap_cfg)
-        })
-    }
-
-    pub(crate) fn observe_service(&mut self, id: &Id, service_sequence: u64) {
-        if let Some(state) = self.identities.get_mut(id) {
-            state
-                .dynamic_cap
-                .observe_service(service_sequence, &self.dynamic_cap_cfg);
-        }
-    }
-
-    pub(crate) fn push_existing(
-        &mut self,
-        id: &Id,
-        item: T,
-        service_sequence: u64,
-    ) -> Result<(), PushError<Id>> {
-        let effective_limit = self.effective_per_id_limit(id, service_sequence, 1);
+    pub(crate) fn push_existing(&mut self, id: &Id, item: T) -> Result<(), PushError<Id>> {
         let new_len = self
             .identities
             .get(id)
             .map(|state| state.queue.len().saturating_add(1))
             .expect("identity must exist when routed to existing pool");
         ensure!(
-            new_len <= effective_limit,
+            new_len <= self.per_id_limit,
             PushError::PerIdLimitExceeded {
                 id: id.clone(),
-                limit: effective_limit,
+                limit: self.per_id_limit,
             }
         );
         ensure!(
@@ -192,7 +136,6 @@ where
             .expect("identity must exist when routed to existing pool");
         state.queue.push_back(item);
         self.total_items = self.total_items.saturating_add(1);
-        let _ = self.refresh_pressure_mode();
         Ok(())
     }
 
@@ -201,7 +144,6 @@ where
         id: Id,
         item: T,
         score: Score,
-        service_sequence: u64,
     ) -> Result<(), (PushError<Id>, T)> {
         ensure!(
             self.has_capacity_for(1),
@@ -221,12 +163,10 @@ where
                 queue: VecDeque::from([item]),
                 score,
                 finish_time,
-                dynamic_cap: DynamicCapIdentity::new(service_sequence),
             },
         );
         self.total_items = self.total_items.saturating_add(1);
         self.heap.push(HeapEntry { finish_time, id });
-        let _ = self.refresh_pressure_mode();
         Ok(())
     }
 
@@ -275,7 +215,6 @@ where
 
             self.total_items = self.total_items.saturating_sub(1);
             self.virtual_time = entry.finish_time;
-            let _ = self.refresh_pressure_mode();
 
             if let Some(finish_time) = next_finish {
                 self.heap.push(HeapEntry {
@@ -289,32 +228,11 @@ where
             return Some(PopItem { id, item });
         }
     }
-
-    fn effective_per_id_limit(
-        &mut self,
-        id: &Id,
-        service_sequence: u64,
-        incoming_items: usize,
-    ) -> usize {
-        let pressure_enforced = self.pressure_mode_for(incoming_items);
-        let share = self.decayed_service_share(id, service_sequence);
-        dynamic_cap_effective_limit(
-            self.per_id_limit,
-            self.max_size,
-            pressure_enforced,
-            share,
-            &self.dynamic_cap_cfg,
-        )
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn test_cfg() -> DynamicCapConfig {
-        DynamicCapConfig::default()
-    }
 
     #[test]
     fn heap_entry_eq_matches_ord_for_equal_finish_time() {
@@ -333,37 +251,34 @@ mod tests {
 
     #[test]
     fn pop_next_does_not_panic_when_total_items_is_stale() {
-        let mut pool = Pool::new(100, 100, test_cfg());
+        let mut pool = Pool::new(100, 100);
         let score = Score::try_from(1.0).unwrap();
-        pool.push_new(0u32, 42u32, score, 0).unwrap();
+        pool.push_new(0u32, 42u32, score).unwrap();
         pool.remove_items(usize::MAX);
 
         assert_eq!(pool.pop_next().map(|item| item.id), Some(0));
     }
 
     #[test]
-    fn rejected_push_does_not_enable_pressure_mode() {
-        let mut pool = Pool::new(1, 10, test_cfg());
+    fn rejected_push_keeps_pool_size_unchanged() {
+        let mut pool = Pool::new(1, 10);
         let score = Score::try_from(1.0).unwrap();
 
-        for id in 0..7u32 {
-            pool.push_new(id, id, score, 0).unwrap();
-        }
-        assert!(!pool.dynamic_cap_enforced);
+        pool.push_new(0u32, 0u32, score).unwrap();
 
-        let err = pool.push_existing(&0, 99, 0).unwrap_err();
+        let err = pool.push_existing(&0, 99).unwrap_err();
         assert!(matches!(err, PushError::PerIdLimitExceeded { .. }));
-        assert!(!pool.dynamic_cap_enforced);
+        assert_eq!(pool.len(), 1);
     }
 
     #[test]
     fn partially_drained_identity_shrinks_queue_capacity() {
-        let mut pool = Pool::new(2_048, 4_096, test_cfg());
+        let mut pool = Pool::new(2_048, 4_096);
         let score = Score::try_from(1.0).unwrap();
 
-        pool.push_new(0u32, 0u32, score, 0).unwrap();
+        pool.push_new(0u32, 0u32, score).unwrap();
         for item in 1..1_024u32 {
-            pool.push_existing(&0, item, 0).unwrap();
+            pool.push_existing(&0, item).unwrap();
         }
 
         let peak_capacity = pool.identities[&0].queue.capacity();

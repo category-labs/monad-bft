@@ -7,7 +7,6 @@ description = "Lightweight UDP protocol with fragmentation and ordered reassembl
 [dependencies]
 bytes = { workspace = true }
 indexmap = { workspace = true }
-monad-dynamic-cap = { workspace = true }
 monad-executor = { workspace = true }
 rand = { workspace = true }
 thiserror = { workspace = true }

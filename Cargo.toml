@@ -20,7 +20,6 @@ monad-consensus-types = { path = "./monad-consensus-types" }
 monad-control-panel = { path = "./monad-control-panel" }
 monad-crypto = { path = "./monad-crypto" }
 monad-dataplane = { path = "./monad-dataplane" }
-monad-dynamic-cap = { path = "./monad-dynamic-cap" }
 monad-eth-block-policy = { path = "./monad-eth-block-policy" }
 monad-eth-block-validator = { path = "./monad-eth-block-validator" }
 monad-eth-ledger = { path = "./monad-eth-ledger" }

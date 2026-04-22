@@ -5085,10 +5085,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "monad-dynamic-cap"
-version = "0.1.0"
-
-[[package]]
 name = "monad-eth-block-policy"
 version = "0.1.0"
 dependencies = [
@@ -5417,7 +5413,6 @@ name = "monad-fair-queue"
 version = "0.1.0"
 dependencies = [
  "criterion",
- "monad-dynamic-cap",
  "monad-executor",
  "monad-peer-score",
  "proptest",
@@ -5456,7 +5451,6 @@ dependencies = [
  "bytes",
  "criterion",
  "indexmap 2.12.1",
- "monad-dynamic-cap",
  "monad-executor",
  "rand 0.8.5",
  "thiserror 1.0.69",

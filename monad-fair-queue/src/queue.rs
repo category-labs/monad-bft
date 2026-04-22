@@ -18,7 +18,6 @@ use std::{
     hash::Hash,
 };
 
-use monad_dynamic_cap::DynamicCapConfig;
 use monad_executor::{ExecutorMetrics, MetricDef};
 
 use crate::{metrics::*, pool::Pool, IdentityScore, PeerStatus, PushError, Score};
@@ -110,22 +109,13 @@ impl FairQueueBuilder {
             "regular_per_id_limit must be > 0"
         );
         assert!(self.regular_max_size > 0, "regular_max_size must be > 0");
-        let priority_dynamic_cap_cfg = DynamicCapConfig::default();
-        priority_dynamic_cap_cfg.validate();
-        let regular_dynamic_cap_cfg = DynamicCapConfig::default();
-        regular_dynamic_cap_cfg.validate();
 
         FairQueue {
-            priority_pool: Pool::new(self.per_id_limit, self.max_size, priority_dynamic_cap_cfg),
-            regular_pool: Pool::new(
-                self.regular_per_id_limit,
-                self.regular_max_size,
-                regular_dynamic_cap_cfg,
-            ),
+            priority_pool: Pool::new(self.per_id_limit, self.max_size),
+            regular_pool: Pool::new(self.regular_per_id_limit, self.regular_max_size),
             scorer,
             regular_bandwidth_pct: self.regular_bandwidth_pct,
             pop_counter: 0,
-            service_sequence: 0,
             metrics: ExecutorMetrics::default(),
         }
     }
@@ -137,7 +127,6 @@ pub struct FairQueue<S: IdentityScore, T> {
     scorer: S,
     regular_bandwidth_pct: u8,
     pop_counter: u8,
-    service_sequence: u64,
     metrics: ExecutorMetrics,
 }
 
@@ -204,9 +193,7 @@ where
 
     fn push_inner(&mut self, id: S::Identity, item: T) -> Result<PoolKind, PushError<S::Identity>> {
         if let Some(pool_kind) = self.pool_containing_identity(&id) {
-            let service_sequence = self.service_sequence;
-            self.pool_mut(pool_kind)
-                .push_existing(&id, item, service_sequence)?;
+            self.pool_mut(pool_kind).push_existing(&id, item)?;
             return Ok(pool_kind);
         }
 
@@ -219,10 +206,9 @@ where
         item: T,
     ) -> Result<PoolKind, PushError<S::Identity>> {
         let (desired_pool, score) = pool_and_score(self.scorer.score(&id));
-        let service_sequence = self.service_sequence;
 
         self.pool_mut(desired_pool)
-            .push_new(id, item, score, service_sequence)
+            .push_new(id, item, score)
             .map(|_| desired_pool)
             .map_err(|(err, _)| err)
     }
@@ -234,10 +220,6 @@ where
 
     fn pop_from_pool(&mut self, pool_kind: PoolKind) -> Option<(S::Identity, T)> {
         let popped = self.pool_mut(pool_kind).pop_next()?;
-        self.service_sequence += 1;
-        let service_sequence = self.service_sequence;
-        self.pool_mut(pool_kind)
-            .observe_service(&popped.id, service_sequence);
         Some((popped.id, popped.item))
     }
 
@@ -601,7 +583,7 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_cap_is_inactive_when_pool_undersaturated() {
+    fn configured_per_id_limit_is_enforced_while_undersaturated() {
         let scorer = make_test_scorer([]);
         let mut queue: TestQueue = make_queue_with_limits(scorer, 20, 100, 20, 100, 100);
 
@@ -616,7 +598,7 @@ mod tests {
     }
 
     #[test]
-    fn pressure_mode_uses_bootstrap_for_new_identity_and_clamps_growth() {
+    fn configured_per_id_limit_applies_under_pressure() {
         let scorer = make_test_scorer([]);
         let per_id_limit = 200;
         let mut queue: TestQueue =
@@ -626,7 +608,7 @@ mod tests {
             queue.push(i + 1, i).unwrap();
         }
 
-        for i in 0..DynamicCapConfig::DEFAULT_BOOTSTRAP_LIMIT as u32 {
+        for i in 0..per_id_limit as u32 {
             queue.push(999, i).unwrap();
         }
         let err = queue.push(999, 9999).unwrap_err();
@@ -636,14 +618,14 @@ mod tests {
                 PushError::PerIdLimitExceeded {
                     limit,
                     ..
-                } if limit == DynamicCapConfig::DEFAULT_BOOTSTRAP_LIMIT
+                } if limit == per_id_limit
             ),
-            "expected bootstrap dynamic cap for new identity under pressure, got {err:?}"
+            "expected configured per-id limit under pressure, got {err:?}"
         );
     }
 
     #[test]
-    fn recently_served_identity_is_still_capped_by_configured_per_id_limit() {
+    fn configured_per_id_limit_still_applies_after_service_under_pressure() {
         let scorer = make_test_scorer([]);
         let per_id_limit = 200;
         let mut queue: TestQueue =
