@@ -44,7 +44,7 @@ use monad_eth_types::{EthExecutionProtocol, ExtractEthAddress};
 use monad_execution_state_read::ExecutionStateRead;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
-use monad_types::{ExecutionProtocol, SeqNum};
+use monad_types::{ExecutionProtocol, LimitedVec, SeqNum};
 use monad_validator::signature_collection::SignatureCollection;
 
 pub trait MockableTxPool:
@@ -613,10 +613,11 @@ where
             &MockChainConfig::DEFAULT,
             vec![(tx, PoolTxKind::owned_default())],
             |tx| {
-                self.events.push_back(MempoolEvent::ForwardTxs(vec![tx
-                    .raw()
-                    .encoded_2718()
-                    .into()]));
+                self.events
+                    .push_back(MempoolEvent::ForwardTxs(LimitedVec::from(vec![tx
+                        .raw()
+                        .encoded_2718()
+                        .into()])));
             },
         );
 

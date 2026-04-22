@@ -29,8 +29,10 @@ serde_with = { workspace = true, features = ["hex"] }
 
 [dev-dependencies]
 criterion = { workspace = true }
+insta = { workspace = true }
 monad-eth-types = { workspace = true }
 monad-multi-sig = { workspace = true }
+serde_json = { workspace = true }
 toml = { workspace = true }
 
 [[bench]]
