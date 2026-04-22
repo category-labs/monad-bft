@@ -17,6 +17,7 @@ use std::{
     error::Error,
     fmt::{Debug, Display},
     io,
+    marker::PhantomData,
     ops::{Add, AddAssign, Div, Rem, Sub, SubAssign},
     str::FromStr,
     time::{Duration, Instant},
@@ -28,8 +29,12 @@ use alloy_rlp::{
 };
 use monad_crypto::certificate_signature::PubKey;
 pub use monad_crypto::hasher::Hash;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{
+    de::{IgnoredAny, SeqAccess, Visitor},
+    Deserialize, Deserializer, Serialize, Serializer,
+};
 use serde_json::Value;
+use serde_with::{de::DeserializeAsWrap, DeserializeAs, SerializeAs};
 use zerocopy::IntoBytes;
 
 pub const GENESIS_SEQ_NUM: SeqNum = SeqNum(0);
@@ -37,6 +42,7 @@ pub const GENESIS_ROUND: Round = Round(0);
 
 pub const ETHERNET_MTU: u16 = 1500;
 pub const DEFAULT_MTU: u16 = ETHERNET_MTU;
+pub const MAX_FORWARDED_TXS_PER_MESSAGE: usize = 5_000;
 
 const PROTOCOL_VERSION: u32 = 1;
 
@@ -956,9 +962,85 @@ impl<T: Serialize, const N: usize> Serialize for LimitedVec<T, N> {
     }
 }
 
+struct LimitedVecVisitor<T, const N: usize> {
+    marker: PhantomData<T>,
+}
+
+impl<T, const N: usize> LimitedVecVisitor<T, N> {
+    fn new() -> Self {
+        Self {
+            marker: PhantomData,
+        }
+    }
+}
+
+impl<'de, T: Deserialize<'de>, const N: usize> Visitor<'de> for LimitedVecVisitor<T, N> {
+    type Value = LimitedVec<T, N>;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "a sequence with at most {N} elements")
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+        let capacity = match seq.size_hint() {
+            Some(len) if len > N => {
+                return Err(<A::Error as serde::de::Error>::custom(
+                    "list exceeds maximum length",
+                ));
+            }
+            Some(len) => len,
+            None => 0,
+        };
+        let mut vec = Vec::with_capacity(capacity);
+
+        while vec.len() < N {
+            let Some(item) = seq.next_element()? else {
+                return Ok(LimitedVec(vec));
+            };
+            vec.push(item);
+        }
+
+        if seq.next_element::<IgnoredAny>()?.is_some() {
+            return Err(<A::Error as serde::de::Error>::custom(
+                "list exceeds maximum length",
+            ));
+        }
+
+        Ok(LimitedVec(vec))
+    }
+}
+
 impl<'de, T: Deserialize<'de>, const N: usize> Deserialize<'de> for LimitedVec<T, N> {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Vec::<T>::deserialize(deserializer).map(Self)
+        deserializer.deserialize_seq(LimitedVecVisitor::<T, N>::new())
+    }
+}
+
+impl<T, TAs, const N: usize> SerializeAs<LimitedVec<T, N>> for LimitedVec<TAs, N>
+where
+    TAs: SerializeAs<T>,
+{
+    fn serialize_as<S: Serializer>(
+        source: &LimitedVec<T, N>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        <Vec<TAs> as SerializeAs<Vec<T>>>::serialize_as(&source.0, serializer)
+    }
+}
+
+impl<'de, T, TAs, const N: usize> DeserializeAs<'de, LimitedVec<T, N>> for LimitedVec<TAs, N>
+where
+    TAs: DeserializeAs<'de, T>,
+{
+    fn deserialize_as<D: Deserializer<'de>>(deserializer: D) -> Result<LimitedVec<T, N>, D::Error> {
+        LimitedVec::<DeserializeAsWrap<T, TAs>, N>::deserialize(deserializer).map(|vec| {
+            LimitedVec(
+                vec.0
+                    .into_iter()
+                    .map(DeserializeAsWrap::into_inner)
+                    .collect(),
+            )
+        })
     }
 }
 
@@ -1022,12 +1104,13 @@ impl<const MAX: u64> Decodable for BoundedU64<MAX> {
 
 #[cfg(test)]
 mod test {
-    use alloy_rlp::{Decodable, Encodable};
+    use alloy_rlp::{bytes::Bytes, Decodable, Encodable};
     use serde::de::{
         value::{Error as SerdeError, StrDeserializer, U64Deserializer},
         IntoDeserializer,
     };
     use serde_test::{assert_ser_tokens, Token};
+    use serde_with::serde_as;
     use test_case::test_case;
 
     use super::*;
@@ -1180,6 +1263,26 @@ mod test {
         let err = v.try_push(7).unwrap_err();
         assert_eq!(err.rejected, 7);
         assert_eq!(err.capacity, 0);
+    }
+
+    #[test]
+    fn test_limited_vec_serde_deserialize_rejects_overflow() {
+        let err = serde_json::from_str::<LimitedVec<u32, 3>>("[1,2,3,4]").unwrap_err();
+        assert!(err.to_string().contains("list exceeds maximum length"));
+    }
+
+    #[test]
+    fn test_limited_vec_serde_as_deserialize_rejects_overflow() {
+        #[serde_as]
+        #[derive(Debug, serde::Deserialize)]
+        #[allow(dead_code)]
+        struct HexTxs {
+            #[serde_as(as = "LimitedVec<serde_with::hex::Hex, 1>")]
+            txs: LimitedVec<Bytes, 1>,
+        }
+
+        let err = serde_json::from_str::<HexTxs>(r#"{"txs":["00","01"]}"#).unwrap_err();
+        assert!(err.to_string().contains("list exceeds maximum length"));
     }
 
     #[test]

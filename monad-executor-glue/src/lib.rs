@@ -51,7 +51,7 @@ use monad_crypto::certificate_signature::{
 use monad_execution_state_read::ExecutionStateRead;
 use monad_types::{
     deserialize_pubkey, serialize_pubkey, Epoch, ExecutionProtocol, LimitedVec, NodeId, Round,
-    RouterTarget, SeqNum, Stake, UdpPriority,
+    RouterTarget, SeqNum, Stake, UdpPriority, MAX_FORWARDED_TXS_PER_MESSAGE,
 };
 use monad_validator::signature_collection::SignatureCollection;
 use serde::{Deserialize, Serialize};
@@ -664,7 +664,7 @@ where
 
     InsertForwardedTxs {
         sender: NodeId<SCT::NodeIdPubKey>,
-        txs: Vec<Bytes>,
+        txs: LimitedVec<Bytes, MAX_FORWARDED_TXS_PER_MESSAGE>,
     },
 
     EnterRound {
@@ -1248,12 +1248,15 @@ where
     /// Txs that are incoming via other nodes
     ForwardedTxs {
         sender: NodeId<SCT::NodeIdPubKey>,
-        #[serde_as(as = "Vec<serde_with::hex::Hex>")]
-        txs: Vec<Bytes>,
+        #[serde_as(as = "LimitedVec<serde_with::hex::Hex, MAX_FORWARDED_TXS_PER_MESSAGE>")]
+        txs: LimitedVec<Bytes, MAX_FORWARDED_TXS_PER_MESSAGE>,
     },
 
     /// Txs that should be forwarded to upcoming leaders
-    ForwardTxs(#[serde_as(as = "Vec<serde_with::hex::Hex>")] Vec<Bytes>),
+    ForwardTxs(
+        #[serde_as(as = "LimitedVec<serde_with::hex::Hex, MAX_FORWARDED_TXS_PER_MESSAGE>")]
+        LimitedVec<Bytes, MAX_FORWARDED_TXS_PER_MESSAGE>,
+    ),
 }
 
 impl<ST, SCT, EPT> Encodable for MempoolEvent<ST, SCT, EPT>
@@ -1388,11 +1391,11 @@ where
             }
             2 => {
                 let sender = NodeId::<SCT::NodeIdPubKey>::decode(&mut payload)?;
-                let txs = Vec::<Bytes>::decode(&mut payload)?;
+                let txs = LimitedVec::<Bytes, MAX_FORWARDED_TXS_PER_MESSAGE>::decode(&mut payload)?;
                 Ok(Self::ForwardedTxs { sender, txs })
             }
             3 => {
-                let txs = Vec::<Bytes>::decode(&mut payload)?;
+                let txs = LimitedVec::<Bytes, MAX_FORWARDED_TXS_PER_MESSAGE>::decode(&mut payload)?;
                 Ok(Self::ForwardTxs(txs))
             }
             _ => Err(alloy_rlp::Error::Custom(
@@ -2469,6 +2472,7 @@ mod tests {
     use std::{net::Ipv4Addr, num::NonZeroU16};
 
     use alloy_rlp::{encode_list, Encodable};
+    use bytes::Bytes;
     use monad_blocksync::messages::message::BlockSyncRequestMessage;
     use monad_consensus_types::block::BlockRange;
     use monad_crypto::{
@@ -2477,7 +2481,9 @@ mod tests {
     };
     use monad_eth_types::EthExecutionProtocol;
     use monad_multi_sig::MultiSig;
-    use monad_types::{NodeId, SeqNum, GENESIS_BLOCK_ID};
+    use monad_types::{
+        LimitedVec, NodeId, SeqNum, GENESIS_BLOCK_ID, MAX_FORWARDED_TXS_PER_MESSAGE,
+    };
     use monad_wal::wal::WALLog;
 
     use crate::{
@@ -2931,7 +2937,7 @@ tcp_port = 8003"#,
             TestSignature,
             TestSignatureCollection,
             TestExecutionProtocol,
-        >::MempoolEvent(MempoolEvent::ForwardTxs(Vec::new()));
+        >::MempoolEvent(MempoolEvent::ForwardTxs(LimitedVec::default()));
         assert!(!mempool_event.is_wal_logged());
 
         let timestamp_event = MonadEvent::<
@@ -2960,5 +2966,19 @@ tcp_port = 8003"#,
             StateSyncNetworkMessage::NotWhitelisted,
         ));
         assert!(!inbound_statesync.is_wal_logged());
+    }
+
+    #[test]
+    fn forwarded_tx_mempool_event_json_matches_original_snapshot() {
+        let txs: LimitedVec<Bytes, MAX_FORWARDED_TXS_PER_MESSAGE> =
+            vec![Bytes::from_static(&[0x12, 0x34]), Bytes::new()].into();
+        let event = MempoolEvent::<
+            TestSignature,
+            TestSignatureCollection,
+            TestExecutionProtocol,
+        >::ForwardTxs(txs);
+
+        let json = serde_json::to_string(&event).unwrap();
+        insta::assert_snapshot!("forwarded_tx_mempool_event_original_json", json);
     }
 }

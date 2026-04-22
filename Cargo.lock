@@ -5572,6 +5572,7 @@ dependencies = [
  "chrono",
  "criterion",
  "futures",
+ "insta",
  "monad-blocksync",
  "monad-chain-config",
  "monad-consensus",
@@ -5584,6 +5585,7 @@ dependencies = [
  "monad-validator",
  "monad-wal",
  "serde",
+ "serde_json",
  "serde_with",
  "toml",
 ]
@@ -6372,6 +6374,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_test",
+ "serde_with",
  "test-case",
  "zerocopy",
 ]
