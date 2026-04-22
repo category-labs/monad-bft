@@ -221,12 +221,12 @@ where
             priority_pool: MessagePool::new(
                 PoolConfig::from_config(config, config.max_priority_messages),
                 priority_pool_rng,
-                IdentityUsage::for_priority_pool(config),
+                IdentityUsage::new(config),
             ),
             regular_pool: MessagePool::new(
                 PoolConfig::from_config(config, config.max_regular_messages),
                 regular_pool_rng,
-                IdentityUsage::for_regular_pool(config),
+                IdentityUsage::new(config),
             ),
             identity_score,
             clock,
