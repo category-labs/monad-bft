@@ -443,9 +443,10 @@ fn test_identity_limit_is_independent_per_pool() {
 }
 
 #[test]
-fn test_regular_dynamic_cap_applies_under_pressure() {
+fn test_regular_per_identity_limit_applies_under_pressure() {
+    let max_messages_per_identity = 200;
     let config = Config {
-        max_messages_per_identity: 200,
+        max_messages_per_identity,
         max_regular_messages: 1_000,
         ..Config::default()
     };
@@ -456,7 +457,7 @@ fn test_regular_dynamic_cap_applies_under_pressure() {
         assert_pending!(decoder, id, first);
     }
 
-    for i in 0..10u64 {
+    for i in 0..max_messages_per_identity as u64 {
         let first = first_packet(&mut encoder, Bytes::from(vec![i as u8; 3_000]));
         assert_pending!(decoder, 9_999, first);
     }
@@ -464,7 +465,9 @@ fn test_regular_dynamic_cap_applies_under_pressure() {
     let over = first_packet(&mut encoder, Bytes::from(vec![0u8; 3_000]));
     assert_eq!(
         decoder.decode(9_999, over),
-        Err(DecodeError::IdentityLimitExceeded { max: 10 })
+        Err(DecodeError::IdentityLimitExceeded {
+            max: max_messages_per_identity,
+        })
     );
 }
 

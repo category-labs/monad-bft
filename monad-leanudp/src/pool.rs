@@ -21,10 +21,6 @@ use std::{
 
 use bytes::{Bytes, BytesMut};
 use indexmap::IndexMap;
-use monad_dynamic_cap::{
-    effective_limit as dynamic_cap_effective_limit, update_pressure_mode, DynamicCapConfig,
-    DynamicCapIdentity,
-};
 use monad_executor::MetricDef;
 use rand::{CryptoRng, Rng as _, RngCore};
 
@@ -34,9 +30,6 @@ use crate::{
     metrics::*,
     Config, FragmentType,
 };
-
-const PRIORITY_DYNAMIC_CAP_BOOTSTRAP_LIMIT: usize = 10;
-const REGULAR_DYNAMIC_CAP_BOOTSTRAP_LIMIT: usize = 10;
 
 macro_rules! ensure {
     ($condition:expr, $error:expr $(,)?) => {
@@ -140,96 +133,45 @@ where
     fn on_identity_removed(&mut self, identity: &I);
 }
 
-pub(crate) struct DynamicCapIdentityLimitPolicy<I>
-where
-    I: Eq + Hash + Clone + Ord,
-{
+pub(crate) struct FixedIdentityLimitPolicy {
     max_messages_per_identity: usize,
-    dynamic_cap_enforced: bool,
-    dynamic_cap_cfg: DynamicCapConfig,
-    dynamic_cap: HashMap<I, DynamicCapIdentity>,
-    service_sequence: u64,
 }
 
-impl<I> DynamicCapIdentityLimitPolicy<I>
-where
-    I: Eq + Hash + Clone + Ord,
-{
-    fn new(max_messages_per_identity: usize, bootstrap_limit: usize) -> Self {
-        let dynamic_cap_cfg = DynamicCapConfig {
-            bootstrap_limit,
-            ..DynamicCapConfig::default()
-        };
-        dynamic_cap_cfg.validate();
+impl FixedIdentityLimitPolicy {
+    fn new(max_messages_per_identity: usize) -> Self {
         Self {
             max_messages_per_identity,
-            dynamic_cap_enforced: false,
-            dynamic_cap_cfg,
-            dynamic_cap: HashMap::new(),
-            service_sequence: 0,
         }
     }
 
     fn for_priority_pool(config: &Config) -> Self {
-        Self::new(
-            config.max_messages_per_identity,
-            PRIORITY_DYNAMIC_CAP_BOOTSTRAP_LIMIT,
-        )
+        Self::new(config.max_messages_per_identity)
     }
 
     fn for_regular_pool(config: &Config) -> Self {
-        Self::new(
-            config.max_messages_per_identity,
-            REGULAR_DYNAMIC_CAP_BOOTSTRAP_LIMIT,
-        )
+        Self::new(config.max_messages_per_identity)
     }
 }
 
-impl<I> IdentityLimitPolicy<I> for DynamicCapIdentityLimitPolicy<I>
+impl<I> IdentityLimitPolicy<I> for FixedIdentityLimitPolicy
 where
     I: Eq + Hash + Clone + Ord,
 {
     fn limit_for_new_message(
         &mut self,
-        identity: &I,
-        pool_size: usize,
-        pool_max_size: usize,
+        _identity: &I,
+        _pool_size: usize,
+        _pool_max_size: usize,
     ) -> usize {
-        self.dynamic_cap_enforced = update_pressure_mode(
-            self.dynamic_cap_enforced,
-            pool_size,
-            pool_max_size,
-            1,
-            &self.dynamic_cap_cfg,
-        );
-
-        let share = self.dynamic_cap.get_mut(identity).map_or(0.0, |state| {
-            state.decayed_share(self.service_sequence, &self.dynamic_cap_cfg)
-        });
-        dynamic_cap_effective_limit(
-            self.max_messages_per_identity,
-            pool_max_size,
-            self.dynamic_cap_enforced,
-            share,
-            &self.dynamic_cap_cfg,
-        )
+        self.max_messages_per_identity
     }
 
-    fn record_service(&mut self, identity: &I) {
-        self.service_sequence = self.service_sequence.saturating_add(1);
-        let service_seq = self.service_sequence;
-        self.dynamic_cap
-            .entry(identity.clone())
-            .or_insert_with(|| DynamicCapIdentity::new(service_seq))
-            .observe_service(service_seq, &self.dynamic_cap_cfg);
-    }
+    fn record_service(&mut self, _identity: &I) {}
 
-    fn on_identity_removed(&mut self, identity: &I) {
-        self.dynamic_cap.remove(identity);
-    }
+    fn on_identity_removed(&mut self, _identity: &I) {}
 }
 
-pub(crate) struct IdentityUsage<I, L = DynamicCapIdentityLimitPolicy<I>>
+pub(crate) struct IdentityUsage<I, L = FixedIdentityLimitPolicy>
 where
     I: Eq + Hash + Clone + Ord,
     L: IdentityLimitPolicy<I>,
@@ -243,11 +185,11 @@ where
     I: Eq + Hash + Clone + Ord,
 {
     pub(crate) fn for_priority_pool(config: &Config) -> Self {
-        Self::with_limit_policy(DynamicCapIdentityLimitPolicy::for_priority_pool(config))
+        Self::with_limit_policy(FixedIdentityLimitPolicy::for_priority_pool(config))
     }
 
     pub(crate) fn for_regular_pool(config: &Config) -> Self {
-        Self::with_limit_policy(DynamicCapIdentityLimitPolicy::for_regular_pool(config))
+        Self::with_limit_policy(FixedIdentityLimitPolicy::for_regular_pool(config))
     }
 }
 
@@ -600,7 +542,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn completing_last_message_does_not_leave_dynamic_cap_state_behind() {
+    fn completing_last_message_clears_identity_tracking() {
         let config = Config::default();
         let mut pool = MessagePool::new(
             PoolConfig::from_config(&config, config.max_regular_messages),
@@ -628,7 +570,6 @@ mod tests {
         );
         assert_eq!(evicted, None);
         assert_eq!(pool.identity_usage.identity_count(&identity), 0);
-        assert!(pool.identity_usage.limit_policy.dynamic_cap.is_empty());
-        assert_eq!(pool.identity_usage.limit_policy.service_sequence, 1);
+        assert!(pool.identity_usage.message_counts.is_empty());
     }
 }
