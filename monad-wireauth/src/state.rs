@@ -16,9 +16,11 @@
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
     net::{IpAddr, SocketAddr},
+    num::NonZeroUsize,
     time::Duration,
 };
 
+use lru::LruCache;
 use monad_executor::ExecutorMetrics;
 
 use crate::{
@@ -117,6 +119,7 @@ pub struct State {
     initiating_sessions: HashMap<SessionIndex, InitiatorState>,
     responding_sessions: HashMap<SessionIndex, ResponderState>,
     transport_sessions: HashMap<SessionIndex, TransportState>,
+    cookies_by_public_key: LruCache<monad_secp::PubKey, [u8; 16]>,
     last_established_session_by_public_key: HashMap<monad_secp::PubKey, EstablishedSessions>,
     last_established_session_by_socket: HashMap<SocketAddr, EstablishedSessions>,
     allocated_indices: HashSet<SessionIndex>,
@@ -135,12 +138,13 @@ pub struct State {
 
 impl State {
     #[cfg(test)]
-    pub fn new(metric_names: &'static MetricNames) -> Self {
-        Self::with_limits(metric_names, usize::MAX, usize::MAX)
+    pub fn new(metric_names: &'static MetricNames, cookie_cache_capacity: usize) -> Self {
+        Self::with_limits(metric_names, cookie_cache_capacity, usize::MAX, usize::MAX)
     }
 
     pub(crate) fn with_limits(
         metric_names: &'static MetricNames,
+        cookie_cache_capacity: usize,
         max_transport_sessions: usize,
         max_established_peers_per_ip: usize,
     ) -> Self {
@@ -148,6 +152,10 @@ impl State {
             initiating_sessions: HashMap::new(),
             responding_sessions: HashMap::new(),
             transport_sessions: HashMap::new(),
+            cookies_by_public_key: LruCache::new(
+                NonZeroUsize::new(cookie_cache_capacity)
+                    .expect("cookie_cache_capacity must be nonzero"),
+            ),
             last_established_session_by_public_key: HashMap::new(),
             last_established_session_by_socket: HashMap::new(),
             allocated_indices: HashSet::new(),
@@ -627,30 +635,12 @@ impl State {
             .set(self.total_sessions as u64);
     }
 
-    pub fn lookup_cookie_from_initiated_sessions(
-        &self,
-        remote_key: &monad_secp::PubKey,
-    ) -> Option<[u8; 16]> {
-        self.initiated_session_by_peer
-            .get(remote_key)
-            .and_then(|&session_id| {
-                self.initiating_sessions
-                    .get(&session_id)
-                    .and_then(|s| s.stored_cookie())
-            })
+    pub fn lookup_cookie(&mut self, remote_key: &monad_secp::PubKey) -> Option<[u8; 16]> {
+        self.cookies_by_public_key.get(remote_key).copied()
     }
 
-    pub fn lookup_cookie_from_accepted_sessions(
-        &self,
-        remote_key: monad_secp::PubKey,
-    ) -> Option<[u8; 16]> {
-        self.accepted_sessions_by_peer
-            .range((remote_key, SessionIndex::new(0))..=(remote_key, SessionIndex::new(u32::MAX)))
-            .find_map(|(_, session_id)| {
-                self.responding_sessions
-                    .get(session_id)
-                    .and_then(|s| s.stored_cookie())
-            })
+    pub fn store_cookie(&mut self, remote_key: monad_secp::PubKey, cookie: [u8; 16]) {
+        self.cookies_by_public_key.put(remote_key, cookie);
     }
 
     pub fn get_max_timestamp(&self, remote_key: &monad_secp::PubKey) -> Option<Tai64N> {
@@ -965,7 +955,7 @@ mod tests {
 
     #[test]
     fn test_allocate_session_index() {
-        let mut state = State::new(DEFAULT_METRICS);
+        let mut state = State::new(DEFAULT_METRICS, Config::default().cookie_cache_capacity);
 
         let reservation0 = state.reserve_session_index().unwrap();
         let idx0 = reservation0.index();
@@ -989,7 +979,7 @@ mod tests {
 
     #[test]
     fn test_allocate_session_index_skips_allocated() {
-        let mut state = State::new(DEFAULT_METRICS);
+        let mut state = State::new(DEFAULT_METRICS, Config::default().cookie_cache_capacity);
 
         let reservation0 = state.reserve_session_index().unwrap();
         let idx0 = reservation0.index();
@@ -1007,7 +997,7 @@ mod tests {
 
     #[test]
     fn test_get_transport_mut() {
-        let mut state = State::new(DEFAULT_METRICS);
+        let mut state = State::new(DEFAULT_METRICS, Config::default().cookie_cache_capacity);
         let mut rng = rng();
         let keypair = monad_secp::KeyPair::generate(&mut rng);
         let public_key = keypair.pubkey();
@@ -1023,7 +1013,7 @@ mod tests {
 
     #[test]
     fn test_get_transport() {
-        let mut state = State::new(DEFAULT_METRICS);
+        let mut state = State::new(DEFAULT_METRICS, Config::default().cookie_cache_capacity);
         let mut rng = rng();
         let keypair = monad_secp::KeyPair::generate(&mut rng);
         let public_key = keypair.pubkey();
@@ -1039,7 +1029,7 @@ mod tests {
 
     #[test]
     fn test_get_transport_by_public_key_empty() {
-        let mut state = State::new(DEFAULT_METRICS);
+        let mut state = State::new(DEFAULT_METRICS, Config::default().cookie_cache_capacity);
         let mut rng = rng();
         let keypair = monad_secp::KeyPair::generate(&mut rng);
         let public_key = keypair.pubkey();
@@ -1048,7 +1038,7 @@ mod tests {
 
     #[test]
     fn test_get_transport_by_public_key_single_initiator() {
-        let mut state = State::new(DEFAULT_METRICS);
+        let mut state = State::new(DEFAULT_METRICS, Config::default().cookie_cache_capacity);
         let mut rng = rng();
         let keypair = monad_secp::KeyPair::generate(&mut rng);
         let public_key = keypair.pubkey();
@@ -1063,7 +1053,7 @@ mod tests {
 
     #[test]
     fn test_get_transport_by_public_key_single_responder() {
-        let mut state = State::new(DEFAULT_METRICS);
+        let mut state = State::new(DEFAULT_METRICS, Config::default().cookie_cache_capacity);
         let mut rng = rng();
         let keypair = monad_secp::KeyPair::generate(&mut rng);
         let public_key = keypair.pubkey();
@@ -1078,7 +1068,7 @@ mod tests {
 
     #[test]
     fn test_get_transport_by_public_key_both_newer_initiator() {
-        let mut state = State::new(DEFAULT_METRICS);
+        let mut state = State::new(DEFAULT_METRICS, Config::default().cookie_cache_capacity);
         let mut rng = rng();
         let keypair = monad_secp::KeyPair::generate(&mut rng);
         let public_key = keypair.pubkey();
@@ -1106,7 +1096,7 @@ mod tests {
 
     #[test]
     fn test_get_transport_by_public_key_both_newer_responder() {
-        let mut state = State::new(DEFAULT_METRICS);
+        let mut state = State::new(DEFAULT_METRICS, Config::default().cookie_cache_capacity);
         let mut rng = rng();
         let keypair = monad_secp::KeyPair::generate(&mut rng);
         let public_key = keypair.pubkey();
@@ -1134,14 +1124,14 @@ mod tests {
 
     #[test]
     fn test_get_transport_by_socket_empty() {
-        let mut state = State::new(DEFAULT_METRICS);
+        let mut state = State::new(DEFAULT_METRICS, Config::default().cookie_cache_capacity);
         let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 51820);
         assert!(state.get_transport_by_socket(&addr).is_none());
     }
 
     #[test]
     fn test_get_transport_by_socket_single() {
-        let mut state = State::new(DEFAULT_METRICS);
+        let mut state = State::new(DEFAULT_METRICS, Config::default().cookie_cache_capacity);
         let mut rng = rng();
         let keypair = monad_secp::KeyPair::generate(&mut rng);
         let public_key = keypair.pubkey();
@@ -1156,7 +1146,7 @@ mod tests {
 
     #[test]
     fn test_get_transport_by_socket_both_newer_initiator() {
-        let mut state = State::new(DEFAULT_METRICS);
+        let mut state = State::new(DEFAULT_METRICS, Config::default().cookie_cache_capacity);
         let mut rng = rng();
         let keypair = monad_secp::KeyPair::generate(&mut rng);
         let public_key = keypair.pubkey();
@@ -1182,7 +1172,7 @@ mod tests {
 
     #[test]
     fn test_insert_and_get_initiator() {
-        let mut state = State::new(DEFAULT_METRICS);
+        let mut state = State::new(DEFAULT_METRICS, Config::default().cookie_cache_capacity);
         let mut rng = rng();
         let keypair = monad_secp::KeyPair::generate(&mut rng);
         let public_key = keypair.pubkey();
@@ -1205,7 +1195,7 @@ mod tests {
 
     #[test]
     fn test_insert_and_get_responder() {
-        let mut state = State::new(DEFAULT_METRICS);
+        let mut state = State::new(DEFAULT_METRICS, Config::default().cookie_cache_capacity);
         let mut rng = rng();
         let keypair = monad_secp::KeyPair::generate(&mut rng);
         let public_key = keypair.pubkey();
@@ -1229,7 +1219,7 @@ mod tests {
 
     #[test]
     fn test_get_initiator_mut() {
-        let mut state = State::new(DEFAULT_METRICS);
+        let mut state = State::new(DEFAULT_METRICS, Config::default().cookie_cache_capacity);
         let mut rng = rng();
         let keypair = monad_secp::KeyPair::generate(&mut rng);
         let public_key = keypair.pubkey();
@@ -1243,7 +1233,7 @@ mod tests {
 
     #[test]
     fn test_get_responder_mut() {
-        let mut state = State::new(DEFAULT_METRICS);
+        let mut state = State::new(DEFAULT_METRICS, Config::default().cookie_cache_capacity);
         let mut rng = rng();
         let keypair = monad_secp::KeyPair::generate(&mut rng);
         let public_key = keypair.pubkey();
@@ -1257,7 +1247,7 @@ mod tests {
 
     #[test]
     fn test_remove_initiator() {
-        let mut state = State::new(DEFAULT_METRICS);
+        let mut state = State::new(DEFAULT_METRICS, Config::default().cookie_cache_capacity);
         let mut rng = rng();
         let keypair = monad_secp::KeyPair::generate(&mut rng);
         let public_key = keypair.pubkey();
@@ -1272,7 +1262,7 @@ mod tests {
 
     #[test]
     fn test_remove_responder() {
-        let mut state = State::new(DEFAULT_METRICS);
+        let mut state = State::new(DEFAULT_METRICS, Config::default().cookie_cache_capacity);
         let mut rng = rng();
         let keypair = monad_secp::KeyPair::generate(&mut rng);
         let public_key = keypair.pubkey();
@@ -1287,7 +1277,7 @@ mod tests {
 
     #[test]
     fn test_insert_transport_initiator() {
-        let mut state = State::new(DEFAULT_METRICS);
+        let mut state = State::new(DEFAULT_METRICS, Config::default().cookie_cache_capacity);
         let mut rng = rng();
         let keypair = monad_secp::KeyPair::generate(&mut rng);
         let public_key = keypair.pubkey();
@@ -1310,7 +1300,7 @@ mod tests {
 
     #[test]
     fn test_insert_transport_keeps_previous_initiator() {
-        let mut state = State::new(DEFAULT_METRICS);
+        let mut state = State::new(DEFAULT_METRICS, Config::default().cookie_cache_capacity);
         let mut rng = rng();
         let keypair = monad_secp::KeyPair::generate(&mut rng);
         let public_key = keypair.pubkey();
@@ -1349,7 +1339,7 @@ mod tests {
 
     #[test]
     fn test_insert_transport_responder() {
-        let mut state = State::new(DEFAULT_METRICS);
+        let mut state = State::new(DEFAULT_METRICS, Config::default().cookie_cache_capacity);
         let mut rng = rng();
         let keypair = monad_secp::KeyPair::generate(&mut rng);
         let public_key = keypair.pubkey();
@@ -1365,7 +1355,7 @@ mod tests {
 
     #[test]
     fn test_insert_transport_both_initiator_and_responder() {
-        let mut state = State::new(DEFAULT_METRICS);
+        let mut state = State::new(DEFAULT_METRICS, Config::default().cookie_cache_capacity);
         let mut rng = rng();
         let keypair = monad_secp::KeyPair::generate(&mut rng);
         let public_key = keypair.pubkey();
@@ -1398,7 +1388,7 @@ mod tests {
 
     #[test]
     fn test_handle_terminate_removes_transport() {
-        let mut state = State::new(DEFAULT_METRICS);
+        let mut state = State::new(DEFAULT_METRICS, Config::default().cookie_cache_capacity);
         let mut rng = rng();
         let keypair = monad_secp::KeyPair::generate(&mut rng);
         let public_key = keypair.pubkey();
@@ -1420,7 +1410,7 @@ mod tests {
 
     #[test]
     fn test_handle_terminate_cleans_up_by_public_key() {
-        let mut state = State::new(DEFAULT_METRICS);
+        let mut state = State::new(DEFAULT_METRICS, Config::default().cookie_cache_capacity);
         let mut rng = rng();
         let keypair = monad_secp::KeyPair::generate(&mut rng);
         let public_key = keypair.pubkey();
@@ -1440,7 +1430,7 @@ mod tests {
 
     #[test]
     fn test_handle_terminate_preserves_other_slot() {
-        let mut state = State::new(DEFAULT_METRICS);
+        let mut state = State::new(DEFAULT_METRICS, Config::default().cookie_cache_capacity);
         let mut rng = rng();
         let keypair = monad_secp::KeyPair::generate(&mut rng);
         let public_key = keypair.pubkey();
@@ -1475,7 +1465,7 @@ mod tests {
 
     #[test]
     fn test_handle_terminate_cleans_up_by_socket() {
-        let mut state = State::new(DEFAULT_METRICS);
+        let mut state = State::new(DEFAULT_METRICS, Config::default().cookie_cache_capacity);
         let mut rng = rng();
         let keypair = monad_secp::KeyPair::generate(&mut rng);
         let public_key = keypair.pubkey();
@@ -1495,7 +1485,7 @@ mod tests {
 
     #[test]
     fn test_handle_terminate_removes_initiator() {
-        let mut state = State::new(DEFAULT_METRICS);
+        let mut state = State::new(DEFAULT_METRICS, Config::default().cookie_cache_capacity);
         let mut rng = rng();
         let keypair = monad_secp::KeyPair::generate(&mut rng);
         let public_key = keypair.pubkey();
@@ -1519,7 +1509,7 @@ mod tests {
 
     #[test]
     fn test_handle_terminate_removes_responder() {
-        let mut state = State::new(DEFAULT_METRICS);
+        let mut state = State::new(DEFAULT_METRICS, Config::default().cookie_cache_capacity);
         let mut rng = rng();
         let keypair = monad_secp::KeyPair::generate(&mut rng);
         let public_key = keypair.pubkey();
@@ -1546,7 +1536,7 @@ mod tests {
 
     #[test]
     fn test_handle_terminate_removes_initiated_session_by_peer() {
-        let mut state = State::new(DEFAULT_METRICS);
+        let mut state = State::new(DEFAULT_METRICS, Config::default().cookie_cache_capacity);
         let mut rng = rng();
         let keypair = monad_secp::KeyPair::generate(&mut rng);
         let public_key = keypair.pubkey();
@@ -1563,32 +1553,28 @@ mod tests {
     }
 
     #[test]
-    fn test_lookup_cookie_from_initiated_sessions_none() {
-        let state = State::new(DEFAULT_METRICS);
+    fn test_lookup_cookie_cache_none() {
+        let mut state = State::new(DEFAULT_METRICS, Config::default().cookie_cache_capacity);
         let mut rng = rng();
         let keypair = monad_secp::KeyPair::generate(&mut rng);
         let public_key = keypair.pubkey();
         let key_bytes = public_key;
-        assert!(state
-            .lookup_cookie_from_initiated_sessions(&key_bytes)
-            .is_none());
+        assert!(state.lookup_cookie(&key_bytes).is_none());
     }
 
     #[test]
     fn test_lookup_cookie_from_accepted_sessions_none() {
-        let state = State::new(DEFAULT_METRICS);
+        let mut state = State::new(DEFAULT_METRICS, Config::default().cookie_cache_capacity);
         let mut rng = rng();
         let keypair = monad_secp::KeyPair::generate(&mut rng);
         let public_key = keypair.pubkey();
         let key_bytes = public_key;
-        assert!(state
-            .lookup_cookie_from_accepted_sessions(key_bytes)
-            .is_none());
+        assert!(state.lookup_cookie(&key_bytes).is_none());
     }
 
     #[test]
     fn test_get_max_timestamp_empty() {
-        let state = State::new(DEFAULT_METRICS);
+        let state = State::new(DEFAULT_METRICS, Config::default().cookie_cache_capacity);
         let mut rng = rng();
         let keypair = monad_secp::KeyPair::generate(&mut rng);
         let public_key = keypair.pubkey();
@@ -1598,7 +1584,7 @@ mod tests {
 
     #[test]
     fn test_reserve_success_and_commit() {
-        let mut state = State::new(DEFAULT_METRICS);
+        let mut state = State::new(DEFAULT_METRICS, Config::default().cookie_cache_capacity);
 
         let index = {
             let reservation = state.reserve_session_index().unwrap();
@@ -1623,7 +1609,7 @@ mod tests {
 
     #[test]
     fn test_reserve_drop_without_commit() {
-        let mut state = State::new(DEFAULT_METRICS);
+        let mut state = State::new(DEFAULT_METRICS, Config::default().cookie_cache_capacity);
 
         {
             let _reservation = state.reserve_session_index().unwrap();
