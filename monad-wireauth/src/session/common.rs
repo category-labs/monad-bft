@@ -39,7 +39,6 @@ pub struct RekeyEvent {
     pub remote_public_key: monad_secp::PubKey,
     pub remote_addr: SocketAddr,
     pub retry_attempts: u64,
-    pub stored_cookie: Option<[u8; 16]>,
 }
 
 #[derive(Clone)]
@@ -78,7 +77,6 @@ pub struct SessionState {
     pub session_timeout_deadline: Option<Duration>,
     pub max_session_duration_deadline: Option<Duration>,
     pub gc_deadline: Option<Duration>,
-    pub stored_cookie: Option<[u8; 16]>,
     pub last_handshake_mac1: Option<[u8; 16]>,
     pub retry_attempts: u64,
     pub initiator_timestamp: Option<Tai64N>,
@@ -105,7 +103,6 @@ impl SessionState {
             session_timeout_deadline: None,
             max_session_duration_deadline: None,
             gc_deadline: None,
-            stored_cookie: None,
             last_handshake_mac1: None,
             retry_attempts,
             initiator_timestamp,
@@ -188,18 +185,14 @@ impl SessionState {
         .min()
     }
 
-    pub fn stored_cookie(&self) -> Option<[u8; 16]> {
-        self.stored_cookie
-    }
-
     pub fn initiator_timestamp(&self) -> Option<Tai64N> {
         self.initiator_timestamp
     }
 
     pub fn handle_cookie(
-        &mut self,
+        &self,
         cookie_reply: &mut crate::protocol::messages::CookieReply,
-    ) -> Result<(), SessionError> {
+    ) -> Result<[u8; 16], SessionError> {
         let Some(mac1) = self.last_handshake_mac1 else {
             debug!("no last_handshake_mac1 stored");
             return Err(SessionError::InvalidCookie(
@@ -215,9 +208,8 @@ impl SessionState {
                 SessionError::InvalidCookie(e)
             })?;
 
-        self.stored_cookie = Some(cookie);
         debug!("cookie stored successfully");
-        Ok(())
+        Ok(cookie)
     }
 
     pub fn handle_session_timeout(&mut self) -> (TerminatedEvent, Option<RekeyEvent>) {
@@ -246,7 +238,6 @@ impl SessionState {
             remote_public_key: self.remote_public_key,
             remote_addr: self.remote_addr,
             retry_attempts: self.retry_attempts,
-            stored_cookie: self.stored_cookie,
         });
 
         (terminated, rekey)
