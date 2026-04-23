@@ -11,6 +11,7 @@ monad-peer-discovery = { workspace = true }
 monad-router-scheduler = { workspace = true }
 monad-transformer = { workspace = true }
 monad-types = { workspace = true }
+
 itertools = { workspace = true }
 priority-queue = { workspace = true }
 rand = { workspace = true }
@@ -19,5 +20,6 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 monad-testutil = { workspace = true }
-tracing-test = { workspace = true, features = ["no-env-filter"] }
+
 alloy-rlp = { workspace = true }
+tracing-test = { workspace = true, features = ["no-env-filter"] }

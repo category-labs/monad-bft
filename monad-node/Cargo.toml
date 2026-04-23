@@ -8,6 +8,10 @@ edition = "2021"
 name = "monad-node"
 bench = false
 
+[features]
+default = ["jemallocator"]
+jemallocator = ["tikv-jemallocator", "monad-pprof/jemallocator"]
+
 [dependencies]
 monad-bls = { workspace = true }
 monad-chain-config = { workspace = true }
@@ -28,7 +32,7 @@ monad-peer-discovery = { workspace = true }
 monad-peer-score = { workspace = true }
 monad-pprof = { workspace = true }
 monad-raptorcast = { workspace = true }
-monad-router-multi = { workspace = true}
+monad-router-multi = { workspace = true }
 monad-secp = { workspace = true }
 monad-state = { workspace = true }
 monad-state-backend = { workspace = true }
@@ -49,9 +53,9 @@ clap = { workspace = true, features = ["derive"] }
 futures-util = { workspace = true }
 hex = { workspace = true }
 opentelemetry = { workspace = true }
-opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }
 opentelemetry-otlp = { workspace = true, features = ["metrics", "grpc-tonic"] }
 opentelemetry-semantic-conventions = { workspace = true }
+opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }
 rand_chacha = { workspace = true }
 rayon = { workspace = true }
 reqwest = { workspace = true, features = ["blocking"] }
@@ -74,7 +78,3 @@ monad-block-persist = { workspace = true }
 
 inotify = { workspace = true }
 lru = { workspace = true }
-
-[features]
-default = ["jemallocator"]
-jemallocator = ["tikv-jemallocator", "monad-pprof/jemallocator"]

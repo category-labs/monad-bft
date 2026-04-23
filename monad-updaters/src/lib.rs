@@ -29,18 +29,15 @@ pub mod val_set;
 
 #[cfg(feature = "tokio")]
 pub mod config_loader;
-
-#[cfg(all(feature = "tokio", feature = "monad-triedb"))]
-pub mod triedb_val_set;
-
+#[cfg(feature = "tokio")]
+pub mod local_router;
 #[cfg(feature = "tokio")]
 pub mod timer;
-
 #[cfg(feature = "tokio")]
 pub mod tokio_timestamp;
 
-#[cfg(feature = "tokio")]
-pub mod local_router;
+#[cfg(feature = "monad-triedb")]
+pub mod triedb_val_set;
 
 /// An Updater executes commands and produces events for State
 pub trait Updater<E>: Executor + Stream<Item = E> {

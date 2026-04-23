@@ -16,10 +16,10 @@ alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
 as-any = { workspace = true }
 auto_impl = { workspace = true }
-serde = { workspace = true }
 itertools = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
+serde = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]

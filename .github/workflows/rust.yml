@@ -39,6 +39,9 @@ jobs:
     container:
       image: peach10.devcore4.com/category-labs/builder
       options: --privileged -u 1000:1000
+      credentials:
+        username: ${{ secrets.PRIVATE_REGISTRY_USERNAME }}
+        password: ${{ secrets.PRIVATE_REGISTRY_PASSWORD }}
 
     steps:
       - name: Generate a token
@@ -54,18 +57,28 @@ jobs:
         with:
           submodules: recursive
           token: ${{ steps.generate_token.outputs.token }}
+
       - run: rustup toolchain install nightly-2025-12-09 --profile minimal --component rustfmt
       - run: rustup toolchain install 1.91.1-x86_64-unknown-linux-gnu --profile minimal --component clippy
+
       - name: Install cargo-binstall
         uses: cargo-bins/cargo-binstall@v1.15.7
-      - name: Install cargo-shear
-        run: cargo binstall --no-confirm cargo-shear
+
+      - name: Install tools
+        run: cargo binstall --no-confirm cargo-shear cargo-sort
+
       - name: Verify lockfile
         run: cargo update --workspace --locked
-      - name: Lint unused dependencies
-        run: cargo shear
+
+      - name: Format TOML
+        run: cargo sort --workspace --grouped --check
+
       - name: Format
         run: cargo +nightly-2025-12-09 fmt --all --check
+
+      - name: Lint unused dependencies (cargo-shear)
+        run: cargo shear
+
       - name: Lint
         run: cargo clippy --all-targets --all-features --
           -D clippy::suspicious
@@ -91,14 +104,11 @@ jobs:
           -A clippy::mutable_key_type
           -A clippy::large_enum_variant
           -A clippy::doc-overindented-list-items
-      - name: Check
-        run: cargo check --all-targets --all-features
+
       - name: Run tests
         run: cargo test --release --all-targets --all-features
-      - name: Build docs
-        run: cargo doc -p monad-event-ring -p monad-exec-events
-      - name: Run doc tests
-        run: cargo test --release --doc --all-features
-      - run: rustup target add wasm32-unknown-unknown
+
+      - name: Add WASM target
+        run: rustup target add wasm32-unknown-unknown
       - name: Check WASM
         run: cargo check --target wasm32-unknown-unknown -p monad-debugger

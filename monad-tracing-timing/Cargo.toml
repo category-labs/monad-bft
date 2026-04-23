@@ -3,10 +3,6 @@ name = "monad-tracing-timing"
 version = "0.1.0"
 edition = "2021"
 
-[[bench]]
-name = "timing_benchmark"
-harness = false
-
 [dependencies]
 opentelemetry = { workspace = true, features = ["metrics"] }
 quanta = { workspace = true }
@@ -15,6 +11,10 @@ tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 
 [dev-dependencies]
 criterion = { workspace = true }
-opentelemetry_sdk = { workspace = true, features = ["metrics", "testing"] }
 futures = { workspace = true }
-tokio =  { workspace = true, features = ["sync"] }
+opentelemetry_sdk = { workspace = true, features = ["metrics", "testing"] }
+tokio = { workspace = true, features = ["sync"] }
+
+[[bench]]
+name = "timing_benchmark"
+harness = false

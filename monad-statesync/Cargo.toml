@@ -24,12 +24,12 @@ rand = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "net", "rt", "sync", "time"] }
 tracing = { workspace = true }
 
+[build-dependencies]
+bindgen = { workspace = true }
+
 [dev-dependencies]
 criterion = { workspace = true, features = ["async_tokio"] }
 tempfile = { workspace = true }
-
-[build-dependencies]
-bindgen = { workspace = true }
 
 [[bench]]
 name = "ipc_bench"
