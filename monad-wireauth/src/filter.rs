@@ -42,8 +42,6 @@ pub struct Filter {
     handshake_rate_reset_interval: Duration,
     ip_request_history: LruCache<IpAddr, Duration>,
     ip_rate_limit_window: Duration,
-    max_sessions_per_ip: usize,
-    low_watermark_sessions: usize,
     high_watermark_sessions: usize,
     metrics: ExecutorMetrics,
     metric_names: &'static MetricNames,
@@ -61,8 +59,6 @@ impl Filter {
         handshake_rate_reset_interval: Duration,
         ip_rate_limit_window: Duration,
         ip_history_capacity: usize,
-        max_sessions_per_ip: usize,
-        low_watermark_sessions: usize,
         high_watermark_sessions: usize,
     ) -> Self {
         Self {
@@ -74,8 +70,6 @@ impl Filter {
             handshake_rate_reset_interval,
             ip_request_history: LruCache::new(NonZeroUsize::new(ip_history_capacity).unwrap()),
             ip_rate_limit_window,
-            max_sessions_per_ip,
-            low_watermark_sessions,
             high_watermark_sessions,
             metrics: ExecutorMetrics::default(),
             metric_names,
@@ -122,16 +116,24 @@ impl Filter {
     ) -> FilterAction {
         trace!(remote_addr = %remote_addr, cookie_valid = cookie_valid, "applying filter");
         let total_sessions = state.total_sessions();
-        let ip = remote_addr.ip();
 
         let action = self
             .check_high_watermark(total_sessions, remote_addr)
-            .or_else(|| self.check_cookie_rate_limit(remote_addr, cookie_valid))
-            .or_else(|| self.check_low_watermark(total_sessions))
-            .or_else(|| self.check_cookie_validity(cookie_valid))
-            .or_else(|| self.check_ip_rate_limit(ip, duration_since_start))
-            .or_else(|| self.check_max_sessions_per_ip(state, ip))
-            .unwrap_or(FilterAction::Pass);
+            .unwrap_or_else(|| {
+                if cookie_valid {
+                    self.check_verified_request(remote_addr, duration_since_start)
+                } else {
+                    self.check_unverified_request(remote_addr)
+                }
+            });
+
+        if action == FilterAction::Pass {
+            if cookie_valid {
+                self.cookie_verified_counter += 1;
+            } else {
+                self.cookie_unverified_counter += 1;
+            }
+        }
 
         self.record_metric(action);
         action
@@ -153,93 +155,53 @@ impl Filter {
         })
     }
 
-    fn check_cookie_rate_limit(
+    fn check_unverified_request(&self, remote_addr: SocketAddr) -> FilterAction {
+        if self.cookie_unverified_counter >= self.handshake_cookie_unverified_rate_limit {
+            debug!(
+                remote_addr = %remote_addr,
+                unverified_counter = self.cookie_unverified_counter,
+                unverified_rate_limit = self.handshake_cookie_unverified_rate_limit,
+                "cookie-unverified rate limit exceeded - sending cookie reply"
+            );
+            FilterAction::SendCookie
+        } else {
+            FilterAction::Pass
+        }
+    }
+
+    fn check_verified_request(
         &mut self,
         remote_addr: SocketAddr,
-        cookie_valid: bool,
-    ) -> Option<FilterAction> {
-        if cookie_valid {
-            if self.cookie_verified_counter >= self.handshake_cookie_verified_rate_limit {
-                debug!(
-                    remote_addr = %remote_addr,
-                    counter = self.cookie_verified_counter,
-                    verified_rate_limit = self.handshake_cookie_verified_rate_limit,
-                    "cookie-verified rate limit exceeded - dropping handshake"
-                );
-                return Some(FilterAction::Drop);
-            }
-            self.cookie_verified_counter += 1;
-        } else {
-            if self.cookie_unverified_counter >= self.handshake_cookie_unverified_rate_limit {
-                if self.cookie_verified_counter < self.handshake_cookie_verified_rate_limit {
-                    debug!(
-                        remote_addr = %remote_addr,
-                        unverified_counter = self.cookie_unverified_counter,
-                        unverified_rate_limit = self.handshake_cookie_unverified_rate_limit,
-                        verified_counter = self.cookie_verified_counter,
-                        verified_rate_limit = self.handshake_cookie_verified_rate_limit,
-                        "cookie-unverified budget exhausted - sending cookie reply"
-                    );
-                    return Some(FilterAction::SendCookie);
-                }
-                debug!(
-                    remote_addr = %remote_addr,
-                    counter = self.cookie_unverified_counter,
-                    unverified_rate_limit = self.handshake_cookie_unverified_rate_limit,
-                    verified_counter = self.cookie_verified_counter,
-                    verified_rate_limit = self.handshake_cookie_verified_rate_limit,
-                    "cookie-unverified rate limit exceeded - dropping handshake (no verified budget for cookie replies)"
-                );
-                return Some(FilterAction::Drop);
-            }
-            self.cookie_unverified_counter += 1;
-        }
-
-        None
-    }
-
-    fn check_low_watermark(&self, total_sessions: usize) -> Option<FilterAction> {
-        (total_sessions < self.low_watermark_sessions).then_some(FilterAction::Pass)
-    }
-
-    fn check_cookie_validity(&self, cookie_valid: bool) -> Option<FilterAction> {
-        (!cookie_valid).then_some(FilterAction::SendCookie)
-    }
-
-    fn check_ip_rate_limit(
-        &mut self,
-        ip: IpAddr,
         duration_since_start: Duration,
-    ) -> Option<FilterAction> {
-        let window_start = duration_since_start.saturating_sub(self.ip_rate_limit_window);
-
-        match self.ip_request_history.get_mut(&ip) {
-            Some(last_time) if *last_time >= window_start => {
-                debug!(ip = %ip, "ip rate limit exceeded");
-                Some(FilterAction::Drop)
-            }
-            Some(last_time) => {
-                *last_time = duration_since_start;
-                None
-            }
-            None => {
-                self.ip_request_history.put(ip, duration_since_start);
-                self.metrics[self.metric_names.filter_ip_request_history_size] =
-                    self.ip_request_history.len() as u64;
-                None
-            }
+    ) -> FilterAction {
+        if self.cookie_verified_counter >= self.handshake_cookie_verified_rate_limit {
+            debug!(
+                remote_addr = %remote_addr,
+                counter = self.cookie_verified_counter,
+                verified_rate_limit = self.handshake_cookie_verified_rate_limit,
+                "cookie-verified rate limit exceeded - dropping handshake"
+            );
+            return FilterAction::Drop;
         }
+
+        if self.check_ip_rate_limit(remote_addr.ip(), duration_since_start) {
+            debug!(remote_addr = %remote_addr, "ip rate limit exceeded");
+            return FilterAction::Drop;
+        }
+
+        self.ip_request_history
+            .put(remote_addr.ip(), duration_since_start);
+        self.metrics[self.metric_names.filter_ip_request_history_size] =
+            self.ip_request_history.len() as u64;
+        FilterAction::Pass
     }
 
-    fn check_max_sessions_per_ip(&self, state: &State, ip: IpAddr) -> Option<FilterAction> {
-        (state.ip_session_count(&ip) >= self.max_sessions_per_ip).then(|| {
-            debug!(
-                ip = %ip,
-                max = self.max_sessions_per_ip,
-                "too many sessions for ip"
-            );
-            FilterAction::Drop
-        })
+    fn check_ip_rate_limit(&mut self, ip: IpAddr, duration_since_start: Duration) -> bool {
+        let window_start = duration_since_start.saturating_sub(self.ip_rate_limit_window);
+        matches!(
+            self.ip_request_history.peek(&ip),
+            Some(last_time) if *last_time >= window_start
+        )
     }
 
     fn record_metric(&mut self, action: FilterAction) {
@@ -264,9 +226,7 @@ mod tests {
             100,
             Duration::from_secs(60),
             Duration::from_secs(60),
-            1000,
-            10,
-            50,
+            1_000,
             100,
         )
     }
@@ -276,7 +236,7 @@ mod tests {
         let mut filter = default_filter();
         let state = State::new(DEFAULT_METRICS);
         let addr = "127.0.0.1:8080".parse().unwrap();
-        let action = filter.apply(&state, addr, Duration::from_secs(1), false);
+        let action = filter.apply(&state, addr, Duration::ZERO, false);
         assert_eq!(action, FilterAction::Pass);
     }
 
@@ -289,67 +249,40 @@ mod tests {
             100,
             Duration::from_secs(60),
             Duration::from_secs(60),
-            1000,
-            10,
-            5,
+            1_000,
             high_watermark,
         );
         let mut state = State::new(DEFAULT_METRICS);
         for i in 0..high_watermark {
-            let ip: IpAddr = format!("10.0.0.{}", i).parse().unwrap();
-            insert_test_initiator_session(&mut state, SocketAddr::new(ip, 51820));
+            let addr: SocketAddr = format!("10.0.0.{}:51820", i).parse().unwrap();
+            insert_test_initiator_session(&mut state, addr);
         }
         let addr = "127.0.0.1:8080".parse().unwrap();
-        let action = filter.apply(&state, addr, Duration::from_secs(1), false);
+        let action = filter.apply(&state, addr, Duration::ZERO, false);
         assert_eq!(action, FilterAction::Drop);
     }
 
     #[test]
-    fn test_between_watermarks_requires_cookie() {
-        let low_watermark = 5;
+    fn test_unverified_rate_limit_sends_cookie_after_limit() {
+        let unverified_rate_limit = 5;
         let mut filter = Filter::new(
             DEFAULT_METRICS,
-            100,
+            unverified_rate_limit,
             100,
             Duration::from_secs(60),
             Duration::from_secs(60),
-            1000,
-            10,
-            low_watermark,
-            10,
+            1_000,
+            100,
         );
-        let mut state = State::new(DEFAULT_METRICS);
-        for i in 0..low_watermark {
-            let ip: IpAddr = format!("10.0.0.{}", i).parse().unwrap();
-            insert_test_initiator_session(&mut state, SocketAddr::new(ip, 51820));
-        }
+        let state = State::new(DEFAULT_METRICS);
         let addr = "127.0.0.1:8080".parse().unwrap();
-        let action = filter.apply(&state, addr, Duration::from_secs(1), false);
+        for _ in 0..unverified_rate_limit {
+            let action = filter.apply(&state, addr, Duration::ZERO, false);
+            assert_eq!(action, FilterAction::Pass);
+        }
+        let action = filter.apply(&state, addr, Duration::ZERO, false);
         assert_eq!(action, FilterAction::SendCookie);
-    }
-
-    #[test]
-    fn test_between_watermarks_passes_with_cookie() {
-        let low_watermark = 5;
-        let mut filter = Filter::new(
-            DEFAULT_METRICS,
-            100,
-            100,
-            Duration::from_secs(60),
-            Duration::from_secs(60),
-            1000,
-            10,
-            low_watermark,
-            10,
-        );
-        let mut state = State::new(DEFAULT_METRICS);
-        for i in 0..low_watermark {
-            let ip: IpAddr = format!("10.0.0.{}", i).parse().unwrap();
-            insert_test_initiator_session(&mut state, SocketAddr::new(ip, 51820));
-        }
-        let addr = "127.0.0.1:8080".parse().unwrap();
-        let action = filter.apply(&state, addr, Duration::from_secs(1), true);
-        assert_eq!(action, FilterAction::Pass);
+        assert_eq!(filter.cookie_unverified_counter, unverified_rate_limit);
     }
 
     #[test]
@@ -362,28 +295,27 @@ mod tests {
             verified_rate_limit,
             Duration::from_secs(60),
             Duration::from_secs(60),
-            1000,
-            10,
-            50,
+            1_000,
             100,
         );
         let state = State::new(DEFAULT_METRICS);
         let addr = "127.0.0.1:8080".parse().unwrap();
         for _ in 0..handshake_rate_limit {
-            let action = filter.apply(&state, addr, Duration::from_secs(1), false);
+            let action = filter.apply(&state, addr, Duration::ZERO, false);
             assert_eq!(action, FilterAction::Pass);
         }
 
-        let action = filter.apply(&state, addr, Duration::from_secs(1), false);
+        let action = filter.apply(&state, addr, Duration::ZERO, false);
         assert_eq!(action, FilterAction::SendCookie);
 
-        for _ in 0..verified_rate_limit {
-            let action = filter.apply(&state, addr, Duration::from_secs(1), true);
+        for i in 0..verified_rate_limit {
+            let verified_addr: SocketAddr = format!("127.0.0.{}:8080", i + 2).parse().unwrap();
+            let action = filter.apply(&state, verified_addr, Duration::from_secs(61), true);
             assert_eq!(action, FilterAction::Pass);
         }
 
-        let action = filter.apply(&state, addr, Duration::from_secs(1), false);
-        assert_eq!(action, FilterAction::Drop);
+        let action = filter.apply(&state, addr, Duration::ZERO, false);
+        assert_eq!(action, FilterAction::SendCookie);
     }
 
     #[test]
@@ -395,63 +327,49 @@ mod tests {
             verified_rate_limit,
             Duration::from_secs(60),
             Duration::from_secs(60),
-            1000,
-            10,
-            50,
+            1_000,
             100,
         );
         let state = State::new(DEFAULT_METRICS);
-        let addr = "127.0.0.1:8080".parse().unwrap();
-        for _ in 0..verified_rate_limit {
-            let action = filter.apply(&state, addr, Duration::from_secs(1), true);
+        for i in 0..verified_rate_limit {
+            let addr: SocketAddr = format!("127.0.0.{}:8080", i + 2).parse().unwrap();
+            let action = filter.apply(&state, addr, Duration::from_secs(61), true);
             assert_eq!(action, FilterAction::Pass);
         }
-        let action = filter.apply(&state, addr, Duration::from_secs(1), true);
+        let action = filter.apply(
+            &state,
+            "127.0.0.2:8080".parse().unwrap(),
+            Duration::from_secs(61),
+            true,
+        );
         assert_eq!(action, FilterAction::Drop);
     }
 
     #[test]
-    fn test_unverified_rate_limit_does_not_starve_verified_rate_limit() {
+    fn test_unverified_rate_limit_does_not_depend_on_verified_budget() {
         let mut filter = Filter::new(
             DEFAULT_METRICS,
             2, // unverified
-            2, // verified
+            0, // verified
             Duration::from_secs(60),
             Duration::from_secs(60),
-            1000,
-            10,
-            50,
+            1_000,
             100,
         );
         let state = State::new(DEFAULT_METRICS);
         let addr = "127.0.0.1:8080".parse().unwrap();
 
-        // Exhaust unverified budget.
         assert_eq!(
-            filter.apply(&state, addr, Duration::from_secs(1), false),
+            filter.apply(&state, addr, Duration::ZERO, false),
             FilterAction::Pass
         );
         assert_eq!(
-            filter.apply(&state, addr, Duration::from_secs(1), false),
+            filter.apply(&state, addr, Duration::ZERO, false),
             FilterAction::Pass
         );
         assert_eq!(
-            filter.apply(&state, addr, Duration::from_secs(1), false),
+            filter.apply(&state, addr, Duration::ZERO, false),
             FilterAction::SendCookie
-        );
-
-        // Verified budget is still available.
-        assert_eq!(
-            filter.apply(&state, addr, Duration::from_secs(1), true),
-            FilterAction::Pass
-        );
-        assert_eq!(
-            filter.apply(&state, addr, Duration::from_secs(1), true),
-            FilterAction::Pass
-        );
-        assert_eq!(
-            filter.apply(&state, addr, Duration::from_secs(1), true),
-            FilterAction::Drop
         );
     }
 
@@ -464,18 +382,16 @@ mod tests {
             handshake_rate_limit,
             Duration::from_secs(1),
             Duration::from_secs(60),
-            1000,
-            10,
-            50,
+            1_000,
             100,
         );
         let state = State::new(DEFAULT_METRICS);
         let addr = "127.0.0.1:8080".parse().unwrap();
         for _ in 0..handshake_rate_limit {
-            filter.apply(&state, addr, Duration::from_secs(0), false);
+            filter.apply(&state, addr, Duration::ZERO, false);
         }
         filter.tick(Duration::from_secs(1));
-        let action = filter.apply(&state, addr, Duration::from_secs(1), false);
+        let action = filter.apply(&state, addr, Duration::ZERO, false);
         assert_eq!(action, FilterAction::Pass);
     }
 
@@ -488,15 +404,13 @@ mod tests {
             handshake_rate_limit,
             Duration::from_secs(10),
             Duration::from_secs(60),
-            1000,
-            10,
-            50,
+            1_000,
             100,
         );
         let state = State::new(DEFAULT_METRICS);
         let addr = "127.0.0.1:8080".parse().unwrap();
         for _ in 0..handshake_rate_limit {
-            filter.apply(&state, addr, Duration::from_secs(0), false);
+            filter.apply(&state, addr, Duration::ZERO, false);
         }
         filter.tick(Duration::from_secs(5));
         let action = filter.apply(&state, addr, Duration::from_secs(5), false);
@@ -504,165 +418,196 @@ mod tests {
     }
 
     #[test]
-    fn test_ip_rate_limit_within_window() {
-        let low_watermark = 5;
-        let mut filter = Filter::new(
-            DEFAULT_METRICS,
-            100,
-            100,
-            Duration::from_secs(60),
-            Duration::from_secs(5),
-            1000,
-            10,
-            low_watermark,
-            10,
-        );
-        let mut state = State::new(DEFAULT_METRICS);
-        for i in 0..low_watermark {
-            let ip: IpAddr = format!("10.0.0.{}", i).parse().unwrap();
-            insert_test_initiator_session(&mut state, SocketAddr::new(ip, 51820));
-        }
-        let addr = "127.0.0.1:8080".parse().unwrap();
-        filter.apply(&state, addr, Duration::from_secs(0), true);
-        let action = filter.apply(&state, addr, Duration::from_secs(3), true);
-        assert_eq!(action, FilterAction::Drop);
-    }
-
-    #[test]
-    fn test_ip_rate_limit_after_window() {
-        let low_watermark = 5;
-        let mut filter = Filter::new(
-            DEFAULT_METRICS,
-            100,
-            100,
-            Duration::from_secs(60),
-            Duration::from_secs(5),
-            1000,
-            10,
-            low_watermark,
-            10,
-        );
-        let mut state = State::new(DEFAULT_METRICS);
-        for i in 0..low_watermark {
-            let ip: IpAddr = format!("10.0.0.{}", i).parse().unwrap();
-            insert_test_initiator_session(&mut state, SocketAddr::new(ip, 51820));
-        }
-        let addr = "127.0.0.1:8080".parse().unwrap();
-        filter.apply(&state, addr, Duration::from_secs(0), true);
-        let action = filter.apply(&state, addr, Duration::from_secs(6), true);
-        assert_eq!(action, FilterAction::Pass);
-    }
-
-    #[test]
-    fn test_max_sessions_per_ip_drops() {
-        let low_watermark = 5;
-        let max_sessions_per_ip = 2;
-        let mut filter = Filter::new(
-            DEFAULT_METRICS,
-            100,
-            100,
-            Duration::from_secs(60),
-            Duration::from_secs(60),
-            1000,
-            max_sessions_per_ip,
-            low_watermark,
-            10,
-        );
-        let mut state = State::new(DEFAULT_METRICS);
-        for i in 0..low_watermark {
-            let ip: IpAddr = format!("10.0.0.{}", i).parse().unwrap();
-            insert_test_initiator_session(&mut state, SocketAddr::new(ip, 51820));
-        }
-        let ip: IpAddr = "192.168.1.1".parse().unwrap();
-        for _ in 0..max_sessions_per_ip {
-            insert_test_initiator_session(&mut state, SocketAddr::new(ip, 51820));
-        }
-        let addr = "192.168.1.1:8080".parse().unwrap();
-        let action = filter.apply(&state, addr, Duration::from_secs(1), true);
-        assert_eq!(action, FilterAction::Drop);
-    }
-
-    #[test]
-    fn test_max_sessions_per_ip_passes_under_limit() {
-        let low_watermark = 5;
-        let max_sessions_per_ip = 2;
-        let mut filter = Filter::new(
-            DEFAULT_METRICS,
-            100,
-            100,
-            Duration::from_secs(60),
-            Duration::from_secs(60),
-            1000,
-            max_sessions_per_ip,
-            low_watermark,
-            10,
-        );
-        let mut state = State::new(DEFAULT_METRICS);
-        for i in 0..low_watermark {
-            let ip: IpAddr = format!("10.0.0.{}", i).parse().unwrap();
-            insert_test_initiator_session(&mut state, SocketAddr::new(ip, 51820));
-        }
-        let ip: IpAddr = "192.168.1.1".parse().unwrap();
-        insert_test_initiator_session(&mut state, SocketAddr::new(ip, 51820));
-        let addr = "192.168.1.1:8080".parse().unwrap();
-        let action = filter.apply(&state, addr, Duration::from_secs(1), true);
-        assert_eq!(action, FilterAction::Pass);
-    }
-
-    #[test]
-    fn test_combined_rate_limit_and_watermark() {
+    fn test_verified_rate_limit_remains_available_after_unverified_limit() {
         let handshake_rate_limit = 5;
-        let low_watermark = 5;
         let mut filter = Filter::new(
             DEFAULT_METRICS,
             handshake_rate_limit,
             handshake_rate_limit,
             Duration::from_secs(60),
             Duration::from_secs(60),
-            1000,
-            10,
-            low_watermark,
-            10,
+            1_000,
+            100,
         );
-        let mut state = State::new(DEFAULT_METRICS);
-        for i in 0..low_watermark {
-            let ip: IpAddr = format!("10.0.0.{}", i).parse().unwrap();
-            insert_test_initiator_session(&mut state, SocketAddr::new(ip, 51820));
-        }
+        let state = State::new(DEFAULT_METRICS);
         let addr = "127.0.0.1:8080".parse().unwrap();
         for _ in 0..handshake_rate_limit {
-            filter.apply(&state, addr, Duration::from_secs(1), false);
+            filter.apply(&state, addr, Duration::ZERO, false);
         }
-        let action = filter.apply(&state, addr, Duration::from_secs(1), false);
-        assert_eq!(action, FilterAction::SendCookie);
+        assert_eq!(
+            filter.apply(&state, addr, Duration::ZERO, false),
+            FilterAction::SendCookie
+        );
+        for i in 0..handshake_rate_limit {
+            let verified_addr: SocketAddr = format!("127.0.0.{}:8080", i + 2).parse().unwrap();
+            assert_eq!(
+                filter.apply(&state, verified_addr, Duration::from_secs(61), true,),
+                FilterAction::Pass
+            );
+        }
+        assert_eq!(
+            filter.apply(
+                &state,
+                "127.0.0.3:8080".parse().unwrap(),
+                Duration::from_secs(61),
+                true,
+            ),
+            FilterAction::Drop
+        );
     }
 
     #[test]
-    fn test_lru_cache_eviction() {
-        let low_watermark = 5;
+    fn test_ip_rate_limit_only_applies_to_verified_requests() {
         let mut filter = Filter::new(
             DEFAULT_METRICS,
             100,
             100,
             Duration::from_secs(60),
             Duration::from_secs(5),
-            2,
-            10,
-            low_watermark,
-            10,
+            1_000,
+            100,
         );
-        let mut state = State::new(DEFAULT_METRICS);
-        for i in 0..low_watermark {
-            let ip: IpAddr = format!("10.0.0.{}", i).parse().unwrap();
-            insert_test_initiator_session(&mut state, SocketAddr::new(ip, 51820));
-        }
-        let addr1 = "192.168.1.1:8080".parse().unwrap();
-        let addr2 = "192.168.1.2:8080".parse().unwrap();
-        let addr3 = "192.168.1.3:8080".parse().unwrap();
-        filter.apply(&state, addr1, Duration::from_secs(0), true);
-        filter.apply(&state, addr2, Duration::from_secs(1), true);
-        filter.apply(&state, addr3, Duration::from_secs(2), true);
-        let action = filter.apply(&state, addr1, Duration::from_secs(3), true);
-        assert_eq!(action, FilterAction::Pass);
+        let state = State::new(DEFAULT_METRICS);
+        let addr = "127.0.0.1:8080".parse().unwrap();
+
+        assert_eq!(
+            filter.apply(&state, addr, Duration::ZERO, false),
+            FilterAction::Pass
+        );
+        assert_eq!(
+            filter.apply(&state, addr, Duration::from_secs(1), false),
+            FilterAction::Pass
+        );
+        assert_eq!(
+            filter.apply(&state, addr, Duration::from_secs(2), true),
+            FilterAction::Pass
+        );
+        assert_eq!(
+            filter.apply(&state, addr, Duration::from_secs(3), true),
+            FilterAction::Drop
+        );
+    }
+
+    #[test]
+    fn test_drop_does_not_increment_verified_counter() {
+        let mut filter = Filter::new(
+            DEFAULT_METRICS,
+            100,
+            2,
+            Duration::from_secs(60),
+            Duration::from_secs(10),
+            1_000,
+            100,
+        );
+        let state = State::new(DEFAULT_METRICS);
+
+        assert_eq!(
+            filter.apply(
+                &state,
+                "127.0.0.1:8080".parse().unwrap(),
+                Duration::ZERO,
+                true,
+            ),
+            FilterAction::Pass
+        );
+        assert_eq!(
+            filter.apply(
+                &state,
+                "127.0.0.1:8080".parse().unwrap(),
+                Duration::from_secs(1),
+                true,
+            ),
+            FilterAction::Drop
+        );
+        assert_eq!(filter.cookie_verified_counter, 1);
+        assert_eq!(
+            filter.apply(
+                &state,
+                "127.0.0.2:8080".parse().unwrap(),
+                Duration::from_secs(2),
+                true,
+            ),
+            FilterAction::Pass
+        );
+        assert_eq!(
+            filter.apply(
+                &state,
+                "127.0.0.3:8080".parse().unwrap(),
+                Duration::from_secs(3),
+                true,
+            ),
+            FilterAction::Drop
+        );
+        assert_eq!(filter.cookie_verified_counter, 2);
+    }
+
+    #[test]
+    fn test_send_cookie_does_not_increment_unverified_counter() {
+        let mut filter = Filter::new(
+            DEFAULT_METRICS,
+            1,
+            100,
+            Duration::from_secs(60),
+            Duration::from_secs(10),
+            1_000,
+            100,
+        );
+        let state = State::new(DEFAULT_METRICS);
+        let addr = "127.0.0.1:8080".parse().unwrap();
+
+        assert_eq!(
+            filter.apply(&state, addr, Duration::ZERO, false),
+            FilterAction::Pass
+        );
+        assert_eq!(filter.cookie_unverified_counter, 1);
+        assert_eq!(
+            filter.apply(&state, addr, Duration::from_secs(1), false),
+            FilterAction::SendCookie
+        );
+        assert_eq!(filter.cookie_unverified_counter, 1);
+        assert_eq!(
+            filter.apply(&state, addr, Duration::from_secs(2), false),
+            FilterAction::SendCookie
+        );
+        assert_eq!(filter.cookie_unverified_counter, 1);
+    }
+
+    #[test]
+    fn test_ip_rate_limit_check_does_not_refresh_lru_recency() {
+        let mut filter = Filter::new(
+            DEFAULT_METRICS,
+            100,
+            100,
+            Duration::from_secs(60),
+            Duration::from_secs(30),
+            2,
+            100,
+        );
+        let state = State::new(DEFAULT_METRICS);
+
+        let addr1: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+        let addr2: SocketAddr = "127.0.0.2:8080".parse().unwrap();
+        let addr3: SocketAddr = "127.0.0.3:8080".parse().unwrap();
+
+        assert_eq!(
+            filter.apply(&state, addr1, Duration::ZERO, true),
+            FilterAction::Pass
+        );
+        assert_eq!(
+            filter.apply(&state, addr2, Duration::from_secs(20), true),
+            FilterAction::Pass
+        );
+        assert_eq!(
+            filter.apply(&state, addr1, Duration::from_secs(25), true),
+            FilterAction::Drop
+        );
+        assert_eq!(
+            filter.apply(&state, addr3, Duration::from_secs(40), true),
+            FilterAction::Pass
+        );
+        assert_eq!(
+            filter.apply(&state, addr2, Duration::from_secs(41), true),
+            FilterAction::Drop
+        );
     }
 }

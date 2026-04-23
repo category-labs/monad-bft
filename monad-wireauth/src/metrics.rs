@@ -167,7 +167,7 @@ macro_rules! define_metric_names {
             ),
             state_ip_session_counts_size: &monad_executor::MetricDef::new(
                 concat!("monad.wireauth.", $transport, ".state.ip_session_counts_size"),
-                "tracks session count per ip for rate limiting",
+                "tracks session count per ip",
             ),
 
             filter_pass: &monad_executor::MetricDef::new(
@@ -176,7 +176,7 @@ macro_rules! define_metric_names {
             ),
             filter_send_cookie: &monad_executor::MetricDef::new(
                 concat!("monad.wireauth.", $transport, ".filter.send_cookie"),
-                "cookie challenges sent (between low and high watermark)",
+                "cookie challenges sent due to the unverified handshake rate limit",
             ),
             filter_drop: &monad_executor::MetricDef::new(
                 concat!("monad.wireauth.", $transport, ".filter.drop"),
