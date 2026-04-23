@@ -22,17 +22,20 @@ session management layer:
 
 high-level api with dos protection:
 
-the filter operates using two global handshake rate limits plus a hard session cap:
+the filter operates using two global handshake rate limits plus transport and pending session caps:
 
 | condition | action |
 |-----------|--------|
 | cookie invalid and handshakes >= `handshake_cookie_unverified_rate_limit` | send cookie reply |
 | cookie valid and handshakes >= `handshake_cookie_verified_rate_limit` | drop request |
 | cookie valid and last verified request from the same ip is within `ip_rate_limit_window` | drop request |
-| sessions >= `high_watermark_sessions` | drop request |
+| transport sessions >= `total_transport_sessions` | drop request |
+| pending sessions >= `total_pending_sessions` | drop request |
 | otherwise | accept request |
 
-defaults: `high_watermark_sessions`=40,000, `handshake_cookie_unverified_rate_limit`=500/sec, `handshake_cookie_verified_rate_limit`=1,000/sec, `ip_rate_limit_window`=10s, `ip_history_capacity`=1,000,000, `connect_rate_limit`=300/sec
+defaults: `total_transport_sessions`=40,000, `total_pending_sessions`=20,000, `max_sessions_per_ip`=4, `pending_session_timeout`=1s, `handshake_cookie_unverified_rate_limit`=500/sec, `handshake_cookie_verified_rate_limit`=1,000/sec, `ip_rate_limit_window`=10s, `ip_history_capacity`=1,000,000, `connect_rate_limit`=300/sec
+
+the `total_transport_sessions` watermark only counts established transport sessions. the pending-session limit applies to both initiated and accepted handshakes. the per-ip session cap is checked when a handshake is about to become an established transport session, so pending handshakes do not consume that budget.
 
 these defaults are per instance. we expect to run more than one wireauth instance, so the per-instance handshake and session limits are intentionally lower and aggregate capacity should come from running multiple instances.
 
@@ -152,7 +155,8 @@ session_decrypt         time:   [166.11 ns 168.75 ns 171.20 ns]
 
 | parameter | type | default | description |
 |-----------|------|---------|-------------|
-| `session_timeout` | Duration | 10s | idle time before session expires (reset on any packet exchange) |
+| `session_timeout` | Duration | 10s | idle time before an established session expires (reset on any packet exchange) |
+| `pending_session_timeout` | Duration | 1s | time to wait for a handshake reply or the first authenticated packet on a pending session |
 | `session_timeout_jitter` | Duration | 1s | randomization to prevent thundering herd on timeout |
 | `keepalive_interval` | Duration | 3s | send empty packet after this idle time to maintain session |
 | `keepalive_jitter` | Duration | 300ms | randomization to spread keepalive traffic |
@@ -167,9 +171,10 @@ session_decrypt         time:   [166.11 ns 168.75 ns 171.20 ns]
 | `cookie_refresh_duration` | Duration | 120s | cookie validity period (responder rotates cookie key) |
 | `ip_rate_limit_window` | Duration | 10s | time window for counting verified handshake requests per ip |
 | `ip_history_capacity` | usize | 1000000 | lru cache size for tracking recent verified handshake requests per ip |
-| `high_watermark_sessions` | usize | 40000 | at this threshold, drop all incoming handshake requests |
+| `total_transport_sessions` | usize | 40000 | at this threshold of established transport sessions, drop all incoming handshake requests |
+| `total_pending_sessions` | usize | 20000 | upper limit for concurrent pending sessions (initiated + accepted handshakes) |
+| `max_sessions_per_ip` | usize | 4 | limit concurrent established sessions from a single ip |
 | `psk` | [u8; 32] | zeros | optional pre-shared key mixed into handshake for additional auth |
-| `max_initiated_sessions` | usize | 1000 | max concurrent initiated sessions (handshakes in progress) |
 | `max_buffered_bytes_per_session` | usize | 131072 | max bytes of buffered messages per initiated session (128KB) |
 | `gc_idle_timeout` | Duration | 120s | idle time without useful data before session is garbage collected (keepalives don't reset) |
 | `max_expired_timers_per_tick` | usize | 10000 | cap expired timers processed per `API::tick` |

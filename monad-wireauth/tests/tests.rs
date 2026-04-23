@@ -148,13 +148,13 @@ fn test_retries() {
     let _init1 = collect::<HandshakeInitiation>(&mut peer1);
 
     // 3. advance time and tick - peer1 retries
-    peer1_ctx.advance_time(Duration::from_secs(11));
+    peer1_ctx.advance_time(Duration::from_secs(1));
     peer1.tick();
     // 4. peer1 sends second init - dropped
     let _init2 = collect::<HandshakeInitiation>(&mut peer1);
 
     // 5. advance time and tick - peer1 retries
-    peer1_ctx.advance_time(Duration::from_secs(11));
+    peer1_ctx.advance_time(Duration::from_secs(1));
     peer1.tick();
     // 6. peer1 sends third init - delivered to peer2
     let init3 = collect::<HandshakeInitiation>(&mut peer1);
@@ -231,7 +231,7 @@ fn test_cookie_reply_on_init() {
         session_timeout_jitter: Duration::ZERO, // to avoid randomness in tests
         ..Config::default()
     };
-    let session_timeout = config.session_timeout;
+    let pending_session_timeout = config.pending_session_timeout;
 
     let mut rng = rng();
     let keypair1 = monad_secp::KeyPair::generate(&mut rng);
@@ -258,7 +258,7 @@ fn test_cookie_reply_on_init() {
     dispatch(&mut peer1, &cookie, peer2_addr);
 
     // 4. advance time past session timeout, tick triggers retry with stored cookie
-    context1.advance_time(session_timeout);
+    context1.advance_time(pending_session_timeout);
     peer1.tick();
 
     // 5. peer1 sends init with valid mac2 (using stored cookie)
@@ -365,9 +365,9 @@ fn test_timestamp_replay() {
 #[test]
 fn test_too_many_accepted_sessions() {
     init_tracing();
-    // 1. create responder with max 5 accepted sessions
+    // 1. create responder with max 5 pending sessions
     let config = Config {
-        high_watermark_sessions: 5,
+        total_pending_sessions: 5,
         ..Default::default()
     };
 
@@ -403,7 +403,7 @@ fn test_too_many_accepted_sessions() {
         dispatch(&mut responder, &init, initiator_addr);
     }
 
-    // 3. verify responder only accepted 5 sessions (high_watermark_sessions limit)
+    // 3. verify responder only accepted 5 sessions (total_pending_sessions limit)
     let mut pkts = vec![];
     while let Some(pkt) = responder.next_packet() {
         pkts.push(pkt);
@@ -495,18 +495,18 @@ fn test_next_deadline() {
     assert!(session_deadline.is_some());
     let deadline_instant = session_deadline.unwrap();
     let max_expected_deadline =
-        peer1_ctx.convert_duration_since_start_to_deadline(Duration::from_secs(10));
+        peer1_ctx.convert_duration_since_start_to_deadline(config.pending_session_timeout);
     assert!(deadline_instant <= max_expected_deadline);
 
     // 3. advance time partially and verify deadline remains unchanged
-    peer1_ctx.advance_time(Duration::from_secs(5));
+    peer1_ctx.advance_time(Duration::from_millis(500));
 
     let deadline_after_time_advance = peer1.next_deadline();
     assert!(deadline_after_time_advance.is_some());
     assert_eq!(deadline_after_time_advance.unwrap(), deadline_instant);
 
     // 4. advance time past deadline and verify deadline is now in the past
-    peer1_ctx.advance_time(Duration::from_secs(20));
+    peer1_ctx.advance_time(Duration::from_secs(2));
 
     let deadline_in_past = peer1.next_deadline();
     assert!(deadline_in_past.is_some());
@@ -866,10 +866,10 @@ fn test_handshake_response_address_mismatch_rejected() {
 }
 
 #[test]
-fn test_max_initiated_sessions_limit() {
+fn test_total_pending_sessions_limit() {
     init_tracing();
     let config = Config {
-        max_initiated_sessions: 3,
+        total_pending_sessions: 3,
         ..Config::default()
     };
 
@@ -894,8 +894,163 @@ fn test_max_initiated_sessions_limit() {
     let err = result.unwrap_err();
     assert!(matches!(
         err,
-        monad_wireauth::Error::TooManyInitiatedSessions { limit: 3 }
+        monad_wireauth::Error::TooManyPendingSessions { limit: 3 }
     ));
+}
+
+#[test]
+fn test_max_established_sessions_per_ip_limit_on_initiator() {
+    init_tracing();
+
+    let mut rng = rng();
+    let initiator_keypair = monad_secp::KeyPair::generate(&mut rng);
+    let initiator_ctx = TestContext::new();
+    let mut initiator = API::new(
+        DEFAULT_METRICS,
+        Config {
+            max_sessions_per_ip: 1,
+            ..Config::default()
+        },
+        initiator_keypair,
+        initiator_ctx,
+    );
+
+    let responder1_keypair = monad_secp::KeyPair::generate(&mut rng);
+    let responder1_pubkey = responder1_keypair.pubkey();
+    let responder1_ctx = TestContext::new();
+    let mut responder1 = API::new(
+        DEFAULT_METRICS,
+        Config::default(),
+        responder1_keypair,
+        responder1_ctx,
+    );
+
+    let responder2_keypair = monad_secp::KeyPair::generate(&mut rng);
+    let responder2_pubkey = responder2_keypair.pubkey();
+    let responder2_ctx = TestContext::new();
+    let mut responder2 = API::new(
+        DEFAULT_METRICS,
+        Config::default(),
+        responder2_keypair,
+        responder2_ctx,
+    );
+
+    let initiator_addr: SocketAddr = "127.0.0.1:8001".parse().unwrap();
+    let responder1_addr: SocketAddr = "127.0.0.1:9001".parse().unwrap();
+    let responder2_addr: SocketAddr = "127.0.0.1:9002".parse().unwrap();
+
+    initiator
+        .connect(responder1_pubkey, responder1_addr, DEFAULT_RETRY_ATTEMPTS)
+        .unwrap();
+    let init1 = collect::<HandshakeInitiation>(&mut initiator);
+    dispatch(&mut responder1, &init1, initiator_addr);
+    let resp1 = collect::<HandshakeResponse>(&mut responder1);
+    dispatch(&mut initiator, &resp1, responder1_addr);
+    collect::<DataPacketHeader>(&mut initiator);
+
+    assert!(initiator.is_connected_public_key(&responder1_pubkey));
+
+    initiator
+        .connect(responder2_pubkey, responder2_addr, DEFAULT_RETRY_ATTEMPTS)
+        .unwrap();
+    let init2 = collect::<HandshakeInitiation>(&mut initiator);
+    dispatch(&mut responder2, &init2, initiator_addr);
+    let mut resp2 = collect::<HandshakeResponse>(&mut responder2);
+    let parsed_packet = Packet::try_from(&mut resp2[..]).unwrap();
+    let err = match parsed_packet {
+        Packet::Control(control) => initiator
+            .dispatch_control(control, responder2_addr)
+            .unwrap_err(),
+        Packet::Data(_) => panic!("expected control packet"),
+    };
+
+    assert!(matches!(
+        err,
+        monad_wireauth::Error::TooManyEstablishedSessionsForIp { ip, limit: 1 }
+        if ip == responder2_addr.ip()
+    ));
+    assert!(!initiator.is_connected_public_key(&responder2_pubkey));
+}
+
+#[test]
+fn test_max_established_sessions_per_ip_limit_on_responder() {
+    init_tracing();
+
+    let mut rng = rng();
+    let responder_keypair = monad_secp::KeyPair::generate(&mut rng);
+    let responder_pubkey = responder_keypair.pubkey();
+    let responder_ctx = TestContext::new();
+    let mut responder = API::new(
+        DEFAULT_METRICS,
+        Config {
+            max_sessions_per_ip: 1,
+            ..Config::default()
+        },
+        responder_keypair,
+        responder_ctx,
+    );
+
+    let initiator1_keypair = monad_secp::KeyPair::generate(&mut rng);
+    let initiator1_pubkey = initiator1_keypair.pubkey();
+    let initiator1_ctx = TestContext::new();
+    let mut initiator1 = API::new(
+        DEFAULT_METRICS,
+        Config::default(),
+        initiator1_keypair,
+        initiator1_ctx,
+    );
+
+    let initiator2_keypair = monad_secp::KeyPair::generate(&mut rng);
+    let initiator2_pubkey = initiator2_keypair.pubkey();
+    let initiator2_ctx = TestContext::new();
+    let mut initiator2 = API::new(
+        DEFAULT_METRICS,
+        Config::default(),
+        initiator2_keypair,
+        initiator2_ctx,
+    );
+
+    let responder_addr: SocketAddr = "127.0.0.1:9000".parse().unwrap();
+    let initiator1_addr: SocketAddr = "127.0.0.1:8001".parse().unwrap();
+    let initiator2_addr: SocketAddr = "127.0.0.1:8002".parse().unwrap();
+
+    initiator1
+        .connect(responder_pubkey, responder_addr, DEFAULT_RETRY_ATTEMPTS)
+        .unwrap();
+    let init1 = collect::<HandshakeInitiation>(&mut initiator1);
+    dispatch(&mut responder, &init1, initiator1_addr);
+    let resp1 = collect::<HandshakeResponse>(&mut responder);
+    dispatch(&mut initiator1, &resp1, responder_addr);
+    let (_, confirm1) = initiator1.next_packet().unwrap();
+    dispatch(&mut responder, &confirm1, initiator1_addr);
+
+    assert!(responder.is_connected_public_key(&initiator1_pubkey));
+
+    initiator2
+        .connect(responder_pubkey, responder_addr, DEFAULT_RETRY_ATTEMPTS)
+        .unwrap();
+    let init2 = collect::<HandshakeInitiation>(&mut initiator2);
+    dispatch(&mut responder, &init2, initiator2_addr);
+    let resp2 = collect::<HandshakeResponse>(&mut responder);
+    dispatch(&mut initiator2, &resp2, responder_addr);
+
+    let (_, confirm2) = initiator2.next_packet().unwrap();
+    let mut confirm2 = confirm2.to_vec();
+    let parsed_packet = Packet::try_from(&mut confirm2[..]).unwrap();
+    let err = match parsed_packet {
+        Packet::Control(control) => match responder.dispatch_control(control, initiator2_addr) {
+            Ok(_) => panic!("expected established-session-per-ip limit error"),
+            Err(err) => err,
+        },
+        Packet::Data(_) => panic!("expected keepalive control packet"),
+    };
+
+    assert!(matches!(
+        err,
+        monad_wireauth::Error::TooManyEstablishedSessionsForIp { ip, limit: 1 }
+        if ip == initiator2_addr.ip()
+    ));
+    assert!(!responder.is_connected_public_key(&initiator2_pubkey));
 }
 
 #[test]

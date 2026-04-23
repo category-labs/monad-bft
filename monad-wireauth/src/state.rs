@@ -121,6 +121,7 @@ pub struct State {
     initiated_session_by_peer: HashMap<monad_secp::PubKey, SessionIndex>,
     accepted_sessions_by_peer: BTreeSet<(monad_secp::PubKey, SessionIndex)>,
     ip_session_counts: HashMap<IpAddr, usize>,
+    established_ip_session_counts: HashMap<IpAddr, usize>,
     total_sessions: usize,
     metrics: ExecutorMetrics,
     metric_names: &'static MetricNames,
@@ -139,6 +140,7 @@ impl State {
             initiated_session_by_peer: HashMap::new(),
             accepted_sessions_by_peer: BTreeSet::new(),
             ip_session_counts: HashMap::new(),
+            established_ip_session_counts: HashMap::new(),
             total_sessions: 0,
             metrics: ExecutorMetrics::default(),
             metric_names,
@@ -322,6 +324,10 @@ impl State {
             }
         }
 
+        *self
+            .established_ip_session_counts
+            .entry(remote_addr.ip())
+            .or_insert(0) += 1;
         self.transport_sessions.insert(session_id, transport);
         self.metrics[self.metric_names.state_transport_sessions] =
             self.transport_sessions.len() as u64;
@@ -360,6 +366,16 @@ impl State {
             self.allocated_indices.len() as u64;
 
         if let Some(transport) = transport {
+            if let Some(count) = self
+                .established_ip_session_counts
+                .get_mut(&remote_addr.ip())
+            {
+                *count = count.saturating_sub(1);
+                if *count == 0 {
+                    self.established_ip_session_counts.remove(&remote_addr.ip());
+                }
+            }
+
             if let Some(sessions) = self
                 .last_established_session_by_socket
                 .get_mut(&remote_addr)
@@ -615,17 +631,29 @@ impl State {
         terminated_addrs
     }
 
+    #[cfg(test)]
     pub fn total_sessions(&self) -> usize {
         self.total_sessions
+    }
+
+    pub(crate) fn pending_sessions_count(&self) -> usize {
+        self.initiating_sessions.len() + self.responding_sessions.len()
+    }
+
+    pub(crate) fn transport_sessions_count(&self) -> usize {
+        self.transport_sessions.len()
+    }
+
+    pub(crate) fn established_ip_session_count(&self, ip: &IpAddr) -> usize {
+        self.established_ip_session_counts
+            .get(ip)
+            .copied()
+            .unwrap_or(0)
     }
 
     #[cfg(test)]
     pub fn ip_session_count(&self, ip: &IpAddr) -> usize {
         self.ip_session_counts.get(ip).copied().unwrap_or(0)
-    }
-
-    pub fn initiated_sessions_count(&self) -> usize {
-        self.initiating_sessions.len()
     }
 }
 
@@ -642,7 +670,8 @@ pub(crate) fn insert_test_initiator_session(
     let remote_public_key = keypair.pubkey();
     let local_keypair = monad_secp::KeyPair::generate(&mut rng);
     let config = Config::default();
-    let local_index = SessionIndex::new(1);
+    let reservation = state.reserve_session_index().unwrap();
+    let local_index = reservation.index();
     let (initiator, _) = InitiatorState::new(
         &mut rng,
         std::time::SystemTime::now(),
@@ -655,7 +684,47 @@ pub(crate) fn insert_test_initiator_session(
         None,
         0,
     );
+    reservation.commit();
     state.insert_initiator(local_index, initiator, remote_public_key);
+    local_index
+}
+
+#[cfg(test)]
+pub(crate) fn insert_test_transport_session(
+    state: &mut State,
+    remote_addr: SocketAddr,
+) -> SessionIndex {
+    use secp256k1::rand::rng;
+
+    use crate::{
+        protocol::common::{CipherKey, HashOutput},
+        session::{SessionState, TransportState},
+    };
+
+    let mut rng = rng();
+    let keypair = monad_secp::KeyPair::generate(&mut rng);
+    let remote_public_key = keypair.pubkey();
+    let reservation = state.reserve_session_index().unwrap();
+    let local_index = reservation.index();
+    let hash1 = HashOutput([0u8; 32]);
+    let hash2 = HashOutput([1u8; 32]);
+    let common = SessionState::new(
+        remote_addr,
+        remote_public_key,
+        local_index,
+        Duration::ZERO,
+        0,
+        None,
+        true,
+    );
+    let transport = TransportState::new(
+        local_index,
+        CipherKey::from(&hash1),
+        CipherKey::from(&hash2),
+        common,
+    );
+    reservation.commit();
+    state.insert_transport(local_index, transport);
     local_index
 }
 
