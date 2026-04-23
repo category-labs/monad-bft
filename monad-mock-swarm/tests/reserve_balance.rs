@@ -19,6 +19,7 @@ mod eth_swarm_common;
 mod test {
     use std::collections::BTreeMap;
 
+    use alloy_eips::eip2718::Encodable2718;
     use alloy_primitives::B256;
     use itertools::Itertools;
     use monad_eth_testutil::{

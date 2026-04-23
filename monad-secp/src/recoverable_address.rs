@@ -15,7 +15,6 @@
 
 use alloy_consensus::TxEnvelope;
 use alloy_primitives::{keccak256, Address};
-use monad_eth_types::EthTxEnvelope;
 use secp256k1::{
     ecdsa::{RecoverableSignature, RecoveryId},
     Message, Secp256k1,
@@ -28,16 +27,6 @@ pub trait RecoverableAddress {
 }
 
 impl RecoverableAddress for TxEnvelope {
-    fn secp256k1_recover(&self) -> Result<Address, Error> {
-        recover_signature(
-            self.signature_hash(),
-            &self.signature().as_bytes(),
-            self.signature().recid().to_byte(),
-        )
-    }
-}
-
-impl RecoverableAddress for EthTxEnvelope {
     fn secp256k1_recover(&self) -> Result<Address, Error> {
         recover_signature(
             self.signature_hash(),

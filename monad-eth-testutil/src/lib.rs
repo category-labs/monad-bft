@@ -29,7 +29,7 @@ use alloy_eips::eip7702::{
     Authorization, RecoveredAuthority, RecoveredAuthorization, SignedAuthorization,
 };
 use alloy_primitives::{
-    hex, keccak256, Address, Bloom, FixedBytes, Log, LogData, Signature, TxKind, B256, U256,
+    hex, keccak256, Address, Bloom, FixedBytes, Log, LogData, TxKind, B256, U256,
 };
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
@@ -51,8 +51,8 @@ use monad_eth_block_policy::{
     EthValidatedBlock,
 };
 use monad_eth_types::{
-    AccountKey, EthBlockBody, EthExecutionProtocol, EthTxEnvelope, ProposedEthHeader, ValidatedTx,
-    NAMESPACED_TX_PREFIX,
+    chain_id_for_namespace, AccountKey, EthBlockBody, EthExecutionProtocol, EthTxEnvelope,
+    NamespacedTx, ProposedEthHeader, ValidatedTx,
 };
 use monad_secp::KeyPair;
 use monad_testutil::signing::MockSignatures;
@@ -60,6 +60,7 @@ use monad_types::{Balance, Epoch, NodeId, Round, SeqNum};
 use monad_validator::signature_collection::SignatureCollection;
 
 const BASE_FEE: u64 = 100_000_000_000;
+const TEST_CHAIN_ID: u64 = 1337;
 
 // pubkey starts with AAA
 pub const S1: B256 = B256::new(hex!(
@@ -116,9 +117,7 @@ pub fn make_legacy_tx_with_value(
     nonce: u64,
     input_len: usize,
 ) -> EthTxEnvelope {
-    EthTxEnvelope::global(make_legacy_tx_envelope_with_value(
-        sender, value, gas_price, gas_limit, nonce, input_len,
-    ))
+    make_legacy_tx_envelope_with_value(sender, value, gas_price, gas_limit, nonce, input_len)
 }
 
 pub fn make_legacy_tx_envelope_with_value(
@@ -130,7 +129,7 @@ pub fn make_legacy_tx_envelope_with_value(
     input_len: usize,
 ) -> TxEnvelope {
     let transaction = TxLegacy {
-        chain_id: Some(1337),
+        chain_id: Some(TEST_CHAIN_ID),
         nonce,
         gas_price,
         gas_limit,
@@ -166,8 +165,9 @@ pub fn make_namespaced_legacy_tx_with_value(
     nonce: u64,
     input_len: usize,
 ) -> EthTxEnvelope {
+    let chain_id = namespaced_chain_id(namespace);
     let transaction = TxLegacy {
-        chain_id: Some(1337),
+        chain_id: Some(chain_id),
         nonce,
         gas_price,
         gas_limit,
@@ -177,8 +177,10 @@ pub fn make_namespaced_legacy_tx_with_value(
     };
 
     let signer = PrivateKeySigner::from_bytes(&sender).unwrap();
-    let signature = sign_namespaced_transaction(namespace, &transaction, &signer);
-    EthTxEnvelope::namespaced(namespace, transaction.into_signed(signature).into())
+    let signature = signer
+        .sign_hash_sync(&transaction.signature_hash())
+        .unwrap();
+    transaction.into_signed(signature).into()
 }
 
 pub fn make_eip1559_tx(
@@ -209,7 +211,7 @@ pub fn make_eip1559_tx_with_value(
     nonce: u64,
     input_len: usize,
 ) -> EthTxEnvelope {
-    EthTxEnvelope::global(make_eip1559_tx_envelope_with_value(
+    make_eip1559_tx_envelope_with_value(
         sender,
         value,
         max_fee_per_gas,
@@ -217,7 +219,7 @@ pub fn make_eip1559_tx_with_value(
         gas_limit,
         nonce,
         input_len,
-    ))
+    )
 }
 
 pub fn make_eip1559_tx_envelope_with_value(
@@ -230,7 +232,7 @@ pub fn make_eip1559_tx_envelope_with_value(
     input_len: usize,
 ) -> TxEnvelope {
     let transaction = TxEip1559 {
-        chain_id: 1337,
+        chain_id: TEST_CHAIN_ID,
         nonce,
         gas_limit,
         max_fee_per_gas,
@@ -279,8 +281,9 @@ pub fn make_namespaced_eip1559_tx_with_value(
     nonce: u64,
     input_len: usize,
 ) -> EthTxEnvelope {
+    let chain_id = namespaced_chain_id(namespace);
     let transaction = TxEip1559 {
-        chain_id: 1337,
+        chain_id,
         nonce,
         gas_limit,
         max_fee_per_gas,
@@ -292,8 +295,10 @@ pub fn make_namespaced_eip1559_tx_with_value(
     };
 
     let signer = PrivateKeySigner::from_bytes(&sender).unwrap();
-    let signature = sign_namespaced_transaction(namespace, &transaction, &signer);
-    EthTxEnvelope::namespaced(namespace, transaction.into_signed(signature).into())
+    let signature = signer
+        .sign_hash_sync(&transaction.signature_hash())
+        .unwrap();
+    transaction.into_signed(signature).into()
 }
 
 pub fn make_eip7702_tx(
@@ -327,7 +332,7 @@ pub fn make_eip7702_tx_with_value(
     authorization_list: Vec<SignedAuthorization>,
     input_len: usize,
 ) -> EthTxEnvelope {
-    EthTxEnvelope::global(make_eip7702_tx_envelope_with_value(
+    make_eip7702_tx_envelope_with_value(
         sender,
         value,
         max_fee_per_gas,
@@ -336,7 +341,7 @@ pub fn make_eip7702_tx_with_value(
         nonce,
         authorization_list,
         input_len,
-    ))
+    )
 }
 
 pub fn make_eip7702_tx_envelope_with_value(
@@ -350,7 +355,7 @@ pub fn make_eip7702_tx_envelope_with_value(
     input_len: usize,
 ) -> TxEnvelope {
     let transaction = TxEip7702 {
-        chain_id: 1337,
+        chain_id: TEST_CHAIN_ID,
         nonce,
         gas_limit,
         max_fee_per_gas,
@@ -403,8 +408,9 @@ pub fn make_namespaced_eip7702_tx_with_value(
     authorization_list: Vec<SignedAuthorization>,
     input_len: usize,
 ) -> EthTxEnvelope {
+    let chain_id = namespaced_chain_id(namespace);
     let transaction = TxEip7702 {
-        chain_id: 1337,
+        chain_id,
         nonce,
         gas_limit,
         max_fee_per_gas,
@@ -417,23 +423,10 @@ pub fn make_namespaced_eip7702_tx_with_value(
     };
 
     let signer = PrivateKeySigner::from_bytes(&sender).unwrap();
-    let signature = sign_namespaced_transaction(namespace, &transaction, &signer);
-    EthTxEnvelope::namespaced(namespace, transaction.into_signed(signature).into())
-}
-
-fn sign_namespaced_transaction<T>(
-    namespace: Address,
-    transaction: &T,
-    signer: &PrivateKeySigner,
-) -> Signature
-where
-    T: SignableTransaction<Signature>,
-{
-    let mut payload = Vec::new();
-    payload.push(NAMESPACED_TX_PREFIX);
-    payload.extend_from_slice(namespace.as_ref());
-    transaction.encode_for_signing(&mut payload);
-    signer.sign_hash_sync(&keccak256(payload)).unwrap()
+    let signature = signer
+        .sign_hash_sync(&transaction.signature_hash())
+        .unwrap();
+    transaction.into_signed(signature).into()
 }
 
 pub fn make_signed_authorization(
@@ -442,7 +435,7 @@ pub fn make_signed_authorization(
     nonce: u64,
 ) -> SignedAuthorization {
     let authorization = Authorization {
-        chain_id: U256::from(1337),
+        chain_id: U256::from(TEST_CHAIN_ID),
         address,
         nonce,
     };
@@ -464,6 +457,18 @@ pub fn sign_authorization(
 pub fn recover_tx(tx: EthTxEnvelope) -> Recovered<EthTxEnvelope> {
     let signer = tx.recover_signer().unwrap();
     Recovered::new_unchecked(tx, signer)
+}
+
+fn namespaced_chain_id(namespace: Address) -> u64 {
+    chain_id_for_namespace(namespace, TEST_CHAIN_ID)
+        .expect("test namespace must fit in the temporary u64 subset")
+}
+
+pub fn make_representable_namespace(tag: u64) -> Address {
+    let chain_id = (tag << 16) | TEST_CHAIN_ID;
+    let mut bytes = [0u8; 20];
+    bytes[12..].copy_from_slice(&chain_id.to_be_bytes());
+    Address::from(bytes)
 }
 
 pub fn make_receipt(logs_len: usize) -> ReceiptWithBloom {
@@ -499,7 +504,7 @@ fn compute_expected_txn_fees_and_nonce_usages(
             if let Some(auth_list) = eth_txn.authorization_list() {
                 for auth in auth_list {
                     let authority = auth.recover_authority().unwrap();
-                    let authority_key = eth_txn.account_key(authority);
+                    let authority_key = eth_txn.account_key(TEST_CHAIN_ID, authority).unwrap();
                     txn_fees
                         .entry(authority_key)
                         .and_modify(|e| {
@@ -517,15 +522,15 @@ fn compute_expected_txn_fees_and_nonce_usages(
         }
 
         txn_fees
-            .entry(eth_txn.account_key(eth_txn.signer()))
+            .entry(eth_txn.account_key(TEST_CHAIN_ID, eth_txn.signer()).unwrap())
             .and_modify(|e| {
                 e.max_gas_cost = e
                     .max_gas_cost
-                    .saturating_add(compute_txn_max_gas_cost(eth_txn.inner().inner(), BASE_FEE));
+                    .saturating_add(compute_txn_max_gas_cost(eth_txn.inner(), BASE_FEE));
             })
             .or_insert_with(|| TxnFee {
                 first_txn_value: eth_txn.value(),
-                first_txn_gas: compute_txn_max_gas_cost(eth_txn.inner().inner(), BASE_FEE),
+                first_txn_gas: compute_txn_max_gas_cost(eth_txn.inner(), BASE_FEE),
                 max_gas_cost: Balance::ZERO,
                 is_delegated: false,
                 delegation_before_first_txn: false,
@@ -535,7 +540,10 @@ fn compute_expected_txn_fees_and_nonce_usages(
     let nonce_usages = txs
         .iter()
         .flat_map(|t| {
-            let mut pairs = vec![(t.account_key(t.signer()), NonceUsage::Known(t.nonce()))];
+            let mut pairs = vec![(
+                t.account_key(TEST_CHAIN_ID, t.signer()).unwrap(),
+                NonceUsage::Known(t.nonce()),
+            )];
 
             if t.is_eip7702() {
                 if let Some(auth_list) = t.authorization_list() {
@@ -543,7 +551,7 @@ fn compute_expected_txn_fees_and_nonce_usages(
                         let authority = auth.recover_authority().unwrap();
 
                         pairs.push((
-                            t.account_key(authority),
+                            t.account_key(TEST_CHAIN_ID, authority).unwrap(),
                             NonceUsage::Possible(VecDeque::from_iter([auth.nonce()])),
                         ));
                     }

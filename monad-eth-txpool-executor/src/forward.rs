@@ -20,6 +20,7 @@ use std::{
 };
 
 use bytes::Bytes;
+use alloy_eips::eip2718::Encodable2718;
 use monad_chain_config::{
     execution_revision::ExecutionChainParams, revision::ChainRevision, ChainConfig,
 };

@@ -20,8 +20,8 @@ use alloy_eips::Decodable2718;
 use alloy_primitives::{Address, FixedBytes};
 use alloy_rpc_types::Filter;
 use monad_exec_events::BlockCommitState;
+use monad_eth_types::{namespace_for_chain_id, EthTxEnvelope};
 use monad_rpc_docs::rpc;
-use monad_eth_types::EthTxEnvelope;
 use monad_triedb_utils::triedb_env::Triedb;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -165,10 +165,13 @@ fn validate_and_decode_tx(
         ));
     }
 
-    if let Some(tx_chain_id) = tx.chain_id() {
-        if tx_chain_id != chain_id {
-            return Err(JsonRpcError::invalid_chain_id(chain_id, tx_chain_id));
-        }
+    if let Err(err) = namespace_for_chain_id(tx.chain_id(), chain_id) {
+        let tx_chain_id = match err {
+            monad_eth_types::WrongChainId::InvalidNamespaceSuffix { tx_chain_id, .. } => {
+                tx_chain_id
+            }
+        };
+        return Err(JsonRpcError::invalid_chain_id(chain_id, tx_chain_id));
     }
 
     Ok(tx)
