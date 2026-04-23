@@ -15,6 +15,7 @@
 
 use alloy_consensus::{Transaction, TxEnvelope};
 use monad_chain_config::{execution_revision::ExecutionChainParams, revision::ChainParams};
+use monad_eth_types::namespace_for_chain_id;
 use serde::{Deserialize, Serialize};
 
 // allow for more fine grain debugging if needed
@@ -148,11 +149,13 @@ impl EthHomesteadForkValidation {
     }
 
     fn eip_155(tx: &TxEnvelope, chain_id: u64) -> Result<(), StaticValidationError> {
-        // We still allow legacy transactions without chain_id specified to pass through
-        if let Some(tx_chain_id) = tx.chain_id() {
-            if tx_chain_id != chain_id {
-                return Err(StaticValidationError::InvalidChainId { tx_chain_id });
-            }
+        if let Err(err) = namespace_for_chain_id(tx.chain_id(), chain_id) {
+            let tx_chain_id = match err {
+                monad_eth_types::WrongChainId::InvalidNamespaceSuffix { tx_chain_id, .. } => {
+                    tx_chain_id
+                }
+            };
+            return Err(StaticValidationError::InvalidChainId { tx_chain_id });
         }
         Ok(())
     }

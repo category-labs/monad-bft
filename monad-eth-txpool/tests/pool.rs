@@ -1469,7 +1469,7 @@ fn test_tx_invalid_chain_id() {
             .sign_hash_sync(&transaction.signature_hash())
             .unwrap();
 
-        EthTxEnvelope::global(transaction.into_signed(signature).into())
+        transaction.into_signed(signature).into()
     };
 
     run_custom(
@@ -1596,7 +1596,7 @@ fn test_missing_chain_id() {
         let signer = PrivateKeySigner::from_bytes(&S1).unwrap();
         let signature = signer.sign_hash_sync(&tx.signature_hash()).unwrap();
 
-        EthTxEnvelope::global(tx.into_signed(signature).into())
+        tx.into_signed(signature).into()
     };
 
     run_simple(

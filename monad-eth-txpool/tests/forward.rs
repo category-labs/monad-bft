@@ -15,15 +15,16 @@
 
 use std::collections::BTreeMap;
 
-use alloy_eips::Decodable2718;
+use alloy_eips::{Decodable2718, Encodable2718};
 use monad_chain_config::{revision::MockChainRevision, MockChainConfig};
 use monad_crypto::NopSignature;
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_testutil::{
-    generate_block_with_txs, make_legacy_tx, make_namespaced_legacy_tx, recover_tx, S1,
+    generate_block_with_txs, make_legacy_tx, make_namespaced_legacy_tx, make_representable_namespace,
+    recover_tx, S1,
 };
 use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics, PoolTxKind};
-use monad_eth_types::{AccountKey, EthTxEnvelope, NAMESPACED_TX_PREFIX};
+use monad_eth_types::{AccountKey, EthTxEnvelope, NamespacedTx};
 use monad_state_backend::{AccountState, InMemoryBlockState, InMemoryState, InMemoryStateInner};
 use monad_testutil::signing::MockSignatures;
 use monad_types::{Round, SeqNum, GENESIS_SEQ_NUM};
@@ -238,7 +239,7 @@ fn test_multiple_sequential_commits() {
 
 #[test]
 fn test_namespaced_forwarded_bytes_roundtrip_and_insert() {
-    let namespace = alloy_primitives::Address::repeat_byte(0xaa);
+    let namespace = make_representable_namespace(1);
     let tx = recover_tx(make_namespaced_legacy_tx(
         namespace,
         S1,
@@ -309,11 +310,12 @@ fn test_namespaced_forwarded_bytes_roundtrip_and_insert() {
         .unwrap()
         .clone();
     let raw = forwardable.encoded_2718();
-    assert_eq!(raw[0], NAMESPACED_TX_PREFIX);
-    assert_eq!(&raw[1..21], namespace.0.as_slice());
-
     let decoded = EthTxEnvelope::decode_2718_exact(&raw).unwrap();
     assert_eq!(decoded, forwardable);
+    assert_eq!(
+        decoded.namespace(1337).unwrap(),
+        Some(namespace)
+    );
 
     let mut dest_pool = EthTxPool::default_testing();
     let dest_metrics = EthTxPoolMetrics::default();

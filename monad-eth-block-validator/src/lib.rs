@@ -50,8 +50,8 @@ use monad_eth_block_policy::{
     EthBlockPolicy, EthValidatedBlock,
 };
 use monad_eth_types::{
-    EthBlockBody, EthExecutionProtocol, EthTxEnvelope, ExtractEthAddress, ProposedEthHeader,
-    ValidatedTx,
+    namespace_for_chain_id, EthBlockBody, EthExecutionProtocol, EthTxEnvelope, ExtractEthAddress,
+    NamespacedTx, ProposedEthHeader, ValidatedTx,
 };
 use monad_secp::RecoverableAddress;
 use monad_state_backend::StateBackend;
@@ -420,8 +420,10 @@ where
         let mut nonce_usages = NonceUsageMap::default();
 
         for sys_txn in &system_txns {
-            let maybe_old_nonce_usage =
-                nonce_usages.add_known(sys_txn.account_key(sys_txn.signer()), sys_txn.nonce());
+            let sys_account_key = sys_txn
+                .account_key(chain_id, sys_txn.signer())
+                .expect("system transaction chain id should already be checked");
+            let maybe_old_nonce_usage = nonce_usages.add_known(sys_account_key, sys_txn.nonce());
             // A block is invalid if we see a smaller or equal nonce
             // after the first or if there is a nonce gap
             if let Some(old_nonce_usage) = maybe_old_nonce_usage {
@@ -455,13 +457,16 @@ where
 
         // early return if any user transaction fails static validation
         for eth_txn in eth_txns.iter() {
-            if eth_txn.is_namespaced() && eth_txn.signer() == SYSTEM_SENDER_ETH_ADDRESS {
+            if namespace_for_chain_id(eth_txn.chain_id(), chain_id)
+                .is_ok_and(|namespace| namespace.is_some())
+                && eth_txn.signer() == SYSTEM_SENDER_ETH_ADDRESS
+            {
                 debug!(?eth_txn, "namespaced system sender transaction is not allowed");
                 return Err(TxnError::InvalidSystemAccountAuthorization.into());
             }
 
             if let Err(txn_err) =
-                static_validate_transaction(eth_txn.inner().inner(), chain_id, chain_params, execution_chain_params)
+                static_validate_transaction(eth_txn.inner(), chain_id, chain_params, execution_chain_params)
             {
                 debug!(?eth_txn, ?txn_err, "transaction static validation failed");
                 return Err(TxnError::StaticValidationError(txn_err).into());
@@ -509,7 +514,9 @@ where
                 return Err(TxnError::MaxFeeLessThanBaseFee.into());
             }
 
-            let txn_account_key = eth_txn.account_key(eth_txn.signer());
+            let txn_account_key = eth_txn
+                .account_key(chain_id, eth_txn.signer())
+                .expect("statically validated transaction chain id should already be checked");
             let maybe_old_nonce_usage = nonce_usages.add_known(txn_account_key, eth_txn.nonce());
             // txn iteration is following the same order as they are in the
             // block. A block is invalid if we see a smaller or equal nonce
@@ -553,7 +560,9 @@ where
 
                     // TODO: currently consensus and execution both treats invalid authorization as has_delegated
                     // this has to be updated together with execution change in the future
-                    let authority_key = eth_txn.account_key(authority);
+                    let authority_key = eth_txn
+                        .account_key(chain_id, authority)
+                        .expect("statically validated transaction chain id should already be checked");
                     txn_fees
                         .entry(authority_key)
                         .and_modify(|e| e.is_delegated = true)
@@ -609,11 +618,11 @@ where
                 .and_modify(|e| {
                     e.max_gas_cost = e
                         .max_gas_cost
-                        .saturating_add(compute_txn_max_gas_cost(eth_txn.inner().inner(), block_base_fee));
+                        .saturating_add(compute_txn_max_gas_cost(eth_txn.inner(), block_base_fee));
                 })
                 .or_insert(TxnFee {
                     first_txn_value: eth_txn.value(),
-                    first_txn_gas: compute_txn_max_gas_cost(eth_txn.inner().inner(), block_base_fee),
+                    first_txn_gas: compute_txn_max_gas_cost(eth_txn.inner(), block_base_fee),
                     max_gas_cost: Balance::ZERO,
                     is_delegated: false,
                     delegation_before_first_txn: false,
@@ -1038,9 +1047,8 @@ mod test {
             !original_signature.v(),
         );
         let inner_tx = valid_txn.as_legacy().unwrap().tx();
-        let invalid_txn = EthTxEnvelope::global(
-            Signed::new_unchecked(inner_tx.clone(), invalid_signature, *valid_txn.tx_hash()).into(),
-        );
+        let invalid_txn: EthTxEnvelope =
+            Signed::new_unchecked(inner_tx.clone(), invalid_signature, *valid_txn.tx_hash()).into();
 
         // both transactions recover to the same signer
         assert_eq!(

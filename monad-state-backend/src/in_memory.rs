@@ -27,7 +27,7 @@ use alloy_primitives::Address;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_types::{AccountKey, EthAccount, EthHeader, EthTxEnvelope};
+use monad_eth_types::{AccountKey, EthAccount, EthHeader, EthTxEnvelope, NamespacedTx};
 use monad_types::{
     Balance, BlockId, Epoch, Nonce, Round, SeqNum, Stake, GENESIS_BLOCK_ID, GENESIS_ROUND,
     GENESIS_SEQ_NUM,
@@ -41,6 +41,7 @@ use crate::{MockExecution, StateBackend, StateBackendError};
 pub type InMemoryState<ST, SCT> = Arc<Mutex<InMemoryStateInner<ST, SCT>>>;
 
 const DEFAULT_RESERVE_BALANCE: u128 = 10_000_000_000_000_000_000; // 10 MON
+const MOCK_CHAIN_ID: u64 = 1337;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountState {
@@ -276,7 +277,9 @@ where
 
         for tx in txns.iter() {
             let addr = tx.recover_signer().expect("invalid eth tx in block");
-            let account_key = tx.account_key(addr);
+            let account_key = tx
+                .account_key(MOCK_CHAIN_ID, addr)
+                .expect("mock execution only supports statically valid chain ids");
 
             // recover 7702 authorities of current block
             let txn_authorities: Vec<AccountKey> =
@@ -285,7 +288,10 @@ where
                         .expect("valid 7702 must have auth list")
                         .iter()
                         .filter_map(|tuple| tuple.recover_authority().ok())
-                        .map(|authority| tx.account_key(authority))
+                        .map(|authority| {
+                            tx.account_key(MOCK_CHAIN_ID, authority)
+                                .expect("mock execution only supports statically valid chain ids")
+                        })
                         .collect()
                 } else {
                     Vec::new()
@@ -378,7 +384,9 @@ where
                     .expect("valid 7702 must have auth list");
                 for tuple in auth_list {
                     if let Ok(auth_addr) = tuple.recover_authority() {
-                        let auth_account_key = tx.account_key(auth_addr);
+                        let auth_account_key = tx
+                            .account_key(MOCK_CHAIN_ID, auth_addr)
+                            .expect("mock execution only supports statically valid chain ids");
                         let auth_account_entry =
                             accounts.entry(auth_account_key).or_insert(AccountState {
                                 balance: Balance::default(),

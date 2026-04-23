@@ -94,7 +94,7 @@ impl SystemTransactionValidator {
             return Err(SystemTransactionError::UnexpectedSenderAddress);
         }
 
-        if !txn.inner().inner().is_legacy() {
+        if !txn.inner().is_legacy() {
             return Err(SystemTransactionError::InvalidTxType);
         }
 

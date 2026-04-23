@@ -54,7 +54,7 @@ fn sign_with_system_sender(transaction: TxLegacy) -> Recovered<EthTxEnvelope> {
     let signed = transaction.into_signed(signature);
 
     Recovered::new_unchecked(
-        EthTxEnvelope::global(TxEnvelope::Legacy(signed)),
+        TxEnvelope::Legacy(signed),
         SYSTEM_SENDER_ETH_ADDRESS,
     )
 }

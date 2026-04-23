@@ -257,6 +257,7 @@ where
                 proposal_byte_limit,
                 &mut account_balances,
                 &validator,
+                chain_config.chain_id(),
                 &mut proposal,
                 tx.tx,
             ) {
@@ -275,7 +276,7 @@ where
                         continue;
                     }
 
-                    let authority_key = tx.tx.raw().inner().account_key(*authority);
+                    let authority_key = tx.tx.authority_account_key(*authority);
                     if !account_balances.contains_key(&authority_key) {
                         // Authority not used during sequencing, no need to track possible nonces
                         continue;
@@ -298,6 +299,7 @@ where
         proposal_byte_limit: u64,
         account_balances: &mut BTreeMap<&AccountKey, AccountBalanceState>,
         validator: &EthBlockPolicyBlockValidator<CRT>,
+        chain_id: u64,
         proposal: &mut Proposal<ST>,
         tx: &PoolTx<CertificateSignaturePubKey<ST>>,
     ) -> bool {
@@ -331,7 +333,9 @@ where
                 })
                 .collect(),
         };
-        if let Err(error) = validator.try_add_transaction(account_balances, &validated_tx) {
+        if let Err(error) =
+            validator.try_add_transaction(account_balances, &validated_tx, chain_id)
+        {
             debug!(
                 ?error,
                 signer = ?tx.raw().signer(),

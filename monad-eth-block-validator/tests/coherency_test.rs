@@ -770,7 +770,7 @@ fn make_test_tx(
         .sign_hash_sync(&transaction.signature_hash())
         .unwrap();
     let te: TxEnvelope = transaction.into_signed(signature).into();
-    recover_tx(EthTxEnvelope::global(te))
+    recover_tx(te)
 }
 
 pub fn make_eip7702_tx_with_value(
@@ -801,7 +801,7 @@ pub fn make_eip7702_tx_with_value(
         .sign_hash_sync(&transaction.signature_hash())
         .unwrap();
     let te: TxEnvelope = transaction.into_signed(signature).into();
-    recover_tx(EthTxEnvelope::global(te))
+    recover_tx(te)
 }
 
 pub fn make_signed_authorization(

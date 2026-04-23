@@ -34,7 +34,8 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_types::{
-    AccountKey, EthAccount, EthExecutionProtocol, EthHeader, ExtractEthAddress, ValidatedTx,
+    AccountKey, EthAccount, EthExecutionProtocol, EthHeader, ExtractEthAddress, NamespacedTx,
+    ValidatedTx,
 };
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_system_calls::validator::{SystemTransactionValidationError, SystemTransactionValidator};
@@ -470,8 +471,11 @@ where
         &self,
         account_balances: &mut BTreeMap<&AccountKey, AccountBalanceState>,
         txn: &ValidatedTx,
+        chain_id: u64,
     ) -> Result<(), BlockPolicyError> {
-        let account_key = txn.account_key(txn.signer());
+        let account_key = txn
+            .account_key(chain_id, txn.signer())
+            .map_err(|_| BlockPolicyError::BlockNotCoherent)?;
 
         let maybe_account_balance = account_balances.get_mut(&account_key);
 
@@ -501,7 +505,7 @@ where
 
         // if an account for txn T is not delegated and has no prior txns, then T can charge into reserve.
         if is_emptying_transaction {
-            let txn_max_gas = compute_txn_max_gas_cost(txn.tx.inner().inner(), self.base_fee);
+            let txn_max_gas = compute_txn_max_gas_cost(txn.tx.inner(), self.base_fee);
             if account_balance.balance < txn_max_gas {
                 trace!(
                     seq_num =?self.block_seq_num,
@@ -516,7 +520,7 @@ where
                 ));
             }
 
-            let txn_max_cost = compute_txn_max_value(txn.tx.inner().inner(), self.base_fee);
+            let txn_max_cost = compute_txn_max_value(txn.tx.inner(), self.base_fee);
             let estimated_balance = account_balance.balance.saturating_sub(txn_max_cost);
             let reserve_balance = account_balance.max_reserve_balance.min(estimated_balance);
 
@@ -540,7 +544,7 @@ where
             account_balance.remaining_reserve_balance = reserve_balance;
             account_balance.block_seqnum_of_latest_txn = self.block_seq_num;
         } else {
-            let txn_max_gas = compute_txn_max_gas_cost(txn.tx.inner().inner(), self.base_fee);
+            let txn_max_gas = compute_txn_max_gas_cost(txn.tx.inner(), self.base_fee);
             if account_balance.remaining_reserve_balance < txn_max_gas {
                 trace!(
                     seq_num =?self.block_seq_num,
@@ -565,7 +569,9 @@ where
         // update delegation status of authority addresses
         for recovered_auth in &txn.authorizations_7702 {
             if let Some(auth_address) = recovered_auth.authority() {
-                let auth_account_key = txn.account_key(auth_address);
+                let auth_account_key = txn
+                    .account_key(chain_id, auth_address)
+                    .map_err(|_| BlockPolicyError::BlockNotCoherent)?;
                 if let Some(account_balance) = account_balances.get_mut(&auth_account_key) {
                     account_balance.is_delegated = true;
                 }
@@ -1011,9 +1017,12 @@ where
         &self,
         system_txns: &[ValidatedTx],
         account_nonces: &mut BTreeMap<&AccountKey, u64>,
+        chain_id: u64,
     ) -> Result<(), BlockPolicyError> {
         for sys_txn in system_txns.iter() {
-            let sys_txn_signer = sys_txn.account_key(sys_txn.signer());
+            let sys_txn_signer = sys_txn
+                .account_key(chain_id, sys_txn.signer())
+                .map_err(|_| BlockPolicyError::BlockNotCoherent)?;
             let sys_txn_nonce = sys_txn.nonce();
 
             let expected_nonce = account_nonces
@@ -1039,8 +1048,11 @@ where
         &self,
         txn: &ValidatedTx,
         account_nonces: &mut BTreeMap<&AccountKey, u64>,
+        chain_id: u64,
     ) -> Result<(), BlockPolicyError> {
-        let account_key = txn.account_key(txn.signer());
+        let account_key = txn
+            .account_key(chain_id, txn.signer())
+            .map_err(|_| BlockPolicyError::BlockNotCoherent)?;
         let txn_nonce = txn.nonce();
 
         let expected_nonce = account_nonces
@@ -1077,7 +1089,9 @@ where
         {
             match result {
                 Some(authority) => {
-                    let authority_key = txn.account_key(authority);
+                    let authority_key = txn
+                        .account_key(chain_id, authority)
+                        .expect("validated tx chain id should already be checked");
                     trace!(?code_address, ?nonce, ?authority, "Authority");
                     if !auth_chain_id.is_zero() && *auth_chain_id != U256::from(chain_id) {
                         continue;
@@ -1110,10 +1124,14 @@ where
         &self,
         validated_txns: &[ValidatedTx],
         system_txns: &[ValidatedTx],
+        chain_id: u64,
     ) -> HashSet<AccountKey> {
         let mut tx_signers: HashSet<AccountKey> = validated_txns
             .iter()
-            .map(|txn| txn.account_key(txn.signer()))
+            .map(|txn| {
+                txn.account_key(chain_id, txn.signer())
+                    .expect("validated tx chain id should already be checked")
+            })
             .collect();
 
         // authority signers
@@ -1121,11 +1139,17 @@ where
             txn.authorizations_7702
                 .iter()
                 .filter_map(|recovered_auth| recovered_auth.authority())
-                .map(|authority| txn.account_key(authority))
+                .map(|authority| {
+                    txn.account_key(chain_id, authority)
+                        .expect("validated tx chain id should already be checked")
+                })
         }));
 
         // system transactions signers
-        tx_signers.extend(system_txns.iter().map(|txn| txn.account_key(txn.signer())));
+        tx_signers.extend(system_txns.iter().map(|txn| {
+            txn.account_key(chain_id, txn.signer())
+                .expect("validated tx chain id should already be checked")
+        }));
 
         tx_signers
     }
@@ -1216,7 +1240,8 @@ where
             return Err(BlockPolicyError::BaseFeeError);
         }
 
-        let tx_signers = self.extract_signers(&block.validated_txns, &block.system_txns);
+        let tx_signers =
+            self.extract_signers(&block.validated_txns, &block.system_txns, chain_id);
 
         // these must be updated as we go through txs in the block
         let mut account_nonces = self.get_account_base_nonces(
@@ -1250,11 +1275,11 @@ where
             );
             return Err(BlockPolicyError::SystemTransactionError);
         }
-        self.system_transaction_nonce_check(&block.system_txns, &mut account_nonces)?;
+        self.system_transaction_nonce_check(&block.system_txns, &mut account_nonces, chain_id)?;
 
         for txn in block.validated_txns.iter() {
-            self.nonce_check_and_update(txn, &mut account_nonces)?;
-            validator.try_add_transaction(&mut account_balances, txn)?;
+            self.nonce_check_and_update(txn, &mut account_nonces, chain_id)?;
+            validator.try_add_transaction(&mut account_balances, txn, chain_id)?;
 
             // https://eips.ethereum.org/EIPS/eip-7702#behavior
             // "The authorization list is processed before the execution portion
@@ -1321,8 +1346,8 @@ mod test {
     use monad_eth_testutil::{
         generate_consensus_test_block, make_eip1559_tx, make_eip1559_tx_with_value,
         make_eip7702_tx, make_eip7702_tx_with_value, make_legacy_tx,
-        make_namespaced_eip1559_tx, make_signed_authorization, recover_tx, secret_to_eth_address,
-        sign_authorization, S1, S2,
+        make_namespaced_eip1559_tx, make_representable_namespace, make_signed_authorization,
+        recover_tx, secret_to_eth_address, sign_authorization, S1, S2,
     };
     use monad_eth_types::EthTxEnvelope;
     use monad_state_backend::{AccountState, InMemoryBlockState, InMemoryStateInner, NopStateBackend};
@@ -1488,7 +1513,7 @@ mod test {
         )?;
 
         for txn in incoming_block.validated_txns.iter() {
-            validator.try_add_transaction(&mut account_balances, txn)?;
+            validator.try_add_transaction(&mut account_balances, txn, CHAIN_ID)?;
         }
 
         Ok(())
@@ -1515,7 +1540,7 @@ mod test {
         )?;
 
         for txn in incoming_block.validated_txns.iter() {
-            block_policy.nonce_check_and_update(txn, &mut account_nonces)?;
+            block_policy.nonce_check_and_update(txn, &mut account_nonces, CHAIN_ID)?;
             if txn.is_eip7702() {
                 block_policy.eip_7702_valid_nonce_update(txn, &mut account_nonces, CHAIN_ID);
             }
@@ -2806,7 +2831,7 @@ mod test {
 
         for txn in txs.iter() {
             assert!(validator
-                .try_add_transaction(&mut account_balances, txn)
+                .try_add_transaction(&mut account_balances, txn, CHAIN_ID)
                 .is_ok());
         }
 
@@ -2831,7 +2856,7 @@ mod test {
 
         for txn in txs.iter() {
             assert!(
-                validator.try_add_transaction(&mut account_balances, txn)
+                validator.try_add_transaction(&mut account_balances, txn, CHAIN_ID)
                     == Err(BlockPolicyError::BlockPolicyBlockValidatorError(
                         BlockPolicyBlockValidatorError::InsufficientBalance
                     ))
@@ -2874,7 +2899,7 @@ mod test {
 
         for txn in txs.iter() {
             assert!(validator
-                .try_add_transaction(&mut account_balances, txn)
+                .try_add_transaction(&mut account_balances, txn, CHAIN_ID)
                 .is_ok());
         }
 
@@ -2899,7 +2924,7 @@ mod test {
 
         for txn in txs.iter() {
             assert!(
-                validator.try_add_transaction(&mut account_balances, txn)
+                validator.try_add_transaction(&mut account_balances, txn, CHAIN_ID)
                     == Err(BlockPolicyError::BlockPolicyBlockValidatorError(
                         BlockPolicyBlockValidatorError::InsufficientReserveBalance
                     ))
@@ -2943,7 +2968,7 @@ mod test {
 
         for txn in txs.iter() {
             assert!(
-                validator.try_add_transaction(&mut account_balances, txn)
+                validator.try_add_transaction(&mut account_balances, txn, CHAIN_ID)
                     == Err(BlockPolicyError::BlockPolicyBlockValidatorError(
                         BlockPolicyBlockValidatorError::AccountBalanceMissing
                     ))
@@ -2987,7 +3012,7 @@ mod test {
 
         for txn in txs.iter() {
             assert!(validator
-                .try_add_transaction(&mut account_balances, txn)
+                .try_add_transaction(&mut account_balances, txn, CHAIN_ID)
                 .is_ok());
         }
 
@@ -3015,7 +3040,7 @@ mod test {
 
         for txn in txs.iter() {
             assert!(validator
-                .try_add_transaction(&mut account_balances, txn)
+                .try_add_transaction(&mut account_balances, txn, CHAIN_ID)
                 .is_ok());
         }
     }
@@ -3059,7 +3084,7 @@ mod test {
 
         for txn in txs.iter() {
             assert!(validator
-                .try_add_transaction(&mut account_balances, txn)
+                .try_add_transaction(&mut account_balances, txn, CHAIN_ID)
                 .is_ok());
         }
 
@@ -3087,7 +3112,7 @@ mod test {
 
         for txn in txs.iter() {
             assert!(validator
-                .try_add_transaction(&mut account_balances, txn)
+                .try_add_transaction(&mut account_balances, txn, CHAIN_ID)
                 .is_ok());
         }
     }
@@ -3167,7 +3192,7 @@ mod test {
         .unwrap();
 
         assert_eq!(
-            validator.try_add_transaction(&mut account_balances, &txn),
+            validator.try_add_transaction(&mut account_balances, &txn, CHAIN_ID),
             expect
         );
     }
@@ -3411,7 +3436,7 @@ mod test {
         .unwrap();
 
         assert_eq!(
-            validator.try_add_transaction(account_balances, txn),
+            validator.try_add_transaction(account_balances, txn, CHAIN_ID),
             expect,
             "txn nonce {}",
             txn.nonce()
@@ -3680,8 +3705,8 @@ mod test {
 
     #[test]
     fn test_namespaced_nonce_spaces_are_independent() {
-        let namespace_a = Address::repeat_byte(0xaa);
-        let namespace_b = Address::repeat_byte(0xbb);
+        let namespace_a = make_representable_namespace(1);
+        let namespace_b = make_representable_namespace(2);
         let block_policy = EthBlockPolicy::<
             SignatureType,
             SignatureCollectionType,
@@ -3727,13 +3752,13 @@ mod test {
         ]);
 
         assert!(block_policy
-            .nonce_check_and_update(&global_tx, &mut account_nonces)
+            .nonce_check_and_update(&global_tx, &mut account_nonces, CHAIN_ID)
             .is_ok());
         assert!(block_policy
-            .nonce_check_and_update(&namespaced_tx_a, &mut account_nonces)
+            .nonce_check_and_update(&namespaced_tx_a, &mut account_nonces, CHAIN_ID)
             .is_ok());
         assert!(block_policy
-            .nonce_check_and_update(&namespaced_tx_b, &mut account_nonces)
+            .nonce_check_and_update(&namespaced_tx_b, &mut account_nonces, CHAIN_ID)
             .is_ok());
 
         assert_eq!(account_nonces[&global_key], 1);
@@ -3743,7 +3768,7 @@ mod test {
 
     #[test]
     fn test_namespaced_nonce_gap_is_rejected() {
-        let namespace = Address::repeat_byte(0xcc);
+        let namespace = make_representable_namespace(3);
         let block_policy = EthBlockPolicy::<
             SignatureType,
             SignatureCollectionType,
@@ -3773,17 +3798,17 @@ mod test {
         let mut account_nonces = BTreeMap::from([(&account_key, 0)]);
 
         assert!(block_policy
-            .nonce_check_and_update(&tx0, &mut account_nonces)
+            .nonce_check_and_update(&tx0, &mut account_nonces, CHAIN_ID)
             .is_ok());
         assert_eq!(
-            block_policy.nonce_check_and_update(&tx2, &mut account_nonces),
+            block_policy.nonce_check_and_update(&tx2, &mut account_nonces, CHAIN_ID),
             Err(BlockPolicyError::BlockNotCoherent)
         );
     }
 
     #[test]
     fn test_namespaced_balance_lookup_is_scoped_to_namespace() {
-        let namespace = Address::repeat_byte(0xdd);
+        let namespace = make_representable_namespace(4);
         let tx = make_validated_tx(recover_tx(make_namespaced_eip1559_tx(
             namespace,
             S1,
@@ -3828,7 +3853,7 @@ mod test {
             )
             .unwrap();
         assert!(validator
-            .try_add_transaction(&mut funded_balances, &tx)
+            .try_add_transaction(&mut funded_balances, &tx, CHAIN_ID)
             .is_ok());
 
         let global_only_state =
@@ -3849,7 +3874,7 @@ mod test {
             )
             .unwrap();
         assert_eq!(
-            validator.try_add_transaction(&mut global_only_balances, &tx),
+            validator.try_add_transaction(&mut global_only_balances, &tx, CHAIN_ID),
             Err(BlockPolicyError::BlockPolicyBlockValidatorError(
                 BlockPolicyBlockValidatorError::InsufficientBalance
             ))

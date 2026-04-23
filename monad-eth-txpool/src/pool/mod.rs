@@ -213,7 +213,7 @@ where
                     .get(&tx.account_key())
                     .is_none_or(|account_balance_state| {
                         account_balance_state.balance
-                            < compute_txn_max_gas_cost(tx.raw().inner().inner(), last_commit_base_fee)
+                            < compute_txn_max_gas_cost(tx.raw().inner(), last_commit_base_fee)
                     })
                 {
                     event_tracker.drop(tx.hash(), EthTxPoolDropReason::InsufficientBalance);

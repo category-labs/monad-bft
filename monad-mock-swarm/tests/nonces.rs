@@ -19,12 +19,13 @@ mod eth_swarm_common;
 mod test {
     use std::collections::{BTreeMap, HashSet};
 
-    use alloy_primitives::{Address, B256};
+    use alloy_eips::eip2718::Encodable2718;
+    use alloy_primitives::B256;
     use itertools::Itertools;
     use monad_consensus_types::{timeout::HighExtend, RoundCertificate};
     use monad_eth_testutil::{
-        make_eip7702_tx, make_legacy_tx, make_namespaced_legacy_tx, make_signed_authorization,
-        secret_to_eth_address,
+        make_eip7702_tx, make_legacy_tx, make_namespaced_legacy_tx,
+        make_representable_namespace, make_signed_authorization, secret_to_eth_address,
     };
     use monad_eth_types::AccountKey;
     use monad_mock_swarm::{
@@ -51,7 +52,7 @@ mod test {
     fn namespaced_global_and_namespaced_nonce_zero_can_coexist() {
         let sender_key = B256::repeat_byte(0xAB);
         let sender_address = secret_to_eth_address(sender_key);
-        let namespace = Address::repeat_byte(0x42);
+        let namespace = make_representable_namespace(1);
         let mut swarm = generate_eth_swarm_with_account_keys(
             2,
             BTreeMap::from([
