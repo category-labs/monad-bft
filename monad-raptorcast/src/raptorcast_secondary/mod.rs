@@ -290,7 +290,14 @@ where
                             ?round,
                             "RaptorCastSecondary UpdateCurrentRound (Client)"
                         );
-                        client.enter_round(round);
+                        self.curr_epoch = epoch;
+                        let reports = client.enter_round(round);
+                        for (report, validator_id) in reports {
+                            self.send_single_msg(
+                                FullNodesGroupMessage::ParticipationReport(report),
+                                validator_id,
+                            );
+                        }
                     }
                     Role::Publisher(publisher) => {
                         trace!(

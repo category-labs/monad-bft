@@ -20,13 +20,16 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_executor::ExecutorMetrics;
-use monad_types::{NodeId, Round, RoundSpan, GENESIS_ROUND};
+use monad_types::{BoundedU64, NodeId, Round, RoundSpan, GENESIS_ROUND};
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, error, warn};
 
 use super::{
     super::config::RaptorCastConfigSecondaryClient,
-    group_message::{ConfirmGroup, PrepareGroup, PrepareGroupResponse},
+    group_message::{
+        ConfirmGroup, PeerParticipation, PeerParticipationReport, PrepareGroup,
+        PrepareGroupResponse,
+    },
 };
 use crate::{
     raptorcast_secondary::group_message::NoConfirm,
@@ -45,6 +48,10 @@ monad_executor::metric_consts! {
     pub CLIENT_RECEIVED_CONFIRMS {
         name: "monad.bft.raptorcast.secondary.client.received_confirms",
         help: "Group confirmations received as raptorcast secondary client",
+    }
+    pub CLIENT_SENT_REPORTS {
+        name: "monad.bft.raptorcast.secondary.client.sent_reports",
+        help: "Participation reports sent as raptorcast secondary client",
     }
 }
 
@@ -121,8 +128,16 @@ where
         }
     }
 
-    // Called from UpdateCurrentRound
-    pub fn enter_round(&mut self, curr_round: Round) {
+    // Called from UpdateCurrentRound.
+    // Returns participation reports for any groups that expired this round,
+    // paired with the validator node_id to send each report to.
+    pub fn enter_round(
+        &mut self,
+        curr_round: Round,
+    ) -> Vec<(
+        PeerParticipationReport<CertificateSignaturePubKey<ST>>,
+        NodeId<CertificateSignaturePubKey<ST>>,
+    )> {
         // Sanity check on curr_round
         if curr_round < self.curr_round {
             error!(
@@ -130,7 +145,7 @@ where
                 {:?} -> {:?}",
                 self.curr_round, curr_round
             );
-            return;
+            return Vec::new();
         } else if curr_round > self.curr_round + Round(1) {
             debug!(
                 "RaptorCastSecondary detected round gap \
@@ -152,10 +167,50 @@ where
                 keys_to_remove.push(interval.clone());
             }
         }
+
+        let mut reports = Vec::new();
         for interval_key in keys_to_remove {
-            self.confirmed_groups.remove(interval_key);
+            if let Some(group_assignment) = self.confirmed_groups.remove(interval_key) {
+                let report = self.build_participation_report(&group_assignment);
+                let validator_id = *group_assignment.publisher_id();
+                reports.push((report, validator_id));
+                self.metrics[CLIENT_SENT_REPORTS] += 1;
+            }
         }
+
         self.metrics[CLIENT_NUM_CURRENT_GROUPS] = self.get_current_group_count();
+
+        reports
+    }
+
+    fn build_participation_report(
+        &self,
+        group: &SecondaryGroupAssignment<CertificateSignaturePubKey<ST>>,
+    ) -> PeerParticipationReport<CertificateSignaturePubKey<ST>> {
+        // TODO: Replace placeholder scores with actual chunk-based participation metrics
+        let peer_scores: Vec<PeerParticipation<CertificateSignaturePubKey<ST>>> = group
+            .group()
+            .iter()
+            .filter(|peer| **peer != self.client_node_id)
+            .map(|peer| PeerParticipation {
+                peer: *peer,
+                participation_score: BoundedU64::new(100).unwrap(),
+            })
+            .collect();
+
+        debug!(
+            round_span = ?group.round_span(),
+            validator = ?group.publisher_id(),
+            num_peers = peer_scores.len(),
+            "Building participation report"
+        );
+
+        PeerParticipationReport {
+            reporter: self.client_node_id,
+            validator_id: *group.publisher_id(),
+            round_span: *group.round_span(),
+            peer_scores: peer_scores.into(),
+        }
     }
 
     // If we are not receiving proposals, then we don't know what the current
@@ -524,6 +579,27 @@ mod tests {
         UnboundedReceiver<SecondaryGroupAssignment<PubKeyType>>,
     );
 
+    fn make_client(
+        self_id: NodeId<PubKeyType>,
+    ) -> (
+        Client<ST>,
+        UnboundedReceiver<SecondaryGroupAssignment<PubKeyType>>,
+    ) {
+        let (clt_tx, clt_rx): RcToRcChannelGrp = unbounded_channel();
+        let clt = Client::<ST>::new(
+            self_id,
+            clt_tx,
+            RaptorCastConfigSecondaryClient {
+                max_num_group: 5,
+                max_group_size: 50,
+                invite_future_dist_min: Round(1),
+                invite_future_dist_max: Round(100),
+                invite_accept_heartbeat: Duration::from_secs(10),
+            },
+        );
+        (clt, clt_rx)
+    }
+
     #[test]
     fn malformed_prepare_messages() {
         let (clt_tx, _clt_rx): RcToRcChannelGrp = unbounded_channel();
@@ -623,19 +699,8 @@ mod tests {
 
     #[test]
     fn test_get_current_group_count() {
-        let (clt_tx, _clt_rx): RcToRcChannelGrp = unbounded_channel();
         let self_id = nid(1);
-        let mut clt = Client::<ST>::new(
-            self_id,
-            clt_tx,
-            RaptorCastConfigSecondaryClient {
-                max_num_group: 2,
-                max_group_size: 50,
-                invite_future_dist_min: Round(1),
-                invite_future_dist_max: Round(100),
-                invite_accept_heartbeat: Duration::from_secs(10),
-            },
-        );
+        let (mut clt, _rx) = make_client(self_id);
 
         clt.curr_round = Round(2);
         let grp = SecondaryGroupAssignment::new(
@@ -701,6 +766,73 @@ mod tests {
                 .contains_key(&validator_id),
             "Valid NoConfirm should remove the invite from pending_confirms"
         );
+    }
+
+    #[test]
+    fn enter_round_returns_reports_on_expiry() {
+        let self_id = nid(1);
+        let (mut clt, _rx) = make_client(self_id);
+
+        let validator_id = nid(2);
+        let grp = SecondaryGroupAssignment::new(
+            validator_id,
+            RoundSpan::new(Round(1), Round(5)).unwrap(),
+            SecondaryGroup::new([self_id, nid(3), nid(4)].into_iter().collect()).unwrap(),
+        );
+        clt.confirmed_groups.insert(Round(1)..Round(5), grp);
+
+        // Group still active at round 3
+        let reports = clt.enter_round(Round(3));
+        assert!(reports.is_empty());
+
+        // Group expires at round 5
+        let reports = clt.enter_round(Round(5));
+        assert_eq!(reports.len(), 1);
+
+        let (report, dest) = &reports[0];
+        assert_eq!(*dest, validator_id);
+        assert_eq!(report.reporter, self_id);
+        assert_eq!(report.validator_id, validator_id);
+        assert_eq!(
+            report.round_span,
+            RoundSpan::new(Round(1), Round(5)).unwrap()
+        );
+        // All peers except self (nid(3), nid(4))
+        assert_eq!(report.peer_scores.len(), 2);
+        for score in report.peer_scores.iter() {
+            assert_ne!(
+                score.peer, self_id,
+                "self should be excluded from peer_scores"
+            );
+        }
+    }
+
+    #[test]
+    fn multiple_groups_produce_multiple_reports() {
+        let self_id = nid(1);
+        let (mut clt, _rx) = make_client(self_id);
+
+        // Two groups from different validators, both expiring at round 5
+        let grp1 = SecondaryGroupAssignment::new(
+            nid(10),
+            RoundSpan::new(Round(1), Round(5)).unwrap(),
+            SecondaryGroup::new([self_id, nid(3)].into_iter().collect()).unwrap(),
+        );
+        let grp2 = SecondaryGroupAssignment::new(
+            nid(20),
+            RoundSpan::new(Round(2), Round(5)).unwrap(),
+            SecondaryGroup::new([self_id, nid(4)].into_iter().collect()).unwrap(),
+        );
+        clt.confirmed_groups.force_insert(Round(1)..Round(5), grp1);
+        clt.confirmed_groups.force_insert(Round(2)..Round(5), grp2);
+
+        let reports = clt.enter_round(Round(5));
+        assert_eq!(reports.len(), 2);
+
+        let validators: std::collections::BTreeSet<_> =
+            reports.iter().map(|(_, dest)| *dest).collect();
+        assert!(validators.contains(&nid(10)));
+        assert!(validators.contains(&nid(20)));
     }
 
     // Creates a node id that we can refer to just from its seed
