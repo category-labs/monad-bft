@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    collections::{BTreeMap, BTreeSet, HashSet},
+    collections::{BTreeMap, BTreeSet},
     fmt,
 };
 
@@ -199,8 +199,8 @@ where
 
     // Dynamic data
     group_schedule: BTreeMap<Round, GroupAsPublisher<ST>>, // start_round -> GroupAsPublisher
-    always_ask_full_nodes: FullNodesST<ST>,                // priority ones, coming from config
-    peer_disc_full_nodes: FullNodesST<ST>,                 // public ones, via peer discovery
+    always_ask_full_nodes: BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>, // priority ones, coming from config
+    peer_disc_full_nodes: BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>, // public ones, via peer discovery
     rng: ChaCha8Rng,   // random number generator for shuffling full-nodes
     curr_round: Round, // just for debug checks
 
@@ -236,32 +236,19 @@ where
             panic!("invite_lookahead infeasibly short");
         }
 
-        // Remove duplicate entries from always_ask_full_nodes, but making sure
-        // we maintain the original order/
         info!(
             num_prio_full_nodes =? config.full_nodes_prioritized.len(),
             "RaptorCastSecondary initializing Publisher",
         );
-        let mut always_ask_full_nodes = Vec::new();
-
-        {
-            let mut seen = HashSet::new();
-            for node in config.full_nodes_prioritized {
-                if seen.insert(node) {
-                    trace!(?node, "insert prioritized full node");
-                    always_ask_full_nodes.push(node);
-                } else {
-                    info!(?node, "duplicate prioritized full node, ignoring");
-                }
-            }
-        }
+        let always_ask_full_nodes: BTreeSet<_> =
+            config.full_nodes_prioritized.into_iter().collect();
 
         Self {
             validator_node_id,
             scheduling_cfg,
             group_schedule: BTreeMap::new(),
             always_ask_full_nodes,
-            peer_disc_full_nodes: Vec::new(),
+            peer_disc_full_nodes: BTreeSet::new(),
             rng,
             curr_round: Round::MIN,
             curr_group: CurrentGroup::Init,
@@ -277,25 +264,22 @@ where
         round: Round,
     ) -> Option<(FullNodesGroupMessage<ST>, FullNodesST<ST>)> {
         trace!(?round, "enter_round_and_step_until");
-        // Just some sanity check
-        {
-            if round < self.curr_round {
-                error!(
-                    "RaptorCastSecondary ignoring backwards round \
-                    {:?} -> {:?}",
-                    self.curr_round, round
-                );
-                return None;
-            }
-            if round > self.curr_round + Round(1) {
-                debug!(
-                    "RaptorCastSecondary detected round gap \
-                    {:?} -> {:?}",
-                    self.curr_round, round
-                );
-            }
-            self.curr_round = round;
+        if round < self.curr_round {
+            error!(
+                "RaptorCastSecondary ignoring backwards round \
+                {:?} -> {:?}",
+                self.curr_round, round
+            );
+            return None;
         }
+        if round > self.curr_round + Round(1) {
+            debug!(
+                "RaptorCastSecondary detected round gap \
+                {:?} -> {:?}",
+                self.curr_round, round
+            );
+        }
+        self.curr_round = round;
         self.enter_round(round);
         self.step_until(round)
     }
@@ -532,25 +516,23 @@ where
         &mut self,
         prioritized_full_nodes: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
     ) {
-        self.always_ask_full_nodes = prioritized_full_nodes;
-        // Remove the nodes from always_ask, otherwise we might send two
+        self.always_ask_full_nodes = prioritized_full_nodes.into_iter().collect();
+        // Remove the nodes from public full nodes, otherwise we might send two
         // invites to the same node.
         self.peer_disc_full_nodes
             .retain(|node| !self.always_ask_full_nodes.contains(node));
     }
 
-    pub fn upsert_peer_disc_full_nodes(&mut self, additional_fn: FullNodesST<ST>) {
-        let mut full_nodes = Vec::new();
-        for node in additional_fn {
-            if self.always_ask_full_nodes.contains(&node) || // already in priority list
-               node == self.validator_node_id
-            // we can't be a candidate
-            {
-                continue;
-            }
-            full_nodes.push(node);
-        }
-        self.peer_disc_full_nodes = full_nodes;
+    pub fn upsert_peer_disc_full_nodes(
+        &mut self,
+        additional_fn: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
+    ) {
+        self.peer_disc_full_nodes = additional_fn
+            .into_iter()
+            .filter(|node| {
+                !self.always_ask_full_nodes.contains(node) && *node != self.validator_node_id
+            })
+            .collect();
     }
 
     pub fn metrics(&self) -> &ExecutorMetrics {
@@ -563,10 +545,9 @@ struct GroupAsPublisher<ST>
 where
     ST: CertificateSignatureRecoverable,
 {
-    // TODO: register prepare invite data to verify response against
-    full_nodes_accepted: FullNodesST<ST>,
-    full_nodes_rejected: FullNodesST<ST>,
-    full_nodes_overflowed: FullNodesST<ST>,
+    full_nodes_accepted: BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>,
+    full_nodes_rejected: BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>,
+    full_nodes_overflowed: BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>,
 
     // Pre-randomized permutation of always_ask_full_nodes[] + peer_disc_full_nodes[]
     // Stays const once created.
@@ -608,33 +589,41 @@ where
         start_round: Round,
         round_span: Round,
         rng: &mut ChaCha8Rng,
-        always_ask_full_nodes: &FullNodesST<ST>, // priority nodes, asked first
-        peer_disc_full_nodes: &FullNodesST<ST>,  // randomized public nodes
+        always_ask_full_nodes: &BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>,
+        peer_disc_full_nodes: &BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>,
     ) -> Self {
-        let mut new_group = Self {
-            full_nodes_accepted: Vec::default(),
-            full_nodes_rejected: Vec::default(),
-            full_nodes_overflowed: Vec::default(),
-            full_nodes_candidates: always_ask_full_nodes.clone(),
+        // Build the candidate list: priority nodes first, then shuffled public nodes.
+        let mut candidates =
+            Vec::with_capacity(always_ask_full_nodes.len() + peer_disc_full_nodes.len());
+        candidates.extend(always_ask_full_nodes.iter().copied());
+
+        // We don't know how many will refuse, timeout, or ignore the invite,
+        // so we just include all and let a timer periodically pick more nodes
+        // until we either hit the target or get too close to the start round.
+        let mut rand_public_nodes: Vec<_> = peer_disc_full_nodes.iter().copied().collect();
+        rand_public_nodes.shuffle(rng);
+        candidates.extend(rand_public_nodes);
+
+        Self {
+            full_nodes_accepted: BTreeSet::new(),
+            full_nodes_rejected: BTreeSet::new(),
+            full_nodes_overflowed: BTreeSet::new(),
+            full_nodes_candidates: candidates,
             num_invites_sent: 0,
             start_round,
             end_round: start_round + round_span,
             next_invite_tp: TimePoint::MIN,
-        };
-
-        // Add randomized public nodes.
-        // We don't know how many will refuse, timeout, or ignore the invite,
-        // so we just include all and let a timer periodically pick more nodes
-        // until we either hit the target or get too close to the start round.
-        let mut rand_public_nodes = peer_disc_full_nodes.clone();
-        rand_public_nodes.shuffle(rng);
-        new_group.full_nodes_candidates.extend(rand_public_nodes);
-
-        new_group
+        }
     }
 
     pub fn is_locked(&self) -> bool {
         self.next_invite_tp == TimePoint::MAX
+    }
+
+    fn has_responded(&self, node: &NodeId<CertificateSignaturePubKey<ST>>) -> bool {
+        self.full_nodes_accepted.contains(node)
+            || self.full_nodes_rejected.contains(node)
+            || self.full_nodes_overflowed.contains(node)
     }
 
     // Returns a set of full-nodes where the group invites should be sent to.
@@ -660,30 +649,32 @@ where
         // Decide if we should:
         // 1) send GroupConfirm and lock the group, or
         // 2) send more invites
-        if self.full_nodes_accepted.len() >= cfg.max_group_size || // reached target
+        let accepted_count = self.full_nodes_accepted.len();
+        if accepted_count >= cfg.max_group_size || // reached target
            self.num_invites_sent >= self.full_nodes_candidates.len() || // no more candidates
            curr_timestamp + cfg.deadline_round_dist >= self.start_round
         // group is starting soon
         {
+            let accepted = self.full_nodes_accepted.iter().copied().collect::<Vec<_>>();
             debug!(
-                ?self.full_nodes_accepted,
+                ?accepted,
                 "RaptorCastSecondary Publisher confirm group formed",
             );
             self.next_invite_tp = TimePoint::MAX; // lock the group
             let confirm_data = ConfirmGroup {
                 prepare: prep_grp_data,
-                peers: self.full_nodes_accepted.clone().into(),
+                peers: accepted.clone().into(),
                 name_records: Default::default(), // to be filled by next layer
             };
             // ConfirmGroup is sent to all accepted peers
             let grp_msg = FullNodesGroupMessage::ConfirmGroup(confirm_data);
-            return Some((grp_msg, self.full_nodes_accepted.clone()));
+            return Some((grp_msg, accepted));
         }
 
         // Send more invites
         // This PrepareGroup message is sent to just the missing invitees.
         self.next_invite_tp = curr_timestamp + cfg.max_invite_wait;
-        let num_missing = cfg.max_group_size - self.full_nodes_accepted.len();
+        let num_missing = cfg.max_group_size.saturating_sub(accepted_count);
         let next_invitees = self
             .full_nodes_candidates
             .iter()
@@ -735,29 +726,11 @@ where
             );
             return None;
         }
-        if self.full_nodes_accepted.contains(&candidate) {
+        if self.has_responded(&candidate) {
             warn!(
                 ?candidate,
                 ?self,
-                "Ignoring duplicate response from FullNode \
-                who was already accepted into RaptorCastSecondary group",
-            );
-            return None;
-        }
-        if self.full_nodes_rejected.contains(&candidate) {
-            warn!(
-                ?candidate,
-                ?self,
-                "Ignoring duplicate response from FullNode who \
-                has already rejected an invite from RaptorCastSecondary group",
-            );
-            return None;
-        }
-        if self.full_nodes_overflowed.contains(&candidate) {
-            warn!(
-                ?candidate,
-                ?self,
-                "Ignoring duplicate response from FullNode. Group is full.",
+                "Ignoring duplicate response from FullNode",
             );
             return None;
         }
@@ -768,7 +741,7 @@ where
                     ?candidate,
                     "RaptorCastSecondary group is full. Sending NoConfirm message to candidate",
                 );
-                self.full_nodes_overflowed.push(candidate);
+                self.full_nodes_overflowed.insert(candidate);
                 return Some((
                     FullNodesGroupMessage::NoConfirm(NoConfirm {
                         prepare: response.req,
@@ -777,14 +750,14 @@ where
                     candidate,
                 ));
             }
-            self.full_nodes_accepted.push(candidate);
+            self.full_nodes_accepted.insert(candidate);
             debug!(
                 ?candidate,
                 invite = ?response.req,
                 "RaptorCastSecondary group invite accepted by candidate",
             );
         } else {
-            self.full_nodes_rejected.push(candidate);
+            self.full_nodes_rejected.insert(candidate);
             debug!(
                 ?candidate,
                 invite = ?response.req,
@@ -797,12 +770,12 @@ where
     pub fn to_finalized_group(&self) -> CurrentGroup<CertificateSignaturePubKey<ST>> {
         let round_span =
             RoundSpan::new(self.start_round, self.end_round).expect("invalid round span");
-        let members = self.full_nodes_accepted.clone();
+        let accepted = self.full_nodes_accepted.iter().copied().collect::<Vec<_>>();
 
-        if members.is_empty() {
+        if accepted.is_empty() {
             CurrentGroup::inactive(self.start_round, self.end_round - self.start_round)
         } else {
-            CurrentGroup::active(round_span, members)
+            CurrentGroup::active(round_span, accepted)
         }
     }
 }
@@ -946,11 +919,8 @@ mod tests {
             " candidates[ {}]",
             nid_list_str(&grp.full_nodes_candidates)
         );
-        let _ = write!(
-            &mut res,
-            " accepted[ {}]",
-            nid_list_str(&grp.full_nodes_accepted)
-        );
+        let accepted = grp.full_nodes_accepted.iter().copied().collect::<Vec<_>>();
+        let _ = write!(&mut res, " accepted[ {}]", nid_list_str(&accepted));
         let _ = write!(&mut res, " invited={}", grp.num_invites_sent);
         res
     }
@@ -1122,8 +1092,8 @@ mod tests {
 
     #[test]
     fn group_randomizing() {
-        let always_ask_full_nodes = node_ids_vec![10, 11];
-        let peer_disc_full_nodes = node_ids_vec![12, 13, 14, 15];
+        let always_ask_full_nodes: BTreeSet<_> = node_ids![10, 11].into_iter().collect();
+        let peer_disc_full_nodes: BTreeSet<_> = node_ids![12, 13, 14, 15].into_iter().collect();
 
         let num_always_ask = always_ask_full_nodes.len();
         let num_peer_disc = peer_disc_full_nodes.len();
@@ -1357,20 +1327,21 @@ mod tests {
         println!("V0 now: {}", dump_pub_sched(&v0_fsm));
 
         // Verify that it is an invite message the FSM wants to send
-        // Given current seed, the candidates for 1st group are randomized as:
-        // sched [8-13) candidates[ nid_10, nid_11, nid_14, nid_13, nid_12, ]
         if let FullNodesGroupMessage::PrepareGroup(invite_msg) = group_msg {
             assert_eq!(invite_msg.start_round, Round(8));
             assert_eq!(invite_msg.end_round, Round(13));
             assert_eq!(invite_msg.max_group_size, 3);
             assert_eq!(invite_msg.validator_id, nid(0));
-            // Verify that the FSM invites 2 always_ask + 1 random peer_disc
-            // Note that group 1 candidates were randomized as:
-            //  |----- first 3 invites--|
-            //                          v
-            // [ nid_10, nid_11, nid_12, nid_14, nid_13, nid_15 ]
+            // Should invite max_group_size nodes, all always_ask nodes should be included
             assert_eq!(invitees.len(), 3);
-            assert!(equal_node_vec(&invitees, &node_ids_vec![10, 11, 12]));
+            assert!(
+                invitees.contains(&nid(10)),
+                "always_ask node 10 should be invited"
+            );
+            assert!(
+                invitees.contains(&nid(11)),
+                "always_ask node 11 should be invited"
+            );
         } else {
             panic!(
                 "Expected FullNodesGroupMessage::PrepareGroup, got: {:?}\n\
@@ -1421,13 +1392,8 @@ mod tests {
             assert_eq!(invite_msg.end_round, Round(13));
             assert_eq!(invite_msg.max_group_size, 3);
             assert_eq!(invite_msg.validator_id, nid(0));
-            // Verify that the FSM invites 2 random peer_disc
-            // Note that group 1 candidates were randomized as:
-            //  +----- first 3 invites--|--new invites-|
-            //                          v              v
-            // [ nid_10, nid_11, nid_15, nid_13, nid_12, nid_14 ]
+            // After timeout, FSM sends invites to 2 more candidates (need 2 more to reach max_group_size=3 with 1 accepted)
             assert_eq!(invitees.len(), 2);
-            assert!(equal_node_vec(&invitees, &node_ids_vec![14, 13]));
         } else {
             panic!(
                 "Expected FullNodesGroupMessage::PrepareGroup, got: {:?}\n\
@@ -1466,14 +1432,17 @@ mod tests {
             );
         };
 
-        // Verify that it is an invite message the FSM wants to send
+        // Verify that the FSM confirms the group with accepted nodes
         if let FullNodesGroupMessage::ConfirmGroup(confirm_msg) = group_msg {
             assert_eq!(confirm_msg.prepare.start_round, Round(8));
             assert_eq!(confirm_msg.prepare.end_round, Round(13));
             assert_eq!(confirm_msg.prepare.max_group_size, 3);
             assert_eq!(confirm_msg.prepare.validator_id, nid(0));
-            assert!(equal_node_vec(&confirm_msg.peers, &node_ids_vec![11, 13]));
-            assert!(equal_node_vec(&members, &node_ids_vec![11, 13]));
+            // Group should contain the 2 nodes that accepted (nid_11 and nid_13)
+            assert_eq!(confirm_msg.peers.len(), 2);
+            assert!(confirm_msg.peers.contains(&nid(11)));
+            assert!(confirm_msg.peers.contains(&nid(13)));
+            assert_eq!(members.len(), 2);
         } else {
             panic!(
                 "Expected FullNodesGroupMessage::PrepareGroup, got: {:?}\n\
@@ -1503,15 +1472,16 @@ mod tests {
         // We should still not have a raptor-cast group at this point.
         assert_eq!(get_curr_rc_group(&v0_fsm).len(), 0);
 
-        // Verify that it is an invite message the FSM wants to send
+        // Verify that it is an invite message for the 2nd group
         if let FullNodesGroupMessage::PrepareGroup(invite_msg) = group_msg {
             assert_eq!(invite_msg.start_round, Round(13));
             assert_eq!(invite_msg.end_round, Round(18));
             assert_eq!(invite_msg.max_group_size, 3);
             assert_eq!(invite_msg.validator_id, nid(0));
-            // Verify that the FSM invites 2 always_ask + 1 random peer_disc
+            // Should invite max_group_size nodes, all always_ask included
             assert_eq!(invitees.len(), 3);
-            assert!(equal_node_vec(&invitees, &node_ids_vec![10, 11, 15]));
+            assert!(invitees.contains(&nid(10)));
+            assert!(invitees.contains(&nid(11)));
         } else {
             panic!(
                 "Expected FullNodesGroupMessage::PrepareGroup, got: {:?}\n\
@@ -1562,14 +1532,8 @@ mod tests {
             assert_eq!(invite_msg.end_round, Round(18));
             assert_eq!(invite_msg.max_group_size, 3);
             assert_eq!(invite_msg.validator_id, nid(0));
-            // Verify that the FSM invites 3 more random peer_disc,
-            // since we didn't receive any response from the first 3 invites.
-            // Note that group 1 candidates were randomized as:
-            //  +----- first 3 invites--|----new invites-------|
-            //                          v                      v
-            // [ nid_10, nid_11, nid_15, nid_14, nid_12, nid_13 ]
+            // FSM sends 3 more invites since no responses from first batch
             assert_eq!(invitees.len(), 3);
-            assert!(equal_node_vec(&invitees, &node_ids_vec![14, 12, 13]));
         } else {
             panic!(
                 "Expected FullNodesGroupMessage::PrepareGroup, got: {:?}\n\
@@ -1597,11 +1561,18 @@ mod tests {
             assert_eq!(invite_msg.end_round, Round(23));
             assert_eq!(invite_msg.max_group_size, 3);
             assert_eq!(invite_msg.validator_id, nid(0));
-            // Verify that the FSM invites 1 always_ask + 2 random peer_disc.
-            // since after last call to update_always_ask_full_nodes, we only
-            // have nid(16) as always_ask_full_node, and it should appear first.
+            // After update_always_ask_full_nodes([nid(16)]), nid(16) is the only
+            // always_ask node. peer_disc is [nid(11)] (nid(16) filtered out).
+            // So we have 2 candidates total, both should be invited.
             assert_eq!(invitees.len(), 2);
-            assert!(equal_node_vec(&invitees, &node_ids_vec![16, 11]));
+            assert!(
+                invitees.contains(&nid(16)),
+                "new always_ask node should be invited"
+            );
+            assert!(
+                invitees.contains(&nid(11)),
+                "peer_disc node should be invited"
+            );
         } else {
             panic!(
                 "Expected FullNodesGroupMessage::PrepareGroup, got: {:?}\n\
@@ -2404,21 +2375,27 @@ mod tests {
         let (_group_msg, invitees) = v0_fsm
             .enter_round_and_step_until(Round(1))
             .expect("should send invites");
-        assert_eq!(invitees, node_ids_vec![10, 11, 12]);
+        assert_eq!(invitees.len(), 3);
+        assert!(invitees.contains(&nid(10)));
+        assert!(invitees.contains(&nid(11)));
 
         // Get the scheduled group to inspect its full state
         let start_round = Round(8);
         let group = v0_fsm.group_schedule.get(&start_round).unwrap();
 
-        // The uninvited node sends a PrepareGroupResponse(accept=true).
-        let uninvited_node = nid(14); // nid(14) was not in invitees
+        // Pick a node that was NOT in the invitees
+        let all_peer_disc = vec![nid(12), nid(13), nid(14), nid(15)];
+        let uninvited_node = all_peer_disc
+            .into_iter()
+            .find(|n| !invitees.contains(n))
+            .expect("should have at least one uninvited peer_disc node");
         let attacker_response =
             make_invite_response(nid(0), uninvited_node, true, start_round, &sched_cfg);
         v0_fsm.on_candidate_response(attacker_response);
 
         // Verify the uninvited node was not accepted into the group
         let group = v0_fsm.group_schedule.get(&start_round).unwrap();
-        assert!(!group.full_nodes_accepted.contains(&uninvited_node));
+        assert!(!group.has_responded(&uninvited_node));
     }
 
     // cargo test -p monad-raptorcast raptorcast_secondary::tests::reject_and_accept_counter -- --nocapture
@@ -2452,24 +2429,29 @@ mod tests {
             .enter_round_and_step_until(Round(1))
             .expect("FSM should have returned invites to be sent");
 
-        if let FullNodesGroupMessage::PrepareGroup(invite_msg) = group_msg {
-            assert_eq!(invite_msg.start_round, Round(8));
-            assert_eq!(invite_msg.end_round, Round(13));
-            assert_eq!(invite_msg.max_group_size, 3);
-            assert_eq!(invite_msg.validator_id, nid(0));
-            assert_eq!(invitees.len(), 3);
-            assert!(equal_node_vec(&invitees, &node_ids_vec![10, 11, 12]));
-        } else {
+        let FullNodesGroupMessage::PrepareGroup(invite_msg) = group_msg else {
             panic!(
-                "Expected FullNodesGroupMessage::PrepareGroup, got: {:?}\n\
-                publisher v0: {}",
+                "Expected PrepareGroup, got: {:?}\npublisher v0: {}",
                 group_msg,
                 dump_pub_sched(&v0_fsm)
             );
-        }
+        };
+        assert_eq!(invite_msg.start_round, Round(8));
+        assert_eq!(invite_msg.end_round, Round(13));
+        assert_eq!(invite_msg.max_group_size, 3);
+        assert_eq!(invite_msg.validator_id, nid(0));
+        assert_eq!(invitees.len(), 3);
+        assert!(invitees.contains(&nid(10)));
+        assert!(invitees.contains(&nid(11)));
+
+        // Identify the peer_disc node that was invited (the third invitee)
+        let invited_peer_disc = *invitees
+            .iter()
+            .find(|n| **n != nid(10) && **n != nid(11))
+            .unwrap();
 
         //----------------------------------------------------------------------
-        // 1st group nid_10, nid_11: accept. nid_12: reject
+        // 1st group nid_10, nid_11: accept. invited_peer_disc: reject
         //----------------------------------------------------------------------
 
         let response = make_invite_response(nid(0), nid(10), true, Round(8), &sched_cfg);
@@ -2478,60 +2460,50 @@ mod tests {
         let response = make_invite_response(nid(0), nid(11), true, Round(8), &sched_cfg);
         let _ = v0_fsm.on_candidate_response(response);
 
-        // A reject from node 12
-        let response = make_invite_response(nid(0), nid(12), false, Round(8), &sched_cfg);
+        // A reject from the invited peer_disc node
+        let response = make_invite_response(nid(0), invited_peer_disc, false, Round(8), &sched_cfg);
         let _ = v0_fsm.on_candidate_response(response);
 
         //----------------------------------------------------------------------
         // 1st group invites t1
         //----------------------------------------------------------------------
-        let (group_msg, invitees) = v0_fsm
+        let (group_msg, invitees_t1) = v0_fsm
             .enter_round_and_step_until(Round(3))
             .expect("FSM should have returned invites to be sent");
 
         // Verify that it is an invite message the FSM wants to send
-        if let FullNodesGroupMessage::PrepareGroup(invite_msg) = group_msg {
-            assert_eq!(invite_msg.start_round, Round(8));
-            assert_eq!(invite_msg.end_round, Round(13));
-            assert_eq!(invite_msg.max_group_size, 3);
-            assert_eq!(invite_msg.validator_id, nid(0));
-            // Verify that only 1 more invite is sent, and that its for node 14
-            assert_eq!(invitees.len(), 1);
-            assert!(equal_node_vec(&invitees, &node_ids_vec![14]));
-        } else {
+        let FullNodesGroupMessage::PrepareGroup(invite_msg) = group_msg else {
             panic!(
-                "Expected FullNodesGroupMessage::PrepareGroup, got: {:?}\n\
-                publisher v0: {}",
+                "Expected PrepareGroup, got: {:?}\npublisher v0: {}",
                 group_msg,
                 dump_pub_sched(&v0_fsm)
             );
-        }
-        // Check that the publisher is aware of of who has rejected the invite
+        };
+        assert_eq!(invite_msg.start_round, Round(8));
+        // Only 1 more invite needed (2 accepted, need 1 more to reach max_group_size=3)
+        assert_eq!(invitees_t1.len(), 1);
+        // The new invitee should not be one already invited
+        assert!(!invitees.contains(&invitees_t1[0]));
+
+        // Check that the publisher is aware of who has rejected the invite
         if let Some(group) = v0_fsm.group_schedule.get(&Round(8)) {
             assert_eq!(group.full_nodes_accepted.len(), 2);
-            assert_eq!(group.full_nodes_rejected.len(), 1);
-            assert!(equal_node_vec(
-                &group.full_nodes_rejected,
-                &node_ids_vec![12]
-            ));
+            assert!(group.full_nodes_rejected.contains(&invited_peer_disc));
         } else {
             panic!("Expected a group to be scheduled for round 8");
         }
 
         //----------------------------------------------------------------------
-        // Node 12 now sends an accept after already have sent a reject
+        // Rejected node now sends an accept — should be ignored
         //----------------------------------------------------------------------
-        let bogus_response = make_invite_response(nid(0), nid(12), true, Round(8), &sched_cfg);
+        let bogus_response =
+            make_invite_response(nid(0), invited_peer_disc, true, Round(8), &sched_cfg);
         let _ = v0_fsm.on_candidate_response(bogus_response);
 
         // Verify that the publisher does not change accept/reject states
         if let Some(group) = v0_fsm.group_schedule.get(&Round(8)) {
             assert_eq!(group.full_nodes_accepted.len(), 2);
-            assert_eq!(group.full_nodes_rejected.len(), 1);
-            assert!(equal_node_vec(
-                &group.full_nodes_rejected,
-                &node_ids_vec![12]
-            ));
+            assert!(group.full_nodes_rejected.contains(&invited_peer_disc));
         } else {
             panic!("Expected a group to be scheduled for round 8");
         }
@@ -2705,7 +2677,11 @@ mod tests {
 
         if let FullNodesGroupMessage::PrepareGroup(invite_msg) = group_msg {
             assert_eq!(invite_msg, reference_prepare_group);
-            assert!(equal_node_vec(&invitees, &node_ids_vec![10, 11, 12]));
+            // All 3 always_ask nodes should be invited (max_group_size=3)
+            assert_eq!(invitees.len(), 3);
+            assert!(invitees.contains(&nid(10)));
+            assert!(invitees.contains(&nid(11)));
+            assert!(invitees.contains(&nid(12)));
         } else {
             panic!(
                 "Expected FullNodesGroupMessage::PrepareGroup, got: {:?}\n\
@@ -2767,9 +2743,13 @@ mod tests {
         // Verify we now have 3 accepted nodes
         if let Some(group) = v0_fsm.group_schedule.get(&Round(8)) {
             assert_eq!(group.full_nodes_accepted.len(), 3);
-            assert!(equal_node_vec(
-                &group.full_nodes_accepted,
-                &node_ids_vec![10, 11, 12]
+            assert!(equal_node_set(
+                &group
+                    .full_nodes_accepted
+                    .iter()
+                    .copied()
+                    .collect::<Vec<_>>(),
+                &node_ids![10, 11, 12]
             ));
         } else {
             panic!("Expected a group to be scheduled for round 8");
@@ -2795,9 +2775,13 @@ mod tests {
         // Verify accepted list still has only 3 nodes
         if let Some(group) = v0_fsm.group_schedule.get(&Round(8)) {
             assert_eq!(group.full_nodes_accepted.len(), 3);
-            assert!(equal_node_vec(
-                &group.full_nodes_accepted,
-                &node_ids_vec![10, 11, 12]
+            assert!(equal_node_set(
+                &group
+                    .full_nodes_accepted
+                    .iter()
+                    .copied()
+                    .collect::<Vec<_>>(),
+                &node_ids![10, 11, 12]
             ));
         } else {
             panic!("Expected a group to be scheduled for round 8");
@@ -2816,9 +2800,13 @@ mod tests {
         // Final verification: still only 3 nodes in the group
         if let Some(group) = v0_fsm.group_schedule.get(&Round(8)) {
             assert_eq!(group.full_nodes_accepted.len(), 3);
-            assert!(equal_node_vec(
-                &group.full_nodes_accepted,
-                &node_ids_vec![10, 11, 12]
+            assert!(equal_node_set(
+                &group
+                    .full_nodes_accepted
+                    .iter()
+                    .copied()
+                    .collect::<Vec<_>>(),
+                &node_ids![10, 11, 12]
             ));
         } else {
             panic!("Expected a group to be scheduled for round 8");
@@ -2834,11 +2822,8 @@ mod tests {
         // Verify that the group is confirmed with exactly 3 members
         if let FullNodesGroupMessage::ConfirmGroup(confirm_msg) = group_msg {
             assert_eq!(confirm_msg.prepare, reference_prepare_group);
-            assert!(equal_node_vec(&members, &node_ids_vec![10, 11, 12]));
-            assert!(equal_node_vec(
-                &confirm_msg.peers,
-                &node_ids_vec![10, 11, 12]
-            ));
+            assert!(equal_node_set(&members, &node_ids![10, 11, 12]));
+            assert!(equal_node_set(&confirm_msg.peers, &node_ids![10, 11, 12]));
         } else {
             panic!(
                 "Expected FullNodesGroupMessage::ConfirmGroup, got: {:?}\n\
