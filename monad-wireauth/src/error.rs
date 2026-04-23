@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 
 use thiserror::Error as ThisError;
 
@@ -69,8 +69,11 @@ pub enum Error {
         interval: std::time::Duration,
     },
 
-    #[error("too many initiated sessions: limit is {limit}")]
-    TooManyInitiatedSessions { limit: usize },
+    #[error("too many pending sessions: limit is {limit}")]
+    TooManyPendingSessions { limit: usize },
+
+    #[error("too many established sessions for ip {ip}: limit is {limit}")]
+    TooManyEstablishedSessionsForIp { ip: IpAddr, limit: usize },
 
     #[error("buffer limit exceeded: {size} bytes exceeds limit of {limit} bytes")]
     BufferLimitExceeded { size: usize, limit: usize },
