@@ -224,11 +224,10 @@ fn test_encrypt_by_pubkey_and_socket() {
 #[test]
 fn test_cookie_reply_on_init() {
     init_tracing();
-    // 1. create managers with low_watermark_sessions=0 to trigger cookie immediate cookie reply under load
+    // 1. create managers with zero unverified budget to trigger an immediate cookie reply
     let config = Config {
-        handshake_cookie_unverified_rate_limit: 10,
+        handshake_cookie_unverified_rate_limit: 0,
         handshake_cookie_verified_rate_limit: 10,
-        low_watermark_sessions: 0,
         session_timeout_jitter: Duration::ZERO, // to avoid randomness in tests
         ..Config::default()
     };
@@ -247,7 +246,7 @@ fn test_cookie_reply_on_init() {
     let peer1_addr: SocketAddr = "192.0.0.1:8001".parse().unwrap();
     let peer2_addr: SocketAddr = "192.0.0.2:8002".parse().unwrap();
 
-    // 2. peer1 initiates again - peer2 is now at low_watermark, sends cookie reply
+    // 2. peer1 initiates again and peer2 immediately sends a cookie reply
     peer1
         .connect(public_key2, peer2_addr, DEFAULT_RETRY_ATTEMPTS)
         .unwrap();
@@ -368,7 +367,6 @@ fn test_too_many_accepted_sessions() {
     init_tracing();
     // 1. create responder with max 5 accepted sessions
     let config = Config {
-        low_watermark_sessions: 5,
         high_watermark_sessions: 5,
         ..Default::default()
     };

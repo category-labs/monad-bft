@@ -81,8 +81,6 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
             config.handshake_rate_reset_interval,
             config.ip_rate_limit_window,
             config.ip_history_capacity,
-            config.max_sessions_per_ip,
-            config.low_watermark_sessions,
             config.high_watermark_sessions,
         );
         let local_serialized_public = CompressedPublicKey::from(&local_static_public);
