@@ -14,7 +14,7 @@ name: Build and publish builder Docker image
       - 'docker/builder/**'
 
 env:
-  REGISTRY: peach10.devcore4.com
+  REGISTRY: ${{ secrets.REGISTRY }}
   IMAGE_NAME: category-labs/builder
 
 jobs:

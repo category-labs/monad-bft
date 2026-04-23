@@ -38,7 +38,7 @@ jobs:
     runs-on: ubuntu-24.04-32
 
     container:
-      image: peach10.devcore4.com/category-labs/builder
+      image: ${{ secrets.REGISTRY }}/category-labs/builder
       options: --privileged --security-opt seccomp=unconfined
       credentials:
         username: ${{ secrets.PRIVATE_REGISTRY_USERNAME }}
