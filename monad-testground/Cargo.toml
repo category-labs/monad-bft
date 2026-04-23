@@ -32,9 +32,9 @@ monad-validator = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 futures-util = { workspace = true }
 opentelemetry = { workspace = true }
-opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }
 opentelemetry-otlp = { workspace = true, features = ["grpc-tonic"] }
 opentelemetry-semantic-conventions = { workspace = true }
+opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }
 rand = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tracing = { workspace = true, features = ["log"] }

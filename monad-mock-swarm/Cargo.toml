@@ -41,12 +41,13 @@ monad-eth-block-policy = { workspace = true }
 monad-eth-block-validator = { workspace = true }
 monad-eth-ledger = { workspace = true }
 monad-eth-testutil = { workspace = true }
+monad-eth-types = { workspace = true }
 monad-secp = { workspace = true }
 monad-testutil = { workspace = true }
 
 alloy-consensus = { workspace = true }
-alloy-primitives = { workspace = true }
 alloy-eips = { workspace = true }
+alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
 criterion = { workspace = true }
 seq-macro = { workspace = true }
@@ -55,7 +56,6 @@ test-case = { workspace = true }
 toml = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
-monad-eth-types = { workspace = true }
 
 [[bench]]
 name = "two_node_benchmark"

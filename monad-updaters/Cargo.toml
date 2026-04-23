@@ -8,6 +8,10 @@ edition = "2021"
 [lib]
 bench = false
 
+[features]
+monad-triedb = ["dep:monad-bls", "dep:monad-secp", "tokio"]
+tokio = ["dep:tokio"]
+
 [dependencies]
 monad-blocksync = { workspace = true }
 monad-bls = { workspace = true, optional = true }
@@ -32,17 +36,10 @@ bytes = { workspace = true }
 futures = { workspace = true }
 serde_json = { workspace = true }
 sorted-vec = { workspace = true }
-tokio = { workspace = true, features = [
-    "macros",
-    "rt",
-    "sync",
-    "time",
-], optional = true }
+tokio = { workspace = true, features = ["net", "rt", "sync", "time"], optional = true }
 toml = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
 ntest = { workspace = true }
-
-[features]
-monad-triedb = ["dep:monad-bls","dep:monad-secp"]
+tokio = { workspace = true, features = ["macros"] }

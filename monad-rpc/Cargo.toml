@@ -60,8 +60,8 @@ hex = { workspace = true }
 inotify = { workspace = true }
 itertools = { workspace = true }
 opentelemetry = { workspace = true, features = ["metrics", "trace"] }
-opentelemetry_sdk = { workspace = true, features = ["rt-tokio", "trace"] }
 opentelemetry-otlp = { workspace = true, features = ["metrics", "grpc-tonic"] }
+opentelemetry_sdk = { workspace = true, features = ["rt-tokio", "trace"] }
 pin-project = { workspace = true }
 rand = { workspace = true }
 rayon = { workspace = true }
@@ -79,12 +79,7 @@ tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies.tikv-jemallocator]
 workspace = true
-features = [
-    "profiling",
-    "stats",
-    "unprefixed_malloc_on_supported_platforms",
-    "background_threads",
-]
+features = ["profiling", "stats", "unprefixed_malloc_on_supported_platforms", "background_threads"]
 optional = true
 
 [build-dependencies]

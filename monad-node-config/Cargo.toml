@@ -8,6 +8,9 @@ edition = "2021"
 [lib]
 bench = false
 
+[features]
+crypto = ["dep:monad-bls", "dep:monad-secp"]
+
 [dependencies]
 monad-bls = { workspace = true, optional = true }
 monad-consensus-types = { workspace = true }
@@ -27,9 +30,6 @@ clap = { workspace = true, features = ["derive"] }
 codespan-reporting = { workspace = true }
 strum = { workspace = true, features = ["derive"] }
 toml = { workspace = true }
-
-[features]
-crypto = ["dep:monad-bls", "dep:monad-secp"]
 
 [[example]]
 name = "monad-node-config-linter"

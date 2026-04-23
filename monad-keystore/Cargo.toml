@@ -35,5 +35,5 @@ zeroize = { workspace = true }
 monad-version = { workspace = true }
 
 [dev-dependencies]
-tempfile = { workspace = true }
 rstest = { workspace = true }
+tempfile = { workspace = true }
