@@ -81,7 +81,8 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
             config.handshake_rate_reset_interval,
             config.ip_rate_limit_window,
             config.ip_history_capacity,
-            config.high_watermark_sessions,
+            config.total_transport_sessions,
+            config.total_pending_sessions,
         );
         let local_serialized_public = CompressedPublicKey::from(&local_static_public);
         debug!(local_public_key=?local_serialized_public, "initialized manager");
@@ -292,11 +293,11 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
         debug!(retry_attempts, "initiating connection");
 
         self.check_connect_rate_limit()?;
-        let initiated_count = self.state.initiated_sessions_count();
-        if initiated_count >= self.config.max_initiated_sessions {
+        let pending_count = self.state.pending_sessions_count();
+        if pending_count >= self.config.total_pending_sessions {
             self.metrics[self.metric_names.error_connect] += 1;
-            return Err(Error::TooManyInitiatedSessions {
-                limit: self.config.max_initiated_sessions,
+            return Err(Error::TooManyPendingSessions {
+                limit: self.config.total_pending_sessions,
             });
         }
 
@@ -376,6 +377,20 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
             .insert_initiator(index, session, remote_static_key);
 
         Ok((index, timer, message))
+    }
+
+    fn ensure_established_ip_capacity(&mut self, remote_addr: SocketAddr) -> Result<()> {
+        if self.state.established_ip_session_count(&remote_addr.ip())
+            < self.config.max_sessions_per_ip
+        {
+            return Ok(());
+        }
+
+        self.metrics[self.metric_names.error_session_exhausted] += 1;
+        Err(Error::TooManyEstablishedSessionsForIp {
+            ip: remote_addr.ip(),
+            limit: self.config.max_sessions_per_ip,
+        })
     }
 
     fn is_under_load(
@@ -574,9 +589,27 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
             // to prove private key ownership. We implement this by storing the
             // responder separately until it has received that packet.
             let duration_since_start = self.context.duration_since_start();
-            match responder.decrypt(&self.config, duration_since_start, data_packet) {
-                Ok((_timer, plaintext)) => {
-                    let remote_public_key = responder.transport.remote_public_key;
+            let decrypt_result = responder
+                .decrypt(&self.config, duration_since_start, data_packet)
+                .map(|(_timer, plaintext)| {
+                    (
+                        plaintext,
+                        responder.transport.remote_public_key,
+                        responder.transport.remote_addr,
+                    )
+                });
+            match decrypt_result {
+                Ok((plaintext, remote_public_key, responder_remote_addr)) => {
+                    if let Err(err) = self.ensure_established_ip_capacity(responder_remote_addr) {
+                        self.metrics[self.metric_names.error_decrypt] += 1;
+                        self.state.terminate_session(
+                            receiver_index,
+                            &remote_public_key,
+                            responder_remote_addr,
+                        );
+                        return Err(err);
+                    }
+
                     // unwrap() is safe as we have &mut and it was accessed right before this line
                     let responder = self.state.remove_responder(&receiver_index).unwrap();
                     let (transport, establish_timer) =
@@ -622,29 +655,39 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
 
         let receiver_session_index = response.receiver_index.into();
 
-        let initiator = self
-            .state
-            .get_initiator_mut(&receiver_session_index)
-            .ok_or_else(|| {
-                self.metrics[self.metric_names.error_session_index_not_found] += 1;
-                Error::InvalidReceiverIndex {
-                    index: receiver_session_index,
-                }
-            })?;
-        let expected_remote_addr = initiator.remote_addr;
-        if remote_addr != expected_remote_addr {
-            self.metrics[self.metric_names.error_handshake_response_validation] += 1;
-            return Err(Error::HandshakeResponseAddressMismatch {
-                expected: expected_remote_addr,
-                actual: remote_addr,
-            });
-        }
-
-        let validated_response = initiator
-            .validate_response(&self.config, self.local_static_key.as_ref(), response)
-            .inspect_err(|_| {
+        let (remote_public_key, validated_response) = {
+            let initiator = self
+                .state
+                .get_initiator_mut(&receiver_session_index)
+                .ok_or_else(|| {
+                    self.metrics[self.metric_names.error_session_index_not_found] += 1;
+                    Error::InvalidReceiverIndex {
+                        index: receiver_session_index,
+                    }
+                })?;
+            let expected_remote_addr = initiator.remote_addr;
+            if remote_addr != expected_remote_addr {
                 self.metrics[self.metric_names.error_handshake_response_validation] += 1;
-            })?;
+                return Err(Error::HandshakeResponseAddressMismatch {
+                    expected: expected_remote_addr,
+                    actual: remote_addr,
+                });
+            }
+
+            let remote_public_key = initiator.remote_public_key;
+            let validated_response = initiator
+                .validate_response(&self.config, self.local_static_key.as_ref(), response)
+                .inspect_err(|_| {
+                    self.metrics[self.metric_names.error_handshake_response_validation] += 1;
+                })?;
+            (remote_public_key, validated_response)
+        };
+
+        if let Err(err) = self.ensure_established_ip_capacity(remote_addr) {
+            self.state
+                .terminate_session(receiver_session_index, &remote_public_key, remote_addr);
+            return Err(err);
+        }
 
         // Code should not be fallible after this point
         let initiator = self

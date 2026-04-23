@@ -43,7 +43,9 @@ mod tests {
 
     fn test_config() -> Config {
         Config {
+            max_sessions_per_ip: usize::MAX,
             rekey_interval: Duration::from_secs(REKEY_INTERVAL_SECS),
+            pending_session_timeout: Duration::from_secs(SESSION_TIMEOUT_SECS),
             session_timeout: Duration::from_secs(SESSION_TIMEOUT_SECS),
             ..Config::default()
         }
