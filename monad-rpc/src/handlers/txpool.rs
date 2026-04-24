@@ -85,7 +85,7 @@ pub struct TxPoolStatusByAddressParams {
 #[derive(Serialize, Debug, schemars::JsonSchema)]
 pub struct TxPoolStatusByAddressResult(BTreeMap<EthHash, TxPoolStatusResult>);
 
-#[rpc(method = "txpool_statusByAddress")]
+#[rpc(method = "txpool_statusByAddress", ignore = "namespace")]
 #[allow(non_snake_case)]
 pub async fn monad_txpool_statusByAddress(
     txpool_bridge_client: &EthTxPoolBridgeClient,

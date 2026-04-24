@@ -41,7 +41,7 @@ pub struct MonadEthGetBalanceParams {
     block_number: BlockTagOrHash,
 }
 
-#[rpc(method = "eth_getBalance")]
+#[rpc(method = "eth_getBalance", ignore = "namespace")]
 #[allow(non_snake_case)]
 /// Returns the balance of the account of given address.
 pub async fn monad_eth_getBalance<T: Triedb>(
@@ -77,7 +77,7 @@ pub struct MonadEthGetCodeParams {
     block: BlockTagOrHash,
 }
 
-#[rpc(method = "eth_getCode")]
+#[rpc(method = "eth_getCode", ignore = "namespace")]
 #[allow(non_snake_case)]
 /// Returns code at a given address.
 pub async fn monad_eth_getCode<T: Triedb>(
@@ -124,7 +124,7 @@ pub struct MonadEthGetStorageAtParams {
     block: BlockTagOrHash,
 }
 
-#[rpc(method = "eth_getStorageAt")]
+#[rpc(method = "eth_getStorageAt", ignore = "namespace")]
 #[allow(non_snake_case)]
 /// Returns the value from a storage position at a given address.
 pub async fn monad_eth_getStorageAt<T: Triedb>(
@@ -164,7 +164,7 @@ pub struct MonadEthGetTransactionCountParams {
     block: BlockTagOrHash,
 }
 
-#[rpc(method = "eth_getTransactionCount")]
+#[rpc(method = "eth_getTransactionCount", ignore = "namespace")]
 #[allow(non_snake_case)]
 /// Returns the number of transactions sent from an address.
 pub async fn monad_eth_getTransactionCount<T: Triedb>(
