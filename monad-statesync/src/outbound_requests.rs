@@ -169,8 +169,17 @@ impl<PT: PubKey> InFlightRequest<PT> {
             return responses;
         }
 
-        let replaced = self.responses.insert(response.response_index, response);
-        assert!(replaced.is_none(), "server sent duplicate response_index");
+        let response_index = response.response_index;
+        if let Entry::Vacant(entry) = self.responses.entry(response_index) {
+            entry.insert(response);
+        } else {
+            tracing::debug!(
+                ?from,
+                ?response,
+                ?response_index,
+                "dropping statesync response, duplicate response_index"
+            );
+        }
 
         Vec::new()
     }
@@ -427,5 +436,67 @@ impl<PT: PubKey> OutboundRequests<PT> {
         self.in_flight_requests.remove(&to_send);
 
         self.insert_request(to_send)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use monad_crypto::NopPubKey;
+    use monad_executor_glue::{StateSyncRequest, StateSyncResponse, SELF_STATESYNC_VERSION};
+    use monad_types::NodeId;
+
+    use super::InFlightRequest;
+
+    fn node_id(seed: u8) -> NodeId<NopPubKey> {
+        let pubkey =
+            <NopPubKey as monad_crypto::certificate_signature::PubKey>::from_bytes(&[seed; 32])
+                .expect("valid nop pubkey");
+        NodeId::new(pubkey)
+    }
+
+    fn request() -> StateSyncRequest {
+        StateSyncRequest {
+            version: SELF_STATESYNC_VERSION,
+            prefix: 0,
+            prefix_bytes: 1,
+            target: 10,
+            from: 0,
+            until: 10,
+            old_target: 0,
+        }
+    }
+
+    fn response(response_index: u32) -> StateSyncResponse {
+        StateSyncResponse {
+            version: SELF_STATESYNC_VERSION,
+            nonce: 1,
+            response_index,
+            request: request(),
+            response: Vec::new(),
+            response_n: 0,
+        }
+    }
+
+    #[test]
+    fn duplicate_out_of_order_response_index_is_ignored() {
+        let peer = node_id(1);
+        let mut in_flight_request = InFlightRequest::new(peer);
+
+        assert!(in_flight_request
+            .apply_response(&peer, response(1))
+            .is_empty());
+
+        let duplicate = in_flight_request.apply_response(&peer, response(1));
+        assert!(duplicate.is_empty());
+
+        let emitted = in_flight_request.apply_response(&peer, response(0));
+        assert_eq!(emitted.len(), 2);
+        assert_eq!(
+            emitted
+                .iter()
+                .map(|response| response.response_index)
+                .collect::<Vec<_>>(),
+            vec![0, 1]
+        );
     }
 }
