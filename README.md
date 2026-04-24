@@ -56,7 +56,7 @@ The most straightforward way to start a consensus client + an execution client +
 
 #### Requirements
 
-* x86 processor - the Monad client is developed exclusively against x86 processors. Emulation techniques for other processors, e.g. ARM (Macbooks) are possible but not supported here
+* x86-64-v3 / AVX2-capable processor - the Monad client is developed exclusively against x86-64 processors. Emulation techniques for other processors, e.g. ARM (Macbooks) are possible but not supported here
 * 4+ physical cores (building times will be faster with more cores and higher clock speed)
 * 60 GB+ available hard drive space - Docker builds are about 500 MB each, but the build cache can consume 50 GB+.
 
@@ -68,6 +68,12 @@ After successfully cloning the `monad-bft` repo, run the following from the `mon
 2. `nets/run.sh`
 
 This script builds the docker images from source, which can take 500s+ depending on available memory and cores.  This will construct a build folder `docker/single-node/logs/$(date +%Y%m%d_%H%M%S)-$rand_hex"` and run `docker compose up` on the execution, consensus and rpc images.
+
+By default, the execution image is built with the `gcc-avx2` toolchain, which maps to `monad-execution/category/core/toolchains/gcc-avx2.cmake` and emits Haswell-era/x86-64-v3 machine code. To build with a different execution toolchain, pass the toolchain basename:
+
+```bash
+nets/run.sh --toolchain gcc-avx512
+```
 
 This will start a single node with chain ID of `20143` and RPC at `localhost:8080`. The known [Foundry/Anvil accounts](https://getfoundry.sh/anvil/overview/) have each been loaded with [large initial balances](https://github.com/category-labs/monad/blob/ce4101b11701bf4ef3a9cd996a6144883735187f/category/execution/monad/chain/monad_devnet_alloc.hpp#L22). The easiest way to fund transactions is to import the private key from one of those pre-allocated accounts.
 
