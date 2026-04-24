@@ -69,30 +69,46 @@ pub fn rlp_decode_account(account_rlp: Vec<u8>) -> Option<EthAccount> {
 }
 
 pub fn rlp_decode_storage_slot(storage_rlp: Vec<u8>) -> Option<[u8; 32]> {
+    if let Some(storage_value) = rlp_decode_storage_slot_with_key(&storage_rlp) {
+        return Some(storage_value);
+    }
+
+    rlp_decode_storage_value_only(storage_rlp.as_slice())
+}
+
+fn rlp_decode_storage_slot_with_key(storage_rlp: &[u8]) -> Option<[u8; 32]> {
+    let mut buf = storage_rlp;
+    let Ok(mut buf) = alloy_rlp::Header::decode_bytes(&mut buf, true) else {
+        return None;
+    };
+
+    // storage key (currently not needed)
+    let Ok(_) = U256::decode(&mut buf) else {
+        return None;
+    };
+
+    // storage value
+    decode_storage_value(&mut buf)
+}
+
+fn rlp_decode_storage_value_only(storage_rlp: &[u8]) -> Option<[u8; 32]> {
     let mut buf = storage_rlp.as_slice();
     let Ok(mut buf) = alloy_rlp::Header::decode_bytes(&mut buf, true) else {
         warn!("rlp decode failed: {:?}", buf);
         return None;
     };
 
-    // storage key (currently not needed)
-    let Ok(_) = U256::decode(&mut buf) else {
-        warn!("rlp storage key decode failed: {:?}", buf);
-        return None;
-    };
+    decode_storage_value(&mut buf)
+}
 
-    // storage value
-    match U256::decode(&mut buf) {
+fn decode_storage_value(buf: &mut &[u8]) -> Option<[u8; 32]> {
+    match U256::decode(buf) {
         Ok(res) => {
-            let mut storage_value = [0_u8; 32];
-            for (byte, storage) in res
-                .to_be_bytes_vec()
-                .into_iter()
-                .zip(storage_value.iter_mut())
-            {
-                *storage = byte;
+            if !buf.is_empty() {
+                warn!("rlp storage value had trailing bytes: {:?}", buf);
+                return None;
             }
-            Some(storage_value)
+            Some(res.to_be_bytes())
         }
         Err(e) => {
             warn!("rlp storage value decode failed: {:?}", e);
@@ -120,6 +136,53 @@ pub fn rlp_decode_transaction_location(transaction_location_rlp: Vec<u8>) -> Opt
     };
 
     Some((block_num, tx_index))
+}
+
+#[cfg(test)]
+mod tests {
+    use alloy_primitives::U256;
+    use alloy_rlp::{Encodable, Header};
+
+    use super::rlp_decode_storage_slot;
+
+    #[test]
+    fn decodes_storage_slot_with_key_and_value() {
+        let mut payload = Vec::new();
+        U256::ZERO.encode(&mut payload);
+        U256::from(0x1234_u64).encode(&mut payload);
+
+        let mut encoded = Vec::new();
+        Header {
+            list: true,
+            payload_length: payload.len(),
+        }
+        .encode(&mut encoded);
+        encoded.extend_from_slice(&payload);
+
+        assert_eq!(
+            rlp_decode_storage_slot(encoded),
+            Some(U256::from(0x1234_u64).to_be_bytes())
+        );
+    }
+
+    #[test]
+    fn decodes_storage_value_only() {
+        let mut encoded = Vec::new();
+        U256::from(0x1234_u64).encode(&mut encoded);
+
+        assert_eq!(
+            rlp_decode_storage_slot(encoded),
+            Some(U256::from(0x1234_u64).to_be_bytes())
+        );
+    }
+
+    #[test]
+    fn decodes_zero_storage_value_only() {
+        let mut encoded = Vec::new();
+        U256::ZERO.encode(&mut encoded);
+
+        assert_eq!(rlp_decode_storage_slot(encoded), Some([0_u8; 32]));
+    }
 }
 
 pub fn rlp_decode_block_num(block_num_rlp: Vec<u8>) -> Option<u64> {
