@@ -48,9 +48,7 @@ where
 
 #[derive(Debug, Clone, Copy)]
 pub struct ForwardedIngressFairQueueConfig {
-    pub per_id_limit: usize,
     pub max_size: usize,
-    pub regular_per_id_limit: usize,
     pub regular_max_size: usize,
     pub regular_bandwidth_pct: u8,
 }
@@ -58,10 +56,8 @@ pub struct ForwardedIngressFairQueueConfig {
 impl Default for ForwardedIngressFairQueueConfig {
     fn default() -> Self {
         Self {
-            per_id_limit: 4_000,
-            max_size: 40_000,
-            regular_per_id_limit: 4_000,
-            regular_max_size: 40_000,
+            max_size: 1_000_000,
+            regular_max_size: 1_000_000,
             regular_bandwidth_pct: 10,
         }
     }
@@ -251,9 +247,7 @@ where
             command_tx,
             forwarded_tx,
             forwarded_queue: FairQueueBuilder::new()
-                .per_id_limit(forwarded_queue_config.per_id_limit)
                 .max_size(forwarded_queue_config.max_size)
-                .regular_per_id_limit(forwarded_queue_config.regular_per_id_limit)
                 .regular_max_size(forwarded_queue_config.regular_max_size)
                 .regular_bandwidth_pct(forwarded_queue_config.regular_bandwidth_pct)
                 .build(score_reader),

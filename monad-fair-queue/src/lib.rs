@@ -19,6 +19,7 @@ mod queue;
 
 use std::fmt::{Debug, Display};
 
+use bytes::Bytes;
 pub use monad_peer_score::{IdentityScore, PeerStatus, Score};
 
 macro_rules! ensure {
@@ -31,10 +32,37 @@ macro_rules! ensure {
 pub(crate) use ensure;
 pub use queue::{FairQueue, FairQueueBuilder};
 
+pub trait Len {
+    fn len(&self) -> usize;
+
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+impl Len for Bytes {
+    fn len(&self) -> usize {
+        Bytes::len(self)
+    }
+}
+
+impl Len for Vec<u8> {
+    fn len(&self) -> usize {
+        Vec::len(self)
+    }
+}
+
+#[cfg(test)]
+impl Len for u32 {
+    fn len(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+}
+
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum PushError<Id: Debug + Display> {
-    #[error("per-id limit exceeded for {id}: {limit}")]
-    PerIdLimitExceeded { id: Id, limit: usize },
+    #[error("per-id byte limit exceeded for {id}: {limit}")]
+    PerIdByteLimitExceeded { id: Id, limit: usize },
     #[error("queue full: {size}/{max_size}")]
     Full { size: usize, max_size: usize },
 }
