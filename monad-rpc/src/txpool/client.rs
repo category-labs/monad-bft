@@ -15,9 +15,9 @@
 
 use std::{collections::HashMap, sync::Arc};
 
-use alloy_primitives::{Address, TxHash};
+use alloy_primitives::TxHash;
 use flume::{Sender, TrySendError};
-use monad_eth_types::EthTxEnvelope;
+use monad_eth_types::{AccountKey, EthTxEnvelope};
 
 use super::{
     state::{EthTxPoolBridgeStateView, TxStatusReceiverSender},
@@ -75,8 +75,11 @@ impl EthTxPoolBridgeClient {
         self.state.get_status_by_hash(hash)
     }
 
-    pub fn get_status_by_address(&self, address: &Address) -> Option<HashMap<TxHash, TxStatus>> {
-        self.state.get_status_by_address(address)
+    pub fn get_status_by_address(
+        &self,
+        account_key: &AccountKey,
+    ) -> Option<HashMap<TxHash, TxStatus>> {
+        self.state.get_status_by_address(account_key)
     }
 
     pub fn for_testing() -> Self {

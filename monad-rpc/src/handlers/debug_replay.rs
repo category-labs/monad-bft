@@ -277,7 +277,7 @@ pub async fn collect_debug_trace_via_replay(
 ) -> Result<Box<RawValue>, JsonRpcError> {
     let eth_call_handler = app_state.eth_call_handler.as_ref().method_not_supported()?;
     let permit = eth_call_handler.acquire(request_id).await?;
-    let chain_id = parse_ethcall_chain_id(app_state.chain_id)?;
+    let chain_id = parse_ethcall_chain_id(app_state.base_chain_id)?;
     let max_response_size = app_state.max_response_size as usize;
 
     permit

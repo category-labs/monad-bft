@@ -119,7 +119,7 @@ pub struct MonadEthSendRawTransactionParams {
 // TODO: need to support EIP-4844 transactions
 #[rpc(
     method = "eth_sendRawTransaction",
-    ignore = "tx_pool,ipc,chain_id,allow_unprotected_txs"
+    ignore = "tx_pool,ipc,base_chain_id,route_chain_id,route_namespace,allow_unprotected_txs"
 )]
 #[allow(non_snake_case)]
 #[tracing::instrument(level = "debug", skip_all)]
@@ -128,14 +128,18 @@ pub struct MonadEthSendRawTransactionParams {
 pub async fn monad_eth_sendRawTransaction(
     txpool_bridge_client: &EthTxPoolBridgeClient,
     params: MonadEthSendRawTransactionParams,
-    chain_id: u64,
+    base_chain_id: u64,
+    route_chain_id: u64,
+    route_namespace: Option<Address>,
     allow_unprotected_txs: bool,
 ) -> JsonRpcResult<String> {
     trace!("monad_eth_sendRawTransaction: {params:?}");
 
     let tx = validate_and_decode_tx(
         &params.hex_tx.0,
-        chain_id,
+        base_chain_id,
+        route_chain_id,
+        route_namespace,
         allow_unprotected_txs,
         JsonRpcError::txn_decode_error,
     )?;
@@ -149,7 +153,9 @@ pub async fn monad_eth_sendRawTransaction(
 
 fn validate_and_decode_tx(
     hex_tx: &[u8],
-    chain_id: u64,
+    base_chain_id: u64,
+    route_chain_id: u64,
+    route_namespace: Option<Address>,
     allow_unprotected_txs: bool,
     decode_error_fn: impl FnOnce() -> JsonRpcError,
 ) -> Result<EthTxEnvelope, JsonRpcError> {
@@ -165,13 +171,23 @@ fn validate_and_decode_tx(
         ));
     }
 
-    if let Err(err) = namespace_for_chain_id(tx.chain_id(), chain_id) {
-        let tx_chain_id = match err {
-            monad_eth_types::WrongChainId::InvalidNamespaceSuffix { tx_chain_id, .. } => {
-                tx_chain_id
-            }
-        };
-        return Err(JsonRpcError::invalid_chain_id(chain_id, tx_chain_id));
+    let tx_namespace = match namespace_for_chain_id(tx.chain_id(), base_chain_id) {
+        Ok(tx_namespace) => tx_namespace,
+        Err(err) => {
+            let tx_chain_id = match err {
+                monad_eth_types::WrongChainId::InvalidNamespaceSuffix { tx_chain_id, .. } => {
+                    tx_chain_id
+                }
+            };
+            return Err(JsonRpcError::invalid_chain_id(base_chain_id, tx_chain_id));
+        }
+    };
+
+    if route_namespace.is_some() && tx_namespace != route_namespace {
+        return Err(JsonRpcError::invalid_chain_id(
+            route_chain_id,
+            tx.chain_id().unwrap_or(base_chain_id),
+        ));
     }
 
     Ok(tx)
@@ -249,7 +265,7 @@ pub struct MonadEthSendRawTransactionSyncParams {
 
 #[rpc(
     method = "eth_sendRawTransactionSync",
-    ignore = "txpool_bridge_client,event_server_client,chain_id,allow_unprotected_txs,eth_send_raw_transaction_sync_default_timeout_ms,eth_send_raw_transaction_sync_max_timeout_ms"
+    ignore = "txpool_bridge_client,event_server_client,base_chain_id,route_chain_id,route_namespace,allow_unprotected_txs,eth_send_raw_transaction_sync_default_timeout_ms,eth_send_raw_transaction_sync_max_timeout_ms"
 )]
 #[allow(non_snake_case)]
 #[tracing::instrument(level = "debug", skip_all)]
@@ -257,7 +273,9 @@ pub async fn monad_eth_sendRawTransactionSync(
     txpool_bridge_client: &EthTxPoolBridgeClient,
     event_server_client: &EventServerClient,
     params: MonadEthSendRawTransactionSyncParams,
-    chain_id: u64,
+    base_chain_id: u64,
+    route_chain_id: u64,
+    route_namespace: Option<Address>,
     allow_unprotected_txs: bool,
     eth_send_raw_transaction_sync_default_timeout_ms: u64,
     eth_send_raw_transaction_sync_max_timeout_ms: u64,
@@ -271,7 +289,9 @@ pub async fn monad_eth_sendRawTransactionSync(
 
     let tx = validate_and_decode_tx(
         &params.hex_tx.0,
-        chain_id,
+        base_chain_id,
+        route_chain_id,
+        route_namespace,
         allow_unprotected_txs,
         JsonRpcError::tx_sync_unready,
     )?;
@@ -507,9 +527,16 @@ mod tests {
 
         for (idx, case) in expected_failures.into_iter().enumerate() {
             assert!(
-                monad_eth_sendRawTransaction(&EthTxPoolBridgeClient::for_testing(), case, 1, true)
-                    .await
-                    .is_err(),
+                monad_eth_sendRawTransaction(
+                    &EthTxPoolBridgeClient::for_testing(),
+                    case,
+                    1,
+                    1,
+                    None,
+                    true,
+                )
+                .await
+                .is_err(),
                 "Expected error for case: {:?}",
                 idx + 1
             );
@@ -573,6 +600,8 @@ mod tests {
                     &event_server_client,
                     case,
                     1,
+                    1,
+                    None,
                     true,
                     2000,
                     30000,

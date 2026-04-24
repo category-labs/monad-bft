@@ -31,8 +31,9 @@ use alloy_rlp::Decodable;
 use auto_impl::auto_impl;
 use futures::{channel::oneshot, FutureExt};
 use monad_eth_types::{
-    BlockHeader, EthAccount, EthAddress, EthBlockHash, EthCode, EthCodeHash, EthStorageKey,
-    EthStorageSlot, EthTxHash, ReceiptWithLogIndex, TransactionLocation, TxEnvelopeWithSender,
+    AccountKey, BlockHeader, EthAccount, EthAddress, EthBlockHash, EthCode, EthCodeHash,
+    EthStorageKey, EthStorageSlot, EthTxHash, ReceiptWithLogIndex, TransactionLocation,
+    TxEnvelopeWithSender,
 };
 use monad_triedb::{
     compute_page_key, compute_slot_offset, decode_storage_page_slot, TraverseEntry, TriedbHandle,
@@ -455,10 +456,21 @@ pub trait Triedb: Debug {
         key: BlockKey,
         addr: EthAddress,
     ) -> impl std::future::Future<Output = Result<EthAccount, String>> + Send;
+    fn get_account_by_key(
+        &self,
+        key: BlockKey,
+        account_key: AccountKey,
+    ) -> impl std::future::Future<Output = Result<EthAccount, String>> + Send;
     fn get_storage_at(
         &self,
         key: BlockKey,
         addr: EthAddress,
+        at: EthStorageKey,
+    ) -> impl std::future::Future<Output = Result<EthStorageSlot, String>> + Send;
+    fn get_storage_at_by_key(
+        &self,
+        key: BlockKey,
+        account_key: AccountKey,
         at: EthStorageKey,
     ) -> impl std::future::Future<Output = Result<EthStorageSlot, String>> + Send;
     fn get_code(
@@ -877,6 +889,27 @@ impl TriedbPath for TriedbEnv {
     }
 }
 
+fn key_input_for_account(account_key: &AccountKey) -> KeyInput<'_> {
+    match account_key.namespace.as_ref() {
+        Some(namespace) => {
+            KeyInput::NamespacedAddress(namespace.as_ref(), account_key.address.as_ref())
+        }
+        None => KeyInput::Address(account_key.address.as_ref()),
+    }
+}
+
+fn key_input_for_storage<'a>(
+    account_key: &'a AccountKey,
+    at: &'a EthStorageKey,
+) -> KeyInput<'a> {
+    match account_key.namespace.as_ref() {
+        Some(namespace) => {
+            KeyInput::NamespacedStorage(namespace.as_ref(), account_key.address.as_ref(), at)
+        }
+        None => KeyInput::Storage(account_key.address.as_ref(), at),
+    }
+}
+
 impl Triedb for TriedbEnv {
     fn get_latest_finalized_block_key(&self) -> FinalizedBlockKey {
         let meta = self.meta.lock().expect("mutex poisoned");
@@ -926,7 +959,17 @@ impl Triedb for TriedbEnv {
         block_key: BlockKey,
         addr: EthAddress,
     ) -> Result<EthAccount, String> {
-        self.handle_async_request(block_key, KeyInput::Address(&addr), |data| {
+        self.get_account_by_key(block_key, AccountKey::global(addr.into()))
+            .await
+    }
+
+    #[tracing::instrument(level = "debug")]
+    async fn get_account_by_key(
+        &self,
+        block_key: BlockKey,
+        account_key: AccountKey,
+    ) -> Result<EthAccount, String> {
+        self.handle_async_request(block_key, key_input_for_account(&account_key), |data| {
             rlp_decode_account(data).ok_or_else(|| String::from("Decoding account error"))
         })
         .await
@@ -940,6 +983,17 @@ impl Triedb for TriedbEnv {
         addr: EthAddress,
         at: EthStorageKey,
     ) -> Result<EthStorageSlot, String> {
+        self.get_storage_at_by_key(block_key, AccountKey::global(addr.into()), at)
+            .await
+    }
+
+    #[tracing::instrument(level = "debug")]
+    async fn get_storage_at_by_key(
+        &self,
+        block_key: BlockKey,
+        account_key: AccountKey,
+        at: EthStorageKey,
+    ) -> Result<EthStorageSlot, String> {
         if self.page_encoded {
             // Page-encoded: storage is keyed by keccak(page_key) where
             // page_key = slot >> 7, and the leaf is an encoded page. Look up the
@@ -950,7 +1004,7 @@ impl Triedb for TriedbEnv {
             let offset = compute_slot_offset(at);
             self.handle_async_request(
                 block_key,
-                KeyInput::Storage(&addr, &page_key),
+                key_input_for_storage(&account_key, &page_key),
                 move |data| {
                     decode_storage_page_slot(&data, offset)
                         .ok_or_else(|| String::from("Decoding storage page error"))
@@ -959,9 +1013,8 @@ impl Triedb for TriedbEnv {
             .await
             .map(Option::unwrap_or_default)
         } else {
-            self.handle_async_request(block_key, KeyInput::Storage(&addr, &at), |data| {
-                rlp_decode_storage_slot(data)
-                    .ok_or_else(|| String::from("Decoding storage slot error"))
+            self.handle_async_request(block_key, key_input_for_storage(&account_key, &at), |data| {
+                rlp_decode_storage_slot(data).ok_or_else(|| String::from("Decoding storage slot error"))
             })
             .await
             .map(Option::unwrap_or_default)

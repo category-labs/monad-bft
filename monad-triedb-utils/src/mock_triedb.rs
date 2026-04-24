@@ -16,9 +16,11 @@
 use std::{collections::HashMap, future::ready};
 
 use alloy_consensus::{transaction::SignerRecoverable, Block, TxEnvelope};
+use alloy_primitives::Address;
 use monad_eth_types::{
-    BlockHeader, EthAccount, EthAddress, EthBlockHash, EthCode, EthCodeHash, EthStorageKey,
-    EthStorageSlot, EthTxHash, ReceiptWithLogIndex, TransactionLocation, TxEnvelopeWithSender,
+    AccountKey, BlockHeader, EthAccount, EthAddress, EthBlockHash, EthCode, EthCodeHash,
+    EthStorageKey, EthStorageSlot, EthTxHash, ReceiptWithLogIndex, TransactionLocation,
+    TxEnvelopeWithSender,
 };
 use monad_types::SeqNum;
 
@@ -29,7 +31,8 @@ pub struct MockTriedb {
     latest_block: u64,
     finalized_blocks: HashMap<SeqNum, Block<TxEnvelope>>,
     receipts: HashMap<SeqNum, Vec<ReceiptWithLogIndex>>,
-    accounts: HashMap<EthAddress, EthAccount>,
+    accounts: HashMap<AccountKey, EthAccount>,
+    storage: HashMap<(AccountKey, EthStorageKey), EthStorageSlot>,
     tx_locations: HashMap<EthTxHash, TransactionLocation>,
     call_frames: HashMap<TransactionLocation, Vec<u8>>,
     code: Vec<u8>,
@@ -41,7 +44,21 @@ impl MockTriedb {
     }
 
     pub fn set_account(&mut self, address: EthAddress, account: EthAccount) {
-        self.accounts.insert(address, account);
+        self.accounts
+            .insert(AccountKey::global(Address::from(address)), account);
+    }
+
+    pub fn set_account_by_key(&mut self, account_key: AccountKey, account: EthAccount) {
+        self.accounts.insert(account_key, account);
+    }
+
+    pub fn set_storage_at_by_key(
+        &mut self,
+        account_key: AccountKey,
+        key: EthStorageKey,
+        slot: EthStorageSlot,
+    ) {
+        self.storage.insert((account_key, key), slot);
     }
 
     pub fn set_transaction_location_by_hash(
@@ -92,10 +109,18 @@ impl Triedb for MockTriedb {
 
     fn get_account(
         &self,
-        _block_key: BlockKey,
-        _addr: EthAddress,
+        block_key: BlockKey,
+        addr: EthAddress,
     ) -> impl std::future::Future<Output = Result<EthAccount, String>> + Send {
-        self.accounts.get(&_addr).map_or_else(
+        self.get_account_by_key(block_key, AccountKey::global(Address::from(addr)))
+    }
+
+    fn get_account_by_key(
+        &self,
+        _block_key: BlockKey,
+        account_key: AccountKey,
+    ) -> impl std::future::Future<Output = Result<EthAccount, String>> + Send {
+        self.accounts.get(&account_key).map_or_else(
             || ready(Ok(EthAccount::default())),
             |account| ready(Ok(*account)),
         )
@@ -103,11 +128,24 @@ impl Triedb for MockTriedb {
 
     fn get_storage_at(
         &self,
-        _block_key: BlockKey,
-        _addr: EthAddress,
-        _at: EthStorageKey,
+        block_key: BlockKey,
+        addr: EthAddress,
+        at: EthStorageKey,
     ) -> impl std::future::Future<Output = Result<EthStorageSlot, String>> + Send {
-        ready(Ok(EthStorageSlot::default()))
+        self.get_storage_at_by_key(block_key, AccountKey::global(Address::from(addr)), at)
+    }
+
+    fn get_storage_at_by_key(
+        &self,
+        _block_key: BlockKey,
+        account_key: AccountKey,
+        at: EthStorageKey,
+    ) -> impl std::future::Future<Output = Result<EthStorageSlot, String>> + Send {
+        ready(Ok(self
+            .storage
+            .get(&(account_key, at))
+            .copied()
+            .unwrap_or_default()))
     }
 
     fn get_code(

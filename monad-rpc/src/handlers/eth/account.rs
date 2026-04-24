@@ -13,7 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use alloy_primitives::B256;
+use alloy_primitives::{Address, B256};
+use monad_eth_types::AccountKey;
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::Triedb;
 use serde::Deserialize;
@@ -27,6 +28,13 @@ use crate::{
     },
 };
 
+fn account_key(namespace: Option<Address>, address: EthAddress) -> AccountKey {
+    match namespace {
+        Some(namespace) => AccountKey::namespaced(namespace, Address::from(address.0)),
+        None => AccountKey::global(Address::from(address.0)),
+    }
+}
+
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
 pub struct MonadEthGetBalanceParams {
     account: EthAddress,
@@ -38,6 +46,7 @@ pub struct MonadEthGetBalanceParams {
 /// Returns the balance of the account of given address.
 pub async fn monad_eth_getBalance<T: Triedb>(
     data_provider: &DataProvider<T>,
+    namespace: Option<Address>,
     params: MonadEthGetBalanceParams,
 ) -> JsonRpcResult<String> {
     trace!("monad_eth_getBalance: {params:?}");
@@ -47,7 +56,7 @@ pub async fn monad_eth_getBalance<T: Triedb>(
         .ok_or_else(JsonRpcError::block_not_found)?;
     let account = data_provider
         .triedb_env
-        .get_account(block_key, params.account.0)
+        .get_account_by_key(block_key, account_key(namespace, params.account))
         .await
         .map_err(JsonRpcError::internal_error)?;
 
@@ -73,6 +82,7 @@ pub struct MonadEthGetCodeParams {
 /// Returns code at a given address.
 pub async fn monad_eth_getCode<T: Triedb>(
     data_provider: &DataProvider<T>,
+    namespace: Option<Address>,
     params: MonadEthGetCodeParams,
 ) -> JsonRpcResult<String> {
     trace!("monad_eth_getCode: {params:?}");
@@ -82,7 +92,7 @@ pub async fn monad_eth_getCode<T: Triedb>(
         .ok_or_else(JsonRpcError::block_not_found)?;
     let account = data_provider
         .triedb_env
-        .get_account(block_key, params.account.0)
+        .get_account_by_key(block_key, account_key(namespace, params.account))
         .await
         .map_err(JsonRpcError::internal_error)?;
 
@@ -119,6 +129,7 @@ pub struct MonadEthGetStorageAtParams {
 /// Returns the value from a storage position at a given address.
 pub async fn monad_eth_getStorageAt<T: Triedb>(
     data_provider: &DataProvider<T>,
+    namespace: Option<Address>,
     params: MonadEthGetStorageAtParams,
 ) -> JsonRpcResult<String> {
     trace!("monad_eth_getStorageAt: {params:?}");
@@ -128,7 +139,11 @@ pub async fn monad_eth_getStorageAt<T: Triedb>(
         .ok_or_else(JsonRpcError::block_not_found)?;
     let storage_value = data_provider
         .triedb_env
-        .get_storage_at(block_key, params.account.0, B256::from(params.position.0).0)
+        .get_storage_at_by_key(
+            block_key,
+            account_key(namespace, params.account),
+            B256::from(params.position.0).0,
+        )
         .await
         .map_err(JsonRpcError::internal_error)?;
 
@@ -154,6 +169,7 @@ pub struct MonadEthGetTransactionCountParams {
 /// Returns the number of transactions sent from an address.
 pub async fn monad_eth_getTransactionCount<T: Triedb>(
     data_provider: &DataProvider<T>,
+    namespace: Option<Address>,
     params: MonadEthGetTransactionCountParams,
 ) -> JsonRpcResult<String> {
     trace!("monad_eth_getTransactionCount: {params:?}");
@@ -163,7 +179,7 @@ pub async fn monad_eth_getTransactionCount<T: Triedb>(
         .ok_or_else(JsonRpcError::block_not_found)?;
     let account = data_provider
         .triedb_env
-        .get_account(block_key, params.account.0)
+        .get_account_by_key(block_key, account_key(namespace, params.account))
         .await
         .map_err(JsonRpcError::internal_error)?;
 

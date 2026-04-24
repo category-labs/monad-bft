@@ -32,7 +32,7 @@ use monad_rpc::{
     event::EventServer,
     handlers::{
         resources::{MonadJsonRootSpanBuilder, MonadRpcResources},
-        rpc_handler,
+        namespace_rpc_handler, rpc_handler,
     },
     middleware::{DecompressionGuard, Metrics, TimingMiddleware},
     txpool::EthTxPoolBridge,
@@ -136,7 +136,7 @@ async fn main() -> std::io::Result<()> {
                     info!("Waiting for statesync to complete");
                 }
                 _= retry_timer.tick() => {
-                    match EthTxPoolBridge::start(&ipc_path).await  {
+                    match EthTxPoolBridge::start(&ipc_path, node_config.chain_id).await {
                         Ok((client, handle)) => {
                             info!("Statesync complete, starting RPC server");
                             break (client, handle)
@@ -413,6 +413,10 @@ async fn main() -> std::io::Result<()> {
                 .app_data(web::PayloadConfig::default().limit(args.max_request_size))
                 .app_data(web::Data::new(app_state.clone()))
                 .service(web::resource("/").route(web::post().to(rpc_handler)))
+                .service(
+                    web::resource("/namespace/{chain_id}")
+                        .route(web::post().to(namespace_rpc_handler)),
+                )
         })
         .bind((args.rpc_addr, args.rpc_port))?
         .shutdown_timeout(1)
@@ -426,6 +430,10 @@ async fn main() -> std::io::Result<()> {
                 .app_data(web::PayloadConfig::default().limit(args.max_request_size))
                 .app_data(web::Data::new(app_state.clone()))
                 .service(web::resource("/").route(web::post().to(rpc_handler)))
+                .service(
+                    web::resource("/namespace/{chain_id}")
+                        .route(web::post().to(namespace_rpc_handler)),
+                )
         })
         .bind((args.rpc_addr, args.rpc_port))?
         .shutdown_timeout(1)

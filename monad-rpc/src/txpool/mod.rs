@@ -55,6 +55,7 @@ pub struct EthTxPoolBridge {
 impl EthTxPoolBridge {
     pub async fn start<P>(
         bind_path: P,
+        chain_id: u64,
     ) -> io::Result<(EthTxPoolBridgeClient, EthTxPoolBridgeHandle)>
     where
         P: AsRef<Path>,
@@ -62,7 +63,8 @@ impl EthTxPoolBridge {
         let (ipc_client, snapshot) = EthTxPoolIpcClient::new(&bind_path).await?;
 
         let mut eviction_queue = EthTxPoolBridgeEvictionQueue::default();
-        let state: EthTxPoolBridgeState = EthTxPoolBridgeState::new(&mut eviction_queue, snapshot);
+        let state: EthTxPoolBridgeState =
+            EthTxPoolBridgeState::new(&mut eviction_queue, snapshot, chain_id);
 
         let (tx_sender, tx_receiver) = flume::bounded(ETH_TXPOOL_BRIDGE_CHANNEL_SIZE);
 
@@ -353,7 +355,7 @@ mod tests {
             drop(ipc_stream); // Simulate crash
         });
 
-        let (client, _handle) = EthTxPoolBridge::start(&socket_path)
+        let (client, _handle) = EthTxPoolBridge::start(&socket_path, 1)
             .await
             .expect("Bridge should start");
 
@@ -404,7 +406,7 @@ mod tests {
             }
         });
 
-        let (client, handle) = EthTxPoolBridge::start(&socket_path)
+        let (client, handle) = EthTxPoolBridge::start(&socket_path, 1)
             .await
             .expect("Bridge should start");
 
@@ -449,7 +451,7 @@ mod tests {
             (received_tx, ipc_stream)
         });
 
-        let (client, _handle) = EthTxPoolBridge::start(&socket_path)
+        let (client, _handle) = EthTxPoolBridge::start(&socket_path, 1)
             .await
             .expect("Bridge should start");
 
@@ -516,7 +518,7 @@ mod tests {
             drop(ipc_stream1);
         });
 
-        let (client, _handle) = EthTxPoolBridge::start(&socket_path)
+        let (client, _handle) = EthTxPoolBridge::start(&socket_path, 1)
             .await
             .expect("Bridge should start");
 

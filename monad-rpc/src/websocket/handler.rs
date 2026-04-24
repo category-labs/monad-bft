@@ -722,7 +722,9 @@ mod tests {
         let app_state = MonadRpcResources {
             txpool_bridge_client: Some(EthTxPoolBridgeClient::for_testing()),
             eth_call_handler: None,
+            base_chain_id: 1337,
             chain_id: 1337,
+            namespace: None,
             data_provider: None,
             event_server_client: Some(event_server_client),
             batch_request_limit: 5,

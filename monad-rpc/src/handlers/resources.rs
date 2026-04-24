@@ -18,6 +18,7 @@ use actix_web::{
     dev::{ServiceRequest, ServiceResponse},
     Error,
 };
+use alloy_primitives::Address;
 use monad_triedb_utils::triedb_env::TriedbEnv;
 use tracing_actix_web::RootSpanBuilder;
 
@@ -33,7 +34,9 @@ use crate::{
 pub struct MonadRpcResources {
     pub txpool_bridge_client: Option<EthTxPoolBridgeClient>,
     pub eth_call_handler: Option<EthCallHandler>,
+    pub base_chain_id: u64,
     pub chain_id: u64,
+    pub namespace: Option<Address>,
     pub data_provider: Option<DataProvider<TriedbEnv>>,
     pub event_server_client: Option<EventServerClient>,
     pub batch_request_limit: u16,
@@ -76,7 +79,9 @@ impl MonadRpcResources {
         Self {
             txpool_bridge_client,
             eth_call_handler,
+            base_chain_id: chain_id,
             chain_id,
+            namespace: None,
             data_provider,
             event_server_client,
             batch_request_limit,
@@ -93,6 +98,13 @@ impl MonadRpcResources {
             metrics,
             rpc_comparator,
         }
+    }
+
+    pub fn with_namespace_context(&self, chain_id: u64, namespace: Address) -> Self {
+        let mut resources = self.clone();
+        resources.chain_id = chain_id;
+        resources.namespace = Some(namespace);
+        resources
     }
 }
 
