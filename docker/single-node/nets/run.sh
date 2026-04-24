@@ -5,12 +5,14 @@ set -ex
 # --- Default variables ---
 CACHED_VOL_ROOT=""
 USE_PREBUILT=false
+TOOLCHAIN="${TOOLCHAIN:-gcc-avx2}"
 
 # --- Function Definitions ---
 usage() {
-    echo "Usage: $0 [--cached-build /path/to/vol_root] [--use-prebuilt]"
+    echo "Usage: $0 [--cached-build /path/to/vol_root] [--use-prebuilt] [--toolchain toolchain]"
     echo "  --cached-build: Skips all build steps and runs docker-compose from an existing volume root."
     echo "  --use-prebuilt: Uses pre-built images (via compose.override.yaml) instead of building from source."
+    echo "  --toolchain: Execution toolchain basename under monad-execution/category/core/toolchains (default: gcc-avx2)."
     exit 1
 }
 
@@ -27,6 +29,14 @@ while [[ "$#" -gt 0 ]]; do
             ;;
         --use-prebuilt)
             USE_PREBUILT=true
+            ;;
+        --toolchain)
+            if [[ -z "$2" || "$2" == --* ]]; then
+                echo "Error: --toolchain requires a toolchain name argument." >&2
+                usage
+            fi
+            TOOLCHAIN="$2"
+            shift
             ;;
         *)
             echo "Unknown parameter passed: $1"
@@ -65,6 +75,16 @@ export MONAD_EXECUTION_ROOT="${MONAD_BFT_ROOT}/monad-execution"
 
 # Get git describe tag for versioning
 export GIT_TAG_VERSION=$(git -C "$MONAD_BFT_ROOT" describe --always)
+
+if [ -z "$CACHED_VOL_ROOT" ] && [ "$USE_PREBUILT" != true ]; then
+    toolchain_file="$MONAD_EXECUTION_ROOT/category/core/toolchains/${TOOLCHAIN}.cmake"
+    if [ ! -f "$toolchain_file" ]; then
+        echo "Error: execution toolchain file does not exist: $toolchain_file" >&2
+        echo "Set --toolchain to one of:" >&2
+        find "$MONAD_EXECUTION_ROOT/category/core/toolchains" -maxdepth 1 -type f -name '*.cmake' -exec basename {} .cmake \; | sort >&2
+        exit 1
+    fi
+fi
 
 # --- Main Logic: Choose between Fresh Build or Cached Run ---
 
@@ -112,7 +132,8 @@ if [ -z "$CACHED_VOL_ROOT" ]; then
             --build-arg GIT_COMMIT_HASH=$(git -C "$MONAD_EXECUTION_ROOT" rev-parse HEAD) \
             --build-arg CC=gcc-15 \
             --build-arg CXX=g++-15 \
-            --build-arg CMAKE_BUILD_TYPE=RelWithDebInfo
+            --build-arg CMAKE_BUILD_TYPE=RelWithDebInfo \
+            --build-arg TOOLCHAIN="$TOOLCHAIN"
 
         # Run one-off build services and start node services, forcing a build of all images
         docker compose up build_triedb build_genesis monad_execution monad_node monad_rpc --build
