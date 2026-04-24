@@ -16,8 +16,8 @@
 use std::collections::BTreeMap;
 
 use alloy_primitives::{Address, TxHash};
-use monad_eth_types::AccountKey;
 use monad_eth_txpool_types::EthTxPoolEvictReason;
+use monad_eth_types::AccountKey;
 use monad_rpc_docs::rpc;
 use serde::{Deserialize, Serialize};
 

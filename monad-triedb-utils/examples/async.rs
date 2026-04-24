@@ -17,8 +17,8 @@ use std::{error::Error, path::PathBuf};
 
 use alloy_primitives::{Uint, B256};
 use clap::Parser;
-use monad_eth_types::AccountKey;
 use monad_eth_testutil::secret_to_eth_address;
+use monad_eth_types::AccountKey;
 use monad_triedb_utils::{key::Version, TriedbReader};
 
 #[derive(Debug, Parser)]

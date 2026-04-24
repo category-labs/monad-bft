@@ -280,8 +280,7 @@ impl ExecutionStateRead<SecpSignature, BlsSignatureCollection<monad_secp::PubKey
             // check finalized
 
             // block <= latest
-            let Some(statuses) =
-                self.get_accounts_async(seq_num, Version::Finalized, account_keys)
+            let Some(statuses) = self.get_accounts_async(seq_num, Version::Finalized, account_keys)
             else {
                 return Err(ExecutionStateReadError::NotAvailableYet);
             };

@@ -263,11 +263,11 @@ mod test {
 
     use alloy_consensus::transaction::SignerRecoverable;
     use monad_eth_testutil::{make_legacy_tx, S1};
-    use monad_eth_types::EthTxEnvelope;
     use monad_eth_txpool_types::{
         EthTxPoolDropReason, EthTxPoolEvent, EthTxPoolEventType, EthTxPoolEvictReason,
         EthTxPoolSnapshot,
     };
+    use monad_eth_types::EthTxEnvelope;
     use tokio::time::Instant;
 
     use super::EthTxPoolBridgeStateView;

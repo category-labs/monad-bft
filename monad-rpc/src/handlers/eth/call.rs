@@ -23,11 +23,11 @@ use alloy_eips::eip7702::SignedAuthorization;
 use alloy_primitives::{Address, Bytes, Signature, TxKind, Uint, B256, U256, U64, U8};
 use alloy_rpc_types::{AccessList, AccessListItem};
 use monad_chain_config::execution_revision::MonadExecutionRevision;
+use monad_eth_types::AccountKey;
 use monad_ethcall::{
     eth_call, CallResult, EthCallExecutor, EthCallRequest, EthCallResult, FailureCallResult,
     MonadTracer, StateOverrideSet,
 };
-use monad_eth_types::AccountKey;
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{
     BlockKey, FinalizedBlockKey, ProposedBlockKey, Triedb, TriedbPath,
@@ -402,16 +402,15 @@ pub async fn fill_gas_params<T: Triedb>(
             tx.fill_gas_prices(U256::from(header.base_fee_per_gas.unwrap_or_default()))?;
 
             if tx.gas.is_none() {
-                let allowance =
-                    sender_gas_allowance(
-                        triedb_env,
-                        block_key,
-                        header,
-                        tx,
-                        state_overrides,
-                        namespace,
-                    )
-                        .await?;
+                let allowance = sender_gas_allowance(
+                    triedb_env,
+                    block_key,
+                    header,
+                    tx,
+                    state_overrides,
+                    namespace,
+                )
+                .await?;
                 tx.gas = Some(U256::from(allowance).min(eth_call_provider_gas_limit));
             }
         }

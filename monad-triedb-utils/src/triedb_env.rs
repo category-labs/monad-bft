@@ -898,10 +898,7 @@ fn key_input_for_account(account_key: &AccountKey) -> KeyInput<'_> {
     }
 }
 
-fn key_input_for_storage<'a>(
-    account_key: &'a AccountKey,
-    at: &'a EthStorageKey,
-) -> KeyInput<'a> {
+fn key_input_for_storage<'a>(account_key: &'a AccountKey, at: &'a EthStorageKey) -> KeyInput<'a> {
     match account_key.namespace.as_ref() {
         Some(namespace) => {
             KeyInput::NamespacedStorage(namespace.as_ref(), account_key.address.as_ref(), at)
@@ -1013,9 +1010,14 @@ impl Triedb for TriedbEnv {
             .await
             .map(Option::unwrap_or_default)
         } else {
-            self.handle_async_request(block_key, key_input_for_storage(&account_key, &at), |data| {
-                rlp_decode_storage_slot(data).ok_or_else(|| String::from("Decoding storage slot error"))
-            })
+            self.handle_async_request(
+                block_key,
+                key_input_for_storage(&account_key, &at),
+                |data| {
+                    rlp_decode_storage_slot(data)
+                        .ok_or_else(|| String::from("Decoding storage slot error"))
+                },
+            )
             .await
             .map(Option::unwrap_or_default)
         }

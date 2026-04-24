@@ -31,8 +31,9 @@ use monad_rpc::{
     },
     event::EventServer,
     handlers::{
+        namespace_rpc_handler,
         resources::{MonadJsonRootSpanBuilder, MonadRpcResources},
-        namespace_rpc_handler, rpc_handler,
+        rpc_handler,
     },
     middleware::{DecompressionGuard, Metrics, TimingMiddleware},
     txpool::EthTxPoolBridge,

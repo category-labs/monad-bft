@@ -122,11 +122,10 @@ pub async fn namespace_rpc_handler(
         Ok(chain_id) => chain_id,
         Err(err) => return HttpResponse::Ok().json(Response::from_error(err)),
     };
-    let namespace =
-        match namespace_for_route_chain_id(route_chain_id, app_state.base_chain_id) {
-            Ok(namespace) => namespace,
-            Err(err) => return HttpResponse::Ok().json(Response::from_error(err)),
-        };
+    let namespace = match namespace_for_route_chain_id(route_chain_id, app_state.base_chain_id) {
+        Ok(namespace) => namespace,
+        Err(err) => return HttpResponse::Ok().json(Response::from_error(err)),
+    };
     let app_state = web::Data::new(app_state.with_namespace_context(route_chain_id, namespace));
 
     rpc_handler_inner(root_span, body, app_state, request_id).await
