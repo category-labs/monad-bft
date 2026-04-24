@@ -92,7 +92,7 @@ fn rlp_decode_storage_slot_with_key(storage_rlp: &[u8]) -> Option<[u8; 32]> {
 }
 
 fn rlp_decode_storage_value_only(storage_rlp: &[u8]) -> Option<[u8; 32]> {
-    let mut buf = storage_rlp.as_slice();
+    let mut buf = storage_rlp;
     let Ok(mut buf) = alloy_rlp::Header::decode_bytes(&mut buf, true) else {
         warn!("rlp decode failed: {:?}", buf);
         return None;
