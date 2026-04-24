@@ -23,7 +23,7 @@ use std::{
 };
 
 use alloy_consensus::Header;
-use alloy_primitives::{Address, U256};
+use alloy_primitives::U256;
 use alloy_rlp::Decodable;
 use futures::{channel::oneshot, executor::block_on, future::join_all, FutureExt};
 use key::Version;
