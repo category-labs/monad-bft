@@ -46,7 +46,7 @@ use crate::{
         rlp_decode_account, rlp_decode_block_num, rlp_decode_storage_slot,
         rlp_decode_transaction_location,
     },
-    key::{create_range_key, create_triedb_key, KeyInput, Version},
+    key::{create_range_key, create_triedb_key, KeyInput, KeyLenNibbles, Version},
 };
 
 enum TriedbRequest {
@@ -60,13 +60,13 @@ struct RangeGetRequest {
     request_sender: oneshot::Sender<Option<Vec<TraverseEntry>>>,
     // prefix key is used to get the root of the subtrie
     prefix_key: Vec<u8>,
-    prefix_key_len_nibbles: u8,
+    prefix_key_len_nibbles: KeyLenNibbles,
     // min key is inclusive in the range we want to retrieve
     min_triedb_key: Vec<u8>,
-    min_key_len_nibbles: u8,
+    min_key_len_nibbles: KeyLenNibbles,
     // max key is not inclusive in the range we want to retrieve
     max_triedb_key: Vec<u8>,
-    max_key_len_nibbles: u8,
+    max_key_len_nibbles: KeyLenNibbles,
     block_key: BlockKey,
 }
 
@@ -75,7 +75,7 @@ struct TraverseRequest {
     request_sender: oneshot::Sender<Option<Vec<TraverseEntry>>>,
     // triedb_key and key_len_nibbles are used to read items from triedb
     triedb_key: Vec<u8>,
-    key_len_nibbles: u8,
+    key_len_nibbles: KeyLenNibbles,
     block_key: BlockKey,
 }
 
@@ -88,7 +88,7 @@ struct AsyncRequest {
     completed_counter: Arc<AtomicUsize>,
     // triedb_key and key_len_nibbles are used to read items from triedb
     triedb_key: Vec<u8>,
-    key_len_nibbles: u8,
+    key_len_nibbles: KeyLenNibbles,
     block_key: BlockKey,
 }
 

@@ -18,6 +18,8 @@ use alloy_rlp::Encodable;
 use monad_types::BlockId;
 use tracing::warn;
 
+pub type KeyLenNibbles = u16;
+
 // Table nibbles
 const STATE_NIBBLE: u8 = 0;
 const CODE_NIBBLE: u8 = 1;
@@ -54,7 +56,7 @@ pub enum KeyInput<'a> {
     CallFrame,
 }
 
-pub fn create_triedb_key(version: Version, key: KeyInput) -> (Vec<u8>, u8) {
+pub fn create_triedb_key(version: Version, key: KeyInput) -> (Vec<u8>, KeyLenNibbles) {
     let mut key_nibbles: Vec<u8> = vec![];
 
     match version {
@@ -145,7 +147,7 @@ pub fn create_triedb_key(version: Version, key: KeyInput) -> (Vec<u8>, u8) {
         KeyInput::CallFrame => key_nibbles.push(CALL_FRAME_NIBBLE),
     }
 
-    let num_nibbles: u8 = match key_nibbles.len().try_into() {
+    let num_nibbles: KeyLenNibbles = match key_nibbles.len().try_into() {
         Ok(len) => len,
         Err(_) => {
             warn!("Key too big, returning an empty key");
@@ -173,7 +175,7 @@ fn append_hashed_nibbles(key_nibbles: &mut Vec<u8>, input: &[u8]) {
     }
 }
 
-pub fn create_range_key(tx_index: u64) -> (Vec<u8>, u8) {
+pub fn create_range_key(tx_index: u64) -> (Vec<u8>, KeyLenNibbles) {
     let mut key_nibbles: Vec<u8> = vec![];
     // call frame key takes tx index as 4 bytes
     // downcast index to u32
@@ -190,7 +192,7 @@ pub fn create_range_key(tx_index: u64) -> (Vec<u8>, u8) {
         key_nibbles.push(byte & 0xF)
     }
 
-    let num_nibbles: u8 = match key_nibbles.len().try_into() {
+    let num_nibbles: KeyLenNibbles = match key_nibbles.len().try_into() {
         Ok(len) => len,
         Err(_) => {
             warn!("Key too big, returning an empty key");
@@ -213,6 +215,7 @@ pub fn create_range_key(tx_index: u64) -> (Vec<u8>, u8) {
 #[cfg(test)]
 mod test {
     use alloy_primitives::keccak256;
+    use monad_types::{BlockId, Hash};
 
     use super::*;
 
@@ -274,5 +277,21 @@ mod test {
         assert_ne!(namespaced_address_key, other_namespace_address_key);
         assert_eq!(namespaced_address_nibbles, 2 + 64 + 64);
         assert_eq!(namespaced_storage_nibbles, 2 + 64 + 64 + 64);
+    }
+
+    #[test]
+    fn create_triedb_key_supports_proposal_namespaced_storage() {
+        let namespace = [0xaa; 20];
+        let address = [0x11; 20];
+        let slot = [0x22; 32];
+        let block_id = BlockId(Hash([0x33; 32]));
+
+        let (key, nibbles) = create_triedb_key(
+            Version::Proposal(block_id),
+            KeyInput::NamespacedStorage(&namespace, &address, &slot),
+        );
+
+        assert_eq!(nibbles, 1 + 64 + 1 + 64 + 64 + 64);
+        assert_eq!(key.len(), usize::from(nibbles).div_ceil(2));
     }
 }
