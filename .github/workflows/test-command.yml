@@ -58,7 +58,7 @@ jobs:
     needs: check-command
     runs-on: self-hosted
     container:
-      image: peach10.devcore4.com/category-labs/builder
+      image: ${{ secrets.REGISTRY }}/category-labs/builder
       options: --privileged -u 1000:1000
     steps:
       - name: Generate token

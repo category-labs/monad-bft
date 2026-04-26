@@ -52,7 +52,7 @@ jobs:
       - name: Log in to the Peach10 Container registry
         uses: docker/login-action@v3.1.0
         with:
-          registry: peach10.devcore4.com
+          registry: ${{ secrets.REGISTRY }}
           username: ${{ secrets.PRIVATE_REGISTRY_USERNAME }}
           password: ${{ secrets.PRIVATE_REGISTRY_PASSWORD }}
 
@@ -61,7 +61,7 @@ jobs:
         uses: docker/metadata-action@v5.5.1
         with:
           images: |
-            peach10.devcore4.com/category-labs/${{ matrix.dockerfile.name }}
+            ${{ secrets.REGISTRY }}/category-labs/${{ matrix.dockerfile.name }}
           tags: |
             type=ref,event=branch
             type=sha,prefix=
