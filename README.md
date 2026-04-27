@@ -117,18 +117,20 @@ Some Rust targets depend on the execution C++ library through crates such as
 targets directly with Cargo on x86, use the compiler and CPU feature settings
 documented by Monad execution:
 
-- [minimum development tool requirements](monad-execution/README.md#minimum-development-tool-requirements)
-- [CPU compilation requirements](monad-execution/README.md#cpu-compilation-requirements)
-- [compiling the execution code](monad-execution/README.md#compiling-the-execution-code)
+- [minimum development tool requirements](https://github.com/category-labs/monad/blob/184baba1c5f4f04cd80ae6df2b4bc06602496aa9/README.md#minimum-development-tool-requirements)
+- [CPU compilation requirements](https://github.com/category-labs/monad/blob/184baba1c5f4f04cd80ae6df2b4bc06602496aa9/README.md#cpu-compilation-requirements)
+- [compiling the execution code](https://github.com/category-labs/monad/blob/184baba1c5f4f04cd80ae6df2b4bc06602496aa9/README.md#compiling-the-execution-code)
 
 Set `TRIEDB_TARGET=triedb_driver` when the Cargo target needs the Rust build
 scripts to build and link the execution C++ library.
 
 If CMake was first configured with the wrong compiler or flags, remove the
-generated `monad-cxx` build directory before retrying:
+generated `monad-cxx` build directory for the relevant Cargo profile before
+retrying:
 
 ```bash
-rm -rf target/release/build/monad-cxx-*
+rm -rf "${CARGO_TARGET_DIR:-target}"/debug/build/monad-cxx-*
+rm -rf "${CARGO_TARGET_DIR:-target}"/release/build/monad-cxx-*
 ```
 
 ## Architecture
