@@ -43,7 +43,7 @@ use crate::bindings;
 
 /// StateSyncIpc encapsulates a connection to a live execution client, used for servicing statesync
 /// requests
-pub(crate) struct StateSyncIpc<PT: PubKey> {
+pub struct StateSyncIpc<PT: PubKey> {
     /// request_tx accepts (from, request) pairs
     pub request_tx: tokio::sync::mpsc::Sender<(NodeId<PT>, StateSyncNetworkMessage)>,
     /// response_rx yields (to, response, completion) tuples
@@ -51,6 +51,11 @@ pub(crate) struct StateSyncIpc<PT: PubKey> {
     pub response_rx:
         tokio::sync::mpsc::Receiver<(NodeId<PT>, StateSyncNetworkMessage, oneshot::Sender<()>)>,
 
+    metrics: StreamMetrics,
+}
+
+#[derive(Clone, Default)]
+struct StreamMetrics {
     pending_request_len: Arc<AtomicUsize>,
     is_servicing_request: Arc<AtomicBool>,
     num_syncdone_success: Arc<AtomicUsize>,
@@ -58,25 +63,73 @@ pub(crate) struct StateSyncIpc<PT: PubKey> {
     total_service_time_us: Arc<AtomicUsize>,
 }
 
+impl StreamMetrics {
+    /// Drive a single connection: build a `StreamState` over the given stream and
+    /// pump it until the socket errors, mirroring StreamState progress into the
+    /// shared atomics on each tick.
+    async fn run_stream<PT: PubKey>(
+        &self,
+        request_timeout: Duration,
+        stream: UnixStream,
+        request_tx_reader: &mut tokio::sync::mpsc::Receiver<(NodeId<PT>, StateSyncNetworkMessage)>,
+        response_rx_writer: &mut tokio::sync::mpsc::Sender<(
+            NodeId<PT>,
+            StateSyncNetworkMessage,
+            oneshot::Sender<()>,
+        )>,
+    ) {
+        let mut stream_state = StreamState::new(
+            request_timeout,
+            stream,
+            request_tx_reader,
+            response_rx_writer,
+        );
+        while let Ok(()) = stream_state.poll().await {
+            self.update_from(&stream_state);
+        }
+    }
+
+    fn update_from<PT: PubKey>(&self, state: &StreamState<'_, PT>) {
+        self.pending_request_len
+            .store(state.pending_requests.len(), Ordering::Relaxed);
+        self.is_servicing_request
+            .store(state.wip_response.is_some(), Ordering::Relaxed);
+        self.num_syncdone_success
+            .store(state.metric_syncdone_success, Ordering::Relaxed);
+        self.num_syncdone_failed
+            .store(state.metric_syncdone_failed, Ordering::Relaxed);
+        self.total_service_time_us
+            .store(state.metric_total_service_time_us, Ordering::Relaxed);
+    }
+
+    fn reset(&self) {
+        self.pending_request_len.store(0, Ordering::Relaxed);
+        self.is_servicing_request.store(false, Ordering::Relaxed);
+        self.num_syncdone_success.store(0, Ordering::Relaxed);
+        self.num_syncdone_failed.store(0, Ordering::Relaxed);
+        self.total_service_time_us.store(0, Ordering::Relaxed);
+    }
+}
+
 impl<PT: PubKey> StateSyncIpc<PT> {
     pub fn pending_request_len(&self) -> usize {
-        self.pending_request_len.load(Ordering::Relaxed)
+        self.metrics.pending_request_len.load(Ordering::Relaxed)
     }
 
     pub fn is_servicing_request(&self) -> bool {
-        self.is_servicing_request.load(Ordering::Relaxed)
+        self.metrics.is_servicing_request.load(Ordering::Relaxed)
     }
 
     pub fn num_syncdone_success(&self) -> usize {
-        self.num_syncdone_success.load(Ordering::Relaxed)
+        self.metrics.num_syncdone_success.load(Ordering::Relaxed)
     }
 
     pub fn num_syncdone_failed(&self) -> usize {
-        self.num_syncdone_failed.load(Ordering::Relaxed)
+        self.metrics.num_syncdone_failed.load(Ordering::Relaxed)
     }
 
     pub fn total_service_time_us(&self) -> usize {
-        self.total_service_time_us.load(Ordering::Relaxed)
+        self.metrics.total_service_time_us.load(Ordering::Relaxed)
     }
 }
 
@@ -114,23 +167,10 @@ impl<PT: PubKey> StateSyncIpc<PT> {
         let (request_tx_writer, mut request_tx_reader) = tokio::sync::mpsc::channel(10);
         let (mut response_rx_writer, response_rx_reader) = tokio::sync::mpsc::channel(100);
 
-        let pending_request_len = Arc::new(AtomicUsize::new(0));
-        let pending_request_len_clone = pending_request_len.clone();
-        let is_servicing_request = Arc::new(AtomicBool::new(false));
-        let is_servicing_request_clone = is_servicing_request.clone();
-        let num_syncdone_success = Arc::new(AtomicUsize::new(0));
-        let num_syncdone_success_clone = num_syncdone_success.clone();
-        let num_syncdone_failed = Arc::new(AtomicUsize::new(0));
-        let num_syncdone_failed_clone = num_syncdone_failed.clone();
-        let total_service_time_us = Arc::new(AtomicUsize::new(0));
-        let total_service_time_us_clone = total_service_time_us.clone();
+        let metrics = StreamMetrics::default();
+        let metrics_task = metrics.clone();
 
         tokio::spawn(async move {
-            let pending_request_len = pending_request_len_clone;
-            let is_servicing_request = is_servicing_request_clone;
-            let num_syncdone_success = num_syncdone_success_clone;
-            let num_syncdone_failed = num_syncdone_failed_clone;
-            let total_service_time_us = total_service_time_us_clone;
             loop {
                 let execution_stream = {
                     let conn_fut = async {
@@ -142,56 +182,65 @@ impl<PT: PubKey> StateSyncIpc<PT> {
                     };
                     let drain_fut = async {
                         // this future exists to make sure that the request channel is drained
-                        // while waiting for execution to connect
-                        loop {
-                            let _request: (NodeId<PT>, StateSyncNetworkMessage) =
-                                request_tx_reader.recv().await.expect("request_tx dropped");
-                        }
+                        // while waiting for execution to connect; returns when all senders are
+                        // dropped so the surrounding task can exit cleanly
+                        while request_tx_reader.recv().await.is_some() {}
                     };
                     match futures::future::select(pin!(conn_fut), pin!(drain_fut)).await {
                         futures::future::Either::Left((stream, _)) => stream,
-                        futures::future::Either::Right(_) => {
-                            unreachable!("drain_fut yields forever")
-                        }
+                        futures::future::Either::Right(_) => return,
                     }
                 };
 
-                let mut stream_state = StreamState::new(
-                    request_timeout,
-                    execution_stream,
-                    &mut request_tx_reader,
-                    &mut response_rx_writer,
-                );
-                while let Ok(()) = stream_state.poll().await {
-                    pending_request_len
-                        .store(stream_state.pending_requests.len(), Ordering::Relaxed);
-                    is_servicing_request
-                        .store(stream_state.wip_response.is_some(), Ordering::Relaxed);
-                    num_syncdone_success
-                        .store(stream_state.metric_syncdone_success, Ordering::Relaxed);
-                    num_syncdone_failed
-                        .store(stream_state.metric_syncdone_failed, Ordering::Relaxed);
-                    total_service_time_us
-                        .store(stream_state.metric_total_service_time_us, Ordering::Relaxed);
-                }
+                metrics_task
+                    .run_stream(
+                        request_timeout,
+                        execution_stream,
+                        &mut request_tx_reader,
+                        &mut response_rx_writer,
+                    )
+                    .await;
 
                 tracing::warn!("UDS socket error, retrying");
-                pending_request_len.store(0, Ordering::Relaxed);
-                is_servicing_request.store(false, Ordering::Relaxed);
-                num_syncdone_success.store(0, Ordering::Relaxed);
-                num_syncdone_failed.store(0, Ordering::Relaxed);
-                total_service_time_us.store(0, Ordering::Relaxed);
+                metrics_task.reset();
             }
         });
 
         Self {
             request_tx: request_tx_writer,
             response_rx: response_rx_reader,
-            pending_request_len,
-            is_servicing_request,
-            num_syncdone_success,
-            num_syncdone_failed,
-            total_service_time_us,
+            metrics,
+        }
+    }
+
+    /// Create a StateSyncIpc from an already-connected UnixStream.
+    /// Bypasses the listener accept loop, useful for tests that drive both
+    /// ends of the connection in-process.
+    pub fn from_stream(stream: UnixStream, request_timeout: Duration) -> Self {
+        let (request_tx_writer, mut request_tx_reader) = tokio::sync::mpsc::channel(10);
+        let (mut response_rx_writer, response_rx_reader) = tokio::sync::mpsc::channel(100);
+
+        let metrics = StreamMetrics::default();
+        let metrics_task = metrics.clone();
+
+        tokio::spawn(async move {
+            metrics_task
+                .run_stream(
+                    request_timeout,
+                    stream,
+                    &mut request_tx_reader,
+                    &mut response_rx_writer,
+                )
+                .await;
+
+            tracing::warn!("statesync stream closed");
+            metrics_task.reset();
+        });
+
+        Self {
+            request_tx: request_tx_writer,
+            response_rx: response_rx_reader,
+            metrics,
         }
     }
 }
@@ -332,13 +381,16 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
         enum Event<PT: PubKey> {
             Execution(Result<u8, tokio::io::Error>),
             Message((NodeId<PT>, StateSyncNetworkMessage)),
+            RequestChannelClosed,
             TcpCompletion(Result<(), Canceled>),
             Timeout,
             ClientTimeout,
         }
         let fut = async {
-            let maybe_request = self.request_tx_reader.recv().await;
-            Event::Message(maybe_request.expect("request_tx_writer dropped"))
+            match self.request_tx_reader.recv().await {
+                Some(req) => Event::Message(req),
+                None => Event::RequestChannelClosed,
+            }
         };
         let mut futures = vec![fut.boxed()];
 
@@ -396,6 +448,10 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
                 self.handle_execution_message(execution_message).await
             }
             Event::Message((from, request)) => self.handle_message(from, request).await,
+            Event::RequestChannelClosed => Err(tokio::io::Error::new(
+                tokio::io::ErrorKind::BrokenPipe,
+                "statesync request channel closed",
+            )),
             Event::Timeout => self.handle_timeout(),
             Event::TcpCompletion(res) => self.handle_tcp_completion(res),
             Event::ClientTimeout => self.handle_client_timeout(),
