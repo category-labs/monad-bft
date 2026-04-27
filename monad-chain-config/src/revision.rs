@@ -54,6 +54,7 @@ pub enum MonadChainRevision {
     V_0_11_0,
     V_0_12_0,
     V_0_13_0,
+    V_0_14_0,
 }
 
 impl ChainRevision for MonadChainRevision {
@@ -65,6 +66,7 @@ impl ChainRevision for MonadChainRevision {
             MonadChainRevision::V_0_11_0 => &CHAIN_PARAMS_V_0_11_0,
             MonadChainRevision::V_0_12_0 => &CHAIN_PARAMS_V_0_12_0,
             MonadChainRevision::V_0_13_0 => &CHAIN_PARAMS_V_0_13_0,
+            MonadChainRevision::V_0_14_0 => &CHAIN_PARAMS_V_0_14_0,
         }
     }
 }
@@ -144,6 +146,14 @@ const CHAIN_PARAMS_V_0_13_0: ChainParams = chain_params! {
     vote_pace: Duration::from_millis(250),
 };
 
+const CHAIN_PARAMS_V_0_14_0: ChainParams = chain_params! {
+    tx_limit: 5_000,
+    proposal_gas_limit: 200_000_000,
+    proposal_byte_limit: 2_000_000,
+    max_reserve_balance: 10_000_000_000_000_000_000, // 10 MON
+    vote_pace: Duration::from_millis(400),
+};
+
 // NOTE: when adding a new revision, chain_params! asserts that tx_limit is <= MAX_TRANSACTIONS_PER_BLOCK
 
 #[cfg(test)]
@@ -156,5 +166,7 @@ mod test {
         assert!(MonadChainRevision::V_0_8_0 < MonadChainRevision::V_0_10_0);
         assert!(MonadChainRevision::V_0_10_0 < MonadChainRevision::V_0_11_0);
         assert!(MonadChainRevision::V_0_11_0 < MonadChainRevision::V_0_12_0);
+        assert!(MonadChainRevision::V_0_12_0 < MonadChainRevision::V_0_13_0);
+        assert!(MonadChainRevision::V_0_13_0 < MonadChainRevision::V_0_14_0);
     }
 }
