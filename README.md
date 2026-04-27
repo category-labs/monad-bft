@@ -104,6 +104,27 @@ To run a Monad consensus client, follow instructions [here](monad-node/README.md
  
 To run a JsonRpc server, follow instructions [here](monad-rpc/README.md).
 
+#### Cargo targets that link Monad execution
+
+Some Rust targets depend on the execution C++ library through crates such as
+`monad-ethcall`, `monad-triedb`, or `monad-cxx`. When building or testing those
+targets directly with Cargo on x86, use the compiler and CPU feature settings
+documented by Monad execution:
+
+- [minimum development tool requirements](monad-execution/README.md#minimum-development-tool-requirements)
+- [CPU compilation requirements](monad-execution/README.md#cpu-compilation-requirements)
+- [compiling the execution code](monad-execution/README.md#compiling-the-execution-code)
+
+Set `TRIEDB_TARGET=triedb_driver` when the Cargo target needs the Rust build
+scripts to build and link the execution C++ library.
+
+If CMake was first configured with the wrong compiler or flags, remove the
+generated `monad-cxx` build directory before retrying:
+
+```bash
+rm -rf target/release/build/monad-cxx-*
+```
+
 ## Architecture
 
 ```mermaid
