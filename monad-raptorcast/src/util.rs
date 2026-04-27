@@ -421,11 +421,7 @@ impl<'a, PT: PubKey> SecondaryBroadcastGroup<'a, PT> {
         let group = full_node_group_map
             .get_group_map(publisher)
             .ok_or(BroadcastGroupError::GroupNotFound(group_id))?
-            // FIXME: should use `get` method. `get_current_or_next`
-            // implements the old behavior, which can be hit if full node is
-            // upgraded before the validator. It'll be removed after the
-            // upgrade
-            .get_current_or_next(round)
+            .get(round)
             .ok_or(BroadcastGroupError::GroupNotFound(group_id))?;
         Ok(Self {
             round,
