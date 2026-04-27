@@ -783,7 +783,7 @@ pub async fn monad_eth_gasPrice<T: Triedb>(
     // Obtain suggested priority fee
     let priority_fee = suggested_priority_fee().await.unwrap_or_default();
 
-    Ok(Quantity(base_fee_per_gas + priority_fee))
+    Ok(Quantity(base_fee_per_gas.saturating_add(priority_fee)))
 }
 
 #[rpc(method = "eth_maxPriorityFeePerGas")]
