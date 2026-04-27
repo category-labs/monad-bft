@@ -5891,6 +5891,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "test-case",
+ "thiserror 1.0.69",
  "tikv-jemallocator",
  "tokio",
  "toml",

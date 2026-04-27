@@ -22,7 +22,7 @@ use alloy_consensus::{
     transaction::Recovered, Header as RlpHeader, ReceiptEnvelope, ReceiptWithBloom,
     Transaction as _,
 };
-use alloy_primitives::{Bloom, FixedBytes, TxHash, TxKind, U256};
+use alloy_primitives::{BlockHash, Bloom, FixedBytes, TxHash, TxKind, U256};
 use alloy_rlp::Encodable;
 use alloy_rpc_types::{
     Block, BlockTransactions, Filter, FilterBlockOption, FilteredParams, Header, Log, Receipt,
@@ -43,12 +43,15 @@ use tracing::{debug, error, trace, warn};
 
 use self::{
     buffer::{block_height_from_tag, ExecEventsBuffer},
-    source::{ArchiveDataSource, DataSourceStack, HistoricalDataSourceStack},
+    source::{
+        ArchiveDataSource, BlockCommitState, BlockPointer, DataSourceResult, DataSourceStack,
+        HistoricalDataSource, HistoricalDataSourceStack,
+    },
 };
 use crate::{
     handlers::eth::txn::FilterError,
     types::{
-        eth_json::{BlockTagOrHash, BlockTags, MonadLog, MonadTransactionReceipt},
+        eth_json::{BlockTagOrHash, BlockTags, MonadLog, MonadTransactionReceipt, Quantity},
         heuristic_size::HeuristicSize,
         jsonrpc::{ArchiveErrorExt, JsonRpcError, JsonRpcResult},
     },
@@ -143,6 +146,37 @@ fn resolve_block_height_from_buffer(
         BlockTagOrHash::Hash(hash) => buffer
             .get_block_by_hash(&FixedBytes(hash.0))
             .map(|block| block.header.number),
+    }
+}
+
+async fn resolve_block_tag_or_hash(
+    data_source: &impl HistoricalDataSource,
+    block_tag_or_hash: BlockTagOrHash,
+) -> DataSourceResult<Option<BlockPointer>> {
+    match block_tag_or_hash {
+        BlockTagOrHash::BlockTags(BlockTags::Number(Quantity(block_num))) => {
+            data_source.try_resolve_block_number(block_num).await
+        }
+        BlockTagOrHash::BlockTags(BlockTags::Latest) => {
+            data_source
+                .try_resolve_block_commit_state(BlockCommitState::Proposed)
+                .await
+        }
+        BlockTagOrHash::BlockTags(BlockTags::Safe) => {
+            data_source
+                .try_resolve_block_commit_state(BlockCommitState::Voted)
+                .await
+        }
+        BlockTagOrHash::BlockTags(BlockTags::Finalized) => {
+            data_source
+                .try_resolve_block_commit_state(BlockCommitState::Finalized)
+                .await
+        }
+        BlockTagOrHash::Hash(block_hash) => {
+            data_source
+                .try_resolve_block_hash(BlockHash::from(block_hash.0))
+                .await
+        }
     }
 }
 
@@ -384,22 +418,17 @@ impl<T: Triedb> DataProvider<T> {
             }
         }
 
-        if let Some(archive_reader) = &self.archive_reader {
-            match block {
-                BlockTagOrHash::BlockTags(BlockTags::Number(n)) => {
-                    if let Some(block) = archive_reader.try_get_block_by_number(n.0).await? {
-                        return Ok(block.header);
-                    }
-                }
-                BlockTagOrHash::Hash(hash) => {
-                    if let Some(block) = archive_reader
-                        .try_get_block_by_hash(&FixedBytes(hash.0))
-                        .await?
-                    {
-                        return Ok(block.header);
-                    }
-                }
-                _ => {}
+        if let Some(block_pointer) = resolve_block_tag_or_hash(&self.historical, block)
+            .await
+            .map_err(|e| ChainStateError::Archive(e.to_string()))?
+        {
+            if let Some(header) = self
+                .historical
+                .get_block_header(block_pointer)
+                .await
+                .map_err(|e| ChainStateError::Archive(e.to_string()))?
+            {
+                return Ok(header);
             }
         }
 
@@ -442,32 +471,22 @@ impl<T: Triedb> DataProvider<T> {
             }
         }
 
-        if let Some(archive_reader) = &self.archive_reader {
-            match block {
-                BlockTagOrHash::BlockTags(BlockTags::Number(n)) => {
-                    if let Some(block) = archive_reader.try_get_block_by_number(n.0).await? {
-                        return Ok(parse_block_content(
-                            block.header.hash_slow(),
-                            block.header,
-                            block.body.transactions,
-                            return_full_txns,
-                        ));
-                    }
-                }
-                BlockTagOrHash::Hash(hash) => {
-                    if let Some(block) = archive_reader
-                        .try_get_block_by_hash(&FixedBytes(hash.0))
-                        .await?
-                    {
-                        return Ok(parse_block_content(
-                            block.header.hash_slow(),
-                            block.header,
-                            block.body.transactions,
-                            return_full_txns,
-                        ));
-                    }
-                }
-                _ => {}
+        if let Some(block_pointer) = resolve_block_tag_or_hash(&self.historical, block)
+            .await
+            .map_err(|e| ChainStateError::Archive(e.to_string()))?
+        {
+            if let Some((header, transactions)) = self
+                .historical
+                .get_block(block_pointer)
+                .await
+                .map_err(|e| ChainStateError::Archive(e.to_string()))?
+            {
+                return Ok(parse_block_content(
+                    header.hash_slow(),
+                    header,
+                    transactions,
+                    return_full_txns,
+                ));
             }
         }
 
@@ -640,14 +659,19 @@ impl<T: Triedb> DataProvider<T> {
                         // retry from archive reader if block hash not available in triedb
                         // TODO: This is ridiculously inefficient, we should be using the archive direct support for
                         //       eth_getLogs via block_hash instead
-                        if let Some(archive_reader) = &self.archive_reader {
-                            if let Some(block) =
-                                archive_reader.try_get_block_by_hash(&block_hash).await?
-                            {
-                                block.header.number
-                            } else {
-                                return Ok(vec![]);
-                            }
+                        if let Some(block_pointer) = self
+                            .historical
+                            .try_resolve_block_hash(block_hash)
+                            .await
+                            .map_err(|e| JsonRpcError::internal_error(e.to_string()))?
+                        {
+                            // TODO(andr-dev): Once all sources are implemented, we can replace
+                            // the log range math with BlockPointer math, for now we must stick
+                            // to block numbers.
+                            match block_pointer {
+                                    BlockPointer::Finalized(block_num, _) => block_num,
+                                    BlockPointer::NonFinalized(_, _) => return Err(JsonRpcError::internal_error("archive produced non-finalized block number after resolving block hash".to_string())),
+                                }
                         } else {
                             return Ok(vec![]);
                         }
@@ -790,6 +814,7 @@ impl<T: Triedb> DataProvider<T> {
                             // fallback and try fetching from archive
                             if let Some(archive_reader) = &self.archive_reader {
                                 fetch_bloom_filtered_header_transactions_receipts_from_archive(
+                                    &self.historical,
                                     archive_reader,
                                     block_number,
                                     filter_match,
@@ -1067,6 +1092,7 @@ fn receipt_envelope_to_logs_iter<'a>(
 }
 
 async fn fetch_bloom_filtered_header_transactions_receipts_from_archive(
+    data_source: &impl HistoricalDataSource,
     archive_reader: &ArchiveReader,
     block_number: u64,
     filter_match: impl Fn(Bloom) -> bool,
@@ -1075,18 +1101,16 @@ async fn fetch_bloom_filtered_header_transactions_receipts_from_archive(
     Vec<TxEnvelopeWithSender>,
     Vec<ReceiptWithLogIndex>,
 )> {
-    let alloy_consensus::Block::<TxEnvelopeWithSender> {
-        header,
-        body:
-            alloy_consensus::BlockBody {
-                transactions,
-                ommers,
-                withdrawals,
-            },
-    } = archive_reader
-        .get_block_by_number(block_number)
+    let block_pointer = BlockPointer::Finalized(block_number, None);
+    let Some((header, transactions)) = data_source
+        .get_block(block_pointer)
         .await
-        .to_jsonrpc_error("Error getting block by number")?;
+        .map_err(|e| JsonRpcError::internal_error(e.to_string()))?
+    else {
+        return Err(JsonRpcError::internal_error(
+            "Error getting block by number".into(),
+        ));
+    };
 
     let header = BlockHeader {
         hash: header.hash_slow(),
