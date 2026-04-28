@@ -60,7 +60,7 @@ use crate::{
             MonadDebugTraceBlockByHashParams, MonadDebugTraceBlockByNumberParams,
             MonadDebugTraceTransactionParams,
         },
-        eth::{call::monad_createAccessList, simulate::MonadSimulateParams},
+        eth::call::monad_createAccessList,
     },
     middleware::TimingRequestId,
     types::{

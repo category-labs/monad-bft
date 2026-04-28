@@ -18,7 +18,6 @@ use std::{
     collections::{HashMap, HashSet},
 };
 
-use actix_http::header;
 use alloy_consensus::{Header, SignableTransaction, TxEip1559, TxEip7702, TxEnvelope, TxLegacy};
 use alloy_eips::eip7702::SignedAuthorization;
 use alloy_primitives::{Address, Bytes, Signature, TxKind, Uint, B256, U256, U64, U8};

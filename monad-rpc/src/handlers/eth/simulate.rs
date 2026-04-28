@@ -34,7 +34,6 @@ use crate::{
     },
     types::{
         eth_json::BlockTagOrHash,
-        ethhex,
         jsonrpc::{JsonRpcError, JsonRpcResult},
     },
 };
@@ -105,7 +104,7 @@ pub async fn monad_simulate_v1<T: Triedb + TriedbPath>(
         .simulation
         .block_state_calls
         .iter()
-        .map(|bsc| bsc.calls.iter().map(|call| call.clone()).collect())
+        .map(|bsc| bsc.calls.to_vec())
         .collect();
 
     for call_list in &mut calls {
@@ -190,8 +189,8 @@ mod tests {
     use serde_json::from_str;
 
     use crate::{
-        eth_json_types::{BlockTagOrHash, BlockTags},
         handlers::eth::simulate::MonadSimulateParams,
+        types::eth_json::{BlockTagOrHash, BlockTags},
     };
 
     #[test]
