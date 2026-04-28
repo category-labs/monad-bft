@@ -16,6 +16,7 @@
 pub(crate) mod assigner;
 mod builder;
 mod chunk;
+pub mod deterministic;
 pub mod regular;
 
 use std::{collections::HashMap, net::SocketAddr};
@@ -26,8 +27,11 @@ use monad_crypto::certificate_signature::{
 };
 use monad_types::NodeId;
 
-pub(crate) use self::{assigner::ChunkAssigner, builder::MessageBuilder, chunk::Chunk};
-use crate::util::{BuildTarget, Redundancy};
+pub(crate) use self::{builder::MessageBuilder, chunk::Chunk};
+use crate::{
+    udp::GroupId,
+    util::{BroadcastMode, BuildTarget, Redundancy},
+};
 
 #[derive(Debug)]
 pub enum BuildError {
@@ -45,10 +49,21 @@ pub enum BuildError {
     TooManyChunks,
     // app message is too large
     AppMessageTooLarge,
+    // app message is empty
+    AppMessageEmpty,
     // total stake is zero
     ZeroTotalStake,
     // redundancy is too high
     RedundancyTooHigh,
+    // group id not supported with the broadcast mode
+    InvalidGroupId(GroupId),
+    // broadcast mode not supported
+    InvalidBroadcastMode(BroadcastMode),
+    // encoding scheme not supported
+    InvalidEncodingScheme,
+    // chunk ids are not contiguous starting from 0, as required by
+    // deterministic RC
+    NonContiguousChunkIds,
 }
 
 type Result<A, E = BuildError> = std::result::Result<A, E>;

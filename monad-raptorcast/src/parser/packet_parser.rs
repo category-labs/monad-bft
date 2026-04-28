@@ -27,9 +27,9 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Ref, LE, U16, U32, 
 
 use crate::{
     message::MAX_MESSAGE_SIZE,
-    packet::regular,
+    packet::{assigner::stake_partition_num_chunks_hint, deterministic, regular},
     udp::{ChunkSignatureVerifier, GroupId, InvalidChunk, ValidatedChunk, MAX_VALIDATOR_SET_SIZE},
-    util::{ensure, BroadcastMode, HexBytes},
+    util::{ensure, BroadcastMode, EncodingScheme, HexBytes},
     SIGNATURE_SIZE,
 };
 
@@ -40,11 +40,14 @@ struct ChunkMeta {
     encoded_symbol_capacity: usize,
     timestamp: u64,
     broadcast_mode: BroadcastMode,
+    encoding_scheme: EncodingScheme,
     group_id: GroupId,
-    app_message_hash: HexBytes<HASH_SIZE>,
-    recipient_hash: HexBytes<HASH_SIZE>,
+    app_message_hash: Option<HexBytes<HASH_SIZE>>,
+    merkle_root: HexBytes<MERKLE_HASH_SIZE>,
+    recipient_hash: Option<HexBytes<HASH_SIZE>>,
     signed_over_data: SignedOverData,
 }
+
 impl ChunkMeta {
     fn get_epoch(&self) -> Option<Epoch> {
         match self.group_id {
@@ -63,6 +66,7 @@ pub enum MalformedPacket {
     TooLong,
     InvalidTreeDepth(u8),
     InvalidBroadcastBits(u8),
+    InvalidEncodingScheme(u8),
     UnknownVersion(u16),
 }
 
@@ -158,6 +162,16 @@ const _: () = assert!(
     "RaptorcastChunkHeader size must match CHUNK_HEADER_LEN"
 );
 
+const _: () = assert!(
+    RAPTORCAST_HEADER_V1_SIZE == crate::packet::deterministic::PacketLayout::HEADER_LEN,
+    "RaptorcastHeader size must match HEADER_LEN"
+);
+
+const _: () = assert!(
+    RaptorcastChunkHeaderV1::SIZE == crate::packet::deterministic::PacketLayout::CHUNK_HEADER_LEN,
+    "RaptorcastChunkHeader size must match CHUNK_HEADER_LEN"
+);
+
 /// Raptorcast V0 chunk header layout (follows header and merkle proof):
 /// - 20 bytes * (merkle_tree_depth - 1) => merkle proof (leaves include everything that follows,
 ///   eg hash(chunk_recipient + chunk_byte_offset + symbol_len + payload))
@@ -179,6 +193,92 @@ pub struct RaptorcastChunkHeaderV0 {
 
 impl RaptorcastChunkHeaderV0 {
     const SIZE: usize = MERKLE_HASH_SIZE + 1 + 1 + 2;
+}
+
+/// Raptorcast packet V1 versioned header layout (follows common header):
+/// - 2 bits => broadcast mode
+/// - 2 bits => unused
+/// - 4 bits => Merkle tree depth
+/// - 1 byte (u8) => encoding scheme variant
+/// - 8 bytes (u64) => Round #
+/// - 8 bytes (u64) => Epoch #
+/// - 8 bytes (u64) => Unix timestamp
+/// - 20 bytes => global merkle tree root for the full message
+/// - 4 bytes (u32) => Serialized AppMessage length (bytes)
+#[repr(C, packed)]
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Clone, Copy)]
+pub struct RaptorcastHeaderV1 {
+    broadcast_tree_depth: u8,
+    encoding_scheme_variant: u8,
+    round: U64<LE>,
+    epoch: U64<LE>,
+    unix_ts_ms: U64<LE>,
+    global_merkle_root: [u8; MERKLE_HASH_SIZE],
+    app_message_len: U32<LE>,
+}
+
+/// Combined header size for V1 (common header + versioned header)
+const RAPTORCAST_HEADER_V1_SIZE: usize = RaptorcastHeader::SIZE + RaptorcastHeaderV1::SIZE;
+
+impl RaptorcastHeaderV1 {
+    const SIZE: usize = 1 + 1 + 8 + 8 + 8 + MERKLE_HASH_SIZE + 4;
+
+    pub fn broadcast_mode(&self) -> Result<BroadcastMode, MalformedPacket> {
+        match (self.broadcast_tree_depth & 0b1100_0000) >> 6 {
+            0b10 => Ok(BroadcastMode::Primary),
+            bits => Err(MalformedPacket::InvalidBroadcastBits(bits)),
+        }
+    }
+
+    pub fn encoding_scheme(&self) -> Result<EncodingScheme, MalformedPacket> {
+        let round = Round(self.round.get());
+        match self.encoding_scheme_variant {
+            0x1 => Ok(EncodingScheme::Deterministic25(round)),
+            v => Err(MalformedPacket::InvalidEncodingScheme(v)),
+        }
+    }
+
+    #[allow(clippy::manual_range_contains)]
+    pub fn tree_depth(&self) -> Result<u8, MalformedPacket> {
+        let depth = self.broadcast_tree_depth & 0b0000_1111;
+        ensure!(
+            (deterministic::MIN_MERKLE_TREE_DEPTH..=deterministic::MAX_MERKLE_TREE_DEPTH)
+                .contains(&depth),
+            MalformedPacket::InvalidTreeDepth(depth)
+        );
+
+        Ok(depth)
+    }
+
+    pub fn group_id(&self) -> Result<GroupId, MalformedPacket> {
+        let epoch = Epoch(self.epoch.get());
+        match self.broadcast_mode()? {
+            BroadcastMode::Primary => Ok(GroupId::Primary(epoch)),
+            // broadcast_mode() only returns Primary for v1
+            _broadcast_mode => unreachable!(),
+        }
+    }
+}
+
+/// Raptorcast V1 chunk header layout (follows header and merkle proof):
+/// - 20 bytes * (merkle_tree_depth - 1) => merkle proof (leaves include everything that follows,
+///   eg hash(reserved + chunk_id + payload))
+/// - 2 bytes => reserved
+/// - 2 bytes (u16) => This chunk's id, also used as the merkle leaf index
+/// - rest => data
+#[repr(C, packed)]
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Clone, Copy)]
+pub struct RaptorcastChunkHeaderV1 {
+    reserved: U16<LE>,
+    chunk_id: U16<LE>,
+}
+
+impl RaptorcastChunkHeaderV1 {
+    const SIZE: usize = 2 + 2;
+
+    fn merkle_leaf_index(&self) -> u16 {
+        self.chunk_id.get()
+    }
 }
 
 /// header + merkle root, used as cache key for signatures
@@ -211,20 +311,47 @@ impl SignedOverDataV0 {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SignedOverDataV1([u8; RAPTORCAST_HEADER_V1_SIZE]);
+
+impl SignedOverDataV1 {
+    pub fn new(
+        common_header: &Ref<&[u8], RaptorcastHeader>,
+        versioned_header: &Ref<&[u8], RaptorcastHeaderV1>,
+    ) -> Self {
+        use zerocopy::IntoBytes;
+        let mut data = [0u8; RAPTORCAST_HEADER_V1_SIZE];
+        data[..RaptorcastHeader::SIZE].copy_from_slice(common_header.as_bytes());
+        data[RaptorcastHeader::SIZE..].copy_from_slice(versioned_header.as_bytes());
+        Self(data)
+    }
+
+    pub fn signed_message(&self) -> &[u8] {
+        &self.0[SIGNATURE_SIZE..]
+    }
+
+    fn signature(&self) -> &[u8] {
+        &self.0[..SIGNATURE_SIZE]
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SignedOverData {
     V0(SignedOverDataV0),
+    V1(SignedOverDataV1),
 }
 
 impl SignedOverData {
     pub fn signature(&self) -> &[u8] {
         match self {
             SignedOverData::V0(v0) => v0.signature(),
+            SignedOverData::V1(v1) => v1.signature(),
         }
     }
 
     pub fn signed_message(&self) -> &[u8] {
         match self {
             SignedOverData::V0(v0) => v0.signed_message(),
+            SignedOverData::V1(v1) => v1.signed_message(),
         }
     }
 }
@@ -351,13 +478,14 @@ impl<'a> RaptorcastPacketV0<'a> {
             // TODO: use more accurate estimation for number of rounding chunks
             chunk_id_cap = chunk_id_cap.saturating_add(MAX_VALIDATOR_SET_SIZE);
         }
+
         let chunk_id = self.chunk_header.chunk_id.get() as usize;
         ensure!(chunk_id < chunk_id_cap, InvalidChunk::InvalidChunkId);
 
         let group_id = self.header.group_id()?;
         let signed_over_data = self.signed_over_data(common_header, &merkle_root);
-        let app_message_hash = HexBytes(self.header.app_message_hash);
-        let recipient_hash = HexBytes(self.chunk_header.recipient_hash);
+        let app_message_hash = Some(HexBytes(self.header.app_message_hash));
+        let recipient_hash = Some(HexBytes(self.chunk_header.recipient_hash));
 
         Ok(ChunkMeta {
             app_message_len,
@@ -366,8 +494,10 @@ impl<'a> RaptorcastPacketV0<'a> {
             encoded_symbol_capacity: chunk_id_cap,
             timestamp,
             broadcast_mode,
+            encoding_scheme: EncodingScheme::Unspecified,
             group_id,
             app_message_hash,
+            merkle_root: HexBytes(merkle_root),
             recipient_hash,
             signed_over_data,
         })
@@ -386,8 +516,177 @@ impl<'a> RaptorcastPacketV0<'a> {
     }
 }
 
+pub struct RaptorcastPacketV1<'a> {
+    pub header: Ref<&'a [u8], RaptorcastHeaderV1>,
+    pub merkle_proof: Ref<&'a [u8], [MerkleHash]>,
+    pub chunk_header: Ref<&'a [u8], RaptorcastChunkHeaderV1>,
+    pub chunk_header_and_payload: &'a [u8],
+    pub payload: &'a [u8],
+    pub payload_offset: usize,
+}
+
+impl<'a> RaptorcastPacketV1<'a> {
+    pub fn parse(rest: &'a [u8]) -> Result<Self, MalformedPacket> {
+        // Deterministic raptorcast uses a globally fixed segment size.
+        let expected_min_len = deterministic::MIN_SEGMENT_LEN - RaptorcastHeader::SIZE;
+        let expected_max_len = deterministic::MAX_SEGMENT_LEN - RaptorcastHeader::SIZE;
+        ensure!(rest.len() >= expected_min_len, MalformedPacket::TooShort);
+        ensure!(rest.len() <= expected_max_len, MalformedPacket::TooLong);
+
+        // Defensive: Should be unreachable given the asserted segment size.
+        ensure!(
+            rest.len() >= RaptorcastChunkHeaderV1::SIZE,
+            MalformedPacket::TooShort
+        );
+
+        let (header_bytes, rest) = rest.split_at(RaptorcastHeaderV1::SIZE);
+        let header: Ref<&[u8], RaptorcastHeaderV1> =
+            Ref::from_bytes(header_bytes).map_err(|_| MalformedPacket::TooShort)?;
+
+        let tree_depth = header.tree_depth()?;
+        let merkle_proof_len = MERKLE_HASH_SIZE * (tree_depth - 1) as usize;
+        ensure!(rest.len() > merkle_proof_len, MalformedPacket::TooShort);
+
+        let (merkle_proof_bytes, chunk_header_and_payload) = rest.split_at(merkle_proof_len);
+        let merkle_proof: Ref<&[u8], [MerkleHash]> =
+            Ref::from_bytes(merkle_proof_bytes).map_err(|_| MalformedPacket::TooShort)?;
+
+        ensure!(
+            chunk_header_and_payload.len() >= RaptorcastChunkHeaderV1::SIZE,
+            MalformedPacket::TooShort
+        );
+        let (chunk_header_bytes, payload) =
+            chunk_header_and_payload.split_at(RaptorcastChunkHeaderV1::SIZE);
+        let chunk_header: Ref<&[u8], RaptorcastChunkHeaderV1> =
+            Ref::from_bytes(chunk_header_bytes).map_err(|_| MalformedPacket::TooShort)?;
+
+        ensure!(!payload.is_empty(), MalformedPacket::TooShort);
+
+        let payload_offset =
+            RAPTORCAST_HEADER_V1_SIZE + merkle_proof_len + RaptorcastChunkHeaderV1::SIZE;
+
+        Ok(Self {
+            header,
+            merkle_proof,
+            chunk_header,
+            chunk_header_and_payload,
+            payload,
+            payload_offset,
+        })
+    }
+
+    pub fn split_chunk(&self, message: &Bytes) -> Result<Bytes, MalformedPacket> {
+        ensure!(
+            message.len() >= self.payload_offset,
+            MalformedPacket::TooShort
+        );
+        Ok(message.slice(self.payload_offset..))
+    }
+
+    pub fn payload(&self) -> &[u8] {
+        &self.chunk_header_and_payload[RaptorcastChunkHeaderV1::SIZE..]
+    }
+
+    pub fn signed_over_data(&self, common_header: &Ref<&[u8], RaptorcastHeader>) -> SignedOverData {
+        SignedOverData::V1(SignedOverDataV1::new(common_header, &self.header))
+    }
+
+    // Validates all the header fields to be consistent and within
+    // expected bounds. Does not check the signature yet.
+    fn validate_chunk_meta(
+        &self,
+        common_header: &Ref<&'a [u8], RaptorcastHeader>,
+        max_age_ms: u64,
+    ) -> Result<ChunkMeta, InvalidChunk> {
+        let encoding_scheme = self.header.encoding_scheme()?;
+        // ensure encoding scheme is recognized before any other validation
+
+        let app_message_len = self.ensure_app_message_length()?;
+        let timestamp = self.header.unix_ts_ms.get();
+        ensure_valid_timestamp(timestamp, max_age_ms)?;
+
+        let symbol_len = self.payload().len();
+        ensure!(
+            symbol_len >= deterministic::MIN_SYMBOL_LEN || symbol_len == app_message_len,
+            InvalidChunk::InvalidChunkLen
+        );
+        ensure!(
+            symbol_len <= deterministic::MAX_SYMBOL_LEN,
+            InvalidChunk::InvalidChunkLen
+        );
+
+        let num_source_symbols = app_message_len.div_ceil(symbol_len);
+        ensure!(
+            (monad_raptor::SOURCE_SYMBOLS_MIN..=monad_raptor::SOURCE_SYMBOLS_MAX)
+                .contains(&num_source_symbols),
+            InvalidChunk::InvalidAppMessageLen(app_message_len)
+        );
+
+        let broadcast_mode = self.header.broadcast_mode()?;
+        let chunk_id_cap = stake_partition_num_chunks_hint(
+            num_source_symbols,
+            deterministic::DEFAULT_REDUNDANCY,
+            MAX_VALIDATOR_SET_SIZE,
+        )
+        .ok_or(InvalidChunk::InvalidChunkId)?;
+        let chunk_id = self.chunk_header.chunk_id.get() as usize;
+        ensure!(chunk_id < chunk_id_cap, InvalidChunk::InvalidChunkId);
+
+        let group_id = self.header.group_id()?;
+        let signed_over_data = self.signed_over_data(common_header);
+        let merkle_root = self.validate_merkle_root()?;
+
+        Ok(ChunkMeta {
+            app_message_len,
+            chunk_id,
+            num_source_symbols,
+            encoded_symbol_capacity: chunk_id_cap,
+            timestamp,
+            broadcast_mode,
+            encoding_scheme,
+            group_id,
+            app_message_hash: None,
+            merkle_root: HexBytes(merkle_root),
+            recipient_hash: None,
+            signed_over_data,
+        })
+    }
+
+    fn ensure_app_message_length(&self) -> Result<usize, InvalidChunk> {
+        let app_message_len = self.header.app_message_len.get() as usize;
+        ensure!(
+            app_message_len > 0 && app_message_len <= MAX_MESSAGE_SIZE,
+            InvalidChunk::InvalidAppMessageLen(app_message_len)
+        );
+        Ok(app_message_len)
+    }
+
+    fn validate_merkle_root(&self) -> Result<MerkleHash, InvalidChunk> {
+        let proof = MerkleProof::new_from_leaf_idx(
+            self.merkle_proof.to_vec(),
+            self.chunk_header.merkle_leaf_index(),
+        )
+        .ok_or(InvalidChunk::InvalidMerkleProof)?;
+
+        let mut hasher = HasherType::new();
+        hasher.update(self.chunk_header_and_payload);
+        let leaf_hash = hasher.hash();
+
+        let root = proof
+            .compute_root(&leaf_hash)
+            .ok_or(InvalidChunk::InvalidMerkleProof)?;
+
+        if root != self.header.global_merkle_root {
+            return Err(InvalidChunk::InvalidMerkleProof);
+        }
+
+        Ok(root)
+    }
+}
+
 pub enum RaptorcastPacketVersioned<'a> {
     V0(RaptorcastPacketV0<'a>),
+    V1(RaptorcastPacketV1<'a>),
 }
 
 pub type CommonRaptorcastHeader<'a> = Ref<&'a [u8], RaptorcastHeader>;
@@ -420,6 +719,7 @@ impl<'a> RaptorcastPacket<'a> {
 
         let versioned = match header.version.get() {
             0 => RaptorcastPacketVersioned::V0(RaptorcastPacketV0::parse(rest)?),
+            1 => RaptorcastPacketVersioned::V1(RaptorcastPacketV1::parse(rest)?),
             v => return Err(MalformedPacket::UnknownVersion(v)),
         };
 
@@ -433,6 +733,9 @@ impl<'a> RaptorcastPacket<'a> {
         match &self.versioned {
             RaptorcastPacketVersioned::V0(v0) => {
                 v0.validate_chunk_meta(&self.common_header, max_age_ms)
+            }
+            RaptorcastPacketVersioned::V1(v1) => {
+                v1.validate_chunk_meta(&self.common_header, max_age_ms)
             }
         }
     }
@@ -450,6 +753,7 @@ impl<'a> RaptorcastPacket<'a> {
         let author = verify_signature(env.signature_verifier, &meta, env.bypass_rate_limiter)?;
         let chunk = match &self.versioned {
             RaptorcastPacketVersioned::V0(v0) => v0.split_chunk(message)?,
+            RaptorcastPacketVersioned::V1(v1) => v1.split_chunk(message)?,
         };
 
         ensure!(author != *env.self_id, InvalidChunk::Loopback);
@@ -457,11 +761,15 @@ impl<'a> RaptorcastPacket<'a> {
         Ok(ValidatedChunk {
             chunk,
             message: message.clone(),
+            signature: message.slice(..SIGNATURE_SIZE),
             author,
+            version: self.common_header.version.get(),
             group_id: meta.group_id,
             unix_ts_ms: meta.timestamp,
             app_message_hash: meta.app_message_hash,
+            merkle_root: meta.merkle_root,
             app_message_len: meta.app_message_len as u32,
+            encoding_scheme: meta.encoding_scheme,
             broadcast_mode: meta.broadcast_mode,
             recipient_hash: meta.recipient_hash,
             chunk_id: meta.chunk_id as u16,

@@ -21,6 +21,8 @@ use monad_crypto::certificate_signature::{
 use monad_node_config::FullNodeRaptorCastConfig;
 use monad_types::{NodeId, Round};
 
+use crate::v1_rollout::DeterministicProtocolRolloutStage;
+
 pub struct RaptorCastConfig<ST>
 where
     ST: CertificateSignatureRecoverable,
@@ -51,6 +53,8 @@ where
     // Validators and full-nodes who do not want to participate in validator-
     // to-full-node raptor-casting may opt out of this.
     pub secondary_instance: FullNodeRaptorCastConfig<CertificateSignaturePubKey<ST>>,
+
+    pub deterministic_protocol_rollout: DeterministicProtocolRolloutStage,
 }
 
 impl<ST> Clone for RaptorCastConfig<ST>
@@ -65,6 +69,7 @@ where
             sig_verification_rate_limit: self.sig_verification_rate_limit,
             primary_instance: self.primary_instance.clone(),
             secondary_instance: self.secondary_instance.clone(),
+            deterministic_protocol_rollout: self.deterministic_protocol_rollout,
         }
     }
 }

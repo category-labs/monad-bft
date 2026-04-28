@@ -27,19 +27,20 @@ use monad_crypto::{
 };
 use monad_dataplane::udp::{segment_size_for_mtu, ETHERNET_SEGMENT_SIZE};
 use monad_merkle::{MerkleHash, MerkleTree};
-use monad_raptor::Encoder;
+use monad_raptor::{r10::lt::MAX_TRIPLES, Encoder};
 use monad_types::NodeId;
-use rand::{CryptoRng, Rng};
+use rand::Rng;
 
 use super::{
-    assigner::{ChunkAssignment, ChunkOrder, Partitioned, Replicated, StakeBasedWithRC},
-    chunk::{AggregatedChunk, Chunk},
-    BuildError, ChunkAssigner, Result,
+    assigner::{ChunkAssignment, EvenPartition, OrderedNodes as _, StakePartition},
+    chunk::Chunk,
+    BuildError, Result,
 };
 use crate::{
     udp::{GroupId, MAX_NUM_PACKETS},
     util::{
-        compute_app_message_hash, BroadcastMode, BuildTarget, Collector, Redundancy, UdpMessage,
+        compute_app_message_hash, ensure, BroadcastMode, BuildTarget, Collector, Redundancy,
+        UdpMessage,
     },
     SIGNATURE_SIZE,
 };
@@ -90,60 +91,31 @@ const _: () = assert!(
 /// Ethernet to avoid fragmentation when routed across the internet.
 pub const MAX_SEGMENT_LENGTH: usize = ETHERNET_SEGMENT_SIZE as usize;
 
-#[derive(Default, Clone, Copy, PartialEq, Eq)]
-pub enum AssembleMode {
-    // Compatible with existing build_messages logic, does not support
-    // streaming per merkle batch
-    GsoFull,
-
-    // Gso concatenated chunks only within a merkle batch.
-    GsoBestEffort,
-
-    // Each recipient gets its own packet in round-robin order.
-    #[default]
-    RoundRobin,
-}
-
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn assemble<ST>(
+    mut chunks: Vec<Chunk<CertificateSignaturePubKey<ST>>>,
     key: &ST::KeyPairType,
     layout: PacketLayout,
     app_message: &[u8],
     header_buf: &[u8],
-    assignment: ChunkAssignment<CertificateSignaturePubKey<ST>>,
-    mode: AssembleMode,
     collector: &mut impl Collector<UdpMessage<CertificateSignaturePubKey<ST>>>,
 ) -> Result<()>
 where
     ST: CertificateSignature,
 {
-    // step 1. generate the chunks
-    let mut chunks = assignment.generate(layout.segment_len());
+    // step 1. encode and write raptor symbols to each chunk
+    encode_symbols(app_message, &mut chunks, layout)?;
 
-    // step 2. encode and write raptor symbols to each chunk
-    if assignment.unique_chunk_id() {
-        encode_unique_symbols(app_message, &mut chunks, layout)?;
-    } else {
-        encode_symbols(app_message, &mut chunks, layout)?;
-    }
+    for mut batch in owned_merkle_batches(chunks, layout) {
+        // step 2. sign and write headers for this merkle batch
+        let merkle_batch = MerkleBatch::from(&mut batch[..]);
+        merkle_batch.write_header::<ST>(layout, key, header_buf)?;
 
-    if mode.stream_mode() {
-        for mut batch in owned_merkle_batches(chunks, layout) {
-            // step 3. sign and write headers for this merkle batch
-            let merkle_batch = MerkleBatch::from(&mut batch[..]);
-            merkle_batch.write_header::<ST>(layout, key, header_buf)?;
-
-            // step 4. assemble udp messages
-            mode.assemble_udp_messages_into(collector, batch);
+        // step 3. dispatch the udp messages
+        collector.reserve(batch.len());
+        for chunk in batch {
+            collector.push(chunk.into());
         }
-    } else {
-        // step 3. sign and write headers for this merkle batch
-        for batch in merkle_batches(&mut chunks, layout) {
-            batch.write_header::<ST>(layout, key, header_buf)?;
-        }
-
-        // step 4. assemble udp messages
-        mode.assemble_udp_messages_into(collector, chunks);
     }
 
     Ok(())
@@ -239,13 +211,8 @@ impl PacketLayout {
         merkle_hash_count * Self::MERKLE_HASH_LEN
     }
 
-    pub const fn calc_num_symbols(
-        &self,
-        app_message_len: usize,
-        redundancy: Redundancy,
-    ) -> Option<usize> {
-        let base_num_symbols = app_message_len.div_ceil(self.symbol_len());
-        redundancy.scale(base_num_symbols)
+    pub const fn num_base_symbols(&self, app_message_len: usize) -> usize {
+        app_message_len.div_ceil(self.symbol_len())
     }
 
     pub const fn signature_range(&self) -> Range<usize> {
@@ -356,15 +323,6 @@ pub(super) struct MerkleBatch<'a, PT: PubKey> {
     chunks: &'a mut [Chunk<PT>],
 }
 
-pub(super) fn merkle_batches<PT: PubKey>(
-    all_chunks: &mut [Chunk<PT>],
-    layout: PacketLayout,
-) -> impl Iterator<Item = MerkleBatch<'_, PT>> {
-    let batch_len = layout.merkle_batch_len();
-    debug_assert!(batch_len > 0);
-    all_chunks.chunks_mut(batch_len).map(MerkleBatch::from)
-}
-
 fn owned_merkle_batches<PT: PubKey>(
     mut chunks: Vec<Chunk<PT>>,
     layout: PacketLayout,
@@ -462,37 +420,20 @@ impl<'a, PT: PubKey> MerkleBatch<'a, PT> {
     }
 }
 
-fn encode_unique_symbols<PT: PubKey>(
-    app_message: &[u8],
-    chunks: &mut [Chunk<PT>],
-    layout: PacketLayout,
-) -> Result<()> {
-    let symbol_len = layout.symbol_len();
-    let encoder =
-        Encoder::new(app_message, symbol_len).map_err(|_| BuildError::EncoderCreationFailed)?;
-    for chunk in chunks.iter_mut() {
-        let chunk_id = chunk.chunk_id();
-        let symbol_buffer = layout.symbol_mut(chunk);
-        encoder.encode_symbol(symbol_buffer, chunk_id);
-    }
-    Ok(())
-}
-
 fn encode_symbols<PT: PubKey>(
     app_message: &[u8],
     chunks: &mut [Chunk<PT>],
     layout: PacketLayout,
 ) -> Result<()> {
+    // The caller must guarantee that max(chunk_id) <
+    // chunks.len(). This is automatically guaranteed if the chunks
+    // come from an Assignment.
     let symbol_len = layout.symbol_len();
     let encoder =
         Encoder::new(app_message, symbol_len).map_err(|_| BuildError::EncoderCreationFailed)?;
 
     // A map from chunk_id to index to `chunks` slice. Stores the
     // 1+index of the chunk of a given symbol.
-    //
-    // Over-allocated to avoid re-allocation on the premise that
-    // |chunks| >= max(chunk_id). Switch to a proper Map if the
-    // premise no longer holds.
     let mut symbol_chunks = vec![0; chunks.len()];
 
     for i in 0..chunks.len() {
@@ -615,33 +556,23 @@ where
 {
     // compute app message hash
     let app_message_hash = compute_app_message_hash(app_message).0;
-
-    // select chunk assignment algorithm based on build target
-    let rng = &mut rand::thread_rng();
     let self_node_id = NodeId::new(key.pubkey());
-    let assigner = make_assigner(build_target, &self_node_id, &app_message_hash, rng);
 
-    // calculate the number of symbols needed for assignment
-    let num_symbols = layout
-        .calc_num_symbols(app_message.len(), redundancy)
-        .ok_or(BuildError::TooManyChunks)?;
-    if num_symbols > MAX_NUM_PACKETS {
-        return Err(BuildError::TooManyChunks);
-    }
+    let num_base_symbols = layout.num_base_symbols(app_message.len());
 
-    // assign the chunks to recipients
-    let assemble_mode = AssembleMode::default();
-    let order = assemble_mode.expected_chunk_order();
-    let mut assignment = assigner.assign_chunks(num_symbols, order)?;
-    assignment.ensure_order(order);
+    // generate chunks based on build target
+    let chunks = generate_chunks(
+        build_target,
+        &self_node_id,
+        &app_message_hash,
+        num_base_symbols,
+        redundancy,
+        layout,
+    )?;
 
-    if assignment.is_empty() {
+    if chunks.is_empty() {
         tracing::warn!(app_msg_len = app_message.len(), "no chunk generated");
         return Ok(());
-    }
-
-    if assignment.total_chunks() > MAX_NUM_PACKETS {
-        return Err(BuildError::TooManyChunks);
     }
 
     // build the shared header
@@ -655,62 +586,75 @@ where
     )?;
 
     // assemble the chunks's headers and content
-    assemble::<ST>(
-        key,
-        layout,
-        app_message,
-        &header,
-        assignment,
-        assemble_mode,
-        collector,
-    )?;
+    assemble::<ST>(chunks, key, layout, app_message, &header, collector)?;
 
     Ok(())
 }
 
-fn make_assigner<PT: PubKey>(
+fn generate_chunks<PT: PubKey>(
     build_target: &BuildTarget<'_, PT>,
     self_node_id: &NodeId<PT>,
     app_message_hash: &[u8; 20],
-    rng: &mut (impl Rng + CryptoRng),
-) -> Box<dyn ChunkAssigner<PT>> {
-    match build_target {
+    num_base_symbols: usize,
+    redundancy: Redundancy,
+    layout: PacketLayout,
+) -> Result<Vec<Chunk<PT>>> {
+    let segment_len = layout.segment_len();
+
+    let chunks = match build_target {
         BuildTarget::PointToPoint { recipient, .. } => {
-            let assigner = Replicated::from_broadcast(
-                std::iter::once(*recipient)
-                    .filter(|node_id| *node_id != self_node_id)
-                    .cloned(),
-            );
-            Box::new(assigner)
+            if *recipient == self_node_id {
+                return Ok(Vec::new());
+            }
+            let num_symbols = redundancy
+                .scale(num_base_symbols)
+                .ok_or(BuildError::TooManyChunks)?;
+            ensure!(num_symbols <= MAX_TRIPLES, BuildError::TooManyChunks);
+            let assignment = ChunkAssignment::unicast(num_symbols);
+            assignment.materialize(segment_len, *recipient)?
         }
-        BuildTarget::Broadcast(nodes) => {
-            let assigner = Replicated::from_broadcast(
-                nodes
-                    .iter()
-                    .map(|(n, _)| n)
-                    .filter(|node_id| *node_id != self_node_id)
-                    .cloned(),
-            );
-            Box::new(assigner)
-        }
-        BuildTarget::Raptorcast(validators) => {
-            let mut validators = validators
+
+        BuildTarget::Broadcast(primary_group) => {
+            let num_symbols = redundancy
+                .scale(num_base_symbols)
+                .ok_or(BuildError::TooManyChunks)?;
+            ensure!(num_symbols <= MAX_TRIPLES, BuildError::TooManyChunks);
+            let recipients: Vec<_> = primary_group
                 .iter()
-                .filter(|(node_id, _stake)| *node_id != self_node_id)
-                .map(|(node_id, stake)| (*node_id, *stake))
-                .collect::<Vec<_>>();
-            let seed = derive_seed(app_message_hash);
-            StakeBasedWithRC::shuffle_validators(&mut validators, seed);
-            let assigner = StakeBasedWithRC::from_validator_set(validators);
-            Box::new(assigner)
+                .map(|(n, _stake)| n)
+                .filter(|node_id| *node_id != self_node_id)
+                .cloned()
+                .collect();
+            let assignment = ChunkAssignment::unicast(num_symbols);
+            let mut chunks = Vec::with_capacity(assignment.num_chunks() * recipients.len());
+            for recipient in &recipients {
+                chunks.extend(assignment.materialize(segment_len, recipient)?);
+            }
+            chunks
         }
-        BuildTarget::FullNodeRaptorCast(group) => {
-            let seed = rng.gen::<usize>();
-            let mut members: Vec<_> = group.iter().cloned().collect();
-            randomize_secondary_group_nodes(&mut members, seed);
-            Box::new(Partitioned::from_homogeneous_peers(members))
+
+        BuildTarget::Raptorcast {
+            group: primary_group,
+            ..
+        } => {
+            let mut partition = StakePartition::from_group(primary_group);
+            partition.shuffle(derive_seed(app_message_hash));
+            let assignment = partition.assign(num_base_symbols, redundancy)?;
+            assignment.materialize(segment_len, &partition)?
         }
-    }
+
+        BuildTarget::FullNodeRaptorCast(secondary_group) => {
+            let seed = rand::thread_rng().gen::<[u8; 32]>();
+            let mut partition = EvenPartition::from_group(secondary_group);
+            partition.shuffle(seed);
+            let assignment = partition.assign(num_base_symbols, redundancy)?;
+            assignment.materialize(segment_len, &partition)?
+        }
+    };
+
+    ensure!(chunks.len() <= MAX_NUM_PACKETS, BuildError::TooManyChunks);
+
+    Ok(chunks)
 }
 
 fn broadcast_mode_from_build_target<PT: PubKey>(
@@ -720,77 +664,5 @@ fn broadcast_mode_from_build_target<PT: PubKey>(
         BuildTarget::Raptorcast { .. } => BroadcastMode::Primary,
         BuildTarget::FullNodeRaptorCast { .. } => BroadcastMode::Secondary,
         BuildTarget::Broadcast(_) | BuildTarget::PointToPoint { .. } => BroadcastMode::Unspecified,
-    }
-}
-
-// introduce variation in the group member ordering
-fn randomize_secondary_group_nodes<PT: PubKey>(group: &mut [NodeId<PT>], seed: usize) {
-    let n = seed % group.len();
-    group.rotate_left(n);
-}
-
-impl AssembleMode {
-    pub fn expected_chunk_order(self) -> Option<ChunkOrder> {
-        match self {
-            AssembleMode::GsoFull => Some(ChunkOrder::GsoFriendly),
-            AssembleMode::GsoBestEffort => Some(ChunkOrder::GsoFriendly),
-            AssembleMode::RoundRobin => Some(ChunkOrder::RoundRobin),
-        }
-    }
-
-    fn stream_mode(self) -> bool {
-        match self {
-            AssembleMode::GsoFull => false,
-            AssembleMode::RoundRobin | AssembleMode::GsoBestEffort => true,
-        }
-    }
-
-    fn assemble_udp_messages_into<PT: PubKey>(
-        self,
-        collector: &mut impl Collector<UdpMessage<PT>>,
-        chunks: Vec<Chunk<PT>>,
-    ) {
-        match self {
-            AssembleMode::GsoFull | AssembleMode::GsoBestEffort => {
-                Self::assemble_gso_udp_messages_into(collector, chunks);
-            }
-            AssembleMode::RoundRobin => {
-                Self::assemble_standalone_udp_messages_into(collector, chunks);
-            }
-        }
-    }
-
-    fn assemble_standalone_udp_messages_into<PT: PubKey>(
-        collector: &mut impl Collector<UdpMessage<PT>>,
-        chunks: Vec<Chunk<PT>>,
-    ) {
-        collector.reserve(chunks.len());
-        for chunk in chunks {
-            collector.push(chunk.into());
-        }
-    }
-
-    fn assemble_gso_udp_messages_into<PT: PubKey>(
-        collector: &mut impl Collector<UdpMessage<PT>>,
-        chunks: Vec<Chunk<PT>>,
-    ) {
-        let mut agg_chunk = None;
-
-        for chunk in chunks {
-            let Some(agg) = &mut agg_chunk else {
-                // first chunk, start a new aggregation
-                agg_chunk = Some(AggregatedChunk::from(chunk));
-                continue;
-            };
-
-            if let Some(to_flush) = agg.aggregate(chunk) {
-                // different recipient, flush the previous message
-                collector.push(to_flush.into());
-            }
-        }
-
-        if let Some(agg) = agg_chunk.take() {
-            collector.push(agg.into());
-        }
     }
 }
