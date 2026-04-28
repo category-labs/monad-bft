@@ -72,7 +72,7 @@ use monad_validator::{
     signature_collection::SignatureCollection, validator_set::ValidatorSetFactory,
     weighted_round_robin::WeightedRoundRobin,
 };
-use monad_wal::wal::WALoggerConfig;
+use monad_wal::wal::{WALLog, WALoggerConfig};
 use opentelemetry::metrics::MeterProvider;
 use opentelemetry_otlp::{MetricExporter, WithExportConfig};
 use rand_chacha::{rand_core::SeedableRng, ChaCha8Rng};
@@ -478,18 +478,20 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
 
                 {
                     let _ledger_span = ledger_span.enter();
-                    if let Some(waltrace_tx) = waltrace_tx.as_ref() {
-                        let wal_event = LogFriendlyMonadEvent {
-                            timestamp: Utc::now(),
-                            event: event.lossy_clone(),
-                        };
-                        match waltrace_tx.try_send(wal_event) {
-                            Ok(()) => {}
-                            Err(TrySendError::Full(_)) => {
-                                warn!("waltrace is lagging; dropping wal event");
-                            }
-                            Err(TrySendError::Disconnected(_)) => {
-                                event!(Level::ERROR, "waltrace thread stopped");
+                    if event.is_wal_logged() {
+                        if let Some(waltrace_tx) = waltrace_tx.as_ref() {
+                            let wal_event = LogFriendlyMonadEvent {
+                                timestamp: Utc::now(),
+                                event: event.lossy_clone(),
+                            };
+                            match waltrace_tx.try_send(wal_event) {
+                                Ok(()) => {}
+                                Err(TrySendError::Full(_)) => {
+                                    warn!("waltrace is lagging; dropping wal event");
+                                }
+                                Err(TrySendError::Disconnected(_)) => {
+                                    event!(Level::ERROR, "waltrace thread stopped");
+                                }
                             }
                         }
                     }
