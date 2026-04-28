@@ -47,7 +47,7 @@ use crate::udp::GroupId;
 #[derive(Debug, Clone, Copy)]
 pub enum RaptorcastMode {
     Regular,
-    Deterministic { round: Round },
+    Deterministic { round: Round, epoch: Epoch },
 }
 
 // Argument for raptorcast send
@@ -67,9 +67,13 @@ pub enum BuildTarget<'a, PT: PubKey> {
         group_id: GroupId,
         recipient: &'a NodeId<PT>,
     },
-    // raptorcast to a set of full nodes, assuming equal stake
-    // distribution
-    FullNodeRaptorCast(SecondaryBroadcastGroup<'a, PT>),
+    // raptorcast to a set of full nodes. In regular mode, chunks are
+    // assigned round-robin; in deterministic mode, chunks are
+    // assigned by the seeded shuffle of the full-node group.
+    FullNodeRaptorCast {
+        group: SecondaryBroadcastGroup<'a, PT>,
+        mode: RaptorcastMode,
+    },
 }
 
 impl<'a, PT: PubKey> BuildTarget<'a, PT> {
@@ -81,9 +85,28 @@ impl<'a, PT: PubKey> BuildTarget<'a, PT> {
     }
 
     pub fn deterministic_raptorcast(group: PrimaryBroadcastGroup<'a, PT>, round: Round) -> Self {
+        let epoch = group.epoch();
         BuildTarget::Raptorcast {
             group,
-            mode: RaptorcastMode::Deterministic { round },
+            mode: RaptorcastMode::Deterministic { round, epoch },
+        }
+    }
+
+    pub fn fullnode_raptorcast(group: SecondaryBroadcastGroup<'a, PT>) -> Self {
+        BuildTarget::FullNodeRaptorCast {
+            group,
+            mode: RaptorcastMode::Regular,
+        }
+    }
+
+    pub fn deterministic_fullnode_raptorcast(
+        group: SecondaryBroadcastGroup<'a, PT>,
+        epoch: Epoch,
+        round: Round,
+    ) -> Self {
+        BuildTarget::FullNodeRaptorCast {
+            group,
+            mode: RaptorcastMode::Deterministic { round, epoch },
         }
     }
 
@@ -100,7 +123,7 @@ impl<'a, PT: PubKey> BuildTarget<'a, PT> {
                 Box::new(group.iter().map(|(n, _)| n))
             }
             BuildTarget::PointToPoint { recipient, .. } => Box::new(std::iter::once(*recipient)),
-            BuildTarget::FullNodeRaptorCast(group) => Box::new(group.iter()),
+            BuildTarget::FullNodeRaptorCast { group, .. } => Box::new(group.iter()),
         }
     }
 
@@ -109,7 +132,7 @@ impl<'a, PT: PubKey> BuildTarget<'a, PT> {
             BuildTarget::Broadcast(group) | BuildTarget::Raptorcast { group, .. } => {
                 group.group_id()
             }
-            BuildTarget::FullNodeRaptorCast(group) => group.group_id(),
+            BuildTarget::FullNodeRaptorCast { group, .. } => group.group_id(),
             BuildTarget::PointToPoint { group_id, .. } => *group_id,
         }
     }
@@ -433,6 +456,10 @@ impl<'a, PT: PubKey> PrimaryBroadcastGroup<'a, PT> {
     pub fn group_id(&self) -> GroupId {
         GroupId::Primary(self.epoch)
     }
+
+    pub fn epoch(&self) -> Epoch {
+        self.epoch
+    }
 }
 
 // Invariances:
@@ -511,6 +538,18 @@ impl<'a, PT: PubKey> SecondaryBroadcastGroup<'a, PT> {
 
     pub fn group_id(&self) -> GroupId {
         GroupId::Secondary(self.round)
+    }
+
+    pub fn publisher(&self) -> &NodeId<PT> {
+        self.publisher
+    }
+
+    pub fn round(&self) -> Round {
+        self.round
+    }
+
+    pub fn len(&self) -> NonZero<usize> {
+        self.group.len()
     }
 }
 

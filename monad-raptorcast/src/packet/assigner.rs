@@ -296,6 +296,17 @@ impl<PT: PubKey> EvenPartition<PT> {
 
         Ok(assignment)
     }
+
+    pub fn num_chunks(&self, num_base_symbols: usize, redundancy: Redundancy) -> Option<usize> {
+        even_partition_num_chunks(num_base_symbols, redundancy)
+    }
+}
+
+#[inline(always)]
+pub fn even_partition_num_chunks(num_base_symbols: usize, redundancy: Redundancy) -> Option<usize> {
+    // EvenPartition::assign emits exactly redundancy.scale(num_base_symbols)
+    // chunks regardless of group size.
+    redundancy.scale(num_base_symbols)
 }
 
 // Proportional to stake, plus each validator gets an optional

@@ -29,8 +29,11 @@ use crate::{
     decoding::{DecoderCache, DecodingContext, TryDecodeError, TryDecodeStatus},
     metrics::{
         UdpStateMetrics, COUNTER_RAPTORCAST_CHUNKS_DROPPED_INCOMPATIBLE_VERSION,
+        COUNTER_RAPTORCAST_SECONDARY_CHUNKS_DROPPED_INCOMPATIBLE_VERSION,
         COUNTER_RAPTORCAST_V0_PRIMARY_CHUNKS_ACCEPTED,
+        COUNTER_RAPTORCAST_V0_SECONDARY_CHUNKS_ACCEPTED,
         COUNTER_RAPTORCAST_V1_PRIMARY_CHUNKS_ACCEPTED,
+        COUNTER_RAPTORCAST_V1_SECONDARY_CHUNKS_ACCEPTED,
         GAUGE_RAPTORCAST_DECODING_CACHE_SIGNATURE_VERIFICATIONS_RATE_LIMITED,
         GAUGE_RAPTORCAST_DETERMINISTIC_ROLLOUT_STAGE,
     },
@@ -305,7 +308,6 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
 
     pub fn handle_secondary_raptorcast(
         &mut self,
-        epoch_validators: &BTreeMap<Epoch, ValidatorSet<CertificateSignaturePubKey<ST>>>,
         full_node_group_map: &FullNodeGroupMap<CertificateSignaturePubKey<ST>>,
         chunk: &ValidatedChunk<CertificateSignaturePubKey<ST>>,
         rebroadcast_to: &mut impl FnMut(Vec<NodeId<CertificateSignaturePubKey<ST>>>),
@@ -338,13 +340,92 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
             }
         }
 
-        let validator_set = match chunk.group_id {
-            GroupId::Primary(epoch) => epoch_validators.get(&epoch),
-            GroupId::Secondary(_round) => None,
+        let decoding_context = DecodingContext::new(None, unix_ts_ms_now());
+
+        match chunk.encoding_scheme {
+            EncodingScheme::Deterministic25(round) => self.handle_deterministic_secondary(
+                &group,
+                round,
+                chunk,
+                &decoding_context,
+                rebroadcast_to,
+            ),
+            _ => self.handle_regular_secondary(&group, chunk, &decoding_context, rebroadcast_to),
+        }
+    }
+
+    fn handle_deterministic_secondary(
+        &mut self,
+        group: &SecondaryBroadcastGroup<'_, CertificateSignaturePubKey<ST>>,
+        round: Round,
+        chunk: &ValidatedChunk<CertificateSignaturePubKey<ST>>,
+        decoding_context: &DecodingContext<CertificateSignaturePubKey<ST>>,
+        rebroadcast_to: &mut impl FnMut(Vec<NodeId<CertificateSignaturePubKey<ST>>>),
+    ) -> Option<(NodeId<CertificateSignaturePubKey<ST>>, Bytes)> {
+        let Some(round_info) = self
+            .round_info_cache
+            .get_or_insert_secondary(chunk.author, round)
+        else {
+            tracing::debug!(
+                ?chunk.group_id,
+                ?chunk.chunk_id,
+                author =? chunk.author,
+                "dropping secondary chunk for round that is too far in the past or future"
+            );
+            return None;
         };
 
-        let decoding_context = DecodingContext::new(validator_set, unix_ts_ms_now());
-        let message = self.try_decode(chunk, &decoding_context)?;
+        // already logged the equivocation in try_commit.
+        round_info.try_commit(chunk)?;
+
+        let Some(routing) = round_info.chunk_routing(group, chunk) else {
+            tracing::debug!(
+                ?chunk.group_id,
+                ?chunk.chunk_id,
+                author =? chunk.author,
+                "dropping secondary chunk that is not routed to self or any peers"
+            );
+            return None;
+        };
+
+        let is_recipient = *routing.recipient() == self.self_id;
+        let rebroadcast_targets = if is_recipient {
+            Some(routing.rebroadcast_targets())
+        } else {
+            None
+        };
+
+        let message = self.try_decode(chunk, decoding_context)?;
+        if let Some((_author, message)) = &message {
+            if let Some(encoding_valid) =
+                chunk.check_deterministic_encoding_secondary(message, group)
+            {
+                if !encoding_valid {
+                    self.decoder_cache.mark_tainted(chunk);
+                    tracing::warn!(
+                        author =? chunk.author,
+                        "secondary message failed deterministic encoding validation"
+                    );
+                    return None;
+                }
+            }
+        }
+
+        if let Some(targets) = rebroadcast_targets {
+            rebroadcast_to(targets);
+        }
+
+        message
+    }
+
+    fn handle_regular_secondary(
+        &mut self,
+        group: &SecondaryBroadcastGroup<'_, CertificateSignaturePubKey<ST>>,
+        chunk: &ValidatedChunk<CertificateSignaturePubKey<ST>>,
+        decoding_context: &DecodingContext<CertificateSignaturePubKey<ST>>,
+        rebroadcast_to: &mut impl FnMut(Vec<NodeId<CertificateSignaturePubKey<ST>>>),
+    ) -> Option<(NodeId<CertificateSignaturePubKey<ST>>, Bytes)> {
+        let message = self.try_decode(chunk, decoding_context)?;
 
         if let Some((_author, message)) = &message {
             if let Some(hash_valid) = chunk.check_message_hash(message) {
@@ -529,13 +610,24 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                     )
                 }
 
-                BroadcastMode::Secondary => self.handle_secondary_raptorcast(
-                    epoch_validators,
-                    full_node_group_map,
-                    &chunk,
-                    rebroadcast_to,
-                    message.sender.as_ref(),
-                ),
+                BroadcastMode::Secondary => {
+                    if !v1_rollout::should_accept(self.v1_rollout, &chunk) {
+                        self.metrics.executor_metrics_mut()
+                            [COUNTER_RAPTORCAST_SECONDARY_CHUNKS_DROPPED_INCOMPATIBLE_VERSION] += 1;
+                        continue;
+                    }
+                    let accepted_metric = match chunk.version {
+                        1 => COUNTER_RAPTORCAST_V1_SECONDARY_CHUNKS_ACCEPTED,
+                        _ => COUNTER_RAPTORCAST_V0_SECONDARY_CHUNKS_ACCEPTED,
+                    };
+                    self.metrics.executor_metrics_mut()[accepted_metric] += 1;
+                    self.handle_secondary_raptorcast(
+                        full_node_group_map,
+                        &chunk,
+                        rebroadcast_to,
+                        message.sender.as_ref(),
+                    )
+                }
             };
 
             if let Some((author, decoded_message)) = maybe_decoded_message {
@@ -614,6 +706,27 @@ impl<PT: PubKey> ValidatedChunk<PT> {
         }
 
         match deterministic::calc_global_merkle_root(
+            app_message,
+            group,
+            self.encoding_scheme,
+            self.unix_ts_ms,
+        ) {
+            Ok(expected_root) => Some(expected_root == self.merkle_root.0),
+            Err(_err) => Some(false),
+        }
+    }
+
+    // Return None if chunk is not encoded using deterministic raptorcast
+    pub fn check_deterministic_encoding_secondary(
+        &self,
+        app_message: &[u8],
+        group: &SecondaryBroadcastGroup<'_, PT>,
+    ) -> Option<bool> {
+        if !matches!(self.encoding_scheme, EncodingScheme::Deterministic25(_)) {
+            return None;
+        }
+
+        match deterministic::calc_global_merkle_root_secondary(
             app_message,
             group,
             self.encoding_scheme,
@@ -1068,7 +1181,7 @@ mod tests {
         let app_message: Bytes = vec![1_u8; 1024 * 1024].into();
         let build_targets = vec![
             BuildTarget::raptorcast(primary_group),
-            BuildTarget::FullNodeRaptorCast(secondary_group),
+            BuildTarget::fullnode_raptorcast(secondary_group),
         ];
 
         let mut parser = ChunkParser::new();
@@ -1092,7 +1205,7 @@ mod tests {
                         BuildTarget::Raptorcast { .. } => {
                             assert!(matches!(chunk.broadcast_mode, BroadcastMode::Primary));
                         }
-                        BuildTarget::FullNodeRaptorCast(_) => {
+                        BuildTarget::FullNodeRaptorCast { .. } => {
                             assert!(matches!(chunk.broadcast_mode, BroadcastMode::Secondary));
                         }
                         _ => unreachable!(),
