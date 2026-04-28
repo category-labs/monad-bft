@@ -397,6 +397,7 @@ async fn establish_connections(
     ready_rxs: Vec<tokio::sync::oneshot::Receiver<()>>,
     epoch: Epoch,
     validator_set: Vec<(NodeId<CertificateSignaturePubKey<SecpSignature>>, Stake)>,
+    node_ids: &[NodeId<CertificateSignaturePubKey<SecpSignature>>],
     event_rxs: &mut [&mut tokio::sync::mpsc::UnboundedReceiver<
         MockEvent<CertificateSignaturePubKey<SecpSignature>>,
     >],
@@ -410,14 +411,18 @@ async fn establish_connections(
             .unwrap();
     }
 
-    let setup_message = MockMessage::new(1, 100);
-    for cmd_tx in cmd_txs {
-        cmd_tx
-            .send(RouterCommand::Publish {
-                target: monad_types::RouterTarget::Broadcast(epoch),
-                message: setup_message,
-            })
-            .unwrap();
+    // establish connections via pairwise p2p messages
+    for (i, cmd_tx) in cmd_txs.iter().enumerate() {
+        for (j, node_id) in node_ids.iter().enumerate() {
+            if i != j {
+                cmd_tx
+                    .send(RouterCommand::Publish {
+                        target: monad_types::RouterTarget::PointToPoint(*node_id),
+                        message: MockMessage::new(1, 100),
+                    })
+                    .unwrap();
+            }
+        }
     }
 
     for ready_rx in ready_rxs {
@@ -523,11 +528,14 @@ async fn run_test_scenario(num_auth_nodes: usize, routing_type: RoutingType, mes
     let cmd_tx_refs: Vec<_> = cmd_txs.iter().collect();
     let mut event_rx_refs: Vec<_> = event_rxs.iter_mut().collect();
 
+    let node_ids: Vec<_> = validator_infos.iter().map(|v| v.nodeid).collect();
+
     establish_connections(
         &cmd_tx_refs,
         ready_rxs,
         epoch,
         validator_set,
+        &node_ids,
         &mut event_rx_refs,
     )
     .await;
@@ -662,12 +670,14 @@ async fn test_rate_limiting_basic() {
 
     let cmd_tx_refs: Vec<_> = cmd_txs.iter().collect();
     let mut event_rx_refs: Vec<_> = event_rxs.iter_mut().collect();
+    let node_ids: Vec<_> = validator_infos.iter().map(|v| v.nodeid).collect();
 
     establish_connections(
         &cmd_tx_refs,
         ready_rxs,
         epoch,
         validator_set,
+        &node_ids,
         &mut event_rx_refs,
     )
     .await;
@@ -744,9 +754,6 @@ async fn test_rate_limiting_basic() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-// This test depends on broadcasting to validators as non-validators,
-// which is now prohibited.
-#[ignore]
 async fn test_rate_limiting_p2p() {
     init_tracing();
 
@@ -850,12 +857,14 @@ async fn run_send_with_record_uses_name_record_address() {
     let cmd_txs = [&alice.cmd_tx, &bob1.cmd_tx];
     let mut event_rxs = [alice.event_rx, bob1.event_rx];
     let mut event_rx_refs: Vec<_> = event_rxs.iter_mut().collect();
+    let node_ids = [alice_info.nodeid, bob_info.nodeid];
 
     establish_connections(
         &cmd_txs,
         vec![alice.ready_rx, bob1.ready_rx],
         epoch,
         validator_set.clone(),
+        &node_ids,
         &mut event_rx_refs,
     )
     .await;
