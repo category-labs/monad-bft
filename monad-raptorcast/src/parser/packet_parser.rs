@@ -22,13 +22,14 @@ use monad_crypto::{
 };
 use monad_merkle::{MerkleHash, MerkleProof};
 use monad_types::{Epoch, NodeId, Round};
+use monad_validator::validator_set::MAX_VALIDATOR_SET_SIZE;
 use tracing::warn;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Ref, LE, U16, U32, U64};
 
 use crate::{
     message::MAX_MESSAGE_SIZE,
     packet::regular,
-    udp::{ChunkSignatureVerifier, GroupId, InvalidChunk, ValidatedChunk, MAX_VALIDATOR_SET_SIZE},
+    udp::{ChunkSignatureVerifier, GroupId, InvalidChunk, ValidatedChunk},
     util::{ensure, BroadcastMode, HexBytes},
     SIGNATURE_SIZE,
 };

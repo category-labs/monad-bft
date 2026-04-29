@@ -22,6 +22,10 @@ use itertools::Itertools;
 use monad_crypto::certificate_signature::PubKey;
 use monad_types::{NodeId, Stake};
 
+/// Maximum validator set size.
+/// Must match the constant in <execution>/monad/staking/util/constants.hpp.
+pub const MAX_VALIDATOR_SET_SIZE: usize = 300;
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum ValidatorSetCreationError<PT: PubKey> {
     EmptyValidatorSet,

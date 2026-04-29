@@ -20,14 +20,13 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
 use monad_types::{Epoch, ExecutionProtocol, LimitedVec, NodeId, Stake};
-use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionPubKeyType};
+use monad_validator::{
+    signature_collection::{SignatureCollection, SignatureCollectionPubKeyType},
+    validator_set::MAX_VALIDATOR_SET_SIZE,
+};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::checkpoint::Checkpoint;
-
-/// Maximum validator set size with some additional buffer.
-/// Needs to be updated alongside constant in <execution>/monad/staking/util/constants.hpp
-pub const MAX_VALIDATORS: usize = 300;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, RlpEncodable, RlpDecodable)]
 pub struct ValidatorSetDataWithEpoch<SCT: SignatureCollection> {
@@ -44,7 +43,7 @@ pub struct ValidatorSetDataWithEpoch<SCT: SignatureCollection> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, RlpEncodable, RlpDecodable)]
 pub struct ValidatorSetData<SCT: SignatureCollection>(
     #[serde(bound(serialize = "", deserialize = ""))]
-    pub LimitedVec<ValidatorData<SCT>, MAX_VALIDATORS>,
+    pub LimitedVec<ValidatorData<SCT>, MAX_VALIDATOR_SET_SIZE>,
 );
 
 #[derive(
