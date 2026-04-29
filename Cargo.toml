@@ -174,6 +174,7 @@ rand = "0.8"
 rand_chacha = "0.3"
 rand_distr = "0.4"
 rayon = "1.7"
+redb = "2.4"
 regex = "1.10.2"
 reqwest = { version = "0.12.28", features = ["json"] }
 rstest = "0.25.0"
