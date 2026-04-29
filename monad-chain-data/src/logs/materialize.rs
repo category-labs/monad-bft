@@ -21,7 +21,7 @@ use super::{LogBlockHeader, LogEntry, RawLogEntry};
 use crate::{
     error::{MonadChainDataError, Result},
     family::Hash32,
-    kernel::tables::Tables,
+    kernel::{bitmap::sharded_stream_id, tables::Tables},
     primitives::{
         page::{QueryOrder, DEFAULT_QUERY_LIMIT},
         refs::BlockRef,
@@ -34,6 +34,12 @@ use crate::{
 pub struct LogFilter {
     pub address: Option<HashSet<Address>>,
     pub topics: [Option<HashSet<B256>>; 4],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum IndexedLogClause {
+    Address(Vec<Address>),
+    Topic { position: usize, values: Vec<B256> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,6 +78,31 @@ pub struct QueryLogsResponse {
 }
 
 impl LogFilter {
+    pub fn has_indexed_clause(&self) -> bool {
+        self.address.is_some() || self.topics.iter().any(Option::is_some)
+    }
+
+    pub(crate) fn indexed_clauses(&self) -> Vec<IndexedLogClause> {
+        let mut clauses = Vec::new();
+
+        if let Some(addresses) = &self.address {
+            clauses.push(IndexedLogClause::Address(
+                addresses.iter().copied().collect(),
+            ));
+        }
+
+        for (position, topics) in self.topics.iter().enumerate() {
+            if let Some(values) = topics {
+                clauses.push(IndexedLogClause::Topic {
+                    position,
+                    values: values.iter().copied().collect(),
+                });
+            }
+        }
+
+        clauses
+    }
+
     pub fn matches(&self, log: &LogEntry) -> bool {
         if let Some(addresses) = &self.address {
             if !addresses.contains(&log.address) {
@@ -92,6 +123,31 @@ impl LogFilter {
     }
 }
 
+impl IndexedLogClause {
+    pub(crate) fn stream_ids_for_shard(&self, shard: u64) -> Vec<String> {
+        match self {
+            Self::Address(addresses) => addresses
+                .iter()
+                .map(|address| sharded_stream_id("addr", address.as_slice(), shard))
+                .collect(),
+            Self::Topic { position, values } => {
+                let index_kind = match position {
+                    0 => "topic0",
+                    1 => "topic1",
+                    2 => "topic2",
+                    3 => "topic3",
+                    _ => return Vec::new(),
+                };
+
+                values
+                    .iter()
+                    .map(|topic| sharded_stream_id(index_kind, topic.as_slice(), shard))
+                    .collect()
+            }
+        }
+    }
+}
+
 pub struct LogMaterializer<'a, M: MetaStore, B: BlobStore> {
     tables: &'a Tables<M, B>,
 }
@@ -99,6 +155,47 @@ pub struct LogMaterializer<'a, M: MetaStore, B: BlobStore> {
 impl<'a, M: MetaStore, B: BlobStore> LogMaterializer<'a, M, B> {
     pub fn new(tables: &'a Tables<M, B>) -> Self {
         Self { tables }
+    }
+
+    pub async fn load_block_ref(&self, block_number: u64) -> Result<BlockRef> {
+        let block_record = self
+            .tables
+            .blocks()
+            .load_record(block_number)
+            .await?
+            .ok_or(MonadChainDataError::MissingData("missing block record"))?;
+        Ok(BlockRef::from(&block_record))
+    }
+
+    pub async fn load_log_at(&self, block_number: u64, log_idx: usize) -> Result<LogEntry> {
+        let block_record = self
+            .tables
+            .blocks()
+            .load_record(block_number)
+            .await?
+            .ok_or(MonadChainDataError::MissingData("missing block record"))?;
+        let header = self
+            .tables
+            .logs()
+            .load_block_header(block_number)
+            .await?
+            .ok_or(MonadChainDataError::MissingData("missing block log header"))?;
+
+        if log_idx + 1 >= header.offsets.len() {
+            return Err(MonadChainDataError::Decode("log index out of range"));
+        }
+        let start = header.offsets[log_idx] as usize;
+        let end = header.offsets[log_idx + 1] as usize;
+
+        let bytes = self
+            .tables
+            .logs()
+            .read_block_blob_range(block_number, start, end)
+            .await?
+            .ok_or(MonadChainDataError::MissingData("missing block log blob"))?;
+
+        let raw = RawLogEntry::decode(&bytes)?;
+        Ok(raw.into_log_entry(block_record.block_number, block_record.block_hash))
     }
 
     pub async fn load_filtered_block_logs_for_block(
@@ -162,7 +259,7 @@ fn load_filtered_block_logs(
     Ok(logs)
 }
 
-fn decode_log_at(
+pub(crate) fn decode_log_at(
     header: &LogBlockHeader,
     blob: &[u8],
     log_idx: usize,

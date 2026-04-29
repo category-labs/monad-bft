@@ -13,6 +13,7 @@ alloy-primitives = { workspace = true, features = ["rlp"] }
 alloy-rlp = { workspace = true, features = ["derive"] }
 auto_impl = { workspace = true }
 bytes = { workspace = true }
+roaring = "0.11"
 thiserror = { workspace = true }
 
 [dev-dependencies]

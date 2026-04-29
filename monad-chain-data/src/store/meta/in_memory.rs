@@ -138,7 +138,33 @@ impl MetaStore for InMemoryMetaStore {
         cursor: Option<Vec<u8>>,
         limit: usize,
     ) -> Result<Page> {
-        let _ = (table, partition, prefix, cursor, limit);
-        todo!("list scannable metadata keys from the in-memory meta store")
+        let guard = self
+            .scan_records
+            .read()
+            .map_err(|_| crate::error::MonadChainDataError::Backend("poisoned lock".to_string()))?;
+        let mut keys = Vec::new();
+        let mut next_cursor = None;
+        let cursor = cursor.as_deref();
+
+        for ((record_table, record_partition, clustering), _) in guard.iter() {
+            if *record_table != table || record_partition.as_slice() != partition {
+                continue;
+            }
+            if !clustering.starts_with(prefix) {
+                continue;
+            }
+            if let Some(cursor) = cursor {
+                if clustering.as_slice() <= cursor {
+                    continue;
+                }
+            }
+            if keys.len() == limit {
+                next_cursor = keys.last().cloned();
+                break;
+            }
+            keys.push(clustering.clone());
+        }
+
+        Ok(Page { keys, next_cursor })
     }
 }

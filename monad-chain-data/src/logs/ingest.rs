@@ -17,7 +17,10 @@ use super::{LogBlockHeader, RawLogEntry};
 use crate::{
     error::{MonadChainDataError, Result},
     family::FinalizedBlock,
-    primitives::state::BlockRecord,
+    kernel::bitmap::{
+        encode_grouped_bitmap_fragments, stream_entries_for_log, BitmapFragmentWrite,
+    },
+    primitives::state::{BlockRecord, FamilyWindowRecord, LogId},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,26 +28,35 @@ pub struct LogIngestPlan {
     pub block_record: BlockRecord,
     pub block_log_header: LogBlockHeader,
     pub block_log_blob: Vec<u8>,
+    pub bitmap_fragments: Vec<BitmapFragmentWrite>,
     pub written_logs: usize,
 }
 
 impl LogIngestPlan {
-    pub fn build(block: &FinalizedBlock) -> Result<Self> {
+    pub fn build(block: &FinalizedBlock, first_log_id: LogId) -> Result<Self> {
         // First pass writes only per-block payload/header artifacts plus the shared block record.
         // Later commits add global log IDs, directory fragments, and bitmap index artifacts.
         let logs = Self::flatten_logs(block)?;
+        let log_count = u32::try_from(logs.len())
+            .map_err(|_| MonadChainDataError::Decode("log count overflow"))?;
 
         let (block_log_header, block_log_blob) = Self::encode_block_logs(&logs)?;
+        let bitmap_fragments = Self::collect_bitmap_fragments(&logs, first_log_id)?;
         let block_record = BlockRecord {
             block_number: block.block_number,
             block_hash: block.block_hash,
             parent_hash: block.parent_hash,
+            logs: FamilyWindowRecord {
+                first_log_id,
+                count: log_count,
+            },
         };
 
         Ok(Self {
             block_record,
             block_log_header,
             block_log_blob,
+            bitmap_fragments,
             written_logs: logs.len(),
         })
     }
@@ -91,5 +103,25 @@ impl LogIngestPlan {
         );
 
         Ok((LogBlockHeader { offsets }, blob))
+    }
+
+    fn collect_bitmap_fragments(
+        logs: &[RawLogEntry],
+        first_log_id: LogId,
+    ) -> Result<Vec<BitmapFragmentWrite>> {
+        let mut stream_values = Vec::new();
+
+        for (ordinal, log) in logs.iter().enumerate() {
+            let ordinal = u64::try_from(ordinal)
+                .map_err(|_| MonadChainDataError::Decode("log ordinal overflow"))?;
+            let log_id = first_log_id.checked_add(ordinal)?;
+            stream_values.extend(stream_entries_for_log(
+                log.address.as_slice(),
+                &log.topics,
+                log_id,
+            ));
+        }
+
+        encode_grouped_bitmap_fragments(stream_values)
     }
 }

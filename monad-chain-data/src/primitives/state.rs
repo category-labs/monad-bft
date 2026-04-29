@@ -20,11 +20,68 @@ use crate::{
     family::Hash32,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, RlpEncodable, RlpDecodable)]
+pub struct LogId(u64);
+
+impl LogId {
+    pub const ZERO: Self = Self(0);
+    pub const LOCAL_ID_BITS: u32 = 24;
+    const LOCAL_ID_MASK: u64 = (1u64 << Self::LOCAL_ID_BITS) - 1;
+
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    pub const fn as_u64(self) -> u64 {
+        self.0
+    }
+
+    pub fn checked_add(self, rhs: u64) -> Result<Self> {
+        self.0
+            .checked_add(rhs)
+            .map(Self)
+            .ok_or(MonadChainDataError::Decode("log id overflow"))
+    }
+
+    pub const fn shard(self) -> u64 {
+        self.0 >> Self::LOCAL_ID_BITS
+    }
+
+    pub const fn local(self) -> u32 {
+        (self.0 & Self::LOCAL_ID_MASK) as u32
+    }
+
+    pub const fn from_parts(shard: u64, local: u32) -> Self {
+        Self((shard << Self::LOCAL_ID_BITS) | (local as u64))
+    }
+
+    pub fn idx_in_block(self, first: LogId) -> Result<usize> {
+        let delta = self
+            .0
+            .checked_sub(first.0)
+            .ok_or(MonadChainDataError::Decode("log id below block start"))?;
+        usize::try_from(delta).map_err(|_| MonadChainDataError::Decode("log block index overflow"))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+pub struct FamilyWindowRecord {
+    pub first_log_id: LogId,
+    pub count: u32,
+}
+
+impl FamilyWindowRecord {
+    pub fn next_log_id(self) -> Result<LogId> {
+        self.first_log_id.checked_add(u64::from(self.count))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 pub struct BlockRecord {
     pub block_number: u64,
     pub block_hash: Hash32,
     pub parent_hash: Hash32,
+    pub logs: FamilyWindowRecord,
 }
 
 impl BlockRecord {

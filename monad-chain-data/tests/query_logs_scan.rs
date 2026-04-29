@@ -17,7 +17,7 @@ use std::collections::HashSet;
 
 use monad_chain_data::{
     error::MonadChainDataError, Address, Bytes, FinalizedBlock, InMemoryBlobStore,
-    InMemoryMetaStore, Log, LogData, LogFilter, MonadChainDataService, QueryLogsRequest,
+    InMemoryMetaStore, Log, LogData, LogFilter, LogId, MonadChainDataService, QueryLogsRequest,
     QueryOrder, B256,
 };
 
@@ -167,6 +167,119 @@ async fn query_logs_rejects_from_block_above_published_head() {
         err,
         MonadChainDataError::InvalidRequest("from_block must be <= published head")
     ));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn ingest_assigns_contiguous_log_id_windows_across_empty_blocks() {
+    let service =
+        MonadChainDataService::new(InMemoryMetaStore::default(), InMemoryBlobStore::default());
+
+    service
+        .ingest_block(FinalizedBlock {
+            block_number: 1,
+            block_hash: B256::repeat_byte(1),
+            parent_hash: B256::ZERO,
+            logs_by_tx: vec![vec![
+                log(Address::repeat_byte(3), B256::repeat_byte(4)),
+                log(Address::repeat_byte(3), B256::repeat_byte(4)),
+            ]],
+        })
+        .await
+        .expect("ingest block 1");
+
+    service
+        .ingest_block(FinalizedBlock {
+            block_number: 2,
+            block_hash: B256::repeat_byte(2),
+            parent_hash: B256::repeat_byte(1),
+            logs_by_tx: vec![vec![]],
+        })
+        .await
+        .expect("ingest block 2");
+
+    service
+        .ingest_block(FinalizedBlock {
+            block_number: 3,
+            block_hash: B256::repeat_byte(3),
+            parent_hash: B256::repeat_byte(2),
+            logs_by_tx: vec![vec![log(Address::repeat_byte(3), B256::repeat_byte(4))]],
+        })
+        .await
+        .expect("ingest block 3");
+
+    let block_1 = service
+        .tables()
+        .blocks()
+        .load_record(1)
+        .await
+        .expect("load block 1")
+        .expect("block 1 record");
+    let block_2 = service
+        .tables()
+        .blocks()
+        .load_record(2)
+        .await
+        .expect("load block 2")
+        .expect("block 2 record");
+    let block_3 = service
+        .tables()
+        .blocks()
+        .load_record(3)
+        .await
+        .expect("load block 3")
+        .expect("block 3 record");
+
+    assert_eq!(block_1.logs.first_log_id, LogId::new(0));
+    assert_eq!(block_1.logs.count, 2);
+    assert_eq!(block_2.logs.first_log_id, LogId::new(2));
+    assert_eq!(block_2.logs.count, 0);
+    assert_eq!(block_3.logs.first_log_id, LogId::new(2));
+    assert_eq!(block_3.logs.count, 1);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn block_scan_completes_current_block_when_limit_reached_mid_block() {
+    let service =
+        MonadChainDataService::new(InMemoryMetaStore::default(), InMemoryBlobStore::default());
+
+    service
+        .ingest_block(FinalizedBlock {
+            block_number: 1,
+            block_hash: B256::repeat_byte(1),
+            parent_hash: B256::ZERO,
+            logs_by_tx: vec![vec![
+                log(Address::repeat_byte(5), B256::repeat_byte(8)),
+                log(Address::repeat_byte(5), B256::repeat_byte(8)),
+                log(Address::repeat_byte(5), B256::repeat_byte(8)),
+            ]],
+        })
+        .await
+        .expect("ingest block 1");
+
+    service
+        .ingest_block(FinalizedBlock {
+            block_number: 2,
+            block_hash: B256::repeat_byte(2),
+            parent_hash: B256::repeat_byte(1),
+            logs_by_tx: vec![vec![log(Address::repeat_byte(5), B256::repeat_byte(8))]],
+        })
+        .await
+        .expect("ingest block 2");
+
+    let page = service
+        .query_logs(QueryLogsRequest {
+            from_block: Some(1),
+            to_block: Some(2),
+            order: QueryOrder::Ascending,
+            limit: 1,
+            filter: LogFilter::default(),
+        })
+        .await
+        .expect("query");
+
+    assert_eq!(page.logs.len(), 3);
+    assert!(page.logs.iter().all(|l| l.block_number == 1));
+    assert_eq!(page.cursor_block.number, 1);
 }
 
 fn log(address: Address, topic0: B256) -> Log {

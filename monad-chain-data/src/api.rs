@@ -18,8 +18,11 @@ use crate::{
     family::FinalizedBlock,
     kernel::tables::Tables,
     logs::{LogIngestPlan, QueryLogsRequest, QueryLogsResponse},
-    primitives::{range::ResolvedBlockWindow, state::BlockRecord},
-    query::runner::execute_block_scan_query,
+    primitives::{
+        range::ResolvedBlockWindow,
+        state::{BlockRecord, LogId},
+    },
+    query::{indexed::execute_indexed_log_query, runner::execute_block_scan_query},
     store::{BlobStore, MetaStore},
 };
 
@@ -49,28 +52,38 @@ impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
     // incompletely written. Retry logic, logging, and metrics belong here once the
     // overall pipeline shape stabilizes.
     pub async fn ingest_block(&self, block: FinalizedBlock) -> Result<IngestOutcome> {
+        let blocks = self.tables.blocks();
+        let logs = self.tables.logs();
         let current_head = self.tables.publication().load_published_head().await?;
-        self.tables
-            .blocks()
-            .validate_continuity(&block, current_head)
-            .await?;
+        let previous_record = blocks.validate_continuity(&block, current_head).await?;
+        let next_log_id = match previous_record {
+            Some(previous) => previous.logs.next_log_id()?,
+            None => LogId::ZERO,
+        };
 
         let LogIngestPlan {
             block_record,
             block_log_header,
             block_log_blob,
+            bitmap_fragments,
             written_logs,
-        } = LogIngestPlan::build(&block)?;
-        self.tables
-            .logs()
-            .store_block_blob(block.block_number, block_log_blob)
+        } = LogIngestPlan::build(&block, next_log_id)?;
+        logs.store_block_blob(block.block_number, block_log_blob)
             .await?;
-        self.tables
-            .logs()
-            .store_block_header(block.block_number, &block_log_header)
+        logs.store_block_header(block.block_number, &block_log_header)
             .await?;
-        self.tables
-            .blocks()
+        logs.dir()
+            .persist_block_fragment(
+                block.block_number,
+                block_record.logs.first_log_id.as_u64(),
+                block_record.logs.count,
+            )
+            .await?;
+        for fragment in &bitmap_fragments {
+            logs.store_bitmap_fragment(fragment, block.block_number)
+                .await?;
+        }
+        blocks
             .store_record(block.block_number, &block_record)
             .await?;
         self.tables
@@ -102,8 +115,10 @@ impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
             .ok_or(MonadChainDataError::MissingData("no published blocks"))?;
         let window = ResolvedBlockWindow::resolve(&request, head, self.tables.blocks()).await?;
 
-        // First pass: all log queries use the fallback block-scan path.
-        // Indexed execution lands in later commits once log IDs and bitmap artifacts exist.
+        if request.filter.has_indexed_clause() {
+            return execute_indexed_log_query(&self.tables, &request, window).await;
+        }
+
         execute_block_scan_query(&self.tables, &request, window).await
     }
 }
