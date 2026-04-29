@@ -33,6 +33,7 @@ pub struct LogIngestPlan {
 }
 
 impl LogIngestPlan {
+    /// Derives the per-block log artifacts and index fragments for one finalized block.
     pub fn build(block: &FinalizedBlock, first_log_id: LogId) -> Result<Self> {
         // First pass writes only per-block payload/header artifacts plus the shared block record.
         // Later commits add global log IDs, directory fragments, and bitmap index artifacts.

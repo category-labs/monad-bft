@@ -16,6 +16,7 @@
 pub mod api;
 pub mod error;
 pub mod family;
+pub mod ingest;
 pub mod kernel;
 pub mod logs;
 pub mod primitives;

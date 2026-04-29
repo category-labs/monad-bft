@@ -20,7 +20,7 @@ use crate::{
     family::FinalizedBlock,
     kernel::{
         bitmap::{stream_page_key, BitmapFragmentWrite},
-        primary_dir::{PrimaryDirFragment, PrimaryDirTables},
+        primary_dir::{PrimaryDirBucket, PrimaryDirFragment, PrimaryDirTables},
     },
     logs::LogBlockHeader,
     primitives::state::{BlockRecord, PublicationState},
@@ -127,6 +127,7 @@ impl<M: MetaStore> BlockTables<M> {
         Ok(())
     }
 
+    /// Validates that a new block extends the currently published chain.
     pub async fn validate_continuity(
         &self,
         block: &FinalizedBlock,
@@ -172,6 +173,7 @@ pub struct LogTables<M: MetaStore, B: BlobStore> {
 impl<M: MetaStore, B: BlobStore> LogTables<M, B> {
     pub const BLOCK_LOG_HEADER_TABLE: TableId = TableId::new("block_log_header");
     pub const BLOCK_LOG_BLOB_TABLE: BlobTableId = BlobTableId::new("block_log_blob");
+    pub const LOG_DIR_BUCKET_TABLE: TableId = TableId::new("log_dir_bucket");
     pub const LOG_DIR_BY_BLOCK_TABLE: ScannableTableId = ScannableTableId::new("log_dir_by_block");
     pub const LOG_BITMAP_BY_BLOCK_TABLE: ScannableTableId =
         ScannableTableId::new("log_bitmap_by_block");
@@ -180,7 +182,10 @@ impl<M: MetaStore, B: BlobStore> LogTables<M, B> {
         Self {
             block_headers: meta_store.table(Self::BLOCK_LOG_HEADER_TABLE),
             block_blobs: blob_store.table(Self::BLOCK_LOG_BLOB_TABLE),
-            dir: PrimaryDirTables::new(meta_store.scannable_table(Self::LOG_DIR_BY_BLOCK_TABLE)),
+            dir: PrimaryDirTables::new(
+                meta_store.scannable_table(Self::LOG_DIR_BY_BLOCK_TABLE),
+                meta_store.table(Self::LOG_DIR_BUCKET_TABLE),
+            ),
             bitmap_fragments: meta_store.scannable_table(Self::LOG_BITMAP_BY_BLOCK_TABLE),
         }
     }
@@ -237,11 +242,15 @@ impl<M: MetaStore, B: BlobStore> LogTables<M, B> {
         Ok(())
     }
 
-    pub async fn load_sub_bucket_fragments(
+    pub async fn load_bucket_fragments(
         &self,
-        sub_bucket_start: u64,
+        bucket_start: u64,
     ) -> Result<Vec<PrimaryDirFragment>> {
-        self.dir.load_sub_bucket_fragments(sub_bucket_start).await
+        self.dir.load_bucket_fragments(bucket_start).await
+    }
+
+    pub async fn load_bucket(&self, bucket_start: u64) -> Result<Option<PrimaryDirBucket>> {
+        self.dir.load_bucket(bucket_start).await
     }
 
     pub async fn store_bitmap_fragment(

@@ -167,6 +167,7 @@ impl<'a, M: MetaStore, B: BlobStore> LogMaterializer<'a, M, B> {
         Ok(BlockRef::from(&block_record))
     }
 
+    /// Resolves and materializes one log by block number and block-local ordinal.
     pub async fn load_log_at(&self, block_number: u64, log_idx: usize) -> Result<LogEntry> {
         let block_record = self
             .tables
@@ -198,6 +199,7 @@ impl<'a, M: MetaStore, B: BlobStore> LogMaterializer<'a, M, B> {
         Ok(raw.into_log_entry(block_record.block_number, block_record.block_hash))
     }
 
+    /// Loads and filters all logs for one block in the requested output order.
     pub async fn load_filtered_block_logs_for_block(
         &self,
         block_number: u64,

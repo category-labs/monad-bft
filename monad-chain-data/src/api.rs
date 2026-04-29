@@ -16,6 +16,7 @@
 use crate::{
     error::{MonadChainDataError, Result},
     family::FinalizedBlock,
+    ingest::directory_compaction::compact_newly_sealed_log_directory_buckets,
     kernel::tables::Tables,
     logs::{LogIngestPlan, QueryLogsRequest, QueryLogsResponse},
     primitives::{
@@ -51,6 +52,7 @@ impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
     // TODO: Individual writes are idempotent, but a partial failure leaves the block
     // incompletely written. Retry logic, logging, and metrics belong here once the
     // overall pipeline shape stabilizes.
+    /// Persists one finalized block and advances the published head on success.
     pub async fn ingest_block(&self, block: FinalizedBlock) -> Result<IngestOutcome> {
         let blocks = self.tables.blocks();
         let logs = self.tables.logs();
@@ -68,6 +70,7 @@ impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
             bitmap_fragments,
             written_logs,
         } = LogIngestPlan::build(&block, next_log_id)?;
+        let next_log_id_exclusive = block_record.logs.next_log_id()?;
         logs.store_block_blob(block.block_number, block_log_blob)
             .await?;
         logs.store_block_header(block.block_number, &block_log_header)
@@ -79,6 +82,12 @@ impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
                 block_record.logs.count,
             )
             .await?;
+        compact_newly_sealed_log_directory_buckets(
+            logs,
+            next_log_id.as_u64(),
+            next_log_id_exclusive.as_u64(),
+        )
+        .await?;
         for fragment in &bitmap_fragments {
             logs.store_bitmap_fragment(fragment, block.block_number)
                 .await?;
@@ -100,6 +109,7 @@ impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
         })
     }
 
+    /// Executes a finalized logs query over the current published head.
     pub async fn query_logs(&self, request: QueryLogsRequest) -> Result<QueryLogsResponse> {
         if request.limit == 0 {
             return Err(MonadChainDataError::InvalidRequest(

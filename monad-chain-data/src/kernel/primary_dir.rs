@@ -16,11 +16,53 @@
 use bytes::Bytes;
 
 use crate::{
-    error::Result,
-    store::{MetaStore, ScannableKvTable},
+    error::{MonadChainDataError, Result},
+    store::{KvTable, MetaStore, ScannableKvTable},
 };
 
-pub const DIRECTORY_SUB_BUCKET_SIZE: u64 = 10_000;
+pub const DIRECTORY_BUCKET_SIZE: u64 = 10_000;
+
+#[derive(Debug, Clone, PartialEq, Eq, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable)]
+pub struct PrimaryDirBucket {
+    pub start_block: u64,
+    pub first_primary_ids: Vec<u64>,
+}
+
+impl PrimaryDirBucket {
+    /// Constructs a bucket after enforcing the sentinel and nondecreasing
+    /// invariants. All bucket producers — RLP decode and ingest-side
+    /// compaction — funnel through here so the type's invariants live in
+    /// one place.
+    pub(crate) fn new(start_block: u64, first_primary_ids: Vec<u64>) -> Result<Self> {
+        if first_primary_ids.len() < 2 {
+            return Err(MonadChainDataError::Decode(
+                "primary directory bucket missing sentinel",
+            ));
+        }
+        if first_primary_ids
+            .windows(2)
+            .any(|window| window[0] > window[1])
+        {
+            return Err(MonadChainDataError::Decode(
+                "primary directory bucket ids must be nondecreasing",
+            ));
+        }
+        Ok(Self {
+            start_block,
+            first_primary_ids,
+        })
+    }
+
+    pub fn encode(&self) -> Vec<u8> {
+        alloy_rlp::encode(self)
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
+        let raw: Self = alloy_rlp::decode_exact(bytes)
+            .map_err(|_| MonadChainDataError::Decode("invalid primary directory bucket rlp"))?;
+        Self::new(raw.start_block, raw.first_primary_ids)
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable)]
 pub struct PrimaryDirFragment {
@@ -43,17 +85,18 @@ impl PrimaryDirFragment {
 
 pub struct PrimaryDirTables<M: MetaStore> {
     fragments: ScannableKvTable<M>,
+    buckets: KvTable<M>,
 }
 
 impl<M: MetaStore> PrimaryDirTables<M> {
-    pub fn new(fragments: ScannableKvTable<M>) -> Self {
-        Self { fragments }
+    pub fn new(fragments: ScannableKvTable<M>, buckets: KvTable<M>) -> Self {
+        Self { fragments, buckets }
     }
 
-    /// Writes a directory fragment for the given block into every sub-bucket
-    /// its log-ID window overlaps. A single block can span multiple sub-buckets
+    /// Writes a directory fragment for the given block into every 10k bucket
+    /// its log-ID window overlaps. A single block can span multiple buckets
     /// when its ID range crosses a 10k boundary, so the same fragment is stored
-    /// in each one to allow readers to locate it from any covered sub-bucket.
+    /// in each one to allow readers to locate it from any covered bucket.
     pub async fn persist_block_fragment(
         &self,
         block_number: u64,
@@ -66,31 +109,41 @@ impl<M: MetaStore> PrimaryDirTables<M> {
             end_primary_id_exclusive: first_primary_id.saturating_add(u64::from(count)),
         };
 
-        let mut current_sub_bucket_start = sub_bucket_start(first_primary_id);
-        let last_sub_bucket_start = if count == 0 {
-            current_sub_bucket_start
+        let mut current_bucket_start = bucket_start(first_primary_id);
+        let last_bucket_start = if count == 0 {
+            current_bucket_start
         } else {
-            sub_bucket_start(fragment.end_primary_id_exclusive.saturating_sub(1))
+            bucket_start(fragment.end_primary_id_exclusive.saturating_sub(1))
         };
 
         loop {
-            self.put_fragment(current_sub_bucket_start, block_number, &fragment)
+            self.put_fragment(current_bucket_start, block_number, &fragment)
                 .await?;
-            if current_sub_bucket_start == last_sub_bucket_start {
+            if current_bucket_start == last_bucket_start {
                 break;
             }
-            current_sub_bucket_start =
-                current_sub_bucket_start.saturating_add(DIRECTORY_SUB_BUCKET_SIZE);
+            current_bucket_start = current_bucket_start.saturating_add(DIRECTORY_BUCKET_SIZE);
         }
 
         Ok(())
     }
 
-    pub async fn load_sub_bucket_fragments(
+    /// Loads the compacted summary for one sealed 10k bucket.
+    pub async fn load_bucket(&self, bucket_start: u64) -> Result<Option<PrimaryDirBucket>> {
+        let key = u64_key(bucket_start);
+        let Some(record) = self.buckets.get(&key).await? else {
+            return Ok(None);
+        };
+
+        Ok(Some(PrimaryDirBucket::decode(&record.value)?))
+    }
+
+    /// Loads all retained fragments for one 10k bucket.
+    pub async fn load_bucket_fragments(
         &self,
-        sub_bucket_start: u64,
+        bucket_start: u64,
     ) -> Result<Vec<PrimaryDirFragment>> {
-        let partition = u64_key(sub_bucket_start);
+        let partition = u64_key(bucket_start);
         let page = self
             .fragments
             .list_prefix(&partition, &[], None, usize::MAX)
@@ -109,13 +162,19 @@ impl<M: MetaStore> PrimaryDirTables<M> {
         Ok(fragments)
     }
 
+    pub async fn put_bucket(&self, bucket_start: u64, bucket: &PrimaryDirBucket) -> Result<()> {
+        let key = u64_key(bucket_start);
+        self.buckets.put(&key, Bytes::from(bucket.encode())).await?;
+        Ok(())
+    }
+
     async fn put_fragment(
         &self,
-        sub_bucket_start: u64,
+        bucket_start: u64,
         block_number: u64,
         fragment: &PrimaryDirFragment,
     ) -> Result<()> {
-        let partition = u64_key(sub_bucket_start);
+        let partition = u64_key(bucket_start);
         let clustering = u64_key(block_number);
         self.fragments
             .put(&partition, &clustering, Bytes::from(fragment.encode()))
@@ -124,8 +183,8 @@ impl<M: MetaStore> PrimaryDirTables<M> {
     }
 }
 
-pub fn sub_bucket_start(primary_id: u64) -> u64 {
-    aligned_u64_start(primary_id, DIRECTORY_SUB_BUCKET_SIZE)
+pub fn bucket_start(primary_id: u64) -> u64 {
+    aligned_u64_start(primary_id, DIRECTORY_BUCKET_SIZE)
 }
 
 fn aligned_u64_start(value: u64, alignment: u64) -> u64 {

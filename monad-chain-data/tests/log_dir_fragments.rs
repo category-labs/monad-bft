@@ -14,13 +14,13 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use monad_chain_data::{
-    kernel::primary_dir::{PrimaryDirFragment, DIRECTORY_SUB_BUCKET_SIZE},
+    kernel::primary_dir::{PrimaryDirFragment, DIRECTORY_BUCKET_SIZE},
     Address, Bytes, FinalizedBlock, InMemoryBlobStore, InMemoryMetaStore, Log, LogData,
     MonadChainDataService, B256,
 };
 
 #[tokio::test(flavor = "current_thread")]
-async fn ingest_persists_log_dir_fragment_for_single_sub_bucket_block() {
+async fn ingest_persists_log_dir_fragment_for_single_bucket_block() {
     let service =
         MonadChainDataService::new(InMemoryMetaStore::default(), InMemoryBlobStore::default());
 
@@ -37,7 +37,7 @@ async fn ingest_persists_log_dir_fragment_for_single_sub_bucket_block() {
     let fragments = service
         .tables()
         .logs()
-        .load_sub_bucket_fragments(0)
+        .load_bucket_fragments(0)
         .await
         .expect("load fragments");
 
@@ -69,7 +69,7 @@ async fn ingest_persists_zero_width_fragment_for_empty_block() {
     let fragments = service
         .tables()
         .logs()
-        .load_sub_bucket_fragments(0)
+        .load_bucket_fragments(0)
         .await
         .expect("load fragments");
 
@@ -84,7 +84,7 @@ async fn ingest_persists_zero_width_fragment_for_empty_block() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn ingest_persists_spanning_fragment_in_each_covered_sub_bucket() {
+async fn ingest_persists_spanning_fragment_in_each_covered_bucket() {
     let service =
         MonadChainDataService::new(InMemoryMetaStore::default(), InMemoryBlobStore::default());
 
@@ -94,7 +94,7 @@ async fn ingest_persists_spanning_fragment_in_each_covered_sub_bucket() {
             block_hash: B256::repeat_byte(1),
             parent_hash: B256::ZERO,
             logs_by_tx: vec![repeated_logs(
-                usize::try_from(DIRECTORY_SUB_BUCKET_SIZE - 2).expect("bucket size fits usize"),
+                usize::try_from(DIRECTORY_BUCKET_SIZE - 2).expect("bucket size fits usize"),
             )],
         })
         .await
@@ -113,20 +113,20 @@ async fn ingest_persists_spanning_fragment_in_each_covered_sub_bucket() {
     let first_partition = service
         .tables()
         .logs()
-        .load_sub_bucket_fragments(0)
+        .load_bucket_fragments(0)
         .await
         .expect("load first partition");
     let second_partition = service
         .tables()
         .logs()
-        .load_sub_bucket_fragments(DIRECTORY_SUB_BUCKET_SIZE)
+        .load_bucket_fragments(DIRECTORY_BUCKET_SIZE)
         .await
         .expect("load second partition");
 
     let expected = PrimaryDirFragment {
         block_number: 2,
-        first_primary_id: DIRECTORY_SUB_BUCKET_SIZE - 2,
-        end_primary_id_exclusive: DIRECTORY_SUB_BUCKET_SIZE + 2,
+        first_primary_id: DIRECTORY_BUCKET_SIZE - 2,
+        end_primary_id_exclusive: DIRECTORY_BUCKET_SIZE + 2,
     };
 
     assert!(first_partition.contains(&expected));
