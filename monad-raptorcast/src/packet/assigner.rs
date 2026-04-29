@@ -485,6 +485,7 @@ mod tests {
     use monad_secp::SecpSignature;
     use monad_testutil::signing::get_key;
     use monad_types::{NodeId, Stake};
+    use monad_validator::validator_set::MAX_VALIDATOR_SET_SIZE;
     use rstest::rstest;
 
     use super::{ChunkAssignment, EvenPartition, NodeIndex, OrderedNodes, StakePartition};
@@ -833,7 +834,7 @@ mod tests {
     #[case(vec![(1, 0.001), (2, 0.999)], 100)]
     // large validator set
     #[case({
-        let n = 200;
+        let n = MAX_VALIDATOR_SET_SIZE;
         let share = 1.0 / n as f64;
         (1..=n).map(|i| (i as u64, share)).collect::<Vec<_>>()
     }, 5000)]

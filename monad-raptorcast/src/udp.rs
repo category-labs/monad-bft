@@ -47,10 +47,6 @@ pub const SIGNATURE_CACHE_SIZE: usize = 10_000;
 // if we have many peers to transmit the message to.
 pub const MAX_NUM_PACKETS: usize = 65535;
 
-/// The maximum sane validator set size. Defined in
-/// <execution>/monad/staking/util/constants.hpp.
-pub const MAX_VALIDATOR_SET_SIZE: usize = 200;
-
 /// Cache key for signature verification: header + merkle root
 pub type SignatureCacheKey = SignedOverData;
 pub type ChunkSignatureVerifier<ST> =
@@ -594,7 +590,9 @@ mod tests {
     use monad_dataplane::udp::DEFAULT_SEGMENT_SIZE;
     use monad_secp::{KeyPair, SecpSignature};
     use monad_types::{Epoch, NodeId, Round, Stake};
-    use monad_validator::validator_set::{ValidatorSet, ValidatorSetType as _};
+    use monad_validator::validator_set::{
+        ValidatorSet, ValidatorSetType as _, MAX_VALIDATOR_SET_SIZE,
+    };
     use rstest::*;
 
     use super::{ChunkSignatureVerifier, InvalidChunk, UdpState, ValidatedChunk};
@@ -604,7 +602,7 @@ mod tests {
             packet_parser::{ChunkValidationEnv, MalformedPacket, RaptorcastPacket},
             signature_verifier::SignatureVerifier,
         },
-        udp::{build_messages, MAX_VALIDATOR_SET_SIZE, SIGNATURE_CACHE_SIZE},
+        udp::{build_messages, SIGNATURE_CACHE_SIZE},
         util::{
             compute_app_message_hash, BroadcastMode, BuildTarget, FullNodeGroupMap,
             PrimaryBroadcastGroup, Redundancy, SecondaryBroadcastGroup, SecondaryGroup,

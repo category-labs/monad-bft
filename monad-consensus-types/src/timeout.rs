@@ -28,12 +28,12 @@ use monad_validator::{
         SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
     },
     validator_mapping::ValidatorMapping,
+    validator_set::MAX_VALIDATOR_SET_SIZE,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    quorum_certificate::QuorumCertificate, tip::ConsensusTip, validator_data::MAX_VALIDATORS,
-    voting::Vote, RoundCertificate,
+    quorum_certificate::QuorumCertificate, tip::ConsensusTip, voting::Vote, RoundCertificate,
 };
 
 /// Timeout message to broadcast to other nodes after a local timeout
@@ -455,7 +455,7 @@ where
     /// to create a TC
     pub round: Round,
     /// signatures over the round of the TC and the high tip round,
-    pub tip_rounds: LimitedVec<HighTipRoundSigColTuple<SCT>, MAX_VALIDATORS>,
+    pub tip_rounds: LimitedVec<HighTipRoundSigColTuple<SCT>, MAX_VALIDATOR_SET_SIZE>,
 
     // corresponds to the highest tip (or qc if no tip) in tip_rounds
     pub high_extend: HighExtend<ST, SCT, EPT>,
@@ -523,7 +523,7 @@ where
 {
     pub epoch: Epoch,
     pub round: Round,
-    pub tip_rounds: LimitedVec<HighTipRoundSigColTuple<SCT>, MAX_VALIDATORS>,
+    pub tip_rounds: LimitedVec<HighTipRoundSigColTuple<SCT>, MAX_VALIDATOR_SET_SIZE>,
 
     pub high_qc: QuorumCertificate<SCT>,
 }
