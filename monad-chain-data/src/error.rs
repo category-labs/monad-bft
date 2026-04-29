@@ -37,4 +37,9 @@ pub enum MonadChainDataError {
         max_limit: usize,
         max_block_range: u64,
     },
+    /// The publication head was advanced by another writer between this
+    /// writer's read and CAS. The caller is no longer the active writer
+    /// and should step down rather than retry.
+    #[error("fenced out by concurrent writer (current head: {current_head:?})")]
+    FencedOut { current_head: Option<u64> },
 }

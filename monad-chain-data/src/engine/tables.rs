@@ -30,12 +30,14 @@ use crate::{
         state::{BlockRecord, PublicationState},
         EvmBlockHeader,
     },
-    store::{BlobStore, BlobTable, KvTable, MetaStore, ScannableTableId, TableId},
+    store::{
+        BlobStore, BlobTable, CasOutcome, CasVersion, KvTable, MetaStore, MetaStoreCas,
+        ScannableTableId, TableId,
+    },
     txs::TxHashIndexTable,
 };
 
 pub struct Tables<M: MetaStore, B: BlobStore> {
-    publication: PublicationTables<M>,
     blocks: BlockTables<M>,
     tx_hash_index: TxHashIndexTable<M>,
     families: BTreeMap<Family, FamilyTables<M, B>>,
@@ -53,15 +55,10 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
             FamilyTables::new(meta_store.clone(), blob_store, Family::Tx),
         );
         Self {
-            publication: PublicationTables::new(meta_store.clone()),
             blocks: BlockTables::new(meta_store.clone()),
             tx_hash_index: TxHashIndexTable::new(meta_store),
             families,
         }
-    }
-
-    pub fn publication(&self) -> &PublicationTables<M> {
-        &self.publication
     }
 
     pub fn blocks(&self) -> &BlockTables<M> {
@@ -86,39 +83,66 @@ fn block_number_key(block_number: u64) -> [u8; 8] {
     block_number.to_be_bytes()
 }
 
-pub struct PublicationTables<M: MetaStore> {
-    publication_state: KvTable<M>,
+pub struct PublicationTables<M: MetaStoreCas> {
+    meta_store: M,
 }
 
-impl<M: MetaStore> PublicationTables<M> {
+impl<M: MetaStoreCas> PublicationTables<M> {
     pub const PUBLICATION_STATE_TABLE: TableId = TableId::new("publication_state");
     pub const PUBLICATION_STATE_KEY: &[u8] = b"state";
 
-    fn new(meta_store: M) -> Self {
-        Self {
-            publication_state: meta_store.table(Self::PUBLICATION_STATE_TABLE),
-        }
+    pub(crate) fn new(meta_store: M) -> Self {
+        Self { meta_store }
     }
 
-    pub async fn load_published_head(&self) -> Result<Option<u64>> {
-        let Some(bytes) = self
-            .publication_state
-            .get(Self::PUBLICATION_STATE_KEY)
+    /// Loads the current publication state along with its CAS version.
+    /// Writers must thread the version into the matching [`Self::cas_advance`]
+    /// call; readers that only want the head can use [`Self::load_published_head`].
+    pub async fn load_state(&self) -> Result<Option<(CasVersion, PublicationState)>> {
+        let Some((version, bytes)) = self
+            .meta_store
+            .cas_get(Self::PUBLICATION_STATE_TABLE, Self::PUBLICATION_STATE_KEY)
             .await?
         else {
             return Ok(None);
         };
 
-        Ok(Some(
-            PublicationState::decode(&bytes)?.indexed_finalized_head,
-        ))
+        Ok(Some((version, PublicationState::decode(&bytes)?)))
     }
 
-    pub async fn store_state(&self, state: PublicationState) -> Result<()> {
-        self.publication_state
-            .put(Self::PUBLICATION_STATE_KEY, Bytes::from(state.encode()))
+    pub async fn load_published_head(&self) -> Result<Option<u64>> {
+        Ok(self
+            .load_state()
+            .await?
+            .map(|(_, state)| state.indexed_finalized_head))
+    }
+
+    /// Atomically advances the publication state. `expected` must be the
+    /// version returned by the load that produced `next`'s preconditions —
+    /// writer+standby failover is the case this guards. On version mismatch
+    /// this returns `Err(FencedOut)` rather than [`CasOutcome::Conflict`]
+    /// so callers can `?` through ingest paths.
+    pub async fn cas_advance(
+        &self,
+        expected: Option<CasVersion>,
+        next: PublicationState,
+    ) -> Result<()> {
+        let outcome = self
+            .meta_store
+            .cas_put(
+                Self::PUBLICATION_STATE_TABLE,
+                Self::PUBLICATION_STATE_KEY,
+                expected,
+                Bytes::from(next.encode()),
+            )
             .await?;
-        Ok(())
+        match outcome {
+            CasOutcome::Applied { .. } => Ok(()),
+            CasOutcome::Conflict { .. } => {
+                let current_head = self.load_published_head().await?;
+                Err(MonadChainDataError::FencedOut { current_head })
+            }
+        }
     }
 }
 

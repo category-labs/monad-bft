@@ -24,7 +24,7 @@ use crate::{
     error::Result,
     store::{
         common::Page,
-        meta::{MetaStore, ScannableTableId, TableId},
+        meta::{CasOutcome, CasVersion, MetaStore, MetaStoreCas, ScannableTableId, TableId},
     },
 };
 
@@ -34,6 +34,7 @@ use crate::{
 pub struct InMemoryMetaStore {
     kv_records: Arc<RwLock<BTreeMap<(TableId, Vec<u8>), Bytes>>>,
     scan_records: Arc<RwLock<BTreeMap<(ScannableTableId, Vec<u8>, Vec<u8>), Bytes>>>,
+    cas_records: Arc<RwLock<BTreeMap<(TableId, Vec<u8>), (u64, Bytes)>>>,
 }
 
 impl InMemoryMetaStore {
@@ -51,12 +52,26 @@ impl InMemoryMetaStore {
                 .read()
                 .map(|guard| guard.len())
                 .unwrap_or_default()
+            + self
+                .cas_records
+                .read()
+                .map(|guard| guard.len())
+                .unwrap_or_default()
     }
 
     /// Test-only: remove a kv row from the fixture to simulate missing data.
     /// Not exposed on the [`MetaStore`] trait — real backends are append-only.
     pub fn clear_key(&self, table: TableId, key: &[u8]) {
         if let Ok(mut guard) = self.kv_records.write() {
+            guard.remove(&(table, key.to_vec()));
+        }
+    }
+
+    /// Test-only: remove a CAS row from the fixture. CAS rows live in a
+    /// physically separate map from plain kv rows, so a [`Self::clear_key`]
+    /// call on the same `(table, key)` does not affect them.
+    pub fn clear_cas_key(&self, table: TableId, key: &[u8]) {
+        if let Ok(mut guard) = self.cas_records.write() {
             guard.remove(&(table, key.to_vec()));
         }
     }
@@ -146,5 +161,42 @@ impl MetaStore for InMemoryMetaStore {
         }
 
         Ok(Page { keys, next_cursor })
+    }
+}
+
+impl MetaStoreCas for InMemoryMetaStore {
+    async fn cas_get(&self, table: TableId, key: &[u8]) -> Result<Option<(CasVersion, Bytes)>> {
+        let guard = self
+            .cas_records
+            .read()
+            .map_err(|_| crate::error::MonadChainDataError::Backend("poisoned lock".to_string()))?;
+        Ok(guard
+            .get(&(table, key.to_vec()))
+            .map(|(version, value)| (CasVersion(*version), value.clone())))
+    }
+
+    async fn cas_put(
+        &self,
+        table: TableId,
+        key: &[u8],
+        expected: Option<CasVersion>,
+        value: Bytes,
+    ) -> Result<CasOutcome> {
+        let mut guard = self
+            .cas_records
+            .write()
+            .map_err(|_| crate::error::MonadChainDataError::Backend("poisoned lock".to_string()))?;
+        let entry_key = (table, key.to_vec());
+        let current = guard.get(&entry_key).map(|(v, _)| CasVersion(*v));
+        if current != expected {
+            return Ok(CasOutcome::Conflict {
+                current_version: current,
+            });
+        }
+        let new_version = current.map_or(1, |v| v.0 + 1);
+        guard.insert(entry_key, (new_version, value));
+        Ok(CasOutcome::Applied {
+            new_version: CasVersion(new_version),
+        })
     }
 }

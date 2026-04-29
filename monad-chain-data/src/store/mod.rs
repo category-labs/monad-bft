@@ -20,5 +20,6 @@ pub mod meta;
 pub use blob::{BlobStore, BlobTable, BlobTableId, InMemoryBlobStore};
 pub use common::Page;
 pub use meta::{
-    InMemoryMetaStore, KvTable, MetaStore, ScannableKvTable, ScannableTableId, TableId,
+    CasOutcome, CasVersion, InMemoryMetaStore, KvTable, MetaStore, MetaStoreCas, ScannableKvTable,
+    ScannableTableId, TableId,
 };

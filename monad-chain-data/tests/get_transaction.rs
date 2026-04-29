@@ -231,7 +231,7 @@ async fn get_transaction_ignores_index_hits_without_published_head() {
         .await
         .expect("ingest");
 
-    meta_store.clear_key(
+    meta_store.clear_cas_key(
         PublicationTables::<InMemoryMetaStore>::PUBLICATION_STATE_TABLE,
         PublicationTables::<InMemoryMetaStore>::PUBLICATION_STATE_KEY,
     );
