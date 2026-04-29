@@ -25,12 +25,13 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use enum_dispatch::enum_dispatch;
 use eyre::{eyre, Context, Result};
+use futures::stream::{self, BoxStream, StreamExt};
 use monad_types::{BlockId, Hash};
 use tokio::sync::Mutex;
 
 use crate::{
     kvstore::{KVReader, KVStore, KVStoreErased, WritePolicy},
-    model::bft_paths::{self, INDEX_ENTRY_BYTES},
+    model::bft_paths::{self, INDEX_ENTRY_BYTES, INDEX_PAGE_SIZE},
 };
 
 #[enum_dispatch]
@@ -38,6 +39,15 @@ pub trait IndexBackend {
     async fn get_id(&self, seq_num: u64) -> Result<Option<BlockId>>;
     async fn put_id(&self, seq_num: u64, id: BlockId) -> Result<()>;
     async fn put_ids_batch(&self, entries: &[(u64, BlockId)]) -> Result<()>;
+
+    /// Stream every present (seq_num, id) entry in `[min..=max_inclusive]`,
+    /// in ascending seq order. Missing slots are skipped — callers wanting
+    /// gap detection should compare expected vs yielded counts.
+    fn iter_range(
+        &self,
+        min: u64,
+        max_inclusive: u64,
+    ) -> BoxStream<'_, Result<(u64, BlockId)>>;
 }
 
 #[enum_dispatch(IndexBackend)]
@@ -97,6 +107,27 @@ impl IndexBackend for KvIndexBackend {
             .bulk_put(kvs, WritePolicy::AllowOverwrite)
             .await?;
         Ok(())
+    }
+
+    fn iter_range(
+        &self,
+        min: u64,
+        max_inclusive: u64,
+    ) -> BoxStream<'_, Result<(u64, BlockId)>> {
+        let this = self.clone();
+        // One key per seq_num: query each, skip None, propagate errors.
+        let s = stream::iter(min..=max_inclusive).then(move |seq| {
+            let this = this.clone();
+            async move { this.get_id(seq).await.map(|opt| (seq, opt)) }
+        });
+        s.filter_map(|res| async move {
+            match res {
+                Ok((seq, Some(id))) => Some(Ok((seq, id))),
+                Ok((_, None)) => None,
+                Err(e) => Some(Err(e)),
+            }
+        })
+        .boxed()
     }
 }
 
@@ -199,6 +230,52 @@ impl IndexBackend for PagedIndexBackend {
                 .await?;
         }
         Ok(())
+    }
+
+    fn iter_range(
+        &self,
+        min: u64,
+        max_inclusive: u64,
+    ) -> BoxStream<'_, Result<(u64, BlockId)>> {
+        let this = self.clone();
+        let first_page = bft_paths::index_page_for(min);
+        let last_page = bft_paths::index_page_for(max_inclusive);
+        // One read per page, then walk slots in-page; cheaper than per-seq
+        // get_id when there are many sequential entries.
+        let pages = stream::iter(first_page..=last_page);
+        pages
+            .then(move |page| {
+                let this = this.clone();
+                let path = bft_paths::index_page_path_for_page(page);
+                let page_min = page * INDEX_PAGE_SIZE;
+                let slot_lo = min.saturating_sub(page_min) as usize;
+                let slot_hi = (max_inclusive - page_min).min(INDEX_PAGE_SIZE - 1) as usize;
+                async move {
+                    let bytes = match this.kv.get(&path).await? {
+                        Some(b) => b,
+                        None => return Ok::<Vec<(u64, BlockId)>, eyre::Report>(Vec::new()),
+                    };
+                    let mut out = Vec::new();
+                    for slot in slot_lo..=slot_hi {
+                        let offset = slot * INDEX_ENTRY_BYTES;
+                        if bytes.len() < offset + INDEX_ENTRY_BYTES {
+                            break;
+                        }
+                        let mut arr = [0u8; 32];
+                        arr.copy_from_slice(&bytes[offset..offset + INDEX_ENTRY_BYTES]);
+                        if arr == [0u8; 32] {
+                            continue;
+                        }
+                        out.push((page_min + slot as u64, BlockId(Hash(arr))));
+                    }
+                    Ok(out)
+                }
+            })
+            .flat_map(|res| match res {
+                Ok(entries) => stream::iter(entries.into_iter().map(Ok)).boxed(),
+                Err(e) => stream::iter(std::iter::once(Err(e))).boxed(),
+            })
+            .boxed()
     }
 }
 
@@ -325,5 +402,65 @@ mod tests {
         assert_eq!(b.get_id(0).await.unwrap(), Some(block_id(0x10)));
         assert!(b.get_id(1).await.unwrap().is_none());
         assert_eq!(b.get_id(2).await.unwrap(), Some(block_id(0x20)));
+    }
+
+    async fn collect_iter(
+        s: futures::stream::BoxStream<'_, Result<(u64, BlockId)>>,
+    ) -> Vec<(u64, BlockId)> {
+        s.collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .map(|r| r.unwrap())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn kv_iter_range_yields_present_entries_in_order() {
+        let b = fresh_kv_backend();
+        b.put_id(1, block_id(0x01)).await.unwrap();
+        b.put_id(3, block_id(0x03)).await.unwrap();
+        b.put_id(5, block_id(0x05)).await.unwrap();
+        let got = collect_iter(b.iter_range(0, 10)).await;
+        assert_eq!(
+            got,
+            vec![(1, block_id(0x01)), (3, block_id(0x03)), (5, block_id(0x05))]
+        );
+    }
+
+    #[tokio::test]
+    async fn paged_iter_range_walks_pages_and_skips_gaps() {
+        let b = fresh_paged_backend();
+        // Three entries split across two pages, with intra-page gaps.
+        b.put_id(0, block_id(0x01)).await.unwrap();
+        b.put_id(2, block_id(0x02)).await.unwrap();
+        b.put_id(1_000, block_id(0x03)).await.unwrap();
+        b.put_id(1_500, block_id(0x04)).await.unwrap();
+        let got = collect_iter(b.iter_range(0, 1_999)).await;
+        assert_eq!(
+            got,
+            vec![
+                (0, block_id(0x01)),
+                (2, block_id(0x02)),
+                (1_000, block_id(0x03)),
+                (1_500, block_id(0x04)),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn paged_iter_range_respects_inclusive_bounds() {
+        let b = fresh_paged_backend();
+        for seq in [3, 5, 7] {
+            b.put_id(seq, block_id(seq as u8)).await.unwrap();
+        }
+        let got = collect_iter(b.iter_range(4, 6)).await;
+        assert_eq!(got, vec![(5, block_id(5))]);
+    }
+
+    #[tokio::test]
+    async fn iter_range_on_missing_pages_yields_empty() {
+        let b = fresh_paged_backend();
+        let got = collect_iter(b.iter_range(0, 4_999)).await;
+        assert!(got.is_empty());
     }
 }
