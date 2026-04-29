@@ -36,10 +36,10 @@ impl<M: MetaStore> TxHashIndexTable<M> {
     }
 
     pub(crate) async fn get(&self, tx_hash: &Hash32) -> Result<Option<TxLocation>> {
-        let Some(record) = self.table.get(tx_hash.as_slice()).await? else {
+        let Some(bytes) = self.table.get(tx_hash.as_slice()).await? else {
             return Ok(None);
         };
-        TxLocation::decode(record.value.as_ref()).map(Some)
+        TxLocation::decode(bytes.as_ref()).map(Some)
     }
 
     pub(crate) async fn put(&self, tx_hash: &Hash32, location: TxLocation) -> Result<()> {

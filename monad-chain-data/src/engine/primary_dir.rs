@@ -131,11 +131,11 @@ impl<M: MetaStore> PrimaryDirTables<M> {
     /// Loads the compacted summary for one sealed 10k bucket.
     pub async fn load_bucket(&self, bucket_start: u64) -> Result<Option<PrimaryDirBucket>> {
         let key = u64_key(bucket_start);
-        let Some(record) = self.buckets.get(&key).await? else {
+        let Some(bytes) = self.buckets.get(&key).await? else {
             return Ok(None);
         };
 
-        Ok(Some(PrimaryDirBucket::decode(&record.value)?))
+        Ok(Some(PrimaryDirBucket::decode(&bytes)?))
     }
 
     /// Loads all retained fragments for one 10k bucket.
@@ -151,12 +151,12 @@ impl<M: MetaStore> PrimaryDirTables<M> {
         let mut fragments = Vec::with_capacity(page.keys.len());
 
         for clustering in page.keys {
-            let record = self.fragments.get(&partition, &clustering).await?.ok_or(
+            let bytes = self.fragments.get(&partition, &clustering).await?.ok_or(
                 crate::error::MonadChainDataError::MissingData(
                     "missing primary directory fragment",
                 ),
             )?;
-            fragments.push(PrimaryDirFragment::decode(&record.value)?);
+            fragments.push(PrimaryDirFragment::decode(&bytes)?);
         }
 
         Ok(fragments)

@@ -24,7 +24,7 @@ use crate::{
     error::Result,
     store::{
         common::Page,
-        meta::{MetaStore, PutResult, Record, ScannableTableId, TableId},
+        meta::{MetaStore, ScannableTableId, TableId},
     },
 };
 
@@ -32,8 +32,8 @@ use crate::{
 /// `RwLock`s. Not intended as a deployable backend.
 #[derive(Debug, Clone, Default)]
 pub struct InMemoryMetaStore {
-    kv_records: Arc<RwLock<BTreeMap<(TableId, Vec<u8>), Record>>>,
-    scan_records: Arc<RwLock<BTreeMap<(ScannableTableId, Vec<u8>, Vec<u8>), Record>>>,
+    kv_records: Arc<RwLock<BTreeMap<(TableId, Vec<u8>), Bytes>>>,
+    scan_records: Arc<RwLock<BTreeMap<(ScannableTableId, Vec<u8>, Vec<u8>), Bytes>>>,
 }
 
 impl InMemoryMetaStore {
@@ -63,7 +63,7 @@ impl InMemoryMetaStore {
 }
 
 impl MetaStore for InMemoryMetaStore {
-    async fn get(&self, table: TableId, key: &[u8]) -> Result<Option<Record>> {
+    async fn get(&self, table: TableId, key: &[u8]) -> Result<Option<Bytes>> {
         let guard = self
             .kv_records
             .read()
@@ -76,7 +76,7 @@ impl MetaStore for InMemoryMetaStore {
         table: ScannableTableId,
         partition: &[u8],
         clustering: &[u8],
-    ) -> Result<Option<Record>> {
+    ) -> Result<Option<Bytes>> {
         let guard = self
             .scan_records
             .read()
@@ -86,27 +86,13 @@ impl MetaStore for InMemoryMetaStore {
             .cloned())
     }
 
-    async fn put(&self, table: TableId, key: &[u8], value: Bytes) -> Result<PutResult> {
+    async fn put(&self, table: TableId, key: &[u8], value: Bytes) -> Result<()> {
         let mut guard = self
             .kv_records
             .write()
             .map_err(|_| crate::error::MonadChainDataError::Backend("poisoned lock".to_string()))?;
-
-        let entry_key = (table, key.to_vec());
-        let current = guard.get(&entry_key).cloned();
-        let next_version = current.map_or(1, |record| record.version + 1);
-        guard.insert(
-            entry_key,
-            Record {
-                version: next_version,
-                value,
-            },
-        );
-
-        Ok(PutResult {
-            applied: true,
-            version: Some(next_version),
-        })
+        guard.insert((table, key.to_vec()), value);
+        Ok(())
     }
 
     async fn scan_put(
@@ -115,27 +101,13 @@ impl MetaStore for InMemoryMetaStore {
         partition: &[u8],
         clustering: &[u8],
         value: Bytes,
-    ) -> Result<PutResult> {
+    ) -> Result<()> {
         let mut guard = self
             .scan_records
             .write()
             .map_err(|_| crate::error::MonadChainDataError::Backend("poisoned lock".to_string()))?;
-
-        let entry_key = (table, partition.to_vec(), clustering.to_vec());
-        let current = guard.get(&entry_key).cloned();
-        let next_version = current.map_or(1, |record| record.version + 1);
-        guard.insert(
-            entry_key,
-            Record {
-                version: next_version,
-                value,
-            },
-        );
-
-        Ok(PutResult {
-            applied: true,
-            version: Some(next_version),
-        })
+        guard.insert((table, partition.to_vec(), clustering.to_vec()), value);
+        Ok(())
     }
 
     async fn scan_list(
