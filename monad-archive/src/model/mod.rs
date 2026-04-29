@@ -16,6 +16,7 @@
 pub mod bft_ledger;
 pub mod bft_paths;
 pub mod block_data_archive;
+pub mod index_backend;
 pub mod index_repr;
 pub mod logs_index;
 pub mod tx_index_archive;

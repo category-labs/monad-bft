@@ -20,7 +20,10 @@ use monad_types::{BlockId, Hash};
 
 use crate::{
     kvstore::WritePolicy,
-    model::bft_paths,
+    model::{
+        bft_paths,
+        index_backend::{IndexBackend, IndexBackendErased, KvIndexBackend},
+    },
     prelude::*,
 };
 
@@ -31,11 +34,22 @@ pub type BftBlockHeader =
 #[derive(Clone)]
 pub struct BftBlockModel {
     pub kv: KVStoreErased,
+    pub index: IndexBackendErased,
 }
 
 impl BftBlockModel {
+    /// Build a model whose index uses the same kv as headers/bodies via the
+    /// per-key local layout. Suitable for the live archiver and the migration
+    /// indexer.
     pub fn new(kv: KVStoreErased) -> Self {
-        Self { kv }
+        let index: IndexBackendErased = KvIndexBackend::new(kv.clone()).into();
+        Self::with_index(kv, index)
+    }
+
+    /// Build a model with an explicitly chosen index backend (e.g. paged for
+    /// the S3 upload phase).
+    pub fn with_index(kv: KVStoreErased, index: IndexBackendErased) -> Self {
+        Self { kv, index }
     }
 
     pub async fn get_id_by_num(&self, num: u64) -> Result<BlockId> {
@@ -45,26 +59,11 @@ impl BftBlockModel {
     }
 
     pub async fn get_id_by_num_opt(&self, num: u64) -> Result<Option<BlockId>> {
-        let key = bft_paths::index_per_key_path(num);
-        let Some(value) = self.kv.get(&key).await? else {
-            return Ok(None);
-        };
-        let id = hex::decode(&value)
-            .wrap_err_with(|| format!("Failed to decode hex block id at key {key}"))?;
-        let id_len = id.len();
-        let id: [u8; 32] = id.try_into().map_err(|_| {
-            eyre!("Invalid block id length at key {key}: expected 32, got {id_len}")
-        })?;
-        Ok(Some(BlockId(Hash(id))))
+        self.index.get_id(num).await
     }
 
     pub async fn put_index(&self, seq_num: u64, header_id: &BlockId) -> Result<()> {
-        let encoded_hash = hex::encode(header_id.0).into_bytes();
-        let key = bft_paths::index_per_key_path(seq_num);
-        self.kv
-            .put(key, encoded_hash, WritePolicy::AllowOverwrite)
-            .await?;
-        Ok(())
+        self.index.put_id(seq_num, *header_id).await
     }
 
     pub async fn get_header_by_id(&self, id: &BlockId) -> Result<BftBlockHeader> {
