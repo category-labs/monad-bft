@@ -349,6 +349,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                 chunk,
                 &decoding_context,
                 rebroadcast_to,
+                sender,
             ),
             _ => self.handle_regular_secondary(&group, chunk, &decoding_context, rebroadcast_to),
         }
@@ -361,6 +362,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
         chunk: &ValidatedChunk<CertificateSignaturePubKey<ST>>,
         decoding_context: &DecodingContext<CertificateSignaturePubKey<ST>>,
         rebroadcast_to: &mut impl FnMut(Vec<NodeId<CertificateSignaturePubKey<ST>>>),
+        sender: Option<&NodeId<CertificateSignaturePubKey<ST>>>,
     ) -> Option<(NodeId<CertificateSignaturePubKey<ST>>, Bytes)> {
         let Some(round_info) = self
             .round_info_cache
@@ -394,6 +396,25 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
         } else {
             None
         };
+
+        if is_recipient {
+            tracing::info!(
+                ?round,
+                chunk_id = chunk.chunk_id,
+                author =? chunk.author,
+                ?sender,
+                "received deterministic secondary chunk assigned to self"
+            );
+        } else {
+            tracing::info!(
+                ?round,
+                chunk_id = chunk.chunk_id,
+                author =? chunk.author,
+                recipient =? routing.recipient(),
+                ?sender,
+                "received deterministic secondary chunk rebroadcast from peer"
+            );
+        }
 
         let message = self.try_decode(chunk, decoding_context)?;
         if let Some((_author, message)) = &message {

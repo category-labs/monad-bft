@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 //  -----------------+------------------+------------------+----------
 
 pub const CURRENT_STAGE: DeterministicProtocolRolloutStage =
-    DeterministicProtocolRolloutStage::AlwaysV0;
+    DeterministicProtocolRolloutStage::AlwaysV1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
