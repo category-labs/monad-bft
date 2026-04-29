@@ -425,7 +425,7 @@ impl SeqNum {
     RlpEncodableWrapper,
     RlpDecodableWrapper,
 )]
-pub struct NodeId<P: PubKey>(
+pub struct NodeId<P>(
     #[serde(serialize_with = "serialize_pubkey::<_, P>")]
     #[serde(deserialize_with = "deserialize_pubkey::<_, P>")]
     #[serde(bound = "P:PubKey")]
