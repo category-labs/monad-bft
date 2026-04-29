@@ -16,8 +16,10 @@ alloy-rlp = { workspace = true, features = ["derive"] }
 alloy-rpc-types-eth = { workspace = true, optional = true }
 auto_impl = { workspace = true }
 bytes = { workspace = true }
+fjall = { version = "3.1", optional = true }
 roaring = "0.11"
 thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt"], optional = true }
 
 [features]
 default = []
@@ -25,6 +27,10 @@ default = []
 # `alloy_rpc_types_eth::Transaction`. Off by default so the crate stays
 # narrow; the consensus envelope is always accessible via `TxEntry::envelope`.
 alloy-rpc-types-eth = ["dep:alloy-rpc-types-eth"]
+# Enables the embedded fjall backend (FjallStore). Pulls in tokio because
+# fjall is sync and the trait impls wrap blocking work in spawn_blocking.
+fjall = ["dep:fjall", "dep:tokio"]
 
 [dev-dependencies]
+tempfile = "3"
 tokio = { workspace = true, features = ["macros", "rt"] }
