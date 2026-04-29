@@ -408,6 +408,8 @@ impl BftBlockIndex {
                 let current_id = marker.tail_id;
                 let current_header_key = bft_paths::legacy_header_path(&current_id);
                 if self.source.get(&current_header_key).await?.is_none() {
+                    self.metrics
+                        .inc_counter(MetricNames::BFT_MIGRATION_SUBCHAIN_STALLED);
                     return Err(eyre!(
                         "Stopping sub-chain: missing legacy header for id {} at seq_num {}; \
                          marker preserved for operator investigation",

@@ -72,6 +72,7 @@ pub enum MetricNames {
     BFT_BLOCK_FILES_FAILED_TO_PROCESS,
     BFT_MIGRATION_SUBCHAINS_ACTIVE,
     BFT_MIGRATION_SUBCHAINS_COMPLETED,
+    BFT_MIGRATION_SUBCHAIN_STALLED,
 
     // Generic Dir Archiver
     GENERIC_ARCHIVE_FILES_DISCOVERED,
@@ -141,6 +142,7 @@ impl MetricNames {
             MetricNames::BFT_BLOCKS_UPLOADED => "bft_blocks_uploaded",
             MetricNames::BFT_MIGRATION_SUBCHAINS_ACTIVE => "bft_migration_subchains_active",
             MetricNames::BFT_MIGRATION_SUBCHAINS_COMPLETED => "bft_migration_subchains_completed",
+            MetricNames::BFT_MIGRATION_SUBCHAIN_STALLED => "bft_migration_subchain_stalled",
             MetricNames::REPLICA_FAULTS_BY_KIND => "replica_faults__by_kind",
             MetricNames::REPLICA_FAULTS_TOTAL => "replica_faults__total",
             MetricNames::FAULTS_BLOCKS_WITH_FAULTS => "faults_blocks_with_faults",
@@ -202,12 +204,26 @@ impl MetricNames {
             MetricNames::SOURCE_LATEST_BLOCK_NUM => "Latest block number from source",
             MetricNames::END_BLOCK_NUMBER => "End block number for archival",
             MetricNames::START_BLOCK_NUMBER => "Start block number for archival",
+            // Worker supervision
+            MetricNames::WORKER_HEALTH_STATUS => "Worker health status (1=healthy, 0=unhealthy)",
+            MetricNames::WORKER_RETRY_ATTEMPTS => "Worker retry attempts",
+            MetricNames::WORKER_RESTARTS => "Worker restart count",
+            MetricNames::WORKER_LAST_SUCCESS_UNIX_S => {
+                "Worker last successful iteration (unix seconds)"
+            }
+            MetricNames::WORKER_STALLED_SECONDS => "Seconds since worker last made progress",
             // BFT Block Files
+            MetricNames::BFT_LATEST_UPLOADED_SEQ => "Latest BFT sequence number uploaded",
             MetricNames::BFT_BLOCKS_UPLOADED => "BFT blocks uploaded",
             MetricNames::BFT_BLOCK_FILES_DISCOVERED => "BFT block files discovered",
             MetricNames::BFT_BLOCK_FILES_ALREADY_IN_S3 => "BFT block files already in S3",
             MetricNames::BFT_BLOCK_FILES_UPLOADED => "BFT block files uploaded",
             MetricNames::BFT_BLOCK_FILES_FAILED_TO_PROCESS => "BFT block files failed to process",
+            MetricNames::BFT_MIGRATION_SUBCHAINS_ACTIVE => "Active BFT migration subchains",
+            MetricNames::BFT_MIGRATION_SUBCHAINS_COMPLETED => "Completed BFT migration subchains",
+            MetricNames::BFT_MIGRATION_SUBCHAIN_STALLED => {
+                "BFT migration sub-chain stalled (missing legacy data); marker preserved for operator investigation"
+            }
             // Generic Archive
             MetricNames::GENERIC_ARCHIVE_FILES_DISCOVERED => "Generic archive files discovered",
             MetricNames::GENERIC_ARCHIVE_FILES_ALREADY_IN_S3 => {
