@@ -26,7 +26,11 @@ use serde::{
 };
 use serde_json::{Map as JsonMap, Value as JsonValue};
 
-use crate::{archive_reader::redact_mongo_url, kvstore::mongo::MongoDbStorage, prelude::*};
+use crate::{
+    archive_reader::redact_mongo_url,
+    kvstore::{mongo::MongoDbStorage, redb::RedbStorage},
+    prelude::*,
+};
 
 const DEFAULT_BUCKET_TIMEOUT: u64 = 10;
 const DEFAULT_OPERATION_TIMEOUT: u64 = 40;
@@ -106,6 +110,13 @@ pub fn set_source_and_sink_metrics(
                 vec![opentelemetry::KeyValue::new("sink_store_type", "fs")],
             );
         }
+        ArchiveArgs::Redb(_) => {
+            metrics.periodic_gauge_with_attrs(
+                MetricNames::SINK_STORE_TYPE,
+                5,
+                vec![opentelemetry::KeyValue::new("sink_store_type", "redb")],
+            );
+        }
     }
 
     match source {
@@ -183,6 +194,7 @@ pub enum ArchiveArgs {
     Aws(AwsCliArgs),
     MongoDb(MongoDbCliArgs),
     Fs(FsCliArgs),
+    Redb(RedbCliArgs),
 }
 
 impl FromStr for BlockDataReaderArgs {
@@ -215,6 +227,7 @@ impl FromStr for ArchiveArgs {
             "aws" => Aws(AwsCliArgs::parse(args)?),
             "mongodb" => MongoDb(MongoDbCliArgs::parse(args)?),
             "fs" => Fs(FsCliArgs::parse(args)?),
+            "redb" => Redb(RedbCliArgs::parse(args)?),
             _ => {
                 bail!("Unrecognized storage args variant: {storage_type}");
             }
@@ -289,6 +302,7 @@ impl ArchiveArgs {
             ArchiveArgs::Fs(args) => {
                 FsStorage::new(args.block_store_path(), metrics.clone())?.into()
             }
+            ArchiveArgs::Redb(args) => RedbStorage::open(&args.path)?.into(),
         };
         Ok(BlockDataArchive::new(store))
     }
@@ -323,6 +337,9 @@ impl ArchiveArgs {
                 FsStorage::new(args.block_store_path(), metrics.clone())?.into(),
                 FsStorage::new(args.index_store_path(), metrics.clone())?.into(),
             ),
+            ArchiveArgs::Redb(_) => {
+                bail!("redb archive args are only valid for `build_block_data_archive` (BFT migration); they cannot back the tx index")
+            }
         };
         Ok(TxIndexArchiver::new(
             index,
@@ -358,6 +375,9 @@ impl ArchiveArgs {
                 FsStorage::new(args.block_store_path(), metrics.clone())?.into(),
                 FsStorage::new(args.index_store_path(), metrics.clone())?.into(),
             ),
+            ArchiveArgs::Redb(_) => {
+                bail!("redb archive args are only valid for `build_block_data_archive` (BFT migration); they cannot back the archive reader's tx index")
+            }
         };
         let bdr = BlockDataReaderErased::from(BlockDataArchive::new(blob));
         Ok(ArchiveReader::new(
@@ -373,6 +393,7 @@ impl ArchiveArgs {
             ArchiveArgs::Aws(aws_cli_args) => aws_cli_args.bucket.clone(),
             ArchiveArgs::MongoDb(mongo_db_cli_args) => mongo_db_cli_args.replica_name(),
             ArchiveArgs::Fs(fs_cli_args) => fs_cli_args.path.to_string_lossy().into_owned(),
+            ArchiveArgs::Redb(redb_cli_args) => redb_cli_args.path.to_string_lossy().into_owned(),
         }
     }
 }
@@ -436,6 +457,7 @@ fn parse_archive_args<E: de::Error>(value: JsonValue) -> Result<ArchiveArgs, E> 
             "aws" => deserialize_variant(cfg, "aws archive_sink").map(ArchiveArgs::Aws),
             "mongodb" => deserialize_variant(cfg, "mongodb archive_sink").map(ArchiveArgs::MongoDb),
             "fs" => deserialize_variant(cfg, "fs archive_sink").map(ArchiveArgs::Fs),
+            "redb" => deserialize_variant(cfg, "redb archive_sink").map(ArchiveArgs::Redb),
             other => Err(E::custom(format!(
                 "unsupported archive_sink type '{other}'",
             ))),
@@ -444,6 +466,7 @@ fn parse_archive_args<E: de::Error>(value: JsonValue) -> Result<ArchiveArgs, E> 
             "Aws" => deserialize_variant(cfg, "Aws archive_sink").map(ArchiveArgs::Aws),
             "MongoDb" => deserialize_variant(cfg, "MongoDb archive_sink").map(ArchiveArgs::MongoDb),
             "Fs" => deserialize_variant(cfg, "Fs archive_sink").map(ArchiveArgs::Fs),
+            "Redb" => deserialize_variant(cfg, "Redb archive_sink").map(ArchiveArgs::Redb),
             other => Err(E::custom(format!(
                 "unsupported archive_sink variant '{other}'",
             ))),
@@ -728,6 +751,24 @@ impl FsCliArgs {
 
     pub fn index_store_path(&self) -> PathBuf {
         self.path.join("index")
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Hash, PartialEq, Eq)]
+pub struct RedbCliArgs {
+    pub path: PathBuf,
+}
+
+impl RedbCliArgs {
+    pub fn parse(s: &str) -> Result<Self> {
+        let (positional, mut kv) = parse_str_positional_and_kv(s)?;
+        Ok(Self {
+            path: kv
+                .remove("path")
+                .or_else(|| positional.first().cloned())
+                .map(PathBuf::from)
+                .ok_or_eyre("storage args missing redb path")?,
+        })
     }
 }
 

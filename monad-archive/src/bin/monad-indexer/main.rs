@@ -82,6 +82,7 @@ async fn main() -> Result<()> {
                 no_copy_data,
                 genesis_seq_num,
                 seed_tips_file,
+                max_blocks,
             } => {
                 // Default behavior is to copy data; the flag disables it.
                 run_migrate_bft_index(
@@ -92,6 +93,7 @@ async fn main() -> Result<()> {
                     !no_copy_data,
                     genesis_seq_num,
                     seed_tips_file,
+                    max_blocks,
                     args.otel_endpoint,
                     args.otel_replica_name_override,
                 )
@@ -222,6 +224,7 @@ async fn run_migrate_bft_index(
     copy_data: bool,
     genesis_seq_num: u64,
     seed_tips_file: Option<std::path::PathBuf>,
+    max_blocks: Option<u64>,
     otel_endpoint: Option<String>,
     otel_replica_name_override: Option<String>,
 ) -> Result<()> {
@@ -244,6 +247,7 @@ async fn run_migrate_bft_index(
     let config = migrate_bft_archive::IndexerConfig {
         genesis_seq_num,
         seed_tips,
+        max_blocks,
     };
 
     let indexer = BftBlockIndex::new(source_archive.store, sink_archive.store, metrics)

@@ -261,6 +261,13 @@ pub enum Commands {
         /// scan_prefix sampling — typically derived from S3 Inventory.
         #[arg(long)]
         seed_tips_file: Option<std::path::PathBuf>,
+
+        /// Canary cap on total blocks indexed across all sub-chains.
+        /// Intended for smoke-testing on a fresh sink before kicking off
+        /// the full ~120M-block run. Markers are still cleaned up on exit
+        /// so canary runs are not resumable.
+        #[arg(long)]
+        max_blocks: Option<u64>,
     },
 }
 

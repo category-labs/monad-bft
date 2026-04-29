@@ -13,6 +13,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
+
 use alloy_rlp::Decodable;
 use futures::future::join_all;
 use monad_archive::{
@@ -49,7 +54,7 @@ struct IndexedRangeMarker {
 }
 
 /// Tunables for the migration indexer. Defaults reproduce historic behavior
-/// (genesis at seq_num 0, no inventory-derived seed list).
+/// (genesis at seq_num 0, no inventory-derived seed list, no canary cap).
 #[derive(Clone, Default)]
 pub struct IndexerConfig {
     /// Treat a header at this seq_num as the legitimate stop case for a
@@ -58,6 +63,11 @@ pub struct IndexerConfig {
     /// Optional inventory-derived list of legacy header BlockIds to seed
     /// committable-head discovery, replacing `scan_prefix` sampling.
     pub seed_tips: Option<Vec<BlockId>>,
+    /// Canary mode: stop indexing once this many blocks have been written
+    /// across all sub-chains. Markers are deleted as usual on Ok exit, so
+    /// canary runs are not resumable — that's intentional, the point is to
+    /// validate end-to-end on a fresh sink before kicking off the full run.
+    pub max_blocks: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -69,6 +79,7 @@ pub struct BftBlockIndex {
     pub model: BftBlockModel,
     pub metrics: Metrics,
     pub config: IndexerConfig,
+    blocks_indexed: Arc<AtomicU64>,
 }
 
 impl BftBlockIndex {
@@ -79,12 +90,20 @@ impl BftBlockIndex {
             sink,
             metrics,
             config: IndexerConfig::default(),
+            blocks_indexed: Arc::new(AtomicU64::new(0)),
         }
     }
 
     pub fn with_config(mut self, config: IndexerConfig) -> Self {
         self.config = config;
         self
+    }
+
+    fn canary_limit_reached(&self) -> bool {
+        match self.config.max_blocks {
+            Some(limit) => self.blocks_indexed.load(Ordering::Relaxed) >= limit,
+            None => false,
+        }
     }
 
     fn worker_attrs(stage: &'static str, operation: &'static str) -> [KeyValue; 3] {
@@ -398,6 +417,13 @@ impl BftBlockIndex {
                 }
                 let retry_attrs = Self::worker_attrs("index_sub_chain", "index_block");
                 let metrics = self.metrics.clone();
+                if self.canary_limit_reached() {
+                    info!(
+                        "Canary mode: --max-blocks={} reached, stopping sub-chain cleanly",
+                        self.config.max_blocks.unwrap_or(0)
+                    );
+                    return Ok(());
+                }
                 let next = retry_forever_with_observer(
                     || self.index_single_block(current_id, copy_data),
                     "index block",
@@ -412,10 +438,17 @@ impl BftBlockIndex {
                 )
                 .await;
                 let Some((next_id, next_num)) = next else {
-                    info!(
-                        "Sub-chain reached genesis at seq_num {}, stopping cleanly",
-                        self.config.genesis_seq_num
-                    );
+                    if self.canary_limit_reached() {
+                        info!(
+                            "Canary mode: --max-blocks={} reached, stopping sub-chain cleanly",
+                            self.config.max_blocks.unwrap_or(0)
+                        );
+                    } else {
+                        info!(
+                            "Sub-chain reached genesis at seq_num {}, stopping cleanly",
+                            self.config.genesis_seq_num
+                        );
+                    }
                     return Ok(());
                 };
                 marker.tail_id = next_id;
@@ -464,6 +497,7 @@ impl BftBlockIndex {
         self.model
             .put_index(current_header.seq_num.0, &current_id)
             .await?;
+        self.blocks_indexed.fetch_add(1, Ordering::Relaxed);
 
         info!(
             "Indexed bft block num: {}, id: {}",
@@ -472,6 +506,10 @@ impl BftBlockIndex {
         );
 
         if current_header.seq_num.0 == self.config.genesis_seq_num {
+            return Ok(None);
+        }
+
+        if self.canary_limit_reached() {
             return Ok(None);
         }
 
@@ -752,8 +790,33 @@ mod tests {
         let index = test_index().with_config(IndexerConfig {
             genesis_seq_num: 42,
             seed_tips: Some(vec![block_id(0x99)]),
+            max_blocks: Some(10),
         });
         assert_eq!(index.config.genesis_seq_num, 42);
         assert_eq!(index.config.seed_tips.as_deref(), Some(&[block_id(0x99)][..]));
+        assert_eq!(index.config.max_blocks, Some(10));
+    }
+
+    #[test]
+    fn canary_limit_is_disabled_by_default() {
+        let index = test_index();
+        assert!(!index.canary_limit_reached());
+        index.blocks_indexed.store(1_000_000, Ordering::Relaxed);
+        assert!(!index.canary_limit_reached());
+    }
+
+    #[test]
+    fn canary_limit_fires_at_threshold() {
+        let index = test_index().with_config(IndexerConfig {
+            max_blocks: Some(3),
+            ..Default::default()
+        });
+        assert!(!index.canary_limit_reached());
+        index.blocks_indexed.store(2, Ordering::Relaxed);
+        assert!(!index.canary_limit_reached());
+        index.blocks_indexed.store(3, Ordering::Relaxed);
+        assert!(index.canary_limit_reached());
+        index.blocks_indexed.store(4, Ordering::Relaxed);
+        assert!(index.canary_limit_reached());
     }
 }

@@ -87,6 +87,10 @@ impl Hash for CheckerArchiveKey {
                 "fs".hash(state);
                 args.hash(state);
             }
+            ArchiveArgs::Redb(args) => {
+                "redb".hash(state);
+                args.hash(state);
+            }
         }
     }
 }
