@@ -17,17 +17,16 @@ use alloy_rlp::Decodable;
 use futures::future::join_all;
 use monad_archive::{
     kvstore::WritePolicy,
-    model::bft_ledger::{BftBlockHeader, BftBlockModel},
+    model::{
+        bft_ledger::{BftBlockHeader, BftBlockModel},
+        bft_paths,
+    },
     prelude::*,
 };
 use monad_types::{BlockId, Hash};
 use opentelemetry::KeyValue;
 use serde::{Deserialize, Serialize};
 
-const LEGACY_BFT_BLOCKS_PREFIX: &str = "bft_block/";
-const BFT_INDEX_MARKERS_PREFIX: &str = "bft/index_markers/";
-const BFT_LEDGER_HEADERS_PREFIX: &str = "bft/ledger/headers/";
-const BFT_LEDGER_BODIES_PREFIX: &str = "bft/ledger/bodies/";
 const RETRY_DELAY: Duration = Duration::from_millis(500);
 const MAX_STARTUP_RETRIES: usize = 10;
 // scan_prefix counts .header and .body keys, so we overscan to find enough headers.
@@ -237,7 +236,7 @@ impl BftBlockIndex {
             .source
             // Get extras in case some are not canonical
             .scan_prefix_with_max_keys(
-                LEGACY_BFT_BLOCKS_PREFIX,
+                bft_paths::legacy_prefix(),
                 concurrency * CANDIDATE_SCAN_MULTIPLIER,
             )
             .await?;
@@ -246,13 +245,9 @@ impl BftBlockIndex {
 
         let candidates = candidates.into_iter().filter_map(|key| {
             info!("Candidate key: {}", key);
-            let hex_str = key
-                .strip_prefix(LEGACY_BFT_BLOCKS_PREFIX)?
-                .strip_suffix(".header")?;
-            info!("Hex string: {}", hex_str);
-            let bytes = hex::decode(hex_str).ok()?;
-            let arr: [u8; 32] = bytes.try_into().ok()?;
-            Some(BlockId(Hash(arr)))
+            let id = bft_paths::parse_legacy_header_path(&key)?;
+            info!("Parsed header id: {}", hex::encode(id.0));
+            Some(id)
         });
 
         for candidate in candidates {
@@ -366,11 +361,7 @@ impl BftBlockIndex {
                 }
 
                 let current_id = marker.tail_id;
-                let current_header_key = format!(
-                    "{}{}.header",
-                    LEGACY_BFT_BLOCKS_PREFIX,
-                    hex::encode(current_id.0)
-                );
+                let current_header_key = bft_paths::legacy_header_path(&current_id);
                 if self.source.get(&current_header_key).await?.is_none() {
                     warn!(
                         "Stopping sub-chain: missing legacy header for id {}",
@@ -449,24 +440,16 @@ impl BftBlockIndex {
         Ok((next_id, next_num))
     }
 
-    fn header_storage_key(id: &BlockId) -> String {
-        format!("{BFT_LEDGER_HEADERS_PREFIX}{}", hex::encode(id.0))
-    }
-
-    fn body_storage_key(body_id: &Hash) -> String {
-        format!("{BFT_LEDGER_BODIES_PREFIX}{}", hex::encode(body_id))
-    }
-
     async fn put_header_bytes_no_clobber(&self, id: &BlockId, bytes: Vec<u8>) -> Result<()> {
         self.sink
-            .put(Self::header_storage_key(id), bytes, WritePolicy::NoClobber)
+            .put(bft_paths::header_path(id), bytes, WritePolicy::NoClobber)
             .await?;
         Ok(())
     }
 
     async fn put_body_bytes_no_clobber(&self, id: &Hash, bytes: Vec<u8>) -> Result<()> {
         self.sink
-            .put(Self::body_storage_key(id), bytes, WritePolicy::NoClobber)
+            .put(bft_paths::body_path(id), bytes, WritePolicy::NoClobber)
             .await?;
         Ok(())
     }
@@ -476,7 +459,7 @@ impl BftBlockIndex {
         marker: &mut IndexedRangeMarker,
         copy_data: bool,
     ) -> Result<()> {
-        let header_key = Self::header_storage_key(&marker.tail_id);
+        let header_key = bft_paths::header_path(&marker.tail_id);
         let (header, repaired_header) = match self.sink.get(&header_key).await? {
             Some(bytes) => {
                 let header = BftBlockHeader::decode(&mut &bytes[..]).wrap_err_with(|| {
@@ -498,7 +481,7 @@ impl BftBlockIndex {
         };
 
         let repaired_body = if copy_data {
-            let body_key = Self::body_storage_key(&header.block_body_id.0);
+            let body_key = bft_paths::body_path(&header.block_body_id.0);
             if self.sink.get(&body_key).await?.is_some() {
                 false
             } else {
@@ -527,7 +510,7 @@ impl BftBlockIndex {
     }
 
     async fn get_markers(&self) -> Result<HashSet<IndexedRangeMarker>> {
-        let markers = self.sink.scan_prefix(BFT_INDEX_MARKERS_PREFIX).await?;
+        let markers = self.sink.scan_prefix(bft_paths::markers_prefix()).await?;
 
         futures::stream::iter(markers)
             .map(|s| async move {
@@ -540,7 +523,7 @@ impl BftBlockIndex {
     }
 
     fn marker_key(head_num: u64) -> String {
-        format!("{BFT_INDEX_MARKERS_PREFIX}{head_num}")
+        bft_paths::marker_path(head_num)
     }
 
     async fn ensure_marker_slot_matches_head_id(&self, key: &str, head_id: &BlockId) -> Result<()> {
@@ -588,7 +571,7 @@ impl BftBlockIndex {
         &self,
         hash: &BlockId,
     ) -> Result<(BftBlockHeader, Vec<u8>)> {
-        let key = format!("{}{}.header", LEGACY_BFT_BLOCKS_PREFIX, hex::encode(hash.0));
+        let key = bft_paths::legacy_header_path(hash);
         let bytes = self
             .source
             .get(&key)
@@ -599,8 +582,7 @@ impl BftBlockIndex {
     }
 
     async fn fetch_legacy_body_bytes_by_id(&self, header: &BftBlockHeader) -> Result<Vec<u8>> {
-        let body_id = header.block_body_id.0;
-        let key = format!("{}{}.body", LEGACY_BFT_BLOCKS_PREFIX, hex::encode(body_id));
+        let key = bft_paths::legacy_body_path(&header.block_body_id.0);
         Ok(self
             .source
             .get(&key)

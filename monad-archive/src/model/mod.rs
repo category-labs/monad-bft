@@ -14,6 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 pub mod bft_ledger;
+pub mod bft_paths;
 pub mod block_data_archive;
 pub mod index_repr;
 pub mod logs_index;
