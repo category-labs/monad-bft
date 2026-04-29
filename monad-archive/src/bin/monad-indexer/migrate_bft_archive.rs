@@ -48,6 +48,18 @@ struct IndexedRangeMarker {
     tail_id: BlockId,
 }
 
+/// Tunables for the migration indexer. Defaults reproduce historic behavior
+/// (genesis at seq_num 0, no inventory-derived seed list).
+#[derive(Clone, Default)]
+pub struct IndexerConfig {
+    /// Treat a header at this seq_num as the legitimate stop case for a
+    /// sub-chain walk. The entry is still indexed; the parent is not visited.
+    pub genesis_seq_num: u64,
+    /// Optional inventory-derived list of legacy header BlockIds to seed
+    /// committable-head discovery, replacing `scan_prefix` sampling.
+    pub seed_tips: Option<Vec<BlockId>>,
+}
+
 #[derive(Clone)]
 pub struct BftBlockIndex {
     /// Read-only source for legacy bft_blocks/ data
@@ -56,6 +68,7 @@ pub struct BftBlockIndex {
     pub sink: KVStoreErased,
     pub model: BftBlockModel,
     pub metrics: Metrics,
+    pub config: IndexerConfig,
 }
 
 impl BftBlockIndex {
@@ -65,7 +78,13 @@ impl BftBlockIndex {
             model: BftBlockModel::new(sink.clone()),
             sink,
             metrics,
+            config: IndexerConfig::default(),
         }
+    }
+
+    pub fn with_config(mut self, config: IndexerConfig) -> Self {
+        self.config = config;
+        self
     }
 
     fn worker_attrs(stage: &'static str, operation: &'static str) -> [KeyValue; 3] {
@@ -232,23 +251,30 @@ impl BftBlockIndex {
             return Ok(known_committable_heads);
         }
 
-        let candidates = self
-            .source
-            // Get extras in case some are not canonical
-            .scan_prefix_with_max_keys(
-                bft_paths::legacy_prefix(),
-                concurrency * CANDIDATE_SCAN_MULTIPLIER,
-            )
-            .await?;
+        let candidates: Vec<BlockId> = if let Some(seeds) = &self.config.seed_tips {
+            info!("Using {} seed tips from inventory", seeds.len());
+            seeds.clone()
+        } else {
+            let keys = self
+                .source
+                // Get extras in case some are not canonical
+                .scan_prefix_with_max_keys(
+                    bft_paths::legacy_prefix(),
+                    concurrency * CANDIDATE_SCAN_MULTIPLIER,
+                )
+                .await?;
 
-        info!(?candidates, "Found {} candidates", candidates.len());
+            info!(?keys, "Found {} candidates", keys.len());
 
-        let candidates = candidates.into_iter().filter_map(|key| {
-            info!("Candidate key: {}", key);
-            let id = bft_paths::parse_legacy_header_path(&key)?;
-            info!("Parsed header id: {}", hex::encode(id.0));
-            Some(id)
-        });
+            keys.into_iter()
+                .filter_map(|key| {
+                    info!("Candidate key: {}", key);
+                    let id = bft_paths::parse_legacy_header_path(&key)?;
+                    info!("Parsed header id: {}", hex::encode(id.0));
+                    Some(id)
+                })
+                .collect()
+        };
 
         for candidate in candidates {
             if known_committable_heads.len() >= concurrency {
@@ -363,15 +389,16 @@ impl BftBlockIndex {
                 let current_id = marker.tail_id;
                 let current_header_key = bft_paths::legacy_header_path(&current_id);
                 if self.source.get(&current_header_key).await?.is_none() {
-                    warn!(
-                        "Stopping sub-chain: missing legacy header for id {}",
-                        hex::encode(current_id.0)
-                    );
-                    return Ok(());
+                    return Err(eyre!(
+                        "Stopping sub-chain: missing legacy header for id {} at seq_num {}; \
+                         marker preserved for operator investigation",
+                        hex::encode(current_id.0),
+                        marker.tail_num,
+                    ));
                 }
                 let retry_attrs = Self::worker_attrs("index_sub_chain", "index_block");
                 let metrics = self.metrics.clone();
-                let (next_id, next_num) = retry_forever_with_observer(
+                let next = retry_forever_with_observer(
                     || self.index_single_block(current_id, copy_data),
                     "index block",
                     RETRY_DELAY,
@@ -384,6 +411,13 @@ impl BftBlockIndex {
                     },
                 )
                 .await;
+                let Some((next_id, next_num)) = next else {
+                    info!(
+                        "Sub-chain reached genesis at seq_num {}, stopping cleanly",
+                        self.config.genesis_seq_num
+                    );
+                    return Ok(());
+                };
                 marker.tail_id = next_id;
                 marker.tail_num = next_num;
             }
@@ -409,12 +443,14 @@ impl BftBlockIndex {
         Ok(())
     }
 
-    /// Index a single block and return (next_block_id, next_seq_num) for marker update
+    /// Index a single block. Returns `Some((next_id, next_num))` to advance the
+    /// marker, or `None` when the just-indexed block is at the configured
+    /// genesis seq_num — the legitimate end of a sub-chain walk.
     async fn index_single_block(
         &self,
         current_id: BlockId,
         copy_data: bool,
-    ) -> Result<(BlockId, u64)> {
+    ) -> Result<Option<(BlockId, u64)>> {
         let (current_header, header_bytes) = self.fetch_legacy_header_by_id(&current_id).await?;
 
         if copy_data {
@@ -435,9 +471,13 @@ impl BftBlockIndex {
             hex::encode(current_id.0)
         );
 
+        if current_header.seq_num.0 == self.config.genesis_seq_num {
+            return Ok(None);
+        }
+
         let next_id = current_header.get_parent_id();
         let next_num = current_header.seq_num.0.saturating_sub(1);
-        Ok((next_id, next_num))
+        Ok(Some((next_id, next_num)))
     }
 
     async fn put_header_bytes_no_clobber(&self, id: &BlockId, bytes: Vec<u8>) -> Result<()> {
@@ -698,5 +738,22 @@ mod tests {
         assert!(err_string.contains("seq_num=499"));
         assert!(err_string.contains(&hex::encode(wrong.0)));
         assert!(err_string.contains(&hex::encode(m.tail_id.0)));
+    }
+
+    #[test]
+    fn indexer_config_defaults_match_historic_behavior() {
+        let cfg = IndexerConfig::default();
+        assert_eq!(cfg.genesis_seq_num, 0);
+        assert!(cfg.seed_tips.is_none());
+    }
+
+    #[test]
+    fn with_config_replaces_default() {
+        let index = test_index().with_config(IndexerConfig {
+            genesis_seq_num: 42,
+            seed_tips: Some(vec![block_id(0x99)]),
+        });
+        assert_eq!(index.config.genesis_seq_num, 42);
+        assert_eq!(index.config.seed_tips.as_deref(), Some(&[block_id(0x99)][..]));
     }
 }

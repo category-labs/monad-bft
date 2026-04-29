@@ -250,6 +250,17 @@ pub enum Commands {
         /// Skip copying header and body bytes to the new schema
         #[arg(long)]
         no_copy_data: bool,
+
+        /// Stop walking parents once a header at this seq_num is reached
+        /// (legitimate termination — distinct from a missing-data gap)
+        #[arg(long, default_value_t = 0)]
+        genesis_seq_num: u64,
+
+        /// Optional path to a newline-separated file of hex BlockIds to seed
+        /// committable-head discovery. When set, replaces the default
+        /// scan_prefix sampling — typically derived from S3 Inventory.
+        #[arg(long)]
+        seed_tips_file: Option<std::path::PathBuf>,
     },
 }
 

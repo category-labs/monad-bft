@@ -80,6 +80,8 @@ async fn main() -> Result<()> {
                 concurrency,
                 batch_size,
                 no_copy_data,
+                genesis_seq_num,
+                seed_tips_file,
             } => {
                 // Default behavior is to copy data; the flag disables it.
                 run_migrate_bft_index(
@@ -88,6 +90,8 @@ async fn main() -> Result<()> {
                     concurrency,
                     batch_size,
                     !no_copy_data,
+                    genesis_seq_num,
+                    seed_tips_file,
                     args.otel_endpoint,
                     args.otel_replica_name_override,
                 )
@@ -216,6 +220,8 @@ async fn run_migrate_bft_index(
     concurrency: usize,
     batch_size: usize,
     copy_data: bool,
+    genesis_seq_num: u64,
+    seed_tips_file: Option<std::path::PathBuf>,
     otel_endpoint: Option<String>,
     otel_replica_name_override: Option<String>,
 ) -> Result<()> {
@@ -231,8 +237,53 @@ async fn run_migrate_bft_index(
     let source_archive = source.build_block_data_archive(&metrics).await?;
     let sink_archive = sink.build_block_data_archive(&metrics).await?;
 
-    let indexer = BftBlockIndex::new(source_archive.store, sink_archive.store, metrics);
+    let seed_tips = match seed_tips_file {
+        Some(path) => Some(load_seed_tips(&path)?),
+        None => None,
+    };
+    let config = migrate_bft_archive::IndexerConfig {
+        genesis_seq_num,
+        seed_tips,
+    };
+
+    let indexer = BftBlockIndex::new(source_archive.store, sink_archive.store, metrics)
+        .with_config(config);
     indexer
         .index_bft_headers(concurrency, batch_size, copy_data)
         .await
+}
+
+fn load_seed_tips(path: &std::path::Path) -> Result<Vec<monad_types::BlockId>> {
+    use monad_types::{BlockId, Hash};
+
+    let contents = std::fs::read_to_string(path)
+        .wrap_err_with(|| format!("Failed to read seed tips file at {}", path.display()))?;
+    let mut out = Vec::new();
+    for (idx, raw) in contents.lines().enumerate() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let bytes = hex::decode(line).wrap_err_with(|| {
+            format!(
+                "Failed to decode seed tip on line {} of {}",
+                idx + 1,
+                path.display()
+            )
+        })?;
+        let len = bytes.len();
+        let arr: [u8; 32] = bytes.try_into().map_err(|_| {
+            eyre!(
+                "Seed tip on line {} of {} has wrong byte length: expected 32, got {}",
+                idx + 1,
+                path.display(),
+                len,
+            )
+        })?;
+        out.push(BlockId(Hash(arr)));
+    }
+    if out.is_empty() {
+        bail!("Seed tips file at {} contained no entries", path.display());
+    }
+    Ok(out)
 }
