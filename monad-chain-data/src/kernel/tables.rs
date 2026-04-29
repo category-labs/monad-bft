@@ -19,15 +19,12 @@ use crate::{
     error::Result,
     family::FinalizedBlock,
     kernel::{
-        bitmap::{stream_page_key, BitmapFragmentWrite},
+        bitmap::{BitmapFragmentWrite, BitmapPageMeta, BitmapTables},
         primary_dir::{PrimaryDirBucket, PrimaryDirFragment, PrimaryDirTables},
     },
     logs::LogBlockHeader,
     primitives::state::{BlockRecord, PublicationState},
-    store::{
-        BlobStore, BlobTable, BlobTableId, KvTable, MetaStore, ScannableKvTable, ScannableTableId,
-        TableId,
-    },
+    store::{BlobStore, BlobTable, BlobTableId, KvTable, MetaStore, ScannableTableId, TableId},
 };
 
 pub struct Tables<M: MetaStore, B: BlobStore> {
@@ -167,7 +164,7 @@ pub struct LogTables<M: MetaStore, B: BlobStore> {
     block_headers: KvTable<M>,
     block_blobs: BlobTable<B>,
     dir: PrimaryDirTables<M>,
-    bitmap_fragments: ScannableKvTable<M>,
+    bitmap: BitmapTables<M>,
 }
 
 impl<M: MetaStore, B: BlobStore> LogTables<M, B> {
@@ -175,6 +172,10 @@ impl<M: MetaStore, B: BlobStore> LogTables<M, B> {
     pub const BLOCK_LOG_BLOB_TABLE: BlobTableId = BlobTableId::new("block_log_blob");
     pub const LOG_DIR_BUCKET_TABLE: TableId = TableId::new("log_dir_bucket");
     pub const LOG_DIR_BY_BLOCK_TABLE: ScannableTableId = ScannableTableId::new("log_dir_by_block");
+    pub const LOG_BITMAP_PAGE_META_TABLE: TableId = TableId::new("log_bitmap_page_meta");
+    pub const LOG_BITMAP_PAGE_BLOB_TABLE: TableId = TableId::new("log_bitmap_page_blob");
+    pub const LOG_OPEN_BITMAP_STREAM_TABLE: ScannableTableId =
+        ScannableTableId::new("log_open_bitmap_stream");
     pub const LOG_BITMAP_BY_BLOCK_TABLE: ScannableTableId =
         ScannableTableId::new("log_bitmap_by_block");
 
@@ -186,12 +187,21 @@ impl<M: MetaStore, B: BlobStore> LogTables<M, B> {
                 meta_store.scannable_table(Self::LOG_DIR_BY_BLOCK_TABLE),
                 meta_store.table(Self::LOG_DIR_BUCKET_TABLE),
             ),
-            bitmap_fragments: meta_store.scannable_table(Self::LOG_BITMAP_BY_BLOCK_TABLE),
+            bitmap: BitmapTables::new(
+                meta_store.scannable_table(Self::LOG_BITMAP_BY_BLOCK_TABLE),
+                meta_store.table(Self::LOG_BITMAP_PAGE_META_TABLE),
+                meta_store.table(Self::LOG_BITMAP_PAGE_BLOB_TABLE),
+                meta_store.scannable_table(Self::LOG_OPEN_BITMAP_STREAM_TABLE),
+            ),
         }
     }
 
     pub fn dir(&self) -> &PrimaryDirTables<M> {
         &self.dir
+    }
+
+    pub fn bitmap(&self) -> &BitmapTables<M> {
+        &self.bitmap
     }
 
     pub async fn load_block_header(&self, block_number: u64) -> Result<Option<LogBlockHeader>> {
@@ -258,12 +268,7 @@ impl<M: MetaStore, B: BlobStore> LogTables<M, B> {
         fragment: &BitmapFragmentWrite,
         block_number: u64,
     ) -> Result<()> {
-        let partition = stream_page_key(&fragment.stream_id, fragment.page_start_local);
-        let clustering = block_number_key(block_number);
-        self.bitmap_fragments
-            .put(&partition, &clustering, fragment.bitmap_blob.clone())
-            .await?;
-        Ok(())
+        self.bitmap.store_fragment(fragment, block_number).await
     }
 
     pub async fn load_bitmap_fragments(
@@ -271,24 +276,71 @@ impl<M: MetaStore, B: BlobStore> LogTables<M, B> {
         stream_id: &str,
         page_start_local: u32,
     ) -> Result<Vec<Bytes>> {
-        let partition = stream_page_key(stream_id, page_start_local);
-        let page = self
-            .bitmap_fragments
-            .list_prefix(&partition, &[], None, usize::MAX)
-            .await?;
-        let mut fragments = Vec::with_capacity(page.keys.len());
+        self.bitmap
+            .load_fragments(stream_id, page_start_local)
+            .await
+    }
 
-        for clustering in page.keys {
-            let record = self
-                .bitmap_fragments
-                .get(&partition, &clustering)
-                .await?
-                .ok_or(crate::error::MonadChainDataError::MissingData(
-                    "missing log bitmap fragment",
-                ))?;
-            fragments.push(record.value);
-        }
+    /// Loads the compacted page metadata for one sealed stream page.
+    pub async fn load_bitmap_page_meta(
+        &self,
+        stream_id: &str,
+        page_start_local: u32,
+    ) -> Result<Option<BitmapPageMeta>> {
+        self.bitmap
+            .load_page_meta(stream_id, page_start_local)
+            .await
+    }
 
-        Ok(fragments)
+    pub async fn store_bitmap_page_meta(
+        &self,
+        stream_id: &str,
+        page_start_local: u32,
+        meta: &BitmapPageMeta,
+    ) -> Result<()> {
+        self.bitmap
+            .store_page_meta(stream_id, page_start_local, meta)
+            .await
+    }
+
+    /// Loads the compacted bitmap blob for one sealed stream page.
+    pub async fn load_bitmap_page_blob(
+        &self,
+        stream_id: &str,
+        page_start_local: u32,
+    ) -> Result<Option<Bytes>> {
+        self.bitmap
+            .load_page_blob(stream_id, page_start_local)
+            .await
+    }
+
+    pub async fn store_bitmap_page_blob(
+        &self,
+        stream_id: &str,
+        page_start_local: u32,
+        bitmap_blob: Bytes,
+    ) -> Result<()> {
+        self.bitmap
+            .store_page_blob(stream_id, page_start_local, bitmap_blob)
+            .await
+    }
+
+    /// Loads the open stream inventory for one frontier page.
+    pub async fn load_open_bitmap_streams(&self, global_page_start: u64) -> Result<Vec<String>> {
+        self.bitmap.load_open_streams(global_page_start).await
+    }
+
+    /// Records any newly touched streams in the open inventory for one page.
+    ///
+    /// This is intentionally append-only in the current slice so replay can
+    /// never lose open-stream membership through a partial delete+rewrite.
+    pub async fn record_open_bitmap_streams(
+        &self,
+        global_page_start: u64,
+        streams: &std::collections::BTreeSet<String>,
+    ) -> Result<()> {
+        self.bitmap
+            .record_open_streams(global_page_start, streams)
+            .await
     }
 }

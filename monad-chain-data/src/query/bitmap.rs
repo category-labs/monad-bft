@@ -16,7 +16,7 @@
 use roaring::RoaringBitmap;
 
 use crate::{
-    error::Result,
+    error::{MonadChainDataError, Result},
     kernel::{
         bitmap::{decode_bitmap_blob, page_start_local, STREAM_PAGE_LOCAL_ID_SPAN},
         tables::LogTables,
@@ -45,9 +45,8 @@ pub(crate) async fn load_clause_bitmap_for_shard<M: MetaStore, B: BlobStore>(
     for stream_id in stream_ids {
         let mut page_start = first_page_start;
         loop {
-            for fragment in logs.load_bitmap_fragments(&stream_id, page_start).await? {
-                clause_bitmap |= decode_bitmap_blob(fragment.as_ref())?.bitmap;
-            }
+            clause_bitmap |=
+                load_bitmap_page(logs, &stream_id, page_start, local_from, local_to).await?;
 
             if page_start == last_page_start {
                 break;
@@ -60,8 +59,52 @@ pub(crate) async fn load_clause_bitmap_for_shard<M: MetaStore, B: BlobStore>(
     Ok(clause_bitmap)
 }
 
+async fn load_bitmap_page<M: MetaStore, B: BlobStore>(
+    logs: &LogTables<M, B>,
+    stream_id: &str,
+    page_start_local: u32,
+    local_from: u32,
+    local_to: u32,
+) -> Result<RoaringBitmap> {
+    if let Some(meta) = logs
+        .load_bitmap_page_meta(stream_id, page_start_local)
+        .await?
+    {
+        if !overlaps(meta.min_local, meta.max_local, local_from, local_to) {
+            return Ok(RoaringBitmap::new());
+        }
+
+        let page_blob = logs
+            .load_bitmap_page_blob(stream_id, page_start_local)
+            .await?
+            .ok_or(MonadChainDataError::MissingData(
+                "missing log bitmap page blob",
+            ))?;
+        // Page loads may include out-of-range bits from a partially overlapping
+        // page; the caller clips the final merged bitmap once per clause.
+        return Ok(decode_bitmap_blob(page_blob.as_ref())?.bitmap);
+    }
+
+    let mut page_bitmap = RoaringBitmap::new();
+    for fragment in logs
+        .load_bitmap_fragments(stream_id, page_start_local)
+        .await?
+    {
+        let fragment = decode_bitmap_blob(fragment.as_ref())?;
+        if overlaps(fragment.min_local, fragment.max_local, local_from, local_to) {
+            page_bitmap |= fragment.bitmap;
+        }
+    }
+
+    Ok(page_bitmap)
+}
+
 pub(crate) const fn max_local_id() -> u32 {
     (1u32 << LogId::LOCAL_ID_BITS) - 1
+}
+
+fn overlaps(start: u32, end: u32, query_start: u32, query_end: u32) -> bool {
+    start <= query_end && end >= query_start
 }
 
 fn clip_bitmap_to_local_range(bitmap: &mut RoaringBitmap, local_from: u32, local_to: u32) {
