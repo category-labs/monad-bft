@@ -86,6 +86,12 @@ struct Args {
     /// Cap on the number of failures of each kind to keep in the report.
     #[clap(long, default_value_t = 100)]
     max_failures_per_kind: usize,
+
+    /// Process the range in fixed windows of this many seq_nums to bound RAM
+    /// regardless of [min..=max] size. Only the last (BlockId) of each window
+    /// carries across the boundary for the chain-contiguity check.
+    #[clap(long, default_value_t = 100_000)]
+    window_size: u64,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -174,6 +180,116 @@ async fn load_indexed_header(
     }
 }
 
+/// Process one window of seq_nums end-to-end (passes 1-3) and return the
+/// BlockId at the last slot of the window (or `None` if it was unindexed).
+/// `prev_id` is the carried BlockId from the previous window's last slot.
+#[allow(clippy::too_many_arguments)]
+async fn process_window(
+    window_start: u64,
+    window_end: u64,
+    sink_index: &IndexBackendErased,
+    source: &KVStoreErased,
+    concurrency: usize,
+    cap: usize,
+    skip_body_check: bool,
+    is_first_window: bool,
+    prev_id: Option<BlockId>,
+    report: &mut ReconcileReport,
+) -> Result<Option<BlockId>> {
+    let span = (window_end - window_start + 1) as usize;
+    let mut indexed: Vec<Option<(BlockId, Option<BftBlockHeader>)>> = vec![None; span];
+
+    // Pass 1: parallel index + header lookup, bounded by concurrency.
+    let lookups = stream::iter(window_start..=window_end)
+        .map(|seq| {
+            let sink_index = sink_index.clone();
+            let source = source.clone();
+            async move {
+                let res = load_indexed_header(seq, &sink_index, &source).await;
+                (seq, res)
+            }
+        })
+        .buffer_unordered(concurrency);
+
+    futures::pin_mut!(lookups);
+    while let Some((seq, res)) = lookups.next().await {
+        let res = res.wrap_err_with(|| format!("lookup failed at seq_num {seq}"))?;
+        let slot = (seq - window_start) as usize;
+        match &res {
+            None => report.record_missing_index(seq, cap),
+            Some((_, None)) => {
+                report.indexed = report.indexed.saturating_add(1);
+                report.record_header_missing(seq, cap);
+            }
+            Some((_, Some(header))) => {
+                report.indexed = report.indexed.saturating_add(1);
+                if header.seq_num.0 != seq {
+                    report.record_header_seq_mismatch(seq, cap);
+                }
+            }
+        }
+        indexed[slot] = res;
+    }
+
+    // Pass 2: chain contiguity within the window, plus boundary check against
+    // the previous window's tail via `prev_id`.
+    for slot in 0..span {
+        let seq = window_start + slot as u64;
+        let Some((_, Some(this_header))) = indexed[slot].as_ref() else {
+            continue;
+        };
+        let predecessor: Option<&BlockId> = if slot == 0 {
+            if is_first_window {
+                continue;
+            }
+            prev_id.as_ref()
+        } else {
+            indexed[slot - 1].as_ref().map(|(id, _)| id)
+        };
+        let Some(prev) = predecessor else {
+            continue;
+        };
+        if this_header.get_parent_id() != *prev {
+            report.record_chain_break(seq, cap);
+        }
+    }
+
+    // Pass 3: body presence within window. Only checks slots with a decoded
+    // header.
+    if !skip_body_check {
+        let body_lookups = stream::iter(window_start..=window_end)
+            .filter_map(|seq| {
+                let slot = (seq - window_start) as usize;
+                let body_id = indexed[slot]
+                    .as_ref()
+                    .and_then(|(_, h)| h.as_ref().map(|h| h.block_body_id.0));
+                async move { body_id.map(|b| (seq, b)) }
+            })
+            .map(|(seq, body_id)| {
+                let source = source.clone();
+                async move {
+                    let key = bft_paths::legacy_body_path(&body_id);
+                    let exists = source.exists(&key).await?;
+                    Ok::<_, eyre::Report>((seq, exists))
+                }
+            })
+            .buffer_unordered(concurrency);
+
+        futures::pin_mut!(body_lookups);
+        while let Some(res) = body_lookups.next().await {
+            let (seq, exists) = res?;
+            if !exists {
+                report.record_body_missing(seq, cap);
+            }
+        }
+    }
+
+    // Carry: BlockId at the last slot of this window. None if the slot was
+    // unindexed — in that case the chain-contiguity check at the next
+    // window's first slot is naturally skipped.
+    Ok(indexed[span - 1].as_ref().map(|(id, _)| *id))
+}
+
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -207,8 +323,10 @@ async fn main() -> Result<()> {
         KvIndexBackend::new(sink.store.clone()).into()
     };
 
-    // First pass: per-seq_num index + header lookup, enough to also feed the
-    // chain-contiguity check on the next pass.
+    if args.window_size == 0 {
+        bail!("--window-size must be > 0");
+    }
+
     let cap = args.max_failures_per_kind;
     let mut report = ReconcileReport {
         min_seq_num: args.min_seq_num,
@@ -217,86 +335,32 @@ async fn main() -> Result<()> {
         ..Default::default()
     };
 
-    // Buffer headers in order so we can check chain contiguity in pass 2.
-    // For very large ranges this would page out; for the migration's bounded
-    // sub-chains it's cheap enough to keep in memory.
-    let span = (args.max_seq_num - args.min_seq_num + 1) as usize;
-    let mut indexed: Vec<Option<(BlockId, Option<BftBlockHeader>)>> = Vec::with_capacity(span);
-    indexed.resize_with(span, || None);
-
-    let lookups = stream::iter(args.min_seq_num..=args.max_seq_num)
-        .map(|seq| {
-            let sink_index = sink_index.clone();
-            let source_store = source.store.clone();
-            async move {
-                let res = load_indexed_header(seq, &sink_index, &source_store).await;
-                (seq, res)
-            }
-        })
-        .buffer_unordered(args.concurrency);
-
-    futures::pin_mut!(lookups);
-    while let Some((seq, res)) = lookups.next().await {
-        let res = res.wrap_err_with(|| format!("lookup failed at seq_num {seq}"))?;
-        let slot = (seq - args.min_seq_num) as usize;
-        match &res {
-            None => report.record_missing_index(seq, cap),
-            Some((_, None)) => {
-                report.indexed = report.indexed.saturating_add(1);
-                report.record_header_missing(seq, cap);
-            }
-            Some((_, Some(header))) => {
-                report.indexed = report.indexed.saturating_add(1);
-                if header.seq_num.0 != seq {
-                    report.record_header_seq_mismatch(seq, cap);
-                }
-            }
-        }
-        indexed[slot] = res;
-    }
-
-    // Pass 2: chain contiguity. For every seq > min that has both itself and
-    // its predecessor indexed, verify parent_id matches.
-    for slot in 1..span {
-        let seq = args.min_seq_num + slot as u64;
-        let (Some((_, Some(this_header))), Some((prev_id, _))) =
-            (indexed[slot].as_ref(), indexed[slot - 1].as_ref())
-        else {
-            continue;
-        };
-        if this_header.get_parent_id() != *prev_id {
-            report.record_chain_break(seq, cap);
-        }
-    }
-
-    // Pass 3: body presence. Only checks slots that have a decoded header.
-    if !args.skip_body_check {
-        let body_cap = cap;
-        let body_lookups = stream::iter(args.min_seq_num..=args.max_seq_num)
-            .filter_map(|seq| {
-                let slot = (seq - args.min_seq_num) as usize;
-                let header = indexed[slot]
-                    .as_ref()
-                    .and_then(|(_, h)| h.as_ref().map(|h| h.block_body_id.0));
-                async move { header.map(|body_id| (seq, body_id)) }
-            })
-            .map(|(seq, body_id)| {
-                let source_store = source.store.clone();
-                async move {
-                    let key = bft_paths::legacy_body_path(&body_id);
-                    let exists = source_store.exists(&key).await?;
-                    Ok::<_, eyre::Report>((seq, exists))
-                }
-            })
-            .buffer_unordered(args.concurrency);
-
-        futures::pin_mut!(body_lookups);
-        while let Some(res) = body_lookups.next().await {
-            let (seq, exists) = res?;
-            if !exists {
-                report.record_body_missing(seq, body_cap);
-            }
-        }
+    // Window the work. Holding all headers in RAM is fine for sub-chain-sized
+    // verifies but blows up at the full 120M-row scale; window_size bounds
+    // peak memory regardless of the [min..=max] span. Across windows we carry
+    // only the last slot's BlockId — enough for the chain-contiguity check at
+    // the boundary.
+    let mut prev_id: Option<BlockId> = None;
+    let mut window_start = args.min_seq_num;
+    while window_start <= args.max_seq_num {
+        let window_end = window_start
+            .saturating_add(args.window_size - 1)
+            .min(args.max_seq_num);
+        let is_first_window = window_start == args.min_seq_num;
+        prev_id = process_window(
+            window_start,
+            window_end,
+            &sink_index,
+            &source.store,
+            args.concurrency,
+            cap,
+            args.skip_body_check,
+            is_first_window,
+            prev_id,
+            &mut report,
+        )
+        .await?;
+        window_start = window_end + 1;
     }
 
     // Pass 4: markers postcondition.

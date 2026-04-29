@@ -239,7 +239,11 @@ pub enum Commands {
         #[arg(long, value_parser = clap::value_parser!(ArchiveArgs))]
         sink: ArchiveArgs,
 
-        /// Number of sub-chains to index in parallel
+        /// Number of sub-chains to index in parallel. Also caps the
+        /// candidate pool, including --seed-tips-file: only the first
+        /// `concurrency` seeds that resolve to a committable head will
+        /// be indexed. Raise this when running against a large
+        /// inventory-derived seed file.
         #[arg(long, default_value_t = 4)]
         concurrency: usize,
 
@@ -259,6 +263,10 @@ pub enum Commands {
         /// Optional path to a newline-separated file of hex BlockIds to seed
         /// committable-head discovery. When set, replaces the default
         /// scan_prefix sampling — typically derived from S3 Inventory.
+        /// NOTE: capped by --concurrency. If the seed file has more
+        /// entries than --concurrency, only the first N that resolve
+        /// to committable heads are indexed; raise --concurrency to
+        /// cover the full seed list.
         #[arg(long)]
         seed_tips_file: Option<std::path::PathBuf>,
 

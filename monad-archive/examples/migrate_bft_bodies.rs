@@ -144,21 +144,42 @@ async fn main() -> Result<()> {
             async move {
                 let dst_key = bft_paths::body_path(&body_id);
 
-                let src_etag = source
-                    .etag(&legacy_key)
+                let src_meta = source
+                    .head_meta(&legacy_key)
                     .await
                     .wrap_err_with(|| format!("HEAD source failed for {legacy_key}"))?;
-                if src_etag.is_none() {
+                let Some(src_meta) = src_meta else {
                     bail!("source missing legacy body key {legacy_key}");
-                }
-                let dst_etag = sink
-                    .etag(&dst_key)
+                };
+                let dst_meta = sink
+                    .head_meta(&dst_key)
                     .await
                     .wrap_err_with(|| format!("HEAD sink failed for {dst_key}"))?;
 
-                let needs_copy = match (&src_etag, &dst_etag) {
-                    (Some(s), Some(d)) if s == d => false,
-                    _ => dst_etag.is_none() || dst_etag != src_etag,
+                // Skip when destination exists AND looks identical:
+                //   - simple objects: ETag is plain MD5, exact match means same bytes.
+                //   - multipart objects: ETag is `<md5>-<parts>` and can differ
+                //     between source and a CopyObject'd destination even when the
+                //     bytes are identical, so fall back to content-length match.
+                //     Same-region S3 CopyObject preserves bytes (and thus length),
+                //     so a length match on a present destination is a sound
+                //     idempotency signal that avoids pointless re-copies of large
+                //     multipart bodies.
+                let is_multipart = src_meta
+                    .etag
+                    .as_deref()
+                    .or(dst_meta.as_ref().and_then(|m| m.etag.as_deref()))
+                    .map(|t| t.trim_matches('"').contains('-'))
+                    .unwrap_or(false);
+                let needs_copy = match &dst_meta {
+                    None => true,
+                    Some(d) => {
+                        if is_multipart {
+                            d.size != src_meta.size || d.size.is_none()
+                        } else {
+                            d.etag != src_meta.etag || d.etag.is_none()
+                        }
+                    }
                 };
 
                 if needs_copy {

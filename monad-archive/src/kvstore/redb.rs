@@ -252,6 +252,36 @@ mod tests {
         assert_eq!(bounded, vec!["a/1", "a/2"]);
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_writes_are_serialized_and_durable() {
+        // Pin the write_lock + spawn_blocking contract: N tokio tasks
+        // each doing M puts to disjoint keys must produce N*M durable
+        // entries with no lost writes and no panics.
+        let (_dir, s) = fresh();
+        const N_TASKS: usize = 16;
+        const PUTS_PER_TASK: usize = 50;
+        let mut handles = Vec::new();
+        for t in 0..N_TASKS {
+            let s = s.clone();
+            handles.push(tokio::spawn(async move {
+                for i in 0..PUTS_PER_TASK {
+                    let key = format!("t{t:02}/k{i:03}");
+                    s.put(key, vec![t as u8, i as u8], WritePolicy::AllowOverwrite)
+                        .await
+                        .unwrap();
+                }
+            }));
+        }
+        for h in handles {
+            h.await.unwrap();
+        }
+        let all = s.scan_prefix("").await.unwrap();
+        assert_eq!(all.len(), N_TASKS * PUTS_PER_TASK);
+        // Spot-check a few keys round-trip correctly.
+        let v = s.get("t05/k025").await.unwrap().unwrap();
+        assert_eq!(v.as_ref(), &[5u8, 25u8]);
+    }
+
     #[tokio::test]
     async fn persists_across_reopen() {
         let dir = TempDir::new().unwrap();

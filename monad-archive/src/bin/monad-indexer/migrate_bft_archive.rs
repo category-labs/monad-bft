@@ -33,6 +33,17 @@ use opentelemetry::KeyValue;
 use serde::{Deserialize, Serialize};
 
 const RETRY_DELAY: Duration = Duration::from_millis(500);
+
+/// Outcome of indexing one block in a sub-chain walk. Distinguishes the
+/// two stop reasons explicitly so the orchestrator log message matches
+/// the actual cause when both conditions could fire on the same block
+/// (canary cap landing exactly on the genesis seq_num).
+#[derive(Debug)]
+enum BlockStepResult {
+    Advance { next_id: BlockId, next_num: u64 },
+    Genesis,
+    Canary,
+}
 const MAX_STARTUP_RETRIES: usize = 10;
 // scan_prefix counts .header and .body keys, so we overscan to find enough headers.
 const CANDIDATE_SCAN_MULTIPLIER: usize = 40;
@@ -439,22 +450,26 @@ impl BftBlockIndex {
                     },
                 )
                 .await;
-                let Some((next_id, next_num)) = next else {
-                    if self.canary_limit_reached() {
-                        info!(
-                            "Canary mode: --max-blocks={} reached, stopping sub-chain cleanly",
-                            self.config.max_blocks.unwrap_or(0)
-                        );
-                    } else {
+                match next {
+                    BlockStepResult::Genesis => {
                         info!(
                             "Sub-chain reached genesis at seq_num {}, stopping cleanly",
                             self.config.genesis_seq_num
                         );
+                        return Ok(());
                     }
-                    return Ok(());
-                };
-                marker.tail_id = next_id;
-                marker.tail_num = next_num;
+                    BlockStepResult::Canary => {
+                        info!(
+                            "Canary mode: --max-blocks={} reached, stopping sub-chain cleanly",
+                            self.config.max_blocks.unwrap_or(0)
+                        );
+                        return Ok(());
+                    }
+                    BlockStepResult::Advance { next_id, next_num } => {
+                        marker.tail_id = next_id;
+                        marker.tail_num = next_num;
+                    }
+                }
             }
 
             if other_sub_chain_tips.contains(&marker.tail_id) {
@@ -478,14 +493,15 @@ impl BftBlockIndex {
         Ok(())
     }
 
-    /// Index a single block. Returns `Some((next_id, next_num))` to advance the
-    /// marker, or `None` when the just-indexed block is at the configured
-    /// genesis seq_num — the legitimate end of a sub-chain walk.
+    /// Index a single block. The returned `BlockStepResult` distinguishes
+    /// the three terminal outcomes (advance to parent, hit genesis,
+    /// hit canary cap) so the caller's log message matches the actual
+    /// cause even when both stop conditions could fire on the same block.
     async fn index_single_block(
         &self,
         current_id: BlockId,
         copy_data: bool,
-    ) -> Result<Option<(BlockId, u64)>> {
+    ) -> Result<BlockStepResult> {
         let (current_header, header_bytes) = self.fetch_legacy_header_by_id(&current_id).await?;
 
         if copy_data {
@@ -507,17 +523,20 @@ impl BftBlockIndex {
             hex::encode(current_id.0)
         );
 
+        // Genesis takes precedence: if the just-indexed block IS genesis,
+        // that's the unambiguous reason to stop, regardless of whether
+        // the canary cap would also have fired.
         if current_header.seq_num.0 == self.config.genesis_seq_num {
-            return Ok(None);
+            return Ok(BlockStepResult::Genesis);
         }
 
         if self.canary_limit_reached() {
-            return Ok(None);
+            return Ok(BlockStepResult::Canary);
         }
 
         let next_id = current_header.get_parent_id();
         let next_num = current_header.seq_num.0.saturating_sub(1);
-        Ok(Some((next_id, next_num)))
+        Ok(BlockStepResult::Advance { next_id, next_num })
     }
 
     async fn put_header_bytes_no_clobber(&self, id: &BlockId, bytes: Vec<u8>) -> Result<()> {
@@ -602,10 +621,6 @@ impl BftBlockIndex {
             .await
     }
 
-    fn marker_key(head_num: u64) -> String {
-        bft_paths::marker_path(head_num)
-    }
-
     async fn ensure_marker_slot_matches_head_id(&self, key: &str, head_id: &BlockId) -> Result<()> {
         let Some(existing) = self.sink.get(key).await? else {
             return Ok(());
@@ -626,7 +641,7 @@ impl BftBlockIndex {
     }
 
     async fn write_marker(&self, range: &IndexedRangeMarker) -> Result<()> {
-        let key = Self::marker_key(range.head_num);
+        let key = bft_paths::marker_path(range.head_num);
         self.ensure_marker_slot_matches_head_id(&key, &range.head_id)
             .await?;
         let bytes = serde_json::to_vec(&range).wrap_err("Failed to serialize index range")?;
@@ -638,7 +653,7 @@ impl BftBlockIndex {
     }
 
     async fn delete_marker(&self, range: &IndexedRangeMarker) -> Result<()> {
-        let key = Self::marker_key(range.head_num);
+        let key = bft_paths::marker_path(range.head_num);
         self.ensure_marker_slot_matches_head_id(&key, &range.head_id)
             .await?;
         self.sink
@@ -735,7 +750,7 @@ mod tests {
         index.write_marker(&first).await.unwrap();
         index.write_marker(&advanced).await.unwrap();
 
-        let key = BftBlockIndex::marker_key(advanced.head_num);
+        let key = bft_paths::marker_path(advanced.head_num);
         let stored = index.sink.get(&key).await.unwrap().unwrap();
         let stored: IndexedRangeMarker = serde_json::from_slice(&stored).unwrap();
         assert_eq!(stored, advanced);
@@ -751,7 +766,7 @@ mod tests {
         let err = index.delete_marker(&colliding).await.unwrap_err();
         assert!(err.to_string().contains("Marker key collision"));
 
-        let key = BftBlockIndex::marker_key(first.head_num);
+        let key = bft_paths::marker_path(first.head_num);
         assert!(index.sink.get(&key).await.unwrap().is_some());
     }
 

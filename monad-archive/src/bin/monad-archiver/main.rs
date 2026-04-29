@@ -267,8 +267,15 @@ async fn main() -> Result<()> {
 
     if let Some(path) = args.bft_block_path {
         info!("Spawning bft block archive worker...");
-        let model =
-            monad_archive::model::bft_ledger::BftBlockModel::new(archive_writer.store.clone());
+        // Live archiver writes paged: one 32 KB blob per 1K-block page,
+        // RMW'd in place as the live tip moves. The migrator writes per-key
+        // (different prefix) so the two formats never collide.
+        let store = archive_writer.store.clone();
+        let index = monad_archive::model::index_backend::PagedIndexBackend::new(store.clone());
+        let model = monad_archive::model::bft_ledger::BftBlockModel::with_index(
+            store,
+            index.into(),
+        );
         let poll_frequency = Duration::from_secs(args.bft_block_poll_freq_secs);
         let worker_metrics = metrics.clone();
         workers.spawn(run_supervised_worker(

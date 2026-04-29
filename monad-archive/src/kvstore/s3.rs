@@ -38,6 +38,16 @@ use crate::{metrics::Metrics, prelude::*};
 
 const CLIENT_RECREATE_AFTER_SECS: u64 = 60;
 
+/// Lightweight object metadata returned by `Bucket::head_meta`. ETag alone
+/// is not a reliable equality check for multipart uploads (the format is
+/// `<md5>-<part_count>` and CopyObject can change the part layout), so
+/// callers that want robust idempotency should also compare `size`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObjectMeta {
+    pub etag: Option<String>,
+    pub size: Option<i64>,
+}
+
 #[derive(Clone)]
 pub struct Bucket {
     inner: Arc<BucketInner>,
@@ -157,6 +167,39 @@ impl Bucket {
         *guard = Client::new(sdk_config);
         // Reset timer so we don't immediately recreate again.
         self.inner.last_success.store(now, Ordering::Relaxed);
+    }
+
+    /// HEAD an object and return its ETag and content-length, if present.
+    /// Returns `None` for `NoSuchKey`. Prefer this over `etag` for
+    /// idempotency on objects that may have been multipart-uploaded.
+    pub async fn head_meta(&self, key: &str) -> Result<Option<ObjectMeta>> {
+        let client = self.client();
+        let start = Instant::now();
+        let resp = client
+            .head_object()
+            .bucket(&self.inner.bucket)
+            .key(key)
+            .request_payer(aws_sdk_s3::types::RequestPayer::Requester)
+            .send()
+            .await;
+        let duration = start.elapsed();
+        match resp {
+            Ok(out) => {
+                self.record_get_metrics(duration, true);
+                Ok(Some(ObjectMeta {
+                    etag: out.e_tag().map(|s| s.to_owned()),
+                    size: out.content_length(),
+                }))
+            }
+            Err(SdkError::ServiceError(service_err)) if service_err.err().is_not_found() => {
+                self.record_get_metrics(duration, true);
+                Ok(None)
+            }
+            Err(e) => {
+                self.record_get_metrics(duration, false);
+                Err(e).wrap_err_with(|| format!("S3 head_object failed for key {key}"))
+            }
+        }
     }
 
     /// HEAD an object and return its ETag, if present. Returns `None` for

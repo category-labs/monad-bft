@@ -38,6 +38,16 @@ use crate::{
 pub trait IndexBackend {
     async fn get_id(&self, seq_num: u64) -> Result<Option<BlockId>>;
     async fn put_id(&self, seq_num: u64, id: BlockId) -> Result<()>;
+
+    /// Bulk write. **Backend-defined semantics:**
+    /// - `KvIndexBackend`: per-key bulk put; no clobber implications since
+    ///   each seq_num has its own key.
+    /// - `PagedIndexBackend`: unconditional full-page write. The provided
+    ///   entries define the entire content of each touched page;
+    ///   previously written entries on those pages that are not in this
+    ///   batch are clobbered (read back as None via the zero sentinel).
+    ///   No GET, no mutex — pages run independently and the caller is
+    ///   responsible for not racing with `put_id` on the same page.
     async fn put_ids_batch(&self, entries: &[(u64, BlockId)]) -> Result<()>;
 
     /// Stream every present (seq_num, id) entry in `[min..=max_inclusive]`,
@@ -88,7 +98,15 @@ impl IndexBackend for KvIndexBackend {
         let Some(value) = self.kv.get(&key).await? else {
             return Ok(None);
         };
-        Ok(Some(Self::decode_id(&key, &value)?))
+        let id = Self::decode_id(&key, &value)?;
+        // Symmetric with PagedIndexBackend's zero sentinel: an all-zero
+        // BlockId is impossible for a real header hash, so treat it as
+        // unindexed. Keeps the trait's get_id semantics consistent
+        // across impls.
+        if id.0 .0 == [0u8; 32] {
+            return Ok(None);
+        }
+        Ok(Some(id))
     }
 
     async fn put_id(&self, seq_num: u64, id: BlockId) -> Result<()> {
@@ -133,9 +151,22 @@ impl IndexBackend for KvIndexBackend {
 
 /// Paged index backend: each page covers `INDEX_PAGE_SIZE` consecutive
 /// seq_nums and is stored as one contiguous, fixed-stride blob keyed by
-/// `bft_paths::index_page_path`. Random reads slice by byte-range offset;
-/// writes are read-modify-write of the page blob and serialized through a
-/// single mutex so concurrent writers don't drop each other's edits.
+/// `bft_paths::index_page_path`. Random reads slice by byte-range offset.
+///
+/// Two write paths with **different** semantics:
+/// - `put_id` is read-modify-write — preserves untouched slots on the
+///   page. Serialized via the internal `write_lock` so concurrent
+///   `put_id`s don't drop each other's edits. Used by the live archiver
+///   for per-block updates to the active tip page.
+/// - `put_ids_batch` is unconditional — the provided entries define the
+///   full content of each touched page, non-provided slots become zero.
+///   No GET, no mutex; pages run independently for caller-side
+///   parallelism. Used by the upload tool, which knows the full page
+///   state from the local index.
+///
+/// Mixing the two on the same `PagedIndexBackend` instance is safe only
+/// if the caller serializes externally; the migration plan keeps them
+/// in different processes against different page ranges.
 ///
 /// A page may be shorter than the full `INDEX_PAGE_SIZE * INDEX_ENTRY_BYTES`
 /// length while it is still being filled — the live archiver rewrites the
@@ -212,18 +243,25 @@ impl IndexBackend for PagedIndexBackend {
     }
 
     async fn put_ids_batch(&self, entries: &[(u64, BlockId)]) -> Result<()> {
+        // Group by page; each page is built from scratch (zero-init,
+        // splice in the entries' offsets) and PUT unconditionally. No
+        // GET on the existing page, no shared mutex. Caller owns the
+        // assertion that these entries are the intended full state of
+        // each touched page.
         let mut by_page: BTreeMap<u64, Vec<(usize, BlockId)>> = BTreeMap::new();
         for (seq, id) in entries {
             let page = bft_paths::index_page_for(*seq);
             let offset = bft_paths::index_page_offset(*seq);
             by_page.entry(page).or_default().push((offset, *id));
         }
-        let _guard = self.write_lock.lock().await;
         for (page, edits) in by_page {
             let path = bft_paths::index_page_path_for_page(page);
-            let mut buf = self.read_page(&path).await?;
+            // Size to the largest offset; trailing zeros at lower offsets
+            // are valid and read back as None via the zero sentinel.
+            let max_offset = edits.iter().map(|(o, _)| *o).max().unwrap_or(0);
+            let mut buf = vec![0u8; max_offset + INDEX_ENTRY_BYTES];
             for (offset, id) in &edits {
-                Self::write_entry_into_page(&mut buf, *offset, *id);
+                buf[*offset..*offset + INDEX_ENTRY_BYTES].copy_from_slice(&id.0 .0);
             }
             self.kv
                 .put(path, buf, WritePolicy::AllowOverwrite)
@@ -237,14 +275,17 @@ impl IndexBackend for PagedIndexBackend {
         min: u64,
         max_inclusive: u64,
     ) -> BoxStream<'_, Result<(u64, BlockId)>> {
+        // Order-preserving page fetches with limited in-flight overlap so
+        // S3 GET latency overlaps across pages. `buffered` (vs
+        // `buffer_unordered`) keeps the output sorted by page → seq_num
+        // ascending, which the reconciliation pass relies on.
+        const PAGE_FETCH_CONCURRENCY: usize = 32;
         let this = self.clone();
         let first_page = bft_paths::index_page_for(min);
         let last_page = bft_paths::index_page_for(max_inclusive);
-        // One read per page, then walk slots in-page; cheaper than per-seq
-        // get_id when there are many sequential entries.
         let pages = stream::iter(first_page..=last_page);
         pages
-            .then(move |page| {
+            .map(move |page| {
                 let this = this.clone();
                 let path = bft_paths::index_page_path_for_page(page);
                 let page_min = page * INDEX_PAGE_SIZE;
@@ -271,6 +312,7 @@ impl IndexBackend for PagedIndexBackend {
                     Ok(out)
                 }
             })
+            .buffered(PAGE_FETCH_CONCURRENCY)
             .flat_map(|res| match res {
                 Ok(entries) => stream::iter(entries.into_iter().map(Ok)).boxed(),
                 Err(e) => stream::iter(std::iter::once(Err(e))).boxed(),
@@ -318,6 +360,14 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn kv_get_id_treats_all_zero_as_unindexed() {
+        // Symmetric with the paged backend's zero sentinel.
+        let b = fresh_kv_backend();
+        b.put_id(11, BlockId(Hash([0u8; 32]))).await.unwrap();
+        assert!(b.get_id(11).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
     async fn put_id_overwrites() {
         let b = fresh_kv_backend();
         b.put_id(7, block_id(0x01)).await.unwrap();
@@ -360,7 +410,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn paged_batch_writes_all_entries_with_one_rmw_per_page() {
+    async fn paged_batch_writes_all_entries_one_put_per_page() {
         let b = fresh_paged_backend();
         let entries = vec![
             (0, block_id(0x10)),
@@ -372,6 +422,22 @@ mod tests {
         for (seq, expected) in entries {
             assert_eq!(b.get_id(seq).await.unwrap(), Some(expected));
         }
+    }
+
+    #[tokio::test]
+    async fn paged_batch_clobbers_prior_entries_on_same_page() {
+        // Documents the unconditional-write contract: put_ids_batch
+        // treats its entries as the full state of each touched page.
+        // Slots not in the batch are zeroed (read back as None).
+        let b = fresh_paged_backend();
+        b.put_id(1, block_id(0x01)).await.unwrap();
+        assert_eq!(b.get_id(1).await.unwrap(), Some(block_id(0x01)));
+        b.put_ids_batch(&[(5, block_id(0x05))]).await.unwrap();
+        assert_eq!(b.get_id(5).await.unwrap(), Some(block_id(0x05)));
+        assert!(
+            b.get_id(1).await.unwrap().is_none(),
+            "slot 1 should be clobbered by the unconditional batch write"
+        );
     }
 
     #[tokio::test]
