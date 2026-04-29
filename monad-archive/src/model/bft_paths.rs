@@ -79,11 +79,20 @@ fn shard_for_hex(hex: &str) -> &str {
     &hex[..end]
 }
 
+/// Build the sharded header path for a BlockId.
+///
+/// **Do not strip the shard segment on backends that store keys as
+/// filesystem paths.** S3 treats the shard as a flat key prefix, but on
+/// XFS / ext4 a single directory holding ~120M entries is hostile to
+/// `readdir`/listing tooling. The 4-hex shard caps any one directory at
+/// ~1,830 entries (120M / 65,536).
 pub fn header_path(id: &BlockId) -> String {
     let hex = hex::encode(id.0);
     format!("{HEADERS_PREFIX}{}/{hex}", shard_for_hex(&hex))
 }
 
+/// Build the sharded body path for a body Hash. See [`header_path`] for
+/// the shard rationale.
 pub fn body_path(body_id: &Hash) -> String {
     let hex = hex::encode(body_id);
     format!("{BODIES_PREFIX}{}/{hex}", shard_for_hex(&hex))
@@ -139,6 +148,28 @@ pub fn parse_legacy_body_path(key: &str) -> Option<Hash> {
     Some(Hash(parse_hex_id(hex)?))
 }
 
+/// Inverse of [`header_path`]. Validates that the shard segment matches
+/// the leading `HEX_SHARD_CHARS` of the id; rejects mismatches because
+/// they indicate either schema drift or a corrupted listing.
+pub fn parse_header_path(key: &str) -> Option<BlockId> {
+    let rest = key.strip_prefix(HEADERS_PREFIX)?;
+    let (shard, hex) = rest.split_once('/')?;
+    if shard != shard_for_hex(hex) {
+        return None;
+    }
+    Some(BlockId(Hash(parse_hex_id(hex)?)))
+}
+
+/// Inverse of [`body_path`]. Same shard validation as [`parse_header_path`].
+pub fn parse_body_path(key: &str) -> Option<Hash> {
+    let rest = key.strip_prefix(BODIES_PREFIX)?;
+    let (shard, hex) = rest.split_once('/')?;
+    if shard != shard_for_hex(hex) {
+        return None;
+    }
+    Some(Hash(parse_hex_id(hex)?))
+}
+
 pub fn parse_index_per_key_path(key: &str) -> Option<u64> {
     key.strip_prefix(INDEX_PER_KEY_PREFIX)?.parse().ok()
 }
@@ -189,6 +220,52 @@ mod tests {
     fn parse_legacy_rejects_wrong_suffix() {
         assert_eq!(parse_legacy_header_path("bft_block/00.body"), None);
         assert_eq!(parse_legacy_body_path("bft_block/00.header"), None);
+    }
+
+    #[test]
+    fn header_path_round_trip() {
+        let id = block_id(0xCD);
+        let key = header_path(&id);
+        assert_eq!(parse_header_path(&key), Some(id));
+    }
+
+    #[test]
+    fn body_path_round_trip() {
+        let body = Hash([0xEF; 32]);
+        let key = body_path(&body);
+        assert_eq!(parse_body_path(&key), Some(body));
+    }
+
+    #[test]
+    fn parse_header_path_rejects_unsharded_or_mismatched_shard() {
+        let id = block_id(0xCD);
+        let hex = hex::encode(id.0);
+        // Missing shard segment.
+        assert_eq!(
+            parse_header_path(&format!("bft/ledger/headers/{hex}")),
+            None
+        );
+        // Shard doesn't match leading hex chars.
+        assert_eq!(
+            parse_header_path(&format!("bft/ledger/headers/abcd/{hex}")),
+            None
+        );
+        // Body path fed to header parser.
+        let body = Hash([0x12; 32]);
+        assert_eq!(parse_header_path(&body_path(&body)), None);
+    }
+
+    #[test]
+    fn parse_body_path_rejects_unsharded_or_mismatched_shard() {
+        let body = Hash([0xEF; 32]);
+        let hex = hex::encode(body);
+        assert_eq!(parse_body_path(&format!("bft/ledger/bodies/{hex}")), None);
+        assert_eq!(
+            parse_body_path(&format!("bft/ledger/bodies/abcd/{hex}")),
+            None
+        );
+        let id = block_id(0xCD);
+        assert_eq!(parse_body_path(&header_path(&id)), None);
     }
 
     #[test]
