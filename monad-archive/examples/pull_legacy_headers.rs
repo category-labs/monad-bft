@@ -22,7 +22,10 @@
 
 use std::{
     path::PathBuf,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc,
+    },
     time::Instant,
 };
 
@@ -35,6 +38,7 @@ use monad_archive::{
     metrics::Metrics,
     model::bft_paths,
 };
+use tokio::sync::Mutex;
 
 #[derive(Debug, Parser)]
 #[clap(about = "Pull legacy bft_block/*.header keys from source archive into a local sink")]
@@ -60,6 +64,16 @@ struct Args {
     /// but redundant work on resumed runs.
     #[clap(long)]
     no_skip_existing: bool,
+
+    /// Abort on the first error instead of accumulating failures. In-flight
+    /// pulls finish; no new pulls are dispatched after the first failure.
+    #[clap(long)]
+    fail_fast: bool,
+
+    /// Cap on the number of failure samples retained for the exit report.
+    /// (The total failure count is always reported.)
+    #[clap(long, default_value_t = 100)]
+    max_failures_sample: usize,
 }
 
 fn parse_inventory(contents: &str) -> Result<Vec<String>> {
@@ -114,32 +128,56 @@ async fn main() -> Result<()> {
     let sink_store = sink.store;
     let pulled = AtomicU64::new(0);
     let skipped = AtomicU64::new(0);
+    let failures = AtomicU64::new(0);
+    let abort = Arc::new(AtomicBool::new(false));
+    let failure_sample: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
     let started = Instant::now();
 
     let skip_existing = !args.no_skip_existing;
+    let fail_fast = args.fail_fast;
+    let max_failures_sample = args.max_failures_sample;
 
     stream::iter(keys.into_iter())
         .map(|key| {
             let source = source_store.clone();
             let sink = sink_store.clone();
+            let abort = abort.clone();
             let pulled = &pulled;
             let skipped = &skipped;
             async move {
-                if skip_existing && sink.exists(&key).await? {
+                if abort.load(Ordering::Relaxed) {
+                    return Err((
+                        key.clone(),
+                        eyre::eyre!("aborted by --fail-fast on earlier error"),
+                    ));
+                }
+                if skip_existing
+                    && sink
+                        .exists(&key)
+                        .await
+                        .map_err(|e| (key.clone(), e.wrap_err("sink exists check failed")))?
+                {
                     skipped.fetch_add(1, Ordering::Relaxed);
-                    return Ok::<_, eyre::Report>(());
+                    return Ok(());
                 }
                 let bytes = source
                     .get(&key)
                     .await
-                    .wrap_err_with(|| format!("source GET failed for {key}"))?;
+                    .wrap_err_with(|| format!("source GET failed for {key}"))
+                    .map_err(|e| (key.clone(), e))?;
                 let bytes = match bytes {
                     Some(b) => b,
-                    None => bail!("source missing legacy header key {key}"),
+                    None => {
+                        return Err((
+                            key.clone(),
+                            eyre::eyre!("source missing legacy header key {key}"),
+                        ))
+                    }
                 };
                 sink.put(&key, bytes.to_vec(), WritePolicy::NoClobber)
                     .await
-                    .wrap_err_with(|| format!("sink PUT failed for {key}"))?;
+                    .wrap_err_with(|| format!("sink PUT failed for {key}"))
+                    .map_err(|e| (key.clone(), e))?;
                 let n = pulled.fetch_add(1, Ordering::Relaxed) + 1;
                 if n.is_power_of_two() || n % 100_000 == 0 {
                     let elapsed = started.elapsed().as_secs_f64().max(0.001);
@@ -150,27 +188,54 @@ async fn main() -> Result<()> {
                         "Pull progress"
                     );
                 }
-                Ok(())
+                Ok::<(), (String, eyre::Report)>(())
             }
         })
         .buffer_unordered(args.concurrency)
-        .for_each(|res| async {
-            if let Err(e) = res {
-                tracing::error!(?e, "pull error");
+        .for_each(|res| {
+            let abort = abort.clone();
+            let failure_sample = failure_sample.clone();
+            let failures = &failures;
+            async move {
+                if let Err((key, err)) = res {
+                    failures.fetch_add(1, Ordering::Relaxed);
+                    let err_str = format!("{err:#}");
+                    tracing::error!(key, err = %err_str, "pull error");
+                    {
+                        let mut sample = failure_sample.lock().await;
+                        if sample.len() < max_failures_sample {
+                            sample.push((key, err_str));
+                        }
+                    }
+                    if fail_fast {
+                        abort.store(true, Ordering::Relaxed);
+                    }
+                }
             }
         })
         .await;
 
     let pulled = pulled.load(Ordering::Relaxed);
     let skipped = skipped.load(Ordering::Relaxed);
+    let failures = failures.load(Ordering::Relaxed);
     let elapsed = started.elapsed().as_secs_f64();
     println!(
-        "Pull complete: pulled={pulled}, skipped_existing={skipped}, total={total}, elapsed={elapsed:.1}s",
+        "Pull complete: pulled={pulled}, skipped_existing={skipped}, failures={failures}, total={total}, elapsed={elapsed:.1}s",
     );
 
+    if failures > 0 {
+        let sample = failure_sample.lock().await;
+        eprintln!("Showing up to {} failure samples:", sample.len());
+        for (key, err) in sample.iter() {
+            eprintln!("  {key}: {err}");
+        }
+        bail!(
+            "pull had {failures} failures; sink is incomplete and the run cannot be marked as a successful Phase 2"
+        );
+    }
     if pulled + skipped < total as u64 {
         bail!(
-            "incomplete pull: {} keys errored",
+            "incomplete pull: {} keys neither pulled nor skipped",
             total as u64 - pulled - skipped
         );
     }
