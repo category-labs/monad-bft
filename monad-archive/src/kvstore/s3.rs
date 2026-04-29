@@ -159,6 +159,70 @@ impl Bucket {
         self.inner.last_success.store(now, Ordering::Relaxed);
     }
 
+    /// HEAD an object and return its ETag, if present. Returns `None` for
+    /// `NoSuchKey`. Used by migration tooling for idempotency checks
+    /// without paying for body bytes.
+    pub async fn etag(&self, key: &str) -> Result<Option<String>> {
+        let client = self.client();
+        let start = Instant::now();
+        let resp = client
+            .head_object()
+            .bucket(&self.inner.bucket)
+            .key(key)
+            .request_payer(aws_sdk_s3::types::RequestPayer::Requester)
+            .send()
+            .await;
+        let duration = start.elapsed();
+        match resp {
+            Ok(out) => {
+                self.record_get_metrics(duration, true);
+                Ok(out.e_tag().map(|s| s.to_owned()))
+            }
+            Err(SdkError::ServiceError(service_err)) if service_err.err().is_not_found() => {
+                self.record_get_metrics(duration, true);
+                Ok(None)
+            }
+            Err(e) => {
+                self.record_get_metrics(duration, false);
+                Err(e).wrap_err_with(|| format!("S3 head_object failed for key {key}"))
+            }
+        }
+    }
+
+    /// Server-side `CopyObject` from `<src_bucket>/<src_key>` into this bucket
+    /// at `dst_key`. Free egress for same-region copies; preserves bytes.
+    pub async fn copy_from(
+        &self,
+        src_bucket: &str,
+        src_key: &str,
+        dst_key: &str,
+    ) -> Result<()> {
+        let client = self.client();
+        let copy_source = format!("{src_bucket}/{src_key}");
+        let start = Instant::now();
+        let resp = client
+            .copy_object()
+            .copy_source(&copy_source)
+            .bucket(&self.inner.bucket)
+            .key(dst_key)
+            .request_payer(aws_sdk_s3::types::RequestPayer::Requester)
+            .send()
+            .await;
+        let duration = start.elapsed();
+        match resp {
+            Ok(_) => {
+                self.record_put_metrics(duration, true);
+                Ok(())
+            }
+            Err(e) => {
+                self.record_put_metrics(duration, false);
+                Err(e).wrap_err_with(|| {
+                    format!("S3 copy_object failed: {copy_source} -> {}/{dst_key}", self.inner.bucket)
+                })
+            }
+        }
+    }
+
     pub async fn create_bucket(&self) -> Result<()> {
         let client = self.client();
         match client
