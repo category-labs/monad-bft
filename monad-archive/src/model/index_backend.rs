@@ -109,8 +109,13 @@ impl IndexBackend for KvIndexBackend {
 /// A page may be shorter than the full `INDEX_PAGE_SIZE * INDEX_ENTRY_BYTES`
 /// length while it is still being filled — the live archiver rewrites the
 /// current page in full on every committed block, so partial pages only
-/// occur at the live tip. `get_id` returns `None` when the page is missing
-/// or the requested offset lies past the page's current length.
+/// occur at the live tip. `get_id` returns `None` when the page is missing,
+/// when the requested offset lies past the page's current length, or when
+/// the slot is all-zero (the unindexed sentinel — collision with a real
+/// BlockId is cryptographically impossible). The all-zero check matters
+/// when a partial migration or canary leaves intra-page gaps: the page
+/// extends past the gap because a higher-offset slot was written, and the
+/// gap reads back as zero bytes that must not be confused with a valid id.
 #[derive(Clone)]
 pub struct PagedIndexBackend {
     pub kv: KVStoreErased,
@@ -154,6 +159,12 @@ impl IndexBackend for PagedIndexBackend {
         }
         let mut arr = [0u8; 32];
         arr.copy_from_slice(&bytes[offset..offset + INDEX_ENTRY_BYTES]);
+        // All-zero is the "not yet indexed" sentinel for intra-page gaps
+        // (e.g. partial migration or canary with non-contiguous writes).
+        // Collision with a real BlockId is cryptographically impossible.
+        if arr == [0u8; 32] {
+            return Ok(None);
+        }
         Ok(Some(BlockId(Hash(arr))))
     }
 
@@ -301,5 +312,18 @@ mod tests {
         // Slot 7 is past the high water of 3, so the page is shorter than
         // (7+1)*32 bytes — read returns None even though page exists.
         assert!(b.get_id(7).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn paged_get_returns_none_for_intra_page_zero_gap() {
+        let b = fresh_paged_backend();
+        // Write slot 0 and slot 2 — slot 1 is now within the page's length
+        // but still all-zero. Without the sentinel check we'd return a
+        // valid-looking BlockId(0) here.
+        b.put_id(0, block_id(0x10)).await.unwrap();
+        b.put_id(2, block_id(0x20)).await.unwrap();
+        assert_eq!(b.get_id(0).await.unwrap(), Some(block_id(0x10)));
+        assert!(b.get_id(1).await.unwrap().is_none());
+        assert_eq!(b.get_id(2).await.unwrap(), Some(block_id(0x20)));
     }
 }
