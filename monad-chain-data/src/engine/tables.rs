@@ -30,12 +30,14 @@ use crate::{
         state::{BlockRecord, PublicationState},
         EvmBlockHeader,
     },
-    store::{BlobStore, BlobTable, KvTable, MetaStore, ScannableTableId, TableId},
+    store::{
+        BlobStore, BlobTable, CasOutcome, CasVersion, KvTable, MetaStore, MetaStoreCas,
+        ScannableTableId, TableId,
+    },
     txs::TxHashIndexTable,
 };
 
 pub struct Tables<M: MetaStore, B: BlobStore> {
-    publication: PublicationTables<M>,
     blocks: BlockTables<M>,
     tx_hash_index: TxHashIndexTable<M>,
     families: BTreeMap<Family, FamilyTables<M, B>>,
@@ -53,15 +55,10 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
             FamilyTables::new(meta_store.clone(), blob_store, Family::Tx),
         );
         Self {
-            publication: PublicationTables::new(meta_store.clone()),
             blocks: BlockTables::new(meta_store.clone()),
             tx_hash_index: TxHashIndexTable::new(meta_store),
             families,
         }
-    }
-
-    pub fn publication(&self) -> &PublicationTables<M> {
-        &self.publication
     }
 
     pub fn blocks(&self) -> &BlockTables<M> {
@@ -86,39 +83,66 @@ fn block_number_key(block_number: u64) -> [u8; 8] {
     block_number.to_be_bytes()
 }
 
-pub struct PublicationTables<M: MetaStore> {
-    publication_state: KvTable<M>,
+pub struct PublicationTables<M: MetaStoreCas> {
+    meta_store: M,
 }
 
-impl<M: MetaStore> PublicationTables<M> {
+impl<M: MetaStoreCas> PublicationTables<M> {
     pub const PUBLICATION_STATE_TABLE: TableId = TableId::new("publication_state");
     pub const PUBLICATION_STATE_KEY: &[u8] = b"state";
 
-    fn new(meta_store: M) -> Self {
-        Self {
-            publication_state: meta_store.table(Self::PUBLICATION_STATE_TABLE),
-        }
+    pub(crate) fn new(meta_store: M) -> Self {
+        Self { meta_store }
     }
 
-    pub async fn load_published_head(&self) -> Result<Option<u64>> {
-        let Some(record) = self
-            .publication_state
-            .get(Self::PUBLICATION_STATE_KEY)
+    /// Loads the current publication state along with its CAS version.
+    /// Writers must thread the version into the matching [`Self::cas_advance`]
+    /// call; readers that only want the head can use [`Self::load_published_head`].
+    pub async fn load_state(&self) -> Result<Option<(CasVersion, PublicationState)>> {
+        let Some((version, bytes)) = self
+            .meta_store
+            .cas_get(Self::PUBLICATION_STATE_TABLE, Self::PUBLICATION_STATE_KEY)
             .await?
         else {
             return Ok(None);
         };
 
-        Ok(Some(
-            PublicationState::decode(&record.value)?.indexed_finalized_head,
-        ))
+        Ok(Some((version, PublicationState::decode(&bytes)?)))
     }
 
-    pub async fn store_state(&self, state: PublicationState) -> Result<()> {
-        self.publication_state
-            .put(Self::PUBLICATION_STATE_KEY, Bytes::from(state.encode()))
+    pub async fn load_published_head(&self) -> Result<Option<u64>> {
+        Ok(self
+            .load_state()
+            .await?
+            .map(|(_, state)| state.indexed_finalized_head))
+    }
+
+    /// Atomically advances the publication state. `expected` must be the
+    /// version returned by the load that produced `next`'s preconditions —
+    /// writer+standby failover is the case this guards. On version mismatch
+    /// this returns `Err(FencedOut)` rather than [`CasOutcome::Conflict`]
+    /// so callers can `?` through ingest paths.
+    pub async fn cas_advance(
+        &self,
+        expected: Option<CasVersion>,
+        next: PublicationState,
+    ) -> Result<()> {
+        let outcome = self
+            .meta_store
+            .cas_put(
+                Self::PUBLICATION_STATE_TABLE,
+                Self::PUBLICATION_STATE_KEY,
+                expected,
+                Bytes::from(next.encode()),
+            )
             .await?;
-        Ok(())
+        match outcome {
+            CasOutcome::Applied { .. } => Ok(()),
+            CasOutcome::Conflict { .. } => {
+                let current_head = self.load_published_head().await?;
+                Err(MonadChainDataError::FencedOut { current_head })
+            }
+        }
     }
 }
 
@@ -144,10 +168,10 @@ impl<M: MetaStore> BlockTables<M> {
 
     pub async fn load_record(&self, block_number: u64) -> Result<Option<BlockRecord>> {
         let key = block_number_key(block_number);
-        let Some(record) = self.block_records.get(&key).await? else {
+        let Some(bytes) = self.block_records.get(&key).await? else {
             return Ok(None);
         };
-        Ok(Some(BlockRecord::decode(&record.value)?))
+        Ok(Some(BlockRecord::decode(&bytes)?))
     }
 
     pub async fn store_record(&self, block_number: u64, block_record: &BlockRecord) -> Result<()> {
@@ -160,10 +184,10 @@ impl<M: MetaStore> BlockTables<M> {
 
     pub async fn load_header(&self, block_number: u64) -> Result<Option<EvmBlockHeader>> {
         let key = block_number_key(block_number);
-        let Some(record) = self.block_headers.get(&key).await? else {
+        let Some(bytes) = self.block_headers.get(&key).await? else {
             return Ok(None);
         };
-        let header = EvmBlockHeader::decode(&mut record.value.as_ref())
+        let header = EvmBlockHeader::decode(&mut bytes.as_ref())
             .map_err(|_| MonadChainDataError::Decode("invalid block header rlp"))?;
         Ok(Some(header))
     }
@@ -184,17 +208,17 @@ impl<M: MetaStore> BlockTables<M> {
     /// load should expect `MissingData` if `n > published_head` or if the
     /// follow-up loads fail.
     pub async fn block_number_by_hash(&self, block_hash: &Hash32) -> Result<Option<u64>> {
-        let Some(record) = self
+        let Some(value) = self
             .block_hash_to_number_index
             .get(block_hash.as_slice())
             .await?
         else {
             return Ok(None);
         };
-        let bytes: [u8; 8] =
-            record.value.as_ref().try_into().map_err(|_| {
-                MonadChainDataError::Decode("invalid block_hash_to_number_index value")
-            })?;
+        let bytes: [u8; 8] = value
+            .as_ref()
+            .try_into()
+            .map_err(|_| MonadChainDataError::Decode("invalid block_hash_to_number_index value"))?;
         Ok(Some(u64::from_be_bytes(bytes)))
     }
 
@@ -286,7 +310,7 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
     /// the consumer's responsibility; the engine treats the value as opaque.
     pub async fn load_block_header(&self, block_number: u64) -> Result<Option<Bytes>> {
         let key = block_number_key(block_number);
-        Ok(self.block_headers.get(&key).await?.map(|r| r.value))
+        self.block_headers.get(&key).await
     }
 
     pub async fn store_block_header(&self, block_number: u64, bytes: Bytes) -> Result<()> {

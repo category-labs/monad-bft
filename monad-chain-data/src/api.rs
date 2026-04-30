@@ -19,7 +19,11 @@ use crate::{
     blocks::{
         execute_query_blocks, load_blocks_by_numbers, QueryBlocksRequest, QueryBlocksResponse,
     },
-    engine::{family::Family, query::family_runner::IndexedFamilyQuery, tables::Tables},
+    engine::{
+        family::Family,
+        query::family_runner::IndexedFamilyQuery,
+        tables::{PublicationTables, Tables},
+    },
     error::{MonadChainDataError, Result},
     family::{FinalizedBlock, Hash32},
     logs::{
@@ -31,15 +35,16 @@ use crate::{
         range::ResolvedBlockWindow,
         state::{BlockRecord, LogId, TxId},
     },
-    store::{BlobStore, MetaStore},
+    store::{BlobStore, MetaStoreCas},
     txs::{
         execute_block_scan_tx_query, execute_indexed_tx_query, load_txs_by_positions,
         QueryTransactionsRequest, QueryTransactionsResponse, TxEntry, TxIngestPlan, TxMaterializer,
     },
 };
 
-pub struct MonadChainDataService<M: MetaStore, B: BlobStore> {
+pub struct MonadChainDataService<M: MetaStoreCas, B: BlobStore> {
     tables: Tables<M, B>,
+    publication: PublicationTables<M>,
     limits: QueryLimits,
 }
 
@@ -51,9 +56,10 @@ pub struct IngestOutcome {
     pub written_txs: usize,
 }
 
-impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
+impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
     pub fn new(meta_store: M, blob_store: B, limits: QueryLimits) -> Self {
         Self {
+            publication: PublicationTables::new(meta_store.clone()),
             tables: Tables::new(meta_store, blob_store),
             limits,
         }
@@ -63,21 +69,33 @@ impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
         &self.tables
     }
 
+    pub fn publication(&self) -> &PublicationTables<M> {
+        &self.publication
+    }
+
     pub fn limits(&self) -> &QueryLimits {
         &self.limits
     }
 
     // The publication head is the commit boundary: every artifact written before
-    // `store_state` is pre-publication state and must not be treated as valid by
+    // `cas_advance` is pre-publication state and must not be treated as valid by
     // readers until the head advances. Retry/recovery should derive the next block
     // from the published head and may overwrite any matching pre-publication
     // artifacts left by an interrupted ingest.
+    //
+    // The head row is CAS-protected so that during writer+standby failover the
+    // losing writer sees `FencedOut` and steps down rather than racing the new
+    // writer's publish.
     /// Persists one finalized block and advances the published head on success.
     pub async fn ingest_block(&self, block: FinalizedBlock) -> Result<IngestOutcome> {
         let blocks = self.tables.blocks();
         let logs = self.tables.family(Family::Log);
         let txs = self.tables.family(Family::Tx);
-        let current_head = self.tables.publication().load_published_head().await?;
+        let current_state = self.publication.load_state().await?;
+        let (expected_version, current_head) = match &current_state {
+            Some((version, state)) => (Some(*version), Some(state.indexed_finalized_head)),
+            None => (None, None),
+        };
         let previous_record = blocks.validate_continuity(&block, current_head).await?;
         // Lenient: log-only fixtures pass `txs: vec![]` alongside non-empty
         // `logs_by_tx`. When callers do provide txs, the count must line up
@@ -147,11 +165,13 @@ impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
         blocks
             .store_record(block.block_number(), &block_record)
             .await?;
-        self.tables
-            .publication()
-            .store_state(crate::primitives::state::PublicationState {
-                indexed_finalized_head: block.block_number(),
-            })
+        self.publication
+            .cas_advance(
+                expected_version,
+                crate::primitives::state::PublicationState {
+                    indexed_finalized_head: block.block_number(),
+                },
+            )
             .await?;
 
         Ok(IngestOutcome {
@@ -252,7 +272,7 @@ impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
         let Some(location) = self.tables.tx_hash_index().get(&tx_hash).await? else {
             return Ok(None);
         };
-        let Some(head) = self.tables.publication().load_published_head().await? else {
+        let Some(head) = self.publication.load_published_head().await? else {
             return Ok(None);
         };
         if location.block_number > head {
@@ -285,8 +305,7 @@ impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
     }
 
     async fn load_published_head(&self) -> Result<u64> {
-        self.tables
-            .publication()
+        self.publication
             .load_published_head()
             .await?
             .ok_or(MonadChainDataError::MissingData("no published blocks"))

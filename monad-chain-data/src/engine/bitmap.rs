@@ -119,10 +119,10 @@ impl<M: MetaStore> BitmapTables<M> {
         let mut fragments = Vec::with_capacity(page.keys.len());
 
         for clustering in page.keys {
-            let record = self.fragments.get(&partition, &clustering).await?.ok_or(
+            let bytes = self.fragments.get(&partition, &clustering).await?.ok_or(
                 MonadChainDataError::MissingData("missing log bitmap fragment"),
             )?;
-            fragments.push(record.value);
+            fragments.push(bytes);
         }
 
         Ok(fragments)
@@ -135,11 +135,11 @@ impl<M: MetaStore> BitmapTables<M> {
         page_start_local: u32,
     ) -> Result<Option<BitmapPageMeta>> {
         let key = stream_page_key(stream_id, page_start_local);
-        let Some(record) = self.page_meta.get(&key).await? else {
+        let Some(bytes) = self.page_meta.get(&key).await? else {
             return Ok(None);
         };
 
-        Ok(Some(BitmapPageMeta::decode(&record.value)?))
+        Ok(Some(BitmapPageMeta::decode(&bytes)?))
     }
 
     pub async fn store_page_meta(
@@ -160,7 +160,7 @@ impl<M: MetaStore> BitmapTables<M> {
         page_start_local: u32,
     ) -> Result<Option<Bytes>> {
         let key = stream_page_key(stream_id, page_start_local);
-        Ok(self.page_blobs.get(&key).await?.map(|record| record.value))
+        self.page_blobs.get(&key).await
     }
 
     pub async fn store_page_blob(
