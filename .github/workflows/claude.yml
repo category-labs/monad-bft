@@ -10,20 +10,17 @@ on:
   pull_request:
     types: [opened, ready_for_review]
 
+permissions: {}
+
 concurrency:
-  group: >
-    ${{
-      github.event_name == 'pull_request'
-      && format('claude-pr-{0}', github.event.pull_request.number)
-      || format('claude-{0}', github.run_id)
-    }}
+  group: claude-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   check-permission:
     permissions: {}
     if: |
-      (github.event_name == 'pull_request' && github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository) ||
+      (github.event_name == 'pull_request' && !github.event.pull_request.draft && github.event.pull_request.head.repo.full_name == github.repository) ||
       (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
       (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
       (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude'))
@@ -43,52 +40,35 @@ jobs:
             });
             return ['admin', 'write'].includes(data.permission);
 
-  # Auto-review on PR open
-  review:
+  claude:
     needs: check-permission
-    if: |
-      needs.check-permission.outputs.has-write == 'true' &&
-      github.event_name == 'pull_request'
+    if: needs.check-permission.outputs.has-write == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
       pull-requests: write
       issues: write
-      actions: read
+      actions: read # Required for Claude to read CI results on PRs
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
           fetch-depth: 1
 
-      - name: Run Claude Code
+      - name: Run Claude Code (review)
+        if: github.event_name == 'pull_request'
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           claude_args: "--model claude-opus-4-6 --max-turns 30 --allowedTools Bash,Read,Glob,Grep"
-          prompt: "Review this pull request for code quality, correctness, and security. Analyze the diff, then post your findings as review comments."
+          prompt: "Review this pull request for code quality, correctness, and security. Analyze the diff carefully, check for potential bugs, security issues, and code style problems. Post your findings as review comments."
 
-  # On-demand @claude mentions
-  claude:
-    needs: check-permission
-    if: |
-      needs.check-permission.outputs.has-write == 'true' &&
-      github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: write
-      issues: write
-      actions: read
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: 1
-
-      - name: Run Claude Code
-        id: claude
+      - name: Run Claude Code (mention)
+        if: >
+          github.event_name == 'issue_comment' ||
+          github.event_name == 'pull_request_review_comment' ||
+          github.event_name == 'pull_request_review'
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
