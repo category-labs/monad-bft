@@ -18,7 +18,7 @@ use std::collections::HashSet;
 use monad_chain_data::{
     kernel::{bitmap::STREAM_PAGE_LOCAL_ID_SPAN, primary_dir::DIRECTORY_BUCKET_SIZE},
     Address, Bytes, FinalizedBlock, InMemoryBlobStore, InMemoryMetaStore, Log, LogData, LogFilter,
-    MonadChainDataService, QueryLimits, QueryLogsRequest, QueryOrder, Topic, B256,
+    LogsRelations, MonadChainDataService, QueryLimits, QueryLogsRequest, QueryOrder, Topic, B256,
 };
 
 mod common;
@@ -69,6 +69,7 @@ async fn indexed_query_logs_respects_and_or_filter_semantics() {
                     None,
                 ],
             },
+            relations: LogsRelations::default(),
         })
         .await
         .expect("query");
@@ -128,6 +129,7 @@ async fn indexed_query_logs_descending_returns_newest_first() {
                     None,
                 ],
             },
+            relations: LogsRelations::default(),
         })
         .await
         .expect("query");
@@ -188,6 +190,7 @@ async fn indexed_query_logs_paginates_at_block_boundaries() {
                     None,
                 ],
             },
+            relations: LogsRelations::default(),
         })
         .await
         .expect("first page");
@@ -210,6 +213,7 @@ async fn indexed_query_logs_paginates_at_block_boundaries() {
                     None,
                 ],
             },
+            relations: LogsRelations::default(),
         })
         .await
         .expect("second page");
@@ -269,6 +273,7 @@ async fn indexed_query_logs_scans_across_bucket_and_page_boundaries() {
                     None,
                 ],
             },
+            relations: LogsRelations::default(),
         })
         .await
         .expect("query");
@@ -344,6 +349,7 @@ async fn indexed_query_completes_current_block_when_limit_reached_mid_block() {
                     None,
                 ],
             },
+            relations: LogsRelations::default(),
         })
         .await
         .expect("query");
@@ -417,6 +423,7 @@ async fn indexed_query_completes_current_block_when_limit_reached_mid_block_desc
                     None,
                 ],
             },
+            relations: LogsRelations::default(),
         })
         .await
         .expect("query");
@@ -475,6 +482,7 @@ async fn indexed_query_stops_at_block_when_limit_equals_block_match_count() {
                     None,
                 ],
             },
+            relations: LogsRelations::default(),
         })
         .await
         .expect("query");
@@ -510,6 +518,7 @@ async fn unindexed_query_logs_still_uses_block_scan_fallback() {
             order: QueryOrder::Ascending,
             limit: 1,
             filter: LogFilter::default(),
+            relations: LogsRelations::default(),
         })
         .await
         .expect("query");

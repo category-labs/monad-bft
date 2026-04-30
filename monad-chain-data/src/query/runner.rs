@@ -47,6 +47,7 @@ pub async fn execute_block_scan_query<M: MetaStore, B: BlobStore>(
 
     Ok(QueryLogsResponse {
         logs,
+        blocks: None,
         from_block: request_from,
         to_block: request_to,
         cursor_block,

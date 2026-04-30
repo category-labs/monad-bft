@@ -19,6 +19,7 @@ use alloy_primitives::{Address, Bytes, B256};
 
 use super::{LogBlockHeader, LogEntry, RawLogEntry};
 use crate::{
+    blocks::Block,
     error::{MonadChainDataError, Result},
     family::Hash32,
     kernel::{bitmap::sharded_stream_id, tables::Tables},
@@ -34,6 +35,17 @@ use crate::{
 pub struct LogFilter {
     pub address: Option<HashSet<Address>>,
     pub topics: [Option<HashSet<B256>>; 4],
+}
+
+/// Opt-in relations joined onto a logs query response. Each field is a
+/// hint to the service; disabled relations leave the corresponding vec
+/// empty in the response.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct LogsRelations {
+    /// When true, `QueryLogsResponse::blocks` is populated with deduped
+    /// headers (sorted ascending by number) for the blocks that
+    /// contributed logs in this page.
+    pub blocks: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,6 +67,7 @@ pub struct QueryLogsRequest {
     /// [`DEFAULT_QUERY_LIMIT`].
     pub limit: usize,
     pub filter: LogFilter,
+    pub relations: LogsRelations,
 }
 
 impl Default for QueryLogsRequest {
@@ -65,6 +78,7 @@ impl Default for QueryLogsRequest {
             order: QueryOrder::default(),
             limit: DEFAULT_QUERY_LIMIT,
             filter: LogFilter::default(),
+            relations: LogsRelations::default(),
         }
     }
 }
@@ -75,6 +89,9 @@ impl Default for QueryLogsRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueryLogsResponse {
     pub logs: Vec<LogEntry>,
+    /// Deduped blocks for the `logs` in this page, sorted ascending by
+    /// block number. `None` unless `QueryLogsRequest::relations.blocks`.
+    pub blocks: Option<Vec<Block>>,
     pub from_block: BlockRef,
     pub to_block: BlockRef,
     pub cursor_block: BlockRef,
