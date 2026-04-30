@@ -5005,6 +5005,7 @@ dependencies = [
  "clap",
  "eyre",
  "fjall",
+ "futures",
  "monad-archive",
  "monad-eth-types",
  "roaring",

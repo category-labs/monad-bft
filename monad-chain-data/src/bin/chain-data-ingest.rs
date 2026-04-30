@@ -25,12 +25,13 @@ use alloy_eips::eip2718::Encodable2718;
 use alloy_primitives::Bytes;
 use clap::Parser;
 use eyre::{bail, Context, Result};
+use futures::{stream, StreamExt};
 use monad_archive::{
     cli::BlockDataReaderArgs,
     metrics::Metrics,
     model::{
         block_data_archive::{Block, BlockReceipts},
-        BlockDataReader,
+        BlockDataReader, BlockDataReaderErased,
     },
 };
 use monad_chain_data::{
@@ -71,6 +72,16 @@ struct Cli {
     /// How often to log progress, in blocks.
     #[arg(long, default_value_t = 1000)]
     log_every: u64,
+
+    /// Maximum number of block fetches in flight against the archive
+    /// concurrently. Each in-flight slot issues block + receipts in
+    /// parallel via `try_join!`, so peak archive request concurrency is
+    /// roughly `2 * concurrency`. Increase for high-latency archives
+    /// (e.g. S3); leave low for local FS where queueing buys nothing.
+    /// Memory ceiling is bounded by this many fetched-but-not-yet-ingested
+    /// blocks held in the prefetch buffer.
+    #[arg(long, default_value_t = 16)]
+    concurrency: usize,
 }
 
 #[tokio::main]
@@ -87,6 +98,9 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     if cli.start > cli.end {
         bail!("start ({}) must be <= end ({})", cli.start, cli.end);
+    }
+    if cli.concurrency == 0 {
+        bail!("--concurrency must be >= 1");
     }
 
     let store = FjallStore::open(&cli.data_dir)
@@ -127,22 +141,27 @@ async fn main() -> Result<()> {
     info!(
         start = cli.start,
         end = cli.end,
+        concurrency = cli.concurrency,
         data_dir = %cli.data_dir.display(),
         "starting ingest"
     );
 
+    // Bounded prefetch: buffered() polls up to `concurrency` fetches
+    // concurrently and yields results in input (block-number) order, so
+    // the consumer side stays sequential — which it must, since
+    // ingest_block validates parent_hash continuity.
+    let fetch_stream = stream::iter(cli.start..=cli.end)
+        .map(|n| {
+            let reader = reader.clone();
+            async move { fetch_block(&reader, n).await }
+        })
+        .buffered(cli.concurrency);
+    futures::pin_mut!(fetch_stream);
+
     let mut total_logs: u64 = 0;
     let mut total_txs: u64 = 0;
-    for n in cli.start..=cli.end {
-        let block = reader
-            .get_block_by_number(n)
-            .await
-            .with_context(|| format!("fetching block {n}"))?;
-        let receipts = reader
-            .get_block_receipts(n)
-            .await
-            .with_context(|| format!("fetching receipts for block {n}"))?;
-
+    while let Some(item) = fetch_stream.next().await {
+        let (n, block, receipts) = item?;
         let finalized = into_finalized_block(block, receipts)
             .with_context(|| format!("transforming block {n}"))?;
         let outcome = service
@@ -160,6 +179,16 @@ async fn main() -> Result<()> {
 
     info!(end = cli.end, total_txs, total_logs, "ingest complete");
     Ok(())
+}
+
+async fn fetch_block(
+    reader: &BlockDataReaderErased,
+    n: u64,
+) -> Result<(u64, Block, BlockReceipts)> {
+    let (block, receipts) =
+        tokio::try_join!(reader.get_block_by_number(n), reader.get_block_receipts(n),)
+            .with_context(|| format!("fetching block {n}"))?;
+    Ok((n, block, receipts))
 }
 
 fn into_finalized_block(block: Block, receipts: BlockReceipts) -> Result<FinalizedBlock> {
