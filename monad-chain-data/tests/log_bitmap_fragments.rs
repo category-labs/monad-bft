@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use monad_chain_data::{
-    kernel::bitmap::{decode_bitmap_blob, sharded_stream_id, STREAM_PAGE_LOCAL_ID_SPAN},
+    engine::bitmap::{decode_bitmap_blob, sharded_stream_id, STREAM_PAGE_LOCAL_ID_SPAN},
     Address, Bytes, FinalizedBlock, InMemoryBlobStore, InMemoryMetaStore, Log, LogData,
     MonadChainDataService, QueryLimits, Topic, B256,
 };

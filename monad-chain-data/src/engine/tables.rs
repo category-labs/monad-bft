@@ -17,24 +17,24 @@ use alloy_rlp::Decodable;
 use bytes::Bytes;
 
 use crate::{
-    error::{MonadChainDataError, Result},
-    family::{FinalizedBlock, Hash32},
-    kernel::{
+    engine::{
         bitmap::{BitmapFragmentWrite, BitmapPageMeta, BitmapTables},
+        family::Family,
         primary_dir::{PrimaryDirBucket, PrimaryDirFragment, PrimaryDirTables},
     },
-    logs::LogBlockHeader,
+    error::{MonadChainDataError, Result},
+    family::{FinalizedBlock, Hash32},
     primitives::{
         state::{BlockRecord, PublicationState},
         EvmBlockHeader,
     },
-    store::{BlobStore, BlobTable, BlobTableId, KvTable, MetaStore, ScannableTableId, TableId},
+    store::{BlobStore, BlobTable, KvTable, MetaStore, ScannableTableId, TableId},
 };
 
 pub struct Tables<M: MetaStore, B: BlobStore> {
     publication: PublicationTables<M>,
     blocks: BlockTables<M>,
-    logs: LogTables<M, B>,
+    logs: FamilyTables<M, B>,
 }
 
 impl<M: MetaStore, B: BlobStore> Tables<M, B> {
@@ -42,7 +42,7 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
         Self {
             publication: PublicationTables::new(meta_store.clone()),
             blocks: BlockTables::new(meta_store.clone()),
-            logs: LogTables::new(meta_store, blob_store),
+            logs: FamilyTables::new(meta_store, blob_store, Family::Log),
         }
     }
 
@@ -54,7 +54,7 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
         &self.blocks
     }
 
-    pub fn logs(&self) -> &LogTables<M, B> {
+    pub fn logs(&self) -> &FamilyTables<M, B> {
         &self.logs
     }
 }
@@ -221,38 +221,28 @@ impl<M: MetaStore> BlockTables<M> {
     }
 }
 
-pub struct LogTables<M: MetaStore, B: BlobStore> {
+pub struct FamilyTables<M: MetaStore, B: BlobStore> {
     block_headers: KvTable<M>,
     block_blobs: BlobTable<B>,
     dir: PrimaryDirTables<M>,
     bitmap: BitmapTables<M>,
 }
 
-impl<M: MetaStore, B: BlobStore> LogTables<M, B> {
-    pub const BLOCK_LOG_HEADER_TABLE: TableId = TableId::new("block_log_header");
-    pub const BLOCK_LOG_BLOB_TABLE: BlobTableId = BlobTableId::new("block_log_blob");
-    pub const LOG_DIR_BUCKET_TABLE: TableId = TableId::new("log_dir_bucket");
-    pub const LOG_DIR_BY_BLOCK_TABLE: ScannableTableId = ScannableTableId::new("log_dir_by_block");
-    pub const LOG_BITMAP_PAGE_META_TABLE: TableId = TableId::new("log_bitmap_page_meta");
-    pub const LOG_BITMAP_PAGE_BLOB_TABLE: TableId = TableId::new("log_bitmap_page_blob");
-    pub const LOG_OPEN_BITMAP_STREAM_TABLE: ScannableTableId =
-        ScannableTableId::new("log_open_bitmap_stream");
-    pub const LOG_BITMAP_BY_BLOCK_TABLE: ScannableTableId =
-        ScannableTableId::new("log_bitmap_by_block");
-
-    fn new(meta_store: M, blob_store: B) -> Self {
+impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
+    fn new(meta_store: M, blob_store: B, family: Family) -> Self {
+        let ids = family.table_ids();
         Self {
-            block_headers: meta_store.table(Self::BLOCK_LOG_HEADER_TABLE),
-            block_blobs: blob_store.table(Self::BLOCK_LOG_BLOB_TABLE),
+            block_headers: meta_store.table(ids.block_header),
+            block_blobs: blob_store.table(ids.block_blob),
             dir: PrimaryDirTables::new(
-                meta_store.scannable_table(Self::LOG_DIR_BY_BLOCK_TABLE),
-                meta_store.table(Self::LOG_DIR_BUCKET_TABLE),
+                meta_store.scannable_table(ids.dir_by_block),
+                meta_store.table(ids.dir_bucket),
             ),
             bitmap: BitmapTables::new(
-                meta_store.scannable_table(Self::LOG_BITMAP_BY_BLOCK_TABLE),
-                meta_store.table(Self::LOG_BITMAP_PAGE_META_TABLE),
-                meta_store.table(Self::LOG_BITMAP_PAGE_BLOB_TABLE),
-                meta_store.scannable_table(Self::LOG_OPEN_BITMAP_STREAM_TABLE),
+                meta_store.scannable_table(ids.bitmap_by_block),
+                meta_store.table(ids.bitmap_page_meta),
+                meta_store.table(ids.bitmap_page_blob),
+                meta_store.scannable_table(ids.open_bitmap_stream),
             ),
         }
     }
@@ -265,23 +255,20 @@ impl<M: MetaStore, B: BlobStore> LogTables<M, B> {
         &self.bitmap
     }
 
-    pub async fn load_block_header(&self, block_number: u64) -> Result<Option<LogBlockHeader>> {
-        let key = block_number_key(block_number);
-        let Some(record) = self.block_headers.get(&key).await? else {
-            return Ok(None);
-        };
-        Ok(Some(LogBlockHeader::decode(&record.value)?))
+    pub fn bitmap_by_block_table(&self) -> ScannableTableId {
+        self.bitmap.fragments_table()
     }
 
-    pub async fn store_block_header(
-        &self,
-        block_number: u64,
-        block_log_header: &LogBlockHeader,
-    ) -> Result<()> {
+    /// Loads the raw per-block header bytes for this family. The codec is
+    /// the consumer's responsibility; the engine treats the value as opaque.
+    pub async fn load_block_header(&self, block_number: u64) -> Result<Option<Bytes>> {
         let key = block_number_key(block_number);
-        self.block_headers
-            .put(&key, Bytes::from(block_log_header.encode()))
-            .await?;
+        Ok(self.block_headers.get(&key).await?.map(|r| r.value))
+    }
+
+    pub async fn store_block_header(&self, block_number: u64, bytes: Bytes) -> Result<()> {
+        let key = block_number_key(block_number);
+        self.block_headers.put(&key, bytes).await?;
         Ok(())
     }
 

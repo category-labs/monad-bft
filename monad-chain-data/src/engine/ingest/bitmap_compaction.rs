@@ -16,14 +16,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
-    error::Result,
-    kernel::{
+    engine::{
         bitmap::{
             compact_bitmap_page, global_page_start, local_page_start, stream_page_global_start,
             BitmapFragmentWrite,
         },
-        tables::LogTables,
+        tables::FamilyTables,
     },
+    error::Result,
     store::{BlobStore, MetaStore},
 };
 
@@ -37,7 +37,7 @@ struct BitmapCompactionPlan {
 /// Compacts every stream page sealed by the current ingest transition and
 /// updates the frontier open-stream inventory for the page that remains live.
 pub(crate) async fn compact_newly_sealed_log_bitmap_pages<M: MetaStore, B: BlobStore>(
-    logs: &LogTables<M, B>,
+    logs: &FamilyTables<M, B>,
     written_fragments: &[BitmapFragmentWrite],
     from_next_primary_id: u64,
     next_primary_id: u64,
@@ -71,7 +71,7 @@ pub(crate) async fn compact_newly_sealed_log_bitmap_pages<M: MetaStore, B: BlobS
 }
 
 async fn compact_page_streams<M: MetaStore, B: BlobStore>(
-    logs: &LogTables<M, B>,
+    logs: &FamilyTables<M, B>,
     global_page_start: u64,
     streams: &BTreeSet<String>,
 ) -> Result<()> {
@@ -176,7 +176,7 @@ mod tests {
     use bytes::Bytes;
 
     use super::{build_compaction_plan, touched_streams_by_page, BitmapCompactionPlan};
-    use crate::kernel::bitmap::{BitmapFragmentWrite, STREAM_PAGE_LOCAL_ID_SPAN};
+    use crate::engine::bitmap::{BitmapFragmentWrite, STREAM_PAGE_LOCAL_ID_SPAN};
 
     #[test]
     fn compaction_plan_carries_previous_open_streams_into_the_sealed_start_page() {

@@ -16,7 +16,7 @@
 use std::collections::HashSet;
 
 use monad_chain_data::{
-    kernel::{bitmap::STREAM_PAGE_LOCAL_ID_SPAN, primary_dir::DIRECTORY_BUCKET_SIZE},
+    engine::{bitmap::STREAM_PAGE_LOCAL_ID_SPAN, primary_dir::DIRECTORY_BUCKET_SIZE},
     Address, Bytes, FinalizedBlock, InMemoryBlobStore, InMemoryMetaStore, Log, LogData, LogFilter,
     LogsRelations, MonadChainDataService, QueryEnvelope, QueryLimits, QueryLogsRequest, QueryOrder,
     Topic, B256,

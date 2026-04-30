@@ -20,10 +20,11 @@ use roaring::RoaringBitmap;
 
 use crate::{
     error::{MonadChainDataError, Result},
-    primitives::state::LogId,
-    store::{KvTable, MetaStore, ScannableKvTable},
+    primitives::state::PrimaryId,
+    store::{KvTable, MetaStore, ScannableKvTable, ScannableTableId},
 };
 
+pub const LOCAL_ID_BITS: u32 = PrimaryId::LOCAL_ID_BITS;
 pub const STREAM_PAGE_LOCAL_ID_SPAN: u32 = 64 * 1024;
 const BITMAP_BLOB_VERSION: u8 = 2;
 const BITMAP_BLOB_HEADER_LEN: usize = 1 + 4 * 3;
@@ -81,6 +82,10 @@ impl<M: MetaStore> BitmapTables<M> {
             page_blobs,
             open_streams,
         }
+    }
+
+    pub fn fragments_table(&self) -> ScannableTableId {
+        self.fragments.table
     }
 
     /// Stores one bitmap fragment for a block within the stream page it covers.
@@ -334,7 +339,7 @@ pub fn page_start_local(local_id: u32) -> u32 {
 }
 
 pub fn sharded_stream_id(index_kind: &str, value: &[u8], shard: u64) -> String {
-    let shard_hex_width = ((64 - LogId::LOCAL_ID_BITS) as usize).div_ceil(4);
+    let shard_hex_width = ((64 - PrimaryId::LOCAL_ID_BITS) as usize).div_ceil(4);
     format!(
         "{index_kind}/{}/{:0width$x}",
         alloy_primitives::hex::encode(value),
@@ -355,31 +360,11 @@ pub(crate) fn global_page_start(primary_id: u64) -> u64 {
 
 pub(crate) fn stream_page_global_start(stream_id: &str, page_start_local: u32) -> Result<u64> {
     let shard = parse_stream_shard(stream_id)?;
-    Ok((shard << LogId::LOCAL_ID_BITS) + u64::from(page_start_local))
+    Ok((shard << PrimaryId::LOCAL_ID_BITS) + u64::from(page_start_local))
 }
 
 pub(crate) fn local_page_start(global_page_start: u64) -> u32 {
-    (global_page_start % (1u64 << LogId::LOCAL_ID_BITS)) as u32
-}
-
-/// Expands one log into the indexed stream entries written at ingest time.
-pub fn stream_entries_for_log(
-    address: &[u8],
-    topics: &[alloy_primitives::B256],
-    global_log_id: LogId,
-) -> Vec<(String, u32)> {
-    let shard = global_log_id.shard();
-    let local = global_log_id.local();
-
-    let mut entries = Vec::with_capacity(5);
-    entries.push((sharded_stream_id("addr", address, shard), local));
-
-    let topic_kinds = ["topic0", "topic1", "topic2", "topic3"];
-    for (topic, kind) in topics.iter().zip(topic_kinds) {
-        entries.push((sharded_stream_id(kind, topic.as_slice(), shard), local));
-    }
-
-    entries
+    (global_page_start % (1u64 << PrimaryId::LOCAL_ID_BITS)) as u32
 }
 
 fn compacted_bitmap_blob(

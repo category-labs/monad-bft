@@ -15,6 +15,4 @@
 
 pub(crate) mod bitmap;
 pub(crate) mod directory_resolver;
-pub(crate) mod indexed;
-pub mod runner;
 pub(crate) mod window;

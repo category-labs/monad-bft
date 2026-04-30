@@ -15,8 +15,8 @@
 
 use super::bitmap::max_local_id;
 use crate::{
+    engine::tables::Tables,
     error::Result,
-    kernel::tables::Tables,
     primitives::{
         page::QueryOrder,
         range::ResolvedBlockWindow,

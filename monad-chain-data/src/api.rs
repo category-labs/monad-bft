@@ -13,22 +13,28 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use bytes::Bytes;
+
 use crate::{
     blocks::{execute_query_blocks, load_blocks_for_logs, QueryBlocksRequest, QueryBlocksResponse},
+    engine::{
+        ingest::{
+            bitmap_compaction::compact_newly_sealed_log_bitmap_pages,
+            directory_compaction::compact_newly_sealed_log_directory_buckets,
+        },
+        tables::Tables,
+    },
     error::{MonadChainDataError, Result},
     family::FinalizedBlock,
-    ingest::{
-        bitmap_compaction::compact_newly_sealed_log_bitmap_pages,
-        directory_compaction::compact_newly_sealed_log_directory_buckets,
+    logs::{
+        execute_block_scan_query, execute_indexed_log_query, LogIngestPlan, QueryLogsRequest,
+        QueryLogsResponse,
     },
-    kernel::tables::Tables,
-    logs::{LogIngestPlan, QueryLogsRequest, QueryLogsResponse},
     primitives::{
         limits::QueryLimits,
         range::ResolvedBlockWindow,
         state::{BlockRecord, LogId},
     },
-    query::{indexed::execute_indexed_log_query, runner::execute_block_scan_query},
     store::{BlobStore, MetaStore},
 };
 
@@ -89,7 +95,7 @@ impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
             .await?;
         logs.store_block_blob(block.block_number(), block_log_blob)
             .await?;
-        logs.store_block_header(block.block_number(), &block_log_header)
+        logs.store_block_header(block.block_number(), Bytes::from(block_log_header.encode()))
             .await?;
         logs.dir()
             .persist_block_fragment(

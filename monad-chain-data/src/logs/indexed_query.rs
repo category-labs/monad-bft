@@ -15,13 +15,16 @@
 
 use roaring::RoaringBitmap;
 
-use super::{
-    bitmap::load_clause_bitmap_for_shard, directory_resolver::LogIdResolver,
-    window::resolve_log_window,
-};
 use crate::{
+    engine::{
+        clause::IndexedFilter,
+        query::{
+            bitmap::load_intersection_bitmap_for_shard, directory_resolver::LogIdResolver,
+            window::resolve_log_window,
+        },
+        tables::Tables,
+    },
     error::{MonadChainDataError, Result},
-    kernel::tables::Tables,
     logs::{LogMaterializer, QueryLogsRequest, QueryLogsResponse},
     primitives::{page::QueryOrder, range::ResolvedBlockWindow, refs::BlockSpan, state::LogId},
     store::{BlobStore, MetaStore},
@@ -61,8 +64,14 @@ pub(crate) async fn execute_indexed_log_query<M: MetaStore, B: BlobStore>(
     for shard in log_window.shard_iter(request.envelope.order) {
         let (local_from, local_to) = log_window.local_range_for_shard(shard);
 
-        let Some(candidate_bitmap) =
-            load_candidate_bitmap_for_shard(tables, &clauses, shard, local_from, local_to).await?
+        let Some(candidate_bitmap) = load_intersection_bitmap_for_shard(
+            tables.logs(),
+            &clauses,
+            shard,
+            local_from,
+            local_to,
+        )
+        .await?
         else {
             continue;
         };
@@ -116,37 +125,6 @@ pub(crate) async fn execute_indexed_log_query<M: MetaStore, B: BlobStore>(
             cursor_block: request_to,
         },
     })
-}
-
-async fn load_candidate_bitmap_for_shard<M: MetaStore, B: BlobStore>(
-    tables: &Tables<M, B>,
-    clauses: &[crate::logs::IndexedLogClause],
-    shard: u64,
-    local_from: u32,
-    local_to: u32,
-) -> Result<Option<RoaringBitmap>> {
-    let mut accumulator: Option<RoaringBitmap> = None;
-
-    for clause in clauses {
-        let clause_bitmap =
-            load_clause_bitmap_for_shard(tables.logs(), clause, shard, local_from, local_to)
-                .await?;
-        if clause_bitmap.is_empty() {
-            return Ok(None);
-        }
-
-        match accumulator.as_mut() {
-            Some(current) => {
-                *current &= &clause_bitmap;
-                if current.is_empty() {
-                    return Ok(None);
-                }
-            }
-            None => accumulator = Some(clause_bitmap),
-        }
-    }
-
-    Ok(accumulator.filter(|bitmap| !bitmap.is_empty()))
 }
 
 fn locals_in_query_order(bitmap: RoaringBitmap, order: QueryOrder) -> Vec<u32> {

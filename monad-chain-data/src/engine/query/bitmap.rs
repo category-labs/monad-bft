@@ -16,19 +16,18 @@
 use roaring::RoaringBitmap;
 
 use crate::{
-    error::{MonadChainDataError, Result},
-    kernel::{
-        bitmap::{decode_bitmap_blob, page_start_local, STREAM_PAGE_LOCAL_ID_SPAN},
-        tables::LogTables,
+    engine::{
+        bitmap::{decode_bitmap_blob, page_start_local, LOCAL_ID_BITS, STREAM_PAGE_LOCAL_ID_SPAN},
+        clause::IndexedClause,
+        tables::FamilyTables,
     },
-    logs::IndexedLogClause,
-    primitives::state::LogId,
+    error::{MonadChainDataError, Result},
     store::{BlobStore, MetaStore},
 };
 
-pub(crate) async fn load_clause_bitmap_for_shard<M: MetaStore, B: BlobStore>(
-    logs: &LogTables<M, B>,
-    clause: &IndexedLogClause,
+async fn load_clause_bitmap_for_shard<M: MetaStore, B: BlobStore>(
+    logs: &FamilyTables<M, B>,
+    clause: &IndexedClause,
     shard: u64,
     local_from: u32,
     local_to: u32,
@@ -59,8 +58,41 @@ pub(crate) async fn load_clause_bitmap_for_shard<M: MetaStore, B: BlobStore>(
     Ok(clause_bitmap)
 }
 
+/// Loads the AND-intersection of all clauses for one shard, clipped to
+/// the local-id range. Returns `None` if any clause yields an empty
+/// bitmap, meaning the shard cannot contribute candidates.
+pub(crate) async fn load_intersection_bitmap_for_shard<M: MetaStore, B: BlobStore>(
+    family: &FamilyTables<M, B>,
+    clauses: &[IndexedClause],
+    shard: u64,
+    local_from: u32,
+    local_to: u32,
+) -> Result<Option<RoaringBitmap>> {
+    let mut accumulator: Option<RoaringBitmap> = None;
+
+    for clause in clauses {
+        let clause_bitmap =
+            load_clause_bitmap_for_shard(family, clause, shard, local_from, local_to).await?;
+        if clause_bitmap.is_empty() {
+            return Ok(None);
+        }
+
+        match accumulator.as_mut() {
+            Some(current) => {
+                *current &= &clause_bitmap;
+                if current.is_empty() {
+                    return Ok(None);
+                }
+            }
+            None => accumulator = Some(clause_bitmap),
+        }
+    }
+
+    Ok(accumulator.filter(|bitmap| !bitmap.is_empty()))
+}
+
 async fn load_bitmap_page<M: MetaStore, B: BlobStore>(
-    logs: &LogTables<M, B>,
+    logs: &FamilyTables<M, B>,
     stream_id: &str,
     page_start_local: u32,
     local_from: u32,
@@ -100,7 +132,7 @@ async fn load_bitmap_page<M: MetaStore, B: BlobStore>(
 }
 
 pub(crate) const fn max_local_id() -> u32 {
-    (1u32 << LogId::LOCAL_ID_BITS) - 1
+    (1u32 << LOCAL_ID_BITS) - 1
 }
 
 fn overlaps(start: u32, end: u32, query_start: u32, query_end: u32) -> bool {

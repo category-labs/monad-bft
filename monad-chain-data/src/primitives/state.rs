@@ -21,10 +21,13 @@ use crate::{
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, RlpEncodable, RlpDecodable)]
-pub struct LogId(u64);
+pub struct PrimaryId(u64);
 
-impl LogId {
+impl PrimaryId {
     pub const ZERO: Self = Self(0);
+    /// Number of low bits used for the in-shard local index. The remaining
+    /// high bits encode the shard. Shared with `engine::bitmap` so the on-disk
+    /// bit layout cannot drift between encode and decode sites.
     pub const LOCAL_ID_BITS: u32 = 24;
     const LOCAL_ID_MASK: u64 = (1u64 << Self::LOCAL_ID_BITS) - 1;
 
@@ -40,7 +43,7 @@ impl LogId {
         self.0
             .checked_add(rhs)
             .map(Self)
-            .ok_or(MonadChainDataError::Decode("log id overflow"))
+            .ok_or(MonadChainDataError::Decode("primary id overflow"))
     }
 
     pub const fn shard(self) -> u64 {
@@ -58,9 +61,46 @@ impl LogId {
     pub fn idx_in_block(self, first: LogId) -> Result<usize> {
         let delta = self
             .0
-            .checked_sub(first.0)
+            .checked_sub(first.as_u64())
             .ok_or(MonadChainDataError::Decode("log id below block start"))?;
         usize::try_from(delta).map_err(|_| MonadChainDataError::Decode("log block index overflow"))
+    }
+}
+
+/// `PrimaryId` scoped to the log family. Kept as a distinct type so log-domain
+/// signatures don't accept primary ids from other families by mistake.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, RlpEncodable, RlpDecodable)]
+pub struct LogId(PrimaryId);
+
+impl LogId {
+    pub const ZERO: Self = Self(PrimaryId::ZERO);
+
+    pub const fn new(value: u64) -> Self {
+        Self(PrimaryId::new(value))
+    }
+
+    pub const fn as_u64(self) -> u64 {
+        self.0.as_u64()
+    }
+
+    pub fn checked_add(self, rhs: u64) -> Result<Self> {
+        self.0.checked_add(rhs).map(Self)
+    }
+
+    pub const fn shard(self) -> u64 {
+        self.0.shard()
+    }
+
+    pub const fn local(self) -> u32 {
+        self.0.local()
+    }
+
+    pub const fn from_parts(shard: u64, local: u32) -> Self {
+        Self(PrimaryId::from_parts(shard, local))
+    }
+
+    pub fn idx_in_block(self, first: LogId) -> Result<usize> {
+        self.0.idx_in_block(first)
     }
 }
 

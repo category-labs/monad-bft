@@ -14,14 +14,14 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use crate::{
+    engine::tables::Tables,
     error::Result,
-    kernel::tables::Tables,
     logs::{LogMaterializer, QueryLogsRequest, QueryLogsResponse},
     primitives::{range::ResolvedBlockWindow, refs::BlockSpan},
     store::{BlobStore, MetaStore},
 };
 
-/// Executes the block-scan fallback path for unindexed log queries.
+/// Walks blocks in query order, applying `LogFilter` to each block's logs.
 pub async fn execute_block_scan_query<M: MetaStore, B: BlobStore>(
     tables: &Tables<M, B>,
     request: &QueryLogsRequest,

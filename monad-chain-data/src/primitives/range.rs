@@ -14,8 +14,8 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use crate::{
+    engine::tables::BlockTables,
     error::{MonadChainDataError, Result},
-    kernel::tables::BlockTables,
     primitives::{
         limits::{LimitExceededKind, QueryEnvelope, QueryLimits},
         page::QueryOrder,
