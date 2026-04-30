@@ -139,6 +139,12 @@ impl ValSetUpdater<SecpSignature, BlsSignatureCollection<PubKey>> {
             // This file should never be manually edited anyways.
             .expect("failed to read validators_path")
             .get_validator_set(&locked_epoch)
+            .unwrap_or_else(|| {
+                panic!(
+                    "validator set for epoch {:?} should be in config file",
+                    locked_epoch
+                )
+            })
             .clone();
         self.valset_sender
             .send((validator_set_data, seq_num, locked_epoch))
