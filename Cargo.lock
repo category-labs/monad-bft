@@ -5620,6 +5620,7 @@ dependencies = [
  "monad-consensus-types",
  "monad-crypto",
  "monad-eth-types",
+ "monad-executor-glue",
  "monad-peer-score",
  "monad-secp",
  "monad-types",

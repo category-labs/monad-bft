@@ -586,7 +586,7 @@ fn setup_node(
         let name_record = NameRecord::new(
             *participant.tcp_addr.ip(),
             participant.tcp_addr.port(),
-            participant.udp_addr.port(),
+            Some(participant.udp_addr.port()),
             participant.authenticated_udp_addr.port(),
             0,
             0,
@@ -638,7 +638,7 @@ fn setup_node(
 
     let mut known_addresses = std::collections::HashMap::new();
     for (node_id, record) in &routing_info {
-        known_addresses.insert(*node_id, record.name_record.udp_socket());
+        known_addresses.insert(*node_id, record.name_record.authenticated_udp_socket());
     }
 
     let noop_builder = NopDiscoveryBuilder {
