@@ -82,6 +82,20 @@ struct Cli {
     /// blocks held in the prefetch buffer.
     #[arg(long, default_value_t = 16)]
     concurrency: usize,
+
+    /// Number of retry attempts after a fetch failure, per block. The
+    /// first attempt is not counted, so `--max-retries 5` means up to 6
+    /// total attempts. Set to 0 to disable retry. Only fetches retry —
+    /// transform and ingest errors are deterministic and bail
+    /// immediately.
+    #[arg(long, default_value_t = 5)]
+    max_retries: u32,
+
+    /// Initial backoff between retry attempts, in milliseconds. Doubles
+    /// after each failure (exponential, no jitter), so the default 200ms
+    /// with 5 retries waits ~6.2s in total worst case.
+    #[arg(long, default_value_t = 200)]
+    retry_backoff_ms: u64,
 }
 
 #[tokio::main]
@@ -150,10 +164,12 @@ async fn main() -> Result<()> {
     // concurrently and yields results in input (block-number) order, so
     // the consumer side stays sequential — which it must, since
     // ingest_block validates parent_hash continuity.
+    let max_retries = cli.max_retries;
+    let initial_backoff = Duration::from_millis(cli.retry_backoff_ms);
     let fetch_stream = stream::iter(cli.start..=cli.end)
         .map(|n| {
             let reader = reader.clone();
-            async move { fetch_block(&reader, n).await }
+            async move { fetch_block_with_retry(&reader, n, max_retries, initial_backoff).await }
         })
         .buffered(cli.concurrency);
     futures::pin_mut!(fetch_stream);
@@ -189,6 +205,43 @@ async fn fetch_block(
         tokio::try_join!(reader.get_block_by_number(n), reader.get_block_receipts(n),)
             .with_context(|| format!("fetching block {n}"))?;
     Ok((n, block, receipts))
+}
+
+/// Retries `fetch_block` with exponential backoff. Total attempts =
+/// `max_retries + 1`. Retries every error indiscriminately — we don't
+/// have a transient-vs-permanent classification on the archive side, so
+/// genuinely permanent failures (e.g. block-not-found past the
+/// archive's tip) waste a fixed retry budget before propagating.
+async fn fetch_block_with_retry(
+    reader: &BlockDataReaderErased,
+    n: u64,
+    max_retries: u32,
+    initial_backoff: Duration,
+) -> Result<(u64, Block, BlockReceipts)> {
+    let mut backoff = initial_backoff;
+    for attempt in 0..=max_retries {
+        match fetch_block(reader, n).await {
+            Ok(item) => return Ok(item),
+            Err(e) if attempt < max_retries => {
+                warn!(
+                    block = n,
+                    attempt = attempt + 1,
+                    max_attempts = max_retries + 1,
+                    backoff_ms = backoff.as_millis() as u64,
+                    error = %e,
+                    "fetch failed, retrying after backoff"
+                );
+                tokio::time::sleep(backoff).await;
+                backoff = backoff.saturating_mul(2);
+            }
+            Err(e) => {
+                return Err(e).with_context(|| {
+                    format!("fetch_block({n}) failed after {} attempts", max_retries + 1)
+                });
+            }
+        }
+    }
+    unreachable!("loop exits via Ok or final Err arm")
 }
 
 fn into_finalized_block(block: Block, receipts: BlockReceipts) -> Result<FinalizedBlock> {
