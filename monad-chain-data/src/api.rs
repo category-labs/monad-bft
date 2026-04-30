@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use crate::{
-    blocks::load_blocks_for_logs,
+    blocks::{execute_query_blocks, load_blocks_for_logs, QueryBlocksRequest, QueryBlocksResponse},
     error::{MonadChainDataError, Result},
     family::FinalizedBlock,
     ingest::{
@@ -162,6 +162,24 @@ impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
         }
 
         Ok(response)
+    }
+
+    /// Executes a finalized blocks query over the current published head.
+    /// The service's configured `QueryLimits` bound the request shape and
+    /// the resolved block-range span.
+    pub async fn query_blocks(&self, request: QueryBlocksRequest) -> Result<QueryBlocksResponse> {
+        self.limits.check_limit(request.envelope.limit)?;
+
+        let head = self.load_published_head().await?;
+        let window = ResolvedBlockWindow::resolve(
+            &request.envelope,
+            head,
+            &self.limits,
+            self.tables.blocks(),
+        )
+        .await?;
+
+        execute_query_blocks(&self.tables, &request, window).await
     }
 
     async fn load_published_head(&self) -> Result<u64> {
