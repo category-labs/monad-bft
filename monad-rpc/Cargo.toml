@@ -50,9 +50,12 @@ alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
 alloy-rpc-types = { workspace = true, features = ["eth"] }
 async-stream = { workspace = true }
+async-trait = { workspace = true }
+auto_impl = { workspace = true }
 bytes = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 dashmap = { workspace = true }
+dyn-clone = { workspace = true }
 flume = { workspace = true }
 futures = { workspace = true }
 futures-util = { workspace = true }
