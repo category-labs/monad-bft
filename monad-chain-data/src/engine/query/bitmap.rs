@@ -25,110 +25,112 @@ use crate::{
     store::{BlobStore, MetaStore},
 };
 
-async fn load_clause_bitmap_for_shard<M: MetaStore, B: BlobStore>(
-    logs: &FamilyTables<M, B>,
-    clause: &IndexedClause,
-    shard: u64,
-    local_from: u32,
-    local_to: u32,
-) -> Result<RoaringBitmap> {
-    let stream_ids = clause.stream_ids_for_shard(shard);
-    if stream_ids.is_empty() {
-        return Ok(RoaringBitmap::new());
-    }
+impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
+    /// Loads the AND-intersection of all clauses for one shard, clipped to
+    /// the local-id range. Returns `None` if any clause yields an empty
+    /// bitmap, meaning the shard cannot contribute candidates.
+    pub async fn load_intersection_bitmap(
+        &self,
+        clauses: &[IndexedClause],
+        shard: u64,
+        local_from: u32,
+        local_to: u32,
+    ) -> Result<Option<RoaringBitmap>> {
+        let mut accumulator: Option<RoaringBitmap> = None;
 
-    let first_page_start = page_start_local(local_from);
-    let last_page_start = page_start_local(local_to);
-    let mut clause_bitmap = RoaringBitmap::new();
-
-    for stream_id in stream_ids {
-        let mut page_start = first_page_start;
-        loop {
-            clause_bitmap |=
-                load_bitmap_page(logs, &stream_id, page_start, local_from, local_to).await?;
-
-            if page_start == last_page_start {
-                break;
+        for clause in clauses {
+            let clause_bitmap = self
+                .load_clause_bitmap(clause, shard, local_from, local_to)
+                .await?;
+            if clause_bitmap.is_empty() {
+                return Ok(None);
             }
-            page_start = page_start.saturating_add(STREAM_PAGE_LOCAL_ID_SPAN);
-        }
-    }
 
-    clip_bitmap_to_local_range(&mut clause_bitmap, local_from, local_to);
-    Ok(clause_bitmap)
-}
-
-/// Loads the AND-intersection of all clauses for one shard, clipped to
-/// the local-id range. Returns `None` if any clause yields an empty
-/// bitmap, meaning the shard cannot contribute candidates.
-pub(crate) async fn load_intersection_bitmap_for_shard<M: MetaStore, B: BlobStore>(
-    family: &FamilyTables<M, B>,
-    clauses: &[IndexedClause],
-    shard: u64,
-    local_from: u32,
-    local_to: u32,
-) -> Result<Option<RoaringBitmap>> {
-    let mut accumulator: Option<RoaringBitmap> = None;
-
-    for clause in clauses {
-        let clause_bitmap =
-            load_clause_bitmap_for_shard(family, clause, shard, local_from, local_to).await?;
-        if clause_bitmap.is_empty() {
-            return Ok(None);
-        }
-
-        match accumulator.as_mut() {
-            Some(current) => {
-                *current &= &clause_bitmap;
-                if current.is_empty() {
-                    return Ok(None);
+            match accumulator.as_mut() {
+                Some(current) => {
+                    *current &= &clause_bitmap;
+                    if current.is_empty() {
+                        return Ok(None);
+                    }
                 }
+                None => accumulator = Some(clause_bitmap),
             }
-            None => accumulator = Some(clause_bitmap),
         }
+
+        Ok(accumulator.filter(|bitmap| !bitmap.is_empty()))
     }
 
-    Ok(accumulator.filter(|bitmap| !bitmap.is_empty()))
-}
-
-async fn load_bitmap_page<M: MetaStore, B: BlobStore>(
-    logs: &FamilyTables<M, B>,
-    stream_id: &str,
-    page_start_local: u32,
-    local_from: u32,
-    local_to: u32,
-) -> Result<RoaringBitmap> {
-    if let Some(meta) = logs
-        .load_bitmap_page_meta(stream_id, page_start_local)
-        .await?
-    {
-        if !overlaps(meta.min_local, meta.max_local, local_from, local_to) {
+    async fn load_clause_bitmap(
+        &self,
+        clause: &IndexedClause,
+        shard: u64,
+        local_from: u32,
+        local_to: u32,
+    ) -> Result<RoaringBitmap> {
+        let stream_ids = clause.stream_ids_for_shard(shard);
+        if stream_ids.is_empty() {
             return Ok(RoaringBitmap::new());
         }
 
-        let page_blob = logs
-            .load_bitmap_page_blob(stream_id, page_start_local)
-            .await?
-            .ok_or(MonadChainDataError::MissingData(
-                "missing log bitmap page blob",
-            ))?;
-        // Page loads may include out-of-range bits from a partially overlapping
-        // page; the caller clips the final merged bitmap once per clause.
-        return Ok(decode_bitmap_blob(page_blob.as_ref())?.bitmap);
-    }
+        let first_page_start = page_start_local(local_from);
+        let last_page_start = page_start_local(local_to);
+        let mut clause_bitmap = RoaringBitmap::new();
 
-    let mut page_bitmap = RoaringBitmap::new();
-    for fragment in logs
-        .load_bitmap_fragments(stream_id, page_start_local)
-        .await?
-    {
-        let fragment = decode_bitmap_blob(fragment.as_ref())?;
-        if overlaps(fragment.min_local, fragment.max_local, local_from, local_to) {
-            page_bitmap |= fragment.bitmap;
+        for stream_id in stream_ids {
+            let mut page_start = first_page_start;
+            loop {
+                clause_bitmap |= self
+                    .load_bitmap_page(&stream_id, page_start, local_from, local_to)
+                    .await?;
+
+                if page_start == last_page_start {
+                    break;
+                }
+                page_start = page_start.saturating_add(STREAM_PAGE_LOCAL_ID_SPAN);
+            }
         }
+
+        clip_bitmap_to_local_range(&mut clause_bitmap, local_from, local_to);
+        Ok(clause_bitmap)
     }
 
-    Ok(page_bitmap)
+    async fn load_bitmap_page(
+        &self,
+        stream_id: &str,
+        page_start_local: u32,
+        local_from: u32,
+        local_to: u32,
+    ) -> Result<RoaringBitmap> {
+        if let Some(meta) = self
+            .load_bitmap_page_meta(stream_id, page_start_local)
+            .await?
+        {
+            if !overlaps(meta.min_local, meta.max_local, local_from, local_to) {
+                return Ok(RoaringBitmap::new());
+            }
+
+            let page_blob = self
+                .load_bitmap_page_blob(stream_id, page_start_local)
+                .await?
+                .ok_or(MonadChainDataError::MissingData("missing bitmap page blob"))?;
+            // Page loads may include out-of-range bits from a partially overlapping
+            // page; the caller clips the final merged bitmap once per clause.
+            return Ok(decode_bitmap_blob(page_blob.as_ref())?.bitmap);
+        }
+
+        let mut page_bitmap = RoaringBitmap::new();
+        for fragment in self
+            .load_bitmap_fragments(stream_id, page_start_local)
+            .await?
+        {
+            let fragment = decode_bitmap_blob(fragment.as_ref())?;
+            if overlaps(fragment.min_local, fragment.max_local, local_from, local_to) {
+                page_bitmap |= fragment.bitmap;
+            }
+        }
+
+        Ok(page_bitmap)
+    }
 }
 
 pub(crate) const fn max_local_id() -> u32 {

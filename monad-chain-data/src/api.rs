@@ -17,13 +17,7 @@ use bytes::Bytes;
 
 use crate::{
     blocks::{execute_query_blocks, load_blocks_for_logs, QueryBlocksRequest, QueryBlocksResponse},
-    engine::{
-        ingest::{
-            bitmap_compaction::compact_newly_sealed_log_bitmap_pages,
-            directory_compaction::compact_newly_sealed_log_directory_buckets,
-        },
-        tables::Tables,
-    },
+    engine::{family::Family, tables::Tables},
     error::{MonadChainDataError, Result},
     family::FinalizedBlock,
     logs::{
@@ -74,11 +68,11 @@ impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
     /// Persists one finalized block and advances the published head on success.
     pub async fn ingest_block(&self, block: FinalizedBlock) -> Result<IngestOutcome> {
         let blocks = self.tables.blocks();
-        let logs = self.tables.logs();
+        let logs = self.tables.family(Family::Log);
         let current_head = self.tables.publication().load_published_head().await?;
         let previous_record = blocks.validate_continuity(&block, current_head).await?;
         let next_log_id = match previous_record {
-            Some(previous) => previous.logs.next_log_id()?,
+            Some(previous) => LogId::from(previous.logs.next_primary_id_exclusive()?),
             None => LogId::ZERO,
         };
 
@@ -89,36 +83,15 @@ impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
             bitmap_fragments,
             written_logs,
         } = LogIngestPlan::build(&block, next_log_id)?;
-        let next_log_id_exclusive = block_record.logs.next_log_id()?;
         blocks
             .store_header(block.block_number(), &block.header)
             .await?;
-        logs.store_block_blob(block.block_number(), block_log_blob)
-            .await?;
-        logs.store_block_header(block.block_number(), Bytes::from(block_log_header.encode()))
-            .await?;
-        logs.dir()
-            .persist_block_fragment(
-                block.block_number(),
-                block_record.logs.first_log_id.as_u64(),
-                block_record.logs.count,
-            )
-            .await?;
-        for fragment in &bitmap_fragments {
-            logs.store_bitmap_fragment(fragment, block.block_number())
-                .await?;
-        }
-        compact_newly_sealed_log_directory_buckets(
-            logs,
-            next_log_id.as_u64(),
-            next_log_id_exclusive.as_u64(),
-        )
-        .await?;
-        compact_newly_sealed_log_bitmap_pages(
-            logs,
+        logs.persist_indexed_family_ingest(
+            block.block_number(),
+            block_log_blob,
+            Bytes::from(block_log_header.encode()),
+            block_record.logs,
             &bitmap_fragments,
-            next_log_id.as_u64(),
-            next_log_id_exclusive.as_u64(),
         )
         .await?;
         blocks

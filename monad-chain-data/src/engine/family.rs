@@ -13,7 +13,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use crate::store::{BlobTableId, ScannableTableId, TableId};
+use crate::{
+    primitives::state::{BlockRecord, FamilyWindowRecord},
+    store::{BlobTableId, ScannableTableId, TableId},
+};
 
 pub struct FamilyTableIds {
     pub block_header: TableId,
@@ -52,6 +55,14 @@ impl Family {
     pub const fn table_ids(self) -> FamilyTableIds {
         match self {
             Family::Log => family_table_ids!("log"),
+        }
+    }
+
+    /// Returns the per-block window for this family, if this block recorded
+    /// any records in the family.
+    pub fn window_in(self, block: &BlockRecord) -> Option<FamilyWindowRecord> {
+        match self {
+            Family::Log => Some(block.logs),
         }
     }
 }

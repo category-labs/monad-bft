@@ -15,7 +15,7 @@
 
 use monad_chain_data::{
     engine::primary_dir::{PrimaryDirFragment, DIRECTORY_BUCKET_SIZE},
-    Address, Bytes, FinalizedBlock, InMemoryBlobStore, InMemoryMetaStore, Log, LogData,
+    Address, Bytes, Family, FinalizedBlock, InMemoryBlobStore, InMemoryMetaStore, Log, LogData,
     MonadChainDataService, QueryLimits, B256,
 };
 
@@ -41,7 +41,7 @@ async fn ingest_persists_log_dir_fragment_for_single_bucket_block() {
 
     let fragments = service
         .tables()
-        .logs()
+        .family(Family::Log)
         .load_bucket_fragments(0)
         .await
         .expect("load fragments");
@@ -74,7 +74,7 @@ async fn ingest_persists_zero_width_fragment_for_empty_block() {
 
     let fragments = service
         .tables()
-        .logs()
+        .family(Family::Log)
         .load_bucket_fragments(0)
         .await
         .expect("load fragments");
@@ -120,13 +120,13 @@ async fn ingest_persists_spanning_fragment_in_each_covered_bucket() {
 
     let first_partition = service
         .tables()
-        .logs()
+        .family(Family::Log)
         .load_bucket_fragments(0)
         .await
         .expect("load first partition");
     let second_partition = service
         .tables()
-        .logs()
+        .family(Family::Log)
         .load_bucket_fragments(DIRECTORY_BUCKET_SIZE)
         .await
         .expect("load second partition");

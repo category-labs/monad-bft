@@ -19,9 +19,9 @@ use bytes::Bytes as StorageBytes;
 use monad_chain_data::{
     engine::bitmap::{sharded_stream_id, stream_page_key, STREAM_PAGE_LOCAL_ID_SPAN},
     store::{MetaStore, TableId},
-    Address, Bytes, FinalizedBlock, InMemoryBlobStore, InMemoryMetaStore, Log, LogData, LogFilter,
-    LogsRelations, MonadChainDataService, QueryEnvelope, QueryLimits, QueryLogsRequest, QueryOrder,
-    Topic, B256,
+    Address, Bytes, Family, FinalizedBlock, InMemoryBlobStore, InMemoryMetaStore, Log, LogData,
+    LogFilter, LogsRelations, MonadChainDataService, QueryEnvelope, QueryLimits, QueryLogsRequest,
+    QueryOrder, Topic, B256,
 };
 
 mod common;
@@ -69,28 +69,28 @@ async fn ingest_compacts_sealed_pages_and_query_prefers_compacted_page_blobs() {
     let frontier_stream = sharded_stream_id("addr", frontier_address.as_slice(), 0);
     assert!(service
         .tables()
-        .logs()
+        .family(Family::Log)
         .load_bitmap_page_meta(&old_stream, 0)
         .await
         .expect("load old page meta")
         .is_some());
     assert!(service
         .tables()
-        .logs()
+        .family(Family::Log)
         .load_bitmap_page_blob(&old_stream, 0)
         .await
         .expect("load old page blob")
         .is_some());
     assert!(service
         .tables()
-        .logs()
+        .family(Family::Log)
         .load_bitmap_page_meta(&frontier_stream, 0)
         .await
         .expect("load sealed frontier page meta")
         .is_some());
     assert!(service
         .tables()
-        .logs()
+        .family(Family::Log)
         .load_bitmap_page_meta(&frontier_stream, STREAM_PAGE_LOCAL_ID_SPAN)
         .await
         .expect("load live frontier page meta")
@@ -99,7 +99,7 @@ async fn ingest_compacts_sealed_pages_and_query_prefers_compacted_page_blobs() {
     let partition = stream_page_key(&old_stream, 0);
     meta_store
         .scan_put(
-            service.tables().logs().bitmap_by_block_table(),
+            service.tables().family(Family::Log).bitmap_by_block_table(),
             &partition,
             &1u64.to_be_bytes(),
             StorageBytes::from_static(b"corrupt-fragment"),
@@ -206,10 +206,7 @@ async fn query_errors_when_compacted_page_meta_exists_but_blob_is_missing() {
         .await
         .expect_err("missing page blob should error");
 
-    assert_eq!(
-        error.to_string(),
-        "missing data: missing log bitmap page blob"
-    );
+    assert_eq!(error.to_string(), "missing data: missing bitmap page blob");
 }
 
 fn repeated_logs(address: Address, topics: Vec<Topic>, count: usize) -> Vec<Log> {

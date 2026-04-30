@@ -48,7 +48,7 @@ impl LogIngestPlan {
             block_hash: block.block_hash(),
             parent_hash: block.parent_hash(),
             logs: FamilyWindowRecord {
-                first_log_id,
+                first_primary_id: first_log_id.into(),
                 count: log_count,
             },
         };

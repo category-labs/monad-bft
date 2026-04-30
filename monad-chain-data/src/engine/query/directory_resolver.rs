@@ -18,37 +18,40 @@ use std::collections::{hash_map::Entry, HashMap};
 use crate::{
     engine::{
         primary_dir::{bucket_start, PrimaryDirBucket, PrimaryDirFragment},
-        tables::Tables,
+        tables::FamilyTables,
     },
     error::{MonadChainDataError, Result},
-    primitives::state::LogId,
+    primitives::state::PrimaryId,
     store::{BlobStore, MetaStore},
 };
 
-/// Resolves a global log ID to its block number and position within that block.
+/// Resolves a primary id to its block number and position within that block.
 ///
-/// Caches the chosen directory source for each 10k bucket so repeated log-id
+/// Caches the chosen directory source for each 10k bucket so repeated id
 /// lookups do not re-read summaries or fragments.
-pub(crate) struct LogIdResolver<'a, M: MetaStore, B: BlobStore> {
-    tables: &'a Tables<M, B>,
+pub(crate) struct PrimaryIdResolver<'a, M: MetaStore, B: BlobStore> {
+    family: &'a FamilyTables<M, B>,
     bucket_cache: HashMap<u64, CachedBucket>,
 }
 
-impl<'a, M: MetaStore, B: BlobStore> LogIdResolver<'a, M, B> {
-    pub(crate) fn new(tables: &'a Tables<M, B>) -> Self {
+impl<'a, M: MetaStore, B: BlobStore> PrimaryIdResolver<'a, M, B> {
+    pub(crate) fn new(family: &'a FamilyTables<M, B>) -> Self {
         Self {
-            tables,
+            family,
             bucket_cache: HashMap::new(),
         }
     }
 
-    pub(crate) async fn resolve(&mut self, log_id: LogId) -> Result<Option<ResolvedLogLocation>> {
-        let bucket = bucket_start(log_id.as_u64());
+    pub(crate) async fn resolve(
+        &mut self,
+        id: PrimaryId,
+    ) -> Result<Option<ResolvedPrimaryIdLocation>> {
+        let bucket = bucket_start(id.as_u64());
         if let Entry::Vacant(entry) = self.bucket_cache.entry(bucket) {
-            let cached = if let Some(summary) = self.tables.logs().load_bucket(bucket).await? {
+            let cached = if let Some(summary) = self.family.load_bucket(bucket).await? {
                 CachedBucket::Summary(summary)
             } else {
-                CachedBucket::Fragments(self.tables.logs().load_bucket_fragments(bucket).await?)
+                CachedBucket::Fragments(self.family.load_bucket_fragments(bucket).await?)
             };
             entry.insert(cached);
         }
@@ -57,16 +60,16 @@ impl<'a, M: MetaStore, B: BlobStore> LogIdResolver<'a, M, B> {
             .bucket_cache
             .get(&bucket)
             .ok_or(MonadChainDataError::Decode(
-                "missing cached log directory bucket",
+                "missing cached primary directory bucket",
             ))?;
-        cached.resolve(log_id)
+        cached.resolve(id)
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ResolvedLogLocation {
+pub(crate) struct ResolvedPrimaryIdLocation {
     pub(crate) block_number: u64,
-    pub(crate) log_block_idx: usize,
+    pub(crate) idx_in_block: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,16 +79,16 @@ enum CachedBucket {
 }
 
 impl CachedBucket {
-    fn resolve(&self, log_id: LogId) -> Result<Option<ResolvedLogLocation>> {
+    fn resolve(&self, id: PrimaryId) -> Result<Option<ResolvedPrimaryIdLocation>> {
         match self {
-            Self::Summary(bucket) => resolved_location_from_bucket(bucket, log_id)?
+            Self::Summary(bucket) => resolved_location_from_bucket(bucket, id)?
                 .ok_or(MonadChainDataError::Decode(
-                    "compacted primary directory bucket missing queried log id",
+                    "compacted primary directory bucket missing queried id",
                 ))
                 .map(Some),
-            Self::Fragments(fragments) => resolved_location_from_fragments(fragments, log_id)?
+            Self::Fragments(fragments) => resolved_location_from_fragments(fragments, id)?
                 .ok_or(MonadChainDataError::Decode(
-                    "primary directory fragments missing queried log id",
+                    "primary directory fragments missing queried id",
                 ))
                 .map(Some),
         }
@@ -94,49 +97,48 @@ impl CachedBucket {
 
 fn resolved_location_from_bucket(
     bucket: &PrimaryDirBucket,
-    log_id: LogId,
-) -> Result<Option<ResolvedLogLocation>> {
-    let Some(entry_index) = containing_bucket_entry(bucket, log_id.as_u64()) else {
+    id: PrimaryId,
+) -> Result<Option<ResolvedPrimaryIdLocation>> {
+    let Some(entry_index) = containing_bucket_entry(bucket, id.as_u64()) else {
         return Ok(None);
     };
 
-    Ok(Some(ResolvedLogLocation {
+    Ok(Some(ResolvedPrimaryIdLocation {
         block_number: bucket.start_block.saturating_add(entry_index as u64),
-        log_block_idx: log_id.idx_in_block(LogId::new(bucket.first_primary_ids[entry_index]))?,
+        idx_in_block: id.idx_in_block(PrimaryId::new(bucket.first_primary_ids[entry_index]))?,
     }))
 }
 
-fn containing_bucket_entry(bucket: &PrimaryDirBucket, log_id: u64) -> Option<usize> {
+fn containing_bucket_entry(bucket: &PrimaryDirBucket, id: u64) -> Option<usize> {
     if bucket.first_primary_ids.len() < 2 {
         return None;
     }
 
     let upper = bucket
         .first_primary_ids
-        .partition_point(|first_primary_id| *first_primary_id <= log_id);
+        .partition_point(|first_primary_id| *first_primary_id <= id);
     if upper == 0 || upper >= bucket.first_primary_ids.len() {
         return None;
     }
 
     let entry_index = upper - 1;
     let end = bucket.first_primary_ids[upper];
-    (log_id < end).then_some(entry_index)
+    (id < end).then_some(entry_index)
 }
 
 fn resolved_location_from_fragments(
     fragments: &[PrimaryDirFragment],
-    log_id: LogId,
-) -> Result<Option<ResolvedLogLocation>> {
+    id: PrimaryId,
+) -> Result<Option<ResolvedPrimaryIdLocation>> {
     let Some(fragment) = fragments.iter().find(|fragment| {
-        log_id.as_u64() >= fragment.first_primary_id
-            && log_id.as_u64() < fragment.end_primary_id_exclusive
+        id.as_u64() >= fragment.first_primary_id && id.as_u64() < fragment.end_primary_id_exclusive
     }) else {
         return Ok(None);
     };
 
-    Ok(Some(ResolvedLogLocation {
+    Ok(Some(ResolvedPrimaryIdLocation {
         block_number: fragment.block_number,
-        log_block_idx: log_id.idx_in_block(LogId::new(fragment.first_primary_id))?,
+        idx_in_block: id.idx_in_block(PrimaryId::new(fragment.first_primary_id))?,
     }))
 }
 
@@ -145,7 +147,7 @@ mod tests {
     use super::{
         containing_bucket_entry, resolved_location_from_bucket, CachedBucket, PrimaryDirFragment,
     };
-    use crate::{engine::primary_dir::PrimaryDirBucket, primitives::state::LogId};
+    use crate::{engine::primary_dir::PrimaryDirBucket, primitives::state::PrimaryId};
 
     #[test]
     fn bucket_lookup_uses_last_duplicate_boundary() {
@@ -157,10 +159,10 @@ mod tests {
         assert_eq!(containing_bucket_entry(&bucket, 1006), Some(2));
 
         let location =
-            resolved_location_from_bucket(&bucket, LogId::new(1006)).expect("resolve bucket");
+            resolved_location_from_bucket(&bucket, PrimaryId::new(1006)).expect("resolve bucket");
         let location = location.expect("contained");
         assert_eq!(location.block_number, 52);
-        assert_eq!(location.log_block_idx, 3);
+        assert_eq!(location.idx_in_block, 3);
     }
 
     #[test]
@@ -180,12 +182,12 @@ mod tests {
             first_primary_id: 100,
             end_primary_id_exclusive: 103,
         }])
-        .resolve(LogId::new(104))
+        .resolve(PrimaryId::new(104))
         .expect_err("missing fragment candidate should fail loud");
 
         assert_eq!(
             error.to_string(),
-            "decode error: primary directory fragments missing queried log id"
+            "decode error: primary directory fragments missing queried id"
         );
     }
 }

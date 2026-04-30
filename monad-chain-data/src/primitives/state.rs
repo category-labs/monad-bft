@@ -58,12 +58,13 @@ impl PrimaryId {
         Self((shard << Self::LOCAL_ID_BITS) | (local as u64))
     }
 
-    pub fn idx_in_block(self, first: LogId) -> Result<usize> {
+    pub fn idx_in_block(self, first: PrimaryId) -> Result<usize> {
         let delta = self
             .0
-            .checked_sub(first.as_u64())
-            .ok_or(MonadChainDataError::Decode("log id below block start"))?;
-        usize::try_from(delta).map_err(|_| MonadChainDataError::Decode("log block index overflow"))
+            .checked_sub(first.0)
+            .ok_or(MonadChainDataError::Decode("primary id below block start"))?;
+        usize::try_from(delta)
+            .map_err(|_| MonadChainDataError::Decode("primary block index overflow"))
     }
 }
 
@@ -98,21 +99,29 @@ impl LogId {
     pub const fn from_parts(shard: u64, local: u32) -> Self {
         Self(PrimaryId::from_parts(shard, local))
     }
+}
 
-    pub fn idx_in_block(self, first: LogId) -> Result<usize> {
-        self.0.idx_in_block(first)
+impl From<PrimaryId> for LogId {
+    fn from(id: PrimaryId) -> Self {
+        Self(id)
+    }
+}
+
+impl From<LogId> for PrimaryId {
+    fn from(id: LogId) -> Self {
+        id.0
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 pub struct FamilyWindowRecord {
-    pub first_log_id: LogId,
+    pub first_primary_id: PrimaryId,
     pub count: u32,
 }
 
 impl FamilyWindowRecord {
-    pub fn next_log_id(self) -> Result<LogId> {
-        self.first_log_id.checked_add(u64::from(self.count))
+    pub fn next_primary_id_exclusive(self) -> Result<PrimaryId> {
+        self.first_primary_id.checked_add(u64::from(self.count))
     }
 }
 

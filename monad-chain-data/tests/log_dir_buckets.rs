@@ -15,7 +15,7 @@
 
 use monad_chain_data::{
     engine::primary_dir::{PrimaryDirBucket, PrimaryDirFragment, DIRECTORY_BUCKET_SIZE},
-    Address, Bytes, FinalizedBlock, InMemoryBlobStore, InMemoryMetaStore, Log, LogData,
+    Address, Bytes, Family, FinalizedBlock, InMemoryBlobStore, InMemoryMetaStore, Log, LogData,
     MonadChainDataService, QueryLimits, B256,
 };
 
@@ -54,7 +54,7 @@ async fn ingest_compacts_a_sealed_directory_bucket_when_crossing_the_boundary() 
 
     let bucket = service
         .tables()
-        .logs()
+        .family(Family::Log)
         .load_bucket(0)
         .await
         .expect("load compacted bucket")
@@ -69,7 +69,7 @@ async fn ingest_compacts_a_sealed_directory_bucket_when_crossing_the_boundary() 
 
     let fragments = service
         .tables()
-        .logs()
+        .family(Family::Log)
         .load_bucket_fragments(0)
         .await
         .expect("load fragments");
@@ -92,7 +92,7 @@ async fn ingest_compacts_a_sealed_directory_bucket_when_crossing_the_boundary() 
     assert!(
         service
             .tables()
-            .logs()
+            .family(Family::Log)
             .load_bucket(DIRECTORY_BUCKET_SIZE)
             .await
             .expect("load frontier bucket")

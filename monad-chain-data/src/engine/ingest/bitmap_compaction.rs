@@ -34,67 +34,69 @@ struct BitmapCompactionPlan {
     final_open_streams: BTreeSet<String>,
 }
 
-/// Compacts every stream page sealed by the current ingest transition and
-/// updates the frontier open-stream inventory for the page that remains live.
-pub(crate) async fn compact_newly_sealed_log_bitmap_pages<M: MetaStore, B: BlobStore>(
-    logs: &FamilyTables<M, B>,
-    written_fragments: &[BitmapFragmentWrite],
-    from_next_primary_id: u64,
-    next_primary_id: u64,
-) -> Result<()> {
-    if next_primary_id <= from_next_primary_id {
-        return Ok(());
+impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
+    /// Compacts every stream page sealed by the current ingest transition and
+    /// updates the frontier open-stream inventory for the page that remains live.
+    pub async fn compact_newly_sealed_bitmap_pages(
+        &self,
+        written_fragments: &[BitmapFragmentWrite],
+        from_next_primary_id: u64,
+        next_primary_id: u64,
+    ) -> Result<()> {
+        if next_primary_id <= from_next_primary_id {
+            return Ok(());
+        }
+
+        let start_open_page = global_page_start(from_next_primary_id);
+        let previous_open_streams = self
+            .load_open_bitmap_streams(start_open_page)
+            .await?
+            .into_iter()
+            .collect();
+        let touched_by_page = touched_streams_by_page(written_fragments)?;
+        let plan = build_compaction_plan(
+            previous_open_streams,
+            touched_by_page,
+            from_next_primary_id,
+            next_primary_id,
+        );
+
+        for (page_start, streams) in &plan.sealed_pages {
+            self.compact_page_streams(*page_start, streams).await?;
+        }
+
+        self.record_open_bitmap_streams(plan.final_open_page_start, &plan.final_open_streams)
+            .await?;
+
+        Ok(())
     }
 
-    let start_open_page = global_page_start(from_next_primary_id);
-    let previous_open_streams = logs
-        .load_open_bitmap_streams(start_open_page)
-        .await?
-        .into_iter()
-        .collect();
-    let touched_by_page = touched_streams_by_page(written_fragments)?;
-    let plan = build_compaction_plan(
-        previous_open_streams,
-        touched_by_page,
-        from_next_primary_id,
-        next_primary_id,
-    );
+    async fn compact_page_streams(
+        &self,
+        global_page_start: u64,
+        streams: &BTreeSet<String>,
+    ) -> Result<()> {
+        let page_start_local = local_page_start(global_page_start);
 
-    for (page_start, streams) in &plan.sealed_pages {
-        compact_page_streams(logs, *page_start, streams).await?;
+        for stream_id in streams {
+            let fragments = self
+                .load_bitmap_fragments(stream_id, page_start_local)
+                .await?;
+            // Sealed-page fragments are intentionally retained after compaction —
+            // the query path falls back to fragments when the compacted page is
+            // missing, and keeping them lets a corrupted page-meta/page-blob write
+            // be reconstructed from source. Storage cost is bounded by retention
+            // policy, which lives outside this slice.
+            let (meta, bitmap_blob) = compact_bitmap_page(page_start_local, &fragments)?;
+
+            self.store_bitmap_page_blob(stream_id, page_start_local, bitmap_blob)
+                .await?;
+            self.store_bitmap_page_meta(stream_id, page_start_local, &meta)
+                .await?;
+        }
+
+        Ok(())
     }
-
-    logs.record_open_bitmap_streams(plan.final_open_page_start, &plan.final_open_streams)
-        .await?;
-
-    Ok(())
-}
-
-async fn compact_page_streams<M: MetaStore, B: BlobStore>(
-    logs: &FamilyTables<M, B>,
-    global_page_start: u64,
-    streams: &BTreeSet<String>,
-) -> Result<()> {
-    let page_start_local = local_page_start(global_page_start);
-
-    for stream_id in streams {
-        let fragments = logs
-            .load_bitmap_fragments(stream_id, page_start_local)
-            .await?;
-        // Sealed-page fragments are intentionally retained after compaction —
-        // the query path falls back to fragments when the compacted page is
-        // missing, and keeping them lets a corrupted page-meta/page-blob write
-        // be reconstructed from source. Storage cost is bounded by retention
-        // policy, which lives outside this slice.
-        let (meta, bitmap_blob) = compact_bitmap_page(page_start_local, &fragments)?;
-
-        logs.store_bitmap_page_blob(stream_id, page_start_local, bitmap_blob)
-            .await?;
-        logs.store_bitmap_page_meta(stream_id, page_start_local, &meta)
-            .await?;
-    }
-
-    Ok(())
 }
 
 fn touched_streams_by_page(
