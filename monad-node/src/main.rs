@@ -147,7 +147,13 @@ fn main() {
 async fn run(node_state: NodeState) -> Result<(), ()> {
     let locked_epoch_validators = node_state
         .validators_config
-        .get_locked_validator_sets(&node_state.forkpoint_config);
+        .get_locked_validator_sets(&node_state.forkpoint_config)
+        .unwrap_or_else(|epoch| {
+            panic!(
+                "validators config missing validator set for epoch: {}",
+                epoch
+            )
+        });
 
     let current_epoch = node_state
         .forkpoint_config

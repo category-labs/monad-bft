@@ -1623,9 +1623,7 @@ where
 mod test {
     use monad_bls::BlsSignatureCollection;
     use monad_consensus_types::{
-        quorum_certificate::QuorumCertificate,
-        validator_data::{ValidatorData, ValidatorSetData, ValidatorsConfig},
-        voting::Vote,
+        quorum_certificate::QuorumCertificate, validator_data::ValidatorSetData, voting::Vote,
     };
     use monad_crypto::{certificate_signature::CertificateSignaturePubKey, signing_domain};
     use monad_eth_types::EthExecutionProtocol;
@@ -1835,56 +1833,6 @@ mod test {
             ),
             Err(ForkpointValidationError::InvalidQC)
         );
-    }
-
-    #[test]
-    fn test_validators_config() {
-        let (keys, cert_keys, _valset, _valmap) = create_keys_w_validators::<
-            SignatureType,
-            SignatureCollectionType,
-            _,
-        >(1, ValidatorSetFactory::default());
-
-        let make_val_set_data = |stake: Stake| {
-            ValidatorSetData(
-                vec![ValidatorData {
-                    node_id: NodeId::new(keys[0].pubkey()),
-                    cert_pubkey: cert_keys[0].pubkey(),
-                    stake,
-                }]
-                .into(),
-            )
-        };
-
-        let validators_config: ValidatorsConfig<SignatureCollectionType> = ValidatorsConfig {
-            validators: vec![
-                (Epoch(1), make_val_set_data(Stake::ONE)),
-                (Epoch(2), make_val_set_data(Stake::from(2))),
-                (Epoch(4), make_val_set_data(Stake::from(3))),
-                (Epoch(10), make_val_set_data(Stake::from(4))),
-            ]
-            .into_iter()
-            .collect(),
-        };
-
-        let expected = vec![
-            (Epoch(1), make_val_set_data(Stake::ONE)),
-            (Epoch(2), make_val_set_data(Stake::from(2))),
-            (Epoch(3), make_val_set_data(Stake::from(2))),
-            (Epoch(4), make_val_set_data(Stake::from(3))),
-            (Epoch(5), make_val_set_data(Stake::from(3))),
-            (Epoch(6), make_val_set_data(Stake::from(3))),
-            (Epoch(7), make_val_set_data(Stake::from(3))),
-            (Epoch(8), make_val_set_data(Stake::from(3))),
-            (Epoch(9), make_val_set_data(Stake::from(3))),
-            (Epoch(10), make_val_set_data(Stake::from(4))),
-            (Epoch(11), make_val_set_data(Stake::from(4))),
-            (Epoch(12), make_val_set_data(Stake::from(4))),
-        ];
-
-        for (epoch, val_set) in &expected {
-            assert_eq!(val_set, validators_config.get_validator_set(epoch))
-        }
     }
 
     // Confirm that version values greather than 2^16 for version fields don't cause deser issue
