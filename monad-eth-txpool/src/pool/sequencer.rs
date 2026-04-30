@@ -28,7 +28,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_eth_block_policy::{
     nonce_usage::{NonceUsage, NonceUsageRetrievable},
-    EthBlockPolicyBlockValidator, EthValidatedBlock,
+    EthValidatedBlock, ReserveBalanceUpdater,
 };
 use monad_eth_types::ValidatedTx;
 use monad_types::NodeId;
@@ -205,7 +205,7 @@ where
         proposal_byte_limit: u64,
         chain_config: &CCT,
         mut account_balances: BTreeMap<&Address, AccountBalanceState>,
-        validator: EthBlockPolicyBlockValidator<CRT>,
+        reserve_balance_updater: ReserveBalanceUpdater,
     ) -> Proposal<ST>
     where
         CCT: ChainConfig<CRT>,
@@ -257,7 +257,7 @@ where
                 proposal_gas_limit,
                 proposal_byte_limit,
                 &mut account_balances,
-                &validator,
+                &reserve_balance_updater,
                 &mut proposal,
                 tx.tx,
             ) {
@@ -293,11 +293,11 @@ where
     }
 
     #[inline]
-    fn try_add_tx_to_proposal<CRT: ChainRevision>(
+    fn try_add_tx_to_proposal(
         proposal_gas_limit: u64,
         proposal_byte_limit: u64,
         account_balances: &mut BTreeMap<&Address, AccountBalanceState>,
-        validator: &EthBlockPolicyBlockValidator<CRT>,
+        reserve_balance_updater: &ReserveBalanceUpdater,
         proposal: &mut Proposal<ST>,
         tx: &PoolTx<CertificateSignaturePubKey<ST>>,
     ) -> bool {
@@ -331,7 +331,9 @@ where
                 })
                 .collect(),
         };
-        if let Err(error) = validator.try_add_transaction(account_balances, &validated_tx) {
+        if let Err(error) =
+            reserve_balance_updater.try_add_transaction(account_balances, &validated_tx)
+        {
             debug!(
                 ?error,
                 signer = ?tx.raw().signer(),
