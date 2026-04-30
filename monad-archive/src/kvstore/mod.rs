@@ -155,8 +155,25 @@ pub trait KVReader: Clone {
     async fn scan_prefix(&self, prefix: &str) -> Result<Vec<String>> {
         self.scan_prefix_with_max_keys(prefix, usize::MAX).await
     }
-    async fn scan_prefix_with_max_keys(&self, prefix: &str, max_keys: usize)
-        -> Result<Vec<String>>;
+    async fn scan_prefix_with_max_keys(
+        &self,
+        prefix: &str,
+        max_keys: usize,
+    ) -> Result<Vec<String>> {
+        self.scan_prefix_after_with_max_keys(prefix, "", max_keys)
+            .await
+    }
+    /// Returns up to `max_keys` keys with the given `prefix`, in lexicographic
+    /// order, strictly greater than `after`. Pass `after = ""` to start from
+    /// the beginning of the prefix range. Used to drive paginated streaming
+    /// scans (e.g. resumable bucket walks): caller loops, passing the last
+    /// returned key as `after` on the next call.
+    async fn scan_prefix_after_with_max_keys(
+        &self,
+        prefix: &str,
+        after: &str,
+        max_keys: usize,
+    ) -> Result<Vec<String>>;
     async fn get(&self, key: &str) -> Result<Option<Bytes>>;
 
     /// Lightweight existence check; prefer this over `get` when you don't need payload bytes.

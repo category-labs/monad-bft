@@ -74,13 +74,14 @@ impl KVReader for DynamoDBArchive {
         )
     }
 
-    async fn scan_prefix_with_max_keys(
+    async fn scan_prefix_after_with_max_keys(
         &self,
         _prefix: &str,
+        _after: &str,
         _max_keys: usize,
     ) -> Result<Vec<String>> {
         unimplemented!(
-            "scan_prefix_with_max_keys is intentionally unsupported for this DynamoDB backend; this is a catastrophic misconfiguration"
+            "scan_prefix_after_with_max_keys is intentionally unsupported for this DynamoDB backend; this is a catastrophic misconfiguration"
         )
     }
 }

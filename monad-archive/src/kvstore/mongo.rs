@@ -265,21 +265,25 @@ impl KVReader for MongoDbStorage {
         self.scan_prefix_with_max_keys(prefix, usize::MAX).await
     }
 
-    async fn scan_prefix_with_max_keys(
+    async fn scan_prefix_after_with_max_keys(
         &self,
         prefix: &str,
+        after: &str,
         max_keys: usize,
     ) -> Result<Vec<String>> {
-        let filter = doc! {
-            "_id": {
-                "$regex": format!("^{}", regex::escape(prefix))
-            }
+        let mut id_filter = doc! {
+            "$regex": format!("^{}", regex::escape(prefix)),
         };
+        if !after.is_empty() {
+            id_filter.insert("$gt", after);
+        }
+        let filter = doc! { "_id": id_filter };
 
         let mut keys = Vec::new();
         let mut cursor = self
             .collection
             .find(filter)
+            .sort(doc! { "_id": 1 })
             .limit(max_keys as i64)
             .await
             .wrap_err("MongoDB scan operation failed")?;

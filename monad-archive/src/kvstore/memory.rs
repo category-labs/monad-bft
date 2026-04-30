@@ -64,9 +64,10 @@ impl KVReader for MemoryStorage {
         Ok(self.db.lock().await.contains_key(key))
     }
 
-    async fn scan_prefix_with_max_keys(
+    async fn scan_prefix_after_with_max_keys(
         &self,
         prefix: &str,
+        after: &str,
         max_keys: usize,
     ) -> Result<Vec<String>> {
         use std::sync::atomic::Ordering;
@@ -75,20 +76,19 @@ impl KVReader for MemoryStorage {
             return Err(eyre::eyre!("MemoryStorage simulated failure"));
         }
 
-        Ok(self
+        // HashMap iteration is unordered; sort to honor the lex-order +
+        // strictly-greater-than-`after` contract.
+        let mut keys: Vec<String> = self
             .db
             .lock()
             .await
             .keys()
-            .filter_map(|k| {
-                if k.starts_with(prefix) {
-                    Some(k.to_owned())
-                } else {
-                    None
-                }
-            })
-            .take(max_keys)
-            .collect())
+            .filter(|k| k.starts_with(prefix) && (after.is_empty() || k.as_str() > after))
+            .cloned()
+            .collect();
+        keys.sort();
+        keys.truncate(max_keys);
+        Ok(keys)
     }
 }
 

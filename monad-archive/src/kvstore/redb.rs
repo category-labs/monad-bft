@@ -87,25 +87,35 @@ impl KVReader for RedbStorage {
         .wrap_err("redb exists task panicked")?
     }
 
-    async fn scan_prefix_with_max_keys(
+    async fn scan_prefix_after_with_max_keys(
         &self,
         prefix: &str,
+        after: &str,
         max_keys: usize,
     ) -> Result<Vec<String>> {
         let db = self.db.clone();
         let prefix = prefix.to_owned();
+        let after = after.to_owned();
         tokio::task::spawn_blocking(move || -> Result<Vec<String>> {
             let txn = db.begin_read().wrap_err("redb begin_read")?;
             let table = txn.open_table(KV_TABLE).wrap_err("redb open_table")?;
+            // Lower bound: max(prefix, after) — and strictly greater than
+            // `after` if non-empty. redb has no native exclusive bound, so
+            // we filter `k > after` after the iterator yields.
+            let lower = if after.as_str() > prefix.as_str() {
+                after.as_str()
+            } else {
+                prefix.as_str()
+            };
             let mut out = Vec::new();
-            for entry in table
-                .range::<&str>(prefix.as_str()..)
-                .wrap_err("redb range")?
-            {
+            for entry in table.range::<&str>(lower..).wrap_err("redb range")? {
                 let (k, _) = entry.wrap_err("redb range entry")?;
                 let k = k.value();
                 if !k.starts_with(&prefix) {
                     break;
+                }
+                if !after.is_empty() && k <= after.as_str() {
+                    continue;
                 }
                 if out.len() >= max_keys {
                     break;
@@ -236,6 +246,44 @@ mod tests {
             .unwrap();
         s.delete("k").await.unwrap();
         assert!(s.get("k").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn scan_prefix_after_resumes_strictly_greater() {
+        let (_dir, s) = fresh();
+        for k in ["bft/0001", "bft/0002", "bft/0003", "bft/0004"] {
+            s.put(k, vec![0u8], WritePolicy::AllowOverwrite)
+                .await
+                .unwrap();
+        }
+        // after = "" → start from beginning
+        let page1 = s
+            .scan_prefix_after_with_max_keys("bft/", "", 2)
+            .await
+            .unwrap();
+        assert_eq!(page1, vec!["bft/0001", "bft/0002"]);
+
+        // after = last key from page1 → strictly greater
+        let page2 = s
+            .scan_prefix_after_with_max_keys("bft/", page1.last().unwrap(), 2)
+            .await
+            .unwrap();
+        assert_eq!(page2, vec!["bft/0003", "bft/0004"]);
+
+        // exhausted
+        let page3 = s
+            .scan_prefix_after_with_max_keys("bft/", page2.last().unwrap(), 2)
+            .await
+            .unwrap();
+        assert!(page3.is_empty());
+
+        // `after` outside the prefix (lex < prefix) is treated as "from
+        // start of prefix" because `lower = max(prefix, after)`.
+        let from_start = s
+            .scan_prefix_after_with_max_keys("bft/", "aaa", 10)
+            .await
+            .unwrap();
+        assert_eq!(from_start.len(), 4);
     }
 
     #[tokio::test]

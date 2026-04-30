@@ -378,13 +378,21 @@ impl KVReader for Bucket {
         self.scan_prefix_with_max_keys(prefix, usize::MAX).await
     }
 
-    async fn scan_prefix_with_max_keys(
+    async fn scan_prefix_after_with_max_keys(
         &self,
         prefix: &str,
+        after: &str,
         max_keys: usize,
     ) -> Result<Vec<String>> {
         let mut objects = Vec::new();
-        let mut continuation_token = None;
+        let mut continuation_token: Option<String> = None;
+        // `start-after` is honored only on the first request; subsequent
+        // requests use the continuation token returned by S3.
+        let mut start_after_first: Option<&str> = if after.is_empty() {
+            None
+        } else {
+            Some(after)
+        };
 
         loop {
             let client = self.client();
@@ -397,6 +405,8 @@ impl KVReader for Bucket {
 
             if let Some(token) = token {
                 request = request.continuation_token(token);
+            } else if let Some(sa) = start_after_first.take() {
+                request = request.start_after(sa);
             }
             let response = match request.send().await {
                 Ok(resp) => {

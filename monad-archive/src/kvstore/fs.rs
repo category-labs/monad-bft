@@ -140,22 +140,27 @@ impl KVReader for FsStorage {
         self.scan_prefix_with_max_keys(prefix, usize::MAX).await
     }
 
-    async fn scan_prefix_with_max_keys(
+    async fn scan_prefix_after_with_max_keys(
         &self,
         prefix: &str,
+        after: &str,
         max_keys: usize,
     ) -> Result<Vec<String>> {
         let root = self.root.clone();
         let prefix = prefix.to_owned();
+        let after = after.to_owned();
         let name = self.name.clone();
 
         spawn_blocking(move || -> Result<Vec<String>> {
-            let mut matches = Vec::new();
-
             if !root.exists() {
-                return Ok(matches);
+                return Ok(Vec::new());
             }
 
+            // Filesystem walks are inherently unordered (readdir order is
+            // not guaranteed) so collect, sort, then apply the after-filter
+            // and max_keys cap. Acceptable: this backend is dev/test only;
+            // S3 and redb are the prod paths and stream natively.
+            let mut matches = Vec::new();
             let mut stack = vec![root.clone()];
             while let Some(dir) = stack.pop() {
                 for entry in std::fs::read_dir(&dir)
@@ -170,18 +175,17 @@ impl KVReader for FsStorage {
                     }
 
                     let key = Self::path_to_key(&root, &name, &path)?;
-
                     if !key.starts_with(&prefix) {
                         continue;
                     }
-
-                    matches.push(key);
-                    if matches.len() >= max_keys {
-                        return Ok(matches);
+                    if !after.is_empty() && key.as_str() <= after.as_str() {
+                        continue;
                     }
+                    matches.push(key);
                 }
             }
-
+            matches.sort();
+            matches.truncate(max_keys);
             Ok(matches)
         })
         .await?

@@ -45,6 +45,7 @@ const LATEST_UPLOADED_KEY: &str = "bft/ledger/latest_uploaded";
 const LEGACY_PREFIX: &str = "bft_block/";
 const LEGACY_HEADER_SUFFIX: &str = ".header";
 const LEGACY_BODY_SUFFIX: &str = ".body";
+const PULL_CURSOR_PREFIX: &str = "bft/migration/pull_cursor/";
 
 pub fn headers_prefix() -> &'static str {
     HEADERS_PREFIX
@@ -72,6 +73,24 @@ pub fn latest_uploaded_key() -> &'static str {
 
 pub fn legacy_prefix() -> &'static str {
     LEGACY_PREFIX
+}
+
+pub fn legacy_header_suffix() -> &'static str {
+    LEGACY_HEADER_SUFFIX
+}
+
+/// Resume cursor for the bulk-pull tool, sharded by source-list prefix.
+/// Stored in the sink (the redb header cache) so a crashed run can resume
+/// from the last successfully processed key in each shard's LIST stream.
+pub fn pull_cursor_path(shard: &str) -> String {
+    format!("{PULL_CURSOR_PREFIX}{shard}")
+}
+
+/// Resume cursor for the body-copy tool. Stored in the local redb header
+/// cache (which is also the input the tool iterates) so a crashed run picks
+/// up where it left off without re-HEAD'ing every previously copied body.
+pub fn body_copy_cursor_path() -> &'static str {
+    "bft/migration/body_copy_cursor"
 }
 
 fn shard_for_hex(hex: &str) -> &str {
