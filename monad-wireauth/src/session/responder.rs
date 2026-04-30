@@ -185,7 +185,7 @@ impl ResponderState {
     pub fn handle_cookie(
         &mut self,
         cookie_reply: &mut crate::protocol::messages::CookieReply,
-    ) -> Result<(), SessionError> {
+    ) -> Result<[u8; 16], SessionError> {
         self.transport.common.handle_cookie(cookie_reply)
     }
 }
