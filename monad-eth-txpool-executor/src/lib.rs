@@ -26,7 +26,6 @@ use std::{
 use alloy_consensus::{transaction::Recovered, TxEnvelope};
 use alloy_eips::Decodable2718;
 use alloy_primitives::Address;
-use bytes::Bytes;
 use futures::Stream;
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_consensus_types::{
@@ -52,7 +51,7 @@ use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_peer_score::{ema, StdClock};
 use monad_secp::RecoverableAddress;
 use monad_state_backend::StateBackend;
-use monad_types::{DropTimer, Epoch, ExecutionProtocol, NodeId, Round, SeqNum};
+use monad_types::{DropTimer, Epoch, ExecutionProtocol, ForwardedTxList, NodeId, Round, SeqNum};
 use monad_validator::signature_collection::SignatureCollection;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tokio::{sync::mpsc, time::Instant};
@@ -147,7 +146,7 @@ where
         sender_gas: BTreeMap<NodeId<SCT::NodeIdPubKey>, u64>,
     },
 
-    ForwardTxs(Vec<Bytes>),
+    ForwardTxs(ForwardedTxList),
 }
 
 pub struct EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT, TIS>
@@ -805,6 +804,7 @@ mod test {
 
     use alloy_consensus::transaction::SignerRecoverable;
     use alloy_primitives::TxHash;
+    use bytes::Bytes;
     use futures::StreamExt;
     use monad_chain_config::{revision::MockChainRevision, ChainConfig, MockChainConfig};
     use monad_consensus_types::{
@@ -880,7 +880,7 @@ mod test {
         }
     }
 
-    fn make_forwarded_txs(start_nonce: u64, count: usize) -> Vec<bytes::Bytes> {
+    fn make_forwarded_txs(start_nonce: u64, count: usize) -> Vec<Bytes> {
         (start_nonce..(start_nonce + count as u64))
             .map(|nonce| {
                 alloy_rlp::encode(make_legacy_tx(S1, MIN_BASE_FEE.into(), 100_000, nonce, 512))
@@ -914,7 +914,7 @@ mod test {
 
     fn collect_forwarded_txs(
         event: MonadEvent<SignatureType, SignatureCollectionType, EthExecutionProtocol>,
-    ) -> Vec<bytes::Bytes> {
+    ) -> Vec<Bytes> {
         let expected_signer = secret_to_eth_address(S1);
 
         match event {
@@ -934,10 +934,7 @@ mod test {
         }
     }
 
-    fn assert_no_proposal(
-        proposal_rx: &mut mpsc::UnboundedReceiver<Vec<bytes::Bytes>>,
-        context: &str,
-    ) {
+    fn assert_no_proposal(proposal_rx: &mut mpsc::UnboundedReceiver<Vec<Bytes>>, context: &str) {
         assert!(
             matches!(
                 proposal_rx.try_recv(),
@@ -950,10 +947,10 @@ mod test {
     const MAX_YIELDS: usize = 10;
 
     async fn recv_proposal_with_yields(
-        proposal_rx: &mut mpsc::UnboundedReceiver<Vec<bytes::Bytes>>,
+        proposal_rx: &mut mpsc::UnboundedReceiver<Vec<Bytes>>,
         yields: usize,
         context: &str,
-    ) -> Vec<bytes::Bytes> {
+    ) -> Vec<Bytes> {
         assert!(yields <= MAX_YIELDS, "yield limit exceeded");
 
         for _ in 0..yields {
@@ -1079,7 +1076,7 @@ mod test {
 
         client.exec(vec![TxPoolCommand::InsertForwardedTxs {
             sender: node_id::<SignatureType>(),
-            txs: make_forwarded_txs(0, 4),
+            txs: make_forwarded_txs(0, 4).try_into().unwrap(),
         }]);
 
         let metrics = client.metrics().into_inner();
@@ -1160,7 +1157,7 @@ mod test {
                         "initial proposal did not arrive within yield budget",
                     )
                     .await,
-                    Vec::<bytes::Bytes>::default()
+                    Vec::<Bytes>::default()
                 );
                 assert_no_proposal(
                     &mut proposal_rx,
@@ -1170,7 +1167,7 @@ mod test {
                 command_tx
                     .send(vec![TxPoolCommand::InsertForwardedTxs {
                         sender: node_id::<SignatureType>(),
-                        txs: expected_txs.clone(),
+                        txs: expected_txs.clone().try_into().unwrap(),
                     }])
                     .expect("forwarded txs are queued");
                 tokio::task::yield_now().await;
@@ -1186,7 +1183,7 @@ mod test {
                         "proposal after 4ms did not arrive within yield budget",
                     )
                     .await,
-                    Vec::<bytes::Bytes>::default()
+                    Vec::<Bytes>::default()
                 );
 
                 tokio::time::advance(Duration::from_millis(INGRESS_CHUNK_INTERVAL_MS - 4)).await;
@@ -1208,7 +1205,7 @@ mod test {
                 command_tx
                     .send(vec![TxPoolCommand::InsertForwardedTxs {
                         sender: node_id::<SignatureType>(),
-                        txs: expected_txs_after_second_batch.clone(),
+                        txs: expected_txs_after_second_batch.clone().try_into().unwrap(),
                     }])
                     .expect("forwarded txs are queued");
                 tokio::task::yield_now().await;

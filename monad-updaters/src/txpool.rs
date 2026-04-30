@@ -594,10 +594,11 @@ where
             &MockChainConfig::DEFAULT,
             vec![(tx, PoolTxKind::owned_default())],
             |tx| {
-                self.events.push_back(MempoolEvent::ForwardTxs(vec![tx
-                    .raw()
-                    .encoded_2718()
-                    .into()]));
+                self.events.push_back(MempoolEvent::ForwardTxs(
+                    vec![tx.raw().encoded_2718().into()]
+                        .try_into()
+                        .expect("forwarded tx list must allow at least one transaction"),
+                ));
             },
         );
 

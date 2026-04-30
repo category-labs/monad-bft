@@ -33,7 +33,7 @@ use monad_peer_score::{
 };
 use monad_secp::ExtractEthAddress;
 use monad_state_backend::StateBackend;
-use monad_types::NodeId;
+use monad_types::{ForwardedTxList, NodeId};
 use monad_validator::signature_collection::SignatureCollection;
 
 use crate::{forward::INGRESS_CHUNK_MAX_SIZE, TxPoolExecutorCommand, TxPoolExecutorEvent};
@@ -43,7 +43,7 @@ where
     SCT: SignatureCollection,
 {
     pub sender: NodeId<SCT::NodeIdPubKey>,
-    pub txs: Vec<Bytes>,
+    pub txs: ForwardedTxList,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -332,7 +332,9 @@ where
             };
             batch.push(ForwardedTxs {
                 sender,
-                txs: vec![tx],
+                txs: vec![tx]
+                    .try_into()
+                    .expect("forwarded tx list limit must be greater than 0"),
             });
         }
 
