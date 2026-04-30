@@ -23,7 +23,7 @@ use monad_chain_data::{
     },
     store::MetaStore,
     Address, Bytes, FinalizedBlock, InMemoryBlobStore, InMemoryMetaStore, Log, LogData, LogFilter,
-    MonadChainDataService, QueryLogsRequest, QueryOrder, Topic, B256,
+    MonadChainDataService, QueryLimits, QueryLogsRequest, QueryOrder, Topic, B256,
 };
 
 // Fills a full bitmap page (~65k logs) to exercise the seal/compaction path;
@@ -33,7 +33,8 @@ use monad_chain_data::{
 async fn ingest_compacts_sealed_pages_and_query_prefers_compacted_page_blobs() {
     let meta_store = InMemoryMetaStore::default();
     let blob_store = InMemoryBlobStore::default();
-    let service = MonadChainDataService::new(meta_store.clone(), blob_store);
+    let service =
+        MonadChainDataService::new(meta_store.clone(), blob_store, QueryLimits::UNLIMITED);
 
     let old_address = Address::repeat_byte(7);
     let old_topic = B256::repeat_byte(9);
@@ -144,7 +145,8 @@ async fn ingest_compacts_sealed_pages_and_query_prefers_compacted_page_blobs() {
 async fn query_errors_when_compacted_page_meta_exists_but_blob_is_missing() {
     let meta_store = InMemoryMetaStore::default();
     let blob_store = InMemoryBlobStore::default();
-    let service = MonadChainDataService::new(meta_store.clone(), blob_store);
+    let service =
+        MonadChainDataService::new(meta_store.clone(), blob_store, QueryLimits::UNLIMITED);
 
     let address = Address::repeat_byte(7);
     let topic = B256::repeat_byte(9);

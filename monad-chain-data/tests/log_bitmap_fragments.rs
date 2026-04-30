@@ -16,13 +16,16 @@
 use monad_chain_data::{
     kernel::bitmap::{decode_bitmap_blob, sharded_stream_id, STREAM_PAGE_LOCAL_ID_SPAN},
     Address, Bytes, FinalizedBlock, InMemoryBlobStore, InMemoryMetaStore, Log, LogData,
-    MonadChainDataService, Topic, B256,
+    MonadChainDataService, QueryLimits, Topic, B256,
 };
 
 #[tokio::test(flavor = "current_thread")]
 async fn ingest_persists_log_bitmap_fragments_for_address_and_topics() {
-    let service =
-        MonadChainDataService::new(InMemoryMetaStore::default(), InMemoryBlobStore::default());
+    let service = MonadChainDataService::new(
+        InMemoryMetaStore::default(),
+        InMemoryBlobStore::default(),
+        QueryLimits::UNLIMITED,
+    );
 
     service
         .ingest_block(FinalizedBlock {
@@ -82,8 +85,11 @@ async fn ingest_persists_log_bitmap_fragments_for_address_and_topics() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn ingest_persists_log_bitmap_fragments_across_page_boundaries() {
-    let service =
-        MonadChainDataService::new(InMemoryMetaStore::default(), InMemoryBlobStore::default());
+    let service = MonadChainDataService::new(
+        InMemoryMetaStore::default(),
+        InMemoryBlobStore::default(),
+        QueryLimits::UNLIMITED,
+    );
 
     service
         .ingest_block(FinalizedBlock {
@@ -149,8 +155,11 @@ async fn ingest_persists_log_bitmap_fragments_across_page_boundaries() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn ingest_empty_block_writes_no_log_bitmap_fragments() {
-    let service =
-        MonadChainDataService::new(InMemoryMetaStore::default(), InMemoryBlobStore::default());
+    let service = MonadChainDataService::new(
+        InMemoryMetaStore::default(),
+        InMemoryBlobStore::default(),
+        QueryLimits::UNLIMITED,
+    );
 
     service
         .ingest_block(FinalizedBlock {

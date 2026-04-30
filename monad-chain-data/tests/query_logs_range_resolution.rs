@@ -15,7 +15,7 @@
 
 use monad_chain_data::{
     Address, Bytes, FinalizedBlock, InMemoryBlobStore, InMemoryMetaStore, Log, LogData, LogFilter,
-    MonadChainDataError, MonadChainDataService, QueryLogsRequest, QueryOrder, B256,
+    MonadChainDataError, MonadChainDataService, QueryLimits, QueryLogsRequest, QueryOrder, B256,
 };
 
 #[tokio::test(flavor = "current_thread")]
@@ -209,8 +209,11 @@ async fn defaulted_range_resolves_to_full_chain() {
 }
 
 async fn ingest_two_block_chain() -> MonadChainDataService<InMemoryMetaStore, InMemoryBlobStore> {
-    let service =
-        MonadChainDataService::new(InMemoryMetaStore::default(), InMemoryBlobStore::default());
+    let service = MonadChainDataService::new(
+        InMemoryMetaStore::default(),
+        InMemoryBlobStore::default(),
+        QueryLimits::UNLIMITED,
+    );
 
     service
         .ingest_block(FinalizedBlock {

@@ -15,6 +15,8 @@
 
 use thiserror::Error;
 
+use crate::primitives::limits::LimitExceededKind;
+
 pub type Result<T> = std::result::Result<T, MonadChainDataError>;
 
 #[derive(Debug, Error)]
@@ -29,4 +31,10 @@ pub enum MonadChainDataError {
     InvalidRequest(&'static str),
     #[error("missing data: {0}")]
     MissingData(&'static str),
+    #[error("limit exceeded ({kind}): max_limit={max_limit}, max_block_range={max_block_range}")]
+    LimitExceeded {
+        kind: LimitExceededKind,
+        max_limit: usize,
+        max_block_range: u64,
+    },
 }

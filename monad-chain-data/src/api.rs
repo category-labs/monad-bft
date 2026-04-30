@@ -23,6 +23,7 @@ use crate::{
     kernel::tables::Tables,
     logs::{LogIngestPlan, QueryLogsRequest, QueryLogsResponse},
     primitives::{
+        limits::{LimitExceededKind, QueryLimits},
         range::ResolvedBlockWindow,
         state::{BlockRecord, LogId},
     },
@@ -32,6 +33,7 @@ use crate::{
 
 pub struct MonadChainDataService<M: MetaStore, B: BlobStore> {
     tables: Tables<M, B>,
+    limits: QueryLimits,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,14 +44,19 @@ pub struct IngestOutcome {
 }
 
 impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
-    pub fn new(meta_store: M, blob_store: B) -> Self {
+    pub fn new(meta_store: M, blob_store: B, limits: QueryLimits) -> Self {
         Self {
             tables: Tables::new(meta_store, blob_store),
+            limits,
         }
     }
 
     pub fn tables(&self) -> &Tables<M, B> {
         &self.tables
+    }
+
+    pub fn limits(&self) -> &QueryLimits {
+        &self.limits
     }
 
     // TODO: Individual writes are idempotent, but a partial failure leaves the block
@@ -120,11 +127,20 @@ impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
     }
 
     /// Executes a finalized logs query over the current published head.
+    /// The service's configured `QueryLimits` bound the request shape and
+    /// the resolved block-range span.
     pub async fn query_logs(&self, request: QueryLogsRequest) -> Result<QueryLogsResponse> {
         if request.limit == 0 {
             return Err(MonadChainDataError::InvalidRequest(
                 "limit must be at least 1",
             ));
+        }
+        if request.limit > self.limits.max_limit {
+            return Err(MonadChainDataError::LimitExceeded {
+                kind: LimitExceededKind::Limit,
+                max_limit: self.limits.max_limit,
+                max_block_range: self.limits.max_block_range,
+            });
         }
 
         let head = self
@@ -133,7 +149,9 @@ impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
             .load_published_head()
             .await?
             .ok_or(MonadChainDataError::MissingData("no published blocks"))?;
-        let window = ResolvedBlockWindow::resolve(&request, head, self.tables.blocks()).await?;
+        let window =
+            ResolvedBlockWindow::resolve(&request, head, &self.limits, self.tables.blocks())
+                .await?;
 
         if request.filter.has_indexed_clause() {
             return execute_indexed_log_query(&self.tables, &request, window).await;

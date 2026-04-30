@@ -17,7 +17,11 @@ use crate::{
     error::{MonadChainDataError, Result},
     kernel::tables::BlockTables,
     logs::QueryLogsRequest,
-    primitives::{page::QueryOrder, refs::BlockRef},
+    primitives::{
+        limits::{LimitExceededKind, QueryLimits},
+        page::QueryOrder,
+        refs::BlockRef,
+    },
     store::MetaStore,
 };
 
@@ -34,15 +38,25 @@ pub struct ResolvedBlockWindow {
 }
 
 impl ResolvedBlockWindow {
-    /// Resolves a query's inclusive block range against the published head.
-    /// Translates the spec's order-dependent `from_block`/`to_block` into
-    /// the internal order-independent `(low, high)` form.
+    /// Resolves a query's inclusive block range against the published head,
+    /// short-circuits if the resolved span exceeds `limits.max_block_range`,
+    /// then loads the per-bound block records.
     pub async fn resolve<M: MetaStore>(
         request: &QueryLogsRequest,
         published_head: u64,
+        limits: &QueryLimits,
         blocks: &BlockTables<M>,
     ) -> Result<Self> {
         let (low_number, high_number) = Self::resolve_block_numbers(request, published_head)?;
+
+        let span = high_number - low_number + 1;
+        if span > limits.max_block_range {
+            return Err(MonadChainDataError::LimitExceeded {
+                kind: LimitExceededKind::BlockRange,
+                max_limit: limits.max_limit,
+                max_block_range: limits.max_block_range,
+            });
+        }
 
         let low_record =
             blocks

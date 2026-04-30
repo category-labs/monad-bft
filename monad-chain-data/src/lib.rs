@@ -30,6 +30,7 @@ pub use family::{FinalizedBlock, Hash32};
 pub use kernel::tables::Tables;
 pub use logs::{LogEntry, LogFilter, QueryLogsRequest, QueryLogsResponse};
 pub use primitives::{
+    limits::{LimitExceededKind, QueryLimits},
     page::{QueryOrder, DEFAULT_QUERY_LIMIT},
     refs::BlockRef,
     state::{BlockRecord, FamilyWindowRecord, LogId},
