@@ -106,8 +106,10 @@ async fn indexed_query_logs_descending_returns_newest_first() {
 
     let page = service
         .query_logs(QueryLogsRequest {
-            from_block: Some(1),
-            to_block: Some(2),
+            // Spec semantics: in descending order from_block is the upper
+            // bound and to_block is the lower bound.
+            from_block: Some(2),
+            to_block: Some(1),
             order: QueryOrder::Descending,
             limit: 1,
             filter: LogFilter {
@@ -389,8 +391,8 @@ async fn indexed_query_completes_current_block_when_limit_reached_mid_block_desc
 
     let page = service
         .query_logs(QueryLogsRequest {
-            from_block: Some(1),
-            to_block: Some(3),
+            from_block: Some(3),
+            to_block: Some(1),
             order: QueryOrder::Descending,
             limit: 2,
             filter: LogFilter {

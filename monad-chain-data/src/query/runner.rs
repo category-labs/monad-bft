@@ -30,8 +30,9 @@ pub async fn execute_block_scan_query<M: MetaStore, B: BlobStore>(
 ) -> Result<QueryLogsResponse> {
     let materializer = LogMaterializer::new(tables);
     let target_log_count = request.limit;
+    let (request_from, request_to) = window.request_endpoints(request.order);
     let mut logs = Vec::new();
-    let mut cursor_block = window.from_block;
+    let mut cursor_block = request_from;
 
     for block_number in block_range(window, request.order) {
         let (block_ref, block_logs) = materializer
@@ -46,14 +47,14 @@ pub async fn execute_block_scan_query<M: MetaStore, B: BlobStore>(
 
     Ok(QueryLogsResponse {
         logs,
-        from_block: window.from_block,
-        to_block: window.to_block,
+        from_block: request_from,
+        to_block: request_to,
         cursor_block,
     })
 }
 
 fn block_range(window: ResolvedBlockWindow, order: QueryOrder) -> impl Iterator<Item = u64> {
-    let range = window.from_block.number..=window.to_block.number;
+    let range = window.low.number..=window.high.number;
     let (fwd, rev) = match order {
         QueryOrder::Ascending => (Some(range), None),
         QueryOrder::Descending => (None, Some(range.rev())),

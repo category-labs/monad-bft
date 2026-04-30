@@ -32,12 +32,14 @@ pub(crate) async fn execute_indexed_log_query<M: MetaStore, B: BlobStore>(
     request: &QueryLogsRequest,
     block_window: ResolvedBlockWindow,
 ) -> Result<QueryLogsResponse> {
+    let (request_from, request_to) = block_window.request_endpoints(request.order);
+
     let Some(log_window) = resolve_log_window(tables, &block_window).await? else {
         return Ok(QueryLogsResponse {
             logs: Vec::new(),
-            from_block: block_window.from_block,
-            to_block: block_window.to_block,
-            cursor_block: block_window.to_block,
+            from_block: request_from,
+            to_block: request_to,
+            cursor_block: request_to,
         });
     };
 
@@ -74,8 +76,8 @@ pub(crate) async fn execute_indexed_log_query<M: MetaStore, B: BlobStore>(
                     let cursor_block = materializer.load_block_ref(stop_block).await?;
                     return Ok(QueryLogsResponse {
                         logs,
-                        from_block: block_window.from_block,
-                        to_block: block_window.to_block,
+                        from_block: request_from,
+                        to_block: request_to,
                         cursor_block,
                     });
                 }
@@ -101,9 +103,9 @@ pub(crate) async fn execute_indexed_log_query<M: MetaStore, B: BlobStore>(
 
     Ok(QueryLogsResponse {
         logs,
-        from_block: block_window.from_block,
-        to_block: block_window.to_block,
-        cursor_block: block_window.to_block,
+        from_block: request_from,
+        to_block: request_to,
+        cursor_block: request_to,
     })
 }
 

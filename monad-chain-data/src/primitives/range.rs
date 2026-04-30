@@ -17,7 +17,7 @@ use crate::{
     error::{MonadChainDataError, Result},
     kernel::tables::BlockTables,
     logs::QueryLogsRequest,
-    primitives::refs::BlockRef,
+    primitives::{page::QueryOrder, refs::BlockRef},
     store::MetaStore,
 };
 
@@ -25,65 +25,104 @@ use crate::{
 /// chain to start at block 1, so block 0 has no record to load.
 const EARLIEST_QUERYABLE_BLOCK: u64 = 1;
 
-/// Inclusive block range clipped to the published head.
-///
-/// `from_block.number <= to_block.number` always holds, regardless of query
-/// order. Callers choose iteration direction based on `QueryOrder`.
+/// Inclusive block range in `(low, high)` form with `low.number <= high.number`.
+/// Iteration direction is the caller's choice via `QueryOrder`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ResolvedBlockWindow {
-    pub from_block: BlockRef,
-    pub to_block: BlockRef,
+    pub low: BlockRef,
+    pub high: BlockRef,
 }
 
 impl ResolvedBlockWindow {
     /// Resolves a query's inclusive block range against the published head.
+    /// Translates the spec's order-dependent `from_block`/`to_block` into
+    /// the internal order-independent `(low, high)` form.
     pub async fn resolve<M: MetaStore>(
         request: &QueryLogsRequest,
         published_head: u64,
         blocks: &BlockTables<M>,
     ) -> Result<Self> {
-        let (from_number, to_number) = Self::resolve_query_block_numbers(request, published_head)?;
+        let (low_number, high_number) = Self::resolve_block_numbers(request, published_head)?;
 
-        let from_record =
+        let low_record =
             blocks
-                .load_record(from_number)
+                .load_record(low_number)
                 .await?
                 .ok_or(MonadChainDataError::MissingData(
-                    "missing from_block record",
+                    "missing block record at range low bound",
                 ))?;
-        let to_record = blocks
-            .load_record(to_number)
-            .await?
-            .ok_or(MonadChainDataError::MissingData("missing to_block record"))?;
+        let high_record =
+            blocks
+                .load_record(high_number)
+                .await?
+                .ok_or(MonadChainDataError::MissingData(
+                    "missing block record at range high bound",
+                ))?;
 
         Ok(Self {
-            from_block: BlockRef::from(&from_record),
-            to_block: BlockRef::from(&to_record),
+            low: BlockRef::from(&low_record),
+            high: BlockRef::from(&high_record),
         })
     }
 
-    fn resolve_query_block_numbers(
+    /// Maps internal `(low, high)` back to spec `(from, to)` for the given order.
+    pub fn request_endpoints(&self, order: QueryOrder) -> (BlockRef, BlockRef) {
+        match order {
+            QueryOrder::Ascending => (self.low, self.high),
+            QueryOrder::Descending => (self.high, self.low),
+        }
+    }
+
+    /// Maps the spec's order-dependent `(from_block, to_block)` to internal
+    /// `(low, high)` with `low <= high`. Errors if the inputs do not form a
+    /// valid range for `order`, or if the lower bound exceeds the published head.
+    fn resolve_block_numbers(
         request: &QueryLogsRequest,
         published_head: u64,
     ) -> Result<(u64, u64)> {
-        let from = request.from_block.unwrap_or(EARLIEST_QUERYABLE_BLOCK);
-        if from > published_head {
-            return Err(MonadChainDataError::InvalidRequest(
-                "from_block must be <= published head",
-            ));
+        // User-space inversion is checked before defaults so an unspecified
+        // bound (e.g. `from=None, to=N` with `N` above head) reports the
+        // genuine cause (above-head) rather than a defaulted-inversion artifact.
+        if let (Some(from), Some(to)) = (request.from_block, request.to_block) {
+            let inverted = match request.order {
+                QueryOrder::Ascending => from > to,
+                QueryOrder::Descending => from < to,
+            };
+            if inverted {
+                return Err(MonadChainDataError::InvalidRequest(
+                    "from_block and to_block do not form a valid range for the requested order",
+                ));
+            }
         }
-        // Floors an explicit `from_block = 0` to avoid loading a nonexistent record.
-        let from = from.max(EARLIEST_QUERYABLE_BLOCK);
-        let to = request
-            .to_block
-            .unwrap_or(published_head)
-            .min(published_head);
 
-        if from > to {
+        let (low, high) = match request.order {
+            QueryOrder::Ascending => (
+                request.from_block.unwrap_or(EARLIEST_QUERYABLE_BLOCK),
+                request.to_block.unwrap_or(published_head),
+            ),
+            QueryOrder::Descending => (
+                request.to_block.unwrap_or(EARLIEST_QUERYABLE_BLOCK),
+                request.from_block.unwrap_or(published_head),
+            ),
+        };
+
+        // The lower bound must be an ingested block — silently collapsing
+        // `low > head` to `[head, head]` would mask caller bugs and return
+        // empty pages. The upper bound is treated as "up to head" and clipped.
+        if low > published_head {
             return Err(MonadChainDataError::InvalidRequest(
-                "from_block must be <= to_block",
+                "block range starts above the published head",
             ));
         }
-        Ok((from, to))
+        let high = high.min(published_head);
+        // Floors an explicit `from_block = 0` to avoid loading a nonexistent record.
+        let low = low.max(EARLIEST_QUERYABLE_BLOCK);
+
+        if low > high {
+            return Err(MonadChainDataError::InvalidRequest(
+                "from_block and to_block do not form a valid range for the requested order",
+            ));
+        }
+        Ok((low, high))
     }
 }

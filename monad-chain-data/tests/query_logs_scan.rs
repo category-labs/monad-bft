@@ -165,7 +165,7 @@ async fn query_logs_rejects_from_block_above_published_head() {
 
     assert!(matches!(
         err,
-        MonadChainDataError::InvalidRequest("from_block must be <= published head")
+        MonadChainDataError::InvalidRequest("block range starts above the published head")
     ));
 }
 

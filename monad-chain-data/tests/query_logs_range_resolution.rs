@@ -81,6 +81,115 @@ async fn inverted_range_returns_invalid_request() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn descending_to_block_above_head_returns_invalid_request() {
+    let service = ingest_two_block_chain().await;
+
+    // In descending order to_block is the lower numeric bound, so
+    // to=50 against head=2 puts the lower bound above head. Leaving
+    // from_block unspecified isolates the lower-bound-above-head path
+    // from the inverted-range path.
+    let err = service
+        .query_logs(QueryLogsRequest {
+            from_block: None,
+            to_block: Some(50),
+            order: QueryOrder::Descending,
+            limit: 10,
+            filter: LogFilter::default(),
+        })
+        .await
+        .expect_err("to_block above head in desc should not silently collapse");
+
+    assert!(
+        matches!(err, MonadChainDataError::InvalidRequest(_)),
+        "expected InvalidRequest, got {err:?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn descending_from_above_head_clips_to_head() {
+    let service = ingest_two_block_chain().await;
+
+    // In descending order from_block is the upper bound; values above
+    // the published head clip to head, mirroring the ascending
+    // to_block-above-head behavior.
+    let page = service
+        .query_logs(QueryLogsRequest {
+            from_block: Some(50),
+            to_block: Some(1),
+            order: QueryOrder::Descending,
+            limit: 100,
+            filter: LogFilter::default(),
+        })
+        .await
+        .expect("query");
+
+    assert_eq!(page.from_block.number, 2);
+    assert_eq!(page.to_block.number, 1);
+    assert_eq!(page.cursor_block.number, 1);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn from_block_zero_floors_to_earliest_queryable_block() {
+    let service = ingest_two_block_chain().await;
+
+    let page = service
+        .query_logs(QueryLogsRequest {
+            from_block: Some(0),
+            to_block: Some(2),
+            order: QueryOrder::Ascending,
+            limit: 100,
+            filter: LogFilter::default(),
+        })
+        .await
+        .expect("query");
+
+    assert_eq!(page.from_block.number, 1);
+    assert_eq!(page.to_block.number, 2);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn descending_inverted_range_returns_invalid_request() {
+    let service = ingest_two_block_chain().await;
+
+    // In descending order from_block is the upper bound; from < to is
+    // the wrong shape.
+    let err = service
+        .query_logs(QueryLogsRequest {
+            from_block: Some(1),
+            to_block: Some(2),
+            order: QueryOrder::Descending,
+            limit: 10,
+            filter: LogFilter::default(),
+        })
+        .await
+        .expect_err("descending from < to should error");
+
+    assert!(
+        matches!(err, MonadChainDataError::InvalidRequest(_)),
+        "expected InvalidRequest, got {err:?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn descending_defaulted_range_inverts_endpoints() {
+    let service = ingest_two_block_chain().await;
+
+    let page = service
+        .query_logs(QueryLogsRequest {
+            from_block: None,
+            to_block: None,
+            order: QueryOrder::Descending,
+            limit: 100,
+            filter: LogFilter::default(),
+        })
+        .await
+        .expect("query");
+
+    assert_eq!(page.from_block.number, 2);
+    assert_eq!(page.to_block.number, 1);
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn defaulted_range_resolves_to_full_chain() {
     let service = ingest_two_block_chain().await;
 
