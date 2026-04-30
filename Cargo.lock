@@ -5002,11 +5002,17 @@ dependencies = [
  "alloy-rpc-types-eth",
  "auto_impl",
  "bytes",
+ "clap",
+ "eyre",
  "fjall",
+ "monad-archive",
+ "monad-eth-types",
  "roaring",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
