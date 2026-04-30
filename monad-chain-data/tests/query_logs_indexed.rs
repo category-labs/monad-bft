@@ -21,6 +21,10 @@ use monad_chain_data::{
     MonadChainDataService, QueryLimits, QueryLogsRequest, QueryOrder, Topic, B256,
 };
 
+mod common;
+
+use common::{chain_header, test_header};
+
 #[tokio::test(flavor = "current_thread")]
 async fn indexed_query_logs_respects_and_or_filter_semantics() {
     let service = MonadChainDataService::new(
@@ -31,9 +35,7 @@ async fn indexed_query_logs_respects_and_or_filter_semantics() {
 
     service
         .ingest_block(FinalizedBlock {
-            block_number: 1,
-            block_hash: B256::repeat_byte(1),
-            parent_hash: B256::ZERO,
+            header: test_header(1, B256::ZERO),
             logs_by_tx: vec![vec![
                 log(Address::repeat_byte(1), vec![B256::repeat_byte(9)]),
                 log(
@@ -84,11 +86,12 @@ async fn indexed_query_logs_descending_returns_newest_first() {
         QueryLimits::UNLIMITED,
     );
 
+    let h1 = test_header(1, B256::ZERO);
+    let h2 = chain_header(2, &h1);
+
     service
         .ingest_block(FinalizedBlock {
-            block_number: 1,
-            block_hash: B256::repeat_byte(1),
-            parent_hash: B256::ZERO,
+            header: h1,
             logs_by_tx: vec![vec![log(
                 Address::repeat_byte(7),
                 vec![B256::repeat_byte(9)],
@@ -99,9 +102,7 @@ async fn indexed_query_logs_descending_returns_newest_first() {
 
     service
         .ingest_block(FinalizedBlock {
-            block_number: 2,
-            block_hash: B256::repeat_byte(2),
-            parent_hash: B256::repeat_byte(1),
+            header: h2,
             logs_by_tx: vec![vec![
                 log(Address::repeat_byte(7), vec![B256::repeat_byte(9)]),
                 log(Address::repeat_byte(7), vec![B256::repeat_byte(9)]),
@@ -147,11 +148,12 @@ async fn indexed_query_logs_paginates_at_block_boundaries() {
         QueryLimits::UNLIMITED,
     );
 
+    let h1 = test_header(1, B256::ZERO);
+    let h2 = chain_header(2, &h1);
+
     service
         .ingest_block(FinalizedBlock {
-            block_number: 1,
-            block_hash: B256::repeat_byte(1),
-            parent_hash: B256::ZERO,
+            header: h1,
             logs_by_tx: vec![vec![
                 log(Address::repeat_byte(7), vec![B256::repeat_byte(9)]),
                 log(Address::repeat_byte(7), vec![B256::repeat_byte(9)]),
@@ -162,9 +164,7 @@ async fn indexed_query_logs_paginates_at_block_boundaries() {
 
     service
         .ingest_block(FinalizedBlock {
-            block_number: 2,
-            block_hash: B256::repeat_byte(2),
-            parent_hash: B256::repeat_byte(1),
+            header: h2,
             logs_by_tx: vec![vec![log(
                 Address::repeat_byte(7),
                 vec![B256::repeat_byte(9)],
@@ -226,11 +226,12 @@ async fn indexed_query_logs_scans_across_bucket_and_page_boundaries() {
         QueryLimits::UNLIMITED,
     );
 
+    let h1 = test_header(1, B256::ZERO);
+    let h2 = chain_header(2, &h1);
+
     service
         .ingest_block(FinalizedBlock {
-            block_number: 1,
-            block_hash: B256::repeat_byte(1),
-            parent_hash: B256::ZERO,
+            header: h1,
             logs_by_tx: vec![repeated_logs(
                 Address::repeat_byte(1),
                 vec![B256::repeat_byte(3)],
@@ -242,9 +243,7 @@ async fn indexed_query_logs_scans_across_bucket_and_page_boundaries() {
 
     service
         .ingest_block(FinalizedBlock {
-            block_number: 2,
-            block_hash: B256::repeat_byte(2),
-            parent_hash: B256::repeat_byte(1),
+            header: h2,
             logs_by_tx: vec![repeated_logs(
                 Address::repeat_byte(7),
                 vec![B256::repeat_byte(9)],
@@ -290,11 +289,13 @@ async fn indexed_query_completes_current_block_when_limit_reached_mid_block() {
         QueryLimits::UNLIMITED,
     );
 
+    let h1 = test_header(1, B256::ZERO);
+    let h2 = chain_header(2, &h1);
+    let h3 = chain_header(3, &h2);
+
     service
         .ingest_block(FinalizedBlock {
-            block_number: 1,
-            block_hash: B256::repeat_byte(1),
-            parent_hash: B256::ZERO,
+            header: h1,
             logs_by_tx: vec![vec![log(
                 Address::repeat_byte(7),
                 vec![B256::repeat_byte(9)],
@@ -305,9 +306,7 @@ async fn indexed_query_completes_current_block_when_limit_reached_mid_block() {
 
     service
         .ingest_block(FinalizedBlock {
-            block_number: 2,
-            block_hash: B256::repeat_byte(2),
-            parent_hash: B256::repeat_byte(1),
+            header: h2,
             logs_by_tx: vec![vec![
                 log(Address::repeat_byte(7), vec![B256::repeat_byte(9)]),
                 log(Address::repeat_byte(7), vec![B256::repeat_byte(9)]),
@@ -321,9 +320,7 @@ async fn indexed_query_completes_current_block_when_limit_reached_mid_block() {
 
     service
         .ingest_block(FinalizedBlock {
-            block_number: 3,
-            block_hash: B256::repeat_byte(3),
-            parent_hash: B256::repeat_byte(2),
+            header: h3,
             logs_by_tx: vec![vec![log(
                 Address::repeat_byte(7),
                 vec![B256::repeat_byte(9)],
@@ -365,11 +362,13 @@ async fn indexed_query_completes_current_block_when_limit_reached_mid_block_desc
         QueryLimits::UNLIMITED,
     );
 
+    let h1 = test_header(1, B256::ZERO);
+    let h2 = chain_header(2, &h1);
+    let h3 = chain_header(3, &h2);
+
     service
         .ingest_block(FinalizedBlock {
-            block_number: 1,
-            block_hash: B256::repeat_byte(1),
-            parent_hash: B256::ZERO,
+            header: h1,
             logs_by_tx: vec![vec![log(
                 Address::repeat_byte(7),
                 vec![B256::repeat_byte(9)],
@@ -380,9 +379,7 @@ async fn indexed_query_completes_current_block_when_limit_reached_mid_block_desc
 
     service
         .ingest_block(FinalizedBlock {
-            block_number: 2,
-            block_hash: B256::repeat_byte(2),
-            parent_hash: B256::repeat_byte(1),
+            header: h2,
             logs_by_tx: vec![vec![
                 log(Address::repeat_byte(7), vec![B256::repeat_byte(9)]),
                 log(Address::repeat_byte(7), vec![B256::repeat_byte(9)]),
@@ -396,9 +393,7 @@ async fn indexed_query_completes_current_block_when_limit_reached_mid_block_desc
 
     service
         .ingest_block(FinalizedBlock {
-            block_number: 3,
-            block_hash: B256::repeat_byte(3),
-            parent_hash: B256::repeat_byte(2),
+            header: h3,
             logs_by_tx: vec![vec![log(
                 Address::repeat_byte(7),
                 vec![B256::repeat_byte(9)],
@@ -440,11 +435,12 @@ async fn indexed_query_stops_at_block_when_limit_equals_block_match_count() {
         QueryLimits::UNLIMITED,
     );
 
+    let h1 = test_header(1, B256::ZERO);
+    let h2 = chain_header(2, &h1);
+
     service
         .ingest_block(FinalizedBlock {
-            block_number: 1,
-            block_hash: B256::repeat_byte(1),
-            parent_hash: B256::ZERO,
+            header: h1,
             logs_by_tx: vec![vec![
                 log(Address::repeat_byte(7), vec![B256::repeat_byte(9)]),
                 log(Address::repeat_byte(7), vec![B256::repeat_byte(9)]),
@@ -455,9 +451,7 @@ async fn indexed_query_stops_at_block_when_limit_equals_block_match_count() {
 
     service
         .ingest_block(FinalizedBlock {
-            block_number: 2,
-            block_hash: B256::repeat_byte(2),
-            parent_hash: B256::repeat_byte(1),
+            header: h2,
             logs_by_tx: vec![vec![log(
                 Address::repeat_byte(7),
                 vec![B256::repeat_byte(9)],
@@ -500,9 +494,7 @@ async fn unindexed_query_logs_still_uses_block_scan_fallback() {
 
     service
         .ingest_block(FinalizedBlock {
-            block_number: 1,
-            block_hash: B256::repeat_byte(1),
-            parent_hash: B256::ZERO,
+            header: test_header(1, B256::ZERO),
             logs_by_tx: vec![vec![
                 log(Address::repeat_byte(5), vec![B256::repeat_byte(8)]),
                 log(Address::repeat_byte(6), vec![B256::repeat_byte(9)]),

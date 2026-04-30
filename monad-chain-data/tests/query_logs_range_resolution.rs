@@ -18,6 +18,10 @@ use monad_chain_data::{
     MonadChainDataError, MonadChainDataService, QueryLimits, QueryLogsRequest, QueryOrder, B256,
 };
 
+mod common;
+
+use common::{chain_header, test_header};
+
 #[tokio::test(flavor = "current_thread")]
 async fn from_block_above_head_returns_invalid_request() {
     let service = ingest_two_block_chain().await;
@@ -215,11 +219,12 @@ async fn ingest_two_block_chain() -> MonadChainDataService<InMemoryMetaStore, In
         QueryLimits::UNLIMITED,
     );
 
+    let h1 = test_header(1, B256::ZERO);
+    let h2 = chain_header(2, &h1);
+
     service
         .ingest_block(FinalizedBlock {
-            block_number: 1,
-            block_hash: B256::repeat_byte(1),
-            parent_hash: B256::ZERO,
+            header: h1,
             logs_by_tx: vec![vec![log(Address::repeat_byte(1), B256::repeat_byte(1))]],
         })
         .await
@@ -227,9 +232,7 @@ async fn ingest_two_block_chain() -> MonadChainDataService<InMemoryMetaStore, In
 
     service
         .ingest_block(FinalizedBlock {
-            block_number: 2,
-            block_hash: B256::repeat_byte(2),
-            parent_hash: B256::repeat_byte(1),
+            header: h2,
             logs_by_tx: vec![vec![log(Address::repeat_byte(2), B256::repeat_byte(2))]],
         })
         .await

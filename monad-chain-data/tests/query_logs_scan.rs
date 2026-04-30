@@ -21,6 +21,10 @@ use monad_chain_data::{
     B256,
 };
 
+mod common;
+
+use common::{chain_header, test_header};
+
 #[tokio::test(flavor = "current_thread")]
 async fn query_logs_paginates_at_block_boundaries() {
     let service = MonadChainDataService::new(
@@ -29,11 +33,12 @@ async fn query_logs_paginates_at_block_boundaries() {
         QueryLimits::UNLIMITED,
     );
 
+    let h1 = test_header(1, B256::ZERO);
+    let h2 = chain_header(2, &h1);
+
     service
         .ingest_block(FinalizedBlock {
-            block_number: 1,
-            block_hash: B256::repeat_byte(1),
-            parent_hash: B256::ZERO,
+            header: h1,
             logs_by_tx: vec![vec![
                 log(Address::repeat_byte(7), B256::repeat_byte(9)),
                 log(Address::repeat_byte(7), B256::repeat_byte(9)),
@@ -44,9 +49,7 @@ async fn query_logs_paginates_at_block_boundaries() {
 
     service
         .ingest_block(FinalizedBlock {
-            block_number: 2,
-            block_hash: B256::repeat_byte(2),
-            parent_hash: B256::repeat_byte(1),
+            header: h2,
             logs_by_tx: vec![vec![log(Address::repeat_byte(7), B256::repeat_byte(9))]],
         })
         .await
@@ -110,9 +113,7 @@ async fn query_logs_descending_returns_newest_first() {
 
     service
         .ingest_block(FinalizedBlock {
-            block_number: 1,
-            block_hash: B256::repeat_byte(1),
-            parent_hash: B256::ZERO,
+            header: test_header(1, B256::ZERO),
             logs_by_tx: vec![vec![
                 log(Address::repeat_byte(5), B256::repeat_byte(8)),
                 log(Address::repeat_byte(5), B256::repeat_byte(8)),
@@ -155,9 +156,7 @@ async fn query_logs_rejects_from_block_above_published_head() {
 
     service
         .ingest_block(FinalizedBlock {
-            block_number: 1,
-            block_hash: B256::repeat_byte(1),
-            parent_hash: B256::ZERO,
+            header: test_header(1, B256::ZERO),
             logs_by_tx: vec![vec![log(Address::repeat_byte(5), B256::repeat_byte(8))]],
         })
         .await
@@ -186,11 +185,13 @@ async fn ingest_assigns_contiguous_log_id_windows_across_empty_blocks() {
         QueryLimits::UNLIMITED,
     );
 
+    let h1 = test_header(1, B256::ZERO);
+    let h2 = chain_header(2, &h1);
+    let h3 = chain_header(3, &h2);
+
     service
         .ingest_block(FinalizedBlock {
-            block_number: 1,
-            block_hash: B256::repeat_byte(1),
-            parent_hash: B256::ZERO,
+            header: h1,
             logs_by_tx: vec![vec![
                 log(Address::repeat_byte(3), B256::repeat_byte(4)),
                 log(Address::repeat_byte(3), B256::repeat_byte(4)),
@@ -201,9 +202,7 @@ async fn ingest_assigns_contiguous_log_id_windows_across_empty_blocks() {
 
     service
         .ingest_block(FinalizedBlock {
-            block_number: 2,
-            block_hash: B256::repeat_byte(2),
-            parent_hash: B256::repeat_byte(1),
+            header: h2,
             logs_by_tx: vec![vec![]],
         })
         .await
@@ -211,9 +210,7 @@ async fn ingest_assigns_contiguous_log_id_windows_across_empty_blocks() {
 
     service
         .ingest_block(FinalizedBlock {
-            block_number: 3,
-            block_hash: B256::repeat_byte(3),
-            parent_hash: B256::repeat_byte(2),
+            header: h3,
             logs_by_tx: vec![vec![log(Address::repeat_byte(3), B256::repeat_byte(4))]],
         })
         .await
@@ -257,11 +254,12 @@ async fn block_scan_completes_current_block_when_limit_reached_mid_block() {
         QueryLimits::UNLIMITED,
     );
 
+    let h1 = test_header(1, B256::ZERO);
+    let h2 = chain_header(2, &h1);
+
     service
         .ingest_block(FinalizedBlock {
-            block_number: 1,
-            block_hash: B256::repeat_byte(1),
-            parent_hash: B256::ZERO,
+            header: h1,
             logs_by_tx: vec![vec![
                 log(Address::repeat_byte(5), B256::repeat_byte(8)),
                 log(Address::repeat_byte(5), B256::repeat_byte(8)),
@@ -273,9 +271,7 @@ async fn block_scan_completes_current_block_when_limit_reached_mid_block() {
 
     service
         .ingest_block(FinalizedBlock {
-            block_number: 2,
-            block_hash: B256::repeat_byte(2),
-            parent_hash: B256::repeat_byte(1),
+            header: h2,
             logs_by_tx: vec![vec![log(Address::repeat_byte(5), B256::repeat_byte(8))]],
         })
         .await

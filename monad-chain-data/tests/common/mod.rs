@@ -13,28 +13,18 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use alloy_primitives::{Log, B256};
+#![allow(dead_code)]
 
-use crate::primitives::EvmBlockHeader;
+use monad_chain_data::{EvmBlockHeader, B256};
 
-pub type Hash32 = B256;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FinalizedBlock {
-    pub header: EvmBlockHeader,
-    pub logs_by_tx: Vec<Vec<Log>>,
+pub fn test_header(number: u64, parent_hash: B256) -> EvmBlockHeader {
+    EvmBlockHeader {
+        number,
+        parent_hash,
+        ..EvmBlockHeader::default()
+    }
 }
 
-impl FinalizedBlock {
-    pub fn block_number(&self) -> u64 {
-        self.header.number
-    }
-
-    pub fn block_hash(&self) -> Hash32 {
-        self.header.hash_slow()
-    }
-
-    pub fn parent_hash(&self) -> Hash32 {
-        self.header.parent_hash
-    }
+pub fn chain_header(number: u64, parent: &EvmBlockHeader) -> EvmBlockHeader {
+    test_header(number, parent.hash_slow())
 }

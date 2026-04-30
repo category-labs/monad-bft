@@ -59,9 +59,11 @@ impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
         &self.limits
     }
 
-    // TODO: Individual writes are idempotent, but a partial failure leaves the block
-    // incompletely written. Retry logic, logging, and metrics belong here once the
-    // overall pipeline shape stabilizes.
+    // The publication head is the commit boundary: every artifact written before
+    // `store_state` is pre-publication state and must not be treated as valid by
+    // readers until the head advances. Retry/recovery should derive the next block
+    // from the published head and may overwrite any matching pre-publication
+    // artifacts left by an interrupted ingest.
     /// Persists one finalized block and advances the published head on success.
     pub async fn ingest_block(&self, block: FinalizedBlock) -> Result<IngestOutcome> {
         let blocks = self.tables.blocks();
@@ -81,19 +83,22 @@ impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
             written_logs,
         } = LogIngestPlan::build(&block, next_log_id)?;
         let next_log_id_exclusive = block_record.logs.next_log_id()?;
-        logs.store_block_blob(block.block_number, block_log_blob)
+        blocks
+            .store_header(block.block_number(), &block.header)
             .await?;
-        logs.store_block_header(block.block_number, &block_log_header)
+        logs.store_block_blob(block.block_number(), block_log_blob)
+            .await?;
+        logs.store_block_header(block.block_number(), &block_log_header)
             .await?;
         logs.dir()
             .persist_block_fragment(
-                block.block_number,
+                block.block_number(),
                 block_record.logs.first_log_id.as_u64(),
                 block_record.logs.count,
             )
             .await?;
         for fragment in &bitmap_fragments {
-            logs.store_bitmap_fragment(fragment, block.block_number)
+            logs.store_bitmap_fragment(fragment, block.block_number())
                 .await?;
         }
         compact_newly_sealed_log_directory_buckets(
@@ -110,17 +115,17 @@ impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
         )
         .await?;
         blocks
-            .store_record(block.block_number, &block_record)
+            .store_record(block.block_number(), &block_record)
             .await?;
         self.tables
             .publication()
             .store_state(crate::primitives::state::PublicationState {
-                indexed_finalized_head: block.block_number,
+                indexed_finalized_head: block.block_number(),
             })
             .await?;
 
         Ok(IngestOutcome {
-            indexed_finalized_head: block.block_number,
+            indexed_finalized_head: block.block_number(),
             block_record,
             written_logs,
         })

@@ -19,6 +19,10 @@ use monad_chain_data::{
     QueryOrder, B256,
 };
 
+mod common;
+
+use common::{chain_header, test_header};
+
 #[tokio::test(flavor = "current_thread")]
 async fn limit_above_max_limit_returns_limit_exceeded() {
     let service = ingest_three_block_chain(QueryLimits::new(5, 1_000)).await;
@@ -134,16 +138,14 @@ async fn ingest_three_block_chain(
         limits,
     );
 
-    for (n, prev_hash) in [
-        (1u64, B256::ZERO),
-        (2, B256::repeat_byte(1)),
-        (3, B256::repeat_byte(2)),
-    ] {
+    let h1 = test_header(1, B256::ZERO);
+    let h2 = chain_header(2, &h1);
+    let h3 = chain_header(3, &h2);
+
+    for header in [h1, h2, h3] {
         service
             .ingest_block(FinalizedBlock {
-                block_number: n,
-                block_hash: B256::repeat_byte(n as u8),
-                parent_hash: prev_hash,
+                header,
                 logs_by_tx: vec![vec![log()]],
             })
             .await

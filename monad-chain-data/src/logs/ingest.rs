@@ -44,9 +44,9 @@ impl LogIngestPlan {
         let (block_log_header, block_log_blob) = Self::encode_block_logs(&logs)?;
         let bitmap_fragments = Self::collect_bitmap_fragments(&logs, first_log_id)?;
         let block_record = BlockRecord {
-            block_number: block.block_number,
-            block_hash: block.block_hash,
-            parent_hash: block.parent_hash,
+            block_number: block.block_number(),
+            block_hash: block.block_hash(),
+            parent_hash: block.parent_hash(),
             logs: FamilyWindowRecord {
                 first_log_id,
                 count: log_count,

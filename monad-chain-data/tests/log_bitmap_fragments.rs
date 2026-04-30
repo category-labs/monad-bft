@@ -19,6 +19,10 @@ use monad_chain_data::{
     MonadChainDataService, QueryLimits, Topic, B256,
 };
 
+mod common;
+
+use common::{chain_header, test_header};
+
 #[tokio::test(flavor = "current_thread")]
 async fn ingest_persists_log_bitmap_fragments_for_address_and_topics() {
     let service = MonadChainDataService::new(
@@ -29,9 +33,7 @@ async fn ingest_persists_log_bitmap_fragments_for_address_and_topics() {
 
     service
         .ingest_block(FinalizedBlock {
-            block_number: 1,
-            block_hash: B256::repeat_byte(1),
-            parent_hash: B256::ZERO,
+            header: test_header(1, B256::ZERO),
             logs_by_tx: vec![vec![
                 log(
                     Address::repeat_byte(7),
@@ -91,11 +93,12 @@ async fn ingest_persists_log_bitmap_fragments_across_page_boundaries() {
         QueryLimits::UNLIMITED,
     );
 
+    let h1 = test_header(1, B256::ZERO);
+    let h2 = chain_header(2, &h1);
+
     service
         .ingest_block(FinalizedBlock {
-            block_number: 1,
-            block_hash: B256::repeat_byte(1),
-            parent_hash: B256::ZERO,
+            header: h1,
             logs_by_tx: vec![repeated_logs(
                 Address::repeat_byte(1),
                 vec![B256::repeat_byte(3)],
@@ -107,9 +110,7 @@ async fn ingest_persists_log_bitmap_fragments_across_page_boundaries() {
 
     service
         .ingest_block(FinalizedBlock {
-            block_number: 2,
-            block_hash: B256::repeat_byte(2),
-            parent_hash: B256::repeat_byte(1),
+            header: h2,
             logs_by_tx: vec![repeated_logs(
                 Address::repeat_byte(7),
                 vec![B256::repeat_byte(9)],
@@ -163,9 +164,7 @@ async fn ingest_empty_block_writes_no_log_bitmap_fragments() {
 
     service
         .ingest_block(FinalizedBlock {
-            block_number: 1,
-            block_hash: B256::repeat_byte(1),
-            parent_hash: B256::ZERO,
+            header: test_header(1, B256::ZERO),
             logs_by_tx: vec![vec![]],
         })
         .await

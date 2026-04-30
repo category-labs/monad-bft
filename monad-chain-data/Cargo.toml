@@ -9,6 +9,7 @@ edition = "2021"
 bench = false
 
 [dependencies]
+alloy-consensus = { workspace = true }
 alloy-primitives = { workspace = true, features = ["rlp"] }
 alloy-rlp = { workspace = true, features = ["derive"] }
 auto_impl = { workspace = true }

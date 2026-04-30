@@ -26,6 +26,10 @@ use monad_chain_data::{
     MonadChainDataService, QueryLimits, QueryLogsRequest, QueryOrder, Topic, B256,
 };
 
+mod common;
+
+use common::{chain_header, test_header};
+
 // Fills a full bitmap page (~65k logs) to exercise the seal/compaction path;
 // the in-memory store makes that slow, so gate behind --ignored.
 #[tokio::test(flavor = "current_thread")]
@@ -36,13 +40,14 @@ async fn ingest_compacts_sealed_pages_and_query_prefers_compacted_page_blobs() {
     let service =
         MonadChainDataService::new(meta_store.clone(), blob_store, QueryLimits::UNLIMITED);
 
+    let h1 = test_header(1, B256::ZERO);
+    let h2 = chain_header(2, &h1);
+
     let old_address = Address::repeat_byte(7);
     let old_topic = B256::repeat_byte(9);
     service
         .ingest_block(FinalizedBlock {
-            block_number: 1,
-            block_hash: B256::repeat_byte(1),
-            parent_hash: B256::ZERO,
+            header: h1,
             logs_by_tx: vec![repeated_logs(
                 old_address,
                 vec![old_topic],
@@ -56,9 +61,7 @@ async fn ingest_compacts_sealed_pages_and_query_prefers_compacted_page_blobs() {
     let frontier_topic = B256::repeat_byte(10);
     service
         .ingest_block(FinalizedBlock {
-            block_number: 2,
-            block_hash: B256::repeat_byte(2),
-            parent_hash: B256::repeat_byte(1),
+            header: h2,
             logs_by_tx: vec![repeated_logs(frontier_address, vec![frontier_topic], 4)],
         })
         .await
@@ -150,11 +153,12 @@ async fn query_errors_when_compacted_page_meta_exists_but_blob_is_missing() {
 
     let address = Address::repeat_byte(7);
     let topic = B256::repeat_byte(9);
+    let h1 = test_header(1, B256::ZERO);
+    let h2 = chain_header(2, &h1);
+
     service
         .ingest_block(FinalizedBlock {
-            block_number: 1,
-            block_hash: B256::repeat_byte(1),
-            parent_hash: B256::ZERO,
+            header: h1,
             logs_by_tx: vec![repeated_logs(
                 address,
                 vec![topic],
@@ -165,9 +169,7 @@ async fn query_errors_when_compacted_page_meta_exists_but_blob_is_missing() {
         .expect("ingest block 1");
     service
         .ingest_block(FinalizedBlock {
-            block_number: 2,
-            block_hash: B256::repeat_byte(2),
-            parent_hash: B256::repeat_byte(1),
+            header: h2,
             logs_by_tx: vec![repeated_logs(
                 Address::repeat_byte(8),
                 vec![B256::repeat_byte(10)],
