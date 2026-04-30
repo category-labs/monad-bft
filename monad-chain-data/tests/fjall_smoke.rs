@@ -15,9 +15,11 @@
 
 #![cfg(feature = "fjall")]
 
+use bytes::Bytes;
 use monad_chain_data::{
-    primitives::state::PublicationState, store::FjallStore, Family, FinalizedBlock,
-    MonadChainDataError, MonadChainDataService, QueryLimits, B256,
+    primitives::state::PublicationState,
+    store::{BlobStore, BlobTableId, FjallStore},
+    Family, FinalizedBlock, MonadChainDataError, MonadChainDataService, QueryLimits, B256,
 };
 use tempfile::tempdir;
 
@@ -97,6 +99,28 @@ async fn fjall_persists_across_reopen() {
         .await
         .expect("load head");
     assert_eq!(head, Some(1));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn fjall_blob_roundtrips_value_above_kv_separation_threshold() {
+    // KV separation kicks in at 1 KiB by default; this test puts a 64 KiB
+    // value to exercise the blob-file path, then reads it back.
+    const TEST_TABLE: BlobTableId = BlobTableId::new("kv_sep_smoke");
+
+    let dir = tempdir().expect("tempdir");
+    let store = FjallStore::open(dir.path()).expect("open fjall");
+
+    let payload = Bytes::from(vec![0xAB; 64 * 1024]);
+    store
+        .put_blob(TEST_TABLE, b"big", payload.clone())
+        .await
+        .expect("put");
+    let got = store
+        .get_blob(TEST_TABLE, b"big")
+        .await
+        .expect("get")
+        .expect("present");
+    assert_eq!(got, payload);
 }
 
 #[tokio::test(flavor = "current_thread")]

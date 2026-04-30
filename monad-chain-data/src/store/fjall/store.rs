@@ -20,7 +20,7 @@ use std::{
 };
 
 use bytes::Bytes;
-use fjall::{Config, Database, Keyspace, KeyspaceCreateOptions};
+use fjall::{Config, Database, Keyspace, KeyspaceCreateOptions, KvSeparationOptions};
 
 use crate::{
     error::{MonadChainDataError, Result},
@@ -43,6 +43,16 @@ const BLOB_PREFIX: &str = "blob:";
 /// and [`BlobStore`]. Single-process only: CAS rows are protected by a
 /// process-local mutex around their read-modify-write critical section,
 /// not by the storage engine itself.
+///
+/// Blob keyspaces are opened with key-value separation enabled, so the
+/// LSM holds only `(key → blob_file_id, offset, length)` pointers and
+/// the actual bytes live in append-only blob files. Chain-data blobs
+/// are written once and never deleted, so blob-file GC effectively never
+/// fires; we just append. Sized for ~280M+ objects in the 10s of KB to
+/// 16 MiB range. Operators that want to colocate the meta store and
+/// blob store on different disks should construct two `FjallStore`s
+/// pointed at different paths and pass them as the meta and blob
+/// arguments.
 pub struct FjallStore {
     inner: Arc<Inner>,
 }
@@ -77,10 +87,22 @@ impl FjallStore {
         if let Some(ks) = guard.get(name) {
             return Ok(ks.clone());
         }
+        let is_blob = name.starts_with(BLOB_PREFIX);
         let ks = self
             .inner
             .db
-            .keyspace(name, KeyspaceCreateOptions::default)
+            .keyspace(name, || {
+                let opts = KeyspaceCreateOptions::default();
+                if is_blob {
+                    // KV separation: defaults are 1 KiB separation threshold,
+                    // 64 MiB blob files, LZ4. Suits 10s of KB - 16 MiB blobs;
+                    // staleness/age GC thresholds never fire under our
+                    // append-only workload.
+                    opts.with_kv_separation(Some(KvSeparationOptions::default()))
+                } else {
+                    opts
+                }
+            })
             .map_err(|e| MonadChainDataError::Backend(format!("fjall keyspace {name}: {e}")))?;
         guard.insert(name.to_string(), ks.clone());
         Ok(ks)
