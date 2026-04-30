@@ -18,7 +18,7 @@ use bytes::Bytes;
 
 use crate::{
     error::{MonadChainDataError, Result},
-    family::FinalizedBlock,
+    family::{FinalizedBlock, Hash32},
     kernel::{
         bitmap::{BitmapFragmentWrite, BitmapPageMeta, BitmapTables},
         primary_dir::{PrimaryDirBucket, PrimaryDirFragment, PrimaryDirTables},
@@ -102,16 +102,20 @@ impl<M: MetaStore> PublicationTables<M> {
 pub struct BlockTables<M: MetaStore> {
     block_records: KvTable<M>,
     block_headers: KvTable<M>,
+    block_hash_to_number_index: KvTable<M>,
 }
 
 impl<M: MetaStore> BlockTables<M> {
     pub const BLOCK_RECORD_TABLE: TableId = TableId::new("block_record");
     pub const BLOCK_HEADER_TABLE: TableId = TableId::new("block_header");
+    pub const BLOCK_HASH_TO_NUMBER_INDEX_TABLE: TableId =
+        TableId::new("block_hash_to_number_index");
 
     fn new(meta_store: M) -> Self {
         Self {
             block_records: meta_store.table(Self::BLOCK_RECORD_TABLE),
             block_headers: meta_store.table(Self::BLOCK_HEADER_TABLE),
+            block_hash_to_number_index: meta_store.table(Self::BLOCK_HASH_TO_NUMBER_INDEX_TABLE),
         }
     }
 
@@ -145,6 +149,38 @@ impl<M: MetaStore> BlockTables<M> {
         let key = block_number_key(block_number);
         self.block_headers
             .put(&key, Bytes::from(alloy_rlp::encode(header)))
+            .await?;
+        Ok(())
+    }
+
+    /// Resolves a block hash to its block number via the hash-to-number index.
+    /// A returned `Some(n)` is not by itself a guarantee that block `n` is
+    /// fully published — the index entry is written before the publication
+    /// head advances, so a hash hit may name a block whose record/header is
+    /// not yet visible. Callers that turn the number into a record/header
+    /// load should expect `MissingData` if `n > published_head` or if the
+    /// follow-up loads fail.
+    pub async fn block_number_by_hash(&self, block_hash: &Hash32) -> Result<Option<u64>> {
+        let Some(record) = self
+            .block_hash_to_number_index
+            .get(block_hash.as_slice())
+            .await?
+        else {
+            return Ok(None);
+        };
+        let bytes: [u8; 8] =
+            record.value.as_ref().try_into().map_err(|_| {
+                MonadChainDataError::Decode("invalid block_hash_to_number_index value")
+            })?;
+        Ok(Some(u64::from_be_bytes(bytes)))
+    }
+
+    pub async fn store_hash_index(&self, block_hash: &Hash32, block_number: u64) -> Result<()> {
+        self.block_hash_to_number_index
+            .put(
+                block_hash.as_slice(),
+                Bytes::copy_from_slice(&block_number.to_be_bytes()),
+            )
             .await?;
         Ok(())
     }
