@@ -34,7 +34,7 @@ use monad_rpc::{
         resources::{MonadJsonRootSpanBuilder, MonadRpcResources},
         rpc_handler,
     },
-    middleware::{DecompressionGuard, Metrics, TimingMiddleware},
+    middleware::{Metrics, TimingMiddleware},
     txpool::EthTxPoolBridge,
     websocket, MONAD_RPC_VERSION,
 };
@@ -301,8 +301,6 @@ async fn main() -> std::io::Result<()> {
         )
     });
 
-    let decompression_guard = DecompressionGuard::new(args.max_request_size);
-
     // Configure event ring, websocket server and event cache.
     let (events_client, events_for_cache) = if let Some(exec_event_path) = args.exec_event_path {
         let event_ring_path =
@@ -408,7 +406,6 @@ async fn main() -> std::io::Result<()> {
     let app = match with_metrics {
         Some(metrics) => HttpServer::new(move || {
             App::new()
-                .wrap(decompression_guard.clone())
                 .wrap(metrics.clone())
                 .wrap(TracingLogger::<MonadJsonRootSpanBuilder>::new())
                 .wrap(TimingMiddleware)
@@ -422,7 +419,6 @@ async fn main() -> std::io::Result<()> {
         .run(),
         None => HttpServer::new(move || {
             App::new()
-                .wrap(decompression_guard.clone())
                 .wrap(TracingLogger::<MonadJsonRootSpanBuilder>::new())
                 .wrap(TimingMiddleware)
                 .app_data(web::PayloadConfig::default().limit(args.max_request_size))

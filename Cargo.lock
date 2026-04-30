@@ -62,12 +62,10 @@ dependencies = [
  "actix-utils",
  "base64 0.22.1",
  "bitflags 2.10.0",
- "brotli",
  "bytes",
  "bytestring",
  "derive_more",
  "encoding_rs",
- "flate2",
  "foldhash 0.1.5",
  "futures-core",
  "h2 0.3.27",
@@ -86,7 +84,6 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
- "zstd",
 ]
 
 [[package]]
@@ -5839,12 +5836,10 @@ dependencies = [
  "arbitrary",
  "async-stream",
  "awc",
- "brotli",
  "bytes",
  "clap",
  "criterion",
  "dashmap",
- "flate2",
  "flume",
  "futures",
  "futures-util",
@@ -5888,7 +5883,6 @@ dependencies = [
  "tracing-actix-web",
  "tracing-manytrace",
  "tracing-subscriber",
- "zstd",
 ]
 
 [[package]]

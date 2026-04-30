@@ -76,11 +76,11 @@ monad-exec-events = { path = "./monad-execution/rust/crates/monad-exec-events" }
 monad-triedb = { path = "./monad-execution/rust/crates/monad-triedb" }
 
 actix = "0.13"
-actix-http = "3.11.1"
+actix-http = { version = "3.11.1", default-features = false }
 actix-rt = "2.9.0"
 actix-server = "2.5.1"
-actix-test = "0.1"
-actix-web = "4.5.1"
+actix-test = { version = "0.1", default-features = false }
+actix-web = { version = "4.5.1", default-features = false, features = ["macros", "http2", "unicode", "ws"] }
 actix-ws = "0.3.0"
 aegis = "0.5"
 aes = "0.8.3"
@@ -108,7 +108,7 @@ async-channel = "2.5"
 async-graphql = "7.0"
 async-stream = "0.3.6"
 auto_impl = "1.2"
-awc = "3"
+awc = { version = "3", default-features = false }
 aws-config = "1.8.13"
 aws-sdk-dynamodb = { version = "1.104.0", default-features = false, features = ["behavior-version-latest", "rt-tokio", "default-https-client"] }
 aws-sdk-s3 = { version = "1.122.0", default-features = false, features = ["behavior-version-latest", "sigv4a", "rt-tokio", "default-https-client"] }
