@@ -49,12 +49,14 @@ macro_rules! family_table_ids {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Family {
     Log,
+    Tx,
 }
 
 impl Family {
     pub const fn table_ids(self) -> FamilyTableIds {
         match self {
             Family::Log => family_table_ids!("log"),
+            Family::Tx => family_table_ids!("tx"),
         }
     }
 
@@ -63,6 +65,7 @@ impl Family {
     pub fn window_in(self, block: &BlockRecord) -> Option<FamilyWindowRecord> {
         match self {
             Family::Log => Some(block.logs),
+            Family::Tx => Some(block.txs),
         }
     }
 }

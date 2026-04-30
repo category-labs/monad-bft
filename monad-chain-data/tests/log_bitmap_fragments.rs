@@ -41,6 +41,7 @@ async fn ingest_persists_log_bitmap_fragments_for_address_and_topics() {
                 ),
                 log(Address::repeat_byte(7), vec![B256::repeat_byte(9)]),
             ]],
+            txs: Vec::new(),
         })
         .await
         .expect("ingest block 1");
@@ -104,6 +105,7 @@ async fn ingest_persists_log_bitmap_fragments_across_page_boundaries() {
                 vec![B256::repeat_byte(3)],
                 usize::try_from(STREAM_PAGE_LOCAL_ID_SPAN - 2).expect("page span fits usize"),
             )],
+            txs: Vec::new(),
         })
         .await
         .expect("ingest block 1");
@@ -116,6 +118,7 @@ async fn ingest_persists_log_bitmap_fragments_across_page_boundaries() {
                 vec![B256::repeat_byte(9)],
                 4,
             )],
+            txs: Vec::new(),
         })
         .await
         .expect("ingest block 2");
@@ -166,6 +169,7 @@ async fn ingest_empty_block_writes_no_log_bitmap_fragments() {
         .ingest_block(FinalizedBlock {
             header: test_header(1, B256::ZERO),
             logs_by_tx: vec![vec![]],
+            txs: Vec::new(),
         })
         .await
         .expect("ingest block 1");

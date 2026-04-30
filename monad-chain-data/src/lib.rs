@@ -21,21 +21,25 @@ pub mod family;
 pub mod logs;
 pub mod primitives;
 pub mod store;
+pub mod txs;
 
 pub use alloy_primitives::{Address, Bytes, Log, LogData, B256};
 pub use api::{IngestOutcome, MonadChainDataService};
 pub use blocks::{Block, QueryBlocksRequest, QueryBlocksResponse};
 pub use engine::{family::Family, tables::Tables};
 pub use error::MonadChainDataError;
-pub use family::{FinalizedBlock, Hash32};
+pub use family::{FinalizedBlock, Hash32, IngestTx};
 pub use logs::{LogEntry, LogFilter, LogsRelations, QueryLogsRequest, QueryLogsResponse};
 pub use primitives::{
     limits::{LimitExceededKind, QueryEnvelope, QueryLimits},
     page::{QueryOrder, DEFAULT_QUERY_LIMIT},
     refs::{BlockRef, BlockSpan},
-    state::{BlockRecord, FamilyWindowRecord, LogId, PrimaryId},
+    state::{BlockRecord, FamilyWindowRecord, LogId, PrimaryId, TxId},
     EvmBlockHeader,
 };
 pub use store::{InMemoryBlobStore, InMemoryMetaStore};
+pub use txs::{
+    QueryTransactionsRequest, QueryTransactionsResponse, TxEntry, TxFilter, TxsRelations,
+};
 
 pub type Topic = B256;

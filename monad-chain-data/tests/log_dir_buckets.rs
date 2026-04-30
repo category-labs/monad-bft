@@ -40,6 +40,7 @@ async fn ingest_compacts_a_sealed_directory_bucket_when_crossing_the_boundary() 
             logs_by_tx: vec![repeated_logs(
                 usize::try_from(DIRECTORY_BUCKET_SIZE - 2).expect("bucket size fits usize"),
             )],
+            txs: Vec::new(),
         })
         .await
         .expect("ingest block 1");
@@ -48,6 +49,7 @@ async fn ingest_compacts_a_sealed_directory_bucket_when_crossing_the_boundary() 
         .ingest_block(FinalizedBlock {
             header: h2,
             logs_by_tx: vec![repeated_logs(4)],
+            txs: Vec::new(),
         })
         .await
         .expect("ingest block 2");
