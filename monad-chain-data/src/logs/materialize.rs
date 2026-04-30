@@ -36,6 +36,7 @@ use crate::{
         state::BlockRecord,
     },
     store::{BlobStore, MetaStore},
+    txs::TxEntry,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -53,6 +54,11 @@ pub struct LogsRelations {
     /// headers (sorted ascending by number) for the blocks that
     /// contributed logs in this page.
     pub blocks: bool,
+    /// When true, `QueryLogsResponse::transactions` is populated with
+    /// deduped txs (sorted ascending by block number, then tx index) for
+    /// the `(block_number, tx_index)` pairs carried on the logs in this
+    /// page.
+    pub transactions: bool,
 }
 
 /// Public log query in queryX spec semantics: `from_block`/`to_block` are
@@ -74,6 +80,10 @@ pub struct QueryLogsResponse {
     /// Deduped blocks for the `logs` in this page, sorted ascending by
     /// block number. `None` unless `QueryLogsRequest::relations.blocks`.
     pub blocks: Option<Vec<Block>>,
+    /// Deduped transactions for the `logs` in this page, sorted ascending
+    /// by `(block_number, tx_index)`. `None` unless
+    /// `QueryLogsRequest::relations.transactions`.
+    pub transactions: Option<Vec<TxEntry>>,
     pub span: BlockSpan,
 }
 

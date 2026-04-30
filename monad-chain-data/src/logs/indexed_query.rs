@@ -39,6 +39,7 @@ pub(crate) async fn execute_indexed_log_query<M: MetaStore, B: BlobStore>(
     Ok(QueryLogsResponse {
         logs: outcome.records,
         blocks: None,
+        transactions: None,
         span: outcome.span,
     })
 }

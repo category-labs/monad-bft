@@ -16,18 +16,18 @@
 use crate::{
     engine::{query::family_runner::execute_block_scan_family_query, tables::Tables},
     error::Result,
-    logs::{LogMaterializer, QueryLogsRequest, QueryLogsResponse},
     primitives::range::ResolvedBlockWindow,
     store::{BlobStore, MetaStore},
+    txs::{QueryTransactionsRequest, QueryTransactionsResponse, TxMaterializer},
 };
 
-/// Walks blocks in query order, applying `LogFilter` to each block's logs.
-pub async fn execute_block_scan_query<M: MetaStore, B: BlobStore>(
+/// Walks blocks in query order, applying `TxFilter` to each block's txs.
+pub(crate) async fn execute_block_scan_tx_query<M: MetaStore, B: BlobStore>(
     tables: &Tables<M, B>,
-    request: &QueryLogsRequest,
+    request: &QueryTransactionsRequest,
     window: ResolvedBlockWindow,
-) -> Result<QueryLogsResponse> {
-    let materializer = LogMaterializer::new(tables);
+) -> Result<QueryTransactionsResponse> {
+    let materializer = TxMaterializer::new(tables);
     let outcome = execute_block_scan_family_query(
         &materializer,
         &request.filter,
@@ -36,10 +36,9 @@ pub async fn execute_block_scan_query<M: MetaStore, B: BlobStore>(
         request.envelope.limit,
     )
     .await?;
-    Ok(QueryLogsResponse {
-        logs: outcome.records,
+    Ok(QueryTransactionsResponse {
+        txs: outcome.records,
         blocks: None,
-        transactions: None,
         span: outcome.span,
     })
 }

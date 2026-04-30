@@ -14,32 +14,31 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use crate::{
-    engine::{query::family_runner::execute_block_scan_family_query, tables::Tables},
+    engine::{query::family_runner::execute_indexed_family_query, tables::Tables},
     error::Result,
-    logs::{LogMaterializer, QueryLogsRequest, QueryLogsResponse},
     primitives::range::ResolvedBlockWindow,
     store::{BlobStore, MetaStore},
+    txs::{QueryTransactionsRequest, QueryTransactionsResponse, TxMaterializer},
 };
 
-/// Walks blocks in query order, applying `LogFilter` to each block's logs.
-pub async fn execute_block_scan_query<M: MetaStore, B: BlobStore>(
+pub(crate) async fn execute_indexed_tx_query<M: MetaStore, B: BlobStore>(
     tables: &Tables<M, B>,
-    request: &QueryLogsRequest,
-    window: ResolvedBlockWindow,
-) -> Result<QueryLogsResponse> {
-    let materializer = LogMaterializer::new(tables);
-    let outcome = execute_block_scan_family_query(
+    request: &QueryTransactionsRequest,
+    block_window: ResolvedBlockWindow,
+) -> Result<QueryTransactionsResponse> {
+    let materializer = TxMaterializer::new(tables);
+    let outcome = execute_indexed_family_query(
+        tables,
         &materializer,
         &request.filter,
-        window,
+        block_window,
         request.envelope.order,
         request.envelope.limit,
     )
     .await?;
-    Ok(QueryLogsResponse {
-        logs: outcome.records,
+    Ok(QueryTransactionsResponse {
+        txs: outcome.records,
         blocks: None,
-        transactions: None,
         span: outcome.span,
     })
 }

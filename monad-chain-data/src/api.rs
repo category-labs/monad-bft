@@ -16,10 +16,12 @@
 use bytes::Bytes;
 
 use crate::{
-    blocks::{execute_query_blocks, load_blocks_for_logs, QueryBlocksRequest, QueryBlocksResponse},
-    engine::{family::Family, tables::Tables},
+    blocks::{
+        execute_query_blocks, load_blocks_by_numbers, QueryBlocksRequest, QueryBlocksResponse,
+    },
+    engine::{family::Family, query::family_runner::IndexedFamilyQuery, tables::Tables},
     error::{MonadChainDataError, Result},
-    family::FinalizedBlock,
+    family::{FinalizedBlock, Hash32},
     logs::{
         execute_block_scan_query, execute_indexed_log_query, LogIngestPlan, QueryLogsRequest,
         QueryLogsResponse,
@@ -30,7 +32,10 @@ use crate::{
         state::{BlockRecord, LogId, TxId},
     },
     store::{BlobStore, MetaStore},
-    txs::TxIngestPlan,
+    txs::{
+        execute_block_scan_tx_query, execute_indexed_tx_query, load_txs_by_positions,
+        QueryTransactionsRequest, QueryTransactionsResponse, TxEntry, TxIngestPlan, TxMaterializer,
+    },
 };
 
 pub struct MonadChainDataService<M: MetaStore, B: BlobStore> {
@@ -102,6 +107,7 @@ impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
             block_tx_header,
             block_tx_blob,
             bitmap_fragments: tx_bitmap_fragments,
+            hash_locations: tx_hash_locations,
             written_txs,
         } = TxIngestPlan::build(&block, next_tx_id)?;
 
@@ -135,6 +141,9 @@ impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
         blocks
             .store_hash_index(&block.block_hash(), block.block_number())
             .await?;
+        for (tx_hash, location) in tx_hash_locations {
+            self.tables.tx_hash_index().put(&tx_hash, location).await?;
+        }
         blocks
             .store_record(block.block_number(), &block_record)
             .await?;
@@ -175,11 +184,86 @@ impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
         };
 
         if request.relations.blocks {
-            response.blocks =
-                Some(load_blocks_for_logs(self.tables.blocks(), &response.logs).await?);
+            response.blocks = Some(
+                load_blocks_by_numbers(
+                    self.tables.blocks(),
+                    response.logs.iter().map(|l| l.block_number),
+                )
+                .await?,
+            );
+        }
+
+        if request.relations.transactions {
+            response.transactions = Some(
+                load_txs_by_positions(
+                    &self.tables,
+                    response.logs.iter().map(|l| (l.block_number, l.tx_index)),
+                )
+                .await?,
+            );
         }
 
         Ok(response)
+    }
+
+    /// Executes a finalized transactions query over the current published
+    /// head. The service's configured `QueryLimits` bound the request
+    /// shape and the resolved block-range span.
+    pub async fn query_transactions(
+        &self,
+        request: QueryTransactionsRequest,
+    ) -> Result<QueryTransactionsResponse> {
+        self.limits.check_limit(request.envelope.limit)?;
+
+        let head = self.load_published_head().await?;
+        let window = ResolvedBlockWindow::resolve(
+            &request.envelope,
+            head,
+            &self.limits,
+            self.tables.blocks(),
+        )
+        .await?;
+
+        let mut response = if request.filter.has_indexed_clause() {
+            execute_indexed_tx_query(&self.tables, &request, window).await?
+        } else {
+            execute_block_scan_tx_query(&self.tables, &request, window).await?
+        };
+
+        if request.relations.blocks {
+            response.blocks = Some(
+                load_blocks_by_numbers(
+                    self.tables.blocks(),
+                    response.txs.iter().map(|t| t.block_number),
+                )
+                .await?,
+            );
+        }
+
+        Ok(response)
+    }
+
+    /// Resolves a finalized transaction by hash. Returns `None` if the
+    /// hash was never indexed. A hit in the index that fails to
+    /// materialize inside the published range indicates a data-layer
+    /// inconsistency and surfaces as `MissingData`; it is not silently
+    /// flattened to `None`.
+    pub async fn get_transaction(&self, tx_hash: Hash32) -> Result<Option<TxEntry>> {
+        let Some(location) = self.tables.tx_hash_index().get(&tx_hash).await? else {
+            return Ok(None);
+        };
+        let Some(head) = self.tables.publication().load_published_head().await? else {
+            return Ok(None);
+        };
+        if location.block_number > head {
+            return Ok(None);
+        }
+
+        let materializer = TxMaterializer::new(&self.tables);
+        let entry = materializer
+            .load_record_at(location.block_number, location.tx_idx as usize)
+            .await?;
+        Ok(Some(entry))
     }
 
     /// Executes a finalized blocks query over the current published head.
