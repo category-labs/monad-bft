@@ -32,9 +32,9 @@ pub use family::{FinalizedBlock, Hash32};
 pub use kernel::tables::Tables;
 pub use logs::{LogEntry, LogFilter, LogsRelations, QueryLogsRequest, QueryLogsResponse};
 pub use primitives::{
-    limits::{LimitExceededKind, QueryLimits},
+    limits::{LimitExceededKind, QueryEnvelope, QueryLimits},
     page::{QueryOrder, DEFAULT_QUERY_LIMIT},
-    refs::BlockRef,
+    refs::{BlockRef, BlockSpan},
     state::{BlockRecord, FamilyWindowRecord, LogId},
     EvmBlockHeader,
 };

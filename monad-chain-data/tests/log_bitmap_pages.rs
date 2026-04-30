@@ -23,7 +23,8 @@ use monad_chain_data::{
     },
     store::MetaStore,
     Address, Bytes, FinalizedBlock, InMemoryBlobStore, InMemoryMetaStore, Log, LogData, LogFilter,
-    LogsRelations, MonadChainDataService, QueryLimits, QueryLogsRequest, QueryOrder, Topic, B256,
+    LogsRelations, MonadChainDataService, QueryEnvelope, QueryLimits, QueryLogsRequest, QueryOrder,
+    Topic, B256,
 };
 
 mod common;
@@ -111,10 +112,12 @@ async fn ingest_compacts_sealed_pages_and_query_prefers_compacted_page_blobs() {
 
     let old_page = service
         .query_logs(QueryLogsRequest {
-            from_block: Some(1),
-            to_block: Some(2),
-            order: QueryOrder::Ascending,
-            limit: 10,
+            envelope: QueryEnvelope {
+                from_block: Some(1),
+                to_block: Some(2),
+                order: QueryOrder::Ascending,
+                limit: 10,
+            },
             filter: LogFilter {
                 address: Some(HashSet::from([old_address])),
                 topics: [Some(HashSet::from([old_topic])), None, None, None],
@@ -130,10 +133,12 @@ async fn ingest_compacts_sealed_pages_and_query_prefers_compacted_page_blobs() {
 
     let frontier_page = service
         .query_logs(QueryLogsRequest {
-            from_block: Some(1),
-            to_block: Some(2),
-            order: QueryOrder::Ascending,
-            limit: 10,
+            envelope: QueryEnvelope {
+                from_block: Some(1),
+                to_block: Some(2),
+                order: QueryOrder::Ascending,
+                limit: 10,
+            },
             filter: LogFilter {
                 address: Some(HashSet::from([frontier_address])),
                 topics: [Some(HashSet::from([frontier_topic])), None, None, None],
@@ -189,10 +194,12 @@ async fn query_errors_when_compacted_page_meta_exists_but_blob_is_missing() {
 
     let error = service
         .query_logs(QueryLogsRequest {
-            from_block: Some(1),
-            to_block: Some(2),
-            order: QueryOrder::Ascending,
-            limit: 10,
+            envelope: QueryEnvelope {
+                from_block: Some(1),
+                to_block: Some(2),
+                order: QueryOrder::Ascending,
+                limit: 10,
+            },
             filter: LogFilter {
                 address: Some(HashSet::from([address])),
                 topics: [Some(HashSet::from([topic])), None, None, None],

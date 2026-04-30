@@ -15,8 +15,8 @@
 
 use monad_chain_data::{
     Address, Bytes, FinalizedBlock, InMemoryBlobStore, InMemoryMetaStore, Log, LogData, LogFilter,
-    LogsRelations, MonadChainDataError, MonadChainDataService, QueryLimits, QueryLogsRequest,
-    QueryOrder, B256,
+    LogsRelations, MonadChainDataError, MonadChainDataService, QueryEnvelope, QueryLimits,
+    QueryLogsRequest, QueryOrder, B256,
 };
 
 mod common;
@@ -29,10 +29,12 @@ async fn from_block_above_head_returns_invalid_request() {
 
     let err = service
         .query_logs(QueryLogsRequest {
-            from_block: Some(50),
-            to_block: Some(60),
-            order: QueryOrder::Ascending,
-            limit: 10,
+            envelope: QueryEnvelope {
+                from_block: Some(50),
+                to_block: Some(60),
+                order: QueryOrder::Ascending,
+                limit: 10,
+            },
             filter: LogFilter::default(),
             relations: LogsRelations::default(),
         })
@@ -51,19 +53,21 @@ async fn to_block_above_head_clips_to_head() {
 
     let page = service
         .query_logs(QueryLogsRequest {
-            from_block: Some(1),
-            to_block: Some(50),
-            order: QueryOrder::Ascending,
-            limit: 100,
+            envelope: QueryEnvelope {
+                from_block: Some(1),
+                to_block: Some(50),
+                order: QueryOrder::Ascending,
+                limit: 100,
+            },
             filter: LogFilter::default(),
             relations: LogsRelations::default(),
         })
         .await
         .expect("query");
 
-    assert_eq!(page.from_block.number, 1);
-    assert_eq!(page.to_block.number, 2);
-    assert_eq!(page.cursor_block.number, 2);
+    assert_eq!(page.span.from_block.number, 1);
+    assert_eq!(page.span.to_block.number, 2);
+    assert_eq!(page.span.cursor_block.number, 2);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -72,10 +76,12 @@ async fn inverted_range_returns_invalid_request() {
 
     let err = service
         .query_logs(QueryLogsRequest {
-            from_block: Some(2),
-            to_block: Some(1),
-            order: QueryOrder::Ascending,
-            limit: 10,
+            envelope: QueryEnvelope {
+                from_block: Some(2),
+                to_block: Some(1),
+                order: QueryOrder::Ascending,
+                limit: 10,
+            },
             filter: LogFilter::default(),
             relations: LogsRelations::default(),
         })
@@ -98,10 +104,12 @@ async fn descending_to_block_above_head_returns_invalid_request() {
     // from the inverted-range path.
     let err = service
         .query_logs(QueryLogsRequest {
-            from_block: None,
-            to_block: Some(50),
-            order: QueryOrder::Descending,
-            limit: 10,
+            envelope: QueryEnvelope {
+                from_block: None,
+                to_block: Some(50),
+                order: QueryOrder::Descending,
+                limit: 10,
+            },
             filter: LogFilter::default(),
             relations: LogsRelations::default(),
         })
@@ -123,19 +131,21 @@ async fn descending_from_above_head_clips_to_head() {
     // to_block-above-head behavior.
     let page = service
         .query_logs(QueryLogsRequest {
-            from_block: Some(50),
-            to_block: Some(1),
-            order: QueryOrder::Descending,
-            limit: 100,
+            envelope: QueryEnvelope {
+                from_block: Some(50),
+                to_block: Some(1),
+                order: QueryOrder::Descending,
+                limit: 100,
+            },
             filter: LogFilter::default(),
             relations: LogsRelations::default(),
         })
         .await
         .expect("query");
 
-    assert_eq!(page.from_block.number, 2);
-    assert_eq!(page.to_block.number, 1);
-    assert_eq!(page.cursor_block.number, 1);
+    assert_eq!(page.span.from_block.number, 2);
+    assert_eq!(page.span.to_block.number, 1);
+    assert_eq!(page.span.cursor_block.number, 1);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -144,18 +154,20 @@ async fn from_block_zero_floors_to_earliest_queryable_block() {
 
     let page = service
         .query_logs(QueryLogsRequest {
-            from_block: Some(0),
-            to_block: Some(2),
-            order: QueryOrder::Ascending,
-            limit: 100,
+            envelope: QueryEnvelope {
+                from_block: Some(0),
+                to_block: Some(2),
+                order: QueryOrder::Ascending,
+                limit: 100,
+            },
             filter: LogFilter::default(),
             relations: LogsRelations::default(),
         })
         .await
         .expect("query");
 
-    assert_eq!(page.from_block.number, 1);
-    assert_eq!(page.to_block.number, 2);
+    assert_eq!(page.span.from_block.number, 1);
+    assert_eq!(page.span.to_block.number, 2);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -166,10 +178,12 @@ async fn descending_inverted_range_returns_invalid_request() {
     // the wrong shape.
     let err = service
         .query_logs(QueryLogsRequest {
-            from_block: Some(1),
-            to_block: Some(2),
-            order: QueryOrder::Descending,
-            limit: 10,
+            envelope: QueryEnvelope {
+                from_block: Some(1),
+                to_block: Some(2),
+                order: QueryOrder::Descending,
+                limit: 10,
+            },
             filter: LogFilter::default(),
             relations: LogsRelations::default(),
         })
@@ -188,18 +202,20 @@ async fn descending_defaulted_range_inverts_endpoints() {
 
     let page = service
         .query_logs(QueryLogsRequest {
-            from_block: None,
-            to_block: None,
-            order: QueryOrder::Descending,
-            limit: 100,
+            envelope: QueryEnvelope {
+                from_block: None,
+                to_block: None,
+                order: QueryOrder::Descending,
+                limit: 100,
+            },
             filter: LogFilter::default(),
             relations: LogsRelations::default(),
         })
         .await
         .expect("query");
 
-    assert_eq!(page.from_block.number, 2);
-    assert_eq!(page.to_block.number, 1);
+    assert_eq!(page.span.from_block.number, 2);
+    assert_eq!(page.span.to_block.number, 1);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -208,18 +224,20 @@ async fn defaulted_range_resolves_to_full_chain() {
 
     let page = service
         .query_logs(QueryLogsRequest {
-            from_block: None,
-            to_block: None,
-            order: QueryOrder::Ascending,
-            limit: 100,
+            envelope: QueryEnvelope {
+                from_block: None,
+                to_block: None,
+                order: QueryOrder::Ascending,
+                limit: 100,
+            },
             filter: LogFilter::default(),
             relations: LogsRelations::default(),
         })
         .await
         .expect("query");
 
-    assert_eq!(page.from_block.number, 1);
-    assert_eq!(page.to_block.number, 2);
+    assert_eq!(page.span.from_block.number, 1);
+    assert_eq!(page.span.to_block.number, 2);
 }
 
 async fn ingest_two_block_chain() -> MonadChainDataService<InMemoryMetaStore, InMemoryBlobStore> {

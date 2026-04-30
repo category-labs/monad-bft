@@ -16,9 +16,8 @@
 use crate::{
     error::{MonadChainDataError, Result},
     kernel::tables::BlockTables,
-    logs::QueryLogsRequest,
     primitives::{
-        limits::{LimitExceededKind, QueryLimits},
+        limits::{LimitExceededKind, QueryEnvelope, QueryLimits},
         page::QueryOrder,
         refs::BlockRef,
     },
@@ -42,12 +41,17 @@ impl ResolvedBlockWindow {
     /// short-circuits if the resolved span exceeds `limits.max_block_range`,
     /// then loads the per-bound block records.
     pub async fn resolve<M: MetaStore>(
-        request: &QueryLogsRequest,
+        envelope: &QueryEnvelope,
         published_head: u64,
         limits: &QueryLimits,
         blocks: &BlockTables<M>,
     ) -> Result<Self> {
-        let (low_number, high_number) = Self::resolve_block_numbers(request, published_head)?;
+        let (low_number, high_number) = Self::resolve_block_numbers(
+            envelope.from_block,
+            envelope.to_block,
+            envelope.order,
+            published_head,
+        )?;
 
         let span = high_number - low_number + 1;
         if span > limits.max_block_range {
@@ -87,18 +91,30 @@ impl ResolvedBlockWindow {
         }
     }
 
+    /// Iterates `low..=high` in the requested traversal direction.
+    pub fn iter(&self, order: QueryOrder) -> impl Iterator<Item = u64> {
+        let range = self.low.number..=self.high.number;
+        let (fwd, rev) = match order {
+            QueryOrder::Ascending => (Some(range), None),
+            QueryOrder::Descending => (None, Some(range.rev())),
+        };
+        fwd.into_iter().flatten().chain(rev.into_iter().flatten())
+    }
+
     /// Maps the spec's order-dependent `(from_block, to_block)` to internal
     /// `(low, high)` with `low <= high`. Errors if the inputs do not form a
     /// valid range for `order`, or if the lower bound exceeds the published head.
     fn resolve_block_numbers(
-        request: &QueryLogsRequest,
+        from_block: Option<u64>,
+        to_block: Option<u64>,
+        order: QueryOrder,
         published_head: u64,
     ) -> Result<(u64, u64)> {
         // User-space inversion is checked before defaults so an unspecified
         // bound (e.g. `from=None, to=N` with `N` above head) reports the
         // genuine cause (above-head) rather than a defaulted-inversion artifact.
-        if let (Some(from), Some(to)) = (request.from_block, request.to_block) {
-            let inverted = match request.order {
+        if let (Some(from), Some(to)) = (from_block, to_block) {
+            let inverted = match order {
                 QueryOrder::Ascending => from > to,
                 QueryOrder::Descending => from < to,
             };
@@ -109,14 +125,14 @@ impl ResolvedBlockWindow {
             }
         }
 
-        let (low, high) = match request.order {
+        let (low, high) = match order {
             QueryOrder::Ascending => (
-                request.from_block.unwrap_or(EARLIEST_QUERYABLE_BLOCK),
-                request.to_block.unwrap_or(published_head),
+                from_block.unwrap_or(EARLIEST_QUERYABLE_BLOCK),
+                to_block.unwrap_or(published_head),
             ),
             QueryOrder::Descending => (
-                request.to_block.unwrap_or(EARLIEST_QUERYABLE_BLOCK),
-                request.from_block.unwrap_or(published_head),
+                to_block.unwrap_or(EARLIEST_QUERYABLE_BLOCK),
+                from_block.unwrap_or(published_head),
             ),
         };
 

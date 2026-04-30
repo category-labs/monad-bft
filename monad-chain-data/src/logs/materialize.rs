@@ -24,8 +24,9 @@ use crate::{
     family::Hash32,
     kernel::{bitmap::sharded_stream_id, tables::Tables},
     primitives::{
-        page::{QueryOrder, DEFAULT_QUERY_LIMIT},
-        refs::BlockRef,
+        limits::QueryEnvelope,
+        page::QueryOrder,
+        refs::{BlockRef, BlockSpan},
         state::BlockRecord,
     },
     store::{BlobStore, MetaStore},
@@ -57,44 +58,23 @@ pub(crate) enum IndexedLogClause {
 /// Public log query in queryX spec semantics: `from_block`/`to_block` are
 /// the inclusive range start/end, with the lower/upper roles depending on
 /// `order`. Omitted bounds default to `"earliest"`/`"latest"` per order.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct QueryLogsRequest {
-    pub from_block: Option<u64>,
-    pub to_block: Option<u64>,
-    pub order: QueryOrder,
-    /// Target log count. The server completes the current block before
-    /// stopping, so the actual count may exceed this. Defaults to
-    /// [`DEFAULT_QUERY_LIMIT`].
-    pub limit: usize,
+    pub envelope: QueryEnvelope,
     pub filter: LogFilter,
     pub relations: LogsRelations,
 }
 
-impl Default for QueryLogsRequest {
-    fn default() -> Self {
-        Self {
-            from_block: None,
-            to_block: None,
-            order: QueryOrder::default(),
-            limit: DEFAULT_QUERY_LIMIT,
-            filter: LogFilter::default(),
-            relations: LogsRelations::default(),
-        }
-    }
-}
-
-/// `from_block`/`to_block` mirror the request's spec semantics. `cursor_block`
-/// is the last block scanned; pagination resumes from `cursor_block.number ± 1`
-/// per order.
+/// The span mirrors the resolved request bounds and records the last
+/// block scanned. When `logs` is empty there is no next page; callers
+/// should treat the response as terminal rather than advance the cursor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueryLogsResponse {
     pub logs: Vec<LogEntry>,
     /// Deduped blocks for the `logs` in this page, sorted ascending by
     /// block number. `None` unless `QueryLogsRequest::relations.blocks`.
     pub blocks: Option<Vec<Block>>,
-    pub from_block: BlockRef,
-    pub to_block: BlockRef,
-    pub cursor_block: BlockRef,
+    pub span: BlockSpan,
 }
 
 impl LogFilter {
@@ -259,7 +239,7 @@ fn load_filtered_block_logs(
     request: &QueryLogsRequest,
 ) -> Result<Vec<LogEntry>> {
     let count = header.log_count();
-    let indices: Box<dyn Iterator<Item = usize>> = match request.order {
+    let indices: Box<dyn Iterator<Item = usize>> = match request.envelope.order {
         QueryOrder::Ascending => Box::new(0..count),
         QueryOrder::Descending => Box::new((0..count).rev()),
     };

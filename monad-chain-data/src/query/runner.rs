@@ -17,9 +17,8 @@ use crate::{
     error::Result,
     kernel::tables::Tables,
     logs::{LogMaterializer, QueryLogsRequest, QueryLogsResponse},
-    primitives::range::ResolvedBlockWindow,
+    primitives::{range::ResolvedBlockWindow, refs::BlockSpan},
     store::{BlobStore, MetaStore},
-    QueryOrder,
 };
 
 /// Executes the block-scan fallback path for unindexed log queries.
@@ -29,12 +28,12 @@ pub async fn execute_block_scan_query<M: MetaStore, B: BlobStore>(
     window: ResolvedBlockWindow,
 ) -> Result<QueryLogsResponse> {
     let materializer = LogMaterializer::new(tables);
-    let target_log_count = request.limit;
-    let (request_from, request_to) = window.request_endpoints(request.order);
+    let target_log_count = request.envelope.limit;
+    let (request_from, request_to) = window.request_endpoints(request.envelope.order);
     let mut logs = Vec::new();
     let mut cursor_block = request_from;
 
-    for block_number in block_range(window, request.order) {
+    for block_number in window.iter(request.envelope.order) {
         let (block_ref, block_logs) = materializer
             .load_filtered_block_logs_for_block(block_number, request)
             .await?;
@@ -48,17 +47,10 @@ pub async fn execute_block_scan_query<M: MetaStore, B: BlobStore>(
     Ok(QueryLogsResponse {
         logs,
         blocks: None,
-        from_block: request_from,
-        to_block: request_to,
-        cursor_block,
+        span: BlockSpan {
+            from_block: request_from,
+            to_block: request_to,
+            cursor_block,
+        },
     })
-}
-
-fn block_range(window: ResolvedBlockWindow, order: QueryOrder) -> impl Iterator<Item = u64> {
-    let range = window.low.number..=window.high.number;
-    let (fwd, rev) = match order {
-        QueryOrder::Ascending => (Some(range), None),
-        QueryOrder::Descending => (None, Some(range.rev())),
-    };
-    fwd.into_iter().flatten().chain(rev.into_iter().flatten())
 }

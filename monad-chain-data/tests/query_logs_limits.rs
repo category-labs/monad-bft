@@ -15,8 +15,8 @@
 
 use monad_chain_data::{
     Address, Bytes, FinalizedBlock, InMemoryBlobStore, InMemoryMetaStore, LimitExceededKind, Log,
-    LogData, LogFilter, LogsRelations, MonadChainDataError, MonadChainDataService, QueryLimits,
-    QueryLogsRequest, QueryOrder, B256,
+    LogData, LogFilter, LogsRelations, MonadChainDataError, MonadChainDataService, QueryEnvelope,
+    QueryLimits, QueryLogsRequest, QueryOrder, B256,
 };
 
 mod common;
@@ -29,10 +29,12 @@ async fn limit_above_max_limit_returns_limit_exceeded() {
 
     let err = service
         .query_logs(QueryLogsRequest {
-            from_block: Some(1),
-            to_block: Some(3),
-            order: QueryOrder::Ascending,
-            limit: 10,
+            envelope: QueryEnvelope {
+                from_block: Some(1),
+                to_block: Some(3),
+                order: QueryOrder::Ascending,
+                limit: 10,
+            },
             filter: LogFilter::default(),
             relations: LogsRelations::default(),
         })
@@ -59,10 +61,12 @@ async fn block_range_above_max_block_range_returns_limit_exceeded() {
 
     let err = service
         .query_logs(QueryLogsRequest {
-            from_block: Some(1),
-            to_block: Some(3),
-            order: QueryOrder::Ascending,
-            limit: 10,
+            envelope: QueryEnvelope {
+                from_block: Some(1),
+                to_block: Some(3),
+                order: QueryOrder::Ascending,
+                limit: 10,
+            },
             filter: LogFilter::default(),
             relations: LogsRelations::default(),
         })
@@ -89,18 +93,20 @@ async fn block_range_at_max_block_range_succeeds() {
 
     let page = service
         .query_logs(QueryLogsRequest {
-            from_block: Some(1),
-            to_block: Some(3),
-            order: QueryOrder::Ascending,
-            limit: 10,
+            envelope: QueryEnvelope {
+                from_block: Some(1),
+                to_block: Some(3),
+                order: QueryOrder::Ascending,
+                limit: 10,
+            },
             filter: LogFilter::default(),
             relations: LogsRelations::default(),
         })
         .await
         .expect("query at max should succeed");
 
-    assert_eq!(page.from_block.number, 1);
-    assert_eq!(page.to_block.number, 3);
+    assert_eq!(page.span.from_block.number, 1);
+    assert_eq!(page.span.to_block.number, 3);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -111,10 +117,12 @@ async fn defaulted_block_range_is_bounded_by_max_block_range() {
 
     let err = service
         .query_logs(QueryLogsRequest {
-            from_block: None,
-            to_block: None,
-            order: QueryOrder::Ascending,
-            limit: 10,
+            envelope: QueryEnvelope {
+                from_block: None,
+                to_block: None,
+                order: QueryOrder::Ascending,
+                limit: 10,
+            },
             filter: LogFilter::default(),
             relations: LogsRelations::default(),
         })

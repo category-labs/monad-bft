@@ -17,7 +17,7 @@ use std::collections::HashSet;
 
 use monad_chain_data::{
     Address, Bytes, FinalizedBlock, InMemoryBlobStore, InMemoryMetaStore, Log, LogData, LogFilter,
-    LogId, LogsRelations, MonadChainDataError, MonadChainDataService, QueryLimits,
+    LogId, LogsRelations, MonadChainDataError, MonadChainDataService, QueryEnvelope, QueryLimits,
     QueryLogsRequest, QueryOrder, B256,
 };
 
@@ -57,10 +57,12 @@ async fn query_logs_paginates_at_block_boundaries() {
 
     let first_page = service
         .query_logs(QueryLogsRequest {
-            from_block: Some(1),
-            to_block: Some(2),
-            order: QueryOrder::Ascending,
-            limit: 1,
+            envelope: QueryEnvelope {
+                from_block: Some(1),
+                to_block: Some(2),
+                order: QueryOrder::Ascending,
+                limit: 1,
+            },
             filter: LogFilter {
                 address: Some(HashSet::from([Address::repeat_byte(7)])),
                 topics: [
@@ -76,16 +78,18 @@ async fn query_logs_paginates_at_block_boundaries() {
         .expect("first page");
 
     assert_eq!(first_page.logs.len(), 2);
-    assert_eq!(first_page.cursor_block.number, 1);
+    assert_eq!(first_page.span.cursor_block.number, 1);
     assert_eq!(first_page.logs[0].block_number, 1);
     assert_eq!(first_page.logs[1].block_number, 1);
 
     let second_page = service
         .query_logs(QueryLogsRequest {
-            from_block: Some(first_page.cursor_block.number + 1),
-            to_block: Some(2),
-            order: QueryOrder::Ascending,
-            limit: 1,
+            envelope: QueryEnvelope {
+                from_block: Some(first_page.span.cursor_block.number + 1),
+                to_block: Some(2),
+                order: QueryOrder::Ascending,
+                limit: 1,
+            },
             filter: LogFilter {
                 address: Some(HashSet::from([Address::repeat_byte(7)])),
                 topics: [
@@ -101,7 +105,7 @@ async fn query_logs_paginates_at_block_boundaries() {
         .expect("second page");
 
     assert_eq!(second_page.logs.len(), 1);
-    assert_eq!(second_page.cursor_block.number, 2);
+    assert_eq!(second_page.span.cursor_block.number, 2);
     assert_eq!(second_page.logs[0].block_number, 2);
 }
 
@@ -126,10 +130,12 @@ async fn query_logs_descending_returns_newest_first() {
 
     let page = service
         .query_logs(QueryLogsRequest {
-            from_block: Some(1),
-            to_block: Some(1),
-            order: QueryOrder::Descending,
-            limit: 1,
+            envelope: QueryEnvelope {
+                from_block: Some(1),
+                to_block: Some(1),
+                order: QueryOrder::Descending,
+                limit: 1,
+            },
             filter: LogFilter {
                 address: Some(HashSet::from([Address::repeat_byte(5)])),
                 topics: [
@@ -167,8 +173,11 @@ async fn query_logs_rejects_from_block_above_published_head() {
 
     let err = service
         .query_logs(QueryLogsRequest {
-            from_block: Some(2),
-            to_block: None,
+            envelope: QueryEnvelope {
+                from_block: Some(2),
+                to_block: None,
+                ..QueryEnvelope::default()
+            },
             ..QueryLogsRequest::default()
         })
         .await
@@ -282,10 +291,12 @@ async fn block_scan_completes_current_block_when_limit_reached_mid_block() {
 
     let page = service
         .query_logs(QueryLogsRequest {
-            from_block: Some(1),
-            to_block: Some(2),
-            order: QueryOrder::Ascending,
-            limit: 1,
+            envelope: QueryEnvelope {
+                from_block: Some(1),
+                to_block: Some(2),
+                order: QueryOrder::Ascending,
+                limit: 1,
+            },
             filter: LogFilter::default(),
             relations: LogsRelations::default(),
         })
@@ -294,7 +305,7 @@ async fn block_scan_completes_current_block_when_limit_reached_mid_block() {
 
     assert_eq!(page.logs.len(), 3);
     assert!(page.logs.iter().all(|l| l.block_number == 1));
-    assert_eq!(page.cursor_block.number, 1);
+    assert_eq!(page.span.cursor_block.number, 1);
 }
 
 fn log(address: Address, topic0: B256) -> Log {
