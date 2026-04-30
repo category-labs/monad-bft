@@ -85,6 +85,12 @@ struct Args {
     /// (The total failure count is always reported.)
     #[clap(long, default_value_t = 100)]
     max_failures_sample: usize,
+
+    /// Canary cap: stop each shard after listing (not fetching) this many
+    /// keys. Set low for connectivity / smoke tests (e.g. 100). Counts both
+    /// .header and .body keys since LIST returns both interleaved.
+    #[clap(long)]
+    max_keys_per_shard: Option<u64>,
 }
 
 fn enumerate_shards(hex_chars: u32) -> Vec<String> {
@@ -138,6 +144,7 @@ async fn main() -> Result<()> {
     let fail_fast = args.fail_fast;
     let max_failures_sample = args.max_failures_sample;
     let fetch_concurrency = args.fetch_concurrency;
+    let max_keys_per_shard = args.max_keys_per_shard;
 
     let shard_results = stream::iter(shards.clone().into_iter().map(|shard| {
         let source = source.store.clone();
@@ -156,6 +163,7 @@ async fn main() -> Result<()> {
                 skip_existing,
                 fail_fast,
                 max_failures_sample,
+                max_keys_per_shard,
                 pulled,
                 skipped,
                 failures,
@@ -217,6 +225,7 @@ async fn run_shard(
     skip_existing: bool,
     fail_fast: bool,
     max_failures_sample: usize,
+    max_keys_per_shard: Option<u64>,
     pulled: Arc<AtomicU64>,
     skipped: Arc<AtomicU64>,
     failures: Arc<AtomicU64>,
@@ -242,17 +251,30 @@ async fn run_shard(
         tracing::info!(shard, %cursor, "resuming shard from cursor");
     }
 
+    let mut listed_in_shard: u64 = 0;
+
     loop {
         if abort.load(Ordering::Relaxed) {
             return Ok(());
         }
+        // Honor canary cap: trim the per-call max_keys so we don't
+        // overshoot the budget by up to LIST_PAGE_SIZE - 1.
+        let remaining_budget = max_keys_per_shard
+            .map(|cap| cap.saturating_sub(listed_in_shard) as usize)
+            .unwrap_or(LIST_PAGE_SIZE);
+        if remaining_budget == 0 {
+            tracing::info!(shard, listed_in_shard, "canary cap reached for shard");
+            return Ok(());
+        }
+        let page_size = remaining_budget.min(LIST_PAGE_SIZE);
         let page = source
-            .scan_prefix_after_with_max_keys(&shard_prefix, &cursor, LIST_PAGE_SIZE)
+            .scan_prefix_after_with_max_keys(&shard_prefix, &cursor, page_size)
             .await
             .wrap_err_with(|| format!("LIST failed for shard {shard} after={cursor}"))?;
         if page.is_empty() {
             return Ok(());
         }
+        listed_in_shard += page.len() as u64;
 
         let last_key = page.last().expect("non-empty page").clone();
 
