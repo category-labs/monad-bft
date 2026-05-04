@@ -337,6 +337,7 @@ where
         val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
         election: &LT,
         client_version: u32,
+        current_round: Round,
     ) -> Result<Verified<ST, Validated<ConsensusMessage<ST, SCT, EPT>>>, Error>
     where
         VTF: ValidatorSetTypeFactory<ValidatorSetType = VT>,
@@ -352,7 +353,7 @@ where
                             obj:
                                 ConsensusMessage {
                                     version: msg_version,
-                                    message,
+                                    mut message,
                                 },
                         },
                     author_signature,
@@ -363,7 +364,7 @@ where
             return Err(Error::InvalidVersion);
         }
 
-        match &message {
+        match &mut message {
             ProtocolMessage::Proposal(m) => {
                 m.validate(cert_cache, epoch_manager, val_epoch_map, election)?;
             }
@@ -371,7 +372,13 @@ where
                 m.validate(epoch_manager)?;
             }
             ProtocolMessage::Timeout(m) => {
-                m.validate(cert_cache, epoch_manager, val_epoch_map, election)?;
+                m.validate(
+                    cert_cache,
+                    epoch_manager,
+                    val_epoch_map,
+                    election,
+                    current_round,
+                )?;
             }
             ProtocolMessage::RoundRecovery(m) => {
                 m.validate(cert_cache, epoch_manager, val_epoch_map, election)?;
@@ -543,13 +550,16 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-    /// A valid timeout message is well-formed, and carries valid QC/TC
+    /// A valid timeout message is well-formed, carries a valid high-extend,
+    /// and only verifies its last-round QC/TC before this node has entered the
+    /// timeout round.
     pub fn validate<VTF, VT, LT>(
-        &self,
+        &mut self,
         cert_cache: &mut CertificateCache<ST, SCT, EPT>,
         epoch_manager: &EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
         election: &LT,
+        current_round: Round,
     ) -> Result<(), Error>
     where
         VTF: ValidatorSetTypeFactory<ValidatorSetType = VT>,
@@ -564,6 +574,14 @@ where
 
         self.well_formed_timeout()?;
         self.verify_epoch(epoch_manager)?;
+
+        if current_round >= timeout.tminfo.round {
+            // We can skip verifying last_round_certificate, because we don't need to advance
+            // our round. We set last_round_certificate to None so it's inaccessible in
+            // consensus-state.
+            self.0.last_round_certificate = None;
+        }
+        let timeout = &self.0;
 
         if let Some(round_certificate) = &timeout.last_round_certificate {
             match round_certificate {
@@ -1817,7 +1835,7 @@ mod test {
             high_tip_round: GENESIS_ROUND,
         };
 
-        let unvalidated_tmo_msg =
+        let mut unvalidated_tmo_msg =
             TimeoutMessage::<SignatureType, SignatureCollectionType, ExecutionProtocolType>::new(
                 &certkeys[0],
                 timeout,
@@ -1840,6 +1858,7 @@ mod test {
             &epoch_manager,
             &val_epoch_map,
             &election,
+            Round(3),
         );
 
         assert!(matches!(err, Err(Error::InsufficientStake)));
@@ -1938,13 +1957,14 @@ mod test {
             high_tip_round: GENESIS_ROUND,
         };
 
-        let unvalidated_byzantine_tmo_msg = TimeoutMessage::<
-            SignatureType,
-            SignatureCollectionType,
-            ExecutionProtocolType,
-        >::new(
-            &certkeys[0], timeout, HighExtend::Qc(qc), true, None
-        );
+        let mut unvalidated_byzantine_tmo_msg =
+            TimeoutMessage::<SignatureType, SignatureCollectionType, ExecutionProtocolType>::new(
+                &certkeys[0],
+                timeout,
+                HighExtend::Qc(qc),
+                true,
+                None,
+            );
 
         let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
         let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
@@ -1960,8 +1980,205 @@ mod test {
             &epoch_manager,
             &val_epoch_map,
             &election,
+            Round(4),
         );
         assert!(matches!(err, Err(Error::NotWellFormed)));
+    }
+
+    #[test]
+    fn timeout_without_last_round_certificate_is_not_well_formed_after_entering_round() {
+        let (keypairs, certkeys, vset, vmap) = create_keys_w_validators::<
+            SignatureType,
+            SignatureCollectionType,
+            _,
+        >(4, ValidatorSetFactory::default());
+        let election = ElectionType::default();
+        let high_qc = signed_qc(&keypairs, &certkeys, &vmap, Epoch(1), Round(2));
+        let timeout = TimeoutInfo {
+            epoch: Epoch(1),
+            round: Round(4),
+            high_qc_round: high_qc.get_round(),
+            high_tip_round: GENESIS_ROUND,
+        };
+        let mut timeout_message = TimeoutMessage::<
+            SignatureType,
+            SignatureCollectionType,
+            ExecutionProtocolType,
+        >::new(
+            &certkeys[0], timeout, HighExtend::Qc(high_qc), true, None
+        );
+
+        let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
+        let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
+        val_epoch_map.insert(
+            Epoch(1),
+            vset.get_members().iter().map(|(a, b)| (*a, *b)).collect(),
+            vmap,
+        );
+
+        let mut cert_cache = CertificateCache::default();
+        let result = timeout_message.validate(
+            &mut cert_cache,
+            &epoch_manager,
+            &val_epoch_map,
+            &election,
+            Round(4),
+        );
+
+        assert_eq!(result, Err(Error::NotWellFormed));
+        assert!(timeout_message.last_round_certificate.is_none());
+    }
+
+    #[test]
+    fn future_timeout_without_last_round_certificate_is_not_well_formed() {
+        let (keypairs, certkeys, vset, vmap) = create_keys_w_validators::<
+            SignatureType,
+            SignatureCollectionType,
+            _,
+        >(4, ValidatorSetFactory::default());
+        let election = ElectionType::default();
+        let high_qc = signed_qc(&keypairs, &certkeys, &vmap, Epoch(1), Round(2));
+        let timeout = TimeoutInfo {
+            epoch: Epoch(1),
+            round: Round(4),
+            high_qc_round: high_qc.get_round(),
+            high_tip_round: GENESIS_ROUND,
+        };
+        let mut timeout_message = TimeoutMessage::<
+            SignatureType,
+            SignatureCollectionType,
+            ExecutionProtocolType,
+        >::new(
+            &certkeys[0], timeout, HighExtend::Qc(high_qc), true, None
+        );
+
+        let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
+        let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
+        val_epoch_map.insert(
+            Epoch(1),
+            vset.get_members().iter().map(|(a, b)| (*a, *b)).collect(),
+            vmap,
+        );
+
+        let mut cert_cache = CertificateCache::default();
+        let result = timeout_message.validate(
+            &mut cert_cache,
+            &epoch_manager,
+            &val_epoch_map,
+            &election,
+            Round(3),
+        );
+
+        assert_eq!(result, Err(Error::NotWellFormed));
+    }
+
+    #[test]
+    fn entered_round_timeout_sanitizes_invalid_last_round_certificate() {
+        let (keypairs, certkeys, vset, vmap) = create_keys_w_validators::<
+            SignatureType,
+            SignatureCollectionType,
+            _,
+        >(4, ValidatorSetFactory::default());
+        let election = ElectionType::default();
+        let high_qc = signed_qc(&keypairs, &certkeys, &vmap, Epoch(1), Round(2));
+        let invalid_tc: TimeoutCertificate<
+            SignatureType,
+            SignatureCollectionType,
+            ExecutionProtocolType,
+        > = TimeoutCertificate {
+            epoch: Epoch(1),
+            round: Round(3),
+            tip_rounds: Default::default(),
+            high_extend: HighExtend::Qc(QuorumCertificate::genesis_qc()),
+        };
+        let timeout = TimeoutInfo {
+            epoch: Epoch(1),
+            round: Round(4),
+            high_qc_round: high_qc.get_round(),
+            high_tip_round: GENESIS_ROUND,
+        };
+        let mut timeout_message =
+            TimeoutMessage::<SignatureType, SignatureCollectionType, ExecutionProtocolType>::new(
+                &certkeys[0],
+                timeout,
+                HighExtend::Qc(high_qc),
+                true,
+                Some(RoundCertificate::Tc(invalid_tc)),
+            );
+
+        let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
+        let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
+        val_epoch_map.insert(
+            Epoch(1),
+            vset.get_members().iter().map(|(a, b)| (*a, *b)).collect(),
+            vmap,
+        );
+
+        let mut cert_cache = CertificateCache::default();
+        let result = timeout_message.validate(
+            &mut cert_cache,
+            &epoch_manager,
+            &val_epoch_map,
+            &election,
+            Round(4),
+        );
+
+        assert_eq!(result, Ok(()));
+        assert!(timeout_message.last_round_certificate.is_none());
+    }
+
+    #[test]
+    fn future_timeout_validates_and_keeps_last_round_certificate() {
+        let (keypairs, certkeys, vset, vmap) = create_keys_w_validators::<
+            SignatureType,
+            SignatureCollectionType,
+            _,
+        >(4, ValidatorSetFactory::default());
+        let election = ElectionType::default();
+        let high_qc = signed_qc(&keypairs, &certkeys, &vmap, Epoch(1), Round(2));
+        let last_round_tc = signed_tc(
+            &keypairs,
+            &certkeys,
+            &vmap,
+            Epoch(1),
+            Round(3),
+            high_qc.get_round(),
+            HighExtend::Qc(high_qc.clone()),
+        );
+        let timeout = TimeoutInfo {
+            epoch: Epoch(1),
+            round: Round(4),
+            high_qc_round: high_qc.get_round(),
+            high_tip_round: GENESIS_ROUND,
+        };
+        let mut timeout_message =
+            TimeoutMessage::<SignatureType, SignatureCollectionType, ExecutionProtocolType>::new(
+                &certkeys[0],
+                timeout,
+                HighExtend::Qc(high_qc),
+                true,
+                Some(RoundCertificate::Tc(last_round_tc)),
+            );
+
+        let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
+        let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
+        val_epoch_map.insert(
+            Epoch(1),
+            vset.get_members().iter().map(|(a, b)| (*a, *b)).collect(),
+            vmap,
+        );
+
+        let mut cert_cache = CertificateCache::default();
+        let result = timeout_message.validate(
+            &mut cert_cache,
+            &epoch_manager,
+            &val_epoch_map,
+            &election,
+            Round(3),
+        );
+
+        assert_eq!(result, Ok(()));
+        assert!(timeout_message.last_round_certificate.is_some());
     }
 
     #[test]
@@ -2244,7 +2461,7 @@ mod test {
             high_tip_round: GENESIS_ROUND,
         };
 
-        let unvalidated_timeout_message: TimeoutMessage<
+        let mut unvalidated_timeout_message: TimeoutMessage<
             SignatureType,
             SignatureCollectionType,
             ExecutionProtocolType,
@@ -2262,6 +2479,7 @@ mod test {
             &epoch_manager,
             &val_epoch_map,
             &election,
+            Round(1),
         );
         assert_eq!(maybe_validated, Err(Error::InvalidEpoch));
     }
@@ -2317,8 +2535,13 @@ mod test {
         tmo_msg.0.timeout_signature = BlsSignature::uncompress(&not_in_subgroup_bytes).unwrap();
 
         let mut cert_cache = CertificateCache::default();
-        let maybe_validated =
-            tmo_msg.validate(&mut cert_cache, &epoch_manager, &val_epoch_map, &election);
+        let maybe_validated = tmo_msg.validate(
+            &mut cert_cache,
+            &epoch_manager,
+            &val_epoch_map,
+            &election,
+            Round(1),
+        );
         assert_eq!(maybe_validated, Err(Error::InvalidSignature));
     }
 
@@ -2340,7 +2563,7 @@ mod test {
             high_qc_round: GENESIS_ROUND,
             high_tip_round: GENESIS_ROUND,
         };
-        let timeout_message =
+        let mut timeout_message =
             TimeoutMessage::<SignatureType, SignatureCollectionType, ExecutionProtocolType>::new(
                 &cert_keys[0],
                 timeout,
@@ -2350,8 +2573,13 @@ mod test {
             );
 
         let mut cert_cache = CertificateCache::default();
-        let err =
-            timeout_message.validate(&mut cert_cache, &epoch_manager, &val_epoch_map, &election);
+        let err = timeout_message.validate(
+            &mut cert_cache,
+            &epoch_manager,
+            &val_epoch_map,
+            &election,
+            GENESIS_ROUND,
+        );
 
         assert_eq!(err, Err(Error::NotWellFormed));
     }
@@ -2374,7 +2602,7 @@ mod test {
             high_qc_round: Round::MAX,
             high_tip_round: GENESIS_ROUND,
         };
-        let timeout_message =
+        let mut timeout_message =
             TimeoutMessage::<SignatureType, SignatureCollectionType, ExecutionProtocolType>::new(
                 &cert_keys[0],
                 timeout,
@@ -2384,8 +2612,13 @@ mod test {
             );
 
         let mut cert_cache = CertificateCache::default();
-        let err =
-            timeout_message.validate(&mut cert_cache, &epoch_manager, &val_epoch_map, &election);
+        let err = timeout_message.validate(
+            &mut cert_cache,
+            &epoch_manager,
+            &val_epoch_map,
+            &election,
+            GENESIS_ROUND,
+        );
 
         assert_eq!(err, Err(Error::NotWellFormed));
     }
