@@ -1037,6 +1037,15 @@ where
 
                 if take_checkpoint {
                     if let Some(checkpoint_cmd) = ConsensusChildState::new(self).checkpoint() {
+                        // Note that this is not written to disk synchronously
+                        //
+                        // This is intentional since we want to avoid blocking the consensus state
+                        // machine on disk IO (fsync)
+                        //
+                        // There is no practically exploitable attack here since a malicious actor
+                        // would have to cause f+1 nodes to crash immediately after taking a
+                        // checkpoint and before the checkpoint is written to disk, which is
+                        // not a realistic attack vector
                         cmds.push(Command::ConfigFileCommand(checkpoint_cmd));
                     }
                 }
