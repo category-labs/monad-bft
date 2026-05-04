@@ -740,6 +740,8 @@ where
             self.metrics.consensus_events.old_remote_timeout += 1;
             return cmds;
         }
+        // Note that last_round_certificate might have been mutated to None by
+        // TimeoutMessage::validate if timeout.round == current_round
 
         debug!(?author, ?timeout, "remote timeout message");
         self.metrics.consensus_events.remote_timeout_msg += 1;
@@ -813,6 +815,9 @@ where
             }
             None => {
                 // don't do anything
+
+                // Note that last_round_certificate might have been mutated to None by
+                // TimeoutMessage::validate if timeout.round == current_round
             }
         }
 

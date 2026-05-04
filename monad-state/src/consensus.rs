@@ -564,6 +564,7 @@ where
                 val_epoch_map,
                 election,
                 version.protocol_version,
+                current_round,
             )
             .map_err(|e| {
                 handle_validation_error(e, metrics);
