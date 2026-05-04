@@ -19,7 +19,7 @@ use alloy_consensus::TxEnvelope;
 use alloy_eips::BlockNumberOrTag;
 use alloy_primitives::{Address, FixedBytes, LogData, U256};
 use alloy_rpc_types::{
-    pubsub::Params, Block, FeeHistory, Header, Log, Transaction, TransactionReceipt,
+    pubsub::Params, AccessList, Block, FeeHistory, Header, Log, Transaction, TransactionReceipt,
 };
 use monad_exec_events::BlockCommitState;
 use monad_types::BlockId;
@@ -126,6 +126,25 @@ impl schemars::JsonSchema for FillTransactionResult {
         .schema
         .into()
     }
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MonadCreateAccessListItem {
+    pub address: EthAddress,
+    pub storage_keys: Vec<EthHash>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MonadCreateAccessListResult {
+    #[schemars(with = "Vec<MonadCreateAccessListItem>")]
+    pub access_list: AccessList,
+    #[schemars(with = "String")]
+    pub gas_used: U256,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub error: Option<String>,
 }
 
 #[derive(Serialize, Debug, JsonSchema)]

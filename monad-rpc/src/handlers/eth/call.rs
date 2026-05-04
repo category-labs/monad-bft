@@ -21,7 +21,7 @@ use std::{
 use alloy_consensus::{Header, SignableTransaction, TxEip1559, TxEip7702, TxEnvelope, TxLegacy};
 use alloy_eips::eip7702::SignedAuthorization;
 use alloy_primitives::{Address, Bytes, Signature, TxKind, Uint, B256, U256, U64, U8};
-use alloy_rpc_types::{AccessList, AccessListItem, AccessListResult};
+use alloy_rpc_types::{AccessList, AccessListItem};
 use monad_chain_config::execution_revision::MonadExecutionRevision;
 use monad_ethcall::{
     eth_call, CallResult, EthCallExecutor, EthCallRequest, EthCallResult, MonadTracer,
@@ -46,7 +46,7 @@ use crate::{
         parse_ethcall_chain_id,
     },
     types::{
-        eth_json::BlockTagOrHash,
+        eth_json::{BlockTagOrHash, MonadCreateAccessListResult},
         ethhex,
         jsonrpc::{JsonRpcError, JsonRpcResult},
     },
@@ -854,7 +854,10 @@ pub async fn monad_debug_traceCall<T: Triedb + TriedbPath>(
     }
 }
 
-/// Returns an access list containing all addresses and storage slots accessed during a simulated transaction.
+/// Returns the derived access list and gas used for a simulated transaction.
+///
+/// Execution failures and reverts are reported in the result object's optional
+/// `error` field so callers can still use the generated access list.
 #[rpc(
     method = "eth_createAccessList",
     ignore = "eth_call_handler_config",
@@ -868,7 +871,7 @@ pub async fn monad_createAccessList<T: Triedb + TriedbPath>(
     eth_call_executor: &EthCallExecutor,
     chain_id: u64,
     params: MonadCreateAccessListParams,
-) -> JsonRpcResult<Box<RawValue>> {
+) -> JsonRpcResult<MonadCreateAccessListResult> {
     trace!("monad_createAccessList: {params:?}");
 
     let mut follow_up_tx = params.transaction.clone();
@@ -916,10 +919,7 @@ pub async fn monad_createAccessList<T: Triedb + TriedbPath>(
         block_key,
     )
     .await?;
-    let result = access_list_result_from_call_result(access_list, call_result)?;
-
-    serde_json::value::to_raw_value(&result)
-        .map_err(|e| JsonRpcError::internal_error(format!("json serialization error: {}", e)))
+    access_list_result_from_call_result(access_list, call_result)
 }
 
 fn decode_access_list_trace(raw_payload: &[u8]) -> Result<AccessList, JsonRpcError> {
@@ -966,10 +966,10 @@ fn create_access_list_error_message(error: &monad_ethcall::FailureCallResult) ->
 fn access_list_result_from_call_result(
     access_list: AccessList,
     call_result: CallResult,
-) -> Result<AccessListResult, JsonRpcError> {
+) -> Result<MonadCreateAccessListResult, JsonRpcError> {
     match call_result {
         CallResult::Success(monad_ethcall::SuccessCallResult { gas_used, .. }) => {
-            Ok(AccessListResult {
+            Ok(MonadCreateAccessListResult {
                 access_list,
                 gas_used: U256::from(gas_used),
                 error: None,
@@ -978,7 +978,7 @@ fn access_list_result_from_call_result(
         CallResult::Failure(error) => match error.error_code {
             EthCallResult::OutOfGas
             | EthCallResult::ExecutionError
-            | EthCallResult::ReserveBalanceViolation => Ok(AccessListResult {
+            | EthCallResult::ReserveBalanceViolation => Ok(MonadCreateAccessListResult {
                 access_list,
                 gas_used: U256::from(error.gas_used),
                 error: Some(create_access_list_error_message(&error)),
