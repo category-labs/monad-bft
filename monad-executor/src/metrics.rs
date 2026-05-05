@@ -17,7 +17,6 @@ use std::{
     collections::{hash_map::Entry, HashMap, HashSet},
     fmt,
     hash::{Hash, Hasher},
-    ops::{Index, IndexMut},
 };
 
 use hdrhistogram::Histogram as HdrHistogram;
@@ -116,23 +115,9 @@ macro_rules! metric_consts {
     };
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct ExecutorMetrics {
-    values: HashMap<&'static MetricDef, u64>,
     gauges: HashMap<&'static MetricDef, Gauge>,
-}
-
-impl Clone for ExecutorMetrics {
-    fn clone(&self) -> Self {
-        let mut metrics = Self::default();
-        for (&metric, &value) in &self.values {
-            metrics.values.insert(metric, value);
-        }
-        for (metric, value) in self.gauge_snapshot() {
-            metrics.ensure_gauge(metric).set(value);
-        }
-        metrics
-    }
 }
 
 impl fmt::Debug for ExecutorMetrics {
@@ -147,42 +132,22 @@ impl ExecutorMetrics {
     fn ensure_gauge(&mut self, metric: &'static MetricDef) -> &Gauge {
         match self.gauges.entry(metric) {
             Entry::Occupied(entry) => entry.into_mut(),
-            Entry::Vacant(entry) => {
-                let gauge = Gauge::with_opts(Opts::new(
+            Entry::Vacant(entry) => entry.insert(
+                Gauge::with_opts(Opts::new(
                     prometheus_metric_name(metric.name)
                         .expect("executor metric definition is valid"),
                     metric.help,
                 ))
-                .expect("executor metric definition is valid");
-
-                entry.insert(gauge)
-            }
+                .expect("executor metric definition is valid"),
+            ),
         }
     }
 
-    fn gauge_snapshot(&self) -> Vec<(&'static MetricDef, u64)> {
+    fn snapshot(&self) -> Vec<(&'static MetricDef, u64)> {
         let mut metrics = Vec::with_capacity(self.gauges.len());
 
         for (&metric, gauge) in &self.gauges {
             metrics.push((metric, gauge.get()));
-        }
-
-        metrics
-    }
-
-    fn snapshot(&self) -> Vec<(&'static MetricDef, u64)> {
-        let mut seen = HashSet::new();
-        let mut metrics = Vec::with_capacity(self.gauges.len() + self.values.len());
-
-        for (metric, value) in self.gauge_snapshot() {
-            seen.insert(metric);
-            metrics.push((metric, value));
-        }
-
-        for (&metric, &value) in &self.values {
-            if seen.insert(metric) {
-                metrics.push((metric, value));
-            }
         }
 
         metrics
@@ -197,44 +162,35 @@ impl ExecutorMetrics {
     }
 
     pub fn gauge(&mut self, metric: &'static MetricDef) -> &Gauge {
-        let registered = self.gauges.contains_key(metric);
-        if !registered {
-            error!(
-                metric = metric.name,
-                "executor metric gauge was not registered before access"
-            );
+        match self.gauges.entry(metric) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => {
+                error!(
+                    metric = metric.name,
+                    "executor metric gauge was not registered before access"
+                );
+                debug_assert!(
+                    false,
+                    "executor metric must be initialized before taking a gauge: {}",
+                    metric.name
+                );
+                entry.insert(
+                    Gauge::with_opts(Opts::new(
+                        prometheus_metric_name(metric.name)
+                            .expect("executor metric definition is valid"),
+                        metric.help,
+                    ))
+                    .expect("executor metric definition is valid"),
+                )
+            }
         }
-        debug_assert!(
-            registered,
-            "executor metric must be initialized before taking a gauge: {}",
-            metric.name
-        );
-        self.ensure_gauge(metric)
     }
 
     pub fn metric_handles(&self) -> Vec<(&'static str, Gauge, &'static str)> {
-        let mut seen = HashSet::new();
-        let mut metrics = Vec::with_capacity(self.gauges.len() + self.values.len());
-
-        for (&metric, gauge) in &self.gauges {
-            seen.insert(metric);
-            metrics.push((metric.name, gauge.clone(), metric.help));
-        }
-
-        for (&metric, &value) in &self.values {
-            if seen.insert(metric) {
-                let gauge = Gauge::with_opts(Opts::new(
-                    prometheus_metric_name(metric.name)
-                        .expect("executor metric definition is valid"),
-                    metric.help,
-                ))
-                .expect("executor metric definition is valid");
-                gauge.set(value);
-                metrics.push((metric.name, gauge, metric.help));
-            }
-        }
-
-        metrics
+        self.gauges
+            .iter()
+            .map(|(&metric, gauge)| (metric.name, gauge.clone(), metric.help))
+            .collect()
     }
 
     pub fn register(&self, registry: &Registry) -> prometheus::Result<()> {
@@ -244,36 +200,12 @@ impl ExecutorMetrics {
         Ok(())
     }
 
-    pub fn copy_values_from(&mut self, other: &ExecutorMetrics) {
-        for (metric, value) in other.snapshot() {
-            if self.gauges.contains_key(metric) {
-                self.ensure_gauge(metric).set(value);
-            } else {
-                self.values.insert(metric, value);
-            }
-        }
-    }
-
     pub fn iter_with_descriptions(
         &self,
     ) -> impl Iterator<Item = (&'static str, u64, &'static str)> + '_ {
         self.snapshot()
             .into_iter()
             .map(|(metric, value)| (metric.name, value, metric.help))
-    }
-}
-
-impl Index<&'static MetricDef> for ExecutorMetrics {
-    type Output = u64;
-
-    fn index(&self, metric: &'static MetricDef) -> &Self::Output {
-        self.values.get(metric).unwrap_or(&0)
-    }
-}
-
-impl IndexMut<&'static MetricDef> for ExecutorMetrics {
-    fn index_mut(&mut self, metric: &'static MetricDef) -> &mut Self::Output {
-        self.values.entry(metric).or_default()
     }
 }
 
@@ -410,19 +342,5 @@ mod tests {
     fn prometheus_metric_name_rejects_invalid_names() {
         assert!(prometheus_metric_name(TEST_INVALID_METRIC.name).is_err());
         assert!(prometheus_metric_name(TEST_LEADING_DIGIT_METRIC.name).is_err());
-    }
-
-    #[test]
-    fn test_copy_values_from_preserves_registered_storage() {
-        let mut registered_metrics = ExecutorMetrics::with_metric_defs(&[TEST_REGISTERED_METRIC]);
-        let registered = registered_metrics.gauge(TEST_REGISTERED_METRIC).clone();
-
-        let mut snapshot = ExecutorMetrics::with_metric_defs(&[TEST_REGISTERED_METRIC]);
-        snapshot.gauge(TEST_REGISTERED_METRIC).set(7);
-
-        registered_metrics.copy_values_from(&snapshot);
-
-        assert_eq!(registered.get(), 7);
-        assert_eq!(registered_metrics.gauge(TEST_REGISTERED_METRIC).get(), 7);
     }
 }

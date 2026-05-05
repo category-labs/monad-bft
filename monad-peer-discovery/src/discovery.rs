@@ -35,8 +35,8 @@ use tracing::{debug, info, trace, warn};
 use crate::{
     MonadNameRecord, MonadNameRecordWithPubkey, NameRecord, PeerDiscoveryAlgo,
     PeerDiscoveryAlgoBuilder, PeerDiscoveryCommand, PeerDiscoveryEvent, PeerDiscoveryMessage,
-    PeerDiscoveryMetricsCommand, PeerDiscoveryTimerCommand, PeerLookupRequest, PeerLookupResponse,
-    PeerSource, Ping, Pong, TimerKind,
+    PeerDiscoveryTimerCommand, PeerLookupRequest, PeerLookupResponse, PeerSource, Ping, Pong,
+    TimerKind,
     ipv4_validation::{IpCheckError, validate_socket_ipv4_address},
     message::MAX_PEER_IN_RESPONSE,
 };
@@ -1686,11 +1686,6 @@ where
         // reset timer to schedule for the next refresh
         cmds.extend(self.reset_refresh_timer());
 
-        // export metrics
-        cmds.push(PeerDiscoveryCommand::MetricsCommand(
-            PeerDiscoveryMetricsCommand(self.metrics.clone()),
-        ));
-
         cmds
     }
 
@@ -1882,8 +1877,8 @@ where
         cmds
     }
 
-    fn metrics(&mut self) -> &mut ExecutorMetrics {
-        &mut self.metrics
+    fn metrics(&self) -> &ExecutorMetrics {
+        &self.metrics
     }
 
     fn get_pending_udp_addr_by_id(
@@ -3356,7 +3351,7 @@ mod tests {
         // do not look for upstream validator if running as None in secondary raptorcast
         state.self_role = PeerDiscoveryRole::FullNodeNone;
         let cmds = state.refresh();
-        assert_eq!(cmds.len(), 5); // 2 peer look commands (unrelated to test case), 2 timer commands and 1 metrics command
+        assert_eq!(cmds.len(), 4); // 2 peer lookup commands and 2 timer commands, unrelated to test case
 
         // look for upstream validator if running as a Client in secondary raptorcast
         state.self_role = PeerDiscoveryRole::FullNodeClient;

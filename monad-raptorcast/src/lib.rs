@@ -1500,10 +1500,6 @@ where
                     } => {
                         send_peer_disc_msg(this, target, Some(name_record), message);
                     }
-                    PeerDiscoveryEmit::MetricsCommand(executor_metrics) => {
-                        this.peer_discovery_metrics
-                            .copy_values_from(&executor_metrics);
-                    }
                 }
             }
         }

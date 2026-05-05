@@ -671,9 +671,6 @@ pub enum PeerDiscoveryTimerCommand<E, ST: CertificateSignatureRecoverable> {
 }
 
 #[derive(Debug, Clone)]
-pub struct PeerDiscoveryMetricsCommand(ExecutorMetrics);
-
-#[derive(Debug, Clone)]
 pub enum PeerDiscoveryCommand<ST: CertificateSignatureRecoverable> {
     RouterCommand {
         target: NodeId<CertificateSignaturePubKey<ST>>,
@@ -685,7 +682,6 @@ pub enum PeerDiscoveryCommand<ST: CertificateSignatureRecoverable> {
         message: PeerDiscoveryMessage<ST>,
     },
     TimerCommand(PeerDiscoveryTimerCommand<PeerDiscoveryEvent<ST>, ST>),
-    MetricsCommand(PeerDiscoveryMetricsCommand),
 }
 
 pub trait PeerDiscoveryAlgo {
@@ -788,7 +784,7 @@ pub trait PeerDiscoveryAlgo {
         peers: BTreeSet<NodeId<CertificateSignaturePubKey<Self::SignatureType>>>,
     ) -> Vec<PeerDiscoveryCommand<Self::SignatureType>>;
 
-    fn metrics(&mut self) -> &mut ExecutorMetrics;
+    fn metrics(&self) -> &ExecutorMetrics;
 
     fn get_pending_udp_addr_by_id(
         &self,

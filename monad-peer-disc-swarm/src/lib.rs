@@ -551,10 +551,6 @@ where
         &self.states
     }
 
-    pub fn states_mut(&mut self) -> &mut BTreeMap<NodeId<SwarmPubKeyType<S>>, Node<S>> {
-        &mut self.states
-    }
-
     pub fn add_state<B>(&mut self, node_builder: NodeBuilder<S, B>)
     where
         B: PeerDiscoveryAlgoBuilder<PeerDiscoveryAlgoType = S::PeerDiscoveryAlgoType>,
