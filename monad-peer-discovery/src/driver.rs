@@ -24,7 +24,6 @@ use futures::{Stream, StreamExt};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_executor::ExecutorMetrics;
 use monad_types::NodeId;
 use tokio_util::time::{DelayQueue, delay_queue::Key};
 
@@ -43,7 +42,6 @@ pub enum PeerDiscoveryEmit<ST: CertificateSignatureRecoverable> {
         name_record: crate::NameRecord,
         message: PeerDiscoveryMessage<ST>,
     },
-    MetricsCommand(ExecutorMetrics),
 }
 
 struct PeerDiscTimers<ST: CertificateSignatureRecoverable> {
@@ -261,16 +259,6 @@ impl<PD: PeerDiscoveryAlgo> PeerDiscoveryDriver<PD> {
                 PeerDiscoveryCommand::TimerCommand(timer_cmd) => {
                     timer_cmds.push(timer_cmd);
                 }
-                PeerDiscoveryCommand::MetricsCommand(peer_discovery_metrics_command) => {
-                    self.pending_emits
-                        .push_back(PeerDiscoveryEmit::MetricsCommand(
-                            peer_discovery_metrics_command.0,
-                        ));
-
-                    if let Some(waker) = self.waker.take() {
-                        waker.wake();
-                    }
-                }
             }
         }
 
@@ -345,7 +333,7 @@ impl<PD: PeerDiscoveryAlgo> PeerDiscoveryDriver<PD> {
         self.pd.get_name_record(id)
     }
 
-    pub fn metrics(&mut self) -> &mut ExecutorMetrics {
+    pub fn metrics(&self) -> &monad_executor::ExecutorMetrics {
         self.pd.metrics()
     }
 }

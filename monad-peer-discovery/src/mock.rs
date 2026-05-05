@@ -269,8 +269,8 @@ where
         Vec::new()
     }
 
-    fn metrics(&mut self) -> &mut ExecutorMetrics {
-        &mut self.metrics
+    fn metrics(&self) -> &ExecutorMetrics {
+        &self.metrics
     }
 
     fn get_pending_udp_addr_by_id(

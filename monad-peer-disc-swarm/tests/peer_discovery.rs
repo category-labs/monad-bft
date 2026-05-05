@@ -29,6 +29,7 @@ use monad_crypto::{
     hasher::{Hasher, HasherType},
     signing_domain,
 };
+use monad_executor::{ExecutorMetrics, MetricDef};
 use monad_peer_disc_swarm::{
     NodeBuilder, PeerDiscSwarmRelation, SwarmPubKeyType, SwarmSignatureType,
     builder::PeerDiscSwarmBuilder,
@@ -52,6 +53,16 @@ use monad_types::{Epoch, NodeId, Round};
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 use tracing_test::traced_test;
+
+fn metric(metrics: &ExecutorMetrics, metric: &'static MetricDef) -> u64 {
+    metrics
+        .metric_handles()
+        .into_iter()
+        .find(|(name, _, _)| *name == metric.name)
+        .map(|(_, gauge, _)| gauge.get())
+        .unwrap_or_default()
+}
+
 struct PeerDiscSwarm {}
 
 impl PeerDiscSwarmRelation for PeerDiscSwarm {
@@ -279,13 +290,13 @@ fn test_ping_pong() {
     // ping is sent out at t=0. we expect receiving pong at t=2
     // and thus adding the name record to routing_info
     // other metrics should be 4 due to message delay
-    for state in nodes.states_mut().values_mut() {
-        let state = state.peer_disc_driver.get_peer_disc_state_mut();
+    for state in nodes.states().values() {
+        let state = state.peer_disc_driver.get_peer_disc_state();
         let metrics = state.metrics();
-        assert_eq!(metrics.gauge(GAUGE_PEER_DISC_SEND_PING).get(), 1);
-        assert_eq!(metrics.gauge(GAUGE_PEER_DISC_SEND_PONG).get(), 1);
-        assert_eq!(metrics.gauge(GAUGE_PEER_DISC_RECV_PING).get(), 1);
-        assert_eq!(metrics.gauge(GAUGE_PEER_DISC_RECV_PONG).get(), 1);
+        assert_eq!(metric(metrics, GAUGE_PEER_DISC_SEND_PING), 1);
+        assert_eq!(metric(metrics, GAUGE_PEER_DISC_SEND_PONG), 1);
+        assert_eq!(metric(metrics, GAUGE_PEER_DISC_RECV_PING), 1);
+        assert_eq!(metric(metrics, GAUGE_PEER_DISC_RECV_PONG), 1);
 
         for node_id in node_ids.iter() {
             if node_id == &state.self_id {
@@ -460,12 +471,12 @@ fn test_unresponsive_pings() {
     // the offline node should not be added to routing info
     while nodes.step_until(Duration::from_secs(5)) {}
     assert_eq!(nodes.states().len(), 1);
-    for state in nodes.states_mut().values_mut() {
-        let state = state.peer_disc_driver.get_peer_disc_state_mut();
+    for state in nodes.states().values() {
+        let state = state.peer_disc_driver.get_peer_disc_state();
         let metrics = state.metrics();
 
-        assert_eq!(metrics.gauge(GAUGE_PEER_DISC_SEND_PING).get(), 3);
-        assert_eq!(metrics.gauge(GAUGE_PEER_DISC_PING_TIMEOUT).get(), 3);
+        assert_eq!(metric(metrics, GAUGE_PEER_DISC_SEND_PING), 3);
+        assert_eq!(metric(metrics, GAUGE_PEER_DISC_PING_TIMEOUT), 3);
         assert!(state.routing_info.is_empty());
     }
 }
@@ -501,11 +512,11 @@ fn test_peer_lookup_open_discovery() {
 
     // Node1 should know about Node2 and Node3 through open discovery
     let node_1_state = nodes
-        .states_mut()
-        .get_mut(&node_ids[1])
+        .states()
+        .get(&node_ids[1])
         .expect("Node 1 state should exist")
         .peer_disc_driver
-        .get_peer_disc_state_mut();
+        .get_peer_disc_state();
     for node_id in node_ids.iter() {
         if node_id == &node_1_state.self_id {
             continue;
@@ -515,7 +526,7 @@ fn test_peer_lookup_open_discovery() {
 
     // check that Node1 sends pings to new nodes
     let metrics = node_1_state.metrics();
-    assert_eq!(metrics.gauge(GAUGE_PEER_DISC_SEND_PING).get(), 3);
+    assert_eq!(metric(metrics, GAUGE_PEER_DISC_SEND_PING), 3);
 
     // check that Node2 and Node3 now has name record of Node1
     for (node_id, state) in nodes.states() {
@@ -558,8 +569,8 @@ fn test_peer_lookup_targeted_nodes() {
 
     // Node1 has number of peers larger than min number of peers but still missing validator Node2
     // Node1 should send targeted lookup request to Node0 asking for Node2
-    for state in nodes.states_mut().values_mut() {
-        let state = state.peer_disc_driver.get_peer_disc_state_mut();
+    for state in nodes.states().values() {
+        let state = state.peer_disc_driver.get_peer_disc_state();
         for node_id in node_ids.iter() {
             if node_id == &state.self_id {
                 continue;
@@ -570,11 +581,9 @@ fn test_peer_lookup_targeted_nodes() {
         if state.self_id == node_ids[0] {
             // Both Node1 and Node2 sends targeted peer lookup request to Node0
             let metrics = state.metrics();
-            assert_eq!(metrics.gauge(GAUGE_PEER_DISC_RECV_LOOKUP_REQUEST).get(), 2);
+            assert_eq!(metric(metrics, GAUGE_PEER_DISC_RECV_LOOKUP_REQUEST), 2);
             assert_eq!(
-                metrics
-                    .gauge(GAUGE_PEER_DISC_RECV_TARGETED_LOOKUP_REQUEST)
-                    .get(),
+                metric(metrics, GAUGE_PEER_DISC_RECV_TARGETED_LOOKUP_REQUEST),
                 2
             );
         }
@@ -625,13 +634,13 @@ fn test_peer_lookup_retry() {
     nodes.remove_state(&node_ids[0]);
     while nodes.step_until(config.refresh_period + Duration::from_secs(5)) {}
 
-    for (node, state) in nodes.states_mut() {
-        let state = state.peer_disc_driver.get_peer_disc_state_mut();
+    for (node, state) in nodes.states() {
+        let state = state.peer_disc_driver.get_peer_disc_state();
         let metrics = state.metrics();
 
         // Node1 and Node2 should send targeted peer lookup request to Node0
-        assert_eq!(metrics.gauge(GAUGE_PEER_DISC_SEND_LOOKUP_REQUEST).get(), 4);
-        assert_eq!(metrics.gauge(GAUGE_PEER_DISC_LOOKUP_TIMEOUT).get(), 4);
+        assert_eq!(metric(metrics, GAUGE_PEER_DISC_SEND_LOOKUP_REQUEST), 4);
+        assert_eq!(metric(metrics, GAUGE_PEER_DISC_LOOKUP_TIMEOUT), 4);
 
         // Node1 and Node2 does not contain each other in routing info
         if node == &node_ids[1] {
@@ -666,14 +675,14 @@ fn test_ping_timeout() {
     // ping timeout of 1 second
     // verify that ping timeout event is recorded correctly and subsequent pong is dropped
     // unresponsive_pings accumulate until being pruned when threshold is reached
-    for state in nodes.states_mut().values_mut() {
-        let state = state.peer_disc_driver.get_peer_disc_state_mut();
+    for state in nodes.states().values() {
+        let state = state.peer_disc_driver.get_peer_disc_state();
         let metrics = state.metrics();
         // prune threshold is three, so it's pruned after 3 unresponsive pings
-        assert_eq!(metrics.gauge(GAUGE_PEER_DISC_SEND_PING).get(), 5);
-        assert_eq!(metrics.gauge(GAUGE_PEER_DISC_PING_TIMEOUT).get(), 4);
-        assert_eq!(metrics.gauge(GAUGE_PEER_DISC_RECV_PONG).get(), 1);
-        assert_eq!(metrics.gauge(GAUGE_PEER_DISC_DROP_PONG).get(), 1);
+        assert_eq!(metric(metrics, GAUGE_PEER_DISC_SEND_PING), 5);
+        assert_eq!(metric(metrics, GAUGE_PEER_DISC_PING_TIMEOUT), 4);
+        assert_eq!(metric(metrics, GAUGE_PEER_DISC_RECV_PONG), 1);
+        assert_eq!(metric(metrics, GAUGE_PEER_DISC_DROP_PONG), 1);
 
         // name record not added to routing info
         assert!(state.routing_info.is_empty());
@@ -708,8 +717,8 @@ fn test_min_watermark() {
 
     while nodes.step_until(Duration::from_secs(30)) {}
 
-    for (node_id, state) in nodes.states_mut() {
-        let state = state.peer_disc_driver.get_peer_disc_state_mut();
+    for (node_id, state) in nodes.states() {
+        let state = state.peer_disc_driver.get_peer_disc_state();
 
         // Node1, Node2, and Node3 should send lookup request during refresh to Node0 and discover each other
         for peer_id in node_ids.iter() {
@@ -721,9 +730,9 @@ fn test_min_watermark() {
 
         let metrics = state.metrics();
         if node_id == &node_ids[0] {
-            assert_eq!(metrics.gauge(GAUGE_PEER_DISC_RECV_LOOKUP_REQUEST).get(), 3);
+            assert_eq!(metric(metrics, GAUGE_PEER_DISC_RECV_LOOKUP_REQUEST), 3);
         } else {
-            assert_eq!(metrics.gauge(GAUGE_PEER_DISC_SEND_LOOKUP_REQUEST).get(), 1);
+            assert_eq!(metric(metrics, GAUGE_PEER_DISC_SEND_LOOKUP_REQUEST), 1);
         }
     }
 }
@@ -913,21 +922,13 @@ fn test_full_nodes_connections() {
     };
     nodes.insert_test_event(&node_ids[2], Duration::from_secs(20), participation_event);
     while nodes.step_until(Duration::from_secs(30)) {}
-    for state in nodes.states_mut().values_mut() {
-        let state = state.peer_disc_driver.get_peer_disc_state_mut();
+    for state in nodes.states().values() {
+        let state = state.peer_disc_driver.get_peer_disc_state();
 
         if state.self_id == node_ids[0] {
             let metrics = state.metrics();
-            assert_eq!(
-                metrics.gauge(GAUGE_PEER_DISC_NUM_UPSTREAM_VALIDATORS).get(),
-                0
-            );
-            assert_eq!(
-                metrics
-                    .gauge(GAUGE_PEER_DISC_NUM_DOWNSTREAM_FULLNODES)
-                    .get(),
-                0
-            );
+            assert_eq!(metric(metrics, GAUGE_PEER_DISC_NUM_UPSTREAM_VALIDATORS), 0);
+            assert_eq!(metric(metrics, GAUGE_PEER_DISC_NUM_DOWNSTREAM_FULLNODES), 0);
         } else if state.self_id == node_ids[1] {
             assert!(state.routing_info.contains_key(&node_ids[2]));
             assert_eq!(
@@ -935,16 +936,8 @@ fn test_full_nodes_connections() {
                 SecondaryRaptorcastConnectionStatus::Connected
             );
             let metrics = state.metrics();
-            assert_eq!(
-                metrics.gauge(GAUGE_PEER_DISC_NUM_UPSTREAM_VALIDATORS).get(),
-                0
-            );
-            assert_eq!(
-                metrics
-                    .gauge(GAUGE_PEER_DISC_NUM_DOWNSTREAM_FULLNODES)
-                    .get(),
-                1
-            );
+            assert_eq!(metric(metrics, GAUGE_PEER_DISC_NUM_UPSTREAM_VALIDATORS), 0);
+            assert_eq!(metric(metrics, GAUGE_PEER_DISC_NUM_DOWNSTREAM_FULLNODES), 1);
         } else if state.self_id == node_ids[2] {
             assert!(state.routing_info.contains_key(&node_ids[0]));
             assert_eq!(
@@ -957,16 +950,8 @@ fn test_full_nodes_connections() {
                 SecondaryRaptorcastConnectionStatus::Connected
             );
             let metrics = state.metrics();
-            assert_eq!(
-                metrics.gauge(GAUGE_PEER_DISC_NUM_UPSTREAM_VALIDATORS).get(),
-                1
-            );
-            assert_eq!(
-                metrics
-                    .gauge(GAUGE_PEER_DISC_NUM_DOWNSTREAM_FULLNODES)
-                    .get(),
-                0
-            );
+            assert_eq!(metric(metrics, GAUGE_PEER_DISC_NUM_UPSTREAM_VALIDATORS), 1);
+            assert_eq!(metric(metrics, GAUGE_PEER_DISC_NUM_DOWNSTREAM_FULLNODES), 0);
         }
     }
 }
