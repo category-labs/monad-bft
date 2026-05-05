@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use monad_executor::ExecutorMetrics;
+
 monad_executor::metric_consts! {
     pub COUNTER_FAIR_QUEUE_PUSH_TOTAL {
         name: "monad.fair_queue.push.total",
@@ -58,4 +60,20 @@ monad_executor::metric_consts! {
         name: "monad.fair_queue.regular_items",
         help: "Current number of items in the regular pool",
     }
+}
+
+pub fn init_executor_metrics() -> ExecutorMetrics {
+    ExecutorMetrics::with_metric_defs([
+        COUNTER_FAIR_QUEUE_PUSH_TOTAL,
+        COUNTER_FAIR_QUEUE_PUSH_PRIORITY,
+        COUNTER_FAIR_QUEUE_PUSH_REGULAR,
+        COUNTER_FAIR_QUEUE_PUSH_ERROR_FULL,
+        COUNTER_FAIR_QUEUE_PUSH_ERROR_PER_ID_LIMIT,
+        COUNTER_FAIR_QUEUE_POP_TOTAL,
+        COUNTER_FAIR_QUEUE_POP_EMPTY,
+        COUNTER_FAIR_QUEUE_POP_FROM_PRIORITY,
+        COUNTER_FAIR_QUEUE_POP_FROM_REGULAR,
+        GAUGE_FAIR_QUEUE_PRIORITY_ITEMS,
+        GAUGE_FAIR_QUEUE_REGULAR_ITEMS,
+    ])
 }
