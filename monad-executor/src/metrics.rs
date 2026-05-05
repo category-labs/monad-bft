@@ -14,11 +14,20 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    collections::HashMap,
+    collections::{hash_map::Entry, HashMap, HashSet},
+    fmt,
+    hash::{Hash, Hasher},
     ops::{Index, IndexMut},
 };
 
 use hdrhistogram::Histogram as HdrHistogram;
+use prometheus::{
+    core::{AtomicU64, GenericGauge},
+    Opts, Registry,
+};
+use tracing::error;
+
+pub type Gauge = GenericGauge<AtomicU64>;
 
 #[derive(Copy, Clone, Debug)]
 pub struct MetricDef {
@@ -32,8 +41,8 @@ impl MetricDef {
     }
 }
 
-impl std::hash::Hash for MetricDef {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+impl Hash for MetricDef {
+    fn hash<H: Hasher>(&self, state: &mut H) {
         self.name.hash(state);
     }
 }
@@ -45,6 +54,42 @@ impl PartialEq for MetricDef {
 }
 
 impl Eq for MetricDef {}
+
+fn is_valid_prometheus_metric_start(ch: char) -> bool {
+    ch.is_ascii_alphabetic() || matches!(ch, '_' | ':')
+}
+
+fn is_valid_prometheus_metric_char(ch: char) -> bool {
+    is_valid_prometheus_metric_start(ch) || ch.is_ascii_digit()
+}
+
+pub fn prometheus_metric_name(metric: &str) -> prometheus::Result<String> {
+    let mut name = String::with_capacity(metric.len());
+    for (idx, ch) in metric.char_indices() {
+        match ch {
+            '.' => name.push('_'),
+            ch if is_valid_prometheus_metric_char(ch) => name.push(ch),
+            _ => {
+                return Err(prometheus::Error::Msg(format!(
+                    "invalid prometheus metric name {metric:?}: character {ch:?} at byte {idx} is not allowed"
+                )));
+            }
+        }
+    }
+
+    let Some(first) = name.chars().next() else {
+        return Err(prometheus::Error::Msg(
+            "prometheus metric name must not be empty".to_owned(),
+        ));
+    };
+    if !is_valid_prometheus_metric_start(first) {
+        return Err(prometheus::Error::Msg(format!(
+            "invalid prometheus metric name {metric:?}: first character {first:?} is not allowed"
+        )));
+    }
+
+    Ok(name)
+}
 
 /// Defines one or more `MetricDef` constants with co-located name and help text.
 ///
@@ -71,20 +116,150 @@ macro_rules! metric_consts {
     };
 }
 
-#[derive(Default, Debug, Clone)]
+#[derive(Default)]
 pub struct ExecutorMetrics {
     values: HashMap<&'static MetricDef, u64>,
+    gauges: HashMap<&'static MetricDef, Gauge>,
+}
+
+impl Clone for ExecutorMetrics {
+    fn clone(&self) -> Self {
+        let mut metrics = Self::default();
+        for (&metric, &value) in &self.values {
+            metrics.values.insert(metric, value);
+        }
+        for (metric, value) in self.gauge_snapshot() {
+            metrics.ensure_gauge(metric).set(value);
+        }
+        metrics
+    }
+}
+
+impl fmt::Debug for ExecutorMetrics {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ExecutorMetrics")
+            .field("values", &self.snapshot())
+            .finish()
+    }
 }
 
 impl ExecutorMetrics {
-    pub fn set(&mut self, metric: &'static MetricDef, value: u64) {
-        self.values.insert(metric, value);
+    fn ensure_gauge(&mut self, metric: &'static MetricDef) -> &Gauge {
+        match self.gauges.entry(metric) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => {
+                let gauge = Gauge::with_opts(Opts::new(
+                    prometheus_metric_name(metric.name)
+                        .expect("executor metric definition is valid"),
+                    metric.help,
+                ))
+                .expect("executor metric definition is valid");
+
+                entry.insert(gauge)
+            }
+        }
+    }
+
+    fn gauge_snapshot(&self) -> Vec<(&'static MetricDef, u64)> {
+        let mut metrics = Vec::with_capacity(self.gauges.len());
+
+        for (&metric, gauge) in &self.gauges {
+            metrics.push((metric, gauge.get()));
+        }
+
+        metrics
+    }
+
+    fn snapshot(&self) -> Vec<(&'static MetricDef, u64)> {
+        let mut seen = HashSet::new();
+        let mut metrics = Vec::with_capacity(self.gauges.len() + self.values.len());
+
+        for (metric, value) in self.gauge_snapshot() {
+            seen.insert(metric);
+            metrics.push((metric, value));
+        }
+
+        for (&metric, &value) in &self.values {
+            if seen.insert(metric) {
+                metrics.push((metric, value));
+            }
+        }
+
+        metrics
+    }
+
+    pub fn with_metric_defs(metric_defs: &[&'static MetricDef]) -> Self {
+        let mut metrics = Self::default();
+        for &metric in metric_defs {
+            metrics.ensure_gauge(metric);
+        }
+        metrics
+    }
+
+    pub fn gauge(&mut self, metric: &'static MetricDef) -> &Gauge {
+        let registered = self.gauges.contains_key(metric);
+        if !registered {
+            error!(
+                metric = metric.name,
+                "executor metric gauge was not registered before access"
+            );
+        }
+        debug_assert!(
+            registered,
+            "executor metric must be initialized before taking a gauge: {}",
+            metric.name
+        );
+        self.ensure_gauge(metric)
+    }
+
+    pub fn metric_handles(&self) -> Vec<(&'static str, Gauge, &'static str)> {
+        let mut seen = HashSet::new();
+        let mut metrics = Vec::with_capacity(self.gauges.len() + self.values.len());
+
+        for (&metric, gauge) in &self.gauges {
+            seen.insert(metric);
+            metrics.push((metric.name, gauge.clone(), metric.help));
+        }
+
+        for (&metric, &value) in &self.values {
+            if seen.insert(metric) {
+                let gauge = Gauge::with_opts(Opts::new(
+                    prometheus_metric_name(metric.name)
+                        .expect("executor metric definition is valid"),
+                    metric.help,
+                ))
+                .expect("executor metric definition is valid");
+                gauge.set(value);
+                metrics.push((metric.name, gauge, metric.help));
+            }
+        }
+
+        metrics
+    }
+
+    pub fn register(&self, registry: &Registry) -> prometheus::Result<()> {
+        for (_, gauge, _) in self.metric_handles() {
+            registry.register(Box::new(gauge))?;
+        }
+        Ok(())
+    }
+
+    pub fn copy_values_from(&mut self, other: &ExecutorMetrics) {
+        for (metric, value) in other.snapshot() {
+            if self.gauges.contains_key(metric) {
+                self.ensure_gauge(metric).set(value);
+            } else {
+                self.values.insert(metric, value);
+            }
+        }
     }
 
     pub fn iter_with_descriptions(
         &self,
     ) -> impl Iterator<Item = (&'static str, u64, &'static str)> + '_ {
-        self.values.iter().map(|(k, &v)| (k.name, v, k.help))
+        self.snapshot()
+            .into_iter()
+            .map(|(metric, value)| (metric.name, value, metric.help))
     }
 }
 
@@ -129,10 +304,25 @@ impl<'a> ExecutorMetricsChain<'a> {
     }
 
     pub fn into_inner(self) -> Vec<(&'static str, u64, &'static str)> {
-        self.0
+        self.metric_handles()
             .into_iter()
-            .flat_map(|metrics| metrics.values.iter().map(|(k, &v)| (k.name, v, k.help)))
+            .map(|(name, gauge, help)| (name, gauge.get(), help))
             .collect()
+    }
+
+    pub fn metric_handles(&self) -> Vec<(&'static str, Gauge, &'static str)> {
+        let mut seen = HashSet::new();
+        let mut gauges = Vec::new();
+
+        for metrics in &self.0 {
+            for (name, gauge, help) in metrics.metric_handles() {
+                if seen.insert(name) {
+                    gauges.push((name, gauge, help));
+                }
+            }
+        }
+
+        gauges
     }
 }
 
@@ -179,6 +369,21 @@ impl Histogram {
 mod tests {
     use super::*;
 
+    metric_consts! {
+        TEST_REGISTERED_METRIC {
+            name: "monad.executor.test.registered",
+            help: "Test registered metric",
+        }
+        TEST_INVALID_METRIC {
+            name: "monad.executor.test-invalid",
+            help: "Test invalid metric",
+        }
+        TEST_LEADING_DIGIT_METRIC {
+            name: "1monad.executor.test.invalid",
+            help: "Test leading digit metric",
+        }
+    }
+
     #[test]
     fn test_histogram() {
         let mut hist = Histogram::new(1_000_000, 3).unwrap();
@@ -191,5 +396,33 @@ mod tests {
         assert!(hist.p50() >= 5000 && hist.p50() <= 5100);
         assert!(hist.p90() >= 9000 && hist.p90() <= 9100);
         assert!(hist.p99() >= 9900 && hist.p99() <= 10000);
+    }
+
+    #[test]
+    fn prometheus_metric_name_replaces_dots_only() {
+        assert_eq!(
+            prometheus_metric_name(TEST_REGISTERED_METRIC.name).expect("valid name"),
+            "monad_executor_test_registered"
+        );
+    }
+
+    #[test]
+    fn prometheus_metric_name_rejects_invalid_names() {
+        assert!(prometheus_metric_name(TEST_INVALID_METRIC.name).is_err());
+        assert!(prometheus_metric_name(TEST_LEADING_DIGIT_METRIC.name).is_err());
+    }
+
+    #[test]
+    fn test_copy_values_from_preserves_registered_storage() {
+        let mut registered_metrics = ExecutorMetrics::with_metric_defs(&[TEST_REGISTERED_METRIC]);
+        let registered = registered_metrics.gauge(TEST_REGISTERED_METRIC).clone();
+
+        let mut snapshot = ExecutorMetrics::with_metric_defs(&[TEST_REGISTERED_METRIC]);
+        snapshot.gauge(TEST_REGISTERED_METRIC).set(7);
+
+        registered_metrics.copy_values_from(&snapshot);
+
+        assert_eq!(registered.get(), 7);
+        assert_eq!(registered_metrics.gauge(TEST_REGISTERED_METRIC).get(), 7);
     }
 }
