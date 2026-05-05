@@ -345,7 +345,7 @@ impl<PD: PeerDiscoveryAlgo> PeerDiscoveryDriver<PD> {
         self.pd.get_name_record(id)
     }
 
-    pub fn metrics(&self) -> &ExecutorMetrics {
+    pub fn metrics(&mut self) -> &mut ExecutorMetrics {
         self.pd.metrics()
     }
 }

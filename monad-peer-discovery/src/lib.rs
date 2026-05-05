@@ -788,7 +788,7 @@ pub trait PeerDiscoveryAlgo {
         peers: BTreeSet<NodeId<CertificateSignaturePubKey<Self::SignatureType>>>,
     ) -> Vec<PeerDiscoveryCommand<Self::SignatureType>>;
 
-    fn metrics(&self) -> &ExecutorMetrics;
+    fn metrics(&mut self) -> &mut ExecutorMetrics;
 
     fn get_pending_udp_addr_by_id(
         &self,
