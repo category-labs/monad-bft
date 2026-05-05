@@ -1,0 +1,74 @@
+services:
+  build_triedb:
+    image: monad-execution-builder:latest
+    command: monad-mpt --storage /monad/triedb/test.db --create --root-offsets-chunk-count=2
+    volumes:
+      - ./node:/monad
+    privileged: true
+    ulimits: &ulimits
+      nofile:
+        soft: 1048576
+        hard: 1048576
+      memlock:
+        soft: 16770785280
+        hard: 16770785280
+
+  build_genesis:
+    image: monad-execution-builder:latest
+    depends_on:
+      build_triedb:
+        condition: service_completed_successfully
+    volumes:
+      - ./node:/monad
+    privileged: true
+    command:
+      monad
+      --chain hive_net
+      --db /monad/triedb/test.db
+      --block_db /monad/ledger
+      --nblocks 0
+      --log_level ERROR
+    ulimits: *ulimits
+
+  monad_execution:
+    image: monad-execution-builder:latest
+    depends_on:
+      build_genesis:
+        condition: service_completed_successfully
+    volumes:
+      - ./node:/monad
+    privileged: true
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        monad
+        --chain hive_net
+        --db /monad/triedb/test.db
+        --block_db /monad/ledger
+        --log_level ERROR
+        --nblocks ${NBLOCKS}
+        --chain-rlp /monad/chain.rlp
+        --as-eth-blocks
+    ulimits: *ulimits
+
+  monad_rpc:
+    build:
+      context: ${MONAD_BFT_ROOT}
+      dockerfile: ${RPC_DIR}/Dockerfile
+      args:
+        GIT_TAG_VERSION: ${GIT_TAG_VERSION}
+    image: monad-rpc:latest
+    depends_on:
+      monad_execution:
+        condition: service_completed_successfully
+    volumes:
+      - ./node:/monad
+    privileged: true
+    ports:
+      - "8080:8080"
+    command: |
+      monad-rpc
+      --triedb-path /monad/triedb
+      --node-config /monad/config/node.toml
+    ulimits: *ulimits
+
