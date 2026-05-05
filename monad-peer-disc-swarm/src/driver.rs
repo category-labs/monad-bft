@@ -243,4 +243,8 @@ where
     pub fn get_peer_disc_state(&self) -> &PDT {
         &self.algo
     }
+
+    pub fn get_peer_disc_state_mut(&mut self) -> &mut PDT {
+        &mut self.algo
+    }
 }
