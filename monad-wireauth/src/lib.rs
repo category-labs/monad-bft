@@ -29,6 +29,6 @@ pub use api::API;
 pub use config::{Config, DEFAULT_RETRY_ATTEMPTS, RETRY_ALWAYS};
 pub use context::{Context, StdContext, TestContext};
 pub use error::{Error, Result};
-pub use metrics::{MetricNames, DEFAULT_METRICS};
+pub use metrics::{init_executor_metrics, MetricNames, DEFAULT_METRICS};
 pub use monad_secp::PubKey as PublicKey;
 pub use protocol::{crypto, messages};
