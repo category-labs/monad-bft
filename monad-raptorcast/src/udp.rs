@@ -110,8 +110,10 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
 
     pub fn set_v1_rollout(&mut self, stage: DeterministicProtocolRolloutStage) {
         self.v1_rollout = stage;
-        self.metrics.executor_metrics_mut()[GAUGE_RAPTORCAST_DETERMINISTIC_ROLLOUT_STAGE] =
-            stage as u64;
+        self.metrics
+            .executor_metrics_mut()
+            .gauge(GAUGE_RAPTORCAST_DETERMINISTIC_ROLLOUT_STAGE)
+            .set(stage as u64);
     }
 
     pub fn metrics(&self) -> &UdpStateMetrics {
@@ -475,8 +477,10 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                         src_addr = ?message.src_addr,
                         "rate limited raptorcast chunk signature verification"
                     );
-                    self.metrics.executor_metrics_mut()
-                        [GAUGE_RAPTORCAST_DECODING_CACHE_SIGNATURE_VERIFICATIONS_RATE_LIMITED] += 1;
+                    self.metrics
+                        .executor_metrics_mut()
+                        .gauge(GAUGE_RAPTORCAST_DECODING_CACHE_SIGNATURE_VERIFICATIONS_RATE_LIMITED)
+                        .inc();
                     continue;
                 }
                 Err(err) => {
@@ -520,7 +524,10 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                             }
                             BroadcastMode::Unspecified => unreachable!(),
                         };
-                        self.metrics.executor_metrics_mut()[dropped_metric] += 1;
+                        self.metrics
+                            .executor_metrics_mut()
+                            .gauge(dropped_metric)
+                            .inc();
                         continue;
                     }
                     let accepted_metric = match (chunk.broadcast_mode, chunk.version) {
@@ -538,7 +545,10 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                         }
                         (BroadcastMode::Unspecified, _) => unreachable!(),
                     };
-                    self.metrics.executor_metrics_mut()[accepted_metric] += 1;
+                    self.metrics
+                        .executor_metrics_mut()
+                        .gauge(accepted_metric)
+                        .inc();
                     self.handle_raptorcast(
                         epoch_validators,
                         full_node_group_map,
