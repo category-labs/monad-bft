@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{future::Future, pin::Pin, task::Poll};
+use std::{future::Future, pin::Pin, sync::Arc, task::Poll};
 
 use bytes::Bytes;
 use futures::Stream;
@@ -94,6 +94,16 @@ monad_executor::metric_consts! {
     }
 }
 
+fn init_forwarded_ingress_metrics() -> ExecutorMetrics {
+    ExecutorMetrics::with_metric_defs([
+        COUNTER_TXPOOL_FORWARDED_INGRESS_ENQUEUED_TXS,
+        COUNTER_TXPOOL_FORWARDED_INGRESS_DROPPED_TXS,
+        COUNTER_TXPOOL_FORWARDED_INGRESS_DROP_EVENTS,
+        COUNTER_TXPOOL_FORWARDED_INGRESS_SENT_BATCHES,
+        COUNTER_TXPOOL_FORWARDED_INGRESS_SENT_TXS,
+    ])
+}
+
 type ForwardedPermitFuture<SCT> = Pin<
     Box<
         dyn Future<
@@ -134,8 +144,8 @@ where
     CRT: ChainRevision,
 {
     handle: tokio::task::JoinHandle<()>,
-    metrics: ExecutorMetrics,
-    update_metrics: Box<dyn Fn(&mut ExecutorMetrics)>,
+    metrics: Arc<ExecutorMetrics>,
+    forwarded_ingress_metrics: ExecutorMetrics,
 
     command_tx: tokio::sync::mpsc::Sender<
         Vec<
@@ -186,7 +196,7 @@ where
             ) -> F
             + Send
             + 'static,
-        update_metrics: Box<dyn Fn(&mut ExecutorMetrics) + Send + 'static>,
+        metrics: Arc<ExecutorMetrics>,
         score_provider: ScoreProvider<NodeId<SCT::NodeIdPubKey>, StdClock>,
         score_reader: ScoreReader<NodeId<SCT::NodeIdPubKey>, StdClock>,
         forwarded_queue_config: ForwardedIngressFairQueueConfig,
@@ -196,7 +206,7 @@ where
     {
         Self::new_with_buffer_sizes(
             updater,
-            update_metrics,
+            metrics,
             score_provider,
             score_reader,
             DEFAULT_COMMAND_BUFFER_SIZE,
@@ -226,7 +236,7 @@ where
             ) -> F
             + Send
             + 'static,
-        update_metrics: Box<dyn Fn(&mut ExecutorMetrics) + Send + 'static>,
+        metrics: Arc<ExecutorMetrics>,
         score_provider: ScoreProvider<NodeId<SCT::NodeIdPubKey>, StdClock>,
         score_reader: ScoreReader<NodeId<SCT::NodeIdPubKey>, StdClock>,
         command_buffer_size: usize,
@@ -245,8 +255,8 @@ where
 
         Self {
             handle,
-            metrics: ExecutorMetrics::default(),
-            update_metrics,
+            metrics,
+            forwarded_ingress_metrics: init_forwarded_ingress_metrics(),
 
             command_tx,
             forwarded_tx,
@@ -292,13 +302,19 @@ where
             for (index, tx) in txs.into_iter().enumerate() {
                 match self.forwarded_queue.push(sender, tx) {
                     Ok(()) => {
-                        self.metrics[COUNTER_TXPOOL_FORWARDED_INGRESS_ENQUEUED_TXS] += 1;
+                        self.forwarded_ingress_metrics
+                            .gauge(COUNTER_TXPOOL_FORWARDED_INGRESS_ENQUEUED_TXS)
+                            .inc();
                     }
                     Err(err) => {
                         let dropped = (txs_len - index) as u64;
                         total_dropped += dropped;
-                        self.metrics[COUNTER_TXPOOL_FORWARDED_INGRESS_DROPPED_TXS] += dropped;
-                        self.metrics[COUNTER_TXPOOL_FORWARDED_INGRESS_DROP_EVENTS] += 1;
+                        self.forwarded_ingress_metrics
+                            .gauge(COUNTER_TXPOOL_FORWARDED_INGRESS_DROPPED_TXS)
+                            .add(dropped);
+                        self.forwarded_ingress_metrics
+                            .gauge(COUNTER_TXPOOL_FORWARDED_INGRESS_DROP_EVENTS)
+                            .inc();
                         tracing::debug!(
                             ?sender,
                             error = %err,
@@ -365,8 +381,12 @@ where
                     self.forwarded_pending_send = None;
                     return false;
                 }
-                self.metrics[COUNTER_TXPOOL_FORWARDED_INGRESS_SENT_BATCHES] += 1;
-                self.metrics[COUNTER_TXPOOL_FORWARDED_INGRESS_SENT_TXS] += batch.len() as u64;
+                self.forwarded_ingress_metrics
+                    .gauge(COUNTER_TXPOOL_FORWARDED_INGRESS_SENT_BATCHES)
+                    .inc();
+                self.forwarded_ingress_metrics
+                    .gauge(COUNTER_TXPOOL_FORWARDED_INGRESS_SENT_TXS)
+                    .add(batch.len() as u64);
                 tracing::debug!(
                     batch_items = batch.len(),
                     "txpool forwarded_ingress: channel slot acquired, sending batch"
@@ -549,7 +569,8 @@ where
     }
 
     fn metrics(&self) -> ExecutorMetricsChain<'_> {
-        ExecutorMetricsChain::from(&self.metrics)
+        ExecutorMetricsChain::from(self.metrics.as_ref())
+            .push(&self.forwarded_ingress_metrics)
             .push(self.forwarded_queue.metrics())
             .push(self.score_provider.executor_metrics())
     }
@@ -573,8 +594,6 @@ where
         let this = self.get_mut();
 
         this.verify_handle_liveness();
-
-        (this.update_metrics)(&mut this.metrics);
 
         loop {
             let Poll::Ready(result) = this.event_rx.poll_recv(cx) else {
