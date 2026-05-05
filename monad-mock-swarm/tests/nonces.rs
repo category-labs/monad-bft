@@ -377,7 +377,7 @@ mod test {
             swarm
                 .states()
                 .values()
-                .map(|state| state.state.metrics().consensus_events.created_nec)
+                .map(|state| state.state.metrics().consensus_events.created_nec.get())
                 .max()
                 .unwrap(),
             1
