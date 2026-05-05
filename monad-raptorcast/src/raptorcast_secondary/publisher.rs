@@ -50,6 +50,10 @@ monad_executor::metric_consts! {
     }
 }
 
+fn init_executor_metrics() -> ExecutorMetrics {
+    ExecutorMetrics::with_metric_defs(&[PUBLISHER_CURRENT_GROUP_SIZE, PUBLISHER_SENT_INVITES])
+}
+
 type FullNodesST<ST> = Vec<NodeId<CertificateSignaturePubKey<ST>>>;
 type TimePoint = Round;
 
@@ -266,7 +270,7 @@ where
             curr_round: Round::MIN,
             curr_group: CurrentGroup::Init,
             pending_scores: BTreeMap::new(),
-            metrics: ExecutorMetrics::default(),
+            metrics: init_executor_metrics(),
         }
     }
 
@@ -328,7 +332,7 @@ where
             // Not serving any full nodes in current round
             self.curr_group =
                 CurrentGroup::inactive(new_round, self.scheduling_cfg.init_empty_round_span);
-            self.metrics[PUBLISHER_CURRENT_GROUP_SIZE] = 0;
+            self.metrics.gauge(PUBLISHER_CURRENT_GROUP_SIZE).set(0);
             return;
         };
 
@@ -356,7 +360,7 @@ where
                     round, next group is",
             );
             // Not serving any full nodes in current round
-            self.metrics[PUBLISHER_CURRENT_GROUP_SIZE] = 0;
+            self.metrics.gauge(PUBLISHER_CURRENT_GROUP_SIZE).set(0);
             self.curr_group =
                 CurrentGroup::inactive(new_round, self.scheduling_cfg.init_empty_round_span);
             return;
@@ -366,13 +370,15 @@ where
         self.curr_group = next_group.remove().to_finalized_group();
         match &self.curr_group {
             CurrentGroup::Inactive { .. } => {
-                self.metrics[PUBLISHER_CURRENT_GROUP_SIZE] = 0;
+                self.metrics.gauge(PUBLISHER_CURRENT_GROUP_SIZE).set(0);
             }
             CurrentGroup::Active {
                 members,
                 round_span,
             } => {
-                self.metrics[PUBLISHER_CURRENT_GROUP_SIZE] = members.len().get() as u64;
+                self.metrics
+                    .gauge(PUBLISHER_CURRENT_GROUP_SIZE)
+                    .set(members.len().get() as u64);
 
                 // Register this group for participation report collection
                 self.pending_scores
@@ -414,7 +420,9 @@ where
 
                 // record number of invites
                 if let FullNodesGroupMessage::PrepareGroup(_) = &out_msg.0 {
-                    self.metrics[PUBLISHER_SENT_INVITES] += out_msg.1.len() as u64;
+                    self.metrics
+                        .gauge(PUBLISHER_SENT_INVITES)
+                        .add(out_msg.1.len() as u64);
                 }
 
                 return Some(out_msg);
@@ -439,9 +447,11 @@ where
             self.group_schedule.insert(new_group.start_round, new_group);
 
             // record number of invites for new group
-            self.metrics[PUBLISHER_SENT_INVITES] += maybe_invites
-                .as_ref()
-                .map_or(0, |(_, full_nodes)| full_nodes.len() as u64);
+            self.metrics.gauge(PUBLISHER_SENT_INVITES).add(
+                maybe_invites
+                    .as_ref()
+                    .map_or(0, |(_, full_nodes)| full_nodes.len() as u64),
+            );
 
             return maybe_invites;
         }
