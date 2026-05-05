@@ -18,7 +18,7 @@ use std::{
     io,
     marker::PhantomData,
     pin::Pin,
-    sync::{atomic::Ordering, Arc},
+    sync::Arc,
     task::Poll,
     time::Duration,
 };
@@ -174,7 +174,7 @@ where
     preload_manager: Pin<Box<EthTxPoolPreloadManager>>,
 
     metrics: Arc<EthTxPoolExecutorMetrics>,
-    executor_metrics: ExecutorMetrics,
+    executor_metrics: Arc<ExecutorMetrics>,
 
     _phantom: PhantomData<CRT>,
 }
@@ -205,14 +205,13 @@ where
 
         let (events_tx, events) = mpsc::unbounded_channel();
 
-        let metrics = Arc::new(EthTxPoolExecutorMetrics::default());
-        let mut executor_metrics = ExecutorMetrics::default();
-
-        metrics.update(&mut executor_metrics);
+        let (executor_metrics, metrics) = EthTxPoolExecutorMetrics::new();
+        let executor_metrics = Arc::new(executor_metrics);
+        let metrics = Arc::new(metrics);
 
         Ok(EthTxPoolExecutorClient::new(
             {
-                let metrics = metrics.clone();
+                let executor_metrics = executor_metrics.clone();
 
                 move |command_rx, forwarded_rx, event_tx| {
                     let pool = EthTxPool::new(
@@ -247,15 +246,12 @@ where
 
                         metrics,
                         executor_metrics,
-
                         _phantom: PhantomData,
                     }
                     .run(command_rx, forwarded_rx, event_tx)
                 }
             },
-            Box::new(move |executor_metrics: &mut ExecutorMetrics| {
-                metrics.update(executor_metrics)
-            }),
+            executor_metrics,
             score_provider,
             score_reader,
             ForwardedIngressFairQueueConfig::default(),
@@ -377,7 +373,7 @@ where
 
             self.metrics
                 .reject_forwarded_invalid_bytes
-                .fetch_add(num_invalid_bytes, Ordering::SeqCst);
+                .add(num_invalid_bytes);
 
             if num_invalid_bytes != 0 {
                 tracing::warn!(?sender, ?num_invalid_bytes, "invalid forwarded txs");
@@ -495,10 +491,10 @@ where
                         }) => {
                             let elapsed = create_proposal_start.elapsed();
 
-                            self.metrics.create_proposal.fetch_add(1, Ordering::SeqCst);
+                            self.metrics.create_proposal.inc();
                             self.metrics
                                 .create_proposal_elapsed_ns
-                                .fetch_add(elapsed.as_nanos() as u64, Ordering::SeqCst);
+                                .add(elapsed.as_nanos().try_into().unwrap_or(u64::MAX));
 
                             self.events_tx
                                 .send(TxPoolExecutorEvent::Proposal {
@@ -566,15 +562,13 @@ where
             }
         }
 
-        self.metrics.update(&mut self.executor_metrics);
-
         self.tx_input_stream
             .as_mut()
             .broadcast_tx_events(ipc_events);
     }
 
     fn metrics(&self) -> ExecutorMetricsChain<'_> {
-        ExecutorMetricsChain::default().push(&self.executor_metrics)
+        ExecutorMetricsChain::default().push(self.executor_metrics.as_ref())
     }
 }
 
@@ -617,8 +611,7 @@ where
             preload_manager,
 
             metrics,
-            executor_metrics,
-
+            executor_metrics: _,
             _phantom,
         } = self.get_mut();
 
@@ -695,7 +688,6 @@ where
                 .project()
                 .add_egress_txs(immediately_forwardable_txs.iter());
 
-            metrics.update(executor_metrics);
             tx_input_stream.as_mut().broadcast_tx_events(ipc_events);
 
             cx.waker().wake_by_ref();
@@ -773,19 +765,15 @@ where
                 )
             }
 
-            metrics.preload_backend_lookups.fetch_add(
-                state_backend.total_db_lookups() - total_db_lookups_before,
-                Ordering::SeqCst,
-            );
             metrics
-                .preload_backend_requests
-                .fetch_add(addresses.len() as u64, Ordering::SeqCst);
+                .preload_backend_lookups
+                .add(state_backend.total_db_lookups() - total_db_lookups_before);
+            metrics.preload_backend_requests.add(addresses.len() as u64);
 
             preload_manager
                 .complete_polled_requests(predicted_proposal_seqnum, addresses.into_iter());
         }
 
-        metrics.update(executor_metrics);
         tx_input_stream.as_mut().broadcast_tx_events(ipc_events);
 
         Poll::Pending
@@ -821,7 +809,7 @@ mod test {
         EthTxPoolEventType, EthTxPoolIpcTx, EthTxPoolSnapshot, EthTxPoolTxInputStream,
     };
     use monad_eth_types::EthExecutionProtocol;
-    use monad_executor::{Executor, ExecutorMetrics};
+    use monad_executor::Executor;
     use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
     use monad_peer_score::{ema, StdClock};
     use monad_state_backend::{
@@ -1014,42 +1002,50 @@ mod test {
             StdClock,
         >(ema::ScoreConfig::default(), StdClock);
 
-        EthTxPoolExecutorClient::new(
-            move |command_rx, forwarded_rx, event_tx| {
-                let pool = EthTxPool::new(
-                    EthTxPoolConfig {
-                        limits: TrackedTxLimitsConfig::new(
-                            None,
-                            None,
-                            None,
-                            None,
-                            TEST_TX_EXPIRY,
-                            TEST_TX_EXPIRY,
-                        ),
-                    },
-                    chain_config.chain_id(),
-                    chain_config.get_chain_revision(round),
-                    chain_config.get_execution_chain_revision(execution_timestamp_s),
-                );
+        let (executor_metrics, metrics) = EthTxPoolExecutorMetrics::new();
+        let executor_metrics = Arc::new(executor_metrics);
+        let metrics = Arc::new(metrics);
 
-                ExecutorType {
-                    pool,
-                    tx_input_stream: Box::pin(NoopTxInputStream),
-                    reset: EthTxPoolResetTrigger::default(),
-                    block_policy,
-                    state_backend,
-                    chain_config,
-                    events_tx,
-                    events,
-                    forwarding_manager: Box::pin(EthTxPoolForwardingManager::default()),
-                    preload_manager: Box::pin(EthTxPoolPreloadManager::default()),
-                    metrics: Arc::new(EthTxPoolExecutorMetrics::default()),
-                    executor_metrics: ExecutorMetrics::default(),
-                    _phantom: PhantomData,
+        EthTxPoolExecutorClient::new(
+            {
+                let executor_metrics = executor_metrics.clone();
+
+                move |command_rx, forwarded_rx, event_tx| {
+                    let pool = EthTxPool::new(
+                        EthTxPoolConfig {
+                            limits: TrackedTxLimitsConfig::new(
+                                None,
+                                None,
+                                None,
+                                None,
+                                TEST_TX_EXPIRY,
+                                TEST_TX_EXPIRY,
+                            ),
+                        },
+                        chain_config.chain_id(),
+                        chain_config.get_chain_revision(round),
+                        chain_config.get_execution_chain_revision(execution_timestamp_s),
+                    );
+
+                    ExecutorType {
+                        pool,
+                        tx_input_stream: Box::pin(NoopTxInputStream),
+                        reset: EthTxPoolResetTrigger::default(),
+                        block_policy,
+                        state_backend,
+                        chain_config,
+                        events_tx,
+                        events,
+                        forwarding_manager: Box::pin(EthTxPoolForwardingManager::default()),
+                        preload_manager: Box::pin(EthTxPoolPreloadManager::default()),
+                        metrics,
+                        executor_metrics,
+                        _phantom: PhantomData,
+                    }
+                    .run(command_rx, forwarded_rx, event_tx)
                 }
-                .run(command_rx, forwarded_rx, event_tx)
             },
-            Box::new(|_| {}),
+            executor_metrics,
             score_provider,
             score_reader,
             forwarded_ingress_fair_queue_config,
