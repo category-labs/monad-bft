@@ -230,7 +230,7 @@ where
             ),
             identity_score,
             clock,
-            metrics: ExecutorMetrics::default(),
+            metrics: init_executor_metrics(),
         }
     }
 
@@ -238,7 +238,9 @@ where
         match self.priority_pool.message_status(key, now) {
             MessageStatus::Active => return PoolSelection::Priority,
             MessageStatus::Stale => {
-                self.metrics[EvictionKind::Timeout.metric_name()] += 1;
+                self.metrics
+                    .gauge(EvictionKind::Timeout.metric_name())
+                    .inc();
                 return self.identity_score.score(identity).into();
             }
             MessageStatus::Missing => {}
@@ -247,7 +249,9 @@ where
         match self.regular_pool.message_status(key, now) {
             MessageStatus::Active => PoolSelection::Regular,
             MessageStatus::Stale => {
-                self.metrics[EvictionKind::Timeout.metric_name()] += 1;
+                self.metrics
+                    .gauge(EvictionKind::Timeout.metric_name())
+                    .inc();
                 self.identity_score.score(identity).into()
             }
             MessageStatus::Missing => self.identity_score.score(identity).into(),
@@ -276,7 +280,9 @@ where
                     .evict_one_stale_for_identity_if_limited(&input.identity, now),
             };
             if evicted {
-                self.metrics[EvictionKind::Timeout.metric_name()] += 1;
+                self.metrics
+                    .gauge(EvictionKind::Timeout.metric_name())
+                    .inc();
             }
             match selected_pool {
                 PoolSelection::Priority => self
@@ -294,7 +300,7 @@ where
         };
 
         if let Some(kind) = pool_evicted {
-            self.metrics[kind.metric_name()] += 1;
+            self.metrics.gauge(kind.metric_name()).inc();
         }
 
         result
@@ -306,32 +312,40 @@ where
         payload_bytes: u64,
         result: &Result<DecodeOutcome, DecodeError>,
     ) {
-        self.metrics[selected_pool.fragments_counter()] += 1;
+        self.metrics.gauge(selected_pool.fragments_counter()).inc();
         if payload_bytes > 0 {
-            self.metrics[selected_pool.bytes_counter()] += payload_bytes;
+            self.metrics
+                .gauge(selected_pool.bytes_counter())
+                .add(payload_bytes);
         }
 
         match result {
             Ok(DecodeOutcome::Complete(msg)) => {
-                self.metrics[COUNTER_LEANUDP_DECODE_MESSAGES_COMPLETED] += 1;
-                self.metrics[COUNTER_LEANUDP_DECODE_BYTES_COMPLETED] += msg.len() as u64;
+                self.metrics
+                    .gauge(COUNTER_LEANUDP_DECODE_MESSAGES_COMPLETED)
+                    .inc();
+                self.metrics
+                    .gauge(COUNTER_LEANUDP_DECODE_BYTES_COMPLETED)
+                    .add(msg.len() as u64);
             }
             Ok(DecodeOutcome::Pending) => {}
             Err(e) => {
-                self.metrics[e.metric_name()] += 1;
+                self.metrics.gauge(e.metric_name()).inc();
             }
         }
     }
 
     fn update_pool_gauges(&mut self) {
-        self.metrics[GAUGE_LEANUDP_POOL_PRIORITY_MESSAGES] =
-            self.priority_pool.message_count() as u64;
-        self.metrics[GAUGE_LEANUDP_POOL_REGULAR_MESSAGES] =
-            self.regular_pool.message_count() as u64;
+        self.metrics
+            .gauge(GAUGE_LEANUDP_POOL_PRIORITY_MESSAGES)
+            .set(self.priority_pool.message_count() as u64);
+        self.metrics
+            .gauge(GAUGE_LEANUDP_POOL_REGULAR_MESSAGES)
+            .set(self.regular_pool.message_count() as u64);
     }
 
     fn reject_decode(&mut self, error: DecodeError) -> DecodeError {
-        self.metrics[error.metric_name()] += 1;
+        self.metrics.gauge(error.metric_name()).inc();
         self.update_pool_gauges();
         error
     }
@@ -341,7 +355,9 @@ where
         T: TryInto<Packet>,
         T::Error: Into<DecodeError>,
     {
-        self.metrics[COUNTER_LEANUDP_DECODE_FRAGMENTS_RECEIVED] += 1;
+        self.metrics
+            .gauge(COUNTER_LEANUDP_DECODE_FRAGMENTS_RECEIVED)
+            .inc();
 
         let Packet { header, payload } = match packet.try_into().map_err(Into::into) {
             Ok(packet) => packet,
@@ -349,7 +365,9 @@ where
         };
         let payload_bytes = payload.len() as u64;
         if payload_bytes > 0 {
-            self.metrics[COUNTER_LEANUDP_DECODE_BYTES_RECEIVED] += payload_bytes;
+            self.metrics
+                .gauge(COUNTER_LEANUDP_DECODE_BYTES_RECEIVED)
+                .add(payload_bytes);
         }
         if header.version() != LEANUDP_PROTOCOL_VERSION {
             return Err(self.reject_decode(DecodeError::UnsupportedVersion {
