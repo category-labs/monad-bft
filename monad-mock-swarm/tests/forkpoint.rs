@@ -524,12 +524,14 @@ fn forkpoint_restart_one(
             .metrics()
             .consensus_events
             .trigger_state_sync
+            .get()
             > 0;
         let state_sync_reset_target = restarted_node
             .state
             .metrics()
             .consensus_events
             .trigger_state_sync
+            .get()
             > 1;
         let should_reset_statesync_target =
             (recovery_time - time_before_new_forkpoint) >= statesync_service_window;
@@ -538,9 +540,15 @@ fn forkpoint_restart_one(
             .metrics()
             .validation_errors
             .invalid_epoch
+            .get()
             > 0;
-        let restarted_node_is_voting =
-            restarted_node.state.metrics().consensus_events.created_vote > 0;
+        let restarted_node_is_voting = restarted_node
+            .state
+            .metrics()
+            .consensus_events
+            .created_vote
+            .get()
+            > 0;
         let close_to_threshold =
             SeqNum(statesync_threshold.0.saturating_sub(recovery_time.0)) < SeqNum(5);
         // epoch_cross_over means that the restarting node doesn't have the

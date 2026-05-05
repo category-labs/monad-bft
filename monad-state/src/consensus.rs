@@ -63,19 +63,19 @@ fn record_prefilter_error(metrics: &mut Metrics, prefilter_error: PrefilterError
     match prefilter_error {
         PrefilterError::OutdatedProposal | PrefilterError::OutdatedRoundRecovery => {}
         PrefilterError::OutdatedVote => {
-            metrics.consensus_events.old_vote_received += 1;
+            metrics.consensus_events.old_vote_received.inc();
         }
         PrefilterError::OutdatedTimeout => {
-            metrics.consensus_events.old_remote_timeout += 1;
+            metrics.consensus_events.old_remote_timeout.inc();
         }
         PrefilterError::OutdatedNoEndorsement => {
-            metrics.consensus_events.old_no_endorsement_received += 1;
+            metrics.consensus_events.old_no_endorsement_received.inc();
         }
         PrefilterError::OutdatedAdvanceRoundQc => {
-            metrics.consensus_events.process_old_qc += 1;
+            metrics.consensus_events.process_old_qc.inc();
         }
         PrefilterError::OutdatedAdvanceRoundTc => {
-            metrics.consensus_events.process_old_tc += 1;
+            metrics.consensus_events.process_old_tc.inc();
         }
     }
 }
@@ -201,7 +201,7 @@ where
                                         consensus_tip =? new_root.seq_num,
                                         "setting new statesync target",
                                     );
-                                    self.metrics.consensus_events.trigger_state_sync += 1;
+                                    self.metrics.consensus_events.trigger_state_sync.inc();
                                     cmds.push(self.wrap(ConsensusCommand::RequestStateSync {
                                         root: new_root,
                                         high_qc: new_high_qc,
@@ -383,7 +383,7 @@ where
                 fresh_proposal_certificate,
             } => {
                 let _span = debug_span!("mempool proposal").entered();
-                consensus.metrics.consensus_events.creating_proposal += 1;
+                consensus.metrics.consensus_events.creating_proposal.inc();
                 let block_body = ConsensusBlockBody::new(ConsensusBlockBodyInner {
                     execution_body: proposed_execution_inputs.body,
                 });

@@ -114,21 +114,15 @@ fn vote_delay_metrics_record_ready_after_timer_start_on_happy_path() {
 
     for node in swarm.states().values() {
         let metrics = node.state.metrics();
+        let p50 = metrics.vote_delay.ready_after_timer_start_p50_ms.get();
+        let p90 = metrics.vote_delay.ready_after_timer_start_p90_ms.get();
+        let p99 = metrics.vote_delay.ready_after_timer_start_p99_ms.get();
 
-        assert!(metrics.vote_delay.ready_after_timer_start_p50_ms > 0);
-        assert!(
-            metrics.vote_delay.ready_after_timer_start_p50_ms
-                <= metrics.vote_delay.ready_after_timer_start_p90_ms
-        );
-        assert!(
-            metrics.vote_delay.ready_after_timer_start_p90_ms
-                <= metrics.vote_delay.ready_after_timer_start_p99_ms
-        );
-        assert!(
-            metrics.vote_delay.ready_after_timer_start_p99_ms
-                < ON_TIME_CHAIN_PARAMS.vote_pace.as_millis() as u64
-        );
-        assert!(metrics.consensus_events.local_timeout <= 1);
+        assert!(p50 > 0);
+        assert!(p50 <= p90);
+        assert!(p90 <= p99);
+        assert!(p99 < ON_TIME_CHAIN_PARAMS.vote_pace.as_millis() as u64);
+        assert!(metrics.consensus_events.local_timeout.get() <= 1);
     }
 }
 
@@ -142,18 +136,12 @@ fn vote_delay_metrics_record_large_ready_after_timer_start_when_vote_pace_is_too
 
     for node in swarm.states().values() {
         let metrics = node.state.metrics();
+        let p50 = metrics.vote_delay.ready_after_timer_start_p50_ms.get();
+        let p90 = metrics.vote_delay.ready_after_timer_start_p90_ms.get();
+        let p99 = metrics.vote_delay.ready_after_timer_start_p99_ms.get();
 
-        assert!(
-            metrics.vote_delay.ready_after_timer_start_p50_ms
-                > LATE_CHAIN_PARAMS.vote_pace.as_millis() as u64
-        );
-        assert!(
-            metrics.vote_delay.ready_after_timer_start_p50_ms
-                <= metrics.vote_delay.ready_after_timer_start_p90_ms
-        );
-        assert!(
-            metrics.vote_delay.ready_after_timer_start_p90_ms
-                <= metrics.vote_delay.ready_after_timer_start_p99_ms
-        );
+        assert!(p50 > LATE_CHAIN_PARAMS.vote_pace.as_millis() as u64);
+        assert!(p50 <= p90);
+        assert!(p90 <= p99);
     }
 }

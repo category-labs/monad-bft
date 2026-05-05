@@ -299,13 +299,13 @@ where
                     );
                 }
                 Err(BlockPolicyError::StateBackendError(StateBackendError::NotAvailableYet)) => {
-                    metrics.consensus_events.rx_execution_lagging += 1;
+                    metrics.consensus_events.rx_execution_lagging.inc();
                 }
                 Err(BlockPolicyError::ExecutionResultMismatch) => {
-                    metrics.consensus_events.rx_bad_state_root += 1;
+                    metrics.consensus_events.rx_bad_state_root.inc();
                 }
                 Err(BlockPolicyError::BaseFeeError) => {
-                    metrics.consensus_events.rx_base_fee_error += 1;
+                    metrics.consensus_events.rx_base_fee_error.inc();
                 }
                 Err(
                     BlockPolicyError::BlockPolicyBlockValidatorError(_)
