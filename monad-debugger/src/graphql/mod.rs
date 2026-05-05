@@ -285,18 +285,29 @@ struct GraphQLMetrics<'s>(&'s Metrics);
 #[Object]
 impl GraphQLMetrics<'_> {
     async fn consensus_created_qc(&self) -> u32 {
-        self.0.consensus_events.created_qc.try_into().unwrap()
+        self.0.consensus_events.created_qc.get().try_into().unwrap()
     }
     async fn consensus_local_timeout(&self) -> u32 {
-        self.0.consensus_events.local_timeout.try_into().unwrap()
+        self.0
+            .consensus_events
+            .local_timeout
+            .get()
+            .try_into()
+            .unwrap()
     }
     async fn consensus_handle_proposal(&self) -> u32 {
-        self.0.consensus_events.handle_proposal.try_into().unwrap()
+        self.0
+            .consensus_events
+            .handle_proposal
+            .get()
+            .try_into()
+            .unwrap()
     }
     async fn consensus_failed_txn_validation(&self) -> u32 {
         self.0
             .consensus_events
             .failed_txn_validation
+            .get()
             .try_into()
             .unwrap()
     }
@@ -304,6 +315,7 @@ impl GraphQLMetrics<'_> {
         self.0
             .consensus_events
             .invalid_proposal_round_leader
+            .get()
             .try_into()
             .unwrap()
     }
@@ -311,6 +323,7 @@ impl GraphQLMetrics<'_> {
         self.0
             .consensus_events
             .out_of_order_proposals
+            .get()
             .try_into()
             .unwrap()
     }

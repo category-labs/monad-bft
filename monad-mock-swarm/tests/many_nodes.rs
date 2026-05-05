@@ -166,7 +166,7 @@ fn many_nodes_noser_one_offline() {
     let mut max_observed_local_timeouts = swarm
         .states()
         .values()
-        .map(|node| node.state.metrics().consensus_events.local_timeout)
+        .map(|node| node.state.metrics().consensus_events.local_timeout.get())
         .max()
         .unwrap();
     // subtract 1 for the initial timeout on startup

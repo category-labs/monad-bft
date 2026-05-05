@@ -80,9 +80,9 @@ impl VoteDelayMetricsWindow {
     }
 
     fn update_metrics(&self, metrics: &mut Metrics) {
-        metrics.vote_delay.ready_after_timer_start_p50_ms = 0;
-        metrics.vote_delay.ready_after_timer_start_p90_ms = 0;
-        metrics.vote_delay.ready_after_timer_start_p99_ms = 0;
+        metrics.vote_delay.ready_after_timer_start_p50_ms.set(0);
+        metrics.vote_delay.ready_after_timer_start_p90_ms.set(0);
+        metrics.vote_delay.ready_after_timer_start_p99_ms.set(0);
 
         if self.ready_after_timer_start_samples.is_empty() {
             return;
@@ -95,9 +95,18 @@ impl VoteDelayMetricsWindow {
             .collect::<Vec<_>>();
         values.sort_unstable();
 
-        metrics.vote_delay.ready_after_timer_start_p50_ms = percentile(&values, 50);
-        metrics.vote_delay.ready_after_timer_start_p90_ms = percentile(&values, 90);
-        metrics.vote_delay.ready_after_timer_start_p99_ms = percentile(&values, 99);
+        metrics
+            .vote_delay
+            .ready_after_timer_start_p50_ms
+            .set(percentile(&values, 50));
+        metrics
+            .vote_delay
+            .ready_after_timer_start_p90_ms
+            .set(percentile(&values, 90));
+        metrics
+            .vote_delay
+            .ready_after_timer_start_p99_ms
+            .set(percentile(&values, 99));
     }
 }
 
@@ -127,9 +136,9 @@ mod tests {
         window.record_ready_after_timer_start(20, 20, &mut metrics);
         window.record_ready_after_timer_start(30, 200, &mut metrics);
 
-        assert_eq!(metrics.vote_delay.ready_after_timer_start_p50_ms, 20);
-        assert_eq!(metrics.vote_delay.ready_after_timer_start_p90_ms, 200);
-        assert_eq!(metrics.vote_delay.ready_after_timer_start_p99_ms, 200);
+        assert_eq!(metrics.vote_delay.ready_after_timer_start_p50_ms.get(), 20);
+        assert_eq!(metrics.vote_delay.ready_after_timer_start_p90_ms.get(), 200);
+        assert_eq!(metrics.vote_delay.ready_after_timer_start_p99_ms.get(), 200);
     }
 
     #[test]
@@ -140,8 +149,8 @@ mod tests {
         window.record_ready_after_timer_start(0, 100, &mut metrics);
         window.record_ready_after_timer_start(VOTE_DELAY_WINDOW_MS + 1, 50, &mut metrics);
 
-        assert_eq!(metrics.vote_delay.ready_after_timer_start_p50_ms, 50);
-        assert_eq!(metrics.vote_delay.ready_after_timer_start_p90_ms, 50);
-        assert_eq!(metrics.vote_delay.ready_after_timer_start_p99_ms, 50);
+        assert_eq!(metrics.vote_delay.ready_after_timer_start_p50_ms.get(), 50);
+        assert_eq!(metrics.vote_delay.ready_after_timer_start_p90_ms.get(), 50);
+        assert_eq!(metrics.vote_delay.ready_after_timer_start_p99_ms.get(), 50);
     }
 }
