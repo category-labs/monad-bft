@@ -111,8 +111,10 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
 
     pub fn set_v1_rollout(&mut self, stage: DeterministicProtocolRolloutStage) {
         self.v1_rollout = stage;
-        self.metrics.executor_metrics_mut()[GAUGE_RAPTORCAST_DETERMINISTIC_ROLLOUT_STAGE] =
-            stage as u64;
+        self.metrics
+            .executor_metrics_mut()
+            .gauge(GAUGE_RAPTORCAST_DETERMINISTIC_ROLLOUT_STAGE)
+            .set(stage as u64);
     }
 
     pub fn metrics(&self) -> &UdpStateMetrics {
@@ -476,8 +478,10 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                         src_addr = ?message.src_addr,
                         "rate limited raptorcast chunk signature verification"
                     );
-                    self.metrics.executor_metrics_mut()
-                        [GAUGE_RAPTORCAST_DECODING_CACHE_SIGNATURE_VERIFICATIONS_RATE_LIMITED] += 1;
+                    self.metrics
+                        .executor_metrics_mut()
+                        .gauge(GAUGE_RAPTORCAST_DECODING_CACHE_SIGNATURE_VERIFICATIONS_RATE_LIMITED)
+                        .inc();
                     continue;
                 }
                 Err(err) => {
@@ -512,15 +516,20 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                 }
                 BroadcastMode::Primary => {
                     if !v1_rollout::should_accept(self.v1_rollout, &chunk) {
-                        self.metrics.executor_metrics_mut()
-                            [COUNTER_RAPTORCAST_CHUNKS_DROPPED_INCOMPATIBLE_VERSION] += 1;
+                        self.metrics
+                            .executor_metrics_mut()
+                            .gauge(COUNTER_RAPTORCAST_CHUNKS_DROPPED_INCOMPATIBLE_VERSION)
+                            .inc();
                         continue;
                     }
                     let accepted_metric = match chunk.version {
                         1 => COUNTER_RAPTORCAST_V1_PRIMARY_CHUNKS_ACCEPTED,
                         _ => COUNTER_RAPTORCAST_V0_PRIMARY_CHUNKS_ACCEPTED,
                     };
-                    self.metrics.executor_metrics_mut()[accepted_metric] += 1;
+                    self.metrics
+                        .executor_metrics_mut()
+                        .gauge(accepted_metric)
+                        .inc();
                     self.handle_primary_raptorcast(
                         epoch_validators,
                         &chunk,

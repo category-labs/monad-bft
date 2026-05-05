@@ -59,6 +59,15 @@ monad_executor::metric_consts! {
     }
 }
 
+fn init_executor_metrics() -> ExecutorMetrics {
+    ExecutorMetrics::with_metric_defs([
+        METRIC_RECENTLY_DECODED_HIT,
+        METRIC_PENDING_HIT,
+        METRIC_NEW_ENTRY,
+        METRIC_DECODED,
+    ])
+}
+
 pub(crate) const RECENTLY_DECODED_CACHE_SIZE: usize = 10000;
 
 pub(crate) const BROADCAST_TIER_CONFIG: SoftQuotaCacheConfig = SoftQuotaCacheConfig {
@@ -172,7 +181,7 @@ where
         Self {
             recently_decoded: LruCache::new(recently_decoded_cache_size),
             pending_messages: TieredCache::new(config),
-            metrics: ExecutorMetrics::default(),
+            metrics: init_executor_metrics(),
         }
     }
 
@@ -190,7 +199,7 @@ where
             Some(MessageCacheEntry::RecentlyDecoded(recently_decoded)) => {
                 // the app message was recently decoded
                 recently_decoded.handle_message(message)?;
-                self.metrics[METRIC_RECENTLY_DECODED_HIT] += 1;
+                self.metrics.gauge(METRIC_RECENTLY_DECODED_HIT).inc();
                 return Ok(TryDecodeStatus::RecentlyDecoded);
             }
 
@@ -212,7 +221,7 @@ where
                     self.insert_decoder_state(&cache_key, message, decoder_state, context)
                 else {
                     // the cache rejected the new entry
-                    self.metrics[METRIC_NEW_ENTRY] += 1;
+                    self.metrics.gauge(METRIC_NEW_ENTRY).inc();
                     return Ok(TryDecodeStatus::RejectedByCache);
                 };
                 cache_hit_metric = METRIC_NEW_ENTRY;
@@ -221,16 +230,16 @@ where
         };
 
         if !decoder_state.decoder.try_decode() {
-            self.metrics[cache_hit_metric] += 1;
+            self.metrics.gauge(cache_hit_metric).inc();
             return Ok(TryDecodeStatus::NeedsMoreSymbols);
         }
 
         let Some(mut decoded) = decoder_state.decoder.reconstruct_source_data() else {
-            self.metrics[cache_hit_metric] += 1;
+            self.metrics.gauge(cache_hit_metric).inc();
             return Err(TryDecodeError::UnableToReconstructSourceData);
         };
 
-        self.metrics[cache_hit_metric] += 1;
+        self.metrics.gauge(cache_hit_metric).inc();
 
         // decoding succeeds at this point.
         let app_message_len = message
@@ -246,7 +255,7 @@ where
 
         self.recently_decoded
             .put(cache_key, RecentlyDecodedState::from(decoder_state));
-        self.metrics[METRIC_DECODED] += 1;
+        self.metrics.gauge(METRIC_DECODED).inc();
 
         Ok(TryDecodeStatus::Decoded {
             author: message.author,
@@ -535,30 +544,40 @@ impl SoftQuotaCacheMetrics {
             )))
         };
 
+        let total_insertions = full_def("total_insertions", "Total cache insertions");
+        let total_evictions_from_overquota_author = full_def(
+            "total_evictions_from_overquota_author",
+            "Evictions due to per-author quota being exceeded",
+        );
+        let total_evictions_from_overquota_others = full_def(
+            "total_evictions_from_overquota_others",
+            "Evictions due to global quota for non-author entries",
+        );
+        let total_evictions_from_expiry = full_def(
+            "total_evictions_from_expiry",
+            "Evictions due to message expiry",
+        );
+        let total_random_evictions =
+            full_def("total_random_evictions", "Random evictions to free space");
+
         Self {
-            total_insertions: full_def("total_insertions", "Total cache insertions"),
-            total_evictions_from_overquota_author: full_def(
-                "total_evictions_from_overquota_author",
-                "Evictions due to per-author quota being exceeded",
-            ),
-            total_evictions_from_overquota_others: full_def(
-                "total_evictions_from_overquota_others",
-                "Evictions due to global quota for non-author entries",
-            ),
-            total_evictions_from_expiry: full_def(
-                "total_evictions_from_expiry",
-                "Evictions due to message expiry",
-            ),
-            total_random_evictions: full_def(
-                "total_random_evictions",
-                "Random evictions to free space",
-            ),
-            metrics: ExecutorMetrics::default(),
+            total_insertions,
+            total_evictions_from_overquota_author,
+            total_evictions_from_overquota_others,
+            total_evictions_from_expiry,
+            total_random_evictions,
+            metrics: ExecutorMetrics::with_metric_defs([
+                total_insertions,
+                total_evictions_from_overquota_author,
+                total_evictions_from_overquota_others,
+                total_evictions_from_expiry,
+                total_random_evictions,
+            ]),
         }
     }
 
     pub fn incr(&mut self, key: &'static monad_executor::MetricDef, value: usize) {
-        self.metrics[key] += value as u64;
+        self.metrics.gauge(key).add(value as u64);
     }
 
     pub fn metrics(&self) -> &ExecutorMetrics {

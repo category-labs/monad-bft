@@ -48,6 +48,14 @@ monad_executor::metric_consts! {
     }
 }
 
+fn init_executor_metrics() -> ExecutorMetrics {
+    ExecutorMetrics::with_metric_defs([
+        CLIENT_NUM_CURRENT_GROUPS,
+        CLIENT_RECEIVED_INVITES,
+        CLIENT_RECEIVED_CONFIRMS,
+    ])
+}
+
 // This is for when the router is playing the role of a client
 // That is, we are a full-node receiving group invites from a validator
 pub struct Client<ST>
@@ -117,7 +125,7 @@ where
             group_sink_channel,
             curr_round: GENESIS_ROUND,
             last_round_heartbeat,
-            metrics: ExecutorMetrics::default(),
+            metrics: init_executor_metrics(),
         }
     }
 
@@ -155,7 +163,9 @@ where
         for interval_key in keys_to_remove {
             self.confirmed_groups.remove(interval_key);
         }
-        self.metrics[CLIENT_NUM_CURRENT_GROUPS] = self.get_current_group_count();
+        self.metrics
+            .gauge(CLIENT_NUM_CURRENT_GROUPS)
+            .set(self.get_current_group_count());
     }
 
     // If we are not receiving proposals, then we don't know what the current
@@ -283,7 +293,7 @@ where
             ?invite_msg,
             "RaptorCastSecondary Client received group invite"
         );
-        self.metrics[CLIENT_RECEIVED_INVITES] += 1;
+        self.metrics.gauge(CLIENT_RECEIVED_INVITES).inc();
 
         // Check the invite for duplicates & bandwidth requirements
         let accept = self.validate_prepare_group_message(&invite_msg);
@@ -408,7 +418,7 @@ where
             );
         }
 
-        self.metrics[CLIENT_RECEIVED_CONFIRMS] += 1;
+        self.metrics.gauge(CLIENT_RECEIVED_CONFIRMS).inc();
         debug!(
             "RaptorCastSecondary Client confirmed group for \
              rounds [{:?}, {:?}) from validator {:?}, group size {}",
@@ -422,7 +432,10 @@ where
         invites.remove(&confirm_msg.prepare.validator_id);
         self.confirmed_groups
             .force_insert(round_span.start..round_span.end, group);
-        self.metrics[CLIENT_NUM_CURRENT_GROUPS] = self.get_current_group_count();
+
+        self.metrics
+            .gauge(CLIENT_NUM_CURRENT_GROUPS)
+            .set(self.get_current_group_count());
 
         true
     }
