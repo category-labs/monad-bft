@@ -82,15 +82,15 @@ use tracing::{error, event, info, warn, Instrument, Level};
 use self::{
     cli::Cli,
     error::NodeSetupError,
-    metrics::NodePrometheusMetrics,
-    metrics_server::{start_metrics_server, MetricsServerState},
+    metrics::{
+        default_prometheus_labels, start_metrics_server, MetricsServerState, NodePrometheusMetrics,
+    },
     state::NodeState,
 };
 
 mod cli;
 mod error;
 mod metrics;
-mod metrics_server;
 mod state;
 
 #[cfg(all(not(target_env = "msvc"), feature = "jemallocator"))]
@@ -129,6 +129,24 @@ fn main() {
     drop(cmd);
 
     MONAD_NODE_VERSION.map(|v| info!("starting monad-bft with version {}", v));
+
+    if !node_state.pprof.is_empty() {
+        runtime.spawn({
+            let pprof = node_state.pprof.clone();
+            async {
+                let server = match start_pprof_server(pprof) {
+                    Ok(server) => server,
+                    Err(err) => {
+                        error!("failed to start pprof server: {}", err);
+                        return;
+                    }
+                };
+                if let Err(err) = server.await {
+                    error!("pprof server failed: {}", err);
+                }
+            }
+        });
+    }
 
     if let Err(e) = runtime.block_on(run(node_state)) {
         tracing::error!("monad consensus node crashed: {:?}", e);
@@ -401,20 +419,53 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         last_ledger_tip = last_ledger_tip.map(|s| s.as_u64())
     );
 
+    let (maybe_otel_meter_provider, mut maybe_metrics_ticker) = node_state
+        .otel_endpoint_interval
+        .map(|(otel_endpoint, record_metrics_interval)| {
+            let provider = build_otel_meter_provider(
+                &otel_endpoint,
+                format!(
+                    "{network_name}_{node_name}",
+                    network_name = &node_state.node_config.network_name,
+                    node_name = &node_state.node_config.node_name
+                ),
+                node_state.node_config.network_name.clone(),
+                record_metrics_interval,
+            )
+            .expect("failed to build otel monad-node");
+
+            let mut timer = tokio::time::interval(record_metrics_interval);
+            timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+            (provider, timer)
+        })
+        .unzip();
+    let maybe_otel_meter = maybe_otel_meter_provider
+        .as_ref()
+        .map(|provider| provider.meter("opentelemetry"));
+    let mut gauge_cache = HashMap::new();
     let process_start = Instant::now();
-    let mut prometheus_labels = HashMap::from([
-        ("service_name".to_owned(), "monad-node".to_owned()),
-        (
-            "network".to_owned(),
-            node_state.node_config.network_name.clone(),
+    let mut total_state_update_elapsed = Duration::ZERO;
+
+    let mut prometheus_labels = default_prometheus_labels(
+        format!(
+            "{network_name}_{node_name}",
+            network_name = &node_state.node_config.network_name,
+            node_name = &node_state.node_config.node_name
         ),
-        (
-            "node_name".to_owned(),
-            node_state.node_config.node_name.clone(),
-        ),
-    ]);
-    if let Some(version) = MONAD_NODE_VERSION {
-        prometheus_labels.insert("version".to_owned(), version.to_owned());
+        node_state.node_config.network_name.clone(),
+        MONAD_NODE_VERSION,
+    );
+    if let Some(metrics_config) = &node_state.metrics {
+        for label in &metrics_config.labels {
+            if prometheus_labels
+                .insert(label.key.clone(), label.value.clone())
+                .is_some()
+            {
+                error!(label = %label.key, "duplicate prometheus label");
+                return Err(());
+            }
+        }
     }
 
     let prometheus_metrics = Arc::new(
@@ -428,33 +479,6 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
             error!(?err, "failed to initialize prometheus metrics");
         })?,
     );
-    let (maybe_otel_meter_provider, mut maybe_metrics_ticker) = node_state
-        .otel
-        .as_ref()
-        .map(|otel| {
-            let provider = build_otel_meter_provider(
-                &otel.endpoint,
-                format!(
-                    "{network_name}_{node_name}",
-                    network_name = node_state.node_config.network_name,
-                    node_name = node_state.node_config.node_name
-                ),
-                node_state.node_config.network_name.clone(),
-                otel.export_interval,
-            )
-            .expect("failed to build otel monad-node");
-
-            let mut timer = tokio::time::interval(otel.export_interval);
-            timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-
-            (provider, timer)
-        })
-        .unzip();
-    let maybe_otel_meter = maybe_otel_meter_provider
-        .as_ref()
-        .map(|provider| provider.meter("opentelemetry"));
-    let mut gauge_cache = HashMap::new();
-    let mut total_state_update_elapsed = Duration::ZERO;
 
     if let Some(metrics_config) = &node_state.metrics {
         let server_state = MetricsServerState::new(
@@ -473,24 +497,6 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
             async move {
                 if let Err(err) = server.await {
                     error!("metrics server failed: {}", err);
-                }
-            }
-        });
-    }
-
-    if let Some(pprof) = &node_state.pprof {
-        tokio::spawn({
-            let addr = pprof.addr.clone();
-            async move {
-                let server = match start_pprof_server(addr) {
-                    Ok(server) => server,
-                    Err(err) => {
-                        error!("failed to start pprof server: {}", err);
-                        return;
-                    }
-                };
-                if let Err(err) = server.await {
-                    error!("pprof server failed: {}", err);
                 }
             }
         });
@@ -604,70 +610,6 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
     }
 
     Ok(())
-}
-
-fn send_metrics(
-    meter: &Meter,
-    gauge_cache: &mut HashMap<&'static str, Gauge<u64>>,
-    node_metrics: &NodePrometheusMetrics,
-    executor_metrics: ExecutorMetricsChain,
-) {
-    node_metrics.refresh_dynamic_metrics();
-
-    for (k, v, desc) in node_metrics
-        .metric_handles()
-        .into_iter()
-        .map(|(name, gauge, help)| (name, gauge.get(), help))
-        .chain(executor_metrics.into_inner())
-    {
-        let gauge = gauge_cache.entry(k).or_insert_with(|| {
-            if desc.is_empty() {
-                meter.u64_gauge(k).build()
-            } else {
-                meter.u64_gauge(k).with_description(desc).build()
-            }
-        });
-        gauge.record(v, &[]);
-    }
-}
-
-fn build_otel_meter_provider(
-    otel_endpoint: &str,
-    service_name: String,
-    network_name: String,
-    interval: Duration,
-) -> Result<opentelemetry_sdk::metrics::SdkMeterProvider, NodeSetupError> {
-    let exporter = MetricExporter::builder()
-        .with_tonic()
-        .with_timeout(interval * 2)
-        .with_endpoint(otel_endpoint)
-        .build()?;
-
-    let reader = opentelemetry_sdk::metrics::PeriodicReader::builder(exporter)
-        .with_interval(interval / 2)
-        .build();
-
-    let mut attrs = vec![
-        opentelemetry::KeyValue::new(
-            opentelemetry_semantic_conventions::resource::SERVICE_NAME,
-            service_name,
-        ),
-        opentelemetry::KeyValue::new("network", network_name),
-    ];
-    if let Some(version) = MONAD_NODE_VERSION {
-        attrs.push(opentelemetry::KeyValue::new(
-            opentelemetry_semantic_conventions::resource::SERVICE_VERSION,
-            version,
-        ));
-    }
-
-    let provider_builder = opentelemetry_sdk::metrics::SdkMeterProvider::builder().with_resource(
-        opentelemetry_sdk::Resource::builder_empty()
-            .with_attributes(attrs)
-            .build(),
-    );
-
-    Ok(provider_builder.with_reader(reader).build())
 }
 
 fn build_raptorcast_router<ST, SCT, M, OM, DS>(
@@ -956,4 +898,70 @@ fn bootstrap_peer_entry<ST: CertificateSignatureRecoverable>(
         auth_port: peer.auth_port,
         direct_udp_port: peer.direct_udp_port,
     })
+}
+
+fn send_metrics(
+    meter: &Meter,
+    gauge_cache: &mut HashMap<&'static str, Gauge<u64>>,
+    node_metrics: &NodePrometheusMetrics,
+    executor_metrics: ExecutorMetricsChain,
+) {
+    node_metrics.refresh_dynamic_metrics();
+
+    for (k, v, desc) in node_metrics
+        .metric_handles()
+        .into_iter()
+        .map(|(name, gauge, help)| (name, gauge.get(), help))
+        .chain(executor_metrics.into_inner())
+    {
+        let gauge = gauge_cache.entry(k).or_insert_with(|| {
+            if desc.is_empty() {
+                meter.u64_gauge(k).build()
+            } else {
+                meter.u64_gauge(k).with_description(desc).build()
+            }
+        });
+        gauge.record(v, &[]);
+    }
+}
+
+fn build_otel_meter_provider(
+    otel_endpoint: &str,
+    service_name: String,
+    network_name: String,
+    interval: Duration,
+) -> Result<opentelemetry_sdk::metrics::SdkMeterProvider, NodeSetupError> {
+    let exporter = MetricExporter::builder()
+        .with_tonic()
+        .with_timeout(interval * 2)
+        .with_endpoint(otel_endpoint)
+        .build()?;
+
+    let reader = opentelemetry_sdk::metrics::PeriodicReader::builder(exporter)
+        .with_interval(interval / 2)
+        .build();
+
+    let mut attrs = vec![
+        opentelemetry::KeyValue::new(
+            opentelemetry_semantic_conventions::resource::SERVICE_NAME,
+            service_name,
+        ),
+        opentelemetry::KeyValue::new("network", network_name),
+    ];
+    if let Some(version) = MONAD_NODE_VERSION {
+        attrs.push(opentelemetry::KeyValue::new(
+            opentelemetry_semantic_conventions::resource::SERVICE_VERSION,
+            version,
+        ));
+    }
+
+    let provider_builder = opentelemetry_sdk::metrics::SdkMeterProvider::builder()
+        .with_reader(reader)
+        .with_resource(
+            opentelemetry_sdk::Resource::builder_empty()
+                .with_attributes(attrs)
+                .build(),
+        );
+
+    Ok(provider_builder.build())
 }

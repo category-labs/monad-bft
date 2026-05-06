@@ -15,14 +15,67 @@
 
 use std::{
     collections::HashMap,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
+use actix_server::Server;
+use actix_web::{http::header, web, App, HttpRequest, HttpResponse, HttpServer};
 use monad_consensus_types::metrics::Metrics as StateMetrics;
-use monad_executor::{
-    metric_consts, prometheus_metric_name, ExecutorMetrics, ExecutorMetricsChain, Gauge,
-};
-use prometheus::Registry;
+use monad_executor::{metric_consts, ExecutorMetrics, ExecutorMetricsChain, Gauge};
+use prometheus::{Encoder, ProtobufEncoder, Registry, TextEncoder};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Label {
+    pub key: String,
+    pub value: String,
+}
+
+pub fn parse_label(label: &str) -> Result<Label, String> {
+    let Some((key, value)) = label.split_once('=') else {
+        return Err("expected key=value".to_owned());
+    };
+
+    if key.is_empty() {
+        return Err("label key must not be empty".to_owned());
+    }
+
+    if !is_valid_label_key(key) {
+        return Err(format!(
+            "invalid label key {key:?}; expected [a-zA-Z_][a-zA-Z0-9_]*"
+        ));
+    }
+
+    Ok(Label {
+        key: key.to_owned(),
+        value: value.to_owned(),
+    })
+}
+
+fn is_valid_label_key(key: &str) -> bool {
+    let mut chars = key.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+
+    (first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+}
+
+pub fn default_prometheus_labels(
+    service_name: String,
+    network_name: String,
+    version: Option<&str>,
+) -> HashMap<String, String> {
+    let mut labels = HashMap::from([
+        ("service_name".to_owned(), service_name),
+        ("network".to_owned(), network_name),
+    ]);
+    if let Some(version) = version {
+        labels.insert("service_version".to_owned(), version.to_owned());
+    }
+    labels
+}
 
 metric_consts! {
     pub GAUGE_TOTAL_UPTIME_US {
@@ -135,4 +188,70 @@ impl NodePrometheusMetrics {
         self.total_uptime
             .set(duration_micros_u64(&self.process_start.elapsed()));
     }
+}
+
+#[derive(Clone)]
+pub struct MetricsServerState {
+    registry: Registry,
+    before_gather: Option<Arc<dyn Fn() + Send + Sync>>,
+}
+
+impl MetricsServerState {
+    pub fn new(registry: Registry, before_gather: Option<Arc<dyn Fn() + Send + Sync>>) -> Self {
+        Self {
+            registry,
+            before_gather,
+        }
+    }
+}
+
+fn wants_protobuf(request: &HttpRequest) -> bool {
+    // Prometheus negotiates scrape response format with the request Accept header:
+    // https://prometheus.io/docs/instrumenting/content_negotiation/
+    request
+        .headers()
+        .get(header::ACCEPT)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.contains(prometheus::PROTOBUF_FORMAT))
+}
+
+async fn handle_metrics(
+    request: HttpRequest,
+    state: web::Data<MetricsServerState>,
+) -> HttpResponse {
+    if let Some(before_gather) = &state.before_gather {
+        before_gather();
+    }
+
+    let metric_families = state.registry.gather();
+    let mut buffer = Vec::new();
+
+    let content_type = if wants_protobuf(&request) {
+        let encoder = ProtobufEncoder::new();
+        if encoder.encode(&metric_families, &mut buffer).is_err() {
+            return HttpResponse::InternalServerError().finish();
+        }
+        prometheus::PROTOBUF_FORMAT
+    } else {
+        let encoder = TextEncoder::new();
+        if encoder.encode(&metric_families, &mut buffer).is_err() {
+            return HttpResponse::InternalServerError().finish();
+        }
+        prometheus::TEXT_FORMAT
+    };
+
+    HttpResponse::Ok()
+        .insert_header((header::CONTENT_TYPE, content_type))
+        .body(buffer)
+}
+
+pub fn start_metrics_server(addr: String, state: MetricsServerState) -> std::io::Result<Server> {
+    Ok(HttpServer::new(move || {
+        App::new()
+            .app_data(web::Data::new(state.clone()))
+            .route("/metrics", web::get().to(handle_metrics))
+    })
+    .bind(addr)?
+    .workers(1)
+    .run())
 }
