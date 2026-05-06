@@ -26,4 +26,9 @@ monad-multi-sig = { workspace = true }
 monad-secp = { workspace = true }
 monad-testutil = { workspace = true }
 
+criterion = { workspace = true }
 test-case = { workspace = true }
+
+[[bench]]
+name = "cert_verify"
+harness = false
