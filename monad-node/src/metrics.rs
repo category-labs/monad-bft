@@ -22,6 +22,58 @@ use monad_consensus_types::metrics::Metrics as StateMetrics;
 use monad_executor::{metric_consts, ExecutorMetrics, ExecutorMetricsChain, Gauge};
 use prometheus::{Opts, Registry};
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Label {
+    pub key: String,
+    pub value: String,
+}
+
+pub fn parse_label(label: &str) -> Result<Label, String> {
+    let Some((key, value)) = label.split_once('=') else {
+        return Err("expected key=value".to_owned());
+    };
+
+    if key.is_empty() {
+        return Err("label key must not be empty".to_owned());
+    }
+
+    if !is_valid_label_key(key) {
+        return Err(format!(
+            "invalid label key {key:?}; expected [a-zA-Z_][a-zA-Z0-9_]*"
+        ));
+    }
+
+    Ok(Label {
+        key: key.to_owned(),
+        value: value.to_owned(),
+    })
+}
+
+fn is_valid_label_key(key: &str) -> bool {
+    let mut chars = key.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+
+    (first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+}
+
+pub fn default_prometheus_labels(
+    service_name: String,
+    network_name: String,
+    version: Option<&str>,
+) -> HashMap<String, String> {
+    let mut labels = HashMap::from([
+        ("service_name".to_owned(), service_name),
+        ("network".to_owned(), network_name),
+    ]);
+    if let Some(version) = version {
+        labels.insert("service_version".to_owned(), version.to_owned());
+    }
+    labels
+}
+
 metric_consts! {
     pub GAUGE_TOTAL_UPTIME_US {
         name: "monad.total_uptime_us",
@@ -197,7 +249,7 @@ impl NodePrometheusMetrics {
 }
 #[cfg(test)]
 mod tests {
-    use super::prometheus_metric_name;
+    use super::{default_prometheus_labels, parse_label, prometheus_metric_name, Label};
 
     #[test]
     fn prometheus_metric_name_replaces_dots_only() {
@@ -211,5 +263,71 @@ mod tests {
     fn prometheus_metric_name_rejects_invalid_names() {
         assert!(prometheus_metric_name("monad.state.invalid-name").is_err());
         assert!(prometheus_metric_name("1monad.state.invalid").is_err());
+    }
+
+    #[test]
+    fn default_labels_match_otel_resource_labels() {
+        let labels = default_prometheus_labels(
+            "devnet_node-1".to_owned(),
+            "devnet".to_owned(),
+            Some("1.2.3"),
+        );
+
+        assert_eq!(
+            labels.get("service_name").map(String::as_str),
+            Some("devnet_node-1")
+        );
+        assert_eq!(labels.get("network").map(String::as_str), Some("devnet"));
+        assert_eq!(
+            labels.get("service_version").map(String::as_str),
+            Some("1.2.3")
+        );
+        assert!(!labels.contains_key("node_name"));
+    }
+
+    #[test]
+    fn default_labels_omit_missing_version() {
+        let labels =
+            default_prometheus_labels("devnet_node-1".to_owned(), "devnet".to_owned(), None);
+
+        assert!(!labels.contains_key("service_version"));
+    }
+
+    #[test]
+    fn parses_key_value_label() {
+        assert_eq!(
+            parse_label("network=devnet").expect("valid label"),
+            Label {
+                key: "network".to_owned(),
+                value: "devnet".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn allows_empty_label_value() {
+        assert_eq!(
+            parse_label("zone=").expect("valid label"),
+            Label {
+                key: "zone".to_owned(),
+                value: String::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_missing_separator() {
+        assert!(parse_label("network").is_err());
+    }
+
+    #[test]
+    fn rejects_empty_label_key() {
+        assert!(parse_label("=devnet").is_err());
+    }
+
+    #[test]
+    fn rejects_invalid_label_key() {
+        assert!(parse_label("1network=devnet").is_err());
+        assert!(parse_label("network.name=devnet").is_err());
     }
 }

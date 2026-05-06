@@ -40,7 +40,7 @@ use tracing_subscriber::{
     Layer,
 };
 
-use crate::{cli::Cli, error::NodeSetupError};
+use crate::{cli::Cli, error::NodeSetupError, metrics::Label};
 
 const REMOTE_FORKPOINT_URL_ENV: &str = "REMOTE_FORKPOINT_URL";
 const REMOTE_VALIDATORS_URL_ENV: &str = "REMOTE_VALIDATORS_URL";
@@ -48,6 +48,7 @@ const REMOTE_VALIDATORS_URL_ENV: &str = "REMOTE_VALIDATORS_URL";
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MetricsConfig {
     pub addr: String,
+    pub labels: Vec<Label>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -112,12 +113,13 @@ impl NodeState {
             record_metrics_interval_seconds,
             keystore_password,
             metrics,
+            metrics_labels,
             pprof,
             manytrace_socket,
             persisted_peers_path,
         } = Cli::from_arg_matches_mut(&mut cmd.get_matches_mut())?;
 
-        let metrics = parse_metrics_config(metrics);
+        let metrics = parse_metrics_config(metrics, metrics_labels)?;
         let otel = parse_otel_config(otel_endpoint, record_metrics_interval_seconds)?;
         let pprof = parse_pprof_config(pprof);
 
@@ -300,11 +302,21 @@ fn parse_otel_config(
     }))
 }
 
-fn parse_metrics_config(addr: String) -> Option<MetricsConfig> {
+fn parse_metrics_config(
+    addr: String,
+    labels: Vec<Label>,
+) -> Result<Option<MetricsConfig>, NodeSetupError> {
     if addr.is_empty() {
-        None
+        if labels.is_empty() {
+            Ok(None)
+        } else {
+            Err(NodeSetupError::Custom {
+                kind: ErrorKind::MissingRequiredArgument,
+                msg: "--metrics-labels requires --metrics".to_owned(),
+            })
+        }
     } else {
-        Some(MetricsConfig { addr })
+        Ok(Some(MetricsConfig { addr, labels }))
     }
 }
 
@@ -508,6 +520,7 @@ mod tests {
         parse_metrics_config, parse_otel_config, parse_pprof_config, MetricsConfig, OtelConfig,
         PprofConfig,
     };
+    use crate::metrics::Label;
 
     #[test]
     fn rejects_interval_without_otel_endpoint() {
@@ -541,18 +554,46 @@ mod tests {
 
     #[test]
     fn disables_metrics_server_when_address_is_empty() {
-        assert_eq!(parse_metrics_config(String::new()), None);
+        assert_eq!(
+            parse_metrics_config(String::new(), Vec::new()).expect("metrics config"),
+            None
+        );
+    }
+
+    #[test]
+    fn rejects_metrics_labels_without_metrics_address() {
+        let error = parse_metrics_config(
+            String::new(),
+            vec![Label {
+                key: "role".to_owned(),
+                value: "validator".to_owned(),
+            }],
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument);
     }
 
     #[test]
     fn preserves_metrics_configuration() {
-        let config =
-            parse_metrics_config("127.0.0.1:9090".to_owned()).expect("metrics should be enabled");
+        let config = parse_metrics_config(
+            "127.0.0.1:9090".to_owned(),
+            vec![Label {
+                key: "role".to_owned(),
+                value: "validator".to_owned(),
+            }],
+        )
+        .expect("metrics config")
+        .expect("metrics should be enabled");
 
         assert_eq!(
             config,
             MetricsConfig {
                 addr: "127.0.0.1:9090".to_owned(),
+                labels: vec![Label {
+                    key: "role".to_owned(),
+                    value: "validator".to_owned(),
+                }],
             }
         );
     }

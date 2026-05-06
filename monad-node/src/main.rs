@@ -82,7 +82,7 @@ use tracing::{error, event, info, warn, Instrument, Level};
 use self::{
     cli::Cli,
     error::NodeSetupError,
-    metrics::NodePrometheusMetrics,
+    metrics::{default_prometheus_labels, NodePrometheusMetrics},
     metrics_server::{start_metrics_server, MetricsServerState},
     state::NodeState,
 };
@@ -372,20 +372,27 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         last_ledger_tip = last_ledger_tip.map(|s| s.as_u64())
     );
 
+    let metrics_service_name = format!(
+        "{network_name}_{node_name}",
+        network_name = &node_state.node_config.network_name,
+        node_name = &node_state.node_config.node_name
+    );
     let process_start = Instant::now();
-    let mut prometheus_labels = HashMap::from([
-        ("service_name".to_owned(), "monad-node".to_owned()),
-        (
-            "network".to_owned(),
-            node_state.node_config.network_name.clone(),
-        ),
-        (
-            "node_name".to_owned(),
-            node_state.node_config.node_name.clone(),
-        ),
-    ]);
-    if let Some(version) = MONAD_NODE_VERSION {
-        prometheus_labels.insert("version".to_owned(), version.to_owned());
+    let mut prometheus_labels = default_prometheus_labels(
+        metrics_service_name.clone(),
+        node_state.node_config.network_name.clone(),
+        MONAD_NODE_VERSION,
+    );
+    if let Some(metrics_config) = &node_state.metrics {
+        for label in &metrics_config.labels {
+            if prometheus_labels
+                .insert(label.key.clone(), label.value.clone())
+                .is_some()
+            {
+                error!(label = %label.key, "duplicate prometheus label");
+                return Err(());
+            }
+        }
     }
 
     let prometheus_metrics = Arc::new(
@@ -405,11 +412,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         .map(|otel| {
             let provider = build_otel_meter_provider(
                 &otel.endpoint,
-                format!(
-                    "{network_name}_{node_name}",
-                    network_name = node_state.node_config.network_name,
-                    node_name = node_state.node_config.node_name
-                ),
+                metrics_service_name.clone(),
                 node_state.node_config.network_name.clone(),
                 otel.export_interval,
             )

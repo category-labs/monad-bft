@@ -17,6 +17,8 @@ use std::path::PathBuf;
 
 use clap::Parser;
 
+use crate::metrics::{parse_label, Label};
+
 #[derive(Debug, Parser)]
 #[command(name = "monad-node", about, long_about = None, version = monad_version::version!())]
 pub struct Cli {
@@ -92,6 +94,14 @@ pub struct Cli {
         default_value = ""
     )]
     pub metrics: String,
+
+    #[arg(
+        long,
+        value_name = "KEY=VALUE",
+        value_parser = parse_label,
+        help = "constant Prometheus label to attach to all /metrics output; can be repeated"
+    )]
+    pub metrics_labels: Vec<Label>,
 
     #[arg(
         long,
