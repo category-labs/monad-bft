@@ -40,7 +40,7 @@ use tracing_subscriber::{
     Layer,
 };
 
-use crate::{cli::Cli, error::NodeSetupError};
+use crate::{cli::Cli, error::NodeSetupError, metrics::Label};
 
 const REMOTE_FORKPOINT_URL_ENV: &str = "REMOTE_FORKPOINT_URL";
 const REMOTE_VALIDATORS_URL_ENV: &str = "REMOTE_VALIDATORS_URL";
@@ -48,17 +48,7 @@ const REMOTE_VALIDATORS_URL_ENV: &str = "REMOTE_VALIDATORS_URL";
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MetricsConfig {
     pub addr: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PprofConfig {
-    pub addr: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct OtelConfig {
-    pub endpoint: String,
-    pub export_interval: Duration,
+    pub labels: Vec<Label>,
 }
 
 pub struct NodeState {
@@ -86,8 +76,8 @@ pub struct NodeState {
     pub persisted_peers_path: PathBuf,
 
     pub metrics: Option<MetricsConfig>,
-    pub otel: Option<OtelConfig>,
-    pub pprof: Option<PprofConfig>,
+    pub otel_endpoint_interval: Option<(String, Duration)>,
+    pub pprof: String,
     pub reload_handle: Box<dyn TracingReload>,
     // should be kept as long as node is alive, tracing listener is stopped when handle is dropped
     #[allow(unused)]
@@ -113,17 +103,16 @@ impl NodeState {
             statesync_ipc_path,
             statesync_sq_thread_cpu,
             otel_endpoint,
-            record_metrics_interval_seconds,
             keystore_password,
+            record_metrics_interval_seconds,
             metrics,
+            metrics_labels,
             pprof,
             manytrace_socket,
             persisted_peers_path,
         } = Cli::from_arg_matches_mut(&mut cmd.get_matches_mut())?;
 
-        let metrics = parse_metrics_config(metrics);
-        let otel = parse_otel_config(otel_endpoint, record_metrics_interval_seconds)?;
-        let pprof = parse_pprof_config(pprof);
+        let metrics = parse_metrics_config(metrics, metrics_labels)?;
 
         let (reload_handle, agent) = NodeState::setup_tracing(manytrace_socket)?;
 
@@ -180,6 +169,15 @@ impl NodeState {
         let chain_config =
             MonadChainConfig::new(node_config.chain_id, devnet_chain_config_override)?;
 
+        let otel_endpoint_interval = match (otel_endpoint, record_metrics_interval_seconds) {
+            (Some(otel_endpoint), Some(record_metrics_interval_seconds)) => Some((
+                otel_endpoint,
+                Duration::from_secs(record_metrics_interval_seconds),
+            )),
+            (None, None) => None,
+            _ => panic!("cli accepted otel_endpoint without record_metrics_interval_seconds"),
+        };
+
         Ok(Self {
             node_config,
             node_config_path,
@@ -204,7 +202,7 @@ impl NodeState {
             statesync_sq_thread_cpu,
 
             metrics,
-            otel,
+            otel_endpoint_interval,
             pprof,
             reload_handle,
             manytrace_agent: agent,
@@ -264,47 +262,21 @@ impl NodeState {
     }
 }
 
-fn parse_otel_config(
-    endpoint: Option<String>,
-    export_interval_seconds: Option<u64>,
-) -> Result<Option<OtelConfig>, NodeSetupError> {
-    let Some(endpoint) = endpoint else {
-        if export_interval_seconds.is_some() {
-            return Err(NodeSetupError::Custom {
+fn parse_metrics_config(
+    addr: String,
+    labels: Vec<Label>,
+) -> Result<Option<MetricsConfig>, NodeSetupError> {
+    if addr.is_empty() {
+        if labels.is_empty() {
+            Ok(None)
+        } else {
+            Err(NodeSetupError::Custom {
                 kind: ErrorKind::MissingRequiredArgument,
-                msg: "--record-metrics-interval-seconds requires --otel-endpoint".to_owned(),
-            });
+                msg: "--metrics-labels requires --metrics".to_owned(),
+            })
         }
-        return Ok(None);
-    };
-
-    let export_interval_seconds = export_interval_seconds.unwrap_or(1);
-    if export_interval_seconds == 0 {
-        return Err(NodeSetupError::Custom {
-            kind: ErrorKind::InvalidValue,
-            msg: "--record-metrics-interval-seconds must be greater than zero".to_owned(),
-        });
-    }
-
-    Ok(Some(OtelConfig {
-        endpoint,
-        export_interval: Duration::from_secs(export_interval_seconds),
-    }))
-}
-
-fn parse_metrics_config(addr: String) -> Option<MetricsConfig> {
-    if addr.is_empty() {
-        None
     } else {
-        Some(MetricsConfig { addr })
-    }
-}
-
-fn parse_pprof_config(addr: String) -> Option<PprofConfig> {
-    if addr.is_empty() {
-        None
-    } else {
-        Some(PprofConfig { addr })
+        Ok(Some(MetricsConfig { addr, labels }))
     }
 }
 
