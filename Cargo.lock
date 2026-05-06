@@ -4915,6 +4915,7 @@ name = "monad-consensus"
 version = "0.1.0"
 dependencies = [
  "alloy-rlp",
+ "criterion",
  "lru",
  "monad-bls",
  "monad-chain-config",
