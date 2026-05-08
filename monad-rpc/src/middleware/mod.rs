@@ -14,11 +14,9 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 pub use self::{
-    decompression_guard::DecompressionGuard,
     metrics::{Metrics, MetricsMiddleware},
     timing::{TimingMiddleware, TimingRequestId},
 };
 
-mod decompression_guard;
 mod metrics;
 mod timing;
