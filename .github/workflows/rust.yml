@@ -9,6 +9,9 @@ on:
     branches: "*"
     types: [ opened, synchronize, reopened, edited ]
 
+permissions:
+  contents: read
+
 concurrency:
   group: >
     ${{
@@ -36,18 +39,44 @@ jobs:
   build:
     runs-on: self-hosted
 
-    container:
-      image: peach10.devcore4.com/category-labs/builder
-      options: --privileged -u 1000:1000
-      credentials:
-        username: ${{ secrets.PRIVATE_REGISTRY_USERNAME }}
-        password: ${{ secrets.PRIVATE_REGISTRY_PASSWORD }}
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update && sudo apt-get install -y software-properties-common
+          sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
+          sudo apt-get update && sudo apt-get install -y \
+            libboost-fiber1.83.0 \
+            libboost-json1.83.0 \
+            libboost-stacktrace1.83.0 \
+            libboost-fiber1.83-dev \
+            libboost-json1.83-dev \
+            libboost-stacktrace1.83-dev \
+            libboost1.83-dev \
+            libbenchmark-dev \
+            libcgroup-dev \
+            libgmock-dev \
+            libgtest-dev \
+            libtbb-dev \
+            liburing-dev \
+            libarchive-dev \
+            libbrotli-dev \
+            libcap-dev \
+            libcli11-dev \
+            libcrypto++-dev \
+            libgmp-dev \
+            libzstd-dev \
+            clang-19 \
+            libclang-19-dev \
+            gcc-15 \
+            g++-15 \
+            libhugetlbfs-dev \
+            libmagicenum-dev
+
       - run: rustup toolchain install nightly-2025-12-09 --profile minimal --component rustfmt
       - run: rustup toolchain install 1.91.1-x86_64-unknown-linux-gnu --profile minimal --component clippy
 
@@ -95,8 +124,18 @@ jobs:
           -A clippy::large_enum_variant
           -A clippy::doc-overindented-list-items
 
+      - name: Tune network buffers
+        run: |
+          sudo sysctl -w net.core.rmem_default=62500000
+          sudo sysctl -w net.core.rmem_max=62500000
+          sudo sysctl -w net.core.wmem_default=62500000
+          sudo sysctl -w net.core.wmem_max=62500000
+          sudo sysctl -w net.ipv4.tcp_rmem="4096 62500000 62500000"
+          sudo sysctl -w net.ipv4.tcp_wmem="4096 62500000 62500000"
+
       - name: Run tests
-        run: cargo test --release --all-targets --all-features
+        run: |
+          cargo test --release --all-targets --all-features
 
       - name: Add WASM target
         run: rustup target add wasm32-unknown-unknown
