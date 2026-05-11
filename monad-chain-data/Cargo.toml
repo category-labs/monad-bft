@@ -18,7 +18,7 @@ auto_impl = { workspace = true }
 bytes = { workspace = true }
 clap = { workspace = true, features = ["derive"], optional = true }
 eyre = { workspace = true, optional = true }
-fjall = { version = "3.1", optional = true }
+fjall = { workspace = true, optional = true }
 futures = { workspace = true, optional = true }
 monad-archive = { workspace = true, optional = true }
 monad-eth-types = { workspace = true, optional = true }
