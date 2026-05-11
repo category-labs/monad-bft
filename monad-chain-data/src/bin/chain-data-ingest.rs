@@ -19,7 +19,16 @@
 //! the same `--block-data-source "fs /path"` / `"aws bucket"` / etc.
 //! syntax works as in the other archive bins.
 
-use std::{path::PathBuf, time::Duration};
+use std::{
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex,
+    },
+    time::{Duration, Instant},
+};
+
+use tokio::sync::Semaphore;
 
 use alloy_eips::eip2718::Encodable2718;
 use alloy_primitives::Bytes;
@@ -37,7 +46,7 @@ use monad_archive::{
 use monad_chain_data::{
     store::FjallStore, FinalizedBlock, IngestTx, MonadChainDataService, QueryLimits,
 };
-use tracing::{info, warn, Level};
+use tracing::{debug, info, warn, Level};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -55,14 +64,22 @@ struct Cli {
     #[arg(long, value_parser = clap::value_parser!(BlockDataReaderArgs))]
     block_data_source: BlockDataReaderArgs,
 
-    /// First block to ingest (inclusive). Must be `1` for a fresh data
-    /// directory; on resume it must be `published_head + 1`.
+    /// First block to ingest (inclusive). Defaults to `published_head + 1`
+    /// (i.e. `1` on a fresh data directory). When provided explicitly, must
+    /// match that value — the flag exists for assertion in scripted runs.
     #[arg(long)]
-    start: u64,
+    start: Option<u64>,
 
-    /// Last block to ingest (inclusive).
-    #[arg(long)]
-    end: u64,
+    /// Last block to ingest (inclusive). Mutually exclusive with `--count`;
+    /// exactly one of the two must be set.
+    #[arg(long, conflicts_with = "count", required_unless_present = "count")]
+    end: Option<u64>,
+
+    /// Number of blocks to ingest from the resolved start (i.e.
+    /// `published_head + 1`). End block is derived as `start + count - 1`.
+    /// Mutually exclusive with `--end`.
+    #[arg(long, conflicts_with = "end", required_unless_present = "end")]
+    count: Option<u64>,
 
     /// Optional OTel collector endpoint for archive-side metrics. Off by
     /// default; archive readers still build without it.
@@ -80,7 +97,7 @@ struct Cli {
     /// (e.g. S3); leave low for local FS where queueing buys nothing.
     /// Memory ceiling is bounded by this many fetched-but-not-yet-ingested
     /// blocks held in the prefetch buffer.
-    #[arg(long, default_value_t = 16)]
+    #[arg(long, default_value_t = 512)]
     concurrency: usize,
 
     /// Number of retry attempts after a fetch failure, per block. The
@@ -96,6 +113,22 @@ struct Cli {
     /// with 5 retries waits ~6.2s in total worst case.
     #[arg(long, default_value_t = 200)]
     retry_backoff_ms: u64,
+
+    /// Enable adaptive concurrency. When set, `--concurrency` is the
+    /// starting value; an AIMD controller scales it within
+    /// `[--min-concurrency, --max-concurrency]` based on retry rate per
+    /// window (halve above 5% retries, additive increase below 1%).
+    #[arg(long)]
+    autotune: bool,
+
+    /// Lower bound on adaptive concurrency. Ignored unless `--autotune`.
+    #[arg(long, default_value_t = 1)]
+    min_concurrency: usize,
+
+    /// Upper bound on adaptive concurrency. Also caps the prefetch buffer
+    /// size when autotuning. Ignored unless `--autotune`.
+    #[arg(long, default_value_t = 5000)]
+    max_concurrency: usize,
 }
 
 #[tokio::main]
@@ -109,20 +142,55 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    let cli = Cli::parse();
-    if cli.start > cli.end {
-        bail!("start ({}) must be <= end ({})", cli.start, cli.end);
+    // High concurrency + fjall's per-SST FDs blow past the default 1024
+    // soft NOFILE limit. Bump to the hard limit before any sockets or
+    // keyspace files open. Best-effort: a warning here just means the
+    // operator should `ulimit -n` themselves.
+    match raise_nofile_to_hard_limit() {
+        Ok((from, to)) if from < to => {
+            info!(from, to, "raised NOFILE soft limit to hard limit");
+        }
+        Ok(_) => {}
+        Err(e) => warn!(
+            error = %e,
+            "failed to raise NOFILE soft limit; high --concurrency may exhaust file descriptors"
+        ),
     }
+
+    let cli = Cli::parse();
     if cli.concurrency == 0 {
         bail!("--concurrency must be >= 1");
+    }
+    if matches!(cli.count, Some(0)) {
+        bail!("--count must be >= 1");
+    }
+    if cli.autotune {
+        if cli.min_concurrency == 0 {
+            bail!("--min-concurrency must be >= 1");
+        }
+        if cli.max_concurrency < cli.min_concurrency {
+            bail!(
+                "--max-concurrency ({}) must be >= --min-concurrency ({})",
+                cli.max_concurrency,
+                cli.min_concurrency
+            );
+        }
+        if cli.concurrency < cli.min_concurrency || cli.concurrency > cli.max_concurrency {
+            bail!(
+                "--concurrency ({}) must be within [--min-concurrency ({}), --max-concurrency ({})]",
+                cli.concurrency,
+                cli.min_concurrency,
+                cli.max_concurrency
+            );
+        }
     }
 
     let store = FjallStore::open(&cli.data_dir)
         .with_context(|| format!("opening fjall store at {}", cli.data_dir.display()))?;
     let service = MonadChainDataService::new(store.clone(), store, QueryLimits::UNLIMITED);
 
-    // Sanity check the resume point against the publication head before any
-    // archive I/O, so a misconfigured `--start` fails fast rather than
+    // Resolve the block range against the current publication head before
+    // any archive I/O, so a misconfigured range fails fast rather than
     // burning a fetch.
     let head = service
         .publication()
@@ -130,13 +198,29 @@ async fn main() -> Result<()> {
         .await
         .context("loading current publication head")?;
     let expected_start = head.map_or(1, |h| h + 1);
-    if cli.start != expected_start {
+    let start = cli.start.unwrap_or(expected_start);
+    if start != expected_start {
         bail!(
             "start={} does not match expected next block {} (current head: {:?})",
-            cli.start,
+            start,
             expected_start,
             head
         );
+    }
+    let end = match (cli.end, cli.count) {
+        (Some(e), None) => e,
+        (None, Some(c)) => {
+            let Some(e) = start.checked_add(c - 1) else {
+                bail!("start + count - 1 overflows u64 (start={start}, count={c})");
+            };
+            e
+        }
+        // clap's required_unless_present + conflicts_with constraints make
+        // the other two cases unreachable.
+        _ => unreachable!("clap enforces exactly one of --end or --count"),
+    };
+    if start > end {
+        bail!("start ({}) must be <= end ({})", start, end);
     }
 
     let metrics = Metrics::new(
@@ -153,47 +237,183 @@ async fn main() -> Result<()> {
         .context("building block data reader")?;
 
     info!(
-        start = cli.start,
-        end = cli.end,
+        start,
+        end,
         concurrency = cli.concurrency,
         data_dir = %cli.data_dir.display(),
         "starting ingest"
     );
 
-    // Bounded prefetch: buffered() polls up to `concurrency` fetches
-    // concurrently and yields results in input (block-number) order, so
-    // the consumer side stays sequential — which it must, since
-    // ingest_block validates parent_hash continuity.
+    // Concurrency controller. When `--autotune` is off, min == max == initial
+    // and `tune()` is never called, so the controller degenerates into a
+    // fixed semaphore equivalent to the old `buffered(N)`.
+    let initial_concurrency = cli.concurrency;
+    let (min_concurrency, max_concurrency) = if cli.autotune {
+        (cli.min_concurrency, cli.max_concurrency)
+    } else {
+        (initial_concurrency, initial_concurrency)
+    };
+    let control = Arc::new(ConcurrencyControl::new(
+        initial_concurrency,
+        min_concurrency,
+        max_concurrency,
+    ));
+
+    // A window narrower than the prefetch buffer can fall entirely inside
+    // a drain phase — the consumer empties already-completed slots while
+    // no new fetches finish in that span — producing an all-zero stats
+    // window that flips the classifier to nonsense. Floor `log_every` at
+    // `max_concurrency` so each window must span at least one buffer
+    // refill even after autotune ramps up.
+    let log_every = cli.log_every.max(max_concurrency as u64);
+    if log_every != cli.log_every {
+        info!(
+            requested = cli.log_every,
+            effective = log_every,
+            "log_every raised to span at least one prefetch refill"
+        );
+    }
+    // Wall-clock cap on window length. When throughput collapses (e.g.
+    // throttled at high concurrency) the modulus trigger can take an
+    // hour to fire; the wall-clock fallback keeps feedback flowing.
+    const WINDOW_MAX_WALL: Duration = Duration::from_secs(30);
+
+    // Bounded prefetch. `buffered(max_concurrency)` caps the parked task
+    // count; the semaphore inside the closure is the actual dynamic limit.
+    // Fetches issue in input (block-number) order, so the consumer side
+    // stays sequential — required because ingest_block validates
+    // parent_hash continuity.
     let max_retries = cli.max_retries;
     let initial_backoff = Duration::from_millis(cli.retry_backoff_ms);
-    let fetch_stream = stream::iter(cli.start..=cli.end)
-        .map(|n| {
-            let reader = reader.clone();
-            async move { fetch_block_with_retry(&reader, n, max_retries, initial_backoff).await }
-        })
-        .buffered(cli.concurrency);
+    let fetch_stats = Arc::new(Mutex::new(FetchStats::default()));
+    let fetch_stream = {
+        let fetch_stats = fetch_stats.clone();
+        let permits = control.permits();
+        stream::iter(start..=end)
+            .map(move |n| {
+                let reader = reader.clone();
+                let stats = fetch_stats.clone();
+                let permits = permits.clone();
+                async move {
+                    let _permit = permits
+                        .acquire_owned()
+                        .await
+                        .expect("concurrency semaphore should never close");
+                    fetch_block_with_retry(&reader, n, max_retries, initial_backoff, &stats).await
+                }
+            })
+            .buffered(max_concurrency)
+    };
     futures::pin_mut!(fetch_stream);
 
     let mut total_logs: u64 = 0;
     let mut total_txs: u64 = 0;
-    while let Some(item) = fetch_stream.next().await {
+    let mut window_start = Instant::now();
+    let mut window_blocks: u64 = 0;
+    let mut window_txs: u64 = 0;
+    let mut window_logs: u64 = 0;
+    let mut ingest_ms: Vec<u64> = Vec::with_capacity(cli.log_every as usize);
+    let mut wait_ms: Vec<u64> = Vec::with_capacity(cli.log_every as usize);
+    loop {
+        // consumer_wait = time from "ready to consume next block" until
+        // buffered() yields one. ~0 = prefetch saturated (S3 keeping up
+        // or ingest-bound); approaches fetch_p50 = consumer outrunning
+        // prefetch (network-bound, raise --concurrency).
+        let wait_started = Instant::now();
+        let Some(item) = fetch_stream.next().await else {
+            break;
+        };
+        wait_ms.push(wait_started.elapsed().as_millis() as u64);
+
         let (n, block, receipts) = item?;
         let finalized = into_finalized_block(block, receipts)
             .with_context(|| format!("transforming block {n}"))?;
+        let ingest_started = Instant::now();
         let outcome = service
             .ingest_block(finalized)
             .await
             .with_context(|| format!("ingesting block {n}"))?;
+        ingest_ms.push(ingest_started.elapsed().as_millis() as u64);
 
         total_logs += outcome.written_logs as u64;
         total_txs += outcome.written_txs as u64;
+        window_blocks += 1;
+        window_txs += outcome.written_txs as u64;
+        window_logs += outcome.written_logs as u64;
 
-        if n % cli.log_every == 0 || n == cli.end {
-            info!(block = n, total_txs, total_logs, "ingest progress");
+        let flush = n == end
+            || (window_blocks > 0
+                && (n % log_every == 0 || window_start.elapsed() >= WINDOW_MAX_WALL));
+        if flush {
+            let elapsed_secs = window_start.elapsed().as_secs_f64().max(1e-9);
+            let fetch_window =
+                std::mem::take(&mut *fetch_stats.lock().expect("fetch stats poisoned"));
+            let fetch_p50 = percentile(&fetch_window.durations_ms, 0.50);
+            let fetch_p99 = percentile(&fetch_window.durations_ms, 0.99);
+            let ingest_p50 = percentile(&ingest_ms, 0.50);
+            let ingest_p99 = percentile(&ingest_ms, 0.99);
+            let wait_avg_ms = if wait_ms.is_empty() {
+                0.0
+            } else {
+                wait_ms.iter().sum::<u64>() as f64 / wait_ms.len() as f64
+            };
+            let wait_max_ms = wait_ms.iter().copied().max().unwrap_or(0);
+            let retry_rate = if window_blocks == 0 {
+                0.0
+            } else {
+                fetch_window.retry_attempts as f64 / window_blocks as f64
+            };
+            let concurrency_observed = control.current();
+            let (bottleneck, hint) = classify_bottleneck(
+                fetch_p50,
+                ingest_p50,
+                wait_avg_ms,
+                retry_rate,
+                concurrency_observed,
+            );
+
+            info!(
+                block = n,
+                total_txs,
+                total_logs,
+                bottleneck,
+                hint,
+                concurrency = concurrency_observed,
+                blocks_per_sec = window_blocks as f64 / elapsed_secs,
+                txs_per_sec = window_txs as f64 / elapsed_secs,
+                logs_per_sec = window_logs as f64 / elapsed_secs,
+                fetch_p50_ms = fetch_p50,
+                fetch_p99_ms = fetch_p99,
+                ingest_p50_ms = ingest_p50,
+                ingest_p99_ms = ingest_p99,
+                consumer_wait_avg_ms = wait_avg_ms,
+                consumer_wait_max_ms = wait_max_ms,
+                retries = fetch_window.retry_attempts,
+                "ingest progress"
+            );
+
+            if cli.autotune {
+                let adjusted = control.tune(retry_rate);
+                if adjusted != concurrency_observed {
+                    info!(
+                        from = concurrency_observed,
+                        to = adjusted,
+                        retry_rate,
+                        "autotune: adjusted concurrency"
+                    );
+                }
+            }
+
+            window_start = Instant::now();
+            window_blocks = 0;
+            window_txs = 0;
+            window_logs = 0;
+            ingest_ms.clear();
+            wait_ms.clear();
         }
     }
 
-    info!(end = cli.end, total_txs, total_logs, "ingest complete");
+    info!(end, total_txs, total_logs, "ingest complete");
     Ok(())
 }
 
@@ -217,13 +437,29 @@ async fn fetch_block_with_retry(
     n: u64,
     max_retries: u32,
     initial_backoff: Duration,
+    stats: &Mutex<FetchStats>,
 ) -> Result<(u64, Block, BlockReceipts)> {
     let mut backoff = initial_backoff;
+    // Wall time across all attempts: a retried fetch's "latency" is what
+    // the consumer actually waits for, not just the successful attempt.
+    let started = Instant::now();
     for attempt in 0..=max_retries {
         match fetch_block(reader, n).await {
-            Ok(item) => return Ok(item),
+            Ok(item) => {
+                let elapsed_ms = started.elapsed().as_millis() as u64;
+                stats
+                    .lock()
+                    .expect("fetch stats poisoned")
+                    .durations_ms
+                    .push(elapsed_ms);
+                return Ok(item);
+            }
             Err(e) if attempt < max_retries => {
-                warn!(
+                stats
+                    .lock()
+                    .expect("fetch stats poisoned")
+                    .retry_attempts += 1;
+                debug!(
                     block = n,
                     attempt = attempt + 1,
                     max_attempts = max_retries + 1,
@@ -242,6 +478,150 @@ async fn fetch_block_with_retry(
         }
     }
     unreachable!("loop exits via Ok or final Err arm")
+}
+
+#[derive(Default)]
+struct FetchStats {
+    durations_ms: Vec<u64>,
+    retry_attempts: u64,
+}
+
+/// Dynamic concurrency limiter driven by AIMD on per-window retry rate.
+///
+/// The semaphore is the actual gate: fetchers `acquire_owned()` a permit
+/// before issuing the request and drop it on return. `tune()` mutates the
+/// permit pool — `add_permits` to grow, spawned `acquire_many.forget` to
+/// shrink (the shrink awaits permits to free, so concurrency decreases
+/// asymptotically as in-flight requests finish).
+struct ConcurrencyControl {
+    permits: Arc<Semaphore>,
+    current: AtomicUsize,
+    min: usize,
+    max: usize,
+}
+
+impl ConcurrencyControl {
+    fn new(initial: usize, min: usize, max: usize) -> Self {
+        Self {
+            permits: Arc::new(Semaphore::new(initial)),
+            current: AtomicUsize::new(initial),
+            min,
+            max,
+        }
+    }
+
+    fn permits(&self) -> Arc<Semaphore> {
+        self.permits.clone()
+    }
+
+    fn current(&self) -> usize {
+        self.current.load(Ordering::Relaxed)
+    }
+
+    /// AIMD step on observed retry rate. Decrease is tiered so mild
+    /// throttling produces a mild correction; only severe throttling
+    /// halves:
+    /// - retries above 20% → ×0.5 (severe — halve)
+    /// - retries above 5%  → ×0.75 (moderate — back off 25%)
+    /// - retries above 1%  → ×0.9 (mild — back off 10%)
+    /// - retries below 1%  → grow by max(2, cur/8) (additive, ~12.5%)
+    /// - else hold
+    ///
+    /// Returns the new concurrency (== current if no change). When
+    /// `min == max` this is a fixed-permit no-op.
+    fn tune(&self, retry_rate: f64) -> usize {
+        let cur = self.current.load(Ordering::Relaxed);
+        let new = if retry_rate > 0.20 {
+            (cur / 2).max(self.min)
+        } else if retry_rate > 0.05 {
+            (cur * 3 / 4).max(self.min)
+        } else if retry_rate > 0.01 {
+            (cur * 9 / 10).max(self.min)
+        } else if cur < self.max {
+            cur.saturating_add((cur / 8).max(2)).min(self.max)
+        } else {
+            cur
+        };
+        if new == cur {
+            return cur;
+        }
+        self.current.store(new, Ordering::Relaxed);
+        if new > cur {
+            self.permits.add_permits(new - cur);
+        } else {
+            let diff = (cur - new) as u32;
+            let permits = self.permits.clone();
+            tokio::spawn(async move {
+                if let Ok(p) = permits.acquire_many_owned(diff).await {
+                    p.forget();
+                }
+            });
+        }
+        new
+    }
+}
+
+#[cfg(unix)]
+fn raise_nofile_to_hard_limit() -> Result<(u64, u64)> {
+    let mut rl = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut rl) } != 0 {
+        return Err(std::io::Error::last_os_error()).context("getrlimit(NOFILE)");
+    }
+    let was = rl.rlim_cur as u64;
+    if rl.rlim_cur < rl.rlim_max {
+        rl.rlim_cur = rl.rlim_max;
+        if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &rl) } != 0 {
+            return Err(std::io::Error::last_os_error()).context("setrlimit(NOFILE)");
+        }
+    }
+    Ok((was, rl.rlim_cur as u64))
+}
+
+#[cfg(not(unix))]
+fn raise_nofile_to_hard_limit() -> Result<(u64, u64)> {
+    Ok((0, 0))
+}
+
+fn percentile(samples: &[u64], p: f64) -> u64 {
+    if samples.is_empty() {
+        return 0;
+    }
+    let mut sorted = samples.to_vec();
+    sorted.sort_unstable();
+    let idx = (((sorted.len() - 1) as f64) * p).round() as usize;
+    sorted[idx]
+}
+
+/// Maps the per-window timing signals to a single bottleneck label so the
+/// operator does not have to interpret raw numbers. Returns `(label, hint)`
+/// where `hint` names the action that label points at.
+fn classify_bottleneck(
+    fetch_p50_ms: u64,
+    ingest_p50_ms: u64,
+    consumer_wait_avg_ms: f64,
+    retry_rate: f64,
+    concurrency: usize,
+) -> (&'static str, &'static str) {
+    if retry_rate > 0.05 {
+        return ("throttled", "back off --concurrency");
+    }
+    let per_slot_ms = (fetch_p50_ms as f64) / (concurrency.max(1) as f64);
+    if consumer_wait_avg_ms > (fetch_p50_ms as f64) * 0.7 {
+        return (
+            "s3_head_of_line",
+            "tail latency dragging head; check fetch_p99 vs p50",
+        );
+    }
+    if (ingest_p50_ms as f64) > per_slot_ms * 1.5 {
+        return (
+            "ingest_bound",
+            "parallelize writers (fjall ingest > per-slot fetch budget)",
+        );
+    }
+    ("s3_pipelined", "raise --concurrency if retries stay low")
 }
 
 fn into_finalized_block(block: Block, receipts: BlockReceipts) -> Result<FinalizedBlock> {
