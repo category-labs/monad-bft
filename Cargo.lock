@@ -5008,6 +5008,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-ctl"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "tempfile",
+]
+
+[[package]]
 name = "monad-cxx"
 version = "0.1.0"
 dependencies = [
