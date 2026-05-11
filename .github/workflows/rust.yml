@@ -34,7 +34,7 @@ env:
 
 jobs:
   build:
-    runs-on: self-hosted
+    runs-on: arc-runner-set
 
     container:
       image: peach10.devcore4.com/category-labs/builder
