@@ -338,6 +338,7 @@ impl<S: SwarmRelation> Node<S> {
         None
     }
 
+    #[expect(unused)]
     fn build_validator_set_data(
         validator_set: &<S::ValidatorSetTypeFactory as ValidatorSetTypeFactory>::ValidatorSetType,
         validator_mapping: &ValidatorMapping<<<S::SignatureType as CertificateSignature>::KeyPairType as CertificateKeyPair>::PubKeyType, <<S::SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::KeyPairType>,

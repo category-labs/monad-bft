@@ -497,7 +497,7 @@ where
         let mut txn_fees: TxnFees = TxnFees::default();
         for eth_txn in validated_txns.iter() {
             let block_base_fee = header.base_fee;
-            if eth_txn.max_fee_per_gas() < block_base_fee.into() {
+            if eth_txn.max_fee_per_gas() < u128::from(block_base_fee) {
                 debug!(
                     ?eth_txn,
                     block_base_fee, "transaction max fee less than base fee"

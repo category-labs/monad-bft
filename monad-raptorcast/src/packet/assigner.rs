@@ -26,8 +26,11 @@ use rand_chacha::ChaCha20Rng;
 use super::{BuildError, Chunk, Result};
 use crate::util::{ensure, PrimaryBroadcastGroup, Recipient, Redundancy, SecondaryBroadcastGroup};
 
+// index of a node in an OrderedNodes instance. Treat as opaque
+// handle, only meaningful when used with the same OrderedNodes
+// instance that produced it.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub(crate) struct NodeIndex(usize);
+pub struct NodeIndex(usize);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChunkTarget {
@@ -51,7 +54,7 @@ impl From<NodeIndex> for ChunkTarget {
 // A frozen ordered list of nodes, indexable by NodeIndex. Captures
 // the concept of "the recipient table for a ChunkAssignment".
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct OrderedNodes<PT: PubKey>(Box<[NodeId<PT>]>);
+pub struct OrderedNodes<PT: PubKey>(Box<[NodeId<PT>]>);
 
 impl<PT: PubKey> OrderedNodes<PT> {
     pub fn singleton(node: NodeId<PT>) -> Self {
@@ -78,7 +81,7 @@ impl<PT: PubKey> FromIterator<NodeId<PT>> for OrderedNodes<PT> {
 }
 
 // A Partition produces a ChunkAssignment from its internal node set.
-pub(crate) trait Partition {
+pub trait Partition {
     type PubKey: PubKey;
 
     // [u8; 32] == <ChaCha20Rng as SeedableRng>::Seed
@@ -295,7 +298,7 @@ pub fn even_partition_num_chunks(num_base_symbols: usize, redundancy: Redundancy
 
 // Proportional to stake, plus each validator gets an optional
 // rounding chunk
-pub(crate) struct StakePartition<PT: PubKey> {
+pub struct StakePartition<PT: PubKey> {
     // Validator set with the publisher node excluded.
     //
     // Invariant: all stake must be non-zero

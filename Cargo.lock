@@ -5691,6 +5691,7 @@ dependencies = [
  "monad-executor",
  "monad-executor-glue",
  "monad-multi-sig",
+ "monad-raptorcast",
  "monad-router-scheduler",
  "monad-secp",
  "monad-state",
