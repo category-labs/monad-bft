@@ -32,7 +32,10 @@ use std::{
 
 use bytes::Bytes;
 use eyre::{Context, Result};
-use fjall::{Config, Database, Keyspace, KeyspaceCreateOptions, KvSeparationOptions};
+use fjall::{
+    config::CompressionPolicy, CompressionType, Config, Database, Keyspace,
+    KeyspaceCreateOptions, KvSeparationOptions,
+};
 use tokio::task::spawn_blocking;
 
 use super::{KVStoreType, MetricsResultExt, PutResult, WritePolicy};
@@ -73,13 +76,26 @@ impl FjallKvStore {
 
         let keyspace = db
             .keyspace(KEYSPACE_NAME, || {
+                // LZ4 everywhere: fjall's defaults skip L0/L1 data blocks and
+                // all index blocks. Archive payloads compress well and we
+                // care about on-disk size more than write latency, so apply
+                // LZ4 to every level. (fjall 3.1 doesn't expose an LZ4 HC /
+                // level knob — `Lz4` is the only setting available.)
+                //
                 // KV separation: defaults are 1 KiB threshold, 64 MiB blob
-                // files, LZ4. Small archive entries stay inline; block
-                // bodies/receipts/traces land in blob files. Archive
-                // writes are append-mostly so blob GC effectively never
-                // fires.
+                // files. Small archive entries stay inline; block
+                // bodies/receipts/traces land in blob files. Archive writes
+                // are append-mostly so blob GC effectively never fires.
                 KeyspaceCreateOptions::default()
-                    .with_kv_separation(Some(KvSeparationOptions::default()))
+                    .data_block_compression_policy(CompressionPolicy::all(
+                        CompressionType::Lz4,
+                    ))
+                    .index_block_compression_policy(CompressionPolicy::all(
+                        CompressionType::Lz4,
+                    ))
+                    .with_kv_separation(Some(
+                        KvSeparationOptions::default().compression(CompressionType::Lz4),
+                    ))
             })
             .wrap_err_with(|| format!("Failed to open fjall keyspace at {path:?}"))?;
 
