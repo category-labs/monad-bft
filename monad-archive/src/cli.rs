@@ -106,6 +106,13 @@ pub fn set_source_and_sink_metrics(
                 vec![opentelemetry::KeyValue::new("sink_store_type", "fs")],
             );
         }
+        ArchiveArgs::Fjall(_) => {
+            metrics.periodic_gauge_with_attrs(
+                MetricNames::SINK_STORE_TYPE,
+                5,
+                vec![opentelemetry::KeyValue::new("sink_store_type", "fjall")],
+            );
+        }
     }
 
     match source {
@@ -135,6 +142,13 @@ pub fn set_source_and_sink_metrics(
                 MetricNames::SOURCE_STORE_TYPE,
                 3,
                 vec![opentelemetry::KeyValue::new("source_store_type", "triedb")],
+            );
+        }
+        BlockDataReaderArgs::Fjall(_) => {
+            metrics.periodic_gauge_with_attrs(
+                MetricNames::SOURCE_STORE_TYPE,
+                5,
+                vec![opentelemetry::KeyValue::new("source_store_type", "fjall")],
             );
         }
     }
@@ -176,6 +190,7 @@ pub enum BlockDataReaderArgs {
     Triedb(TrieDbCliArgs),
     MongoDb(MongoDbCliArgs),
     Fs(FsCliArgs),
+    Fjall(FjallCliArgs),
 }
 
 #[derive(Debug, Clone, Serialize, Eq, PartialEq, Hash)]
@@ -183,6 +198,7 @@ pub enum ArchiveArgs {
     Aws(AwsCliArgs),
     MongoDb(MongoDbCliArgs),
     Fs(FsCliArgs),
+    Fjall(FjallCliArgs),
 }
 
 impl FromStr for BlockDataReaderArgs {
@@ -197,6 +213,7 @@ impl FromStr for BlockDataReaderArgs {
             "triedb" => Triedb(TrieDbCliArgs::parse(args)?),
             "mongodb" => MongoDb(MongoDbCliArgs::parse(args)?),
             "fs" => Fs(FsCliArgs::parse(args)?),
+            "fjall" => Fjall(FjallCliArgs::parse(args)?),
             _ => {
                 bail!("Unrecognized storage args variant: {storage_type}");
             }
@@ -215,6 +232,7 @@ impl FromStr for ArchiveArgs {
             "aws" => Aws(AwsCliArgs::parse(args)?),
             "mongodb" => MongoDb(MongoDbCliArgs::parse(args)?),
             "fs" => Fs(FsCliArgs::parse(args)?),
+            "fjall" => Fjall(FjallCliArgs::parse(args)?),
             _ => {
                 bail!("Unrecognized storage args variant: {storage_type}");
             }
@@ -260,6 +278,11 @@ impl BlockDataReaderArgs {
                 BlockDataArchive::new(FsStorage::new(fs_args.block_store_path(), metrics.clone())?)
                     .into()
             }
+            Fjall(fjall_args) => BlockDataArchive::new(FjallKvStore::open(
+                fjall_args.block_store_path(),
+                metrics.clone(),
+            )?)
+            .into(),
         })
     }
 
@@ -270,6 +293,7 @@ impl BlockDataReaderArgs {
             Triedb(trie_db_cli_args) => trie_db_cli_args.triedb_path.clone(),
             MongoDb(mongo_db_cli_args) => mongo_db_cli_args.replica_name(),
             Fs(fs_cli_args) => fs_cli_args.path.to_string_lossy().into_owned(),
+            Fjall(fjall_cli_args) => fjall_cli_args.path.to_string_lossy().into_owned(),
         }
     }
 }
@@ -288,6 +312,9 @@ impl ArchiveArgs {
             }
             ArchiveArgs::Fs(args) => {
                 FsStorage::new(args.block_store_path(), metrics.clone())?.into()
+            }
+            ArchiveArgs::Fjall(args) => {
+                FjallKvStore::open(args.block_store_path(), metrics.clone())?.into()
             }
         };
         Ok(BlockDataArchive::new(store))
@@ -322,6 +349,10 @@ impl ArchiveArgs {
             ArchiveArgs::Fs(args) => (
                 FsStorage::new(args.block_store_path(), metrics.clone())?.into(),
                 FsStorage::new(args.index_store_path(), metrics.clone())?.into(),
+            ),
+            ArchiveArgs::Fjall(args) => (
+                FjallKvStore::open(args.block_store_path(), metrics.clone())?.into(),
+                FjallKvStore::open(args.index_store_path(), metrics.clone())?.into(),
             ),
         };
         Ok(TxIndexArchiver::new(
@@ -358,6 +389,10 @@ impl ArchiveArgs {
                 FsStorage::new(args.block_store_path(), metrics.clone())?.into(),
                 FsStorage::new(args.index_store_path(), metrics.clone())?.into(),
             ),
+            ArchiveArgs::Fjall(args) => (
+                FjallKvStore::open(args.block_store_path(), metrics.clone())?.into(),
+                FjallKvStore::open(args.index_store_path(), metrics.clone())?.into(),
+            ),
         };
         let bdr = BlockDataReaderErased::from(BlockDataArchive::new(blob));
         Ok(ArchiveReader::new(
@@ -373,6 +408,9 @@ impl ArchiveArgs {
             ArchiveArgs::Aws(aws_cli_args) => aws_cli_args.bucket.clone(),
             ArchiveArgs::MongoDb(mongo_db_cli_args) => mongo_db_cli_args.replica_name(),
             ArchiveArgs::Fs(fs_cli_args) => fs_cli_args.path.to_string_lossy().into_owned(),
+            ArchiveArgs::Fjall(fjall_cli_args) => {
+                fjall_cli_args.path.to_string_lossy().into_owned()
+            }
         }
     }
 }
@@ -399,6 +437,8 @@ fn parse_block_data_reader_args<E: de::Error>(value: JsonValue) -> Result<BlockD
             "mongodb" => deserialize_variant(cfg, "mongodb block_data_source")
                 .map(BlockDataReaderArgs::MongoDb),
             "fs" => deserialize_variant(cfg, "fs block_data_source").map(BlockDataReaderArgs::Fs),
+            "fjall" => deserialize_variant(cfg, "fjall block_data_source")
+                .map(BlockDataReaderArgs::Fjall),
             other => Err(E::custom(format!(
                 "unsupported block_data_source type '{other}'",
             ))),
@@ -412,6 +452,8 @@ fn parse_block_data_reader_args<E: de::Error>(value: JsonValue) -> Result<BlockD
             "MongoDb" => deserialize_variant(cfg, "MongoDb block_data_source")
                 .map(BlockDataReaderArgs::MongoDb),
             "Fs" => deserialize_variant(cfg, "Fs block_data_source").map(BlockDataReaderArgs::Fs),
+            "Fjall" => deserialize_variant(cfg, "Fjall block_data_source")
+                .map(BlockDataReaderArgs::Fjall),
             other => Err(E::custom(format!(
                 "unsupported block_data_source variant '{other}'",
             ))),
@@ -436,6 +478,7 @@ fn parse_archive_args<E: de::Error>(value: JsonValue) -> Result<ArchiveArgs, E> 
             "aws" => deserialize_variant(cfg, "aws archive_sink").map(ArchiveArgs::Aws),
             "mongodb" => deserialize_variant(cfg, "mongodb archive_sink").map(ArchiveArgs::MongoDb),
             "fs" => deserialize_variant(cfg, "fs archive_sink").map(ArchiveArgs::Fs),
+            "fjall" => deserialize_variant(cfg, "fjall archive_sink").map(ArchiveArgs::Fjall),
             other => Err(E::custom(format!(
                 "unsupported archive_sink type '{other}'",
             ))),
@@ -444,6 +487,7 @@ fn parse_archive_args<E: de::Error>(value: JsonValue) -> Result<ArchiveArgs, E> 
             "Aws" => deserialize_variant(cfg, "Aws archive_sink").map(ArchiveArgs::Aws),
             "MongoDb" => deserialize_variant(cfg, "MongoDb archive_sink").map(ArchiveArgs::MongoDb),
             "Fs" => deserialize_variant(cfg, "Fs archive_sink").map(ArchiveArgs::Fs),
+            "Fjall" => deserialize_variant(cfg, "Fjall archive_sink").map(ArchiveArgs::Fjall),
             other => Err(E::custom(format!(
                 "unsupported archive_sink variant '{other}'",
             ))),
@@ -711,6 +755,32 @@ pub struct FsCliArgs {
 }
 
 impl FsCliArgs {
+    pub fn parse(s: &str) -> Result<Self> {
+        let (positional, mut kv) = parse_str_positional_and_kv(s)?;
+        Ok(Self {
+            path: kv
+                .remove("path")
+                .or_else(|| positional.first().cloned())
+                .map(PathBuf::from)
+                .ok_or_eyre("storage args missing path")?,
+        })
+    }
+
+    pub fn block_store_path(&self) -> PathBuf {
+        self.path.join("blocks")
+    }
+
+    pub fn index_store_path(&self) -> PathBuf {
+        self.path.join("index")
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Hash, PartialEq, Eq)]
+pub struct FjallCliArgs {
+    pub path: PathBuf,
+}
+
+impl FjallCliArgs {
     pub fn parse(s: &str) -> Result<Self> {
         let (positional, mut kv) = parse_str_positional_and_kv(s)?;
         Ok(Self {
