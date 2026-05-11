@@ -23,7 +23,6 @@ use std::{
 
 use ffi::SyncRequest;
 use futures::{Stream, StreamExt};
-use ipc::StateSyncIpc;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
@@ -41,6 +40,8 @@ pub mod bindings {
 mod ffi;
 mod ipc;
 mod outbound_requests;
+
+pub use ipc::StateSyncIpc;
 
 monad_executor::metric_consts! {
     GAUGE_STATESYNC_SYNCING {
