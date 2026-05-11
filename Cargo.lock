@@ -5007,6 +5007,7 @@ dependencies = [
  "eyre",
  "fjall",
  "futures",
+ "libc",
  "monad-archive",
  "monad-eth-types",
  "roaring",

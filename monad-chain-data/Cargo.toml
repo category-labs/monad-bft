@@ -20,6 +20,7 @@ clap = { workspace = true, features = ["derive"], optional = true }
 eyre = { workspace = true, optional = true }
 fjall = { workspace = true, optional = true }
 futures = { workspace = true, optional = true }
+libc = { workspace = true, optional = true }
 monad-archive = { workspace = true, optional = true }
 monad-eth-types = { workspace = true, optional = true }
 roaring = "0.11"
@@ -47,6 +48,7 @@ archive-ingest = [
     "dep:clap",
     "dep:eyre",
     "dep:futures",
+    "dep:libc",
     "dep:monad-archive",
     "dep:monad-eth-types",
     "dep:tokio",
