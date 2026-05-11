@@ -34,11 +34,11 @@ env:
 
 jobs:
   build:
-    runs-on: arc-runner-set
+    runs-on: self-hosted
 
     container:
       image: peach10.devcore4.com/category-labs/builder
-      options: --privileged -u 1000:1000
+      options: --privileged
       credentials:
         username: ${{ secrets.PRIVATE_REGISTRY_USERNAME }}
         password: ${{ secrets.PRIVATE_REGISTRY_PASSWORD }}
