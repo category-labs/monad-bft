@@ -21,10 +21,11 @@ use std::{
 use alloy_consensus::{Header, SignableTransaction, TxEip1559, TxEip7702, TxEnvelope, TxLegacy};
 use alloy_eips::eip7702::SignedAuthorization;
 use alloy_primitives::{Address, Bytes, Signature, TxKind, Uint, B256, U256, U64, U8};
-use alloy_rpc_types::{AccessList, AccessListItem, AccessListResult};
+use alloy_rpc_types::{AccessList, AccessListItem};
 use monad_chain_config::execution_revision::MonadExecutionRevision;
 use monad_ethcall::{
-    eth_call, CallResult, EthCallExecutor, EthCallRequest, MonadTracer, StateOverrideSet,
+    eth_call, CallResult, EthCallExecutor, EthCallRequest, EthCallResult, FailureCallResult,
+    MonadTracer, StateOverrideSet,
 };
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{
@@ -45,7 +46,7 @@ use crate::{
         parse_ethcall_chain_id,
     },
     types::{
-        eth_json::BlockTagOrHash,
+        eth_json::{BlockTagOrHash, MonadCreateAccessListResult},
         ethhex,
         jsonrpc::{JsonRpcError, JsonRpcResult},
     },
@@ -498,39 +499,90 @@ pub enum CallParams {
 
 impl CallParams {
     /// Destructure into the component parts needed by `prepare_eth_call`.
-    fn into_parts(self) -> (CallRequest, BlockTagOrHash, StateOverrideSet, MonadTracer) {
+    fn into_execution_params(self) -> (EthCallExecutionParams, BlockTagOrHash) {
         match self {
-            CallParams::Call(p) => (
-                p.transaction,
-                p.block,
-                p.state_overrides,
-                MonadTracer::NoopTracer,
-            ),
-            CallParams::Trace(p) => (
-                p.transaction,
-                p.block,
-                p.tracer.state_overrides,
-                p.tracer.tracer_params.into(),
-            ),
-            CallParams::AccessList(p) => (
-                p.transaction,
-                p.block,
-                StateOverrideSet::default(),
-                MonadTracer::AccessListTracer,
-            ),
+            CallParams::Call(p) => {
+                let execution_params = EthCallExecutionParams {
+                    transaction: p.transaction,
+                    state_overrides: p.state_overrides,
+                    tracer: MonadTracer::NoopTracer,
+                };
+                (execution_params, p.block)
+            }
+            CallParams::Trace(p) => {
+                let execution_params = EthCallExecutionParams {
+                    transaction: p.transaction,
+                    state_overrides: p.tracer.state_overrides,
+                    tracer: p.tracer.tracer_params.into(),
+                };
+                (execution_params, p.block)
+            }
+            CallParams::AccessList(p) => {
+                let execution_params = EthCallExecutionParams {
+                    transaction: p.transaction,
+                    state_overrides: StateOverrideSet::default(),
+                    tracer: MonadTracer::AccessListTracer,
+                };
+                (execution_params, p.block)
+            }
         }
     }
 }
 
+struct EthCallExecutionParams {
+    transaction: CallRequest,
+    state_overrides: StateOverrideSet,
+    tracer: MonadTracer,
+}
+
+/// Controls response shaping for provider-cap and execution out-of-gas cases.
+/// Other call failures pass through and are handled by the RPC method.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OutOfGasHandling {
+    RpcError,
+    ReturnAsCallFailure,
+}
+
 #[tracing::instrument(level = "debug")]
-pub async fn prepare_eth_call<T: Triedb + TriedbPath>(
+async fn prepare_eth_call<T: Triedb + TriedbPath>(
     triedb_env: &T,
     eth_call_handler_config: &EthCallHandlerConfig,
     eth_call_executor: &EthCallExecutor,
     chain_id: u64,
     params: CallParams,
+    out_of_gas_handling: OutOfGasHandling,
 ) -> Result<(BlockKey, CallResult), JsonRpcError> {
-    let (mut tx, block_tag, state_overrides, tracer) = params.into_parts();
+    let (execution_params, block_tag) = params.into_execution_params();
+    let block_key = get_block_key_from_tag_or_hash(triedb_env, block_tag)
+        .await
+        .ok_or_else(JsonRpcError::block_not_found)?;
+
+    prepare_eth_call_at_block(
+        triedb_env,
+        eth_call_handler_config,
+        eth_call_executor,
+        chain_id,
+        execution_params,
+        out_of_gas_handling,
+        block_key,
+    )
+    .await
+}
+
+async fn prepare_eth_call_at_block<T: Triedb + TriedbPath>(
+    triedb_env: &T,
+    eth_call_handler_config: &EthCallHandlerConfig,
+    eth_call_executor: &EthCallExecutor,
+    chain_id: u64,
+    params: EthCallExecutionParams,
+    out_of_gas_handling: OutOfGasHandling,
+    block_key: BlockKey,
+) -> Result<(BlockKey, CallResult), JsonRpcError> {
+    let EthCallExecutionParams {
+        transaction: mut tx,
+        state_overrides,
+        tracer,
+    } = params;
 
     tx.input.input = match (tx.input.input.take(), tx.input.data.take()) {
         (Some(input), Some(data)) => {
@@ -542,22 +594,24 @@ pub async fn prepare_eth_call<T: Triedb + TriedbPath>(
         (None, data) | (data, None) => data,
     };
 
-    if tx.gas
-        > Some(U256::from(
-            eth_call_handler_config.provider_gas_limit_eth_call,
-        ))
-    {
-        return Err(JsonRpcError::eth_call_error(
-            "user-specified gas exceeds provider limit".to_string(),
-            None,
-        ));
+    let provider_gas_limit = U256::from(eth_call_handler_config.provider_gas_limit_eth_call);
+    if tx.gas > Some(provider_gas_limit) {
+        match out_of_gas_handling {
+            OutOfGasHandling::RpcError => {
+                return Err(JsonRpcError::eth_call_error(
+                    "user-specified gas exceeds provider limit".to_string(),
+                    None,
+                ));
+            }
+            OutOfGasHandling::ReturnAsCallFailure => {
+                // Geth caps eth_createAccessList gas above RPCGasCap instead
+                // of rejecting it before execution.
+                tx.gas = Some(provider_gas_limit);
+            }
+        }
     }
 
     // TODO: check duplicate address, duplicate storage key, etc.
-
-    let block_key = get_block_key_from_tag_or_hash(triedb_env, block_tag)
-        .await
-        .ok_or_else(JsonRpcError::block_not_found)?;
 
     let mut header = match triedb_env
         .get_block_header(block_key)
@@ -621,18 +675,29 @@ pub async fn prepare_eth_call<T: Triedb + TriedbPath>(
     )
     .await
     {
-        monad_ethcall::CallResult::Failure(error)
-            if matches!(error.error_code, monad_ethcall::EthCallResult::OutOfGas) =>
-        {
-            if eth_call_provider_gas_limit < header_gas_limit
-                && U256::from(eth_call_provider_gas_limit) < original_tx_gas
-            {
-                return Err(JsonRpcError::eth_call_error(
-                    "provider-specified max eth_call gas limit exceeded".to_string(),
+        CallResult::Failure(error) if matches!(error.error_code, EthCallResult::OutOfGas) => {
+            match out_of_gas_handling {
+                OutOfGasHandling::RpcError => Err(JsonRpcError::eth_call_error(
+                    if eth_call_provider_gas_limit < header_gas_limit
+                        && U256::from(eth_call_provider_gas_limit) < original_tx_gas
+                    {
+                        "provider-specified max eth_call gas limit exceeded".to_string()
+                    } else {
+                        "out of gas".to_string()
+                    },
                     None,
-                ));
+                )),
+                OutOfGasHandling::ReturnAsCallFailure => Ok((
+                    block_key,
+                    CallResult::Failure(FailureCallResult {
+                        error_code: error.error_code,
+                        gas_used: error.gas_used,
+                        gas_refund: error.gas_refund,
+                        message: "out of gas".to_string(),
+                        data: None,
+                    }),
+                )),
             }
-            return Err(JsonRpcError::eth_call_error("out of gas".to_string(), None));
         }
         result => Ok((block_key, result)),
     }
@@ -661,6 +726,7 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
         eth_call_executor,
         chain_id,
         CallParams::Call(params),
+        OutOfGasHandling::RpcError,
     )
     .await?;
     match result {
@@ -700,6 +766,7 @@ pub async fn monad_debug_traceCall<T: Triedb + TriedbPath>(
         eth_call_executor,
         chain_id,
         CallParams::Trace(params),
+        OutOfGasHandling::RpcError,
     )
     .await?;
     let raw_payload: Vec<u8> = match call_result {
@@ -739,7 +806,10 @@ pub async fn monad_debug_traceCall<T: Triedb + TriedbPath>(
     }
 }
 
-/// Returns an access list containing all addresses and storage slots accessed during a simulated transaction.
+/// Returns the derived access list and gas used for a simulated transaction.
+///
+/// Execution failures and reverts are reported in the result object's optional
+/// `error` field so callers can still use the generated access list.
 #[rpc(
     method = "eth_createAccessList",
     ignore = "eth_call_handler_config",
@@ -753,85 +823,116 @@ pub async fn monad_createAccessList<T: Triedb + TriedbPath>(
     eth_call_executor: &EthCallExecutor,
     chain_id: u64,
     params: MonadCreateAccessListParams,
-) -> JsonRpcResult<Box<RawValue>> {
+) -> JsonRpcResult<MonadCreateAccessListResult> {
     trace!("monad_createAccessList: {params:?}");
 
     let mut follow_up_tx = params.transaction.clone();
     let original_access_list = params.transaction.access_list.clone();
-    let block = params.block.clone();
 
-    let (_, call_result) = prepare_eth_call(
+    let (block_key, call_result) = prepare_eth_call(
         &data_provider.triedb_env,
         eth_call_handler_config,
         eth_call_executor,
         chain_id,
         CallParams::AccessList(params),
+        OutOfGasHandling::ReturnAsCallFailure,
     )
     .await?;
-    let raw_payload: Vec<u8> = match call_result {
-        CallResult::Success(monad_ethcall::SuccessCallResult { output_data, .. }) => output_data,
-        CallResult::Failure(error) => {
-            return Err(JsonRpcError::eth_call_error(error.message, error.data))
-        }
-        CallResult::Revert(_) => {
-            return Err(JsonRpcError::eth_call_error(
-                "execution reverted".to_string(),
-                None,
-            ));
-        }
-    };
+    let access_list = access_list_from_trace_call_result(call_result)?;
 
-    let v: serde_cbor::Value = if raw_payload.is_empty() {
-        serde_cbor::Value::Array(vec![])
-    } else {
-        serde_cbor::from_slice(&raw_payload)
-            .map_err(|e| JsonRpcError::internal_error(format!("cbor decode error: {}", e)))?
-    };
-
-    let access_list: AccessList = serde_cbor::value::from_value(v).map_err(|e| {
-        JsonRpcError::internal_error(format!("failed to decode access list: {}", e))
-    })?;
-
+    // Compatibility note: geth keeps rerunning access-list tracing until the
+    // generated access list stops changing. This only does one traced pass; the
+    // follow-up call is used to compute gasUsed and error for that access list.
     follow_up_tx.access_list = Some(merge_access_lists(
         access_list.clone(),
         original_access_list,
     ));
 
-    let call_params = MonadEthCallParams {
+    let call_params = EthCallExecutionParams {
         transaction: follow_up_tx,
-        block,
         state_overrides: StateOverrideSet::default(),
+        tracer: MonadTracer::NoopTracer,
     };
 
-    let (_, call_result) = prepare_eth_call(
+    let (_, call_result) = prepare_eth_call_at_block(
         &data_provider.triedb_env,
         eth_call_handler_config,
         eth_call_executor,
         chain_id,
-        CallParams::Call(call_params),
+        call_params,
+        OutOfGasHandling::ReturnAsCallFailure,
+        block_key,
     )
     .await?;
-    let result: AccessListResult = match call_result {
-        CallResult::Success(monad_ethcall::SuccessCallResult { gas_used, .. }) => {
-            AccessListResult {
+    MonadCreateAccessListResult::from_follow_up_call_result(access_list, call_result)
+}
+
+fn decode_access_list_trace(raw_payload: &[u8]) -> Result<AccessList, JsonRpcError> {
+    if raw_payload.is_empty() {
+        return Ok(AccessList::default());
+    }
+
+    serde_cbor::from_slice(raw_payload)
+        .map_err(|e| JsonRpcError::internal_error(format!("failed to decode access list: {}", e)))
+}
+
+fn access_list_from_trace_call_result(call_result: CallResult) -> Result<AccessList, JsonRpcError> {
+    match call_result {
+        CallResult::Success(monad_ethcall::SuccessCallResult { output_data, .. }) => {
+            decode_access_list_trace(&output_data)
+        }
+        CallResult::Failure(error) => Err(JsonRpcError::eth_call_error(error.message, error.data)),
+        CallResult::Revert(result) => decode_access_list_trace(&result.trace),
+    }
+}
+
+impl MonadCreateAccessListResult {
+    /// Builds the public `eth_createAccessList` result from the follow-up call.
+    ///
+    /// Execution failures that still produce gas usage are returned in the
+    /// result object so callers can use the generated access list.
+    fn from_follow_up_call_result(
+        access_list: AccessList,
+        call_result: CallResult,
+    ) -> Result<Self, JsonRpcError> {
+        match call_result {
+            CallResult::Success(monad_ethcall::SuccessCallResult { gas_used, .. }) => Ok(Self {
                 access_list,
                 gas_used: U256::from(gas_used),
                 error: None,
-            }
+            }),
+            CallResult::Failure(error) => match error.error_code {
+                EthCallResult::OutOfGas
+                | EthCallResult::ExecutionError
+                | EthCallResult::ReserveBalanceViolation => {
+                    // Geth's `eth_createAccessList` reports the VM error string for
+                    // execution reverts, without the decoded revert reason suffix.
+                    let message = if error.error_code == EthCallResult::ExecutionError
+                        && error.message.starts_with("execution reverted:")
+                    {
+                        "execution reverted".to_string()
+                    } else {
+                        error.message.clone()
+                    };
+                    Ok(Self {
+                        access_list,
+                        gas_used: U256::from(error.gas_used),
+                        error: Some(message),
+                    })
+                }
+                EthCallResult::OtherError => {
+                    Err(JsonRpcError::eth_call_error(error.message, error.data))
+                }
+                EthCallResult::Success => Err(JsonRpcError::internal_error(
+                    "unexpected successful eth_call failure".into(),
+                )),
+            },
+            CallResult::Revert(_) => Err(JsonRpcError::internal_error(
+                "unexpected traced revert from NoopTracer eth_createAccessList follow-up call"
+                    .into(),
+            )),
         }
-        CallResult::Failure(error) => {
-            return Err(JsonRpcError::eth_call_error(error.message, error.data))
-        }
-        CallResult::Revert(_) => {
-            return Err(JsonRpcError::eth_call_error(
-                "execution reverted".to_string(),
-                None,
-            ));
-        }
-    };
-
-    serde_json::value::to_raw_value(&result)
-        .map_err(|e| JsonRpcError::internal_error(format!("json serialization error: {}", e)))
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
@@ -883,9 +984,13 @@ mod tests {
     use std::collections::HashMap;
 
     use alloy_consensus::{Header, TxEnvelope};
-    use alloy_primitives::{Address, Bytes, U256};
+    use alloy_primitives::{Address, Bytes, B256, U256};
+    use alloy_rpc_types::{AccessList, AccessListItem};
     use monad_chain_config::execution_revision::MonadExecutionRevision;
-    use monad_ethcall::{StateOverrideObject, StateOverrideSet};
+    use monad_ethcall::{
+        CallResult, EthCallResult, FailureCallResult, RevertCallResult, StateOverrideObject,
+        StateOverrideSet, SuccessCallResult,
+    };
     use monad_triedb_utils::{
         mock_triedb::MockTriedb,
         triedb_env::{BlockKey, FinalizedBlockKey},
@@ -897,10 +1002,210 @@ mod tests {
     use crate::{
         handlers::{
             debug::Tracer,
-            eth::call::{sender_gas_allowance, CallInput, MonadDebugTraceCallParams},
+            eth::call::{
+                access_list_from_trace_call_result, decode_access_list_trace, sender_gas_allowance,
+                CallInput, MonadDebugTraceCallParams,
+            },
         },
-        types::jsonrpc::JsonRpcError,
+        types::{eth_json::MonadCreateAccessListResult, jsonrpc::JsonRpcError},
     };
+
+    fn sample_access_list() -> AccessList {
+        AccessList(vec![AccessListItem {
+            address: Address::from([0x11; 20]),
+            storage_keys: vec![B256::from([0x22; 32])],
+        }])
+    }
+
+    fn cbor_access_list(access_list: &AccessList) -> Vec<u8> {
+        serde_cbor::to_vec(access_list).expect("access list encodes as CBOR")
+    }
+
+    fn failed_call_result(error_code: EthCallResult, gas_used: u64, message: &str) -> CallResult {
+        CallResult::Failure(FailureCallResult {
+            error_code,
+            gas_used,
+            gas_refund: 0,
+            message: message.into(),
+            data: None,
+        })
+    }
+
+    #[test]
+    fn decode_access_list_trace_empty_payload() {
+        let access_list = decode_access_list_trace(&[]).expect("empty trace decodes");
+        assert_eq!(access_list, AccessList::default());
+    }
+
+    #[test]
+    fn decode_access_list_trace_cbor_payload() {
+        let expected = sample_access_list();
+        let payload = cbor_access_list(&expected);
+
+        let access_list = decode_access_list_trace(&payload).expect("access list trace decodes");
+
+        assert_eq!(access_list, expected);
+    }
+
+    #[test]
+    fn access_list_from_successful_tracer_result() {
+        let expected = sample_access_list();
+        let payload = cbor_access_list(&expected);
+
+        let access_list =
+            access_list_from_trace_call_result(CallResult::Success(SuccessCallResult {
+                output_data: payload,
+                ..Default::default()
+            }))
+            .expect("successful tracer result decodes");
+
+        assert_eq!(access_list, expected);
+    }
+
+    #[test]
+    fn access_list_from_reverted_tracer_result() {
+        let expected = sample_access_list();
+        let payload = cbor_access_list(&expected);
+
+        let access_list =
+            access_list_from_trace_call_result(CallResult::Revert(RevertCallResult {
+                trace: payload,
+            }))
+            .expect("reverted tracer result decodes");
+
+        assert_eq!(access_list, expected);
+    }
+
+    #[test]
+    fn access_list_from_failed_tracer_result_stays_rpc_error() {
+        let err = access_list_from_trace_call_result(CallResult::Failure(FailureCallResult {
+            error_code: EthCallResult::OtherError,
+            gas_used: 0,
+            gas_refund: 0,
+            message: "failed to apply transaction".into(),
+            data: Some("0xdead".into()),
+        }))
+        .expect_err("access-list setup failures stay top-level RPC errors");
+
+        assert_eq!(
+            err,
+            JsonRpcError::eth_call_error(
+                "failed to apply transaction".into(),
+                Some("0xdead".into())
+            )
+        );
+    }
+
+    #[test]
+    fn access_list_result_records_follow_up_success() {
+        let access_list = sample_access_list();
+        let call_result = CallResult::Success(SuccessCallResult {
+            gas_used: 21_000,
+            ..Default::default()
+        });
+
+        let result = MonadCreateAccessListResult::from_follow_up_call_result(
+            access_list.clone(),
+            call_result,
+        )
+        .expect("successful follow-up call produces access-list result");
+
+        assert_eq!(result.access_list, access_list);
+        assert_eq!(result.gas_used, U256::from(21_000));
+        assert_eq!(result.error, None);
+    }
+
+    #[test]
+    fn access_list_result_records_follow_up_execution_failures() {
+        for (error_code, gas_used, message, expected_message) in [
+            (
+                EthCallResult::ExecutionError,
+                54_321,
+                "execution reverted: abi error",
+                "execution reverted",
+            ),
+            (EthCallResult::OutOfGas, 12_345, "out of gas", "out of gas"),
+            (
+                EthCallResult::ReserveBalanceViolation,
+                23_456,
+                "reserve balance violation",
+                "reserve balance violation",
+            ),
+        ] {
+            let access_list = sample_access_list();
+            let call_result = failed_call_result(error_code, gas_used, message);
+
+            let result = MonadCreateAccessListResult::from_follow_up_call_result(
+                access_list.clone(),
+                call_result,
+            )
+            .expect("execution failure is represented in access list result");
+
+            assert_eq!(result.access_list, access_list);
+            assert_eq!(result.gas_used, U256::from(gas_used));
+            assert_eq!(result.error.as_deref(), Some(expected_message));
+        }
+    }
+
+    #[test]
+    fn access_list_result_preserves_other_error_as_rpc_error() {
+        let access_list = sample_access_list();
+        let call_result = CallResult::Failure(FailureCallResult {
+            error_code: EthCallResult::OtherError,
+            gas_used: 1,
+            gas_refund: 0,
+            message: "internal eth_call error".into(),
+            data: Some("0xdead".into()),
+        });
+
+        let err = MonadCreateAccessListResult::from_follow_up_call_result(access_list, call_result)
+            .expect_err("non-execution failures stay top-level RPC errors");
+
+        assert_eq!(
+            err,
+            JsonRpcError::eth_call_error("internal eth_call error".into(), Some("0xdead".into()))
+        );
+    }
+
+    #[test]
+    fn create_access_list_revert_result_matches_execution_apis_shape() {
+        let expected_access_list = sample_access_list();
+        let trace_payload = cbor_access_list(&expected_access_list);
+
+        let access_list =
+            access_list_from_trace_call_result(CallResult::Revert(RevertCallResult {
+                trace: trace_payload,
+            }))
+            .expect("reverted access-list trace still decodes");
+
+        let result = MonadCreateAccessListResult::from_follow_up_call_result(
+            access_list.clone(),
+            CallResult::Failure(FailureCallResult {
+                error_code: EthCallResult::ExecutionError,
+                gas_used: 54_321,
+                gas_refund: 0,
+                message: "execution reverted: user error".into(),
+                data: Some("0x08c379a0".into()),
+            }),
+        )
+        .expect("reverting follow-up call is returned in the result object");
+
+        assert_eq!(access_list, expected_access_list);
+        assert_eq!(result.access_list, expected_access_list);
+        assert_eq!(result.gas_used, U256::from(54_321));
+        assert_eq!(result.error.as_deref(), Some("execution reverted"));
+
+        let value = serde_json::to_value(&result).expect("access-list result serializes");
+        let serialized_access_list = value["accessList"]
+            .as_array()
+            .expect("accessList is an array");
+        assert!(
+            !serialized_access_list.is_empty(),
+            "accessList must be present even when execution reverts"
+        );
+        assert_eq!(value["error"], json!("execution reverted"));
+        assert!(value.get("gasUsed").is_some(), "gasUsed must be present");
+    }
 
     #[test]
     fn parse_call_request_with_tracer() {
