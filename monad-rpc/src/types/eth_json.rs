@@ -19,13 +19,14 @@ use alloy_consensus::TxEnvelope;
 use alloy_eips::BlockNumberOrTag;
 use alloy_primitives::{Address, FixedBytes, LogData, U256};
 use alloy_rpc_types::{
-    pubsub::Params, AccessList, Block, FeeHistory, Header, Log, Transaction, TransactionReceipt,
+    pubsub::{Params, TransactionReceiptsParams},
+    AccessList, Block, FeeHistory, Header, Log, Transaction, TransactionReceipt,
 };
 use monad_exec_events::BlockCommitState;
 use monad_types::BlockId;
 use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use serde_json::value::RawValue;
+use serde_json::{value::RawValue, Value};
 use tracing::debug;
 
 use crate::{
@@ -436,10 +437,50 @@ impl Default for BlockTagOrHash {
 }
 
 #[derive(Deserialize)]
+#[serde(try_from = "RawEthSubscribeRequest")]
 pub struct EthSubscribeRequest {
     pub kind: SubscriptionKind,
-    #[serde(default)]
     pub params: Params,
+}
+
+#[derive(Deserialize)]
+struct RawEthSubscribeRequest(
+    SubscriptionKind,
+    #[serde(default, deserialize_with = "deserialize_raw_subscribe_params")] Option<Value>,
+);
+
+impl TryFrom<RawEthSubscribeRequest> for EthSubscribeRequest {
+    type Error = serde_json::Error;
+
+    fn try_from(raw: RawEthSubscribeRequest) -> Result<Self, Self::Error> {
+        let kind = raw.0;
+        let params = deserialize_subscribe_params(&kind, raw.1)?;
+
+        Ok(Self { kind, params })
+    }
+}
+
+fn deserialize_raw_subscribe_params<'de, D>(deserializer: D) -> Result<Option<Value>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::<Value>::deserialize(deserializer)
+}
+
+fn deserialize_subscribe_params(
+    kind: &SubscriptionKind,
+    params: Option<Value>,
+) -> Result<Params, serde_json::Error> {
+    let Some(params) = params else {
+        return Ok(Params::None);
+    };
+
+    if matches!(kind, SubscriptionKind::TransactionReceipts) {
+        return serde_json::from_value::<TransactionReceiptsParams>(params)
+            .map(Params::TransactionReceipts);
+    }
+
+    Params::from_json_value(params)
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Hash)]
@@ -455,6 +496,8 @@ pub enum SubscriptionKind {
     MonadNewHeads,
     // Subscribes to all logs with their corresponding commit state.
     MonadLogs,
+    // Subscribes to all transaction receipts with an optional transaction hash filter.
+    TransactionReceipts,
 }
 
 #[derive(Deserialize)]
@@ -484,6 +527,7 @@ pub enum SubscriptionResult {
     // NewHeads and Logs are Geth results that return finalized block details.
     NewHeads(alloy_rpc_types::eth::Header),
     Logs(alloy_rpc_types::eth::Log),
+    TransactionReceipts(Vec<TransactionReceipt>),
 
     // Returns all headers with their corresponding commit state.
     MonadNewHeads(MonadNotification<alloy_rpc_types::eth::Header>),
@@ -526,11 +570,14 @@ pub fn serialize_result<T: Serialize>(value: T) -> Result<Box<RawValue>, JsonRpc
 #[cfg(test)]
 mod tests {
     use alloy_eips::BlockNumberOrTag;
-    use alloy_primitives::U256;
+    use alloy_primitives::{B256, U256};
+    use alloy_rpc_types::pubsub::Params;
     use serde::Deserialize;
     use serde_json::json;
 
-    use super::{BlockTags, FixedData, Quantity, UnformattedData};
+    use super::{
+        BlockTags, EthSubscribeRequest, FixedData, Quantity, SubscriptionKind, UnformattedData,
+    };
 
     #[derive(Deserialize, Debug)]
     struct OneDataParam {
@@ -605,6 +652,50 @@ mod tests {
     fn test_deser_quantity() {
         let x: OneQuantity = serde_json::from_value(json!(["0x400"])).unwrap();
         assert_eq!(x.a.0, 1024);
+    }
+
+    #[test]
+    fn eth_subscribe_transaction_receipts_params_deserialize() {
+        let hash = "0x5c504ed432cb51138bcf09aa5e8a410dd4a1e204ef84bfed1be16dfba1b22060";
+        let req: EthSubscribeRequest = serde_json::from_value(json!([
+            "transactionReceipts",
+            { "transactionHashes": [hash] }
+        ]))
+        .unwrap();
+
+        assert_eq!(req.kind, SubscriptionKind::TransactionReceipts);
+        let Params::TransactionReceipts(params) = req.params else {
+            panic!("expected transaction receipts params");
+        };
+
+        assert_eq!(
+            params.transaction_hashes,
+            Some(vec![hash.parse::<B256>().unwrap()])
+        );
+    }
+
+    #[test]
+    fn eth_subscribe_transaction_receipts_empty_object_deserialize() {
+        let req: EthSubscribeRequest =
+            serde_json::from_value(json!(["transactionReceipts", {}])).unwrap();
+
+        assert_eq!(req.kind, SubscriptionKind::TransactionReceipts);
+        let Params::TransactionReceipts(params) = req.params else {
+            panic!("expected transaction receipts params");
+        };
+
+        assert_eq!(params.transaction_hashes, None);
+    }
+
+    #[test]
+    fn eth_subscribe_existing_subscription_params_deserialize() {
+        let req: EthSubscribeRequest = serde_json::from_value(json!(["newHeads"])).unwrap();
+        assert_eq!(req.kind, SubscriptionKind::NewHeads);
+        assert_eq!(req.params, Params::None);
+
+        let req: EthSubscribeRequest = serde_json::from_value(json!(["logs", {}])).unwrap();
+        assert_eq!(req.kind, SubscriptionKind::Logs);
+        assert!(matches!(req.params, Params::Logs(_)));
     }
 
     #[derive(Deserialize, Debug)]
