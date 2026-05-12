@@ -13,19 +13,19 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use itertools::Itertools;
-use monad_event_ring::{DecodedEventRing, EventNextResult};
+use monad_event_ring::{DecodedEventRing, EventNextResult, EventPayloadResult};
 use monad_exec_events::{
     BlockBuilderError, BlockCommitState, CommitStateBlockBuilder, CommitStateBlockUpdate,
-    ExecEventRing, ExecutedBlock, ExecutedBlockBuilder,
+    ExecEventRef, ExecEventRing, ExecutedBlock, ExecutedBlockBuilder,
 };
 use monad_types::BlockId;
 use tokio::sync::broadcast;
 use tracing::{debug, warn};
 
-use super::{EventServerClient, EventServerEvent, BROADCAST_CHANNEL_SIZE};
+use super::{EventServerClient, EventServerEvent, StorageChange, BROADCAST_CHANNEL_SIZE};
 use crate::types::{eth_json::MonadNotification, serialize::JsonSerialized};
 
 pub struct EventServer<R>
@@ -60,6 +60,9 @@ impl EventServer<ExecEventRing> {
         } = self;
 
         let mut event_reader = event_ring.create_reader();
+        let mut pending_storage_changes: Vec<StorageChange> = Vec::new();
+        let mut current_txn_index: Option<usize> = None;
+        let mut storage_by_block: HashMap<BlockId, Arc<[StorageChange]>> = HashMap::new();
 
         loop {
             let event_descriptor = match event_reader.next_descriptor() {
@@ -69,6 +72,9 @@ impl EventServer<ExecEventRing> {
                     broadcast_event(&broadcast_tx, EventServerEvent::Gap);
                     event_reader.reset();
                     block_builder.reset();
+                    pending_storage_changes.clear();
+                    current_txn_index = None;
+                    storage_by_block.clear();
                     continue;
                 }
                 EventNextResult::NotReady => {
@@ -77,6 +83,30 @@ impl EventServer<ExecEventRing> {
                 }
                 EventNextResult::Ready(event_descriptor) => event_descriptor,
             };
+
+            if let EventPayloadResult::Ready(Some(extracted)) =
+                event_descriptor.try_filter_map(extract_event)
+            {
+                match extracted {
+                    Extracted::StorageChange {
+                        address,
+                        key,
+                        old_value,
+                        new_value,
+                    } => {
+                        let txn_index = current_txn_index
+                            .expect("StorageAccess in transaction context has txn_index");
+                        pending_storage_changes.push(StorageChange {
+                            address,
+                            key,
+                            old_value,
+                            new_value,
+                            txn_index,
+                        });
+                    }
+                    Extracted::TxnIndex(idx) => current_txn_index = Some(idx),
+                }
+            }
 
             let Some(result) = block_builder.process_event_descriptor(&event_descriptor) else {
                 continue;
@@ -92,6 +122,9 @@ impl EventServer<ExecEventRing> {
                     broadcast_event(&broadcast_tx, EventServerEvent::Gap);
                     event_reader.reset();
                     block_builder.reset();
+                    pending_storage_changes.clear();
+                    current_txn_index = None;
+                    storage_by_block.clear();
                     continue;
                 }
                 Err(BlockBuilderError::ImplicitDrop {
@@ -104,10 +137,45 @@ impl EventServer<ExecEventRing> {
                     block,
                     state,
                     abandoned,
-                }) => handle_update(&broadcast_tx, block, state, abandoned),
+                }) => {
+                    let storage_changes = take_or_cached_storage_changes(
+                        &block,
+                        &abandoned,
+                        state,
+                        &mut storage_by_block,
+                        &mut pending_storage_changes,
+                    );
+                    handle_update(&broadcast_tx, block, state, abandoned, storage_changes);
+                }
             }
         }
     }
+}
+
+fn take_or_cached_storage_changes(
+    block: &Arc<ExecutedBlock>,
+    abandoned: &[Arc<ExecutedBlock>],
+    state: BlockCommitState,
+    storage_by_block: &mut HashMap<BlockId, Arc<[StorageChange]>>,
+    pending_storage_changes: &mut Vec<StorageChange>,
+) -> Arc<[StorageChange]> {
+    let block_id = BlockId(monad_types::Hash(block.start.block_tag.id.bytes));
+
+    let storage_changes = storage_by_block
+        .entry(block_id)
+        .or_insert_with(|| Arc::from(std::mem::take(pending_storage_changes)))
+        .clone();
+
+    for ab in abandoned {
+        let ab_id = BlockId(monad_types::Hash(ab.start.block_tag.id.bytes));
+        storage_by_block.remove(&ab_id);
+    }
+
+    if state == BlockCommitState::Verified {
+        storage_by_block.remove(&block_id);
+    }
+
+    storage_changes
 }
 
 fn handle_update(
@@ -115,6 +183,7 @@ fn handle_update(
     block: Arc<ExecutedBlock>,
     commit_state: BlockCommitState,
     abandoned: Vec<Arc<ExecutedBlock>>,
+    storage_changes: Arc<[StorageChange]>,
 ) {
     for abandoned in abandoned {
         debug!(
@@ -123,7 +192,41 @@ fn handle_update(
         );
     }
 
-    broadcast_block_updates(broadcast_tx, block, commit_state);
+    broadcast_block_updates(broadcast_tx, block, commit_state, storage_changes);
+}
+
+/// State extracted from a single execution event in one decode pass.
+enum Extracted {
+    StorageChange {
+        address: monad_exec_events::ffi::monad_c_address,
+        key: monad_exec_events::ffi::monad_c_bytes32,
+        old_value: monad_exec_events::ffi::monad_c_bytes32,
+        new_value: monad_exec_events::ffi::monad_c_bytes32,
+    },
+    TxnIndex(usize),
+}
+
+fn extract_event(event_ref: ExecEventRef<'_>) -> Option<Extracted> {
+    match event_ref {
+        ExecEventRef::StorageAccess(sa)
+            if sa.modified
+                && !sa.transient
+                && sa.access_context == 1 /* MONAD_ACCT_ACCESS_TRANSACTION */
+                // `modified` is set whenever the slot is touched; skip events
+                // where the value didn't actually change so we avoid carrying
+                // them through pending state, the broadcast, and the cache.
+                && sa.start_value.bytes != sa.end_value.bytes =>
+        {
+            Some(Extracted::StorageChange {
+                address: sa.address,
+                key: sa.key,
+                old_value: sa.start_value,
+                new_value: sa.end_value,
+            })
+        }
+        ExecEventRef::TxnHeaderStart { txn_index, .. } => Some(Extracted::TxnIndex(txn_index)),
+        _ => None,
+    }
 }
 
 fn broadcast_event(broadcast_tx: &broadcast::Sender<EventServerEvent>, event: EventServerEvent) {
@@ -137,6 +240,7 @@ fn broadcast_block_updates(
     broadcast_tx: &broadcast::Sender<EventServerEvent>,
     block: Arc<ExecutedBlock>,
     commit_state: BlockCommitState,
+    storage_changes: Arc<[StorageChange]>,
 ) {
     let block_id = BlockId(monad_types::Hash(block.start.block_tag.id.bytes));
 
@@ -182,6 +286,7 @@ fn broadcast_block_updates(
             commit_state,
             header: serialized_monad_header,
             transactions: Arc::new(transactions.into_boxed_slice()),
+            storage_changes,
         },
     );
 }
@@ -234,6 +339,9 @@ mod test {
             } = self;
 
             let mut event_reader = event_ring.create_reader();
+            let mut pending_storage_changes: Vec<StorageChange> = Vec::new();
+            let mut current_txn_index: Option<usize> = None;
+            let mut storage_by_block: HashMap<BlockId, Arc<[StorageChange]>> = HashMap::new();
 
             loop {
                 let event_descriptor = match event_reader.next_descriptor() {
@@ -243,6 +351,30 @@ mod test {
                         unreachable!("SnapshotEventDescriptor cannot gap")
                     }
                 };
+
+                if let EventPayloadResult::Ready(Some(extracted)) =
+                    event_descriptor.try_filter_map(extract_event)
+                {
+                    match extracted {
+                        Extracted::StorageChange {
+                            address,
+                            key,
+                            old_value,
+                            new_value,
+                        } => {
+                            let txn_index = current_txn_index
+                                .expect("StorageAccess in transaction context has txn_index");
+                            pending_storage_changes.push(StorageChange {
+                                address,
+                                key,
+                                old_value,
+                                new_value,
+                                txn_index,
+                            });
+                        }
+                        Extracted::TxnIndex(idx) => current_txn_index = Some(idx),
+                    }
+                }
 
                 let Some(result) = block_builder.process_event_descriptor(&event_descriptor) else {
                     continue;
@@ -265,7 +397,16 @@ mod test {
                         block,
                         state,
                         abandoned,
-                    }) => handle_update(&broadcast_tx, block, state, abandoned),
+                    }) => {
+                        let storage_changes = take_or_cached_storage_changes(
+                            &block,
+                            &abandoned,
+                            state,
+                            &mut storage_by_block,
+                            &mut pending_storage_changes,
+                        );
+                        handle_update(&broadcast_tx, block, state, abandoned, storage_changes);
+                    }
                 }
             }
         }
@@ -297,6 +438,29 @@ mod test {
             }
             EventServerEvent::Block { .. } => {}
         }
+
+        let mut saw_storage_change = false;
+        for _ in 0..1024 {
+            let event =
+                match tokio::time::timeout(Duration::from_secs(1), subscription.recv()).await {
+                    Ok(Ok(event)) => event,
+                    Ok(Err(_lagged)) => continue,
+                    Err(_elapsed) => break,
+                };
+            if let EventServerEvent::Block {
+                storage_changes, ..
+            } = event
+            {
+                if !storage_changes.is_empty() {
+                    saw_storage_change = true;
+                    break;
+                }
+            }
+        }
+        assert!(
+            saw_storage_change,
+            "expected at least one broadcast Block to carry non-empty storage_changes"
+        );
     }
 
     #[tokio::test]
@@ -327,6 +491,7 @@ mod test {
                 commit_state,
                 header,
                 transactions,
+                storage_changes: _,
             } => (commit_state, header, transactions),
         };
 
