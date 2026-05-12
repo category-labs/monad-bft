@@ -46,13 +46,13 @@ pub struct SyncCtx {
     dbname_paths: *const *const ::std::os::raw::c_char,
     len: usize,
     sq_thread_cpu: Option<::std::os::raw::c_uint>,
-    request_ctx: *mut monad_statesync_client,
+    request_ctx: StateSyncContext,
     statesync_send_request: ::std::option::Option<
         unsafe extern "C" fn(arg1: *mut monad_statesync_client, arg2: monad_sync_request),
     >,
+    client_version: u32,
 
-    // TODO(andr-dev): Make field non-pub
-    pub ctx: Option<*mut monad_statesync_client_context>,
+    ctx: Option<*mut monad_statesync_client_context>,
 }
 
 impl SyncCtx {
@@ -61,20 +61,28 @@ impl SyncCtx {
         dbname_paths: *const *const ::std::os::raw::c_char,
         len: usize,
         sq_thread_cpu: Option<::std::os::raw::c_uint>,
-        request_ctx: *mut monad_statesync_client,
+        request_ctx: StateSyncContext,
         statesync_send_request: ::std::option::Option<
             unsafe extern "C" fn(arg1: *mut monad_statesync_client, arg2: monad_sync_request),
         >,
     ) -> Self {
+        let client_version = unsafe { bindings::monad_statesync_version() };
+        assert!(unsafe { bindings::monad_statesync_client_compatible(client_version) });
+
         Self {
             dbname_paths,
             len,
             sq_thread_cpu,
             request_ctx,
             statesync_send_request,
+            client_version,
 
             ctx: None,
         }
+    }
+
+    pub fn get_ctx(&self) -> Option<*mut monad_statesync_client_context> {
+        self.ctx
     }
 
     pub fn get_or_create_ctx(&mut self) -> *mut monad_statesync_client_context {
@@ -84,19 +92,15 @@ impl SyncCtx {
                 self.len,
                 self.sq_thread_cpu
                     .unwrap_or(self::bindings::MONAD_SQPOLL_DISABLED),
-                self.request_ctx,
+                (&mut self.request_ctx as *mut StateSyncContext).cast(),
                 self.statesync_send_request,
             );
-            let client_version = self::bindings::monad_statesync_version();
-            assert!(self::bindings::monad_statesync_client_compatible(
-                client_version
-            ));
             let num_prefixes = self::bindings::monad_statesync_client_prefixes();
             for prefix in 0..num_prefixes {
                 self::bindings::monad_statesync_client_handle_new_peer(
                     ctx,
                     prefix as u64,
-                    client_version,
+                    self.client_version,
                 );
             }
             ctx

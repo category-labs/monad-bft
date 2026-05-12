@@ -476,14 +476,14 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
         message: ExecutionMessage,
     ) -> Result<(), tokio::io::Error> {
         match message {
-            ExecutionMessage::SyncRequest(_request) => {
-                panic!("live-mode execution shouldn't send SyncRequest")
+            ExecutionMessage::SyncRequest(request) => {
+                panic!("live-mode execution sent unexpected SyncRequest: {request:?}");
             }
             ExecutionMessage::SyncUpsert(upsert_type, data) => {
                 let wip_response = self
                     .wip_response
                     .as_mut()
-                    .expect("SyncUpsert with no pending_response");
+                    .expect("SyncUpsert has wip_response");
                 wip_response.response_size += data.len();
                 wip_response
                     .response
@@ -494,10 +494,7 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
             ExecutionMessage::SyncDone(done) => {
                 // only one request can be handled at once - because no way of identifying which
                 // requests upserts point to
-                let mut wip_response = self
-                    .wip_response
-                    .take()
-                    .expect("syncdone received with no pending_response");
+                let mut wip_response = self.wip_response.take().expect("SyncDone has wip_response");
                 let service_elapsed = wip_response.service_start_time.elapsed();
                 self.metric_total_service_time_us += service_elapsed.as_micros() as usize;
                 tracing::debug!(
@@ -742,7 +739,7 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
     ) -> Result<ExecutionMessage, tokio::io::Error> {
         let execution_msg = match msg_type {
             ffi::monad_sync_type_SYNC_TYPE_TARGET => {
-                panic!("live-mode execution shouldn't send SyncTarget")
+                panic!("live-mode execution sent unexpected SyncTarget");
             }
             ffi::monad_sync_type_SYNC_TYPE_REQUEST => {
                 let mut buf = [0_u8; std::mem::size_of::<ffi::monad_sync_request>()];
@@ -753,40 +750,24 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
                 })
             }
             ffi::monad_sync_type_SYNC_TYPE_UPSERT_CODE => {
-                let data_len = self.stream.read_u64_le().await?;
-                let mut data = vec![0_u8; data_len as usize];
-                self.stream.read_exact(&mut data).await?;
-                ExecutionMessage::SyncUpsert(StateSyncUpsertType::Code, data)
+                self.read_sync_upsert(StateSyncUpsertType::Code).await?
             }
             ffi::monad_sync_type_SYNC_TYPE_UPSERT_ACCOUNT => {
-                let data_len = self.stream.read_u64_le().await?;
-                let mut data = vec![0_u8; data_len as usize];
-                self.stream.read_exact(&mut data).await?;
-                ExecutionMessage::SyncUpsert(StateSyncUpsertType::Account, data)
+                self.read_sync_upsert(StateSyncUpsertType::Account).await?
             }
             ffi::monad_sync_type_SYNC_TYPE_UPSERT_STORAGE => {
-                let data_len = self.stream.read_u64_le().await?;
-                let mut data = vec![0_u8; data_len as usize];
-                self.stream.read_exact(&mut data).await?;
-                ExecutionMessage::SyncUpsert(StateSyncUpsertType::Storage, data)
+                self.read_sync_upsert(StateSyncUpsertType::Storage).await?
             }
             ffi::monad_sync_type_SYNC_TYPE_UPSERT_ACCOUNT_DELETE => {
-                let data_len = self.stream.read_u64_le().await?;
-                let mut data = vec![0_u8; data_len as usize];
-                self.stream.read_exact(&mut data).await?;
-                ExecutionMessage::SyncUpsert(StateSyncUpsertType::AccountDelete, data)
+                self.read_sync_upsert(StateSyncUpsertType::AccountDelete)
+                    .await?
             }
             ffi::monad_sync_type_SYNC_TYPE_UPSERT_STORAGE_DELETE => {
-                let data_len = self.stream.read_u64_le().await?;
-                let mut data = vec![0_u8; data_len as usize];
-                self.stream.read_exact(&mut data).await?;
-                ExecutionMessage::SyncUpsert(StateSyncUpsertType::StorageDelete, data)
+                self.read_sync_upsert(StateSyncUpsertType::StorageDelete)
+                    .await?
             }
             ffi::monad_sync_type_SYNC_TYPE_UPSERT_HEADER => {
-                let data_len = self.stream.read_u64_le().await?;
-                let mut data = vec![0_u8; data_len as usize];
-                self.stream.read_exact(&mut data).await?;
-                ExecutionMessage::SyncUpsert(StateSyncUpsertType::Header, data)
+                self.read_sync_upsert(StateSyncUpsertType::Header).await?
             }
             ffi::monad_sync_type_SYNC_TYPE_DONE => {
                 let mut buf = [0_u8; std::mem::size_of::<ffi::monad_sync_done>()];
@@ -796,9 +777,19 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
                     std::mem::transmute(buf)
                 })
             }
-            t => panic!("unknown msg_type={}", t),
+            t => panic!("unknown msg_type={t}"),
         };
         Ok(execution_msg)
+    }
+
+    async fn read_sync_upsert(
+        &mut self,
+        upsert_type: StateSyncUpsertType,
+    ) -> Result<ExecutionMessage, tokio::io::Error> {
+        let data_len = self.stream.read_u64_le().await?;
+        let mut data = vec![0_u8; data_len as usize];
+        self.stream.read_exact(&mut data).await?;
+        Ok(ExecutionMessage::SyncUpsert(upsert_type, data))
     }
 
     async fn write_execution_request(
