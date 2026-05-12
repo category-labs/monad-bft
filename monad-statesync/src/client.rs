@@ -98,9 +98,7 @@ impl<PT: PubKey> StateSyncClient<PT> {
                 let db_paths_ptr = db_paths_ptrs.as_ptr();
                 let num_db_paths = db_paths_ptrs.len();
 
-                // callback function must be kept alive until statesync_client_context_destroy is
-                // called
-                let mut request_ctx: Box<ffi::StateSyncContext> = Box::new(Box::new({
+                let request_ctx: ffi::StateSyncContext = Box::new({
                     let request_tx = request_tx.clone();
                     move |request| {
                         let result = request_tx.send(SyncRequest::Request(StateSyncRequest {
@@ -118,13 +116,13 @@ impl<PT: PubKey> StateSyncClient<PT> {
                             std::process::exit(1)
                         }
                     }
-                }));
+                });
 
                 let mut sync_ctx = ffi::SyncCtx::new(
                     db_paths_ptr,
                     num_db_paths,
                     sq_thread_cpu.map(|n| n as ::std::os::raw::c_uint),
-                    &mut *request_ctx as *mut _ as *mut ffi::monad_statesync_client,
+                    request_ctx,
                     Some(ffi::statesync_send_request),
                 );
                 let mut current_target = None;
@@ -167,7 +165,9 @@ impl<PT: PubKey> StateSyncClient<PT> {
                             });
 
                             // handle_response can only be called on an active SyncCtx
-                            let ctx = sync_ctx.ctx.expect("received response on inactive ctx");
+                            let ctx = sync_ctx
+                                .get_ctx()
+                                .expect("received response on inactive ctx");
                             unsafe {
                                 for upsert in &response.response {
                                     let upsert_result = ffi::monad_statesync_client_handle_upsert(
@@ -254,7 +254,7 @@ impl<PT: PubKey> StateSyncClient<PT> {
                     }
                 }
                 // this loop exits when execution is about to start
-                assert!(sync_ctx.ctx.is_none());
+                assert!(sync_ctx.get_ctx().is_none());
             })
             .expect("failed to spawn statesync thread");
 

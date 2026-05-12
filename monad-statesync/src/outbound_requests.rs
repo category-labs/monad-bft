@@ -150,21 +150,13 @@ impl<PT: PubKey> InFlightRequest<PT> {
         }
 
         if response.response_index == self.response_index {
-            let curr_index = self.response_index;
             self.response_index += 1;
             let mut responses = vec![response];
 
             // Remove consecutive responses from out-of-order queue
-            for index in self.responses.keys() {
-                if *index == self.response_index {
-                    self.response_index += 1;
-                } else {
-                    break;
-                }
-            }
-            for index in curr_index + 1..self.response_index {
-                let response = self.responses.remove(&index).expect("missing response");
+            while let Some(response) = self.responses.remove(&self.response_index) {
                 responses.push(response);
+                self.response_index += 1;
             }
             return responses;
         }
