@@ -86,22 +86,22 @@ actix-ws = "0.3.0"
 aegis = "0.5"
 aes = "0.8.3"
 agent = { git = "https://github.com/category-labs/manytrace.git", tag = "v0.1.1" }
-alloy-consensus = "1.7"
-alloy-eips = "1.7"
-alloy-json-rpc = "1.7"
-alloy-network = "1.7"
+alloy-consensus = "2.0"
+alloy-eips = "2.0"
+alloy-json-rpc = "2.0"
+alloy-network = "2.0"
 alloy-primitives = "1.5"
 alloy-rlp = { version = "0.3", features = ["arrayvec"] }
-alloy-rpc-client = "1.7"
-alloy-rpc-types = { version = "1.7", default-features = false, features = ["eth"] }
-alloy-rpc-types-eth = "1.7"
-alloy-rpc-types-trace = "1.7"
-alloy-signer = "1.7"
-alloy-signer-local = "1.7"
+alloy-rpc-client = "2.0"
+alloy-rpc-types = { version = "2.0", default-features = false, features = ["eth"] }
+alloy-rpc-types-eth = "2.0"
+alloy-rpc-types-trace = "2.0"
+alloy-signer = "2.0"
+alloy-signer-local = "2.0"
 alloy-sol-macro = "1.5"
 alloy-sol-types = "1.5"
-alloy-transport = "1.7"
-alloy-transport-http = { version = "1.7", default-features = false, features = ["reqwest", "reqwest-native-tls"] }
+alloy-transport = "2.0"
+alloy-transport-http = { version = "2.0", default-features = false, features = ["reqwest", "reqwest-native-tls"] }
 arbitrary = "1.4.1"
 arrayvec = { version = "0.7", features = ["serde"] }
 as-any = "0.3.1"
