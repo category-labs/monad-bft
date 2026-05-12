@@ -60,7 +60,7 @@ use monad_router_multi::MultiRouter;
 use monad_state::{MonadMessage, MonadStateBuilder, VerifiedMonadMessage};
 use monad_state_backend::StateBackendThreadClient;
 use monad_state_backend_cache::StateBackendCache;
-use monad_statesync::StateSync;
+use monad_statesync::StateSyncExecutor;
 use monad_triedb_utils::TriedbReader;
 use monad_types::{DropTimer, Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
 use monad_updaters::{
@@ -285,7 +285,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         )
         .expect("uds bind failed"),
         loopback: LoopbackExecutor::default(),
-        state_sync: StateSync::<SignatureType, SignatureCollectionType>::new(
+        state_sync: StateSyncExecutor::<SignatureType, SignatureCollectionType>::new(
             vec![statesync_triedb_path.to_string_lossy().to_string()],
             node_state.statesync_sq_thread_cpu,
             state_sync_init_peers,
