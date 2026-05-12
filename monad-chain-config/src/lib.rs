@@ -35,6 +35,8 @@ pub const ETHEREUM_MAINNET_CHAIN_ID: u64 = 1;
 pub const MONAD_MAINNET_CHAIN_ID: u64 = 143;
 pub const MONAD_TESTNET_CHAIN_ID: u64 = 10143;
 pub const MONAD_DEVNET_CHAIN_ID: u64 = 20143;
+// Chain id used by hive: https://github.com/ethereum/execution-apis/blob/main/tests/genesis.json
+pub const HIVE_CHAIN_ID: u64 = 3503995874084926;
 
 pub trait ChainConfig<CR: ChainRevision>: Copy + Clone {
     fn chain_id(&self) -> u64;
