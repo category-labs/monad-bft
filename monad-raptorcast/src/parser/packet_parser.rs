@@ -29,7 +29,7 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Ref, LE, U16, U32, 
 use crate::{
     message::MAX_MESSAGE_SIZE,
     packet::{assigner::stake_partition_num_chunks_hint, deterministic, regular},
-    udp::{ChunkSignatureVerifier, GroupId, InvalidChunk, ValidatedChunk},
+    udp::{ChunkSignatureVerifier, ChunkVersion, GroupId, InvalidChunk, ValidatedChunk},
     util::{ensure, BroadcastMode, EncodingScheme, HexBytes},
     SIGNATURE_SIZE,
 };
@@ -749,9 +749,9 @@ impl<'a> RaptorcastPacket<'a> {
     {
         let meta = self.validate_chunk_meta(env.max_age_ms)?;
         let author = verify_signature(env.signature_verifier, &meta, env.bypass_rate_limiter)?;
-        let chunk = match &self.versioned {
-            RaptorcastPacketVersioned::V0(v0) => v0.split_chunk(message)?,
-            RaptorcastPacketVersioned::V1(v1) => v1.split_chunk(message)?,
+        let (chunk, version) = match &self.versioned {
+            RaptorcastPacketVersioned::V0(v0) => (v0.split_chunk(message)?, ChunkVersion::V0),
+            RaptorcastPacketVersioned::V1(v1) => (v1.split_chunk(message)?, ChunkVersion::V1),
         };
 
         ensure!(author != *env.self_id, InvalidChunk::Loopback);
@@ -761,6 +761,7 @@ impl<'a> RaptorcastPacket<'a> {
             message: message.clone(),
             signature: message.slice(..SIGNATURE_SIZE),
             author,
+            version,
             group_id: meta.group_id,
             unix_ts_ms: meta.timestamp,
             app_message_hash: meta.app_message_hash,
