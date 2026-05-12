@@ -723,6 +723,7 @@ mod tests {
                     inner: tx_recovered,
                     block_hash: Some(block_hash),
                     block_number: Some(height),
+                    block_timestamp: None,
                     transaction_index: Some(tx_idx as u64),
                     effective_gas_price: None,
                 };

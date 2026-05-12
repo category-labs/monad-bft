@@ -266,6 +266,7 @@ impl<T: Triedb> DataProvider<T> {
                             return Ok(parse_tx_content(
                                 block.header.hash_slow(),
                                 block.header.number,
+                                block.header.timestamp,
                                 block.header.base_fee_per_gas,
                                 tx.clone(),
                                 index,
@@ -302,6 +303,7 @@ impl<T: Triedb> DataProvider<T> {
                             return Ok(parse_tx_content(
                                 hash.0.into(),
                                 block.header.number,
+                                block.header.timestamp,
                                 block.header.base_fee_per_gas,
                                 tx.clone(),
                                 index,
@@ -349,6 +351,7 @@ impl<T: Triedb> DataProvider<T> {
                 return Ok(parse_tx_content(
                     header_subset.block_hash,
                     header_subset.block_number,
+                    header_subset.block_timestamp,
                     header_subset.base_fee_per_gas,
                     tx,
                     header_subset.tx_index,
@@ -1311,6 +1314,7 @@ fn parse_block_content(
                 parse_tx_content(
                     block_hash,
                     header.number,
+                    header.timestamp,
                     header.base_fee_per_gas,
                     tx,
                     idx as u64,
@@ -1345,6 +1349,7 @@ fn parse_block_content(
 pub fn parse_tx_content(
     block_hash: FixedBytes<32>,
     block_number: u64,
+    block_timestamp: u64,
     base_fee: Option<u64>,
     tx: TxEnvelopeWithSender,
     tx_index: u64,
@@ -1358,6 +1363,7 @@ pub fn parse_tx_content(
         inner: Recovered::new_unchecked(tx, sender),
         block_hash: Some(block_hash),
         block_number: Some(block_number),
+        block_timestamp: Some(block_timestamp),
         effective_gas_price: Some(effective_gas_price),
         transaction_index: Some(tx_index),
     }
@@ -1554,6 +1560,7 @@ async fn get_transaction_from_triedb<T: Triedb>(
         Some(tx) => Ok(Some(parse_tx_content(
             header.hash,
             header.header.number,
+            header.header.timestamp,
             header.header.base_fee_per_gas,
             tx,
             tx_index,

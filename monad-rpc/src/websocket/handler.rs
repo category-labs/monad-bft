@@ -440,7 +440,7 @@ async fn handle_request(
             let filter = match req.params {
                 Params::None => None,
                 Params::Logs(filter) => Some(*filter),
-                Params::Bool(_) => {
+                Params::Bool(_) | Params::TransactionReceipts(_) => {
                     if let Err(err) = ctx
                         .text(to_response(&crate::types::jsonrpc::Response::new(
                             None,
