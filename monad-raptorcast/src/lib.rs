@@ -207,6 +207,20 @@ where
             );
         }
 
+        let max_group_size = config.secondary_instance.max_group_size;
+        if max_group_size == 0
+            || max_group_size > raptorcast_secondary::group_message::MAX_PEERS_IN_GROUP
+        {
+            panic!(
+                "Configuration value fullnode_raptorcast.max_group_size must be in 1..={}, \
+                but got {}. Receivers reject ConfirmGroup messages with more than {} \
+                name_records at RLP decode time (LimitedVec capacity).",
+                raptorcast_secondary::group_message::MAX_PEERS_IN_GROUP,
+                max_group_size,
+                raptorcast_secondary::group_message::MAX_PEERS_IN_GROUP,
+            );
+        }
+
         let self_id = NodeId::new(config.shared_key.pubkey());
         let is_dynamic_fullnode = matches!(secondary_mode, SecondaryRaptorCastModeConfig::Client);
         debug!(
