@@ -218,7 +218,20 @@ where
             filled_confirm_msg.name_records = Default::default();
             for node_id in dest_node_ids.iter() {
                 if let Some(name_record) = name_records.get(node_id) {
-                    filled_confirm_msg.name_records.push(name_record.clone());
+                    if let Err(err) = filled_confirm_msg
+                        .name_records
+                        .try_push(name_record.clone())
+                    {
+                        warn!(
+                            ?node_id,
+                            ?group_msg,
+                            capacity = err.capacity,
+                            "RaptorCastSecondary: ConfirmGroup.name_records at capacity; \
+                             dropping remaining records. Should be unreachable given \
+                             boot-time max_group_size validation.",
+                        );
+                        break;
+                    }
                 } else {
                     // Maybe can happen if peer discovery gets pruned just
                     // before sending a ConfirmGroup message.

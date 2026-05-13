@@ -230,13 +230,13 @@ where
 {
     pub fn new(genesis_validator_data: ValidatorSetData<SCT>, epoch_length: SeqNum) -> Self {
         let num_validators = genesis_validator_data.0.len();
-        let mut val_data_1 = genesis_validator_data.0.clone();
+        let mut val_data_1: Vec<_> = genesis_validator_data.0.clone().into_inner();
         let val_data_2 = val_data_1.split_off(num_validators / 2);
 
         Self {
             epoch: Epoch(1),
             genesis_val_data: genesis_validator_data,
-            val_data_1: ValidatorSetData(val_data_1),
+            val_data_1: ValidatorSetData(val_data_1.into()),
             val_data_2: ValidatorSetData(val_data_2.into()),
             next_val_data: None,
             epoch_length,
