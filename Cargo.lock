@@ -5588,7 +5588,7 @@ dependencies = [
  "monad-state",
  "monad-state-backend",
  "monad-state-backend-cache",
- "monad-statesync",
+ "monad-statesync-executor",
  "monad-triedb-utils",
  "monad-types",
  "monad-updaters",
@@ -6007,9 +6007,16 @@ dependencies = [
 name = "monad-statesync"
 version = "0.1.0"
 dependencies = [
+ "bindgen",
+ "monad-cxx",
+]
+
+[[package]]
+name = "monad-statesync-executor"
+version = "0.1.0"
+dependencies = [
  "alloy-consensus",
  "alloy-rlp",
- "bindgen",
  "criterion",
  "futures",
  "monad-crypto",
@@ -6017,6 +6024,7 @@ dependencies = [
  "monad-eth-types",
  "monad-executor",
  "monad-executor-glue",
+ "monad-statesync",
  "monad-types",
  "monad-validator",
  "rand 0.8.5",

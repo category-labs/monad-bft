@@ -37,7 +37,7 @@ monad-secp = { workspace = true }
 monad-state = { workspace = true }
 monad-state-backend = { workspace = true }
 monad-state-backend-cache = { workspace = true }
-monad-statesync = { workspace = true }
+monad-statesync-executor = { workspace = true }
 monad-triedb-utils = { workspace = true }
 monad-types = { workspace = true }
 monad-updaters = { workspace = true, features = ["monad-triedb", "tokio"] }

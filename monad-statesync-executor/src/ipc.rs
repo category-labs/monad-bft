@@ -33,13 +33,12 @@ use monad_executor_glue::{
     StateSyncUpsertType, StateSyncUpsertV1, MAX_UPSERTS_PER_RESPONSE, SELF_STATESYNC_VERSION,
     STATESYNC_VERSION_MIN, STATESYNC_VERSION_V2,
 };
+use monad_statesync::ffi;
 use monad_types::NodeId;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, BufReader},
     net::{UnixListener, UnixStream},
 };
-
-use crate::ffi;
 
 /// StateSyncIpc encapsulates a connection to a live execution client, used for servicing statesync
 /// requests

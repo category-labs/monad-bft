@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-pub(crate) use self::bindings::{
+pub use self::bindings::{
     monad_statesync_client, monad_statesync_client_context, monad_statesync_client_handle_done,
     monad_statesync_client_handle_target, monad_statesync_client_handle_upsert, monad_sync_done,
     monad_sync_request, monad_sync_type_SYNC_TYPE_DONE, monad_sync_type_SYNC_TYPE_REQUEST,
@@ -28,7 +28,7 @@ mod bindings {
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 }
 
-pub(crate) type StateSyncContext = Box<dyn FnMut(monad_sync_request)>;
+pub type StateSyncContext = Box<dyn FnMut(monad_sync_request)>;
 
 // void (*statesync_send_request)(struct StateSync *, struct SyncRequest)
 #[no_mangle]
@@ -40,9 +40,23 @@ pub extern "C" fn statesync_send_request(
     unsafe { (*statesync)(request) }
 }
 
+fn add_client_prefixes_as_new_peers(ctx: *mut monad_statesync_client_context, client_version: u32) {
+    let prefixes = unsafe { self::bindings::monad_statesync_client_prefixes() };
+
+    for prefix in 0..prefixes {
+        unsafe {
+            self::bindings::monad_statesync_client_handle_new_peer(
+                ctx,
+                prefix as u64,
+                client_version,
+            )
+        }
+    }
+}
+
 /// Thin unsafe wrapper around statesync_client_context that handles destruction and finalization
 /// checking
-pub struct SyncCtx {
+pub struct StateSyncCtx {
     dbname_paths: *const *const ::std::os::raw::c_char,
     len: usize,
     sq_thread_cpu: Option<::std::os::raw::c_uint>,
@@ -55,8 +69,8 @@ pub struct SyncCtx {
     ctx: Option<*mut monad_statesync_client_context>,
 }
 
-impl SyncCtx {
-    /// Initialize SyncCtx. There should only ever be *one* SyncCtx at any given time.
+impl StateSyncCtx {
+    /// Initialize StateSyncCtx. There should only ever be *one* StateSyncCtx at any given time.
     pub fn new(
         dbname_paths: *const *const ::std::os::raw::c_char,
         len: usize,
@@ -87,6 +101,21 @@ impl SyncCtx {
 
     pub fn get_or_create_ctx(&mut self) -> *mut monad_statesync_client_context {
         *self.ctx.get_or_insert_with(|| unsafe {
+            self::bindings::monad_statesync_client_context_create(
+                self.dbname_paths,
+                self.len,
+                self.sq_thread_cpu
+                    .unwrap_or(self::bindings::MONAD_SQPOLL_DISABLED),
+                (&mut self.request_ctx as *mut StateSyncContext).cast(),
+                self.statesync_send_request,
+            )
+        })
+    }
+
+    pub fn get_or_create_ctx_with_client_prefixes(
+        &mut self,
+    ) -> *mut monad_statesync_client_context {
+        *self.ctx.get_or_insert_with(|| unsafe {
             let ctx = self::bindings::monad_statesync_client_context_create(
                 self.dbname_paths,
                 self.len,
@@ -95,32 +124,40 @@ impl SyncCtx {
                 (&mut self.request_ctx as *mut StateSyncContext).cast(),
                 self.statesync_send_request,
             );
-            let num_prefixes = self::bindings::monad_statesync_client_prefixes();
-            for prefix in 0..num_prefixes {
-                self::bindings::monad_statesync_client_handle_new_peer(
-                    ctx,
-                    prefix as u64,
-                    self.client_version,
-                );
-            }
+
+            add_client_prefixes_as_new_peers(ctx, self.client_version);
+
             ctx
         })
     }
 
-    /// Returns true if reached target and successfully finalized
-    pub fn try_finalize(&mut self) -> bool {
+    pub fn add_client_prefixes_as_new_peers(&mut self) {
+        let ctx = self.ctx.expect(
+            "add_client_prefixes_as_new_peers should only be called on active StateSyncCtx",
+        );
+
+        add_client_prefixes_as_new_peers(ctx, self.client_version);
+    }
+
+    pub fn has_reached_target(&mut self) -> bool {
         let ctx = self
             .ctx
-            .expect("try_finalize should only be called on active SyncCtx");
+            .expect("has_reached_target should only be called on active StateSyncCtx");
 
-        if unsafe { self::bindings::monad_statesync_client_has_reached_target(ctx) } {
-            let root_matches = unsafe { self::bindings::monad_statesync_client_finalize(ctx) };
-            assert!(root_matches, "state root doesn't match, are peers trusted?");
+        unsafe { self::bindings::monad_statesync_client_has_reached_target(ctx) }
+    }
 
-            unsafe { self::bindings::monad_statesync_client_context_destroy(ctx) }
-            self.ctx = None;
-            return true;
-        }
-        false
+    // Returns true when the root matches
+    pub fn finalize(&mut self) -> bool {
+        let ctx = self
+            .ctx
+            .take()
+            .expect("finalize should only be called on active StateSyncCtx");
+
+        let root_matches = unsafe { self::bindings::monad_statesync_client_finalize(ctx) };
+
+        unsafe { self::bindings::monad_statesync_client_context_destroy(ctx) }
+
+        root_matches
     }
 }

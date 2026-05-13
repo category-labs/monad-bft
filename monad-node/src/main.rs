@@ -60,7 +60,7 @@ use monad_router_multi::MultiRouter;
 use monad_state::{MonadMessage, MonadStateBuilder, VerifiedMonadMessage};
 use monad_state_backend::StateBackendThreadClient;
 use monad_state_backend_cache::StateBackendCache;
-use monad_statesync::StateSyncExecutor;
+use monad_statesync_executor::StateSyncExecutor;
 use monad_triedb_utils::TriedbReader;
 use monad_types::{DropTimer, Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
 use monad_updaters::{
