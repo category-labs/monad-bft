@@ -25,6 +25,7 @@ monad-types = { workspace = true }
 monad-validator = { workspace = true }
 monad-wireauth = { workspace = true }
 
+alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
 bitvec = { workspace = true }
 bytes = { workspace = true }
@@ -46,7 +47,6 @@ zerocopy = { workspace = true }
 [dev-dependencies]
 monad-testutil = { workspace = true }
 
-alloy-primitives = { workspace = true }
 byte-unit = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 criterion = { workspace = true }
