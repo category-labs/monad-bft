@@ -1206,15 +1206,6 @@ where
             return cmds;
         }
 
-        if response.name_records.len() > MAX_PEER_IN_RESPONSE {
-            warn!(
-                ?response,
-                "response includes number of peers larger than max, dropping response..."
-            );
-            self.metrics[GAUGE_PEER_DISC_DROP_LOOKUP_RESPONSE] += 1;
-            return cmds;
-        }
-
         // insert peer to pending queue
         for name_record in response.name_records {
             // verify signature of name record
@@ -2537,39 +2528,6 @@ mod tests {
                 lookup_id: 1,
                 target: peer1_pubkey,
                 name_records: vec![record].into(),
-            },
-        );
-        assert!(cmds.is_empty());
-        assert!(!state.pending_queue.contains_key(&peer1_pubkey));
-        assert!(!state.routing_info.contains_key(&peer1_pubkey));
-    }
-
-    #[test]
-    fn test_drop_lookup_response_that_exceeds_max_peers() {
-        let keys = create_keys::<SignatureType>(3);
-        let peer0 = &keys[0];
-        let peer1 = &keys[1];
-        let peer1_pubkey = NodeId::new(peer1.pubkey());
-
-        let lookup_id = 1;
-        let (mut state, _clock) = generate_test_state(peer0, vec![]);
-        state.outstanding_lookup_requests.insert(
-            lookup_id,
-            LookupInfo {
-                num_retries: 0,
-                receiver: peer1_pubkey,
-                open_discovery: false,
-            },
-        );
-
-        // should not record peer lookup response if number of records exceed max
-        let record = generate_name_record(peer1, 0);
-        let cmds = state.handle_peer_lookup_response(
-            peer_source_from_record(peer1),
-            PeerLookupResponse {
-                lookup_id,
-                target: peer1_pubkey,
-                name_records: vec![record; MAX_PEER_IN_RESPONSE + 1].into(),
             },
         );
         assert!(cmds.is_empty());
