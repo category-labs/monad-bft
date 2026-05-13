@@ -29,6 +29,7 @@ use monad_consensus_types::validator_data::ValidatorsConfigFile;
 use monad_control_panel::TracingReload;
 use monad_keystore::keystore::Keystore;
 use monad_node_config::{ForkpointConfig, MonadNodeConfig, ValidatorsConfigType};
+use monad_raptorcast::validate_fullnode_raptorcast_config;
 use monad_secp::KeyPair;
 use monad_types::Round;
 use reqwest::{blocking::Client, Url};
@@ -130,6 +131,13 @@ impl NodeState {
 
         let node_config: MonadNodeConfig =
             toml::from_str(&std::fs::read_to_string(&node_config_path)?)?;
+
+        if let Err(e) = validate_fullnode_raptorcast_config(&node_config.fullnode_raptorcast) {
+            return Err(NodeSetupError::Custom {
+                kind: ErrorKind::ValueValidation,
+                msg: e.to_string(),
+            });
+        }
 
         if !matches!(
             forkpoint_config_path.extension().and_then(OsStr::to_str),

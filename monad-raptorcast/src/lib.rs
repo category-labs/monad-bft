@@ -93,6 +93,10 @@ pub mod parser;
 pub mod raptorcast_secondary;
 pub mod udp;
 pub mod util;
+pub mod validation;
+
+pub use raptorcast_secondary::group_message::MAX_PEERS_IN_GROUP;
+pub use validation::{validate_fullnode_raptorcast_config, FullNodeRaptorCastConfigError};
 
 const SIGNATURE_SIZE: usize = 65;
 const DEFAULT_RETRY_ATTEMPTS: u64 = 3;
