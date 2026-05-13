@@ -15,6 +15,7 @@
 
 use std::{collections::VecDeque, ops::Range};
 
+use alloy_primitives::U256;
 use bytes::BytesMut;
 use monad_crypto::certificate_signature::PubKey;
 use monad_raptor::r10::lt::MAX_TRIPLES;
@@ -302,10 +303,14 @@ impl<PT: PubKey> EvenPartition<PT> {
 // Proportional to stake, plus each validator gets an optional
 // rounding chunk
 pub(crate) struct StakePartition<PT: PubKey> {
-    // Publisher node excluded
-    //
-    // Invariant: validators.map(.1).sum() == 1.0
-    validators: Vec<(NodeId<PT>, f64)>,
+    // Validator set with the publisher node excluded.
+    // Invariant: all stake must be non-zero
+    validators: Vec<(NodeId<PT>, Stake)>,
+
+    // Invariant: total_stake == sum of validators' stakes
+    // Invariant: validators.is_empty() iff total_stake == Stake::ZERO
+    // (i.e. singleton validator set)
+    total_stake: Stake,
 }
 
 impl<PT: PubKey> OrderedNodes<PT> for StakePartition<PT> {
@@ -348,32 +353,39 @@ impl<PT: PubKey> StakePartition<PT> {
                 // skip author
                 continue;
             }
+            // stake is guaranteed to be non-zero from PrimaryBroadcastGroup's invariant.
+            debug_assert!(!stake.0.is_zero());
+            validators.push((*node, *stake));
             total_stake += *stake;
         }
 
-        if total_stake == Stake::ZERO {
-            // Group contains only the author.
-            return Self { validators: vec![] };
+        Self {
+            validators,
+            total_stake,
         }
-
-        for (node, stake) in group.iter() {
-            if node == group.author() {
-                continue;
-            }
-            let share = *stake / total_stake;
-            validators.push((*node, share));
-        }
-
-        let total_share = validators.iter().map(|(_, s)| *s).sum::<f64>();
-        debug_assert!((total_share - 1.0).abs() < 1e-6);
-
-        Self { validators }
     }
 
     #[cfg(test)]
-    fn from_shares(validators: Vec<(NodeId<PT>, f64)>) -> Self {
-        assert!(!validators.is_empty());
-        Self { validators }
+    // accepts u64/U256 as stake
+    fn from_stakes<T>(validators: Vec<(NodeId<PT>, T)>) -> Self
+    where
+        // Use TryInto instead of Into as U256 does not implement
+        // From<u64>.
+        T: TryInto<U256>,
+    {
+        let validators: Vec<_> = validators
+            .into_iter()
+            .map(|(n, s)| {
+                let s = s.try_into().ok().unwrap();
+                assert!(!s.is_zero());
+                (n, Stake(s))
+            })
+            .collect();
+        let total_stake = validators.iter().map(|(_, s)| *s).sum::<Stake>();
+        Self {
+            validators,
+            total_stake,
+        }
     }
 
     pub fn assign(
@@ -385,6 +397,7 @@ impl<PT: PubKey> StakePartition<PT> {
             return Ok(ChunkAssignment::default());
         }
         self.assign_round_robin(num_base_symbols, redundancy)
+            .ok_or(BuildError::TooManyChunks)
     }
 
     pub fn num_chunks_hint(
@@ -392,28 +405,50 @@ impl<PT: PubKey> StakePartition<PT> {
         num_base_symbols: usize,
         redundancy: Redundancy,
     ) -> Option<usize> {
-        let group_size = self.validators.len() + 1; // include author
+        let group_size = self.validators.len() + 1; // add back the author
         stake_partition_num_chunks_hint(num_base_symbols, redundancy, group_size)
     }
 
+    // Compute O = num_scaled_symbols * stake / total_stake, split the
+    // result into the number of whole chunks (floor(O)) and the
+    // remainder (num_scaled_symbols * stake % total_stake).
+    //
+    // Returns None on overflow.
+    fn obligation(&self, num_scaled_symbols: usize, stake: Stake) -> Option<(usize, Stake)> {
+        let stake = stake.0;
+        debug_assert!(!stake.is_zero());
+        let prod = stake.checked_mul(U256::from(num_scaled_symbols))?;
+
+        let total = self.total_stake.0;
+        debug_assert!(!total.is_zero());
+
+        // SAFETY: obligation getting called implies the presence of
+        // at least one validator in `validators`, thus we must have
+        // total_stake > 0 from the invariant.
+        let (quo, rem) = prod.div_rem(total);
+        let quo = quo.try_into().ok()?;
+        let rem = Stake(rem);
+        Some((quo, rem))
+    }
+
     #[cfg(test)]
+    // Returns None on overflow.
     fn assign_proportional(
         &self,
         num_base_symbols: usize,
         redundancy: Redundancy,
-    ) -> Result<ChunkAssignment> {
-        let capacity = self
-            .num_chunks_hint(num_base_symbols, redundancy)
-            .ok_or(BuildError::TooManyChunks)?;
-        let num_scaled_symbols = redundancy
-            .scale(num_base_symbols)
-            .ok_or(BuildError::TooManyChunks)?;
+    ) -> Option<ChunkAssignment> {
+        let capacity = self.num_chunks_hint(num_base_symbols, redundancy)?;
+        let num_scaled_symbols = redundancy.scale(num_base_symbols)?;
         let mut assignment = ChunkAssignment::with_capacity(self.validators.len(), capacity);
 
         let mut curr_chunk_id = 0;
-        for (i, (_node_id, share)) in self.validators.iter().enumerate() {
-            let obligation = num_scaled_symbols as f64 * share;
-            let next_chunk_id = curr_chunk_id + obligation.ceil() as usize;
+        for (i, (_node_id, stake)) in self.validators.iter().enumerate() {
+            let (whole_chunks, remainder) = self.obligation(num_scaled_symbols, *stake)?;
+            // 1 if there's a non-zero remainder, else 0
+            let rounding_chunks = (!remainder.0.is_zero()) as usize;
+            let next_chunk_id = curr_chunk_id + whole_chunks + rounding_chunks;
+            // TODO(xinyuan): restrict rebroadcast targets for rounding chunks
             assignment.push_range(NodeIndex(i), curr_chunk_id..next_chunk_id);
             curr_chunk_id = next_chunk_id;
         }
@@ -421,31 +456,29 @@ impl<PT: PubKey> StakePartition<PT> {
         assert!(assignment.num_chunks() >= num_scaled_symbols);
         assert!(assignment.num_chunks() <= capacity);
 
-        Ok(assignment)
+        Some(assignment)
     }
 
+    // Returns None on overflow.
     fn assign_round_robin(
         &self,
         num_base_symbols: usize,
         redundancy: Redundancy,
-    ) -> Result<ChunkAssignment> {
-        let capacity = self
-            .num_chunks_hint(num_base_symbols, redundancy)
-            .ok_or(BuildError::TooManyChunks)?;
-        let num_scaled_symbols = redundancy
-            .scale(num_base_symbols)
-            .ok_or(BuildError::TooManyChunks)?;
+    ) -> Option<ChunkAssignment> {
+        let capacity = self.num_chunks_hint(num_base_symbols, redundancy)?;
+        let num_scaled_symbols = redundancy.scale(num_base_symbols)?;
         let mut assignment = ChunkAssignment::with_capacity(self.validators.len(), capacity);
 
-        let mut remaining: VecDeque<_> = self
-            .validators
-            .iter()
-            .enumerate()
-            .map(|(i, (_node_id, share))| {
-                let obligation = share * num_scaled_symbols as f64;
-                (NodeIndex(i), obligation.ceil() as usize)
-            })
-            .collect();
+        let mut remaining: VecDeque<(NodeIndex, usize)> =
+            VecDeque::with_capacity(self.validators.len());
+        for (i, (_node_id, stake)) in self.validators.iter().enumerate() {
+            let (whole_chunks, remainder) = self.obligation(num_scaled_symbols, *stake)?;
+            // 1 if there's a non-zero remainder, else 0
+            let rounding_chunks = (!remainder.0.is_zero()) as usize;
+            let obligation = whole_chunks + rounding_chunks;
+            // TODO(xinyuan): restrict rebroadcast targets for rounding chunks
+            remaining.push_back((NodeIndex(i), obligation));
+        }
 
         let mut chunk_id = 0;
         while !remaining.is_empty() {
@@ -471,7 +504,7 @@ impl<PT: PubKey> StakePartition<PT> {
         assert!(assignment.num_chunks() >= num_scaled_symbols);
         assert!(assignment.num_chunks() <= capacity);
 
-        Ok(assignment)
+        Some(assignment)
     }
 }
 
@@ -479,15 +512,21 @@ impl<PT: PubKey> StakePartition<PT> {
 mod tests {
     use std::collections::HashMap;
 
-    use monad_crypto::certificate_signature::CertificateSignaturePubKey;
+    use alloy_primitives::{utils::parse_ether, U256};
+    use monad_crypto::certificate_signature::{CertificateSignaturePubKey, PubKey};
     use monad_secp::SecpSignature;
     use monad_testutil::signing::get_key;
     use monad_types::{NodeId, Stake};
     use monad_validator::validator_set::MAX_VALIDATOR_SET_SIZE;
+    use rand::{seq::SliceRandom as _, SeedableRng as _};
+    use rand_chacha::ChaCha20Rng;
     use rstest::rstest;
 
     use super::{ChunkAssignment, EvenPartition, NodeIndex, OrderedNodes, StakePartition};
-    use crate::util::Redundancy;
+    use crate::{
+        packet::{assigner::stake_partition_num_chunks_hint, BuildError, Result},
+        util::Redundancy,
+    };
 
     const R3: Redundancy = Redundancy::from_u8(3);
 
@@ -730,12 +769,163 @@ mod tests {
     // StakePartition
     // ---------------------------------------------------------------
 
+    // Reference implementation of stake partitioning using f64 for
+    // shares.
+    pub(super) struct F64StakePartition<PT: PubKey> {
+        // Publisher node excluded.
+        //
+        // Invariant: validators.map(.1).sum() == 1.0
+        validators: Vec<(NodeId<PT>, f64)>,
+    }
+
+    impl<PT: PubKey> OrderedNodes<PT> for F64StakePartition<PT> {
+        fn get(&self, index: NodeIndex) -> Option<&NodeId<PT>> {
+            self.validators.get(index.0).map(|(node_id, _)| node_id)
+        }
+
+        fn shuffle(&mut self, seed: [u8; 32]) {
+            let mut rng = ChaCha20Rng::from_seed(seed);
+            self.validators.shuffle(&mut rng);
+        }
+
+        fn len(&self) -> usize {
+            self.validators.len()
+        }
+    }
+
+    impl<PT: PubKey> F64StakePartition<PT> {
+        pub(super) fn from_shares(validators: Vec<(NodeId<PT>, f64)>) -> Self {
+            Self { validators }
+        }
+
+        pub(super) fn assign(
+            &self,
+            num_base_symbols: usize,
+            redundancy: Redundancy,
+        ) -> Result<ChunkAssignment> {
+            if self.validators.is_empty() {
+                return Ok(ChunkAssignment::default());
+            }
+            self.assign_round_robin(num_base_symbols, redundancy)
+        }
+
+        pub(super) fn num_chunks_hint(
+            &self,
+            num_base_symbols: usize,
+            redundancy: Redundancy,
+        ) -> Option<usize> {
+            let group_size = self.validators.len() + 1;
+            stake_partition_num_chunks_hint(num_base_symbols, redundancy, group_size)
+        }
+
+        #[expect(unused)] // reference implementation
+        fn assign_proportional(
+            &self,
+            num_base_symbols: usize,
+            redundancy: Redundancy,
+        ) -> Result<ChunkAssignment> {
+            let capacity = self
+                .num_chunks_hint(num_base_symbols, redundancy)
+                .ok_or(BuildError::TooManyChunks)?;
+            let num_scaled_symbols = redundancy
+                .scale(num_base_symbols)
+                .ok_or(BuildError::TooManyChunks)?;
+            let mut assignment = ChunkAssignment::with_capacity(self.validators.len(), capacity);
+
+            let mut curr_chunk_id = 0;
+            for (i, (_node_id, share)) in self.validators.iter().enumerate() {
+                let obligation = num_scaled_symbols as f64 * share;
+                let next_chunk_id: usize = curr_chunk_id + obligation.ceil() as usize;
+                assignment.push_range(NodeIndex(i), curr_chunk_id..next_chunk_id);
+                curr_chunk_id = next_chunk_id;
+            }
+
+            assert!(assignment.num_chunks() >= num_scaled_symbols);
+            assert!(assignment.num_chunks() <= capacity);
+
+            Ok(assignment)
+        }
+
+        fn assign_round_robin(
+            &self,
+            num_base_symbols: usize,
+            redundancy: Redundancy,
+        ) -> Result<ChunkAssignment> {
+            use std::collections::VecDeque;
+
+            let capacity = self
+                .num_chunks_hint(num_base_symbols, redundancy)
+                .ok_or(BuildError::TooManyChunks)?;
+            let num_scaled_symbols = redundancy
+                .scale(num_base_symbols)
+                .ok_or(BuildError::TooManyChunks)?;
+            let mut assignment = ChunkAssignment::with_capacity(self.validators.len(), capacity);
+
+            let mut remaining: VecDeque<_> = self
+                .validators
+                .iter()
+                .enumerate()
+                .map(|(i, (_node_id, share))| {
+                    let obligation = share * num_scaled_symbols as f64;
+                    (NodeIndex(i), obligation.ceil() as usize)
+                })
+                .collect();
+
+            let mut chunk_id = 0;
+            while !remaining.is_empty() {
+                if remaining.len() == 1 {
+                    let (node_idx, rem) = remaining.pop_front().unwrap();
+                    assignment.push_range(node_idx, chunk_id..(chunk_id + rem));
+                    break;
+                }
+
+                remaining.retain_mut(|(node_idx, rem)| {
+                    if *rem == 0 {
+                        return false;
+                    }
+                    assignment.push(*node_idx, chunk_id);
+                    *rem -= 1;
+                    chunk_id += 1;
+                    *rem > 0
+                })
+            }
+
+            assert!(assignment.num_chunks() >= num_scaled_symbols);
+            assert!(assignment.num_chunks() <= capacity);
+
+            Ok(assignment)
+        }
+    }
+
+    // Build matching f64-share and integer-stake partition algorithms
+    // from a single list of (node_seed, raw_stake) entries for
+    // differential testing.
+    fn make_paired_partitions(
+        stakes: &[(NodeNum, U256)],
+    ) -> (F64StakePartition<PT>, StakePartition<PT>) {
+        let total: U256 = stakes
+            .iter()
+            .map(|(_, s)| *s)
+            .fold(U256::ZERO, |a, b| a + b);
+        let f64_validators: Vec<_> = stakes
+            .iter()
+            .map(|(n, s)| {
+                let share = Stake::from(*s) / Stake::from(total);
+                (node_id(*n), share)
+            })
+            .collect();
+        let int_validators: Vec<_> = stakes.iter().map(|(n, s)| (node_id(*n), *s)).collect();
+        (
+            F64StakePartition::from_shares(f64_validators),
+            StakePartition::from_stakes(int_validators),
+        )
+    }
+
     #[test]
     fn test_stake_partition_single_validator() {
-        let partition = StakePartition::from_shares(vec![(node_id(1), 1.0)]);
+        let partition = StakePartition::from_stakes(vec![(node_id(1), 7)]);
         // 10 base * 3 redundancy = 30 symbols
         let assignment = partition.assign(10, R3).unwrap();
-
         assert_eq!(assignment.num_chunks(), 30);
         assert_contiguous(&assignment);
         for (_, target) in assignment.iter() {
@@ -744,32 +934,20 @@ mod tests {
     }
 
     #[rstest]
-    // equal stakes: each gets ceil(15 * 0.5) = 8 chunks -> 16 total
-    #[case(
-        vec![(1, 0.5), (2, 0.5)],
-        5,
-        vec![(0, 8), (1, 8)]
-    )]
-    // 1/3 vs 2/3: node0 gets ceil(12*1/3)=4, node1 gets ceil(12*2/3)=8 -> 12 total
-    #[case(
-        vec![(1, 1.0/3.0), (2, 2.0/3.0)],
-        4,
-        vec![(0, 4), (1, 8)]
-    )]
-    // three validators: 1/6, 2/6, 3/6
-    // ceil(36 * 1/6) = 6, ceil(36 * 2/6) = 12, ceil(36 * 3/6) = 18 -> 36 total
-    #[case(
-        vec![(1, 1.0/6.0), (2, 2.0/6.0), (3, 3.0/6.0)],
-        12,
-        vec![(0, 6), (1, 12), (2, 18)]
-    )]
+    // all assuming redundancy=3
+    // equal stakes: each gets ceil(15 * 1/2) = 8 -> 16 total
+    #[case(vec![(1, 1u64), (2, 1)], 5, vec![(0, 8), (1, 8)])]
+    // 1:2 ratio: ceil(12 * 1/3) = 4, ceil(12 * 2/3) = 8 -> 12 total
+    #[case(vec![(1, 1), (2, 2)], 4, vec![(0, 4), (1, 8)])]
+    // 1:2:3 ratio: ceil(36 * 1/6) = 6, ceil(36 * 2/6) = 12, ceil(36 * 3/6) = 18
+    #[case(vec![(1, 1), (2, 2), (3, 3)], 12, vec![(0, 6), (1, 12), (2, 18)])]
     fn test_stake_partition_chunk_counts(
-        #[case] shares: Vec<(u64, f64)>,
+        #[case] stakes: Vec<(u64, u64)>,
         #[case] num_base_symbols: usize,
         #[case] expected_counts: Vec<(usize, usize)>,
     ) {
-        let validators: Vec<_> = shares.into_iter().map(|(n, s)| (node_id(n), s)).collect();
-        let partition = StakePartition::from_shares(validators);
+        let validators: Vec<_> = stakes.into_iter().map(|(n, s)| (node_id(n), s)).collect();
+        let partition = StakePartition::from_stakes(validators);
         let assignment = partition.assign(num_base_symbols, R3).unwrap();
 
         assert_contiguous(&assignment);
@@ -785,11 +963,10 @@ mod tests {
 
     #[test]
     fn test_stake_partition_round_robin_order() {
-        // 1/3 vs 2/3 with 2 base * 3 redundancy = 6 symbols
+        // 1:2 ratio with 2 base * 3 redundancy = 6 symbols
         // obligations: ceil(6*1/3)=2, ceil(6*2/3)=4 -> total 6
         // round-robin: 0,1,0,1,1,1
-        let partition =
-            StakePartition::from_shares(vec![(node_id(1), 1.0 / 3.0), (node_id(2), 2.0 / 3.0)]);
+        let partition = StakePartition::from_stakes(vec![(node_id(1), 1u64), (node_id(2), 2u64)]);
         let assignment = partition.assign(2, R3).unwrap();
 
         assert_eq!(assignment.num_chunks(), 6);
@@ -799,14 +976,14 @@ mod tests {
 
     #[test]
     fn test_stake_partition_rounding_bounds() {
-        // With N validators, rounding can add at most N extra chunks
-        let shares = vec![
-            (node_id(1), 0.1),
-            (node_id(2), 0.2),
-            (node_id(3), 0.3),
-            (node_id(4), 0.4),
+        // With N validators, rounding can add at most N extra chunks.
+        let stakes = vec![
+            (node_id(1), 1u64),
+            (node_id(2), 2u64),
+            (node_id(3), 3u64),
+            (node_id(4), 4u64),
         ];
-        let partition = StakePartition::from_shares(shares);
+        let partition = StakePartition::from_stakes(stakes);
         let num_base_symbols = 100;
         let assignment = partition.assign(num_base_symbols, R3).unwrap();
 
@@ -817,56 +994,38 @@ mod tests {
         assert_indices_valid(&assignment, 4);
     }
 
-    // ---------------------------------------------------------------
-    // StakePartition: proportional vs round-robin equivalence
-    // ---------------------------------------------------------------
-
     #[rstest]
     // simple 1:2 stake ratio
-    #[case(vec![(1, 1.0/3.0), (2, 2.0/3.0)], 10)]
+    #[case(vec![(1, 1), (2, 2)], 10)]
     // three validators with unequal stake
-    #[case(vec![(1, 0.1), (2, 0.3), (3, 0.6)], 50)]
+    #[case(vec![(1, 1), (2, 3), (3, 6)], 50)]
     // four validators with small differences
-    #[case(vec![(1, 0.2), (2, 0.25), (3, 0.25), (4, 0.3)], 100)]
+    #[case(vec![(1, 20), (2, 25), (3, 25), (4, 30)], 100)]
     // extreme: one validator has almost all stake
-    #[case(vec![(1, 0.001), (2, 0.999)], 100)]
+    #[case(vec![(1, 1), (2, 999)], 100)]
     // large validator set
     #[case({
-        let n = MAX_VALIDATOR_SET_SIZE;
-        let share = 1.0 / n as f64;
-        (1..=n).map(|i| (i as u64, share)).collect::<Vec<_>>()
+        let n = MAX_VALIDATOR_SET_SIZE as u64;
+        (1..=n).map(|i| (i, n)).collect::<Vec<_>>()
     }, 5000)]
     fn test_proportional_vs_round_robin_same_counts(
-        #[case] shares: Vec<(u64, f64)>,
+        #[case] stakes: Vec<(u64, u64)>,
         #[case] num_symbols: usize,
     ) {
-        let validators: Vec<_> = shares.into_iter().map(|(n, s)| (node_id(n), s)).collect();
-        let partition = StakePartition::from_shares(validators);
+        let validators: Vec<_> = stakes.into_iter().map(|(n, s)| (node_id(n), s)).collect();
+        let partition = StakePartition::from_stakes(validators);
 
         let proportional = partition.assign_proportional(num_symbols, R3).unwrap();
         let round_robin = partition.assign_round_robin(num_symbols, R3).unwrap();
 
-        // same total chunks
         assert_eq!(proportional.num_chunks(), round_robin.num_chunks());
-
-        // same per-node chunk counts
-        let prop_counts = chunk_counts(&proportional);
-        let rr_counts = chunk_counts(&round_robin);
-        assert_eq!(prop_counts, rr_counts);
-
-        // both contiguous
+        assert_eq!(chunk_counts(&proportional), chunk_counts(&round_robin));
         assert_contiguous(&proportional);
         assert_contiguous(&round_robin);
     }
 
-    // ---------------------------------------------------------------
-    // StakePartition: numerical stability at different stake scales
-    // ---------------------------------------------------------------
-
     #[test]
     fn test_stake_partition_numerical_stability() {
-        use alloy_primitives::U256;
-
         use crate::packet::regular;
 
         const DEFAULT_SEGMENT_LEN: usize = 1400;
@@ -878,16 +1037,15 @@ mod tests {
         for scale in [
             U256::from(1),
             U256::from(u64::MAX),
-            U256::MAX / U256::from(16),
+            parse_ether("100_000_000_000").unwrap(), // 100B
         ] {
-            // total stake = 16*scale
             // message_len chosen to produce 10 base symbols, * 2 redundancy = 20
             let message_len = symbol_len * 10;
             let redundancy = Redundancy::from_u8(2);
             let num_base_symbols = DEFAULT_LAYOUT.num_base_symbols(message_len);
             assert_eq!(num_base_symbols, 10);
 
-            let total = U256::from(16) * scale;
+            // total stake = 16*scale
             let stakes = [
                 (1u64, U256::from(1) * scale), // 1/16 -> ceil(20/16) = 2
                 (2, U256::from(4) * scale),    // 4/16 -> ceil(80/16) = 5
@@ -895,14 +1053,8 @@ mod tests {
                 (4, U256::from(6) * scale),    // 6/16 -> ceil(120/16) = 8
             ];
 
-            let validators: Vec<_> = stakes
-                .iter()
-                .map(|(n, s)| {
-                    let share = Stake::from(*s) / Stake::from(total);
-                    (node_id(*n), share)
-                })
-                .collect();
-            let partition = StakePartition::from_shares(validators);
+            let validators: Vec<_> = stakes.iter().map(|(n, s)| (node_id(*n), *s)).collect();
+            let partition = StakePartition::from_stakes(validators);
             let assignment = partition.assign(num_base_symbols, redundancy).unwrap();
 
             let counts = chunk_counts(&assignment);
@@ -916,17 +1068,13 @@ mod tests {
         }
     }
 
-    // ---------------------------------------------------------------
-    // StakePartition: shuffle
-    // ---------------------------------------------------------------
-
     #[test]
     fn test_stake_partition_shuffle() {
-        let mut partition = StakePartition::from_shares(vec![
-            (node_id(1), 0.25),
-            (node_id(2), 0.25),
-            (node_id(3), 0.25),
-            (node_id(4), 0.25),
+        let mut partition = StakePartition::from_stakes(vec![
+            (node_id(1), 1u64),
+            (node_id(2), 1),
+            (node_id(3), 1),
+            (node_id(4), 1),
         ]);
         let before: Vec<_> = (0..4)
             .map(|i| *partition.get(NodeIndex(i)).unwrap())
@@ -941,6 +1089,112 @@ mod tests {
         for node in &before {
             assert!(after.contains(node));
         }
+    }
+
+    // ---------------------------------------------------------------
+    // Differential: F64StakePartition vs integer StakePartition
+    // ---------------------------------------------------------------
+
+    // Assignments are produced from the same (NodeId, stake) input
+    // and must agree both in per-node chunk counts and in the
+    // per-chunk recipient sequence. The order match relies on both
+    // implementations using the same VecDeque round-robin walk.
+    fn assert_assignments_match(
+        f64_partition: &F64StakePartition<PT>,
+        int_partition: &StakePartition<PT>,
+        num_base_symbols: usize,
+        redundancy: Redundancy,
+        ctx: &str,
+    ) {
+        let f64_assignment = f64_partition.assign(num_base_symbols, redundancy).unwrap();
+        let int_assignment = int_partition.assign(num_base_symbols, redundancy).unwrap();
+
+        assert_eq!(
+            f64_assignment.num_chunks(),
+            int_assignment.num_chunks(),
+            "num_chunks mismatch [{ctx}]"
+        );
+        assert_eq!(
+            chunk_counts(&f64_assignment),
+            chunk_counts(&int_assignment),
+            "chunk_counts mismatch [{ctx}]"
+        );
+        let f64_indices: Vec<usize> = f64_assignment.iter().map(|(_, t)| t.node_index.0).collect();
+        let int_indices: Vec<usize> = int_assignment.iter().map(|(_, t)| t.node_index.0).collect();
+        assert_eq!(
+            f64_indices, int_indices,
+            "per-chunk node_index mismatch [{ctx}]"
+        );
+    }
+
+    // Deterministic case set chosen so both implementations agree
+    // exactly: integer stakes well inside f64 precision and totals
+    // that don't trigger sub-ulp rounding boundaries.
+    #[rstest]
+    #[case(vec![(1, 1u64), (2, 1)], 10)]
+    #[case(vec![(1, 1), (2, 2)], 10)]
+    #[case(vec![(1, 1), (2, 2), (3, 3)], 30)]
+    #[case(vec![(1, 1), (2, 3), (3, 6)], 50)]
+    #[case(vec![(1, 4), (2, 5), (3, 5), (4, 6)], 100)]
+    #[case(vec![(1, 10), (2, 20), (3, 30), (4, 40)], 1000)]
+    fn test_diff_simple_inputs_agree(
+        #[case] stakes: Vec<(u64, u64)>,
+        #[case] num_base_symbols: usize,
+    ) {
+        let stakes_u256: Vec<_> = stakes.iter().map(|(n, s)| (*n, U256::from(*s))).collect();
+        let (f64_partition, int_partition) = make_paired_partitions(&stakes_u256);
+        let ctx = format!("stakes={stakes:?} num_base_symbols={num_base_symbols}");
+        assert_assignments_match(&f64_partition, &int_partition, num_base_symbols, R3, &ctx);
+    }
+
+    // Random stake distributions for stakes up to 100B.
+    #[test]
+    fn test_diff_random_stakes_agree() {
+        use rand::{Rng as _, SeedableRng as _};
+
+        let mut rng = rand_chacha::ChaCha20Rng::from_seed([42u8; 32]);
+        let ether: U256 = parse_ether("1").unwrap(); // 10^18
+
+        for trial in 0..200 {
+            let num_validators = rng.gen_range(2..=64);
+            let stakes: Vec<(u64, U256)> = (0..num_validators)
+                .map(|i| {
+                    let a: u64 = rng.gen_range(1..=100_000);
+                    let b: u64 = rng.gen_range(1..=1_000_000);
+                    let stake = U256::from(a) * U256::from(b) * ether;
+                    (i as u64 + 1, stake)
+                })
+                .collect();
+
+            let num_base_symbols = rng.gen_range(1..=512);
+            let (f64_partition, int_partition) = make_paired_partitions(&stakes);
+            let ctx = format!("trial={trial} n={num_validators} m={num_base_symbols}");
+            assert_assignments_match(&f64_partition, &int_partition, num_base_symbols, R3, &ctx);
+        }
+    }
+
+    // Large validator set (MAX_VALIDATOR_SET_SIZE) with small
+    // integer stakes; both implementations should still agree.
+    #[test]
+    fn test_diff_large_set_small_stakes_agree() {
+        use alloy_primitives::U256;
+        use rand::{Rng as _, SeedableRng as _};
+
+        let mut rng = rand_chacha::ChaCha20Rng::from_seed([7u8; 32]);
+        let stakes: Vec<_> = (1..=MAX_VALIDATOR_SET_SIZE as u64)
+            .map(|i| {
+                let s: u32 = rng.gen_range(1..=1_000_000);
+                (i, U256::from(s))
+            })
+            .collect();
+        let (f64_partition, int_partition) = make_paired_partitions(&stakes);
+        assert_assignments_match(
+            &f64_partition,
+            &int_partition,
+            2048,
+            R3,
+            "large_set_small_stakes",
+        );
     }
 
     // ---------------------------------------------------------------
