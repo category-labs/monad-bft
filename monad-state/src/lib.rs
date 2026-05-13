@@ -1775,33 +1775,23 @@ mod test {
 
     #[test]
     fn test_forkpoint_validate_1() {
-        let (mut forkpoint, mut locked_validator_sets, election) = get_forkpoint();
-        let locked_epoch_1 = forkpoint.0.validator_sets.pop().unwrap();
-        let locked_val_set_1 = locked_validator_sets.pop().unwrap();
-        let _ = forkpoint.0.validator_sets.pop().unwrap();
-        let _ = locked_validator_sets.pop().unwrap();
+        let (mut forkpoint, _locked, election) = get_forkpoint();
+        let one = forkpoint.0.validator_sets[0].clone();
 
+        // Stage 1: validator-set count bounds. Both checks return before
+        // `validate` touches the locked sets, so `&[]` suffices.
+
+        // Too few: zero validator sets.
+        forkpoint.0.validator_sets = Vec::new().into();
         assert_eq!(
-            forkpoint.validate(
-                &ValidatorSetFactory::default(),
-                &locked_validator_sets,
-                &election
-            ),
+            forkpoint.validate(&ValidatorSetFactory::default(), &[], &election),
             Err(ForkpointValidationError::TooFewValidatorSets)
         );
 
-        forkpoint.0.validator_sets.push(locked_epoch_1.clone());
-        forkpoint.0.validator_sets.push(locked_epoch_1.clone());
-        forkpoint.0.validator_sets.push(locked_epoch_1);
-        locked_validator_sets.push(locked_val_set_1.clone());
-        locked_validator_sets.push(locked_val_set_1.clone());
-        locked_validator_sets.push(locked_val_set_1);
+        // Too many: > 2 (count rejected before consecutiveness, so dupes are fine).
+        forkpoint.0.validator_sets = vec![one.clone(), one.clone(), one].into();
         assert_eq!(
-            forkpoint.validate(
-                &ValidatorSetFactory::default(),
-                &locked_validator_sets,
-                &election
-            ),
+            forkpoint.validate(&ValidatorSetFactory::default(), &[], &election),
             Err(ForkpointValidationError::TooManyValidatorSets)
         );
     }
