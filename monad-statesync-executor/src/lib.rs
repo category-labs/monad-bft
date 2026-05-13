@@ -36,6 +36,9 @@ use crate::{
     ipc::StateSyncIpc,
 };
 
+mod client;
+mod ipc;
+
 monad_executor::metric_consts! {
     GAUGE_STATESYNC_SYNCING {
         name: "monad.statesync.syncing",

@@ -1,0 +1,34 @@
+[package]
+name = "monad-statesync-executor"
+version = "0.1.0"
+edition = "2021"
+
+# this is necessary for criterion bench options
+# https://bheisler.github.io/criterion.rs/book/faq.html#cargo-bench-gives-unrecognized-option-errors-for-valid-command-line-options
+[lib]
+bench = false
+
+[dependencies]
+monad-crypto = { workspace = true }
+monad-cxx = { workspace = true }
+monad-eth-types = { workspace = true }
+monad-executor = { workspace = true }
+monad-executor-glue = { workspace = true }
+monad-statesync = { workspace = true }
+monad-types = { workspace = true }
+monad-validator = { workspace = true }
+
+alloy-consensus = { workspace = true }
+alloy-rlp = { workspace = true }
+futures = { workspace = true }
+rand = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "net", "rt", "sync", "time"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true, features = ["async_tokio"] }
+tempfile = { workspace = true }
+
+[[bench]]
+name = "ipc_bench"
+harness = false

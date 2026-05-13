@@ -55,6 +55,7 @@ monad-state = { path = "./monad-state" }
 monad-state-backend = { path = "./monad-state-backend" }
 monad-state-backend-cache = { path = "./monad-state-backend-cache" }
 monad-statesync = { path = "./monad-statesync" }
+monad-statesync-executor = { path = "./monad-statesync-executor" }
 monad-system-calls = { path = "./monad-system-calls" }
 monad-testutil = { path = "./monad-testutil" }
 monad-tfm = { path = "./monad-tfm" }

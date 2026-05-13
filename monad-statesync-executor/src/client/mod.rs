@@ -31,13 +31,16 @@ use monad_executor_glue::{
     SessionId, StateSyncBadVersion, StateSyncRequest, StateSyncResponse, StateSyncUpsertType,
     SELF_STATESYNC_VERSION,
 };
+use monad_statesync::ffi;
 use monad_types::{DropTimer, NodeId, SeqNum};
 
-use crate::{
-    ffi,
+use self::{
     outbound_requests::{OutboundRequests, RequestPollResult},
     progress::StateSyncProgress,
 };
+
+mod outbound_requests;
+mod progress;
 
 #[derive(Debug, Clone)]
 /// This name is confusing, but I can't think of a better name. This is basically an output event
@@ -118,7 +121,7 @@ impl<PT: PubKey> StateSyncClient<PT> {
                     }
                 });
 
-                let mut sync_ctx = ffi::SyncCtx::new(
+                let mut sync_ctx = ffi::StateSyncCtx::new(
                     db_paths_ptr,
                     num_db_paths,
                     sq_thread_cpu.map(|n| n as ::std::os::raw::c_uint),
@@ -140,8 +143,9 @@ impl<PT: PubKey> StateSyncClient<PT> {
                                 target.encode(&mut buf);
                                 unsafe {
                                     ffi::monad_statesync_client_handle_target(
-                                        // handle_target can be called on an active or inactive SyncCtx
-                                        sync_ctx.get_or_create_ctx(),
+                                        // handle_target can be called on an active or inactive
+                                        // StateSyncCtx
+                                        sync_ctx.get_or_create_ctx_with_client_prefixes(),
                                         buf.as_ptr(),
                                         buf.len() as u64,
                                     )
@@ -164,7 +168,7 @@ impl<PT: PubKey> StateSyncClient<PT> {
                                 );
                             });
 
-                            // handle_response can only be called on an active SyncCtx
+                            // handle_response can only be called on an active StateSyncCtx
                             let ctx = sync_ctx
                                 .get_ctx()
                                 .expect("received response on inactive ctx");
@@ -210,7 +214,7 @@ impl<PT: PubKey> StateSyncClient<PT> {
                                     .expect("request_rx dropped");
                                 if response.response_n != 0 {
                                     ffi::monad_statesync_client_handle_done(
-                                        sync_ctx.get_or_create_ctx(),
+                                        sync_ctx.get_or_create_ctx_with_client_prefixes(),
                                         ffi::monad_sync_done {
                                             success: true,
                                             prefix: response.request.prefix,
@@ -225,32 +229,38 @@ impl<PT: PubKey> StateSyncClient<PT> {
                             }
                         }
                     }
-                    if sync_ctx.try_finalize() {
-                        let target = current_target.expect("target should be set").clone();
-                        current_target = next_target.take();
-                        if let Some(current_target) = &current_target {
-                            tracing::debug!(
-                                "statesync reached target {:?}, next target {:?}",
-                                target,
-                                current_target
-                            );
-                            let mut buf = Vec::new();
-                            current_target.encode(&mut buf);
-                            unsafe {
-                                ffi::monad_statesync_client_handle_target(
-                                    sync_ctx.get_or_create_ctx(),
-                                    buf.as_ptr(),
-                                    buf.len() as u64,
-                                )
-                            };
-                            progress.lock().unwrap().update_target(current_target)
-                        } else {
-                            tracing::debug!(?target, "done statesync");
-                            progress.lock().unwrap().update_reached_target(&target);
-                            request_tx
-                                .send(SyncRequest::DoneSync(target))
-                                .expect("request_rx dropped mid DoneSync");
-                        }
+
+                    if !sync_ctx.has_reached_target() {
+                        continue;
+                    }
+
+                    let root_matches = sync_ctx.finalize();
+                    assert!(root_matches, "state root doesn't match, are peers trusted?");
+
+                    let target = current_target.expect("target should be set").clone();
+                    current_target = next_target.take();
+                    if let Some(current_target) = &current_target {
+                        tracing::debug!(
+                            "statesync reached target {:?}, next target {:?}",
+                            target,
+                            current_target
+                        );
+                        let mut buf = Vec::new();
+                        current_target.encode(&mut buf);
+                        unsafe {
+                            ffi::monad_statesync_client_handle_target(
+                                sync_ctx.get_or_create_ctx_with_client_prefixes(),
+                                buf.as_ptr(),
+                                buf.len() as u64,
+                            )
+                        };
+                        progress.lock().unwrap().update_target(current_target)
+                    } else {
+                        tracing::debug!(?target, "done statesync");
+                        progress.lock().unwrap().update_reached_target(&target);
+                        request_tx
+                            .send(SyncRequest::DoneSync(target))
+                            .expect("request_rx dropped mid DoneSync");
                     }
                 }
                 // this loop exits when execution is about to start
