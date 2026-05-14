@@ -46,8 +46,9 @@ use monad_archive::{
     },
 };
 use monad_chain_data::{
-    compute_trace_addresses, store::FjallStore, CallKind, FinalizedBlock, IngestTrace, IngestTx,
-    MonadChainDataService, QueryLimits,
+    compute_trace_addresses,
+    store::{FjallStore, FjallTuning},
+    CallKind, FinalizedBlock, IngestTrace, IngestTx, MonadChainDataService, QueryLimits,
 };
 use tracing::{debug, info, warn, Level};
 
@@ -147,6 +148,23 @@ struct Cli {
     /// buffers N fully-built `FinalizedBlock`s in memory.
     #[arg(long, default_value_t = 1)]
     batch_size: usize,
+
+    /// fjall total-journal cap in MiB. Default 512 matches fjall's default;
+    /// raise (e.g. 4096 or 8192) for high-throughput backfill to reduce
+    /// journal-rotation pressure. Must be >= 64.
+    #[arg(long, default_value_t = 512)]
+    fjall_journal_mib: u64,
+
+    /// Per-keyspace memtable cap in MiB. Default 64 matches fjall's default;
+    /// raise (e.g. 256) so each keyspace amortizes more writes per flush.
+    /// Total memtable footprint at steady state is roughly N_keyspaces * this.
+    #[arg(long, default_value_t = 64)]
+    fjall_memtable_mib: u64,
+
+    /// fjall flush/compaction worker thread count. None lets fjall pick
+    /// (min(CPU, 4)). Raise for many-core boxes under sustained write load.
+    #[arg(long)]
+    fjall_workers: Option<usize>,
 }
 
 #[tokio::main]
@@ -185,6 +203,9 @@ async fn main() -> Result<()> {
     if cli.batch_size == 0 {
         bail!("--batch-size must be >= 1");
     }
+    if cli.fjall_journal_mib < 64 {
+        bail!("--fjall-journal-mib must be >= 64");
+    }
     if cli.autotune {
         if cli.min_concurrency == 0 {
             bail!("--min-concurrency must be >= 1");
@@ -206,7 +227,18 @@ async fn main() -> Result<()> {
         }
     }
 
-    let store = FjallStore::open(&cli.data_dir)
+    let tuning = FjallTuning {
+        max_journaling_size_bytes: cli.fjall_journal_mib * 1024 * 1024,
+        max_memtable_size_bytes: cli.fjall_memtable_mib * 1024 * 1024,
+        worker_threads: cli.fjall_workers,
+    };
+    info!(
+        fjall_journal_mib = cli.fjall_journal_mib,
+        fjall_memtable_mib = cli.fjall_memtable_mib,
+        fjall_workers = ?cli.fjall_workers,
+        "fjall tuning"
+    );
+    let store = FjallStore::open(&cli.data_dir, tuning)
         .with_context(|| format!("opening fjall store at {}", cli.data_dir.display()))?;
     let service = MonadChainDataService::new(store.clone(), store, QueryLimits::UNLIMITED);
 

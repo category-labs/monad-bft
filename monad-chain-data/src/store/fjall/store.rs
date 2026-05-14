@@ -20,7 +20,7 @@ use std::{
 };
 
 use bytes::Bytes;
-use fjall::{Config, Database, Keyspace, KeyspaceCreateOptions, KvSeparationOptions};
+use fjall::{Database, Keyspace, KeyspaceCreateOptions, KvSeparationOptions};
 
 use crate::{
     error::{MonadChainDataError, Result},
@@ -38,6 +38,28 @@ pub(super) const KV_PREFIX: &str = "kv:";
 pub(super) const SCAN_PREFIX: &str = "scan:";
 pub(super) const CAS_PREFIX: &str = "cas:";
 pub(super) const BLOB_PREFIX: &str = "blob:";
+
+/// Tunable knobs passed to fjall at open. `Default::default()` reproduces
+/// fjall's own defaults (512 MiB total journal cap, 64 MiB per-keyspace
+/// memtable). Raise the journal cap to silence rotation log spam under
+/// large batched commits; raise per-keyspace memtable to amortize more
+/// writes per flush. Both trade memory for write throughput.
+#[derive(Debug, Clone, Copy)]
+pub struct FjallTuning {
+    pub max_journaling_size_bytes: u64,
+    pub max_memtable_size_bytes: u64,
+    pub worker_threads: Option<usize>,
+}
+
+impl Default for FjallTuning {
+    fn default() -> Self {
+        Self {
+            max_journaling_size_bytes: 512 * 1024 * 1024,
+            max_memtable_size_bytes: 64 * 1024 * 1024,
+            worker_threads: None,
+        }
+    }
+}
 
 /// Embedded fjall-backed implementation of [`MetaStore`], [`MetaStoreCas`],
 /// and [`BlobStore`]. Single-process only: CAS rows are protected by a
@@ -64,17 +86,27 @@ pub(super) struct Inner {
     // publication-state row is the only chain-data row touching the CAS
     // surface today, so contention is bounded to a single hot key.
     pub(super) cas_lock: Mutex<()>,
+    // Set once at open and never mutates; threaded into the per-keyspace
+    // create-options closure inside `keyspace()`.
+    pub(super) tuning: FjallTuning,
 }
 
 impl FjallStore {
-    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        let db = Database::create_or_recover(Config::new(path.as_ref()))
+    pub fn open(path: impl AsRef<Path>, tuning: FjallTuning) -> Result<Self> {
+        let mut builder =
+            Database::builder(path.as_ref()).max_journaling_size(tuning.max_journaling_size_bytes);
+        if let Some(threads) = tuning.worker_threads {
+            builder = builder.worker_threads(threads);
+        }
+        let db = builder
+            .open()
             .map_err(|e| MonadChainDataError::Backend(format!("fjall open: {e}")))?;
         Ok(Self {
             inner: Arc::new(Inner {
                 db,
                 keyspaces: Mutex::new(HashMap::new()),
                 cas_lock: Mutex::new(()),
+                tuning,
             }),
         })
     }
@@ -106,11 +138,12 @@ impl FjallStore {
             return Ok(ks.clone());
         }
         let is_blob = name.starts_with(BLOB_PREFIX);
+        let memtable_bytes = self.inner.tuning.max_memtable_size_bytes;
         let ks = self
             .inner
             .db
             .keyspace(name, || {
-                let opts = KeyspaceCreateOptions::default();
+                let opts = KeyspaceCreateOptions::default().max_memtable_size(memtable_bytes);
                 if is_blob {
                     // KV separation: defaults are 1 KiB separation threshold,
                     // 64 MiB blob files, LZ4. Suits 10s of KB - 16 MiB blobs;

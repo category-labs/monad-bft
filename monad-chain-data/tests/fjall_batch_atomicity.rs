@@ -19,8 +19,8 @@ use bytes::Bytes;
 use monad_chain_data::{
     engine::tables::PublicationTables,
     store::{
-        BlobStore, BlobTableId, BlobWriteBatch, CasOutcome, FjallStore, MetaStore, MetaStoreCas,
-        MetaWriteBatch, ScannableTableId, TableId,
+        BlobStore, BlobTableId, BlobWriteBatch, CasOutcome, FjallStore, FjallTuning, MetaStore,
+        MetaStoreCas, MetaWriteBatch, ScannableTableId, TableId,
     },
     FinalizedBlock, IngestTx, MonadChainDataService, QueryLimits, B256,
 };
@@ -37,13 +37,13 @@ const T_BLOB: BlobTableId = BlobTableId::new("fjall_batch_atomicity_blob");
 async fn meta_batch_writes_survive_reopen() {
     let dir = tempfile::tempdir().expect("tempdir");
     {
-        let store = FjallStore::open(dir.path()).expect("open");
+        let store = FjallStore::open(dir.path(), FjallTuning::default()).expect("open");
         let mut b = MetaStore::begin_batch(&store);
         b.put(T_KV, b"k", Bytes::from_static(b"v"));
         b.scan_put(T_SCAN, b"p", b"c", Bytes::from_static(b"sv"));
         b.commit().await.expect("commit");
     }
-    let store = FjallStore::open(dir.path()).expect("reopen");
+    let store = FjallStore::open(dir.path(), FjallTuning::default()).expect("reopen");
     assert_eq!(
         store.get(T_KV, b"k").await.unwrap().as_deref(),
         Some(&b"v"[..])
@@ -58,12 +58,12 @@ async fn meta_batch_writes_survive_reopen() {
 async fn blob_batch_writes_survive_reopen() {
     let dir = tempfile::tempdir().expect("tempdir");
     {
-        let store = FjallStore::open(dir.path()).expect("open");
+        let store = FjallStore::open(dir.path(), FjallTuning::default()).expect("open");
         let mut b = BlobStore::begin_batch(&store);
         b.put_blob(T_BLOB, b"k", Bytes::from_static(b"v"));
         b.commit().await.expect("commit");
     }
-    let store = FjallStore::open(dir.path()).expect("reopen");
+    let store = FjallStore::open(dir.path(), FjallTuning::default()).expect("reopen");
     assert_eq!(
         store.get_blob(T_BLOB, b"k").await.unwrap().as_deref(),
         Some(&b"v"[..])
@@ -73,7 +73,7 @@ async fn blob_batch_writes_survive_reopen() {
 #[tokio::test(flavor = "current_thread")]
 async fn commit_with_cas_conflict_does_not_persist_meta_writes() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let store = FjallStore::open(dir.path()).expect("open");
+    let store = FjallStore::open(dir.path(), FjallTuning::default()).expect("open");
     // Seed CAS row at version 1.
     store
         .cas_put(T_CAS, b"head", None, Bytes::from_static(b"v0"))
@@ -90,7 +90,7 @@ async fn commit_with_cas_conflict_does_not_persist_meta_writes() {
 
     // Reopen and check the orphan write did not land.
     drop(store);
-    let store = FjallStore::open(dir.path()).expect("reopen");
+    let store = FjallStore::open(dir.path(), FjallTuning::default()).expect("reopen");
     assert!(store.get(T_KV, b"orphan").await.unwrap().is_none());
     let (_, value) = store
         .cas_get(T_CAS, b"head")
@@ -134,7 +134,7 @@ async fn ingest_blocks_retries_idempotently_after_phase_a_only_state() {
     };
 
     {
-        let store = FjallStore::open(dir.path()).expect("open");
+        let store = FjallStore::open(dir.path(), FjallTuning::default()).expect("open");
         let service = MonadChainDataService::new(store.clone(), store, QueryLimits::UNLIMITED);
         service
             .ingest_blocks(blocks.clone())
@@ -145,7 +145,7 @@ async fn ingest_blocks_retries_idempotently_after_phase_a_only_state() {
     // Wipe the CAS row to reproduce a Phase-A-only crash window: Phase A
     // rows remain on disk, but the publication head row never landed.
     {
-        let store = FjallStore::open(dir.path()).expect("reopen for cas clear");
+        let store = FjallStore::open(dir.path(), FjallTuning::default()).expect("reopen for cas clear");
         store
             .clear_cas_key(
                 PublicationTables::<FjallStore>::PUBLICATION_STATE_TABLE,
@@ -167,7 +167,7 @@ async fn ingest_blocks_retries_idempotently_after_phase_a_only_state() {
     // `ingest_blocks` sees `expected_version = None`. It must re-stage
     // the same Phase A rows (idempotent overwrite) and then advance the
     // head via the CAS path.
-    let store = FjallStore::open(dir.path()).expect("reopen for retry");
+    let store = FjallStore::open(dir.path(), FjallTuning::default()).expect("reopen for retry");
     let service = MonadChainDataService::new(store.clone(), store, QueryLimits::UNLIMITED);
 
     assert!(
@@ -199,7 +199,7 @@ async fn ingest_blocks_idempotent_after_reopen_with_published_head() {
     };
 
     {
-        let store = FjallStore::open(dir.path()).expect("open");
+        let store = FjallStore::open(dir.path(), FjallTuning::default()).expect("open");
         let service = MonadChainDataService::new(store.clone(), store, QueryLimits::UNLIMITED);
         service
             .ingest_blocks(blocks.clone())
@@ -207,7 +207,7 @@ async fn ingest_blocks_idempotent_after_reopen_with_published_head() {
             .expect("ingest");
     }
 
-    let store = FjallStore::open(dir.path()).expect("reopen");
+    let store = FjallStore::open(dir.path(), FjallTuning::default()).expect("reopen");
     let service = MonadChainDataService::new(store.clone(), store, QueryLimits::UNLIMITED);
     let head = service.publication().load_published_head().await.unwrap();
     assert_eq!(head, Some(blocks.len() as u64));
