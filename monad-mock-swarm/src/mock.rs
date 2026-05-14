@@ -407,6 +407,9 @@ impl<S: SwarmRelation> Executor for MockExecutor<S> {
                 } => {
                     self.router.send_outbound(self.tick, target, message);
                 }
+                RouterCommand::ProposerScheduleResponse { .. } => {
+                    // TODO
+                }
             }
         }
     }

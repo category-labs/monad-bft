@@ -32,7 +32,7 @@ use monad_mock_swarm::{
     swarm_relation::{DebugSwarmRelation, SwarmRelation},
 };
 use monad_transformer::ID;
-use monad_types::{NodeId, Round, SeqNum, Serializable, GENESIS_ROUND, GENESIS_SEQ_NUM};
+use monad_types::{NodeId, Round, RoundSpan, SeqNum, Serializable, GENESIS_ROUND, GENESIS_SEQ_NUM};
 
 use crate::{graphql::message::GraphQLMonadMessage, simulation::Simulation};
 
@@ -377,6 +377,7 @@ enum GraphQLMonadEvent<'s> {
     TimestampEvent(GraphQLTimestampEvent),
     StateSyncEvent(GraphQLStateSyncEvent<'s>),
     ConfigEvent(GraphQLConfigEvent<'s>),
+    RaptorcastEvent(GraphQLRaptorcastEvent<'s>),
 }
 
 impl<'s> From<&'s MonadEventType> for GraphQLMonadEvent<'s> {
@@ -396,6 +397,9 @@ impl<'s> From<&'s MonadEventType> for GraphQLMonadEvent<'s> {
             MonadEvent::StateSyncEvent(event) => Self::StateSyncEvent(GraphQLStateSyncEvent(event)),
             MonadEvent::ConfigEvent(event) => Self::ConfigEvent(GraphQLConfigEvent(event)),
             MonadEvent::SecondaryRaptorcastPeersUpdate { .. } => todo!(),
+            MonadEvent::ProposerScheduleRequest(span) => {
+                Self::RaptorcastEvent(GraphQLRaptorcastEvent(span))
+            }
         }
     }
 }
@@ -470,6 +474,15 @@ struct GraphQLConfigEvent<'s>(&'s ConfigEvent<SignatureType, SignatureCollection
 
 #[Object]
 impl GraphQLConfigEvent<'_> {
+    async fn debug(&self) -> String {
+        format!("{:?}", self.0)
+    }
+}
+
+struct GraphQLRaptorcastEvent<'s>(&'s RoundSpan);
+
+#[Object]
+impl GraphQLRaptorcastEvent<'_> {
     async fn debug(&self) -> String {
         format!("{:?}", self.0)
     }

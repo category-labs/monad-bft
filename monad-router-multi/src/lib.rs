@@ -325,6 +325,7 @@ where
             match cmd {
                 RouterCommand::Publish { .. } => validator_cmds.push(cmd),
                 RouterCommand::PublishWithPriority { .. } => validator_cmds.push(cmd),
+                RouterCommand::ProposerScheduleResponse { .. } => validator_cmds.push(cmd),
                 RouterCommand::AddEpochValidatorSet {
                     epoch,
                     validator_set,

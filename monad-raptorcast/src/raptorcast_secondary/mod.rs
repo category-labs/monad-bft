@@ -246,6 +246,9 @@ where
                 Self::Command::PublishWithPriority { .. } => {
                     panic!("Command routed to secondary RaptorCast: PublishWithPriority")
                 }
+                Self::Command::ProposerScheduleResponse { .. } => {
+                    panic!("Command routed to secondary RaptorCast: ProposerScheduleResponse")
+                }
                 Self::Command::AddEpochValidatorSet { .. } => {
                     panic!("Command routed to secondary RaptorCast: AddEpochValidatorSet")
                 }

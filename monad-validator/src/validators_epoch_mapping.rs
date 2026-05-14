@@ -54,6 +54,10 @@ where
         }
     }
 
+    pub fn contains_epoch(&self, epoch: &Epoch) -> bool {
+        self.validator_map.contains_key(epoch)
+    }
+
     pub fn get_val_set(&self, epoch: &Epoch) -> Option<&VTF::ValidatorSetType> {
         self.validator_map.get(epoch).map(|(val_set, _)| val_set)
     }
