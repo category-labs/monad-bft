@@ -232,12 +232,29 @@ async fn main() -> Result<()> {
         max_memtable_size_bytes: cli.fjall_memtable_mib * 1024 * 1024,
         worker_threads: cli.fjall_workers,
     };
+    // fjall persists max_memtable_size per-keyspace at creation, so the
+    // value baked in at first open wins on every subsequent reopen — the
+    // flag silently does nothing on existing data dirs. Journal cap and
+    // worker_threads are not persisted and always take effect.
+    let data_dir_fresh = !cli.data_dir.exists()
+        || cli
+            .data_dir
+            .read_dir()
+            .map(|mut d| d.next().is_none())
+            .unwrap_or(true);
     info!(
         fjall_journal_mib = cli.fjall_journal_mib,
         fjall_memtable_mib = cli.fjall_memtable_mib,
         fjall_workers = ?cli.fjall_workers,
+        data_dir_fresh,
         "fjall tuning"
     );
+    if !data_dir_fresh && cli.fjall_memtable_mib != 64 {
+        warn!(
+            requested_memtable_mib = cli.fjall_memtable_mib,
+            "--fjall-memtable-mib is persisted per-keyspace at first creation; this data dir already exists, so the baked-in value will be used. Journal cap and worker_threads still apply."
+        );
+    }
     let store = FjallStore::open(&cli.data_dir, tuning)
         .with_context(|| format!("opening fjall store at {}", cli.data_dir.display()))?;
     let service = MonadChainDataService::new(store.clone(), store, QueryLimits::UNLIMITED);
