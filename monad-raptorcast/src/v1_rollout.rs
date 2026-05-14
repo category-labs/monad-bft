@@ -98,7 +98,7 @@ mod tests {
         packet::MessageBuilder,
         udp::UdpState,
         util::{
-            BuildTarget, FullNodeGroupMap, PrimaryBroadcastGroup, RaptorcastMode, Redundancy,
+            BuildTarget, FullNodeGroupMap, PrimaryBroadcastGroup, RaptorcastMode, ProposerMap, Redundancy,
             SecondaryBroadcastGroup, SecondaryGroup, SecondaryGroupAssignment,
         },
     };
@@ -135,6 +135,8 @@ mod tests {
         let sender_id = NodeId::new(sender_key.pubkey());
         let group_map = [(EPOCH, validators.clone())].into();
         let fn_group_map = FullNodeGroupMap::default();
+        let mut proposer_schedule = ProposerMap::default();
+        proposer_schedule.extend([(ROUND, sender_id)]);
         let group = PrimaryBroadcastGroup::of_epoch(EPOCH, &sender_id, &group_map).unwrap();
 
         let app_message: Bytes = vec![0xAB_u8; 64 * 1024].into();
@@ -167,8 +169,13 @@ mod tests {
                 stride: packet.stride as u16,
                 sender: None,
             };
-            let decoded =
-                udp_state.handle_message(&group_map, &fn_group_map, |_, _, _| {}, recv_msg);
+            let decoded = udp_state.handle_message(
+                &group_map,
+                &fn_group_map,
+                &proposer_schedule,
+                |_, _, _| {},
+                recv_msg,
+            );
             decoded_count += decoded.len();
         }
 

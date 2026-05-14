@@ -78,11 +78,13 @@ use monad_validator::{
 use tracing::warn;
 
 use self::{
-    blocksync::BlockSyncChildState, consensus::ConsensusChildState, statesync::BlockBuffer,
+    blocksync::BlockSyncChildState, consensus::ConsensusChildState,
+    proposer_schedule::ProposerScheduleService, statesync::BlockBuffer,
 };
 
 mod blocksync;
 mod consensus;
+mod proposer_schedule;
 mod statesync;
 
 const STATESYNC_BLOCK_THRESHOLD: SeqNum = SeqNum(30_000);
@@ -417,6 +419,8 @@ where
     epoch_manager: EpochManager,
     /// Maps the epoch number to validator stakes and certificate pubkeys
     val_epoch_map: ValidatorsEpochMapping<VTF, SCT>,
+    /// Resolves proposer schedule requests
+    proposer_schedule: ProposerScheduleService,
     /// Excludes self node id
     /// Expiry NodeId -> round
     secondary_raptorcast_peers: BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, Round>,
@@ -940,6 +944,7 @@ where
             leader_election: self.leader_election,
             epoch_manager,
             val_epoch_map,
+            proposer_schedule: ProposerScheduleService::new(),
             secondary_raptorcast_peers: Default::default(),
 
             block_timestamp,
@@ -1007,6 +1012,22 @@ where
         >,
     > {
         match event {
+            MonadEvent::ProposerScheduleRequest(span) => {
+                let response = self.proposer_schedule.handle_request(
+                    span,
+                    &self.epoch_manager,
+                    &self.val_epoch_map,
+                    &self.leader_election,
+                );
+                response
+                    .map(|proposers| {
+                        Command::RouterCommand(RouterCommand::ProposerScheduleResponse {
+                            proposers,
+                        })
+                    })
+                    .into_iter()
+                    .collect()
+            }
             MonadEvent::ConsensusEvent(consensus_event) => {
                 let consensus_cmds = ConsensusChildState::new(self).update(consensus_event);
 
@@ -1023,17 +1044,18 @@ where
                     })
                     .is_some();
 
-                if consensus_cmds
+                let entered_round = consensus_cmds
                     .iter()
-                    .any(|cmd| matches!(cmd.command, ConsensusCommand::EnterRound(_, _)))
-                {
-                    self.metrics.node_state.self_stake_bps = self.get_self_stake_bps();
-                }
+                    .any(|cmd| matches!(cmd.command, ConsensusCommand::EnterRound(_, _)));
 
                 let mut cmds = consensus_cmds
                     .into_iter()
                     .flat_map(Into::<Vec<Command<_, _, _, _, _, _, _, _, _>>>::into)
                     .collect::<Vec<_>>();
+
+                if entered_round {
+                    self.metrics.node_state.self_stake_bps = self.get_self_stake_bps();
+                }
 
                 if take_checkpoint {
                     if let Some(checkpoint_cmd) = ConsensusChildState::new(self).checkpoint() {

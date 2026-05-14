@@ -88,6 +88,18 @@ impl EpochManager {
 
         epoch_start.map(|(&epoch, _)| epoch)
     }
+
+    /// Like get_epoch, but only returns a value when the answer is guaranteed
+    /// to be stable against future schedule_epoch_start insertions.
+    pub fn get_stable_epoch(&self, round: Round) -> Option<Epoch> {
+        let (_, &max_start) = self.epoch_starts.last_key_value()?;
+        let stable_horizon = max_start + Round(self.epoch_length.0);
+        if round < stable_horizon {
+            self.get_epoch(round)
+        } else {
+            None
+        }
+    }
 }
 
 #[cfg(test)]
@@ -137,5 +149,56 @@ mod tests {
         assert_eq!(epoch_manager.epoch_starts.get(&Epoch(2)), Some(&Round(104)));
         assert_eq!(epoch_manager.get_epoch(Round(103)), Some(Epoch(1)));
         assert_eq!(epoch_manager.get_epoch(Round(104)), Some(Epoch(2)));
+    }
+
+    #[test]
+    fn get_stable_epoch() {
+        // Empty manager: never stable.
+        let empty = EpochManager::new(SeqNum(10), Round(3), &[]);
+        assert_eq!(empty.get_stable_epoch(Round(0)), None);
+        assert_eq!(empty.get_stable_epoch(Round(100)), None);
+
+        // Latest start = Round(20), epoch_length = 10 -> horizon = Round(30).
+        let mut em = EpochManager::new(
+            SeqNum(10),
+            Round(3),
+            &[
+                (Epoch(1), Round(5)),
+                (Epoch(2), Round(12)),
+                (Epoch(3), Round(20)),
+            ],
+        );
+
+        // Below the lowest known start: None.
+        assert_eq!(em.get_stable_epoch(Round(4)), None);
+        // Inside the horizon: matches get_epoch.
+        assert_eq!(em.get_stable_epoch(Round(5)), Some(Epoch(1)));
+        assert_eq!(em.get_stable_epoch(Round(11)), Some(Epoch(1)));
+        assert_eq!(em.get_stable_epoch(Round(12)), Some(Epoch(2)));
+        assert_eq!(em.get_stable_epoch(Round(19)), Some(Epoch(2)));
+        assert_eq!(em.get_stable_epoch(Round(20)), Some(Epoch(3)));
+        assert_eq!(em.get_stable_epoch(Round(29)), Some(Epoch(3)));
+        // At or above the horizon: None.
+        assert_eq!(em.get_epoch(Round(30)), Some(Epoch(3)));
+        assert_eq!(em.get_stable_epoch(Round(30)), None);
+        assert_eq!(em.get_epoch(Round(1000)), Some(Epoch(3)));
+        assert_eq!(em.get_stable_epoch(Round(1000)), None);
+
+        // Capture a stable answer to check invariance after a future insert.
+        let stable_query = Round(29);
+        let before = em.get_stable_epoch(stable_query);
+        assert_eq!(before, Some(Epoch(3)));
+
+        // Boundary block of E3 at block_round=29 -> schedules E4 at Round(32).
+        // New horizon = Round(42).
+        em.schedule_epoch_start(SeqNum(29), Round(29));
+        assert_eq!(em.get_stable_epoch(Round(30)), Some(Epoch(3)));
+        assert_eq!(em.get_stable_epoch(Round(31)), Some(Epoch(3)));
+        assert_eq!(em.get_stable_epoch(Round(32)), Some(Epoch(4)));
+        assert_eq!(em.get_stable_epoch(Round(41)), Some(Epoch(4)));
+        assert_eq!(em.get_stable_epoch(Round(42)), None);
+
+        // Previously stable answer is unchanged.
+        assert_eq!(em.get_stable_epoch(stable_query), before);
     }
 }

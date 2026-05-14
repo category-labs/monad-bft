@@ -263,6 +263,7 @@ where
             RaptorCastEvent::SecondaryRaptorcastPeersUpdate(..) => {
                 unimplemented!()
             }
+            RaptorCastEvent::ProposerScheduleRequest(_) => unimplemented!(),
         }
     }
 }

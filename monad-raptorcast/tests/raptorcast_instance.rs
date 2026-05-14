@@ -391,7 +391,7 @@ impl Message for MockMessage {
     type Event = MockEvent<Self::NodeIdPubKey>;
 
     fn event(self, from: NodeId<Self::NodeIdPubKey>) -> Self::Event {
-        MockEvent((from, self.id))
+        MockEvent::Message((from, self.id))
     }
 }
 
@@ -419,7 +419,26 @@ impl Deserializable<Bytes> for MockMessage {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct MockEvent<P: PubKey>((NodeId<P>, u32));
+enum MockEvent<P: PubKey> {
+    Message((NodeId<P>, u32)),
+    // Sink for raptorcast-internal events that tests don't inspect.
+    Discarded,
+}
+
+// Filter a MockEvent stream down to the inner Message payloads.
+fn messages_only<S>(
+    stream: S,
+) -> impl futures_util::Stream<Item = (NodeId<PubKeyType>, u32)> + Unpin
+where
+    S: futures_util::Stream<Item = MockEvent<PubKeyType>> + Unpin,
+{
+    stream.filter_map(|event| {
+        std::future::ready(match event {
+            MockEvent::Message(m) => Some(m),
+            MockEvent::Discarded => None,
+        })
+    })
+}
 
 impl<ST> From<RaptorCastEvent<MockEvent<CertificateSignaturePubKey<ST>>, ST>>
     for MockEvent<CertificateSignaturePubKey<ST>>
@@ -435,6 +454,7 @@ where
             RaptorCastEvent::SecondaryRaptorcastPeersUpdate { .. } => {
                 unimplemented!()
             }
+            RaptorCastEvent::ProposerScheduleRequest(_) => MockEvent::Discarded,
         }
     }
 }
@@ -552,20 +572,20 @@ async fn publish_to_full_nodes() {
     validator_rc.exec(vec![command]);
 
     // 7. Assert full nodes receive the message
+    let mut full_node1_messages = messages_only(full_node1_rc);
+    let mut full_node2_messages = messages_only(full_node2_rc);
     let timeout = Duration::from_secs(1);
-    let event1 = tokio::time::timeout(timeout, full_node1_rc.next())
+    let (from, id) = tokio::time::timeout(timeout, full_node1_messages.next())
         .await
         .expect("timeout")
         .expect("stream ended");
-    let MockEvent((from, id)) = event1;
     assert_eq!(from, validator_nodeid);
     assert_eq!(id, 42);
 
-    let event2 = tokio::time::timeout(timeout, full_node2_rc.next())
+    let (from, id) = tokio::time::timeout(timeout, full_node2_messages.next())
         .await
         .expect("timeout")
         .expect("stream ended");
-    let MockEvent((from, id)) = event2;
     assert_eq!(from, validator_nodeid);
     assert_eq!(id, 42);
 }
@@ -701,7 +721,9 @@ async fn test_priority_messages() {
     while received_messages.len() < MESSAGE_COUNT * 2 && start.elapsed() < timeout {
         match tokio::time::timeout(Duration::from_millis(100), rx_rc.next()).await {
             Ok(Some(event)) => {
-                let MockEvent((_, msg_id)) = event;
+                let MockEvent::Message((_, msg_id)) = event else {
+                    continue;
+                };
                 received_messages.push(msg_id);
             }
             Ok(None) => break,
@@ -847,7 +869,9 @@ async fn test_raptorcast_forwarding_priority() {
 
     while received_messages.len() < 2 && start.elapsed() < timeout {
         if let Some(event) = validator_fullnode_rc.next().await {
-            let MockEvent((from, msg_id)) = event;
+            let MockEvent::Message((from, msg_id)) = event else {
+                continue;
+            };
             received_messages.push((from, msg_id));
         }
     }

@@ -14,6 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
+    collections::BTreeMap,
     fmt::Debug,
     net::{SocketAddr, SocketAddrV4},
     num::NonZeroU16,
@@ -51,7 +52,7 @@ use monad_crypto::certificate_signature::{
 use monad_state_backend::StateBackend;
 use monad_types::{
     deserialize_pubkey, serialize_pubkey, Epoch, ExecutionProtocol, LimitedVec, NodeId, Round,
-    RouterTarget, SeqNum, Stake, UdpPriority,
+    RoundSpan, RouterTarget, SeqNum, Stake, UdpPriority,
 };
 use monad_validator::signature_collection::SignatureCollection;
 use serde::{Deserialize, Serialize};
@@ -98,6 +99,9 @@ pub enum RouterCommand<ST: CertificateSignatureRecoverable, OM> {
     UpdateFullNodes {
         dedicated_full_nodes: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
         prioritized_full_nodes: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
+    },
+    ProposerScheduleResponse {
+        proposers: BTreeMap<Round, NodeId<CertificateSignaturePubKey<ST>>>,
     },
 }
 
@@ -157,6 +161,10 @@ impl<ST: CertificateSignatureRecoverable, OM> Debug for RouterCommand<ST, OM> {
                 .debug_struct("UpdateFullNodes")
                 .field("dedicated_full_nodes", dedicated_full_nodes)
                 .field("prioritized_full_nodes", prioritized_full_nodes)
+                .finish(),
+            Self::ProposerScheduleResponse { proposers } => f
+                .debug_struct("ProposerScheduleResponse")
+                .field("proposers", proposers)
                 .finish(),
         }
     }
@@ -2069,6 +2077,8 @@ where
         expiry_round: Round,
         confirm_group_peers: Vec<NodeId<SCT::NodeIdPubKey>>,
     },
+    /// Request for proposal schedule information
+    ProposerScheduleRequest(RoundSpan),
 }
 
 impl<ST, SCT, EPT> MonadEvent<ST, SCT, EPT>
@@ -2128,6 +2138,7 @@ where
                 expiry_round: *expiry_round,
                 confirm_group_peers: confirm_group_peers.clone(),
             },
+            MonadEvent::ProposerScheduleRequest(span) => MonadEvent::ProposerScheduleRequest(*span),
         }
     }
 }
@@ -2179,6 +2190,10 @@ where
                 let enc: [&dyn Encodable; 3] = [&9u8, &expiry_round, &confirm_group_peers];
                 encode_list::<_, dyn Encodable>(&enc, out);
             }
+            Self::ProposerScheduleRequest(span) => {
+                let enc: [&dyn Encodable; 2] = [&10u8, span];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
         }
     }
 }
@@ -2222,6 +2237,9 @@ where
                     confirm_group_peers,
                 })
             }
+            10 => Ok(Self::ProposerScheduleRequest(RoundSpan::decode(
+                &mut payload,
+            )?)),
             _ => Err(alloy_rlp::Error::Custom(
                 "failed to decode unknown MonadEvent",
             )),
@@ -2294,6 +2312,9 @@ where
             MonadEvent::ConfigEvent(_) => "CONFIGEVENT".to_string(),
             MonadEvent::SecondaryRaptorcastPeersUpdate { .. } => {
                 "SecondaryRaptorcastPeersUpdate".to_string()
+            }
+            MonadEvent::ProposerScheduleRequest(span) => {
+                format!("ProposerScheduleRequest -- span {span:?}")
             }
         };
 

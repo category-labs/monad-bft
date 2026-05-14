@@ -28,8 +28,8 @@ use crate::{
     SIGNATURE_SIZE,
 };
 
-const CACHE_MAX_FUTURE_ROUNDS: Round = Round(100);
-const CACHE_MAX_PAST_ROUNDS: Round = Round(100);
+pub(crate) const CACHE_MAX_FUTURE_ROUNDS: Round = Round(100);
+pub(crate) const CACHE_MAX_PAST_ROUNDS: Round = Round(100);
 
 // Stores information related to the current round.
 pub struct RoundInfoCache<PT: PubKey> {
@@ -116,12 +116,8 @@ impl<PT: PubKey> RoundInfoCache<PT> {
 
     fn check_round(&self, round: Round) -> Option<()> {
         if let Some(current) = self.current_round {
-            let max_round = current
-                .checked_add(CACHE_MAX_FUTURE_ROUNDS)
-                .unwrap_or(Round::MAX);
-            let min_round = current
-                .checked_sub(CACHE_MAX_PAST_ROUNDS)
-                .unwrap_or(Round::MIN);
+            let max_round = current.saturating_add(CACHE_MAX_FUTURE_ROUNDS);
+            let min_round = current.saturating_sub(CACHE_MAX_PAST_ROUNDS);
 
             if round > max_round || round < min_round {
                 return None;

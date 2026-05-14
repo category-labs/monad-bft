@@ -79,8 +79,16 @@ impl Round {
             .is_some_and(|next_round| next_round == self.as_u64())
     }
 
+    pub fn saturating_sub(self, count: Round) -> Self {
+        Round(self.0.saturating_sub(count.0))
+    }
+
     pub fn checked_sub(self, count: Round) -> Option<Self> {
         self.0.checked_sub(count.0).map(Round)
+    }
+
+    pub fn saturating_add(self, count: Round) -> Self {
+        Round(self.0.saturating_add(count.0))
     }
 
     pub fn checked_add(self, count: Round) -> Option<Self> {
@@ -148,7 +156,9 @@ impl FromStr for Round {
     }
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, RlpEncodable)]
+#[derive(
+    Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Serialize, Deserialize, RlpEncodable,
+)]
 // A non-empty span of rounds
 pub struct RoundSpan {
     pub start: Round, // inclusive
@@ -188,8 +198,19 @@ impl RoundSpan {
     pub fn contains(&self, round: Round) -> bool {
         self.start <= round && round < self.end
     }
+
+    pub fn iter(&self) -> impl Iterator<Item = Round> {
+        (self.start.0..self.end.0).map(Round)
+    }
+
     pub fn overlaps(&self, other: &RoundSpan) -> bool {
         self.start < other.end && other.start < self.end
+    }
+
+    // Clamp `start` up to `lower`. Returns None if the resulting span
+    // would be empty.
+    pub fn clamp_below(self, lower: Round) -> Option<Self> {
+        RoundSpan::new(self.start.max(lower), self.end)
     }
 }
 
@@ -1110,6 +1131,15 @@ mod test {
 
         let decoded = RoundSpan::decode(&mut buf.as_slice()).unwrap();
         assert_eq!(span, decoded);
+    }
+
+    #[test]
+    fn test_round_span_iter() {
+        let span = RoundSpan::new(Round(10), Round(13)).unwrap();
+        assert_eq!(
+            span.iter().collect::<Vec<_>>(),
+            vec![Round(10), Round(11), Round(12)]
+        );
     }
 
     #[test]
