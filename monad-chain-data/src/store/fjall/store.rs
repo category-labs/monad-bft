@@ -91,6 +91,20 @@ pub(super) struct Inner {
     pub(super) tuning: FjallTuning,
 }
 
+/// Snapshot of fjall's per-keyspace runtime state. Sampled cheaply via
+/// `Keyspace` accessor methods; used by operators to attribute write-amp,
+/// flush pressure, and disk usage to specific logical tables.
+#[derive(Debug, Clone)]
+pub struct FjallKeyspaceStats {
+    pub name: String,
+    pub sealed_memtable_count: usize,
+    pub l0_table_count: usize,
+    pub table_count: usize,
+    pub blob_file_count: usize,
+    pub disk_space_bytes: u64,
+    pub approximate_len: usize,
+}
+
 impl FjallStore {
     pub fn open(path: impl AsRef<Path>, tuning: FjallTuning) -> Result<Self> {
         let mut builder =
@@ -127,6 +141,33 @@ impl FjallStore {
             Ok(())
         })
         .await
+    }
+
+    /// Snapshots fjall's runtime accounting for every keyspace this store
+    /// has opened so far. Keyspaces are opened lazily on first access, so
+    /// the returned set grows as the ingest pipeline touches more logical
+    /// tables. Cheap: each accessor reads atomics on the underlying
+    /// keyspace handle.
+    pub fn keyspace_stats(&self) -> Result<Vec<FjallKeyspaceStats>> {
+        let guard = self
+            .inner
+            .keyspaces
+            .lock()
+            .map_err(|_| MonadChainDataError::Backend("fjall keyspace cache poisoned".into()))?;
+        let mut out: Vec<FjallKeyspaceStats> = guard
+            .iter()
+            .map(|(name, ks)| FjallKeyspaceStats {
+                name: name.clone(),
+                sealed_memtable_count: ks.sealed_memtable_count(),
+                l0_table_count: ks.l0_table_count(),
+                table_count: ks.table_count(),
+                blob_file_count: ks.blob_file_count(),
+                disk_space_bytes: ks.disk_space(),
+                approximate_len: ks.approximate_len(),
+            })
+            .collect();
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(out)
     }
 
     pub(super) fn keyspace(&self, name: &str) -> Result<Keyspace> {

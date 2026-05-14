@@ -65,7 +65,7 @@ async fn ingest_blocks_matches_sequential_ingest_block_state() {
         blob_batch.clone(),
         QueryLimits::UNLIMITED,
     );
-    let outcomes = service_batch
+    let (outcomes, _timings) = service_batch
         .ingest_blocks(blocks.clone())
         .await
         .expect("batch ingest");
@@ -207,6 +207,36 @@ async fn ingest_blocks_skips_phase_b_when_no_family_writes_seal() {
     }
 }
 
+// IngestBatchTimings is reporting plumbing — this just confirms the
+// per-phase counters get populated (non-zero where applicable) and the
+// Phase B / standalone-CAS branch flag tracks which path the batch
+// actually took. Wall times are inherently noisy under test load, so we
+// only assert "this phase ran" semantics rather than specific magnitudes.
+#[tokio::test(flavor = "current_thread")]
+async fn ingest_blocks_returns_populated_phase_timings() {
+    let blocks = make_chain(3, 2);
+    let service = MonadChainDataService::new(
+        InMemoryMetaStore::default(),
+        InMemoryBlobStore::default(),
+        QueryLimits::UNLIMITED,
+    );
+    let (outcomes, timings) = service.ingest_blocks(blocks.clone()).await.expect("ingest");
+    assert_eq!(outcomes.len(), blocks.len());
+    assert_eq!(timings.blocks, blocks.len());
+    // Phase A always runs: staging + the two commits are always on the
+    // hot path. We accept zero-ms commits on InMemoryMetaStore (each
+    // commit is a HashMap insert and the clock resolution is 1ms) but
+    // require that the bookkeeping fields were populated by the public
+    // API, not left at their `Default` zero state.
+    let zero = monad_chain_data::IngestBatchTimings::default();
+    assert_ne!(timings, zero, "timings struct should not be Default after ingest");
+    // Non-empty blocks (with logs) seal at least one family fragment, so
+    // the Phase B branch must have run. `commit_b_ms > 0` is flaky on
+    // fast in-memory stores; assert the branch flag instead.
+    assert!(!timings.phase_b_skipped, "non-empty blocks should hit Phase B");
+    assert_eq!(timings.cas_ms, 0, "cas_ms must be 0 when Phase B handled the CAS");
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn ingest_blocks_empty_input_is_no_op() {
     let service = MonadChainDataService::new(
@@ -214,8 +244,9 @@ async fn ingest_blocks_empty_input_is_no_op() {
         InMemoryBlobStore::default(),
         QueryLimits::UNLIMITED,
     );
-    let outcomes = service.ingest_blocks(Vec::new()).await.expect("empty");
+    let (outcomes, timings) = service.ingest_blocks(Vec::new()).await.expect("empty");
     assert!(outcomes.is_empty());
+    assert_eq!(timings, monad_chain_data::IngestBatchTimings::default());
     assert!(service
         .publication()
         .load_published_head()

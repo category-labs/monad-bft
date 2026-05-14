@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::time::Instant;
+
 use bytes::Bytes;
 
 use crate::{
@@ -90,6 +92,24 @@ pub struct IngestOutcome {
     pub written_traces: usize,
 }
 
+/// Per-batch timing breakdown emitted by [`MonadChainDataService::ingest_blocks`].
+/// All durations are milliseconds. `commit_b_ms` and `cas_ms` are mutually
+/// exclusive: when Phase B is empty (`phase_b_skipped = true`) the head
+/// advance runs through a standalone CAS and `commit_b_ms == 0`; otherwise
+/// the CAS is folded into the Phase B commit and `cas_ms == 0`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct IngestBatchTimings {
+    pub stage_a_ms: u64,
+    pub commit_a_meta_ms: u64,
+    pub commit_a_blob_ms: u64,
+    pub reads_ms: u64,
+    pub stage_b_ms: u64,
+    pub commit_b_ms: u64,
+    pub cas_ms: u64,
+    pub phase_b_skipped: bool,
+    pub blocks: usize,
+}
+
 impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
     pub fn new(meta_store: M, blob_store: B, limits: QueryLimits) -> Self {
         Self {
@@ -122,7 +142,7 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
     // writer's publish.
     /// Persists one finalized block and advances the published head on success.
     pub async fn ingest_block(&self, block: FinalizedBlock) -> Result<IngestOutcome> {
-        let mut out = self.ingest_blocks(vec![block]).await?;
+        let (mut out, _timings) = self.ingest_blocks(vec![block]).await?;
         // `ingest_blocks` documents and tests an exact 1:1 input-to-outcome
         // contract, so a single-element input always yields exactly one
         // outcome. The `debug_assert_eq!` traps any future regression of
@@ -141,10 +161,15 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
     pub async fn ingest_blocks(
         &self,
         blocks: Vec<FinalizedBlock>,
-    ) -> Result<Vec<IngestOutcome>> {
+    ) -> Result<(Vec<IngestOutcome>, IngestBatchTimings)> {
         if blocks.is_empty() {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), IngestBatchTimings::default()));
         }
+
+        let mut timings = IngestBatchTimings {
+            blocks: blocks.len(),
+            ..IngestBatchTimings::default()
+        };
 
         let block_tables = self.tables.blocks();
         let logs = self.tables.family(Family::Log);
@@ -160,6 +185,7 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
             .validate_continuity(&blocks[0], current_head)
             .await?;
 
+        let stage_a_start = Instant::now();
         let mut staged: Vec<StagedBlock> = Vec::with_capacity(blocks.len());
         let mut prev_record = first_previous;
         let mut prev_hash = blocks[0].parent_hash();
@@ -254,9 +280,28 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
             }
             block_tables.stage_record(&mut meta_batch, block.block_number(), &st.block_record);
         }
+        timings.stage_a_ms = stage_a_start.elapsed().as_millis() as u64;
 
-        futures::try_join!(meta_batch.commit(), blob_batch.commit())?;
+        // Time each commit individually while still running them
+        // concurrently — `try_join!` would only give us the wall time of the
+        // slower future. Each branch captures its own `Instant` and returns
+        // the elapsed duration so the caller can attribute commit-A latency
+        // to meta vs blob independently.
+        let meta_commit = async {
+            let t = Instant::now();
+            meta_batch.commit().await?;
+            Ok::<_, MonadChainDataError>(t.elapsed())
+        };
+        let blob_commit = async {
+            let t = Instant::now();
+            blob_batch.commit().await?;
+            Ok::<_, MonadChainDataError>(t.elapsed())
+        };
+        let (meta_elapsed, blob_elapsed) = futures::try_join!(meta_commit, blob_commit)?;
+        timings.commit_a_meta_ms = meta_elapsed.as_millis() as u64;
+        timings.commit_a_blob_ms = blob_elapsed.as_millis() as u64;
 
+        let reads_start = Instant::now();
         let log_ranges = family_ranges(&staged, |s| s.log_plan.log_window);
         let tx_ranges = family_ranges(&staged, |s| s.tx_plan.tx_window);
         let trace_ranges = family_ranges(&staged, |s| s.trace_plan.trace_window);
@@ -289,6 +334,7 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
             traces.plan_directory_compactions(&trace_ranges),
             traces.plan_bitmap_compactions(&trace_bitmap_per_block, &trace_ranges),
         )?;
+        timings.reads_ms = reads_start.elapsed().as_millis() as u64;
 
         let phase_b_has_writes = !log_dir_plan.buckets.is_empty()
             || log_bitmap_plan.has_writes
@@ -304,6 +350,8 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
         };
 
         if phase_b_has_writes {
+            timings.phase_b_skipped = false;
+            let stage_b_start = Instant::now();
             let mut phase_b = self.tables.meta_store().begin_batch();
             logs.stage_directory_compactions(&mut phase_b, &log_dir_plan);
             logs.stage_bitmap_compactions(&mut phase_b, &log_bitmap_plan);
@@ -311,7 +359,9 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
             txs.stage_bitmap_compactions(&mut phase_b, &tx_bitmap_plan);
             traces.stage_directory_compactions(&mut phase_b, &trace_dir_plan);
             traces.stage_bitmap_compactions(&mut phase_b, &trace_bitmap_plan);
+            timings.stage_b_ms = stage_b_start.elapsed().as_millis() as u64;
 
+            let commit_b_start = Instant::now();
             let outcome = phase_b
                 .commit_with_cas(
                     PublicationTables::<M>::PUBLICATION_STATE_TABLE,
@@ -321,13 +371,17 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
                 )
                 .await?;
             self.publication.cas_outcome_into_result(outcome).await?;
+            timings.commit_b_ms = commit_b_start.elapsed().as_millis() as u64;
         } else {
+            timings.phase_b_skipped = true;
+            let cas_start = Instant::now();
             self.publication
                 .cas_advance(expected_version, next_state)
                 .await?;
+            timings.cas_ms = cas_start.elapsed().as_millis() as u64;
         }
 
-        Ok(staged
+        let outcomes = staged
             .into_iter()
             .map(|s| IngestOutcome {
                 indexed_finalized_head: s.block_record.block_number,
@@ -336,7 +390,8 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
                 written_txs: s.tx_plan.written_txs,
                 written_traces: s.trace_plan.written_traces,
             })
-            .collect())
+            .collect();
+        Ok((outcomes, timings))
     }
 
     /// Executes a finalized logs query over the current published head.

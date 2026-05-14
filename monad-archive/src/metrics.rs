@@ -87,6 +87,22 @@ pub enum MetricNames {
     FAULTS_MISSING_TXHASH,
     FAULTS_INCORRECT_TX_DATA,
     FAULTS_MISSING_ALL_TXHASH,
+
+    // Chain-data ingest per-phase histograms
+    CHAIN_DATA_INGEST_STAGE_A_DURATION_MS,
+    CHAIN_DATA_INGEST_COMMIT_A_META_DURATION_MS,
+    CHAIN_DATA_INGEST_COMMIT_A_BLOB_DURATION_MS,
+    CHAIN_DATA_INGEST_READS_DURATION_MS,
+    CHAIN_DATA_INGEST_STAGE_B_DURATION_MS,
+    CHAIN_DATA_INGEST_COMMIT_B_DURATION_MS,
+    CHAIN_DATA_INGEST_CAS_DURATION_MS,
+    CHAIN_DATA_INGEST_BATCH_TOTAL_DURATION_MS,
+    CHAIN_DATA_INGEST_BATCH_SIZE,
+
+    // Chain-data fjall keyspace state gauges
+    CHAIN_DATA_FJALL_KEYSPACE_DISK_SPACE_BYTES,
+    CHAIN_DATA_FJALL_KEYSPACE_L0_TABLES,
+    CHAIN_DATA_FJALL_KEYSPACE_SEALED_MEMTABLES,
 }
 
 impl MetricNames {
@@ -145,6 +161,38 @@ impl MetricNames {
             MetricNames::GENERIC_ARCHIVE_FILES_UPLOADED => "generic_archive_files_uploaded",
             MetricNames::GENERIC_ARCHIVE_FILES_FAILED_TO_PROCESS => {
                 "generic_archive_files_failed_to_process"
+            }
+            MetricNames::CHAIN_DATA_INGEST_STAGE_A_DURATION_MS => {
+                "chain_data_ingest_stage_a_duration_ms"
+            }
+            MetricNames::CHAIN_DATA_INGEST_COMMIT_A_META_DURATION_MS => {
+                "chain_data_ingest_commit_a_meta_duration_ms"
+            }
+            MetricNames::CHAIN_DATA_INGEST_COMMIT_A_BLOB_DURATION_MS => {
+                "chain_data_ingest_commit_a_blob_duration_ms"
+            }
+            MetricNames::CHAIN_DATA_INGEST_READS_DURATION_MS => {
+                "chain_data_ingest_reads_duration_ms"
+            }
+            MetricNames::CHAIN_DATA_INGEST_STAGE_B_DURATION_MS => {
+                "chain_data_ingest_stage_b_duration_ms"
+            }
+            MetricNames::CHAIN_DATA_INGEST_COMMIT_B_DURATION_MS => {
+                "chain_data_ingest_commit_b_duration_ms"
+            }
+            MetricNames::CHAIN_DATA_INGEST_CAS_DURATION_MS => "chain_data_ingest_cas_duration_ms",
+            MetricNames::CHAIN_DATA_INGEST_BATCH_TOTAL_DURATION_MS => {
+                "chain_data_ingest_batch_total_duration_ms"
+            }
+            MetricNames::CHAIN_DATA_INGEST_BATCH_SIZE => "chain_data_ingest_batch_size",
+            MetricNames::CHAIN_DATA_FJALL_KEYSPACE_DISK_SPACE_BYTES => {
+                "chain_data_fjall_keyspace_disk_space_bytes"
+            }
+            MetricNames::CHAIN_DATA_FJALL_KEYSPACE_L0_TABLES => {
+                "chain_data_fjall_keyspace_l0_tables"
+            }
+            MetricNames::CHAIN_DATA_FJALL_KEYSPACE_SEALED_MEMTABLES => {
+                "chain_data_fjall_keyspace_sealed_memtables"
             }
         }
     }
@@ -216,6 +264,41 @@ impl MetricNames {
             MetricNames::FAULTS_MISSING_TXHASH => "Missing transaction hashes",
             MetricNames::FAULTS_INCORRECT_TX_DATA => "Incorrect transaction data entries",
             MetricNames::FAULTS_MISSING_ALL_TXHASH => "Blocks missing all transaction hashes",
+            // Chain-data ingest per-phase histograms
+            MetricNames::CHAIN_DATA_INGEST_STAGE_A_DURATION_MS => {
+                "chain-data ingest Phase A staging duration in ms"
+            }
+            MetricNames::CHAIN_DATA_INGEST_COMMIT_A_META_DURATION_MS => {
+                "chain-data ingest Phase A meta commit duration in ms"
+            }
+            MetricNames::CHAIN_DATA_INGEST_COMMIT_A_BLOB_DURATION_MS => {
+                "chain-data ingest Phase A blob commit duration in ms"
+            }
+            MetricNames::CHAIN_DATA_INGEST_READS_DURATION_MS => {
+                "chain-data ingest compaction-plan reads duration in ms"
+            }
+            MetricNames::CHAIN_DATA_INGEST_STAGE_B_DURATION_MS => {
+                "chain-data ingest Phase B staging duration in ms"
+            }
+            MetricNames::CHAIN_DATA_INGEST_COMMIT_B_DURATION_MS => {
+                "chain-data ingest Phase B commit (with CAS) duration in ms"
+            }
+            MetricNames::CHAIN_DATA_INGEST_CAS_DURATION_MS => {
+                "chain-data ingest standalone CAS-advance duration in ms"
+            }
+            MetricNames::CHAIN_DATA_INGEST_BATCH_TOTAL_DURATION_MS => {
+                "chain-data ingest total batch duration in ms"
+            }
+            MetricNames::CHAIN_DATA_INGEST_BATCH_SIZE => "chain-data ingest blocks per batch",
+            MetricNames::CHAIN_DATA_FJALL_KEYSPACE_DISK_SPACE_BYTES => {
+                "fjall keyspace disk-space bytes (per-keyspace gauge)"
+            }
+            MetricNames::CHAIN_DATA_FJALL_KEYSPACE_L0_TABLES => {
+                "fjall keyspace L0 table count (per-keyspace gauge)"
+            }
+            MetricNames::CHAIN_DATA_FJALL_KEYSPACE_SEALED_MEMTABLES => {
+                "fjall keyspace sealed-memtable count (per-keyspace gauge)"
+            }
         }
     }
 }
