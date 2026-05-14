@@ -86,6 +86,10 @@ impl<M: MetaStore> KvTable<M> {
     pub async fn put(&self, key: &[u8], value: Bytes) -> Result<()> {
         self.store.put(self.table, key, value).await
     }
+
+    pub fn put_into(&self, batch: &mut M::Batch, key: &[u8], value: Bytes) {
+        batch.put(self.table, key, value);
+    }
 }
 
 #[derive(Debug)]
@@ -131,6 +135,16 @@ impl<M: MetaStore> ScannableKvTable<M> {
             .scan_list(self.table, partition, prefix, cursor, limit)
             .await
     }
+
+    pub fn scan_put_into(
+        &self,
+        batch: &mut M::Batch,
+        partition: &[u8],
+        clustering: &[u8],
+        value: Bytes,
+    ) {
+        batch.scan_put(self.table, partition, clustering, value);
+    }
 }
 
 /// Monotonic per-row version assigned by [`MetaStoreCas::cas_put`]. Opaque
@@ -163,9 +177,9 @@ pub enum CasOutcome {
 ///
 /// Implementations must be cheaply cloneable (e.g. via internal `Arc`).
 #[allow(async_fn_in_trait)]
-#[auto_impl::auto_impl(Arc)]
-pub trait MetaStore: Clone + Send + Sync {
-    #[auto_impl(keep_default_for(Arc))]
+pub trait MetaStore: Clone + Send + Sync + 'static {
+    type Batch: MetaWriteBatch + Send;
+
     fn table(&self, table: TableId) -> KvTable<Self>
     where
         Self: Sized,
@@ -173,13 +187,14 @@ pub trait MetaStore: Clone + Send + Sync {
         KvTable::new(self.clone(), table)
     }
 
-    #[auto_impl(keep_default_for(Arc))]
     fn scannable_table(&self, table: ScannableTableId) -> ScannableKvTable<Self>
     where
         Self: Sized,
     {
         ScannableKvTable::new(self.clone(), table)
     }
+
+    fn begin_batch(&self) -> Self::Batch;
 
     async fn get(&self, table: TableId, key: &[u8]) -> Result<Option<Bytes>>;
     async fn scan_get(
@@ -208,6 +223,31 @@ pub trait MetaStore: Clone + Send + Sync {
     ) -> Result<Page>;
 }
 
+/// Buffered write batch for [`MetaStore`].
+///
+/// Atomicity is backend-defined and NOT promised by the trait. Pre-publication
+/// writes must be idempotent under retry — already the case at the chain-data
+/// layer because keys are derived from finalized block content.
+#[allow(async_fn_in_trait)]
+pub trait MetaWriteBatch: Send {
+    fn put(&mut self, table: TableId, key: &[u8], value: Bytes);
+    fn scan_put(&mut self, table: ScannableTableId, partition: &[u8], clustering: &[u8], value: Bytes);
+
+    async fn commit(self) -> Result<()>;
+
+    /// Commits buffered writes and then performs a tail CAS. On `Conflict`,
+    /// data writes may or may not be persisted (backend-defined). Callers
+    /// treat any persisted data as orphan state that the next ingest run
+    /// will overwrite by deterministic key.
+    async fn commit_with_cas(
+        self,
+        table: TableId,
+        key: &[u8],
+        expected: Option<CasVersion>,
+        value: Bytes,
+    ) -> Result<CasOutcome>;
+}
+
 /// Versioned compare-and-set storage, used for fencing across writer
 /// failovers. Logically distinct from [`MetaStore`]: a row addressed via
 /// CAS is *not* the same row as one written through `put`, even if the
@@ -219,7 +259,6 @@ pub trait MetaStore: Clone + Send + Sync {
 /// that uses this surface today; everything else is plain idempotent
 /// writes through [`MetaStore`].
 #[allow(async_fn_in_trait)]
-#[auto_impl::auto_impl(Arc)]
 pub trait MetaStoreCas: MetaStore {
     /// Reads the current row, returning its version alongside the value.
     async fn cas_get(&self, table: TableId, key: &[u8]) -> Result<Option<(CasVersion, Bytes)>>;

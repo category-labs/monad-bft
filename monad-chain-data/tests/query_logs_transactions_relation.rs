@@ -167,6 +167,7 @@ async fn build_service() -> MonadChainDataService<InMemoryMetaStore, InMemoryBlo
                 ingest_tx(alice, Some(addr_default), Vec::new()),
                 ingest_tx(bob, Some(target), Vec::new()),
             ],
+            traces: vec![],
         })
         .await
         .expect("ingest block 1");
@@ -177,6 +178,7 @@ async fn build_service() -> MonadChainDataService<InMemoryMetaStore, InMemoryBlo
             header: h2,
             logs_by_tx: vec![vec![log(addr_default)]],
             txs: vec![ingest_tx(carol, Some(addr_default), Vec::new())],
+            traces: vec![],
         })
         .await
         .expect("ingest block 2");

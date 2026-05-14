@@ -80,21 +80,27 @@ impl<B: BlobStore> BlobTable<B> {
             .read_range(self.table, key, start, end_exclusive)
             .await
     }
+
+    pub fn put_into(&self, batch: &mut B::Batch, key: &[u8], value: Bytes) {
+        batch.put_blob(self.table, key, value);
+    }
 }
 
 /// Unversioned object storage with range-read support.
 ///
 /// Implementations must be cheaply cloneable (e.g. via internal `Arc`).
 #[allow(async_fn_in_trait)]
-#[auto_impl::auto_impl(Arc)]
-pub trait BlobStore: Clone + Send + Sync {
-    #[auto_impl(keep_default_for(Arc))]
+pub trait BlobStore: Clone + Send + Sync + 'static {
+    type Batch: BlobWriteBatch + Send;
+
     fn table(&self, table: BlobTableId) -> BlobTable<Self>
     where
         Self: Sized,
     {
         BlobTable::new(self.clone(), table)
     }
+
+    fn begin_batch(&self) -> Self::Batch;
 
     async fn put_blob(&self, table: BlobTableId, key: &[u8], value: Bytes) -> Result<()>;
     async fn get_blob(&self, table: BlobTableId, key: &[u8]) -> Result<Option<Bytes>>;
@@ -113,4 +119,10 @@ pub trait BlobStore: Clone + Send + Sync {
         }
         Ok(Some(blob.slice(start..end_exclusive.min(blob.len()))))
     }
+}
+
+#[allow(async_fn_in_trait)]
+pub trait BlobWriteBatch: Send {
+    fn put_blob(&mut self, table: BlobTableId, key: &[u8], value: Bytes);
+    async fn commit(self) -> Result<()>;
 }

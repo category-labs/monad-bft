@@ -45,6 +45,7 @@ async fn indexed_query_transactions_filters_by_from_across_blocks() {
                 ingest_tx(alice, Some(recipient), Vec::new()),
                 ingest_tx(bob, Some(recipient), Vec::new()),
             ],
+            traces: vec![],
         })
         .await
         .expect("ingest block 1");
@@ -55,6 +56,7 @@ async fn indexed_query_transactions_filters_by_from_across_blocks() {
             header: h2,
             logs_by_tx: vec![vec![]],
             txs: vec![ingest_tx(alice, Some(recipient), Vec::new())],
+            traces: vec![],
         })
         .await
         .expect("ingest block 2");
@@ -101,6 +103,7 @@ async fn indexed_query_transactions_rejects_contract_creation_under_to_filter() 
                 ingest_tx(sender, None, Vec::new()),
                 ingest_tx(sender, Some(target), Vec::new()),
             ],
+            traces: vec![],
         })
         .await
         .expect("ingest");
@@ -146,6 +149,7 @@ async fn indexed_query_transactions_filters_by_selector() {
                 ingest_tx(sender, Some(target), vec![0xaa, 0xbb, 0xcc, 0xdd, 0x01]),
                 ingest_tx(sender, Some(target), vec![0xde, 0xad, 0xbe, 0xef, 0x02]),
             ],
+            traces: vec![],
         })
         .await
         .expect("ingest");
@@ -192,6 +196,7 @@ async fn indexed_query_transactions_selector_filter_skips_short_input() {
             header: test_header(1, B256::ZERO),
             logs_by_tx: vec![vec![]],
             txs: vec![ingest_tx(sender, Some(target), vec![0xde, 0xad, 0xbe])],
+            traces: vec![],
         })
         .await
         .expect("ingest");
@@ -237,6 +242,7 @@ async fn block_scan_query_transactions_returns_all_txs_in_block_order() {
                 ingest_tx(a, None, Vec::new()),
                 ingest_tx(b, None, Vec::new()),
             ],
+            traces: vec![],
         })
         .await
         .expect("ingest block 1");
@@ -247,6 +253,7 @@ async fn block_scan_query_transactions_returns_all_txs_in_block_order() {
             header: h2,
             logs_by_tx: vec![vec![]],
             txs: vec![ingest_tx(c, None, Vec::new())],
+            traces: vec![],
         })
         .await
         .expect("ingest block 2");

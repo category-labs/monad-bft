@@ -137,12 +137,15 @@ where
             let record = runner
                 .load_record_at(location.block_number, location.idx_in_block)
                 .await?;
-            debug_assert!(
-                filter.matches(&record),
-                "indexed candidate at block {} idx {} should match filter",
-                location.block_number,
-                location.idx_in_block,
-            );
+            // Most families guarantee `matches` for any candidate the bitmap
+            // intersection produces. The trace family violates that
+            // guarantee in one case — `is_top_level: Some(false)` combined
+            // with other indexed clauses can pick up top-level frames that
+            // the runner must drop here. Treat the post-filter as
+            // authoritative rather than asserting.
+            if !filter.matches(&record) {
+                continue;
+            }
 
             records.push(record);
 

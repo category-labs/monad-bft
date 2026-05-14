@@ -158,6 +158,52 @@ impl From<TxId> for PrimaryId {
     }
 }
 
+/// `PrimaryId` scoped to the trace family. Kept as a distinct type so
+/// trace-domain signatures don't accept primary ids from other families
+/// by mistake.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, RlpEncodable, RlpDecodable)]
+pub struct TraceId(PrimaryId);
+
+impl TraceId {
+    pub const ZERO: Self = Self(PrimaryId::ZERO);
+
+    pub const fn new(value: u64) -> Self {
+        Self(PrimaryId::new(value))
+    }
+
+    pub const fn as_u64(self) -> u64 {
+        self.0.as_u64()
+    }
+
+    pub fn checked_add(self, rhs: u64) -> Result<Self> {
+        self.0.checked_add(rhs).map(Self)
+    }
+
+    pub const fn shard(self) -> u64 {
+        self.0.shard()
+    }
+
+    pub const fn local(self) -> u32 {
+        self.0.local()
+    }
+
+    pub const fn from_parts(shard: u64, local: u32) -> Self {
+        Self(PrimaryId::from_parts(shard, local))
+    }
+}
+
+impl From<PrimaryId> for TraceId {
+    fn from(id: PrimaryId) -> Self {
+        Self(id)
+    }
+}
+
+impl From<TraceId> for PrimaryId {
+    fn from(id: TraceId) -> Self {
+        id.0
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 pub struct FamilyWindowRecord {
     pub first_primary_id: PrimaryId,
@@ -177,6 +223,10 @@ pub struct BlockRecord {
     pub parent_hash: Hash32,
     pub logs: FamilyWindowRecord,
     pub txs: FamilyWindowRecord,
+    /// Per-block trace family window. Adding this field is a hard break
+    /// of the on-disk RLP layout; data dirs from before the trace family
+    /// existed must be wiped and re-ingested.
+    pub traces: FamilyWindowRecord,
 }
 
 impl BlockRecord {

@@ -102,6 +102,18 @@ impl<M: MetaStore> BitmapTables<M> {
         Ok(())
     }
 
+    pub fn stage_fragment(
+        &self,
+        meta: &mut M::Batch,
+        fragment: &BitmapFragmentWrite,
+        block_number: u64,
+    ) {
+        let partition = stream_page_key(&fragment.stream_id, fragment.page_start_local);
+        let clustering = block_number_key(block_number);
+        self.fragments
+            .scan_put_into(meta, &partition, &clustering, fragment.bitmap_blob.clone());
+    }
+
     /// Loads all retained fragments for one stream page.
     pub async fn load_fragments(
         &self,
@@ -153,6 +165,18 @@ impl<M: MetaStore> BitmapTables<M> {
         Ok(())
     }
 
+    pub fn stage_page_meta(
+        &self,
+        batch: &mut M::Batch,
+        stream_id: &str,
+        page_start_local: u32,
+        page_meta: &BitmapPageMeta,
+    ) {
+        let key = stream_page_key(stream_id, page_start_local);
+        self.page_meta
+            .put_into(batch, &key, Bytes::from(page_meta.encode()));
+    }
+
     /// Loads the compacted bitmap blob for one sealed stream page.
     pub async fn load_page_blob(
         &self,
@@ -172,6 +196,17 @@ impl<M: MetaStore> BitmapTables<M> {
         let key = stream_page_key(stream_id, page_start_local);
         self.page_blobs.put(&key, bitmap_blob).await?;
         Ok(())
+    }
+
+    pub fn stage_page_blob(
+        &self,
+        batch: &mut M::Batch,
+        stream_id: &str,
+        page_start_local: u32,
+        bitmap_blob: Bytes,
+    ) {
+        let key = stream_page_key(stream_id, page_start_local);
+        self.page_blobs.put_into(batch, &key, bitmap_blob);
     }
 
     /// Loads the open stream inventory for one frontier page.
@@ -210,6 +245,19 @@ impl<M: MetaStore> BitmapTables<M> {
         }
 
         Ok(())
+    }
+
+    pub fn stage_open_streams(
+        &self,
+        batch: &mut M::Batch,
+        global_page_start: u64,
+        streams: &BTreeSet<String>,
+    ) {
+        let partition = global_page_start.to_be_bytes();
+        for stream_id in streams {
+            self.open_streams
+                .scan_put_into(batch, &partition, stream_id.as_bytes(), Bytes::new());
+        }
     }
 }
 

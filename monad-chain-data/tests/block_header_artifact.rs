@@ -43,6 +43,7 @@ async fn ingest_persists_block_header() {
             header: header.clone(),
             logs_by_tx: vec![vec![]],
             txs: Vec::new(),
+            traces: vec![],
         })
         .await
         .expect("ingest block 1");
@@ -113,6 +114,7 @@ async fn block_header_roundtrips_with_all_optional_fields_populated() {
             header: header.clone(),
             logs_by_tx: vec![vec![]],
             txs: Vec::new(),
+            traces: vec![],
         })
         .await
         .expect("ingest block 1");

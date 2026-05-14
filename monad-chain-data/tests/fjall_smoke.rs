@@ -39,6 +39,7 @@ async fn fjall_round_trip_two_block_ingest() {
             header: h1.clone(),
             logs_by_tx: vec![vec![], vec![]],
             txs: vec![minimal_ingest_tx(), minimal_ingest_tx()],
+            traces: vec![],
         })
         .await
         .expect("ingest block 1");
@@ -50,6 +51,7 @@ async fn fjall_round_trip_two_block_ingest() {
             header: h2,
             logs_by_tx: vec![vec![]],
             txs: vec![minimal_ingest_tx()],
+            traces: vec![],
         })
         .await
         .expect("ingest block 2");
@@ -86,6 +88,7 @@ async fn fjall_persists_across_reopen() {
                 header: test_header(1, B256::ZERO),
                 logs_by_tx: vec![vec![]],
                 txs: vec![minimal_ingest_tx()],
+                traces: vec![],
             })
             .await
             .expect("ingest");
@@ -134,6 +137,7 @@ async fn fjall_cas_advance_with_stale_version_returns_fenced_out() {
             header: test_header(1, B256::ZERO),
             logs_by_tx: vec![vec![]],
             txs: vec![minimal_ingest_tx()],
+            traces: vec![],
         })
         .await
         .expect("first ingest");

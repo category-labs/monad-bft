@@ -34,10 +34,10 @@ use crate::{
 // Logical-table namespacing on top of fjall keyspaces. Each logical table
 // gets its own physical fjall keyspace, prefixed by the kind so the four
 // trait surfaces never share storage even if their logical names collide.
-const KV_PREFIX: &str = "kv:";
-const SCAN_PREFIX: &str = "scan:";
-const CAS_PREFIX: &str = "cas:";
-const BLOB_PREFIX: &str = "blob:";
+pub(super) const KV_PREFIX: &str = "kv:";
+pub(super) const SCAN_PREFIX: &str = "scan:";
+pub(super) const CAS_PREFIX: &str = "cas:";
+pub(super) const BLOB_PREFIX: &str = "blob:";
 
 /// Embedded fjall-backed implementation of [`MetaStore`], [`MetaStoreCas`],
 /// and [`BlobStore`]. Single-process only: CAS rows are protected by a
@@ -57,13 +57,13 @@ pub struct FjallStore {
     inner: Arc<Inner>,
 }
 
-struct Inner {
-    db: Database,
-    keyspaces: Mutex<HashMap<String, Keyspace>>,
+pub(super) struct Inner {
+    pub(super) db: Database,
+    pub(super) keyspaces: Mutex<HashMap<String, Keyspace>>,
     // Held only inside `spawn_blocking`, never across an await. The
     // publication-state row is the only chain-data row touching the CAS
     // surface today, so contention is bounded to a single hot key.
-    cas_lock: Mutex<()>,
+    pub(super) cas_lock: Mutex<()>,
 }
 
 impl FjallStore {
@@ -79,7 +79,25 @@ impl FjallStore {
         })
     }
 
-    fn keyspace(&self, name: &str) -> Result<Keyspace> {
+    /// Test-only: removes a CAS row, simulating a process crash between
+    /// Phase A (data writes) and Phase B (CAS-anchored publication advance).
+    /// After this call the next ingest sees `expected_version = None` and
+    /// must idempotently re-stage Phase A before publishing. Real backends
+    /// never delete this row in production; only tests need it.
+    pub async fn clear_cas_key(&self, table: TableId, key: &[u8]) -> Result<()> {
+        let store = self.clone();
+        let key = key.to_vec();
+        let name = format!("{CAS_PREFIX}{}", table.as_str());
+        blocking(move || {
+            let ks = store.keyspace(&name)?;
+            ks.remove(key)
+                .map_err(|e| MonadChainDataError::Backend(format!("fjall clear_cas_key: {e}")))?;
+            Ok(())
+        })
+        .await
+    }
+
+    pub(super) fn keyspace(&self, name: &str) -> Result<Keyspace> {
         let mut guard =
             self.inner.keyspaces.lock().map_err(|_| {
                 MonadChainDataError::Backend("fjall keyspace cache poisoned".into())
@@ -117,7 +135,7 @@ impl Clone for FjallStore {
     }
 }
 
-async fn blocking<F, R>(f: F) -> Result<R>
+pub(super) async fn blocking<F, R>(f: F) -> Result<R>
 where
     F: FnOnce() -> Result<R> + Send + 'static,
     R: Send + 'static,
@@ -130,7 +148,7 @@ where
 // `2 BE bytes len(partition) | partition | clustering`. Length-prefixing
 // keeps clustering decoding unambiguous and lets us derive a fjall prefix
 // from `(partition, scan_prefix)` directly.
-fn scan_key(partition: &[u8], clustering: &[u8]) -> Vec<u8> {
+pub(super) fn scan_key(partition: &[u8], clustering: &[u8]) -> Vec<u8> {
     let len = u16::try_from(partition.len()).expect("scan partition length fits in u16");
     let mut key = Vec::with_capacity(2 + partition.len() + clustering.len());
     key.extend_from_slice(&len.to_be_bytes());
@@ -139,14 +157,14 @@ fn scan_key(partition: &[u8], clustering: &[u8]) -> Vec<u8> {
     key
 }
 
-fn encode_cas_row(version: u64, value: &[u8]) -> Vec<u8> {
+pub(super) fn encode_cas_row(version: u64, value: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(8 + value.len());
     out.extend_from_slice(&version.to_be_bytes());
     out.extend_from_slice(value);
     out
 }
 
-fn decode_cas_row(bytes: &[u8]) -> Result<(u64, Bytes)> {
+pub(super) fn decode_cas_row(bytes: &[u8]) -> Result<(u64, Bytes)> {
     if bytes.len() < 8 {
         return Err(MonadChainDataError::Decode(
             "cas row missing version prefix",
@@ -161,6 +179,12 @@ fn decode_cas_row(bytes: &[u8]) -> Result<(u64, Bytes)> {
 }
 
 impl MetaStore for FjallStore {
+    type Batch = super::batch::FjallMetaBatch;
+
+    fn begin_batch(&self) -> Self::Batch {
+        super::batch::FjallMetaBatch::new(Arc::clone(&self.inner))
+    }
+
     async fn get(&self, table: TableId, key: &[u8]) -> Result<Option<Bytes>> {
         let store = self.clone();
         let key = key.to_vec();
@@ -341,6 +365,12 @@ impl MetaStoreCas for FjallStore {
 }
 
 impl BlobStore for FjallStore {
+    type Batch = super::batch::FjallBlobBatch;
+
+    fn begin_batch(&self) -> Self::Batch {
+        super::batch::FjallBlobBatch::new(Arc::clone(&self.inner))
+    }
+
     async fn put_blob(&self, table: BlobTableId, key: &[u8], value: Bytes) -> Result<()> {
         let store = self.clone();
         let key = key.to_vec();

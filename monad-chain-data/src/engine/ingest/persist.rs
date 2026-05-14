@@ -17,45 +17,35 @@ use bytes::Bytes;
 
 use crate::{
     engine::{bitmap::BitmapFragmentWrite, tables::FamilyTables},
-    error::Result,
     primitives::state::FamilyWindowRecord,
     store::{BlobStore, MetaStore},
 };
 
 impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
-    /// Persists one block's family artifacts: the per-block blob and
-    /// header bytes, the primary-directory fragment, and the bitmap
-    /// fragments — followed by the directory-bucket and bitmap-page
-    /// compactions sealed by the ingest transition.
-    pub async fn persist_indexed_family_ingest(
+    /// Stages one block's family Phase A artifacts into the given meta and
+    /// blob batches: per-block blob, per-block header bytes, primary-directory
+    /// fragment writes (one per overlapped bucket), and one bitmap-fragment
+    /// scan_put per bitmap fragment. Pure — no I/O. Phase B compactions are
+    /// planned and staged separately by `plan_*_compactions` /
+    /// `stage_*_compactions`.
+    pub fn stage_indexed_family_ingest(
         &self,
+        meta: &mut M::Batch,
+        blob: &mut B::Batch,
         block_number: u64,
         block_blob: Vec<u8>,
         block_header_bytes: Bytes,
         window: FamilyWindowRecord,
         bitmap_fragments: &[BitmapFragmentWrite],
-    ) -> Result<()> {
+    ) {
         let first_primary_id = window.first_primary_id.as_u64();
-        let next_primary_id_exclusive = window.next_primary_id_exclusive()?.as_u64();
 
-        self.store_block_blob(block_number, block_blob).await?;
-        self.store_block_header(block_number, block_header_bytes)
-            .await?;
+        self.stage_block_blob(blob, block_number, block_blob);
+        self.stage_block_header(meta, block_number, block_header_bytes);
         self.dir()
-            .persist_block_fragment(block_number, first_primary_id, window.count)
-            .await?;
+            .stage_block_fragment(meta, block_number, first_primary_id, window.count);
         for fragment in bitmap_fragments {
-            self.store_bitmap_fragment(fragment, block_number).await?;
+            self.bitmap().stage_fragment(meta, fragment, block_number);
         }
-        self.compact_newly_sealed_directory_buckets(first_primary_id, next_primary_id_exclusive)
-            .await?;
-        self.compact_newly_sealed_bitmap_pages(
-            bitmap_fragments,
-            first_primary_id,
-            next_primary_id_exclusive,
-        )
-        .await?;
-
-        Ok(())
     }
 }
