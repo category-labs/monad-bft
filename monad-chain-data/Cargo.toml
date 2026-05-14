@@ -23,6 +23,7 @@ futures = { workspace = true }
 libc = { workspace = true, optional = true }
 monad-archive = { workspace = true, optional = true }
 monad-eth-types = { workspace = true, optional = true }
+opentelemetry = { workspace = true, optional = true }
 roaring = "0.11"
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt"], optional = true }
@@ -50,6 +51,7 @@ archive-ingest = [
     "dep:libc",
     "dep:monad-archive",
     "dep:monad-eth-types",
+    "dep:opentelemetry",
     "dep:tokio",
     "tokio/rt-multi-thread",
     "tokio/macros",

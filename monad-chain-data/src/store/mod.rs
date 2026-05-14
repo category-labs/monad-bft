@@ -22,7 +22,7 @@ pub mod meta;
 pub use blob::{BlobStore, BlobTable, BlobTableId, BlobWriteBatch, InMemoryBlobStore};
 pub use common::Page;
 #[cfg(feature = "fjall")]
-pub use fjall::{FjallStore, FjallTuning};
+pub use fjall::{FjallKeyspaceStats, FjallStore, FjallTuning};
 pub use meta::{
     CasOutcome, CasVersion, InMemoryMetaStore, KvTable, MetaStore, MetaStoreCas, MetaWriteBatch,
     ScannableKvTable, ScannableTableId, TableId,

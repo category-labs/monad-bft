@@ -37,7 +37,7 @@ use eyre::{bail, eyre, Context, Result};
 use futures::{stream, StreamExt};
 use monad_archive::{
     cli::BlockDataReaderArgs,
-    metrics::Metrics,
+    metrics::{MetricNames, Metrics},
     model::{
         block_data_archive::{
             decode_trace, Block, BlockReceipts, BlockTraces, CallFrame, CallKind as ArchiveCallKind,
@@ -50,6 +50,7 @@ use monad_chain_data::{
     store::{FjallStore, FjallTuning},
     CallKind, FinalizedBlock, IngestTrace, IngestTx, MonadChainDataService, QueryLimits,
 };
+use opentelemetry::KeyValue;
 use tracing::{debug, info, warn, Level};
 
 #[derive(Parser, Debug)]
@@ -257,7 +258,7 @@ async fn main() -> Result<()> {
     }
     let store = FjallStore::open(&cli.data_dir, tuning)
         .with_context(|| format!("opening fjall store at {}", cli.data_dir.display()))?;
-    let service = MonadChainDataService::new(store.clone(), store, QueryLimits::UNLIMITED);
+    let service = MonadChainDataService::new(store.clone(), store.clone(), QueryLimits::UNLIMITED);
 
     // Resolve the block range against the current publication head before
     // any archive I/O, so a misconfigured range fails fast rather than
@@ -398,6 +399,7 @@ async fn main() -> Result<()> {
     let mut window_traces: u64 = 0;
     let mut ingest_ms: Vec<u64> = Vec::with_capacity(cli.log_every as usize);
     let mut wait_ms: Vec<u64> = Vec::with_capacity(cli.log_every as usize);
+    let mut phase = PhaseStats::default();
     let batch_size = cli.batch_size;
     let mut pending: Vec<(u64, FinalizedBlock)> = Vec::with_capacity(batch_size);
     let mut stream_done = false;
@@ -428,11 +430,14 @@ async fn main() -> Result<()> {
         let blocks_in_batch: Vec<FinalizedBlock> = pending.iter().map(|(_, b)| b.clone()).collect();
 
         let ingest_started = Instant::now();
-        let outcomes = service
+        let (outcomes, timings) = service
             .ingest_blocks(blocks_in_batch)
             .await
             .with_context(|| format!("ingesting batch ending at block {last_n}"))?;
-        ingest_ms.push(ingest_started.elapsed().as_millis() as u64);
+        let total_ingest_ms = ingest_started.elapsed().as_millis() as u64;
+        ingest_ms.push(total_ingest_ms);
+        phase.record(&timings);
+        emit_phase_metrics(&metrics, &timings, total_ingest_ms);
 
         for outcome in &outcomes {
             total_logs += outcome.written_logs as u64;
@@ -477,6 +482,17 @@ async fn main() -> Result<()> {
                 concurrency_observed,
             );
 
+            let phase_summary = std::mem::take(&mut phase).summary();
+            let fjall_stats = match store.keyspace_stats() {
+                Ok(stats) => stats,
+                Err(e) => {
+                    warn!(error = %e, "fjall keyspace_stats failed");
+                    Vec::new()
+                }
+            };
+            let fjall_agg = FjallAggregates::from(fjall_stats.as_slice());
+            emit_fjall_metrics(&metrics, &fjall_stats);
+
             info!(
                 block = n,
                 total_txs,
@@ -493,11 +509,42 @@ async fn main() -> Result<()> {
                 fetch_p99_ms = fetch_p99,
                 ingest_p50_ms = ingest_p50,
                 ingest_p99_ms = ingest_p99,
+                stage_a_p50_ms = phase_summary.stage_a_p50,
+                stage_a_p99_ms = phase_summary.stage_a_p99,
+                commit_a_meta_p50_ms = phase_summary.commit_a_meta_p50,
+                commit_a_meta_p99_ms = phase_summary.commit_a_meta_p99,
+                commit_a_blob_p50_ms = phase_summary.commit_a_blob_p50,
+                commit_a_blob_p99_ms = phase_summary.commit_a_blob_p99,
+                reads_p50_ms = phase_summary.reads_p50,
+                reads_p99_ms = phase_summary.reads_p99,
+                stage_b_p50_ms = phase_summary.stage_b_p50,
+                stage_b_p99_ms = phase_summary.stage_b_p99,
+                commit_b_p50_ms = phase_summary.commit_b_p50,
+                commit_b_p99_ms = phase_summary.commit_b_p99,
+                cas_p50_ms = phase_summary.cas_p50,
+                phase_b_skipped_ratio = phase_summary.phase_b_skipped_ratio,
+                fjall_keyspaces = fjall_agg.keyspaces,
+                fjall_disk_space_bytes = fjall_agg.disk_space_bytes,
+                fjall_l0_tables = fjall_agg.l0_tables,
+                fjall_sealed_memtables = fjall_agg.sealed_memtables,
+                fjall_blob_files = fjall_agg.blob_files,
                 consumer_wait_avg_ms = wait_avg_ms,
                 consumer_wait_max_ms = wait_max_ms,
                 retries = fetch_window.retry_attempts,
                 "ingest progress"
             );
+            for ks in &fjall_stats {
+                debug!(
+                    keyspace = %ks.name,
+                    sealed_memtable_count = ks.sealed_memtable_count,
+                    l0_table_count = ks.l0_table_count,
+                    table_count = ks.table_count,
+                    blob_file_count = ks.blob_file_count,
+                    disk_space_bytes = ks.disk_space_bytes,
+                    approximate_len = ks.approximate_len,
+                    "fjall keyspace state"
+                );
+            }
 
             if cli.autotune {
                 let adjusted = control.tune(retry_rate);
@@ -610,6 +657,174 @@ async fn fetch_block_with_retry(
 struct FetchStats {
     durations_ms: Vec<u64>,
     retry_attempts: u64,
+}
+
+/// Per-window accumulator for the per-phase timings returned by
+/// `ingest_blocks`. One sample per batch; percentiles compute over all
+/// samples in the current window and reset on flush.
+#[derive(Default)]
+struct PhaseStats {
+    stage_a: Vec<u64>,
+    commit_a_meta: Vec<u64>,
+    commit_a_blob: Vec<u64>,
+    reads: Vec<u64>,
+    stage_b: Vec<u64>,
+    commit_b: Vec<u64>,
+    cas: Vec<u64>,
+    phase_b_skipped: u64,
+    phase_b_total: u64,
+}
+
+struct PhaseSummary {
+    stage_a_p50: u64,
+    stage_a_p99: u64,
+    commit_a_meta_p50: u64,
+    commit_a_meta_p99: u64,
+    commit_a_blob_p50: u64,
+    commit_a_blob_p99: u64,
+    reads_p50: u64,
+    reads_p99: u64,
+    stage_b_p50: u64,
+    stage_b_p99: u64,
+    commit_b_p50: u64,
+    commit_b_p99: u64,
+    cas_p50: u64,
+    phase_b_skipped_ratio: f64,
+}
+
+impl PhaseStats {
+    fn record(&mut self, t: &monad_chain_data::IngestBatchTimings) {
+        self.stage_a.push(t.stage_a_ms);
+        self.commit_a_meta.push(t.commit_a_meta_ms);
+        self.commit_a_blob.push(t.commit_a_blob_ms);
+        self.reads.push(t.reads_ms);
+        self.stage_b.push(t.stage_b_ms);
+        self.commit_b.push(t.commit_b_ms);
+        self.cas.push(t.cas_ms);
+        self.phase_b_total += 1;
+        if t.phase_b_skipped {
+            self.phase_b_skipped += 1;
+        }
+    }
+
+    fn summary(self) -> PhaseSummary {
+        let ratio = if self.phase_b_total == 0 {
+            0.0
+        } else {
+            self.phase_b_skipped as f64 / self.phase_b_total as f64
+        };
+        PhaseSummary {
+            stage_a_p50: percentile(&self.stage_a, 0.50),
+            stage_a_p99: percentile(&self.stage_a, 0.99),
+            commit_a_meta_p50: percentile(&self.commit_a_meta, 0.50),
+            commit_a_meta_p99: percentile(&self.commit_a_meta, 0.99),
+            commit_a_blob_p50: percentile(&self.commit_a_blob, 0.50),
+            commit_a_blob_p99: percentile(&self.commit_a_blob, 0.99),
+            reads_p50: percentile(&self.reads, 0.50),
+            reads_p99: percentile(&self.reads, 0.99),
+            stage_b_p50: percentile(&self.stage_b, 0.50),
+            stage_b_p99: percentile(&self.stage_b, 0.99),
+            commit_b_p50: percentile(&self.commit_b, 0.50),
+            commit_b_p99: percentile(&self.commit_b, 0.99),
+            cas_p50: percentile(&self.cas, 0.50),
+            phase_b_skipped_ratio: ratio,
+        }
+    }
+}
+
+#[derive(Default)]
+struct FjallAggregates {
+    keyspaces: usize,
+    disk_space_bytes: u64,
+    l0_tables: usize,
+    sealed_memtables: usize,
+    blob_files: usize,
+}
+
+impl FjallAggregates {
+    fn from(stats: &[monad_chain_data::store::FjallKeyspaceStats]) -> Self {
+        let mut out = FjallAggregates {
+            keyspaces: stats.len(),
+            ..FjallAggregates::default()
+        };
+        for ks in stats {
+            out.disk_space_bytes = out.disk_space_bytes.saturating_add(ks.disk_space_bytes);
+            out.l0_tables = out.l0_tables.saturating_add(ks.l0_table_count);
+            out.sealed_memtables = out.sealed_memtables.saturating_add(ks.sealed_memtable_count);
+            out.blob_files = out.blob_files.saturating_add(ks.blob_file_count);
+        }
+        out
+    }
+}
+
+fn emit_phase_metrics(
+    metrics: &Metrics,
+    t: &monad_chain_data::IngestBatchTimings,
+    total_ms: u64,
+) {
+    metrics.histogram(
+        MetricNames::CHAIN_DATA_INGEST_STAGE_A_DURATION_MS,
+        t.stage_a_ms as f64,
+    );
+    metrics.histogram(
+        MetricNames::CHAIN_DATA_INGEST_COMMIT_A_META_DURATION_MS,
+        t.commit_a_meta_ms as f64,
+    );
+    metrics.histogram(
+        MetricNames::CHAIN_DATA_INGEST_COMMIT_A_BLOB_DURATION_MS,
+        t.commit_a_blob_ms as f64,
+    );
+    metrics.histogram(
+        MetricNames::CHAIN_DATA_INGEST_READS_DURATION_MS,
+        t.reads_ms as f64,
+    );
+    metrics.histogram(
+        MetricNames::CHAIN_DATA_INGEST_STAGE_B_DURATION_MS,
+        t.stage_b_ms as f64,
+    );
+    if t.phase_b_skipped {
+        metrics.histogram(
+            MetricNames::CHAIN_DATA_INGEST_CAS_DURATION_MS,
+            t.cas_ms as f64,
+        );
+    } else {
+        metrics.histogram(
+            MetricNames::CHAIN_DATA_INGEST_COMMIT_B_DURATION_MS,
+            t.commit_b_ms as f64,
+        );
+    }
+    metrics.histogram(
+        MetricNames::CHAIN_DATA_INGEST_BATCH_TOTAL_DURATION_MS,
+        total_ms as f64,
+    );
+    metrics.counter(
+        MetricNames::CHAIN_DATA_INGEST_BATCH_SIZE,
+        t.blocks as u64,
+    );
+}
+
+fn emit_fjall_metrics(
+    metrics: &Metrics,
+    stats: &[monad_chain_data::store::FjallKeyspaceStats],
+) {
+    for ks in stats {
+        let attrs = [KeyValue::new("keyspace", ks.name.clone())];
+        metrics.gauge_with_attrs(
+            MetricNames::CHAIN_DATA_FJALL_KEYSPACE_DISK_SPACE_BYTES,
+            ks.disk_space_bytes,
+            &attrs,
+        );
+        metrics.gauge_with_attrs(
+            MetricNames::CHAIN_DATA_FJALL_KEYSPACE_L0_TABLES,
+            ks.l0_table_count as u64,
+            &attrs,
+        );
+        metrics.gauge_with_attrs(
+            MetricNames::CHAIN_DATA_FJALL_KEYSPACE_SEALED_MEMTABLES,
+            ks.sealed_memtable_count as u64,
+            &attrs,
+        );
+    }
 }
 
 /// Dynamic concurrency limiter driven by AIMD on per-window retry rate.

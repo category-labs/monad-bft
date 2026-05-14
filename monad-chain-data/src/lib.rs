@@ -26,7 +26,7 @@ pub mod transfers;
 pub mod txs;
 
 pub use alloy_primitives::{Address, Bytes, Log, LogData, B256};
-pub use api::{IngestOutcome, MonadChainDataService};
+pub use api::{IngestBatchTimings, IngestOutcome, MonadChainDataService};
 pub use blocks::{Block, QueryBlocksRequest, QueryBlocksResponse};
 pub use engine::{family::Family, tables::Tables};
 pub use error::MonadChainDataError;

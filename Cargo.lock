@@ -5010,6 +5010,7 @@ dependencies = [
  "libc",
  "monad-archive",
  "monad-eth-types",
+ "opentelemetry",
  "roaring",
  "tempfile",
  "thiserror 1.0.69",
