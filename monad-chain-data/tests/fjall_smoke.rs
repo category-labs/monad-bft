@@ -18,7 +18,7 @@
 use bytes::Bytes;
 use monad_chain_data::{
     primitives::state::PublicationState,
-    store::{BlobStore, BlobTableId, FjallStore},
+    store::{BlobStore, BlobTableId, FjallStore, FjallTuning},
     Family, FinalizedBlock, MonadChainDataError, MonadChainDataService, QueryLimits, B256,
 };
 use tempfile::tempdir;
@@ -30,7 +30,7 @@ use common::{chain_header, minimal_ingest_tx, test_header};
 #[tokio::test(flavor = "current_thread")]
 async fn fjall_round_trip_two_block_ingest() {
     let dir = tempdir().expect("tempdir");
-    let store = FjallStore::open(dir.path()).expect("open fjall");
+    let store = FjallStore::open(dir.path(), FjallTuning::default()).expect("open fjall");
     let service = MonadChainDataService::new(store.clone(), store, QueryLimits::UNLIMITED);
 
     let h1 = test_header(1, B256::ZERO);
@@ -81,7 +81,7 @@ async fn fjall_persists_across_reopen() {
     let dir = tempdir().expect("tempdir");
 
     {
-        let store = FjallStore::open(dir.path()).expect("open fjall");
+        let store = FjallStore::open(dir.path(), FjallTuning::default()).expect("open fjall");
         let service = MonadChainDataService::new(store.clone(), store, QueryLimits::UNLIMITED);
         service
             .ingest_block(FinalizedBlock {
@@ -94,7 +94,7 @@ async fn fjall_persists_across_reopen() {
             .expect("ingest");
     }
 
-    let store = FjallStore::open(dir.path()).expect("reopen fjall");
+    let store = FjallStore::open(dir.path(), FjallTuning::default()).expect("reopen fjall");
     let service = MonadChainDataService::new(store.clone(), store, QueryLimits::UNLIMITED);
     let head = service
         .publication()
@@ -111,7 +111,7 @@ async fn fjall_blob_roundtrips_value_above_kv_separation_threshold() {
     const TEST_TABLE: BlobTableId = BlobTableId::new("kv_sep_smoke");
 
     let dir = tempdir().expect("tempdir");
-    let store = FjallStore::open(dir.path()).expect("open fjall");
+    let store = FjallStore::open(dir.path(), FjallTuning::default()).expect("open fjall");
 
     let payload = Bytes::from(vec![0xAB; 64 * 1024]);
     store
@@ -129,7 +129,7 @@ async fn fjall_blob_roundtrips_value_above_kv_separation_threshold() {
 #[tokio::test(flavor = "current_thread")]
 async fn fjall_cas_advance_with_stale_version_returns_fenced_out() {
     let dir = tempdir().expect("tempdir");
-    let store = FjallStore::open(dir.path()).expect("open fjall");
+    let store = FjallStore::open(dir.path(), FjallTuning::default()).expect("open fjall");
     let service = MonadChainDataService::new(store.clone(), store, QueryLimits::UNLIMITED);
 
     service

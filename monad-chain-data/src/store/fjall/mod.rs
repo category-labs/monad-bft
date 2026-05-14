@@ -17,4 +17,4 @@ mod batch;
 mod store;
 
 pub use batch::{FjallBlobBatch, FjallMetaBatch};
-pub use store::FjallStore;
+pub use store::{FjallStore, FjallTuning};
