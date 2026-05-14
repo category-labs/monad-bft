@@ -42,13 +42,16 @@ impl<M: MetaStore> TxHashIndexTable<M> {
         TxLocation::decode(bytes.as_ref()).map(Some)
     }
 
-    pub(crate) async fn put(&self, tx_hash: &Hash32, location: TxLocation) -> Result<()> {
-        self.table
-            .put(
-                tx_hash.as_slice(),
-                Bytes::copy_from_slice(&location.encode()),
-            )
-            .await?;
-        Ok(())
+    pub(crate) fn stage_put(
+        &self,
+        meta: &mut M::Batch,
+        tx_hash: &Hash32,
+        location: TxLocation,
+    ) {
+        self.table.put_into(
+            meta,
+            tx_hash.as_slice(),
+            Bytes::copy_from_slice(&location.encode()),
+        );
     }
 }

@@ -168,6 +168,53 @@ impl<M: MetaStore> PrimaryDirTables<M> {
         Ok(())
     }
 
+    pub fn stage_bucket(
+        &self,
+        meta: &mut M::Batch,
+        bucket_start: u64,
+        bucket: &PrimaryDirBucket,
+    ) {
+        let key = u64_key(bucket_start);
+        self.buckets
+            .put_into(meta, &key, Bytes::from(bucket.encode()));
+    }
+
+    /// Stages every per-bucket fragment write the block contributes. Mirrors
+    /// [`Self::persist_block_fragment`] but pushes into a meta batch instead
+    /// of issuing one write per bucket.
+    pub fn stage_block_fragment(
+        &self,
+        meta: &mut M::Batch,
+        block_number: u64,
+        first_primary_id: u64,
+        count: u32,
+    ) {
+        let fragment = PrimaryDirFragment {
+            block_number,
+            first_primary_id,
+            end_primary_id_exclusive: first_primary_id.saturating_add(u64::from(count)),
+        };
+
+        let mut current_bucket_start = bucket_start(first_primary_id);
+        let last_bucket_start = if count == 0 {
+            current_bucket_start
+        } else {
+            bucket_start(fragment.end_primary_id_exclusive.saturating_sub(1))
+        };
+
+        let encoded = Bytes::from(fragment.encode());
+        loop {
+            let partition = u64_key(current_bucket_start);
+            let clustering = u64_key(block_number);
+            self.fragments
+                .scan_put_into(meta, &partition, &clustering, encoded.clone());
+            if current_bucket_start == last_bucket_start {
+                break;
+            }
+            current_bucket_start = current_bucket_start.saturating_add(DIRECTORY_BUCKET_SIZE);
+        }
+    }
+
     async fn put_fragment(
         &self,
         bucket_start: u64,

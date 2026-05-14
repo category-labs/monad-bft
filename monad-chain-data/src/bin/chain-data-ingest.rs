@@ -33,18 +33,21 @@ use tokio::sync::Semaphore;
 use alloy_eips::eip2718::Encodable2718;
 use alloy_primitives::Bytes;
 use clap::Parser;
-use eyre::{bail, Context, Result};
+use eyre::{bail, eyre, Context, Result};
 use futures::{stream, StreamExt};
 use monad_archive::{
     cli::BlockDataReaderArgs,
     metrics::Metrics,
     model::{
-        block_data_archive::{Block, BlockReceipts},
+        block_data_archive::{
+            decode_trace, Block, BlockReceipts, BlockTraces, CallFrame, CallKind as ArchiveCallKind,
+        },
         BlockDataReader, BlockDataReaderErased,
     },
 };
 use monad_chain_data::{
-    store::FjallStore, FinalizedBlock, IngestTx, MonadChainDataService, QueryLimits,
+    compute_trace_addresses, store::FjallStore, CallKind, FinalizedBlock, IngestTrace, IngestTx,
+    MonadChainDataService, QueryLimits,
 };
 use tracing::{debug, info, warn, Level};
 
@@ -91,9 +94,9 @@ struct Cli {
     log_every: u64,
 
     /// Maximum number of block fetches in flight against the archive
-    /// concurrently. Each in-flight slot issues block + receipts in
-    /// parallel via `try_join!`, so peak archive request concurrency is
-    /// roughly `2 * concurrency`. Increase for high-latency archives
+    /// concurrently. Each in-flight slot issues block + receipts + traces
+    /// in parallel via `try_join!`, so peak archive request concurrency
+    /// is roughly `3 * concurrency`. Increase for high-latency archives
     /// (e.g. S3); leave low for local FS where queueing buys nothing.
     /// Memory ceiling is bounded by this many fetched-but-not-yet-ingested
     /// blocks held in the prefetch buffer.
@@ -129,6 +132,21 @@ struct Cli {
     /// size when autotuning. Ignored unless `--autotune`.
     #[arg(long, default_value_t = 5000)]
     max_concurrency: usize,
+
+    /// Skip fetching and ingesting execution traces. With this flag set,
+    /// `Family::Trace` stays empty for every ingested block, and both
+    /// `query_traces` and `query_transfers` will return zero results for
+    /// those blocks (transfers is a derived view over traces). Drops the
+    /// per-block archive fanout from 3 requests to 2.
+    #[arg(long)]
+    no_traces: bool,
+
+    /// Number of consecutive blocks coalesced into one ingest batch. 1
+    /// matches the pre-batching live-mode behavior; backfill should raise
+    /// this (e.g. 32-256) to amortize fjall WAL+commit cost. Each batch
+    /// buffers N fully-built `FinalizedBlock`s in memory.
+    #[arg(long, default_value_t = 1)]
+    batch_size: usize,
 }
 
 #[tokio::main]
@@ -163,6 +181,9 @@ async fn main() -> Result<()> {
     }
     if matches!(cli.count, Some(0)) {
         bail!("--count must be >= 1");
+    }
+    if cli.batch_size == 0 {
+        bail!("--batch-size must be >= 1");
     }
     if cli.autotune {
         if cli.min_concurrency == 0 {
@@ -286,6 +307,10 @@ async fn main() -> Result<()> {
     let max_retries = cli.max_retries;
     let initial_backoff = Duration::from_millis(cli.retry_backoff_ms);
     let fetch_stats = Arc::new(Mutex::new(FetchStats::default()));
+    let fetch_traces = !cli.no_traces;
+    if cli.no_traces {
+        info!("--no-traces set: skipping trace fetch and ingest");
+    }
     let fetch_stream = {
         let fetch_stats = fetch_stats.clone();
         let permits = control.permits();
@@ -299,7 +324,15 @@ async fn main() -> Result<()> {
                         .acquire_owned()
                         .await
                         .expect("concurrency semaphore should never close");
-                    fetch_block_with_retry(&reader, n, max_retries, initial_backoff, &stats).await
+                    fetch_block_with_retry(
+                        &reader,
+                        n,
+                        max_retries,
+                        initial_backoff,
+                        &stats,
+                        fetch_traces,
+                    )
+                    .await
                 }
             })
             .buffered(max_concurrency)
@@ -308,40 +341,63 @@ async fn main() -> Result<()> {
 
     let mut total_logs: u64 = 0;
     let mut total_txs: u64 = 0;
+    let mut total_traces: u64 = 0;
     let mut window_start = Instant::now();
     let mut window_blocks: u64 = 0;
     let mut window_txs: u64 = 0;
     let mut window_logs: u64 = 0;
+    let mut window_traces: u64 = 0;
     let mut ingest_ms: Vec<u64> = Vec::with_capacity(cli.log_every as usize);
     let mut wait_ms: Vec<u64> = Vec::with_capacity(cli.log_every as usize);
+    let batch_size = cli.batch_size;
+    let mut pending: Vec<(u64, FinalizedBlock)> = Vec::with_capacity(batch_size);
+    let mut stream_done = false;
     loop {
-        // consumer_wait = time from "ready to consume next block" until
-        // buffered() yields one. ~0 = prefetch saturated (S3 keeping up
-        // or ingest-bound); approaches fetch_p50 = consumer outrunning
-        // prefetch (network-bound, raise --concurrency).
+        pending.clear();
+        // Drain up to `batch_size` ready blocks from the prefetch stream into
+        // a contiguous Vec. The first item's wait is the "consumer_wait"
+        // signal; subsequent items in the same batch are picked up
+        // back-to-back.
         let wait_started = Instant::now();
-        let Some(item) = fetch_stream.next().await else {
+        for slot in 0..batch_size {
+            let Some(item) = fetch_stream.next().await else {
+                stream_done = true;
+                break;
+            };
+            if slot == 0 {
+                wait_ms.push(wait_started.elapsed().as_millis() as u64);
+            }
+            let (n, block, receipts, traces) = item?;
+            let finalized = into_finalized_block(block, receipts, traces)
+                .with_context(|| format!("transforming block {n}"))?;
+            pending.push((n, finalized));
+        }
+        if pending.is_empty() {
             break;
-        };
-        wait_ms.push(wait_started.elapsed().as_millis() as u64);
+        }
+        let last_n = pending.last().expect("pending non-empty").0;
+        let blocks_in_batch: Vec<FinalizedBlock> = pending.iter().map(|(_, b)| b.clone()).collect();
 
-        let (n, block, receipts) = item?;
-        let finalized = into_finalized_block(block, receipts)
-            .with_context(|| format!("transforming block {n}"))?;
         let ingest_started = Instant::now();
-        let outcome = service
-            .ingest_block(finalized)
+        let outcomes = service
+            .ingest_blocks(blocks_in_batch)
             .await
-            .with_context(|| format!("ingesting block {n}"))?;
+            .with_context(|| format!("ingesting batch ending at block {last_n}"))?;
         ingest_ms.push(ingest_started.elapsed().as_millis() as u64);
 
-        total_logs += outcome.written_logs as u64;
-        total_txs += outcome.written_txs as u64;
-        window_blocks += 1;
-        window_txs += outcome.written_txs as u64;
-        window_logs += outcome.written_logs as u64;
+        for outcome in &outcomes {
+            total_logs += outcome.written_logs as u64;
+            total_txs += outcome.written_txs as u64;
+            total_traces += outcome.written_traces as u64;
+            window_blocks += 1;
+            window_txs += outcome.written_txs as u64;
+            window_logs += outcome.written_logs as u64;
+            window_traces += outcome.written_traces as u64;
+        }
 
-        let flush = n == end
+        let n = last_n;
+        let flush = stream_done
+            || n == end
             || (window_blocks > 0
                 && (n % log_every == 0 || window_start.elapsed() >= WINDOW_MAX_WALL));
         if flush {
@@ -376,12 +432,14 @@ async fn main() -> Result<()> {
                 block = n,
                 total_txs,
                 total_logs,
+                total_traces,
                 bottleneck,
                 hint,
                 concurrency = concurrency_observed,
                 blocks_per_sec = window_blocks as f64 / elapsed_secs,
                 txs_per_sec = window_txs as f64 / elapsed_secs,
                 logs_per_sec = window_logs as f64 / elapsed_secs,
+                traces_per_sec = window_traces as f64 / elapsed_secs,
                 fetch_p50_ms = fetch_p50,
                 fetch_p99_ms = fetch_p99,
                 ingest_p50_ms = ingest_p50,
@@ -408,23 +466,41 @@ async fn main() -> Result<()> {
             window_blocks = 0;
             window_txs = 0;
             window_logs = 0;
+            window_traces = 0;
             ingest_ms.clear();
             wait_ms.clear();
         }
+
+        if stream_done {
+            break;
+        }
     }
 
-    info!(end, total_txs, total_logs, "ingest complete");
+    info!(end, total_txs, total_logs, total_traces, "ingest complete");
     Ok(())
 }
 
 async fn fetch_block(
     reader: &BlockDataReaderErased,
     n: u64,
-) -> Result<(u64, Block, BlockReceipts)> {
-    let (block, receipts) =
-        tokio::try_join!(reader.get_block_by_number(n), reader.get_block_receipts(n),)
-            .with_context(|| format!("fetching block {n}"))?;
-    Ok((n, block, receipts))
+    fetch_traces: bool,
+) -> Result<(u64, Block, BlockReceipts, BlockTraces)> {
+    let (block, receipts, traces) = tokio::try_join!(
+        reader.get_block_by_number(n),
+        reader.get_block_receipts(n),
+        async {
+            if fetch_traces {
+                reader
+                    .try_get_block_traces(n)
+                    .await
+                    .map(|opt| opt.unwrap_or_default())
+            } else {
+                Ok(BlockTraces::default())
+            }
+        },
+    )
+    .with_context(|| format!("fetching block {n}"))?;
+    Ok((n, block, receipts, traces))
 }
 
 /// Retries `fetch_block` with exponential backoff. Total attempts =
@@ -438,13 +514,14 @@ async fn fetch_block_with_retry(
     max_retries: u32,
     initial_backoff: Duration,
     stats: &Mutex<FetchStats>,
-) -> Result<(u64, Block, BlockReceipts)> {
+    fetch_traces: bool,
+) -> Result<(u64, Block, BlockReceipts, BlockTraces)> {
     let mut backoff = initial_backoff;
     // Wall time across all attempts: a retried fetch's "latency" is what
     // the consumer actually waits for, not just the successful attempt.
     let started = Instant::now();
     for attempt in 0..=max_retries {
-        match fetch_block(reader, n).await {
+        match fetch_block(reader, n, fetch_traces).await {
             Ok(item) => {
                 let elapsed_ms = started.elapsed().as_millis() as u64;
                 stats
@@ -624,8 +701,13 @@ fn classify_bottleneck(
     ("s3_pipelined", "raise --concurrency if retries stay low")
 }
 
-fn into_finalized_block(block: Block, receipts: BlockReceipts) -> Result<FinalizedBlock> {
+fn into_finalized_block(
+    block: Block,
+    receipts: BlockReceipts,
+    traces: BlockTraces,
+) -> Result<FinalizedBlock> {
     let header = block.header;
+    let block_number = header.number;
     let txs: Vec<IngestTx> = block
         .body
         .transactions
@@ -640,7 +722,7 @@ fn into_finalized_block(block: Block, receipts: BlockReceipts) -> Result<Finaliz
     if !txs.is_empty() && txs.len() != receipts.len() {
         bail!(
             "block {}: tx count {} != receipt count {}",
-            header.number,
+            block_number,
             txs.len(),
             receipts.len()
         );
@@ -649,20 +731,104 @@ fn into_finalized_block(block: Block, receipts: BlockReceipts) -> Result<Finaliz
         // Should not happen for valid archives, but worth surfacing rather
         // than silently dropping receipts.
         warn!(
-            block = header.number,
+            block = block_number,
             receipts = receipts.len(),
             "block has receipts but no transactions; ignoring receipts"
         );
     }
 
+    // Per-tx receipt success flag, needed by the trace ingest plan for
+    // the `has_transfer` predicate (a sub-call can succeed inside a
+    // reverted parent tx; the tracer doesn't rewrite descendants).
+    let tx_statuses: Vec<bool> = receipts.iter().map(|r| r.receipt.status()).collect();
     let logs_by_tx: Vec<Vec<alloy_primitives::Log>> = receipts
         .into_iter()
         .map(|r| r.receipt.logs().to_vec())
         .collect();
 
+    let ingest_traces = build_ingest_traces(block_number, &traces, &tx_statuses, txs.len())?;
+
     Ok(FinalizedBlock {
         header,
         logs_by_tx,
         txs,
+        traces: ingest_traces,
     })
+}
+
+fn map_call_kind(typ: &ArchiveCallKind) -> CallKind {
+    match typ {
+        ArchiveCallKind::Call => CallKind::Call,
+        ArchiveCallKind::DelegateCall => CallKind::DelegateCall,
+        ArchiveCallKind::CallCode => CallKind::CallCode,
+        ArchiveCallKind::Create => CallKind::Create,
+        ArchiveCallKind::Create2 => CallKind::Create2,
+        ArchiveCallKind::SelfDestruct => CallKind::SelfDestruct,
+        ArchiveCallKind::StaticCall => CallKind::StaticCall,
+    }
+}
+
+/// Decodes each tx's `Vec<Vec<CallFrame>>` from the archive's RLP form,
+/// flattens DFS, computes per-frame `trace_address`, threads in the
+/// tx-level receipt status, and concatenates across txs in tx order.
+///
+/// Archives prior to the trace recorder being enabled may carry an
+/// empty `BlockTraces` even on blocks with txs; in that case we emit an
+/// empty trace vec rather than fail.
+fn build_ingest_traces(
+    block_number: u64,
+    raw_traces: &BlockTraces,
+    tx_statuses: &[bool],
+    tx_count: usize,
+) -> Result<Vec<IngestTrace>> {
+    if raw_traces.is_empty() {
+        return Ok(Vec::new());
+    }
+    if raw_traces.len() != tx_count {
+        bail!(
+            "block {}: trace tx count {} != tx count {}",
+            block_number,
+            raw_traces.len(),
+            tx_count
+        );
+    }
+
+    let mut out = Vec::new();
+    for (tx_idx, raw_tx_trace) in raw_traces.iter().enumerate() {
+        let nested: Vec<Vec<CallFrame>> = decode_trace(raw_tx_trace)
+            .map_err(|e| eyre!("block {block_number} tx {tx_idx}: decode_trace failed: {e}"))?;
+        let frames: Vec<CallFrame> = nested.into_iter().flatten().collect();
+        if frames.is_empty() {
+            continue;
+        }
+        let depths: Vec<u32> = frames.iter().map(|f| f.depth.to::<u32>()).collect();
+        let trace_addresses = compute_trace_addresses(depths)
+            .map_err(|e| eyre!("block {block_number} tx {tx_idx}: trace_address: {e:?}"))?;
+        debug_assert_eq!(frames.len(), trace_addresses.len());
+
+        let tx_status = *tx_statuses
+            .get(tx_idx)
+            .ok_or_else(|| eyre!("block {block_number} tx {tx_idx}: missing receipt"))?;
+        let tx_index_u32 = u32::try_from(tx_idx)
+            .map_err(|_| eyre!("block {block_number}: tx index overflow"))?;
+
+        for (frame, trace_address) in frames.into_iter().zip(trace_addresses.into_iter()) {
+            out.push(IngestTrace {
+                typ: map_call_kind(&frame.typ),
+                from: frame.from,
+                to: frame.to,
+                value: frame.value,
+                gas: frame.gas.to::<u64>(),
+                gas_used: frame.gas_used.to::<u64>(),
+                input: frame.input,
+                output: frame.output,
+                status: frame.status.to::<u8>(),
+                depth: frame.depth.to::<u32>(),
+                tx_index: tx_index_u32,
+                trace_address,
+                tx_status,
+            });
+        }
+    }
+    Ok(out)
 }

@@ -15,11 +15,13 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use bytes::Bytes;
+
 use crate::{
     engine::{
         bitmap::{
             compact_bitmap_page, global_page_start, local_page_start, stream_page_global_start,
-            BitmapFragmentWrite,
+            BitmapFragmentWrite, BitmapPageMeta,
         },
         tables::FamilyTables,
     },
@@ -34,68 +36,131 @@ struct BitmapCompactionPlan {
     final_open_streams: BTreeSet<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompactedPageWrite {
+    pub stream_id: String,
+    pub page_start_local: u32,
+    pub meta: BitmapPageMeta,
+    pub blob: Bytes,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BitmapBatchCompactionPlan {
+    pub compacted_pages: Vec<CompactedPageWrite>,
+    /// Per-frontier-page open-stream sets to record. The vec preserves
+    /// insertion order (one entry per frontier-page advance within the
+    /// batch); each entry's `BTreeSet` is the cumulative set for that page
+    /// at the point the frontier moved past it (for non-final entries) or
+    /// at the end of the batch (for the final entry).
+    pub open_stream_writes: Vec<(u64, BTreeSet<String>)>,
+    pub has_writes: bool,
+}
+
 impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
-    /// Compacts every stream page sealed by the current ingest transition and
-    /// updates the frontier open-stream inventory for the page that remains live.
-    pub async fn compact_newly_sealed_bitmap_pages(
+    /// Reads the prior open-stream inventory and the sealed-page fragments
+    /// across a batch's primary-id ranges, returning the compacted page
+    /// artifacts the Phase B meta batch will stage. Pure I/O — no writes.
+    pub async fn plan_bitmap_compactions(
         &self,
-        written_fragments: &[BitmapFragmentWrite],
-        from_next_primary_id: u64,
-        next_primary_id: u64,
-    ) -> Result<()> {
-        if next_primary_id <= from_next_primary_id {
-            return Ok(());
+        written_fragments_per_block: &[&[BitmapFragmentWrite]],
+        ranges: &[(u64, u64)],
+    ) -> Result<BitmapBatchCompactionPlan> {
+        debug_assert_eq!(written_fragments_per_block.len(), ranges.len());
+
+        if ranges.is_empty() {
+            return Ok(BitmapBatchCompactionPlan {
+                compacted_pages: Vec::new(),
+                open_stream_writes: Vec::new(),
+                has_writes: false,
+            });
         }
 
-        let start_open_page = global_page_start(from_next_primary_id);
-        let previous_open_streams = self
-            .load_open_bitmap_streams(start_open_page)
-            .await?
-            .into_iter()
-            .collect();
-        let touched_by_page = touched_streams_by_page(written_fragments)?;
-        let plan = build_compaction_plan(
-            previous_open_streams,
-            touched_by_page,
-            from_next_primary_id,
-            next_primary_id,
-        );
+        let mut compacted_pages = Vec::new();
+        let mut open_stream_writes: Vec<(u64, BTreeSet<String>)> = Vec::new();
+        let mut frontier: Option<(u64, BTreeSet<String>)> = None;
 
-        for (page_start, streams) in &plan.sealed_pages {
-            self.compact_page_streams(*page_start, streams).await?;
+        for (block_idx, &(from_next_primary_id, next_primary_id)) in ranges.iter().enumerate() {
+            if next_primary_id <= from_next_primary_id {
+                continue;
+            }
+
+            let start_open_page = global_page_start(from_next_primary_id);
+            let previous_open_streams = match frontier.take() {
+                Some((page, streams)) if page == start_open_page => streams,
+                _ => self
+                    .load_open_bitmap_streams(start_open_page)
+                    .await?
+                    .into_iter()
+                    .collect(),
+            };
+
+            let touched_by_page = touched_streams_by_page(written_fragments_per_block[block_idx])?;
+            let shape = build_compaction_plan(
+                previous_open_streams,
+                touched_by_page,
+                from_next_primary_id,
+                next_primary_id,
+            );
+
+            for (page_global_start, streams) in &shape.sealed_pages {
+                let page_start_local = local_page_start(*page_global_start);
+                for stream_id in streams {
+                    let fragments = self
+                        .load_bitmap_fragments(stream_id, page_start_local)
+                        .await?;
+                    let (meta, bitmap_blob) = compact_bitmap_page(page_start_local, &fragments)?;
+                    compacted_pages.push(CompactedPageWrite {
+                        stream_id: stream_id.clone(),
+                        page_start_local,
+                        meta,
+                        blob: bitmap_blob,
+                    });
+                }
+            }
+
+            // Per-block, the original `record_open_bitmap_streams` was called
+            // with the per-block `final_open_streams` at `final_open_page_start`.
+            // Within a batch we update the latest entry for that page so the
+            // batched commit still produces the on-disk union.
+            if !shape.final_open_streams.is_empty() {
+                if let Some(last) = open_stream_writes.last_mut() {
+                    if last.0 == shape.final_open_page_start {
+                        last.1.extend(shape.final_open_streams.iter().cloned());
+                    } else {
+                        open_stream_writes
+                            .push((shape.final_open_page_start, shape.final_open_streams.clone()));
+                    }
+                } else {
+                    open_stream_writes
+                        .push((shape.final_open_page_start, shape.final_open_streams.clone()));
+                }
+            }
+
+            frontier = Some((shape.final_open_page_start, shape.final_open_streams));
         }
 
-        self.record_open_bitmap_streams(plan.final_open_page_start, &plan.final_open_streams)
-            .await?;
-
-        Ok(())
+        let has_writes = !compacted_pages.is_empty() || !open_stream_writes.is_empty();
+        Ok(BitmapBatchCompactionPlan {
+            compacted_pages,
+            open_stream_writes,
+            has_writes,
+        })
     }
 
-    async fn compact_page_streams(
+    pub fn stage_bitmap_compactions(
         &self,
-        global_page_start: u64,
-        streams: &BTreeSet<String>,
-    ) -> Result<()> {
-        let page_start_local = local_page_start(global_page_start);
-
-        for stream_id in streams {
-            let fragments = self
-                .load_bitmap_fragments(stream_id, page_start_local)
-                .await?;
-            // Sealed-page fragments are intentionally retained after compaction —
-            // the query path falls back to fragments when the compacted page is
-            // missing, and keeping them lets a corrupted page-meta/page-blob write
-            // be reconstructed from source. Storage cost is bounded by retention
-            // policy, which lives outside this slice.
-            let (meta, bitmap_blob) = compact_bitmap_page(page_start_local, &fragments)?;
-
-            self.store_bitmap_page_blob(stream_id, page_start_local, bitmap_blob)
-                .await?;
-            self.store_bitmap_page_meta(stream_id, page_start_local, &meta)
-                .await?;
+        meta: &mut M::Batch,
+        plan: &BitmapBatchCompactionPlan,
+    ) {
+        for page in &plan.compacted_pages {
+            self.bitmap()
+                .stage_page_blob(meta, &page.stream_id, page.page_start_local, page.blob.clone());
+            self.bitmap()
+                .stage_page_meta(meta, &page.stream_id, page.page_start_local, &page.meta);
         }
-
-        Ok(())
+        for (page_start, streams) in &plan.open_stream_writes {
+            self.bitmap().stage_open_streams(meta, *page_start, streams);
+        }
     }
 }
 

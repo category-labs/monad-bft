@@ -19,11 +19,11 @@ pub mod common;
 pub mod fjall;
 pub mod meta;
 
-pub use blob::{BlobStore, BlobTable, BlobTableId, InMemoryBlobStore};
+pub use blob::{BlobStore, BlobTable, BlobTableId, BlobWriteBatch, InMemoryBlobStore};
 pub use common::Page;
 #[cfg(feature = "fjall")]
 pub use fjall::FjallStore;
 pub use meta::{
-    CasOutcome, CasVersion, InMemoryMetaStore, KvTable, MetaStore, MetaStoreCas, ScannableKvTable,
-    ScannableTableId, TableId,
+    CasOutcome, CasVersion, InMemoryMetaStore, KvTable, MetaStore, MetaStoreCas, MetaWriteBatch,
+    ScannableKvTable, ScannableTableId, TableId,
 };

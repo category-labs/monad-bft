@@ -35,6 +35,7 @@ async fn ingest_rejects_mismatched_txs_and_logs_by_tx_lengths() {
             header: test_header(1, B256::ZERO),
             logs_by_tx: vec![vec![], vec![]],
             txs: vec![IngestTx::default()],
+            traces: vec![],
         })
         .await
         .expect_err("length mismatch should be rejected");
@@ -58,6 +59,7 @@ async fn ingest_accepts_matching_txs_and_logs_by_tx_lengths() {
             header: test_header(1, B256::ZERO),
             logs_by_tx: vec![vec![], vec![]],
             txs: vec![minimal_ingest_tx(), minimal_ingest_tx()],
+            traces: vec![],
         })
         .await
         .expect("matching lengths should ingest");

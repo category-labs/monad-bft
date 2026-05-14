@@ -49,6 +49,7 @@ async fn indexed_query_logs_respects_and_or_filter_semantics() {
                 ),
             ]],
             txs: Vec::new(),
+            traces: vec![],
         })
         .await
         .expect("ingest block");
@@ -102,6 +103,7 @@ async fn indexed_query_logs_descending_returns_newest_first() {
                 vec![B256::repeat_byte(9)],
             )]],
             txs: Vec::new(),
+            traces: vec![],
         })
         .await
         .expect("ingest block 1");
@@ -114,6 +116,7 @@ async fn indexed_query_logs_descending_returns_newest_first() {
                 log(Address::repeat_byte(7), vec![B256::repeat_byte(9)]),
             ]],
             txs: Vec::new(),
+            traces: vec![],
         })
         .await
         .expect("ingest block 2");
@@ -169,6 +172,7 @@ async fn indexed_query_logs_paginates_at_block_boundaries() {
                 log(Address::repeat_byte(7), vec![B256::repeat_byte(9)]),
             ]],
             txs: Vec::new(),
+            traces: vec![],
         })
         .await
         .expect("ingest block 1");
@@ -181,6 +185,7 @@ async fn indexed_query_logs_paginates_at_block_boundaries() {
                 vec![B256::repeat_byte(9)],
             )]],
             txs: Vec::new(),
+            traces: vec![],
         })
         .await
         .expect("ingest block 2");
@@ -256,6 +261,7 @@ async fn indexed_query_logs_scans_across_bucket_and_page_boundaries() {
                 usize::try_from(STREAM_PAGE_LOCAL_ID_SPAN - 2).expect("page span fits usize"),
             )],
             txs: Vec::new(),
+            traces: vec![],
         })
         .await
         .expect("ingest block 1");
@@ -270,6 +276,7 @@ async fn indexed_query_logs_scans_across_bucket_and_page_boundaries() {
                     .expect("directory bucket size fits usize"),
             )],
             txs: Vec::new(),
+            traces: vec![],
         })
         .await
         .expect("ingest block 2");
@@ -324,6 +331,7 @@ async fn indexed_query_completes_current_block_when_limit_reached_mid_block() {
                 vec![B256::repeat_byte(9)],
             )]],
             txs: Vec::new(),
+            traces: vec![],
         })
         .await
         .expect("ingest block 1");
@@ -339,6 +347,7 @@ async fn indexed_query_completes_current_block_when_limit_reached_mid_block() {
                 log(Address::repeat_byte(7), vec![B256::repeat_byte(9)]),
             ]],
             txs: Vec::new(),
+            traces: vec![],
         })
         .await
         .expect("ingest block 2");
@@ -351,6 +360,7 @@ async fn indexed_query_completes_current_block_when_limit_reached_mid_block() {
                 vec![B256::repeat_byte(9)],
             )]],
             txs: Vec::new(),
+            traces: vec![],
         })
         .await
         .expect("ingest block 3");
@@ -403,6 +413,7 @@ async fn indexed_query_completes_current_block_when_limit_reached_mid_block_desc
                 vec![B256::repeat_byte(9)],
             )]],
             txs: Vec::new(),
+            traces: vec![],
         })
         .await
         .expect("ingest block 1");
@@ -418,6 +429,7 @@ async fn indexed_query_completes_current_block_when_limit_reached_mid_block_desc
                 log(Address::repeat_byte(7), vec![B256::repeat_byte(9)]),
             ]],
             txs: Vec::new(),
+            traces: vec![],
         })
         .await
         .expect("ingest block 2");
@@ -430,6 +442,7 @@ async fn indexed_query_completes_current_block_when_limit_reached_mid_block_desc
                 vec![B256::repeat_byte(9)],
             )]],
             txs: Vec::new(),
+            traces: vec![],
         })
         .await
         .expect("ingest block 3");
@@ -481,6 +494,7 @@ async fn indexed_query_stops_at_block_when_limit_equals_block_match_count() {
                 log(Address::repeat_byte(7), vec![B256::repeat_byte(9)]),
             ]],
             txs: Vec::new(),
+            traces: vec![],
         })
         .await
         .expect("ingest block 1");
@@ -493,6 +507,7 @@ async fn indexed_query_stops_at_block_when_limit_equals_block_match_count() {
                 vec![B256::repeat_byte(9)],
             )]],
             txs: Vec::new(),
+            traces: vec![],
         })
         .await
         .expect("ingest block 2");
@@ -540,6 +555,7 @@ async fn unindexed_query_logs_still_uses_block_scan_fallback() {
                 log(Address::repeat_byte(6), vec![B256::repeat_byte(9)]),
             ]],
             txs: Vec::new(),
+            traces: vec![],
         })
         .await
         .expect("ingest");

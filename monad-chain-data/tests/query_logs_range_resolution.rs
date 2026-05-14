@@ -255,6 +255,7 @@ async fn ingest_two_block_chain() -> MonadChainDataService<InMemoryMetaStore, In
             header: h1,
             logs_by_tx: vec![vec![log(Address::repeat_byte(1), B256::repeat_byte(1))]],
             txs: Vec::new(),
+            traces: vec![],
         })
         .await
         .expect("ingest block 1");
@@ -264,6 +265,7 @@ async fn ingest_two_block_chain() -> MonadChainDataService<InMemoryMetaStore, In
             header: h2,
             logs_by_tx: vec![vec![log(Address::repeat_byte(2), B256::repeat_byte(2))]],
             txs: Vec::new(),
+            traces: vec![],
         })
         .await
         .expect("ingest block 2");

@@ -38,6 +38,8 @@ use crate::{
 };
 
 pub struct Tables<M: MetaStore, B: BlobStore> {
+    meta_store: M,
+    blob_store: B,
     blocks: BlockTables<M>,
     tx_hash_index: TxHashIndexTable<M>,
     families: BTreeMap<Family, FamilyTables<M, B>>,
@@ -52,13 +54,27 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
         );
         families.insert(
             Family::Tx,
-            FamilyTables::new(meta_store.clone(), blob_store, Family::Tx),
+            FamilyTables::new(meta_store.clone(), blob_store.clone(), Family::Tx),
+        );
+        families.insert(
+            Family::Trace,
+            FamilyTables::new(meta_store.clone(), blob_store.clone(), Family::Trace),
         );
         Self {
             blocks: BlockTables::new(meta_store.clone()),
-            tx_hash_index: TxHashIndexTable::new(meta_store),
+            tx_hash_index: TxHashIndexTable::new(meta_store.clone()),
+            meta_store,
+            blob_store,
             families,
         }
+    }
+
+    pub fn meta_store(&self) -> &M {
+        &self.meta_store
+    }
+
+    pub fn blob_store(&self) -> &B {
+        &self.blob_store
     }
 
     pub fn blocks(&self) -> &BlockTables<M> {
@@ -136,6 +152,14 @@ impl<M: MetaStoreCas> PublicationTables<M> {
                 Bytes::from(next.encode()),
             )
             .await?;
+        self.cas_outcome_into_result(outcome).await
+    }
+
+    /// Folds a [`CasOutcome`] from a publication-state write into the
+    /// service-level `Result`. Centralized so the Phase B path in
+    /// `MonadChainDataService::ingest_blocks` and the Phase-B-skipped path
+    /// in [`Self::cas_advance`] map `Conflict` to `FencedOut` identically.
+    pub(crate) async fn cas_outcome_into_result(&self, outcome: CasOutcome) -> Result<()> {
         match outcome {
             CasOutcome::Applied { .. } => Ok(()),
             CasOutcome::Conflict { .. } => {
@@ -182,6 +206,17 @@ impl<M: MetaStore> BlockTables<M> {
         Ok(())
     }
 
+    pub fn stage_record(
+        &self,
+        meta: &mut M::Batch,
+        block_number: u64,
+        block_record: &BlockRecord,
+    ) {
+        let key = block_number_key(block_number);
+        self.block_records
+            .put_into(meta, &key, Bytes::from(block_record.encode()));
+    }
+
     pub async fn load_header(&self, block_number: u64) -> Result<Option<EvmBlockHeader>> {
         let key = block_number_key(block_number);
         let Some(bytes) = self.block_headers.get(&key).await? else {
@@ -198,6 +233,12 @@ impl<M: MetaStore> BlockTables<M> {
             .put(&key, Bytes::from(alloy_rlp::encode(header)))
             .await?;
         Ok(())
+    }
+
+    pub fn stage_header(&self, meta: &mut M::Batch, block_number: u64, header: &EvmBlockHeader) {
+        let key = block_number_key(block_number);
+        self.block_headers
+            .put_into(meta, &key, Bytes::from(alloy_rlp::encode(header)));
     }
 
     /// Resolves a block hash to its block number via the hash-to-number index.
@@ -230,6 +271,19 @@ impl<M: MetaStore> BlockTables<M> {
             )
             .await?;
         Ok(())
+    }
+
+    pub fn stage_hash_index(
+        &self,
+        meta: &mut M::Batch,
+        block_hash: &Hash32,
+        block_number: u64,
+    ) {
+        self.block_hash_to_number_index.put_into(
+            meta,
+            block_hash.as_slice(),
+            Bytes::copy_from_slice(&block_number.to_be_bytes()),
+        );
     }
 
     /// Validates that a new block extends the currently published chain.
@@ -345,6 +399,17 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
             .put(&key, Bytes::from(block_log_blob))
             .await?;
         Ok(())
+    }
+
+    pub fn stage_block_blob(&self, blob: &mut B::Batch, block_number: u64, block_log_blob: Vec<u8>) {
+        let key = block_number_key(block_number);
+        self.block_blobs
+            .put_into(blob, &key, Bytes::from(block_log_blob));
+    }
+
+    pub fn stage_block_header(&self, meta: &mut M::Batch, block_number: u64, bytes: Bytes) {
+        let key = block_number_key(block_number);
+        self.block_headers.put_into(meta, &key, bytes);
     }
 
     pub async fn load_bucket_fragments(
