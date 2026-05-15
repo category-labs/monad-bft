@@ -273,13 +273,26 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
                 &st.block_record.block_hash,
                 block.block_number(),
             );
-            for (tx_hash, location) in &st.tx_plan.hash_locations {
-                self.tables
-                    .tx_hash_index()
-                    .stage_put(&mut meta_batch, tx_hash, *location);
-            }
             block_tables.stage_record(&mut meta_batch, block.block_number(), &st.block_record);
         }
+        // Tx-hash index writes flow through the new write-session API as
+        // the first conversion step in the batch-API → session migration.
+        // The rest of Phase A still threads `&mut M::Batch`; that swap
+        // lands in subsequent commits.
+        let hash_locations: Vec<_> = staged
+            .iter()
+            .flat_map(|s| s.tx_plan.hash_locations.iter().copied())
+            .collect();
+        self.tables
+            .with_writes(|w| {
+                Box::pin(async move {
+                    for (tx_hash, location) in &hash_locations {
+                        w.tables().tx_hash_index().stage_put(w, tx_hash, *location);
+                    }
+                    Ok(())
+                })
+            })
+            .await?;
         timings.stage_a_ms = stage_a_start.elapsed().as_millis() as u64;
 
         // Time each commit individually while still running them

@@ -5008,6 +5008,7 @@ dependencies = [
  "fjall",
  "futures",
  "libc",
+ "lru",
  "monad-archive",
  "monad-eth-types",
  "opentelemetry",

@@ -18,20 +18,22 @@ use bytes::Bytes;
 use crate::{
     error::Result,
     family::Hash32,
-    store::{KvTable, MetaStore, TableId},
+    store::{
+        blob::BlobStore, CacheConfig, CachedKvTable, MetaStore, TableId, WriteSession,
+    },
     txs::types::TxLocation,
 };
 
 pub struct TxHashIndexTable<M: MetaStore> {
-    table: KvTable<M>,
+    table: CachedKvTable<M>,
 }
 
 impl<M: MetaStore> TxHashIndexTable<M> {
     pub const TABLE: TableId = TableId::new("tx_hash_index");
 
-    pub(crate) fn new(meta_store: M) -> Self {
+    pub(crate) fn new(meta_store: M, cache: CacheConfig) -> Self {
         Self {
-            table: meta_store.table(Self::TABLE),
+            table: CachedKvTable::new(meta_store.table(Self::TABLE), cache.tx_hash_index_entries),
         }
     }
 
@@ -42,14 +44,18 @@ impl<M: MetaStore> TxHashIndexTable<M> {
         TxLocation::decode(bytes.as_ref()).map(Some)
     }
 
-    pub(crate) fn stage_put(
+    pub(crate) fn cached_table(&self) -> &CachedKvTable<M> {
+        &self.table
+    }
+
+    pub(crate) fn stage_put<B: BlobStore>(
         &self,
-        meta: &mut M::Batch,
+        w: &WriteSession<'_, M, B>,
         tx_hash: &Hash32,
         location: TxLocation,
     ) {
-        self.table.put_into(
-            meta,
+        w.put(
+            Self::TABLE,
             tx_hash.as_slice(),
             Bytes::copy_from_slice(&location.encode()),
         );

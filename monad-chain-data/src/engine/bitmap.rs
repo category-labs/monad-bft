@@ -21,7 +21,7 @@ use roaring::RoaringBitmap;
 use crate::{
     error::{MonadChainDataError, Result},
     primitives::state::PrimaryId,
-    store::{KvTable, MetaStore, ScannableKvTable, ScannableTableId},
+    store::{CachedKvTable, CachedScannableTable, MetaStore, ScannableTableId},
 };
 
 pub const LOCAL_ID_BITS: u32 = PrimaryId::LOCAL_ID_BITS;
@@ -63,18 +63,18 @@ impl BitmapPageMeta {
 }
 
 pub struct BitmapTables<M: MetaStore> {
-    fragments: ScannableKvTable<M>,
-    page_meta: KvTable<M>,
-    page_blobs: KvTable<M>,
-    open_streams: ScannableKvTable<M>,
+    fragments: CachedScannableTable<M>,
+    page_meta: CachedKvTable<M>,
+    page_blobs: CachedKvTable<M>,
+    open_streams: CachedScannableTable<M>,
 }
 
 impl<M: MetaStore> BitmapTables<M> {
     pub fn new(
-        fragments: ScannableKvTable<M>,
-        page_meta: KvTable<M>,
-        page_blobs: KvTable<M>,
-        open_streams: ScannableKvTable<M>,
+        fragments: CachedScannableTable<M>,
+        page_meta: CachedKvTable<M>,
+        page_blobs: CachedKvTable<M>,
+        open_streams: CachedScannableTable<M>,
     ) -> Self {
         Self {
             fragments,
@@ -85,7 +85,23 @@ impl<M: MetaStore> BitmapTables<M> {
     }
 
     pub fn fragments_table(&self) -> ScannableTableId {
-        self.fragments.table
+        self.fragments.table_id()
+    }
+
+    pub(crate) fn fragments_cache(&self) -> &CachedScannableTable<M> {
+        &self.fragments
+    }
+
+    pub(crate) fn page_meta_cache(&self) -> &CachedKvTable<M> {
+        &self.page_meta
+    }
+
+    pub(crate) fn page_blobs_cache(&self) -> &CachedKvTable<M> {
+        &self.page_blobs
+    }
+
+    pub(crate) fn open_streams_cache(&self) -> &CachedScannableTable<M> {
+        &self.open_streams
     }
 
     /// Stores one bitmap fragment for a block within the stream page it covers.

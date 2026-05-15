@@ -22,7 +22,7 @@ use bytes::Bytes;
 
 use crate::{
     error::Result,
-    store::blob::{BlobStore, BlobTableId, BlobWriteBatch},
+    store::blob::{BlobStore, BlobTableId, BlobWriteBatch, BlobWriteOp},
 };
 
 pub struct InMemoryBlobBatch {
@@ -93,6 +93,17 @@ impl BlobStore for InMemoryBlobStore {
             .write()
             .map_err(|_| crate::error::MonadChainDataError::Backend("poisoned lock".to_string()))?;
         guard.insert((table, key.to_vec()), value);
+        Ok(())
+    }
+
+    async fn apply_writes(&self, writes: Vec<BlobWriteOp>) -> Result<()> {
+        let mut guard = self
+            .blobs
+            .write()
+            .map_err(|_| crate::error::MonadChainDataError::Backend("poisoned lock".to_string()))?;
+        for BlobWriteOp { table, key, value } in writes {
+            guard.insert((table, key), value);
+        }
         Ok(())
     }
 
