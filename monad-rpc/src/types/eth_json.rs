@@ -143,7 +143,6 @@ pub struct MonadCreateAccessListResult {
     #[schemars(with = "String")]
     pub gas_used: U256,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "String")]
     pub error: Option<String>,
 }
 
