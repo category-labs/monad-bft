@@ -19,7 +19,7 @@ use crate::{
         tables::FamilyTables,
     },
     error::{MonadChainDataError, Result},
-    store::{BlobStore, MetaStore},
+    store::{BlobStore, MetaStore, WriteSession},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,7 +52,7 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
 
     pub fn stage_directory_compactions(
         &self,
-        meta: &mut M::Batch,
+        w: &WriteSession<'_, M, B>,
         plan: &DirectoryCompactionPlan,
     ) {
         for (bucket_start, bucket) in &plan.buckets {
@@ -60,7 +60,7 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
             // is written. Reads prefer the bucket via `load_bucket`, so the fragments
             // are unreferenced but kept available for replay/recovery. Eager deletion
             // is deferred to a backend that exposes safe delete semantics.
-            self.dir().stage_bucket(meta, *bucket_start, bucket);
+            self.dir().stage_bucket(w, *bucket_start, bucket);
         }
     }
 }

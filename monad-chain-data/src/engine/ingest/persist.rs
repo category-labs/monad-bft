@@ -18,20 +18,18 @@ use bytes::Bytes;
 use crate::{
     engine::{bitmap::BitmapFragmentWrite, tables::FamilyTables},
     primitives::state::FamilyWindowRecord,
-    store::{BlobStore, MetaStore},
+    store::{BlobStore, MetaStore, WriteSession},
 };
 
 impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
-    /// Stages one block's family Phase A artifacts into the given meta and
-    /// blob batches: per-block blob, per-block header bytes, primary-directory
-    /// fragment writes (one per overlapped bucket), and one bitmap-fragment
-    /// scan_put per bitmap fragment. Pure — no I/O. Phase B compactions are
-    /// planned and staged separately by `plan_*_compactions` /
-    /// `stage_*_compactions`.
+    /// Stages one block's family Phase A artifacts via the write session:
+    /// per-block blob, per-block header bytes, primary-directory fragment
+    /// writes (one per overlapped bucket), and one bitmap-fragment scan_put
+    /// per bitmap fragment. Pure — no I/O. Phase B compactions are planned
+    /// and staged separately by `plan_*_compactions` / `stage_*_compactions`.
     pub fn stage_indexed_family_ingest(
         &self,
-        meta: &mut M::Batch,
-        blob: &mut B::Batch,
+        w: &WriteSession<'_, M, B>,
         block_number: u64,
         block_blob: Vec<u8>,
         block_header_bytes: Bytes,
@@ -40,12 +38,12 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
     ) {
         let first_primary_id = window.first_primary_id.as_u64();
 
-        self.stage_block_blob(blob, block_number, block_blob);
-        self.stage_block_header(meta, block_number, block_header_bytes);
+        self.stage_block_blob(w, block_number, block_blob);
+        self.stage_block_header(w, block_number, block_header_bytes);
         self.dir()
-            .stage_block_fragment(meta, block_number, first_primary_id, window.count);
+            .stage_block_fragment(w, block_number, first_primary_id, window.count);
         for fragment in bitmap_fragments {
-            self.bitmap().stage_fragment(meta, fragment, block_number);
+            self.bitmap().stage_fragment(w, fragment, block_number);
         }
     }
 }

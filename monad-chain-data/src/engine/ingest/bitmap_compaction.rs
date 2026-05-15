@@ -26,7 +26,7 @@ use crate::{
         tables::FamilyTables,
     },
     error::Result,
-    store::{BlobStore, MetaStore},
+    store::{BlobStore, MetaStore, WriteSession},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -149,17 +149,17 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
 
     pub fn stage_bitmap_compactions(
         &self,
-        meta: &mut M::Batch,
+        w: &WriteSession<'_, M, B>,
         plan: &BitmapBatchCompactionPlan,
     ) {
         for page in &plan.compacted_pages {
             self.bitmap()
-                .stage_page_blob(meta, &page.stream_id, page.page_start_local, page.blob.clone());
+                .stage_page_blob(w, &page.stream_id, page.page_start_local, page.blob.clone());
             self.bitmap()
-                .stage_page_meta(meta, &page.stream_id, page.page_start_local, &page.meta);
+                .stage_page_meta(w, &page.stream_id, page.page_start_local, &page.meta);
         }
         for (page_start, streams) in &plan.open_stream_writes {
-            self.bitmap().stage_open_streams(meta, *page_start, streams);
+            self.bitmap().stage_open_streams(w, *page_start, streams);
         }
     }
 }
