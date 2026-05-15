@@ -17,7 +17,7 @@ use bytes::Bytes;
 
 use crate::{
     error::{MonadChainDataError, Result},
-    store::{KvTable, MetaStore, ScannableKvTable},
+    store::{CachedKvTable, CachedScannableTable, MetaStore},
 };
 
 pub const DIRECTORY_BUCKET_SIZE: u64 = 10_000;
@@ -84,13 +84,21 @@ impl PrimaryDirFragment {
 }
 
 pub struct PrimaryDirTables<M: MetaStore> {
-    fragments: ScannableKvTable<M>,
-    buckets: KvTable<M>,
+    fragments: CachedScannableTable<M>,
+    buckets: CachedKvTable<M>,
 }
 
 impl<M: MetaStore> PrimaryDirTables<M> {
-    pub fn new(fragments: ScannableKvTable<M>, buckets: KvTable<M>) -> Self {
+    pub fn new(fragments: CachedScannableTable<M>, buckets: CachedKvTable<M>) -> Self {
         Self { fragments, buckets }
+    }
+
+    pub(crate) fn fragments_cache(&self) -> &CachedScannableTable<M> {
+        &self.fragments
+    }
+
+    pub(crate) fn buckets_cache(&self) -> &CachedKvTable<M> {
+        &self.buckets
     }
 
     /// Writes a directory fragment for the given block into every 10k bucket

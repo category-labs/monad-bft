@@ -20,6 +20,29 @@ pub use in_memory::InMemoryMetaStore;
 
 use crate::{error::Result, store::common::Page};
 
+#[derive(Debug, Clone)]
+pub enum MetaWriteOp {
+    Put {
+        table: TableId,
+        key: Vec<u8>,
+        value: Bytes,
+    },
+    ScanPut {
+        table: ScannableTableId,
+        partition: Vec<u8>,
+        clustering: Vec<u8>,
+        value: Bytes,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct PublicationCasParams {
+    pub table: TableId,
+    pub key: Vec<u8>,
+    pub expected: Option<CasVersion>,
+    pub value: Bytes,
+}
+
 /// Logical identifier for a key/value table.
 ///
 /// Identifiers are opaque names. Backends are responsible for any
@@ -221,6 +244,14 @@ pub trait MetaStore: Clone + Send + Sync + 'static {
         cursor: Option<Vec<u8>>,
         limit: usize,
     ) -> Result<Page>;
+
+    async fn apply_writes(&self, writes: Vec<MetaWriteOp>) -> Result<()>;
+
+    async fn apply_writes_with_cas(
+        &self,
+        writes: Vec<MetaWriteOp>,
+        cas: PublicationCasParams,
+    ) -> Result<CasOutcome>;
 }
 
 /// Buffered write batch for [`MetaStore`].

@@ -25,8 +25,8 @@ use crate::{
     store::{
         common::Page,
         meta::{
-            CasOutcome, CasVersion, MetaStore, MetaStoreCas, MetaWriteBatch, ScannableTableId,
-            TableId,
+            CasOutcome, CasVersion, MetaStore, MetaStoreCas, MetaWriteBatch, MetaWriteOp,
+            PublicationCasParams, ScannableTableId, TableId,
         },
     },
 };
@@ -262,6 +262,79 @@ impl MetaStore for InMemoryMetaStore {
             .map_err(|_| crate::error::MonadChainDataError::Backend("poisoned lock".to_string()))?;
         guard.insert((table, partition.to_vec(), clustering.to_vec()), value);
         Ok(())
+    }
+
+    async fn apply_writes(&self, writes: Vec<MetaWriteOp>) -> Result<()> {
+        let mut kv_guard = self
+            .kv_records
+            .write()
+            .map_err(|_| crate::error::MonadChainDataError::Backend("poisoned lock".to_string()))?;
+        let mut scan_guard = self
+            .scan_records
+            .write()
+            .map_err(|_| crate::error::MonadChainDataError::Backend("poisoned lock".to_string()))?;
+        for op in writes {
+            match op {
+                MetaWriteOp::Put { table, key, value } => {
+                    kv_guard.insert((table, key), value);
+                }
+                MetaWriteOp::ScanPut {
+                    table,
+                    partition,
+                    clustering,
+                    value,
+                } => {
+                    scan_guard.insert((table, partition, clustering), value);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn apply_writes_with_cas(
+        &self,
+        writes: Vec<MetaWriteOp>,
+        cas: PublicationCasParams,
+    ) -> Result<CasOutcome> {
+        let mut kv_guard = self
+            .kv_records
+            .write()
+            .map_err(|_| crate::error::MonadChainDataError::Backend("poisoned lock".to_string()))?;
+        let mut scan_guard = self
+            .scan_records
+            .write()
+            .map_err(|_| crate::error::MonadChainDataError::Backend("poisoned lock".to_string()))?;
+        let mut cas_guard = self
+            .cas_records
+            .write()
+            .map_err(|_| crate::error::MonadChainDataError::Backend("poisoned lock".to_string()))?;
+        let entry_key = (cas.table, cas.key);
+        let current = cas_guard.get(&entry_key).map(|(v, _)| CasVersion(*v));
+        if current != cas.expected {
+            return Ok(CasOutcome::Conflict {
+                current_version: current,
+            });
+        }
+        for op in writes {
+            match op {
+                MetaWriteOp::Put { table, key, value } => {
+                    kv_guard.insert((table, key), value);
+                }
+                MetaWriteOp::ScanPut {
+                    table,
+                    partition,
+                    clustering,
+                    value,
+                } => {
+                    scan_guard.insert((table, partition, clustering), value);
+                }
+            }
+        }
+        let new_version = current.map_or(1, |v| v.0 + 1);
+        cas_guard.insert(entry_key, (new_version, cas.value));
+        Ok(CasOutcome::Applied {
+            new_version: CasVersion(new_version),
+        })
     }
 
     async fn scan_list(

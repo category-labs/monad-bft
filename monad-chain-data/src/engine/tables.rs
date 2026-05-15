@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, future::Future, pin::Pin};
 
 use alloy_rlp::Decodable;
 use bytes::Bytes;
@@ -31,8 +31,9 @@ use crate::{
         EvmBlockHeader,
     },
     store::{
-        BlobStore, BlobTable, CasOutcome, CasVersion, KvTable, MetaStore, MetaStoreCas,
-        ScannableTableId, TableId,
+        BlobStore, BlobTableId, CacheConfig, CachedBlobTable, CachedKvTable, CachedScannableTable,
+        CasOutcome, CasVersion, MetaStore, MetaStoreCas, PublicationCasParams, ScannableTableId,
+        TableId, WriteSession,
     },
     txs::TxHashIndexTable,
 };
@@ -47,22 +48,26 @@ pub struct Tables<M: MetaStore, B: BlobStore> {
 
 impl<M: MetaStore, B: BlobStore> Tables<M, B> {
     pub fn new(meta_store: M, blob_store: B) -> Self {
+        Self::with_cache_config(meta_store, blob_store, CacheConfig::default())
+    }
+
+    pub fn with_cache_config(meta_store: M, blob_store: B, cache: CacheConfig) -> Self {
         let mut families = BTreeMap::new();
         families.insert(
             Family::Log,
-            FamilyTables::new(meta_store.clone(), blob_store.clone(), Family::Log),
+            FamilyTables::new(meta_store.clone(), blob_store.clone(), Family::Log, cache),
         );
         families.insert(
             Family::Tx,
-            FamilyTables::new(meta_store.clone(), blob_store.clone(), Family::Tx),
+            FamilyTables::new(meta_store.clone(), blob_store.clone(), Family::Tx, cache),
         );
         families.insert(
             Family::Trace,
-            FamilyTables::new(meta_store.clone(), blob_store.clone(), Family::Trace),
+            FamilyTables::new(meta_store.clone(), blob_store.clone(), Family::Trace, cache),
         );
         Self {
-            blocks: BlockTables::new(meta_store.clone()),
-            tx_hash_index: TxHashIndexTable::new(meta_store.clone()),
+            blocks: BlockTables::new(meta_store.clone(), cache),
+            tx_hash_index: TxHashIndexTable::new(meta_store.clone(), cache),
             meta_store,
             blob_store,
             families,
@@ -92,6 +97,154 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
         self.families
             .get(&family)
             .expect("family registered at construction")
+    }
+
+    pub async fn with_writes<F>(&self, f: F) -> Result<()>
+    where
+        F: for<'s> FnOnce(
+            &'s WriteSession<'s, M, B>,
+        )
+            -> Pin<Box<dyn Future<Output = Result<()>> + Send + 's>>,
+    {
+        let session = WriteSession::new(self);
+        let closure_result = f(&session).await;
+        if closure_result.is_err() {
+            session.invalidate_populated();
+            return closure_result;
+        }
+        let meta_ops = session.take_meta();
+        let blob_ops = session.take_blob();
+        let flush = futures::try_join!(
+            self.meta_store.apply_writes(meta_ops),
+            self.blob_store.apply_writes(blob_ops),
+        );
+        match flush {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                session.invalidate_populated();
+                Err(e)
+            }
+        }
+    }
+
+    pub async fn with_writes_and_cas<F>(
+        &self,
+        cas: PublicationCasParams,
+        f: F,
+    ) -> Result<CasOutcome>
+    where
+        F: for<'s> FnOnce(
+            &'s WriteSession<'s, M, B>,
+        )
+            -> Pin<Box<dyn Future<Output = Result<()>> + Send + 's>>,
+    {
+        let session = WriteSession::new(self);
+        let closure_result = f(&session).await;
+        if let Err(e) = closure_result {
+            session.invalidate_populated();
+            return Err(e);
+        }
+        let meta_ops = session.take_meta();
+        let blob_ops = session.take_blob();
+        let flush = futures::try_join!(
+            self.meta_store.apply_writes_with_cas(meta_ops, cas),
+            self.blob_store.apply_writes(blob_ops),
+        );
+        match flush {
+            Ok((outcome, _)) => {
+                if matches!(outcome, CasOutcome::Conflict { .. }) {
+                    // CAS conflict means data writes did not land (atomic).
+                    // The cache speculatively holds them; drop those entries
+                    // so reads observe ground truth.
+                    session.invalidate_populated();
+                }
+                Ok(outcome)
+            }
+            Err(e) => {
+                session.invalidate_populated();
+                Err(e)
+            }
+        }
+    }
+
+    pub(crate) fn populate_kv_cache(&self, table: TableId, key: &[u8], value: Bytes) {
+        if let Some(c) = self.find_kv_cache(table) {
+            c.populate(key, value);
+        }
+    }
+
+    pub(crate) fn populate_scan_cache(
+        &self,
+        table: ScannableTableId,
+        partition: &[u8],
+        clustering: &[u8],
+        value: Bytes,
+    ) {
+        if let Some(c) = self.find_scan_cache(table) {
+            c.populate(partition, clustering, value);
+        }
+    }
+
+    pub(crate) fn populate_blob_cache(&self, table: BlobTableId, key: &[u8], value: Bytes) {
+        if let Some(c) = self.find_blob_cache(table) {
+            c.populate(key, value);
+        }
+    }
+
+    pub(crate) fn evict_kv_cache(&self, table: TableId, key: &[u8]) {
+        if let Some(c) = self.find_kv_cache(table) {
+            c.evict(key);
+        }
+    }
+
+    pub(crate) fn evict_scan_cache(
+        &self,
+        table: ScannableTableId,
+        partition: &[u8],
+        clustering: &[u8],
+    ) {
+        if let Some(c) = self.find_scan_cache(table) {
+            c.evict(partition, clustering);
+        }
+    }
+
+    pub(crate) fn evict_blob_cache(&self, table: BlobTableId, key: &[u8]) {
+        if let Some(c) = self.find_blob_cache(table) {
+            c.evict(key);
+        }
+    }
+
+    fn find_kv_cache(&self, table: TableId) -> Option<&CachedKvTable<M>> {
+        if let Some(c) = self.blocks.find_kv_cache(table) {
+            return Some(c);
+        }
+        if table == TxHashIndexTable::<M>::TABLE {
+            return Some(self.tx_hash_index.cached_table());
+        }
+        for fam in self.families.values() {
+            if let Some(c) = fam.find_kv_cache(table) {
+                return Some(c);
+            }
+        }
+        None
+    }
+
+    fn find_scan_cache(&self, table: ScannableTableId) -> Option<&CachedScannableTable<M>> {
+        for fam in self.families.values() {
+            if let Some(c) = fam.find_scan_cache(table) {
+                return Some(c);
+            }
+        }
+        None
+    }
+
+    fn find_blob_cache(&self, table: BlobTableId) -> Option<&CachedBlobTable<B>> {
+        for fam in self.families.values() {
+            if let Some(c) = fam.find_blob_cache(table) {
+                return Some(c);
+            }
+        }
+        None
     }
 }
 
@@ -171,9 +324,9 @@ impl<M: MetaStoreCas> PublicationTables<M> {
 }
 
 pub struct BlockTables<M: MetaStore> {
-    block_records: KvTable<M>,
-    block_headers: KvTable<M>,
-    block_hash_to_number_index: KvTable<M>,
+    block_records: CachedKvTable<M>,
+    block_headers: CachedKvTable<M>,
+    block_hash_to_number_index: CachedKvTable<M>,
 }
 
 impl<M: MetaStore> BlockTables<M> {
@@ -182,11 +335,20 @@ impl<M: MetaStore> BlockTables<M> {
     pub const BLOCK_HASH_TO_NUMBER_INDEX_TABLE: TableId =
         TableId::new("block_hash_to_number_index");
 
-    fn new(meta_store: M) -> Self {
+    fn new(meta_store: M, cache: CacheConfig) -> Self {
         Self {
-            block_records: meta_store.table(Self::BLOCK_RECORD_TABLE),
-            block_headers: meta_store.table(Self::BLOCK_HEADER_TABLE),
-            block_hash_to_number_index: meta_store.table(Self::BLOCK_HASH_TO_NUMBER_INDEX_TABLE),
+            block_records: CachedKvTable::new(
+                meta_store.table(Self::BLOCK_RECORD_TABLE),
+                cache.block_record_entries,
+            ),
+            block_headers: CachedKvTable::new(
+                meta_store.table(Self::BLOCK_HEADER_TABLE),
+                cache.block_header_entries,
+            ),
+            block_hash_to_number_index: CachedKvTable::new(
+                meta_store.table(Self::BLOCK_HASH_TO_NUMBER_INDEX_TABLE),
+                cache.block_hash_to_number_entries,
+            ),
         }
     }
 
@@ -287,6 +449,18 @@ impl<M: MetaStore> BlockTables<M> {
     }
 
     /// Validates that a new block extends the currently published chain.
+    pub(crate) fn find_kv_cache(&self, table: TableId) -> Option<&CachedKvTable<M>> {
+        if table == Self::BLOCK_RECORD_TABLE {
+            Some(&self.block_records)
+        } else if table == Self::BLOCK_HEADER_TABLE {
+            Some(&self.block_headers)
+        } else if table == Self::BLOCK_HASH_TO_NUMBER_INDEX_TABLE {
+            Some(&self.block_hash_to_number_index)
+        } else {
+            None
+        }
+    }
+
     pub async fn validate_continuity(
         &self,
         block: &FinalizedBlock,
@@ -323,27 +497,48 @@ impl<M: MetaStore> BlockTables<M> {
 }
 
 pub struct FamilyTables<M: MetaStore, B: BlobStore> {
-    block_headers: KvTable<M>,
-    block_blobs: BlobTable<B>,
+    block_headers: CachedKvTable<M>,
+    block_blobs: CachedBlobTable<B>,
     dir: PrimaryDirTables<M>,
     bitmap: BitmapTables<M>,
 }
 
 impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
-    fn new(meta_store: M, blob_store: B, family: Family) -> Self {
+    fn new(meta_store: M, blob_store: B, family: Family, cache: CacheConfig) -> Self {
         let ids = family.table_ids();
         Self {
-            block_headers: meta_store.table(ids.block_header),
-            block_blobs: blob_store.table(ids.block_blob),
+            block_headers: CachedKvTable::new(
+                meta_store.table(ids.block_header),
+                cache.block_header_entries,
+            ),
+            block_blobs: CachedBlobTable::new(
+                blob_store.table(ids.block_blob),
+                cache.block_blob_entries,
+            ),
             dir: PrimaryDirTables::new(
-                meta_store.scannable_table(ids.dir_by_block),
-                meta_store.table(ids.dir_bucket),
+                CachedScannableTable::new(
+                    meta_store.scannable_table(ids.dir_by_block),
+                    cache.dir_by_block_entries,
+                ),
+                CachedKvTable::new(meta_store.table(ids.dir_bucket), cache.dir_bucket_entries),
             ),
             bitmap: BitmapTables::new(
-                meta_store.scannable_table(ids.bitmap_by_block),
-                meta_store.table(ids.bitmap_page_meta),
-                meta_store.table(ids.bitmap_page_blob),
-                meta_store.scannable_table(ids.open_bitmap_stream),
+                CachedScannableTable::new(
+                    meta_store.scannable_table(ids.bitmap_by_block),
+                    cache.bitmap_by_block_entries,
+                ),
+                CachedKvTable::new(
+                    meta_store.table(ids.bitmap_page_meta),
+                    cache.bitmap_page_meta_entries,
+                ),
+                CachedKvTable::new(
+                    meta_store.table(ids.bitmap_page_blob),
+                    cache.bitmap_page_blob_entries,
+                ),
+                CachedScannableTable::new(
+                    meta_store.scannable_table(ids.open_bitmap_stream),
+                    cache.open_bitmap_stream_entries,
+                ),
             ),
         }
     }
@@ -502,5 +697,42 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
         self.bitmap
             .record_open_streams(global_page_start, streams)
             .await
+    }
+
+    pub(crate) fn find_kv_cache(&self, table: TableId) -> Option<&CachedKvTable<M>> {
+        if table == self.block_headers.table_id() {
+            Some(&self.block_headers)
+        } else if table == self.dir.buckets_cache().table_id() {
+            Some(self.dir.buckets_cache())
+        } else if table == self.bitmap.page_meta_cache().table_id() {
+            Some(self.bitmap.page_meta_cache())
+        } else if table == self.bitmap.page_blobs_cache().table_id() {
+            Some(self.bitmap.page_blobs_cache())
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn find_scan_cache(
+        &self,
+        table: ScannableTableId,
+    ) -> Option<&CachedScannableTable<M>> {
+        if table == self.dir.fragments_cache().table_id() {
+            Some(self.dir.fragments_cache())
+        } else if table == self.bitmap.fragments_cache().table_id() {
+            Some(self.bitmap.fragments_cache())
+        } else if table == self.bitmap.open_streams_cache().table_id() {
+            Some(self.bitmap.open_streams_cache())
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn find_blob_cache(&self, table: BlobTableId) -> Option<&CachedBlobTable<B>> {
+        if table == self.block_blobs.table_id() {
+            Some(&self.block_blobs)
+        } else {
+            None
+        }
     }
 }
