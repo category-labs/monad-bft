@@ -828,9 +828,12 @@ impl MonadVersion {
     }
 }
 
-/// A `Vec<T>` that enforces a maximum length during RLP deserialization.
+/// A `Vec<T>` whose length is bounded by `N`. The bound is enforced by every
+/// constructor: RLP `Decodable` and serde `Deserialize` reject oversize input;
+/// `From<Vec<T>>` and `FromIterator` assert. The inner `Vec` is private so the
+/// invariant cannot be bypassed via direct construction.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LimitedVec<T, const N: usize>(pub Vec<T>);
+pub struct LimitedVec<T, const N: usize>(Vec<T>);
 
 impl<T, const N: usize> Default for LimitedVec<T, N> {
     fn default() -> Self {
@@ -842,7 +845,35 @@ impl<T, const N: usize> LimitedVec<T, N> {
     pub fn into_inner(self) -> Vec<T> {
         self.0
     }
+
+    /// Append `item` if the vector has not reached the capacity bound `N`.
+    /// Returns the rejected item on overflow so the caller can decide how to recover.
+    pub fn try_push(&mut self, item: T) -> Result<(), LimitedVecCapacityError<T>> {
+        if self.0.len() >= N {
+            return Err(LimitedVecCapacityError {
+                rejected: item,
+                capacity: N,
+            });
+        }
+        self.0.push(item);
+        Ok(())
+    }
 }
+
+/// Error returned by [`LimitedVec::try_push`] when the vector is already at capacity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LimitedVecCapacityError<T> {
+    pub rejected: T,
+    pub capacity: usize,
+}
+
+impl<T> std::fmt::Display for LimitedVecCapacityError<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "LimitedVec at capacity {}", self.capacity)
+    }
+}
+
+impl<T: std::fmt::Debug> std::error::Error for LimitedVecCapacityError<T> {}
 
 impl<T: Encodable, const N: usize> Encodable for LimitedVec<T, N> {
     fn length(&self) -> usize {
@@ -876,14 +907,34 @@ impl<T, const N: usize> std::ops::Deref for LimitedVec<T, N> {
     }
 }
 
-impl<T, const N: usize> std::ops::DerefMut for LimitedVec<T, N> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
+impl<T, I, const N: usize> std::ops::Index<I> for LimitedVec<T, N>
+where
+    Vec<T>: std::ops::Index<I>,
+{
+    type Output = <Vec<T> as std::ops::Index<I>>::Output;
+
+    fn index(&self, index: I) -> &Self::Output {
+        &self.0[index]
+    }
+}
+
+impl<T, I, const N: usize> std::ops::IndexMut<I> for LimitedVec<T, N>
+where
+    Vec<T>: std::ops::IndexMut<I>,
+{
+    fn index_mut(&mut self, index: I) -> &mut Self::Output {
+        &mut self.0[index]
     }
 }
 
 impl<T, const N: usize> From<Vec<T>> for LimitedVec<T, N> {
     fn from(vec: Vec<T>) -> Self {
+        assert!(
+            vec.len() <= N,
+            "LimitedVec capacity {} exceeded by Vec of length {}",
+            N,
+            vec.len(),
+        );
         Self(vec)
     }
 }
@@ -896,13 +947,28 @@ impl<T: Serialize, const N: usize> Serialize for LimitedVec<T, N> {
 
 impl<'de, T: Deserialize<'de>, const N: usize> Deserialize<'de> for LimitedVec<T, N> {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Vec::<T>::deserialize(deserializer).map(Self)
+        let vec = Vec::<T>::deserialize(deserializer)?;
+        if vec.len() > N {
+            return Err(serde::de::Error::custom(format!(
+                "LimitedVec length {} exceeds maximum {}",
+                vec.len(),
+                N,
+            )));
+        }
+        Ok(Self(vec))
     }
 }
 
 impl<T, const N: usize> FromIterator<T> for LimitedVec<T, N> {
     fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
-        Self(iter.into_iter().collect())
+        let vec: Vec<T> = iter.into_iter().collect();
+        assert!(
+            vec.len() <= N,
+            "LimitedVec capacity {} exceeded by iterator of length {}",
+            N,
+            vec.len(),
+        );
+        Self(vec)
     }
 }
 
@@ -1089,6 +1155,77 @@ mod test {
 
         let decoded = LimitedVec::<u32, 0>::decode(&mut buf.as_slice()).unwrap();
         assert!(decoded.is_empty());
+    }
+
+    #[test]
+    fn test_limited_vec_try_push_within_capacity() {
+        let mut v: LimitedVec<u32, 3> = LimitedVec::default();
+        assert!(v.try_push(1).is_ok());
+        assert!(v.try_push(2).is_ok());
+        assert!(v.try_push(3).is_ok());
+        assert_eq!(v.len(), 3);
+        assert_eq!(v.0, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn test_limited_vec_try_push_rejects_at_capacity() {
+        let mut v: LimitedVec<u32, 2> = LimitedVec::default();
+        v.try_push(1).unwrap();
+        v.try_push(2).unwrap();
+        let err = v.try_push(99).unwrap_err();
+        assert_eq!(err.rejected, 99);
+        assert_eq!(err.capacity, 2);
+        assert_eq!(v.len(), 2);
+    }
+
+    #[test]
+    fn test_limited_vec_try_push_zero_capacity() {
+        let mut v: LimitedVec<u32, 0> = LimitedVec::default();
+        let err = v.try_push(7).unwrap_err();
+        assert_eq!(err.rejected, 7);
+        assert_eq!(err.capacity, 0);
+    }
+
+    fn test_limited_vec_deserialize_rejects_overflow() {
+        let json = "[1,2,3,4]";
+        let result: Result<LimitedVec<u32, 3>, _> = serde_json::from_str(json);
+        let err = result.expect_err("expected Err for length 4 > N=3");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("LimitedVec length 4 exceeds maximum 3"),
+            "unexpected error message: {msg}",
+        );
+    }
+
+    #[test]
+    fn test_limited_vec_deserialize_accepts_exact_capacity() {
+        let json = "[1,2,3]";
+        let decoded: LimitedVec<u32, 3> = serde_json::from_str(json).unwrap();
+        assert_eq!(decoded.len(), 3);
+    }
+
+    #[test]
+    #[should_panic(expected = "LimitedVec capacity 3 exceeded by Vec of length 4")]
+    fn test_limited_vec_from_vec_panics_on_overflow() {
+        let _: LimitedVec<u32, 3> = vec![1u32, 2, 3, 4].into();
+    }
+
+    #[test]
+    fn test_limited_vec_from_vec_accepts_exact_capacity() {
+        let v: LimitedVec<u32, 3> = vec![1u32, 2, 3].into();
+        assert_eq!(v.len(), 3);
+    }
+
+    #[test]
+    #[should_panic(expected = "LimitedVec capacity 3 exceeded by iterator of length 4")]
+    fn test_limited_vec_from_iter_panics_on_overflow() {
+        let _: LimitedVec<u32, 3> = (1u32..=4).collect();
+    }
+
+    #[test]
+    fn test_limited_vec_from_iter_accepts_exact_capacity() {
+        let v: LimitedVec<u32, 3> = (1u32..=3).collect();
+        assert_eq!(v.len(), 3);
     }
 
     #[test]
