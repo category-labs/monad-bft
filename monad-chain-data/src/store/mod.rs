@@ -21,13 +21,13 @@ pub mod fjall;
 pub mod meta;
 pub mod session;
 
-pub use blob::{BlobStore, BlobTable, BlobTableId, BlobWriteBatch, BlobWriteOp, InMemoryBlobStore};
+pub use blob::{BlobStore, BlobTable, BlobTableId, BlobWriteOp, InMemoryBlobStore};
 pub use cache::{CacheConfig, CachedBlobTable, CachedKvTable, CachedScannableTable};
 pub use common::Page;
 #[cfg(feature = "fjall")]
 pub use fjall::{FjallKeyspaceStats, FjallStore, FjallTuning};
 pub use meta::{
-    CasOutcome, CasVersion, InMemoryMetaStore, KvTable, MetaStore, MetaStoreCas, MetaWriteBatch,
-    MetaWriteOp, PublicationCasParams, ScannableKvTable, ScannableTableId, TableId,
+    CasOutcome, CasVersion, InMemoryMetaStore, KvTable, MetaStore, MetaStoreCas, MetaWriteOp,
+    PublicationCasParams, ScannableKvTable, ScannableTableId, TableId,
 };
 pub use session::WriteSession;
