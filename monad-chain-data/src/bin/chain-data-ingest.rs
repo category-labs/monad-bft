@@ -47,7 +47,7 @@ use monad_archive::{
 };
 use monad_chain_data::{
     compute_trace_addresses,
-    store::{FjallStore, FjallTuning},
+    store::{CacheConfig, FjallStore, FjallTuning},
     CallKind, FinalizedBlock, IngestTrace, IngestTx, MonadChainDataService, QueryLimits,
 };
 use opentelemetry::KeyValue;
@@ -166,6 +166,12 @@ struct Cli {
     /// (min(CPU, 4)). Raise for many-core boxes under sustained write load.
     #[arg(long)]
     fjall_workers: Option<usize>,
+
+    /// Per-table read-cache budget in MiB. Defaults to the budget implied by
+    /// `CacheConfig::default()`; raising linearly scales every table's entry
+    /// count. `--cache-mib 0` disables caches entirely (compile-time skip).
+    #[arg(long)]
+    cache_mib: Option<usize>,
 }
 
 #[tokio::main]
@@ -258,7 +264,25 @@ async fn main() -> Result<()> {
     }
     let store = FjallStore::open(&cli.data_dir, tuning)
         .with_context(|| format!("opening fjall store at {}", cli.data_dir.display()))?;
-    let service = MonadChainDataService::new(store.clone(), store.clone(), QueryLimits::UNLIMITED);
+    let baseline_cache = CacheConfig::default();
+    let baseline_total_mib = baseline_cache.approx_total_mib().max(1);
+    let cache_config = match cli.cache_mib {
+        None => baseline_cache,
+        Some(0) => baseline_cache.scale(0, 1),
+        Some(target_mib) => baseline_cache.scale(target_mib, baseline_total_mib),
+    };
+    info!(
+        cache_mib_requested = ?cli.cache_mib,
+        baseline_total_mib,
+        scaled_total_entries = cache_config.total_entries(),
+        "cache config"
+    );
+    let service = MonadChainDataService::with_cache_config(
+        store.clone(),
+        store.clone(),
+        QueryLimits::UNLIMITED,
+        cache_config,
+    );
 
     // Resolve the block range against the current publication head before
     // any archive I/O, so a misconfigured range fails fast rather than
@@ -493,6 +517,10 @@ async fn main() -> Result<()> {
             let fjall_agg = FjallAggregates::from(fjall_stats.as_slice());
             emit_fjall_metrics(&metrics, &fjall_stats);
 
+            let cache_window = service.tables().take_cache_window_stats();
+            let cache_hit_ratio_agg = aggregate_cache_hit_ratio(&cache_window);
+            emit_cache_metrics(&metrics, &cache_window);
+
             info!(
                 block = n,
                 total_txs,
@@ -531,6 +559,7 @@ async fn main() -> Result<()> {
                 consumer_wait_avg_ms = wait_avg_ms,
                 consumer_wait_max_ms = wait_max_ms,
                 retries = fetch_window.retry_attempts,
+                cache_hit_ratio = cache_hit_ratio_agg,
                 "ingest progress"
             );
             for ks in &fjall_stats {
@@ -801,6 +830,34 @@ fn emit_phase_metrics(
         MetricNames::CHAIN_DATA_INGEST_BATCH_SIZE,
         t.blocks as u64,
     );
+}
+
+fn emit_cache_metrics(metrics: &Metrics, stats: &[(&'static str, u64, u64)]) {
+    for (table, hits, misses) in stats {
+        let total = hits.saturating_add(*misses);
+        if total == 0 {
+            continue;
+        }
+        let ratio = *hits as f64 / total as f64;
+        let attrs = [KeyValue::new("table", (*table).to_string())];
+        metrics.gauge_with_attrs(
+            MetricNames::CHAIN_DATA_CACHE_HIT_RATIO,
+            (ratio * 1_000.0) as u64,
+            &attrs,
+        );
+    }
+}
+
+fn aggregate_cache_hit_ratio(stats: &[(&'static str, u64, u64)]) -> f64 {
+    let (h, m) = stats
+        .iter()
+        .fold((0u64, 0u64), |(h, m), (_, hi, mi)| (h + hi, m + mi));
+    let total = h + m;
+    if total == 0 {
+        0.0
+    } else {
+        h as f64 / total as f64
+    }
 }
 
 fn emit_fjall_metrics(

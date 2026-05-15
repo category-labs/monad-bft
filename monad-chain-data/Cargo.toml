@@ -66,4 +66,4 @@ required-features = ["archive-ingest"]
 
 [dev-dependencies]
 tempfile = "3"
-tokio = { workspace = true, features = ["macros", "rt"] }
+tokio = { workspace = true, features = ["macros", "rt", "time"] }

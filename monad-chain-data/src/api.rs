@@ -37,7 +37,7 @@ use crate::{
         range::ResolvedBlockWindow,
         state::{BlockRecord, LogId, TraceId, TxId},
     },
-    store::{BlobStore, CasOutcome, MetaStoreCas, PublicationCasParams},
+    store::{BlobStore, CacheConfig, CasOutcome, MetaStoreCas, PublicationCasParams},
     traces::{
         execute_block_scan_trace_query, execute_indexed_trace_query, QueryTracesRequest,
         QueryTracesResponse, TraceIngestPlan,
@@ -112,9 +112,21 @@ pub struct IngestBatchTimings {
 
 impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
     pub fn new(meta_store: M, blob_store: B, limits: QueryLimits) -> Self {
+        Self::with_cache_config(meta_store, blob_store, limits, CacheConfig::default())
+    }
+
+    /// Parallel constructor that lets the binary thread an operator-tuned
+    /// `CacheConfig` through. Existing `new` keeps its three-arg shape so
+    /// fixture call sites don't churn.
+    pub fn with_cache_config(
+        meta_store: M,
+        blob_store: B,
+        limits: QueryLimits,
+        cache: CacheConfig,
+    ) -> Self {
         Self {
             publication: PublicationTables::new(meta_store.clone()),
-            tables: Tables::new(meta_store, blob_store),
+            tables: Tables::with_cache_config(meta_store, blob_store, cache),
             limits,
         }
     }
