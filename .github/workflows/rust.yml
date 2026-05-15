@@ -34,20 +34,44 @@ env:
 
 jobs:
   build:
-    runs-on: arc-runner-set
-
-    container:
-      image: peach10.devcore4.com/category-labs/builder
-      options: --privileged
-      credentials:
-        username: ${{ secrets.PRIVATE_REGISTRY_USERNAME }}
-        password: ${{ secrets.PRIVATE_REGISTRY_PASSWORD }}
+    # runs-on: ubuntu-24.04-32
+    runs-on: ewr-005
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           submodules: recursive
+      - name: Install dependencies
+        run: |
+          sudo apt-get update && sudo apt-get install -y software-properties-common
+          sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
+          sudo apt-get update && sudo apt-get install -y \
+            libboost-fiber1.83.0 \
+            libboost-json1.83.0 \
+            libboost-stacktrace1.83.0 \
+            libboost-fiber1.83-dev \
+            libboost-json1.83-dev \
+            libboost-stacktrace1.83-dev \
+            libboost1.83-dev \
+            libbenchmark-dev \
+            libcgroup-dev \
+            libgmock-dev \
+            libgtest-dev \
+            libtbb-dev \
+            liburing-dev \
+            libarchive-dev \
+            libbrotli-dev \
+            libcap-dev \
+            libcli11-dev \
+            libgmp-dev \
+            libzstd-dev \
+            clang-19 \
+            libclang-19-dev \
+            gcc-15 \
+            g++-15 \
+            libcrypto++-dev
+
       - run: rustup toolchain install nightly-2025-12-09 --profile minimal --component rustfmt
       - run: rustup toolchain install 1.91.1-x86_64-unknown-linux-gnu --profile minimal --component clippy
 
