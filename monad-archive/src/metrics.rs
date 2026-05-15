@@ -103,6 +103,9 @@ pub enum MetricNames {
     CHAIN_DATA_FJALL_KEYSPACE_DISK_SPACE_BYTES,
     CHAIN_DATA_FJALL_KEYSPACE_L0_TABLES,
     CHAIN_DATA_FJALL_KEYSPACE_SEALED_MEMTABLES,
+
+    // Chain-data per-table cache hit ratio (0..=1, attribute-tagged by table name)
+    CHAIN_DATA_CACHE_HIT_RATIO,
 }
 
 impl MetricNames {
@@ -194,6 +197,7 @@ impl MetricNames {
             MetricNames::CHAIN_DATA_FJALL_KEYSPACE_SEALED_MEMTABLES => {
                 "chain_data_fjall_keyspace_sealed_memtables"
             }
+            MetricNames::CHAIN_DATA_CACHE_HIT_RATIO => "chain_data_cache_hit_ratio",
         }
     }
 
@@ -298,6 +302,9 @@ impl MetricNames {
             }
             MetricNames::CHAIN_DATA_FJALL_KEYSPACE_SEALED_MEMTABLES => {
                 "fjall keyspace sealed-memtable count (per-keyspace gauge)"
+            }
+            MetricNames::CHAIN_DATA_CACHE_HIT_RATIO => {
+                "chain-data per-table cache hit ratio (0..=1) over the last progress window"
             }
         }
     }

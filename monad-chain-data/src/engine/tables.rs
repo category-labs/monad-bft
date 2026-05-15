@@ -248,6 +248,53 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
         }
     }
 
+    /// Drains and returns the (hits, misses) counters for every cached
+    /// wrapper, tagged with its logical table name. Each call resets the
+    /// counters so consumers see per-window deltas.
+    pub fn take_cache_window_stats(&self) -> Vec<(&'static str, u64, u64)> {
+        fn push_kv<M: MetaStore>(out: &mut Vec<(&'static str, u64, u64)>, table: &CachedKvTable<M>) {
+            let (h, m) = table.take_window_stats();
+            if h != 0 || m != 0 {
+                out.push((table.table_id().as_str(), h, m));
+            }
+        }
+        fn push_scan<M: MetaStore>(
+            out: &mut Vec<(&'static str, u64, u64)>,
+            table: &CachedScannableTable<M>,
+        ) {
+            let (h, m) = table.take_window_stats();
+            if h != 0 || m != 0 {
+                out.push((table.table_id().as_str(), h, m));
+            }
+        }
+        fn push_blob<B: BlobStore>(
+            out: &mut Vec<(&'static str, u64, u64)>,
+            table: &CachedBlobTable<B>,
+        ) {
+            let (h, m) = table.take_window_stats();
+            if h != 0 || m != 0 {
+                out.push((table.table_id().as_str(), h, m));
+            }
+        }
+
+        let mut out = Vec::new();
+        push_kv(&mut out, &self.blocks.block_records);
+        push_kv(&mut out, &self.blocks.block_headers);
+        push_kv(&mut out, &self.blocks.block_hash_to_number_index);
+        push_kv(&mut out, self.tx_hash_index.cached_table());
+        for fam in self.families.values() {
+            push_kv(&mut out, &fam.block_headers);
+            push_blob(&mut out, &fam.block_blobs);
+            push_scan(&mut out, fam.dir.fragments_cache());
+            push_kv(&mut out, fam.dir.buckets_cache());
+            push_scan(&mut out, fam.bitmap.fragments_cache());
+            push_kv(&mut out, fam.bitmap.page_meta_cache());
+            push_kv(&mut out, fam.bitmap.page_blobs_cache());
+            push_scan(&mut out, fam.bitmap.open_streams_cache());
+        }
+        out
+    }
+
     fn find_kv_cache(&self, table: TableId) -> Option<&CachedKvTable<M>> {
         if let Some(c) = self.blocks.find_kv_cache(table) {
             return Some(c);

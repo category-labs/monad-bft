@@ -15,7 +15,10 @@
 
 use std::{
     num::NonZeroUsize,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
 };
 
 use bytes::Bytes;
@@ -63,6 +66,78 @@ impl Default for CacheConfig {
     }
 }
 
+impl CacheConfig {
+    /// Total entry count across every table. Used as the proportional
+    /// baseline for `--cache-mib` scaling.
+    pub fn total_entries(&self) -> usize {
+        self.dir_by_block_entries
+            .saturating_add(self.dir_bucket_entries)
+            .saturating_add(self.bitmap_by_block_entries)
+            .saturating_add(self.bitmap_page_meta_entries)
+            .saturating_add(self.bitmap_page_blob_entries)
+            .saturating_add(self.open_bitmap_stream_entries)
+            .saturating_add(self.block_record_entries)
+            .saturating_add(self.block_header_entries)
+            .saturating_add(self.block_hash_to_number_entries)
+            .saturating_add(self.tx_hash_index_entries)
+            .saturating_add(self.block_blob_entries)
+    }
+
+    /// Approximate average bytes per entry across all populated caches.
+    /// Used by the binary to convert `--cache-mib` from MiB into entry
+    /// counts. Held conservative — the LRU itself contributes ~96 bytes of
+    /// metadata per entry on top of the value Bytes (which are Arc'd and
+    /// inexpensive to clone).
+    pub const APPROX_BYTES_PER_ENTRY: usize = 256;
+
+    /// Sum of `total_entries` * `APPROX_BYTES_PER_ENTRY` rendered in MiB.
+    /// Used as the denominator for `--cache-mib` linear scaling, so that
+    /// `--cache-mib default_total_mib()` reproduces `CacheConfig::default()`.
+    pub fn approx_total_mib(&self) -> usize {
+        let bytes = self
+            .total_entries()
+            .saturating_mul(Self::APPROX_BYTES_PER_ENTRY);
+        bytes / (1024 * 1024)
+    }
+
+    /// Scales every per-table entry count by `numer / denom`. Used by the
+    /// CLI to convert a single `--cache-mib N` scalar into a proportional
+    /// per-table budget. With `numer == 0` every entry count drops to 0,
+    /// disabling caches (compile-time skip in the cached wrappers).
+    pub fn scale(self, numer: usize, denom: usize) -> Self {
+        if numer == 0 {
+            return Self {
+                dir_by_block_entries: 0,
+                dir_bucket_entries: 0,
+                bitmap_by_block_entries: 0,
+                bitmap_page_meta_entries: 0,
+                bitmap_page_blob_entries: 0,
+                open_bitmap_stream_entries: 0,
+                block_record_entries: 0,
+                block_header_entries: 0,
+                block_hash_to_number_entries: 0,
+                tx_hash_index_entries: 0,
+                block_blob_entries: 0,
+            };
+        }
+        let denom = denom.max(1);
+        let scale = |n: usize| n.saturating_mul(numer) / denom;
+        Self {
+            dir_by_block_entries: scale(self.dir_by_block_entries),
+            dir_bucket_entries: scale(self.dir_bucket_entries),
+            bitmap_by_block_entries: scale(self.bitmap_by_block_entries),
+            bitmap_page_meta_entries: scale(self.bitmap_page_meta_entries),
+            bitmap_page_blob_entries: scale(self.bitmap_page_blob_entries),
+            open_bitmap_stream_entries: scale(self.open_bitmap_stream_entries),
+            block_record_entries: scale(self.block_record_entries),
+            block_header_entries: scale(self.block_header_entries),
+            block_hash_to_number_entries: scale(self.block_hash_to_number_entries),
+            tx_hash_index_entries: scale(self.tx_hash_index_entries),
+            block_blob_entries: scale(self.block_blob_entries),
+        }
+    }
+}
+
 type KvLru = LruCache<Vec<u8>, Option<Bytes>>;
 type ScanLru = LruCache<(Vec<u8>, Vec<u8>), Option<Bytes>>;
 type BlobLru = LruCache<Vec<u8>, Option<Bytes>>;
@@ -77,6 +152,8 @@ where
 pub struct CachedKvTable<M: MetaStore> {
     inner: KvTable<M>,
     cache: Option<Arc<Mutex<KvLru>>>,
+    hits: AtomicU64,
+    misses: AtomicU64,
 }
 
 impl<M: MetaStore> CachedKvTable<M> {
@@ -84,6 +161,8 @@ impl<M: MetaStore> CachedKvTable<M> {
         Self {
             inner,
             cache: make_lru(entries),
+            hits: AtomicU64::new(0),
+            misses: AtomicU64::new(0),
         }
     }
 
@@ -99,8 +178,10 @@ impl<M: MetaStore> CachedKvTable<M> {
                 .get(key)
                 .cloned()
             {
+                self.hits.fetch_add(1, Ordering::Relaxed);
                 return Ok(v);
             }
+            self.misses.fetch_add(1, Ordering::Relaxed);
         }
         let v = self.inner.get(key).await?;
         if let Some(c) = &self.cache {
@@ -121,6 +202,15 @@ impl<M: MetaStore> CachedKvTable<M> {
         self.inner.table
     }
 
+    /// Atomically reads and zeroes the (hits, misses) counters since the last call.
+    /// Used by the ingest binary to emit per-window cache-hit-ratio metrics.
+    pub fn take_window_stats(&self) -> (u64, u64) {
+        (
+            self.hits.swap(0, Ordering::Relaxed),
+            self.misses.swap(0, Ordering::Relaxed),
+        )
+    }
+
     pub(crate) fn populate(&self, key: &[u8], value: Bytes) {
         if let Some(c) = &self.cache {
             c.lock()
@@ -139,6 +229,8 @@ impl<M: MetaStore> CachedKvTable<M> {
 pub struct CachedScannableTable<M: MetaStore> {
     inner: ScannableKvTable<M>,
     cache: Option<Arc<Mutex<ScanLru>>>,
+    hits: AtomicU64,
+    misses: AtomicU64,
 }
 
 impl<M: MetaStore> CachedScannableTable<M> {
@@ -146,6 +238,8 @@ impl<M: MetaStore> CachedScannableTable<M> {
         Self {
             inner,
             cache: make_lru(entries),
+            hits: AtomicU64::new(0),
+            misses: AtomicU64::new(0),
         }
     }
 
@@ -162,8 +256,10 @@ impl<M: MetaStore> CachedScannableTable<M> {
                 .get(&key)
                 .cloned()
             {
+                self.hits.fetch_add(1, Ordering::Relaxed);
                 return Ok(v);
             }
+            self.misses.fetch_add(1, Ordering::Relaxed);
         }
         let v = self.inner.get(partition, clustering).await?;
         if let Some(c) = &self.cache {
@@ -182,6 +278,13 @@ impl<M: MetaStore> CachedScannableTable<M> {
 
     pub fn table_id(&self) -> ScannableTableId {
         self.inner.table
+    }
+
+    pub fn take_window_stats(&self) -> (u64, u64) {
+        (
+            self.hits.swap(0, Ordering::Relaxed),
+            self.misses.swap(0, Ordering::Relaxed),
+        )
     }
 
     pub async fn list_prefix(
@@ -218,6 +321,8 @@ impl<M: MetaStore> CachedScannableTable<M> {
 pub struct CachedBlobTable<B: BlobStore> {
     inner: BlobTable<B>,
     cache: Option<Arc<Mutex<BlobLru>>>,
+    hits: AtomicU64,
+    misses: AtomicU64,
 }
 
 impl<B: BlobStore> CachedBlobTable<B> {
@@ -225,6 +330,8 @@ impl<B: BlobStore> CachedBlobTable<B> {
         Self {
             inner,
             cache: make_lru(entries),
+            hits: AtomicU64::new(0),
+            misses: AtomicU64::new(0),
         }
     }
 
@@ -240,8 +347,10 @@ impl<B: BlobStore> CachedBlobTable<B> {
                 .get(key)
                 .cloned()
             {
+                self.hits.fetch_add(1, Ordering::Relaxed);
                 return Ok(v);
             }
+            self.misses.fetch_add(1, Ordering::Relaxed);
         }
         let v = self.inner.get(key).await?;
         if let Some(c) = &self.cache {
@@ -260,6 +369,13 @@ impl<B: BlobStore> CachedBlobTable<B> {
 
     pub fn table_id(&self) -> BlobTableId {
         self.inner.table
+    }
+
+    pub fn take_window_stats(&self) -> (u64, u64) {
+        (
+            self.hits.swap(0, Ordering::Relaxed),
+            self.misses.swap(0, Ordering::Relaxed),
+        )
     }
 
     pub async fn read_range(
