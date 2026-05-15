@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{collections::BTreeMap, future::Future, pin::Pin};
+use std::{collections::BTreeMap, future::Future, pin::Pin, time::Duration};
 
 use alloy_rlp::Decodable;
 use bytes::Bytes;
@@ -37,6 +37,12 @@ use crate::{
     },
     txs::TxHashIndexTable,
 };
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MetaBlobTimings {
+    pub meta: Duration,
+    pub blob: Duration,
+}
 
 pub struct Tables<M: MetaStore, B: BlobStore> {
     meta_store: M,
@@ -99,42 +105,70 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
             .expect("family registered at construction")
     }
 
-    pub async fn with_writes<F>(&self, f: F) -> Result<()>
+    pub async fn with_writes<'a, F>(&'a self, f: F) -> Result<()>
     where
         F: for<'s> FnOnce(
-            &'s WriteSession<'s, M, B>,
+            &'s WriteSession<'a, M, B>,
+        )
+            -> Pin<Box<dyn Future<Output = Result<()>> + Send + 's>>,
+    {
+        let (result, _timings) = self.with_writes_timed(f).await;
+        result
+    }
+
+    /// Like [`Self::with_writes`] but returns the meta/blob apply durations
+    /// separately so callers preserving per-phase instrumentation can
+    /// attribute commit latency. On closure error or backend error the
+    /// returned durations reflect work actually performed; zero when the
+    /// closure short-circuited the flush.
+    pub async fn with_writes_timed<'a, F>(&'a self, f: F) -> (Result<()>, MetaBlobTimings)
+    where
+        F: for<'s> FnOnce(
+            &'s WriteSession<'a, M, B>,
         )
             -> Pin<Box<dyn Future<Output = Result<()>> + Send + 's>>,
     {
         let session = WriteSession::new(self);
         let closure_result = f(&session).await;
-        if closure_result.is_err() {
+        if let Err(e) = closure_result {
             session.invalidate_populated();
-            return closure_result;
+            return (Err(e), MetaBlobTimings::default());
         }
         let meta_ops = session.take_meta();
         let blob_ops = session.take_blob();
-        let flush = futures::try_join!(
-            self.meta_store.apply_writes(meta_ops),
-            self.blob_store.apply_writes(blob_ops),
-        );
-        match flush {
-            Ok(_) => Ok(()),
+        let meta_apply = async {
+            let t = std::time::Instant::now();
+            self.meta_store.apply_writes(meta_ops).await?;
+            Ok::<_, crate::error::MonadChainDataError>(t.elapsed())
+        };
+        let blob_apply = async {
+            let t = std::time::Instant::now();
+            self.blob_store.apply_writes(blob_ops).await?;
+            Ok::<_, crate::error::MonadChainDataError>(t.elapsed())
+        };
+        match futures::try_join!(meta_apply, blob_apply) {
+            Ok((meta_elapsed, blob_elapsed)) => (
+                Ok(()),
+                MetaBlobTimings {
+                    meta: meta_elapsed,
+                    blob: blob_elapsed,
+                },
+            ),
             Err(e) => {
                 session.invalidate_populated();
-                Err(e)
+                (Err(e), MetaBlobTimings::default())
             }
         }
     }
 
-    pub async fn with_writes_and_cas<F>(
-        &self,
+    pub async fn with_writes_and_cas<'a, F>(
+        &'a self,
         cas: PublicationCasParams,
         f: F,
     ) -> Result<CasOutcome>
     where
         F: for<'s> FnOnce(
-            &'s WriteSession<'s, M, B>,
+            &'s WriteSession<'a, M, B>,
         )
             -> Pin<Box<dyn Future<Output = Result<()>> + Send + 's>>,
     {
@@ -368,15 +402,18 @@ impl<M: MetaStore> BlockTables<M> {
         Ok(())
     }
 
-    pub fn stage_record(
+    pub fn stage_record<B: BlobStore>(
         &self,
-        meta: &mut M::Batch,
+        w: &WriteSession<'_, M, B>,
         block_number: u64,
         block_record: &BlockRecord,
     ) {
         let key = block_number_key(block_number);
-        self.block_records
-            .put_into(meta, &key, Bytes::from(block_record.encode()));
+        w.put(
+            self.block_records.table_id(),
+            &key,
+            Bytes::from(block_record.encode()),
+        );
     }
 
     pub async fn load_header(&self, block_number: u64) -> Result<Option<EvmBlockHeader>> {
@@ -397,10 +434,18 @@ impl<M: MetaStore> BlockTables<M> {
         Ok(())
     }
 
-    pub fn stage_header(&self, meta: &mut M::Batch, block_number: u64, header: &EvmBlockHeader) {
+    pub fn stage_header<B: BlobStore>(
+        &self,
+        w: &WriteSession<'_, M, B>,
+        block_number: u64,
+        header: &EvmBlockHeader,
+    ) {
         let key = block_number_key(block_number);
-        self.block_headers
-            .put_into(meta, &key, Bytes::from(alloy_rlp::encode(header)));
+        w.put(
+            self.block_headers.table_id(),
+            &key,
+            Bytes::from(alloy_rlp::encode(header)),
+        );
     }
 
     /// Resolves a block hash to its block number via the hash-to-number index.
@@ -435,14 +480,14 @@ impl<M: MetaStore> BlockTables<M> {
         Ok(())
     }
 
-    pub fn stage_hash_index(
+    pub fn stage_hash_index<B: BlobStore>(
         &self,
-        meta: &mut M::Batch,
+        w: &WriteSession<'_, M, B>,
         block_hash: &Hash32,
         block_number: u64,
     ) {
-        self.block_hash_to_number_index.put_into(
-            meta,
+        w.put(
+            self.block_hash_to_number_index.table_id(),
             block_hash.as_slice(),
             Bytes::copy_from_slice(&block_number.to_be_bytes()),
         );
@@ -596,15 +641,23 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
         Ok(())
     }
 
-    pub fn stage_block_blob(&self, blob: &mut B::Batch, block_number: u64, block_log_blob: Vec<u8>) {
+    pub fn stage_block_blob(
+        &self,
+        w: &WriteSession<'_, M, B>,
+        block_number: u64,
+        block_log_blob: Vec<u8>,
+    ) {
         let key = block_number_key(block_number);
-        self.block_blobs
-            .put_into(blob, &key, Bytes::from(block_log_blob));
+        w.put_blob(
+            self.block_blobs.table_id(),
+            &key,
+            Bytes::from(block_log_blob),
+        );
     }
 
-    pub fn stage_block_header(&self, meta: &mut M::Batch, block_number: u64, bytes: Bytes) {
+    pub fn stage_block_header(&self, w: &WriteSession<'_, M, B>, block_number: u64, bytes: Bytes) {
         let key = block_number_key(block_number);
-        self.block_headers.put_into(meta, &key, bytes);
+        w.put(self.block_headers.table_id(), &key, bytes);
     }
 
     pub async fn load_bucket_fragments(

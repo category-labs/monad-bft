@@ -17,7 +17,7 @@ use bytes::Bytes;
 
 use crate::{
     error::{MonadChainDataError, Result},
-    store::{CachedKvTable, CachedScannableTable, MetaStore},
+    store::{blob::BlobStore, CachedKvTable, CachedScannableTable, MetaStore, WriteSession},
 };
 
 pub const DIRECTORY_BUCKET_SIZE: u64 = 10_000;
@@ -176,23 +176,26 @@ impl<M: MetaStore> PrimaryDirTables<M> {
         Ok(())
     }
 
-    pub fn stage_bucket(
+    pub fn stage_bucket<B: BlobStore>(
         &self,
-        meta: &mut M::Batch,
+        w: &WriteSession<'_, M, B>,
         bucket_start: u64,
         bucket: &PrimaryDirBucket,
     ) {
         let key = u64_key(bucket_start);
-        self.buckets
-            .put_into(meta, &key, Bytes::from(bucket.encode()));
+        w.put(
+            self.buckets.table_id(),
+            &key,
+            Bytes::from(bucket.encode()),
+        );
     }
 
     /// Stages every per-bucket fragment write the block contributes. Mirrors
     /// [`Self::persist_block_fragment`] but pushes into a meta batch instead
     /// of issuing one write per bucket.
-    pub fn stage_block_fragment(
+    pub fn stage_block_fragment<B: BlobStore>(
         &self,
-        meta: &mut M::Batch,
+        w: &WriteSession<'_, M, B>,
         block_number: u64,
         first_primary_id: u64,
         count: u32,
@@ -214,8 +217,12 @@ impl<M: MetaStore> PrimaryDirTables<M> {
         loop {
             let partition = u64_key(current_bucket_start);
             let clustering = u64_key(block_number);
-            self.fragments
-                .scan_put_into(meta, &partition, &clustering, encoded.clone());
+            w.scan_put(
+                self.fragments.table_id(),
+                &partition,
+                &clustering,
+                encoded.clone(),
+            );
             if current_bucket_start == last_bucket_start {
                 break;
             }

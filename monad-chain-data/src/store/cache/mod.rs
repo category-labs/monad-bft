@@ -121,12 +121,6 @@ impl<M: MetaStore> CachedKvTable<M> {
         self.inner.table
     }
 
-    pub fn put_into(&self, batch: &mut M::Batch, key: &[u8], value: Bytes) {
-        // Bridges the legacy batch API; cache population happens through
-        // WriteSession instead.
-        self.inner.put_into(batch, key, value);
-    }
-
     pub(crate) fn populate(&self, key: &[u8], value: Bytes) {
         if let Some(c) = &self.cache {
             c.lock()
@@ -188,16 +182,6 @@ impl<M: MetaStore> CachedScannableTable<M> {
 
     pub fn table_id(&self) -> ScannableTableId {
         self.inner.table
-    }
-
-    pub fn scan_put_into(
-        &self,
-        batch: &mut M::Batch,
-        partition: &[u8],
-        clustering: &[u8],
-        value: Bytes,
-    ) {
-        self.inner.scan_put_into(batch, partition, clustering, value);
     }
 
     pub async fn list_prefix(
@@ -276,10 +260,6 @@ impl<B: BlobStore> CachedBlobTable<B> {
 
     pub fn table_id(&self) -> BlobTableId {
         self.inner.table
-    }
-
-    pub fn put_into(&self, batch: &mut B::Batch, key: &[u8], value: Bytes) {
-        self.inner.put_into(batch, key, value);
     }
 
     pub async fn read_range(

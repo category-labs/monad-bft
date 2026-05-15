@@ -37,7 +37,7 @@ use crate::{
         range::ResolvedBlockWindow,
         state::{BlockRecord, LogId, TraceId, TxId},
     },
-    store::{BlobStore, BlobWriteBatch, MetaStoreCas, MetaWriteBatch},
+    store::{BlobStore, CasOutcome, MetaStoreCas, PublicationCasParams},
     traces::{
         execute_block_scan_trace_query, execute_indexed_trace_query, QueryTracesRequest,
         QueryTracesResponse, TraceIngestPlan,
@@ -236,83 +236,60 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
             });
         }
 
-        let mut meta_batch = self.tables.meta_store().begin_batch();
-        let mut blob_batch = self.tables.blob_store().begin_batch();
+        timings.stage_a_ms = stage_a_start.elapsed().as_millis() as u64;
 
-        for (block, st) in blocks.iter().zip(staged.iter()) {
-            block_tables.stage_header(&mut meta_batch, block.block_number(), &block.header);
-            logs.stage_indexed_family_ingest(
-                &mut meta_batch,
-                &mut blob_batch,
-                block.block_number(),
-                st.log_plan.block_log_blob.clone(),
-                Bytes::from(st.log_plan.block_log_header.encode()),
-                st.log_plan.log_window,
-                &st.log_plan.bitmap_fragments,
-            );
-            txs.stage_indexed_family_ingest(
-                &mut meta_batch,
-                &mut blob_batch,
-                block.block_number(),
-                st.tx_plan.block_tx_blob.clone(),
-                Bytes::from(st.tx_plan.block_tx_header.encode()),
-                st.tx_plan.tx_window,
-                &st.tx_plan.bitmap_fragments,
-            );
-            traces.stage_indexed_family_ingest(
-                &mut meta_batch,
-                &mut blob_batch,
-                block.block_number(),
-                st.trace_plan.block_trace_blob.clone(),
-                Bytes::from(st.trace_plan.block_trace_header.encode()),
-                st.trace_plan.trace_window,
-                &st.trace_plan.bitmap_fragments,
-            );
-            block_tables.stage_hash_index(
-                &mut meta_batch,
-                &st.block_record.block_hash,
-                block.block_number(),
-            );
-            block_tables.stage_record(&mut meta_batch, block.block_number(), &st.block_record);
-        }
-        // Tx-hash index writes flow through the new write-session API as
-        // the first conversion step in the batch-API → session migration.
-        // The rest of Phase A still threads `&mut M::Batch`; that swap
-        // lands in subsequent commits.
-        let hash_locations: Vec<_> = staged
-            .iter()
-            .flat_map(|s| s.tx_plan.hash_locations.iter().copied())
-            .collect();
-        self.tables
-            .with_writes(|w| {
+        // Phase A: stage every block's artifacts inside one write session so
+        // the framework can fire meta + blob commits concurrently while
+        // populating per-table caches for the Phase B compaction reads.
+        let blocks_ref = &blocks;
+        let staged_ref = &staged;
+        let (phase_a_result, phase_a_timings) = self
+            .tables
+            .with_writes_timed(|w| {
                 Box::pin(async move {
-                    for (tx_hash, location) in &hash_locations {
-                        w.tables().tx_hash_index().stage_put(w, tx_hash, *location);
+                    for (block, st) in blocks_ref.iter().zip(staged_ref.iter()) {
+                        block_tables.stage_header(w, block.block_number(), &block.header);
+                        logs.stage_indexed_family_ingest(
+                            w,
+                            block.block_number(),
+                            st.log_plan.block_log_blob.clone(),
+                            Bytes::from(st.log_plan.block_log_header.encode()),
+                            st.log_plan.log_window,
+                            &st.log_plan.bitmap_fragments,
+                        );
+                        txs.stage_indexed_family_ingest(
+                            w,
+                            block.block_number(),
+                            st.tx_plan.block_tx_blob.clone(),
+                            Bytes::from(st.tx_plan.block_tx_header.encode()),
+                            st.tx_plan.tx_window,
+                            &st.tx_plan.bitmap_fragments,
+                        );
+                        traces.stage_indexed_family_ingest(
+                            w,
+                            block.block_number(),
+                            st.trace_plan.block_trace_blob.clone(),
+                            Bytes::from(st.trace_plan.block_trace_header.encode()),
+                            st.trace_plan.trace_window,
+                            &st.trace_plan.bitmap_fragments,
+                        );
+                        block_tables.stage_hash_index(
+                            w,
+                            &st.block_record.block_hash,
+                            block.block_number(),
+                        );
+                        for (tx_hash, location) in &st.tx_plan.hash_locations {
+                            w.tables().tx_hash_index().stage_put(w, tx_hash, *location);
+                        }
+                        block_tables.stage_record(w, block.block_number(), &st.block_record);
                     }
                     Ok(())
                 })
             })
-            .await?;
-        timings.stage_a_ms = stage_a_start.elapsed().as_millis() as u64;
-
-        // Time each commit individually while still running them
-        // concurrently — `try_join!` would only give us the wall time of the
-        // slower future. Each branch captures its own `Instant` and returns
-        // the elapsed duration so the caller can attribute commit-A latency
-        // to meta vs blob independently.
-        let meta_commit = async {
-            let t = Instant::now();
-            meta_batch.commit().await?;
-            Ok::<_, MonadChainDataError>(t.elapsed())
-        };
-        let blob_commit = async {
-            let t = Instant::now();
-            blob_batch.commit().await?;
-            Ok::<_, MonadChainDataError>(t.elapsed())
-        };
-        let (meta_elapsed, blob_elapsed) = futures::try_join!(meta_commit, blob_commit)?;
-        timings.commit_a_meta_ms = meta_elapsed.as_millis() as u64;
-        timings.commit_a_blob_ms = blob_elapsed.as_millis() as u64;
+            .await;
+        phase_a_result?;
+        timings.commit_a_meta_ms = phase_a_timings.meta.as_millis() as u64;
+        timings.commit_a_blob_ms = phase_a_timings.blob.as_millis() as u64;
 
         let reads_start = Instant::now();
         let log_ranges = family_ranges(&staged, |s| s.log_plan.log_window);
@@ -364,27 +341,47 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
 
         if phase_b_has_writes {
             timings.phase_b_skipped = false;
-            let stage_b_start = Instant::now();
-            let mut phase_b = self.tables.meta_store().begin_batch();
-            logs.stage_directory_compactions(&mut phase_b, &log_dir_plan);
-            logs.stage_bitmap_compactions(&mut phase_b, &log_bitmap_plan);
-            txs.stage_directory_compactions(&mut phase_b, &tx_dir_plan);
-            txs.stage_bitmap_compactions(&mut phase_b, &tx_bitmap_plan);
-            traces.stage_directory_compactions(&mut phase_b, &trace_dir_plan);
-            traces.stage_bitmap_compactions(&mut phase_b, &trace_bitmap_plan);
-            timings.stage_b_ms = stage_b_start.elapsed().as_millis() as u64;
-
+            let cas = PublicationCasParams {
+                table: PublicationTables::<M>::PUBLICATION_STATE_TABLE,
+                key: PublicationTables::<M>::PUBLICATION_STATE_KEY.to_vec(),
+                expected: expected_version,
+                value: Bytes::from(next_state.encode()),
+            };
+            let log_dir = &log_dir_plan;
+            let log_bitmap = &log_bitmap_plan;
+            let tx_dir = &tx_dir_plan;
+            let tx_bitmap = &tx_bitmap_plan;
+            let trace_dir = &trace_dir_plan;
+            let trace_bitmap = &trace_bitmap_plan;
+            // `stage_b_ms` is the synchronous closure body — pure staging
+            // into the session. `commit_b_ms` is the meta apply_writes_with_cas
+            // + blob apply_writes that the framework fires after the closure
+            // returns. Carve them apart inside the closure so the on-wire
+            // timing fields keep the same meaning across the rewrite.
+            let stage_b_ms_cell = std::sync::Mutex::new(0u64);
             let commit_b_start = Instant::now();
-            let outcome = phase_b
-                .commit_with_cas(
-                    PublicationTables::<M>::PUBLICATION_STATE_TABLE,
-                    PublicationTables::<M>::PUBLICATION_STATE_KEY,
-                    expected_version,
-                    Bytes::from(next_state.encode()),
-                )
+            let outcome: CasOutcome = self
+                .tables
+                .with_writes_and_cas(cas, |w| {
+                    let stage_b_ms_cell = &stage_b_ms_cell;
+                    Box::pin(async move {
+                        let stage_b_start = Instant::now();
+                        logs.stage_directory_compactions(w, log_dir);
+                        logs.stage_bitmap_compactions(w, log_bitmap);
+                        txs.stage_directory_compactions(w, tx_dir);
+                        txs.stage_bitmap_compactions(w, tx_bitmap);
+                        traces.stage_directory_compactions(w, trace_dir);
+                        traces.stage_bitmap_compactions(w, trace_bitmap);
+                        *stage_b_ms_cell.lock().expect("stage_b timing poisoned") =
+                            stage_b_start.elapsed().as_millis() as u64;
+                        Ok(())
+                    })
+                })
                 .await?;
+            let total_b_ms = commit_b_start.elapsed().as_millis() as u64;
+            timings.stage_b_ms = *stage_b_ms_cell.lock().expect("stage_b timing poisoned");
+            timings.commit_b_ms = total_b_ms.saturating_sub(timings.stage_b_ms);
             self.publication.cas_outcome_into_result(outcome).await?;
-            timings.commit_b_ms = commit_b_start.elapsed().as_millis() as u64;
         } else {
             timings.phase_b_skipped = true;
             let cas_start = Instant::now();

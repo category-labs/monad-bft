@@ -21,7 +21,10 @@ use roaring::RoaringBitmap;
 use crate::{
     error::{MonadChainDataError, Result},
     primitives::state::PrimaryId,
-    store::{CachedKvTable, CachedScannableTable, MetaStore, ScannableTableId},
+    store::{
+        blob::BlobStore, CachedKvTable, CachedScannableTable, MetaStore, ScannableTableId,
+        WriteSession,
+    },
 };
 
 pub const LOCAL_ID_BITS: u32 = PrimaryId::LOCAL_ID_BITS;
@@ -118,16 +121,20 @@ impl<M: MetaStore> BitmapTables<M> {
         Ok(())
     }
 
-    pub fn stage_fragment(
+    pub fn stage_fragment<B: BlobStore>(
         &self,
-        meta: &mut M::Batch,
+        w: &WriteSession<'_, M, B>,
         fragment: &BitmapFragmentWrite,
         block_number: u64,
     ) {
         let partition = stream_page_key(&fragment.stream_id, fragment.page_start_local);
         let clustering = block_number_key(block_number);
-        self.fragments
-            .scan_put_into(meta, &partition, &clustering, fragment.bitmap_blob.clone());
+        w.scan_put(
+            self.fragments.table_id(),
+            &partition,
+            &clustering,
+            fragment.bitmap_blob.clone(),
+        );
     }
 
     /// Loads all retained fragments for one stream page.
@@ -181,16 +188,19 @@ impl<M: MetaStore> BitmapTables<M> {
         Ok(())
     }
 
-    pub fn stage_page_meta(
+    pub fn stage_page_meta<B: BlobStore>(
         &self,
-        batch: &mut M::Batch,
+        w: &WriteSession<'_, M, B>,
         stream_id: &str,
         page_start_local: u32,
         page_meta: &BitmapPageMeta,
     ) {
         let key = stream_page_key(stream_id, page_start_local);
-        self.page_meta
-            .put_into(batch, &key, Bytes::from(page_meta.encode()));
+        w.put(
+            self.page_meta.table_id(),
+            &key,
+            Bytes::from(page_meta.encode()),
+        );
     }
 
     /// Loads the compacted bitmap blob for one sealed stream page.
@@ -214,15 +224,15 @@ impl<M: MetaStore> BitmapTables<M> {
         Ok(())
     }
 
-    pub fn stage_page_blob(
+    pub fn stage_page_blob<B: BlobStore>(
         &self,
-        batch: &mut M::Batch,
+        w: &WriteSession<'_, M, B>,
         stream_id: &str,
         page_start_local: u32,
         bitmap_blob: Bytes,
     ) {
         let key = stream_page_key(stream_id, page_start_local);
-        self.page_blobs.put_into(batch, &key, bitmap_blob);
+        w.put(self.page_blobs.table_id(), &key, bitmap_blob);
     }
 
     /// Loads the open stream inventory for one frontier page.
@@ -263,16 +273,20 @@ impl<M: MetaStore> BitmapTables<M> {
         Ok(())
     }
 
-    pub fn stage_open_streams(
+    pub fn stage_open_streams<B: BlobStore>(
         &self,
-        batch: &mut M::Batch,
+        w: &WriteSession<'_, M, B>,
         global_page_start: u64,
         streams: &BTreeSet<String>,
     ) {
         let partition = global_page_start.to_be_bytes();
         for stream_id in streams {
-            self.open_streams
-                .scan_put_into(batch, &partition, stream_id.as_bytes(), Bytes::new());
+            w.scan_put(
+                self.open_streams.table_id(),
+                &partition,
+                stream_id.as_bytes(),
+                Bytes::new(),
+            );
         }
     }
 }
