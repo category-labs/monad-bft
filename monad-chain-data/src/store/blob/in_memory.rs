@@ -22,31 +22,8 @@ use bytes::Bytes;
 
 use crate::{
     error::Result,
-    store::blob::{BlobStore, BlobTableId, BlobWriteBatch, BlobWriteOp},
+    store::blob::{BlobStore, BlobTableId, BlobWriteOp},
 };
-
-pub struct InMemoryBlobBatch {
-    store: InMemoryBlobStore,
-    pending: Vec<(BlobTableId, Vec<u8>, Bytes)>,
-}
-
-impl BlobWriteBatch for InMemoryBlobBatch {
-    fn put_blob(&mut self, table: BlobTableId, key: &[u8], value: Bytes) {
-        self.pending.push((table, key.to_vec(), value));
-    }
-
-    async fn commit(self) -> Result<()> {
-        let mut guard = self
-            .store
-            .blobs
-            .write()
-            .map_err(|_| crate::error::MonadChainDataError::Backend("poisoned lock".to_string()))?;
-        for (table, key, value) in self.pending {
-            guard.insert((table, key), value);
-        }
-        Ok(())
-    }
-}
 
 /// Test-only blob fixture. Holds blobs in memory behind a sync `RwLock`.
 /// Not intended as a deployable backend.
@@ -78,15 +55,6 @@ impl InMemoryBlobStore {
 }
 
 impl BlobStore for InMemoryBlobStore {
-    type Batch = InMemoryBlobBatch;
-
-    fn begin_batch(&self) -> Self::Batch {
-        InMemoryBlobBatch {
-            store: self.clone(),
-            pending: Vec::new(),
-        }
-    }
-
     async fn put_blob(&self, table: BlobTableId, key: &[u8], value: Bytes) -> Result<()> {
         let mut guard = self
             .blobs

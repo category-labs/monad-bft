@@ -19,8 +19,8 @@ use bytes::Bytes;
 use monad_chain_data::{
     engine::tables::PublicationTables,
     store::{
-        BlobStore, BlobTableId, BlobWriteBatch, CasOutcome, FjallStore, FjallTuning, MetaStore,
-        MetaStoreCas, MetaWriteBatch, ScannableTableId, TableId,
+        BlobStore, BlobTableId, BlobWriteOp, CasOutcome, FjallStore, FjallTuning, MetaStore,
+        MetaStoreCas, MetaWriteOp, PublicationCasParams, ScannableTableId, TableId,
     },
     FinalizedBlock, IngestTx, MonadChainDataService, QueryLimits, B256,
 };
@@ -34,14 +34,28 @@ const T_CAS: TableId = TableId::new("fjall_batch_atomicity_cas");
 const T_BLOB: BlobTableId = BlobTableId::new("fjall_batch_atomicity_blob");
 
 #[tokio::test(flavor = "current_thread")]
-async fn meta_batch_writes_survive_reopen() {
+async fn meta_apply_writes_survive_reopen() {
     let dir = tempfile::tempdir().expect("tempdir");
     {
         let store = FjallStore::open(dir.path(), FjallTuning::default()).expect("open");
-        let mut b = MetaStore::begin_batch(&store);
-        b.put(T_KV, b"k", Bytes::from_static(b"v"));
-        b.scan_put(T_SCAN, b"p", b"c", Bytes::from_static(b"sv"));
-        b.commit().await.expect("commit");
+        MetaStore::apply_writes(
+            &store,
+            vec![
+                MetaWriteOp::Put {
+                    table: T_KV,
+                    key: b"k".to_vec(),
+                    value: Bytes::from_static(b"v"),
+                },
+                MetaWriteOp::ScanPut {
+                    table: T_SCAN,
+                    partition: b"p".to_vec(),
+                    clustering: b"c".to_vec(),
+                    value: Bytes::from_static(b"sv"),
+                },
+            ],
+        )
+        .await
+        .expect("apply_writes");
     }
     let store = FjallStore::open(dir.path(), FjallTuning::default()).expect("reopen");
     assert_eq!(
@@ -55,13 +69,20 @@ async fn meta_batch_writes_survive_reopen() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn blob_batch_writes_survive_reopen() {
+async fn blob_apply_writes_survive_reopen() {
     let dir = tempfile::tempdir().expect("tempdir");
     {
         let store = FjallStore::open(dir.path(), FjallTuning::default()).expect("open");
-        let mut b = BlobStore::begin_batch(&store);
-        b.put_blob(T_BLOB, b"k", Bytes::from_static(b"v"));
-        b.commit().await.expect("commit");
+        BlobStore::apply_writes(
+            &store,
+            vec![BlobWriteOp {
+                table: T_BLOB,
+                key: b"k".to_vec(),
+                value: Bytes::from_static(b"v"),
+            }],
+        )
+        .await
+        .expect("apply_writes");
     }
     let store = FjallStore::open(dir.path(), FjallTuning::default()).expect("reopen");
     assert_eq!(
@@ -71,24 +92,32 @@ async fn blob_batch_writes_survive_reopen() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn commit_with_cas_conflict_does_not_persist_meta_writes() {
+async fn apply_writes_with_cas_conflict_does_not_persist_meta_writes() {
     let dir = tempfile::tempdir().expect("tempdir");
     let store = FjallStore::open(dir.path(), FjallTuning::default()).expect("open");
-    // Seed CAS row at version 1.
     store
         .cas_put(T_CAS, b"head", None, Bytes::from_static(b"v0"))
         .await
         .expect("seed");
 
-    let mut b = MetaStore::begin_batch(&store);
-    b.put(T_KV, b"orphan", Bytes::from_static(b"x"));
-    let outcome = b
-        .commit_with_cas(T_CAS, b"head", None, Bytes::from_static(b"v1"))
+    let outcome = store
+        .apply_writes_with_cas(
+            vec![MetaWriteOp::Put {
+                table: T_KV,
+                key: b"orphan".to_vec(),
+                value: Bytes::from_static(b"x"),
+            }],
+            PublicationCasParams {
+                table: T_CAS,
+                key: b"head".to_vec(),
+                expected: None,
+                value: Bytes::from_static(b"v1"),
+            },
+        )
         .await
-        .expect("commit_with_cas");
+        .expect("apply_writes_with_cas");
     assert!(matches!(outcome, CasOutcome::Conflict { .. }));
 
-    // Reopen and check the orphan write did not land.
     drop(store);
     let store = FjallStore::open(dir.path(), FjallTuning::default()).expect("reopen");
     assert!(store.get(T_KV, b"orphan").await.unwrap().is_none());
@@ -112,13 +141,6 @@ fn block_with_tx(number: u64, parent_hash: B256, sender_byte: u8) -> FinalizedBl
     }
 }
 
-// Phase A (data writes) commits before Phase B (CAS-anchored publication
-// advance). A crash in that window leaves data rows on disk with the
-// publication head unchanged. We simulate the window by ingesting once,
-// removing the CAS row (the only thing Phase B contributed for a no-seal
-// run, plus the publication state for any run), reopening, and asserting
-// that re-running `ingest_blocks` on the same input completes successfully
-// and reaches the same final on-disk head.
 #[tokio::test(flavor = "current_thread")]
 async fn ingest_blocks_retries_idempotently_after_phase_a_only_state() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -142,8 +164,6 @@ async fn ingest_blocks_retries_idempotently_after_phase_a_only_state() {
             .expect("first ingest");
     }
 
-    // Wipe the CAS row to reproduce a Phase-A-only crash window: Phase A
-    // rows remain on disk, but the publication head row never landed.
     {
         let store = FjallStore::open(dir.path(), FjallTuning::default()).expect("reopen for cas clear");
         store
@@ -163,10 +183,6 @@ async fn ingest_blocks_retries_idempotently_after_phase_a_only_state() {
         assert!(head.is_none(), "CAS row must be gone after clear");
     }
 
-    // Reopen with a fresh service. The publication head is missing so
-    // `ingest_blocks` sees `expected_version = None`. It must re-stage
-    // the same Phase A rows (idempotent overwrite) and then advance the
-    // head via the CAS path.
     let store = FjallStore::open(dir.path(), FjallTuning::default()).expect("reopen for retry");
     let service = MonadChainDataService::new(store.clone(), store, QueryLimits::UNLIMITED);
 

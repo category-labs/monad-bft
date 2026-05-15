@@ -25,113 +25,11 @@ use crate::{
     store::{
         common::Page,
         meta::{
-            CasOutcome, CasVersion, MetaStore, MetaStoreCas, MetaWriteBatch, MetaWriteOp,
-            PublicationCasParams, ScannableTableId, TableId,
+            CasOutcome, CasVersion, MetaStore, MetaStoreCas, MetaWriteOp, PublicationCasParams,
+            ScannableTableId, TableId,
         },
     },
 };
-
-enum PendingMeta {
-    Put(TableId, Vec<u8>, Bytes),
-    ScanPut(ScannableTableId, Vec<u8>, Vec<u8>, Bytes),
-}
-
-pub struct InMemoryMetaBatch {
-    store: InMemoryMetaStore,
-    pending: Vec<PendingMeta>,
-}
-
-impl MetaWriteBatch for InMemoryMetaBatch {
-    fn put(&mut self, table: TableId, key: &[u8], value: Bytes) {
-        self.pending
-            .push(PendingMeta::Put(table, key.to_vec(), value));
-    }
-
-    fn scan_put(
-        &mut self,
-        table: ScannableTableId,
-        partition: &[u8],
-        clustering: &[u8],
-        value: Bytes,
-    ) {
-        self.pending.push(PendingMeta::ScanPut(
-            table,
-            partition.to_vec(),
-            clustering.to_vec(),
-            value,
-        ));
-    }
-
-    async fn commit(self) -> Result<()> {
-        let mut kv_guard = self
-            .store
-            .kv_records
-            .write()
-            .map_err(|_| crate::error::MonadChainDataError::Backend("poisoned lock".to_string()))?;
-        let mut scan_guard = self
-            .store
-            .scan_records
-            .write()
-            .map_err(|_| crate::error::MonadChainDataError::Backend("poisoned lock".to_string()))?;
-        for op in self.pending {
-            match op {
-                PendingMeta::Put(table, key, value) => {
-                    kv_guard.insert((table, key), value);
-                }
-                PendingMeta::ScanPut(table, partition, clustering, value) => {
-                    scan_guard.insert((table, partition, clustering), value);
-                }
-            }
-        }
-        Ok(())
-    }
-
-    async fn commit_with_cas(
-        self,
-        table: TableId,
-        key: &[u8],
-        expected: Option<CasVersion>,
-        value: Bytes,
-    ) -> Result<CasOutcome> {
-        let mut kv_guard = self
-            .store
-            .kv_records
-            .write()
-            .map_err(|_| crate::error::MonadChainDataError::Backend("poisoned lock".to_string()))?;
-        let mut scan_guard = self
-            .store
-            .scan_records
-            .write()
-            .map_err(|_| crate::error::MonadChainDataError::Backend("poisoned lock".to_string()))?;
-        let mut cas_guard = self
-            .store
-            .cas_records
-            .write()
-            .map_err(|_| crate::error::MonadChainDataError::Backend("poisoned lock".to_string()))?;
-        let entry_key = (table, key.to_vec());
-        let current = cas_guard.get(&entry_key).map(|(v, _)| CasVersion(*v));
-        if current != expected {
-            return Ok(CasOutcome::Conflict {
-                current_version: current,
-            });
-        }
-        for op in self.pending {
-            match op {
-                PendingMeta::Put(t, k, v) => {
-                    kv_guard.insert((t, k), v);
-                }
-                PendingMeta::ScanPut(t, p, c, v) => {
-                    scan_guard.insert((t, p, c), v);
-                }
-            }
-        }
-        let new_version = current.map_or(1, |v| v.0 + 1);
-        cas_guard.insert(entry_key, (new_version, value));
-        Ok(CasOutcome::Applied {
-            new_version: CasVersion(new_version),
-        })
-    }
-}
 
 /// Test-only meta-store fixture. Holds records in memory behind sync
 /// `RwLock`s. Not intended as a deployable backend.
@@ -208,15 +106,6 @@ impl InMemoryMetaStore {
 }
 
 impl MetaStore for InMemoryMetaStore {
-    type Batch = InMemoryMetaBatch;
-
-    fn begin_batch(&self) -> Self::Batch {
-        InMemoryMetaBatch {
-            store: self.clone(),
-            pending: Vec::new(),
-        }
-    }
-
     async fn get(&self, table: TableId, key: &[u8]) -> Result<Option<Bytes>> {
         let guard = self
             .kv_records

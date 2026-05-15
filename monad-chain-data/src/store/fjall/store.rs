@@ -291,12 +291,6 @@ pub(super) fn decode_cas_row(bytes: &[u8]) -> Result<(u64, Bytes)> {
 }
 
 impl MetaStore for FjallStore {
-    type Batch = super::batch::FjallMetaBatch;
-
-    fn begin_batch(&self) -> Self::Batch {
-        super::batch::FjallMetaBatch::new(Arc::clone(&self.inner))
-    }
-
     async fn get(&self, table: TableId, key: &[u8]) -> Result<Option<Bytes>> {
         let store = self.clone();
         let key = key.to_vec();
@@ -580,12 +574,6 @@ impl MetaStoreCas for FjallStore {
 }
 
 impl BlobStore for FjallStore {
-    type Batch = super::batch::FjallBlobBatch;
-
-    fn begin_batch(&self) -> Self::Batch {
-        super::batch::FjallBlobBatch::new(Arc::clone(&self.inner))
-    }
-
     async fn put_blob(&self, table: BlobTableId, key: &[u8], value: Bytes) -> Result<()> {
         let store = self.clone();
         let key = key.to_vec();
