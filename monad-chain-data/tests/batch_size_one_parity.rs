@@ -59,7 +59,8 @@ async fn batch_size_one_observationally_identical_to_batch_size_eight() {
 
     let meta_a = InMemoryMetaStore::default();
     let blob_a = InMemoryBlobStore::default();
-    let service_a = MonadChainDataService::new(meta_a.clone(), blob_a.clone(), QueryLimits::UNLIMITED);
+    let service_a =
+        MonadChainDataService::new(meta_a.clone(), blob_a.clone(), QueryLimits::UNLIMITED);
     for b in blocks.clone() {
         service_a
             .ingest_blocks(vec![b])
@@ -69,7 +70,8 @@ async fn batch_size_one_observationally_identical_to_batch_size_eight() {
 
     let meta_b = InMemoryMetaStore::default();
     let blob_b = InMemoryBlobStore::default();
-    let service_b = MonadChainDataService::new(meta_b.clone(), blob_b.clone(), QueryLimits::UNLIMITED);
+    let service_b =
+        MonadChainDataService::new(meta_b.clone(), blob_b.clone(), QueryLimits::UNLIMITED);
     for chunk in blocks.chunks(8) {
         service_b
             .ingest_blocks(chunk.to_vec())
@@ -112,16 +114,8 @@ async fn batch_size_one_observationally_identical_to_batch_size_eight() {
         "blob rows diverged byte-for-byte between batch_size=1 and batch_size=8"
     );
 
-    let head_a = service_a
-        .publication()
-        .load_published_head()
-        .await
-        .unwrap();
-    let head_b = service_b
-        .publication()
-        .load_published_head()
-        .await
-        .unwrap();
+    let head_a = service_a.publication().load_published_head().await.unwrap();
+    let head_b = service_b.publication().load_published_head().await.unwrap();
     assert_eq!(head_a, head_b);
     assert_eq!(head_a, Some(blocks.len() as u64));
 }

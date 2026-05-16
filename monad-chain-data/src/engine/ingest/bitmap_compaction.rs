@@ -13,7 +13,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    time::Instant,
+};
 
 use bytes::Bytes;
 
@@ -23,6 +26,8 @@ use crate::{
             compact_bitmap_page, global_page_start, local_page_start, stream_page_global_start,
             BitmapFragmentWrite, BitmapPageMeta,
         },
+        ingest::ReadPlanningTimings,
+        open_index::{OpenIndexes, OpenIndexesEviction},
         tables::FamilyTables,
     },
     error::Result,
@@ -38,6 +43,7 @@ struct BitmapCompactionPlan {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompactedPageWrite {
+    pub page_global_start: u64,
     pub stream_id: String,
     pub page_start_local: u32,
     pub meta: BitmapPageMeta,
@@ -54,14 +60,16 @@ pub struct BitmapBatchCompactionPlan {
     /// at the end of the batch (for the final entry).
     pub open_stream_writes: Vec<(u64, BTreeSet<String>)>,
     pub has_writes: bool,
+    pub(crate) timings: ReadPlanningTimings,
 }
 
 impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
     /// Reads the prior open-stream inventory and the sealed-page fragments
     /// across a batch's primary-id ranges, returning the compacted page
     /// artifacts the Phase B meta batch will stage. Pure I/O — no writes.
-    pub async fn plan_bitmap_compactions(
+    pub(crate) async fn plan_bitmap_compactions(
         &self,
+        open_indexes: &OpenIndexes,
         written_fragments_per_block: &[&[BitmapFragmentWrite]],
         ranges: &[(u64, u64)],
     ) -> Result<BitmapBatchCompactionPlan> {
@@ -72,12 +80,14 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
                 compacted_pages: Vec::new(),
                 open_stream_writes: Vec::new(),
                 has_writes: false,
+                timings: ReadPlanningTimings::default(),
             });
         }
 
         let mut compacted_pages = Vec::new();
         let mut open_stream_writes: Vec<(u64, BTreeSet<String>)> = Vec::new();
         let mut frontier: Option<(u64, BTreeSet<String>)> = None;
+        let mut timings = ReadPlanningTimings::default();
 
         for (block_idx, &(from_next_primary_id, next_primary_id)) in ranges.iter().enumerate() {
             if next_primary_id <= from_next_primary_id {
@@ -87,11 +97,7 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
             let start_open_page = global_page_start(from_next_primary_id);
             let previous_open_streams = match frontier.take() {
                 Some((page, streams)) if page == start_open_page => streams,
-                _ => self
-                    .load_open_bitmap_streams(start_open_page)
-                    .await?
-                    .into_iter()
-                    .collect(),
+                _ => open_indexes.bitmap_open_streams(self.family(), start_open_page),
             };
 
             let touched_by_page = touched_streams_by_page(written_fragments_per_block[block_idx])?;
@@ -105,11 +111,24 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
             for (page_global_start, streams) in &shape.sealed_pages {
                 let page_start_local = local_page_start(*page_global_start);
                 for stream_id in streams {
+                    let blocks =
+                        open_indexes.bitmap_blocks(self.family(), stream_id, page_start_local);
                     let fragments = self
-                        .load_bitmap_fragments(stream_id, page_start_local)
+                        .load_bitmap_fragments_by_blocks(
+                            stream_id,
+                            page_start_local,
+                            &blocks,
+                            &mut timings,
+                        )
                         .await?;
+                    let compact_start = Instant::now();
                     let (meta, bitmap_blob) = compact_bitmap_page(page_start_local, &fragments)?;
+                    timings.bitmap_compact_ms = timings
+                        .bitmap_compact_ms
+                        .saturating_add(compact_start.elapsed().as_millis() as u64);
+                    timings.bitmap_compact_count = timings.bitmap_compact_count.saturating_add(1);
                     compacted_pages.push(CompactedPageWrite {
+                        page_global_start: *page_global_start,
                         stream_id: stream_id.clone(),
                         page_start_local,
                         meta,
@@ -127,12 +146,16 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
                     if last.0 == shape.final_open_page_start {
                         last.1.extend(shape.final_open_streams.iter().cloned());
                     } else {
-                        open_stream_writes
-                            .push((shape.final_open_page_start, shape.final_open_streams.clone()));
+                        open_stream_writes.push((
+                            shape.final_open_page_start,
+                            shape.final_open_streams.clone(),
+                        ));
                     }
                 } else {
-                    open_stream_writes
-                        .push((shape.final_open_page_start, shape.final_open_streams.clone()));
+                    open_stream_writes.push((
+                        shape.final_open_page_start,
+                        shape.final_open_streams.clone(),
+                    ));
                 }
             }
 
@@ -144,6 +167,7 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
             compacted_pages,
             open_stream_writes,
             has_writes,
+            timings,
         })
     }
 
@@ -153,13 +177,35 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
         plan: &BitmapBatchCompactionPlan,
     ) {
         for page in &plan.compacted_pages {
-            self.bitmap()
-                .stage_page_blob(w, &page.stream_id, page.page_start_local, page.blob.clone());
+            self.bitmap().stage_page_blob(
+                w,
+                &page.stream_id,
+                page.page_start_local,
+                page.blob.clone(),
+            );
             self.bitmap()
                 .stage_page_meta(w, &page.stream_id, page.page_start_local, &page.meta);
         }
         for (page_start, streams) in &plan.open_stream_writes {
             self.bitmap().stage_open_streams(w, *page_start, streams);
+        }
+    }
+
+    pub(crate) fn bitmap_eviction(&self, plan: &BitmapBatchCompactionPlan) -> OpenIndexesEviction {
+        OpenIndexesEviction {
+            bitmap_pages: plan
+                .compacted_pages
+                .iter()
+                .map(|page| (self.family(), page.stream_id.clone(), page.page_start_local))
+                .collect(),
+            bitmap_open_pages: plan
+                .compacted_pages
+                .iter()
+                .map(|page| (self.family(), page.page_global_start))
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect(),
+            ..OpenIndexesEviction::default()
         }
     }
 }

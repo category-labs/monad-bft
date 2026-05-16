@@ -16,3 +16,46 @@
 pub(crate) mod bitmap_compaction;
 pub(crate) mod directory_compaction;
 pub(crate) mod persist;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct ReadPlanningTimings {
+    pub dir_list_ms: u64,
+    pub dir_get_ms: u64,
+    pub dir_list_count: u64,
+    pub dir_get_count: u64,
+    pub bitmap_open_streams_ms: u64,
+    pub bitmap_open_streams_count: u64,
+    pub bitmap_list_ms: u64,
+    pub bitmap_get_ms: u64,
+    pub bitmap_compact_ms: u64,
+    pub bitmap_list_count: u64,
+    pub bitmap_get_count: u64,
+    pub bitmap_compact_count: u64,
+}
+
+impl ReadPlanningTimings {
+    pub(crate) fn merge(&mut self, other: Self) {
+        self.dir_list_ms = self.dir_list_ms.saturating_add(other.dir_list_ms);
+        self.dir_get_ms = self.dir_get_ms.saturating_add(other.dir_get_ms);
+        self.dir_list_count = self.dir_list_count.saturating_add(other.dir_list_count);
+        self.dir_get_count = self.dir_get_count.saturating_add(other.dir_get_count);
+        self.bitmap_open_streams_ms = self
+            .bitmap_open_streams_ms
+            .saturating_add(other.bitmap_open_streams_ms);
+        self.bitmap_open_streams_count = self
+            .bitmap_open_streams_count
+            .saturating_add(other.bitmap_open_streams_count);
+        self.bitmap_list_ms = self.bitmap_list_ms.saturating_add(other.bitmap_list_ms);
+        self.bitmap_get_ms = self.bitmap_get_ms.saturating_add(other.bitmap_get_ms);
+        self.bitmap_compact_ms = self
+            .bitmap_compact_ms
+            .saturating_add(other.bitmap_compact_ms);
+        self.bitmap_list_count = self
+            .bitmap_list_count
+            .saturating_add(other.bitmap_list_count);
+        self.bitmap_get_count = self.bitmap_get_count.saturating_add(other.bitmap_get_count);
+        self.bitmap_compact_count = self
+            .bitmap_compact_count
+            .saturating_add(other.bitmap_compact_count);
+    }
+}

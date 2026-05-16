@@ -152,11 +152,10 @@ impl FjallStore {
     /// tables. Cheap: each accessor reads atomics on the underlying
     /// keyspace handle.
     pub fn keyspace_stats(&self) -> Result<Vec<FjallKeyspaceStats>> {
-        let guard = self
-            .inner
-            .keyspaces
-            .lock()
-            .map_err(|_| MonadChainDataError::Backend("fjall keyspace cache poisoned".into()))?;
+        let guard =
+            self.inner.keyspaces.lock().map_err(|_| {
+                MonadChainDataError::Backend("fjall keyspace cache poisoned".into())
+            })?;
         let mut out: Vec<FjallKeyspaceStats> = guard
             .iter()
             .map(|(name, ks)| FjallKeyspaceStats {
@@ -451,9 +450,9 @@ impl MetaStore for FjallStore {
                 }
             }
             batch.insert(&cas_ks, key, encode_cas_row(new_version, &cas_value));
-            batch
-                .commit()
-                .map_err(|e| MonadChainDataError::Backend(format!("fjall cas apply_writes: {e}")))?;
+            batch.commit().map_err(|e| {
+                MonadChainDataError::Backend(format!("fjall cas apply_writes: {e}"))
+            })?;
             Ok(CasOutcome::Applied {
                 new_version: CasVersion(new_version),
             })
@@ -601,9 +600,9 @@ impl BlobStore for FjallStore {
                 let ks = ks_cached(&inner, &mut cache, name)?;
                 batch.insert(&ks, key, value.as_ref());
             }
-            batch
-                .commit()
-                .map_err(|e| MonadChainDataError::Backend(format!("fjall blob apply_writes: {e}")))?;
+            batch.commit().map_err(|e| {
+                MonadChainDataError::Backend(format!("fjall blob apply_writes: {e}"))
+            })?;
             Ok(())
         })
         .await

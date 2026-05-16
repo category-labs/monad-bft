@@ -111,13 +111,7 @@ async fn trace_id_window_advances_across_blocks() {
             header: h2,
             logs_by_tx: vec![],
             txs: vec![],
-            traces: vec![top_level_call(
-                0,
-                addr(1),
-                addr(2),
-                U256::ZERO,
-                vec![],
-            )],
+            traces: vec![top_level_call(0, addr(1), addr(2), U256::ZERO, vec![])],
         })
         .await
         .expect("ingest block 2");

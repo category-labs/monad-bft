@@ -22,8 +22,6 @@ mod types;
 pub(crate) use indexed_query::execute_indexed_trace_query;
 pub use ingest::{compute_trace_addresses, is_transfer_frame, TraceIngestPlan};
 pub(crate) use materialize::TraceMaterializer;
-pub use materialize::{
-    QueryTracesRequest, QueryTracesResponse, TraceFilter, TracesRelations,
-};
+pub use materialize::{QueryTracesRequest, QueryTracesResponse, TraceFilter, TracesRelations};
 pub(crate) use scan_query::execute_block_scan_trace_query;
 pub use types::{BlockTraceHeader, StoredTrace, TraceEntry};

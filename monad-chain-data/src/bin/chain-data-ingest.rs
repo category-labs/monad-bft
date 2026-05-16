@@ -28,8 +28,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use tokio::sync::Semaphore;
-
 use alloy_eips::eip2718::Encodable2718;
 use alloy_primitives::Bytes;
 use clap::Parser;
@@ -51,6 +49,7 @@ use monad_chain_data::{
     CallKind, FinalizedBlock, IngestTrace, IngestTx, MonadChainDataService, QueryLimits,
 };
 use opentelemetry::KeyValue;
+use tokio::sync::Semaphore;
 use tracing::{debug, info, warn, Level};
 
 #[derive(Parser, Debug)]
@@ -524,6 +523,12 @@ async fn main() -> Result<()> {
             let cache_window = service.tables().take_cache_window_stats();
             let cache_hit_ratio_agg = aggregate_cache_hit_ratio(&cache_window);
             emit_cache_metrics(&metrics, &cache_window);
+            let open_index_stats = service.open_index_stats();
+
+            let blocks_per_sec = round_2(window_blocks as f64 / elapsed_secs);
+            let txs_per_sec = round_2(window_txs as f64 / elapsed_secs);
+            let logs_per_sec = round_2(window_logs as f64 / elapsed_secs);
+            let traces_per_sec = round_2(window_traces as f64 / elapsed_secs);
 
             info!(
                 block = n,
@@ -533,10 +538,10 @@ async fn main() -> Result<()> {
                 bottleneck,
                 hint,
                 concurrency = concurrency_observed,
-                blocks_per_sec = window_blocks as f64 / elapsed_secs,
-                txs_per_sec = window_txs as f64 / elapsed_secs,
-                logs_per_sec = window_logs as f64 / elapsed_secs,
-                traces_per_sec = window_traces as f64 / elapsed_secs,
+                blocks_per_sec,
+                txs_per_sec,
+                logs_per_sec,
+                traces_per_sec,
                 fetch_p50_ms = fetch_p50,
                 fetch_p99_ms = fetch_p99,
                 ingest_p50_ms = ingest_p50,
@@ -549,21 +554,46 @@ async fn main() -> Result<()> {
                 commit_a_blob_p99_ms = phase_summary.commit_a_blob_p99,
                 reads_p50_ms = phase_summary.reads_p50,
                 reads_p99_ms = phase_summary.reads_p99,
+                reads_dir_list_p50_ms = phase_summary.reads_dir_list_p50,
+                reads_dir_list_p99_ms = phase_summary.reads_dir_list_p99,
+                reads_dir_get_p50_ms = phase_summary.reads_dir_get_p50,
+                reads_dir_get_p99_ms = phase_summary.reads_dir_get_p99,
+                reads_bitmap_open_streams_p50_ms = phase_summary.reads_bitmap_open_streams_p50,
+                reads_bitmap_open_streams_p99_ms = phase_summary.reads_bitmap_open_streams_p99,
+                reads_bitmap_list_p50_ms = phase_summary.reads_bitmap_list_p50,
+                reads_bitmap_list_p99_ms = phase_summary.reads_bitmap_list_p99,
+                reads_bitmap_get_p50_ms = phase_summary.reads_bitmap_get_p50,
+                reads_bitmap_get_p99_ms = phase_summary.reads_bitmap_get_p99,
+                reads_bitmap_compact_p50_ms = phase_summary.reads_bitmap_compact_p50,
+                reads_bitmap_compact_p99_ms = phase_summary.reads_bitmap_compact_p99,
+                reads_dir_list_count = phase_summary.reads_dir_list_count,
+                reads_dir_get_count = phase_summary.reads_dir_get_count,
+                reads_bitmap_open_streams_count = phase_summary.reads_bitmap_open_streams_count,
+                reads_bitmap_list_count = phase_summary.reads_bitmap_list_count,
+                reads_bitmap_get_count = phase_summary.reads_bitmap_get_count,
+                reads_bitmap_compact_count = phase_summary.reads_bitmap_compact_count,
                 stage_b_p50_ms = phase_summary.stage_b_p50,
                 stage_b_p99_ms = phase_summary.stage_b_p99,
                 commit_b_p50_ms = phase_summary.commit_b_p50,
                 commit_b_p99_ms = phase_summary.commit_b_p99,
                 cas_p50_ms = phase_summary.cas_p50,
-                phase_b_skipped_ratio = phase_summary.phase_b_skipped_ratio,
+                phase_b_skipped_ratio = round_2(phase_summary.phase_b_skipped_ratio),
                 fjall_keyspaces = fjall_agg.keyspaces,
                 fjall_disk_space_bytes = fjall_agg.disk_space_bytes,
                 fjall_l0_tables = fjall_agg.l0_tables,
                 fjall_sealed_memtables = fjall_agg.sealed_memtables,
                 fjall_blob_files = fjall_agg.blob_files,
-                consumer_wait_avg_ms = wait_avg_ms,
+                consumer_wait_avg_ms = round_2(wait_avg_ms),
                 consumer_wait_max_ms = wait_max_ms,
                 retries = fetch_window.retry_attempts,
-                cache_hit_ratio = cache_hit_ratio_agg,
+                cache_hit_ratio = round_2(cache_hit_ratio_agg),
+                open_index_directory_keys = open_index_stats.directory_keys,
+                open_index_directory_blocks = open_index_stats.directory_blocks,
+                open_index_bitmap_stream_pages = open_index_stats.bitmap_stream_pages,
+                open_index_bitmap_blocks = open_index_stats.bitmap_blocks,
+                open_index_bitmap_open_pages = open_index_stats.bitmap_open_pages,
+                open_index_bitmap_open_streams = open_index_stats.bitmap_open_streams,
+                open_index_approx_bytes = open_index_stats.approx_bytes,
                 "ingest progress"
             );
             for ks in &fjall_stats {
@@ -661,10 +691,7 @@ async fn fetch_block_with_retry(
                 return Ok(item);
             }
             Err(e) if attempt < max_retries => {
-                stats
-                    .lock()
-                    .expect("fetch stats poisoned")
-                    .retry_attempts += 1;
+                stats.lock().expect("fetch stats poisoned").retry_attempts += 1;
                 debug!(
                     block = n,
                     attempt = attempt + 1,
@@ -701,9 +728,21 @@ struct PhaseStats {
     commit_a_meta: Vec<u64>,
     commit_a_blob: Vec<u64>,
     reads: Vec<u64>,
+    reads_dir_list: Vec<u64>,
+    reads_dir_get: Vec<u64>,
+    reads_bitmap_open_streams: Vec<u64>,
+    reads_bitmap_list: Vec<u64>,
+    reads_bitmap_get: Vec<u64>,
+    reads_bitmap_compact: Vec<u64>,
     stage_b: Vec<u64>,
     commit_b: Vec<u64>,
     cas: Vec<u64>,
+    reads_dir_list_count: u64,
+    reads_dir_get_count: u64,
+    reads_bitmap_open_streams_count: u64,
+    reads_bitmap_list_count: u64,
+    reads_bitmap_get_count: u64,
+    reads_bitmap_compact_count: u64,
     phase_b_skipped: u64,
     phase_b_total: u64,
 }
@@ -717,6 +756,24 @@ struct PhaseSummary {
     commit_a_blob_p99: u64,
     reads_p50: u64,
     reads_p99: u64,
+    reads_dir_list_p50: u64,
+    reads_dir_list_p99: u64,
+    reads_dir_get_p50: u64,
+    reads_dir_get_p99: u64,
+    reads_bitmap_open_streams_p50: u64,
+    reads_bitmap_open_streams_p99: u64,
+    reads_bitmap_list_p50: u64,
+    reads_bitmap_list_p99: u64,
+    reads_bitmap_get_p50: u64,
+    reads_bitmap_get_p99: u64,
+    reads_bitmap_compact_p50: u64,
+    reads_bitmap_compact_p99: u64,
+    reads_dir_list_count: u64,
+    reads_dir_get_count: u64,
+    reads_bitmap_open_streams_count: u64,
+    reads_bitmap_list_count: u64,
+    reads_bitmap_get_count: u64,
+    reads_bitmap_compact_count: u64,
     stage_b_p50: u64,
     stage_b_p99: u64,
     commit_b_p50: u64,
@@ -731,9 +788,34 @@ impl PhaseStats {
         self.commit_a_meta.push(t.commit_a_meta_ms);
         self.commit_a_blob.push(t.commit_a_blob_ms);
         self.reads.push(t.reads_ms);
+        self.reads_dir_list.push(t.reads_dir_list_ms);
+        self.reads_dir_get.push(t.reads_dir_get_ms);
+        self.reads_bitmap_open_streams
+            .push(t.reads_bitmap_open_streams_ms);
+        self.reads_bitmap_list.push(t.reads_bitmap_list_ms);
+        self.reads_bitmap_get.push(t.reads_bitmap_get_ms);
+        self.reads_bitmap_compact.push(t.reads_bitmap_compact_ms);
         self.stage_b.push(t.stage_b_ms);
         self.commit_b.push(t.commit_b_ms);
         self.cas.push(t.cas_ms);
+        self.reads_dir_list_count = self
+            .reads_dir_list_count
+            .saturating_add(t.reads_dir_list_count);
+        self.reads_dir_get_count = self
+            .reads_dir_get_count
+            .saturating_add(t.reads_dir_get_count);
+        self.reads_bitmap_open_streams_count = self
+            .reads_bitmap_open_streams_count
+            .saturating_add(t.reads_bitmap_open_streams_count);
+        self.reads_bitmap_list_count = self
+            .reads_bitmap_list_count
+            .saturating_add(t.reads_bitmap_list_count);
+        self.reads_bitmap_get_count = self
+            .reads_bitmap_get_count
+            .saturating_add(t.reads_bitmap_get_count);
+        self.reads_bitmap_compact_count = self
+            .reads_bitmap_compact_count
+            .saturating_add(t.reads_bitmap_compact_count);
         self.phase_b_total += 1;
         if t.phase_b_skipped {
             self.phase_b_skipped += 1;
@@ -755,6 +837,24 @@ impl PhaseStats {
             commit_a_blob_p99: percentile(&self.commit_a_blob, 0.99),
             reads_p50: percentile(&self.reads, 0.50),
             reads_p99: percentile(&self.reads, 0.99),
+            reads_dir_list_p50: percentile(&self.reads_dir_list, 0.50),
+            reads_dir_list_p99: percentile(&self.reads_dir_list, 0.99),
+            reads_dir_get_p50: percentile(&self.reads_dir_get, 0.50),
+            reads_dir_get_p99: percentile(&self.reads_dir_get, 0.99),
+            reads_bitmap_open_streams_p50: percentile(&self.reads_bitmap_open_streams, 0.50),
+            reads_bitmap_open_streams_p99: percentile(&self.reads_bitmap_open_streams, 0.99),
+            reads_bitmap_list_p50: percentile(&self.reads_bitmap_list, 0.50),
+            reads_bitmap_list_p99: percentile(&self.reads_bitmap_list, 0.99),
+            reads_bitmap_get_p50: percentile(&self.reads_bitmap_get, 0.50),
+            reads_bitmap_get_p99: percentile(&self.reads_bitmap_get, 0.99),
+            reads_bitmap_compact_p50: percentile(&self.reads_bitmap_compact, 0.50),
+            reads_bitmap_compact_p99: percentile(&self.reads_bitmap_compact, 0.99),
+            reads_dir_list_count: self.reads_dir_list_count,
+            reads_dir_get_count: self.reads_dir_get_count,
+            reads_bitmap_open_streams_count: self.reads_bitmap_open_streams_count,
+            reads_bitmap_list_count: self.reads_bitmap_list_count,
+            reads_bitmap_get_count: self.reads_bitmap_get_count,
+            reads_bitmap_compact_count: self.reads_bitmap_compact_count,
             stage_b_p50: percentile(&self.stage_b, 0.50),
             stage_b_p99: percentile(&self.stage_b, 0.99),
             commit_b_p50: percentile(&self.commit_b, 0.50),
@@ -783,18 +883,16 @@ impl FjallAggregates {
         for ks in stats {
             out.disk_space_bytes = out.disk_space_bytes.saturating_add(ks.disk_space_bytes);
             out.l0_tables = out.l0_tables.saturating_add(ks.l0_table_count);
-            out.sealed_memtables = out.sealed_memtables.saturating_add(ks.sealed_memtable_count);
+            out.sealed_memtables = out
+                .sealed_memtables
+                .saturating_add(ks.sealed_memtable_count);
             out.blob_files = out.blob_files.saturating_add(ks.blob_file_count);
         }
         out
     }
 }
 
-fn emit_phase_metrics(
-    metrics: &Metrics,
-    t: &monad_chain_data::IngestBatchTimings,
-    total_ms: u64,
-) {
+fn emit_phase_metrics(metrics: &Metrics, t: &monad_chain_data::IngestBatchTimings, total_ms: u64) {
     metrics.histogram(
         MetricNames::CHAIN_DATA_INGEST_STAGE_A_DURATION_MS,
         t.stage_a_ms as f64,
@@ -830,10 +928,7 @@ fn emit_phase_metrics(
         MetricNames::CHAIN_DATA_INGEST_BATCH_TOTAL_DURATION_MS,
         total_ms as f64,
     );
-    metrics.counter(
-        MetricNames::CHAIN_DATA_INGEST_BATCH_SIZE,
-        t.blocks as u64,
-    );
+    metrics.counter(MetricNames::CHAIN_DATA_INGEST_BATCH_SIZE, t.blocks as u64);
 }
 
 fn emit_cache_metrics(metrics: &Metrics, stats: &[(&'static str, u64, u64)]) {
@@ -844,11 +939,7 @@ fn emit_cache_metrics(metrics: &Metrics, stats: &[(&'static str, u64, u64)]) {
         }
         let ratio = *hits as f64 / total as f64;
         let attrs = [KeyValue::new("table", (*table).to_string())];
-        metrics.gauge_with_attrs(
-            MetricNames::CHAIN_DATA_CACHE_HIT_RATIO,
-            (ratio * 1_000.0) as u64,
-            &attrs,
-        );
+        metrics.f64_gauge_with_attrs(MetricNames::CHAIN_DATA_CACHE_HIT_RATIO, ratio, &attrs);
     }
 }
 
@@ -864,10 +955,11 @@ fn aggregate_cache_hit_ratio(stats: &[(&'static str, u64, u64)]) -> f64 {
     }
 }
 
-fn emit_fjall_metrics(
-    metrics: &Metrics,
-    stats: &[monad_chain_data::store::FjallKeyspaceStats],
-) {
+fn round_2(value: f64) -> f64 {
+    (value * 100.0).round() / 100.0
+}
+
+fn emit_fjall_metrics(metrics: &Metrics, stats: &[monad_chain_data::store::FjallKeyspaceStats]) {
     for ks in stats {
         let attrs = [KeyValue::new("keyspace", ks.name.clone())];
         metrics.gauge_with_attrs(
@@ -1134,8 +1226,8 @@ fn build_ingest_traces(
         let tx_status = *tx_statuses
             .get(tx_idx)
             .ok_or_else(|| eyre!("block {block_number} tx {tx_idx}: missing receipt"))?;
-        let tx_index_u32 = u32::try_from(tx_idx)
-            .map_err(|_| eyre!("block {block_number}: tx index overflow"))?;
+        let tx_index_u32 =
+            u32::try_from(tx_idx).map_err(|_| eyre!("block {block_number}: tx index overflow"))?;
 
         for (frame, trace_address) in frames.into_iter().zip(trace_addresses.into_iter()) {
             out.push(IngestTrace {

@@ -33,8 +33,8 @@ use std::{
 use bytes::Bytes;
 use eyre::{Context, Result};
 use fjall::{
-    config::CompressionPolicy, CompressionType, Config, Database, Keyspace,
-    KeyspaceCreateOptions, KvSeparationOptions,
+    config::CompressionPolicy, CompressionType, Config, Database, Keyspace, KeyspaceCreateOptions,
+    KvSeparationOptions,
 };
 use tokio::task::spawn_blocking;
 
@@ -87,12 +87,8 @@ impl FjallKvStore {
                 // bodies/receipts/traces land in blob files. Archive writes
                 // are append-mostly so blob GC effectively never fires.
                 KeyspaceCreateOptions::default()
-                    .data_block_compression_policy(CompressionPolicy::all(
-                        CompressionType::Lz4,
-                    ))
-                    .index_block_compression_policy(CompressionPolicy::all(
-                        CompressionType::Lz4,
-                    ))
+                    .data_block_compression_policy(CompressionPolicy::all(CompressionType::Lz4))
+                    .index_block_compression_policy(CompressionPolicy::all(CompressionType::Lz4))
                     .with_kv_separation(Some(
                         KvSeparationOptions::default().compression(CompressionType::Lz4),
                     ))
@@ -174,15 +170,19 @@ impl KVStore for FjallKvStore {
                     Ok(PutResult::Written)
                 }
                 WritePolicy::NoClobber => {
-                    let _guard = inner.no_clobber_lock.lock().map_err(|_| {
-                        eyre::eyre!("fjall no_clobber_lock poisoned")
-                    })?;
+                    let _guard = inner
+                        .no_clobber_lock
+                        .lock()
+                        .map_err(|_| eyre::eyre!("fjall no_clobber_lock poisoned"))?;
                     let exists = inner
                         .keyspace
                         .contains_key(key.as_bytes())
                         .wrap_err_with(|| format!("fjall put exists check {key}"))?;
                     if exists {
-                        warn!(key, "Fjall put skipped: key already exists (NoClobber policy)");
+                        warn!(
+                            key,
+                            "Fjall put skipped: key already exists (NoClobber policy)"
+                        );
                         return Ok(PutResult::Skipped);
                     }
                     inner
@@ -370,6 +370,121 @@ mod tests {
         let store = FjallKvStore::open(dir.path(), Metrics::none())?;
         let got = store.get("persist/k").await?.unwrap();
         assert_eq!(got, Bytes::from(b"v".to_vec()));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn large_value_roundtrips_through_kv_separation() -> Result<()> {
+        // Anything above the KV-separation threshold (1 KiB default) lands
+        // in an append-only blob file rather than inline LSM data, so block
+        // bodies/receipts/traces take a different storage path than the
+        // small entries the other tests cover. Use 4 MiB to comfortably
+        // clear the threshold while staying well under the 64 MiB blob
+        // file rotation size.
+        let (_dir, store) = open_store();
+        let key = "blocks/0000000001";
+        let mut data = vec![0u8; 4 * 1024 * 1024];
+        for (i, b) in data.iter_mut().enumerate() {
+            // Pattern that defeats any accidental compression of zero-only
+            // payloads — must round-trip byte-for-byte regardless.
+            *b = ((i as u64).wrapping_mul(2_654_435_761) & 0xff) as u8;
+        }
+        store
+            .put(key, data.clone(), WritePolicy::AllowOverwrite)
+            .await?;
+        let got = store.get(key).await?.expect("blob not found");
+        assert_eq!(got.len(), data.len());
+        assert_eq!(got.as_ref(), data.as_slice());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn empty_value_roundtrips_as_present() -> Result<()> {
+        // Sentinel rows in the archive use an empty value with a meaningful
+        // key. Must distinguish "stored with empty value" from "missing".
+        let (_dir, store) = open_store();
+        let key = "sentinel/k";
+        store
+            .put(key, Vec::new(), WritePolicy::AllowOverwrite)
+            .await?;
+        let got = store
+            .get(key)
+            .await?
+            .expect("empty value should be present");
+        assert!(got.is_empty());
+        assert!(store.exists(key).await?);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn non_utf8_value_roundtrips_byte_for_byte() -> Result<()> {
+        // Receipts and block bodies are RLP-encoded binary. Verify full
+        // byte range round-trips (no accidental utf-8 sanitization in the
+        // value path).
+        let (_dir, store) = open_store();
+        let key = "bin/all-bytes";
+        let data: Vec<u8> = (0..=255).cycle().take(8192).collect();
+        store
+            .put(key, data.clone(), WritePolicy::AllowOverwrite)
+            .await?;
+        let got = store.get(key).await?.unwrap();
+        assert_eq!(got.as_ref(), data.as_slice());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn persists_large_value_across_reopen() -> Result<()> {
+        // The graceful-shutdown flush path must commit blob files too,
+        // not just the LSM portion.
+        let dir = tempfile::tempdir()?;
+        let data: Vec<u8> = (0..32_768).map(|i| (i & 0xff) as u8).collect();
+        {
+            let store = FjallKvStore::open(dir.path(), Metrics::none())?;
+            store
+                .put("blocks/42", data.clone(), WritePolicy::AllowOverwrite)
+                .await?;
+        }
+        let store = FjallKvStore::open(dir.path(), Metrics::none())?;
+        let got = store.get("blocks/42").await?.unwrap();
+        assert_eq!(got.as_ref(), data.as_slice());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn concurrent_writes_across_clones_roundtrip() -> Result<()> {
+        // `FjallKvStore` is cloneable and clones share the keyspace via
+        // `Arc<Inner>`. Concurrent writers from clones must not lose or
+        // corrupt data — fjall's own thread-safety guarantee, but exercised
+        // here because that property is load-bearing for the ingest path.
+        let (_dir, store) = open_store();
+        let mut tasks = Vec::new();
+        for shard in 0..16 {
+            let store = store.clone();
+            tasks.push(tokio::spawn(async move {
+                for i in 0..64 {
+                    let key = format!("shard/{shard:02}/{i:04}");
+                    let value: Vec<u8> = vec![shard as u8; 256 + i];
+                    store
+                        .put(&key, value.clone(), WritePolicy::AllowOverwrite)
+                        .await
+                        .unwrap();
+                    let got = store.get(&key).await.unwrap().unwrap();
+                    assert_eq!(got.as_ref(), value.as_slice());
+                }
+            }));
+        }
+        for t in tasks {
+            t.await.unwrap();
+        }
+        // Spot-check a few keys after the storm settles.
+        for shard in [0u8, 7, 15] {
+            for i in [0usize, 33, 63] {
+                let key = format!("shard/{shard:02}/{i:04}");
+                let got = store.get(&key).await?.unwrap();
+                assert_eq!(got.len(), 256 + i);
+                assert!(got.iter().all(|&b| b == shard));
+            }
+        }
         Ok(())
     }
 

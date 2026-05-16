@@ -165,7 +165,8 @@ async fn ingest_blocks_retries_idempotently_after_phase_a_only_state() {
     }
 
     {
-        let store = FjallStore::open(dir.path(), FjallTuning::default()).expect("reopen for cas clear");
+        let store =
+            FjallStore::open(dir.path(), FjallTuning::default()).expect("reopen for cas clear");
         store
             .clear_cas_key(
                 PublicationTables::<FjallStore>::PUBLICATION_STATE_TABLE,
@@ -187,7 +188,12 @@ async fn ingest_blocks_retries_idempotently_after_phase_a_only_state() {
     let service = MonadChainDataService::new(store.clone(), store, QueryLimits::UNLIMITED);
 
     assert!(
-        service.publication().load_published_head().await.unwrap().is_none(),
+        service
+            .publication()
+            .load_published_head()
+            .await
+            .unwrap()
+            .is_none(),
         "head must be absent before retry"
     );
 
@@ -217,10 +223,7 @@ async fn ingest_blocks_idempotent_after_reopen_with_published_head() {
     {
         let store = FjallStore::open(dir.path(), FjallTuning::default()).expect("open");
         let service = MonadChainDataService::new(store.clone(), store, QueryLimits::UNLIMITED);
-        service
-            .ingest_blocks(blocks.clone())
-            .await
-            .expect("ingest");
+        service.ingest_blocks(blocks.clone()).await.expect("ingest");
     }
 
     let store = FjallStore::open(dir.path(), FjallTuning::default()).expect("reopen");

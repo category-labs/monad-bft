@@ -13,9 +13,12 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::{collections::BTreeSet, time::Instant};
+
 use bytes::Bytes;
 
 use crate::{
+    engine::ingest::ReadPlanningTimings,
     error::{MonadChainDataError, Result},
     store::{blob::BlobStore, CachedKvTable, CachedScannableTable, MetaStore, WriteSession},
 };
@@ -151,23 +154,95 @@ impl<M: MetaStore> PrimaryDirTables<M> {
         &self,
         bucket_start: u64,
     ) -> Result<Vec<PrimaryDirFragment>> {
+        self.load_bucket_fragments_with_timings(bucket_start, None)
+            .await
+    }
+
+    pub(crate) async fn load_bucket_fragments_with_timings(
+        &self,
+        bucket_start: u64,
+        mut timings: Option<&mut ReadPlanningTimings>,
+    ) -> Result<Vec<PrimaryDirFragment>> {
         let partition = u64_key(bucket_start);
+        let list_start = Instant::now();
         let page = self
             .fragments
             .list_prefix(&partition, &[], None, usize::MAX)
             .await?;
+        if let Some(t) = timings.as_deref_mut() {
+            t.dir_list_ms = t
+                .dir_list_ms
+                .saturating_add(list_start.elapsed().as_millis() as u64);
+            t.dir_list_count = t.dir_list_count.saturating_add(1);
+        }
         let mut fragments = Vec::with_capacity(page.keys.len());
 
         for clustering in page.keys {
+            let get_start = Instant::now();
             let bytes = self.fragments.get(&partition, &clustering).await?.ok_or(
                 crate::error::MonadChainDataError::MissingData(
                     "missing primary directory fragment",
                 ),
             )?;
+            if let Some(t) = timings.as_deref_mut() {
+                t.dir_get_ms = t
+                    .dir_get_ms
+                    .saturating_add(get_start.elapsed().as_millis() as u64);
+                t.dir_get_count = t.dir_get_count.saturating_add(1);
+            }
             fragments.push(PrimaryDirFragment::decode(&bytes)?);
         }
 
         Ok(fragments)
+    }
+
+    pub(crate) async fn load_bucket_fragments_by_blocks(
+        &self,
+        bucket_start: u64,
+        blocks: &[u64],
+        mut timings: Option<&mut ReadPlanningTimings>,
+    ) -> Result<Vec<PrimaryDirFragment>> {
+        let partition = u64_key(bucket_start);
+        let mut fragments = Vec::with_capacity(blocks.len());
+
+        for block in blocks {
+            let clustering = u64_key(*block);
+            let get_start = Instant::now();
+            let bytes = self.fragments.get(&partition, &clustering).await?.ok_or(
+                crate::error::MonadChainDataError::MissingData(
+                    "missing primary directory fragment",
+                ),
+            )?;
+            if let Some(t) = timings.as_deref_mut() {
+                t.dir_get_ms = t
+                    .dir_get_ms
+                    .saturating_add(get_start.elapsed().as_millis() as u64);
+                t.dir_get_count = t.dir_get_count.saturating_add(1);
+            }
+            fragments.push(PrimaryDirFragment::decode(&bytes)?);
+        }
+
+        Ok(fragments)
+    }
+
+    pub(crate) async fn list_bucket_fragment_blocks(
+        &self,
+        bucket_start: u64,
+        published_head: u64,
+    ) -> Result<BTreeSet<u64>> {
+        let partition = u64_key(bucket_start);
+        let page = self
+            .fragments
+            .list_prefix(&partition, &[], None, usize::MAX)
+            .await?;
+        let mut out = BTreeSet::new();
+        for key in page.keys {
+            let block = u64_from_key(&key)?;
+            if block <= published_head {
+                out.insert(block);
+            }
+        }
+        Ok(out)
     }
 
     pub async fn put_bucket(&self, bucket_start: u64, bucket: &PrimaryDirBucket) -> Result<()> {
@@ -246,4 +321,11 @@ fn aligned_u64_start(value: u64, alignment: u64) -> u64 {
 
 fn u64_key(value: u64) -> [u8; 8] {
     value.to_be_bytes()
+}
+
+fn u64_from_key(key: &[u8]) -> Result<u64> {
+    let bytes: [u8; 8] = key
+        .try_into()
+        .map_err(|_| MonadChainDataError::Decode("invalid u64 clustering key"))?;
+    Ok(u64::from_be_bytes(bytes))
 }

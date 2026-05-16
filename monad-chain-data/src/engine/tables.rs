@@ -13,7 +13,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{collections::BTreeMap, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    time::Duration,
+};
 
 use alloy_rlp::Decodable;
 use bytes::Bytes;
@@ -22,6 +25,7 @@ use crate::{
     engine::{
         bitmap::{BitmapFragmentWrite, BitmapPageMeta, BitmapTables},
         family::Family,
+        ingest::ReadPlanningTimings,
         primary_dir::{PrimaryDirBucket, PrimaryDirFragment, PrimaryDirTables},
     },
     error::{MonadChainDataError, Result},
@@ -161,6 +165,7 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
         f: F,
     ) -> Result<CasOutcome>
     where
+        M: MetaStoreCas,
         F: for<'s> FnOnce(&'s WriteSession<'a, M, B>) -> SessionFuture<'s>,
     {
         let session = WriteSession::new(self);
@@ -171,25 +176,20 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
         }
         let meta_ops = session.take_meta();
         let blob_ops = session.take_blob();
-        let flush = futures::try_join!(
-            self.meta_store.apply_writes_with_cas(meta_ops, cas),
+        match futures::try_join!(
+            self.meta_store.apply_writes(meta_ops),
             self.blob_store.apply_writes(blob_ops),
-        );
-        match flush {
-            Ok((outcome, _)) => {
-                if matches!(outcome, CasOutcome::Conflict { .. }) {
-                    // CAS conflict means data writes did not land (atomic).
-                    // The cache speculatively holds them; drop those entries
-                    // so reads observe ground truth.
-                    session.invalidate_populated();
-                }
-                Ok(outcome)
-            }
+        ) {
+            Ok(((), ())) => {}
             Err(e) => {
                 session.invalidate_populated();
-                Err(e)
+                return Err(e);
             }
         }
+
+        self.meta_store
+            .cas_put(cas.table, &cas.key, cas.expected, cas.value)
+            .await
     }
 
     /// Drains and returns the (hits, misses) counters for every cached
@@ -365,7 +365,11 @@ impl<M: MetaStore> BlockTables<M> {
         block_record: &BlockRecord,
     ) {
         let key = block_number_key(block_number);
-        w.put(&self.block_records, &key, Bytes::from(block_record.encode()));
+        w.put(
+            &self.block_records,
+            &key,
+            Bytes::from(block_record.encode()),
+        );
     }
 
     pub async fn load_header(&self, block_number: u64) -> Result<Option<EvmBlockHeader>> {
@@ -393,7 +397,11 @@ impl<M: MetaStore> BlockTables<M> {
         header: &EvmBlockHeader,
     ) {
         let key = block_number_key(block_number);
-        w.put(&self.block_headers, &key, Bytes::from(alloy_rlp::encode(header)));
+        w.put(
+            &self.block_headers,
+            &key,
+            Bytes::from(alloy_rlp::encode(header)),
+        );
     }
 
     /// Resolves a block hash to its block number via the hash-to-number index.
@@ -483,6 +491,7 @@ impl<M: MetaStore> BlockTables<M> {
 }
 
 pub struct FamilyTables<M: MetaStore, B: BlobStore> {
+    family: Family,
     block_headers: CachedKvTable<M>,
     block_blobs: CachedBlobTable<B>,
     dir: PrimaryDirTables<M>,
@@ -493,6 +502,7 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
     fn new(meta_store: M, blob_store: B, family: Family, cache: CacheConfig) -> Self {
         let ids = family.table_ids();
         Self {
+            family,
             block_headers: CachedKvTable::new(
                 meta_store.table(ids.block_header),
                 cache.block_header_entries,
@@ -539,6 +549,10 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
 
     pub fn bitmap_by_block_table(&self) -> ScannableTableId {
         self.bitmap.fragments_table()
+    }
+
+    pub fn family(&self) -> Family {
+        self.family
     }
 
     /// Loads the raw per-block header bytes for this family. The codec is
@@ -604,6 +618,27 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
         self.dir.load_bucket_fragments(bucket_start).await
     }
 
+    pub(crate) async fn load_bucket_fragments_by_blocks(
+        &self,
+        bucket_start: u64,
+        blocks: &[u64],
+        timings: &mut ReadPlanningTimings,
+    ) -> Result<Vec<PrimaryDirFragment>> {
+        self.dir
+            .load_bucket_fragments_by_blocks(bucket_start, blocks, Some(timings))
+            .await
+    }
+
+    pub(crate) async fn list_bucket_fragment_blocks(
+        &self,
+        bucket_start: u64,
+        published_head: u64,
+    ) -> Result<BTreeSet<u64>> {
+        self.dir
+            .list_bucket_fragment_blocks(bucket_start, published_head)
+            .await
+    }
+
     pub async fn load_bucket(&self, bucket_start: u64) -> Result<Option<PrimaryDirBucket>> {
         self.dir.load_bucket(bucket_start).await
     }
@@ -623,6 +658,29 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
     ) -> Result<Vec<Bytes>> {
         self.bitmap
             .load_fragments(stream_id, page_start_local)
+            .await
+    }
+
+    pub(crate) async fn load_bitmap_fragments_by_blocks(
+        &self,
+        stream_id: &str,
+        page_start_local: u32,
+        blocks: &[u64],
+        timings: &mut ReadPlanningTimings,
+    ) -> Result<Vec<Bytes>> {
+        self.bitmap
+            .load_fragments_by_blocks(stream_id, page_start_local, blocks, Some(timings))
+            .await
+    }
+
+    pub(crate) async fn list_bitmap_fragment_blocks(
+        &self,
+        stream_id: &str,
+        page_start_local: u32,
+        published_head: u64,
+    ) -> Result<BTreeSet<u64>> {
+        self.bitmap
+            .list_fragment_blocks(stream_id, page_start_local, published_head)
             .await
     }
 

@@ -63,7 +63,13 @@ async fn indexed_query_filters_by_from_across_blocks() {
             header: h2,
             logs_by_tx: vec![],
             txs: vec![],
-            traces: vec![top_level_call(0, alice, recipient, U256::from(20u64), vec![])],
+            traces: vec![top_level_call(
+                0,
+                alice,
+                recipient,
+                U256::from(20u64),
+                vec![],
+            )],
         })
         .await
         .expect("ingest 2");

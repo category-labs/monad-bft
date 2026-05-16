@@ -15,6 +15,8 @@
 
 use crate::{
     engine::{
+        ingest::ReadPlanningTimings,
+        open_index::{OpenIndexes, OpenIndexesEviction},
         primary_dir::{bucket_start, PrimaryDirBucket, PrimaryDirFragment, DIRECTORY_BUCKET_SIZE},
         tables::FamilyTables,
     },
@@ -25,29 +27,43 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DirectoryCompactionPlan {
     pub buckets: Vec<(u64, PrimaryDirBucket)>,
+    pub(crate) timings: ReadPlanningTimings,
 }
 
 impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
     /// Reads every sealed bucket's fragments and folds them into compacted
     /// bucket summaries. Pure I/O — no writes — so callers can fan out across
     /// families with `try_join_all` before opening the Phase B meta batch.
-    pub async fn plan_directory_compactions(
+    pub(crate) async fn plan_directory_compactions(
         &self,
+        open_indexes: &OpenIndexes,
         ranges: &[(u64, u64)],
     ) -> Result<DirectoryCompactionPlan> {
         let mut buckets = Vec::new();
+        let mut timings = ReadPlanningTimings::default();
         for &(from_next_primary_id, next_primary_id) in ranges {
             for sealed_bucket_start in sealed_ranges(from_next_primary_id, next_primary_id) {
+                let blocks = open_indexes.directory_blocks(self.family(), sealed_bucket_start);
                 let bucket = compact_bucket_from_fragments(
                     &self
-                        .dir()
-                        .load_bucket_fragments(sealed_bucket_start)
+                        .load_bucket_fragments_by_blocks(sealed_bucket_start, &blocks, &mut timings)
                         .await?,
                 )?;
                 buckets.push((sealed_bucket_start, bucket));
             }
         }
-        Ok(DirectoryCompactionPlan { buckets })
+        Ok(DirectoryCompactionPlan { buckets, timings })
+    }
+
+    pub(crate) fn directory_eviction(&self, plan: &DirectoryCompactionPlan) -> OpenIndexesEviction {
+        OpenIndexesEviction {
+            directory_buckets: plan
+                .buckets
+                .iter()
+                .map(|(bucket_start, _)| (self.family(), *bucket_start))
+                .collect(),
+            ..OpenIndexesEviction::default()
+        }
     }
 
     pub fn stage_directory_compactions(

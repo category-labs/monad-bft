@@ -17,6 +17,7 @@ pub mod bitmap;
 pub mod clause;
 pub mod family;
 pub(crate) mod ingest;
+pub mod open_index;
 pub mod primary_dir;
 pub(crate) mod query;
 pub mod tables;

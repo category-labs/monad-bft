@@ -143,6 +143,7 @@ async fn main() -> Result<()> {
         unsafe_skip_bad_blocks: args.unsafe_skip_bad_blocks,
         require_traces: args.require_traces,
         traces_only: args.traces_only,
+        skip_traces: args.skip_traces,
         async_backfill: args.async_backfill,
         blocks_write_policy: if args.unsafe_allow_overwrite || args.unsafe_allow_blocks_overwrite {
             WritePolicy::AllowOverwrite

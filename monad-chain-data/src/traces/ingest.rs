@@ -115,7 +115,10 @@ fn stream_entries_for_trace(trace: &IngestTrace, global_trace_id: TraceId) -> Ve
     }
 
     if trace.input.len() >= 4 {
-        entries.push((sharded_stream_id("selector", &trace.input[..4], shard), local));
+        entries.push((
+            sharded_stream_id("selector", &trace.input[..4], shard),
+            local,
+        ));
     }
 
     if trace.trace_address.is_empty() {
@@ -144,12 +147,13 @@ fn stream_entries_for_trace(trace: &IngestTrace, global_trace_id: TraceId) -> Ve
 pub fn is_transfer_frame(trace: &IngestTrace) -> bool {
     let kind_moves_value = matches!(
         trace.typ,
-        CallKind::Call | CallKind::CallCode | CallKind::Create | CallKind::Create2 | CallKind::SelfDestruct
+        CallKind::Call
+            | CallKind::CallCode
+            | CallKind::Create
+            | CallKind::Create2
+            | CallKind::SelfDestruct
     );
-    trace.value > U256::ZERO
-        && kind_moves_value
-        && trace.status == 0
-        && trace.tx_status
+    trace.value > U256::ZERO && kind_moves_value && trace.status == 0 && trace.tx_status
 }
 
 /// Computes the OpenEthereum-style `trace_address` for each frame in a
@@ -231,14 +235,7 @@ mod tests {
         let addresses = compute_trace_addresses(depths).expect("compute");
         assert_eq!(
             addresses,
-            vec![
-                vec![],
-                vec![0],
-                vec![0, 0],
-                vec![0, 1],
-                vec![1],
-                vec![1, 0],
-            ]
+            vec![vec![], vec![0], vec![0, 0], vec![0, 1], vec![1], vec![1, 0],]
         );
     }
 
@@ -267,14 +264,7 @@ mod tests {
         let addresses = compute_trace_addresses(depths).expect("compute");
         assert_eq!(
             addresses,
-            vec![
-                vec![],
-                vec![0],
-                vec![1],
-                vec![],
-                vec![0],
-                vec![0, 0],
-            ]
+            vec![vec![], vec![0], vec![1], vec![], vec![0], vec![0, 0],]
         );
     }
 
