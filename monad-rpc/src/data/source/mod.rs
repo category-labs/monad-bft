@@ -19,11 +19,13 @@ pub use self::{
     archive::ArchiveDataSource,
     historical::{HistoricalDataSource, HistoricalDataSourceStack},
     stack::DataSourceStack,
+    triedb::TriedbDataSource,
 };
 
 mod archive;
 mod historical;
 mod stack;
+mod triedb;
 
 pub type DataSourceResult<T> = Result<T, DataSourceError>;
 

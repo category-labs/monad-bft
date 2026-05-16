@@ -26,14 +26,14 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, error, trace, warn};
 
 use crate::{
-    data::{ChainStateError, DataProvider},
+    data::DataProvider,
     txpool::{EthTxPoolBridgeClient, TxStatus},
     types::{
         eth_json::{
             BlockTagOrHash, BlockTags, EthHash, MonadLog, MonadTransaction,
             MonadTransactionReceipt, Quantity, UnformattedData,
         },
-        jsonrpc::{ChainStateResultMap, JsonRpcError, JsonRpcResult},
+        jsonrpc::{ChainStateResultExt as _, ChainStateResultMap, JsonRpcError, JsonRpcResult},
     },
 };
 
@@ -254,27 +254,24 @@ async fn poll_for_receipt<T: Triedb>(
     let poll_interval = Duration::from_millis(RECEIPT_POLL_INTERVAL_MS);
 
     loop {
-        match data_provider.get_transaction_receipt(&tx_hash).await {
-            Ok(receipt) => return Ok(receipt),
-            Err(ChainStateError::ResourceNotFound) => {
-                // Not found yet, check timeout
-                if start_time.elapsed() >= timeout {
-                    // EIP-7966: Error code 4 with tx hash in data
-                    return Err(JsonRpcError::tx_sync_timeout(
-                        tx_hash.to_string(),
-                        timeout_ms,
-                    ));
-                }
-
-                tokio::time::sleep(poll_interval).await;
-            }
-            Err(ChainStateError::Archive(e)) => {
-                return Err(JsonRpcError::internal_error(format!("Archive error: {e}")));
-            }
-            Err(ChainStateError::Triedb(e)) => {
-                return Err(JsonRpcError::internal_error(format!("Triedb error: {e}")));
-            }
+        if let Some(receipt) = data_provider
+            .get_transaction_receipt(&tx_hash)
+            .await
+            .to_jsonrpc_result()?
+        {
+            return Ok(receipt);
         }
+
+        // Not found yet, check timeout
+        if start_time.elapsed() >= timeout {
+            // EIP-7966: Error code 4 with tx hash in data
+            return Err(JsonRpcError::tx_sync_timeout(
+                tx_hash.to_string(),
+                timeout_ms,
+            ));
+        }
+
+        tokio::time::sleep(poll_interval).await;
     }
 }
 
@@ -410,6 +407,8 @@ pub async fn monad_eth_getTransactionByBlockNumberAndIndex<T: Triedb>(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use alloy_consensus::{SignableTransaction, TxEip1559, TxEnvelope};
     use alloy_eips::eip2718::Encodable2718;
     use alloy_primitives::{Address, FixedBytes, TxKind};
@@ -517,7 +516,7 @@ mod tests {
             },
         );
 
-        let data_provider = DataProvider::new(None, triedb, None);
+        let data_provider = DataProvider::new(None, Arc::new(triedb), None);
 
         // Test the same validation failures as eth_sendRawTransaction
         // to ensure both methods have consistent validation

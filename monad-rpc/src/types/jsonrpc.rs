@@ -325,12 +325,15 @@ impl<T> ChainStateResultExt for Result<T, ChainStateError> {
         match self {
             Ok(x) => Ok(Some(x)),
             Err(ChainStateError::ResourceNotFound) => Ok(None),
-            Err(ChainStateError::Archive(e)) => {
-                Err(JsonRpcError::internal_error(format!("Archive error: {e}")))
-            }
             Err(ChainStateError::Triedb(e)) => {
                 Err(JsonRpcError::internal_error(format!("Triedb error: {e}")))
             }
+            Err(ChainStateError::Archive(e)) => {
+                Err(JsonRpcError::internal_error(format!("Archive error: {e}")))
+            }
+            Err(ChainStateError::DataSource(e)) => Err(JsonRpcError::internal_error(format!(
+                "DataSource error: {e}"
+            ))),
         }
     }
 }
