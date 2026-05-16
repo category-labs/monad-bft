@@ -15,6 +15,7 @@
 
 use crate::{
     engine::{
+        family::Family,
         ingest::ReadPlanningTimings,
         open_index::{OpenIndexes, OpenIndexesEviction},
         primary_dir::{bucket_start, PrimaryDirBucket, PrimaryDirFragment, DIRECTORY_BUCKET_SIZE},
@@ -28,6 +29,19 @@ use crate::{
 pub struct DirectoryCompactionPlan {
     pub buckets: Vec<(u64, PrimaryDirBucket)>,
     pub(crate) timings: ReadPlanningTimings,
+}
+
+impl DirectoryCompactionPlan {
+    pub(crate) fn eviction(&self, family: Family) -> OpenIndexesEviction {
+        OpenIndexesEviction {
+            directory_buckets: self
+                .buckets
+                .iter()
+                .map(|(bucket_start, _)| (family, *bucket_start))
+                .collect(),
+            ..OpenIndexesEviction::default()
+        }
+    }
 }
 
 impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
@@ -53,17 +67,6 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
             }
         }
         Ok(DirectoryCompactionPlan { buckets, timings })
-    }
-
-    pub(crate) fn directory_eviction(&self, plan: &DirectoryCompactionPlan) -> OpenIndexesEviction {
-        OpenIndexesEviction {
-            directory_buckets: plan
-                .buckets
-                .iter()
-                .map(|(bucket_start, _)| (self.family(), *bucket_start))
-                .collect(),
-            ..OpenIndexesEviction::default()
-        }
     }
 
     pub fn stage_directory_compactions(

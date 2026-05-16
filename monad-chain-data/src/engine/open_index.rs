@@ -16,10 +16,15 @@
 use std::{
     collections::{BTreeSet, HashMap},
     hash::Hash,
-    sync::Mutex,
+    sync::RwLock,
 };
 
 use crate::engine::family::Family;
+
+const FRAGMENT_KEY_BYTES: u64 = 80;
+const OPEN_PAGE_KEY_BYTES: u64 = 24;
+const OPEN_STREAM_BYTES: u64 = 64;
+const BTREE_SET_U64_NODE_BYTES: u64 = 56;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct DirectoryIndexKey {
@@ -130,19 +135,19 @@ struct OpenIndexesInner {
 
 #[derive(Debug, Default)]
 pub(crate) struct OpenIndexes {
-    inner: Mutex<OpenIndexesInner>,
+    inner: RwLock<OpenIndexesInner>,
 }
 
 impl OpenIndexes {
     pub(crate) fn rebuilt_for_head(&self) -> Option<Option<u64>> {
         self.inner
-            .lock()
+            .read()
             .expect("open index poisoned")
             .rebuilt_for_head
     }
 
     pub(crate) fn replace_rebuilt(&self, head: Option<u64>, delta: OpenIndexesDelta) {
-        let mut inner = self.inner.lock().expect("open index poisoned");
+        let mut inner = self.inner.write().expect("open index poisoned");
         inner.directory.blocks_by_key.clear();
         inner.bitmap.blocks_by_key.clear();
         inner.bitmap_open_streams.clear();
@@ -152,18 +157,18 @@ impl OpenIndexes {
 
     pub(crate) fn mark_rebuilt_for_head(&self, head: Option<u64>) {
         self.inner
-            .lock()
+            .write()
             .expect("open index poisoned")
             .rebuilt_for_head = Some(head);
     }
 
     pub(crate) fn apply_delta(&self, delta: OpenIndexesDelta) {
-        let mut inner = self.inner.lock().expect("open index poisoned");
+        let mut inner = self.inner.write().expect("open index poisoned");
         apply_delta_locked(&mut inner, delta);
     }
 
     pub(crate) fn apply_eviction(&self, eviction: OpenIndexesEviction) {
-        let mut inner = self.inner.lock().expect("open index poisoned");
+        let mut inner = self.inner.write().expect("open index poisoned");
         for (family, bucket_start) in eviction.directory_buckets {
             inner.directory.remove(&DirectoryIndexKey {
                 family,
@@ -187,7 +192,7 @@ impl OpenIndexes {
 
     pub(crate) fn directory_blocks(&self, family: Family, bucket_start: u64) -> Vec<u64> {
         self.inner
-            .lock()
+            .read()
             .expect("open index poisoned")
             .directory
             .blocks(&DirectoryIndexKey {
@@ -203,7 +208,7 @@ impl OpenIndexes {
         page_start_local: u32,
     ) -> Vec<u64> {
         self.inner
-            .lock()
+            .read()
             .expect("open index poisoned")
             .bitmap
             .blocks(&BitmapIndexKey {
@@ -219,7 +224,7 @@ impl OpenIndexes {
         page_global_start: u64,
     ) -> BTreeSet<String> {
         self.inner
-            .lock()
+            .read()
             .expect("open index poisoned")
             .bitmap_open_streams
             .get(&BitmapOpenStreamsKey {
@@ -231,7 +236,7 @@ impl OpenIndexes {
     }
 
     pub fn stats(&self) -> OpenIndexStats {
-        let inner = self.inner.lock().expect("open index poisoned");
+        let inner = self.inner.read().expect("open index poisoned");
         let directory_keys = inner.directory.key_count();
         let directory_blocks = inner.directory.block_count();
         let bitmap_stream_pages = inner.bitmap.key_count();
@@ -243,12 +248,12 @@ impl OpenIndexes {
             .map(|streams| streams.len() as u64)
             .sum();
         let approx_bytes = directory_keys
-            .saturating_mul(24)
-            .saturating_add(directory_blocks.saturating_mul(8))
-            .saturating_add(bitmap_stream_pages.saturating_mul(80))
-            .saturating_add(bitmap_blocks.saturating_mul(8))
-            .saturating_add(bitmap_open_pages.saturating_mul(24))
-            .saturating_add(bitmap_open_streams.saturating_mul(64));
+            .saturating_mul(FRAGMENT_KEY_BYTES)
+            .saturating_add(directory_blocks.saturating_mul(BTREE_SET_U64_NODE_BYTES))
+            .saturating_add(bitmap_stream_pages.saturating_mul(FRAGMENT_KEY_BYTES))
+            .saturating_add(bitmap_blocks.saturating_mul(BTREE_SET_U64_NODE_BYTES))
+            .saturating_add(bitmap_open_pages.saturating_mul(OPEN_PAGE_KEY_BYTES))
+            .saturating_add(bitmap_open_streams.saturating_mul(OPEN_STREAM_BYTES));
         OpenIndexStats {
             directory_keys,
             directory_blocks,
