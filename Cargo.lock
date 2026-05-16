@@ -6165,6 +6165,7 @@ dependencies = [
  "alloy-consensus",
  "alloy-primitives",
  "alloy-rlp",
+ "auto_impl",
  "clap",
  "futures",
  "monad-bls",

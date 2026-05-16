@@ -761,6 +761,8 @@ fn assign_log_indices(root: &Rc<RefCell<MonadCallFrame>>) {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use alloy_consensus::{BlockBody, ReceiptEnvelope, ReceiptWithBloom};
     use alloy_primitives::Bloom;
     use alloy_rlp::{BufMut, Encodable};
@@ -898,7 +900,7 @@ mod tests {
             frame,
         );
 
-        let data_provider = DataProvider::new(None, mock_triedb, None);
+        let data_provider = DataProvider::new(None, Arc::new(mock_triedb), None);
         let resp = monad_debug_traceTransaction(
             &data_provider,
             MonadDebugTraceTransactionParams {
@@ -955,7 +957,7 @@ mod tests {
 
         mock_triedb.set_code(hex::decode("608060405260043610603f5760003560e01c80635c60da1b146044575b600080fd5b605060048036036020811015605857600080fd5b5035606e565b005b6000548156fea2646970667358221220a0f2af6f9a7d2b0c8c3c32bd2d8a4f3d856c7f8a8888a1e0dc8b9a8a2a47e2ea64736f6c634300080000330000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000").unwrap());
 
-        let data_provider = DataProvider::new(None, mock_triedb, None);
+        let data_provider = DataProvider::new(None, Arc::new(mock_triedb), None);
         let resp: Option<MonadCallFrame> = monad_debug_traceTransaction(
             &data_provider,
             MonadDebugTraceTransactionParams {
@@ -1008,7 +1010,7 @@ mod tests {
             frame,
         );
 
-        let data_provider = DataProvider::new(None, mock_triedb, None);
+        let data_provider = DataProvider::new(None, Arc::new(mock_triedb), None);
         let resp: Option<MonadCallFrame> = monad_debug_traceTransaction(
             &data_provider,
             MonadDebugTraceTransactionParams {
@@ -1114,7 +1116,7 @@ mod tests {
             frame,
         );
 
-        let data_provider = DataProvider::new(None, mock_triedb, None);
+        let data_provider = DataProvider::new(None, Arc::new(mock_triedb), None);
         let resp: Option<MonadCallFrame> = monad_debug_traceTransaction(
             &data_provider,
             MonadDebugTraceTransactionParams {
@@ -1167,7 +1169,7 @@ mod tests {
             frame,
         );
 
-        let data_provider = DataProvider::new(None, mock_triedb, None);
+        let data_provider = DataProvider::new(None, Arc::new(mock_triedb), None);
         let with_logs_resp = monad_debug_traceTransaction(
             &data_provider,
             MonadDebugTraceTransactionParams {
@@ -1253,7 +1255,7 @@ mod tests {
             }],
         );
 
-        let data_provider = DataProvider::new(None, mock_triedb, None);
+        let data_provider = DataProvider::new(None, Arc::new(mock_triedb), None);
         let result = monad_debug_getRawReceipts(
             &data_provider,
             25_000_000,
@@ -1291,7 +1293,7 @@ mod tests {
 
         mock_triedb.set_finalized_block(SeqNum(1), block.clone());
 
-        let data_provider = DataProvider::new(None, mock_triedb, None);
+        let data_provider = DataProvider::new(None, Arc::new(mock_triedb), None);
         let error = monad_debug_getRawBlock(
             &data_provider,
             txs_payload_limit,
