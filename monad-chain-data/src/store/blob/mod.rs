@@ -13,9 +13,13 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+mod compression;
 mod in_memory;
 
 use bytes::Bytes;
+pub use compression::{
+    BlobCompressionConfig, BlobCompressionSnapshot, BlobCompressionStats, BlobCompressionStore,
+};
 pub use in_memory::InMemoryBlobStore;
 
 use crate::error::{MonadChainDataError, Result};
