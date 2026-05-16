@@ -315,6 +315,28 @@ pub fn bucket_start(primary_id: u64) -> u64 {
     aligned_u64_start(primary_id, DIRECTORY_BUCKET_SIZE)
 }
 
+pub(crate) fn bucket_starts_for_window(first_primary_id: u64, count: u32) -> Vec<u64> {
+    if count == 0 {
+        return Vec::new();
+    }
+
+    let mut out = Vec::new();
+    let mut current = bucket_start(first_primary_id);
+    let last = bucket_start(
+        first_primary_id
+            .saturating_add(u64::from(count))
+            .saturating_sub(1),
+    );
+    loop {
+        out.push(current);
+        if current == last {
+            break;
+        }
+        current = current.saturating_add(DIRECTORY_BUCKET_SIZE);
+    }
+    out
+}
+
 fn aligned_u64_start(value: u64, alignment: u64) -> u64 {
     value - (value % alignment)
 }

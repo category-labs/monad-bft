@@ -159,6 +159,11 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
         }
     }
 
+    /// Stages writes, flushes meta and blob artifacts, and only then attempts
+    /// the publication CAS. A CAS conflict therefore means the staged
+    /// artifacts may already be durable; callers must make those writes
+    /// idempotent and retry-safe. On closure or flush error, populated cache
+    /// entries are invalidated because the durable state may not match them.
     pub async fn with_writes_and_cas<'a, F>(
         &'a self,
         cas: PublicationCasParams,

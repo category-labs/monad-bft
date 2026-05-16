@@ -26,6 +26,7 @@ use crate::{
             compact_bitmap_page, global_page_start, local_page_start, stream_page_global_start,
             BitmapFragmentWrite, BitmapPageMeta,
         },
+        family::Family,
         ingest::ReadPlanningTimings,
         open_index::{OpenIndexes, OpenIndexesEviction},
         tables::FamilyTables,
@@ -61,6 +62,26 @@ pub struct BitmapBatchCompactionPlan {
     pub open_stream_writes: Vec<(u64, BTreeSet<String>)>,
     pub has_writes: bool,
     pub(crate) timings: ReadPlanningTimings,
+}
+
+impl BitmapBatchCompactionPlan {
+    pub(crate) fn eviction(&self, family: Family) -> OpenIndexesEviction {
+        OpenIndexesEviction {
+            bitmap_pages: self
+                .compacted_pages
+                .iter()
+                .map(|page| (family, page.stream_id.clone(), page.page_start_local))
+                .collect(),
+            bitmap_open_pages: self
+                .compacted_pages
+                .iter()
+                .map(|page| (family, page.page_global_start))
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect(),
+            ..OpenIndexesEviction::default()
+        }
+    }
 }
 
 impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
@@ -188,24 +209,6 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
         }
         for (page_start, streams) in &plan.open_stream_writes {
             self.bitmap().stage_open_streams(w, *page_start, streams);
-        }
-    }
-
-    pub(crate) fn bitmap_eviction(&self, plan: &BitmapBatchCompactionPlan) -> OpenIndexesEviction {
-        OpenIndexesEviction {
-            bitmap_pages: plan
-                .compacted_pages
-                .iter()
-                .map(|page| (self.family(), page.stream_id.clone(), page.page_start_local))
-                .collect(),
-            bitmap_open_pages: plan
-                .compacted_pages
-                .iter()
-                .map(|page| (self.family(), page.page_global_start))
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect(),
-            ..OpenIndexesEviction::default()
         }
     }
 }

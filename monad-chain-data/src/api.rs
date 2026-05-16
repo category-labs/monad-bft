@@ -29,7 +29,7 @@ use crate::{
             insert_bitmap_set, insert_directory_set, OpenIndexStats, OpenIndexes, OpenIndexesDelta,
             OpenIndexesEviction,
         },
-        primary_dir::{bucket_start, DIRECTORY_BUCKET_SIZE},
+        primary_dir::{bucket_start, bucket_starts_for_window},
         query::family_runner::IndexedFamilyQuery,
         tables::{PublicationTables, Tables},
     },
@@ -91,28 +91,6 @@ where
         .collect()
 }
 
-fn directory_buckets_for_window(first_primary_id: u64, count: u32) -> Vec<u64> {
-    if count == 0 {
-        return Vec::new();
-    }
-
-    let mut out = Vec::new();
-    let mut current = bucket_start(first_primary_id);
-    let last = bucket_start(
-        first_primary_id
-            .saturating_add(u64::from(count))
-            .saturating_sub(1),
-    );
-    loop {
-        out.push(current);
-        if current == last {
-            break;
-        }
-        current = current.saturating_add(DIRECTORY_BUCKET_SIZE);
-    }
-    out
-}
-
 fn append_family_phase_a_delta(
     delta: &mut OpenIndexesDelta,
     family: Family,
@@ -121,7 +99,7 @@ fn append_family_phase_a_delta(
     bitmap_fragments: &[crate::engine::bitmap::BitmapFragmentWrite],
 ) -> Result<()> {
     let first_primary_id = window.first_primary_id.as_u64();
-    for bucket in directory_buckets_for_window(first_primary_id, window.count) {
+    for bucket in bucket_starts_for_window(first_primary_id, window.count) {
         delta.directory_blocks.push((family, bucket, block_number));
     }
     for fragment in bitmap_fragments {
@@ -253,6 +231,9 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
             .unwrap_or(window.first_primary_id.as_u64());
         let family_tables = self.tables.family(family);
 
+        // Rebuild only the current open directory bucket. Earlier buckets are
+        // sealed behind durable summaries, and future/ahead-of-head fragments
+        // are speculative write-before-CAS artifacts that retry will restage.
         if window.count > 0 {
             let open_bucket = bucket_start(next_primary_id);
             let directory_blocks = family_tables
@@ -261,6 +242,9 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
             insert_directory_set(delta, family, open_bucket, directory_blocks);
         }
 
+        // Likewise, only the current open bitmap page needs fragment block
+        // sets. Sealed pages have compacted page artifacts; ahead-of-head
+        // fragments are ignored by the published-head filter in the scan.
         let open_page = global_page_start(next_primary_id);
         let page_start_local = local_page_start(open_page);
         let streams = family_tables.load_open_bitmap_streams(open_page).await?;
@@ -393,6 +377,32 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
 
         timings.stage_a_ms = stage_a_start.elapsed().as_millis() as u64;
 
+        let mut phase_a_delta = OpenIndexesDelta::default();
+        for st in &staged {
+            let block_number = st.block_record.block_number;
+            append_family_phase_a_delta(
+                &mut phase_a_delta,
+                Family::Log,
+                block_number,
+                st.log_plan.log_window,
+                &st.log_plan.bitmap_fragments,
+            )?;
+            append_family_phase_a_delta(
+                &mut phase_a_delta,
+                Family::Tx,
+                block_number,
+                st.tx_plan.tx_window,
+                &st.tx_plan.bitmap_fragments,
+            )?;
+            append_family_phase_a_delta(
+                &mut phase_a_delta,
+                Family::Trace,
+                block_number,
+                st.trace_plan.trace_window,
+                &st.trace_plan.bitmap_fragments,
+            )?;
+        }
+
         // Phase A: stage every block's artifacts inside one write session so
         // the framework can fire meta + blob commits concurrently while
         // populating per-table caches for the Phase B compaction reads.
@@ -446,31 +456,6 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
         timings.commit_a_meta_ms = phase_a_timings.meta.as_millis() as u64;
         timings.commit_a_blob_ms = phase_a_timings.blob.as_millis() as u64;
 
-        let mut phase_a_delta = OpenIndexesDelta::default();
-        for st in &staged {
-            let block_number = st.block_record.block_number;
-            append_family_phase_a_delta(
-                &mut phase_a_delta,
-                Family::Log,
-                block_number,
-                st.log_plan.log_window,
-                &st.log_plan.bitmap_fragments,
-            )?;
-            append_family_phase_a_delta(
-                &mut phase_a_delta,
-                Family::Tx,
-                block_number,
-                st.tx_plan.tx_window,
-                &st.tx_plan.bitmap_fragments,
-            )?;
-            append_family_phase_a_delta(
-                &mut phase_a_delta,
-                Family::Trace,
-                block_number,
-                st.trace_plan.trace_window,
-                &st.trace_plan.bitmap_fragments,
-            )?;
-        }
         self.open_indexes.apply_delta(phase_a_delta);
 
         let reads_start = Instant::now();
@@ -589,15 +574,15 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
             timings.stage_b_ms = stage_b_ms_cell.load(std::sync::atomic::Ordering::Relaxed);
             timings.commit_b_ms = total_b_ms.saturating_sub(timings.stage_b_ms);
             self.publication.cas_outcome_into_result(outcome).await?;
-            self.open_indexes.mark_rebuilt_for_head(Some(new_head));
             let mut eviction = OpenIndexesEviction::default();
-            eviction.merge(logs.directory_eviction(&log_dir_plan));
-            eviction.merge(logs.bitmap_eviction(&log_bitmap_plan));
-            eviction.merge(txs.directory_eviction(&tx_dir_plan));
-            eviction.merge(txs.bitmap_eviction(&tx_bitmap_plan));
-            eviction.merge(traces.directory_eviction(&trace_dir_plan));
-            eviction.merge(traces.bitmap_eviction(&trace_bitmap_plan));
+            eviction.merge(log_dir_plan.eviction(Family::Log));
+            eviction.merge(log_bitmap_plan.eviction(Family::Log));
+            eviction.merge(tx_dir_plan.eviction(Family::Tx));
+            eviction.merge(tx_bitmap_plan.eviction(Family::Tx));
+            eviction.merge(trace_dir_plan.eviction(Family::Trace));
+            eviction.merge(trace_bitmap_plan.eviction(Family::Trace));
             self.open_indexes.apply_eviction(eviction);
+            self.open_indexes.mark_rebuilt_for_head(Some(new_head));
         } else {
             timings.phase_b_skipped = true;
             let cas_start = Instant::now();

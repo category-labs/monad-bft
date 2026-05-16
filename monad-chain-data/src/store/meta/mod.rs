@@ -229,6 +229,12 @@ pub trait MetaStore: Clone + Send + Sync + 'static {
 
     async fn apply_writes(&self, writes: Vec<MetaWriteOp>) -> Result<()>;
 
+    /// Atomically applies metadata writes and the publication CAS in one
+    /// backend transaction when a backend can provide that shape. Current
+    /// ingest callers intentionally use a write-then-CAS publication path
+    /// instead so meta and blob artifacts are durable before the published
+    /// head advances; this method remains as an atomic alternative and is
+    /// covered by backend tests.
     async fn apply_writes_with_cas(
         &self,
         writes: Vec<MetaWriteOp>,
