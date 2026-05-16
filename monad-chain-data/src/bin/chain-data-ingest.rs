@@ -22,7 +22,7 @@
 #![recursion_limit = "256"]
 
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc, Mutex,
@@ -64,9 +64,18 @@ use tracing::{debug, info, warn, Level};
     about = "Stream blocks + receipts from a monad-archive source into a local chain-data store"
 )]
 struct Cli {
-    /// fjall data directory. Created on first run.
+    /// fjall data directory for both meta and blob stores. Use
+    /// `--meta-data-dir` and `--blob-data-dir` to place them in separate DBs.
+    #[arg(long, conflicts_with_all = ["meta_data_dir", "blob_data_dir"])]
+    data_dir: Option<PathBuf>,
+
+    /// fjall data directory for metadata tables. Created on first run.
     #[arg(long)]
-    data_dir: PathBuf,
+    meta_data_dir: Option<PathBuf>,
+
+    /// fjall data directory for blob tables. Created on first run.
+    #[arg(long)]
+    blob_data_dir: Option<PathBuf>,
 
     /// Archive source. Examples: `"fs /var/lib/monad-archive"`,
     /// `"aws my-bucket"`, `"mongodb mongodb://host:27017 dbname"`.
@@ -214,6 +223,51 @@ enum BlobCompressionArg {
     Zstd,
 }
 
+struct StoreDirs {
+    meta: PathBuf,
+    blob: PathBuf,
+    same_dir: bool,
+}
+
+fn resolve_store_dirs(cli: &Cli) -> Result<StoreDirs> {
+    match (&cli.data_dir, &cli.meta_data_dir, &cli.blob_data_dir) {
+        (Some(data_dir), None, None) => Ok(StoreDirs {
+            meta: data_dir.clone(),
+            blob: data_dir.clone(),
+            same_dir: true,
+        }),
+        (None, Some(meta), Some(blob)) => Ok(StoreDirs {
+            meta: meta.clone(),
+            blob: blob.clone(),
+            same_dir: same_store_dir(meta, blob),
+        }),
+        (Some(_), _, _) => {
+            bail!("--data-dir cannot be combined with --meta-data-dir or --blob-data-dir")
+        }
+        (None, _, _) => {
+            bail!("provide either --data-dir or both --meta-data-dir and --blob-data-dir")
+        }
+    }
+}
+
+fn data_dir_fresh(path: &Path) -> bool {
+    !path.exists()
+        || path
+            .read_dir()
+            .map(|mut d| d.next().is_none())
+            .unwrap_or(true)
+}
+
+fn same_store_dir(a: &Path, b: &Path) -> bool {
+    if a == b {
+        return true;
+    }
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -276,6 +330,7 @@ async fn main() -> Result<()> {
     if cli.profile_blob_compression_only {
         return profile_blob_compression_only(&cli).await;
     }
+    let store_dirs = resolve_store_dirs(&cli)?;
 
     let tuning = FjallTuning {
         max_journaling_size_bytes: cli.fjall_journal_mib * 1024 * 1024,
@@ -286,27 +341,34 @@ async fn main() -> Result<()> {
     // value baked in at first open wins on every subsequent reopen — the
     // flag silently does nothing on existing data dirs. Journal cap and
     // worker_threads are not persisted and always take effect.
-    let data_dir_fresh = !cli.data_dir.exists()
-        || cli
-            .data_dir
-            .read_dir()
-            .map(|mut d| d.next().is_none())
-            .unwrap_or(true);
+    let meta_dir_fresh = data_dir_fresh(&store_dirs.meta);
+    let blob_dir_fresh = data_dir_fresh(&store_dirs.blob);
     info!(
         fjall_journal_mib = cli.fjall_journal_mib,
         fjall_memtable_mib = cli.fjall_memtable_mib,
         fjall_workers = ?cli.fjall_workers,
-        data_dir_fresh,
+        meta_data_dir = %store_dirs.meta.display(),
+        blob_data_dir = %store_dirs.blob.display(),
+        meta_dir_fresh,
+        blob_dir_fresh,
         "fjall tuning"
     );
-    if !data_dir_fresh && cli.fjall_memtable_mib != 64 {
+    if cli.fjall_memtable_mib != 64 && (!meta_dir_fresh || !blob_dir_fresh) {
         warn!(
             requested_memtable_mib = cli.fjall_memtable_mib,
-            "--fjall-memtable-mib is persisted per-keyspace at first creation; this data dir already exists, so the baked-in value will be used. Journal cap and worker_threads still apply."
+            meta_dir_fresh,
+            blob_dir_fresh,
+            "--fjall-memtable-mib is persisted per-keyspace at first creation; existing data dirs will keep their baked-in values. Journal cap and worker_threads still apply."
         );
     }
-    let store = FjallStore::open(&cli.data_dir, tuning)
-        .with_context(|| format!("opening fjall store at {}", cli.data_dir.display()))?;
+    let meta_store = FjallStore::open(&store_dirs.meta, tuning)
+        .with_context(|| format!("opening fjall meta store at {}", store_dirs.meta.display()))?;
+    let blob_fjall_store = if store_dirs.same_dir {
+        meta_store.clone()
+    } else {
+        FjallStore::open(&store_dirs.blob, tuning)
+            .with_context(|| format!("opening fjall blob store at {}", store_dirs.blob.display()))?
+    };
     let baseline_cache = CacheConfig::default();
     let baseline_total_mib = baseline_cache.approx_total_mib().max(1);
     let cache_config = match cli.cache_mib {
@@ -328,7 +390,7 @@ async fn main() -> Result<()> {
     };
     let blob_compression_stats = BlobCompressionStats::default();
     let blob_store = BlobCompressionStore::new(
-        store.clone(),
+        blob_fjall_store.clone(),
         blob_compression,
         blob_compression_stats.clone(),
     );
@@ -339,7 +401,7 @@ async fn main() -> Result<()> {
         "blob compression config"
     );
     let service = MonadChainDataService::with_cache_config(
-        store.clone(),
+        meta_store.clone(),
         blob_store,
         QueryLimits::UNLIMITED,
         cache_config,
@@ -424,7 +486,8 @@ async fn main() -> Result<()> {
         concurrency = cli.concurrency,
         fetch_buffer,
         batch_size = cli.batch_size,
-        data_dir = %cli.data_dir.display(),
+        meta_data_dir = %store_dirs.meta.display(),
+        blob_data_dir = %store_dirs.blob.display(),
         "starting ingest"
     );
 
@@ -584,13 +647,14 @@ async fn main() -> Result<()> {
             );
 
             let phase_summary = std::mem::take(&mut phase).summary();
-            let fjall_stats = match store.keyspace_stats() {
-                Ok(stats) => stats,
-                Err(e) => {
-                    warn!(error = %e, "fjall keyspace_stats failed");
-                    Vec::new()
-                }
-            };
+            let fjall_stats =
+                match collect_fjall_stats(&meta_store, &blob_fjall_store, store_dirs.same_dir) {
+                    Ok(stats) => stats,
+                    Err(e) => {
+                        warn!(error = %e, "fjall keyspace_stats failed");
+                        Vec::new()
+                    }
+                };
             let fjall_agg = FjallAggregates::from(fjall_stats.as_slice());
             emit_fjall_metrics(&metrics, &fjall_stats);
 
@@ -1560,6 +1624,18 @@ impl FjallAggregates {
         }
         out
     }
+}
+
+fn collect_fjall_stats(
+    meta_store: &FjallStore,
+    blob_store: &FjallStore,
+    same_dir: bool,
+) -> Result<Vec<monad_chain_data::store::FjallKeyspaceStats>> {
+    let mut stats = meta_store.keyspace_stats()?;
+    if !same_dir {
+        stats.extend(blob_store.keyspace_stats()?);
+    }
+    Ok(stats)
 }
 
 fn emit_phase_metrics(metrics: &Metrics, t: &monad_chain_data::IngestBatchTimings, total_ms: u64) {
