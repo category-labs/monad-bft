@@ -155,3 +155,17 @@ impl<'a, M: MetaStore, B: BlobStore> WriteSession<'a, M, B> {
         }
     }
 }
+
+// Closures passed to `with_writes*` can panic mid-staging. The framework's
+// happy / error paths both run `invalidate_populated` explicitly, but a panic
+// unwinds past those branches and drops the session directly — without this
+// Drop, the populated cache entries would survive while the corresponding
+// pending ops are silently discarded, leaving phantom values that never
+// reached the backend.
+impl<'a, M: MetaStore, B: BlobStore> Drop for WriteSession<'a, M, B> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.invalidate_populated();
+        }
+    }
+}

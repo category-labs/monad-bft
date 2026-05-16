@@ -169,7 +169,11 @@ struct Cli {
 
     /// Per-table read-cache budget in MiB. Defaults to the budget implied by
     /// `CacheConfig::default()`; raising linearly scales every table's entry
-    /// count. `--cache-mib 0` disables caches entirely (compile-time skip).
+    /// count. Sizing uses a per-table estimate of metadata + payload (bitmap
+    /// fragments and bitmap page blobs dominate at ~8 KiB each; other tables
+    /// are dominated by small metadata), so the actual cache footprint should
+    /// roughly match the requested budget. `--cache-mib 0` disables caches
+    /// entirely (compile-time skip).
     #[arg(long)]
     cache_mib: Option<usize>,
 }
