@@ -13,11 +13,16 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use alloy_primitives::U256;
 
 use super::types::{BlockTraceHeader, StoredTrace};
 use crate::{
-    engine::bitmap::{encode_grouped_bitmap_fragments, sharded_stream_id, BitmapFragmentWrite},
+    engine::bitmap::{
+        encode_grouped_bitmap_fragments, sharded_stream_id, touched_streams_by_page,
+        BitmapFragmentWrite,
+    },
     error::{MonadChainDataError, Result},
     family::{CallKind, FinalizedBlock, IngestTrace},
     primitives::state::{FamilyWindowRecord, TraceId},
@@ -29,6 +34,7 @@ pub struct TraceIngestPlan {
     pub block_trace_header: BlockTraceHeader,
     pub block_trace_blob: Vec<u8>,
     pub bitmap_fragments: Vec<BitmapFragmentWrite>,
+    pub touched_bitmap_streams_by_page: BTreeMap<u64, BTreeSet<String>>,
     pub written_traces: usize,
 }
 
@@ -44,6 +50,7 @@ impl TraceIngestPlan {
 
         let (block_trace_header, block_trace_blob) = encode_block_traces(&block.traces)?;
         let bitmap_fragments = collect_bitmap_fragments(&block.traces, first_trace_id)?;
+        let touched_bitmap_streams_by_page = touched_streams_by_page(&bitmap_fragments)?;
         let trace_window = FamilyWindowRecord {
             first_primary_id: first_trace_id.into(),
             count: trace_count,
@@ -54,6 +61,7 @@ impl TraceIngestPlan {
             block_trace_header,
             block_trace_blob,
             bitmap_fragments,
+            touched_bitmap_streams_by_page,
             written_traces: block.traces.len(),
         })
     }

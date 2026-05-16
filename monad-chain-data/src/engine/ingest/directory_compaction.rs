@@ -57,12 +57,30 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
         let mut timings = ReadPlanningTimings::default();
         for &(from_next_primary_id, next_primary_id) in ranges {
             for sealed_bucket_start in sealed_ranges(from_next_primary_id, next_primary_id) {
-                let blocks = open_indexes.directory_blocks(self.family(), sealed_bucket_start);
-                let bucket = compact_bucket_from_fragments(
-                    &self
-                        .load_bucket_fragments_by_blocks(sealed_bucket_start, &blocks, &mut timings)
-                        .await?,
-                )?;
+                let index_start = std::time::Instant::now();
+                let encoded_fragments =
+                    open_indexes.directory_fragments(self.family(), sealed_bucket_start);
+                timings.dir_index_ms = timings
+                    .dir_index_ms
+                    .saturating_add(index_start.elapsed().as_millis() as u64);
+                timings.dir_index_us = timings
+                    .dir_index_us
+                    .saturating_add(index_start.elapsed().as_micros() as u64);
+                timings.dir_fragment_count = timings
+                    .dir_fragment_count
+                    .saturating_add(encoded_fragments.len() as u64);
+                let decode_start = std::time::Instant::now();
+                let fragments = encoded_fragments
+                    .iter()
+                    .map(|bytes| PrimaryDirFragment::decode(bytes))
+                    .collect::<Result<Vec<_>>>()?;
+                timings.dir_decode_ms = timings
+                    .dir_decode_ms
+                    .saturating_add(decode_start.elapsed().as_millis() as u64);
+                timings.dir_decode_us = timings
+                    .dir_decode_us
+                    .saturating_add(decode_start.elapsed().as_micros() as u64);
+                let bucket = compact_bucket_from_fragments(&fragments)?;
                 buckets.push((sealed_bucket_start, bucket));
             }
         }

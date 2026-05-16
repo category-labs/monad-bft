@@ -14,17 +14,19 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     hash::Hash,
     sync::RwLock,
 };
+
+use bytes::Bytes;
 
 use crate::engine::family::Family;
 
 const FRAGMENT_KEY_BYTES: u64 = 80;
 const OPEN_PAGE_KEY_BYTES: u64 = 24;
 const OPEN_STREAM_BYTES: u64 = 64;
-const BTREE_SET_U64_NODE_BYTES: u64 = 56;
+const BTREE_MAP_U64_NODE_BYTES: u64 = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct DirectoryIndexKey {
@@ -47,8 +49,8 @@ pub(crate) struct BitmapOpenStreamsKey {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct OpenIndexesDelta {
-    pub directory_blocks: Vec<(Family, u64, u64)>,
-    pub bitmap_blocks: Vec<(Family, String, u32, u64)>,
+    pub directory_fragments: Vec<(Family, u64, u64, Bytes)>,
+    pub bitmap_fragments: Vec<(Family, String, u32, u64, Bytes)>,
     pub bitmap_open_streams: Vec<(Family, u64, String)>,
 }
 
@@ -75,18 +77,19 @@ pub struct OpenIndexStats {
     pub bitmap_blocks: u64,
     pub bitmap_open_pages: u64,
     pub bitmap_open_streams: u64,
+    pub fragment_value_bytes: u64,
     pub approx_bytes: u64,
 }
 
 #[derive(Debug)]
 struct OpenFragmentIndex<K> {
-    blocks_by_key: HashMap<K, BTreeSet<u64>>,
+    fragments_by_key: HashMap<K, BTreeMap<u64, Bytes>>,
 }
 
 impl<K> Default for OpenFragmentIndex<K> {
     fn default() -> Self {
         Self {
-            blocks_by_key: HashMap::new(),
+            fragments_by_key: HashMap::new(),
         }
     }
 }
@@ -95,32 +98,40 @@ impl<K> OpenFragmentIndex<K>
 where
     K: Eq + Hash,
 {
-    fn insert(&mut self, key: K, block_number: u64) {
-        self.blocks_by_key
+    fn insert(&mut self, key: K, block_number: u64, value: Bytes) {
+        self.fragments_by_key
             .entry(key)
             .or_default()
-            .insert(block_number);
+            .insert(block_number, value);
     }
 
-    fn blocks(&self, key: &K) -> Vec<u64> {
-        self.blocks_by_key
+    fn fragments(&self, key: &K) -> Vec<Bytes> {
+        self.fragments_by_key
             .get(key)
-            .map(|blocks| blocks.iter().copied().collect())
+            .map(|fragments| fragments.values().cloned().collect())
             .unwrap_or_default()
     }
 
     fn remove(&mut self, key: &K) {
-        self.blocks_by_key.remove(key);
+        self.fragments_by_key.remove(key);
     }
 
     fn key_count(&self) -> u64 {
-        self.blocks_by_key.len() as u64
+        self.fragments_by_key.len() as u64
     }
 
     fn block_count(&self) -> u64 {
-        self.blocks_by_key
+        self.fragments_by_key
             .values()
-            .map(|blocks| blocks.len() as u64)
+            .map(|fragments| fragments.len() as u64)
+            .sum()
+    }
+
+    fn value_bytes(&self) -> u64 {
+        self.fragments_by_key
+            .values()
+            .flat_map(|fragments| fragments.values())
+            .map(|bytes| bytes.len() as u64)
             .sum()
     }
 }
@@ -148,8 +159,8 @@ impl OpenIndexes {
 
     pub(crate) fn replace_rebuilt(&self, head: Option<u64>, delta: OpenIndexesDelta) {
         let mut inner = self.inner.write().expect("open index poisoned");
-        inner.directory.blocks_by_key.clear();
-        inner.bitmap.blocks_by_key.clear();
+        inner.directory.fragments_by_key.clear();
+        inner.bitmap.fragments_by_key.clear();
         inner.bitmap_open_streams.clear();
         apply_delta_locked(&mut inner, delta);
         inner.rebuilt_for_head = Some(head);
@@ -190,28 +201,28 @@ impl OpenIndexes {
         }
     }
 
-    pub(crate) fn directory_blocks(&self, family: Family, bucket_start: u64) -> Vec<u64> {
+    pub(crate) fn directory_fragments(&self, family: Family, bucket_start: u64) -> Vec<Bytes> {
         self.inner
             .read()
             .expect("open index poisoned")
             .directory
-            .blocks(&DirectoryIndexKey {
+            .fragments(&DirectoryIndexKey {
                 family,
                 bucket_start,
             })
     }
 
-    pub(crate) fn bitmap_blocks(
+    pub(crate) fn bitmap_fragments(
         &self,
         family: Family,
         stream_id: &str,
         page_start_local: u32,
-    ) -> Vec<u64> {
+    ) -> Vec<Bytes> {
         self.inner
             .read()
             .expect("open index poisoned")
             .bitmap
-            .blocks(&BitmapIndexKey {
+            .fragments(&BitmapIndexKey {
                 family,
                 stream_id: stream_id.to_owned(),
                 page_start_local,
@@ -242,6 +253,10 @@ impl OpenIndexes {
         let bitmap_stream_pages = inner.bitmap.key_count();
         let bitmap_blocks = inner.bitmap.block_count();
         let bitmap_open_pages = inner.bitmap_open_streams.len() as u64;
+        let fragment_value_bytes = inner
+            .directory
+            .value_bytes()
+            .saturating_add(inner.bitmap.value_bytes());
         let bitmap_open_streams: u64 = inner
             .bitmap_open_streams
             .values()
@@ -249,11 +264,12 @@ impl OpenIndexes {
             .sum();
         let approx_bytes = directory_keys
             .saturating_mul(FRAGMENT_KEY_BYTES)
-            .saturating_add(directory_blocks.saturating_mul(BTREE_SET_U64_NODE_BYTES))
+            .saturating_add(directory_blocks.saturating_mul(BTREE_MAP_U64_NODE_BYTES))
             .saturating_add(bitmap_stream_pages.saturating_mul(FRAGMENT_KEY_BYTES))
-            .saturating_add(bitmap_blocks.saturating_mul(BTREE_SET_U64_NODE_BYTES))
+            .saturating_add(bitmap_blocks.saturating_mul(BTREE_MAP_U64_NODE_BYTES))
             .saturating_add(bitmap_open_pages.saturating_mul(OPEN_PAGE_KEY_BYTES))
-            .saturating_add(bitmap_open_streams.saturating_mul(OPEN_STREAM_BYTES));
+            .saturating_add(bitmap_open_streams.saturating_mul(OPEN_STREAM_BYTES))
+            .saturating_add(fragment_value_bytes);
         OpenIndexStats {
             directory_keys,
             directory_blocks,
@@ -261,22 +277,24 @@ impl OpenIndexes {
             bitmap_blocks,
             bitmap_open_pages,
             bitmap_open_streams,
+            fragment_value_bytes,
             approx_bytes,
         }
     }
 }
 
 fn apply_delta_locked(inner: &mut OpenIndexesInner, delta: OpenIndexesDelta) {
-    for (family, bucket_start, block_number) in delta.directory_blocks {
+    for (family, bucket_start, block_number, value) in delta.directory_fragments {
         inner.directory.insert(
             DirectoryIndexKey {
                 family,
                 bucket_start,
             },
             block_number,
+            value,
         );
     }
-    for (family, stream_id, page_start_local, block_number) in delta.bitmap_blocks {
+    for (family, stream_id, page_start_local, block_number, value) in delta.bitmap_fragments {
         inner.bitmap.insert(
             BitmapIndexKey {
                 family,
@@ -284,6 +302,7 @@ fn apply_delta_locked(inner: &mut OpenIndexesInner, delta: OpenIndexesDelta) {
                 page_start_local,
             },
             block_number,
+            value,
         );
     }
     for (family, page_global_start, stream_id) in delta.bitmap_open_streams {
@@ -302,10 +321,12 @@ pub(crate) fn insert_directory_set(
     delta: &mut OpenIndexesDelta,
     family: Family,
     bucket_start: u64,
-    blocks: BTreeSet<u64>,
+    fragments: BTreeMap<u64, Bytes>,
 ) {
-    for block in blocks {
-        delta.directory_blocks.push((family, bucket_start, block));
+    for (block, value) in fragments {
+        delta
+            .directory_fragments
+            .push((family, bucket_start, block, value));
     }
 }
 
@@ -314,17 +335,19 @@ pub(crate) fn insert_bitmap_set(
     family: Family,
     stream_id: String,
     page_start_local: u32,
-    blocks: BTreeSet<u64>,
+    fragments: BTreeMap<u64, Bytes>,
 ) {
-    for block in blocks {
+    for (block, value) in fragments {
         delta
-            .bitmap_blocks
-            .push((family, stream_id.clone(), page_start_local, block));
+            .bitmap_fragments
+            .push((family, stream_id.clone(), page_start_local, block, value));
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use bytes::Bytes;
+
     use super::{OpenIndexes, OpenIndexesDelta};
     use crate::engine::family::Family;
 
@@ -332,10 +355,16 @@ mod tests {
     fn apply_delta_twice_is_idempotent() {
         let indexes = OpenIndexes::default();
         let mut delta = OpenIndexesDelta::default();
-        delta.directory_blocks.push((Family::Log, 0, 7));
         delta
-            .bitmap_blocks
-            .push((Family::Log, "topic/abcd/0".to_owned(), 0, 7));
+            .directory_fragments
+            .push((Family::Log, 0, 7, Bytes::from_static(b"dir")));
+        delta.bitmap_fragments.push((
+            Family::Log,
+            "topic/abcd/0".to_owned(),
+            0,
+            7,
+            Bytes::from_static(b"bitmap"),
+        ));
         delta
             .bitmap_open_streams
             .push((Family::Log, 0, "topic/abcd/0".to_owned()));
@@ -343,10 +372,13 @@ mod tests {
         indexes.apply_delta(delta.clone());
         indexes.apply_delta(delta);
 
-        assert_eq!(indexes.directory_blocks(Family::Log, 0), vec![7]);
         assert_eq!(
-            indexes.bitmap_blocks(Family::Log, "topic/abcd/0", 0),
-            vec![7]
+            indexes.directory_fragments(Family::Log, 0),
+            vec![Bytes::from_static(b"dir")]
+        );
+        assert_eq!(
+            indexes.bitmap_fragments(Family::Log, "topic/abcd/0", 0),
+            vec![Bytes::from_static(b"bitmap")]
         );
         assert_eq!(indexes.bitmap_open_streams(Family::Log, 0).len(), 1);
         let stats = indexes.stats();

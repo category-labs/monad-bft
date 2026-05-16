@@ -155,11 +155,11 @@ async fn bucket_compaction_uses_open_index_without_prefix_scan() {
 
     assert_eq!(
         after.2, before.2,
-        "hot compaction path should use open-index keys, not list_prefix",
+        "hot compaction path should use open-index fragments, not list_prefix",
     );
-    assert!(
-        timings.reads_dir_get_count > 0,
-        "compaction should still point-read exact fragment keys"
+    assert_eq!(
+        timings.reads_dir_get_count, 0,
+        "compaction should not point-read fragments already held in the open index"
     );
 }
 
@@ -190,5 +190,9 @@ async fn empty_families_do_not_pollute_directory_index() {
     assert_eq!(
         stats.directory_blocks, 1,
         "empty tx/trace windows must not index zero-width fragments",
+    );
+    assert!(
+        stats.fragment_value_bytes > 0,
+        "open index should retain fragment values for hot compaction"
     );
 }

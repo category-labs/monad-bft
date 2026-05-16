@@ -13,10 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    time::Duration,
-};
+use std::{collections::BTreeMap, time::Duration};
 
 use alloy_rlp::Decodable;
 use bytes::Bytes;
@@ -25,7 +22,6 @@ use crate::{
     engine::{
         bitmap::{BitmapFragmentWrite, BitmapPageMeta, BitmapTables},
         family::Family,
-        ingest::ReadPlanningTimings,
         primary_dir::{PrimaryDirBucket, PrimaryDirFragment, PrimaryDirTables},
     },
     error::{MonadChainDataError, Result},
@@ -623,24 +619,13 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
         self.dir.load_bucket_fragments(bucket_start).await
     }
 
-    pub(crate) async fn load_bucket_fragments_by_blocks(
-        &self,
-        bucket_start: u64,
-        blocks: &[u64],
-        timings: &mut ReadPlanningTimings,
-    ) -> Result<Vec<PrimaryDirFragment>> {
-        self.dir
-            .load_bucket_fragments_by_blocks(bucket_start, blocks, Some(timings))
-            .await
-    }
-
-    pub(crate) async fn list_bucket_fragment_blocks(
+    pub(crate) async fn list_bucket_fragments_for_rebuild(
         &self,
         bucket_start: u64,
         published_head: u64,
-    ) -> Result<BTreeSet<u64>> {
+    ) -> Result<BTreeMap<u64, Bytes>> {
         self.dir
-            .list_bucket_fragment_blocks(bucket_start, published_head)
+            .list_bucket_fragments_for_rebuild(bucket_start, published_head)
             .await
     }
 
@@ -666,26 +651,14 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
             .await
     }
 
-    pub(crate) async fn load_bitmap_fragments_by_blocks(
-        &self,
-        stream_id: &str,
-        page_start_local: u32,
-        blocks: &[u64],
-        timings: &mut ReadPlanningTimings,
-    ) -> Result<Vec<Bytes>> {
-        self.bitmap
-            .load_fragments_by_blocks(stream_id, page_start_local, blocks, Some(timings))
-            .await
-    }
-
-    pub(crate) async fn list_bitmap_fragment_blocks(
+    pub(crate) async fn list_bitmap_fragments_for_rebuild(
         &self,
         stream_id: &str,
         page_start_local: u32,
         published_head: u64,
-    ) -> Result<BTreeSet<u64>> {
+    ) -> Result<BTreeMap<u64, Bytes>> {
         self.bitmap
-            .list_fragment_blocks(stream_id, page_start_local, published_head)
+            .list_fragments_for_rebuild(stream_id, page_start_local, published_head)
             .await
     }
 
