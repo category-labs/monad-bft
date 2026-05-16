@@ -370,7 +370,7 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
             // + blob apply_writes that the framework fires after the closure
             // returns. Carve them apart inside the closure so the on-wire
             // timing fields keep the same meaning across the rewrite.
-            let stage_b_ms_cell = std::sync::Mutex::new(0u64);
+            let stage_b_ms_cell = std::sync::atomic::AtomicU64::new(0);
             let commit_b_start = Instant::now();
             let outcome: CasOutcome = self
                 .tables
@@ -384,14 +384,16 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
                         txs.stage_bitmap_compactions(w, tx_bitmap);
                         traces.stage_directory_compactions(w, trace_dir);
                         traces.stage_bitmap_compactions(w, trace_bitmap);
-                        *stage_b_ms_cell.lock().expect("stage_b timing poisoned") =
-                            stage_b_start.elapsed().as_millis() as u64;
+                        stage_b_ms_cell.store(
+                            stage_b_start.elapsed().as_millis() as u64,
+                            std::sync::atomic::Ordering::Relaxed,
+                        );
                         Ok(())
                     })
                 })
                 .await?;
             let total_b_ms = commit_b_start.elapsed().as_millis() as u64;
-            timings.stage_b_ms = *stage_b_ms_cell.lock().expect("stage_b timing poisoned");
+            timings.stage_b_ms = stage_b_ms_cell.load(std::sync::atomic::Ordering::Relaxed);
             timings.commit_b_ms = total_b_ms.saturating_sub(timings.stage_b_ms);
             self.publication.cas_outcome_into_result(outcome).await?;
         } else {

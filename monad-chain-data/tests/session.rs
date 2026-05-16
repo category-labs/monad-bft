@@ -13,252 +13,21 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{
-    sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc,
-    },
-    time::{Duration, Instant},
-};
+mod common;
+
+use std::time::Duration;
 
 use bytes::Bytes;
 use monad_chain_data::{
-    engine::tables::{PublicationTables, Tables},
+    engine::tables::{BlockTables, PublicationTables, Tables},
     error::MonadChainDataError,
+    family::Hash32,
     store::{
-        BlobStore, BlobTableId, BlobWriteOp, CacheConfig, CasOutcome, CasVersion,
-        InMemoryBlobStore, InMemoryMetaStore, MetaStore, MetaStoreCas, MetaWriteOp, Page,
-        PublicationCasParams, ScannableTableId, TableId,
+        CacheConfig, CasOutcome, CasVersion, InMemoryBlobStore, MetaStore, PublicationCasParams,
     },
 };
 
-const T_KV: TableId = TableId::new("session_test_kv");
-const T_BLOB: BlobTableId = BlobTableId::new("session_test_blob");
-
-#[derive(Clone)]
-struct FailingMeta {
-    inner: InMemoryMetaStore,
-    fail_next: Arc<AtomicUsize>,
-}
-
-impl FailingMeta {
-    fn new() -> Self {
-        Self {
-            inner: InMemoryMetaStore::default(),
-            fail_next: Arc::new(AtomicUsize::new(0)),
-        }
-    }
-
-    fn fail_apply_writes_once(&self) {
-        self.fail_next.store(1, Ordering::Relaxed);
-    }
-}
-
-impl MetaStore for FailingMeta {
-    async fn get(&self, table: TableId, key: &[u8]) -> monad_chain_data::error::Result<Option<Bytes>> {
-        self.inner.get(table, key).await
-    }
-    async fn scan_get(
-        &self,
-        table: ScannableTableId,
-        partition: &[u8],
-        clustering: &[u8],
-    ) -> monad_chain_data::error::Result<Option<Bytes>> {
-        self.inner.scan_get(table, partition, clustering).await
-    }
-    async fn put(
-        &self,
-        table: TableId,
-        key: &[u8],
-        value: Bytes,
-    ) -> monad_chain_data::error::Result<()> {
-        self.inner.put(table, key, value).await
-    }
-    async fn scan_put(
-        &self,
-        table: ScannableTableId,
-        partition: &[u8],
-        clustering: &[u8],
-        value: Bytes,
-    ) -> monad_chain_data::error::Result<()> {
-        self.inner.scan_put(table, partition, clustering, value).await
-    }
-    async fn scan_list(
-        &self,
-        table: ScannableTableId,
-        partition: &[u8],
-        prefix: &[u8],
-        cursor: Option<Vec<u8>>,
-        limit: usize,
-    ) -> monad_chain_data::error::Result<Page> {
-        self.inner.scan_list(table, partition, prefix, cursor, limit).await
-    }
-    async fn apply_writes(&self, writes: Vec<MetaWriteOp>) -> monad_chain_data::error::Result<()> {
-        if self.fail_next.swap(0, Ordering::Relaxed) > 0 {
-            return Err(MonadChainDataError::Backend(
-                "FailingMeta: injected meta failure".into(),
-            ));
-        }
-        self.inner.apply_writes(writes).await
-    }
-    async fn apply_writes_with_cas(
-        &self,
-        writes: Vec<MetaWriteOp>,
-        cas: PublicationCasParams,
-    ) -> monad_chain_data::error::Result<CasOutcome> {
-        if self.fail_next.swap(0, Ordering::Relaxed) > 0 {
-            return Err(MonadChainDataError::Backend(
-                "FailingMeta: injected cas failure".into(),
-            ));
-        }
-        self.inner.apply_writes_with_cas(writes, cas).await
-    }
-}
-
-impl MetaStoreCas for FailingMeta {
-    async fn cas_get(
-        &self,
-        table: TableId,
-        key: &[u8],
-    ) -> monad_chain_data::error::Result<Option<(CasVersion, Bytes)>> {
-        self.inner.cas_get(table, key).await
-    }
-    async fn cas_put(
-        &self,
-        table: TableId,
-        key: &[u8],
-        expected: Option<CasVersion>,
-        value: Bytes,
-    ) -> monad_chain_data::error::Result<CasOutcome> {
-        self.inner.cas_put(table, key, expected, value).await
-    }
-}
-
-#[derive(Clone, Default)]
-struct TimingBlob {
-    inner: InMemoryBlobStore,
-    apply_started_at: Arc<std::sync::Mutex<Option<Instant>>>,
-    apply_finished_at: Arc<std::sync::Mutex<Option<Instant>>>,
-    delay: Duration,
-}
-
-impl BlobStore for TimingBlob {
-    async fn put_blob(
-        &self,
-        table: BlobTableId,
-        key: &[u8],
-        value: Bytes,
-    ) -> monad_chain_data::error::Result<()> {
-        self.inner.put_blob(table, key, value).await
-    }
-    async fn get_blob(
-        &self,
-        table: BlobTableId,
-        key: &[u8],
-    ) -> monad_chain_data::error::Result<Option<Bytes>> {
-        self.inner.get_blob(table, key).await
-    }
-    async fn apply_writes(&self, writes: Vec<BlobWriteOp>) -> monad_chain_data::error::Result<()> {
-        *self.apply_started_at.lock().unwrap() = Some(Instant::now());
-        tokio::time::sleep(self.delay).await;
-        let r = self.inner.apply_writes(writes).await;
-        *self.apply_finished_at.lock().unwrap() = Some(Instant::now());
-        r
-    }
-}
-
-#[derive(Clone)]
-struct TimingMeta {
-    inner: InMemoryMetaStore,
-    apply_started_at: Arc<std::sync::Mutex<Option<Instant>>>,
-    apply_finished_at: Arc<std::sync::Mutex<Option<Instant>>>,
-    delay: Duration,
-}
-
-impl TimingMeta {
-    fn new(delay: Duration) -> Self {
-        Self {
-            inner: InMemoryMetaStore::default(),
-            apply_started_at: Arc::new(std::sync::Mutex::new(None)),
-            apply_finished_at: Arc::new(std::sync::Mutex::new(None)),
-            delay,
-        }
-    }
-}
-
-impl MetaStore for TimingMeta {
-    async fn get(&self, table: TableId, key: &[u8]) -> monad_chain_data::error::Result<Option<Bytes>> {
-        self.inner.get(table, key).await
-    }
-    async fn scan_get(
-        &self,
-        table: ScannableTableId,
-        partition: &[u8],
-        clustering: &[u8],
-    ) -> monad_chain_data::error::Result<Option<Bytes>> {
-        self.inner.scan_get(table, partition, clustering).await
-    }
-    async fn put(
-        &self,
-        table: TableId,
-        key: &[u8],
-        value: Bytes,
-    ) -> monad_chain_data::error::Result<()> {
-        self.inner.put(table, key, value).await
-    }
-    async fn scan_put(
-        &self,
-        table: ScannableTableId,
-        partition: &[u8],
-        clustering: &[u8],
-        value: Bytes,
-    ) -> monad_chain_data::error::Result<()> {
-        self.inner.scan_put(table, partition, clustering, value).await
-    }
-    async fn scan_list(
-        &self,
-        table: ScannableTableId,
-        partition: &[u8],
-        prefix: &[u8],
-        cursor: Option<Vec<u8>>,
-        limit: usize,
-    ) -> monad_chain_data::error::Result<Page> {
-        self.inner.scan_list(table, partition, prefix, cursor, limit).await
-    }
-    async fn apply_writes(&self, writes: Vec<MetaWriteOp>) -> monad_chain_data::error::Result<()> {
-        *self.apply_started_at.lock().unwrap() = Some(Instant::now());
-        tokio::time::sleep(self.delay).await;
-        let r = self.inner.apply_writes(writes).await;
-        *self.apply_finished_at.lock().unwrap() = Some(Instant::now());
-        r
-    }
-    async fn apply_writes_with_cas(
-        &self,
-        writes: Vec<MetaWriteOp>,
-        cas: PublicationCasParams,
-    ) -> monad_chain_data::error::Result<CasOutcome> {
-        self.inner.apply_writes_with_cas(writes, cas).await
-    }
-}
-
-impl MetaStoreCas for TimingMeta {
-    async fn cas_get(
-        &self,
-        table: TableId,
-        key: &[u8],
-    ) -> monad_chain_data::error::Result<Option<(CasVersion, Bytes)>> {
-        self.inner.cas_get(table, key).await
-    }
-    async fn cas_put(
-        &self,
-        table: TableId,
-        key: &[u8],
-        expected: Option<CasVersion>,
-        value: Bytes,
-    ) -> monad_chain_data::error::Result<CasOutcome> {
-        self.inner.cas_put(table, key, expected, value).await
-    }
-}
+use crate::common::observed_store::{ObservedMetaStore, ObservedBlobStore};
 
 fn cache() -> CacheConfig {
     CacheConfig {
@@ -276,31 +45,49 @@ fn cache() -> CacheConfig {
     }
 }
 
+// Tests stage a hash-index entry as a stand-in for any "did this write
+// reach the backend?" check: the hash index accepts arbitrary 32-byte keys
+// with 8-byte values and is otherwise read via [`MetaStore::get`] on
+// `BLOCK_HASH_TO_NUMBER_INDEX_TABLE`, so the test can verify presence
+// without going through a typed loader.
+fn test_hash(byte: u8) -> Hash32 {
+    Hash32::from([byte; 32])
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn closure_error_does_not_flush() {
-    let meta = InMemoryMetaStore::default();
+    let meta = ObservedMetaStore::new();
     let blob = InMemoryBlobStore::default();
-    let tables: Tables<InMemoryMetaStore, InMemoryBlobStore> =
-        Tables::with_cache_config(meta.clone(), blob, cache());
+    let tables = Tables::with_cache_config(meta.clone(), blob, cache());
+    let tables_ref = &tables;
+    let hash = test_hash(0xAB);
+    let hash_ref = &hash;
 
     let result = tables
         .with_writes(|w| {
             Box::pin(async move {
-                w.put(T_KV, b"k", Bytes::from_static(b"v"));
+                tables_ref.blocks().stage_hash_index(w, hash_ref, 7);
                 Err(MonadChainDataError::Backend("intentional".into()))
             })
         })
         .await;
     assert!(result.is_err());
-    assert!(meta.get(T_KV, b"k").await.unwrap().is_none());
+    assert!(meta
+        .get(
+            BlockTables::<ObservedMetaStore>::BLOCK_HASH_TO_NUMBER_INDEX_TABLE,
+            hash.as_slice(),
+        )
+        .await
+        .unwrap()
+        .is_none());
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn closure_error_evicts_populated_cache_entries() {
-    let meta = InMemoryMetaStore::default();
+    let meta = ObservedMetaStore::new();
     let blob = InMemoryBlobStore::default();
-    let tables: Tables<InMemoryMetaStore, InMemoryBlobStore> =
-        Tables::with_cache_config(meta, blob, cache());
+    let tables = Tables::with_cache_config(meta, blob, cache());
+    let tables_ref = &tables;
     let header = monad_chain_data::EvmBlockHeader {
         number: 1,
         ..Default::default()
@@ -310,7 +97,7 @@ async fn closure_error_evicts_populated_cache_entries() {
     let _ = tables
         .with_writes(|w| {
             Box::pin(async move {
-                w.tables().blocks().stage_header(w, 1, header_ref);
+                tables_ref.blocks().stage_header(w, 1, header_ref);
                 Err(MonadChainDataError::Backend("intentional".into()))
             })
         })
@@ -325,11 +112,11 @@ async fn closure_error_evicts_populated_cache_entries() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn partial_flush_failure_evicts_cache() {
-    let meta = FailingMeta::new();
+    let meta = ObservedMetaStore::new();
+    meta.mode.fail_apply_writes_once();
     let blob = InMemoryBlobStore::default();
-    meta.fail_apply_writes_once();
-    let tables: Tables<FailingMeta, InMemoryBlobStore> =
-        Tables::with_cache_config(meta, blob, cache());
+    let tables = Tables::with_cache_config(meta, blob, cache());
+    let tables_ref = &tables;
     let header = monad_chain_data::EvmBlockHeader {
         number: 1,
         ..Default::default()
@@ -339,7 +126,7 @@ async fn partial_flush_failure_evicts_cache() {
     let result = tables
         .with_writes(|w| {
             Box::pin(async move {
-                w.tables().blocks().stage_header(w, 1, header_ref);
+                tables_ref.blocks().stage_header(w, 1, header_ref);
                 Ok(())
             })
         })
@@ -352,15 +139,17 @@ async fn partial_flush_failure_evicts_cache() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn closure_error_then_retry_is_idempotent() {
-    let meta = InMemoryMetaStore::default();
+    let meta = ObservedMetaStore::new();
     let blob = InMemoryBlobStore::default();
-    let tables: Tables<InMemoryMetaStore, InMemoryBlobStore> =
-        Tables::with_cache_config(meta.clone(), blob, cache());
+    let tables = Tables::with_cache_config(meta.clone(), blob, cache());
+    let tables_ref = &tables;
+    let hash = test_hash(0xCD);
+    let hash_ref = &hash;
 
     let _ = tables
         .with_writes(|w| {
             Box::pin(async move {
-                w.put(T_KV, b"k", Bytes::from_static(b"v1"));
+                tables_ref.blocks().stage_hash_index(w, hash_ref, 42);
                 Err(MonadChainDataError::Backend("intentional".into()))
             })
         })
@@ -369,38 +158,43 @@ async fn closure_error_then_retry_is_idempotent() {
     tables
         .with_writes(|w| {
             Box::pin(async move {
-                w.put(T_KV, b"k", Bytes::from_static(b"v1"));
+                tables_ref.blocks().stage_hash_index(w, hash_ref, 42);
                 Ok(())
             })
         })
         .await
         .expect("retry succeeds");
 
-    assert_eq!(
-        meta.get(T_KV, b"k").await.unwrap().as_deref(),
-        Some(&b"v1"[..])
-    );
+    let stored = meta
+        .get(
+            BlockTables::<ObservedMetaStore>::BLOCK_HASH_TO_NUMBER_INDEX_TABLE,
+            hash.as_slice(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(stored.as_deref(), Some(&42u64.to_be_bytes()[..]));
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn with_writes_and_cas_folds_atomically() {
-    let meta = InMemoryMetaStore::default();
+    let meta = ObservedMetaStore::new();
     let blob = InMemoryBlobStore::default();
-    let tables: Tables<InMemoryMetaStore, InMemoryBlobStore> =
-        Tables::with_cache_config(meta.clone(), blob, cache());
+    let tables = Tables::with_cache_config(meta.clone(), blob, cache());
+    let tables_ref = &tables;
 
     let cas = PublicationCasParams {
-        table: PublicationTables::<InMemoryMetaStore>::PUBLICATION_STATE_TABLE,
-        key: PublicationTables::<InMemoryMetaStore>::PUBLICATION_STATE_KEY.to_vec(),
-        // Wrong expected: row absent but we expect a version → Conflict.
+        table: PublicationTables::<ObservedMetaStore>::PUBLICATION_STATE_TABLE,
+        key: PublicationTables::<ObservedMetaStore>::PUBLICATION_STATE_KEY.to_vec(),
         expected: Some(CasVersion(999)),
         value: Bytes::from_static(b"new_state"),
     };
 
+    let hash = test_hash(0xEF);
+    let hash_ref = &hash;
     let outcome = tables
         .with_writes_and_cas(cas, |w| {
             Box::pin(async move {
-                w.put(T_KV, b"data_under_cas", Bytes::from_static(b"x"));
+                tables_ref.blocks().stage_hash_index(w, hash_ref, 1);
                 Ok(())
             })
         })
@@ -408,18 +202,22 @@ async fn with_writes_and_cas_folds_atomically() {
         .expect("call ok, outcome is Conflict");
     assert!(matches!(outcome, CasOutcome::Conflict { .. }));
 
-    assert!(
-        meta.get(T_KV, b"data_under_cas").await.unwrap().is_none(),
-        "data writes do not land on CAS conflict"
-    );
+    let stored = meta
+        .get(
+            BlockTables::<ObservedMetaStore>::BLOCK_HASH_TO_NUMBER_INDEX_TABLE,
+            hash.as_slice(),
+        )
+        .await
+        .unwrap();
+    assert!(stored.is_none(), "data writes do not land on CAS conflict");
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn cas_conflict_evicts_populated_cache_entries() {
-    let meta = InMemoryMetaStore::default();
+    let meta = ObservedMetaStore::new();
     let blob = InMemoryBlobStore::default();
-    let tables: Tables<InMemoryMetaStore, InMemoryBlobStore> =
-        Tables::with_cache_config(meta, blob, cache());
+    let tables = Tables::with_cache_config(meta, blob, cache());
+    let tables_ref = &tables;
     let header = monad_chain_data::EvmBlockHeader {
         number: 1,
         ..Default::default()
@@ -427,15 +225,15 @@ async fn cas_conflict_evicts_populated_cache_entries() {
     let header_ref = &header;
 
     let cas = PublicationCasParams {
-        table: PublicationTables::<InMemoryMetaStore>::PUBLICATION_STATE_TABLE,
-        key: PublicationTables::<InMemoryMetaStore>::PUBLICATION_STATE_KEY.to_vec(),
+        table: PublicationTables::<ObservedMetaStore>::PUBLICATION_STATE_TABLE,
+        key: PublicationTables::<ObservedMetaStore>::PUBLICATION_STATE_KEY.to_vec(),
         expected: Some(CasVersion(999)),
         value: Bytes::from_static(b"v"),
     };
     let outcome = tables
         .with_writes_and_cas(cas, |w| {
             Box::pin(async move {
-                w.tables().blocks().stage_header(w, 1, header_ref);
+                tables_ref.blocks().stage_header(w, 1, header_ref);
                 Ok(())
             })
         })
@@ -449,16 +247,18 @@ async fn cas_conflict_evicts_populated_cache_entries() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn panic_in_closure_drops_pending() {
-    let meta = InMemoryMetaStore::default();
+    let meta = ObservedMetaStore::new();
     let blob = InMemoryBlobStore::default();
-    let tables: Tables<InMemoryMetaStore, InMemoryBlobStore> =
-        Tables::with_cache_config(meta.clone(), blob, cache());
+    let tables = Tables::with_cache_config(meta.clone(), blob, cache());
+    let tables_ref = &tables;
+    let hash = test_hash(0x11);
+    let hash_ref = &hash;
 
     let panicked = std::panic::AssertUnwindSafe(async {
         tables
             .with_writes(|w| {
                 Box::pin(async move {
-                    w.put(T_KV, b"panic_key", Bytes::from_static(b"v"));
+                    tables_ref.blocks().stage_hash_index(w, hash_ref, 1);
                     panic!("intentional panic");
                     #[allow(unreachable_code)]
                     Ok(())
@@ -469,18 +269,24 @@ async fn panic_in_closure_drops_pending() {
 
     let r = futures::FutureExt::catch_unwind(panicked).await;
     assert!(r.is_err(), "panic must propagate");
-    assert!(
-        meta.get(T_KV, b"panic_key").await.unwrap().is_none(),
+    assert!(meta
+        .get(
+            BlockTables::<ObservedMetaStore>::BLOCK_HASH_TO_NUMBER_INDEX_TABLE,
+            hash.as_slice(),
+        )
+        .await
+        .unwrap()
+        .is_none(),
         "pending writes dropped on panic"
     );
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn panic_in_closure_evicts_populated_cache_entries() {
-    let meta = InMemoryMetaStore::default();
+    let meta = ObservedMetaStore::new();
     let blob = InMemoryBlobStore::default();
-    let tables: Tables<InMemoryMetaStore, InMemoryBlobStore> =
-        Tables::with_cache_config(meta, blob, cache());
+    let tables = Tables::with_cache_config(meta, blob, cache());
+    let tables_ref = &tables;
     let header = monad_chain_data::EvmBlockHeader {
         number: 1,
         ..Default::default()
@@ -491,7 +297,7 @@ async fn panic_in_closure_evicts_populated_cache_entries() {
         tables
             .with_writes(|w| {
                 Box::pin(async move {
-                    w.tables().blocks().stage_header(w, 1, header_ref);
+                    tables_ref.blocks().stage_header(w, 1, header_ref);
                     panic!("intentional panic");
                     #[allow(unreachable_code)]
                     Ok(())
@@ -516,33 +322,41 @@ async fn panic_in_closure_evicts_populated_cache_entries() {
 #[tokio::test(flavor = "current_thread")]
 async fn parallel_meta_and_blob_flush() {
     let delay = Duration::from_millis(50);
-    let meta = TimingMeta::new(delay);
-    let blob = TimingBlob {
-        inner: InMemoryBlobStore::default(),
-        apply_started_at: Arc::new(std::sync::Mutex::new(None)),
-        apply_finished_at: Arc::new(std::sync::Mutex::new(None)),
-        delay,
-    };
+    let meta = ObservedMetaStore::timed(delay);
+    let blob = ObservedBlobStore::timed(delay);
     let blob_for_check = blob.clone();
     let meta_for_check = meta.clone();
-    let tables: Tables<TimingMeta, TimingBlob> =
-        Tables::with_cache_config(meta, blob, cache());
+    let tables = Tables::with_cache_config(meta, blob, cache());
+    let tables_ref = &tables;
 
+    let header = monad_chain_data::EvmBlockHeader {
+        number: 1,
+        ..Default::default()
+    };
+    let header_ref = &header;
     tables
         .with_writes(|w| {
             Box::pin(async move {
-                w.put(T_KV, b"k", Bytes::from_static(b"v"));
-                w.put_blob(T_BLOB, b"k", Bytes::from_static(b"v"));
+                // stage_block_blob covers the BlobStore side, stage_header
+                // covers the MetaStore side; both writes flush concurrently
+                // because the framework fires apply_writes on both stores
+                // before awaiting either future.
+                tables_ref.family(monad_chain_data::engine::family::Family::Log).stage_block_blob(
+                    w,
+                    1,
+                    b"payload".to_vec(),
+                );
+                tables_ref.blocks().stage_header(w, 1, header_ref);
                 Ok(())
             })
         })
         .await
         .expect("with_writes");
 
-    let meta_start = meta_for_check.apply_started_at.lock().unwrap().unwrap();
-    let meta_end = meta_for_check.apply_finished_at.lock().unwrap().unwrap();
-    let blob_start = blob_for_check.apply_started_at.lock().unwrap().unwrap();
-    let blob_end = blob_for_check.apply_finished_at.lock().unwrap().unwrap();
+    let meta_start = meta_for_check.timings.apply_started_at.lock().unwrap().unwrap();
+    let meta_end = meta_for_check.timings.apply_finished_at.lock().unwrap().unwrap();
+    let blob_start = blob_for_check.timings.apply_started_at.lock().unwrap().unwrap();
+    let blob_end = blob_for_check.timings.apply_finished_at.lock().unwrap().unwrap();
 
     let overlap_start = meta_start.max(blob_start);
     let overlap_end = meta_end.min(blob_end);
@@ -551,4 +365,3 @@ async fn parallel_meta_and_blob_flush() {
         "meta and blob apply_writes must overlap"
     );
 }
-

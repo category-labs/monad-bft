@@ -130,7 +130,7 @@ impl<M: MetaStore> BitmapTables<M> {
         let partition = stream_page_key(&fragment.stream_id, fragment.page_start_local);
         let clustering = block_number_key(block_number);
         w.scan_put(
-            self.fragments.table_id(),
+            &self.fragments,
             &partition,
             &clustering,
             fragment.bitmap_blob.clone(),
@@ -196,11 +196,7 @@ impl<M: MetaStore> BitmapTables<M> {
         page_meta: &BitmapPageMeta,
     ) {
         let key = stream_page_key(stream_id, page_start_local);
-        w.put(
-            self.page_meta.table_id(),
-            &key,
-            Bytes::from(page_meta.encode()),
-        );
+        w.put(&self.page_meta, &key, Bytes::from(page_meta.encode()));
     }
 
     /// Loads the compacted bitmap blob for one sealed stream page.
@@ -232,7 +228,7 @@ impl<M: MetaStore> BitmapTables<M> {
         bitmap_blob: Bytes,
     ) {
         let key = stream_page_key(stream_id, page_start_local);
-        w.put(self.page_blobs.table_id(), &key, bitmap_blob);
+        w.put(&self.page_blobs, &key, bitmap_blob);
     }
 
     /// Loads the open stream inventory for one frontier page.
@@ -282,7 +278,7 @@ impl<M: MetaStore> BitmapTables<M> {
         let partition = global_page_start.to_be_bytes();
         for stream_id in streams {
             w.scan_put(
-                self.open_streams.table_id(),
+                &self.open_streams,
                 &partition,
                 stream_id.as_bytes(),
                 Bytes::new(),

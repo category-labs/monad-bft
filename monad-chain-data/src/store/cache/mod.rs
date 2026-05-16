@@ -14,6 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
+    hash::Hash,
     num::NonZeroUsize,
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -190,31 +191,79 @@ pub enum CacheField {
     BlockBlob,
 }
 
-type KvLru = LruCache<Vec<u8>, Option<Bytes>>;
-type ScanLru = LruCache<(Vec<u8>, Vec<u8>), Option<Bytes>>;
-type BlobLru = LruCache<Vec<u8>, Option<Bytes>>;
-
-fn make_lru<K, V>(entries: usize) -> Option<Arc<Mutex<LruCache<K, V>>>>
+/// The per-key/per-counter machinery shared by every cached wrapper.
+/// Generic over the key type so the three table flavors (KV / scannable /
+/// blob) compose with the same LRU + hits/misses + populate/evict logic.
+/// Wrapped in `Arc` by every owner so WriteSession can capture an eviction
+/// handle without going back through the parent `Tables` to re-resolve.
+pub(crate) struct CachedInner<K>
 where
-    K: std::hash::Hash + Eq,
+    K: Hash + Eq,
 {
-    NonZeroUsize::new(entries).map(|cap| Arc::new(Mutex::new(LruCache::new(cap))))
+    cache: Option<Mutex<LruCache<K, Option<Bytes>>>>,
+    hits: AtomicU64,
+    misses: AtomicU64,
+}
+
+impl<K> CachedInner<K>
+where
+    K: Hash + Eq,
+{
+    fn new(entries: usize) -> Arc<Self> {
+        Arc::new(Self {
+            cache: NonZeroUsize::new(entries).map(|cap| Mutex::new(LruCache::new(cap))),
+            hits: AtomicU64::new(0),
+            misses: AtomicU64::new(0),
+        })
+    }
+
+    fn lookup(&self, key: &K) -> Option<Option<Bytes>> {
+        let c = self.cache.as_ref()?;
+        let hit = c.lock().expect("cache mutex poisoned").get(key).cloned();
+        if hit.is_some() {
+            self.hits.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.misses.fetch_add(1, Ordering::Relaxed);
+        }
+        hit
+    }
+
+    fn store(&self, key: K, value: Option<Bytes>) {
+        if let Some(c) = &self.cache {
+            c.lock().expect("cache mutex poisoned").put(key, value);
+        }
+    }
+
+    pub(crate) fn populate(&self, key: K, value: Bytes) {
+        self.store(key, Some(value));
+    }
+
+    pub(crate) fn evict(&self, key: &K) {
+        if let Some(c) = &self.cache {
+            c.lock().expect("cache mutex poisoned").pop(key);
+        }
+    }
+
+    /// Atomically reads and zeroes the (hits, misses) counters since the last
+    /// call. Used by the ingest binary to emit per-window hit-ratio metrics.
+    pub(crate) fn take_window_stats(&self) -> (u64, u64) {
+        (
+            self.hits.swap(0, Ordering::Relaxed),
+            self.misses.swap(0, Ordering::Relaxed),
+        )
+    }
 }
 
 pub struct CachedKvTable<M: MetaStore> {
     inner: KvTable<M>,
-    cache: Option<Arc<Mutex<KvLru>>>,
-    hits: AtomicU64,
-    misses: AtomicU64,
+    cache: Arc<CachedInner<Vec<u8>>>,
 }
 
 impl<M: MetaStore> CachedKvTable<M> {
     pub fn new(inner: KvTable<M>, entries: usize) -> Self {
         Self {
             inner,
-            cache: make_lru(entries),
-            hits: AtomicU64::new(0),
-            misses: AtomicU64::new(0),
+            cache: CachedInner::new(entries),
         }
     }
 
@@ -223,30 +272,17 @@ impl<M: MetaStore> CachedKvTable<M> {
     }
 
     pub async fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
-        if let Some(c) = &self.cache {
-            if let Some(v) = c
-                .lock()
-                .expect("cache mutex poisoned")
-                .get(key)
-                .cloned()
-            {
-                self.hits.fetch_add(1, Ordering::Relaxed);
-                return Ok(v);
-            }
-            self.misses.fetch_add(1, Ordering::Relaxed);
+        if let Some(v) = self.cache.lookup(&key.to_vec()) {
+            return Ok(v);
         }
         let v = self.inner.get(key).await?;
-        if let Some(c) = &self.cache {
-            c.lock()
-                .expect("cache mutex poisoned")
-                .put(key.to_vec(), v.clone());
-        }
+        self.cache.store(key.to_vec(), v.clone());
         Ok(v)
     }
 
     pub async fn put(&self, key: &[u8], value: Bytes) -> Result<()> {
         self.inner.put(key, value.clone()).await?;
-        self.populate(key, value);
+        self.cache.populate(key.to_vec(), value);
         Ok(())
     }
 
@@ -254,44 +290,25 @@ impl<M: MetaStore> CachedKvTable<M> {
         self.inner.table
     }
 
-    /// Atomically reads and zeroes the (hits, misses) counters since the last call.
-    /// Used by the ingest binary to emit per-window cache-hit-ratio metrics.
     pub fn take_window_stats(&self) -> (u64, u64) {
-        (
-            self.hits.swap(0, Ordering::Relaxed),
-            self.misses.swap(0, Ordering::Relaxed),
-        )
+        self.cache.take_window_stats()
     }
 
-    pub(crate) fn populate(&self, key: &[u8], value: Bytes) {
-        if let Some(c) = &self.cache {
-            c.lock()
-                .expect("cache mutex poisoned")
-                .put(key.to_vec(), Some(value));
-        }
-    }
-
-    pub(crate) fn evict(&self, key: &[u8]) {
-        if let Some(c) = &self.cache {
-            c.lock().expect("cache mutex poisoned").pop(key);
-        }
+    pub(crate) fn cache_handle(&self) -> Arc<CachedInner<Vec<u8>>> {
+        self.cache.clone()
     }
 }
 
 pub struct CachedScannableTable<M: MetaStore> {
     inner: ScannableKvTable<M>,
-    cache: Option<Arc<Mutex<ScanLru>>>,
-    hits: AtomicU64,
-    misses: AtomicU64,
+    cache: Arc<CachedInner<(Vec<u8>, Vec<u8>)>>,
 }
 
 impl<M: MetaStore> CachedScannableTable<M> {
     pub fn new(inner: ScannableKvTable<M>, entries: usize) -> Self {
         Self {
             inner,
-            cache: make_lru(entries),
-            hits: AtomicU64::new(0),
-            misses: AtomicU64::new(0),
+            cache: CachedInner::new(entries),
         }
     }
 
@@ -301,30 +318,18 @@ impl<M: MetaStore> CachedScannableTable<M> {
 
     pub async fn get(&self, partition: &[u8], clustering: &[u8]) -> Result<Option<Bytes>> {
         let key = (partition.to_vec(), clustering.to_vec());
-        if let Some(c) = &self.cache {
-            if let Some(v) = c
-                .lock()
-                .expect("cache mutex poisoned")
-                .get(&key)
-                .cloned()
-            {
-                self.hits.fetch_add(1, Ordering::Relaxed);
-                return Ok(v);
-            }
-            self.misses.fetch_add(1, Ordering::Relaxed);
+        if let Some(v) = self.cache.lookup(&key) {
+            return Ok(v);
         }
         let v = self.inner.get(partition, clustering).await?;
-        if let Some(c) = &self.cache {
-            c.lock()
-                .expect("cache mutex poisoned")
-                .put(key, v.clone());
-        }
+        self.cache.store(key, v.clone());
         Ok(v)
     }
 
     pub async fn put(&self, partition: &[u8], clustering: &[u8], value: Bytes) -> Result<()> {
         self.inner.put(partition, clustering, value.clone()).await?;
-        self.populate(partition, clustering, value);
+        self.cache
+            .populate((partition.to_vec(), clustering.to_vec()), value);
         Ok(())
     }
 
@@ -333,10 +338,7 @@ impl<M: MetaStore> CachedScannableTable<M> {
     }
 
     pub fn take_window_stats(&self) -> (u64, u64) {
-        (
-            self.hits.swap(0, Ordering::Relaxed),
-            self.misses.swap(0, Ordering::Relaxed),
-        )
+        self.cache.take_window_stats()
     }
 
     pub async fn list_prefix(
@@ -346,44 +348,28 @@ impl<M: MetaStore> CachedScannableTable<M> {
         cursor: Option<Vec<u8>>,
         limit: usize,
     ) -> Result<Page> {
-        // Prefix scans intentionally bypass the cache (see plan: caching
-        // unbounded result sets requires invalidation on every adjacent
-        // write). The per-clustering point gets that follow benefit from
-        // populated entries instead.
+        // Prefix scans intentionally bypass the cache: caching unbounded
+        // result sets requires invalidation on every adjacent write. The
+        // per-clustering point gets that follow benefit from populated
+        // entries instead.
         self.inner.list_prefix(partition, prefix, cursor, limit).await
     }
 
-    pub(crate) fn populate(&self, partition: &[u8], clustering: &[u8], value: Bytes) {
-        if let Some(c) = &self.cache {
-            c.lock()
-                .expect("cache mutex poisoned")
-                .put((partition.to_vec(), clustering.to_vec()), Some(value));
-        }
-    }
-
-    pub(crate) fn evict(&self, partition: &[u8], clustering: &[u8]) {
-        if let Some(c) = &self.cache {
-            c.lock()
-                .expect("cache mutex poisoned")
-                .pop(&(partition.to_vec(), clustering.to_vec()));
-        }
+    pub(crate) fn cache_handle(&self) -> Arc<CachedInner<(Vec<u8>, Vec<u8>)>> {
+        self.cache.clone()
     }
 }
 
 pub struct CachedBlobTable<B: BlobStore> {
     inner: BlobTable<B>,
-    cache: Option<Arc<Mutex<BlobLru>>>,
-    hits: AtomicU64,
-    misses: AtomicU64,
+    cache: Arc<CachedInner<Vec<u8>>>,
 }
 
 impl<B: BlobStore> CachedBlobTable<B> {
     pub fn new(inner: BlobTable<B>, entries: usize) -> Self {
         Self {
             inner,
-            cache: make_lru(entries),
-            hits: AtomicU64::new(0),
-            misses: AtomicU64::new(0),
+            cache: CachedInner::new(entries),
         }
     }
 
@@ -392,30 +378,17 @@ impl<B: BlobStore> CachedBlobTable<B> {
     }
 
     pub async fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
-        if let Some(c) = &self.cache {
-            if let Some(v) = c
-                .lock()
-                .expect("cache mutex poisoned")
-                .get(key)
-                .cloned()
-            {
-                self.hits.fetch_add(1, Ordering::Relaxed);
-                return Ok(v);
-            }
-            self.misses.fetch_add(1, Ordering::Relaxed);
+        if let Some(v) = self.cache.lookup(&key.to_vec()) {
+            return Ok(v);
         }
         let v = self.inner.get(key).await?;
-        if let Some(c) = &self.cache {
-            c.lock()
-                .expect("cache mutex poisoned")
-                .put(key.to_vec(), v.clone());
-        }
+        self.cache.store(key.to_vec(), v.clone());
         Ok(v)
     }
 
     pub async fn put(&self, key: &[u8], value: Bytes) -> Result<()> {
         self.inner.put(key, value.clone()).await?;
-        self.populate(key, value);
+        self.cache.populate(key.to_vec(), value);
         Ok(())
     }
 
@@ -424,10 +397,7 @@ impl<B: BlobStore> CachedBlobTable<B> {
     }
 
     pub fn take_window_stats(&self) -> (u64, u64) {
-        (
-            self.hits.swap(0, Ordering::Relaxed),
-            self.misses.swap(0, Ordering::Relaxed),
-        )
+        self.cache.take_window_stats()
     }
 
     pub async fn read_range(
@@ -442,17 +412,7 @@ impl<B: BlobStore> CachedBlobTable<B> {
         self.inner.read_range(key, start, end_exclusive).await
     }
 
-    pub(crate) fn populate(&self, key: &[u8], value: Bytes) {
-        if let Some(c) = &self.cache {
-            c.lock()
-                .expect("cache mutex poisoned")
-                .put(key.to_vec(), Some(value));
-        }
-    }
-
-    pub(crate) fn evict(&self, key: &[u8]) {
-        if let Some(c) = &self.cache {
-            c.lock().expect("cache mutex poisoned").pop(key);
-        }
+    pub(crate) fn cache_handle(&self) -> Arc<CachedInner<Vec<u8>>> {
+        self.cache.clone()
     }
 }

@@ -30,4 +30,4 @@ pub use meta::{
     CasOutcome, CasVersion, InMemoryMetaStore, KvTable, MetaStore, MetaStoreCas, MetaWriteOp,
     PublicationCasParams, ScannableKvTable, ScannableTableId, TableId,
 };
-pub use session::WriteSession;
+pub use session::{SessionFuture, WriteSession};

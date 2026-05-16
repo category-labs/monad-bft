@@ -13,29 +13,35 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::sync::Mutex;
+use std::{future::Future, pin::Pin, sync::{Arc, Mutex}};
 
 use bytes::Bytes;
 
 use crate::{
     engine::tables::Tables,
+    error::Result,
     store::{
-        blob::{BlobStore, BlobTableId, BlobWriteOp},
-        meta::{MetaStore, MetaWriteOp, ScannableTableId, TableId},
+        blob::{BlobStore, BlobWriteOp},
+        cache::{CachedBlobTable, CachedInner, CachedKvTable, CachedScannableTable},
+        meta::{MetaStore, MetaWriteOp},
     },
 };
+
+/// Convenience for the `for<'s>` HRTB closure shape every `with_writes*`
+/// entry-point declares. Halves the line-length of those signatures.
+pub type SessionFuture<'s> = Pin<Box<dyn Future<Output = Result<()>> + Send + 's>>;
 
 pub struct WriteSession<'a, M: MetaStore, B: BlobStore> {
     tables: &'a Tables<M, B>,
     meta_pending: Mutex<Vec<MetaWriteOp>>,
     blob_pending: Mutex<Vec<BlobWriteOp>>,
-    populated_kv: Mutex<Vec<(TableId, Vec<u8>)>>,
-    populated_scan: Mutex<Vec<(ScannableTableId, Vec<u8>, Vec<u8>)>>,
-    populated_blob: Mutex<Vec<(BlobTableId, Vec<u8>)>>,
+    populated_kv: Mutex<Vec<(Arc<CachedInner<Vec<u8>>>, Vec<u8>)>>,
+    populated_scan: Mutex<Vec<(Arc<CachedInner<(Vec<u8>, Vec<u8>)>>, Vec<u8>, Vec<u8>)>>,
+    populated_blob: Mutex<Vec<(Arc<CachedInner<Vec<u8>>>, Vec<u8>)>>,
 }
 
 impl<'a, M: MetaStore, B: BlobStore> WriteSession<'a, M, B> {
-    pub fn tables(&self) -> &'a Tables<M, B> {
+    pub(crate) fn tables(&self) -> &'a Tables<M, B> {
         self.tables
     }
 
@@ -50,17 +56,18 @@ impl<'a, M: MetaStore, B: BlobStore> WriteSession<'a, M, B> {
         }
     }
 
-    pub fn put(&self, table: TableId, key: &[u8], value: Bytes) {
-        self.tables.populate_kv_cache(table, key, value.clone());
+    pub fn put(&self, table: &CachedKvTable<M>, key: &[u8], value: Bytes) {
+        let handle = table.cache_handle();
+        handle.populate(key.to_vec(), value.clone());
         self.populated_kv
             .lock()
             .expect("write session populated_kv poisoned")
-            .push((table, key.to_vec()));
+            .push((handle, key.to_vec()));
         self.meta_pending
             .lock()
             .expect("write session meta_pending poisoned")
             .push(MetaWriteOp::Put {
-                table,
+                table: table.table_id(),
                 key: key.to_vec(),
                 value,
             });
@@ -68,39 +75,43 @@ impl<'a, M: MetaStore, B: BlobStore> WriteSession<'a, M, B> {
 
     pub fn scan_put(
         &self,
-        table: ScannableTableId,
+        table: &CachedScannableTable<M>,
         partition: &[u8],
         clustering: &[u8],
         value: Bytes,
     ) {
-        self.tables
-            .populate_scan_cache(table, partition, clustering, value.clone());
+        let handle = table.cache_handle();
+        handle.populate(
+            (partition.to_vec(), clustering.to_vec()),
+            value.clone(),
+        );
         self.populated_scan
             .lock()
             .expect("write session populated_scan poisoned")
-            .push((table, partition.to_vec(), clustering.to_vec()));
+            .push((handle, partition.to_vec(), clustering.to_vec()));
         self.meta_pending
             .lock()
             .expect("write session meta_pending poisoned")
             .push(MetaWriteOp::ScanPut {
-                table,
+                table: table.table_id(),
                 partition: partition.to_vec(),
                 clustering: clustering.to_vec(),
                 value,
             });
     }
 
-    pub fn put_blob(&self, table: BlobTableId, key: &[u8], value: Bytes) {
-        self.tables.populate_blob_cache(table, key, value.clone());
+    pub fn put_blob(&self, table: &CachedBlobTable<B>, key: &[u8], value: Bytes) {
+        let handle = table.cache_handle();
+        handle.populate(key.to_vec(), value.clone());
         self.populated_blob
             .lock()
             .expect("write session populated_blob poisoned")
-            .push((table, key.to_vec()));
+            .push((handle, key.to_vec()));
         self.blob_pending
             .lock()
             .expect("write session blob_pending poisoned")
             .push(BlobWriteOp {
-                table,
+                table: table.table_id(),
                 key: key.to_vec(),
                 value,
             });
@@ -131,8 +142,8 @@ impl<'a, M: MetaStore, B: BlobStore> WriteSession<'a, M, B> {
                 .lock()
                 .expect("write session populated_kv poisoned"),
         );
-        for (table, key) in kv {
-            self.tables.evict_kv_cache(table, &key);
+        for (cache, key) in kv {
+            cache.evict(&key);
         }
         let scan = std::mem::take(
             &mut *self
@@ -140,9 +151,8 @@ impl<'a, M: MetaStore, B: BlobStore> WriteSession<'a, M, B> {
                 .lock()
                 .expect("write session populated_scan poisoned"),
         );
-        for (table, partition, clustering) in scan {
-            self.tables
-                .evict_scan_cache(table, &partition, &clustering);
+        for (cache, partition, clustering) in scan {
+            cache.evict(&(partition, clustering));
         }
         let blob = std::mem::take(
             &mut *self
@@ -150,8 +160,8 @@ impl<'a, M: MetaStore, B: BlobStore> WriteSession<'a, M, B> {
                 .lock()
                 .expect("write session populated_blob poisoned"),
         );
-        for (table, key) in blob {
-            self.tables.evict_blob_cache(table, &key);
+        for (cache, key) in blob {
+            cache.evict(&key);
         }
     }
 }

@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{collections::BTreeMap, future::Future, pin::Pin, time::Duration};
+use std::{collections::BTreeMap, time::Duration};
 
 use alloy_rlp::Decodable;
 use bytes::Bytes;
@@ -31,8 +31,8 @@ use crate::{
         EvmBlockHeader,
     },
     store::{
-        BlobStore, BlobTableId, CacheConfig, CachedBlobTable, CachedKvTable, CachedScannableTable,
-        CasOutcome, CasVersion, MetaStore, MetaStoreCas, PublicationCasParams, ScannableTableId,
+        BlobStore, CacheConfig, CachedBlobTable, CachedKvTable, CachedScannableTable, CasOutcome,
+        CasVersion, MetaStore, MetaStoreCas, PublicationCasParams, ScannableTableId, SessionFuture,
         TableId, WriteSession,
     },
     txs::TxHashIndexTable,
@@ -107,10 +107,7 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
 
     pub async fn with_writes<'a, F>(&'a self, f: F) -> Result<()>
     where
-        F: for<'s> FnOnce(
-            &'s WriteSession<'a, M, B>,
-        )
-            -> Pin<Box<dyn Future<Output = Result<()>> + Send + 's>>,
+        F: for<'s> FnOnce(&'s WriteSession<'a, M, B>) -> SessionFuture<'s>,
     {
         let (result, _timings) = self.with_writes_timed(f).await;
         result
@@ -123,10 +120,7 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
     /// closure short-circuited the flush.
     pub async fn with_writes_timed<'a, F>(&'a self, f: F) -> (Result<()>, MetaBlobTimings)
     where
-        F: for<'s> FnOnce(
-            &'s WriteSession<'a, M, B>,
-        )
-            -> Pin<Box<dyn Future<Output = Result<()>> + Send + 's>>,
+        F: for<'s> FnOnce(&'s WriteSession<'a, M, B>) -> SessionFuture<'s>,
     {
         let session = WriteSession::new(self);
         let closure_result = f(&session).await;
@@ -167,10 +161,7 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
         f: F,
     ) -> Result<CasOutcome>
     where
-        F: for<'s> FnOnce(
-            &'s WriteSession<'a, M, B>,
-        )
-            -> Pin<Box<dyn Future<Output = Result<()>> + Send + 's>>,
+        F: for<'s> FnOnce(&'s WriteSession<'a, M, B>) -> SessionFuture<'s>,
     {
         let session = WriteSession::new(self);
         let closure_result = f(&session).await;
@@ -201,131 +192,49 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
         }
     }
 
-    pub(crate) fn populate_kv_cache(&self, table: TableId, key: &[u8], value: Bytes) {
-        if let Some(c) = self.find_kv_cache(table) {
-            c.populate(key, value);
-        }
-    }
-
-    pub(crate) fn populate_scan_cache(
-        &self,
-        table: ScannableTableId,
-        partition: &[u8],
-        clustering: &[u8],
-        value: Bytes,
-    ) {
-        if let Some(c) = self.find_scan_cache(table) {
-            c.populate(partition, clustering, value);
-        }
-    }
-
-    pub(crate) fn populate_blob_cache(&self, table: BlobTableId, key: &[u8], value: Bytes) {
-        if let Some(c) = self.find_blob_cache(table) {
-            c.populate(key, value);
-        }
-    }
-
-    pub(crate) fn evict_kv_cache(&self, table: TableId, key: &[u8]) {
-        if let Some(c) = self.find_kv_cache(table) {
-            c.evict(key);
-        }
-    }
-
-    pub(crate) fn evict_scan_cache(
-        &self,
-        table: ScannableTableId,
-        partition: &[u8],
-        clustering: &[u8],
-    ) {
-        if let Some(c) = self.find_scan_cache(table) {
-            c.evict(partition, clustering);
-        }
-    }
-
-    pub(crate) fn evict_blob_cache(&self, table: BlobTableId, key: &[u8]) {
-        if let Some(c) = self.find_blob_cache(table) {
-            c.evict(key);
-        }
-    }
-
     /// Drains and returns the (hits, misses) counters for every cached
     /// wrapper, tagged with its logical table name. Each call resets the
     /// counters so consumers see per-window deltas.
     pub fn take_cache_window_stats(&self) -> Vec<(&'static str, u64, u64)> {
-        fn push_kv<M: MetaStore>(out: &mut Vec<(&'static str, u64, u64)>, table: &CachedKvTable<M>) {
-            let (h, m) = table.take_window_stats();
-            if h != 0 || m != 0 {
-                out.push((table.table_id().as_str(), h, m));
-            }
-        }
-        fn push_scan<M: MetaStore>(
-            out: &mut Vec<(&'static str, u64, u64)>,
-            table: &CachedScannableTable<M>,
-        ) {
-            let (h, m) = table.take_window_stats();
-            if h != 0 || m != 0 {
-                out.push((table.table_id().as_str(), h, m));
-            }
-        }
-        fn push_blob<B: BlobStore>(
-            out: &mut Vec<(&'static str, u64, u64)>,
-            table: &CachedBlobTable<B>,
-        ) {
-            let (h, m) = table.take_window_stats();
-            if h != 0 || m != 0 {
-                out.push((table.table_id().as_str(), h, m));
-            }
-        }
-
         let mut out = Vec::new();
-        push_kv(&mut out, &self.blocks.block_records);
-        push_kv(&mut out, &self.blocks.block_headers);
-        push_kv(&mut out, &self.blocks.block_hash_to_number_index);
-        push_kv(&mut out, self.tx_hash_index.cached_table());
+        self.blocks.collect_window_stats(&mut out);
+        self.tx_hash_index.collect_window_stats(&mut out);
         for fam in self.families.values() {
-            push_kv(&mut out, &fam.block_headers);
-            push_blob(&mut out, &fam.block_blobs);
-            push_scan(&mut out, fam.dir.fragments_cache());
-            push_kv(&mut out, fam.dir.buckets_cache());
-            push_scan(&mut out, fam.bitmap.fragments_cache());
-            push_kv(&mut out, fam.bitmap.page_meta_cache());
-            push_kv(&mut out, fam.bitmap.page_blobs_cache());
-            push_scan(&mut out, fam.bitmap.open_streams_cache());
+            fam.collect_window_stats(&mut out);
         }
         out
     }
+}
 
-    fn find_kv_cache(&self, table: TableId) -> Option<&CachedKvTable<M>> {
-        if let Some(c) = self.blocks.find_kv_cache(table) {
-            return Some(c);
-        }
-        if table == TxHashIndexTable::<M>::TABLE {
-            return Some(self.tx_hash_index.cached_table());
-        }
-        for fam in self.families.values() {
-            if let Some(c) = fam.find_kv_cache(table) {
-                return Some(c);
-            }
-        }
-        None
+/// Pushes one (name, hits, misses) tuple per cached wrapper, skipping rows
+/// where both counters are zero so the per-window log line stays compact.
+pub(crate) fn collect_kv_stats<M: MetaStore>(
+    out: &mut Vec<(&'static str, u64, u64)>,
+    table: &CachedKvTable<M>,
+) {
+    let (h, m) = table.take_window_stats();
+    if h != 0 || m != 0 {
+        out.push((table.table_id().as_str(), h, m));
     }
+}
 
-    fn find_scan_cache(&self, table: ScannableTableId) -> Option<&CachedScannableTable<M>> {
-        for fam in self.families.values() {
-            if let Some(c) = fam.find_scan_cache(table) {
-                return Some(c);
-            }
-        }
-        None
+pub(crate) fn collect_scan_stats<M: MetaStore>(
+    out: &mut Vec<(&'static str, u64, u64)>,
+    table: &CachedScannableTable<M>,
+) {
+    let (h, m) = table.take_window_stats();
+    if h != 0 || m != 0 {
+        out.push((table.table_id().as_str(), h, m));
     }
+}
 
-    fn find_blob_cache(&self, table: BlobTableId) -> Option<&CachedBlobTable<B>> {
-        for fam in self.families.values() {
-            if let Some(c) = fam.find_blob_cache(table) {
-                return Some(c);
-            }
-        }
-        None
+pub(crate) fn collect_blob_stats<B: BlobStore>(
+    out: &mut Vec<(&'static str, u64, u64)>,
+    table: &CachedBlobTable<B>,
+) {
+    let (h, m) = table.take_window_stats();
+    if h != 0 || m != 0 {
+        out.push((table.table_id().as_str(), h, m));
     }
 }
 
@@ -456,11 +365,7 @@ impl<M: MetaStore> BlockTables<M> {
         block_record: &BlockRecord,
     ) {
         let key = block_number_key(block_number);
-        w.put(
-            self.block_records.table_id(),
-            &key,
-            Bytes::from(block_record.encode()),
-        );
+        w.put(&self.block_records, &key, Bytes::from(block_record.encode()));
     }
 
     pub async fn load_header(&self, block_number: u64) -> Result<Option<EvmBlockHeader>> {
@@ -488,11 +393,7 @@ impl<M: MetaStore> BlockTables<M> {
         header: &EvmBlockHeader,
     ) {
         let key = block_number_key(block_number);
-        w.put(
-            self.block_headers.table_id(),
-            &key,
-            Bytes::from(alloy_rlp::encode(header)),
-        );
+        w.put(&self.block_headers, &key, Bytes::from(alloy_rlp::encode(header)));
     }
 
     /// Resolves a block hash to its block number via the hash-to-number index.
@@ -534,23 +435,16 @@ impl<M: MetaStore> BlockTables<M> {
         block_number: u64,
     ) {
         w.put(
-            self.block_hash_to_number_index.table_id(),
+            &self.block_hash_to_number_index,
             block_hash.as_slice(),
             Bytes::copy_from_slice(&block_number.to_be_bytes()),
         );
     }
 
-    /// Validates that a new block extends the currently published chain.
-    pub(crate) fn find_kv_cache(&self, table: TableId) -> Option<&CachedKvTable<M>> {
-        if table == Self::BLOCK_RECORD_TABLE {
-            Some(&self.block_records)
-        } else if table == Self::BLOCK_HEADER_TABLE {
-            Some(&self.block_headers)
-        } else if table == Self::BLOCK_HASH_TO_NUMBER_INDEX_TABLE {
-            Some(&self.block_hash_to_number_index)
-        } else {
-            None
-        }
+    pub(crate) fn collect_window_stats(&self, out: &mut Vec<(&'static str, u64, u64)>) {
+        collect_kv_stats(out, &self.block_records);
+        collect_kv_stats(out, &self.block_headers);
+        collect_kv_stats(out, &self.block_hash_to_number_index);
     }
 
     pub async fn validate_continuity(
@@ -695,16 +589,12 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
         block_log_blob: Vec<u8>,
     ) {
         let key = block_number_key(block_number);
-        w.put_blob(
-            self.block_blobs.table_id(),
-            &key,
-            Bytes::from(block_log_blob),
-        );
+        w.put_blob(&self.block_blobs, &key, Bytes::from(block_log_blob));
     }
 
     pub fn stage_block_header(&self, w: &WriteSession<'_, M, B>, block_number: u64, bytes: Bytes) {
         let key = block_number_key(block_number);
-        w.put(self.block_headers.table_id(), &key, bytes);
+        w.put(&self.block_headers, &key, bytes);
     }
 
     pub async fn load_bucket_fragments(
@@ -799,40 +689,14 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
             .await
     }
 
-    pub(crate) fn find_kv_cache(&self, table: TableId) -> Option<&CachedKvTable<M>> {
-        if table == self.block_headers.table_id() {
-            Some(&self.block_headers)
-        } else if table == self.dir.buckets_cache().table_id() {
-            Some(self.dir.buckets_cache())
-        } else if table == self.bitmap.page_meta_cache().table_id() {
-            Some(self.bitmap.page_meta_cache())
-        } else if table == self.bitmap.page_blobs_cache().table_id() {
-            Some(self.bitmap.page_blobs_cache())
-        } else {
-            None
-        }
-    }
-
-    pub(crate) fn find_scan_cache(
-        &self,
-        table: ScannableTableId,
-    ) -> Option<&CachedScannableTable<M>> {
-        if table == self.dir.fragments_cache().table_id() {
-            Some(self.dir.fragments_cache())
-        } else if table == self.bitmap.fragments_cache().table_id() {
-            Some(self.bitmap.fragments_cache())
-        } else if table == self.bitmap.open_streams_cache().table_id() {
-            Some(self.bitmap.open_streams_cache())
-        } else {
-            None
-        }
-    }
-
-    pub(crate) fn find_blob_cache(&self, table: BlobTableId) -> Option<&CachedBlobTable<B>> {
-        if table == self.block_blobs.table_id() {
-            Some(&self.block_blobs)
-        } else {
-            None
-        }
+    pub(crate) fn collect_window_stats(&self, out: &mut Vec<(&'static str, u64, u64)>) {
+        collect_kv_stats(out, &self.block_headers);
+        collect_blob_stats(out, &self.block_blobs);
+        collect_scan_stats(out, self.dir.fragments_cache());
+        collect_kv_stats(out, self.dir.buckets_cache());
+        collect_scan_stats(out, self.bitmap.fragments_cache());
+        collect_kv_stats(out, self.bitmap.page_meta_cache());
+        collect_kv_stats(out, self.bitmap.page_blobs_cache());
+        collect_scan_stats(out, self.bitmap.open_streams_cache());
     }
 }

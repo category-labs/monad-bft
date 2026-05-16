@@ -15,6 +15,8 @@
 
 #![allow(dead_code)]
 
+pub mod observed_store;
+
 use alloy_primitives::{Address, Bytes, U256};
 use monad_chain_data::{CallKind, EvmBlockHeader, IngestTrace, IngestTx, B256};
 

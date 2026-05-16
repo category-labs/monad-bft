@@ -44,8 +44,8 @@ impl<M: MetaStore> TxHashIndexTable<M> {
         TxLocation::decode(bytes.as_ref()).map(Some)
     }
 
-    pub(crate) fn cached_table(&self) -> &CachedKvTable<M> {
-        &self.table
+    pub(crate) fn collect_window_stats(&self, out: &mut Vec<(&'static str, u64, u64)>) {
+        crate::engine::tables::collect_kv_stats(out, &self.table);
     }
 
     pub(crate) fn stage_put<B: BlobStore>(
@@ -55,7 +55,7 @@ impl<M: MetaStore> TxHashIndexTable<M> {
         location: TxLocation,
     ) {
         w.put(
-            Self::TABLE,
+            &self.table,
             tx_hash.as_slice(),
             Bytes::copy_from_slice(&location.encode()),
         );
