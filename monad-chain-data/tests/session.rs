@@ -476,6 +476,44 @@ async fn panic_in_closure_drops_pending() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn panic_in_closure_evicts_populated_cache_entries() {
+    let meta = InMemoryMetaStore::default();
+    let blob = InMemoryBlobStore::default();
+    let tables: Tables<InMemoryMetaStore, InMemoryBlobStore> =
+        Tables::with_cache_config(meta, blob, cache());
+    let header = monad_chain_data::EvmBlockHeader {
+        number: 1,
+        ..Default::default()
+    };
+    let header_ref = &header;
+
+    let panicked = std::panic::AssertUnwindSafe(async {
+        tables
+            .with_writes(|w| {
+                Box::pin(async move {
+                    w.tables().blocks().stage_header(w, 1, header_ref);
+                    panic!("intentional panic");
+                    #[allow(unreachable_code)]
+                    Ok(())
+                })
+            })
+            .await
+    });
+
+    let r = futures::FutureExt::catch_unwind(panicked).await;
+    assert!(r.is_err(), "panic must propagate");
+
+    // Reads against the cached accessor must miss after the panic:
+    // backend never received the write and Drop must have evicted the
+    // populated cache entry.
+    let read = tables.blocks().load_header(1).await.unwrap();
+    assert!(
+        read.is_none(),
+        "cache must be evicted when WriteSession drops during panic unwind"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn parallel_meta_and_blob_flush() {
     let delay = Duration::from_millis(50);
     let meta = TimingMeta::new(delay);

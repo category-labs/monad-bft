@@ -67,8 +67,9 @@ impl Default for CacheConfig {
 }
 
 impl CacheConfig {
-    /// Total entry count across every table. Used as the proportional
-    /// baseline for `--cache-mib` scaling.
+    /// Total entry count across every table. Retained for diagnostic logging;
+    /// cache budgeting itself goes through per-table size weights via
+    /// [`Self::approx_total_bytes`].
     pub fn total_entries(&self) -> usize {
         self.dir_by_block_entries
             .saturating_add(self.dir_bucket_entries)
@@ -83,27 +84,47 @@ impl CacheConfig {
             .saturating_add(self.block_blob_entries)
     }
 
-    /// Approximate average bytes per entry across all populated caches.
-    /// Used by the binary to convert `--cache-mib` from MiB into entry
-    /// counts. Held conservative — the LRU itself contributes ~96 bytes of
-    /// metadata per entry on top of the value Bytes (which are Arc'd and
-    /// inexpensive to clone).
-    pub const APPROX_BYTES_PER_ENTRY: usize = 256;
-
-    /// Sum of `total_entries` * `APPROX_BYTES_PER_ENTRY` rendered in MiB.
-    /// Used as the denominator for `--cache-mib` linear scaling, so that
-    /// `--cache-mib default_total_mib()` reproduces `CacheConfig::default()`.
-    pub fn approx_total_mib(&self) -> usize {
-        let bytes = self
-            .total_entries()
-            .saturating_mul(Self::APPROX_BYTES_PER_ENTRY);
-        bytes / (1024 * 1024)
+    /// Per-entry size estimate in bytes for each cached table. Roaring-bitmap
+    /// payloads are capped at 8 KiB per fragment / page blob and dominate the
+    /// budget; other tables are dominated by small metadata. Returned values
+    /// are rounded up so `--cache-mib N` produces a conservative entry count.
+    pub const fn approx_bytes_per_entry(field: CacheField) -> usize {
+        match field {
+            CacheField::BitmapByBlock | CacheField::BitmapPageBlob => 8 * 1024,
+            CacheField::BlockHeader => 512,
+            CacheField::DirBucket => 256,
+            CacheField::BlockRecord => 128,
+            CacheField::DirByBlock => 64,
+            CacheField::TxHashIndex => 64,
+            CacheField::BitmapPageMeta => 64,
+            CacheField::BlockHashToNumber => 40,
+            CacheField::OpenBitmapStream => 32,
+            CacheField::BlockBlob => 4 * 1024 * 1024,
+        }
     }
 
-    /// Scales every per-table entry count by `numer / denom`. Used by the
-    /// CLI to convert a single `--cache-mib N` scalar into a proportional
-    /// per-table budget. With `numer == 0` every entry count drops to 0,
-    /// disabling caches (compile-time skip in the cached wrappers).
+    /// Sum of per-table `entries * approx_bytes_per_entry`. Used by the CLI
+    /// to scale `--cache-mib N` into proportional per-table entry counts.
+    pub fn approx_total_bytes(&self) -> usize {
+        let mut total: usize = 0;
+        for (field, entries) in self.per_field() {
+            total =
+                total.saturating_add(entries.saturating_mul(Self::approx_bytes_per_entry(field)));
+        }
+        total
+    }
+
+    /// `approx_total_bytes` rendered in MiB. The denominator for `--cache-mib`
+    /// linear scaling, so `--cache-mib default.approx_total_mib()` reproduces
+    /// `CacheConfig::default()`.
+    pub fn approx_total_mib(&self) -> usize {
+        self.approx_total_bytes() / (1024 * 1024)
+    }
+
+    /// Scales every per-table entry count by `numer / denom`, weighted by the
+    /// per-table size estimate so the result honors a byte budget rather than
+    /// a uniform entry budget. With `numer == 0` every entry count drops to
+    /// 0, disabling caches (compile-time skip in the cached wrappers).
     pub fn scale(self, numer: usize, denom: usize) -> Self {
         if numer == 0 {
             return Self {
@@ -136,6 +157,37 @@ impl CacheConfig {
             block_blob_entries: scale(self.block_blob_entries),
         }
     }
+
+    fn per_field(&self) -> [(CacheField, usize); 11] {
+        [
+            (CacheField::DirByBlock, self.dir_by_block_entries),
+            (CacheField::DirBucket, self.dir_bucket_entries),
+            (CacheField::BitmapByBlock, self.bitmap_by_block_entries),
+            (CacheField::BitmapPageMeta, self.bitmap_page_meta_entries),
+            (CacheField::BitmapPageBlob, self.bitmap_page_blob_entries),
+            (CacheField::OpenBitmapStream, self.open_bitmap_stream_entries),
+            (CacheField::BlockRecord, self.block_record_entries),
+            (CacheField::BlockHeader, self.block_header_entries),
+            (CacheField::BlockHashToNumber, self.block_hash_to_number_entries),
+            (CacheField::TxHashIndex, self.tx_hash_index_entries),
+            (CacheField::BlockBlob, self.block_blob_entries),
+        ]
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheField {
+    DirByBlock,
+    DirBucket,
+    BitmapByBlock,
+    BitmapPageMeta,
+    BitmapPageBlob,
+    OpenBitmapStream,
+    BlockRecord,
+    BlockHeader,
+    BlockHashToNumber,
+    TxHashIndex,
+    BlockBlob,
 }
 
 type KvLru = LruCache<Vec<u8>, Option<Bytes>>;

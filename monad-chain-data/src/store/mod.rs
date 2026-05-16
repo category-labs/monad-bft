@@ -22,7 +22,7 @@ pub mod meta;
 pub mod session;
 
 pub use blob::{BlobStore, BlobTable, BlobTableId, BlobWriteOp, InMemoryBlobStore};
-pub use cache::{CacheConfig, CachedBlobTable, CachedKvTable, CachedScannableTable};
+pub use cache::{CacheConfig, CacheField, CachedBlobTable, CachedKvTable, CachedScannableTable};
 pub use common::Page;
 #[cfg(feature = "fjall")]
 pub use fjall::{FjallKeyspaceStats, FjallStore, FjallTuning};
