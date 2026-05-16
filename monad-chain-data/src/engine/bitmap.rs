@@ -191,50 +191,25 @@ impl<M: MetaStore> BitmapTables<M> {
         Ok(fragments)
     }
 
-    pub(crate) async fn load_fragments_by_blocks(
-        &self,
-        stream_id: &str,
-        page_start_local: u32,
-        blocks: &[u64],
-        mut timings: Option<&mut ReadPlanningTimings>,
-    ) -> Result<Vec<Bytes>> {
-        let partition = stream_page_key(stream_id, page_start_local);
-        let mut fragments = Vec::with_capacity(blocks.len());
-
-        for block in blocks {
-            let clustering = block.to_be_bytes();
-            let get_start = Instant::now();
-            let bytes = self.fragments.get(&partition, &clustering).await?.ok_or(
-                MonadChainDataError::MissingData("missing log bitmap fragment"),
-            )?;
-            if let Some(t) = timings.as_deref_mut() {
-                t.bitmap_get_ms = t
-                    .bitmap_get_ms
-                    .saturating_add(get_start.elapsed().as_millis() as u64);
-                t.bitmap_get_count = t.bitmap_get_count.saturating_add(1);
-            }
-            fragments.push(bytes);
-        }
-
-        Ok(fragments)
-    }
-
-    pub(crate) async fn list_fragment_blocks(
+    pub(crate) async fn list_fragments_for_rebuild(
         &self,
         stream_id: &str,
         page_start_local: u32,
         published_head: u64,
-    ) -> Result<BTreeSet<u64>> {
+    ) -> Result<BTreeMap<u64, Bytes>> {
         let partition = stream_page_key(stream_id, page_start_local);
         let page = self
             .fragments
             .list_prefix(&partition, &[], None, usize::MAX)
             .await?;
-        let mut out = BTreeSet::new();
+        let mut out = BTreeMap::new();
         for key in page.keys {
             let block = u64_from_key(&key)?;
             if block <= published_head {
-                out.insert(block);
+                let bytes = self.fragments.get(&partition, &key).await?.ok_or(
+                    MonadChainDataError::MissingData("missing log bitmap fragment"),
+                )?;
+                out.insert(block, bytes);
             }
         }
         Ok(out)
@@ -528,6 +503,21 @@ pub(crate) fn global_page_start(primary_id: u64) -> u64 {
 pub(crate) fn stream_page_global_start(stream_id: &str, page_start_local: u32) -> Result<u64> {
     let shard = parse_stream_shard(stream_id)?;
     Ok((shard << PrimaryId::LOCAL_ID_BITS) + u64::from(page_start_local))
+}
+
+pub(crate) fn touched_streams_by_page(
+    fragments: &[BitmapFragmentWrite],
+) -> Result<BTreeMap<u64, BTreeSet<String>>> {
+    let mut out = BTreeMap::<u64, BTreeSet<String>>::new();
+
+    for fragment in fragments {
+        let page_start = stream_page_global_start(&fragment.stream_id, fragment.page_start_local)?;
+        out.entry(page_start)
+            .or_default()
+            .insert(fragment.stream_id.clone());
+    }
+
+    Ok(out)
 }
 
 pub(crate) fn local_page_start(global_page_start: u64) -> u32 {

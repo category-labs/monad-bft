@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{collections::BTreeSet, time::Instant};
+use std::{collections::BTreeMap, time::Instant};
 
 use bytes::Bytes;
 
@@ -196,50 +196,26 @@ impl<M: MetaStore> PrimaryDirTables<M> {
         Ok(fragments)
     }
 
-    pub(crate) async fn load_bucket_fragments_by_blocks(
-        &self,
-        bucket_start: u64,
-        blocks: &[u64],
-        mut timings: Option<&mut ReadPlanningTimings>,
-    ) -> Result<Vec<PrimaryDirFragment>> {
-        let partition = u64_key(bucket_start);
-        let mut fragments = Vec::with_capacity(blocks.len());
-
-        for block in blocks {
-            let clustering = u64_key(*block);
-            let get_start = Instant::now();
-            let bytes = self.fragments.get(&partition, &clustering).await?.ok_or(
-                crate::error::MonadChainDataError::MissingData(
-                    "missing primary directory fragment",
-                ),
-            )?;
-            if let Some(t) = timings.as_deref_mut() {
-                t.dir_get_ms = t
-                    .dir_get_ms
-                    .saturating_add(get_start.elapsed().as_millis() as u64);
-                t.dir_get_count = t.dir_get_count.saturating_add(1);
-            }
-            fragments.push(PrimaryDirFragment::decode(&bytes)?);
-        }
-
-        Ok(fragments)
-    }
-
-    pub(crate) async fn list_bucket_fragment_blocks(
+    pub(crate) async fn list_bucket_fragments_for_rebuild(
         &self,
         bucket_start: u64,
         published_head: u64,
-    ) -> Result<BTreeSet<u64>> {
+    ) -> Result<BTreeMap<u64, Bytes>> {
         let partition = u64_key(bucket_start);
         let page = self
             .fragments
             .list_prefix(&partition, &[], None, usize::MAX)
             .await?;
-        let mut out = BTreeSet::new();
+        let mut out = BTreeMap::new();
         for key in page.keys {
             let block = u64_from_key(&key)?;
             if block <= published_head {
-                out.insert(block);
+                let bytes = self.fragments.get(&partition, &key).await?.ok_or(
+                    crate::error::MonadChainDataError::MissingData(
+                        "missing primary directory fragment",
+                    ),
+                )?;
+                out.insert(block, bytes);
             }
         }
         Ok(out)

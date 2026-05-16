@@ -29,7 +29,7 @@ use crate::{
             insert_bitmap_set, insert_directory_set, OpenIndexStats, OpenIndexes, OpenIndexesDelta,
             OpenIndexesEviction,
         },
-        primary_dir::{bucket_start, bucket_starts_for_window},
+        primary_dir::{bucket_start, bucket_starts_for_window, PrimaryDirFragment},
         query::family_runner::IndexedFamilyQuery,
         tables::{PublicationTables, Tables},
     },
@@ -100,16 +100,27 @@ fn append_family_phase_a_delta(
 ) -> Result<()> {
     let first_primary_id = window.first_primary_id.as_u64();
     for bucket in bucket_starts_for_window(first_primary_id, window.count) {
-        delta.directory_blocks.push((family, bucket, block_number));
+        let fragment = PrimaryDirFragment {
+            block_number,
+            first_primary_id,
+            end_primary_id_exclusive: first_primary_id.saturating_add(u64::from(window.count)),
+        };
+        delta.directory_fragments.push((
+            family,
+            bucket,
+            block_number,
+            Bytes::from(fragment.encode()),
+        ));
     }
     for fragment in bitmap_fragments {
         let page_global_start =
             stream_page_global_start(&fragment.stream_id, fragment.page_start_local)?;
-        delta.bitmap_blocks.push((
+        delta.bitmap_fragments.push((
             family,
             fragment.stream_id.clone(),
             fragment.page_start_local,
             block_number,
+            fragment.bitmap_blob.clone(),
         ));
         delta
             .bitmap_open_streams
@@ -143,13 +154,37 @@ pub struct IngestBatchTimings {
     pub reads_dir_list_count: u64,
     pub reads_dir_get_count: u64,
     pub reads_bitmap_open_streams_ms: u64,
+    pub reads_bitmap_open_streams_us: u64,
     pub reads_bitmap_open_streams_count: u64,
     pub reads_bitmap_list_ms: u64,
     pub reads_bitmap_get_ms: u64,
+    pub reads_bitmap_shape_ms: u64,
+    pub reads_bitmap_shape_us: u64,
+    pub reads_bitmap_union_us: u64,
+    pub reads_bitmap_frontier_us: u64,
+    pub reads_bitmap_open_write_us: u64,
+    pub reads_bitmap_index_ms: u64,
+    pub reads_bitmap_index_us: u64,
     pub reads_bitmap_compact_ms: u64,
+    pub reads_bitmap_compact_us: u64,
     pub reads_bitmap_list_count: u64,
     pub reads_bitmap_get_count: u64,
+    pub reads_bitmap_fragment_count: u64,
+    pub reads_bitmap_fragment_bytes: u64,
     pub reads_bitmap_compact_count: u64,
+    pub reads_bitmap_frontier_stream_count: u64,
+    pub reads_bitmap_union_page_count: u64,
+    pub reads_bitmap_union_stream_count: u64,
+    pub reads_bitmap_touched_page_count: u64,
+    pub reads_bitmap_touched_stream_count: u64,
+    pub reads_bitmap_final_open_stream_count: u64,
+    pub reads_dir_index_ms: u64,
+    pub reads_dir_index_us: u64,
+    pub reads_dir_decode_ms: u64,
+    pub reads_dir_decode_us: u64,
+    pub reads_dir_fragment_count: u64,
+    pub reads_unaccounted_ms: u64,
+    pub reads_unaccounted_us: u64,
     pub stage_b_ms: u64,
     pub commit_b_ms: u64,
     pub cas_ms: u64,
@@ -236,10 +271,10 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
         // are speculative write-before-CAS artifacts that retry will restage.
         if window.count > 0 {
             let open_bucket = bucket_start(next_primary_id);
-            let directory_blocks = family_tables
-                .list_bucket_fragment_blocks(open_bucket, published_head)
+            let directory_fragments = family_tables
+                .list_bucket_fragments_for_rebuild(open_bucket, published_head)
                 .await?;
-            insert_directory_set(delta, family, open_bucket, directory_blocks);
+            insert_directory_set(delta, family, open_bucket, directory_fragments);
         }
 
         // Likewise, only the current open bitmap page needs fragment block
@@ -249,16 +284,16 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
         let page_start_local = local_page_start(open_page);
         let streams = family_tables.load_open_bitmap_streams(open_page).await?;
         for stream_id in streams {
-            let blocks = family_tables
-                .list_bitmap_fragment_blocks(&stream_id, page_start_local, published_head)
+            let fragments = family_tables
+                .list_bitmap_fragments_for_rebuild(&stream_id, page_start_local, published_head)
                 .await?;
-            if blocks.is_empty() {
+            if fragments.is_empty() {
                 continue;
             }
             delta
                 .bitmap_open_streams
                 .push((family, open_page, stream_id.clone()));
-            insert_bitmap_set(delta, family, stream_id, page_start_local, blocks);
+            insert_bitmap_set(delta, family, stream_id, page_start_local, fragments);
         }
         Ok(())
     }
@@ -463,17 +498,17 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
         let tx_ranges = family_ranges(&staged, |s| s.tx_plan.tx_window);
         let trace_ranges = family_ranges(&staged, |s| s.trace_plan.trace_window);
 
-        let log_bitmap_per_block: Vec<&[_]> = staged
+        let log_touched_bitmap_per_block: Vec<_> = staged
             .iter()
-            .map(|s| s.log_plan.bitmap_fragments.as_slice())
+            .map(|s| &s.log_plan.touched_bitmap_streams_by_page)
             .collect();
-        let tx_bitmap_per_block: Vec<&[_]> = staged
+        let tx_touched_bitmap_per_block: Vec<_> = staged
             .iter()
-            .map(|s| s.tx_plan.bitmap_fragments.as_slice())
+            .map(|s| &s.tx_plan.touched_bitmap_streams_by_page)
             .collect();
-        let trace_bitmap_per_block: Vec<&[_]> = staged
+        let trace_touched_bitmap_per_block: Vec<_> = staged
             .iter()
-            .map(|s| s.trace_plan.bitmap_fragments.as_slice())
+            .map(|s| &s.trace_plan.touched_bitmap_streams_by_page)
             .collect();
 
         let (
@@ -485,13 +520,21 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
             trace_bitmap_plan,
         ) = futures::try_join!(
             logs.plan_directory_compactions(&self.open_indexes, &log_ranges),
-            logs.plan_bitmap_compactions(&self.open_indexes, &log_bitmap_per_block, &log_ranges),
+            logs.plan_bitmap_compactions(
+                &self.open_indexes,
+                &log_touched_bitmap_per_block,
+                &log_ranges
+            ),
             txs.plan_directory_compactions(&self.open_indexes, &tx_ranges),
-            txs.plan_bitmap_compactions(&self.open_indexes, &tx_bitmap_per_block, &tx_ranges),
+            txs.plan_bitmap_compactions(
+                &self.open_indexes,
+                &tx_touched_bitmap_per_block,
+                &tx_ranges
+            ),
             traces.plan_directory_compactions(&self.open_indexes, &trace_ranges),
             traces.plan_bitmap_compactions(
                 &self.open_indexes,
-                &trace_bitmap_per_block,
+                &trace_touched_bitmap_per_block,
                 &trace_ranges
             ),
         )?;
@@ -508,13 +551,58 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
         timings.reads_dir_list_count = read_plan_timings.dir_list_count;
         timings.reads_dir_get_count = read_plan_timings.dir_get_count;
         timings.reads_bitmap_open_streams_ms = read_plan_timings.bitmap_open_streams_ms;
+        timings.reads_bitmap_open_streams_us = read_plan_timings.bitmap_open_streams_us;
         timings.reads_bitmap_open_streams_count = read_plan_timings.bitmap_open_streams_count;
         timings.reads_bitmap_list_ms = read_plan_timings.bitmap_list_ms;
         timings.reads_bitmap_get_ms = read_plan_timings.bitmap_get_ms;
+        timings.reads_bitmap_shape_ms = read_plan_timings.bitmap_shape_ms;
+        timings.reads_bitmap_shape_us = read_plan_timings.bitmap_shape_us;
+        timings.reads_bitmap_union_us = read_plan_timings.bitmap_union_us;
+        timings.reads_bitmap_frontier_us = read_plan_timings.bitmap_frontier_us;
+        timings.reads_bitmap_open_write_us = read_plan_timings.bitmap_open_write_us;
+        timings.reads_bitmap_index_ms = read_plan_timings.bitmap_index_ms;
+        timings.reads_bitmap_index_us = read_plan_timings.bitmap_index_us;
         timings.reads_bitmap_compact_ms = read_plan_timings.bitmap_compact_ms;
+        timings.reads_bitmap_compact_us = read_plan_timings.bitmap_compact_us;
         timings.reads_bitmap_list_count = read_plan_timings.bitmap_list_count;
         timings.reads_bitmap_get_count = read_plan_timings.bitmap_get_count;
+        timings.reads_bitmap_fragment_count = read_plan_timings.bitmap_fragment_count;
+        timings.reads_bitmap_fragment_bytes = read_plan_timings.bitmap_fragment_bytes;
         timings.reads_bitmap_compact_count = read_plan_timings.bitmap_compact_count;
+        timings.reads_bitmap_frontier_stream_count = read_plan_timings.bitmap_frontier_stream_count;
+        timings.reads_bitmap_union_page_count = read_plan_timings.bitmap_union_page_count;
+        timings.reads_bitmap_union_stream_count = read_plan_timings.bitmap_union_stream_count;
+        timings.reads_bitmap_touched_page_count = read_plan_timings.bitmap_touched_page_count;
+        timings.reads_bitmap_touched_stream_count = read_plan_timings.bitmap_touched_stream_count;
+        timings.reads_bitmap_final_open_stream_count =
+            read_plan_timings.bitmap_final_open_stream_count;
+        timings.reads_dir_index_ms = read_plan_timings.dir_index_ms;
+        timings.reads_dir_index_us = read_plan_timings.dir_index_us;
+        timings.reads_dir_decode_ms = read_plan_timings.dir_decode_ms;
+        timings.reads_dir_decode_us = read_plan_timings.dir_decode_us;
+        timings.reads_dir_fragment_count = read_plan_timings.dir_fragment_count;
+        let accounted_reads_ms = timings
+            .reads_dir_list_ms
+            .saturating_add(timings.reads_dir_get_ms)
+            .saturating_add(timings.reads_dir_index_ms)
+            .saturating_add(timings.reads_dir_decode_ms)
+            .saturating_add(timings.reads_bitmap_open_streams_ms)
+            .saturating_add(timings.reads_bitmap_list_ms)
+            .saturating_add(timings.reads_bitmap_get_ms)
+            .saturating_add(timings.reads_bitmap_shape_ms)
+            .saturating_add(timings.reads_bitmap_index_ms)
+            .saturating_add(timings.reads_bitmap_compact_ms);
+        timings.reads_unaccounted_ms = timings.reads_ms.saturating_sub(accounted_reads_ms);
+        let accounted_reads_us = timings
+            .reads_dir_index_us
+            .saturating_add(timings.reads_dir_decode_us)
+            .saturating_add(timings.reads_bitmap_open_streams_us)
+            .saturating_add(timings.reads_bitmap_union_us)
+            .saturating_add(timings.reads_bitmap_shape_us)
+            .saturating_add(timings.reads_bitmap_index_us)
+            .saturating_add(timings.reads_bitmap_compact_us);
+        timings.reads_unaccounted_us =
+            (reads_start.elapsed().as_micros() as u64).saturating_sub(accounted_reads_us);
 
         let phase_b_has_writes = !log_dir_plan.buckets.is_empty()
             || log_bitmap_plan.has_writes
