@@ -101,6 +101,31 @@ impl<'a, M: MetaStore, B: BlobStore> WriteSession<'a, M, B> {
             });
     }
 
+    pub fn scan_put_uncached(
+        &self,
+        table: &CachedScannableTable<M>,
+        partition: &[u8],
+        clustering: &[u8],
+        value: Bytes,
+    ) {
+        self.meta_pending
+            .lock()
+            .expect("write session meta_pending poisoned")
+            .push(MetaWriteOp::ScanPut {
+                table: table.table_id(),
+                partition: partition.to_vec(),
+                clustering: clustering.to_vec(),
+                value,
+            });
+    }
+
+    pub fn extend_meta_uncached(&self, ops: Vec<MetaWriteOp>) {
+        self.meta_pending
+            .lock()
+            .expect("write session meta_pending poisoned")
+            .extend(ops);
+    }
+
     pub fn put_blob(&self, table: &CachedBlobTable<B>, key: &[u8], value: Bytes) {
         let handle = table.cache_handle();
         handle.populate(key.to_vec(), value.clone());

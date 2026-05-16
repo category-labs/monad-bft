@@ -81,7 +81,7 @@ pub struct OpenIndexStats {
     pub approx_bytes: u64,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct OpenFragmentIndex<K> {
     fragments_by_key: HashMap<K, BTreeMap<u64, Bytes>>,
 }
@@ -136,7 +136,7 @@ where
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct OpenIndexesInner {
     directory: OpenFragmentIndex<DirectoryIndexKey>,
     bitmap: OpenFragmentIndex<BitmapIndexKey>,
@@ -176,6 +176,14 @@ impl OpenIndexes {
     pub(crate) fn apply_delta(&self, delta: OpenIndexesDelta) {
         let mut inner = self.inner.write().expect("open index poisoned");
         apply_delta_locked(&mut inner, delta);
+    }
+
+    pub(crate) fn projected_with_delta(&self, delta: OpenIndexesDelta) -> Self {
+        let mut inner = self.inner.read().expect("open index poisoned").clone();
+        apply_delta_locked(&mut inner, delta);
+        Self {
+            inner: RwLock::new(inner),
+        }
     }
 
     pub(crate) fn apply_eviction(&self, eviction: OpenIndexesEviction) {

@@ -21,7 +21,7 @@ use crate::{
         clause::IndexedClause,
         tables::FamilyTables,
     },
-    error::{MonadChainDataError, Result},
+    error::Result,
     store::{BlobStore, MetaStore},
 };
 
@@ -101,21 +101,22 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
         local_from: u32,
         local_to: u32,
     ) -> Result<RoaringBitmap> {
-        if let Some(meta) = self
-            .load_bitmap_page_meta(stream_id, page_start_local)
+        if let Some(page) = self
+            .load_bitmap_page_artifact(stream_id, page_start_local)
             .await?
         {
-            if !overlaps(meta.min_local, meta.max_local, local_from, local_to) {
+            if !overlaps(
+                page.meta.min_local,
+                page.meta.max_local,
+                local_from,
+                local_to,
+            ) {
                 return Ok(RoaringBitmap::new());
             }
 
-            let page_blob = self
-                .load_bitmap_page_blob(stream_id, page_start_local)
-                .await?
-                .ok_or(MonadChainDataError::MissingData("missing bitmap page blob"))?;
             // Page loads may include out-of-range bits from a partially overlapping
             // page; the caller clips the final merged bitmap once per clause.
-            return Ok(decode_bitmap_blob(page_blob.as_ref())?.bitmap);
+            return Ok(decode_bitmap_blob(page.bitmap_blob.as_ref())?.bitmap);
         }
 
         let mut page_bitmap = RoaringBitmap::new();

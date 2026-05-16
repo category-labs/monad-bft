@@ -20,7 +20,9 @@ use bytes::Bytes;
 use crate::{
     engine::ingest::ReadPlanningTimings,
     error::{MonadChainDataError, Result},
-    store::{blob::BlobStore, CachedKvTable, CachedScannableTable, MetaStore, WriteSession},
+    store::{
+        blob::BlobStore, CachedKvTable, CachedScannableTable, MetaStore, MetaWriteOp, WriteSession,
+    },
 };
 
 pub const DIRECTORY_BUCKET_SIZE: u64 = 10_000;
@@ -120,20 +122,9 @@ impl<M: MetaStore> PrimaryDirTables<M> {
             end_primary_id_exclusive: first_primary_id.saturating_add(u64::from(count)),
         };
 
-        let mut current_bucket_start = bucket_start(first_primary_id);
-        let last_bucket_start = if count == 0 {
-            current_bucket_start
-        } else {
-            bucket_start(fragment.end_primary_id_exclusive.saturating_sub(1))
-        };
-
-        loop {
-            self.put_fragment(current_bucket_start, block_number, &fragment)
+        for bucket_start in fragment_bucket_starts(first_primary_id, count) {
+            self.put_fragment(bucket_start, block_number, &fragment)
                 .await?;
-            if current_bucket_start == last_bucket_start {
-                break;
-            }
-            current_bucket_start = current_bucket_start.saturating_add(DIRECTORY_BUCKET_SIZE);
         }
 
         Ok(())
@@ -253,23 +244,47 @@ impl<M: MetaStore> PrimaryDirTables<M> {
             end_primary_id_exclusive: first_primary_id.saturating_add(u64::from(count)),
         };
 
-        let mut current_bucket_start = bucket_start(first_primary_id);
-        let last_bucket_start = if count == 0 {
-            current_bucket_start
-        } else {
-            bucket_start(fragment.end_primary_id_exclusive.saturating_sub(1))
+        let encoded = Bytes::from(fragment.encode());
+        for bucket_start in fragment_bucket_starts(first_primary_id, count) {
+            let partition = u64_key(bucket_start);
+            let clustering = u64_key(block_number);
+            w.scan_put(&self.fragments, &partition, &clustering, encoded.clone());
+        }
+    }
+
+    pub fn stage_block_fragment_filtered<B, F>(
+        &self,
+        w: &WriteSession<'_, M, B>,
+        block_number: u64,
+        first_primary_id: u64,
+        count: u32,
+        mut should_write_bucket: F,
+    ) where
+        B: BlobStore,
+        F: FnMut(u64) -> bool,
+    {
+        let fragment = PrimaryDirFragment {
+            block_number,
+            first_primary_id,
+            end_primary_id_exclusive: first_primary_id.saturating_add(u64::from(count)),
         };
 
         let encoded = Bytes::from(fragment.encode());
-        loop {
-            let partition = u64_key(current_bucket_start);
-            let clustering = u64_key(block_number);
-            w.scan_put(&self.fragments, &partition, &clustering, encoded.clone());
-            if current_bucket_start == last_bucket_start {
-                break;
+        let clustering = u64_key(block_number);
+        let mut ops = Vec::new();
+        for bucket_start in fragment_bucket_starts(first_primary_id, count) {
+            if !should_write_bucket(bucket_start) {
+                continue;
             }
-            current_bucket_start = current_bucket_start.saturating_add(DIRECTORY_BUCKET_SIZE);
+            let partition = u64_key(bucket_start);
+            ops.push(MetaWriteOp::ScanPut {
+                table: self.fragments.table_id(),
+                partition: partition.to_vec(),
+                clustering: clustering.to_vec(),
+                value: encoded.clone(),
+            });
         }
+        w.extend_meta_uncached(ops);
     }
 
     async fn put_fragment(
@@ -294,6 +309,13 @@ pub fn bucket_start(primary_id: u64) -> u64 {
 pub(crate) fn bucket_starts_for_window(first_primary_id: u64, count: u32) -> Vec<u64> {
     if count == 0 {
         return Vec::new();
+    }
+    fragment_bucket_starts(first_primary_id, count)
+}
+
+pub(crate) fn fragment_bucket_starts(first_primary_id: u64, count: u32) -> Vec<u64> {
+    if count == 0 {
+        return vec![bucket_start(first_primary_id)];
     }
 
     let mut out = Vec::new();
