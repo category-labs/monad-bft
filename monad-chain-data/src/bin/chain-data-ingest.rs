@@ -19,6 +19,8 @@
 //! the same `--block-data-source "fs /path"` / `"aws bucket"` / etc.
 //! syntax works as in the other archive bins.
 
+#![recursion_limit = "256"]
+
 use std::{
     path::PathBuf,
     sync::{
@@ -30,7 +32,7 @@ use std::{
 
 use alloy_eips::eip2718::Encodable2718;
 use alloy_primitives::Bytes;
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use eyre::{bail, eyre, Context, Result};
 use futures::{stream, StreamExt};
 use monad_archive::{
@@ -45,8 +47,12 @@ use monad_archive::{
 };
 use monad_chain_data::{
     compute_trace_addresses,
-    store::{CacheConfig, FjallStore, FjallTuning},
-    CallKind, FinalizedBlock, IngestTrace, IngestTx, MonadChainDataService, QueryLimits,
+    store::{
+        BlobCompressionConfig, BlobCompressionSnapshot, BlobCompressionStats, BlobCompressionStore,
+        CacheConfig, FjallStore, FjallTuning, MetaStore, MetaStoreCas, TableId,
+    },
+    BlockRecord, CallKind, FamilyWindowRecord, FinalizedBlock, InMemoryBlobStore,
+    InMemoryMetaStore, IngestTrace, IngestTx, MonadChainDataService, PrimaryId, QueryLimits,
 };
 use opentelemetry::KeyValue;
 use tokio::sync::Semaphore;
@@ -129,10 +135,16 @@ struct Cli {
     #[arg(long, default_value_t = 1)]
     min_concurrency: usize,
 
-    /// Upper bound on adaptive concurrency. Also caps the prefetch buffer
-    /// size when autotuning. Ignored unless `--autotune`.
+    /// Upper bound on adaptive concurrency. Ignored unless `--autotune`.
     #[arg(long, default_value_t = 5000)]
     max_concurrency: usize,
+
+    /// Number of ordered fetch futures to keep buffered ahead of ingest.
+    /// This is separate from `--concurrency`: the buffer may hold many
+    /// pending/completed block fetches while the concurrency semaphore caps
+    /// active archive requests.
+    #[arg(long)]
+    fetch_buffer: Option<usize>,
 
     /// Skip fetching and ingesting execution traces. With this flag set,
     /// `Family::Trace` stays empty for every ingested block, and both
@@ -175,6 +187,31 @@ struct Cli {
     /// entirely (compile-time skip).
     #[arg(long)]
     cache_mib: Option<usize>,
+
+    /// App-level blob compression for newly written block blobs. Reads remain
+    /// compatible with old raw blobs because compressed values carry a magic
+    /// header and raw values are left unwrapped.
+    #[arg(long, value_enum, default_value_t = BlobCompressionArg::None)]
+    blob_compression: BlobCompressionArg,
+
+    /// zstd compression level used when `--blob-compression zstd`.
+    #[arg(long, default_value_t = 1)]
+    blob_compression_level: i32,
+
+    /// Minimum blob size eligible for app-level compression.
+    #[arg(long, default_value_t = 1024)]
+    blob_compression_min_bytes: usize,
+
+    /// Fetch and ingest into in-memory stores to profile blob compression
+    /// ratio/cost without writing anything into fjall. Requires --start.
+    #[arg(long)]
+    profile_blob_compression_only: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum BlobCompressionArg {
+    None,
+    Zstd,
 }
 
 #[tokio::main]
@@ -236,6 +273,9 @@ async fn main() -> Result<()> {
             );
         }
     }
+    if cli.profile_blob_compression_only {
+        return profile_blob_compression_only(&cli).await;
+    }
 
     let tuning = FjallTuning {
         max_journaling_size_bytes: cli.fjall_journal_mib * 1024 * 1024,
@@ -280,9 +320,27 @@ async fn main() -> Result<()> {
         scaled_total_entries = cache_config.total_entries(),
         "cache config"
     );
+    let blob_compression = match cli.blob_compression {
+        BlobCompressionArg::None => BlobCompressionConfig::none(),
+        BlobCompressionArg::Zstd => {
+            BlobCompressionConfig::zstd(cli.blob_compression_level, cli.blob_compression_min_bytes)
+        }
+    };
+    let blob_compression_stats = BlobCompressionStats::default();
+    let blob_store = BlobCompressionStore::new(
+        store.clone(),
+        blob_compression,
+        blob_compression_stats.clone(),
+    );
+    info!(
+        blob_compression = ?cli.blob_compression,
+        blob_compression_level = cli.blob_compression_level,
+        blob_compression_min_bytes = cli.blob_compression_min_bytes,
+        "blob compression config"
+    );
     let service = MonadChainDataService::with_cache_config(
         store.clone(),
-        store.clone(),
+        blob_store,
         QueryLimits::UNLIMITED,
         cache_config,
     );
@@ -334,14 +392,6 @@ async fn main() -> Result<()> {
         .await
         .context("building block data reader")?;
 
-    info!(
-        start,
-        end,
-        concurrency = cli.concurrency,
-        data_dir = %cli.data_dir.display(),
-        "starting ingest"
-    );
-
     // Concurrency controller. When `--autotune` is off, min == max == initial
     // and `tune()` is never called, so the controller degenerates into a
     // fixed semaphore equivalent to the old `buffered(N)`.
@@ -357,13 +407,33 @@ async fn main() -> Result<()> {
         max_concurrency,
     ));
 
+    let fetch_buffer = cli.fetch_buffer.unwrap_or(max_concurrency);
+    if fetch_buffer == 0 {
+        bail!("--fetch-buffer must be >= 1");
+    }
+    if fetch_buffer < max_concurrency {
+        warn!(
+            fetch_buffer,
+            max_concurrency,
+            "--fetch-buffer is below the maximum fetch concurrency; active concurrency may be capped by the smaller buffer"
+        );
+    }
+    info!(
+        start,
+        end,
+        concurrency = cli.concurrency,
+        fetch_buffer,
+        batch_size = cli.batch_size,
+        data_dir = %cli.data_dir.display(),
+        "starting ingest"
+    );
+
     // A window narrower than the prefetch buffer can fall entirely inside
     // a drain phase — the consumer empties already-completed slots while
     // no new fetches finish in that span — producing an all-zero stats
     // window that flips the classifier to nonsense. Floor `log_every` at
-    // `max_concurrency` so each window must span at least one buffer
-    // refill even after autotune ramps up.
-    let log_every = cli.log_every.max(max_concurrency as u64);
+    // `fetch_buffer` so each window must span at least one buffer refill.
+    let log_every = cli.log_every.max(fetch_buffer as u64);
     if log_every != cli.log_every {
         info!(
             requested = cli.log_every,
@@ -376,7 +446,7 @@ async fn main() -> Result<()> {
     // hour to fire; the wall-clock fallback keeps feedback flowing.
     const WINDOW_MAX_WALL: Duration = Duration::from_secs(30);
 
-    // Bounded prefetch. `buffered(max_concurrency)` caps the parked task
+    // Bounded prefetch. `buffered(fetch_buffer)` caps the parked task
     // count; the semaphore inside the closure is the actual dynamic limit.
     // Fetches issue in input (block-number) order, so the consumer side
     // stays sequential — required because ingest_block validates
@@ -412,7 +482,7 @@ async fn main() -> Result<()> {
                     .await
                 }
             })
-            .buffered(max_concurrency)
+            .buffered(fetch_buffer)
     };
     futures::pin_mut!(fetch_stream);
 
@@ -427,6 +497,7 @@ async fn main() -> Result<()> {
     let mut ingest_ms: Vec<u64> = Vec::with_capacity(cli.log_every as usize);
     let mut wait_ms: Vec<u64> = Vec::with_capacity(cli.log_every as usize);
     let mut phase = PhaseStats::default();
+    let mut last_blob_compression = BlobCompressionSnapshot::default();
     let batch_size = cli.batch_size;
     let mut pending: Vec<(u64, FinalizedBlock)> = Vec::with_capacity(batch_size);
     let mut stream_done = false;
@@ -487,14 +558,17 @@ async fn main() -> Result<()> {
                 std::mem::take(&mut *fetch_stats.lock().expect("fetch stats poisoned"));
             let fetch_p50 = percentile(&fetch_window.durations_ms, 0.50);
             let fetch_p99 = percentile(&fetch_window.durations_ms, 0.99);
+            let fetch_request_wall_total_ms = sum_u64(&fetch_window.durations_ms);
             let ingest_p50 = percentile(&ingest_ms, 0.50);
             let ingest_p99 = percentile(&ingest_ms, 0.99);
+            let ingest_batch_wall_total_ms = sum_u64(&ingest_ms);
             let wait_avg_ms = if wait_ms.is_empty() {
                 0.0
             } else {
                 wait_ms.iter().sum::<u64>() as f64 / wait_ms.len() as f64
             };
             let wait_max_ms = wait_ms.iter().copied().max().unwrap_or(0);
+            let consumer_wait_wall_total_ms = sum_u64(&wait_ms);
             let retry_rate = if window_blocks == 0 {
                 0.0
             } else {
@@ -524,6 +598,10 @@ async fn main() -> Result<()> {
             let cache_hit_ratio_agg = aggregate_cache_hit_ratio(&cache_window);
             emit_cache_metrics(&metrics, &cache_window);
             let open_index_stats = service.open_index_stats();
+            let blob_compression_window = blob_compression_stats
+                .snapshot()
+                .saturating_sub(&last_blob_compression);
+            last_blob_compression = blob_compression_stats.snapshot();
 
             let blocks_per_sec = round_2(window_blocks as f64 / elapsed_secs);
             let txs_per_sec = round_2(window_txs as f64 / elapsed_secs);
@@ -546,6 +624,38 @@ async fn main() -> Result<()> {
                 fetch_p99_ms = fetch_p99,
                 ingest_p50_ms = ingest_p50,
                 ingest_p99_ms = ingest_p99,
+                window_wall_ms = round_2(elapsed_secs * 1_000.0),
+                fetch_request_wall_total_ms,
+                ingest_batch_wall_total_ms,
+                stage_a_wall_total_ms = phase_summary.stage_a_wall_ms_total,
+                stage_a_log_plan_work_total_ms = phase_summary.stage_a_log_plan_ms_total,
+                stage_a_tx_plan_work_total_ms = phase_summary.stage_a_tx_plan_ms_total,
+                stage_a_trace_plan_work_total_ms = phase_summary.stage_a_trace_plan_ms_total,
+                stage_a_delta_work_total_ms = phase_summary.stage_a_delta_ms_total,
+                stage_a_session_stage_wall_total_ms = phase_summary.stage_a_session_stage_ms_total,
+                stage_a_bitmap_fragment_count = phase_summary.stage_a_bitmap_fragment_count,
+                stage_a_hash_location_count = phase_summary.stage_a_hash_location_count,
+                stage_a_dir_fragments_total = phase_summary.stage_a_dir_fragments_total,
+                stage_a_dir_fragments_written = phase_summary.stage_a_dir_fragments_written,
+                stage_a_dir_fragments_skipped = phase_summary.stage_a_dir_fragments_skipped,
+                stage_a_bitmap_fragments_total = phase_summary.stage_a_bitmap_fragments_total,
+                stage_a_bitmap_fragments_written = phase_summary.stage_a_bitmap_fragments_written,
+                stage_a_bitmap_fragments_skipped = phase_summary.stage_a_bitmap_fragments_skipped,
+                phase_a_write_ops_total = phase_summary.phase_a_write_ops_total,
+                phase_a_write_bytes_total = phase_summary.phase_a_write_bytes_total,
+                phase_a_write_ops_by_table = %phase_summary.phase_a_write_ops_by_table,
+                phase_a_write_bytes_by_table = %phase_summary.phase_a_write_bytes_by_table,
+                phase_b_write_ops_total = phase_summary.phase_b_write_ops_total,
+                phase_b_write_bytes_total = phase_summary.phase_b_write_bytes_total,
+                phase_b_write_ops_by_table = %phase_summary.phase_b_write_ops_by_table,
+                phase_b_write_bytes_by_table = %phase_summary.phase_b_write_bytes_by_table,
+                commit_a_meta_wall_total_ms = phase_summary.commit_a_meta_wall_ms_total,
+                commit_a_blob_wall_total_ms = phase_summary.commit_a_blob_wall_ms_total,
+                reads_wall_total_ms = phase_summary.reads_wall_ms_total,
+                stage_b_wall_total_ms = phase_summary.stage_b_wall_ms_total,
+                commit_b_wall_total_ms = phase_summary.commit_b_wall_ms_total,
+                cas_wall_total_ms = phase_summary.cas_wall_ms_total,
+                consumer_wait_wall_total_ms,
                 stage_a_p50_ms = phase_summary.stage_a_p50,
                 stage_a_p99_ms = phase_summary.stage_a_p99,
                 commit_a_meta_p50_ms = phase_summary.commit_a_meta_p50,
@@ -584,9 +694,23 @@ async fn main() -> Result<()> {
                 reads_bitmap_open_write_total_ms = phase_summary.reads_bitmap_open_write_ms_total,
                 reads_bitmap_index_total_ms = phase_summary.reads_bitmap_index_ms_total,
                 reads_bitmap_compact_total_ms = phase_summary.reads_bitmap_compact_ms_total,
+                reads_bitmap_compact_wall_total_ms =
+                    phase_summary.reads_bitmap_compact_wall_ms_total,
                 reads_dir_index_total_ms = phase_summary.reads_dir_index_ms_total,
                 reads_dir_decode_total_ms = phase_summary.reads_dir_decode_ms_total,
                 reads_unaccounted_total_ms = phase_summary.reads_unaccounted_ms_total,
+                reads_bitmap_open_streams_work_total_ms =
+                    phase_summary.reads_bitmap_open_streams_ms_total,
+                reads_bitmap_shape_work_total_ms = phase_summary.reads_bitmap_shape_ms_total,
+                reads_bitmap_union_work_total_ms = phase_summary.reads_bitmap_union_ms_total,
+                reads_bitmap_frontier_work_total_ms = phase_summary.reads_bitmap_frontier_ms_total,
+                reads_bitmap_open_write_work_total_ms =
+                    phase_summary.reads_bitmap_open_write_ms_total,
+                reads_bitmap_index_work_total_ms = phase_summary.reads_bitmap_index_ms_total,
+                reads_bitmap_compact_work_total_ms = phase_summary.reads_bitmap_compact_ms_total,
+                reads_dir_index_work_total_ms = phase_summary.reads_dir_index_ms_total,
+                reads_dir_decode_work_total_ms = phase_summary.reads_dir_decode_ms_total,
+                reads_unaccounted_work_total_ms = phase_summary.reads_unaccounted_ms_total,
                 reads_dir_list_count = phase_summary.reads_dir_list_count,
                 reads_dir_get_count = phase_summary.reads_dir_get_count,
                 reads_dir_fragment_count = phase_summary.reads_dir_fragment_count,
@@ -619,6 +743,15 @@ async fn main() -> Result<()> {
                 consumer_wait_max_ms = wait_max_ms,
                 retries = fetch_window.retry_attempts,
                 cache_hit_ratio = round_2(cache_hit_ratio_agg),
+                blob_compression_raw_bytes = blob_compression_window.raw_input_bytes,
+                blob_compression_stored_bytes = blob_compression_window.stored_output_bytes,
+                blob_compression_ratio = round_2(blob_compression_window.ratio()),
+                blob_compression_compressed_count = blob_compression_window.compressed_count,
+                blob_compression_raw_count = blob_compression_window.raw_count,
+                blob_compression_encode_wall_total_ms =
+                    round_2(blob_compression_window.encode_wall_us as f64 / 1_000.0),
+                blob_compression_encode_work_total_ms =
+                    round_2(blob_compression_window.encode_work_us as f64 / 1_000.0),
                 open_index_directory_keys = open_index_stats.directory_keys,
                 open_index_directory_blocks = open_index_stats.directory_blocks,
                 open_index_bitmap_stream_pages = open_index_stats.bitmap_stream_pages,
@@ -669,6 +802,248 @@ async fn main() -> Result<()> {
     }
 
     info!(end, total_txs, total_logs, total_traces, "ingest complete");
+    Ok(())
+}
+
+async fn profile_blob_compression_only(cli: &Cli) -> Result<()> {
+    if cli.blob_compression == BlobCompressionArg::None {
+        bail!("--profile-blob-compression-only requires --blob-compression zstd");
+    }
+    let Some(start) = cli.start else {
+        bail!("--profile-blob-compression-only requires explicit --start");
+    };
+    let end = match (cli.end, cli.count) {
+        (Some(e), None) => e,
+        (None, Some(c)) => {
+            let Some(e) = start.checked_add(c - 1) else {
+                bail!("start + count - 1 overflows u64 (start={start}, count={c})");
+            };
+            e
+        }
+        _ => unreachable!("clap enforces exactly one of --end or --count"),
+    };
+    if start > end {
+        bail!("start ({}) must be <= end ({})", start, end);
+    }
+
+    let metrics = Metrics::new(
+        cli.otel_endpoint.as_deref(),
+        "chain-data-ingest-compression-profile",
+        "0".to_string(),
+        Duration::from_secs(60),
+    )
+    .context("building metrics")?;
+    let reader = cli
+        .block_data_source
+        .build(&metrics)
+        .await
+        .context("building block data reader")?;
+
+    let blob_compression =
+        BlobCompressionConfig::zstd(cli.blob_compression_level, cli.blob_compression_min_bytes);
+    let compression_stats = BlobCompressionStats::default();
+    let meta_store = InMemoryMetaStore::default();
+    if start > 1 {
+        let (_, prev_block, prev_receipts, prev_traces) = fetch_block(&reader, start - 1, false)
+            .await
+            .with_context(|| {
+                format!(
+                    "fetching previous block {} for in-memory continuity seed",
+                    start - 1
+                )
+            })?;
+        let prev = into_finalized_block(prev_block, prev_receipts, prev_traces)
+            .with_context(|| format!("transforming previous block {}", start - 1))?;
+        seed_profile_publication(&meta_store, &prev).await?;
+    }
+
+    let blob_store = BlobCompressionStore::new(
+        InMemoryBlobStore::default(),
+        blob_compression,
+        compression_stats.clone(),
+    );
+    let service = MonadChainDataService::with_cache_config(
+        meta_store,
+        blob_store,
+        QueryLimits::UNLIMITED,
+        CacheConfig::default().scale(0, 1),
+    );
+
+    let fetch_buffer = cli.fetch_buffer.unwrap_or(cli.concurrency);
+    if fetch_buffer == 0 {
+        bail!("--fetch-buffer must be >= 1");
+    }
+    let permits = Arc::new(Semaphore::new(cli.concurrency));
+    let fetch_stats = Arc::new(Mutex::new(FetchStats::default()));
+    let max_retries = cli.max_retries;
+    let initial_backoff = Duration::from_millis(cli.retry_backoff_ms);
+    let fetch_traces = !cli.no_traces;
+
+    info!(
+        start,
+        end,
+        concurrency = cli.concurrency,
+        fetch_buffer,
+        batch_size = cli.batch_size,
+        blob_compression = ?cli.blob_compression,
+        blob_compression_level = cli.blob_compression_level,
+        blob_compression_min_bytes = cli.blob_compression_min_bytes,
+        "starting in-memory blob compression profile"
+    );
+
+    let fetch_stream = {
+        let fetch_stats = fetch_stats.clone();
+        stream::iter(start..=end)
+            .map(move |n| {
+                let reader = reader.clone();
+                let stats = fetch_stats.clone();
+                let permits = permits.clone();
+                async move {
+                    let _permit = permits
+                        .acquire_owned()
+                        .await
+                        .expect("concurrency semaphore should never close");
+                    fetch_block_with_retry(
+                        &reader,
+                        n,
+                        max_retries,
+                        initial_backoff,
+                        &stats,
+                        fetch_traces,
+                    )
+                    .await
+                }
+            })
+            .buffered(fetch_buffer)
+    };
+    futures::pin_mut!(fetch_stream);
+
+    let started = Instant::now();
+    let mut total_blocks = 0_u64;
+    let mut total_txs = 0_u64;
+    let mut total_logs = 0_u64;
+    let mut total_traces = 0_u64;
+    let mut ingest_ms = Vec::new();
+    let mut phase = PhaseStats::default();
+    let mut pending: Vec<(u64, FinalizedBlock)> = Vec::with_capacity(cli.batch_size);
+    let mut stream_done = false;
+
+    loop {
+        pending.clear();
+        for _ in 0..cli.batch_size {
+            let Some(item) = fetch_stream.next().await else {
+                stream_done = true;
+                break;
+            };
+            let (n, block, receipts, traces) = item?;
+            let finalized = into_finalized_block(block, receipts, traces)
+                .with_context(|| format!("transforming block {n}"))?;
+            pending.push((n, finalized));
+        }
+        if pending.is_empty() {
+            break;
+        }
+        let last_n = pending.last().expect("pending non-empty").0;
+        let blocks: Vec<FinalizedBlock> = pending.iter().map(|(_, b)| b.clone()).collect();
+        let ingest_started = Instant::now();
+        let (outcomes, timings) = service
+            .ingest_blocks(blocks)
+            .await
+            .with_context(|| format!("profiling ingest batch ending at block {last_n}"))?;
+        ingest_ms.push(ingest_started.elapsed().as_millis() as u64);
+        phase.record(&timings);
+        for outcome in outcomes {
+            total_blocks += 1;
+            total_txs += outcome.written_txs as u64;
+            total_logs += outcome.written_logs as u64;
+            total_traces += outcome.written_traces as u64;
+        }
+        if stream_done {
+            break;
+        }
+    }
+
+    let fetch_window = fetch_stats.lock().expect("fetch stats poisoned");
+    let phase_summary = phase.summary();
+    let compression = compression_stats.snapshot();
+    let elapsed_secs = started.elapsed().as_secs_f64().max(1e-9);
+    info!(
+        total_blocks,
+        total_txs,
+        total_logs,
+        total_traces,
+        elapsed_secs = round_2(elapsed_secs),
+        blocks_per_sec = round_2(total_blocks as f64 / elapsed_secs),
+        fetch_p50_ms = percentile(&fetch_window.durations_ms, 0.50),
+        fetch_p99_ms = percentile(&fetch_window.durations_ms, 0.99),
+        ingest_p50_ms = percentile(&ingest_ms, 0.50),
+        ingest_p99_ms = percentile(&ingest_ms, 0.99),
+        stage_a_wall_total_ms = phase_summary.stage_a_wall_ms_total,
+        commit_a_blob_wall_total_ms = phase_summary.commit_a_blob_wall_ms_total,
+        phase_a_write_ops_total = phase_summary.phase_a_write_ops_total,
+        phase_a_write_bytes_total = phase_summary.phase_a_write_bytes_total,
+        phase_a_write_ops_by_table = %phase_summary.phase_a_write_ops_by_table,
+        phase_a_write_bytes_by_table = %phase_summary.phase_a_write_bytes_by_table,
+        phase_b_write_ops_total = phase_summary.phase_b_write_ops_total,
+        phase_b_write_bytes_total = phase_summary.phase_b_write_bytes_total,
+        phase_b_write_ops_by_table = %phase_summary.phase_b_write_ops_by_table,
+        phase_b_write_bytes_by_table = %phase_summary.phase_b_write_bytes_by_table,
+        blob_compression_raw_bytes = compression.raw_input_bytes,
+        blob_compression_stored_bytes = compression.stored_output_bytes,
+        blob_compression_saved_bytes = compression
+            .raw_input_bytes
+            .saturating_sub(compression.stored_output_bytes),
+        blob_compression_ratio = round_2(compression.ratio()),
+        blob_compression_compressed_count = compression.compressed_count,
+        blob_compression_raw_count = compression.raw_count,
+        blob_compression_encode_wall_total_ms =
+            round_2(compression.encode_wall_us as f64 / 1_000.0),
+        blob_compression_encode_work_total_ms =
+            round_2(compression.encode_work_us as f64 / 1_000.0),
+        retries = fetch_window.retry_attempts,
+        "blob compression profile complete"
+    );
+    Ok(())
+}
+
+async fn seed_profile_publication(
+    meta_store: &InMemoryMetaStore,
+    prev: &FinalizedBlock,
+) -> Result<()> {
+    let empty = FamilyWindowRecord {
+        first_primary_id: PrimaryId::ZERO,
+        count: 0,
+    };
+    let record = BlockRecord {
+        block_number: prev.block_number(),
+        block_hash: prev.block_hash(),
+        parent_hash: prev.parent_hash(),
+        logs: empty,
+        txs: empty,
+        traces: empty,
+    };
+    meta_store
+        .put(
+            TableId::new("block_record"),
+            &prev.block_number().to_be_bytes(),
+            bytes::Bytes::from(record.encode()),
+        )
+        .await
+        .context("seeding previous block record")?;
+    meta_store
+        .cas_put(
+            TableId::new("publication_state"),
+            b"state",
+            None,
+            bytes::Bytes::from(
+                monad_chain_data::primitives::state::PublicationState {
+                    indexed_finalized_head: prev.block_number(),
+                }
+                .encode(),
+            ),
+        )
+        .await
+        .context("seeding publication state")?;
     Ok(())
 }
 
@@ -758,6 +1133,21 @@ struct FetchStats {
 #[derive(Default)]
 struct PhaseStats {
     stage_a: Vec<u64>,
+    stage_a_log_plan_us: u64,
+    stage_a_tx_plan_us: u64,
+    stage_a_trace_plan_us: u64,
+    stage_a_delta_us: u64,
+    stage_a_session_stage_us: u64,
+    stage_a_bitmap_fragment_count: u64,
+    stage_a_hash_location_count: u64,
+    stage_a_dir_fragments_total: u64,
+    stage_a_dir_fragments_written: u64,
+    stage_a_dir_fragments_skipped: u64,
+    stage_a_bitmap_fragments_total: u64,
+    stage_a_bitmap_fragments_written: u64,
+    stage_a_bitmap_fragments_skipped: u64,
+    phase_a_write_counts: monad_chain_data::WriteOpCounts,
+    phase_b_write_counts: monad_chain_data::WriteOpCounts,
     commit_a_meta: Vec<u64>,
     commit_a_blob: Vec<u64>,
     reads: Vec<u64>,
@@ -789,6 +1179,7 @@ struct PhaseStats {
     reads_bitmap_open_write_us: u64,
     reads_bitmap_index_us: u64,
     reads_bitmap_compact_us: u64,
+    reads_bitmap_compact_wall_us: u64,
     reads_bitmap_compact_count: u64,
     reads_bitmap_frontier_stream_count: u64,
     reads_bitmap_union_page_count: u64,
@@ -805,6 +1196,34 @@ struct PhaseStats {
 }
 
 struct PhaseSummary {
+    stage_a_wall_ms_total: u64,
+    commit_a_meta_wall_ms_total: u64,
+    commit_a_blob_wall_ms_total: u64,
+    reads_wall_ms_total: u64,
+    stage_b_wall_ms_total: u64,
+    commit_b_wall_ms_total: u64,
+    cas_wall_ms_total: u64,
+    stage_a_log_plan_ms_total: f64,
+    stage_a_tx_plan_ms_total: f64,
+    stage_a_trace_plan_ms_total: f64,
+    stage_a_delta_ms_total: f64,
+    stage_a_session_stage_ms_total: f64,
+    stage_a_bitmap_fragment_count: u64,
+    stage_a_hash_location_count: u64,
+    stage_a_dir_fragments_total: u64,
+    stage_a_dir_fragments_written: u64,
+    stage_a_dir_fragments_skipped: u64,
+    stage_a_bitmap_fragments_total: u64,
+    stage_a_bitmap_fragments_written: u64,
+    stage_a_bitmap_fragments_skipped: u64,
+    phase_a_write_ops_total: u64,
+    phase_a_write_bytes_total: u64,
+    phase_a_write_ops_by_table: String,
+    phase_a_write_bytes_by_table: String,
+    phase_b_write_ops_total: u64,
+    phase_b_write_bytes_total: u64,
+    phase_b_write_ops_by_table: String,
+    phase_b_write_bytes_by_table: String,
     stage_a_p50: u64,
     stage_a_p99: u64,
     commit_a_meta_p50: u64,
@@ -849,6 +1268,7 @@ struct PhaseSummary {
     reads_bitmap_open_write_ms_total: f64,
     reads_bitmap_index_ms_total: f64,
     reads_bitmap_compact_ms_total: f64,
+    reads_bitmap_compact_wall_ms_total: f64,
     reads_bitmap_compact_count: u64,
     reads_bitmap_frontier_stream_count: u64,
     reads_bitmap_union_page_count: u64,
@@ -871,6 +1291,43 @@ struct PhaseSummary {
 impl PhaseStats {
     fn record(&mut self, t: &monad_chain_data::IngestBatchTimings) {
         self.stage_a.push(t.stage_a_ms);
+        self.stage_a_log_plan_us = self
+            .stage_a_log_plan_us
+            .saturating_add(t.stage_a_log_plan_us);
+        self.stage_a_tx_plan_us = self.stage_a_tx_plan_us.saturating_add(t.stage_a_tx_plan_us);
+        self.stage_a_trace_plan_us = self
+            .stage_a_trace_plan_us
+            .saturating_add(t.stage_a_trace_plan_us);
+        self.stage_a_delta_us = self.stage_a_delta_us.saturating_add(t.stage_a_delta_us);
+        self.stage_a_session_stage_us = self
+            .stage_a_session_stage_us
+            .saturating_add(t.stage_a_session_stage_us);
+        self.stage_a_bitmap_fragment_count = self
+            .stage_a_bitmap_fragment_count
+            .saturating_add(t.stage_a_bitmap_fragment_count);
+        self.stage_a_hash_location_count = self
+            .stage_a_hash_location_count
+            .saturating_add(t.stage_a_hash_location_count);
+        self.stage_a_dir_fragments_total = self
+            .stage_a_dir_fragments_total
+            .saturating_add(t.stage_a_dir_fragments_total);
+        self.stage_a_dir_fragments_written = self
+            .stage_a_dir_fragments_written
+            .saturating_add(t.stage_a_dir_fragments_written);
+        self.stage_a_dir_fragments_skipped = self
+            .stage_a_dir_fragments_skipped
+            .saturating_add(t.stage_a_dir_fragments_skipped);
+        self.stage_a_bitmap_fragments_total = self
+            .stage_a_bitmap_fragments_total
+            .saturating_add(t.stage_a_bitmap_fragments_total);
+        self.stage_a_bitmap_fragments_written = self
+            .stage_a_bitmap_fragments_written
+            .saturating_add(t.stage_a_bitmap_fragments_written);
+        self.stage_a_bitmap_fragments_skipped = self
+            .stage_a_bitmap_fragments_skipped
+            .saturating_add(t.stage_a_bitmap_fragments_skipped);
+        self.phase_a_write_counts.merge(&t.phase_a_write_counts);
+        self.phase_b_write_counts.merge(&t.phase_b_write_counts);
         self.commit_a_meta.push(t.commit_a_meta_ms);
         self.commit_a_blob.push(t.commit_a_blob_ms);
         self.reads.push(t.reads_ms);
@@ -931,6 +1388,9 @@ impl PhaseStats {
         self.reads_bitmap_compact_us = self
             .reads_bitmap_compact_us
             .saturating_add(t.reads_bitmap_compact_us);
+        self.reads_bitmap_compact_wall_us = self
+            .reads_bitmap_compact_wall_us
+            .saturating_add(t.reads_bitmap_compact_wall_us);
         self.reads_bitmap_compact_count = self
             .reads_bitmap_compact_count
             .saturating_add(t.reads_bitmap_compact_count);
@@ -975,6 +1435,34 @@ impl PhaseStats {
             self.phase_b_skipped as f64 / self.phase_b_total as f64
         };
         PhaseSummary {
+            stage_a_wall_ms_total: sum_u64(&self.stage_a),
+            commit_a_meta_wall_ms_total: sum_u64(&self.commit_a_meta),
+            commit_a_blob_wall_ms_total: sum_u64(&self.commit_a_blob),
+            reads_wall_ms_total: sum_u64(&self.reads),
+            stage_b_wall_ms_total: sum_u64(&self.stage_b),
+            commit_b_wall_ms_total: sum_u64(&self.commit_b),
+            cas_wall_ms_total: sum_u64(&self.cas),
+            stage_a_log_plan_ms_total: round_2(self.stage_a_log_plan_us as f64 / 1_000.0),
+            stage_a_tx_plan_ms_total: round_2(self.stage_a_tx_plan_us as f64 / 1_000.0),
+            stage_a_trace_plan_ms_total: round_2(self.stage_a_trace_plan_us as f64 / 1_000.0),
+            stage_a_delta_ms_total: round_2(self.stage_a_delta_us as f64 / 1_000.0),
+            stage_a_session_stage_ms_total: round_2(self.stage_a_session_stage_us as f64 / 1_000.0),
+            stage_a_bitmap_fragment_count: self.stage_a_bitmap_fragment_count,
+            stage_a_hash_location_count: self.stage_a_hash_location_count,
+            stage_a_dir_fragments_total: self.stage_a_dir_fragments_total,
+            stage_a_dir_fragments_written: self.stage_a_dir_fragments_written,
+            stage_a_dir_fragments_skipped: self.stage_a_dir_fragments_skipped,
+            stage_a_bitmap_fragments_total: self.stage_a_bitmap_fragments_total,
+            stage_a_bitmap_fragments_written: self.stage_a_bitmap_fragments_written,
+            stage_a_bitmap_fragments_skipped: self.stage_a_bitmap_fragments_skipped,
+            phase_a_write_ops_total: self.phase_a_write_counts.total_ops(),
+            phase_a_write_bytes_total: self.phase_a_write_counts.total_bytes(),
+            phase_a_write_ops_by_table: self.phase_a_write_counts.top_by_ops(12).to_string(),
+            phase_a_write_bytes_by_table: self.phase_a_write_counts.top_by_bytes(12).to_string(),
+            phase_b_write_ops_total: self.phase_b_write_counts.total_ops(),
+            phase_b_write_bytes_total: self.phase_b_write_counts.total_bytes(),
+            phase_b_write_ops_by_table: self.phase_b_write_counts.top_by_ops(12).to_string(),
+            phase_b_write_bytes_by_table: self.phase_b_write_counts.top_by_bytes(12).to_string(),
             stage_a_p50: percentile(&self.stage_a, 0.50),
             stage_a_p99: percentile(&self.stage_a, 0.99),
             commit_a_meta_p50: percentile(&self.commit_a_meta, 0.50),
@@ -1023,6 +1511,9 @@ impl PhaseStats {
             ),
             reads_bitmap_index_ms_total: round_2(self.reads_bitmap_index_us as f64 / 1_000.0),
             reads_bitmap_compact_ms_total: round_2(self.reads_bitmap_compact_us as f64 / 1_000.0),
+            reads_bitmap_compact_wall_ms_total: round_2(
+                self.reads_bitmap_compact_wall_us as f64 / 1_000.0,
+            ),
             reads_bitmap_compact_count: self.reads_bitmap_compact_count,
             reads_bitmap_frontier_stream_count: self.reads_bitmap_frontier_stream_count,
             reads_bitmap_union_page_count: self.reads_bitmap_union_page_count,
@@ -1266,6 +1757,12 @@ fn percentile(samples: &[u64], p: f64) -> u64 {
     sorted.sort_unstable();
     let idx = (((sorted.len() - 1) as f64) * p).round() as usize;
     sorted[idx]
+}
+
+fn sum_u64(samples: &[u64]) -> u64 {
+    samples
+        .iter()
+        .fold(0u64, |acc, sample| acc.saturating_add(*sample))
 }
 
 /// Maps the per-window timing signals to a single bottleneck label so the
