@@ -16,6 +16,7 @@
 use std::time::Instant;
 
 use bytes::Bytes;
+use rayon::prelude::*;
 
 use crate::{
     blocks::{
@@ -24,14 +25,17 @@ use crate::{
     engine::{
         bitmap::{global_page_start, local_page_start, stream_page_global_start},
         family::Family,
-        ingest::ReadPlanningTimings,
+        ingest::{
+            persist::{PhaseAFragmentStageStats, PhaseAFragmentWriteFilter},
+            ReadPlanningTimings,
+        },
         open_index::{
             insert_bitmap_set, insert_directory_set, OpenIndexStats, OpenIndexes, OpenIndexesDelta,
             OpenIndexesEviction,
         },
         primary_dir::{bucket_start, bucket_starts_for_window, PrimaryDirFragment},
         query::family_runner::IndexedFamilyQuery,
-        tables::{PublicationTables, Tables},
+        tables::{PublicationTables, Tables, WriteOpCounts},
     },
     error::{MonadChainDataError, Result},
     family::{FinalizedBlock, Hash32},
@@ -44,7 +48,7 @@ use crate::{
         range::ResolvedBlockWindow,
         state::{BlockRecord, LogId, TraceId, TxId},
     },
-    store::{BlobStore, CacheConfig, CasOutcome, MetaStoreCas, PublicationCasParams},
+    store::{BlobStore, CacheConfig, MetaStoreCas, PublicationCasParams},
     traces::{
         execute_block_scan_trace_query, execute_indexed_trace_query, QueryTracesRequest,
         QueryTracesResponse, TraceIngestPlan,
@@ -71,6 +75,20 @@ struct StagedBlock {
     tx_plan: TxIngestPlan,
     trace_plan: TraceIngestPlan,
     block_record: BlockRecord,
+}
+
+#[derive(Clone, Copy)]
+struct StageAPlanStarts {
+    log: LogId,
+    tx: TxId,
+    trace: TraceId,
+}
+
+struct StageAPlanOutput {
+    staged: StagedBlock,
+    log_plan_us: u64,
+    tx_plan_us: u64,
+    trace_plan_us: u64,
 }
 
 fn family_ranges<F>(staged: &[StagedBlock], pick: F) -> Vec<(u64, u64)>
@@ -143,9 +161,24 @@ pub struct IngestOutcome {
 /// exclusive: when Phase B is empty (`phase_b_skipped = true`) the head
 /// advance runs through a standalone CAS and `commit_b_ms == 0`; otherwise
 /// the CAS is folded into the Phase B commit and `cas_ms == 0`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct IngestBatchTimings {
     pub stage_a_ms: u64,
+    pub stage_a_log_plan_us: u64,
+    pub stage_a_tx_plan_us: u64,
+    pub stage_a_trace_plan_us: u64,
+    pub stage_a_delta_us: u64,
+    pub stage_a_session_stage_us: u64,
+    pub stage_a_bitmap_fragment_count: u64,
+    pub stage_a_hash_location_count: u64,
+    pub stage_a_dir_fragments_total: u64,
+    pub stage_a_dir_fragments_written: u64,
+    pub stage_a_dir_fragments_skipped: u64,
+    pub stage_a_bitmap_fragments_total: u64,
+    pub stage_a_bitmap_fragments_written: u64,
+    pub stage_a_bitmap_fragments_skipped: u64,
+    pub phase_a_write_counts: WriteOpCounts,
+    pub phase_b_write_counts: WriteOpCounts,
     pub commit_a_meta_ms: u64,
     pub commit_a_blob_ms: u64,
     pub reads_ms: u64,
@@ -167,6 +200,7 @@ pub struct IngestBatchTimings {
     pub reads_bitmap_index_us: u64,
     pub reads_bitmap_compact_ms: u64,
     pub reads_bitmap_compact_us: u64,
+    pub reads_bitmap_compact_wall_us: u64,
     pub reads_bitmap_list_count: u64,
     pub reads_bitmap_get_count: u64,
     pub reads_bitmap_fragment_count: u64,
@@ -360,7 +394,7 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
             .await?;
 
         let stage_a_start = Instant::now();
-        let mut staged: Vec<StagedBlock> = Vec::with_capacity(blocks.len());
+        let mut plan_starts: Vec<StageAPlanStarts> = Vec::with_capacity(blocks.len());
         let mut prev_record = first_previous;
         let mut prev_hash = blocks[0].parent_hash();
         for block in &blocks {
@@ -386,32 +420,109 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
                 ),
                 None => (LogId::ZERO, TxId::ZERO, TraceId::ZERO),
             };
+            plan_starts.push(StageAPlanStarts {
+                log: next_log_id,
+                tx: next_tx_id,
+                trace: next_trace_id,
+            });
 
-            let log_plan = LogIngestPlan::build(block, next_log_id)?;
-            let tx_plan = TxIngestPlan::build(block, next_tx_id)?;
-            let trace_plan = TraceIngestPlan::build(block, next_trace_id)?;
+            let log_count: u32 = block
+                .logs_by_tx
+                .iter()
+                .map(Vec::len)
+                .sum::<usize>()
+                .try_into()
+                .map_err(|_| MonadChainDataError::Decode("log count overflow"))?;
+            let tx_count = u32::try_from(block.txs.len())
+                .map_err(|_| MonadChainDataError::Decode("tx count overflow"))?;
+            let trace_count = u32::try_from(block.traces.len())
+                .map_err(|_| MonadChainDataError::Decode("trace count overflow"))?;
 
             let block_record = BlockRecord {
                 block_number: block.block_number(),
                 block_hash: block.block_hash(),
                 parent_hash: block.parent_hash(),
-                logs: log_plan.log_window,
-                txs: tx_plan.tx_window,
-                traces: trace_plan.trace_window,
+                logs: crate::primitives::state::FamilyWindowRecord {
+                    first_primary_id: next_log_id.into(),
+                    count: log_count,
+                },
+                txs: crate::primitives::state::FamilyWindowRecord {
+                    first_primary_id: next_tx_id.into(),
+                    count: tx_count,
+                },
+                traces: crate::primitives::state::FamilyWindowRecord {
+                    first_primary_id: next_trace_id.into(),
+                    count: trace_count,
+                },
             };
 
             prev_hash = block_record.block_hash;
-            prev_record = Some(block_record.clone());
-            staged.push(StagedBlock {
-                log_plan,
-                tx_plan,
-                trace_plan,
-                block_record,
-            });
+            prev_record = Some(block_record);
+        }
+
+        let planned: Vec<StageAPlanOutput> = blocks
+            .par_iter()
+            .zip(plan_starts.par_iter())
+            .map(|(block, starts)| {
+                let log_plan_start = Instant::now();
+                let log_plan = LogIngestPlan::build(block, starts.log)?;
+                let log_plan_us = log_plan_start.elapsed().as_micros() as u64;
+
+                let tx_plan_start = Instant::now();
+                let tx_plan = TxIngestPlan::build(block, starts.tx)?;
+                let tx_plan_us = tx_plan_start.elapsed().as_micros() as u64;
+
+                let trace_plan_start = Instant::now();
+                let trace_plan = TraceIngestPlan::build(block, starts.trace)?;
+                let trace_plan_us = trace_plan_start.elapsed().as_micros() as u64;
+
+                let block_record = BlockRecord {
+                    block_number: block.block_number(),
+                    block_hash: block.block_hash(),
+                    parent_hash: block.parent_hash(),
+                    logs: log_plan.log_window,
+                    txs: tx_plan.tx_window,
+                    traces: trace_plan.trace_window,
+                };
+
+                Ok(StageAPlanOutput {
+                    staged: StagedBlock {
+                        log_plan,
+                        tx_plan,
+                        trace_plan,
+                        block_record,
+                    },
+                    log_plan_us,
+                    tx_plan_us,
+                    trace_plan_us,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        let mut staged: Vec<StagedBlock> = Vec::with_capacity(planned.len());
+        for output in planned {
+            timings.stage_a_log_plan_us = timings
+                .stage_a_log_plan_us
+                .saturating_add(output.log_plan_us);
+            timings.stage_a_tx_plan_us =
+                timings.stage_a_tx_plan_us.saturating_add(output.tx_plan_us);
+            timings.stage_a_trace_plan_us = timings
+                .stage_a_trace_plan_us
+                .saturating_add(output.trace_plan_us);
+            timings.stage_a_bitmap_fragment_count = timings
+                .stage_a_bitmap_fragment_count
+                .saturating_add(output.staged.log_plan.bitmap_fragments.len() as u64)
+                .saturating_add(output.staged.tx_plan.bitmap_fragments.len() as u64)
+                .saturating_add(output.staged.trace_plan.bitmap_fragments.len() as u64);
+            timings.stage_a_hash_location_count = timings
+                .stage_a_hash_location_count
+                .saturating_add(output.staged.tx_plan.hash_locations.len() as u64);
+            staged.push(output.staged);
         }
 
         timings.stage_a_ms = stage_a_start.elapsed().as_millis() as u64;
 
+        let phase_a_delta_start = Instant::now();
         let mut phase_a_delta = OpenIndexesDelta::default();
         for st in &staged {
             let block_number = st.block_record.block_number;
@@ -437,63 +548,71 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
                 &st.trace_plan.bitmap_fragments,
             )?;
         }
+        timings.stage_a_delta_us = phase_a_delta_start.elapsed().as_micros() as u64;
+
+        let last_staged = staged.last().expect("at least one block staged");
+        let log_filter = PhaseAFragmentWriteFilter {
+            open_dir_bucket: bucket_start(
+                last_staged
+                    .log_plan
+                    .log_window
+                    .next_primary_id_exclusive()?
+                    .as_u64(),
+            ),
+            open_bitmap_page: global_page_start(
+                last_staged
+                    .log_plan
+                    .log_window
+                    .next_primary_id_exclusive()?
+                    .as_u64(),
+            ),
+        };
+        let tx_filter = PhaseAFragmentWriteFilter {
+            open_dir_bucket: bucket_start(
+                last_staged
+                    .tx_plan
+                    .tx_window
+                    .next_primary_id_exclusive()?
+                    .as_u64(),
+            ),
+            open_bitmap_page: global_page_start(
+                last_staged
+                    .tx_plan
+                    .tx_window
+                    .next_primary_id_exclusive()?
+                    .as_u64(),
+            ),
+        };
+        let trace_filter = PhaseAFragmentWriteFilter {
+            open_dir_bucket: bucket_start(
+                last_staged
+                    .trace_plan
+                    .trace_window
+                    .next_primary_id_exclusive()?
+                    .as_u64(),
+            ),
+            open_bitmap_page: global_page_start(
+                last_staged
+                    .trace_plan
+                    .trace_window
+                    .next_primary_id_exclusive()?
+                    .as_u64(),
+            ),
+        };
 
         // Phase A: stage every block's artifacts inside one write session so
         // the framework can fire meta + blob commits concurrently while
         // populating per-table caches for the Phase B compaction reads.
         let blocks_ref = &blocks;
         let staged_ref = &staged;
-        let (phase_a_result, phase_a_timings) = self
-            .tables
-            .with_writes_timed(|w| {
-                Box::pin(async move {
-                    for (block, st) in blocks_ref.iter().zip(staged_ref.iter()) {
-                        block_tables.stage_header(w, block.block_number(), &block.header);
-                        logs.stage_indexed_family_ingest(
-                            w,
-                            block.block_number(),
-                            st.log_plan.block_log_blob.clone(),
-                            Bytes::from(st.log_plan.block_log_header.encode()),
-                            st.log_plan.log_window,
-                            &st.log_plan.bitmap_fragments,
-                        );
-                        txs.stage_indexed_family_ingest(
-                            w,
-                            block.block_number(),
-                            st.tx_plan.block_tx_blob.clone(),
-                            Bytes::from(st.tx_plan.block_tx_header.encode()),
-                            st.tx_plan.tx_window,
-                            &st.tx_plan.bitmap_fragments,
-                        );
-                        traces.stage_indexed_family_ingest(
-                            w,
-                            block.block_number(),
-                            st.trace_plan.block_trace_blob.clone(),
-                            Bytes::from(st.trace_plan.block_trace_header.encode()),
-                            st.trace_plan.trace_window,
-                            &st.trace_plan.bitmap_fragments,
-                        );
-                        block_tables.stage_hash_index(
-                            w,
-                            &st.block_record.block_hash,
-                            block.block_number(),
-                        );
-                        for (tx_hash, location) in &st.tx_plan.hash_locations {
-                            w.tables().tx_hash_index().stage_put(w, tx_hash, *location);
-                        }
-                        block_tables.stage_record(w, block.block_number(), &st.block_record);
-                    }
-                    Ok(())
-                })
-            })
-            .await;
-        phase_a_result?;
-        timings.commit_a_meta_ms = phase_a_timings.meta.as_millis() as u64;
-        timings.commit_a_blob_ms = phase_a_timings.blob.as_millis() as u64;
-
-        self.open_indexes.apply_delta(phase_a_delta);
-
-        let reads_start = Instant::now();
+        let stage_a_ms_cell = std::sync::atomic::AtomicU64::new(0);
+        let dir_fragments_total_cell = std::sync::atomic::AtomicU64::new(0);
+        let dir_fragments_written_cell = std::sync::atomic::AtomicU64::new(0);
+        let bitmap_fragments_total_cell = std::sync::atomic::AtomicU64::new(0);
+        let bitmap_fragments_written_cell = std::sync::atomic::AtomicU64::new(0);
+        let projected_open_indexes = self
+            .open_indexes
+            .projected_with_delta(phase_a_delta.clone());
         let log_ranges = family_ranges(&staged, |s| s.log_plan.log_window);
         let tx_ranges = family_ranges(&staged, |s| s.tx_plan.tx_window);
         let trace_ranges = family_ranges(&staged, |s| s.trace_plan.trace_window);
@@ -511,33 +630,145 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
             .map(|s| &s.trace_plan.touched_bitmap_streams_by_page)
             .collect();
 
+        let phase_a_stage = self.tables.stage_writes(|w| {
+            let stage_a_ms_cell = &stage_a_ms_cell;
+            let dir_fragments_total_cell = &dir_fragments_total_cell;
+            let dir_fragments_written_cell = &dir_fragments_written_cell;
+            let bitmap_fragments_total_cell = &bitmap_fragments_total_cell;
+            let bitmap_fragments_written_cell = &bitmap_fragments_written_cell;
+            Box::pin(async move {
+                let stage_a_session_stage_start = Instant::now();
+                for (block, st) in blocks_ref.iter().zip(staged_ref.iter()) {
+                    block_tables.stage_header(w, block.block_number(), &block.header);
+                    let log_stats = logs.stage_indexed_family_ingest(
+                        w,
+                        block.block_number(),
+                        st.log_plan.block_log_blob.clone(),
+                        Bytes::from(st.log_plan.block_log_header.encode()),
+                        st.log_plan.log_window,
+                        &st.log_plan.bitmap_fragments,
+                        log_filter,
+                    )?;
+                    let tx_stats = txs.stage_indexed_family_ingest(
+                        w,
+                        block.block_number(),
+                        st.tx_plan.block_tx_blob.clone(),
+                        Bytes::from(st.tx_plan.block_tx_header.encode()),
+                        st.tx_plan.tx_window,
+                        &st.tx_plan.bitmap_fragments,
+                        tx_filter,
+                    )?;
+                    let trace_stats = if st.trace_plan.trace_window.count == 0 {
+                        PhaseAFragmentStageStats::default()
+                    } else {
+                        traces.stage_indexed_family_ingest(
+                            w,
+                            block.block_number(),
+                            st.trace_plan.block_trace_blob.clone(),
+                            Bytes::from(st.trace_plan.block_trace_header.encode()),
+                            st.trace_plan.trace_window,
+                            &st.trace_plan.bitmap_fragments,
+                            trace_filter,
+                        )?
+                    };
+                    for stats in [log_stats, tx_stats, trace_stats] {
+                        dir_fragments_total_cell.fetch_add(
+                            stats.dir_fragments_total,
+                            std::sync::atomic::Ordering::Relaxed,
+                        );
+                        dir_fragments_written_cell.fetch_add(
+                            stats.dir_fragments_written,
+                            std::sync::atomic::Ordering::Relaxed,
+                        );
+                        bitmap_fragments_total_cell.fetch_add(
+                            stats.bitmap_fragments_total,
+                            std::sync::atomic::Ordering::Relaxed,
+                        );
+                        bitmap_fragments_written_cell.fetch_add(
+                            stats.bitmap_fragments_written,
+                            std::sync::atomic::Ordering::Relaxed,
+                        );
+                    }
+                    block_tables.stage_hash_index(
+                        w,
+                        &st.block_record.block_hash,
+                        block.block_number(),
+                    );
+                    for (tx_hash, location) in &st.tx_plan.hash_locations {
+                        w.tables().tx_hash_index().stage_put(w, tx_hash, *location);
+                    }
+                    block_tables.stage_record(w, block.block_number(), &st.block_record);
+                }
+                stage_a_ms_cell.store(
+                    stage_a_session_stage_start.elapsed().as_micros() as u64,
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+                Ok(())
+            })
+        });
+
+        let stage_b_plan = async {
+            let reads_start = Instant::now();
+            let plans = futures::try_join!(
+                logs.plan_directory_compactions(&projected_open_indexes, &log_ranges),
+                logs.plan_bitmap_compactions(
+                    &projected_open_indexes,
+                    &log_touched_bitmap_per_block,
+                    &log_ranges
+                ),
+                txs.plan_directory_compactions(&projected_open_indexes, &tx_ranges),
+                txs.plan_bitmap_compactions(
+                    &projected_open_indexes,
+                    &tx_touched_bitmap_per_block,
+                    &tx_ranges
+                ),
+                traces.plan_directory_compactions(&projected_open_indexes, &trace_ranges),
+                traces.plan_bitmap_compactions(
+                    &projected_open_indexes,
+                    &trace_touched_bitmap_per_block,
+                    &trace_ranges
+                ),
+            )?;
+            Ok::<_, MonadChainDataError>((
+                plans,
+                reads_start.elapsed().as_millis() as u64,
+                reads_start.elapsed().as_micros() as u64,
+            ))
+        };
+
+        let (phase_a_writes_result, stage_b_plan_result) =
+            futures::join!(phase_a_stage, stage_b_plan);
+        let phase_a_writes = phase_a_writes_result?;
+        timings.stage_a_session_stage_us =
+            stage_a_ms_cell.load(std::sync::atomic::Ordering::Relaxed);
+        timings.stage_a_dir_fragments_total =
+            dir_fragments_total_cell.load(std::sync::atomic::Ordering::Relaxed);
+        timings.stage_a_dir_fragments_written =
+            dir_fragments_written_cell.load(std::sync::atomic::Ordering::Relaxed);
+        timings.stage_a_dir_fragments_skipped = timings
+            .stage_a_dir_fragments_total
+            .saturating_sub(timings.stage_a_dir_fragments_written);
+        timings.stage_a_bitmap_fragments_total =
+            bitmap_fragments_total_cell.load(std::sync::atomic::Ordering::Relaxed);
+        timings.stage_a_bitmap_fragments_written =
+            bitmap_fragments_written_cell.load(std::sync::atomic::Ordering::Relaxed);
+        timings.stage_a_bitmap_fragments_skipped = timings
+            .stage_a_bitmap_fragments_total
+            .saturating_sub(timings.stage_a_bitmap_fragments_written);
+        timings.phase_a_write_counts = phase_a_writes.counts.clone();
+
         let (
-            log_dir_plan,
-            log_bitmap_plan,
-            tx_dir_plan,
-            tx_bitmap_plan,
-            trace_dir_plan,
-            trace_bitmap_plan,
-        ) = futures::try_join!(
-            logs.plan_directory_compactions(&self.open_indexes, &log_ranges),
-            logs.plan_bitmap_compactions(
-                &self.open_indexes,
-                &log_touched_bitmap_per_block,
-                &log_ranges
+            (
+                log_dir_plan,
+                log_bitmap_plan,
+                tx_dir_plan,
+                tx_bitmap_plan,
+                trace_dir_plan,
+                trace_bitmap_plan,
             ),
-            txs.plan_directory_compactions(&self.open_indexes, &tx_ranges),
-            txs.plan_bitmap_compactions(
-                &self.open_indexes,
-                &tx_touched_bitmap_per_block,
-                &tx_ranges
-            ),
-            traces.plan_directory_compactions(&self.open_indexes, &trace_ranges),
-            traces.plan_bitmap_compactions(
-                &self.open_indexes,
-                &trace_touched_bitmap_per_block,
-                &trace_ranges
-            ),
-        )?;
+            reads_elapsed_ms,
+            reads_elapsed_us,
+        ) = stage_b_plan_result?;
         let mut read_plan_timings = ReadPlanningTimings::default();
         read_plan_timings.merge(log_dir_plan.timings);
         read_plan_timings.merge(log_bitmap_plan.timings);
@@ -545,7 +776,7 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
         read_plan_timings.merge(tx_bitmap_plan.timings);
         read_plan_timings.merge(trace_dir_plan.timings);
         read_plan_timings.merge(trace_bitmap_plan.timings);
-        timings.reads_ms = reads_start.elapsed().as_millis() as u64;
+        timings.reads_ms = reads_elapsed_ms;
         timings.reads_dir_list_ms = read_plan_timings.dir_list_ms;
         timings.reads_dir_get_ms = read_plan_timings.dir_get_ms;
         timings.reads_dir_list_count = read_plan_timings.dir_list_count;
@@ -564,6 +795,7 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
         timings.reads_bitmap_index_us = read_plan_timings.bitmap_index_us;
         timings.reads_bitmap_compact_ms = read_plan_timings.bitmap_compact_ms;
         timings.reads_bitmap_compact_us = read_plan_timings.bitmap_compact_us;
+        timings.reads_bitmap_compact_wall_us = read_plan_timings.bitmap_compact_wall_us;
         timings.reads_bitmap_list_count = read_plan_timings.bitmap_list_count;
         timings.reads_bitmap_get_count = read_plan_timings.bitmap_get_count;
         timings.reads_bitmap_fragment_count = read_plan_timings.bitmap_fragment_count;
@@ -591,7 +823,7 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
             .saturating_add(timings.reads_bitmap_get_ms)
             .saturating_add(timings.reads_bitmap_shape_ms)
             .saturating_add(timings.reads_bitmap_index_ms)
-            .saturating_add(timings.reads_bitmap_compact_ms);
+            .saturating_add(timings.reads_bitmap_compact_wall_us / 1_000);
         timings.reads_unaccounted_ms = timings.reads_ms.saturating_sub(accounted_reads_ms);
         let accounted_reads_us = timings
             .reads_dir_index_us
@@ -600,9 +832,8 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
             .saturating_add(timings.reads_bitmap_union_us)
             .saturating_add(timings.reads_bitmap_shape_us)
             .saturating_add(timings.reads_bitmap_index_us)
-            .saturating_add(timings.reads_bitmap_compact_us);
-        timings.reads_unaccounted_us =
-            (reads_start.elapsed().as_micros() as u64).saturating_sub(accounted_reads_us);
+            .saturating_add(timings.reads_bitmap_compact_wall_us);
+        timings.reads_unaccounted_us = reads_elapsed_us.saturating_sub(accounted_reads_us);
 
         let phase_b_has_writes = !log_dir_plan.buckets.is_empty()
             || log_bitmap_plan.has_writes
@@ -616,15 +847,17 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
         let next_state = crate::primitives::state::PublicationState {
             indexed_finalized_head: new_head,
         };
+        let cas = PublicationCasParams {
+            table: PublicationTables::<M>::PUBLICATION_STATE_TABLE,
+            key: PublicationTables::<M>::PUBLICATION_STATE_KEY.to_vec(),
+            expected: expected_version,
+            value: Bytes::from(next_state.encode()),
+        };
 
+        let mut combined_writes = phase_a_writes;
+        let mut phase_b_eviction = OpenIndexesEviction::default();
         if phase_b_has_writes {
             timings.phase_b_skipped = false;
-            let cas = PublicationCasParams {
-                table: PublicationTables::<M>::PUBLICATION_STATE_TABLE,
-                key: PublicationTables::<M>::PUBLICATION_STATE_KEY.to_vec(),
-                expected: expected_version,
-                value: Bytes::from(next_state.encode()),
-            };
             let log_dir = &log_dir_plan;
             let log_bitmap = &log_bitmap_plan;
             let tx_dir = &tx_dir_plan;
@@ -637,10 +870,9 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
             // closure returns. Carve them apart inside the closure so the
             // on-wire timing fields keep the same meaning across the rewrite.
             let stage_b_ms_cell = std::sync::atomic::AtomicU64::new(0);
-            let commit_b_start = Instant::now();
-            let outcome: CasOutcome = self
+            let phase_b_writes = self
                 .tables
-                .with_writes_and_cas(cas, |w| {
+                .stage_writes(|w| {
                     let stage_b_ms_cell = &stage_b_ms_cell;
                     Box::pin(async move {
                         let stage_b_start = Instant::now();
@@ -658,28 +890,46 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
                     })
                 })
                 .await?;
-            let total_b_ms = commit_b_start.elapsed().as_millis() as u64;
             timings.stage_b_ms = stage_b_ms_cell.load(std::sync::atomic::Ordering::Relaxed);
-            timings.commit_b_ms = total_b_ms.saturating_sub(timings.stage_b_ms);
-            self.publication.cas_outcome_into_result(outcome).await?;
-            let mut eviction = OpenIndexesEviction::default();
-            eviction.merge(log_dir_plan.eviction(Family::Log));
-            eviction.merge(log_bitmap_plan.eviction(Family::Log));
-            eviction.merge(tx_dir_plan.eviction(Family::Tx));
-            eviction.merge(tx_bitmap_plan.eviction(Family::Tx));
-            eviction.merge(trace_dir_plan.eviction(Family::Trace));
-            eviction.merge(trace_bitmap_plan.eviction(Family::Trace));
-            self.open_indexes.apply_eviction(eviction);
-            self.open_indexes.mark_rebuilt_for_head(Some(new_head));
+            timings.phase_b_write_counts = phase_b_writes.counts.clone();
+            phase_b_eviction.merge(log_dir_plan.eviction(Family::Log));
+            phase_b_eviction.merge(log_bitmap_plan.eviction(Family::Log));
+            phase_b_eviction.merge(tx_dir_plan.eviction(Family::Tx));
+            phase_b_eviction.merge(tx_bitmap_plan.eviction(Family::Tx));
+            phase_b_eviction.merge(trace_dir_plan.eviction(Family::Trace));
+            phase_b_eviction.merge(trace_bitmap_plan.eviction(Family::Trace));
+            combined_writes.merge(phase_b_writes);
         } else {
             timings.phase_b_skipped = true;
-            let cas_start = Instant::now();
-            self.publication
-                .cas_advance(expected_version, next_state)
-                .await?;
-            self.open_indexes.mark_rebuilt_for_head(Some(new_head));
-            timings.cas_ms = cas_start.elapsed().as_millis() as u64;
         }
+        timings
+            .phase_b_write_counts
+            .add_cas(cas.table, cas.value.len());
+        combined_writes.add_cas_count(cas.table, cas.value.len());
+
+        let commit_start = Instant::now();
+        let combined_timings = self
+            .tables
+            .apply_staged_writes_timed(combined_writes)
+            .await?;
+        timings.commit_a_meta_ms = combined_timings.meta.as_millis() as u64;
+        timings.commit_a_blob_ms = combined_timings.blob.as_millis() as u64;
+        let cas_start = Instant::now();
+        let outcome = self
+            .tables
+            .meta_store()
+            .cas_put(cas.table, &cas.key, cas.expected, cas.value)
+            .await?;
+        timings.cas_ms = cas_start.elapsed().as_millis() as u64;
+        let commit_elapsed_ms = commit_start.elapsed().as_millis() as u64;
+        timings.commit_b_ms = commit_elapsed_ms
+            .saturating_sub(timings.commit_a_meta_ms.max(timings.commit_a_blob_ms));
+        self.publication.cas_outcome_into_result(outcome).await?;
+        self.open_indexes.apply_delta(phase_a_delta);
+        if phase_b_has_writes {
+            self.open_indexes.apply_eviction(phase_b_eviction);
+        }
+        self.open_indexes.mark_rebuilt_for_head(Some(new_head));
 
         let outcomes = staged
             .into_iter()

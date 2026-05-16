@@ -20,10 +20,14 @@ use std::{
 };
 
 use bytes::Bytes;
+use rayon::prelude::*;
 
 use crate::{
     engine::{
-        bitmap::{compact_bitmap_page, global_page_start, local_page_start, BitmapPageMeta},
+        bitmap::{
+            compact_bitmap_page, global_page_start, local_page_start, BitmapPageArtifact,
+            BitmapPageMeta,
+        },
         family::Family,
         ingest::ReadPlanningTimings,
         open_index::{OpenIndexes, OpenIndexesEviction},
@@ -48,6 +52,14 @@ pub struct CompactedPageWrite {
     pub page_start_local: u32,
     pub meta: BitmapPageMeta,
     pub blob: Bytes,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BitmapCompactionJob {
+    page_global_start: u64,
+    stream_id: String,
+    page_start_local: u32,
+    fragments: Vec<Bytes>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -104,7 +116,7 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
             });
         }
 
-        let mut compacted_pages = Vec::new();
+        let mut compaction_jobs = Vec::new();
         let mut open_stream_writes: Vec<(u64, BTreeSet<String>)> = Vec::new();
         let mut timings = ReadPlanningTimings::default();
 
@@ -166,7 +178,7 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
                     start_open_page,
                     start_page_streams.iter(),
                     &mut timings,
-                    &mut compacted_pages,
+                    &mut compaction_jobs,
                 )?;
                 record_open_stream_write(
                     &mut open_stream_writes,
@@ -183,7 +195,7 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
                     *page_global_start,
                     streams.iter(),
                     &mut timings,
-                    &mut compacted_pages,
+                    &mut compaction_jobs,
                 )?;
             }
         }
@@ -194,6 +206,7 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
             &mut timings,
         );
 
+        let compacted_pages = compact_bitmap_jobs(&compaction_jobs, &mut timings)?;
         let has_writes = !compacted_pages.is_empty() || !open_stream_writes.is_empty();
         Ok(BitmapBatchCompactionPlan {
             compacted_pages,
@@ -209,14 +222,15 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
         plan: &BitmapBatchCompactionPlan,
     ) {
         for page in &plan.compacted_pages {
-            self.bitmap().stage_page_blob(
+            self.bitmap().stage_page_artifact(
                 w,
                 &page.stream_id,
                 page.page_start_local,
-                page.blob.clone(),
+                &BitmapPageArtifact {
+                    meta: page.meta,
+                    bitmap_blob: page.blob.clone(),
+                },
             );
-            self.bitmap()
-                .stage_page_meta(w, &page.stream_id, page.page_start_local, &page.meta);
         }
         for (page_start, streams) in &plan.open_stream_writes {
             self.bitmap().stage_open_streams(w, *page_start, streams);
@@ -229,7 +243,7 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
         page_global_start: u64,
         streams: I,
         timings: &mut ReadPlanningTimings,
-        compacted_pages: &mut Vec<CompactedPageWrite>,
+        compaction_jobs: &mut Vec<BitmapCompactionJob>,
     ) -> Result<()>
     where
         I: IntoIterator<Item = &'a String>,
@@ -254,25 +268,58 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
                     .map(|fragment| fragment.len() as u64)
                     .sum::<u64>(),
             );
-            let compact_start = Instant::now();
-            let (meta, bitmap_blob) = compact_bitmap_page(page_start_local, &fragments)?;
-            timings.bitmap_compact_ms = timings
-                .bitmap_compact_ms
-                .saturating_add(compact_start.elapsed().as_millis() as u64);
-            timings.bitmap_compact_us = timings
-                .bitmap_compact_us
-                .saturating_add(compact_start.elapsed().as_micros() as u64);
-            timings.bitmap_compact_count = timings.bitmap_compact_count.saturating_add(1);
-            compacted_pages.push(CompactedPageWrite {
+            compaction_jobs.push(BitmapCompactionJob {
                 page_global_start,
                 stream_id: stream_id.clone(),
                 page_start_local,
-                meta,
-                blob: bitmap_blob,
+                fragments,
             });
         }
         Ok(())
     }
+}
+
+fn compact_bitmap_jobs(
+    jobs: &[BitmapCompactionJob],
+    timings: &mut ReadPlanningTimings,
+) -> Result<Vec<CompactedPageWrite>> {
+    let wall_start = Instant::now();
+    let compacted = jobs
+        .par_iter()
+        .map(|job| {
+            let compact_start = Instant::now();
+            let (meta, bitmap_blob) = compact_bitmap_page(job.page_start_local, &job.fragments)?;
+            let elapsed_us = compact_start.elapsed().as_micros() as u64;
+            Ok((
+                CompactedPageWrite {
+                    page_global_start: job.page_global_start,
+                    stream_id: job.stream_id.clone(),
+                    page_start_local: job.page_start_local,
+                    meta,
+                    blob: bitmap_blob,
+                },
+                elapsed_us,
+            ))
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    timings.bitmap_compact_wall_us = timings
+        .bitmap_compact_wall_us
+        .saturating_add(wall_start.elapsed().as_micros() as u64);
+    timings.bitmap_compact_count = timings
+        .bitmap_compact_count
+        .saturating_add(compacted.len() as u64);
+    let compact_us = compacted
+        .iter()
+        .map(|(_, elapsed_us)| *elapsed_us)
+        .sum::<u64>();
+    timings.bitmap_compact_us = timings.bitmap_compact_us.saturating_add(compact_us);
+    timings.bitmap_compact_ms = timings.bitmap_compact_ms.saturating_add(compact_us / 1_000);
+
+    Ok(compacted
+        .into_iter()
+        .map(|(page, _elapsed_us)| page)
+        .collect())
 }
 
 fn batch_bitmap_shape(

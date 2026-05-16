@@ -13,14 +13,14 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{collections::BTreeMap, time::Duration};
+use std::{collections::BTreeMap, fmt, time::Duration};
 
 use alloy_rlp::Decodable;
 use bytes::Bytes;
 
 use crate::{
     engine::{
-        bitmap::{BitmapFragmentWrite, BitmapPageMeta, BitmapTables},
+        bitmap::{BitmapFragmentWrite, BitmapPageArtifact, BitmapPageMeta, BitmapTables},
         family::Family,
         primary_dir::{PrimaryDirBucket, PrimaryDirFragment, PrimaryDirTables},
     },
@@ -31,17 +31,134 @@ use crate::{
         EvmBlockHeader,
     },
     store::{
-        BlobStore, CacheConfig, CachedBlobTable, CachedKvTable, CachedScannableTable, CasOutcome,
-        CasVersion, MetaStore, MetaStoreCas, PublicationCasParams, ScannableTableId, SessionFuture,
-        TableId, WriteSession,
+        BlobStore, BlobWriteOp, CacheConfig, CachedBlobTable, CachedKvTable, CachedScannableTable,
+        CasOutcome, CasVersion, MetaStore, MetaStoreCas, MetaWriteOp, PublicationCasParams,
+        ScannableTableId, SessionFuture, TableId, WriteSession,
     },
     txs::TxHashIndexTable,
 };
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct MetaBlobTimings {
     pub meta: Duration,
     pub blob: Duration,
+    pub writes: WriteOpCounts,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct StagedWrites {
+    pub meta_ops: Vec<MetaWriteOp>,
+    pub blob_ops: Vec<BlobWriteOp>,
+    pub counts: WriteOpCounts,
+}
+
+impl StagedWrites {
+    pub fn merge(&mut self, mut other: Self) {
+        self.meta_ops.append(&mut other.meta_ops);
+        self.blob_ops.append(&mut other.blob_ops);
+        self.counts.merge(&other.counts);
+    }
+
+    pub fn add_cas_count(&mut self, table: TableId, bytes: usize) {
+        self.counts.add_cas(table, bytes);
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WriteOpCount {
+    pub ops: u64,
+    pub bytes: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WriteOpCounts {
+    by_table: BTreeMap<String, WriteOpCount>,
+}
+
+impl WriteOpCounts {
+    pub fn from_writes(meta_ops: &[MetaWriteOp], blob_ops: &[BlobWriteOp]) -> Self {
+        let mut counts = Self::default();
+        for op in meta_ops {
+            match op {
+                MetaWriteOp::Put { table, value, .. } => {
+                    counts.add(format!("kv:{}", table.as_str()), value.len());
+                }
+                MetaWriteOp::ScanPut { table, value, .. } => {
+                    counts.add(format!("scan:{}", table.as_str()), value.len());
+                }
+            }
+        }
+        for BlobWriteOp { table, value, .. } in blob_ops {
+            counts.add(format!("blob:{}", table.as_str()), value.len());
+        }
+        counts
+    }
+
+    pub fn add_cas(&mut self, table: TableId, bytes: usize) {
+        self.add(format!("cas:{}", table.as_str()), bytes);
+    }
+
+    pub fn merge(&mut self, other: &Self) {
+        for (table, count) in &other.by_table {
+            let entry = self.by_table.entry(table.clone()).or_default();
+            entry.ops = entry.ops.saturating_add(count.ops);
+            entry.bytes = entry.bytes.saturating_add(count.bytes);
+        }
+    }
+
+    pub fn total_ops(&self) -> u64 {
+        self.by_table.values().map(|count| count.ops).sum()
+    }
+
+    pub fn total_bytes(&self) -> u64 {
+        self.by_table.values().map(|count| count.bytes).sum()
+    }
+
+    pub fn top_by_ops(&self, limit: usize) -> WriteOpTopList<'_> {
+        WriteOpTopList {
+            counts: self,
+            limit,
+            sort_by_bytes: false,
+        }
+    }
+
+    pub fn top_by_bytes(&self, limit: usize) -> WriteOpTopList<'_> {
+        WriteOpTopList {
+            counts: self,
+            limit,
+            sort_by_bytes: true,
+        }
+    }
+
+    fn add(&mut self, table: String, bytes: usize) {
+        let entry = self.by_table.entry(table).or_default();
+        entry.ops = entry.ops.saturating_add(1);
+        entry.bytes = entry.bytes.saturating_add(bytes as u64);
+    }
+}
+
+pub struct WriteOpTopList<'a> {
+    counts: &'a WriteOpCounts,
+    limit: usize,
+    sort_by_bytes: bool,
+}
+
+impl fmt::Display for WriteOpTopList<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut entries: Vec<_> = self.counts.by_table.iter().collect();
+        if self.sort_by_bytes {
+            entries.sort_by(|a, b| b.1.bytes.cmp(&a.1.bytes).then_with(|| a.0.cmp(b.0)));
+        } else {
+            entries.sort_by(|a, b| b.1.ops.cmp(&a.1.ops).then_with(|| a.0.cmp(b.0)));
+        }
+        for (idx, (table, count)) in entries.into_iter().take(self.limit).enumerate() {
+            if idx > 0 {
+                f.write_str(",")?;
+            }
+            write!(f, "{}:{}ops/{}bytes", table, count.ops, count.bytes)?;
+        }
+        Ok(())
+    }
 }
 
 pub struct Tables<M: MetaStore, B: BlobStore> {
@@ -130,6 +247,7 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
         }
         let meta_ops = session.take_meta();
         let blob_ops = session.take_blob();
+        let writes = WriteOpCounts::from_writes(&meta_ops, &blob_ops);
         let meta_apply = async {
             let t = std::time::Instant::now();
             self.meta_store.apply_writes(meta_ops).await?;
@@ -146,6 +264,7 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
                 MetaBlobTimings {
                     meta: meta_elapsed,
                     blob: blob_elapsed,
+                    writes,
                 },
             ),
             Err(e) => {
@@ -153,6 +272,50 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
                 (Err(e), MetaBlobTimings::default())
             }
         }
+    }
+
+    /// Stages write operations without applying them. Any cache entries
+    /// populated while staging are evicted before returning because the writes
+    /// may be applied later, retried, or abandoned by a pipelined caller.
+    pub async fn stage_writes<'a, F>(&'a self, f: F) -> Result<StagedWrites>
+    where
+        F: for<'s> FnOnce(&'s WriteSession<'a, M, B>) -> SessionFuture<'s>,
+    {
+        let session = WriteSession::new(self);
+        let closure_result = f(&session).await;
+        if let Err(e) = closure_result {
+            session.invalidate_populated();
+            return Err(e);
+        }
+        let meta_ops = session.take_meta();
+        let blob_ops = session.take_blob();
+        session.invalidate_populated();
+        let counts = WriteOpCounts::from_writes(&meta_ops, &blob_ops);
+        Ok(StagedWrites {
+            meta_ops,
+            blob_ops,
+            counts,
+        })
+    }
+
+    pub async fn apply_staged_writes_timed(&self, writes: StagedWrites) -> Result<MetaBlobTimings> {
+        let counts = writes.counts;
+        let meta_apply = async {
+            let t = std::time::Instant::now();
+            self.meta_store.apply_writes(writes.meta_ops).await?;
+            Ok::<_, crate::error::MonadChainDataError>(t.elapsed())
+        };
+        let blob_apply = async {
+            let t = std::time::Instant::now();
+            self.blob_store.apply_writes(writes.blob_ops).await?;
+            Ok::<_, crate::error::MonadChainDataError>(t.elapsed())
+        };
+        let (meta, blob) = futures::try_join!(meta_apply, blob_apply)?;
+        Ok(MetaBlobTimings {
+            meta,
+            blob,
+            writes: counts,
+        })
     }
 
     /// Stages writes, flushes meta and blob artifacts, and only then attempts
@@ -169,6 +332,20 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
         M: MetaStoreCas,
         F: for<'s> FnOnce(&'s WriteSession<'a, M, B>) -> SessionFuture<'s>,
     {
+        self.with_writes_and_cas_timed(cas, f)
+            .await
+            .map(|(outcome, _timings)| outcome)
+    }
+
+    pub async fn with_writes_and_cas_timed<'a, F>(
+        &'a self,
+        cas: PublicationCasParams,
+        f: F,
+    ) -> Result<(CasOutcome, MetaBlobTimings)>
+    where
+        M: MetaStoreCas,
+        F: for<'s> FnOnce(&'s WriteSession<'a, M, B>) -> SessionFuture<'s>,
+    {
         let session = WriteSession::new(self);
         let closure_result = f(&session).await;
         if let Err(e) = closure_result {
@@ -177,20 +354,39 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
         }
         let meta_ops = session.take_meta();
         let blob_ops = session.take_blob();
+        let mut writes = WriteOpCounts::from_writes(&meta_ops, &blob_ops);
+        writes.add_cas(cas.table, cas.value.len());
+        let meta_start = std::time::Instant::now();
+        let blob_start = std::time::Instant::now();
         match futures::try_join!(
-            self.meta_store.apply_writes(meta_ops),
-            self.blob_store.apply_writes(blob_ops),
+            async {
+                self.meta_store.apply_writes(meta_ops).await?;
+                Ok::<_, crate::error::MonadChainDataError>(meta_start.elapsed())
+            },
+            async {
+                self.blob_store.apply_writes(blob_ops).await?;
+                Ok::<_, crate::error::MonadChainDataError>(blob_start.elapsed())
+            },
         ) {
-            Ok(((), ())) => {}
+            Ok((meta_elapsed, blob_elapsed)) => {
+                let outcome = self
+                    .meta_store
+                    .cas_put(cas.table, &cas.key, cas.expected, cas.value)
+                    .await?;
+                return Ok((
+                    outcome,
+                    MetaBlobTimings {
+                        meta: meta_elapsed,
+                        blob: blob_elapsed,
+                        writes,
+                    },
+                ));
+            }
             Err(e) => {
                 session.invalidate_populated();
                 return Err(e);
             }
         }
-
-        self.meta_store
-            .cas_put(cas.table, &cas.key, cas.expected, cas.value)
-            .await
     }
 
     /// Drains and returns the (hits, misses) counters for every cached
@@ -681,6 +877,28 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
     ) -> Result<()> {
         self.bitmap
             .store_page_meta(stream_id, page_start_local, meta)
+            .await
+    }
+
+    /// Loads a compacted bitmap page artifact for one sealed stream page.
+    pub async fn load_bitmap_page_artifact(
+        &self,
+        stream_id: &str,
+        page_start_local: u32,
+    ) -> Result<Option<BitmapPageArtifact>> {
+        self.bitmap
+            .load_page_artifact(stream_id, page_start_local)
+            .await
+    }
+
+    pub async fn store_bitmap_page_artifact(
+        &self,
+        stream_id: &str,
+        page_start_local: u32,
+        artifact: &BitmapPageArtifact,
+    ) -> Result<()> {
+        self.bitmap
+            .store_page_artifact(stream_id, page_start_local, artifact)
             .await
     }
 

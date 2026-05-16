@@ -37,6 +37,7 @@ pub(crate) struct ReadPlanningTimings {
     pub bitmap_index_us: u64,
     pub bitmap_compact_ms: u64,
     pub bitmap_compact_us: u64,
+    pub bitmap_compact_wall_us: u64,
     pub bitmap_list_count: u64,
     pub bitmap_get_count: u64,
     pub bitmap_fragment_count: u64,
@@ -89,6 +90,9 @@ impl ReadPlanningTimings {
         self.bitmap_compact_us = self
             .bitmap_compact_us
             .saturating_add(other.bitmap_compact_us);
+        self.bitmap_compact_wall_us = self
+            .bitmap_compact_wall_us
+            .saturating_add(other.bitmap_compact_wall_us);
         self.bitmap_list_count = self
             .bitmap_list_count
             .saturating_add(other.bitmap_list_count);

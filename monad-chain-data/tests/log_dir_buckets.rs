@@ -79,18 +79,11 @@ async fn ingest_compacts_a_sealed_directory_bucket_when_crossing_the_boundary() 
         .expect("load fragments");
     assert_eq!(
         fragments,
-        vec![
-            PrimaryDirFragment {
-                block_number: 1,
-                first_primary_id: 0,
-                end_primary_id_exclusive: DIRECTORY_BUCKET_SIZE - 2,
-            },
-            PrimaryDirFragment {
-                block_number: 2,
-                first_primary_id: DIRECTORY_BUCKET_SIZE - 2,
-                end_primary_id_exclusive: DIRECTORY_BUCKET_SIZE + 2,
-            },
-        ]
+        vec![PrimaryDirFragment {
+            block_number: 1,
+            first_primary_id: 0,
+            end_primary_id_exclusive: DIRECTORY_BUCKET_SIZE - 2,
+        }]
     );
 
     assert!(

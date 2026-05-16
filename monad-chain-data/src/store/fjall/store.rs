@@ -42,6 +42,12 @@ pub(super) const SCAN_PREFIX: &str = "scan:";
 pub(super) const CAS_PREFIX: &str = "cas:";
 pub(super) const BLOB_PREFIX: &str = "blob:";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum MetaBatchKeyspace {
+    Kv(TableId),
+    Scan(ScannableTableId),
+}
+
 /// Tunable knobs passed to fjall at open. `Default::default()` reproduces
 /// fjall's own defaults (512 MiB total journal cap, 64 MiB per-keyspace
 /// memtable). Raise the journal cap to silence rotation log spam under
@@ -144,6 +150,24 @@ impl FjallStore {
             Ok(())
         })
         .await
+    }
+
+    fn meta_batch_keyspace(
+        inner: &Arc<Inner>,
+        cache: &mut HashMap<MetaBatchKeyspace, Keyspace>,
+        name_cache: &mut HashMap<String, Keyspace>,
+        key: MetaBatchKeyspace,
+    ) -> Result<Keyspace> {
+        if let Some(ks) = cache.get(&key) {
+            return Ok(ks.clone());
+        }
+        let name = match key {
+            MetaBatchKeyspace::Kv(table) => format!("{KV_PREFIX}{}", table.as_str()),
+            MetaBatchKeyspace::Scan(table) => format!("{SCAN_PREFIX}{}", table.as_str()),
+        };
+        let ks = ks_cached(inner, name_cache, name)?;
+        cache.insert(key, ks.clone());
+        Ok(ks)
     }
 
     /// Snapshots fjall's runtime accounting for every keyspace this store
@@ -363,13 +387,18 @@ impl MetaStore for FjallStore {
         }
         let inner = Arc::clone(&self.inner);
         blocking(move || {
-            let mut cache: HashMap<String, Keyspace> = HashMap::new();
+            let mut cache: HashMap<MetaBatchKeyspace, Keyspace> = HashMap::new();
+            let mut name_cache: HashMap<String, Keyspace> = HashMap::new();
             let mut batch = inner.db.batch();
             for op in writes {
                 match op {
                     MetaWriteOp::Put { table, key, value } => {
-                        let name = format!("{KV_PREFIX}{}", table.as_str());
-                        let ks = ks_cached(&inner, &mut cache, name)?;
+                        let ks = Self::meta_batch_keyspace(
+                            &inner,
+                            &mut cache,
+                            &mut name_cache,
+                            MetaBatchKeyspace::Kv(table),
+                        )?;
                         batch.insert(&ks, key, value.as_ref());
                     }
                     MetaWriteOp::ScanPut {
@@ -378,8 +407,12 @@ impl MetaStore for FjallStore {
                         clustering,
                         value,
                     } => {
-                        let name = format!("{SCAN_PREFIX}{}", table.as_str());
-                        let ks = ks_cached(&inner, &mut cache, name)?;
+                        let ks = Self::meta_batch_keyspace(
+                            &inner,
+                            &mut cache,
+                            &mut name_cache,
+                            MetaBatchKeyspace::Scan(table),
+                        )?;
                         let composite = scan_key(&partition, &clustering);
                         batch.insert(&ks, composite, value.as_ref());
                     }
@@ -593,11 +626,18 @@ impl BlobStore for FjallStore {
         }
         let inner = Arc::clone(&self.inner);
         blocking(move || {
-            let mut cache: HashMap<String, Keyspace> = HashMap::new();
+            let mut cache: HashMap<BlobTableId, Keyspace> = HashMap::new();
+            let mut name_cache: HashMap<String, Keyspace> = HashMap::new();
             let mut batch = inner.db.batch();
             for BlobWriteOp { table, key, value } in writes {
-                let name = format!("{BLOB_PREFIX}{}", table.as_str());
-                let ks = ks_cached(&inner, &mut cache, name)?;
+                let ks = if let Some(ks) = cache.get(&table) {
+                    ks.clone()
+                } else {
+                    let name = format!("{BLOB_PREFIX}{}", table.as_str());
+                    let ks = ks_cached(&inner, &mut name_cache, name)?;
+                    cache.insert(table, ks.clone());
+                    ks
+                };
                 batch.insert(&ks, key, value.as_ref());
             }
             batch.commit().map_err(|e| {

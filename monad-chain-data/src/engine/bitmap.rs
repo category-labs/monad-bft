@@ -26,8 +26,8 @@ use crate::{
     error::{MonadChainDataError, Result},
     primitives::state::PrimaryId,
     store::{
-        blob::BlobStore, CachedKvTable, CachedScannableTable, MetaStore, ScannableTableId,
-        WriteSession,
+        blob::BlobStore, CachedKvTable, CachedScannableTable, MetaStore, MetaWriteOp,
+        ScannableTableId, WriteSession,
     },
 };
 
@@ -35,6 +35,8 @@ pub const LOCAL_ID_BITS: u32 = PrimaryId::LOCAL_ID_BITS;
 pub const STREAM_PAGE_LOCAL_ID_SPAN: u32 = 64 * 1024;
 const BITMAP_BLOB_VERSION: u8 = 2;
 const BITMAP_BLOB_HEADER_LEN: usize = 1 + 4 * 3;
+const BITMAP_PAGE_ARTIFACT_VERSION: u8 = 3;
+const BITMAP_PAGE_ARTIFACT_HEADER_LEN: usize = 1 + 4 * 3;
 
 #[derive(Debug, Clone)]
 pub struct BitmapBlob {
@@ -48,6 +50,12 @@ pub struct BitmapBlob {
 pub struct BitmapFragmentWrite {
     pub stream_id: String,
     pub page_start_local: u32,
+    pub bitmap_blob: Bytes,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BitmapPageArtifact {
+    pub meta: BitmapPageMeta,
     pub bitmap_blob: Bytes,
 }
 
@@ -133,12 +141,45 @@ impl<M: MetaStore> BitmapTables<M> {
     ) {
         let partition = stream_page_key(&fragment.stream_id, fragment.page_start_local);
         let clustering = block_number_key(block_number);
-        w.scan_put(
+        w.scan_put_uncached(
             &self.fragments,
             &partition,
             &clustering,
             fragment.bitmap_blob.clone(),
         );
+    }
+
+    pub fn stage_fragments_for_global_page<B: BlobStore>(
+        &self,
+        w: &WriteSession<'_, M, B>,
+        fragments: &[BitmapFragmentWrite],
+        block_number: u64,
+        global_page_start: u64,
+    ) -> Result<(u64, u64)> {
+        let clustering = block_number_key(block_number);
+        let mut ops = Vec::new();
+        let mut total = 0u64;
+        let mut written = 0u64;
+
+        for fragment in fragments {
+            total = total.saturating_add(1);
+            let page_global_start =
+                stream_page_global_start(&fragment.stream_id, fragment.page_start_local)?;
+            if page_global_start != global_page_start {
+                continue;
+            }
+
+            written = written.saturating_add(1);
+            ops.push(MetaWriteOp::ScanPut {
+                table: self.fragments.table_id(),
+                partition: stream_page_key(&fragment.stream_id, fragment.page_start_local),
+                clustering: clustering.to_vec(),
+                value: fragment.bitmap_blob.clone(),
+            });
+        }
+
+        w.extend_meta_uncached(ops);
+        Ok((total, written))
     }
 
     /// Loads all retained fragments for one stream page.
@@ -251,6 +292,63 @@ impl<M: MetaStore> BitmapTables<M> {
         w.put(&self.page_meta, &key, Bytes::from(page_meta.encode()));
     }
 
+    /// Loads a compacted bitmap page, supporting both the current combined
+    /// artifact row and the legacy split page-meta/page-blob representation.
+    pub async fn load_page_artifact(
+        &self,
+        stream_id: &str,
+        page_start_local: u32,
+    ) -> Result<Option<BitmapPageArtifact>> {
+        let key = stream_page_key(stream_id, page_start_local);
+        let Some(bytes) = self.page_blobs.get(&key).await? else {
+            if self.page_meta.get(&key).await?.is_some() {
+                return Err(MonadChainDataError::MissingData("missing bitmap page blob"));
+            }
+            return Ok(None);
+        };
+
+        if let Some(artifact) = decode_bitmap_page_artifact(bytes.as_ref())? {
+            return Ok(Some(artifact));
+        }
+
+        let meta = self
+            .load_page_meta(stream_id, page_start_local)
+            .await?
+            .ok_or(MonadChainDataError::MissingData("missing bitmap page meta"))?;
+        Ok(Some(BitmapPageArtifact {
+            meta,
+            bitmap_blob: bytes,
+        }))
+    }
+
+    pub async fn store_page_artifact(
+        &self,
+        stream_id: &str,
+        page_start_local: u32,
+        artifact: &BitmapPageArtifact,
+    ) -> Result<()> {
+        let key = stream_page_key(stream_id, page_start_local);
+        self.page_blobs
+            .put(&key, encode_bitmap_page_artifact(artifact))
+            .await?;
+        Ok(())
+    }
+
+    pub fn stage_page_artifact<B: BlobStore>(
+        &self,
+        w: &WriteSession<'_, M, B>,
+        stream_id: &str,
+        page_start_local: u32,
+        artifact: &BitmapPageArtifact,
+    ) {
+        let key = stream_page_key(stream_id, page_start_local);
+        w.put(
+            &self.page_blobs,
+            &key,
+            encode_bitmap_page_artifact(artifact),
+        );
+    }
+
     /// Loads the compacted bitmap blob for one sealed stream page.
     pub async fn load_page_blob(
         &self,
@@ -258,7 +356,13 @@ impl<M: MetaStore> BitmapTables<M> {
         page_start_local: u32,
     ) -> Result<Option<Bytes>> {
         let key = stream_page_key(stream_id, page_start_local);
-        self.page_blobs.get(&key).await
+        let Some(bytes) = self.page_blobs.get(&key).await? else {
+            return Ok(None);
+        };
+        if let Some(artifact) = decode_bitmap_page_artifact(bytes.as_ref())? {
+            return Ok(Some(artifact.bitmap_blob));
+        }
+        Ok(Some(bytes))
     }
 
     pub async fn store_page_blob(
@@ -407,6 +511,55 @@ pub fn decode_bitmap_blob(bytes: &[u8]) -> Result<BitmapBlob> {
         count,
         bitmap,
     })
+}
+
+/// Encodes one compacted bitmap page into a single KV value. The legacy layout
+/// wrote page metadata and page blob as two rows; version 3 keeps the page blob
+/// format intact and prefixes the query metadata so old split rows remain
+/// readable while new compactions write one row per page.
+pub fn encode_bitmap_page_artifact(artifact: &BitmapPageArtifact) -> Bytes {
+    let mut out = Vec::with_capacity(BITMAP_PAGE_ARTIFACT_HEADER_LEN + artifact.bitmap_blob.len());
+    out.push(BITMAP_PAGE_ARTIFACT_VERSION);
+    out.extend_from_slice(&artifact.meta.min_local.to_be_bytes());
+    out.extend_from_slice(&artifact.meta.max_local.to_be_bytes());
+    out.extend_from_slice(&artifact.meta.count.to_be_bytes());
+    out.extend_from_slice(&artifact.bitmap_blob);
+    Bytes::from(out)
+}
+
+pub fn decode_bitmap_page_artifact(bytes: &[u8]) -> Result<Option<BitmapPageArtifact>> {
+    if bytes.first().copied() != Some(BITMAP_PAGE_ARTIFACT_VERSION) {
+        return Ok(None);
+    }
+
+    let header =
+        bytes
+            .get(..BITMAP_PAGE_ARTIFACT_HEADER_LEN)
+            .ok_or(MonadChainDataError::Decode(
+                "bitmap page artifact too short",
+            ))?;
+    let meta = BitmapPageMeta {
+        min_local: u32::from_be_bytes(
+            header[1..5]
+                .try_into()
+                .map_err(|_| MonadChainDataError::Decode("bitmap page artifact min_local"))?,
+        ),
+        max_local: u32::from_be_bytes(
+            header[5..9]
+                .try_into()
+                .map_err(|_| MonadChainDataError::Decode("bitmap page artifact max_local"))?,
+        ),
+        count: u32::from_be_bytes(
+            header[9..13]
+                .try_into()
+                .map_err(|_| MonadChainDataError::Decode("bitmap page artifact count"))?,
+        ),
+    };
+
+    Ok(Some(BitmapPageArtifact {
+        meta,
+        bitmap_blob: Bytes::copy_from_slice(&bytes[BITMAP_PAGE_ARTIFACT_HEADER_LEN..]),
+    }))
 }
 
 /// Groups `(stream_id, local_id)` pairs by stream and page, builds a roaring
@@ -562,4 +715,43 @@ pub(crate) fn parse_stream_shard(stream_id: &str) -> Result<u64> {
         .ok_or(MonadChainDataError::Decode("empty stream id"))?;
     u64::from_str_radix(shard_hex, 16)
         .map_err(|_| MonadChainDataError::Decode("invalid stream id shard"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bitmap_page_artifact_roundtrips_and_legacy_blob_is_not_wrapped() {
+        let bitmap_blob = BitmapBlob {
+            min_local: 7,
+            max_local: 19,
+            count: 2,
+            bitmap: RoaringBitmap::from_iter([7, 19]),
+        };
+        let encoded_blob = encode_bitmap_blob(&bitmap_blob).unwrap();
+        assert!(decode_bitmap_page_artifact(encoded_blob.as_ref())
+            .unwrap()
+            .is_none());
+
+        let artifact = BitmapPageArtifact {
+            meta: BitmapPageMeta {
+                min_local: 7,
+                max_local: 19,
+                count: 2,
+            },
+            bitmap_blob: encoded_blob.clone(),
+        };
+        let encoded_artifact = encode_bitmap_page_artifact(&artifact);
+        let decoded = decode_bitmap_page_artifact(encoded_artifact.as_ref())
+            .unwrap()
+            .unwrap();
+        assert_eq!(decoded, artifact);
+        assert_eq!(
+            decode_bitmap_blob(decoded.bitmap_blob.as_ref())
+                .unwrap()
+                .bitmap,
+            bitmap_blob.bitmap
+        );
+    }
 }

@@ -5012,12 +5012,14 @@ dependencies = [
  "monad-archive",
  "monad-eth-types",
  "opentelemetry",
+ "rayon",
  "roaring",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "zstd",
 ]
 
 [[package]]
