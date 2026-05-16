@@ -192,11 +192,7 @@ impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery<M, B> for TraceMateriali
         Ok(BlockRef::from(&block_record))
     }
 
-    async fn load_record_at(
-        &self,
-        block_number: u64,
-        idx_in_block: usize,
-    ) -> Result<TraceEntry> {
+    async fn load_record_at(&self, block_number: u64, idx_in_block: usize) -> Result<TraceEntry> {
         let block_record = self
             .tables
             .blocks()
@@ -208,7 +204,9 @@ impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery<M, B> for TraceMateriali
             .family(Family::Trace)
             .load_block_header(block_number)
             .await?
-            .ok_or(MonadChainDataError::MissingData("missing block trace header"))?;
+            .ok_or(MonadChainDataError::MissingData(
+                "missing block trace header",
+            ))?;
         let header = BlockTraceHeader::decode(&header_bytes)?;
 
         if idx_in_block + 1 >= header.offsets.len() {
@@ -247,7 +245,9 @@ impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery<M, B> for TraceMateriali
             .family(Family::Trace)
             .load_block_header(block_number)
             .await?
-            .ok_or(MonadChainDataError::MissingData("missing block trace header"))?;
+            .ok_or(MonadChainDataError::MissingData(
+                "missing block trace header",
+            ))?;
         let header = BlockTraceHeader::decode(&header_bytes)?;
         let blob = self
             .tables

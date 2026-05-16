@@ -26,7 +26,10 @@ use crate::common::observed_store::{ObservedMetaStore, OpCounters};
 
 fn make_tables(
     cache: CacheConfig,
-) -> (Tables<ObservedMetaStore, InMemoryBlobStore>, Arc<OpCounters>) {
+) -> (
+    Tables<ObservedMetaStore, InMemoryBlobStore>,
+    Arc<OpCounters>,
+) {
     let meta = ObservedMetaStore::counting();
     let blob = InMemoryBlobStore::default();
     let counters = meta.counters.clone();

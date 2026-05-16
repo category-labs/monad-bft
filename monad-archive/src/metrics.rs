@@ -316,6 +316,7 @@ pub struct Metrics(Option<Arc<MetricsInner>>);
 #[derive(Clone)]
 pub struct MetricsInner {
     pub gauges: Arc<DashMap<MetricNames, Gauge<u64>>>,
+    pub f64_gauges: Arc<DashMap<MetricNames, Gauge<f64>>>,
     pub periodic_gauges: Arc<DashMap<(MetricNames, Vec<KeyValue>), u64>>,
     pub counters: Arc<DashMap<MetricNames, Counter<u64>>>,
     pub histograms: Arc<DashMap<MetricNames, Histogram<f64>>>,
@@ -340,6 +341,7 @@ impl Metrics {
 
         let metrics = Metrics(Some(Arc::new(MetricsInner {
             counters: Arc::default(),
+            f64_gauges: Arc::default(),
             gauges: Arc::default(),
             histograms: Arc::default(),
             periodic_gauges: Arc::default(),
@@ -433,6 +435,19 @@ impl Metrics {
                 inner
                     .meter
                     .u64_gauge(metric.as_str())
+                    .with_description(metric.description())
+                    .build()
+            });
+            gauge.record(value, attributes);
+        }
+    }
+
+    pub fn f64_gauge_with_attrs(&self, metric: MetricNames, value: f64, attributes: &[KeyValue]) {
+        if let Some(inner) = &self.0 {
+            let gauge = inner.f64_gauges.entry(metric).or_insert_with(|| {
+                inner
+                    .meter
+                    .f64_gauge(metric.as_str())
                     .with_description(metric.description())
                     .build()
             });

@@ -16,9 +16,7 @@
 #![cfg(feature = "fjall")]
 
 use bytes::Bytes;
-use monad_chain_data::store::{
-    FjallStore, FjallTuning, MetaStore, MetaWriteOp, TableId,
-};
+use monad_chain_data::store::{FjallStore, FjallTuning, MetaStore, MetaWriteOp, TableId};
 
 const T_KV: TableId = TableId::new("fjall_tuning_kv");
 

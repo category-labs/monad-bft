@@ -19,7 +19,10 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use monad_chain_data::{
-    engine::tables::{BlockTables, PublicationTables, Tables},
+    engine::{
+        family::Family,
+        tables::{BlockTables, PublicationTables, Tables},
+    },
     error::MonadChainDataError,
     family::Hash32,
     store::{
@@ -27,7 +30,7 @@ use monad_chain_data::{
     },
 };
 
-use crate::common::observed_store::{ObservedMetaStore, ObservedBlobStore};
+use crate::common::observed_store::{ObservedBlobStore, ObservedMetaStore};
 
 fn cache() -> CacheConfig {
     CacheConfig {
@@ -176,7 +179,7 @@ async fn closure_error_then_retry_is_idempotent() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn with_writes_and_cas_folds_atomically() {
+async fn with_writes_and_cas_flushes_before_cas_conflict() {
     let meta = ObservedMetaStore::new();
     let blob = InMemoryBlobStore::default();
     let tables = Tables::with_cache_config(meta.clone(), blob, cache());
@@ -209,11 +212,15 @@ async fn with_writes_and_cas_folds_atomically() {
         )
         .await
         .unwrap();
-    assert!(stored.is_none(), "data writes do not land on CAS conflict");
+    assert_eq!(
+        stored.as_deref(),
+        Some(&1u64.to_be_bytes()[..]),
+        "data writes land before the publication CAS"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn cas_conflict_evicts_populated_cache_entries() {
+async fn cas_conflict_keeps_populated_cache_entries() {
     let meta = ObservedMetaStore::new();
     let blob = InMemoryBlobStore::default();
     let tables = Tables::with_cache_config(meta, blob, cache());
@@ -242,7 +249,50 @@ async fn cas_conflict_evicts_populated_cache_entries() {
     assert!(matches!(outcome, CasOutcome::Conflict { .. }));
 
     let read = tables.blocks().load_header(1).await.unwrap();
-    assert!(read.is_none(), "cache must be invalidated on CAS conflict");
+    assert_eq!(
+        read.as_ref().map(|h| h.number),
+        Some(1),
+        "cache remains valid because writes landed before the CAS conflict"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn with_writes_and_cas_flushes_blobs_before_cas_conflict() {
+    let meta = ObservedMetaStore::new();
+    let blob = InMemoryBlobStore::default();
+    let blob_for_check = blob.clone();
+    let tables = Tables::with_cache_config(meta, blob, cache());
+    let tables_ref = &tables;
+
+    let cas = PublicationCasParams {
+        table: PublicationTables::<ObservedMetaStore>::PUBLICATION_STATE_TABLE,
+        key: PublicationTables::<ObservedMetaStore>::PUBLICATION_STATE_KEY.to_vec(),
+        expected: Some(CasVersion(999)),
+        value: Bytes::from_static(b"v"),
+    };
+    let outcome = tables
+        .with_writes_and_cas(cas, |w| {
+            Box::pin(async move {
+                tables_ref
+                    .family(Family::Log)
+                    .stage_block_blob(w, 1, b"payload".to_vec());
+                Ok(())
+            })
+        })
+        .await
+        .expect("conflict still returns Ok(outcome)");
+    assert!(matches!(outcome, CasOutcome::Conflict { .. }));
+
+    let ids = Family::Log.table_ids();
+    let stored = blob_for_check
+        .blob_snapshot()
+        .get(&(ids.block_blob, 1u64.to_be_bytes().to_vec()))
+        .cloned();
+    assert_eq!(
+        stored.as_deref(),
+        Some(&b"payload"[..]),
+        "blob writes land before the publication CAS"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -269,8 +319,8 @@ async fn panic_in_closure_drops_pending() {
 
     let r = futures::FutureExt::catch_unwind(panicked).await;
     assert!(r.is_err(), "panic must propagate");
-    assert!(meta
-        .get(
+    assert!(
+        meta.get(
             BlockTables::<ObservedMetaStore>::BLOCK_HASH_TO_NUMBER_INDEX_TABLE,
             hash.as_slice(),
         )
@@ -341,11 +391,9 @@ async fn parallel_meta_and_blob_flush() {
                 // covers the MetaStore side; both writes flush concurrently
                 // because the framework fires apply_writes on both stores
                 // before awaiting either future.
-                tables_ref.family(monad_chain_data::engine::family::Family::Log).stage_block_blob(
-                    w,
-                    1,
-                    b"payload".to_vec(),
-                );
+                tables_ref
+                    .family(monad_chain_data::engine::family::Family::Log)
+                    .stage_block_blob(w, 1, b"payload".to_vec());
                 tables_ref.blocks().stage_header(w, 1, header_ref);
                 Ok(())
             })
@@ -353,10 +401,30 @@ async fn parallel_meta_and_blob_flush() {
         .await
         .expect("with_writes");
 
-    let meta_start = meta_for_check.timings.apply_started_at.lock().unwrap().unwrap();
-    let meta_end = meta_for_check.timings.apply_finished_at.lock().unwrap().unwrap();
-    let blob_start = blob_for_check.timings.apply_started_at.lock().unwrap().unwrap();
-    let blob_end = blob_for_check.timings.apply_finished_at.lock().unwrap().unwrap();
+    let meta_start = meta_for_check
+        .timings
+        .apply_started_at
+        .lock()
+        .unwrap()
+        .unwrap();
+    let meta_end = meta_for_check
+        .timings
+        .apply_finished_at
+        .lock()
+        .unwrap()
+        .unwrap();
+    let blob_start = blob_for_check
+        .timings
+        .apply_started_at
+        .lock()
+        .unwrap()
+        .unwrap();
+    let blob_end = blob_for_check
+        .timings
+        .apply_finished_at
+        .lock()
+        .unwrap()
+        .unwrap();
 
     let overlap_start = meta_start.max(blob_start);
     let overlap_end = meta_end.min(blob_end);

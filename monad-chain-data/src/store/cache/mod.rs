@@ -166,10 +166,16 @@ impl CacheConfig {
             (CacheField::BitmapByBlock, self.bitmap_by_block_entries),
             (CacheField::BitmapPageMeta, self.bitmap_page_meta_entries),
             (CacheField::BitmapPageBlob, self.bitmap_page_blob_entries),
-            (CacheField::OpenBitmapStream, self.open_bitmap_stream_entries),
+            (
+                CacheField::OpenBitmapStream,
+                self.open_bitmap_stream_entries,
+            ),
             (CacheField::BlockRecord, self.block_record_entries),
             (CacheField::BlockHeader, self.block_header_entries),
-            (CacheField::BlockHashToNumber, self.block_hash_to_number_entries),
+            (
+                CacheField::BlockHashToNumber,
+                self.block_hash_to_number_entries,
+            ),
             (CacheField::TxHashIndex, self.tx_hash_index_entries),
             (CacheField::BlockBlob, self.block_blob_entries),
         ]
@@ -352,7 +358,9 @@ impl<M: MetaStore> CachedScannableTable<M> {
         // result sets requires invalidation on every adjacent write. The
         // per-clustering point gets that follow benefit from populated
         // entries instead.
-        self.inner.list_prefix(partition, prefix, cursor, limit).await
+        self.inner
+            .list_prefix(partition, prefix, cursor, limit)
+            .await
     }
 
     pub(crate) fn cache_handle(&self) -> Arc<CachedInner<(Vec<u8>, Vec<u8>)>> {

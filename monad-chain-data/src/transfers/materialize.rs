@@ -224,7 +224,9 @@ impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery<M, B> for TransferMateri
             .family(Family::Trace)
             .load_block_header(block_number)
             .await?
-            .ok_or(MonadChainDataError::MissingData("missing block trace header"))?;
+            .ok_or(MonadChainDataError::MissingData(
+                "missing block trace header",
+            ))?;
         let header = BlockTraceHeader::decode(&header_bytes)?;
 
         if idx_in_block + 1 >= header.offsets.len() {
@@ -264,7 +266,9 @@ impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery<M, B> for TransferMateri
             .family(Family::Trace)
             .load_block_header(block_number)
             .await?
-            .ok_or(MonadChainDataError::MissingData("missing block trace header"))?;
+            .ok_or(MonadChainDataError::MissingData(
+                "missing block trace header",
+            ))?;
         let header = BlockTraceHeader::decode(&header_bytes)?;
         let blob: Bytes = self
             .tables

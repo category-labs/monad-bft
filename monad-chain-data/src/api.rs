@@ -22,7 +22,14 @@ use crate::{
         execute_query_blocks, load_blocks_by_numbers, QueryBlocksRequest, QueryBlocksResponse,
     },
     engine::{
+        bitmap::{global_page_start, local_page_start, stream_page_global_start},
         family::Family,
+        ingest::ReadPlanningTimings,
+        open_index::{
+            insert_bitmap_set, insert_directory_set, OpenIndexStats, OpenIndexes, OpenIndexesDelta,
+            OpenIndexesEviction,
+        },
+        primary_dir::{bucket_start, DIRECTORY_BUCKET_SIZE},
         query::family_runner::IndexedFamilyQuery,
         tables::{PublicationTables, Tables},
     },
@@ -56,6 +63,7 @@ pub struct MonadChainDataService<M: MetaStoreCas, B: BlobStore> {
     tables: Tables<M, B>,
     publication: PublicationTables<M>,
     limits: QueryLimits,
+    open_indexes: OpenIndexes,
 }
 
 struct StagedBlock {
@@ -83,6 +91,55 @@ where
         .collect()
 }
 
+fn directory_buckets_for_window(first_primary_id: u64, count: u32) -> Vec<u64> {
+    if count == 0 {
+        return Vec::new();
+    }
+
+    let mut out = Vec::new();
+    let mut current = bucket_start(first_primary_id);
+    let last = bucket_start(
+        first_primary_id
+            .saturating_add(u64::from(count))
+            .saturating_sub(1),
+    );
+    loop {
+        out.push(current);
+        if current == last {
+            break;
+        }
+        current = current.saturating_add(DIRECTORY_BUCKET_SIZE);
+    }
+    out
+}
+
+fn append_family_phase_a_delta(
+    delta: &mut OpenIndexesDelta,
+    family: Family,
+    block_number: u64,
+    window: crate::primitives::state::FamilyWindowRecord,
+    bitmap_fragments: &[crate::engine::bitmap::BitmapFragmentWrite],
+) -> Result<()> {
+    let first_primary_id = window.first_primary_id.as_u64();
+    for bucket in directory_buckets_for_window(first_primary_id, window.count) {
+        delta.directory_blocks.push((family, bucket, block_number));
+    }
+    for fragment in bitmap_fragments {
+        let page_global_start =
+            stream_page_global_start(&fragment.stream_id, fragment.page_start_local)?;
+        delta.bitmap_blocks.push((
+            family,
+            fragment.stream_id.clone(),
+            fragment.page_start_local,
+            block_number,
+        ));
+        delta
+            .bitmap_open_streams
+            .push((family, page_global_start, fragment.stream_id.clone()));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IngestOutcome {
     pub indexed_finalized_head: u64,
@@ -103,6 +160,18 @@ pub struct IngestBatchTimings {
     pub commit_a_meta_ms: u64,
     pub commit_a_blob_ms: u64,
     pub reads_ms: u64,
+    pub reads_dir_list_ms: u64,
+    pub reads_dir_get_ms: u64,
+    pub reads_dir_list_count: u64,
+    pub reads_dir_get_count: u64,
+    pub reads_bitmap_open_streams_ms: u64,
+    pub reads_bitmap_open_streams_count: u64,
+    pub reads_bitmap_list_ms: u64,
+    pub reads_bitmap_get_ms: u64,
+    pub reads_bitmap_compact_ms: u64,
+    pub reads_bitmap_list_count: u64,
+    pub reads_bitmap_get_count: u64,
+    pub reads_bitmap_compact_count: u64,
     pub stage_b_ms: u64,
     pub commit_b_ms: u64,
     pub cas_ms: u64,
@@ -128,6 +197,7 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
             publication: PublicationTables::new(meta_store.clone()),
             tables: Tables::with_cache_config(meta_store, blob_store, cache),
             limits,
+            open_indexes: OpenIndexes::default(),
         }
     }
 
@@ -141,6 +211,72 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
 
     pub fn limits(&self) -> &QueryLimits {
         &self.limits
+    }
+
+    pub fn open_index_stats(&self) -> OpenIndexStats {
+        self.open_indexes.stats()
+    }
+
+    async fn ensure_open_indexes_rebuilt(&self, current_head: Option<u64>) -> Result<()> {
+        if self.open_indexes.rebuilt_for_head() == Some(current_head) {
+            return Ok(());
+        }
+        let Some(head) = current_head else {
+            self.open_indexes
+                .replace_rebuilt(None, OpenIndexesDelta::default());
+            return Ok(());
+        };
+        let record = self.tables.blocks().load_record(head).await?.ok_or(
+            MonadChainDataError::MissingData("missing published head block record"),
+        )?;
+        let mut delta = OpenIndexesDelta::default();
+        self.rebuild_family_open_indexes(&mut delta, Family::Log, record.logs, head)
+            .await?;
+        self.rebuild_family_open_indexes(&mut delta, Family::Tx, record.txs, head)
+            .await?;
+        self.rebuild_family_open_indexes(&mut delta, Family::Trace, record.traces, head)
+            .await?;
+        self.open_indexes.replace_rebuilt(Some(head), delta);
+        Ok(())
+    }
+
+    async fn rebuild_family_open_indexes(
+        &self,
+        delta: &mut OpenIndexesDelta,
+        family: Family,
+        window: crate::primitives::state::FamilyWindowRecord,
+        published_head: u64,
+    ) -> Result<()> {
+        let next_primary_id = window
+            .next_primary_id_exclusive()
+            .map(|id| id.as_u64())
+            .unwrap_or(window.first_primary_id.as_u64());
+        let family_tables = self.tables.family(family);
+
+        if window.count > 0 {
+            let open_bucket = bucket_start(next_primary_id);
+            let directory_blocks = family_tables
+                .list_bucket_fragment_blocks(open_bucket, published_head)
+                .await?;
+            insert_directory_set(delta, family, open_bucket, directory_blocks);
+        }
+
+        let open_page = global_page_start(next_primary_id);
+        let page_start_local = local_page_start(open_page);
+        let streams = family_tables.load_open_bitmap_streams(open_page).await?;
+        for stream_id in streams {
+            let blocks = family_tables
+                .list_bitmap_fragment_blocks(&stream_id, page_start_local, published_head)
+                .await?;
+            if blocks.is_empty() {
+                continue;
+            }
+            delta
+                .bitmap_open_streams
+                .push((family, open_page, stream_id.clone()));
+            insert_bitmap_set(delta, family, stream_id, page_start_local, blocks);
+        }
+        Ok(())
     }
 
     // The publication head is the commit boundary: every artifact written before
@@ -159,8 +295,14 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
         // contract, so a single-element input always yields exactly one
         // outcome. The `debug_assert_eq!` traps any future regression of
         // that invariant before the `expect` ever has to fire.
-        debug_assert_eq!(out.len(), 1, "ingest_blocks(vec![one]) returns exactly one outcome");
-        Ok(out.pop().expect("ingest_blocks contract: one outcome per input block"))
+        debug_assert_eq!(
+            out.len(),
+            1,
+            "ingest_blocks(vec![one]) returns exactly one outcome"
+        );
+        Ok(out
+            .pop()
+            .expect("ingest_blocks contract: one outcome per input block"))
     }
 
     /// Persists a contiguous run of finalized blocks as one ingest batch and
@@ -193,6 +335,7 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
             Some((version, state)) => (Some(*version), Some(state.indexed_finalized_head)),
             None => (None, None),
         };
+        self.ensure_open_indexes_rebuilt(current_head).await?;
         let first_previous = block_tables
             .validate_continuity(&blocks[0], current_head)
             .await?;
@@ -303,6 +446,33 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
         timings.commit_a_meta_ms = phase_a_timings.meta.as_millis() as u64;
         timings.commit_a_blob_ms = phase_a_timings.blob.as_millis() as u64;
 
+        let mut phase_a_delta = OpenIndexesDelta::default();
+        for st in &staged {
+            let block_number = st.block_record.block_number;
+            append_family_phase_a_delta(
+                &mut phase_a_delta,
+                Family::Log,
+                block_number,
+                st.log_plan.log_window,
+                &st.log_plan.bitmap_fragments,
+            )?;
+            append_family_phase_a_delta(
+                &mut phase_a_delta,
+                Family::Tx,
+                block_number,
+                st.tx_plan.tx_window,
+                &st.tx_plan.bitmap_fragments,
+            )?;
+            append_family_phase_a_delta(
+                &mut phase_a_delta,
+                Family::Trace,
+                block_number,
+                st.trace_plan.trace_window,
+                &st.trace_plan.bitmap_fragments,
+            )?;
+        }
+        self.open_indexes.apply_delta(phase_a_delta);
+
         let reads_start = Instant::now();
         let log_ranges = family_ranges(&staged, |s| s.log_plan.log_window);
         let tx_ranges = family_ranges(&staged, |s| s.tx_plan.tx_window);
@@ -329,14 +499,37 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
             trace_dir_plan,
             trace_bitmap_plan,
         ) = futures::try_join!(
-            logs.plan_directory_compactions(&log_ranges),
-            logs.plan_bitmap_compactions(&log_bitmap_per_block, &log_ranges),
-            txs.plan_directory_compactions(&tx_ranges),
-            txs.plan_bitmap_compactions(&tx_bitmap_per_block, &tx_ranges),
-            traces.plan_directory_compactions(&trace_ranges),
-            traces.plan_bitmap_compactions(&trace_bitmap_per_block, &trace_ranges),
+            logs.plan_directory_compactions(&self.open_indexes, &log_ranges),
+            logs.plan_bitmap_compactions(&self.open_indexes, &log_bitmap_per_block, &log_ranges),
+            txs.plan_directory_compactions(&self.open_indexes, &tx_ranges),
+            txs.plan_bitmap_compactions(&self.open_indexes, &tx_bitmap_per_block, &tx_ranges),
+            traces.plan_directory_compactions(&self.open_indexes, &trace_ranges),
+            traces.plan_bitmap_compactions(
+                &self.open_indexes,
+                &trace_bitmap_per_block,
+                &trace_ranges
+            ),
         )?;
+        let mut read_plan_timings = ReadPlanningTimings::default();
+        read_plan_timings.merge(log_dir_plan.timings);
+        read_plan_timings.merge(log_bitmap_plan.timings);
+        read_plan_timings.merge(tx_dir_plan.timings);
+        read_plan_timings.merge(tx_bitmap_plan.timings);
+        read_plan_timings.merge(trace_dir_plan.timings);
+        read_plan_timings.merge(trace_bitmap_plan.timings);
         timings.reads_ms = reads_start.elapsed().as_millis() as u64;
+        timings.reads_dir_list_ms = read_plan_timings.dir_list_ms;
+        timings.reads_dir_get_ms = read_plan_timings.dir_get_ms;
+        timings.reads_dir_list_count = read_plan_timings.dir_list_count;
+        timings.reads_dir_get_count = read_plan_timings.dir_get_count;
+        timings.reads_bitmap_open_streams_ms = read_plan_timings.bitmap_open_streams_ms;
+        timings.reads_bitmap_open_streams_count = read_plan_timings.bitmap_open_streams_count;
+        timings.reads_bitmap_list_ms = read_plan_timings.bitmap_list_ms;
+        timings.reads_bitmap_get_ms = read_plan_timings.bitmap_get_ms;
+        timings.reads_bitmap_compact_ms = read_plan_timings.bitmap_compact_ms;
+        timings.reads_bitmap_list_count = read_plan_timings.bitmap_list_count;
+        timings.reads_bitmap_get_count = read_plan_timings.bitmap_get_count;
+        timings.reads_bitmap_compact_count = read_plan_timings.bitmap_compact_count;
 
         let phase_b_has_writes = !log_dir_plan.buckets.is_empty()
             || log_bitmap_plan.has_writes
@@ -366,10 +559,10 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
             let trace_dir = &trace_dir_plan;
             let trace_bitmap = &trace_bitmap_plan;
             // `stage_b_ms` is the synchronous closure body — pure staging
-            // into the session. `commit_b_ms` is the meta apply_writes_with_cas
-            // + blob apply_writes that the framework fires after the closure
-            // returns. Carve them apart inside the closure so the on-wire
-            // timing fields keep the same meaning across the rewrite.
+            // into the session. `commit_b_ms` is the meta/blob apply_writes
+            // plus the publication CAS that the framework runs after the
+            // closure returns. Carve them apart inside the closure so the
+            // on-wire timing fields keep the same meaning across the rewrite.
             let stage_b_ms_cell = std::sync::atomic::AtomicU64::new(0);
             let commit_b_start = Instant::now();
             let outcome: CasOutcome = self
@@ -396,12 +589,22 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
             timings.stage_b_ms = stage_b_ms_cell.load(std::sync::atomic::Ordering::Relaxed);
             timings.commit_b_ms = total_b_ms.saturating_sub(timings.stage_b_ms);
             self.publication.cas_outcome_into_result(outcome).await?;
+            self.open_indexes.mark_rebuilt_for_head(Some(new_head));
+            let mut eviction = OpenIndexesEviction::default();
+            eviction.merge(logs.directory_eviction(&log_dir_plan));
+            eviction.merge(logs.bitmap_eviction(&log_bitmap_plan));
+            eviction.merge(txs.directory_eviction(&tx_dir_plan));
+            eviction.merge(txs.bitmap_eviction(&tx_bitmap_plan));
+            eviction.merge(traces.directory_eviction(&trace_dir_plan));
+            eviction.merge(traces.bitmap_eviction(&trace_bitmap_plan));
+            self.open_indexes.apply_eviction(eviction);
         } else {
             timings.phase_b_skipped = true;
             let cas_start = Instant::now();
             self.publication
                 .cas_advance(expected_version, next_state)
                 .await?;
+            self.open_indexes.mark_rebuilt_for_head(Some(new_head));
             timings.cas_ms = cas_start.elapsed().as_millis() as u64;
         }
 
@@ -525,10 +728,7 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
     /// Executes a finalized traces query over the current published head.
     /// The service's configured `QueryLimits` bound the request shape and
     /// the resolved block-range span.
-    pub async fn query_traces(
-        &self,
-        request: QueryTracesRequest,
-    ) -> Result<QueryTracesResponse> {
+    pub async fn query_traces(&self, request: QueryTracesRequest) -> Result<QueryTracesResponse> {
         self.limits.check_limit(request.envelope.limit)?;
 
         let head = self.load_published_head().await?;

@@ -151,7 +151,10 @@ async fn fjall_keyspace_stats_reflects_writes() {
     }
 
     let stats = store.keyspace_stats().expect("stats");
-    assert!(!stats.is_empty(), "writes should have opened at least one keyspace");
+    assert!(
+        !stats.is_empty(),
+        "writes should have opened at least one keyspace"
+    );
     let touched = stats
         .iter()
         .find(|s| s.name.ends_with("ks_stats_smoke"))

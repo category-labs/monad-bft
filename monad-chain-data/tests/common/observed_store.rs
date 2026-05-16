@@ -149,7 +149,9 @@ impl MetaStore for ObservedMetaStore {
         clustering: &[u8],
         value: Bytes,
     ) -> Result<()> {
-        self.inner.scan_put(table, partition, clustering, value).await
+        self.inner
+            .scan_put(table, partition, clustering, value)
+            .await
     }
 
     async fn scan_list(
@@ -163,7 +165,9 @@ impl MetaStore for ObservedMetaStore {
         if self.mode.count_reads {
             self.counters.scan_list.fetch_add(1, Ordering::Relaxed);
         }
-        self.inner.scan_list(table, partition, prefix, cursor, limit).await
+        self.inner
+            .scan_list(table, partition, prefix, cursor, limit)
+            .await
     }
 
     async fn apply_writes(&self, writes: Vec<MetaWriteOp>) -> Result<()> {
@@ -200,11 +204,7 @@ impl MetaStore for ObservedMetaStore {
 }
 
 impl MetaStoreCas for ObservedMetaStore {
-    async fn cas_get(
-        &self,
-        table: TableId,
-        key: &[u8],
-    ) -> Result<Option<(CasVersion, Bytes)>> {
+    async fn cas_get(&self, table: TableId, key: &[u8]) -> Result<Option<(CasVersion, Bytes)>> {
         self.inner.cas_get(table, key).await
     }
 
@@ -239,20 +239,11 @@ impl ObservedBlobStore {
 }
 
 impl BlobStore for ObservedBlobStore {
-    async fn put_blob(
-        &self,
-        table: BlobTableId,
-        key: &[u8],
-        value: Bytes,
-    ) -> Result<()> {
+    async fn put_blob(&self, table: BlobTableId, key: &[u8], value: Bytes) -> Result<()> {
         self.inner.put_blob(table, key, value).await
     }
 
-    async fn get_blob(
-        &self,
-        table: BlobTableId,
-        key: &[u8],
-    ) -> Result<Option<Bytes>> {
+    async fn get_blob(&self, table: BlobTableId, key: &[u8]) -> Result<Option<Bytes>> {
         self.inner.get_blob(table, key).await
     }
 

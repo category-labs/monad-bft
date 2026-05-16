@@ -158,8 +158,7 @@ async fn ingest_blocks_skips_phase_b_when_no_family_writes_seal() {
 
     let meta = InMemoryMetaStore::default();
     let blob = InMemoryBlobStore::default();
-    let service =
-        MonadChainDataService::new(meta.clone(), blob.clone(), QueryLimits::UNLIMITED);
+    let service = MonadChainDataService::new(meta.clone(), blob.clone(), QueryLimits::UNLIMITED);
 
     service.ingest_blocks(blocks.clone()).await.expect("ingest");
 
@@ -229,12 +228,21 @@ async fn ingest_blocks_returns_populated_phase_timings() {
     // require that the bookkeeping fields were populated by the public
     // API, not left at their `Default` zero state.
     let zero = monad_chain_data::IngestBatchTimings::default();
-    assert_ne!(timings, zero, "timings struct should not be Default after ingest");
+    assert_ne!(
+        timings, zero,
+        "timings struct should not be Default after ingest"
+    );
     // Non-empty blocks (with logs) seal at least one family fragment, so
     // the Phase B branch must have run. `commit_b_ms > 0` is flaky on
     // fast in-memory stores; assert the branch flag instead.
-    assert!(!timings.phase_b_skipped, "non-empty blocks should hit Phase B");
-    assert_eq!(timings.cas_ms, 0, "cas_ms must be 0 when Phase B handled the CAS");
+    assert!(
+        !timings.phase_b_skipped,
+        "non-empty blocks should hit Phase B"
+    );
+    assert_eq!(
+        timings.cas_ms, 0,
+        "cas_ms must be 0 when Phase B handled the CAS"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]

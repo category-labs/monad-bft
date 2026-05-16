@@ -212,8 +212,7 @@ async fn multi_block_ingest_by_stale_writer_is_fenced_at_publish() {
         .await;
     assert!(matches!(
         outcome,
-        Err(MonadChainDataError::FencedOut { .. })
-            | Err(MonadChainDataError::InvalidRequest(_))
+        Err(MonadChainDataError::FencedOut { .. }) | Err(MonadChainDataError::InvalidRequest(_))
     ));
     assert_eq!(
         active_writer

@@ -437,8 +437,9 @@ fn parse_block_data_reader_args<E: de::Error>(value: JsonValue) -> Result<BlockD
             "mongodb" => deserialize_variant(cfg, "mongodb block_data_source")
                 .map(BlockDataReaderArgs::MongoDb),
             "fs" => deserialize_variant(cfg, "fs block_data_source").map(BlockDataReaderArgs::Fs),
-            "fjall" => deserialize_variant(cfg, "fjall block_data_source")
-                .map(BlockDataReaderArgs::Fjall),
+            "fjall" => {
+                deserialize_variant(cfg, "fjall block_data_source").map(BlockDataReaderArgs::Fjall)
+            }
             other => Err(E::custom(format!(
                 "unsupported block_data_source type '{other}'",
             ))),
@@ -452,8 +453,9 @@ fn parse_block_data_reader_args<E: de::Error>(value: JsonValue) -> Result<BlockD
             "MongoDb" => deserialize_variant(cfg, "MongoDb block_data_source")
                 .map(BlockDataReaderArgs::MongoDb),
             "Fs" => deserialize_variant(cfg, "Fs block_data_source").map(BlockDataReaderArgs::Fs),
-            "Fjall" => deserialize_variant(cfg, "Fjall block_data_source")
-                .map(BlockDataReaderArgs::Fjall),
+            "Fjall" => {
+                deserialize_variant(cfg, "Fjall block_data_source").map(BlockDataReaderArgs::Fjall)
+            }
             other => Err(E::custom(format!(
                 "unsupported block_data_source variant '{other}'",
             ))),

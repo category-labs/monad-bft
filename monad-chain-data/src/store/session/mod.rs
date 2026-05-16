@@ -13,7 +13,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{future::Future, pin::Pin, sync::{Arc, Mutex}};
+use std::{
+    future::Future,
+    pin::Pin,
+    sync::{Arc, Mutex},
+};
 
 use bytes::Bytes;
 
@@ -81,10 +85,7 @@ impl<'a, M: MetaStore, B: BlobStore> WriteSession<'a, M, B> {
         value: Bytes,
     ) {
         let handle = table.cache_handle();
-        handle.populate(
-            (partition.to_vec(), clustering.to_vec()),
-            value.clone(),
-        );
+        handle.populate((partition.to_vec(), clustering.to_vec()), value.clone());
         self.populated_scan
             .lock()
             .expect("write session populated_scan poisoned")

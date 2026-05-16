@@ -18,9 +18,7 @@ use bytes::Bytes;
 use crate::{
     error::Result,
     family::Hash32,
-    store::{
-        blob::BlobStore, CacheConfig, CachedKvTable, MetaStore, TableId, WriteSession,
-    },
+    store::{blob::BlobStore, CacheConfig, CachedKvTable, MetaStore, TableId, WriteSession},
     txs::types::TxLocation,
 };
 
