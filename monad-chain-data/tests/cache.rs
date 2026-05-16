@@ -13,134 +13,21 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::sync::{
-    atomic::{AtomicU64, Ordering},
-    Arc,
-};
+mod common;
 
-use bytes::Bytes;
+use std::sync::Arc;
+
 use monad_chain_data::{
     engine::{family::Family, tables::Tables},
-    store::{
-        CacheConfig, CasOutcome, InMemoryBlobStore, InMemoryMetaStore, MetaStore, MetaStoreCas,
-        MetaWriteOp, Page, PublicationCasParams, ScannableTableId, TableId,
-    },
+    store::{CacheConfig, InMemoryBlobStore},
 };
 
-#[derive(Default)]
-struct Counters {
-    get: AtomicU64,
-    scan_get: AtomicU64,
-    scan_list: AtomicU64,
-}
+use crate::common::observed_store::{ObservedMetaStore, OpCounters};
 
-impl Counters {
-    fn snapshot(&self) -> (u64, u64, u64) {
-        (
-            self.get.load(Ordering::Relaxed),
-            self.scan_get.load(Ordering::Relaxed),
-            self.scan_list.load(Ordering::Relaxed),
-        )
-    }
-}
-
-#[derive(Clone)]
-struct CountingMeta {
-    inner: InMemoryMetaStore,
-    counters: Arc<Counters>,
-}
-
-impl CountingMeta {
-    fn new() -> Self {
-        Self {
-            inner: InMemoryMetaStore::default(),
-            counters: Arc::new(Counters::default()),
-        }
-    }
-}
-
-impl MetaStore for CountingMeta {
-    async fn get(&self, table: TableId, key: &[u8]) -> monad_chain_data::error::Result<Option<Bytes>> {
-        self.counters.get.fetch_add(1, Ordering::Relaxed);
-        self.inner.get(table, key).await
-    }
-
-    async fn scan_get(
-        &self,
-        table: ScannableTableId,
-        partition: &[u8],
-        clustering: &[u8],
-    ) -> monad_chain_data::error::Result<Option<Bytes>> {
-        self.counters.scan_get.fetch_add(1, Ordering::Relaxed);
-        self.inner.scan_get(table, partition, clustering).await
-    }
-
-    async fn put(
-        &self,
-        table: TableId,
-        key: &[u8],
-        value: Bytes,
-    ) -> monad_chain_data::error::Result<()> {
-        self.inner.put(table, key, value).await
-    }
-
-    async fn scan_put(
-        &self,
-        table: ScannableTableId,
-        partition: &[u8],
-        clustering: &[u8],
-        value: Bytes,
-    ) -> monad_chain_data::error::Result<()> {
-        self.inner.scan_put(table, partition, clustering, value).await
-    }
-
-    async fn scan_list(
-        &self,
-        table: ScannableTableId,
-        partition: &[u8],
-        prefix: &[u8],
-        cursor: Option<Vec<u8>>,
-        limit: usize,
-    ) -> monad_chain_data::error::Result<Page> {
-        self.counters.scan_list.fetch_add(1, Ordering::Relaxed);
-        self.inner.scan_list(table, partition, prefix, cursor, limit).await
-    }
-
-    async fn apply_writes(&self, writes: Vec<MetaWriteOp>) -> monad_chain_data::error::Result<()> {
-        self.inner.apply_writes(writes).await
-    }
-
-    async fn apply_writes_with_cas(
-        &self,
-        writes: Vec<MetaWriteOp>,
-        cas: PublicationCasParams,
-    ) -> monad_chain_data::error::Result<CasOutcome> {
-        self.inner.apply_writes_with_cas(writes, cas).await
-    }
-}
-
-impl MetaStoreCas for CountingMeta {
-    async fn cas_get(
-        &self,
-        table: TableId,
-        key: &[u8],
-    ) -> monad_chain_data::error::Result<Option<(monad_chain_data::store::CasVersion, Bytes)>> {
-        self.inner.cas_get(table, key).await
-    }
-
-    async fn cas_put(
-        &self,
-        table: TableId,
-        key: &[u8],
-        expected: Option<monad_chain_data::store::CasVersion>,
-        value: Bytes,
-    ) -> monad_chain_data::error::Result<CasOutcome> {
-        self.inner.cas_put(table, key, expected, value).await
-    }
-}
-
-fn make_tables(cache: CacheConfig) -> (Tables<CountingMeta, InMemoryBlobStore>, Arc<Counters>) {
-    let meta = CountingMeta::new();
+fn make_tables(
+    cache: CacheConfig,
+) -> (Tables<ObservedMetaStore, InMemoryBlobStore>, Arc<OpCounters>) {
+    let meta = ObservedMetaStore::counting();
     let blob = InMemoryBlobStore::default();
     let counters = meta.counters.clone();
     let tables = Tables::with_cache_config(meta, blob, cache);
@@ -166,6 +53,7 @@ fn small_cache() -> CacheConfig {
 #[tokio::test(flavor = "current_thread")]
 async fn put_then_get_on_kv_table_serves_from_cache() {
     let (tables, counters) = make_tables(small_cache());
+    let tables_ref = &tables;
     let header = monad_chain_data::EvmBlockHeader {
         number: 1,
         ..Default::default()
@@ -174,7 +62,7 @@ async fn put_then_get_on_kv_table_serves_from_cache() {
     tables
         .with_writes(|w| {
             Box::pin(async move {
-                w.tables().blocks().stage_header(w, 1, header_ref);
+                tables_ref.blocks().stage_header(w, 1, header_ref);
                 Ok(())
             })
         })
@@ -194,10 +82,11 @@ async fn put_then_get_on_kv_table_serves_from_cache() {
 #[tokio::test(flavor = "current_thread")]
 async fn scan_put_then_scan_get_serves_from_cache() {
     let (tables, counters) = make_tables(small_cache());
+    let tables_ref = &tables;
     tables
         .with_writes(|w| {
             Box::pin(async move {
-                w.tables()
+                tables_ref
                     .family(Family::Log)
                     .dir()
                     .stage_block_fragment(w, 1, 0, 1);
@@ -225,6 +114,7 @@ async fn scan_put_then_scan_get_serves_from_cache() {
 #[tokio::test(flavor = "current_thread")]
 async fn cache_visible_inside_same_closure() {
     let (tables, counters) = make_tables(small_cache());
+    let tables_ref = &tables;
     let header = monad_chain_data::EvmBlockHeader {
         number: 1,
         ..Default::default()
@@ -234,8 +124,8 @@ async fn cache_visible_inside_same_closure() {
     tables
         .with_writes(|w| {
             Box::pin(async move {
-                w.tables().blocks().stage_header(w, 1, header_ref);
-                let read = w.tables().blocks().load_header(1).await?;
+                tables_ref.blocks().stage_header(w, 1, header_ref);
+                let read = tables_ref.blocks().load_header(1).await?;
                 assert!(read.is_some(), "populate visible inside closure");
                 Ok(())
             })
@@ -254,6 +144,7 @@ async fn cache_eviction_is_not_correctness_bug() {
         ..small_cache()
     };
     let (tables, _counters) = make_tables(cache);
+    let tables_ref = &tables;
 
     for i in 1..=5u64 {
         let header = monad_chain_data::EvmBlockHeader {
@@ -264,7 +155,7 @@ async fn cache_eviction_is_not_correctness_bug() {
         tables
             .with_writes(|w| {
                 Box::pin(async move {
-                    w.tables().blocks().stage_header(w, i, header_ref);
+                    tables_ref.blocks().stage_header(w, i, header_ref);
                     Ok(())
                 })
             })
@@ -285,6 +176,7 @@ async fn zero_size_cache_skips_lru() {
         ..small_cache()
     };
     let (tables, counters) = make_tables(cache);
+    let tables_ref = &tables;
     let header = monad_chain_data::EvmBlockHeader {
         number: 1,
         ..Default::default()
@@ -293,7 +185,7 @@ async fn zero_size_cache_skips_lru() {
     tables
         .with_writes(|w| {
             Box::pin(async move {
-                w.tables().blocks().stage_header(w, 1, header_ref);
+                tables_ref.blocks().stage_header(w, 1, header_ref);
                 Ok(())
             })
         })
@@ -313,11 +205,12 @@ async fn zero_size_cache_skips_lru() {
 #[tokio::test(flavor = "current_thread")]
 async fn populate_keys_match_scan_get_keys() {
     let (tables, counters) = make_tables(small_cache());
+    let tables_ref = &tables;
 
     tables
         .with_writes(|w| {
             Box::pin(async move {
-                let dir = w.tables().family(Family::Log).dir();
+                let dir = tables_ref.family(Family::Log).dir();
                 dir.stage_block_fragment(w, 1, 0, 5);
                 dir.stage_block_fragment(w, 2, 5, 7);
                 Ok(())
@@ -350,10 +243,11 @@ async fn concurrent_reader_during_populate() {
                 ..Default::default()
             };
             let header_ref = &header;
+            let tables_w_inner = tables_w.clone();
             tables_w
                 .with_writes(|w| {
                     Box::pin(async move {
-                        w.tables().blocks().stage_header(w, i, header_ref);
+                        tables_w_inner.blocks().stage_header(w, i, header_ref);
                         Ok(())
                     })
                 })
@@ -377,6 +271,7 @@ async fn concurrent_reader_during_populate() {
 #[tokio::test(flavor = "current_thread")]
 async fn cache_hit_ratio_metric_resets_between_windows() {
     let (tables, _counters) = make_tables(small_cache());
+    let tables_ref = &tables;
     let header = monad_chain_data::EvmBlockHeader {
         number: 1,
         ..Default::default()
@@ -385,7 +280,7 @@ async fn cache_hit_ratio_metric_resets_between_windows() {
     tables
         .with_writes(|w| {
             Box::pin(async move {
-                w.tables().blocks().stage_header(w, 1, header_ref);
+                tables_ref.blocks().stage_header(w, 1, header_ref);
                 Ok(())
             })
         })
@@ -410,4 +305,3 @@ async fn cache_hit_ratio_metric_resets_between_windows() {
     let third_hits: u64 = third.iter().map(|(_, h, _)| *h).sum();
     assert_eq!(third_hits, 1, "third window observes exactly the new hit");
 }
-

@@ -183,11 +183,7 @@ impl<M: MetaStore> PrimaryDirTables<M> {
         bucket: &PrimaryDirBucket,
     ) {
         let key = u64_key(bucket_start);
-        w.put(
-            self.buckets.table_id(),
-            &key,
-            Bytes::from(bucket.encode()),
-        );
+        w.put(&self.buckets, &key, Bytes::from(bucket.encode()));
     }
 
     /// Stages every per-bucket fragment write the block contributes. Mirrors
@@ -217,12 +213,7 @@ impl<M: MetaStore> PrimaryDirTables<M> {
         loop {
             let partition = u64_key(current_bucket_start);
             let clustering = u64_key(block_number);
-            w.scan_put(
-                self.fragments.table_id(),
-                &partition,
-                &clustering,
-                encoded.clone(),
-            );
+            w.scan_put(&self.fragments, &partition, &clustering, encoded.clone());
             if current_bucket_start == last_bucket_start {
                 break;
             }
