@@ -306,13 +306,6 @@ pub fn bucket_start(primary_id: u64) -> u64 {
     aligned_u64_start(primary_id, DIRECTORY_BUCKET_SIZE)
 }
 
-pub(crate) fn bucket_starts_for_window(first_primary_id: u64, count: u32) -> Vec<u64> {
-    if count == 0 {
-        return Vec::new();
-    }
-    fragment_bucket_starts(first_primary_id, count)
-}
-
 pub(crate) fn fragment_bucket_starts(first_primary_id: u64, count: u32) -> Vec<u64> {
     if count == 0 {
         return vec![bucket_start(first_primary_id)];

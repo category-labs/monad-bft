@@ -25,15 +25,12 @@ use crate::{
     engine::{
         bitmap::{global_page_start, local_page_start, stream_page_global_start},
         family::Family,
-        ingest::{
-            persist::{PhaseAFragmentStageStats, PhaseAFragmentWriteFilter},
-            ReadPlanningTimings,
-        },
+        ingest::{persist::PhaseAFragmentWriteFilter, ReadPlanningTimings},
         open_index::{
             insert_bitmap_set, insert_directory_set, OpenIndexStats, OpenIndexes, OpenIndexesDelta,
             OpenIndexesEviction,
         },
-        primary_dir::{bucket_start, bucket_starts_for_window, PrimaryDirFragment},
+        primary_dir::{bucket_start, fragment_bucket_starts, PrimaryDirFragment},
         query::family_runner::IndexedFamilyQuery,
         tables::{PublicationTables, Tables, WriteOpCounts},
     },
@@ -117,7 +114,7 @@ fn append_family_phase_a_delta(
     bitmap_fragments: &[crate::engine::bitmap::BitmapFragmentWrite],
 ) -> Result<()> {
     let first_primary_id = window.first_primary_id.as_u64();
-    for bucket in bucket_starts_for_window(first_primary_id, window.count) {
+    for bucket in fragment_bucket_starts(first_primary_id, window.count) {
         let fragment = PrimaryDirFragment {
             block_number,
             first_primary_id,
@@ -552,13 +549,6 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
 
         let last_staged = staged.last().expect("at least one block staged");
         let log_filter = PhaseAFragmentWriteFilter {
-            open_dir_bucket: bucket_start(
-                last_staged
-                    .log_plan
-                    .log_window
-                    .next_primary_id_exclusive()?
-                    .as_u64(),
-            ),
             open_bitmap_page: global_page_start(
                 last_staged
                     .log_plan
@@ -568,13 +558,6 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
             ),
         };
         let tx_filter = PhaseAFragmentWriteFilter {
-            open_dir_bucket: bucket_start(
-                last_staged
-                    .tx_plan
-                    .tx_window
-                    .next_primary_id_exclusive()?
-                    .as_u64(),
-            ),
             open_bitmap_page: global_page_start(
                 last_staged
                     .tx_plan
@@ -584,13 +567,6 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
             ),
         };
         let trace_filter = PhaseAFragmentWriteFilter {
-            open_dir_bucket: bucket_start(
-                last_staged
-                    .trace_plan
-                    .trace_window
-                    .next_primary_id_exclusive()?
-                    .as_u64(),
-            ),
             open_bitmap_page: global_page_start(
                 last_staged
                     .trace_plan
@@ -664,18 +640,14 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
                         &st.tx_plan.bitmap_fragments,
                         tx_filter,
                     )?;
-                    let trace_stats = if st.trace_plan.trace_window.count == 0 {
-                        PhaseAFragmentStageStats::default()
-                    } else {
-                        traces.stage_indexed_family_ingest(
-                            w,
-                            block.block_number(),
-                            st.trace_plan.block_trace_blob.clone(),
-                            st.trace_plan.trace_window,
-                            &st.trace_plan.bitmap_fragments,
-                            trace_filter,
-                        )?
-                    };
+                    let trace_stats = traces.stage_indexed_family_ingest(
+                        w,
+                        block.block_number(),
+                        st.trace_plan.block_trace_blob.clone(),
+                        st.trace_plan.trace_window,
+                        &st.trace_plan.bitmap_fragments,
+                        trace_filter,
+                    )?;
                     for stats in [log_stats, tx_stats, trace_stats] {
                         dir_fragments_total_cell.fetch_add(
                             stats.dir_fragments_total,

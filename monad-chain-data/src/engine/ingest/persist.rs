@@ -22,7 +22,6 @@ use crate::{
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PhaseAFragmentWriteFilter {
-    pub open_dir_bucket: u64,
     pub open_bitmap_page: u64,
 }
 
@@ -53,23 +52,17 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
         let mut stats = PhaseAFragmentStageStats::default();
 
         self.stage_block_blob(w, block_number, block_blob);
-        if window.count > 0 {
-            self.dir().stage_block_fragment_filtered(
-                w,
-                block_number,
-                first_primary_id,
-                window.count,
-                |bucket| {
-                    stats.dir_fragments_total = stats.dir_fragments_total.saturating_add(1);
-                    if bucket == fragment_filter.open_dir_bucket {
-                        stats.dir_fragments_written = stats.dir_fragments_written.saturating_add(1);
-                        true
-                    } else {
-                        false
-                    }
-                },
-            );
-        }
+        self.dir().stage_block_fragment_filtered(
+            w,
+            block_number,
+            first_primary_id,
+            window.count,
+            |_| {
+                stats.dir_fragments_total = stats.dir_fragments_total.saturating_add(1);
+                stats.dir_fragments_written = stats.dir_fragments_written.saturating_add(1);
+                true
+            },
+        );
         let (bitmap_total, bitmap_written) = self.bitmap().stage_fragments_for_global_page(
             w,
             bitmap_fragments,
