@@ -89,6 +89,46 @@ async fn ingest_blocks_matches_sequential_ingest_block_state() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn ingest_plans_can_be_built_ahead_of_publication() {
+    let blocks = make_chain(4, 2);
+    let service = MonadChainDataService::new(
+        InMemoryMetaStore::default(),
+        InMemoryBlobStore::default(),
+        QueryLimits::UNLIMITED,
+    );
+
+    let first = service
+        .plan_ingest_blocks(blocks[..2].to_vec())
+        .await
+        .expect("plan first")
+        .expect("first plan");
+    let second = service
+        .plan_ingest_blocks(blocks[2..].to_vec())
+        .await
+        .expect("plan second")
+        .expect("second plan");
+
+    assert!(service
+        .publication()
+        .load_published_head()
+        .await
+        .unwrap()
+        .is_none());
+
+    let (first_outcomes, _) = service.apply_ingest_plan(first).await.expect("apply first");
+    assert_eq!(first_outcomes.last().unwrap().indexed_finalized_head, 2);
+    let (second_outcomes, _) = service
+        .apply_ingest_plan(second)
+        .await
+        .expect("apply second");
+    assert_eq!(second_outcomes.last().unwrap().indexed_finalized_head, 4);
+    assert_eq!(
+        service.publication().load_published_head().await.unwrap(),
+        Some(4)
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn ingest_blocks_rejects_mismatched_continuity_within_batch() {
     let mut blocks = make_chain(3, 2);
     // Corrupt block 2's parent_hash so it no longer chains from block 1.
