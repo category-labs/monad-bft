@@ -639,12 +639,19 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
             Box::pin(async move {
                 let stage_a_session_stage_start = Instant::now();
                 for (block, st) in blocks_ref.iter().zip(staged_ref.iter()) {
-                    block_tables.stage_header(w, block.block_number(), &block.header);
+                    block_tables.stage_metadata(
+                        w,
+                        block.block_number(),
+                        &st.block_record,
+                        &block.header,
+                        Bytes::from(st.log_plan.block_log_header.encode()),
+                        Bytes::from(st.tx_plan.block_tx_header.encode()),
+                        Bytes::from(st.trace_plan.block_trace_header.encode()),
+                    );
                     let log_stats = logs.stage_indexed_family_ingest(
                         w,
                         block.block_number(),
                         st.log_plan.block_log_blob.clone(),
-                        Bytes::from(st.log_plan.block_log_header.encode()),
                         st.log_plan.log_window,
                         &st.log_plan.bitmap_fragments,
                         log_filter,
@@ -653,7 +660,6 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
                         w,
                         block.block_number(),
                         st.tx_plan.block_tx_blob.clone(),
-                        Bytes::from(st.tx_plan.block_tx_header.encode()),
                         st.tx_plan.tx_window,
                         &st.tx_plan.bitmap_fragments,
                         tx_filter,
@@ -665,7 +671,6 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
                             w,
                             block.block_number(),
                             st.trace_plan.block_trace_blob.clone(),
-                            Bytes::from(st.trace_plan.block_trace_header.encode()),
                             st.trace_plan.trace_window,
                             &st.trace_plan.bitmap_fragments,
                             trace_filter,
@@ -697,7 +702,6 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
                     for (tx_hash, location) in &st.tx_plan.hash_locations {
                         w.tables().tx_hash_index().stage_put(w, tx_hash, *location);
                     }
-                    block_tables.stage_record(w, block.block_number(), &st.block_record);
                 }
                 stage_a_ms_cell.store(
                     stage_a_session_stage_start.elapsed().as_micros() as u64,
