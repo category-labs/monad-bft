@@ -13,9 +13,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
+use futures::lock::Mutex;
 use rayon::prelude::*;
 
 use crate::{
@@ -32,7 +33,7 @@ use crate::{
         },
         primary_dir::{bucket_start, fragment_bucket_starts, PrimaryDirFragment},
         query::family_runner::IndexedFamilyQuery,
-        tables::{PublicationTables, Tables, WriteOpCounts},
+        tables::{PublicationTables, StagedWrites, Tables, WriteOpCounts},
     },
     error::{MonadChainDataError, Result},
     family::{FinalizedBlock, Hash32},
@@ -45,7 +46,7 @@ use crate::{
         range::ResolvedBlockWindow,
         state::{BlockRecord, LogId, TraceId, TxId},
     },
-    store::{BlobStore, CacheConfig, MetaStoreCas, PublicationCasParams},
+    store::{BlobStore, CacheConfig, MetaStoreCas},
     traces::{
         execute_block_scan_trace_query, execute_indexed_trace_query, QueryTracesRequest,
         QueryTracesResponse, TraceIngestPlan,
@@ -65,6 +66,13 @@ pub struct MonadChainDataService<M: MetaStoreCas, B: BlobStore> {
     publication: PublicationTables<M>,
     limits: QueryLimits,
     open_indexes: OpenIndexes,
+    planning_state: Mutex<Option<IngestPlanningState>>,
+}
+
+#[derive(Debug, Clone)]
+struct IngestPlanningState {
+    head: Option<u64>,
+    previous: Option<BlockRecord>,
 }
 
 struct StagedBlock {
@@ -154,10 +162,9 @@ pub struct IngestOutcome {
 }
 
 /// Per-batch timing breakdown emitted by [`MonadChainDataService::ingest_blocks`].
-/// All durations are milliseconds. `commit_b_ms` and `cas_ms` are mutually
-/// exclusive: when Phase B is empty (`phase_b_skipped = true`) the head
-/// advance runs through a standalone CAS and `commit_b_ms == 0`; otherwise
-/// the CAS is folded into the Phase B commit and `cas_ms == 0`.
+/// All durations are milliseconds. Data writes are applied before the
+/// publication CAS; `commit_b_ms` is retained as the post-write/CAS overhead
+/// bucket for existing ingest logging.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct IngestBatchTimings {
     pub stage_a_ms: u64,
@@ -223,6 +230,58 @@ pub struct IngestBatchTimings {
     pub blocks: usize,
 }
 
+#[derive(Debug, Clone)]
+pub struct IngestPlan {
+    pub outcomes: Vec<IngestOutcome>,
+    pub timings: IngestBatchTimings,
+    pub writes: StagedWrites,
+    pub publication: PublicationAdvance,
+}
+
+#[derive(Debug, Clone)]
+pub struct PublicationAdvance {
+    pub table: crate::store::TableId,
+    pub key: Vec<u8>,
+    pub value: Bytes,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IoRetryPolicy {
+    pub max_retries: Option<usize>,
+    pub initial_backoff: Duration,
+    pub max_backoff: Duration,
+}
+
+impl IoRetryPolicy {
+    pub const fn no_retries() -> Self {
+        Self {
+            max_retries: Some(0),
+            initial_backoff: Duration::from_millis(0),
+            max_backoff: Duration::from_millis(0),
+        }
+    }
+
+    pub const fn bounded(
+        max_retries: usize,
+        initial_backoff: Duration,
+        max_backoff: Duration,
+    ) -> Self {
+        Self {
+            max_retries: Some(max_retries),
+            initial_backoff,
+            max_backoff,
+        }
+    }
+
+    pub const fn infinite(initial_backoff: Duration, max_backoff: Duration) -> Self {
+        Self {
+            max_retries: None,
+            initial_backoff,
+            max_backoff,
+        }
+    }
+}
+
 impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
     pub fn new(meta_store: M, blob_store: B, limits: QueryLimits) -> Self {
         Self::with_cache_config(meta_store, blob_store, limits, CacheConfig::default())
@@ -242,6 +301,7 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
             tables: Tables::with_cache_config(meta_store, blob_store, cache),
             limits,
             open_indexes: OpenIndexes::default(),
+            planning_state: Mutex::new(None),
         }
     }
 
@@ -366,8 +426,18 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
         &self,
         blocks: Vec<FinalizedBlock>,
     ) -> Result<(Vec<IngestOutcome>, IngestBatchTimings)> {
-        if blocks.is_empty() {
+        let Some(plan) = self.plan_ingest_blocks(blocks).await? else {
             return Ok((Vec::new(), IngestBatchTimings::default()));
+        };
+        self.apply_ingest_plan(plan).await
+    }
+
+    pub async fn plan_ingest_blocks(
+        &self,
+        blocks: Vec<FinalizedBlock>,
+    ) -> Result<Option<IngestPlan>> {
+        if blocks.is_empty() {
+            return Ok(None);
         }
 
         let mut timings = IngestBatchTimings {
@@ -380,15 +450,52 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
         let txs = self.tables.family(Family::Tx);
         let traces = self.tables.family(Family::Trace);
 
-        let current_state = self.publication.load_state().await?;
-        let (expected_version, current_head) = match &current_state {
-            Some((version, state)) => (Some(*version), Some(state.indexed_finalized_head)),
-            None => (None, None),
-        };
-        self.ensure_open_indexes_rebuilt(current_head).await?;
-        let first_previous = block_tables
-            .validate_continuity(&blocks[0], current_head)
-            .await?;
+        let mut planning_state = self.planning_state.lock().await;
+        if planning_state.is_none() {
+            let current_head = self.publication.load_published_head().await?;
+            self.ensure_open_indexes_rebuilt(current_head).await?;
+            let previous = match current_head {
+                Some(head) => Some(block_tables.load_record(head).await?.ok_or(
+                    MonadChainDataError::MissingData("missing published head block record"),
+                )?),
+                None => None,
+            };
+            *planning_state = Some(IngestPlanningState {
+                head: current_head,
+                previous,
+            });
+        }
+        let state = planning_state
+            .as_ref()
+            .expect("planning state initialized above");
+        match state.head {
+            None => {
+                if blocks[0].block_number() != 1 {
+                    return Err(MonadChainDataError::InvalidRequest(
+                        "first ingested block must be block 1 in the first pass",
+                    ));
+                }
+            }
+            Some(head) => {
+                if blocks[0].block_number() != head + 1 {
+                    return Err(MonadChainDataError::InvalidRequest(
+                        "block_number must extend the planned head contiguously",
+                    ));
+                }
+                let previous = state
+                    .previous
+                    .as_ref()
+                    .ok_or(MonadChainDataError::MissingData(
+                        "missing previous planned block record",
+                    ))?;
+                if previous.block_hash != blocks[0].parent_hash() {
+                    return Err(MonadChainDataError::InvalidRequest(
+                        "parent_hash must match the previous planned block",
+                    ));
+                }
+            }
+        }
+        let first_previous = state.previous.clone();
 
         let stage_a_start = Instant::now();
         let mut plan_starts: Vec<StageAPlanStarts> = Vec::with_capacity(blocks.len());
@@ -823,10 +930,9 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
         let next_state = crate::primitives::state::PublicationState {
             indexed_finalized_head: new_head,
         };
-        let cas = PublicationCasParams {
+        let publication = PublicationAdvance {
             table: PublicationTables::<M>::PUBLICATION_STATE_TABLE,
             key: PublicationTables::<M>::PUBLICATION_STATE_KEY.to_vec(),
-            expected: expected_version,
             value: Bytes::from(next_state.encode()),
         };
 
@@ -841,10 +947,8 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
             let trace_dir = &trace_dir_plan;
             let trace_bitmap = &trace_bitmap_plan;
             // `stage_b_ms` is the synchronous closure body — pure staging
-            // into the session. `commit_b_ms` is the meta/blob apply_writes
-            // plus the publication CAS that the framework runs after the
-            // closure returns. Carve them apart inside the closure so the
-            // on-wire timing fields keep the same meaning across the rewrite.
+            // into the session. The IO side applies the combined writes and
+            // publishes with a standalone CAS after planning returns.
             let stage_b_ms_cell = std::sync::atomic::AtomicU64::new(0);
             let phase_b_writes = self
                 .tables
@@ -880,32 +984,22 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
         }
         timings
             .phase_b_write_counts
-            .add_cas(cas.table, cas.value.len());
-        combined_writes.add_cas_count(cas.table, cas.value.len());
+            .add_cas(publication.table, publication.value.len());
+        combined_writes.add_cas_count(publication.table, publication.value.len());
 
-        let commit_start = Instant::now();
-        let combined_timings = self
-            .tables
-            .apply_staged_writes_timed(combined_writes)
-            .await?;
-        timings.commit_a_meta_ms = combined_timings.meta.as_millis() as u64;
-        timings.commit_a_blob_ms = combined_timings.blob.as_millis() as u64;
-        let cas_start = Instant::now();
-        let outcome = self
-            .tables
-            .meta_store()
-            .cas_put(cas.table, &cas.key, cas.expected, cas.value)
-            .await?;
-        timings.cas_ms = cas_start.elapsed().as_millis() as u64;
-        let commit_elapsed_ms = commit_start.elapsed().as_millis() as u64;
-        timings.commit_b_ms = commit_elapsed_ms
-            .saturating_sub(timings.commit_a_meta_ms.max(timings.commit_a_blob_ms));
-        self.publication.cas_outcome_into_result(outcome).await?;
+        // Planning owns the ingest open-index state. Once a plan is emitted,
+        // later plans should account for its open fragments even if the IO
+        // worker has not published it yet. CAS failure tears down ingest, so
+        // there is no rollback path for this speculative state.
         self.open_indexes.apply_delta(phase_a_delta);
         if phase_b_has_writes {
             self.open_indexes.apply_eviction(phase_b_eviction);
         }
         self.open_indexes.mark_rebuilt_for_head(Some(new_head));
+        *planning_state = Some(IngestPlanningState {
+            head: Some(new_head),
+            previous: Some(last.block_record.clone()),
+        });
 
         let outcomes = staged
             .into_iter()
@@ -917,6 +1011,75 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
                 written_traces: s.trace_plan.written_traces,
             })
             .collect();
+        Ok(Some(IngestPlan {
+            outcomes,
+            timings,
+            writes: combined_writes,
+            publication,
+        }))
+    }
+
+    pub async fn apply_ingest_plan(
+        &self,
+        plan: IngestPlan,
+    ) -> Result<(Vec<IngestOutcome>, IngestBatchTimings)> {
+        self.apply_ingest_plan_with_retry(plan, IoRetryPolicy::no_retries())
+            .await
+    }
+
+    pub async fn apply_ingest_plan_with_retry(
+        &self,
+        plan: IngestPlan,
+        retry: IoRetryPolicy,
+    ) -> Result<(Vec<IngestOutcome>, IngestBatchTimings)> {
+        let IngestPlan {
+            outcomes,
+            mut timings,
+            writes,
+            publication,
+        } = plan;
+
+        let commit_start = Instant::now();
+        let mut attempts = 0usize;
+        let mut backoff = retry.initial_backoff;
+        let combined_timings = loop {
+            match self.tables.apply_staged_writes_timed(writes.clone()).await {
+                Ok(timings) => break timings,
+                Err(e) => {
+                    if retry.max_retries.is_some_and(|max| attempts >= max) {
+                        return Err(e);
+                    }
+                    attempts = attempts.saturating_add(1);
+                    if !backoff.is_zero() {
+                        std::thread::sleep(backoff);
+                        backoff = backoff.saturating_mul(2).min(retry.max_backoff);
+                    }
+                }
+            }
+        };
+        timings.commit_a_meta_ms = combined_timings.meta.as_millis() as u64;
+        timings.commit_a_blob_ms = combined_timings.blob.as_millis() as u64;
+        let expected = self
+            .publication
+            .load_state()
+            .await?
+            .map(|(version, _)| version);
+        let cas_start = Instant::now();
+        let outcome = self
+            .tables
+            .meta_store()
+            .cas_put(
+                publication.table,
+                &publication.key,
+                expected,
+                publication.value,
+            )
+            .await?;
+        timings.cas_ms = cas_start.elapsed().as_millis() as u64;
+        let commit_elapsed_ms = commit_start.elapsed().as_millis() as u64;
+        timings.commit_b_ms = commit_elapsed_ms
+            .saturating_sub(timings.commit_a_meta_ms.max(timings.commit_a_blob_ms));
+        self.publication.cas_outcome_into_result(outcome).await?;
         Ok((outcomes, timings))
     }
 
