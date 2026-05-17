@@ -79,11 +79,18 @@ async fn ingest_compacts_a_sealed_directory_bucket_when_crossing_the_boundary() 
         .expect("load fragments");
     assert_eq!(
         fragments,
-        vec![PrimaryDirFragment {
-            block_number: 1,
-            first_primary_id: 0,
-            end_primary_id_exclusive: DIRECTORY_BUCKET_SIZE - 2,
-        }]
+        vec![
+            PrimaryDirFragment {
+                block_number: 1,
+                first_primary_id: 0,
+                end_primary_id_exclusive: DIRECTORY_BUCKET_SIZE - 2,
+            },
+            PrimaryDirFragment {
+                block_number: 2,
+                first_primary_id: DIRECTORY_BUCKET_SIZE - 2,
+                end_primary_id_exclusive: DIRECTORY_BUCKET_SIZE + 2,
+            },
+        ]
     );
 
     assert!(
@@ -157,7 +164,7 @@ async fn bucket_compaction_uses_open_index_without_prefix_scan() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn empty_families_do_not_pollute_directory_index() {
+async fn empty_families_keep_dense_directory_fragments() {
     let service = MonadChainDataService::new(
         InMemoryMetaStore::default(),
         InMemoryBlobStore::default(),
@@ -177,12 +184,12 @@ async fn empty_families_do_not_pollute_directory_index() {
 
     let stats = service.open_index_stats();
     assert_eq!(
-        stats.directory_keys, 1,
-        "only the non-empty log family should have an open directory bucket",
+        stats.directory_keys, 3,
+        "all families keep open directory buckets so compaction sees dense block sequences",
     );
     assert_eq!(
-        stats.directory_blocks, 1,
-        "empty tx/trace windows must not index zero-width fragments",
+        stats.directory_blocks, 3,
+        "empty tx/trace windows index zero-width fragments",
     );
     assert!(
         stats.fragment_value_bytes > 0,
