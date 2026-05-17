@@ -24,7 +24,7 @@
 use std::{
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
         Arc, Mutex,
     },
     time::{Duration, Instant},
@@ -517,17 +517,20 @@ async fn main() -> Result<()> {
     let max_retries = cli.max_retries;
     let initial_backoff = Duration::from_millis(cli.retry_backoff_ms);
     let fetch_stats = Arc::new(Mutex::new(FetchStats::default()));
+    let fetch_progress = Arc::new(FetchProgress::default());
     let fetch_traces = !cli.no_traces;
     if cli.no_traces {
         info!("--no-traces set: skipping trace fetch and ingest");
     }
     let fetch_stream = {
         let fetch_stats = fetch_stats.clone();
+        let fetch_progress = fetch_progress.clone();
         let permits = control.permits();
         stream::iter(start..=end)
             .map(move |n| {
                 let reader = reader.clone();
                 let stats = fetch_stats.clone();
+                let progress = fetch_progress.clone();
                 let permits = permits.clone();
                 async move {
                     let _permit = permits
@@ -540,6 +543,7 @@ async fn main() -> Result<()> {
                         max_retries,
                         initial_backoff,
                         &stats,
+                        &progress,
                         fetch_traces,
                     )
                     .await
@@ -561,6 +565,7 @@ async fn main() -> Result<()> {
     let mut wait_ms: Vec<u64> = Vec::with_capacity(cli.log_every as usize);
     let mut phase = PhaseStats::default();
     let mut last_blob_compression = BlobCompressionSnapshot::default();
+    let mut fetch_consumed_total = 0_u64;
     let batch_size = cli.batch_size;
     let mut pending: Vec<(u64, FinalizedBlock)> = Vec::with_capacity(batch_size);
     let mut stream_done = false;
@@ -580,6 +585,7 @@ async fn main() -> Result<()> {
                 wait_ms.push(wait_started.elapsed().as_millis() as u64);
             }
             let (n, block, receipts, traces) = item?;
+            fetch_consumed_total = fetch_consumed_total.saturating_add(1);
             let finalized = into_finalized_block(block, receipts, traces)
                 .with_context(|| format!("transforming block {n}"))?;
             pending.push((n, finalized));
@@ -619,6 +625,14 @@ async fn main() -> Result<()> {
             let elapsed_secs = window_start.elapsed().as_secs_f64().max(1e-9);
             let fetch_window =
                 std::mem::take(&mut *fetch_stats.lock().expect("fetch stats poisoned"));
+            let fetch_progress_snapshot = fetch_progress.snapshot();
+            let fetch_completed_backlog = fetch_progress_snapshot
+                .completed
+                .saturating_sub(fetch_consumed_total);
+            let fetch_in_flight = fetch_progress_snapshot
+                .started
+                .saturating_sub(fetch_progress_snapshot.completed);
+            let fetch_completed_per_sec = round_2(fetch_window.completed as f64 / elapsed_secs);
             let fetch_p50 = percentile(&fetch_window.durations_ms, 0.50);
             let fetch_p99 = percentile(&fetch_window.durations_ms, 0.99);
             let fetch_request_wall_total_ms = sum_u64(&fetch_window.durations_ms);
@@ -681,6 +695,13 @@ async fn main() -> Result<()> {
                 hint,
                 concurrency = concurrency_observed,
                 blocks_per_sec,
+                fetch_completed_per_sec,
+                fetch_started_total = fetch_progress_snapshot.started,
+                fetch_completed_total = fetch_progress_snapshot.completed,
+                fetch_consumed_total,
+                fetch_completed_backlog,
+                fetch_in_flight,
+                fetch_buffer_capacity = fetch_buffer,
                 txs_per_sec,
                 logs_per_sec,
                 traces_per_sec,
@@ -939,6 +960,7 @@ async fn profile_blob_compression_only(cli: &Cli) -> Result<()> {
     }
     let permits = Arc::new(Semaphore::new(cli.concurrency));
     let fetch_stats = Arc::new(Mutex::new(FetchStats::default()));
+    let fetch_progress = Arc::new(FetchProgress::default());
     let max_retries = cli.max_retries;
     let initial_backoff = Duration::from_millis(cli.retry_backoff_ms);
     let fetch_traces = !cli.no_traces;
@@ -957,10 +979,12 @@ async fn profile_blob_compression_only(cli: &Cli) -> Result<()> {
 
     let fetch_stream = {
         let fetch_stats = fetch_stats.clone();
+        let fetch_progress = fetch_progress.clone();
         stream::iter(start..=end)
             .map(move |n| {
                 let reader = reader.clone();
                 let stats = fetch_stats.clone();
+                let progress = fetch_progress.clone();
                 let permits = permits.clone();
                 async move {
                     let _permit = permits
@@ -973,6 +997,7 @@ async fn profile_blob_compression_only(cli: &Cli) -> Result<()> {
                         max_retries,
                         initial_backoff,
                         &stats,
+                        &progress,
                         fetch_traces,
                     )
                     .await
@@ -991,6 +1016,7 @@ async fn profile_blob_compression_only(cli: &Cli) -> Result<()> {
     let mut phase = PhaseStats::default();
     let mut pending: Vec<(u64, FinalizedBlock)> = Vec::with_capacity(cli.batch_size);
     let mut stream_done = false;
+    let mut fetch_consumed_total = 0_u64;
 
     loop {
         pending.clear();
@@ -1000,6 +1026,7 @@ async fn profile_blob_compression_only(cli: &Cli) -> Result<()> {
                 break;
             };
             let (n, block, receipts, traces) = item?;
+            fetch_consumed_total = fetch_consumed_total.saturating_add(1);
             let finalized = into_finalized_block(block, receipts, traces)
                 .with_context(|| format!("transforming block {n}"))?;
             pending.push((n, finalized));
@@ -1028,6 +1055,13 @@ async fn profile_blob_compression_only(cli: &Cli) -> Result<()> {
     }
 
     let fetch_window = fetch_stats.lock().expect("fetch stats poisoned");
+    let fetch_progress_snapshot = fetch_progress.snapshot();
+    let fetch_completed_backlog = fetch_progress_snapshot
+        .completed
+        .saturating_sub(fetch_consumed_total);
+    let fetch_in_flight = fetch_progress_snapshot
+        .started
+        .saturating_sub(fetch_progress_snapshot.completed);
     let phase_summary = phase.summary();
     let compression = compression_stats.snapshot();
     let elapsed_secs = started.elapsed().as_secs_f64().max(1e-9);
@@ -1038,6 +1072,13 @@ async fn profile_blob_compression_only(cli: &Cli) -> Result<()> {
         total_traces,
         elapsed_secs = round_2(elapsed_secs),
         blocks_per_sec = round_2(total_blocks as f64 / elapsed_secs),
+        fetch_completed_per_sec = round_2(fetch_window.completed as f64 / elapsed_secs),
+        fetch_started_total = fetch_progress_snapshot.started,
+        fetch_completed_total = fetch_progress_snapshot.completed,
+        fetch_consumed_total,
+        fetch_completed_backlog,
+        fetch_in_flight,
+        fetch_buffer_capacity = fetch_buffer,
         fetch_p50_ms = percentile(&fetch_window.durations_ms, 0.50),
         fetch_p99_ms = percentile(&fetch_window.durations_ms, 0.99),
         ingest_p50_ms = percentile(&ingest_ms, 0.50),
@@ -1145,21 +1186,22 @@ async fn fetch_block_with_retry(
     max_retries: u32,
     initial_backoff: Duration,
     stats: &Mutex<FetchStats>,
+    progress: &FetchProgress,
     fetch_traces: bool,
 ) -> Result<(u64, Block, BlockReceipts, BlockTraces)> {
     let mut backoff = initial_backoff;
     // Wall time across all attempts: a retried fetch's "latency" is what
     // the consumer actually waits for, not just the successful attempt.
     let started = Instant::now();
+    progress.started.fetch_add(1, Ordering::Relaxed);
     for attempt in 0..=max_retries {
         match fetch_block(reader, n, fetch_traces).await {
             Ok(item) => {
                 let elapsed_ms = started.elapsed().as_millis() as u64;
-                stats
-                    .lock()
-                    .expect("fetch stats poisoned")
-                    .durations_ms
-                    .push(elapsed_ms);
+                progress.completed.fetch_add(1, Ordering::Relaxed);
+                let mut stats = stats.lock().expect("fetch stats poisoned");
+                stats.completed = stats.completed.saturating_add(1);
+                stats.durations_ms.push(elapsed_ms);
                 return Ok(item);
             }
             Err(e) if attempt < max_retries => {
@@ -1188,7 +1230,29 @@ async fn fetch_block_with_retry(
 #[derive(Default)]
 struct FetchStats {
     durations_ms: Vec<u64>,
+    completed: u64,
     retry_attempts: u64,
+}
+
+#[derive(Default)]
+struct FetchProgress {
+    started: AtomicU64,
+    completed: AtomicU64,
+}
+
+#[derive(Clone, Copy)]
+struct FetchProgressSnapshot {
+    started: u64,
+    completed: u64,
+}
+
+impl FetchProgress {
+    fn snapshot(&self) -> FetchProgressSnapshot {
+        FetchProgressSnapshot {
+            started: self.started.load(Ordering::Relaxed),
+            completed: self.completed.load(Ordering::Relaxed),
+        }
+    }
 }
 
 /// Per-window accumulator for the per-phase timings returned by
