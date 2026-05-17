@@ -1,0 +1,17 @@
+  cargo run --release -p monad-chain-data --bin chain-data-ingest --features archive-ingest -- \
+      --meta-data-dir ~/meta-1 \
+      --blob-data-dir /var/lib/fjall/blob-1 \
+      --block-data-source "aws mainnet-deu-009-0" \
+      --no-traces \
+      --concurrency 1000 \
+      --count 100000000 \
+      --batch-size 30000 \
+      --fetch-buffer 100000 \
+      --autotune \
+      --max-concurrency 10000 \
+      --fjall-journal-mib 16384 \
+      --fjall-memtable-mib 512 \
+      --cache-mib 12288 \
+      --blob-compression zstd \
+      --blob-compression-level 1 \
+      --blob-compression-min-bytes 1024
