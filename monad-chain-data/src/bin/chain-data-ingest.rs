@@ -52,10 +52,11 @@ use monad_chain_data::{
         CacheConfig, FjallStore, FjallTuning, MetaStore, MetaStoreCas, TableId,
     },
     BlockRecord, CallKind, FamilyWindowRecord, FinalizedBlock, InMemoryBlobStore,
-    InMemoryMetaStore, IngestTrace, IngestTx, MonadChainDataService, PrimaryId, QueryLimits,
+    InMemoryMetaStore, IngestPlan, IngestTrace, IngestTx, IoRetryPolicy, MonadChainDataService,
+    PrimaryId, QueryLimits,
 };
 use opentelemetry::KeyValue;
-use tokio::sync::Semaphore;
+use tokio::sync::{mpsc, Semaphore};
 use tracing::{debug, info, warn, Level};
 
 #[derive(Parser, Debug)]
@@ -170,6 +171,29 @@ struct Cli {
     #[arg(long, default_value_t = 1)]
     batch_size: usize,
 
+    /// Number of fully planned ingest batches allowed to queue in front of
+    /// the IO worker. This is the backpressure boundary between planning
+    /// and write/CAS publication.
+    #[arg(long, default_value_t = 2)]
+    plan_buffer: usize,
+
+    /// Number of retries for non-CAS meta/blob write failures. CAS is never
+    /// retried; a CAS conflict means this writer lost the publication lease.
+    #[arg(long, default_value_t = 0)]
+    io_max_retries: usize,
+
+    /// Retry non-CAS IO failures forever. Overrides --io-max-retries.
+    #[arg(long)]
+    io_retry_forever: bool,
+
+    /// Initial non-CAS IO retry backoff, in milliseconds.
+    #[arg(long, default_value_t = 200)]
+    io_retry_backoff_ms: u64,
+
+    /// Maximum non-CAS IO retry backoff, in milliseconds.
+    #[arg(long, default_value_t = 10_000)]
+    io_retry_max_backoff_ms: u64,
+
     /// fjall total-journal cap in MiB. Default 512 matches fjall's default;
     /// raise (e.g. 4096 or 8192) for high-throughput backfill to reduce
     /// journal-rotation pressure. Must be >= 64.
@@ -227,6 +251,28 @@ struct StoreDirs {
     meta: PathBuf,
     blob: PathBuf,
     same_dir: bool,
+}
+
+struct FetchedBatch {
+    last_block: u64,
+    blocks: Vec<FinalizedBlock>,
+    first_wait_ms: u64,
+    ingest_started: Instant,
+}
+
+struct PlannedBatch {
+    last_block: u64,
+    plan: IngestPlan,
+    first_wait_ms: u64,
+    ingest_started: Instant,
+}
+
+struct AppliedBatch {
+    last_block: u64,
+    outcomes: Vec<monad_chain_data::IngestOutcome>,
+    timings: monad_chain_data::IngestBatchTimings,
+    first_wait_ms: u64,
+    total_ingest_ms: u64,
 }
 
 fn resolve_store_dirs(cli: &Cli) -> Result<StoreDirs> {
@@ -303,6 +349,12 @@ async fn main() -> Result<()> {
     }
     if cli.batch_size == 0 {
         bail!("--batch-size must be >= 1");
+    }
+    if cli.plan_buffer == 0 {
+        bail!("--plan-buffer must be >= 1");
+    }
+    if cli.io_retry_max_backoff_ms < cli.io_retry_backoff_ms {
+        bail!("--io-retry-max-backoff-ms must be >= --io-retry-backoff-ms");
     }
     if cli.fjall_journal_mib < 64 {
         bail!("--fjall-journal-mib must be >= 64");
@@ -400,12 +452,12 @@ async fn main() -> Result<()> {
         blob_compression_min_bytes = cli.blob_compression_min_bytes,
         "blob compression config"
     );
-    let service = MonadChainDataService::with_cache_config(
+    let service = Arc::new(MonadChainDataService::with_cache_config(
         meta_store.clone(),
         blob_store,
         QueryLimits::UNLIMITED,
         cache_config,
-    );
+    ));
 
     // Resolve the block range against the current publication head before
     // any archive I/O, so a misconfigured range fails fast rather than
@@ -486,6 +538,9 @@ async fn main() -> Result<()> {
         concurrency = cli.concurrency,
         fetch_buffer,
         batch_size = cli.batch_size,
+        plan_buffer = cli.plan_buffer,
+        io_retry_forever = cli.io_retry_forever,
+        io_max_retries = cli.io_max_retries,
         meta_data_dir = %store_dirs.meta.display(),
         blob_data_dir = %store_dirs.blob.display(),
         "starting ingest"
@@ -509,49 +564,159 @@ async fn main() -> Result<()> {
     // hour to fire; the wall-clock fallback keeps feedback flowing.
     const WINDOW_MAX_WALL: Duration = Duration::from_secs(30);
 
-    // Bounded prefetch. `buffered(fetch_buffer)` caps the parked task
-    // count; the semaphore inside the closure is the actual dynamic limit.
-    // Fetches issue in input (block-number) order, so the consumer side
-    // stays sequential — required because ingest_block validates
-    // parent_hash continuity.
-    let max_retries = cli.max_retries;
-    let initial_backoff = Duration::from_millis(cli.retry_backoff_ms);
     let fetch_stats = Arc::new(Mutex::new(FetchStats::default()));
     let fetch_progress = Arc::new(FetchProgress::default());
-    let fetch_traces = !cli.no_traces;
     if cli.no_traces {
         info!("--no-traces set: skipping trace fetch and ingest");
     }
-    let fetch_stream = {
+
+    let (fetched_tx, mut fetched_rx) = mpsc::channel::<FetchedBatch>(cli.plan_buffer);
+    let (planned_tx, mut planned_rx) = mpsc::channel::<PlannedBatch>(cli.plan_buffer);
+    let (applied_tx, mut applied_rx) = mpsc::channel::<AppliedBatch>(cli.plan_buffer);
+    let fetch_consumed_total = Arc::new(AtomicU64::new(0));
+
+    let fetch_handle = {
+        let reader = reader.clone();
         let fetch_stats = fetch_stats.clone();
         let fetch_progress = fetch_progress.clone();
         let permits = control.permits();
-        stream::iter(start..=end)
-            .map(move |n| {
-                let reader = reader.clone();
-                let stats = fetch_stats.clone();
-                let progress = fetch_progress.clone();
-                let permits = permits.clone();
-                async move {
-                    let _permit = permits
-                        .acquire_owned()
+        let fetched_tx = fetched_tx.clone();
+        let fetch_consumed_total = fetch_consumed_total.clone();
+        let max_retries = cli.max_retries;
+        let initial_backoff = Duration::from_millis(cli.retry_backoff_ms);
+        let fetch_traces = !cli.no_traces;
+        let batch_size = cli.batch_size;
+        tokio::spawn(async move {
+            // Bounded prefetch. `buffered(fetch_buffer)` preserves input
+            // order; the semaphore inside the closure is the dynamic active
+            // fetch limit.
+            let fetch_stream = stream::iter(start..=end)
+                .map(move |n| {
+                    let reader = reader.clone();
+                    let stats = fetch_stats.clone();
+                    let progress = fetch_progress.clone();
+                    let permits = permits.clone();
+                    async move {
+                        let _permit = permits
+                            .acquire_owned()
+                            .await
+                            .expect("concurrency semaphore should never close");
+                        fetch_block_with_retry(
+                            &reader,
+                            n,
+                            max_retries,
+                            initial_backoff,
+                            &stats,
+                            &progress,
+                            fetch_traces,
+                        )
                         .await
-                        .expect("concurrency semaphore should never close");
-                    fetch_block_with_retry(
-                        &reader,
-                        n,
-                        max_retries,
-                        initial_backoff,
-                        &stats,
-                        &progress,
-                        fetch_traces,
-                    )
-                    .await
+                    }
+                })
+                .buffered(fetch_buffer);
+            futures::pin_mut!(fetch_stream);
+
+            let mut pending: Vec<(u64, FinalizedBlock)> = Vec::with_capacity(batch_size);
+            loop {
+                pending.clear();
+                let wait_started = Instant::now();
+                let mut first_wait_ms = 0;
+                for slot in 0..batch_size {
+                    let Some(item) = fetch_stream.next().await else {
+                        break;
+                    };
+                    if slot == 0 {
+                        first_wait_ms = wait_started.elapsed().as_millis() as u64;
+                    }
+                    let (n, block, receipts, traces) = item?;
+                    fetch_consumed_total.fetch_add(1, Ordering::Relaxed);
+                    let finalized = into_finalized_block(block, receipts, traces)
+                        .with_context(|| format!("transforming block {n}"))?;
+                    pending.push((n, finalized));
                 }
-            })
-            .buffered(fetch_buffer)
+                if pending.is_empty() {
+                    break;
+                }
+                let last_block = pending.last().expect("pending non-empty").0;
+                let blocks = pending.iter().map(|(_, b)| b.clone()).collect();
+                fetched_tx
+                    .send(FetchedBatch {
+                        last_block,
+                        blocks,
+                        first_wait_ms,
+                        ingest_started: Instant::now(),
+                    })
+                    .await
+                    .map_err(|_| eyre!("planning worker stopped before fetch completed"))?;
+            }
+            Ok::<_, eyre::Report>(())
+        })
     };
-    futures::pin_mut!(fetch_stream);
+
+    drop(fetched_tx);
+
+    let plan_handle = {
+        let service = service.clone();
+        tokio::spawn(async move {
+            while let Some(batch) = fetched_rx.recv().await {
+                let plan = service
+                    .plan_ingest_blocks(batch.blocks)
+                    .await
+                    .with_context(|| {
+                        format!("planning batch ending at block {}", batch.last_block)
+                    })?
+                    .expect("fetch worker never sends empty batches");
+                planned_tx
+                    .send(PlannedBatch {
+                        last_block: batch.last_block,
+                        plan,
+                        first_wait_ms: batch.first_wait_ms,
+                        ingest_started: batch.ingest_started,
+                    })
+                    .await
+                    .map_err(|_| eyre!("IO worker stopped before planning completed"))?;
+            }
+            Ok::<_, eyre::Report>(())
+        })
+    };
+
+    let io_retry = if cli.io_retry_forever {
+        IoRetryPolicy::infinite(
+            Duration::from_millis(cli.io_retry_backoff_ms),
+            Duration::from_millis(cli.io_retry_max_backoff_ms),
+        )
+    } else {
+        IoRetryPolicy::bounded(
+            cli.io_max_retries,
+            Duration::from_millis(cli.io_retry_backoff_ms),
+            Duration::from_millis(cli.io_retry_max_backoff_ms),
+        )
+    };
+    let io_handle = {
+        let service = service.clone();
+        tokio::spawn(async move {
+            while let Some(batch) = planned_rx.recv().await {
+                let (outcomes, timings) = service
+                    .apply_ingest_plan_with_retry(batch.plan, io_retry)
+                    .await
+                    .with_context(|| {
+                        format!("applying batch ending at block {}", batch.last_block)
+                    })?;
+                let total_ingest_ms = batch.ingest_started.elapsed().as_millis() as u64;
+                applied_tx
+                    .send(AppliedBatch {
+                        last_block: batch.last_block,
+                        outcomes,
+                        timings,
+                        first_wait_ms: batch.first_wait_ms,
+                        total_ingest_ms,
+                    })
+                    .await
+                    .map_err(|_| eyre!("progress consumer stopped before IO completed"))?;
+            }
+            Ok::<_, eyre::Report>(())
+        })
+    };
 
     let mut total_logs: u64 = 0;
     let mut total_txs: u64 = 0;
@@ -565,44 +730,16 @@ async fn main() -> Result<()> {
     let mut wait_ms: Vec<u64> = Vec::with_capacity(cli.log_every as usize);
     let mut phase = PhaseStats::default();
     let mut last_blob_compression = BlobCompressionSnapshot::default();
-    let mut fetch_consumed_total = 0_u64;
-    let batch_size = cli.batch_size;
-    let mut pending: Vec<(u64, FinalizedBlock)> = Vec::with_capacity(batch_size);
-    let mut stream_done = false;
-    loop {
-        pending.clear();
-        // Drain up to `batch_size` ready blocks from the prefetch stream into
-        // a contiguous Vec. The first item's wait is the "consumer_wait"
-        // signal; subsequent items in the same batch are picked up
-        // back-to-back.
-        let wait_started = Instant::now();
-        for slot in 0..batch_size {
-            let Some(item) = fetch_stream.next().await else {
-                stream_done = true;
-                break;
-            };
-            if slot == 0 {
-                wait_ms.push(wait_started.elapsed().as_millis() as u64);
-            }
-            let (n, block, receipts, traces) = item?;
-            fetch_consumed_total = fetch_consumed_total.saturating_add(1);
-            let finalized = into_finalized_block(block, receipts, traces)
-                .with_context(|| format!("transforming block {n}"))?;
-            pending.push((n, finalized));
-        }
-        if pending.is_empty() {
-            break;
-        }
-        let last_n = pending.last().expect("pending non-empty").0;
-        let blocks_in_batch: Vec<FinalizedBlock> = pending.iter().map(|(_, b)| b.clone()).collect();
-
-        let ingest_started = Instant::now();
-        let (outcomes, timings) = service
-            .ingest_blocks(blocks_in_batch)
-            .await
-            .with_context(|| format!("ingesting batch ending at block {last_n}"))?;
-        let total_ingest_ms = ingest_started.elapsed().as_millis() as u64;
+    while let Some(applied) = applied_rx.recv().await {
+        let AppliedBatch {
+            last_block: n,
+            outcomes,
+            timings,
+            first_wait_ms,
+            total_ingest_ms,
+        } = applied;
         ingest_ms.push(total_ingest_ms);
+        wait_ms.push(first_wait_ms);
         phase.record(&timings);
         emit_phase_metrics(&metrics, &timings, total_ingest_ms);
 
@@ -616,9 +753,7 @@ async fn main() -> Result<()> {
             window_traces += outcome.written_traces as u64;
         }
 
-        let n = last_n;
-        let flush = stream_done
-            || n == end
+        let flush = n == end
             || (window_blocks > 0
                 && (n % log_every == 0 || window_start.elapsed() >= WINDOW_MAX_WALL));
         if flush {
@@ -626,9 +761,10 @@ async fn main() -> Result<()> {
             let fetch_window =
                 std::mem::take(&mut *fetch_stats.lock().expect("fetch stats poisoned"));
             let fetch_progress_snapshot = fetch_progress.snapshot();
+            let fetch_consumed_snapshot = fetch_consumed_total.load(Ordering::Relaxed);
             let fetch_completed_backlog = fetch_progress_snapshot
                 .completed
-                .saturating_sub(fetch_consumed_total);
+                .saturating_sub(fetch_consumed_snapshot);
             let fetch_in_flight = fetch_progress_snapshot
                 .started
                 .saturating_sub(fetch_progress_snapshot.completed);
@@ -698,7 +834,7 @@ async fn main() -> Result<()> {
                 fetch_completed_per_sec,
                 fetch_started_total = fetch_progress_snapshot.started,
                 fetch_completed_total = fetch_progress_snapshot.completed,
-                fetch_consumed_total,
+                fetch_consumed_total = fetch_consumed_snapshot,
                 fetch_completed_backlog,
                 fetch_in_flight,
                 fetch_buffer_capacity = fetch_buffer,
@@ -880,11 +1016,20 @@ async fn main() -> Result<()> {
             ingest_ms.clear();
             wait_ms.clear();
         }
-
-        if stream_done {
-            break;
-        }
     }
+
+    fetch_handle
+        .await
+        .context("fetch worker panicked")?
+        .context("fetch worker failed")?;
+    plan_handle
+        .await
+        .context("planning worker panicked")?
+        .context("planning worker failed")?;
+    io_handle
+        .await
+        .context("IO worker panicked")?
+        .context("IO worker failed")?;
 
     info!(end, total_txs, total_logs, total_traces, "ingest complete");
     Ok(())
