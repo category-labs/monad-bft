@@ -60,7 +60,10 @@ use monad_validator::{
     validator_set::{ValidatorSet, ValidatorSetType as _},
 };
 use packet::regular;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::{
+    sync::mpsc::{UnboundedReceiver, UnboundedSender},
+    time::{interval_at, Instant, Interval, MissedTickBehavior},
+};
 use tracing::{debug, debug_span, error, info, trace, warn};
 use util::{
     AutoRebroadcast, BroadcastGroup, BroadcastGroupError, BuildTarget, Collector, FullNodeGroupMap,
@@ -98,6 +101,10 @@ pub mod v1_rollout;
 
 const SIGNATURE_SIZE: usize = 65;
 const DEFAULT_RETRY_ATTEMPTS: u64 = 3;
+const VALIDATOR_AUTH_SESSION_PREWARM_INTERVAL: Duration = Duration::from_secs(2);
+// Bound each prewarm tick so higher validator limits, for example 1000 validators,
+// do not starve other work by doing too much cryptographic session work in one loop.
+const VALIDATOR_AUTH_SESSION_PREWARM_PER_TICK: usize = 200;
 const TX_FORWARD_DIRECT_UDP_MAX_MESSAGE_SIZE_BYTES: usize = 512 * 1024;
 
 pub const UNICAST_MSG_BATCH_SIZE: usize = 32;
@@ -138,6 +145,8 @@ where
     tcp_writer: TcpSocketWriter,
     dual_socket: auth::DualSocketHandle<AP>,
     direct_udp_transport: Option<DirectUdpTransport<ST, AP, DS>>,
+    validator_auth_session_prewarm_timer: Interval,
+    validator_auth_session_prewarm_next_index: usize,
     dataplane_control: DataplaneControl,
     pending_events: VecDeque<RaptorCastEvent<M::Event, ST>>,
 
@@ -151,6 +160,130 @@ where
     metrics: ExecutorMetrics,
     peer_discovery_metrics: ExecutorMetrics,
     _phantom: PhantomData<(OM, SE)>,
+}
+
+fn prewarm_validator_auth_sessions<ST, PD, AP>(
+    next_index: &mut usize,
+    current_epoch: Epoch,
+    self_id: &NodeId<CertificateSignaturePubKey<ST>>,
+    validators_by_epoch: &BTreeMap<Epoch, ValidatorSet<CertificateSignaturePubKey<ST>>>,
+    peer_discovery_driver: &Arc<Mutex<PeerDiscoveryDriver<PD>>>,
+    dual_socket: &mut auth::DualSocketHandle<AP>,
+) where
+    ST: CertificateSignatureRecoverable,
+    PD: PeerDiscoveryAlgo<SignatureType = ST>,
+    AP: auth::AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
+{
+    let Some(validators) = validators_by_epoch.get(&current_epoch) else {
+        return;
+    };
+    if !validators.is_member(self_id) {
+        return;
+    }
+
+    let prewarm_targets = validator_auth_session_prewarm_targets(
+        next_index,
+        self_id,
+        validators,
+        peer_discovery_driver,
+    );
+    for (node_id, auth_addr) in prewarm_targets {
+        prewarm_validator_auth_session(dual_socket, &node_id, auth_addr);
+    }
+    dual_socket.flush();
+}
+
+fn validator_auth_session_prewarm_targets<ST, PD>(
+    next_index: &mut usize,
+    self_id: &NodeId<CertificateSignaturePubKey<ST>>,
+    validators: &ValidatorSet<CertificateSignaturePubKey<ST>>,
+    peer_discovery_driver: &Arc<Mutex<PeerDiscoveryDriver<PD>>>,
+) -> Vec<(NodeId<CertificateSignaturePubKey<ST>>, SocketAddr)>
+where
+    ST: CertificateSignatureRecoverable,
+    PD: PeerDiscoveryAlgo<SignatureType = ST>,
+{
+    let num_validators = validators.len();
+    if num_validators == 0 {
+        return Vec::new();
+    }
+
+    // after an epoch change this may start at an arbitrary offset in the new
+    // validator ordering, but subsequent ticks continue fairly from that point.
+    *next_index %= num_validators;
+    let num_to_check = num_validators.min(VALIDATOR_AUTH_SESSION_PREWARM_PER_TICK);
+    let prewarm_targets = {
+        let peer_discovery = peer_discovery_driver.lock().unwrap();
+        validators
+            .get_members()
+            .keys()
+            .copied()
+            .cycle()
+            .skip(*next_index)
+            .take(num_to_check)
+            .filter(|node_id| node_id != self_id)
+            .filter_map(|node_id| {
+                let name_record = peer_discovery.get_name_record(&node_id)?;
+                Some((
+                    node_id,
+                    SocketAddr::V4(name_record.name_record.authenticated_udp_socket()),
+                ))
+            })
+            .collect::<Vec<_>>()
+    };
+    *next_index = (*next_index + num_to_check) % num_validators;
+    prewarm_targets
+}
+
+fn prewarm_validator_auth_session<P, AP>(
+    dual_socket: &mut auth::DualSocketHandle<AP>,
+    node_id: &NodeId<P>,
+    auth_addr: SocketAddr,
+) where
+    P: PubKey,
+    AP: auth::AuthenticationProtocol<PublicKey = P>,
+{
+    let public_key = node_id.pubkey();
+    match dual_socket.get_socket_by_public_key(&public_key) {
+        Some(current_addr) if current_addr == auth_addr => {}
+        Some(current_addr) => {
+            debug!(
+                ?node_id,
+                ?current_addr,
+                ?auth_addr,
+                "validator authenticated UDP session address changed"
+            );
+            dual_socket.disconnect(&public_key);
+            connect_validator_auth_session(dual_socket, node_id, &public_key, auth_addr);
+        }
+        None if dual_socket.has_any_session_by_public_key(&public_key) => {}
+        None => {
+            connect_validator_auth_session(dual_socket, node_id, &public_key, auth_addr);
+        }
+    }
+}
+
+fn connect_validator_auth_session<P, AP>(
+    dual_socket: &mut auth::DualSocketHandle<AP>,
+    node_id: &NodeId<P>,
+    public_key: &P,
+    auth_addr: SocketAddr,
+) where
+    P: PubKey,
+    AP: auth::AuthenticationProtocol<PublicKey = P>,
+{
+    if let Err(error) = dual_socket.connect(
+        public_key,
+        auth_addr,
+        auth::socket::AUTH_SESSION_CONNECT_RETRY_ATTEMPTS,
+    ) {
+        warn!(
+            ?node_id,
+            ?auth_addr,
+            ?error,
+            "failed to prewarm validator authenticated UDP session"
+        );
+    }
 }
 
 pub enum PeerManagerResponse<ST: CertificateSignatureRecoverable> {
@@ -251,6 +384,11 @@ where
                 auth::LeanUdpFramer::new(direct_udp_peer_score, leanudp_config),
             )
         });
+        let mut validator_auth_session_prewarm_timer = interval_at(
+            Instant::now() + VALIDATOR_AUTH_SESSION_PREWARM_INTERVAL,
+            VALIDATOR_AUTH_SESSION_PREWARM_INTERVAL,
+        );
+        validator_auth_session_prewarm_timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
         let redundancy = Redundancy::from_f32(config.primary_instance.raptor10_redundancy)
             .expect("primary raptor10_redundancy doesn't fit");
@@ -299,6 +437,8 @@ where
             tcp_writer,
             dual_socket,
             direct_udp_transport,
+            validator_auth_session_prewarm_timer,
+            validator_auth_session_prewarm_next_index: 0,
             dataplane_control: control,
             pending_events: Default::default(),
             channel_to_secondary: None,
@@ -368,6 +508,22 @@ where
     ) -> bool {
         self.dual_socket
             .is_connected_socket_and_public_key(socket_addr, public_key)
+    }
+
+    fn poll_validator_auth_session_prewarm(&mut self, cx: &mut Context<'_>) {
+        if Pin::new(&mut self.validator_auth_session_prewarm_timer)
+            .poll_tick(cx)
+            .is_ready()
+        {
+            prewarm_validator_auth_sessions(
+                &mut self.validator_auth_session_prewarm_next_index,
+                self.current_epoch,
+                &self.self_id,
+                &self.epoch_validators,
+                &self.peer_discovery_driver,
+                &mut self.dual_socket,
+            );
+        }
     }
 
     fn enqueue_message_to_self(
@@ -1183,6 +1339,8 @@ where
         } else {
             this.waker = Some(cx.waker().clone());
         }
+
+        this.poll_validator_auth_session_prewarm(cx);
 
         if let Some(event) = this.pending_events.pop_front() {
             return Poll::Ready(Some(event.into()));
