@@ -18,11 +18,12 @@ use std::{
     collections::{HashMap, HashSet},
 };
 
-use alloy_consensus::{Header, SignableTransaction, TxEip1559, TxEip7702, TxEnvelope, TxLegacy};
+use alloy_consensus::{Header, SignableTransaction, TxEip1559, TxEip7702, TxLegacy};
 use alloy_eips::eip7702::SignedAuthorization;
 use alloy_primitives::{Address, Bytes, Signature, TxKind, Uint, B256, U256, U64, U8};
 use alloy_rpc_types::{AccessList, AccessListItem};
 use monad_chain_config::execution_revision::MonadExecutionRevision;
+use monad_eth_types::MonadTxEnvelope;
 use monad_ethcall::{
     eth_call, CallResult, EthCallExecutor, EthCallRequest, EthCallResult, FailureCallResult,
     MonadTracer, StateOverrideSet,
@@ -207,7 +208,7 @@ impl Default for GasPriceDetails {
 
 /// Optimistically create a typed Ethereum transaction from a CallRequest based on provided fields.
 /// TODO: add support for other transaction types.
-impl TryFrom<CallRequest> for TxEnvelope {
+impl TryFrom<CallRequest> for MonadTxEnvelope {
     type Error = JsonRpcError;
     fn try_from(call_request: CallRequest) -> Result<Self, JsonRpcError> {
         let CallRequest {
@@ -651,7 +652,7 @@ async fn prepare_eth_call_at_block<T: Triedb + TriedbPath>(
     let sender = tx.from.unwrap_or_default();
     let tx_chain_id = tx.chain_id.expect("chain_id was set above").to::<u64>();
     let ethcall_chain_id = parse_ethcall_chain_id(tx_chain_id)?;
-    let txn: TxEnvelope = tx.try_into()?;
+    let txn: MonadTxEnvelope = tx.try_into()?;
     let (block_number, block_id) = match block_key {
         BlockKey::Finalized(FinalizedBlockKey(SeqNum(n))) => (n, None),
         BlockKey::Proposed(ProposedBlockKey(SeqNum(n), BlockId(Hash(id)))) => (n, Some(id)),
@@ -983,10 +984,11 @@ pub async fn monad_admin_ethCallStatistics(
 mod tests {
     use std::collections::HashMap;
 
-    use alloy_consensus::{Header, TxEnvelope};
+    use alloy_consensus::Header;
     use alloy_primitives::{Address, Bytes, B256, U256};
     use alloy_rpc_types::{AccessList, AccessListItem};
     use monad_chain_config::execution_revision::MonadExecutionRevision;
+    use monad_eth_types::MonadTxEnvelope;
     use monad_ethcall::{
         CallResult, EthCallResult, FailureCallResult, RevertCallResult, StateOverrideObject,
         StateOverrideSet, SuccessCallResult,
@@ -1458,7 +1460,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result: Result<TxEnvelope, _> = call_request.try_into();
+        let result: Result<MonadTxEnvelope, _> = call_request.try_into();
         assert_eq!(
             result,
             Err(JsonRpcError::code_size_too_large(2 * max_code_size + 1))
@@ -1472,7 +1474,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result: Result<TxEnvelope, _> = call_request.try_into();
+        let result: Result<MonadTxEnvelope, _> = call_request.try_into();
         assert!(result.is_ok());
     }
 }

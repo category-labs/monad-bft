@@ -13,11 +13,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use alloy_consensus::{transaction::SignerRecoverable, ReceiptEnvelope, TxEnvelope};
+use alloy_consensus::{transaction::SignerRecoverable, ReceiptEnvelope};
 use alloy_primitives::BlockHash;
 use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
 use eyre::{bail, ensure};
-use monad_eth_types::{ReceiptWithLogIndex, TxEnvelopeWithSender};
+use monad_eth_types::{MonadTxEnvelope, ReceiptWithLogIndex, TxEnvelopeWithSender};
 use serde::{Deserialize, Serialize};
 
 use crate::prelude::*;
@@ -25,7 +25,7 @@ use crate::prelude::*;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, RlpEncodable, RlpDecodable)]
 #[rlp(trailing)]
 pub struct InlineV0 {
-    pub tx: TxEnvelope,
+    pub tx: MonadTxEnvelope,
     pub trace: Vec<u8>,
     pub receipt: ReceiptEnvelope,
     pub header_subset: HeaderSubsetV0,

@@ -15,13 +15,14 @@
 
 use std::{cell::RefCell, rc::Rc};
 
-use alloy_consensus::{Block, BlockBody, Header, TxEnvelope};
+use alloy_consensus::{Block, BlockBody, Header};
 use alloy_eips::eip2718::Encodable2718;
 use alloy_primitives::{
     aliases::{U256, U64, U8},
     Address, Bytes, FixedBytes, Log,
 };
 use alloy_rlp::{Decodable, Encodable, RlpDecodable};
+use monad_eth_types::MonadTxEnvelope;
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{BlockKey, Triedb};
 use serde::{Deserialize, Serialize};
@@ -55,7 +56,7 @@ pub async fn monad_debug_getRawBlock<T: Triedb>(
 ) -> JsonRpcResult<String> {
     trace!("monad_debug_getRawBlock: {params:?}");
 
-    let encode_block = |block: Block<TxEnvelope>| {
+    let encode_block = |block: Block<MonadTxEnvelope>| {
         let mut res = Vec::new();
         block.encode(&mut res);
         Ok(ethhex::encode_bytes(&res))
@@ -180,7 +181,7 @@ pub async fn monad_debug_getRawTransaction<T: Triedb>(
     {
         Ok(tx) => {
             let mut res = Vec::new();
-            let tx: TxEnvelope = tx.into();
+            let tx: MonadTxEnvelope = tx.into_inner();
             tx.encode_2718(&mut res);
             Ok(ethhex::encode_bytes(&res))
         }

@@ -13,9 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use alloy_consensus::{
-    transaction::SignerRecoverable, SignableTransaction, Signed, TxEnvelope, TxLegacy,
-};
+use alloy_consensus::{transaction::SignerRecoverable, SignableTransaction, Signed, TxLegacy};
 use alloy_primitives::{Address, Bytes, Signature, U256};
 use alloy_signer::{k256::ecdsa::SigningKey, SignerSync};
 use alloy_signer_local::PrivateKeySigner;
@@ -24,6 +22,7 @@ use monad_crypto::{
     hasher::{Hasher, HasherType},
     signing_domain,
 };
+use monad_eth_types::MonadTxEnvelope;
 use monad_secp::{KeyPair, RecoverableAddress, SecpSignature};
 use monad_testutil::signing::get_key;
 use rand::{thread_rng, RngCore};
@@ -127,7 +126,8 @@ fn benchmark_tx_signature_verification(c: &mut Criterion) {
         let tx = create_legacy_tx();
         let signature_hash = tx.signature_hash();
         let signature = signer.sign_hash_sync(&signature_hash).unwrap();
-        let signed_tx: TxEnvelope = Signed::new_unchecked(tx, signature, signature_hash).into();
+        let signed_tx: MonadTxEnvelope =
+            Signed::new_unchecked(tx, signature, signature_hash).into();
 
         b.iter(|| signed_tx.secp256k1_recover().unwrap())
     });
@@ -136,7 +136,8 @@ fn benchmark_tx_signature_verification(c: &mut Criterion) {
         let tx = create_legacy_tx();
         let signature_hash = tx.signature_hash();
         let invalid_sig = create_invalid_signature();
-        let signed_tx: TxEnvelope = Signed::new_unchecked(tx, invalid_sig, signature_hash).into();
+        let signed_tx: MonadTxEnvelope =
+            Signed::new_unchecked(tx, invalid_sig, signature_hash).into();
 
         b.iter(|| signed_tx.secp256k1_recover().is_err())
     });
@@ -147,7 +148,8 @@ fn benchmark_tx_signature_verification(c: &mut Criterion) {
         let tx = create_legacy_tx();
         let signature_hash = tx.signature_hash();
         let signature = signer.sign_hash_sync(&signature_hash).unwrap();
-        let signed_tx: TxEnvelope = Signed::new_unchecked(tx, signature, signature_hash).into();
+        let signed_tx: MonadTxEnvelope =
+            Signed::new_unchecked(tx, signature, signature_hash).into();
 
         b.iter(|| signed_tx.recover_signer().unwrap())
     });

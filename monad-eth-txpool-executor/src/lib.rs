@@ -23,7 +23,7 @@ use std::{
     time::Duration,
 };
 
-use alloy_consensus::{transaction::Recovered, TxEnvelope};
+use alloy_consensus::transaction::Recovered;
 use alloy_eips::Decodable2718;
 use alloy_primitives::Address;
 use bytes::Bytes;
@@ -47,7 +47,7 @@ use monad_eth_txpool::{
 use monad_eth_txpool_types::{
     EthTxPoolDropReason, EthTxPoolEventType, EthTxPoolIpcTx, EthTxPoolTxInputStream,
 };
-use monad_eth_types::{EthExecutionProtocol, ExtractEthAddress};
+use monad_eth_types::{EthExecutionProtocol, ExtractEthAddress, MonadTxEnvelope};
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_peer_score::{ema, StdClock};
 use monad_secp::RecoverableAddress;
@@ -367,7 +367,7 @@ where
             let mut num_invalid_bytes = 0;
 
             ingress_batch.extend(txs.into_iter().filter_map(|raw_tx| {
-                if let Ok(tx) = TxEnvelope::decode_2718_exact(raw_tx.as_ref()) {
+                if let Ok(tx) = MonadTxEnvelope::decode_2718_exact(raw_tx.as_ref()) {
                     Some((sender, tx))
                 } else {
                     num_invalid_bytes += 1;

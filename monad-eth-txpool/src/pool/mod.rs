@@ -16,7 +16,7 @@
 use std::{collections::BTreeMap, time::Duration};
 
 use alloy_consensus::{
-    constants::EMPTY_WITHDRAWALS, transaction::Recovered, TxEnvelope, EMPTY_OMMER_ROOT_HASH,
+    constants::EMPTY_WITHDRAWALS, transaction::Recovered, EMPTY_OMMER_ROOT_HASH,
 };
 use alloy_primitives::Address;
 use alloy_rlp::Encodable;
@@ -38,7 +38,9 @@ use monad_eth_block_policy::{
     EthValidatedBlock,
 };
 use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolInternalDropReason, EthTxPoolSnapshot};
-use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ExtractEthAddress, ProposedEthHeader};
+use monad_eth_types::{
+    EthBlockBody, EthExecutionProtocol, ExtractEthAddress, MonadTxEnvelope, ProposedEthHeader,
+};
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_system_calls::{SystemTransactionGenerator, SYSTEM_SENDER_ETH_ADDRESS};
 use monad_types::{DropTimer, Epoch, NodeId, Round, SeqNum};
@@ -139,7 +141,7 @@ where
         state_backend: &SBT,
         chain_config: &CCT,
         txs: Vec<(
-            Recovered<TxEnvelope>,
+            Recovered<MonadTxEnvelope>,
             PoolTxKind<CertificateSignaturePubKey<ST>>,
         )>,
         mut on_insert: impl FnMut(&PoolTx<CertificateSignaturePubKey<ST>>),
@@ -522,7 +524,7 @@ where
 
     pub fn get_forwardable_txs<const MIN_SEQNUM_DIFF: u64, const MAX_RETRIES: usize>(
         &mut self,
-    ) -> Option<impl Iterator<Item = &TxEnvelope>> {
+    ) -> Option<impl Iterator<Item = &MonadTxEnvelope>> {
         let last_commit = self.last_commit.as_ref()?;
 
         let last_commit_seq_num = last_commit.seq_num;
@@ -566,7 +568,7 @@ where
         block_policy: &EthBlockPolicy<ST, SCT, CCT, CRT>,
         state_backend: &SBT,
         chain_config: &impl ChainConfig<CRT>,
-    ) -> Result<Vec<Recovered<TxEnvelope>>, StateBackendError> {
+    ) -> Result<Vec<Recovered<MonadTxEnvelope>>, StateBackendError> {
         // TODO this should be inside SystemTransactionGenerator to prevent
         // exposing SYSTEM_SENDER_ETH_ADDRESS outside the crate
         let next_system_txn_nonce = *block_policy

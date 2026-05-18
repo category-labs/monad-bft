@@ -16,7 +16,7 @@
 use std::{fmt::Debug, ops::Deref};
 
 use ::serde::{Deserialize, Serialize};
-use alloy_consensus::{transaction::Recovered, Header, ReceiptEnvelope, TxEnvelope};
+use alloy_consensus::{transaction::Recovered, Header, ReceiptEnvelope};
 use alloy_eips::eip7702::RecoveredAuthorization;
 use alloy_primitives::{Address, FixedBytes};
 use alloy_rlp::{
@@ -28,6 +28,10 @@ use monad_types::{Balance, ExecutionProtocol, FinalizedHeader, LimitedVec, Nonce
 use serde_with::{serde_as, DisplayFromStr};
 
 pub mod serde;
+
+pub use monad_tx_envelope::{
+    MonadTxEnvelope, MonadTxType, MonadTypedTransaction, UnsupportedTxType,
+};
 
 pub const EMPTY_RLP_TX_LIST: u8 = 0xc0;
 pub const MAX_TRANSACTIONS_PER_BLOCK: usize = 10000;
@@ -217,7 +221,7 @@ impl FinalizedHeader for EthHeader {
 #[derive(Clone, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize, Deserialize, Default)]
 pub struct EthBlockBody {
     // TODO consider storing recovered txs inline here
-    pub transactions: LimitedVec<TxEnvelope, MAX_TRANSACTIONS_PER_BLOCK>,
+    pub transactions: LimitedVec<MonadTxEnvelope, MAX_TRANSACTIONS_PER_BLOCK>,
     pub ommers: LimitedVec<Ommer, MAX_OMMERS>,
     pub withdrawals: LimitedVec<Withdrawal, MAX_WITHDRAWALS>,
 }
@@ -245,12 +249,12 @@ impl ExecutionProtocol for EthExecutionProtocol {
 
 #[derive(Clone, Debug)]
 pub struct ValidatedTx {
-    pub tx: Recovered<TxEnvelope>,
+    pub tx: Recovered<MonadTxEnvelope>,
     pub authorizations_7702: Vec<RecoveredAuthorization>,
 }
 
 impl Deref for ValidatedTx {
-    type Target = Recovered<TxEnvelope>;
+    type Target = Recovered<MonadTxEnvelope>;
 
     fn deref(&self) -> &Self::Target {
         &self.tx
@@ -313,7 +317,7 @@ impl Decodable for ReceiptWithLogIndex {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TxEnvelopeWithSender {
-    pub tx: TxEnvelope,
+    pub tx: MonadTxEnvelope,
     pub sender: Address,
 }
 
@@ -343,7 +347,7 @@ impl Decodable for TxEnvelopeWithSender {
         if list {
             return Err(alloy_rlp::Error::UnexpectedList);
         }
-        let tx = TxEnvelope::decode(buf)?;
+        let tx = MonadTxEnvelope::decode(buf)?;
         let sender = Address::decode(buf)?;
 
         Ok(TxEnvelopeWithSender { tx, sender })

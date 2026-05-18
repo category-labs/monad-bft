@@ -21,7 +21,7 @@ use std::{
 
 use alloy_consensus::{
     transaction::{Recovered, SignerRecoverable},
-    SignableTransaction, Transaction, TxEnvelope, TxLegacy,
+    SignableTransaction, Transaction, TxLegacy,
 };
 use alloy_primitives::{Address, TxKind, B256, U256};
 use alloy_signer::SignerSync;
@@ -48,6 +48,7 @@ use monad_eth_txpool::{
     EthTxPoolMetrics, PoolTxKind, TrackedTxLimitsConfig,
 };
 use monad_eth_txpool_types::EthTxPoolSnapshot;
+use monad_eth_types::MonadTxEnvelope;
 use monad_state_backend::{AccountState, InMemoryBlockState, InMemoryState, InMemoryStateInner};
 use monad_testutil::signing::MockSignatures;
 use monad_types::{Balance, Epoch, NodeId, Round, SeqNum, GENESIS_ROUND, GENESIS_SEQ_NUM};
@@ -86,15 +87,15 @@ fn make_test_block_policy() -> BlockPolicyType {
 #[derive(Clone)]
 enum TxPoolTestEvent<'a> {
     InsertTxs {
-        txs: Vec<(&'a TxEnvelope, bool)>,
+        txs: Vec<(&'a MonadTxEnvelope, bool)>,
         expected_pool_size_change: usize,
     },
     InsertTxBatch {
-        txs: Vec<&'a TxEnvelope>,
+        txs: Vec<&'a MonadTxEnvelope>,
         should_insert: bool,
     },
     InsertTxsWithKind {
-        txs: Vec<(&'a TxEnvelope, PoolTxKind<NopPubKey>)>,
+        txs: Vec<(&'a MonadTxEnvelope, PoolTxKind<NopPubKey>)>,
         should_insert: bool,
     },
     CreateProposal {
@@ -102,7 +103,7 @@ enum TxPoolTestEvent<'a> {
         tx_limit: usize,
         gas_limit: u64,
         byte_limit: u64,
-        expected_txs: Vec<&'a TxEnvelope>,
+        expected_txs: Vec<&'a MonadTxEnvelope>,
         expected_sender_gas: Option<Vec<(NodeId<NopPubKey>, u64)>>,
         add_to_blocktree: bool,
     },
@@ -512,7 +513,7 @@ fn run_simple<const N: usize>(account: &[B256], events: [TxPoolTestEvent<'_>; N]
     );
 }
 
-fn make_forwarded_test_txs(gas_limits: impl IntoIterator<Item = u64>) -> Vec<TxEnvelope> {
+fn make_forwarded_test_txs(gas_limits: impl IntoIterator<Item = u64>) -> Vec<MonadTxEnvelope> {
     gas_limits
         .into_iter()
         .enumerate()
@@ -1580,7 +1581,7 @@ fn test_eip1559_proposal_base_fee() {
 
 #[test]
 fn test_missing_chain_id() {
-    let tx: TxEnvelope = {
+    let tx: MonadTxEnvelope = {
         let tx = TxLegacy {
             chain_id: None,
             nonce: 0,

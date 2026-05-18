@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use alloy_consensus::{SignableTransaction, TxEip1559, TxEnvelope};
+use alloy_consensus::{SignableTransaction, TxEip1559};
 use alloy_eips::eip2718::Encodable2718;
 use alloy_primitives::{
     aliases::{I24, U24},
@@ -26,6 +26,7 @@ use alloy_rpc_types::{TransactionReceipt, TransactionRequest};
 use alloy_sol_macro::sol;
 use alloy_sol_types::{SolCall, SolConstructor, SolEvent};
 use eyre::Result;
+use monad_eth_types::MonadTxEnvelope;
 use serde::{Deserialize, Serialize};
 
 use crate::shared::{
@@ -150,7 +151,7 @@ impl Uniswap {
         };
 
         let sig = deployer.1.sign_transaction(&tx);
-        let tx = TxEnvelope::Eip1559(tx.into_signed(sig));
+        let tx = MonadTxEnvelope::Eip1559(tx.into_signed(sig));
 
         let mut rlp_encoded_tx = Vec::new();
         tx.encode_2718(&mut rlp_encoded_tx);
@@ -199,7 +200,7 @@ impl Uniswap {
         };
 
         let sig = deployer.1.sign_transaction(&tx);
-        let tx = TxEnvelope::Eip1559(tx.into_signed(sig));
+        let tx = MonadTxEnvelope::Eip1559(tx.into_signed(sig));
         let mut rlp_encoded_tx = Vec::new();
         tx.encode_2718(&mut rlp_encoded_tx);
         let _: String = client
@@ -222,7 +223,7 @@ impl Uniswap {
         max_fee_per_gas: u128,
         chain_id: u64,
     ) -> Result<Address> {
-        let tx: TxEnvelope = ERC20::deploy_tx(nonce, &deployer.1, max_fee_per_gas, chain_id);
+        let tx: MonadTxEnvelope = ERC20::deploy_tx(nonce, &deployer.1, max_fee_per_gas, chain_id);
         let mut rlp_encoded_tx = Vec::new();
         tx.encode_2718(&mut rlp_encoded_tx);
         let _: String = client
@@ -269,7 +270,7 @@ impl Uniswap {
         };
 
         let sig = deployer.1.sign_transaction(&tx);
-        let tx = TxEnvelope::Eip1559(tx.into_signed(sig));
+        let tx = MonadTxEnvelope::Eip1559(tx.into_signed(sig));
 
         let mut rlp_encoded_tx = Vec::new();
         tx.encode_2718(&mut rlp_encoded_tx);
@@ -327,7 +328,7 @@ impl Uniswap {
         };
 
         let sig = deployer.sign_transaction(&tx);
-        let tx = TxEnvelope::Eip1559(tx.into_signed(sig));
+        let tx = MonadTxEnvelope::Eip1559(tx.into_signed(sig));
 
         let mut rlp_encoded_tx = Vec::new();
         tx.encode_2718(&mut rlp_encoded_tx);
@@ -366,7 +367,7 @@ impl Uniswap {
         max_fee_per_gas: u128,
         chain_id: u64,
         gas_limit: Option<u64>,
-    ) -> TxEnvelope {
+    ) -> MonadTxEnvelope {
         ERC20::construct_mint(
             &ERC20 { addr: token_addr },
             &sender.key,
@@ -386,7 +387,7 @@ impl Uniswap {
         max_fee_per_gas: u128,
         chain_id: u64,
         gas_limit: Option<u64>,
-    ) -> TxEnvelope {
+    ) -> MonadTxEnvelope {
         ERC20::construct_approve(
             &ERC20 { addr: token_addr },
             &sender.key,
@@ -409,7 +410,7 @@ impl Uniswap {
         max_fee_per_gas: u128,
         chain_id: u64,
         gas_limit: Option<u64>,
-    ) -> TxEnvelope {
+    ) -> MonadTxEnvelope {
         // price point of 300.0 has a tick value of 57000
         // with tick spacing of 60, lower tick is 10 ticks below current tick
         // upper tick is 10 ticks above current tick
@@ -448,7 +449,7 @@ impl Uniswap {
         };
 
         let sig = sender.key.sign_transaction(&tx);
-        TxEnvelope::Eip1559(tx.into_signed(sig))
+        MonadTxEnvelope::Eip1559(tx.into_signed(sig))
     }
 
     pub async fn get_pool_address(

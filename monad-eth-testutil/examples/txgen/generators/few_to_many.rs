@@ -27,7 +27,11 @@ impl Generator for CreateAccountsGenerator {
         &mut self,
         accts: &mut [SimpleAccount],
         ctx: &GenCtx,
-    ) -> Vec<(TxEnvelope, Address, crate::shared::private_key::PrivateKey)> {
+    ) -> Vec<(
+        MonadTxEnvelope,
+        Address,
+        crate::shared::private_key::PrivateKey,
+    )> {
         let mut txs = Vec::with_capacity(accts.len());
 
         for sender in accts {

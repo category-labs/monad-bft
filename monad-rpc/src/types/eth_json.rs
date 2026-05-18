@@ -15,12 +15,12 @@
 
 use std::str::FromStr;
 
-use alloy_consensus::TxEnvelope;
 use alloy_eips::BlockNumberOrTag;
 use alloy_primitives::{Address, FixedBytes, LogData, U256};
 use alloy_rpc_types::{
     pubsub::Params, AccessList, Block, FeeHistory, Header, Log, Transaction, TransactionReceipt,
 };
+use monad_eth_types::MonadTxEnvelope;
 use monad_exec_events::BlockCommitState;
 use monad_types::BlockId;
 use schemars::JsonSchema;
@@ -71,12 +71,12 @@ fn schema_for_log(_: &mut schemars::gen::SchemaGenerator) -> schemars::schema::S
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct MonadTransaction(
-    #[schemars(schema_with = "schema_for_transaction")] pub Transaction<TxEnvelope>,
+    #[schemars(schema_with = "schema_for_transaction")] pub Transaction<MonadTxEnvelope>,
 );
 
 fn schema_for_transaction(_: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
     let rpc_tx = r#"{"blockHash":"0x883f974b17ca7b28cb970798d1c80f4d4bb427473dc6d39b2a7fe24edc02902d","blockNumber":"0xe26e6d","hash":"0x0e07d8b53ed3d91314c80e53cf25bcde02084939395845cbb625b029d568135c","accessList":[],"transactionIndex":"0xad","type":"0x2","nonce":"0x16d","input":"0x5ae401dc00000000000000000000000000000000000000000000000000000000628ced5b000000000000000000000000000000000000000000000000000000000000004000000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000040000000000000000000000000000000000000000000000000000000000000016000000000000000000000000000000000000000000000000000000000000000e442712a6700000000000000000000000000000000000000000000b3ff1489674e11c40000000000000000000000000000000000000000000000000000004a6ed55bbcc18000000000000000000000000000000000000000000000000000000000000000800000000000000000000000003cf412d970474804623bb4e3a42de13f9bca54360000000000000000000000000000000000000000000000000000000000000002000000000000000000000000c02aaa39b223fe8d0a0e5c4f27ead9083c756cc20000000000000000000000003a75941763f31c930b19c041b709742b0b31ebb600000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000412210e8a00000000000000000000000000000000000000000000000000000000","r":"0x7f2153019a74025d83a73effdd91503ceecefac7e35dd933adc1901c875539aa","s":"0x334ab2f714796d13c825fddf12aad01438db3a8152b2fe3ef7827707c25ecab3","chainId":"0x1","v":"0x0","gas":"0x46a02","maxPriorityFeePerGas":"0x59682f00","from":"0x3cf412d970474804623bb4e3a42de13f9bca5436","to":"0x68b3465833fb72a70ecdf485e0e4c7bd8665fc45","maxFeePerGas":"0x7fc1a20a8","value":"0x4a6ed55bbcc180","gasPrice":"0x50101df3a"}"#;
-    let tx = serde_json::from_str::<Transaction<TxEnvelope>>(rpc_tx).unwrap();
+    let tx = serde_json::from_str::<Transaction<MonadTxEnvelope>>(rpc_tx).unwrap();
     schemars::schema_for_value!(tx).schema.into()
 }
 
@@ -95,11 +95,11 @@ fn schema_for_transaction_receipt(
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct MonadBlock(
-    #[schemars(schema_with = "schema_for_block")] pub Block<Transaction<TxEnvelope>, Header>,
+    #[schemars(schema_with = "schema_for_block")] pub Block<Transaction<MonadTxEnvelope>, Header>,
 );
 
 fn schema_for_block(_: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
-    schemars::schema_for_value!(Block::<Transaction<TxEnvelope>, Header>::default())
+    schemars::schema_for_value!(Block::<Transaction<MonadTxEnvelope>, Header>::default())
         .schema
         .into()
 }

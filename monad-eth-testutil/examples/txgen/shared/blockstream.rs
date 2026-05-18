@@ -20,16 +20,16 @@ use std::{
     time::Duration,
 };
 
-use alloy_consensus::TxEnvelope;
 use alloy_json_rpc::RpcError;
 use alloy_rpc_types::{Block as RpcBlock, Header, Transaction};
 use alloy_transport::TransportErrorKind;
 use futures::{stream::FusedStream, FutureExt, Stream};
+use monad_eth_types::MonadTxEnvelope;
 use thiserror::Error;
 
 use crate::prelude::*;
 
-type Block = RpcBlock<Transaction<TxEnvelope>, Header>;
+type Block = RpcBlock<Transaction<MonadTxEnvelope>, Header>;
 
 #[derive(Debug, Error)]
 pub enum BlockStreamError {

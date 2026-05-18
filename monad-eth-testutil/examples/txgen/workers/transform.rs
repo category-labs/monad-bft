@@ -13,9 +13,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use alloy_consensus::{SignableTransaction, TxEip1559, TxEip7702, TxEnvelope, TxLegacy};
+use alloy_consensus::{SignableTransaction, TxEip1559, TxEip7702, TxLegacy};
 use alloy_eips::eip7702::Authorization;
 use alloy_primitives::{Address, Bytes, TxKind, U256};
+use monad_eth_types::MonadTxEnvelope;
 use rand::Rng;
 
 use crate::{prelude::*, shared::private_key::PrivateKey};
@@ -62,9 +63,9 @@ impl Default for TransformOptions {
 }
 
 pub fn transform_batch(
-    txs: Vec<(TxEnvelope, Address, PrivateKey)>,
+    txs: Vec<(MonadTxEnvelope, Address, PrivateKey)>,
     opts: &TransformOptions,
-) -> Vec<(TxEnvelope, Address, PrivateKey)> {
+) -> Vec<(MonadTxEnvelope, Address, PrivateKey)> {
     let txs = if opts.is_mutation_enabled() {
         mutate_transactions(txs, opts.mutation_percentage)
     } else {
@@ -85,9 +86,9 @@ pub fn transform_batch(
 }
 
 fn mutate_transactions(
-    txs: Vec<(TxEnvelope, Address, PrivateKey)>,
+    txs: Vec<(MonadTxEnvelope, Address, PrivateKey)>,
     mutation_percentage: f64,
-) -> Vec<(TxEnvelope, Address, PrivateKey)> {
+) -> Vec<(MonadTxEnvelope, Address, PrivateKey)> {
     if txs.is_empty() || mutation_percentage <= 0.0 {
         return txs;
     }
@@ -118,9 +119,9 @@ fn mutate_transactions(
 }
 
 fn drop_transactions(
-    txs: Vec<(TxEnvelope, Address, PrivateKey)>,
+    txs: Vec<(MonadTxEnvelope, Address, PrivateKey)>,
     drop_percentage: f64,
-) -> Vec<(TxEnvelope, Address, PrivateKey)> {
+) -> Vec<(MonadTxEnvelope, Address, PrivateKey)> {
     if txs.is_empty() || drop_percentage <= 0.0 {
         return txs;
     }
@@ -149,9 +150,9 @@ fn drop_transactions(
 }
 
 fn convert_batch_to_legacy(
-    txs: Vec<(TxEnvelope, Address, PrivateKey)>,
+    txs: Vec<(MonadTxEnvelope, Address, PrivateKey)>,
     convert_percentage: f64,
-) -> Vec<(TxEnvelope, Address, PrivateKey)> {
+) -> Vec<(MonadTxEnvelope, Address, PrivateKey)> {
     if txs.is_empty() || convert_percentage <= 0.0 {
         return txs;
     }
@@ -185,12 +186,12 @@ fn convert_batch_to_legacy(
 }
 
 fn mutate_transaction(
-    tx_triple: &(TxEnvelope, Address, PrivateKey),
-) -> (TxEnvelope, Address, PrivateKey) {
+    tx_triple: &(MonadTxEnvelope, Address, PrivateKey),
+) -> (MonadTxEnvelope, Address, PrivateKey) {
     let (tx, addr, original_key) = tx_triple;
     let mutated_tx = match tx {
-        TxEnvelope::Eip7702(_) => mutate_eip7702_transaction(tx, original_key),
-        TxEnvelope::Eip1559(_) => mutate_eip1559_transaction(tx, original_key),
+        MonadTxEnvelope::Eip7702(_) => mutate_eip7702_transaction(tx, original_key),
+        MonadTxEnvelope::Eip1559(_) => mutate_eip1559_transaction(tx, original_key),
         _ => tx.clone(),
     };
 
@@ -198,10 +199,10 @@ fn mutate_transaction(
 }
 
 fn convert_eip1559_to_legacy(
-    tx: &TxEnvelope,
+    tx: &MonadTxEnvelope,
     original_key: &PrivateKey,
-) -> Option<(TxEnvelope, PrivateKey)> {
-    let TxEnvelope::Eip1559(signed_tx) = tx else {
+) -> Option<(MonadTxEnvelope, PrivateKey)> {
+    let MonadTxEnvelope::Eip1559(signed_tx) = tx else {
         return None;
     };
 
@@ -219,15 +220,15 @@ fn convert_eip1559_to_legacy(
 
     let sig = original_key.sign_transaction(&legacy);
     Some((
-        TxEnvelope::Legacy(legacy.into_signed(sig)),
+        MonadTxEnvelope::Legacy(legacy.into_signed(sig)),
         original_key.clone(),
     ))
 }
 
-fn mutate_eip7702_transaction(tx: &TxEnvelope, original_key: &PrivateKey) -> TxEnvelope {
+fn mutate_eip7702_transaction(tx: &MonadTxEnvelope, original_key: &PrivateKey) -> MonadTxEnvelope {
     let mut rng = rand::thread_rng();
 
-    let TxEnvelope::Eip7702(signed_tx) = tx else {
+    let MonadTxEnvelope::Eip7702(signed_tx) = tx else {
         error!("mutate_eip7702_transaction called with non-EIP7702 transaction");
         return tx.clone();
     };
@@ -308,18 +309,18 @@ fn mutate_eip7702_transaction(tx: &TxEnvelope, original_key: &PrivateKey) -> TxE
         // Mutate signature by signing with a random key (invalid signature)
         let (_random_addr, random_key) = PrivateKey::new_with_random(&mut rng);
         let sig = random_key.sign_transaction(&new_tx);
-        TxEnvelope::Eip7702(new_tx.into_signed(sig))
+        MonadTxEnvelope::Eip7702(new_tx.into_signed(sig))
     } else {
         // Sign with original key (valid signature, but mutated fields)
         let sig = original_key.sign_transaction(&new_tx);
-        TxEnvelope::Eip7702(new_tx.into_signed(sig))
+        MonadTxEnvelope::Eip7702(new_tx.into_signed(sig))
     }
 }
 
-fn mutate_eip1559_transaction(tx: &TxEnvelope, original_key: &PrivateKey) -> TxEnvelope {
+fn mutate_eip1559_transaction(tx: &MonadTxEnvelope, original_key: &PrivateKey) -> MonadTxEnvelope {
     let mut rng = rand::thread_rng();
 
-    let TxEnvelope::Eip1559(signed_tx) = tx else {
+    let MonadTxEnvelope::Eip1559(signed_tx) = tx else {
         error!("mutate_eip1559_transaction called with non-EIP1559 transaction");
         return tx.clone();
     };
@@ -375,11 +376,11 @@ fn mutate_eip1559_transaction(tx: &TxEnvelope, original_key: &PrivateKey) -> TxE
         // Mutate signature by signing with a random key (invalid signature)
         let (_random_addr, random_key) = PrivateKey::new_with_random(&mut rng);
         let sig = random_key.sign_transaction(&new_tx);
-        TxEnvelope::Eip1559(new_tx.into_signed(sig))
+        MonadTxEnvelope::Eip1559(new_tx.into_signed(sig))
     } else {
         // Sign with original key (valid signature, but mutated fields)
         let sig = original_key.sign_transaction(&new_tx);
-        TxEnvelope::Eip1559(new_tx.into_signed(sig))
+        MonadTxEnvelope::Eip1559(new_tx.into_signed(sig))
     }
 }
 
@@ -387,7 +388,7 @@ fn mutate_eip1559_transaction(tx: &TxEnvelope, original_key: &PrivateKey) -> TxE
 mod tests {
     use super::*;
 
-    fn sample_eip1559_tx() -> (TxEnvelope, Address, PrivateKey) {
+    fn sample_eip1559_tx() -> (MonadTxEnvelope, Address, PrivateKey) {
         let mut rng = rand::thread_rng();
         let (addr, key) = PrivateKey::new_with_random(&mut rng);
         let tx = TxEip1559 {
@@ -402,7 +403,7 @@ mod tests {
             input: Bytes::new(),
         };
         let sig = key.sign_transaction(&tx);
-        (TxEnvelope::Eip1559(tx.into_signed(sig)), addr, key)
+        (MonadTxEnvelope::Eip1559(tx.into_signed(sig)), addr, key)
     }
 
     #[test]
@@ -433,7 +434,7 @@ mod tests {
         let result = transform_batch(vec![tx], &opts);
         assert_eq!(result.len(), 1);
         match &result[0].0 {
-            TxEnvelope::Legacy(_) => {}
+            MonadTxEnvelope::Legacy(_) => {}
             other => panic!("expected legacy tx, got {other:?}"),
         }
     }

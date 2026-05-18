@@ -13,8 +13,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use alloy_consensus::{Transaction, TxEnvelope};
+use alloy_consensus::{Transaction, Typed2718};
 use monad_chain_config::{execution_revision::ExecutionChainParams, revision::ChainParams};
+use monad_eth_types::MonadTxEnvelope;
 use serde::{Deserialize, Serialize};
 
 // allow for more fine grain debugging if needed
@@ -56,7 +57,7 @@ pub enum StaticValidationError {
 
 /// Stateless helper function to check validity of an Ethereum transaction
 pub fn static_validate_transaction(
-    tx: &TxEnvelope,
+    tx: &MonadTxEnvelope,
     chain_id: u64,
     chain_params: &ChainParams,
     execution_chain_params: &ExecutionChainParams,
@@ -94,7 +95,10 @@ pub const EIP_7702_PER_EMPTY_ACCOUNT_COST: u64 = 25_000;
 
 struct TfmValidator;
 impl TfmValidator {
-    fn validate(tx: &TxEnvelope, chain_params: &ChainParams) -> Result<(), StaticValidationError> {
+    fn validate(
+        tx: &MonadTxEnvelope,
+        chain_params: &ChainParams,
+    ) -> Result<(), StaticValidationError> {
         if tx.gas_limit() > TFM_MAX_GAS_LIMIT {
             return Err(StaticValidationError::GasLimitOverTFMGasLimit {
                 tx_gas_limit: tx.gas_limit(),
@@ -115,11 +119,11 @@ impl TfmValidator {
 
 struct YellowPaperValidation;
 impl YellowPaperValidation {
-    fn validate(tx: &TxEnvelope) -> Result<(), StaticValidationError> {
+    fn validate(tx: &MonadTxEnvelope) -> Result<(), StaticValidationError> {
         Self::intrinsic_gas_validation(tx)
     }
 
-    fn intrinsic_gas_validation(tx: &TxEnvelope) -> Result<(), StaticValidationError> {
+    fn intrinsic_gas_validation(tx: &MonadTxEnvelope) -> Result<(), StaticValidationError> {
         // YP eq. 62 - intrinsic gas validation
         let intrinsic_gas = compute_intrinsic_gas(tx);
         if tx.gas_limit() < intrinsic_gas {
@@ -134,12 +138,12 @@ impl YellowPaperValidation {
 
 struct EthHomesteadForkValidation;
 impl EthHomesteadForkValidation {
-    fn validate(tx: &TxEnvelope, chain_id: u64) -> Result<(), StaticValidationError> {
+    fn validate(tx: &MonadTxEnvelope, chain_id: u64) -> Result<(), StaticValidationError> {
         Self::eip_2(tx)?;
         Self::eip_155(tx, chain_id)
     }
 
-    fn eip_2(tx: &TxEnvelope) -> Result<(), StaticValidationError> {
+    fn eip_2(tx: &MonadTxEnvelope) -> Result<(), StaticValidationError> {
         // verify that s is in the lower half of the curve
         if tx.signature().normalize_s().is_some() {
             return Err(StaticValidationError::InvalidSignature);
@@ -147,7 +151,7 @@ impl EthHomesteadForkValidation {
         Ok(())
     }
 
-    fn eip_155(tx: &TxEnvelope, chain_id: u64) -> Result<(), StaticValidationError> {
+    fn eip_155(tx: &MonadTxEnvelope, chain_id: u64) -> Result<(), StaticValidationError> {
         // We still allow legacy transactions without chain_id specified to pass through
         if let Some(tx_chain_id) = tx.chain_id() {
             if tx_chain_id != chain_id {
@@ -160,11 +164,11 @@ impl EthHomesteadForkValidation {
 
 struct EthLondonForkValidation;
 impl EthLondonForkValidation {
-    fn validate(tx: &TxEnvelope) -> Result<(), StaticValidationError> {
+    fn validate(tx: &MonadTxEnvelope) -> Result<(), StaticValidationError> {
         Self::eip_1559(tx)
     }
 
-    fn eip_1559(tx: &TxEnvelope) -> Result<(), StaticValidationError> {
+    fn eip_1559(tx: &MonadTxEnvelope) -> Result<(), StaticValidationError> {
         if let Some(tx_max_priority_fee) = tx.max_priority_fee_per_gas() {
             if tx_max_priority_fee > tx.max_fee_per_gas() {
                 return Err(StaticValidationError::MaxPriorityOverMaxFee {
@@ -180,14 +184,14 @@ impl EthLondonForkValidation {
 struct EthShanghaiForkValidation;
 impl EthShanghaiForkValidation {
     fn validate(
-        tx: &TxEnvelope,
+        tx: &MonadTxEnvelope,
         execution_chain_params: &ExecutionChainParams,
     ) -> Result<(), StaticValidationError> {
         Self::eip_3860(tx, execution_chain_params)
     }
 
     fn eip_3860(
-        tx: &TxEnvelope,
+        tx: &MonadTxEnvelope,
         execution_chain_params: &ExecutionChainParams,
     ) -> Result<(), StaticValidationError> {
         // max init_code is (2 * max_code_size)
@@ -205,7 +209,7 @@ impl EthShanghaiForkValidation {
 struct EthPragueForkValidation;
 impl EthPragueForkValidation {
     fn validate(
-        tx: &TxEnvelope,
+        tx: &MonadTxEnvelope,
         execution_chain_params: &ExecutionChainParams,
     ) -> Result<(), StaticValidationError> {
         if execution_chain_params.prague_enabled {
@@ -216,7 +220,7 @@ impl EthPragueForkValidation {
         Ok(())
     }
 
-    fn eip_7623(tx: &TxEnvelope) -> Result<(), StaticValidationError> {
+    fn eip_7623(tx: &MonadTxEnvelope) -> Result<(), StaticValidationError> {
         let floor_data_gas = compute_floor_data_gas(tx);
         if tx.gas_limit() < floor_data_gas {
             return Err(StaticValidationError::GasLimitUnderFloorDataGas {
@@ -228,7 +232,7 @@ impl EthPragueForkValidation {
     }
 
     fn eip_7702(
-        tx: &TxEnvelope,
+        tx: &MonadTxEnvelope,
         execution_chain_params: &ExecutionChainParams,
     ) -> Result<(), StaticValidationError> {
         if !tx.is_eip7702() {
@@ -252,7 +256,7 @@ impl EthPragueForkValidation {
     }
 }
 
-fn compute_intrinsic_gas(tx: &TxEnvelope) -> u64 {
+fn compute_intrinsic_gas(tx: &MonadTxEnvelope) -> u64 {
     // base stipend
     let mut intrinsic_gas = 21000;
 
@@ -293,7 +297,7 @@ fn compute_intrinsic_gas(tx: &TxEnvelope) -> u64 {
     intrinsic_gas
 }
 
-fn compute_floor_data_gas(tx: &TxEnvelope) -> u64 {
+fn compute_floor_data_gas(tx: &MonadTxEnvelope) -> u64 {
     // EIP-7623
     let zero_data_len = tx.input().iter().filter(|v| **v == 0).count() as u64;
     let non_zero_data_len = tx.input().len() as u64 - zero_data_len;

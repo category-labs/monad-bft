@@ -10,8 +10,8 @@ bench = false
 
 [dependencies]
 monad-eth-block-policy = { workspace = true }
+monad-eth-types = { workspace = true }
 
-alloy-consensus = { workspace = true }
 alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
 serde = { workspace = true }

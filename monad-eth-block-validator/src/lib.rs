@@ -22,7 +22,7 @@ use alloy_consensus::{
     constants::EMPTY_WITHDRAWALS,
     proofs::calculate_transaction_root,
     transaction::{Recovered, Transaction},
-    TxEnvelope, EMPTY_OMMER_ROOT_HASH,
+    Typed2718, EMPTY_OMMER_ROOT_HASH,
 };
 use alloy_eips::eip7702::{RecoveredAuthority, RecoveredAuthorization};
 use alloy_primitives::U256;
@@ -50,7 +50,8 @@ use monad_eth_block_policy::{
     EthBlockPolicy, EthValidatedBlock,
 };
 use monad_eth_types::{
-    EthBlockBody, EthExecutionProtocol, ExtractEthAddress, ProposedEthHeader, ValidatedTx,
+    EthBlockBody, EthExecutionProtocol, ExtractEthAddress, MonadTxEnvelope, ProposedEthHeader,
+    ValidatedTx,
 };
 use monad_secp::RecoverableAddress;
 use monad_state_backend::StateBackend;
@@ -373,7 +374,7 @@ where
         }
 
         // recovering the signers verifies that these are valid signatures
-        let recovered_txns: VecDeque<Recovered<TxEnvelope>> = transactions
+        let recovered_txns: VecDeque<Recovered<MonadTxEnvelope>> = transactions
             .par_iter()
             .map(|tx| {
                 let _span = trace_span!("validator: recover signer").entered();
@@ -1028,7 +1029,7 @@ mod test {
             !original_signature.v(),
         );
         let inner_tx = valid_txn.as_legacy().unwrap().tx();
-        let invalid_txn: TxEnvelope =
+        let invalid_txn: MonadTxEnvelope =
             Signed::new_unchecked(inner_tx.clone(), invalid_signature, *valid_txn.tx_hash()).into();
 
         // both transactions recover to the same signer
@@ -1319,7 +1320,7 @@ mod test {
     fn eip7702_tx_strategy(
         tx_signer: FixedBytes<32>,
         nonce: u64,
-    ) -> impl Strategy<Value = Recovered<TxEnvelope>> {
+    ) -> impl Strategy<Value = Recovered<MonadTxEnvelope>> {
         (1..=8usize)
             .prop_flat_map(|authorizations| {
                 prop::collection::vec(signed_authorization_strategy(), authorizations)
@@ -1404,7 +1405,7 @@ mod test {
             Vec::new(),
             ProposedEthHeader {
                 ommers_hash: *EMPTY_OMMER_ROOT_HASH,
-                transactions_root: *calculate_transaction_root::<TxEnvelope>(&[]),
+                transactions_root: *calculate_transaction_root::<MonadTxEnvelope>(&[]),
                 withdrawals_root: *EMPTY_WITHDRAWALS,
                 difficulty: 0,
                 number: seq_num.0,
@@ -1510,7 +1511,7 @@ mod test {
                 Ok(block) => {
                     assert!(expect_success);
 
-                    let txns: Vec<Recovered<TxEnvelope>> = block
+                    let txns: Vec<Recovered<MonadTxEnvelope>> = block
                         .validated_txns
                         .iter()
                         .map(|vtx| vtx.tx.clone())

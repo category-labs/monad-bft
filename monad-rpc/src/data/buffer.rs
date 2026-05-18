@@ -21,12 +21,11 @@ use std::{
     },
 };
 
-use alloy_consensus::TxEnvelope;
 use alloy_primitives::{BlockHash, Bloom, TxHash};
 use alloy_rpc_types::{Block, BlockTransactions, Transaction, TransactionReceipt};
 use dashmap::DashMap;
 use itertools::Itertools;
-use monad_eth_types::{BlockHeader, ReceiptWithLogIndex, TxEnvelopeWithSender};
+use monad_eth_types::{BlockHeader, MonadTxEnvelope, ReceiptWithLogIndex, TxEnvelopeWithSender};
 use monad_exec_events::BlockCommitState;
 use tokio::sync::Mutex;
 use tracing::{error, warn};
@@ -47,7 +46,7 @@ pub struct ExecEventsBuffer {
     block_heights_capacity: usize,
 
     // Maps a block by its SeqNum
-    block_by_height: Arc<DashMap<u64, Block>>,
+    block_by_height: Arc<DashMap<u64, Block<Transaction<MonadTxEnvelope>>>>,
     // Maps a block by its blockhash
     block_height_by_hash: Arc<DashMap<BlockHash, u64>>,
     // Maps a transaction hash to its block location and receipt
@@ -124,7 +123,7 @@ impl ExecEventsBuffer {
             }
         }
 
-        let block: Block<Transaction, alloy_rpc_types::Header> = Block {
+        let block: Block<Transaction<MonadTxEnvelope>, alloy_rpc_types::Header> = Block {
             header: header.data.value().clone(),
             transactions: alloy_rpc_types::BlockTransactions::Full(
                 transactions
@@ -230,17 +229,20 @@ impl ExecEventsBuffer {
         }
     }
 
-    pub fn get_block_by_height(&self, height: u64) -> Option<Block> {
+    pub fn get_block_by_height(&self, height: u64) -> Option<Block<Transaction<MonadTxEnvelope>>> {
         Some(self.block_by_height.get(&height)?.value().clone())
     }
 
-    pub fn get_block_by_hash(&self, block_hash: &BlockHash) -> Option<Block> {
+    pub fn get_block_by_hash(
+        &self,
+        block_hash: &BlockHash,
+    ) -> Option<Block<Transaction<MonadTxEnvelope>>> {
         let block_height: u64 = *self.block_height_by_hash.get(block_hash)?.value();
 
         Some(self.block_by_height.get(&block_height)?.value().clone())
     }
 
-    pub fn latest_block(&self) -> Option<Block> {
+    pub fn latest_block(&self) -> Option<Block<Transaction<MonadTxEnvelope>>> {
         let finalized_block_height = self.get_latest_finalized_block_num();
 
         Some(
@@ -372,7 +374,10 @@ impl ExecEventsBuffer {
         }
     }
 
-    pub fn get_transaction_by_hash(&self, tx_hash: &TxHash) -> Option<Transaction<TxEnvelope>> {
+    pub fn get_transaction_by_hash(
+        &self,
+        tx_hash: &TxHash,
+    ) -> Option<Transaction<MonadTxEnvelope>> {
         let tx_loc = &self.tx_by_hash.get(tx_hash)?.0;
 
         self.get_transaction_by_location(tx_loc.block_height, tx_loc.tx_idx)
@@ -382,7 +387,7 @@ impl ExecEventsBuffer {
         &self,
         height: u64,
         idx: u64,
-    ) -> Option<Transaction<TxEnvelope>> {
+    ) -> Option<Transaction<MonadTxEnvelope>> {
         let block = self.block_by_height.get(&height)?;
 
         if let alloy_rpc_types::BlockTransactions::Full(transactions) = &block.transactions {
@@ -715,7 +720,7 @@ mod tests {
                     input: vec![].into(),
                 };
                 let signature = signer.sign_hash_sync(&tx_inner.signature_hash()).unwrap();
-                let tx_envelope: TxEnvelope = tx_inner.into_signed(signature).into();
+                let tx_envelope: MonadTxEnvelope = tx_inner.into_signed(signature).into();
                 let transaction_hash = *tx_envelope.tx_hash();
                 let tx_recovered = Recovered::new_unchecked(tx_envelope, signer.address());
 

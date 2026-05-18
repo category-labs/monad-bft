@@ -76,6 +76,7 @@ monad-event-ring = { path = "./monad-execution/rust/crates/monad-event-ring" }
 monad-exec-events = { path = "./monad-execution/rust/crates/monad-exec-events" }
 monad-statesync = { path = "./monad-execution/rust/crates/monad-statesync" }
 monad-triedb = { path = "./monad-execution/rust/crates/monad-triedb" }
+monad-tx-envelope = { path = "./monad-execution/rust/crates/monad-tx-envelope" }
 
 actix = "0.13"
 actix-http = "3.11.1"

@@ -27,7 +27,11 @@ impl Generator for ReserveBalanceGenerator {
         &mut self,
         accts: &mut [SimpleAccount],
         ctx: &GenCtx,
-    ) -> Vec<(TxEnvelope, Address, crate::shared::private_key::PrivateKey)> {
+    ) -> Vec<(
+        MonadTxEnvelope,
+        Address,
+        crate::shared::private_key::PrivateKey,
+    )> {
         accts
             .iter_mut()
             .flat_map(|sender| {
@@ -78,7 +82,7 @@ impl Generator for ReserveBalanceGenerator {
                         sender.native_bal = new_native_bal;
 
                         let sig = sender.key.sign_transaction(&tx);
-                        let tx = TxEnvelope::Eip1559(tx.into_signed(sig));
+                        let tx = MonadTxEnvelope::Eip1559(tx.into_signed(sig));
 
                         (tx, to, sender.key.clone())
                     })

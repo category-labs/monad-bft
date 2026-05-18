@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use alloy_consensus::{SignableTransaction, TxEip1559, TxEip7702, TxEnvelope};
+use alloy_consensus::{SignableTransaction, TxEip1559, TxEip7702};
 use alloy_eips::{eip2718::Encodable2718, eip7702::SignedAuthorization};
 use alloy_primitives::{
     aliases::U192,
@@ -25,6 +25,7 @@ use alloy_rpc_client::ReqwestClient;
 use alloy_sol_macro::sol;
 use alloy_sol_types::{SolCall, SolValue};
 use eyre::Result;
+use monad_eth_types::MonadTxEnvelope;
 use serde::Deserialize;
 
 use crate::{
@@ -63,7 +64,7 @@ impl EntryPoint {
         };
 
         let sig = deployer.1.sign_transaction(&tx);
-        let tx = TxEnvelope::Eip1559(tx.into_signed(sig));
+        let tx = MonadTxEnvelope::Eip1559(tx.into_signed(sig));
         let mut rlp_encoded_tx = Vec::new();
         tx.encode_2718(&mut rlp_encoded_tx);
 
@@ -222,7 +223,7 @@ impl EntryPoint {
         chain_id: u64,
         gas_limit: Option<u64>,
         priority_fee: Option<u128>,
-    ) -> TxEnvelope {
+    ) -> MonadTxEnvelope {
         let call = IEntryPoint::handleOpsCall {
             ops: user_ops,
             beneficiary,
@@ -251,7 +252,7 @@ impl EntryPoint {
             ))
             .unwrap_or(U256::ZERO);
 
-        TxEnvelope::Eip1559(tx.into_signed(sig))
+        MonadTxEnvelope::Eip1559(tx.into_signed(sig))
     }
 
     /// Create handleOps transaction wrapped in EIP-7702
@@ -276,7 +277,7 @@ impl EntryPoint {
         chain_id: u64,
         gas_limit: Option<u64>,
         priority_fee: Option<u128>,
-    ) -> TxEnvelope {
+    ) -> MonadTxEnvelope {
         let call = IEntryPoint::handleOpsCall {
             ops: user_ops,
             beneficiary: bundler.addr,
@@ -306,7 +307,7 @@ impl EntryPoint {
             ))
             .unwrap_or(U256::ZERO);
 
-        TxEnvelope::Eip7702(tx.into_signed(sig))
+        MonadTxEnvelope::Eip7702(tx.into_signed(sig))
     }
 }
 

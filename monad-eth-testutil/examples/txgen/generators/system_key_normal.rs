@@ -13,10 +13,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use alloy_consensus::{SignableTransaction, TxEip1559, TxEnvelope};
+use alloy_consensus::{SignableTransaction, TxEip1559};
 use alloy_primitives::{hex, Address, TxKind, B256};
 use alloy_signer::SignerSync;
 use alloy_signer_local::LocalSigner;
+use monad_eth_types::MonadTxEnvelope;
 
 use crate::prelude::*;
 
@@ -36,7 +37,11 @@ impl Generator for SystemKeyNormalTxGenerator {
         &mut self,
         _accts: &mut [SimpleAccount],
         ctx: &GenCtx,
-    ) -> Vec<(TxEnvelope, Address, crate::shared::private_key::PrivateKey)> {
+    ) -> Vec<(
+        MonadTxEnvelope,
+        Address,
+        crate::shared::private_key::PrivateKey,
+    )> {
         let mut rng = SmallRng::from_entropy();
         let mut txs = Vec::with_capacity(self.tx_per_sender);
         let system_signer = LocalSigner::from_bytes(&SYSTEM_SENDER_PRIV_KEY).unwrap();
@@ -66,7 +71,7 @@ impl Generator for SystemKeyNormalTxGenerator {
 
             let signature_hash = tx.signature_hash();
             let signature = system_signer.sign_hash_sync(&signature_hash).unwrap();
-            let signed_tx = TxEnvelope::Eip1559(tx.into_signed(signature));
+            let signed_tx = MonadTxEnvelope::Eip1559(tx.into_signed(signature));
 
             txs.push((signed_tx, to, system_key.clone()));
         }

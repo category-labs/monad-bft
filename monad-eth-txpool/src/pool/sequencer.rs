@@ -18,7 +18,7 @@ use std::{
     collections::{BTreeMap, BinaryHeap, VecDeque},
 };
 
-use alloy_consensus::{transaction::Recovered, Transaction, TxEnvelope};
+use alloy_consensus::{transaction::Recovered, Transaction};
 use alloy_eips::eip7702::{RecoveredAuthority, RecoveredAuthorization};
 use alloy_primitives::Address;
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
@@ -30,7 +30,7 @@ use monad_eth_block_policy::{
     nonce_usage::{NonceUsage, NonceUsageRetrievable},
     EthBlockPolicyBlockValidator, EthValidatedBlock,
 };
-use monad_eth_types::ValidatedTx;
+use monad_eth_types::{MonadTxEnvelope, ValidatedTx};
 use monad_types::NodeId;
 use monad_validator::signature_collection::SignatureCollection;
 use rand::seq::SliceRandom;
@@ -377,7 +377,7 @@ pub(super) struct Proposal<ST>
 where
     ST: CertificateSignatureRecoverable,
 {
-    pub txs: Vec<Recovered<TxEnvelope>>,
+    pub txs: Vec<Recovered<MonadTxEnvelope>>,
     pub sender_gas: SenderGasContributions<ST>,
     pub total_gas: u64,
     pub total_size: u64,

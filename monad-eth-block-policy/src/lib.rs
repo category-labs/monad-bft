@@ -21,7 +21,7 @@ use std::{
 
 use alloy_consensus::{
     transaction::{Recovered, Transaction},
-    TxEnvelope,
+    Typed2718,
 };
 use alloy_eips::eip7702::RecoveredAuthorization;
 use alloy_primitives::{Address, TxHash, U256};
@@ -38,7 +38,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_types::{
-    EthAccount, EthExecutionProtocol, EthHeader, ExtractEthAddress, ValidatedTx,
+    EthAccount, EthExecutionProtocol, EthHeader, ExtractEthAddress, MonadTxEnvelope, ValidatedTx,
 };
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_system_calls::validator::{SystemTransactionValidationError, SystemTransactionValidator};
@@ -60,13 +60,13 @@ pub enum ReserveBalanceCheck {
     Validate,
 }
 
-pub fn compute_txn_max_value(txn: &TxEnvelope, base_fee: u64) -> U256 {
+pub fn compute_txn_max_value(txn: &MonadTxEnvelope, base_fee: u64) -> U256 {
     let txn_value = txn.value();
     let gas_cost = compute_txn_max_gas_cost(txn, base_fee);
     txn_value.saturating_add(gas_cost)
 }
 
-pub fn compute_txn_max_gas_cost(txn: &TxEnvelope, base_fee: u64) -> U256 {
+pub fn compute_txn_max_gas_cost(txn: &MonadTxEnvelope, base_fee: u64) -> U256 {
     // pre eip-1559 transactions do not have priority fee
     // full gas price is charged
     if txn.is_legacy() || txn.is_eip2930() {
@@ -1038,7 +1038,7 @@ where
     // this function checks the validity of nonces for a regular transaction
     fn nonce_check_and_update(
         &self,
-        txn: &Recovered<TxEnvelope>,
+        txn: &Recovered<MonadTxEnvelope>,
         account_nonces: &mut BTreeMap<&Address, u64>,
     ) -> Result<(), BlockPolicyError> {
         let eth_address = txn.signer();
@@ -1363,7 +1363,7 @@ mod test {
         value: u128,
         nonce: u64,
         signer: FixedBytes<32>,
-    ) -> Recovered<TxEnvelope> {
+    ) -> Recovered<MonadTxEnvelope> {
         recover_tx(make_eip1559_tx_with_value(
             signer,
             value,
@@ -1381,7 +1381,7 @@ mod test {
         nonce: u64,
         signer: FixedBytes<32>,
         authorizations: HashMap<FixedBytes<32>, Authorization>,
-    ) -> Recovered<TxEnvelope> {
+    ) -> Recovered<MonadTxEnvelope> {
         recover_tx(make_eip7702_tx_with_value(
             signer,
             value,
@@ -1397,7 +1397,7 @@ mod test {
         ))
     }
 
-    fn make_validated_tx(tx: Recovered<TxEnvelope>) -> ValidatedTx {
+    fn make_validated_tx(tx: Recovered<MonadTxEnvelope>) -> ValidatedTx {
         if let Some(txn_7702) = tx.as_eip7702() {
             let authorizations_7702: Vec<RecoveredAuthorization> = txn_7702
                 .tx()
@@ -1427,7 +1427,7 @@ mod test {
     pub fn make_test_block(
         round: Round,
         seq_num: SeqNum,
-        txs: Vec<Recovered<TxEnvelope>>,
+        txs: Vec<Recovered<MonadTxEnvelope>>,
     ) -> EthValidatedBlock<NopSignature, MockSignatures<NopSignature>> {
         let consensus_test_block =
             generate_consensus_test_block(round, seq_num, BASE_FEE, &MockChainConfig::DEFAULT, txs);
@@ -1512,7 +1512,7 @@ mod test {
     }
 
     fn setup_block_policy_with_txs(
-        txs: BTreeMap<u64, Vec<Recovered<TxEnvelope>>>,
+        txs: BTreeMap<u64, Vec<Recovered<MonadTxEnvelope>>>,
         signers: Vec<Address>,
         state_backend: &impl StateBackend<SignatureType, SignatureCollectionType>,
         num_committed_blocks: usize,
@@ -2745,7 +2745,7 @@ mod test {
                 ..Default::default()
             };
             let signature = sign_tx(&tx.signature_hash());
-            let tx_envelope = TxEnvelope::from(tx.into_signed(signature));
+            let tx_envelope = MonadTxEnvelope::from(tx.into_signed(signature));
 
             let result = compute_txn_max_value(&tx_envelope, BASE_FEE);
 
@@ -3386,7 +3386,7 @@ mod test {
     fn check_txn_helper(
         block_seq_num: SeqNum,
         account_balances: &mut BTreeMap<&Address, AccountBalanceState>,
-        txn: &Recovered<TxEnvelope>,
+        txn: &Recovered<MonadTxEnvelope>,
         expect: Result<(), BlockPolicyError>,
     ) {
         let txn = &make_validated_tx(txn.clone());
@@ -3411,7 +3411,7 @@ mod test {
         nonce: u64,
         gas_limit: u64,
         signer: FixedBytes<32>,
-    ) -> Recovered<TxEnvelope> {
+    ) -> Recovered<MonadTxEnvelope> {
         recover_tx(make_eip1559_tx_with_value(
             signer, value, 1_u128, 0, gas_limit, nonce, 0,
         ))

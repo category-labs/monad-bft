@@ -121,7 +121,7 @@ impl Generator for ERC4337_7702BundledGenerator {
         &mut self,
         accts: &mut [SimpleAccount],
         ctx: &GenCtx,
-    ) -> Vec<(TxEnvelope, Address, PrivateKey)> {
+    ) -> Vec<(MonadTxEnvelope, Address, PrivateKey)> {
         // Initialize bundler from first funded account
         if self.bundler_account.is_none() {
             if accts.is_empty() {

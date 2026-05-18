@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use alloy_consensus::{SignableTransaction, TxEip1559, TxEnvelope};
+use alloy_consensus::{SignableTransaction, TxEip1559};
 use alloy_eips::{eip2718::Encodable2718, eip7702::Authorization};
 use alloy_primitives::{
     hex::{self, FromHex},
@@ -23,6 +23,7 @@ use alloy_rlp::Encodable;
 use alloy_rpc_client::ReqwestClient;
 use alloy_sol_macro::sol;
 use eyre::Result;
+use monad_eth_types::MonadTxEnvelope;
 use serde::Deserialize;
 
 use crate::{
@@ -68,7 +69,7 @@ impl EIP7702 {
         deployer: &PrivateKey,
         max_fee_per_gas: u128,
         chain_id: u64,
-    ) -> TxEnvelope {
+    ) -> MonadTxEnvelope {
         let input = Bytes::from_hex(BYTECODE).unwrap();
         let tx = TxEip1559 {
             chain_id,
@@ -83,7 +84,7 @@ impl EIP7702 {
         };
 
         let sig = deployer.sign_transaction(&tx);
-        TxEnvelope::Eip1559(tx.into_signed(sig))
+        MonadTxEnvelope::Eip1559(tx.into_signed(sig))
     }
 
     pub fn create_authorization(
@@ -112,7 +113,7 @@ impl EIP7702 {
         chain_id: u64,
         gas_limit: Option<u64>,
         priority_fee: Option<u128>,
-    ) -> TxEnvelope {
+    ) -> MonadTxEnvelope {
         use alloy_consensus::TxEip7702;
 
         let tx = TxEip7702 {
@@ -139,7 +140,7 @@ impl EIP7702 {
             ))
             .unwrap_or(U256::ZERO);
 
-        TxEnvelope::Eip7702(tx.into_signed(sig))
+        MonadTxEnvelope::Eip7702(tx.into_signed(sig))
     }
 
     pub fn create_simple_call_tx(
@@ -149,7 +150,7 @@ impl EIP7702 {
         chain_id: u64,
         gas_limit: Option<u64>,
         priority_fee: Option<u128>,
-    ) -> TxEnvelope {
+    ) -> MonadTxEnvelope {
         let calldata = Bytes::from(vec![0u8; 100]);
 
         let tx = TxEip1559 {
@@ -174,7 +175,7 @@ impl EIP7702 {
             ))
             .unwrap_or(U256::ZERO);
 
-        TxEnvelope::Eip1559(tx.into_signed(sig))
+        MonadTxEnvelope::Eip1559(tx.into_signed(sig))
     }
 
     pub fn create_authorization_usage_tx(
@@ -185,7 +186,7 @@ impl EIP7702 {
         chain_id: u64,
         gas_limit: Option<u64>,
         priority_fee: Option<u128>,
-    ) -> TxEnvelope {
+    ) -> MonadTxEnvelope {
         let execute_calldata = self.create_execute_calldata(authorized_account);
 
         let tx = TxEip1559 {
@@ -210,7 +211,7 @@ impl EIP7702 {
             ))
             .unwrap_or(U256::ZERO);
 
-        TxEnvelope::Eip1559(tx.into_signed(sig))
+        MonadTxEnvelope::Eip1559(tx.into_signed(sig))
     }
 
     fn create_execute_calldata(&self, target_account: Address) -> Bytes {

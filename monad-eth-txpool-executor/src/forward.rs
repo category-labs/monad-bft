@@ -19,7 +19,6 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
-use alloy_consensus::TxEnvelope;
 use alloy_eips::eip2718::Encodable2718;
 use bytes::Bytes;
 use monad_chain_config::{
@@ -29,7 +28,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_txpool::{max_eip2718_encoded_length, EthTxPool};
-use monad_eth_types::ExtractEthAddress;
+use monad_eth_types::{ExtractEthAddress, MonadTxEnvelope};
 use monad_state_backend::StateBackend;
 use monad_validator::signature_collection::SignatureCollection;
 use pin_project::pin_project;
@@ -47,7 +46,7 @@ pub fn egress_max_size_bytes(execution_params: &ExecutionChainParams) -> usize {
 
 #[pin_project(project = EthTxPoolForwardingManagerProjected)]
 pub struct EthTxPoolForwardingManager<S> {
-    ingress_batch: Option<Vec<(S, TxEnvelope)>>,
+    ingress_batch: Option<Vec<(S, MonadTxEnvelope)>>,
     ingress_waker: Option<Waker>,
 
     egress: VecDeque<Bytes>,
@@ -71,7 +70,10 @@ impl<S> EthTxPoolForwardingManager<S> {
         self.ingress_batch.is_none()
     }
 
-    pub fn poll_ingress(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Vec<(S, TxEnvelope)>> {
+    pub fn poll_ingress(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Vec<(S, MonadTxEnvelope)>> {
         let EthTxPoolForwardingManagerProjected {
             ingress_batch,
             ingress_waker,
@@ -149,7 +151,7 @@ impl<S> EthTxPoolForwardingManager<S> {
 }
 
 impl<S> EthTxPoolForwardingManagerProjected<'_, S> {
-    pub fn add_ingress_txs(&mut self, txs: Vec<(S, TxEnvelope)>) {
+    pub fn add_ingress_txs(&mut self, txs: Vec<(S, MonadTxEnvelope)>) {
         let Self {
             ingress_batch,
             ingress_waker,
@@ -175,7 +177,7 @@ impl<S> EthTxPoolForwardingManagerProjected<'_, S> {
         }
     }
 
-    pub fn add_egress_txs<'a>(&mut self, txs: impl Iterator<Item = &'a TxEnvelope>) {
+    pub fn add_egress_txs<'a>(&mut self, txs: impl Iterator<Item = &'a MonadTxEnvelope>) {
         let Self {
             egress,
             egress_waker,
@@ -222,11 +224,12 @@ mod test {
         time::Duration,
     };
 
-    use alloy_consensus::{Transaction, TxEnvelope};
+    use alloy_consensus::Transaction;
     use bytes::Bytes;
     use futures::task::noop_waker_ref;
     use monad_chain_config::execution_revision::MonadExecutionRevision;
     use monad_eth_testutil::{make_eip1559_tx, make_eip7702_tx, make_legacy_tx, S1};
+    use monad_eth_types::MonadTxEnvelope;
 
     use crate::forward::{egress_max_size_bytes, EthTxPoolForwardingManager};
 
@@ -241,11 +244,11 @@ mod test {
         )
     }
 
-    fn generate_tx(nonce: u64) -> TxEnvelope {
+    fn generate_tx(nonce: u64) -> MonadTxEnvelope {
         make_legacy_tx(S1, BASE_FEE_PER_GAS, 100_000, nonce, 0)
     }
 
-    fn generate_ingress_tx(nonce: u64) -> ((), TxEnvelope) {
+    fn generate_ingress_tx(nonce: u64) -> ((), MonadTxEnvelope) {
         ((), generate_tx(nonce))
     }
 

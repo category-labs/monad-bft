@@ -15,10 +15,11 @@
 
 use std::time::Duration;
 
-use alloy_consensus::{Transaction as _, TxEnvelope};
+use alloy_consensus::Transaction as _;
 use alloy_eips::Decodable2718;
 use alloy_primitives::{Address, FixedBytes, TxHash};
 use alloy_rpc_types::{Filter, TransactionReceipt};
+use monad_eth_types::MonadTxEnvelope;
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::Triedb;
 use schemars::JsonSchema;
@@ -149,8 +150,8 @@ fn validate_and_decode_tx(
     chain_id: u64,
     allow_unprotected_txs: bool,
     decode_error_fn: impl FnOnce() -> JsonRpcError,
-) -> Result<TxEnvelope, JsonRpcError> {
-    let tx = TxEnvelope::decode_2718_exact(hex_tx).map_err(|err| {
+) -> Result<MonadTxEnvelope, JsonRpcError> {
+    let tx = MonadTxEnvelope::decode_2718_exact(hex_tx).map_err(|err| {
         debug!(?err, "eth txn decode failed");
         decode_error_fn()
     })?;
@@ -173,7 +174,7 @@ fn validate_and_decode_tx(
 
 async fn submit_to_txpool(
     txpool_bridge_client: &EthTxPoolBridgeClient,
-    tx: TxEnvelope,
+    tx: MonadTxEnvelope,
 ) -> Result<(), JsonRpcError> {
     let Some(_tx_inflight_guard) = txpool_bridge_client.acquire_tx_inflight_guard() else {
         warn!("txpool overloaded");
@@ -409,13 +410,13 @@ pub async fn monad_eth_getTransactionByBlockNumberAndIndex<T: Triedb>(
 mod tests {
     use std::sync::Arc;
 
-    use alloy_consensus::{SignableTransaction, TxEip1559, TxEnvelope};
+    use alloy_consensus::{SignableTransaction, TxEip1559};
     use alloy_eips::eip2718::Encodable2718;
     use alloy_primitives::{Address, FixedBytes, TxKind};
     use alloy_rlp::Encodable;
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
-    use monad_eth_types::EthAccount;
+    use monad_eth_types::{EthAccount, MonadTxEnvelope};
     use monad_triedb_utils::mock_triedb::MockTriedb;
 
     use super::{
@@ -439,7 +440,7 @@ mod tests {
         gas_limit: u64,
         nonce: u64,
         chain_id: u64,
-    ) -> TxEnvelope {
+    ) -> MonadTxEnvelope {
         let transaction = TxEip1559 {
             chain_id,
             nonce,

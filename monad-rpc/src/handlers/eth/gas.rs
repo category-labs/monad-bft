@@ -16,7 +16,7 @@
 use std::ops::{Div, Sub};
 
 use alloy_consensus::{
-    Header, SignableTransaction, Transaction, TxEip1559, TxEip2930, TxEip7702, TxEnvelope, TxLegacy,
+    Header, SignableTransaction, Transaction, TxEip1559, TxEip2930, TxEip7702, TxLegacy,
 };
 use alloy_eips::eip2718::{
     EIP1559_TX_TYPE_ID, EIP2930_TX_TYPE_ID, EIP4844_TX_TYPE_ID, EIP7702_TX_TYPE_ID,
@@ -26,6 +26,7 @@ use alloy_primitives::{Address, Signature, TxKind, U256, U64, U8};
 use alloy_rpc_types::{FeeHistory, TransactionReceipt};
 use futures::stream::StreamExt;
 use itertools::Itertools;
+use monad_eth_types::MonadTxEnvelope;
 use monad_ethcall::{
     CallResult, EthCallExecutor, EthCallRequest, MonadTracer, StateOverrideObject, StateOverrideSet,
 };
@@ -64,7 +65,7 @@ fn block_key_to_parts(block_key: BlockKey) -> (u64, Option<[u8; 32]>) {
 }
 
 async fn estimate_gas(
-    eth_call_fn: impl AsyncFn(&TxEnvelope) -> CallResult,
+    eth_call_fn: impl AsyncFn(&MonadTxEnvelope) -> CallResult,
     call_request: &mut CallRequest,
     original_tx_gas: U256,
     provider_gas_limit: u64,
@@ -82,12 +83,12 @@ async fn estimate_gas(
 }
 
 async fn estimate_gas_with_builder(
-    eth_call_fn: impl AsyncFn(&TxEnvelope) -> CallResult,
+    eth_call_fn: impl AsyncFn(&MonadTxEnvelope) -> CallResult,
     call_request: &mut CallRequest,
     original_tx_gas: U256,
     provider_gas_limit: u64,
     protocol_gas_limit: u64,
-    build_tx: impl Fn(&CallRequest) -> Result<TxEnvelope, JsonRpcError> + Copy,
+    build_tx: impl Fn(&CallRequest) -> Result<MonadTxEnvelope, JsonRpcError> + Copy,
 ) -> Result<Quantity, JsonRpcError> {
     let mut txn = build_tx(call_request)?;
 
@@ -250,7 +251,7 @@ fn build_fill_transaction_eip2930(
 fn build_fill_transaction_envelope(
     tx: &CallRequest,
     chain_id: u64,
-) -> Result<TxEnvelope, JsonRpcError> {
+) -> Result<MonadTxEnvelope, JsonRpcError> {
     if !requires_eip2930_encoding(tx) {
         return tx.clone().try_into();
     }
@@ -361,7 +362,7 @@ pub async fn monad_eth_estimateGas<T: Triedb>(
     let protocol_gas_limit = header.header.gas_limit;
     let (block_number, block_id) = block_key_to_parts(block_key);
 
-    let eth_call_fn = async |transaction: &TxEnvelope| {
+    let eth_call_fn = async |transaction: &MonadTxEnvelope| {
         monad_ethcall::eth_call(
             EthCallRequest {
                 chain_id: ethcall_chain_id,
@@ -391,7 +392,7 @@ pub async fn monad_eth_estimateGas<T: Triedb>(
         {
             let saved_gas = tx.gas;
             tx.gas = Some(U256::from(21_000));
-            let txn: TxEnvelope = tx.clone().try_into()?;
+            let txn: MonadTxEnvelope = tx.clone().try_into()?;
             tx.gas = saved_gas;
 
             if matches!(
@@ -436,25 +437,27 @@ pub async fn monad_eth_fillTransaction<T: Triedb>(
     let from = params.tx.from.unwrap_or_default();
     let state_override = fill_transaction_state_overrides(from);
 
-    let eth_call_fn =
-        async |header: &Header, from: Address, block_key: BlockKey, transaction: &TxEnvelope| {
-            let (block_number, block_id) = block_key_to_parts(block_key);
-            monad_ethcall::eth_call(
-                EthCallRequest {
-                    chain_id: ethcall_chain_id,
-                    transaction,
-                    block_header: header,
-                    sender: from,
-                    block_number,
-                    block_id,
-                    state_override_set: &state_override,
-                    tracer: MonadTracer::NoopTracer,
-                    gas_specified: true,
-                },
-                eth_call_executor,
-            )
-            .await
-        };
+    let eth_call_fn = async |header: &Header,
+                             from: Address,
+                             block_key: BlockKey,
+                             transaction: &MonadTxEnvelope| {
+        let (block_number, block_id) = block_key_to_parts(block_key);
+        monad_ethcall::eth_call(
+            EthCallRequest {
+                chain_id: ethcall_chain_id,
+                transaction,
+                block_header: header,
+                sender: from,
+                block_number,
+                block_id,
+                state_override_set: &state_override,
+                tracer: MonadTracer::NoopTracer,
+                gas_specified: true,
+            },
+            eth_call_executor,
+        )
+        .await
+    };
 
     fill_transaction_with_provider(
         data_provider,
@@ -483,7 +486,7 @@ async fn fill_transaction_with_provider<T: Triedb>(
     eth_call_handler_config: &EthCallHandlerConfig,
     chain_id: u64,
     params: MonadEthFillTransactionParams,
-    eth_call_fn: impl AsyncFn(&Header, Address, BlockKey, &TxEnvelope) -> CallResult,
+    eth_call_fn: impl AsyncFn(&Header, Address, BlockKey, &MonadTxEnvelope) -> CallResult,
 ) -> JsonRpcResult<FillTransactionResult> {
     trace!("monad_eth_fillTransaction: {params:?}");
 
@@ -536,7 +539,7 @@ async fn fill_transaction_with_provider<T: Triedb>(
 
         tx.gas = Some(U256::from(eth_call_provider_gas_limit));
 
-        let estimate_eth_call_fn = async |transaction: &TxEnvelope| {
+        let estimate_eth_call_fn = async |transaction: &MonadTxEnvelope| {
             eth_call_fn(&header, from, block_key, transaction).await
         };
 
@@ -901,7 +904,7 @@ pub async fn monad_eth_feeHistory<T: Triedb>(
 
         gas_used_ratio_history.push((header.gas_used as f64).div(header.gas_limit as f64));
 
-        let txns: Vec<alloy_rpc_types::Transaction> =
+        let txns: Vec<alloy_rpc_types::Transaction<MonadTxEnvelope>> =
             block.transactions.into_transactions().collect::<Vec<_>>();
 
         let receipts = receipts.into_iter().map(|r| r.0).collect::<Vec<_>>();
@@ -945,7 +948,7 @@ pub async fn monad_eth_feeHistory<T: Triedb>(
 }
 
 fn calculate_fee_history_rewards(
-    transactions: Vec<alloy_rpc_types::Transaction>,
+    transactions: Vec<alloy_rpc_types::Transaction<MonadTxEnvelope>>,
     receipts: Vec<TransactionReceipt>,
     base_fee: u64,
     block_gas_used: u64,
@@ -1056,8 +1059,8 @@ mod tests {
         gas_used: u64,
         gas_refund: u64,
         terminal_result: MockTerminalResult,
-    ) -> impl AsyncFn(&TxEnvelope) -> CallResult {
-        async move |txn: &TxEnvelope| {
+    ) -> impl AsyncFn(&MonadTxEnvelope) -> CallResult {
+        async move |txn: &MonadTxEnvelope| {
             if txn.gas_limit() >= gas_used + gas_refund {
                 match terminal_result {
                     MockTerminalResult::Success => CallResult::Success(SuccessCallResult {
@@ -1238,8 +1241,8 @@ mod tests {
         assert!(result.is_err());
     }
 
-    fn make_block(num: u64, base_fee: u64, txns: Vec<TxEnvelope>) -> Block<TxEnvelope> {
-        let mut blk = Block::<TxEnvelope>::default();
+    fn make_block(num: u64, base_fee: u64, txns: Vec<MonadTxEnvelope>) -> Block<MonadTxEnvelope> {
+        let mut blk = Block::<MonadTxEnvelope>::default();
         blk.header.gas_limit = 30_000_000;
         blk.header.gas_used = txns.iter().map(|t| t.gas_limit()).sum();
         blk.header.base_fee_per_gas = Some(base_fee);
@@ -1255,7 +1258,7 @@ mod tests {
         gas_limit: u64,
         nonce: u64,
         chain_id: u64,
-    ) -> TxEnvelope {
+    ) -> MonadTxEnvelope {
         let transaction = TxEip1559 {
             chain_id,
             nonce,
@@ -1439,7 +1442,7 @@ mod tests {
         let signer = PrivateKeySigner::from_bytes(&sender).unwrap();
         let from_addr = signer.address();
 
-        let transactions: Vec<alloy_rpc_types::Transaction> = txs
+        let transactions: Vec<alloy_rpc_types::Transaction<MonadTxEnvelope>> = txs
             .into_iter()
             .map(|tx| alloy_rpc_types::Transaction {
                 inner: Recovered::new_unchecked(tx, from_addr),
@@ -2021,7 +2024,7 @@ mod tests {
         let envelope = build_fill_transaction_envelope(&request, chain_id).unwrap();
 
         match envelope {
-            TxEnvelope::Eip2930(tx) => assert_eq!(tx.tx().chain_id, chain_id),
+            MonadTxEnvelope::Eip2930(tx) => assert_eq!(tx.tx().chain_id, chain_id),
             _ => panic!("expected EIP-2930 envelope"),
         }
     }
