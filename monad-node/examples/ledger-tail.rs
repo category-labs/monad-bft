@@ -147,6 +147,7 @@ async fn main() {
                             .unwrap_or_else(|err| panic!("failed to read validators.toml, or validators.toml corrupt. was this edited manually? err={:?}", err));
                     validators
                         .get_validator_set(&tc.epoch)
+                        .expect("validator set should exist for current epoch")
                         .get_stakes()
                         .into_iter()
                         .collect()

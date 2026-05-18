@@ -368,15 +368,33 @@ fn get_latest_configs(
 
             // if remote config is more recent, use that over local config
             if remote_forkpoint_round > local_forkpoint_round + remote_configs_threshold {
-                info!(
-                    ?remote_forkpoint_round,
-                    ?local_forkpoint_round,
-                    "local forkpoint over {} rounds older than remote forkpoint, using remote configs",
-                    remote_configs_threshold.0
-                );
+                let maybe_missing_epoch =
+                    remote_forkpoint_config
+                        .validator_sets
+                        .iter()
+                        .find_map(|locked_epoch| {
+                            remote_validators_config
+                                .get_validator_set(&locked_epoch.epoch)
+                                .is_none()
+                                .then_some(locked_epoch.epoch)
+                        });
+                if let Some(epoch) = maybe_missing_epoch {
+                    info!(
+                        "remote validators config missing validator set for remote forkpoint at epoch {}, using local configs",
+                        epoch
+                    );
+                    return Ok((local_forkpoint_config, local_validators_config));
+                } else {
+                    info!(
+                        ?remote_forkpoint_round,
+                        ?local_forkpoint_round,
+                        "local forkpoint over {} rounds older than remote forkpoint, using remote configs",
+                        remote_configs_threshold
+                    );
 
-                replace_local_configs(&remote_forkpoint_config, &remote_validators_config);
-                return Ok((remote_forkpoint_config, remote_validators_config));
+                    replace_local_configs(&remote_forkpoint_config, &remote_validators_config);
+                    return Ok((remote_forkpoint_config, remote_validators_config));
+                }
             }
 
             info!(
