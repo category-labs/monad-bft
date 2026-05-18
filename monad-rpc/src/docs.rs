@@ -37,12 +37,13 @@ pub fn as_openrpc() -> OpenRpc {
             let mut in_sub_schema: schemars::schema::Schema = in_schema.schema.into();
             monad_rpc_docs::clean_schema_refs(&mut in_sub_schema);
 
-            let inputs = in_sub_schema
+            let input_object = in_sub_schema
                 .clone()
                 .into_object()
-                .object()
-                .clone()
-                .properties;
+                .object
+                .unwrap_or_default();
+            let required_fields = input_object.required;
+            let inputs = input_object.properties;
 
             for (k, v) in &inputs {
                 components
@@ -54,7 +55,7 @@ pub fn as_openrpc() -> OpenRpc {
                 let param = monad_rpc_docs::Params {
                     name: k.clone(),
                     description: "".to_string(),
-                    required: true,
+                    required: required_fields.contains(&k),
                     schema: v.clone(),
                 };
                 params.push(param);
