@@ -988,12 +988,15 @@ where
             self.metrics.consensus_events.old_no_endorsement_received += 1;
             return Default::default();
         }
-        if no_endorsement_msg.msg.round
-            > self.consensus.pacemaker.get_current_round() + FUTURE_VOTE_BOUND
-        {
+        if no_endorsement_msg.msg.round > self.consensus.pacemaker.get_current_round() {
             self.metrics.consensus_events.future_no_endorsement_received += 1;
             return Default::default();
         }
+        debug_assert_eq!(
+            no_endorsement_msg.msg.round,
+            self.consensus.pacemaker.get_current_round()
+        );
+
         self.metrics.consensus_events.handle_no_endorsement += 1;
 
         let mut cmds = Vec::new();
@@ -2052,7 +2055,10 @@ mod test {
     use monad_consensus::{
         messages::{
             consensus_message::ProtocolMessage,
-            message::{AdvanceRoundMessage, ProposalMessage, TimeoutMessage, VoteMessage},
+            message::{
+                AdvanceRoundMessage, NoEndorsementMessage, ProposalMessage, TimeoutMessage,
+                VoteMessage,
+            },
         },
         pacemaker::PacemakerCommand,
         validation::{safety::Safety, signing::Verified},
@@ -2065,6 +2071,7 @@ mod test {
         block_validator::BlockValidator,
         checkpoint::RootInfo,
         metrics::Metrics,
+        no_endorsement::NoEndorsement,
         payload::{ConsensusBlockBody, ConsensusBlockBodyInner, RoundSignature},
         quorum_certificate::QuorumCertificate,
         tip::ConsensusTip,
@@ -2289,6 +2296,25 @@ mod test {
             >,
         > {
             self.wrapped_state().handle_vote_message(author, p)
+        }
+
+        fn handle_no_endorsement_message(
+            &mut self,
+            author: NodeId<SCT::NodeIdPubKey>,
+            p: NoEndorsementMessage<SCT>,
+        ) -> Vec<
+            ConsensusCommand<
+                ST,
+                SCT,
+                EthExecutionProtocol,
+                BPT,
+                SBT,
+                MockChainConfig,
+                MockChainRevision,
+            >,
+        > {
+            self.wrapped_state()
+                .handle_no_endorsement_message(author, p)
         }
 
         fn handle_block_sync(
@@ -2972,6 +2998,122 @@ mod test {
             expected_qc_high_round
         );
         assert_eq!(wrapped_state.metrics.consensus_events.vote_received, 3);
+    }
+
+    #[test]
+    fn future_no_endorsements_are_not_accumulated() {
+        let num_state = 4;
+        let execution_delay = SeqNum::MAX;
+        let (env, mut ctx) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            BlockPolicyType,
+            StateBackendType,
+            BlockValidatorType,
+            _,
+            _,
+        >(
+            num_state,
+            ValidatorSetFactory::default(),
+            SimpleRoundRobin::default(),
+            || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0),
+            || InMemoryStateInner::genesis(execution_delay),
+            EthBlockValidator::default,
+            execution_delay,
+        );
+
+        assert_eq!(ctx[0].consensus_state.get_current_round(), Round(1));
+
+        let no_endorsements = [1_usize, 2, 3]
+            .iter()
+            .copied()
+            .map(|i| {
+                let no_endorsement_msg = NoEndorsementMessage::<SignatureCollectionType>::new(
+                    NoEndorsement {
+                        epoch: Epoch(1),
+                        round: Round(2),
+                        tip_qc_round: Round(0),
+                    },
+                    &env.cert_keys[i],
+                );
+                Verified::<SignatureType, _>::new(no_endorsement_msg, &env.keys[i])
+            })
+            .collect_vec();
+
+        for no_endorsement in no_endorsements {
+            let _ = ctx[0].handle_no_endorsement_message(
+                *no_endorsement.author(),
+                no_endorsement.deref().clone(),
+            );
+        }
+
+        assert_eq!(
+            ctx[0]
+                .metrics
+                .consensus_events
+                .future_no_endorsement_received,
+            3
+        );
+        assert_eq!(ctx[0].metrics.consensus_events.handle_no_endorsement, 0);
+        assert_eq!(ctx[0].metrics.consensus_events.created_nec, 0);
+    }
+
+    #[test]
+    fn current_round_no_endorsements_can_form_nec() {
+        let num_state = 4;
+        let execution_delay = SeqNum::MAX;
+        let (env, mut ctx) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            BlockPolicyType,
+            StateBackendType,
+            BlockValidatorType,
+            _,
+            _,
+        >(
+            num_state,
+            ValidatorSetFactory::default(),
+            SimpleRoundRobin::default(),
+            || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0),
+            || InMemoryStateInner::genesis(execution_delay),
+            EthBlockValidator::default,
+            execution_delay,
+        );
+
+        assert_eq!(ctx[0].consensus_state.get_current_round(), Round(1));
+
+        let no_endorsements = [1_usize, 2, 3]
+            .iter()
+            .copied()
+            .map(|i| {
+                let no_endorsement_msg = NoEndorsementMessage::<SignatureCollectionType>::new(
+                    NoEndorsement {
+                        epoch: Epoch(1),
+                        round: Round(1),
+                        tip_qc_round: Round(0),
+                    },
+                    &env.cert_keys[i],
+                );
+                Verified::<SignatureType, _>::new(no_endorsement_msg, &env.keys[i])
+            })
+            .collect_vec();
+
+        for no_endorsement in no_endorsements {
+            let _ = ctx[0].handle_no_endorsement_message(
+                *no_endorsement.author(),
+                no_endorsement.deref().clone(),
+            );
+        }
+
+        assert_eq!(
+            ctx[0]
+                .metrics
+                .consensus_events
+                .future_no_endorsement_received,
+            0
+        );
+        assert_eq!(ctx[0].metrics.consensus_events.handle_no_endorsement, 3);
+        assert_eq!(ctx[0].metrics.consensus_events.created_nec, 1);
     }
 
     // When a node locally timesout on a round, it no longer produces votes in that round
