@@ -183,7 +183,6 @@ where
         non_authenticated_socket: UdpSocketHandle,
         control: DataplaneControl,
         peer_discovery_driver: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
-        current_epoch: Epoch,
     ) -> Self {
         let (tcp_reader, tcp_writer) = tcp_socket.split();
 
@@ -290,10 +289,8 @@ where
             message_builder,
             secondary_message_builder: Some(secondary_message_builder),
 
-            // TODO: call UpdateCurrentRound instead of pass in
-            // current_{epoch,round} as argument to allow downstream
-            // components to initialize appropriately.
-            current_epoch,
+            // Updated by the first RouterCommand::UpdateCurrentRound.
+            current_epoch: Epoch(0),
 
             udp_state,
             v1_rollout: config.deterministic_protocol_rollout,
@@ -436,17 +433,13 @@ where
         let mut sink = DualUdpPacketSender::new(&mut self.dual_socket, &self.peer_discovery_driver);
 
         match outbound_msg {
-            SecondaryOutboundMessage::SendSingle {
-                msg_bytes,
-                dest,
-                epoch,
-            } => {
+            SecondaryOutboundMessage::SendSingle { msg_bytes, dest } => {
                 trace!(
                     ?dest,
                     msg_len = msg_bytes.len(),
                     "raptorcastprimary handling single message from secondary"
                 );
-                let build_target = BuildTarget::point_to_point(epoch, &dest);
+                let build_target = BuildTarget::point_to_point(self.current_epoch, &dest);
                 builder
                     .build_into(&msg_bytes, &build_target, &mut sink)
                     .unwrap_log_on_error(&msg_bytes, &build_target)
@@ -838,7 +831,6 @@ where
         dataplane.non_authenticated_socket,
         dataplane.control,
         shared_pd,
-        Epoch(0),
     )
 }
 
@@ -903,7 +895,6 @@ where
         dataplane.non_authenticated_socket,
         dataplane.control,
         shared_pd,
-        Epoch(0),
     )
 }
 
