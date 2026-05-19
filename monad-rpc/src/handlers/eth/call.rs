@@ -478,8 +478,8 @@ pub struct EnrichedTracerObject {
 #[derive(Debug, Deserialize, schemars::JsonSchema, Clone)]
 pub struct MonadDebugTraceCallParams {
     transaction: CallRequest,
-    #[serde(default)]
     block: BlockTagOrHash,
+    #[serde(default)]
     tracer: EnrichedTracerObject,
 }
 
@@ -1226,6 +1226,43 @@ mod tests {
         let params: MonadDebugTraceCallParams = from_str(raw).unwrap();
 
         assert_eq!(params.tracer.tracer_params.tracer, Tracer::PreStateTracer);
+    }
+
+    #[test]
+    fn parse_trace_call_request_with_default_tracer() {
+        let raw = r#"
+        [
+          {
+            "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+            "to": "0x0000000000a39bb272e79075ade125fd351887ac",
+            "gas": "0x1E9EF",
+            "gasPrice": "0xBD32B2ABC",
+            "data": "0xd0e30db0"
+          },
+          "latest"
+        ]
+        "#;
+
+        let params: MonadDebugTraceCallParams = from_str(raw).unwrap();
+
+        assert_eq!(params.tracer.tracer_params.tracer, Tracer::CallTracer);
+    }
+
+    #[test]
+    fn parse_trace_call_request_requires_block() {
+        let raw = r#"
+        [
+          {
+            "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+            "to": "0x0000000000a39bb272e79075ade125fd351887ac",
+            "gas": "0x1E9EF",
+            "gasPrice": "0xBD32B2ABC",
+            "data": "0xd0e30db0"
+          }
+        ]
+        "#;
+
+        assert!(from_str::<MonadDebugTraceCallParams>(raw).is_err());
     }
 
     #[test]
