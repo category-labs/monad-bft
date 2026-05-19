@@ -34,19 +34,18 @@ use tokio::sync::{broadcast, Semaphore, TryAcquireError};
 use tracing::{debug, error, warn};
 
 use crate::{
-    event::{EventServerClient, EventServerClientError, EventServerEvent},
+    event::{events::LogNotification, EventServerClient, EventServerClientError, EventServerEvent},
     handlers::{resources::MonadRpcResources, rpc_select},
     middleware::TimingRequestId,
     types::{
         eth_json::{
             serialize_result, EthSubscribeRequest, EthSubscribeResult, EthUnsubscribeRequest,
-            FixedData, MonadNotification, SubscriptionKind,
+            FixedData, SubscriptionKind,
         },
         jsonrpc::{
             serialize_with_size_limit, JsonRpcError, Notification, Request, RequestWrapper,
             Response,
         },
-        serialize::SharedJsonSerialized,
     },
 };
 
@@ -365,18 +364,8 @@ async fn handle_notification(
 fn apply_logs_filter<'a>(
     filter: &'a Option<Filter>,
     header: &alloy_rpc_types::eth::Header,
-    logs: impl Iterator<
-            Item = &'a SharedJsonSerialized<
-                MonadNotification<SharedJsonSerialized<alloy_rpc_types::Log>>,
-            >,
-        > + 'a,
-) -> Option<
-    impl Iterator<
-            Item = &'a SharedJsonSerialized<
-                MonadNotification<SharedJsonSerialized<alloy_rpc_types::Log>>,
-            >,
-        > + 'a,
-> {
+    logs: impl Iterator<Item = &'a LogNotification> + 'a,
+) -> Option<impl Iterator<Item = &'a LogNotification> + 'a> {
     if let Some(filter) = filter {
         let filtered_params: FilteredParams = FilteredParams::new(Some(filter.clone()));
 
