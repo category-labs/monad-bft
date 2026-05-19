@@ -126,12 +126,8 @@ jobs:
 
       - name: Tune network buffers
         run: |
-          sudo sysctl -w net.core.rmem_default=62500000
-          sudo sysctl -w net.core.rmem_max=62500000
-          sudo sysctl -w net.core.wmem_default=62500000
-          sudo sysctl -w net.core.wmem_max=62500000
-          sudo sysctl -w net.ipv4.tcp_rmem="4096 62500000 62500000"
-          sudo sysctl -w net.ipv4.tcp_wmem="4096 62500000 62500000"
+          sudo cp debian/etc/sysctl.d/90-monad-network-buffer.conf /etc/sysctl.d/
+          sudo sysctl --system
 
       - name: Run tests
         run: |
