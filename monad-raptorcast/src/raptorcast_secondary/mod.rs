@@ -61,7 +61,6 @@ pub enum SecondaryOutboundMessage<PT: PubKey> {
     SendSingle {
         msg_bytes: bytes::Bytes,
         dest: NodeId<PT>,
-        epoch: Epoch,
     },
     SendToGroup {
         msg_bytes: bytes::Bytes,
@@ -92,8 +91,6 @@ where
     // Represents only the group logic, excluding everything network related.
     role: Role<ST>,
 
-    curr_epoch: Epoch,
-
     peer_discovery_driver: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
 
     channel_from_primary: UnboundedReceiver<FullNodesGroupMessage<ST>>,
@@ -123,7 +120,6 @@ where
         channel_to_primary_outbound: UnboundedSender<
             SecondaryOutboundMessage<CertificateSignaturePubKey<ST>>,
         >,
-        current_epoch: Epoch,
     ) -> Self {
         let node_id = NodeId::new(config.shared_key.pubkey());
 
@@ -148,7 +144,6 @@ where
 
         Self {
             role,
-            curr_epoch: current_epoch,
             peer_discovery_driver,
             channel_from_primary,
             channel_to_primary_outbound,
@@ -180,7 +175,6 @@ where
         let outbound = SecondaryOutboundMessage::SendSingle {
             msg_bytes,
             dest: dest_node,
-            epoch: self.curr_epoch,
         };
         if let Err(err) = self.channel_to_primary_outbound.send(outbound) {
             error!(?err, "failed to send message to primary");
@@ -299,7 +293,6 @@ where
                             ?round,
                             "RaptorCastSecondary UpdateCurrentRound (Publisher)"
                         );
-                        self.curr_epoch = epoch;
                         // The publisher needs to be periodically informed about new nodes out there,
                         // so that it can randomize when creating new groups.
                         let full_nodes = self

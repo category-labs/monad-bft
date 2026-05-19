@@ -163,7 +163,6 @@ where
             recv_group_messages,
             send_group_infos,
             send_outbound_to_primary,
-            current_epoch,
         );
 
         let mut rc_primary = RaptorCast::new(
@@ -175,7 +174,6 @@ where
             non_authenticated_socket,
             control,
             shared_pdd.clone(),
-            current_epoch,
         );
         rc_primary.bind_channel_to_secondary_raptorcast(
             secondary_mode,
@@ -222,7 +220,6 @@ where
             recv_group_messages,
             send_group_infos,
             send_outbound_to_primary,
-            current_epoch,
         );
         self.rc_secondary = rc_secondary;
     }
@@ -236,7 +233,6 @@ where
         channel_to_primary_outbound: UnboundedSender<
             SecondaryOutboundMessage<CertificateSignaturePubKey<ST>>,
         >,
-        current_epoch: Epoch,
     ) -> Option<RaptorCastSecondary<ST, M, OM, SE, PD>> {
         let secondary_instance: RaptorCastConfigSecondary<CertificateSignaturePubKey<ST>> =
             match mode {
@@ -303,7 +299,6 @@ where
                 recv_group_messages,
                 send_group_infos,
                 channel_to_primary_outbound,
-                current_epoch,
             )),
         }
     }

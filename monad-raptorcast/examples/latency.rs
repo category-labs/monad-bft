@@ -675,7 +675,6 @@ fn setup_node(
         non_authenticated_socket,
         dataplane_control,
         Arc::new(std::sync::Mutex::new(pd)),
-        Epoch(0),
     );
 
     raptorcast.exec(vec![RouterCommand::AddEpochValidatorSet {
