@@ -20,7 +20,6 @@ macro_rules! ensure {
         }
     };
 }
-
 use std::{
     cell::OnceCell,
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -44,6 +43,12 @@ use monad_validator::validator_set::{ValidatorSet, ValidatorSetType as _};
 
 use crate::udp::GroupId;
 
+#[derive(Debug, Clone, Copy)]
+pub enum RaptorcastMode {
+    Regular,
+    Deterministic { round: Round, epoch: Epoch },
+}
+
 // Argument for raptorcast send
 #[derive(Debug, Clone, Copy)]
 pub enum BuildTarget<'a, PT: PubKey> {
@@ -52,18 +57,58 @@ pub enum BuildTarget<'a, PT: PubKey> {
     Broadcast(PrimaryBroadcastGroup<'a, PT>),
     // raptorcast to the validators, chunks distributed by their
     // proportion of stakes.
-    Raptorcast(PrimaryBroadcastGroup<'a, PT>),
+    Raptorcast {
+        group: PrimaryBroadcastGroup<'a, PT>,
+        mode: RaptorcastMode,
+    },
     // unicast message as raptor-coded chunks to a single recipient
     PointToPoint {
         group_id: GroupId,
         recipient: &'a NodeId<PT>,
     },
-    // raptorcast to a set of full nodes, assuming equal stake
-    // distribution
-    FullNodeRaptorCast(SecondaryBroadcastGroup<'a, PT>),
+    // raptorcast to a set of full nodes. In regular mode, chunks are
+    // assigned round-robin; in deterministic mode, chunks are
+    // assigned by the seeded shuffle of the full-node group.
+    FullNodeRaptorCast {
+        group: SecondaryBroadcastGroup<'a, PT>,
+        mode: RaptorcastMode,
+    },
 }
 
 impl<'a, PT: PubKey> BuildTarget<'a, PT> {
+    pub fn raptorcast(group: PrimaryBroadcastGroup<'a, PT>) -> Self {
+        BuildTarget::Raptorcast {
+            group,
+            mode: RaptorcastMode::Regular,
+        }
+    }
+
+    pub fn deterministic_raptorcast(group: PrimaryBroadcastGroup<'a, PT>, round: Round) -> Self {
+        let epoch = group.epoch();
+        BuildTarget::Raptorcast {
+            group,
+            mode: RaptorcastMode::Deterministic { round, epoch },
+        }
+    }
+
+    pub fn fullnode_raptorcast(group: SecondaryBroadcastGroup<'a, PT>) -> Self {
+        BuildTarget::FullNodeRaptorCast {
+            group,
+            mode: RaptorcastMode::Regular,
+        }
+    }
+
+    pub fn deterministic_fullnode_raptorcast(
+        group: SecondaryBroadcastGroup<'a, PT>,
+        epoch: Epoch,
+    ) -> Self {
+        let round = group.round();
+        BuildTarget::FullNodeRaptorCast {
+            group,
+            mode: RaptorcastMode::Deterministic { round, epoch },
+        }
+    }
+
     pub fn point_to_point(epoch: Epoch, recipient: &'a NodeId<PT>) -> Self {
         BuildTarget::PointToPoint {
             group_id: GroupId::Primary(epoch),
@@ -73,18 +118,20 @@ impl<'a, PT: PubKey> BuildTarget<'a, PT> {
 
     pub fn iter(&self) -> Box<dyn Iterator<Item = &NodeId<PT>> + '_> {
         match self {
-            BuildTarget::Broadcast(group) | BuildTarget::Raptorcast(group) => {
+            BuildTarget::Broadcast(group) | BuildTarget::Raptorcast { group, .. } => {
                 Box::new(group.iter().map(|(n, _)| n))
             }
             BuildTarget::PointToPoint { recipient, .. } => Box::new(std::iter::once(*recipient)),
-            BuildTarget::FullNodeRaptorCast(group) => Box::new(group.iter()),
+            BuildTarget::FullNodeRaptorCast { group, .. } => Box::new(group.iter()),
         }
     }
 
     pub fn group_id(&self) -> GroupId {
         match self {
-            BuildTarget::Broadcast(group) | BuildTarget::Raptorcast(group) => group.group_id(),
-            BuildTarget::FullNodeRaptorCast(group) => group.group_id(),
+            BuildTarget::Broadcast(group) | BuildTarget::Raptorcast { group, .. } => {
+                group.group_id()
+            }
+            BuildTarget::FullNodeRaptorCast { group, .. } => group.group_id(),
             BuildTarget::PointToPoint { group_id, .. } => *group_id,
         }
     }
@@ -129,6 +176,19 @@ impl<const N: usize> HexBytes<N> {
 
 pub type NodeIdHash = HexBytes<20>;
 pub type AppMessageHash = HexBytes<20>;
+pub type MerkleRoot = HexBytes<20>;
+pub type GlobalMerkleRoot = MerkleRoot;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EncodingScheme {
+    Unspecified,
+
+    // Deterministic RaptorCast (encoding_scheme_variant=0x1)
+    // - redundancy: 2.5
+    // - seed: (round, unix_ts_ms//2048, author_pk[1:17])
+    // - assignment: round-robin
+    Deterministic25(Round),
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BroadcastMode {
@@ -350,16 +410,16 @@ impl<'a, PT: PubKey> PrimaryBroadcastGroup<'a, PT> {
         })
     }
 
+    pub fn author(&self) -> &NodeId<PT> {
+        self.author
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = (&NodeId<PT>, &Stake)> + '_ {
         self.group.get_members().iter()
     }
 
     pub fn is_member(&self, node_id: &NodeId<PT>) -> bool {
         self.group.is_member(node_id)
-    }
-
-    pub fn author(&self) -> &NodeId<PT> {
-        self.author
     }
 
     pub fn len(&self) -> NonZero<usize> {
@@ -388,8 +448,16 @@ impl<'a, PT: PubKey> PrimaryBroadcastGroup<'a, PT> {
         })
     }
 
+    pub fn validator_set(&self) -> &ValidatorSet<PT> {
+        self.group
+    }
+
     pub fn group_id(&self) -> GroupId {
         GroupId::Primary(self.epoch)
+    }
+
+    pub fn epoch(&self) -> Epoch {
+        self.epoch
     }
 }
 
@@ -465,6 +533,18 @@ impl<'a, PT: PubKey> SecondaryBroadcastGroup<'a, PT> {
 
     pub fn group_id(&self) -> GroupId {
         GroupId::Secondary(self.round)
+    }
+
+    pub fn publisher(&self) -> &NodeId<PT> {
+        self.publisher
+    }
+
+    pub fn round(&self) -> Round {
+        self.round
+    }
+
+    pub fn len(&self) -> NonZero<usize> {
+        self.group.len()
     }
 }
 
@@ -843,6 +923,18 @@ impl Redundancy {
     pub const fn from_u8(num: u8) -> Self {
         assert!((num as u16) <= u16::MAX >> Self::FRAC_BITS);
         Redundancy(FixedU16::from_bits((num as u16) << Self::FRAC_BITS))
+    }
+
+    pub const fn from_fract(
+        int_part: u8,
+        fract_part_hundredth: u8, // out of 100
+    ) -> Self {
+        assert!((int_part as u16) < u16::MAX >> Self::FRAC_BITS);
+        assert!(fract_part_hundredth < 100);
+
+        let int_bits = (int_part as u16) << Self::FRAC_BITS;
+        let decimal_bits = ((fract_part_hundredth as u32) << Self::FRAC_BITS) / 100;
+        Redundancy(FixedU16::from_bits(int_bits + decimal_bits as u16))
     }
 
     // may round to the nearest representable number when needed

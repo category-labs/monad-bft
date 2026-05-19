@@ -19,7 +19,8 @@ use bytes::BytesMut;
 use monad_crypto::certificate_signature::PubKey;
 use monad_raptor::r10::lt::MAX_TRIPLES;
 use monad_types::{NodeId, Stake};
-use rand::{rngs::StdRng, seq::SliceRandom as _, SeedableRng as _};
+use rand::{seq::SliceRandom as _, SeedableRng as _};
+use rand_chacha::ChaCha20Rng;
 
 use super::{BuildError, Chunk, Result};
 use crate::util::{ensure, PrimaryBroadcastGroup, Recipient, Redundancy, SecondaryBroadcastGroup};
@@ -51,7 +52,7 @@ where
     PT: PubKey,
 {
     fn get(&self, index: NodeIndex) -> Option<&NodeId<PT>>;
-    // [u8; 32] == <StdRng as SeedableRng>::Seed
+    // [u8; 32] == <ChaCha20Rng as SeedableRng>::Seed
     fn shuffle(&mut self, seed: [u8; 32]);
     fn len(&self) -> usize;
 }
@@ -145,7 +146,6 @@ impl ChunkAssignment {
     //
     // The provided nodes must be the same OrderedNodes instance that
     // produced this assignment.
-    #[cfg_attr(not(test), expect(unused))]
     pub fn resolve_chunk_id<'a, PT, N>(
         &'a self,
         chunk_id: usize,
@@ -218,12 +218,10 @@ pub struct ChunkRouting<'a, PT: PubKey, N> {
 }
 
 impl<'a, PT: PubKey, N: OrderedNodes<PT>> ChunkRouting<'a, PT, N> {
-    #[cfg_attr(not(test), expect(unused))]
     pub fn recipient(&self) -> &NodeId<PT> {
         self.recipient
     }
 
-    #[cfg_attr(not(test), expect(unused))]
     pub fn rebroadcast_targets(&self) -> Vec<NodeId<PT>> {
         let recipient_idx = self.target.node_index;
         match &self.target.rebroadcast_targets {
@@ -267,7 +265,7 @@ where
     }
 
     fn shuffle(&mut self, seed: [u8; 32]) {
-        let mut rng = StdRng::from_seed(seed);
+        let mut rng = ChaCha20Rng::from_seed(seed);
         self.nodes.shuffle(&mut rng);
     }
 
@@ -299,6 +297,17 @@ impl<PT: PubKey> EvenPartition<PT> {
 
         Ok(assignment)
     }
+
+    pub fn num_chunks(&self, num_base_symbols: usize, redundancy: Redundancy) -> Option<usize> {
+        even_partition_num_chunks(num_base_symbols, redundancy)
+    }
+}
+
+#[inline(always)]
+pub fn even_partition_num_chunks(num_base_symbols: usize, redundancy: Redundancy) -> Option<usize> {
+    // EvenPartition::assign emits exactly redundancy.scale(num_base_symbols)
+    // chunks regardless of group size.
+    redundancy.scale(num_base_symbols)
 }
 
 // Proportional to stake, plus each validator gets an optional
@@ -320,7 +329,7 @@ impl<PT: PubKey> OrderedNodes<PT> for StakePartition<PT> {
     // validators compute the shuffling using the same seed and
     // algorithm for deterministic raptorcast.
     fn shuffle(&mut self, seed: [u8; 32]) {
-        let mut rng = StdRng::from_seed(seed);
+        let mut rng = ChaCha20Rng::from_seed(seed);
         self.validators.shuffle(&mut rng);
     }
 

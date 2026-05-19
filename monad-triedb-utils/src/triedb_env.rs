@@ -28,6 +28,7 @@ use std::{
 use alloy_consensus::Header;
 use alloy_primitives::keccak256;
 use alloy_rlp::Decodable;
+use auto_impl::auto_impl;
 use futures::{channel::oneshot, FutureExt};
 use monad_eth_types::{
     BlockHeader, EthAccount, EthAddress, EthBlockHash, EthCode, EthCodeHash, EthStorageKey,
@@ -425,6 +426,7 @@ impl From<BlockKey> for Version {
     }
 }
 
+#[auto_impl(Arc)]
 pub trait Triedb: Debug {
     fn get_latest_finalized_block_key(&self) -> FinalizedBlockKey;
     /// returns a FinalizedBlockKey if latest_voted doesn't exist
@@ -507,6 +509,7 @@ pub trait Triedb: Debug {
     ) -> impl std::future::Future<Output = Result<Vec<Vec<u8>>, String>> + Send;
 }
 
+#[auto_impl(Arc)]
 pub trait TriedbPath {
     fn path(&self) -> PathBuf;
 }

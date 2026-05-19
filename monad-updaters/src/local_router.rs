@@ -139,7 +139,7 @@ where
                 RouterCommand::UpdateCurrentRound(_, _) => {}
                 RouterCommand::PublishToFullNodes { .. } => {}
                 RouterCommand::Publish { target, message } => match target {
-                    RouterTarget::Broadcast(_) | RouterTarget::Raptorcast(_) => {
+                    RouterTarget::Broadcast(_) | RouterTarget::Raptorcast { .. } => {
                         let message = message.into();
                         for tx in self.txs.values() {
                             tx.send((now, self.me, message.clone())).unwrap();
@@ -168,7 +168,7 @@ where
                     message,
                     priority: _,
                 } => match target {
-                    RouterTarget::Broadcast(_) | RouterTarget::Raptorcast(_) => {
+                    RouterTarget::Broadcast(_) | RouterTarget::Raptorcast { .. } => {
                         let message = message.into();
                         for tx in self.txs.values() {
                             tx.send((now, self.me, message.clone())).unwrap();

@@ -353,7 +353,8 @@ async fn main() -> std::io::Result<()> {
         None
     };
 
-    let data_provider = triedb_env.map(|t| DataProvider::new(event_buffer, t, archive_reader));
+    let data_provider =
+        triedb_env.map(|t| DataProvider::new(event_buffer, Arc::new(t), archive_reader));
 
     let rpc_comparator: Option<RpcComparator> = args
         .rpc_comparison_endpoint

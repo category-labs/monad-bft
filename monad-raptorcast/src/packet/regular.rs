@@ -633,14 +633,20 @@ fn generate_chunks<PT: PubKey>(
             chunks
         }
 
-        BuildTarget::Raptorcast(primary_group) => {
+        BuildTarget::Raptorcast {
+            group: primary_group,
+            ..
+        } => {
             let mut partition = StakePartition::from_group(primary_group);
             partition.shuffle(derive_seed(app_message_hash));
             let assignment = partition.assign(num_base_symbols, redundancy)?;
             assignment.materialize(segment_len, &partition)?
         }
 
-        BuildTarget::FullNodeRaptorCast(secondary_group) => {
+        BuildTarget::FullNodeRaptorCast {
+            group: secondary_group,
+            ..
+        } => {
             let seed = rand::thread_rng().gen::<[u8; 32]>();
             let mut partition = EvenPartition::from_group(secondary_group);
             partition.shuffle(seed);

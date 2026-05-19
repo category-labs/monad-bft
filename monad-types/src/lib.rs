@@ -78,6 +78,14 @@ impl Round {
             .checked_add(1)
             .is_some_and(|next_round| next_round == self.as_u64())
     }
+
+    pub fn checked_sub(self, count: Round) -> Option<Self> {
+        self.0.checked_sub(count.0).map(Round)
+    }
+
+    pub fn checked_add(self, count: Round) -> Option<Self> {
+        self.0.checked_add(count.0).map(Round)
+    }
 }
 
 pub type Balance = U256;
@@ -682,7 +690,10 @@ impl<S: Clone> Deserializable<S> for S {
 #[derive(Debug)]
 pub enum RouterTarget<P: PubKey> {
     Broadcast(Epoch),
-    Raptorcast(Epoch), // sharded raptor-aware broadcast
+    Raptorcast {
+        round: Round,
+        epoch: Epoch,
+    },
     PointToPoint(NodeId<P>),
     DirectPointToPoint(NodeId<P>),
     TcpPointToPoint {

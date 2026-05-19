@@ -49,6 +49,7 @@ use self::{
     },
 };
 use crate::{
+    data::source::{DataSourceError, TriedbDataSource},
     handlers::eth::txn::FilterError,
     types::{
         eth_json::{BlockTagOrHash, BlockTags, MonadLog, MonadTransactionReceipt, Quantity},
@@ -64,7 +65,7 @@ mod source;
 #[derive(Clone)]
 pub struct DataProvider<T> {
     buffer: Option<Arc<ExecEventsBuffer>>,
-    pub triedb_env: T,
+    pub triedb_env: Arc<T>,
     archive_reader: Option<ArchiveReader>,
 
     historical: HistoricalDataSourceStack,
@@ -74,6 +75,7 @@ pub struct DataProvider<T> {
 pub enum ChainStateError {
     Triedb(String),
     Archive(String),
+    DataSource(DataSourceError),
     ResourceNotFound,
 }
 
@@ -180,29 +182,36 @@ async fn resolve_block_tag_or_hash(
     }
 }
 
-impl<T: Triedb> DataProvider<T> {
+impl<T> DataProvider<T>
+where
+    T: Triedb + Send + Sync + 'static,
+{
     pub fn new(
         buffer: Option<Arc<ExecEventsBuffer>>,
-        triedb_env: T,
+        triedb_env: Arc<T>,
         archive_reader: Option<ArchiveReader>,
     ) -> Self {
         DataProvider {
             buffer,
-            triedb_env,
+            triedb_env: triedb_env.clone(),
             archive_reader: archive_reader.clone(),
 
             historical: DataSourceStack::new(
-                archive_reader
-                    .into_iter()
-                    .map(|archive_reader| {
+                std::iter::once(Box::new(TriedbDataSource::new(triedb_env)) as Box<_>)
+                    .chain(archive_reader.into_iter().map(|archive_reader| {
                         Box::new(ArchiveDataSource::new(archive_reader)) as Box<_>
-                    })
+                    }))
                     .collect::<Vec<_>>()
                     .into_boxed_slice(),
             ),
         }
     }
+}
 
+impl<T> DataProvider<T>
+where
+    T: Triedb,
+{
     pub fn get_latest_block_number(&self) -> u64 {
         // Return triedb's latest block number.
         // There is a race condition between buffer and triedb for common wallet workflows.
@@ -408,28 +417,15 @@ impl<T: Triedb> DataProvider<T> {
             }
         }
 
-        if let Some(block_key) =
-            try_get_block_key_from_tag_or_hash(&self.triedb_env, block.clone()).await?
-        {
-            if let Some(header) = self
-                .triedb_env
-                .get_block_header(block_key)
-                .await
-                .map_err(ChainStateError::Triedb)?
-            {
-                return Ok(header.header);
-            }
-        }
-
         if let Some(block_pointer) = resolve_block_tag_or_hash(&self.historical, block)
             .await
-            .map_err(|e| ChainStateError::Archive(e.to_string()))?
+            .map_err(ChainStateError::DataSource)?
         {
             if let Some(header) = self
                 .historical
                 .get_block_header(block_pointer)
                 .await
-                .map_err(|e| ChainStateError::Archive(e.to_string()))?
+                .map_err(ChainStateError::DataSource)?
             {
                 return Ok(header);
             }
@@ -454,35 +450,15 @@ impl<T: Triedb> DataProvider<T> {
             }
         }
 
-        if let Some(block_key) =
-            try_get_block_key_from_tag_or_hash(&self.triedb_env, block.clone()).await?
-        {
-            if let Some(header) = self
-                .triedb_env
-                .get_block_header(block_key)
-                .await
-                .map_err(ChainStateError::Triedb)?
-            {
-                if let Ok(transactions) = self.triedb_env.get_transactions(block_key).await {
-                    return Ok(parse_block_content(
-                        header.hash,
-                        header.header,
-                        transactions,
-                        return_full_txns,
-                    ));
-                }
-            }
-        }
-
         if let Some(block_pointer) = resolve_block_tag_or_hash(&self.historical, block)
             .await
-            .map_err(|e| ChainStateError::Archive(e.to_string()))?
+            .map_err(ChainStateError::DataSource)?
         {
             if let Some((header, transactions)) = self
                 .historical
                 .get_block(block_pointer)
                 .await
-                .map_err(|e| ChainStateError::Archive(e.to_string()))?
+                .map_err(ChainStateError::DataSource)?
             {
                 return Ok(parse_block_content(
                     header.hash_slow(),
@@ -1663,6 +1639,8 @@ async fn get_receipt_from_triedb<T: Triedb>(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use alloy_consensus::{Block as ConsensusBlock, BlockBody, Header, TxEnvelope};
     use alloy_eips::BlockNumberOrTag;
     use alloy_rlp::Encodable;
@@ -1776,7 +1754,7 @@ mod tests {
                 None,
             );
 
-        let data_provider = DataProvider::new(None, mock_triedb, Some(reader));
+        let data_provider = DataProvider::new(None, Arc::new(mock_triedb), Some(reader));
 
         let block_hash = block.header.hash_slow().0;
 
