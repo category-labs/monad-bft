@@ -1574,12 +1574,20 @@ where
             high_certificate.clone(),
         );
         let current_round = consensus.get_current_round();
+        let current_epoch = consensus.get_current_epoch();
         tracing::info!(
             ?root_info,
             ?high_certificate,
             "done syncing, initializing consensus"
         );
         self.consensus = ConsensusMode::Live(consensus);
+        // Pacemaker emits EnterRound only on a strictly higher
+        // certificate, seed RaptorCast/PeerDiscovery/etc with the
+        // bootstrap round here.
+        commands.push(Command::RouterCommand(RouterCommand::UpdateCurrentRound(
+            current_epoch,
+            current_round,
+        )));
         commands.push(Command::StateSyncCommand(StateSyncCommand::StartExecution));
         // technically we should be waiting for the vote pacing timer
         // to expire before we set scheduled_vote to TimerFired

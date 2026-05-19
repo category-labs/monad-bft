@@ -183,7 +183,6 @@ where
         non_authenticated_socket: UdpSocketHandle,
         control: DataplaneControl,
         peer_discovery_driver: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
-        current_epoch: Epoch,
     ) -> Self {
         let (tcp_reader, tcp_writer) = tcp_socket.split();
 
@@ -290,10 +289,8 @@ where
             message_builder,
             secondary_message_builder: Some(secondary_message_builder),
 
-            // TODO: call UpdateCurrentRound instead of pass in
-            // current_{epoch,round} as argument to allow downstream
-            // components to initialize appropriately.
-            current_epoch,
+            // Updated by the first RouterCommand::UpdateCurrentRound.
+            current_epoch: Epoch(0),
 
             udp_state,
             v1_rollout: config.deterministic_protocol_rollout,
@@ -838,7 +835,6 @@ where
         dataplane.non_authenticated_socket,
         dataplane.control,
         shared_pd,
-        Epoch(0),
     )
 }
 
@@ -903,7 +899,6 @@ where
         dataplane.non_authenticated_socket,
         dataplane.control,
         shared_pd,
-        Epoch(0),
     )
 }
 

@@ -46,7 +46,7 @@ use monad_raptorcast::{
 };
 use monad_state::{Forkpoint, MonadMessage, MonadState, MonadStateBuilder, VerifiedMonadMessage};
 use monad_state_backend::InMemoryState;
-use monad_types::{Epoch, ExecutionProtocol, NodeId, Round, SeqNum};
+use monad_types::{ExecutionProtocol, NodeId, Round, SeqNum};
 use monad_updaters::{
     config_file::MockConfigFile, config_loader::MockConfigLoader, ledger::MockLedger,
     local_router::LocalPeerRouter, loopback::LoopbackExecutor, parent::ParentExecutor,
@@ -202,7 +202,6 @@ where
                     non_authenticated_socket,
                     control,
                     shared_peer_discovery_driver,
-                    Epoch(0),
                 ))
             }
         },
