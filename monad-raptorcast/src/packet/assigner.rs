@@ -58,6 +58,15 @@ where
     fn len(&self) -> usize;
 }
 
+pub(crate) trait Partition<PT>: OrderedNodes<PT>
+where
+    PT: PubKey,
+{
+    fn assign(&self, num_base_symbols: usize, redundancy: Redundancy) -> Result<ChunkAssignment>;
+
+    fn num_chunks_hint(&self, num_base_symbols: usize, redundancy: Redundancy) -> Option<usize>;
+}
+
 impl<PT> OrderedNodes<PT> for NodeId<PT>
 where
     PT: PubKey,
@@ -275,12 +284,8 @@ where
     }
 }
 
-impl<PT: PubKey> EvenPartition<PT> {
-    pub fn assign(
-        &self,
-        num_base_symbols: usize,
-        redundancy: Redundancy,
-    ) -> Result<ChunkAssignment> {
+impl<PT: PubKey> Partition<PT> for EvenPartition<PT> {
+    fn assign(&self, num_base_symbols: usize, redundancy: Redundancy) -> Result<ChunkAssignment> {
         let num_symbols = redundancy
             .scale(num_base_symbols)
             .ok_or(BuildError::TooManyChunks)?;
@@ -299,7 +304,7 @@ impl<PT: PubKey> EvenPartition<PT> {
         Ok(assignment)
     }
 
-    pub fn num_chunks(&self, num_base_symbols: usize, redundancy: Redundancy) -> Option<usize> {
+    fn num_chunks_hint(&self, num_base_symbols: usize, redundancy: Redundancy) -> Option<usize> {
         even_partition_num_chunks(num_base_symbols, redundancy)
     }
 }
@@ -352,6 +357,16 @@ pub fn stake_partition_num_chunks_hint(
     let num_validators = group_size.checked_sub(1)?; // exclude author
     let num_scaled_symbols = redundancy.scale(num_base_symbols)?;
     num_scaled_symbols.checked_add(num_validators)
+}
+
+impl<PT: PubKey> Partition<PT> for StakePartition<PT> {
+    fn assign(&self, num_base_symbols: usize, redundancy: Redundancy) -> Result<ChunkAssignment> {
+        self.assign(num_base_symbols, redundancy)
+    }
+
+    fn num_chunks_hint(&self, num_base_symbols: usize, redundancy: Redundancy) -> Option<usize> {
+        self.num_chunks_hint(num_base_symbols, redundancy)
+    }
 }
 
 impl<PT: PubKey> StakePartition<PT> {
@@ -533,7 +548,9 @@ mod tests {
     use rand_chacha::ChaCha20Rng;
     use rstest::rstest;
 
-    use super::{ChunkAssignment, EvenPartition, NodeIndex, OrderedNodes, StakePartition};
+    use super::{
+        ChunkAssignment, EvenPartition, NodeIndex, OrderedNodes, Partition, StakePartition,
+    };
     use crate::{
         packet::{assigner::stake_partition_num_chunks_hint, BuildError, Result},
         util::Redundancy,

@@ -22,7 +22,7 @@ use crate::{
     util::{BuildTarget, PrimaryBroadcastGroup, SecondaryBroadcastGroup},
 };
 
-// should only be called on receiving a v0 or v1 primary raptorcast chunk
+// should only be called on receiving a v0 or v1 raptorcast chunk
 pub(crate) fn should_accept<PT: PubKey>(
     stage: DeterministicProtocolRolloutStage,
     chunk: &ValidatedChunk<PT>,
