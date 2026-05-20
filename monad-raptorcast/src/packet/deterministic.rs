@@ -30,13 +30,13 @@ use monad_wireauth::messages::DataPacketHeader;
 use super::{
     assigner::{
         even_partition_num_chunks, stake_partition_num_chunks_hint, ChunkAssignment, EvenPartition,
-        StakePartition,
+        Partition, StakePartition,
     },
     Chunk,
 };
 use crate::{
     message::MAX_MESSAGE_SIZE,
-    packet::{assigner::OrderedNodes, BuildError},
+    packet::BuildError,
     util::{
         ensure, BroadcastMode, Collector, EncodingScheme, PrimaryBroadcastGroup, Redundancy,
         SecondaryBroadcastGroup, UdpMessage,
@@ -368,36 +368,30 @@ impl<PT: PubKey> InnerDeterministicEncoding<PT> {
     }
 }
 
-pub(crate) struct PrimaryEncoding<PT: PubKey> {
+pub(crate) struct DeterministicEncoding<PT: PubKey, P: Partition<PT>> {
     layout: PacketLayout,
     redundancy: Redundancy,
     app_message_len: usize,
-    partition: StakePartition<PT>,
+    partition: P,
+    _pd: std::marker::PhantomData<PT>,
 }
 
-impl<PT: PubKey> PrimaryEncoding<PT> {
-    pub fn new<'a>(
-        encoding_scheme: EncodingScheme,
-        group: &'a PrimaryBroadcastGroup<'a, PT>,
-        app_message_len: usize,
-        unix_ts_ms: u64,
-    ) -> Result<Self, BuildError> {
-        let EncodingScheme::Deterministic25(round) = encoding_scheme else {
-            return Err(BuildError::InvalidEncodingScheme);
-        };
+pub(crate) type PrimaryEncoding<PT> = DeterministicEncoding<PT, StakePartition<PT>>;
+pub(crate) type SecondaryEncoding<PT> = DeterministicEncoding<PT, EvenPartition<PT>>;
 
+impl<PT: PubKey, P: Partition<PT>> DeterministicEncoding<PT, P> {
+    // validate message size, find a merkle-tree depth that fits,
+    // shuffle the partition with the caller-derived seed.
+    fn build(app_message_len: usize, mut partition: P, seed: [u8; 32]) -> Result<Self, BuildError> {
         ensure!(app_message_len > 0, BuildError::AppMessageEmpty);
         ensure!(
             app_message_len <= MAX_MESSAGE_SIZE,
             BuildError::AppMessageTooLarge
         );
 
-        // Encoding scheme for Deterministic25
-        let mut partition = StakePartition::from_group(group);
         let redundancy = DEFAULT_REDUNDANCY;
         let segment_len = DEFAULT_SEGMENT_LEN;
 
-        // Search for optimal tree depth.
         let depth = optimal_merkle_tree_depth(|d| {
             let layout = PacketLayout::new(segment_len, d);
             let num_base_symbols = layout.num_base_symbols(app_message_len);
@@ -406,9 +400,6 @@ impl<PT: PubKey> PrimaryEncoding<PT> {
         .ok_or(BuildError::MerkleTreeTooDeep)?;
         let layout = PacketLayout::new(segment_len, depth);
 
-        // Shuffle the validator set
-        let author = group.author();
-        let seed = derive_seed(author, round, unix_ts_ms);
         partition.shuffle(seed);
 
         Ok(Self {
@@ -416,6 +407,7 @@ impl<PT: PubKey> PrimaryEncoding<PT> {
             layout,
             app_message_len,
             partition,
+            _pd: std::marker::PhantomData,
         })
     }
 
@@ -431,83 +423,44 @@ impl<PT: PubKey> PrimaryEncoding<PT> {
 
     pub fn make_assignment(&self) -> Result<ChunkAssignment, BuildError> {
         let num_base_symbols = self.layout.num_base_symbols(self.app_message_len);
-        let assignment = self.partition.assign(num_base_symbols, self.redundancy)?;
-        Ok(assignment)
+        self.partition.assign(num_base_symbols, self.redundancy)
     }
 
-    pub fn partition(&self) -> &StakePartition<PT> {
+    pub fn partition(&self) -> &P {
         &self.partition
     }
 }
 
-pub(crate) struct SecondaryEncoding<PT: PubKey> {
-    layout: PacketLayout,
-    redundancy: Redundancy,
-    app_message_len: usize,
-    partition: EvenPartition<PT>,
-}
-
-impl<PT: PubKey> SecondaryEncoding<PT> {
-    pub fn new<'a>(
+impl<PT: PubKey> PrimaryEncoding<PT> {
+    pub fn new(
         encoding_scheme: EncodingScheme,
-        group: &'a SecondaryBroadcastGroup<'a, PT>,
+        group: &PrimaryBroadcastGroup<'_, PT>,
         app_message_len: usize,
         unix_ts_ms: u64,
     ) -> Result<Self, BuildError> {
         let EncodingScheme::Deterministic25(round) = encoding_scheme else {
             return Err(BuildError::InvalidEncodingScheme);
         };
+        let partition = StakePartition::from_group(group);
+        let seed = derive_seed(group.author(), round, unix_ts_ms);
+        Self::build(app_message_len, partition, seed)
+    }
+}
 
-        ensure!(app_message_len > 0, BuildError::AppMessageEmpty);
-        ensure!(
-            app_message_len <= MAX_MESSAGE_SIZE,
-            BuildError::AppMessageTooLarge
-        );
-
-        let mut partition = EvenPartition::from_group(group);
-        let redundancy = DEFAULT_REDUNDANCY;
-        let segment_len = DEFAULT_SEGMENT_LEN;
-
-        // Search for optimal tree depth.
-        let depth = optimal_merkle_tree_depth(|d| {
-            let layout = PacketLayout::new(segment_len, d);
-            let num_base_symbols = layout.num_base_symbols(app_message_len);
-            partition.num_chunks(num_base_symbols, redundancy)
-        })
-        .ok_or(BuildError::MerkleTreeTooDeep)?;
-        let layout = PacketLayout::new(segment_len, depth);
-
-        // Shuffle the full-node group members.
-        // Seed derivation does not have to be the same as primary raptorcast
+impl<PT: PubKey> SecondaryEncoding<PT> {
+    pub fn new(
+        encoding_scheme: EncodingScheme,
+        group: &SecondaryBroadcastGroup<'_, PT>,
+        app_message_len: usize,
+        unix_ts_ms: u64,
+    ) -> Result<Self, BuildError> {
+        let EncodingScheme::Deterministic25(round) = encoding_scheme else {
+            return Err(BuildError::InvalidEncodingScheme);
+        };
+        let partition = EvenPartition::from_group(group);
+        // Seed derivation does not have to be the same as primary raptorcast.
         let seed = derive_seed(group.publisher(), round, unix_ts_ms);
-        partition.shuffle(seed);
-
-        Ok(Self {
-            redundancy,
-            layout,
-            app_message_len,
-            partition,
-        })
-    }
-
-    pub fn layout(&self) -> PacketLayout {
-        self.layout
-    }
-
-    pub fn make_chunks(&self) -> Result<Vec<Chunk<PT>>, BuildError> {
-        let assignment = self.make_assignment()?;
-        let chunks = assignment.materialize(self.layout.segment_len(), &self.partition)?;
-        Ok(chunks)
-    }
-
-    pub fn make_assignment(&self) -> Result<ChunkAssignment, BuildError> {
-        let num_base_symbols = self.layout.num_base_symbols(self.app_message_len);
-        let assignment = self.partition.assign(num_base_symbols, self.redundancy)?;
-        Ok(assignment)
-    }
-
-    pub fn partition(&self) -> &EvenPartition<PT> {
-        &self.partition
+        Self::build(app_message_len, partition, seed)
     }
 }
 

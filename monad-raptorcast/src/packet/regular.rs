@@ -32,7 +32,7 @@ use monad_types::NodeId;
 use rand::Rng;
 
 use super::{
-    assigner::{ChunkAssignment, EvenPartition, OrderedNodes as _, StakePartition},
+    assigner::{ChunkAssignment, EvenPartition, OrderedNodes as _, Partition as _, StakePartition},
     chunk::Chunk,
     BuildError, Result,
 };

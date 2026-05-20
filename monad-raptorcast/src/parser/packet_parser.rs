@@ -648,7 +648,7 @@ impl<'a> RaptorcastPacketV1<'a> {
             BroadcastMode::Secondary => {
                 even_partition_num_chunks(num_source_symbols, deterministic::DEFAULT_REDUNDANCY)
             }
-            BroadcastMode::Unspecified => None,
+            BroadcastMode::Unspecified => return Err(InvalidChunk::InvalidBroadcastMode),
         }
         .ok_or(InvalidChunk::InvalidChunkId)?;
         let chunk_id = self.chunk_header.chunk_id.get() as usize;
