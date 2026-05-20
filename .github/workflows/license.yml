@@ -10,7 +10,6 @@ on:
     paths-ignore:
       - 'debian/**'
   pull_request:
-    branches: ["master"]
     types: [ opened, synchronize, reopened, edited ]
     paths-ignore:
       - 'debian/**'
