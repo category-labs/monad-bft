@@ -339,6 +339,7 @@ pub(crate) async fn execute_indexed_transfer_query<M: MetaStore, B: BlobStore>(
         request.envelope.limit,
     )
     .await?;
+    let _stats = outcome.stats;
     Ok(QueryTransfersResponse {
         transfers: outcome.records,
         blocks: None,
@@ -361,6 +362,7 @@ pub(crate) async fn execute_block_scan_transfer_query<M: MetaStore, B: BlobStore
         request.envelope.limit,
     )
     .await?;
+    let _stats = outcome.stats;
     Ok(QueryTransfersResponse {
         transfers: outcome.records,
         blocks: None,

@@ -36,6 +36,7 @@ pub(crate) async fn execute_indexed_log_query<M: MetaStore, B: BlobStore>(
         request.envelope.limit,
     )
     .await?;
+    let _stats = outcome.stats;
     Ok(QueryLogsResponse {
         logs: outcome.records,
         blocks: None,

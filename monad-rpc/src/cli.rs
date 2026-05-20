@@ -29,6 +29,30 @@ pub struct Cli {
     #[arg(long)]
     pub triedb_path: Option<PathBuf>,
 
+    /// Run only queryX RPC methods backed by chain-data
+    #[arg(long, default_value_t = false)]
+    pub queryx_only: bool,
+
+    /// Set one monad chain-data fjall path for both meta and blob stores
+    #[arg(long, conflicts_with_all = ["chain_data_meta_path", "chain_data_blob_path"])]
+    pub chain_data_path: Option<PathBuf>,
+
+    /// Set the monad chain-data fjall metadata path for queryX methods
+    #[arg(long, requires = "chain_data_blob_path")]
+    pub chain_data_meta_path: Option<PathBuf>,
+
+    /// Set the monad chain-data fjall blob path for queryX methods
+    #[arg(long, requires = "chain_data_meta_path")]
+    pub chain_data_blob_path: Option<PathBuf>,
+
+    /// Set the maximum primary-object limit accepted by queryX methods
+    #[arg(long, default_value_t = 10_000)]
+    pub queryx_max_limit: usize,
+
+    /// Set the maximum resolved block range accepted by queryX methods
+    #[arg(long, default_value_t = 100_000)]
+    pub queryx_max_block_range: u64,
+
     /// Set the address for RPC to bind to
     #[arg(long, default_value_t = String::from("0.0.0.0"))]
     pub rpc_addr: String,
@@ -39,7 +63,7 @@ pub struct Cli {
 
     /// Set the node config path
     #[arg(long)]
-    pub node_config: PathBuf,
+    pub node_config: Option<PathBuf>,
 
     /// Set the number of worker threads for the RPC server
     #[arg(long, default_value_t = 2)]

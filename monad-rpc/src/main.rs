@@ -13,12 +13,16 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{sync::Arc, time::Duration};
+use std::{io, sync::Arc, time::Duration};
 
 use actix_web::{web, App, HttpServer};
 use agent::AgentBuilder;
 use clap::Parser;
 use monad_archive::archive_reader::{redact_mongo_url, ArchiveReader};
+use monad_chain_data::{
+    store::{BlobCompressionConfig, BlobCompressionStats, BlobCompressionStore, FjallStore},
+    MonadChainDataService, QueryLimits,
+};
 use monad_event_ring::{EventRing, EventRingPath};
 use monad_node_config::MonadNodeConfig;
 use monad_pprof::start_pprof_server;
@@ -66,9 +70,6 @@ pub static malloc_conf: &[u8] = b"prof:true,prof_active:true,lg_prof_sample:19\0
 async fn main() -> std::io::Result<()> {
     let args = Cli::parse();
 
-    let node_config: MonadNodeConfig = toml::from_str(&std::fs::read_to_string(&args.node_config)?)
-        .expect("node toml parse error");
-
     let _agent = if let Some(socket_path) = &args.manytrace_socket {
         let extension = Arc::new(TracingExtension::new());
         let agent = AgentBuilder::new(socket_path.clone())
@@ -109,8 +110,9 @@ async fn main() -> std::io::Result<()> {
     };
 
     if !args.pprof.is_empty() {
+        let pprof = args.pprof.clone();
         tokio::spawn(async {
-            let server = match start_pprof_server(args.pprof) {
+            let server = match start_pprof_server(pprof) {
                 Ok(server) => server,
                 Err(err) => {
                     error!("failed to start pprof server: {}", err);
@@ -125,7 +127,20 @@ async fn main() -> std::io::Result<()> {
 
     MONAD_RPC_VERSION.map(|v| info!("starting monad-rpc with version {}", v));
 
-    let (txpool_bridge_client, _txpool_bridge_handle) = if let Some(ipc_path) = args.ipc_path {
+    if args.queryx_only {
+        return run_queryx_only(args).await;
+    }
+
+    let node_config_path = args.node_config.as_ref().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--node-config is required unless --queryx-only is set",
+        )
+    })?;
+    let node_config: MonadNodeConfig =
+        toml::from_str(&std::fs::read_to_string(node_config_path)?).expect("node toml parse error");
+
+    let (txpool_bridge_client, _txpool_bridge_handle) = if let Some(ipc_path) = &args.ipc_path {
         // Wait for bft to be in a ready state before starting the RPC server.
         // Bft will bind to the ipc socket after state syncing.
         let mut print_message_timer = tokio::time::interval(Duration::from_secs(60));
@@ -293,7 +308,7 @@ async fn main() -> std::io::Result<()> {
         )
     });
 
-    let with_metrics = args.otel_endpoint.map(|otel_endpoint| {
+    let with_metrics = args.otel_endpoint.clone().map(|otel_endpoint| {
         Metrics::new_with_otel_endpoint(
             otel_endpoint,
             node_config.node_name.clone(),
@@ -304,7 +319,7 @@ async fn main() -> std::io::Result<()> {
     let decompression_guard = DecompressionGuard::new(args.max_request_size);
 
     // Configure event ring, websocket server and event cache.
-    let (events_client, events_for_cache) = if let Some(exec_event_path) = args.exec_event_path {
+    let (events_client, events_for_cache) = if let Some(exec_event_path) = &args.exec_event_path {
         let event_ring_path =
             EventRingPath::resolve(exec_event_path).expect("Execution event ring path resolves");
 
@@ -355,6 +370,8 @@ async fn main() -> std::io::Result<()> {
 
     let chain_state = triedb_env.map(|t| ChainState::new(event_buffer, t, archive_reader));
 
+    let chain_data = open_chain_data(&args, false)?;
+
     let rpc_comparator: Option<RpcComparator> = args
         .rpc_comparison_endpoint
         .as_ref()
@@ -362,9 +379,11 @@ async fn main() -> std::io::Result<()> {
 
     let app_state = MonadRpcResources::new(
         txpool_bridge_client,
+        false,
         eth_call_handler,
         node_config.chain_id,
         chain_state,
+        chain_data,
         args.batch_request_limit,
         args.max_response_size,
         args.allow_unprotected_txs,
@@ -454,4 +473,138 @@ async fn main() -> std::io::Result<()> {
     }
 
     Ok(())
+}
+
+async fn run_queryx_only(args: Cli) -> io::Result<()> {
+    if args.ws_enabled {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--ws-enabled is not supported with --queryx-only",
+        ));
+    }
+    if args.chain_data_path.is_none()
+        && (args.chain_data_meta_path.is_none() || args.chain_data_blob_path.is_none())
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--chain-data-path or both --chain-data-meta-path/--chain-data-blob-path are required with --queryx-only",
+        ));
+    }
+
+    let chain_data = open_chain_data(&args, true)?;
+    let with_metrics = args.otel_endpoint.clone().map(|otel_endpoint| {
+        Metrics::new_with_otel_endpoint(
+            otel_endpoint,
+            "queryx-only".to_string(),
+            std::time::Duration::from_secs(5),
+        )
+    });
+    let decompression_guard = DecompressionGuard::new(args.max_request_size);
+    let app_state = MonadRpcResources::new(
+        None,
+        true,
+        None,
+        0,
+        None,
+        chain_data,
+        args.batch_request_limit,
+        args.max_response_size,
+        args.allow_unprotected_txs,
+        args.eth_get_logs_max_block_range,
+        args.eth_send_raw_transaction_sync_default_timeout_ms,
+        args.eth_send_raw_transaction_sync_max_timeout_ms,
+        args.dry_run_get_logs_index,
+        args.use_eth_get_logs_index,
+        args.max_finalized_block_cache_len,
+        with_metrics.clone(),
+        None,
+    );
+
+    let app = match with_metrics {
+        Some(metrics) => HttpServer::new(move || {
+            App::new()
+                .wrap(decompression_guard.clone())
+                .wrap(metrics.clone())
+                .wrap(TracingLogger::<MonadJsonRootSpanBuilder>::new())
+                .wrap(TimingMiddleware)
+                .app_data(web::PayloadConfig::default().limit(args.max_request_size))
+                .app_data(web::Data::new(app_state.clone()))
+                .service(web::resource("/").route(web::post().to(rpc_handler)))
+        })
+        .bind((args.rpc_addr, args.rpc_port))?
+        .shutdown_timeout(1)
+        .workers(args.worker_threads)
+        .run(),
+        None => HttpServer::new(move || {
+            App::new()
+                .wrap(decompression_guard.clone())
+                .wrap(TracingLogger::<MonadJsonRootSpanBuilder>::new())
+                .wrap(TimingMiddleware)
+                .app_data(web::PayloadConfig::default().limit(args.max_request_size))
+                .app_data(web::Data::new(app_state.clone()))
+                .service(web::resource("/").route(web::post().to(rpc_handler)))
+        })
+        .bind((args.rpc_addr, args.rpc_port))?
+        .shutdown_timeout(1)
+        .workers(args.worker_threads)
+        .run(),
+    };
+
+    app.await
+}
+
+fn open_chain_data(
+    args: &Cli,
+    required: bool,
+) -> io::Result<Option<Arc<MonadChainDataService<FjallStore, BlobCompressionStore<FjallStore>>>>> {
+    match &args.chain_data_path {
+        Some(path) => {
+            info!(?path, "opening chain-data store for queryX methods");
+            let store = FjallStore::open(path, Default::default())
+                .map_err(|e| io::Error::other(format!("failed to open chain-data store: {e}")))?;
+            let blob_store = compressed_blob_store(store.clone());
+            Ok(Some(Arc::new(MonadChainDataService::new(
+                store.clone(),
+                blob_store,
+                QueryLimits::new(args.queryx_max_limit, args.queryx_max_block_range),
+            ))))
+        }
+        None if args.chain_data_meta_path.is_some() && args.chain_data_blob_path.is_some() => {
+            let meta_path = args.chain_data_meta_path.as_ref().expect("checked is_some");
+            let blob_path = args.chain_data_blob_path.as_ref().expect("checked is_some");
+            info!(
+                ?meta_path,
+                ?blob_path,
+                "opening split chain-data stores for queryX methods"
+            );
+            let meta_store = FjallStore::open(meta_path, Default::default()).map_err(|e| {
+                io::Error::other(format!("failed to open chain-data meta store: {e}"))
+            })?;
+            let blob_store = FjallStore::open(blob_path, Default::default()).map_err(|e| {
+                io::Error::other(format!("failed to open chain-data blob store: {e}"))
+            })?;
+            let blob_store = compressed_blob_store(blob_store);
+            Ok(Some(Arc::new(MonadChainDataService::new(
+                meta_store,
+                blob_store,
+                QueryLimits::new(args.queryx_max_limit, args.queryx_max_block_range),
+            ))))
+        }
+        None if required => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--chain-data-path or both --chain-data-meta-path/--chain-data-blob-path are required",
+        )),
+        None => {
+            debug!("--chain-data-path is not set, queryX methods will be disabled");
+            Ok(None)
+        }
+    }
+}
+
+fn compressed_blob_store(store: FjallStore) -> BlobCompressionStore<FjallStore> {
+    BlobCompressionStore::new(
+        store,
+        BlobCompressionConfig::zstd(1, 1024),
+        BlobCompressionStats::default(),
+    )
 }

@@ -13,7 +13,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::{hash_map::Entry, HashMap};
+use std::collections::{BTreeSet, HashMap};
+
+use futures::{stream, StreamExt, TryStreamExt};
 
 use crate::{
     engine::{
@@ -24,6 +26,8 @@ use crate::{
     primitives::state::PrimaryId,
     store::{BlobStore, MetaStore},
 };
+
+const DIRECTORY_BUCKET_LOAD_CONCURRENCY: usize = 32;
 
 /// Resolves a primary id to its block number and position within that block.
 ///
@@ -42,20 +46,36 @@ impl<'a, M: MetaStore, B: BlobStore> PrimaryIdResolver<'a, M, B> {
         }
     }
 
-    pub(crate) async fn resolve(
+    pub(crate) async fn resolve_many_ordered(
         &mut self,
-        id: PrimaryId,
-    ) -> Result<Option<ResolvedPrimaryIdLocation>> {
-        let bucket = bucket_start(id.as_u64());
-        if let Entry::Vacant(entry) = self.bucket_cache.entry(bucket) {
-            let cached = if let Some(summary) = self.family.load_bucket(bucket).await? {
-                CachedBucket::Summary(summary)
-            } else {
-                CachedBucket::Fragments(self.family.load_bucket_fragments(bucket).await?)
-            };
-            entry.insert(cached);
+        ids: &[PrimaryId],
+    ) -> Result<Vec<Option<ResolvedPrimaryIdLocation>>> {
+        let missing_buckets: BTreeSet<_> = ids
+            .iter()
+            .map(|id| bucket_start(id.as_u64()))
+            .filter(|bucket| !self.bucket_cache.contains_key(bucket))
+            .collect();
+
+        let family = self.family;
+        let loaded: Vec<_> = stream::iter(missing_buckets)
+            .map(|bucket| async move {
+                load_cached_bucket(family, bucket)
+                    .await
+                    .map(|cached| (bucket, cached))
+            })
+            .buffered(DIRECTORY_BUCKET_LOAD_CONCURRENCY)
+            .try_collect()
+            .await?;
+
+        for (bucket, cached) in loaded {
+            self.bucket_cache.insert(bucket, cached);
         }
 
+        ids.iter().map(|id| self.resolve_from_cache(*id)).collect()
+    }
+
+    fn resolve_from_cache(&self, id: PrimaryId) -> Result<Option<ResolvedPrimaryIdLocation>> {
+        let bucket = bucket_start(id.as_u64());
         let cached = self
             .bucket_cache
             .get(&bucket)
@@ -63,6 +83,19 @@ impl<'a, M: MetaStore, B: BlobStore> PrimaryIdResolver<'a, M, B> {
                 "missing cached primary directory bucket",
             ))?;
         cached.resolve(id)
+    }
+}
+
+async fn load_cached_bucket<M: MetaStore, B: BlobStore>(
+    family: &FamilyTables<M, B>,
+    bucket: u64,
+) -> Result<CachedBucket> {
+    if let Some(summary) = family.load_bucket(bucket).await? {
+        Ok(CachedBucket::Summary(summary))
+    } else {
+        Ok(CachedBucket::Fragments(
+            family.load_bucket_fragments(bucket).await?,
+        ))
     }
 }
 

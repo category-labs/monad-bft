@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use futures::lock::Mutex;
 use rayon::prelude::*;
+use tracing::trace;
 
 use crate::{
     blocks::{
@@ -1087,6 +1088,8 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
     /// The service's configured `QueryLimits` bound the request shape and
     /// the resolved block-range span.
     pub async fn query_logs(&self, request: QueryLogsRequest) -> Result<QueryLogsResponse> {
+        let query_start = Instant::now();
+        trace!(family = "logs", ?request, "chain data query started");
         self.limits.check_limit(request.envelope.limit)?;
 
         let head = self.load_published_head().await?;
@@ -1098,7 +1101,22 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
         )
         .await?;
 
-        let mut response = if request.filter.has_indexed_clause() {
+        let path = if request.filter.has_indexed_clause() {
+            "indexed"
+        } else {
+            "block_scan"
+        };
+        trace!(
+            family = "logs",
+            path,
+            published_head = head,
+            from_block = window.low.number,
+            to_block = window.high.number,
+            block_span = window.high.number - window.low.number + 1,
+            "chain data query window resolved"
+        );
+
+        let mut response = if path == "indexed" {
             execute_indexed_log_query(&self.tables, &request, window).await?
         } else {
             execute_block_scan_query(&self.tables, &request, window).await?
@@ -1124,6 +1142,16 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
             );
         }
 
+        trace!(
+            family = "logs",
+            path,
+            result_count = response.logs.len(),
+            blocks_count = response.blocks.as_ref().map_or(0, Vec::len),
+            transactions_count = response.transactions.as_ref().map_or(0, Vec::len),
+            cursor_block = response.span.cursor_block.number,
+            elapsed_ms = query_start.elapsed().as_millis() as u64,
+            "chain data query completed"
+        );
         Ok(response)
     }
 
@@ -1134,6 +1162,12 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
         &self,
         request: QueryTransactionsRequest,
     ) -> Result<QueryTransactionsResponse> {
+        let query_start = Instant::now();
+        trace!(
+            family = "transactions",
+            ?request,
+            "chain data query started"
+        );
         self.limits.check_limit(request.envelope.limit)?;
 
         let head = self.load_published_head().await?;
@@ -1145,7 +1179,22 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
         )
         .await?;
 
-        let mut response = if request.filter.has_indexed_clause() {
+        let path = if request.filter.has_indexed_clause() {
+            "indexed"
+        } else {
+            "block_scan"
+        };
+        trace!(
+            family = "transactions",
+            path,
+            published_head = head,
+            from_block = window.low.number,
+            to_block = window.high.number,
+            block_span = window.high.number - window.low.number + 1,
+            "chain data query window resolved"
+        );
+
+        let mut response = if path == "indexed" {
             execute_indexed_tx_query(&self.tables, &request, window).await?
         } else {
             execute_block_scan_tx_query(&self.tables, &request, window).await?
@@ -1161,6 +1210,15 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
             );
         }
 
+        trace!(
+            family = "transactions",
+            path,
+            result_count = response.txs.len(),
+            blocks_count = response.blocks.as_ref().map_or(0, Vec::len),
+            cursor_block = response.span.cursor_block.number,
+            elapsed_ms = query_start.elapsed().as_millis() as u64,
+            "chain data query completed"
+        );
         Ok(response)
     }
 
@@ -1191,6 +1249,8 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
     /// The service's configured `QueryLimits` bound the request shape and
     /// the resolved block-range span.
     pub async fn query_traces(&self, request: QueryTracesRequest) -> Result<QueryTracesResponse> {
+        let query_start = Instant::now();
+        trace!(family = "traces", ?request, "chain data query started");
         self.limits.check_limit(request.envelope.limit)?;
 
         let head = self.load_published_head().await?;
@@ -1202,7 +1262,22 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
         )
         .await?;
 
-        let mut response = if request.filter.has_indexed_clause() {
+        let path = if request.filter.has_indexed_clause() {
+            "indexed"
+        } else {
+            "block_scan"
+        };
+        trace!(
+            family = "traces",
+            path,
+            published_head = head,
+            from_block = window.low.number,
+            to_block = window.high.number,
+            block_span = window.high.number - window.low.number + 1,
+            "chain data query window resolved"
+        );
+
+        let mut response = if path == "indexed" {
             execute_indexed_trace_query(&self.tables, &request, window).await?
         } else {
             execute_block_scan_trace_query(&self.tables, &request, window).await?
@@ -1228,6 +1303,16 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
             );
         }
 
+        trace!(
+            family = "traces",
+            path,
+            result_count = response.traces.len(),
+            blocks_count = response.blocks.as_ref().map_or(0, Vec::len),
+            transactions_count = response.transactions.as_ref().map_or(0, Vec::len),
+            cursor_block = response.span.cursor_block.number,
+            elapsed_ms = query_start.elapsed().as_millis() as u64,
+            "chain data query completed"
+        );
         Ok(response)
     }
 
@@ -1240,6 +1325,8 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
         &self,
         request: QueryTransfersRequest,
     ) -> Result<QueryTransfersResponse> {
+        let query_start = Instant::now();
+        trace!(family = "transfers", ?request, "chain data query started");
         self.limits.check_limit(request.envelope.limit)?;
 
         let head = self.load_published_head().await?;
@@ -1251,7 +1338,22 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
         )
         .await?;
 
-        let mut response = if request.filter.has_indexed_clause() {
+        let path = if request.filter.has_indexed_clause() {
+            "indexed"
+        } else {
+            "block_scan"
+        };
+        trace!(
+            family = "transfers",
+            path,
+            published_head = head,
+            from_block = window.low.number,
+            to_block = window.high.number,
+            block_span = window.high.number - window.low.number + 1,
+            "chain data query window resolved"
+        );
+
+        let mut response = if path == "indexed" {
             execute_indexed_transfer_query(&self.tables, &request, window).await?
         } else {
             execute_block_scan_transfer_query(&self.tables, &request, window).await?
@@ -1280,6 +1382,16 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
             );
         }
 
+        trace!(
+            family = "transfers",
+            path,
+            result_count = response.transfers.len(),
+            blocks_count = response.blocks.as_ref().map_or(0, Vec::len),
+            transactions_count = response.transactions.as_ref().map_or(0, Vec::len),
+            cursor_block = response.span.cursor_block.number,
+            elapsed_ms = query_start.elapsed().as_millis() as u64,
+            "chain data query completed"
+        );
         Ok(response)
     }
 
@@ -1287,6 +1399,8 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
     /// The service's configured `QueryLimits` bound the request shape and
     /// the resolved block-range span.
     pub async fn query_blocks(&self, request: QueryBlocksRequest) -> Result<QueryBlocksResponse> {
+        let query_start = Instant::now();
+        trace!(family = "blocks", ?request, "chain data query started");
         self.limits.check_limit(request.envelope.limit)?;
 
         let head = self.load_published_head().await?;
@@ -1298,7 +1412,26 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
         )
         .await?;
 
-        execute_query_blocks(&self.tables, &request, window).await
+        trace!(
+            family = "blocks",
+            path = "block_range",
+            published_head = head,
+            from_block = window.low.number,
+            to_block = window.high.number,
+            block_span = window.high.number - window.low.number + 1,
+            "chain data query window resolved"
+        );
+
+        let response = execute_query_blocks(&self.tables, &request, window).await?;
+        trace!(
+            family = "blocks",
+            path = "block_range",
+            result_count = response.blocks.len(),
+            cursor_block = response.span.cursor_block.number,
+            elapsed_ms = query_start.elapsed().as_millis() as u64,
+            "chain data query completed"
+        );
+        Ok(response)
     }
 
     async fn load_published_head(&self) -> Result<u64> {

@@ -13,10 +13,16 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::sync::Arc;
+
 use actix::{Actor, Context};
 use actix_web::{
     dev::{ServiceRequest, ServiceResponse},
     Error,
+};
+use monad_chain_data::{
+    store::{BlobCompressionStore, FjallStore},
+    MonadChainDataService,
 };
 use monad_triedb_utils::triedb_env::TriedbEnv;
 use tracing_actix_web::RootSpanBuilder;
@@ -31,9 +37,12 @@ use crate::{
 #[derive(Clone)]
 pub struct MonadRpcResources {
     pub txpool_bridge_client: Option<EthTxPoolBridgeClient>,
+    pub queryx_only: bool,
     pub eth_call_handler: Option<EthCallHandler>,
     pub chain_id: u64,
     pub chain_state: Option<ChainState<TriedbEnv>>,
+    pub chain_data:
+        Option<Arc<MonadChainDataService<FjallStore, BlobCompressionStore<FjallStore>>>>,
     pub batch_request_limit: u16,
     pub max_response_size: u32,
     pub allow_unprotected_txs: bool,
@@ -51,9 +60,13 @@ impl MonadRpcResources {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         txpool_bridge_client: Option<EthTxPoolBridgeClient>,
+        queryx_only: bool,
         eth_call_handler: Option<EthCallHandler>,
         chain_id: u64,
         chain_state: Option<ChainState<TriedbEnv>>,
+        chain_data: Option<
+            Arc<MonadChainDataService<FjallStore, BlobCompressionStore<FjallStore>>>,
+        >,
         batch_request_limit: u16,
         max_response_size: u32,
         allow_unprotected_txs: bool,
@@ -68,9 +81,11 @@ impl MonadRpcResources {
     ) -> Self {
         Self {
             txpool_bridge_client,
+            queryx_only,
             eth_call_handler,
             chain_id,
             chain_state,
+            chain_data,
             batch_request_limit,
             max_response_size,
             allow_unprotected_txs,

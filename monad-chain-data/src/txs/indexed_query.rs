@@ -36,6 +36,7 @@ pub(crate) async fn execute_indexed_tx_query<M: MetaStore, B: BlobStore>(
         request.envelope.limit,
     )
     .await?;
+    let _stats = outcome.stats;
     Ok(QueryTransactionsResponse {
         txs: outcome.records,
         blocks: None,
