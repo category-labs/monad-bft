@@ -348,12 +348,13 @@ pub fn set_up_test(
         ));
 
         rt.spawn(async move {
-            let mut service = new_defaulted_raptorcast_for_tests::<
-                SignatureType,
-                MockMessage,
-                MockMessage,
-                <MockMessage as Message>::Event,
-            >(dataplane, peer_addresses, Arc::new(rx_keypair));
+            let mut service =
+                new_defaulted_raptorcast_for_tests::<
+                    SignatureType,
+                    MockMessage,
+                    MockMessage,
+                    <MockMessage as Message>::Event,
+                >(dataplane, peer_addresses, Arc::new(rx_keypair), Epoch(0));
 
             service.exec(vec![RouterCommand::AddEpochValidatorSet {
                 epoch: Epoch(0),
@@ -466,7 +467,124 @@ fn setup_raptorcast_service(
         MockMessage,
         MockMessage,
         <MockMessage as Message>::Event,
-    >(dataplane, known_addresses, Arc::new(keypair))
+    >(dataplane, known_addresses, Arc::new(keypair), Epoch(0))
+}
+
+// a fullnode must be able to forward an incoming FullNodesGroup
+// invite (e.g. PrepareGroup) from a validator to the secondary RC
+// channel even on a freshly booted node, before consensus has caught
+// up, to allow the fullnode to join the group and start receiving
+// proposals.
+#[cfg(test)]
+#[tokio::test]
+async fn raptorcast_forwards_fullnodes_group_invite_at_cold_start() {
+    let epoch = Epoch(5); // non-zero, simulating boot from a real forkpoint
+
+    let validator_keypair = keypair(1);
+    let validator_nodeid = NodeId::new(validator_keypair.pubkey());
+    let fullnode_keypair = keypair(2);
+    let fullnode_nodeid = NodeId::new(fullnode_keypair.pubkey());
+
+    // Only the fullnode is a real RaptorCast instance; the validator side just
+    // constructs and sends a packet manually, so it needs no dataplane.
+    let fullnode_dp = create_dataplane_for_tests(false);
+    let fullnode_addr = fullnode_dp.non_auth_addr;
+
+    let known_addresses: HashMap<NodeId<PubKeyType>, SocketAddrV4> =
+        [(fullnode_nodeid, fullnode_addr)].into_iter().collect();
+    let known_addresses_socketaddr: HashMap<NodeId<PubKeyType>, SocketAddr> = known_addresses
+        .iter()
+        .map(|(k, v)| (*k, SocketAddr::V4(*v)))
+        .collect();
+
+    let mut fullnode_rc = new_defaulted_raptorcast_for_tests::<
+        SignatureType,
+        MockMessage,
+        MockMessage,
+        MockEvent<PubKeyType>,
+    >(
+        fullnode_dp,
+        known_addresses.clone(),
+        Arc::new(fullnode_keypair),
+        epoch,
+    );
+
+    fullnode_rc.exec(vec![RouterCommand::AddEpochValidatorSet {
+        epoch,
+        validator_set: vec![(validator_nodeid, Stake::ONE)],
+    }]);
+
+    // Bind channel_to_secondary so the test can observe the forwarded message.
+    let (channel_to_secondary_tx, mut channel_to_secondary_rx) =
+        unbounded_channel::<FullNodesGroupMessage<SignatureType>>();
+    let (_assignment_tx, assignment_rx) =
+        unbounded_channel::<SecondaryGroupAssignment<PubKeyType>>();
+    let (_outbound_tx, outbound_rx) = unbounded_channel::<SecondaryOutboundMessage<PubKeyType>>();
+    fullnode_rc.bind_channel_to_secondary_raptorcast(
+        SecondaryRaptorCastModeConfig::Client,
+        channel_to_secondary_tx,
+        assignment_rx,
+        outbound_rx,
+    );
+
+    // Construct the invite, mirroring what raptorcast_secondary::publisher
+    // emits when inviting a fullnode into a new group.
+    let prepare = monad_raptorcast::raptorcast_secondary::group_message::PrepareGroup::<PubKeyType> {
+        validator_id: validator_nodeid,
+        max_group_size: 10,
+        start_round: Round(1),
+        end_round: Round(10),
+    };
+    let group_msg = FullNodesGroupMessage::<SignatureType>::PrepareGroup(prepare);
+    let router_msg: monad_raptorcast::message::OutboundRouterMessage<MockMessage, SignatureType> =
+        monad_raptorcast::message::OutboundRouterMessage::FullNodesGroup(group_msg.clone());
+    let msg_bytes = router_msg
+        .try_serialize()
+        .expect("serialize FullNodesGroup");
+
+    // Build a unicast raptorcast packet signed by the validator, targeted at the
+    // fullnode.
+    let packets = build_messages::<SignatureType>(
+        &validator_keypair,
+        DEFAULT_SEGMENT_SIZE,
+        msg_bytes,
+        Redundancy::from_u8(2),
+        0,
+        BuildTarget::point_to_point(epoch, &fullnode_nodeid),
+        &known_addresses_socketaddr,
+    );
+
+    // Drain startup events from the fullnode before sending.
+    loop {
+        tokio::select! {
+            biased;
+            _ = fullnode_rc.next() => {}
+            _ = std::future::ready(()) => break,
+        }
+    }
+
+    let tx_socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+    for (target_addr, payload) in &packets {
+        for chunk in payload.chunks(usize::from(DEFAULT_SEGMENT_SIZE)) {
+            tx_socket.send_to(chunk, target_addr).unwrap();
+        }
+    }
+
+    // Drive the fullnode event loop until the channel receives the message or we time out.
+    let received = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            tokio::select! {
+                biased;
+                msg = channel_to_secondary_rx.recv() => return msg,
+                _ = fullnode_rc.next() => continue,
+            }
+        }
+    })
+    .await
+    .expect("timeout waiting for FullNodesGroup forward")
+    .expect("channel_to_secondary closed");
+
+    assert_eq!(received, group_msg);
 }
 
 #[cfg(test)]
@@ -648,14 +766,24 @@ async fn test_priority_messages() {
         MockMessage,
         MockMessage,
         MockEvent<PubKeyType>,
-    >(tx_dataplane, known_addresses.clone(), tx_key.clone());
+    >(
+        tx_dataplane,
+        known_addresses.clone(),
+        tx_key.clone(),
+        Epoch(0),
+    );
 
     let mut rx_rc = new_defaulted_raptorcast_for_tests::<
         SignatureType,
         MockMessage,
         MockMessage,
         MockEvent<PubKeyType>,
-    >(rx_dataplane, known_addresses.clone(), rx_key.clone());
+    >(
+        rx_dataplane,
+        known_addresses.clone(),
+        rx_key.clone(),
+        Epoch(0),
+    );
 
     let epoch = Epoch(0);
     let validator_set = vec![(tx_nodeid, Stake::ONE), (rx_nodeid, Stake::ONE)];
@@ -774,6 +902,7 @@ async fn test_raptorcast_forwarding_priority() {
         validator1_dataplane,
         known_addresses.clone(),
         validator1_key.clone(),
+        Epoch(0),
     );
 
     let mut validator2_rc = new_defaulted_raptorcast_for_tests::<
@@ -785,6 +914,7 @@ async fn test_raptorcast_forwarding_priority() {
         validator2_dataplane,
         known_addresses.clone(),
         validator2_key.clone(),
+        Epoch(0),
     );
 
     let mut validator_fullnode_rc = new_defaulted_raptorcast_for_tests::<
@@ -796,6 +926,7 @@ async fn test_raptorcast_forwarding_priority() {
         validator_fullnode_dataplane,
         known_addresses.clone(),
         validator_fullnode_key.clone(),
+        Epoch(0),
     );
 
     let epoch = Epoch(0);

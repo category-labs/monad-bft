@@ -256,6 +256,7 @@ fn spawn_noop_validator(
             dataplane.non_authenticated_socket,
             dataplane.control,
             shared_pd,
+            monad_types::Epoch(0),
         );
 
         let mut cmd_rx = cmd_rx;
@@ -344,6 +345,7 @@ fn spawn_wireauth_validator(
             dataplane.non_authenticated_socket,
             dataplane.control,
             shared_pd,
+            monad_types::Epoch(0),
         );
 
         let mut cmd_rx = cmd_rx;

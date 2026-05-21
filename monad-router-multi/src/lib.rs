@@ -174,6 +174,7 @@ where
             non_authenticated_socket,
             control,
             shared_pdd.clone(),
+            current_epoch,
         );
         rc_primary.bind_channel_to_secondary_raptorcast(
             secondary_mode,
