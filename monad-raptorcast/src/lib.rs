@@ -183,6 +183,7 @@ where
         non_authenticated_socket: UdpSocketHandle,
         control: DataplaneControl,
         peer_discovery_driver: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
+        current_epoch: Epoch,
     ) -> Self {
         let (tcp_reader, tcp_writer) = tcp_socket.split();
 
@@ -289,8 +290,9 @@ where
             message_builder,
             secondary_message_builder: Some(secondary_message_builder),
 
-            // Updated by the first RouterCommand::UpdateCurrentRound.
-            current_epoch: Epoch(0),
+            // Seeded from the forkpoint at boot; updated by
+            // RouterCommand::UpdateCurrentRound.
+            current_epoch,
 
             udp_state,
             v1_rollout: config.deterministic_protocol_rollout,
@@ -775,6 +777,7 @@ pub fn new_defaulted_raptorcast_for_tests<ST, M, OM, SE>(
     dataplane: DataplaneHandles,
     known_addresses: HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddrV4>,
     shared_key: Arc<ST::KeyPairType>,
+    current_epoch: Epoch,
 ) -> RaptorCast<
     ST,
     M,
@@ -831,6 +834,7 @@ where
         dataplane.non_authenticated_socket,
         dataplane.control,
         shared_pd,
+        current_epoch,
     )
 }
 
@@ -838,6 +842,7 @@ pub fn new_wireauth_raptorcast_for_tests<ST, M, OM, SE>(
     dataplane: DataplaneHandles,
     known_addresses: HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddrV4>,
     shared_key: Arc<ST::KeyPairType>,
+    current_epoch: Epoch,
 ) -> RaptorCast<
     ST,
     M,
@@ -895,6 +900,7 @@ where
         dataplane.non_authenticated_socket,
         dataplane.control,
         shared_pd,
+        current_epoch,
     )
 }
 

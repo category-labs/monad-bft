@@ -128,12 +128,13 @@ fn service(
             let dataplane = monad_raptorcast::create_dataplane_for_tests(false);
 
             rt.spawn(async move {
-                let mut service = new_defaulted_raptorcast_for_tests::<
-                    SignatureType,
-                    MockMessage,
-                    MockMessage,
-                    <MockMessage as Message>::Event,
-                >(dataplane, known_addresses, Arc::new(key));
+                let mut service =
+                    new_defaulted_raptorcast_for_tests::<
+                        SignatureType,
+                        MockMessage,
+                        MockMessage,
+                        <MockMessage as Message>::Event,
+                    >(dataplane, known_addresses, Arc::new(key), Epoch(0));
 
                 service.exec(vec![RouterCommand::AddEpochValidatorSet {
                     epoch: Epoch(0),
