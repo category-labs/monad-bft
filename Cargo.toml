@@ -156,7 +156,7 @@ k256 = { version = "0.13", features = ["hash2curve"] }
 libc = "0.2.153"
 lru = "0.16"
 lz4 = "1.28"
-mongodb = { version = "3.2.1", default-features = false, features = ["compat-3-0-0", "dns-resolver", "openssl-tls"] }
+mongodb = { version = "3.7.0", default-features = false, features = ["compat-3-0-0", "dns-resolver", "openssl-tls"] }
 monoio = { git = "https://github.com/category-labs/monoio.git", tag = "0.2.4-category", features = ["sync", "iouring"] }
 ntest = "0.9"
 once_cell = "1.19.0"
