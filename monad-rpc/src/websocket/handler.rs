@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     pin::pin,
     sync::Arc,
     time::{Duration, Instant},
@@ -23,7 +23,11 @@ use std::{
 use actix_http::ws;
 use actix_web::{web, HttpRequest, HttpResponse};
 use actix_ws::{AggregatedMessage, CloseCode, CloseReason, Closed};
-use alloy_rpc_types::eth::{pubsub::Params, Filter, FilteredParams};
+use alloy_primitives::TxHash;
+use alloy_rpc_types::eth::{
+    pubsub::{Params, TransactionReceiptsParams},
+    Filter, FilteredParams,
+};
 use futures::StreamExt;
 use itertools::Either;
 use monad_exec_events::BlockCommitState;
@@ -34,7 +38,10 @@ use tokio::sync::{broadcast, Semaphore, TryAcquireError};
 use tracing::{debug, error, warn};
 
 use crate::{
-    event::{events::LogNotification, EventServerClient, EventServerClientError, EventServerEvent},
+    event::{
+        events::{LogNotification, TransactionReceipt},
+        EventServerClient, EventServerClientError, EventServerEvent,
+    },
     handlers::{resources::MonadRpcResources, rpc_select},
     middleware::TimingRequestId,
     types::{
@@ -55,9 +62,77 @@ const RECV_MAX_FRAME_SIZE: usize = 256 * 1024;
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(20);
 const CLIENT_TIMEOUT_SECS: u64 = 60;
 const COMMIT_STATE_FILTER: BlockCommitState = BlockCommitState::Proposed;
+const MAX_TRANSACTION_RECEIPT_HASHES: usize = 200;
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy, Deserialize, Serialize)]
 pub struct SubscriptionId(pub FixedData<16>);
+
+type Subscriptions = HashMap<SubscriptionKind, Vec<(SubscriptionId, Option<SubscriptionFilter>)>>;
+
+#[derive(Clone, Debug)]
+enum SubscriptionFilter {
+    Logs(Filter),
+    TransactionReceipts(ReceiptsFilter),
+}
+
+impl SubscriptionFilter {
+    fn as_logs(&self) -> Option<&Filter> {
+        match self {
+            Self::Logs(filter) => Some(filter),
+            Self::TransactionReceipts(_) => None,
+        }
+    }
+
+    fn as_transaction_receipts(&self) -> Option<&ReceiptsFilter> {
+        match self {
+            Self::Logs(_) => None,
+            Self::TransactionReceipts(filter) => Some(filter),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+struct ReceiptsFilter {
+    transaction_hashes: Option<HashSet<TxHash>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReceiptsFilterError {
+    TooManyTransactionHashes { count: usize, limit: usize },
+}
+
+impl ReceiptsFilterError {
+    fn into_jsonrpc_error(self) -> JsonRpcError {
+        match self {
+            Self::TooManyTransactionHashes { count, limit } => JsonRpcError::filter_error(format!(
+                "transactionReceipts supports at most {limit} transactionHashes, got {count}"
+            )),
+        }
+    }
+}
+
+impl TryFrom<TransactionReceiptsParams> for ReceiptsFilter {
+    type Error = ReceiptsFilterError;
+
+    fn try_from(params: TransactionReceiptsParams) -> Result<Self, Self::Error> {
+        let transaction_hashes = params
+            .transaction_hashes
+            .filter(|hashes| !hashes.is_empty())
+            .map(|hashes| {
+                if hashes.len() > MAX_TRANSACTION_RECEIPT_HASHES {
+                    return Err(ReceiptsFilterError::TooManyTransactionHashes {
+                        count: hashes.len(),
+                        limit: MAX_TRANSACTION_RECEIPT_HASHES,
+                    });
+                }
+
+                Ok(hashes.into_iter().collect())
+            })
+            .transpose()?;
+
+        Ok(Self { transaction_hashes })
+    }
+}
 
 #[derive(Clone)]
 pub struct ConnectionLimit(Arc<Semaphore>);
@@ -109,8 +184,7 @@ pub async fn ws_handler(
             metrics.record_websocket_connection(1);
         }
 
-        let mut subscriptions: HashMap<SubscriptionKind, Vec<(SubscriptionId, Option<Filter>)>> =
-            HashMap::default();
+        let mut subscriptions: Subscriptions = HashMap::default();
 
         let close_reason = handler(
             &mut session,
@@ -147,7 +221,7 @@ async fn handler(
     msg_stream: actix_ws::MessageStream,
     hostname: &String,
     peer_addr: &Option<String>,
-    subscriptions: &mut HashMap<SubscriptionKind, Vec<(SubscriptionId, Option<Filter>)>>,
+    subscriptions: &mut Subscriptions,
     rx: broadcast::Receiver<EventServerEvent>,
     app_state: &web::Data<MonadRpcResources>,
     subscription_limit: u16,
@@ -286,7 +360,7 @@ async fn handler(
 
 async fn handle_notification(
     session: &mut actix_ws::Session,
-    subscriptions: &HashMap<SubscriptionKind, Vec<(SubscriptionId, Option<Filter>)>>,
+    subscriptions: &Subscriptions,
     msg: EventServerEvent,
     max_response_size: usize,
 ) -> Result<(), CloseReason> {
@@ -327,8 +401,11 @@ async fn handle_notification(
                 .map(|x| x.iter())
                 .unwrap_or_default()
             {
-                let Some(logs) = apply_logs_filter(filter, header.data.as_ref(), iter_logs())
-                else {
+                let Some(logs) = apply_logs_filter(
+                    filter.as_ref().and_then(SubscriptionFilter::as_logs),
+                    header.data.as_ref(),
+                    iter_logs(),
+                ) else {
                     continue;
                 };
 
@@ -343,14 +420,53 @@ async fn handle_notification(
                     .map(|x| x.iter())
                     .unwrap_or_default()
                 {
-                    let Some(logs) = apply_logs_filter(filter, header.data.as_ref(), iter_logs())
-                    else {
+                    let Some(logs) = apply_logs_filter(
+                        filter.as_ref().and_then(SubscriptionFilter::as_logs),
+                        header.data.as_ref(),
+                        iter_logs(),
+                    ) else {
                         continue;
                     };
 
                     for log in logs {
                         send_notification(session, id, log.data.as_ref(), max_response_size)
                             .await?;
+                    }
+                }
+
+                for (id, filter) in subscriptions
+                    .get(&SubscriptionKind::TransactionReceipts)
+                    .map(|x| x.iter())
+                    .unwrap_or_default()
+                {
+                    let filter = filter
+                        .as_ref()
+                        .and_then(SubscriptionFilter::as_transaction_receipts);
+
+                    if filter
+                        .and_then(|filter| filter.transaction_hashes.as_ref())
+                        .is_some()
+                    {
+                        let receipts = apply_receipts_filter(
+                            filter,
+                            transactions.iter().map(|(_, receipt, _)| receipt),
+                        );
+
+                        if receipts.is_empty() {
+                            continue;
+                        }
+
+                        let receipts = serialize_transaction_receipts(receipts)?;
+                        send_notification(session, id, receipts, max_response_size).await?;
+                    } else {
+                        if transactions.is_empty() {
+                            continue;
+                        }
+
+                        let receipts = serialize_transaction_receipts(
+                            transactions.iter().map(|(_, receipt, _)| receipt),
+                        )?;
+                        send_notification(session, id, receipts, max_response_size).await?;
                     }
                 }
             }
@@ -362,7 +478,7 @@ async fn handle_notification(
 
 #[inline]
 fn apply_logs_filter<'a>(
-    filter: &'a Option<Filter>,
+    filter: Option<&'a Filter>,
     header: &alloy_rpc_types::eth::Header,
     logs: impl Iterator<Item = &'a LogNotification> + 'a,
 ) -> Option<impl Iterator<Item = &'a LogNotification> + 'a> {
@@ -395,9 +511,54 @@ fn apply_logs_filter<'a>(
     }
 }
 
+fn apply_receipts_filter<'a>(
+    filter: Option<&'a ReceiptsFilter>,
+    receipts: impl Iterator<Item = &'a TransactionReceipt> + 'a,
+) -> Vec<&'a TransactionReceipt> {
+    if let Some(transaction_hashes) = filter.and_then(|filter| filter.transaction_hashes.as_ref()) {
+        let mut matched_receipts = Vec::with_capacity(transaction_hashes.len());
+        let mut remaining = transaction_hashes.len();
+
+        for receipt in receipts {
+            if transaction_hashes.contains(&receipt.value().transaction_hash) {
+                matched_receipts.push(receipt);
+                remaining -= 1;
+
+                if remaining == 0 {
+                    break;
+                }
+            }
+        }
+
+        matched_receipts
+    } else {
+        receipts.collect()
+    }
+}
+
+fn serialize_transaction_receipts<'a>(
+    receipts: impl IntoIterator<Item = &'a TransactionReceipt>,
+) -> Result<Box<RawValue>, CloseReason> {
+    let receipts = receipts
+        .into_iter()
+        .map(|receipt| receipt.as_ref())
+        .collect::<Vec<_>>();
+
+    serialize_result(receipts).map_err(|err| {
+        warn!(
+            ?err,
+            "ws handle_notification failed to serialize transaction receipts"
+        );
+        CloseReason {
+            code: CloseCode::Error,
+            description: Some("ws server failed to serialize transaction receipts".to_string()),
+        }
+    })
+}
+
 async fn handle_request(
     ctx: &mut actix_ws::Session,
-    subscriptions: &mut HashMap<SubscriptionKind, Vec<(SubscriptionId, Option<Filter>)>>,
+    subscriptions: &mut Subscriptions,
     subscription_limit: u16,
     app_state: &MonadRpcResources,
     request: Request<'_>,
@@ -426,10 +587,38 @@ async fn handle_request(
                 return Ok(());
             };
 
-            let filter = match req.params {
-                Params::None => None,
-                Params::Logs(filter) => Some(*filter),
-                Params::Bool(_) | Params::TransactionReceipts(_) => {
+            let filter = match (&req.kind, req.params) {
+                (_, Params::None) => None,
+                (SubscriptionKind::Logs | SubscriptionKind::MonadLogs, Params::Logs(filter)) => {
+                    Some(SubscriptionFilter::Logs(*filter))
+                }
+                (SubscriptionKind::TransactionReceipts, Params::TransactionReceipts(filter)) => {
+                    match ReceiptsFilter::try_from(filter) {
+                        Ok(filter) => Some(SubscriptionFilter::TransactionReceipts(filter)),
+                        Err(err) => {
+                            if let Err(err) = ctx
+                                .text(to_response(&crate::types::jsonrpc::Response::new(
+                                    None,
+                                    Some(err.into_jsonrpc_error()),
+                                    request.id,
+                                )))
+                                .await
+                            {
+                                warn!(
+                                    ?err,
+                                    "ws handle_request eth_subscribe failed to send invalid transactionReceipts filter error"
+                                );
+                                return Err(CloseReason {
+                                    code: ws::CloseCode::Error,
+                                    description: None,
+                                });
+                            }
+
+                            return Ok(());
+                        }
+                    }
+                }
+                _ => {
                     if let Err(err) = ctx
                         .text(to_response(&crate::types::jsonrpc::Response::new(
                             None,
@@ -681,23 +870,142 @@ mod tests {
 
     use actix_http::{ws, ws::Frame};
     use actix_web::{web, App};
+    use alloy_consensus::{Eip658Value, Receipt, ReceiptEnvelope, ReceiptWithBloom};
+    use alloy_primitives::{Address, Bloom, B256};
+    use alloy_rpc_types::{
+        eth::pubsub::TransactionReceiptsParams, TransactionReceipt as AlloyTransactionReceipt,
+    };
     use awc::error::WsClientError;
     use bytes::Bytes;
     use futures_util::{SinkExt as _, StreamExt as _};
     use monad_event_ring::SnapshotEventRing;
     use serde_json::json;
 
-    use super::ws_handler;
+    use super::{
+        apply_receipts_filter, ws_handler, ReceiptsFilter, ReceiptsFilterError,
+        MAX_TRANSACTION_RECEIPT_HASHES,
+    };
     use crate::{
-        event::EventServer,
+        event::{events::TransactionReceipt, EventServer},
         handlers::resources::MonadRpcResources,
         txpool::EthTxPoolBridgeClient,
         types::{
             eth_json::{EthSubscribeResult, FixedData},
             ethhex,
+            serialize::JsonSerialized,
         },
         websocket::handler::{ConnectionLimit, SubscriptionLimit},
     };
+
+    fn make_receipt(transaction_hash: B256) -> TransactionReceipt {
+        JsonSerialized::new_shared(AlloyTransactionReceipt {
+            inner: ReceiptEnvelope::Eip1559(
+                ReceiptWithBloom::<Receipt<alloy_rpc_types::Log>>::new(
+                    Receipt {
+                        status: Eip658Value::Eip658(true),
+                        cumulative_gas_used: 0,
+                        logs: vec![],
+                    },
+                    Bloom::default(),
+                ),
+            ),
+            transaction_hash,
+            transaction_index: None,
+            block_hash: None,
+            block_number: None,
+            gas_used: 0,
+            effective_gas_price: 0,
+            blob_gas_used: None,
+            blob_gas_price: None,
+            from: Address::default(),
+            to: None,
+            contract_address: None,
+        })
+    }
+
+    #[test]
+    fn apply_receipts_filter_matches_transaction_hashes() {
+        let matching_hash = B256::from([1; 32]);
+        let other_hash = B256::from([2; 32]);
+        let receipts = vec![make_receipt(matching_hash), make_receipt(other_hash)];
+        let filter = ReceiptsFilter::try_from(TransactionReceiptsParams {
+            transaction_hashes: Some(vec![matching_hash]),
+        })
+        .unwrap();
+
+        let filtered = apply_receipts_filter(Some(&filter), receipts.iter());
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].value().transaction_hash, matching_hash);
+    }
+
+    #[test]
+    fn apply_receipts_filter_stops_once_all_hashes_match() {
+        let matching_hash = B256::from([1; 32]);
+        let receipts = vec![
+            make_receipt(matching_hash),
+            make_receipt(B256::from([2; 32])),
+            make_receipt(B256::from([3; 32])),
+        ];
+        let filter = ReceiptsFilter::try_from(TransactionReceiptsParams {
+            transaction_hashes: Some(vec![matching_hash]),
+        })
+        .unwrap();
+        let mut visited = 0;
+
+        let filtered = apply_receipts_filter(
+            Some(&filter),
+            receipts.iter().inspect(|_| {
+                visited += 1;
+            }),
+        );
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].value().transaction_hash, matching_hash);
+        assert_eq!(visited, 1);
+    }
+
+    #[test]
+    fn apply_receipts_filter_empty_or_missing_hashes_returns_all() {
+        let receipts = vec![
+            make_receipt(B256::from([1; 32])),
+            make_receipt(B256::from([2; 32])),
+        ];
+
+        let filtered = apply_receipts_filter(None, receipts.iter());
+        assert_eq!(filtered.len(), receipts.len());
+
+        for transaction_hashes in [None, Some(vec![])] {
+            let filter =
+                ReceiptsFilter::try_from(TransactionReceiptsParams { transaction_hashes }).unwrap();
+            let filtered = apply_receipts_filter(Some(&filter), receipts.iter());
+            assert_eq!(filtered.len(), receipts.len());
+        }
+    }
+
+    #[test]
+    fn receipts_filter_rejects_too_many_transaction_hashes() {
+        let transaction_hashes = (0..=MAX_TRANSACTION_RECEIPT_HASHES)
+            .map(|idx| {
+                let mut bytes = [0; 32];
+                bytes[..8].copy_from_slice(&(idx as u64).to_le_bytes());
+                B256::from(bytes)
+            })
+            .collect();
+
+        let err = ReceiptsFilter::try_from(TransactionReceiptsParams {
+            transaction_hashes: Some(transaction_hashes),
+        })
+        .unwrap_err();
+
+        assert_eq!(
+            err,
+            ReceiptsFilterError::TooManyTransactionHashes {
+                count: MAX_TRANSACTION_RECEIPT_HASHES + 1,
+                limit: MAX_TRANSACTION_RECEIPT_HASHES,
+            }
+        );
+    }
 
     fn create_test_server() -> actix_test::TestServer {
         const SNAPSHOT_NAME: &str = "ETHEREUM_MAINNET_30B_15M";
@@ -839,6 +1147,79 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[actix_rt::test]
+    async fn websocket_transaction_receipts_subscription_receives_receipts() {
+        let tx_hash = "0xaedb8ef26125d8ad6e0c5f19fc9cbdd7f4a42eb82de88686b39090b8abcfeb8f";
+        let mut server: actix_test::TestServer = create_test_server();
+        let mut framed = server.ws_at("/ws/").await.unwrap();
+
+        let frame = framed.next().await.unwrap().unwrap();
+        match frame {
+            Frame::Ping(bytes) => {
+                framed.send(ws::Message::Pong(bytes)).await.unwrap();
+            }
+            _ => panic!("Expected initial ping frame"),
+        }
+
+        let body = json!({
+            "jsonrpc": "2.0",
+            "method": "eth_subscribe",
+            "params": ["transactionReceipts", { "transactionHashes": [tx_hash] }],
+            "id": 1
+        });
+
+        framed
+            .send(ws::Message::Text(body.to_string().into()))
+            .await
+            .unwrap();
+
+        let subscription_id = loop {
+            let frame = framed.next().await.unwrap().unwrap();
+            match frame {
+                Frame::Ping(bytes) => {
+                    framed.send(ws::Message::Pong(bytes)).await.unwrap();
+                }
+                Frame::Text(resp) => {
+                    let resp: serde_json::Value = serde_json::from_slice(&resp).unwrap();
+                    let resp: crate::types::jsonrpc::Response =
+                        serde_json::from_value(resp).unwrap();
+                    let id: FixedData<16> =
+                        serde_json::from_str(resp.result.unwrap().get()).unwrap();
+                    break id;
+                }
+                _ => panic!("unexpected frame"),
+            }
+        };
+
+        let receipts = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let frame = framed.next().await.unwrap().unwrap();
+                match frame {
+                    Frame::Ping(bytes) => {
+                        framed.send(ws::Message::Pong(bytes)).await.unwrap();
+                    }
+                    Frame::Text(update) => {
+                        let update: crate::types::jsonrpc::Notification<EthSubscribeResult> =
+                            serde_json::from_slice(&update).unwrap();
+                        assert_eq!(update.params.subscription.0, subscription_id.0);
+
+                        let receipts: Vec<serde_json::Value> =
+                            serde_json::from_str(update.params.result.get()).unwrap();
+                        if !receipts.is_empty() {
+                            break receipts;
+                        }
+                    }
+                    _ => panic!("unexpected frame"),
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for transaction receipts notification");
+
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(receipts[0]["transactionHash"].as_str(), Some(tx_hash));
     }
 
     #[actix_rt::test]
