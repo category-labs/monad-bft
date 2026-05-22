@@ -48,73 +48,74 @@ impl From<NodeIndex> for ChunkTarget {
     }
 }
 
-pub(crate) trait OrderedNodes<PT>
-where
-    PT: PubKey,
-{
-    fn get(&self, index: NodeIndex) -> Option<&NodeId<PT>>;
-    // [u8; 32] == <ChaCha20Rng as SeedableRng>::Seed
-    fn shuffle(&mut self, seed: [u8; 32]);
-    fn len(&self) -> usize;
+// A frozen ordered list of nodes, indexable by NodeIndex. Captures
+// the concept of "the recipient table for a ChunkAssignment".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OrderedNodes<PT: PubKey>(Box<[NodeId<PT>]>);
+
+impl<PT: PubKey> OrderedNodes<PT> {
+    pub fn singleton(node: NodeId<PT>) -> Self {
+        Self(Box::new([node]))
+    }
+
+    pub fn get(&self, index: NodeIndex) -> Option<&NodeId<PT>> {
+        self.0.get(index.0)
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (NodeIndex, &NodeId<PT>)> + '_ {
+        self.0.iter().enumerate().map(|(i, n)| (NodeIndex(i), n))
+    }
 }
 
-pub(crate) trait Partition<PT>: OrderedNodes<PT>
-where
-    PT: PubKey,
-{
-    fn assign(&self, num_base_symbols: usize, redundancy: Redundancy) -> Result<ChunkAssignment>;
+impl<PT: PubKey> FromIterator<NodeId<PT>> for OrderedNodes<PT> {
+    fn from_iter<I: IntoIterator<Item = NodeId<PT>>>(iter: I) -> Self {
+        Self(iter.into_iter().collect())
+    }
+}
+
+// A Partition produces a ChunkAssignment from its internal node set.
+pub(crate) trait Partition {
+    type PubKey: PubKey;
+
+    // [u8; 32] == <ChaCha20Rng as SeedableRng>::Seed
+    fn shuffle(&mut self, seed: [u8; 32]);
+
+    fn assign(
+        &self,
+        num_base_symbols: usize,
+        redundancy: Redundancy,
+    ) -> Result<ChunkAssignment<Self::PubKey>>;
 
     fn num_chunks_hint(&self, num_base_symbols: usize, redundancy: Redundancy) -> Option<usize>;
 }
 
-impl<PT> OrderedNodes<PT> for NodeId<PT>
-where
-    PT: PubKey,
-{
-    fn get(&self, index: NodeIndex) -> Option<&NodeId<PT>> {
-        match index.0 {
-            0 => Some(self),
-            _ => None,
-        }
-    }
-
-    fn shuffle(&mut self, _seed: [u8; 32]) {
-        // no-op since there's only one node
-    }
-
-    fn len(&self) -> usize {
-        1
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct ChunkAssignment {
-    // Invariant: targets[*].node_index < node_len
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChunkAssignment<PT: PubKey> {
+    // mapping from NodeIndex to NodeId. The ordering is frozen on
+    // assignment.
     //
-    // Intuitively, treat this field as playing the role of owning a
-    // &dyn OrderedNodes without the lifetime hassles. Such that the
-    // chunk assignment is bound to a *single* *immutable*
-    // OrderedNodes instance. This guarantees that the node indices in
-    // the assignment are always valid and consistent with the nodes
-    // used for materialization.
-    node_len: usize,
+    // Invariant: every target.node_index is < nodes.len().
+    nodes: OrderedNodes<PT>,
 
     // mapping from chunk_id to the target node
     targets: Vec<ChunkTarget>,
 }
 
-impl ChunkAssignment {
-    fn with_capacity(node_len: usize, capacity: usize) -> Self {
+impl<PT: PubKey> ChunkAssignment<PT> {
+    fn with_capacity(capacity: usize, nodes: OrderedNodes<PT>) -> Self {
         Self {
-            node_len,
+            nodes,
             targets: Vec::with_capacity(capacity),
         }
     }
 
-    pub fn unicast(num_chunks: usize) -> Self {
-        let mut assignment = Self::with_capacity(1, num_chunks);
-        let target = NodeIndex(0);
-        assignment.push_range(target, 0..num_chunks);
+    pub fn unicast(recipient: NodeId<PT>, num_chunks: usize) -> Self {
+        let mut assignment = Self::with_capacity(num_chunks, OrderedNodes::singleton(recipient));
+        assignment.push_range(NodeIndex(0), 0..num_chunks);
         assignment
     }
 
@@ -128,10 +129,10 @@ impl ChunkAssignment {
     }
 
     fn push_range(&mut self, target: impl Into<ChunkTarget>, chunk_id_range: Range<usize>) {
-        debug_assert_eq!(chunk_id_range.start, self.targets.len());
+        assert_eq!(chunk_id_range.start, self.targets.len());
 
         let target = target.into();
-        debug_assert!(target.node_index.0 < self.node_len);
+        assert!(target.node_index.0 < self.nodes.len());
 
         for _ in chunk_id_range {
             self.targets.push(target.clone());
@@ -139,10 +140,10 @@ impl ChunkAssignment {
     }
 
     fn push(&mut self, target: impl Into<ChunkTarget>, chunk_id: usize) {
-        debug_assert_eq!(chunk_id, self.targets.len());
+        assert_eq!(chunk_id, self.targets.len());
 
         let target = target.into();
-        debug_assert!(target.node_index.0 < self.node_len);
+        assert!(target.node_index.0 < self.nodes.len());
 
         self.targets.push(target);
     }
@@ -153,39 +154,17 @@ impl ChunkAssignment {
 
     // Resolve the target information for a given chunk_id. Returns
     // None if chunk_id is out of range.
-    //
-    // The provided nodes must be the same OrderedNodes instance that
-    // produced this assignment.
-    pub fn resolve_chunk_id<'a, PT, N>(
-        &'a self,
-        chunk_id: usize,
-        nodes: &'a N,
-    ) -> Option<ChunkRouting<'a, PT, N>>
-    where
-        PT: PubKey,
-        N: OrderedNodes<PT>,
-    {
+    pub fn resolve_chunk_id(&self, chunk_id: usize) -> Option<ChunkRouting<'_, PT>> {
         let target = self.targets.get(chunk_id)?;
-        let recipient = nodes.get(target.node_index)?;
+        let recipient = self.nodes.get(target.node_index)?;
         Some(ChunkRouting {
             recipient,
             target,
-            nodes,
+            nodes: &self.nodes,
         })
     }
 
-    // Caller must guarantee that the provided nodes are the same as
-    // the ones used for assignment.
-    pub(crate) fn materialize<PT>(
-        &self,
-        segment_len: usize,
-        nodes: &impl OrderedNodes<PT>,
-    ) -> Result<Vec<Chunk<PT>>>
-    where
-        PT: PubKey,
-    {
-        assert_eq!(self.node_len, nodes.len());
-
+    pub(crate) fn materialize(&self, segment_len: usize) -> Result<Vec<Chunk<PT>>> {
         if self.targets.is_empty() {
             return Ok(vec![]);
         }
@@ -194,20 +173,20 @@ impl ChunkAssignment {
 
         let mut chunks = Vec::with_capacity(self.num_chunks());
         let mut buffer = BytesMut::zeroed(self.num_chunks() * segment_len);
-        let mut recipients = vec![None; nodes.len()];
+        let mut recipients = vec![None; self.nodes.len()];
 
         for (chunk_id, target) in self.iter() {
-            let payload = buffer.split_to(segment_len);
-            let Some(node_id) = nodes.get(target.node_index) else {
-                tracing::debug!("BUG: invalid target node index: {}", target.node_index.0);
-                continue;
-            };
-
-            // guaranteed by the invariant on self.node_len
-            debug_assert!(target.node_index.0 < recipients.len());
+            assert!(target.node_index.0 < recipients.len());
+            // SAFETY: guaranteed by the invariant on target.node_index
+            let node_id = self
+                .nodes
+                .get(target.node_index)
+                .expect("invalid target node index");
             let recipient = recipients[target.node_index.0]
                 .get_or_insert_with(|| Recipient::new(*node_id))
                 .clone();
+
+            let payload = buffer.split_to(segment_len);
             let chunk = Chunk::new(chunk_id, recipient, payload);
             chunks.push(chunk);
         }
@@ -221,13 +200,13 @@ impl ChunkAssignment {
 
 // Resolved routing for a single chunk, used to get the first-hop
 // recipient and the rebroadcast targets.
-pub struct ChunkRouting<'a, PT: PubKey, N> {
+pub struct ChunkRouting<'a, PT: PubKey> {
     recipient: &'a NodeId<PT>,
     target: &'a ChunkTarget,
-    nodes: &'a N,
+    nodes: &'a OrderedNodes<PT>,
 }
 
-impl<'a, PT: PubKey, N: OrderedNodes<PT>> ChunkRouting<'a, PT, N> {
+impl<'a, PT: PubKey> ChunkRouting<'a, PT> {
     pub fn recipient(&self) -> &NodeId<PT> {
         self.recipient
     }
@@ -235,10 +214,11 @@ impl<'a, PT: PubKey, N: OrderedNodes<PT>> ChunkRouting<'a, PT, N> {
     pub fn rebroadcast_targets(&self) -> Vec<NodeId<PT>> {
         let recipient_idx = self.target.node_index;
         match &self.target.rebroadcast_targets {
-            None => (0..self.nodes.len())
-                .map(NodeIndex)
-                .filter(|idx| *idx != recipient_idx)
-                .filter_map(|idx| self.nodes.get(idx).copied())
+            None => self
+                .nodes
+                .iter()
+                .filter(|(idx, _)| *idx != recipient_idx)
+                .map(|(_, node_id)| *node_id)
                 .collect(),
             Some(indices) => indices
                 .iter()
@@ -264,33 +244,30 @@ impl<PT: PubKey> EvenPartition<PT> {
             nodes: group.iter().cloned().collect(),
         }
     }
+
+    fn snapshot_nodes(&self) -> OrderedNodes<PT> {
+        self.nodes.iter().copied().collect()
+    }
 }
 
-impl<PT> OrderedNodes<PT> for EvenPartition<PT>
-where
-    PT: PubKey,
-{
-    fn get(&self, index: NodeIndex) -> Option<&NodeId<PT>> {
-        self.nodes.get(index.0)
-    }
+impl<PT: PubKey> Partition for EvenPartition<PT> {
+    type PubKey = PT;
 
     fn shuffle(&mut self, seed: [u8; 32]) {
         let mut rng = ChaCha20Rng::from_seed(seed);
         self.nodes.shuffle(&mut rng);
     }
 
-    fn len(&self) -> usize {
-        self.nodes.len()
-    }
-}
-
-impl<PT: PubKey> Partition<PT> for EvenPartition<PT> {
-    fn assign(&self, num_base_symbols: usize, redundancy: Redundancy) -> Result<ChunkAssignment> {
+    fn assign(
+        &self,
+        num_base_symbols: usize,
+        redundancy: Redundancy,
+    ) -> Result<ChunkAssignment<PT>> {
         let num_symbols = redundancy
             .scale(num_base_symbols)
             .ok_or(BuildError::TooManyChunks)?;
         let num_nodes = self.nodes.len();
-        let mut assignment = ChunkAssignment::with_capacity(num_nodes, num_symbols);
+        let mut assignment = ChunkAssignment::with_capacity(num_symbols, self.snapshot_nodes());
         if num_nodes == 0 {
             tracing::warn!("no nodes specified for even partition chunk assigner");
             return Ok(assignment);
@@ -320,6 +297,7 @@ pub fn even_partition_num_chunks(num_base_symbols: usize, redundancy: Redundancy
 // rounding chunk
 pub(crate) struct StakePartition<PT: PubKey> {
     // Validator set with the publisher node excluded.
+    //
     // Invariant: all stake must be non-zero
     validators: Vec<(NodeId<PT>, Stake)>,
 
@@ -327,25 +305,6 @@ pub(crate) struct StakePartition<PT: PubKey> {
     // Invariant: validators.is_empty() iff total_stake == Stake::ZERO
     // (i.e. singleton validator set)
     total_stake: Stake,
-}
-
-impl<PT: PubKey> OrderedNodes<PT> for StakePartition<PT> {
-    fn get(&self, index: NodeIndex) -> Option<&NodeId<PT>> {
-        self.validators.get(index.0).map(|(node_id, _)| node_id)
-    }
-
-    // Shuffle the validator stake map for chunk assignment. This uses
-    // a deterministic seed. It is required that the publisher and all
-    // validators compute the shuffling using the same seed and
-    // algorithm for deterministic raptorcast.
-    fn shuffle(&mut self, seed: [u8; 32]) {
-        let mut rng = ChaCha20Rng::from_seed(seed);
-        self.validators.shuffle(&mut rng);
-    }
-
-    fn len(&self) -> usize {
-        self.validators.len()
-    }
 }
 
 #[inline(always)]
@@ -359,8 +318,23 @@ pub fn stake_partition_num_chunks_hint(
     num_scaled_symbols.checked_add(num_validators)
 }
 
-impl<PT: PubKey> Partition<PT> for StakePartition<PT> {
-    fn assign(&self, num_base_symbols: usize, redundancy: Redundancy) -> Result<ChunkAssignment> {
+impl<PT: PubKey> Partition for StakePartition<PT> {
+    type PubKey = PT;
+
+    // Shuffle the validator stake map for chunk assignment. This uses
+    // a deterministic seed. It is required that the publisher and all
+    // validators compute the shuffling using the same seed and
+    // algorithm for deterministic raptorcast.
+    fn shuffle(&mut self, seed: [u8; 32]) {
+        let mut rng = ChaCha20Rng::from_seed(seed);
+        self.validators.shuffle(&mut rng);
+    }
+
+    fn assign(
+        &self,
+        num_base_symbols: usize,
+        redundancy: Redundancy,
+    ) -> Result<ChunkAssignment<PT>> {
         self.assign(num_base_symbols, redundancy)
     }
 
@@ -414,13 +388,17 @@ impl<PT: PubKey> StakePartition<PT> {
         }
     }
 
+    fn snapshot_nodes(&self) -> OrderedNodes<PT> {
+        self.validators.iter().map(|(n, _)| *n).collect()
+    }
+
     pub fn assign(
         &self,
         num_base_symbols: usize,
         redundancy: Redundancy,
-    ) -> Result<ChunkAssignment> {
+    ) -> Result<ChunkAssignment<PT>> {
         if self.validators.is_empty() {
-            return Ok(ChunkAssignment::default());
+            return Ok(ChunkAssignment::with_capacity(0, self.snapshot_nodes()));
         }
         self.assign_round_robin(num_base_symbols, redundancy)
             .ok_or(BuildError::TooManyChunks)
@@ -463,10 +441,10 @@ impl<PT: PubKey> StakePartition<PT> {
         &self,
         num_base_symbols: usize,
         redundancy: Redundancy,
-    ) -> Option<ChunkAssignment> {
+    ) -> Option<ChunkAssignment<PT>> {
         let capacity = self.num_chunks_hint(num_base_symbols, redundancy)?;
         let num_scaled_symbols = redundancy.scale(num_base_symbols)?;
-        let mut assignment = ChunkAssignment::with_capacity(self.validators.len(), capacity);
+        let mut assignment = ChunkAssignment::with_capacity(capacity, self.snapshot_nodes());
 
         let mut curr_chunk_id = 0;
         for (i, (_node_id, stake)) in self.validators.iter().enumerate() {
@@ -490,10 +468,10 @@ impl<PT: PubKey> StakePartition<PT> {
         &self,
         num_base_symbols: usize,
         redundancy: Redundancy,
-    ) -> Option<ChunkAssignment> {
+    ) -> Option<ChunkAssignment<PT>> {
         let capacity = self.num_chunks_hint(num_base_symbols, redundancy)?;
         let num_scaled_symbols = redundancy.scale(num_base_symbols)?;
-        let mut assignment = ChunkAssignment::with_capacity(self.validators.len(), capacity);
+        let mut assignment = ChunkAssignment::with_capacity(capacity, self.snapshot_nodes());
 
         let mut remaining: VecDeque<(NodeIndex, usize)> =
             VecDeque::with_capacity(self.validators.len());
@@ -544,13 +522,9 @@ mod tests {
     use monad_testutil::signing::get_key;
     use monad_types::{NodeId, Stake};
     use monad_validator::validator_set::MAX_VALIDATOR_SET_SIZE;
-    use rand::{seq::SliceRandom as _, SeedableRng as _};
-    use rand_chacha::ChaCha20Rng;
     use rstest::rstest;
 
-    use super::{
-        ChunkAssignment, EvenPartition, NodeIndex, OrderedNodes, Partition, StakePartition,
-    };
+    use super::{ChunkAssignment, EvenPartition, NodeIndex, Partition, StakePartition};
     use crate::{
         packet::{assigner::stake_partition_num_chunks_hint, BuildError, Result},
         util::Redundancy,
@@ -572,7 +546,7 @@ mod tests {
     // ---------------------------------------------------------------
 
     // Count how many chunks each NodeIndex receives in an assignment.
-    fn chunk_counts(assignment: &ChunkAssignment) -> HashMap<usize, usize> {
+    fn chunk_counts<PT: PubKey>(assignment: &ChunkAssignment<PT>) -> HashMap<usize, usize> {
         let mut counts = HashMap::new();
         for (_, target) in assignment.iter() {
             *counts.entry(target.node_index.0).or_default() += 1;
@@ -581,14 +555,14 @@ mod tests {
     }
 
     // Assert chunk_ids are contiguous from 0..num_chunks.
-    fn assert_contiguous(assignment: &ChunkAssignment) {
+    fn assert_contiguous<PT: PubKey>(assignment: &ChunkAssignment<PT>) {
         for (i, (chunk_id, _)) in assignment.iter().enumerate() {
             assert_eq!(chunk_id, i, "chunk_ids must be contiguous from 0");
         }
     }
 
     // Assert all node indices in an assignment are within bounds.
-    fn assert_indices_valid(assignment: &ChunkAssignment, num_nodes: usize) {
+    fn assert_indices_valid<PT: PubKey>(assignment: &ChunkAssignment<PT>, num_nodes: usize) {
         for (_, target) in assignment.iter() {
             assert!(
                 target.node_index.0 < num_nodes,
@@ -608,7 +582,7 @@ mod tests {
     #[case(1)]
     #[case(100)]
     fn test_unicast(#[case] num_chunks: usize) {
-        let assignment = ChunkAssignment::unicast(num_chunks);
+        let assignment = ChunkAssignment::unicast(node_id(0), num_chunks);
         assert_eq!(assignment.num_chunks(), num_chunks);
         assert_contiguous(&assignment);
         // all chunks target NodeIndex(0)
@@ -624,8 +598,8 @@ mod tests {
     #[test]
     fn test_materialize_single_node() {
         let node = node_id(1);
-        let assignment = ChunkAssignment::unicast(3);
-        let chunks = assignment.materialize(64, &node).unwrap();
+        let assignment = ChunkAssignment::unicast(node, 3);
+        let chunks = assignment.materialize(64).unwrap();
 
         assert_eq!(chunks.len(), 3);
         for (i, chunk) in chunks.iter().enumerate() {
@@ -640,7 +614,7 @@ mod tests {
         let partition = EvenPartition::new(vec![node_id(1), node_id(2), node_id(3)]);
         // 2 base symbols * 3 redundancy = 6 symbols
         let assignment = partition.assign(2, R3).unwrap();
-        let chunks = assignment.materialize(32, &partition).unwrap();
+        let chunks = assignment.materialize(32).unwrap();
 
         assert_eq!(chunks.len(), 6);
         // chunks should round-robin: 0->n1, 1->n2, 2->n3, 3->n1, ...
@@ -664,27 +638,25 @@ mod tests {
         // round-robin: 0->n1, 1->n2, 2->n3, 3->n1, 4->n2, 5->n3
         let expected = [1, 2, 3, 1, 2, 3];
         for (chunk_id, &n) in expected.iter().enumerate() {
-            let t = assignment.resolve_chunk_id(chunk_id, &partition).unwrap();
+            let t = assignment.resolve_chunk_id(chunk_id).unwrap();
             assert_eq!(t.recipient(), &node_id(n));
         }
 
         // out of range
-        assert!(assignment.resolve_chunk_id(6, &partition).is_none());
-        assert!(assignment
-            .resolve_chunk_id(usize::MAX, &partition)
-            .is_none());
+        assert!(assignment.resolve_chunk_id(6).is_none());
+        assert!(assignment.resolve_chunk_id(usize::MAX).is_none());
     }
 
     #[test]
     fn test_target_single_node() {
         let node = node_id(42);
-        let assignment = ChunkAssignment::unicast(3);
+        let assignment = ChunkAssignment::unicast(node, 3);
 
-        let t = assignment.resolve_chunk_id(0, &node).unwrap();
+        let t = assignment.resolve_chunk_id(0).unwrap();
         assert_eq!(t.recipient(), &node);
         assert!(t.rebroadcast_targets().is_empty());
 
-        assert!(assignment.resolve_chunk_id(3, &node).is_none());
+        assert!(assignment.resolve_chunk_id(3).is_none());
     }
 
     #[test]
@@ -694,17 +666,17 @@ mod tests {
         let assignment = partition.assign(1, R3).unwrap();
 
         // chunk 0 -> recipient n1, rebroadcast to [n2, n3]
-        let t = assignment.resolve_chunk_id(0, &partition).unwrap();
+        let t = assignment.resolve_chunk_id(0).unwrap();
         assert_eq!(t.recipient(), &node_id(1));
         assert_eq!(t.rebroadcast_targets(), vec![node_id(2), node_id(3)]);
 
         // chunk 1 -> recipient n2, rebroadcast to [n1, n3]
-        let t = assignment.resolve_chunk_id(1, &partition).unwrap();
+        let t = assignment.resolve_chunk_id(1).unwrap();
         assert_eq!(t.recipient(), &node_id(2));
         assert_eq!(t.rebroadcast_targets(), vec![node_id(1), node_id(3)]);
 
         // chunk 2 -> recipient n3, rebroadcast to [n1, n2]
-        let t = assignment.resolve_chunk_id(2, &partition).unwrap();
+        let t = assignment.resolve_chunk_id(2).unwrap();
         assert_eq!(t.recipient(), &node_id(3));
         assert_eq!(t.rebroadcast_targets(), vec![node_id(1), node_id(2)]);
     }
@@ -714,7 +686,7 @@ mod tests {
         let partition = EvenPartition::new(vec![node_id(1), node_id(2)]);
         let assignment = partition.assign(1, R3).unwrap();
 
-        assert!(assignment.resolve_chunk_id(99, &partition).is_none());
+        assert!(assignment.resolve_chunk_id(99).is_none());
     }
 
     // ---------------------------------------------------------------
@@ -777,16 +749,13 @@ mod tests {
     #[test]
     fn test_even_partition_shuffle() {
         let mut partition = EvenPartition::new(vec![node_id(1), node_id(2), node_id(3)]);
-        let before: Vec<_> = (0..3)
-            .map(|i| *partition.get(NodeIndex(i)).unwrap())
-            .collect();
+        let before = partition.nodes.clone();
 
         partition.shuffle([42u8; 32]);
-        let after: Vec<_> = (0..3)
-            .map(|i| *partition.get(NodeIndex(i)).unwrap())
-            .collect();
+        let after = partition.nodes.clone();
 
         // same elements, different order (with overwhelming probability)
+        assert_ne!(before, after);
         assert_eq!(before.len(), after.len());
         for node in &before {
             assert!(after.contains(node));
@@ -806,33 +775,22 @@ mod tests {
         validators: Vec<(NodeId<PT>, f64)>,
     }
 
-    impl<PT: PubKey> OrderedNodes<PT> for F64StakePartition<PT> {
-        fn get(&self, index: NodeIndex) -> Option<&NodeId<PT>> {
-            self.validators.get(index.0).map(|(node_id, _)| node_id)
-        }
-
-        fn shuffle(&mut self, seed: [u8; 32]) {
-            let mut rng = ChaCha20Rng::from_seed(seed);
-            self.validators.shuffle(&mut rng);
-        }
-
-        fn len(&self) -> usize {
-            self.validators.len()
-        }
-    }
-
     impl<PT: PubKey> F64StakePartition<PT> {
         pub(super) fn from_shares(validators: Vec<(NodeId<PT>, f64)>) -> Self {
             Self { validators }
+        }
+
+        fn snapshot_nodes(&self) -> super::OrderedNodes<PT> {
+            self.validators.iter().map(|(n, _)| *n).collect()
         }
 
         pub(super) fn assign(
             &self,
             num_base_symbols: usize,
             redundancy: Redundancy,
-        ) -> Result<ChunkAssignment> {
+        ) -> Result<ChunkAssignment<PT>> {
             if self.validators.is_empty() {
-                return Ok(ChunkAssignment::default());
+                return Ok(ChunkAssignment::with_capacity(0, self.snapshot_nodes()));
             }
             self.assign_round_robin(num_base_symbols, redundancy)
         }
@@ -851,14 +809,14 @@ mod tests {
             &self,
             num_base_symbols: usize,
             redundancy: Redundancy,
-        ) -> Result<ChunkAssignment> {
+        ) -> Result<ChunkAssignment<PT>> {
             let capacity = self
                 .num_chunks_hint(num_base_symbols, redundancy)
                 .ok_or(BuildError::TooManyChunks)?;
             let num_scaled_symbols = redundancy
                 .scale(num_base_symbols)
                 .ok_or(BuildError::TooManyChunks)?;
-            let mut assignment = ChunkAssignment::with_capacity(self.validators.len(), capacity);
+            let mut assignment = ChunkAssignment::with_capacity(capacity, self.snapshot_nodes());
 
             let mut curr_chunk_id = 0;
             for (i, (_node_id, share)) in self.validators.iter().enumerate() {
@@ -878,7 +836,7 @@ mod tests {
             &self,
             num_base_symbols: usize,
             redundancy: Redundancy,
-        ) -> Result<ChunkAssignment> {
+        ) -> Result<ChunkAssignment<PT>> {
             use std::collections::VecDeque;
 
             let capacity = self
@@ -887,7 +845,7 @@ mod tests {
             let num_scaled_symbols = redundancy
                 .scale(num_base_symbols)
                 .ok_or(BuildError::TooManyChunks)?;
-            let mut assignment = ChunkAssignment::with_capacity(self.validators.len(), capacity);
+            let mut assignment = ChunkAssignment::with_capacity(capacity, self.snapshot_nodes());
 
             let mut remaining: VecDeque<_> = self
                 .validators
@@ -1104,15 +1062,12 @@ mod tests {
             (node_id(3), 1),
             (node_id(4), 1),
         ]);
-        let before: Vec<_> = (0..4)
-            .map(|i| *partition.get(NodeIndex(i)).unwrap())
-            .collect();
+        let before: Vec<_> = partition.validators.iter().map(|(n, _)| *n).collect();
 
         partition.shuffle([7u8; 32]);
-        let after: Vec<_> = (0..4)
-            .map(|i| *partition.get(NodeIndex(i)).unwrap())
-            .collect();
+        let after: Vec<_> = partition.validators.iter().map(|(n, _)| *n).collect();
 
+        assert_ne!(before, after);
         assert_eq!(before.len(), after.len());
         for node in &before {
             assert!(after.contains(node));
@@ -1231,16 +1186,16 @@ mod tests {
 
     #[test]
     fn test_broadcast_pattern() {
-        // Simulates the broadcast code path: unicast assignment
-        // materialized once per recipient.
+        // Simulates the broadcast code path: a unicast assignment
+        // built and materialized once per recipient.
         let recipients = vec![node_id(1), node_id(2), node_id(3)];
         let num_symbols = 5;
         let segment_len = 32;
 
-        let assignment = ChunkAssignment::unicast(num_symbols);
         let mut all_chunks = Vec::new();
         for recipient in &recipients {
-            all_chunks.extend(assignment.materialize(segment_len, recipient).unwrap());
+            let assignment = ChunkAssignment::unicast(*recipient, num_symbols);
+            all_chunks.extend(assignment.materialize(segment_len).unwrap());
         }
 
         // 3 recipients * 5 symbols = 15 chunks
@@ -1254,15 +1209,5 @@ mod tests {
                 assert_eq!(all_chunks[start + i].recipient().node_id(), recipient);
             }
         }
-    }
-
-    #[test]
-    fn test_broadcast_empty_recipients() {
-        let assignment = ChunkAssignment::unicast(5);
-        let all_chunks: Vec<super::Chunk<PT>> = Vec::new();
-        // no recipients -> no chunks
-        assert!(all_chunks.is_empty());
-        // but the assignment itself is valid
-        assert_eq!(assignment.num_chunks(), 5);
     }
 }

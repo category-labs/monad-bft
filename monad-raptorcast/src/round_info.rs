@@ -20,7 +20,7 @@ use monad_types::{NodeId, Round};
 
 use crate::{
     packet::{
-        assigner::{ChunkAssignment, ChunkRouting, EvenPartition, StakePartition},
+        assigner::{ChunkAssignment, ChunkRouting},
         deterministic,
     },
     udp::ValidatedChunk,
@@ -133,7 +133,7 @@ impl<PT: PubKey> RoundInfoCache<PT> {
 }
 
 pub struct PrimaryRoundInfo<PT: PubKey> {
-    encoding: Option<(deterministic::PrimaryEncoding<PT>, ChunkAssignment)>,
+    assignment: Option<ChunkAssignment<PT>>,
     commitment: Option<EncodingCommitment>,
     // more info:
     //
@@ -143,7 +143,7 @@ pub struct PrimaryRoundInfo<PT: PubKey> {
 impl<PT: PubKey> Default for PrimaryRoundInfo<PT> {
     fn default() -> Self {
         Self {
-            encoding: None,
+            assignment: None,
             commitment: None,
         }
     }
@@ -154,12 +154,12 @@ impl<PT: PubKey> PrimaryRoundInfo<PT> {
         &mut self,
         group: &PrimaryBroadcastGroup<'_, PT>,
         chunk: &ValidatedChunk<PT>,
-    ) -> Option<ChunkRouting<'_, PT, StakePartition<PT>>> {
+    ) -> Option<ChunkRouting<'_, PT>> {
         // The construction of encoding and assignment should never
         // return None on a validated chunk where the app_message_len
         // is checked to be within valid range. The try operators
         // are defensive.
-        if self.encoding.is_none() {
+        if self.assignment.is_none() {
             let encoding = deterministic::PrimaryEncoding::new(
                 chunk.encoding_scheme,
                 group,
@@ -167,15 +167,12 @@ impl<PT: PubKey> PrimaryRoundInfo<PT> {
                 chunk.unix_ts_ms,
             )
             .ok()?;
-            let assignment = encoding.make_assignment().ok()?;
-            self.encoding = Some((encoding, assignment));
+            self.assignment = Some(encoding.make_assignment().ok()?);
         }
 
-        if let Some((encoding, assignment)) = &self.encoding {
-            return assignment.resolve_chunk_id(chunk.chunk_id as usize, encoding.partition());
-        }
-
-        None
+        self.assignment
+            .as_ref()?
+            .resolve_chunk_id(chunk.chunk_id as usize)
     }
 
     // Returns None if there is a conflicting commitment suggesting
@@ -187,14 +184,14 @@ impl<PT: PubKey> PrimaryRoundInfo<PT> {
 }
 
 pub struct SecondaryGroupRoundInfo<PT: PubKey> {
-    encoding: Option<(deterministic::SecondaryEncoding<PT>, ChunkAssignment)>,
+    assignment: Option<ChunkAssignment<PT>>,
     commitment: Option<EncodingCommitment>,
 }
 
 impl<PT: PubKey> Default for SecondaryGroupRoundInfo<PT> {
     fn default() -> Self {
         Self {
-            encoding: None,
+            assignment: None,
             commitment: None,
         }
     }
@@ -205,8 +202,8 @@ impl<PT: PubKey> SecondaryGroupRoundInfo<PT> {
         &mut self,
         group: &SecondaryBroadcastGroup<'_, PT>,
         chunk: &ValidatedChunk<PT>,
-    ) -> Option<ChunkRouting<'_, PT, EvenPartition<PT>>> {
-        if self.encoding.is_none() {
+    ) -> Option<ChunkRouting<'_, PT>> {
+        if self.assignment.is_none() {
             let encoding = deterministic::SecondaryEncoding::new(
                 chunk.encoding_scheme,
                 group,
@@ -214,15 +211,12 @@ impl<PT: PubKey> SecondaryGroupRoundInfo<PT> {
                 chunk.unix_ts_ms,
             )
             .ok()?;
-            let assignment = encoding.make_assignment().ok()?;
-            self.encoding = Some((encoding, assignment));
+            self.assignment = Some(encoding.make_assignment().ok()?);
         }
 
-        if let Some((encoding, assignment)) = &self.encoding {
-            return assignment.resolve_chunk_id(chunk.chunk_id as usize, encoding.partition());
-        }
-
-        None
+        self.assignment
+            .as_ref()?
+            .resolve_chunk_id(chunk.chunk_id as usize)
     }
 
     // Returns None if there is a conflicting commitment suggesting

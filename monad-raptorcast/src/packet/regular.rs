@@ -32,7 +32,7 @@ use monad_types::NodeId;
 use rand::Rng;
 
 use super::{
-    assigner::{ChunkAssignment, EvenPartition, OrderedNodes as _, Partition as _, StakePartition},
+    assigner::{ChunkAssignment, EvenPartition, Partition as _, StakePartition},
     chunk::Chunk,
     BuildError, Result,
 };
@@ -610,8 +610,8 @@ fn generate_chunks<PT: PubKey>(
                 .scale(num_base_symbols)
                 .ok_or(BuildError::TooManyChunks)?;
             ensure!(num_symbols <= MAX_TRIPLES, BuildError::TooManyChunks);
-            let assignment = ChunkAssignment::unicast(num_symbols);
-            assignment.materialize(segment_len, *recipient)?
+            let assignment = ChunkAssignment::unicast(**recipient, num_symbols);
+            assignment.materialize(segment_len)?
         }
 
         BuildTarget::Broadcast(primary_group) => {
@@ -625,10 +625,10 @@ fn generate_chunks<PT: PubKey>(
                 .filter(|node_id| *node_id != self_node_id)
                 .cloned()
                 .collect();
-            let assignment = ChunkAssignment::unicast(num_symbols);
-            let mut chunks = Vec::with_capacity(assignment.num_chunks() * recipients.len());
+            let mut chunks = Vec::with_capacity(num_symbols * recipients.len());
             for recipient in &recipients {
-                chunks.extend(assignment.materialize(segment_len, recipient)?);
+                let assignment = ChunkAssignment::unicast(*recipient, num_symbols);
+                chunks.extend(assignment.materialize(segment_len)?);
             }
             chunks
         }
@@ -640,7 +640,7 @@ fn generate_chunks<PT: PubKey>(
             let mut partition = StakePartition::from_group(primary_group);
             partition.shuffle(derive_seed(app_message_hash));
             let assignment = partition.assign(num_base_symbols, redundancy)?;
-            assignment.materialize(segment_len, &partition)?
+            assignment.materialize(segment_len)?
         }
 
         BuildTarget::FullNodeRaptorCast {
@@ -651,7 +651,7 @@ fn generate_chunks<PT: PubKey>(
             let mut partition = EvenPartition::from_group(secondary_group);
             partition.shuffle(seed);
             let assignment = partition.assign(num_base_symbols, redundancy)?;
-            assignment.materialize(segment_len, &partition)?
+            assignment.materialize(segment_len)?
         }
     };
 
