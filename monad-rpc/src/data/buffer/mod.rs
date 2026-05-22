@@ -21,28 +21,34 @@ use std::{
     },
 };
 
-use alloy_consensus::TxEnvelope;
-use alloy_primitives::{BlockHash, Bloom, TxHash};
-use alloy_rpc_types::{Block, BlockTransactions, Transaction, TransactionReceipt};
+use alloy_primitives::{BlockHash, TxHash};
+use alloy_rpc_types::{Block, Transaction, TransactionReceipt};
 use dashmap::DashMap;
 use itertools::Itertools;
-use monad_eth_types::{BlockHeader, ReceiptWithLogIndex, TxEnvelopeWithSender};
 use monad_exec_events::BlockCommitState;
-use tokio::sync::Mutex;
 use tracing::{error, warn};
 
-use crate::{event::EventServerEvent, types::eth_json::BlockTags};
+pub use self::view::BlockBufferView;
+use crate::event::EventServerEvent;
 
-struct TxLoc {
+mod view;
+
+struct BlockBufferTxLoc {
     block_height: u64,
     tx_idx: u64,
 }
 
-/// Buffer maintains a capped buffer of blocks.
-#[derive(Clone)]
-pub struct ExecEventsBuffer {
+struct BlockBufferBlockStates {
+    voted: AtomicU64,
+    finalized: AtomicU64,
+    proposed: AtomicU64,
+}
+
+pub struct BlockBuffer {
+    block_states: Arc<BlockBufferBlockStates>,
+
     // Ring buffer holding SeqNums
-    block_heights: Arc<Mutex<VecDeque<u64>>>,
+    block_heights: VecDeque<u64>,
     // Capacity of the ring buffer
     block_heights_capacity: usize,
 
@@ -51,33 +57,37 @@ pub struct ExecEventsBuffer {
     // Maps a block by its blockhash
     block_height_by_hash: Arc<DashMap<BlockHash, u64>>,
     // Maps a transaction hash to its block location and receipt
-    tx_by_hash: Arc<DashMap<TxHash, (TxLoc, TransactionReceipt)>>,
-
-    // The latest voted block's SeqNum
-    latest_voted: Arc<AtomicU64>,
-    // The latest finalized block's SeqNum
-    latest_finalized: Arc<AtomicU64>,
-    // The latest proposed block's SeqNum
-    latest_proposed: Arc<AtomicU64>,
+    tx_by_hash: Arc<DashMap<TxHash, (BlockBufferTxLoc, TransactionReceipt)>>,
 }
 
-impl ExecEventsBuffer {
+impl BlockBuffer {
     pub fn new(capacity: usize) -> Self {
         Self {
-            block_heights: Arc::new(Mutex::new(VecDeque::with_capacity(capacity))),
+            block_states: Arc::new(BlockBufferBlockStates {
+                voted: AtomicU64::default(),
+                finalized: AtomicU64::default(),
+                proposed: AtomicU64::default(),
+            }),
+
+            block_heights: VecDeque::with_capacity(capacity),
             block_heights_capacity: capacity,
 
             block_by_height: Arc::new(DashMap::new()),
             block_height_by_hash: Arc::new(DashMap::new()),
             tx_by_hash: Arc::new(DashMap::new()),
-
-            latest_voted: Arc::new(AtomicU64::new(0)),
-            latest_finalized: Arc::new(AtomicU64::new(0)),
-            latest_proposed: Arc::new(AtomicU64::new(0)),
         }
     }
 
-    pub async fn insert(&self, block_event: EventServerEvent) {
+    pub fn create_view(&self) -> BlockBufferView {
+        BlockBufferView {
+            block_states: self.block_states.clone(),
+            block_by_height: self.block_by_height.clone(),
+            block_height_by_hash: self.block_height_by_hash.clone(),
+            tx_by_hash: self.tx_by_hash.clone(),
+        }
+    }
+
+    pub fn insert(&mut self, block_event: EventServerEvent) {
         let (commit_state, header, transactions) = match block_event {
             EventServerEvent::Block {
                 commit_state,
@@ -95,7 +105,8 @@ impl ExecEventsBuffer {
                 return;
             }
             BlockCommitState::Finalized => {
-                self.latest_finalized
+                self.block_states
+                    .finalized
                     .fetch_max(block_height, Ordering::SeqCst);
 
                 if self.block_height_by_hash.contains_key(&block_hash) {
@@ -103,14 +114,16 @@ impl ExecEventsBuffer {
                 }
             }
             BlockCommitState::Voted => {
-                let voted_block_height =
-                    self.latest_voted.fetch_max(block_height, Ordering::SeqCst);
+                let voted_block_height = self
+                    .block_states
+                    .voted
+                    .fetch_max(block_height, Ordering::SeqCst);
 
                 if block_height < voted_block_height {
                     warn!(
                         ?voted_block_height,
                         event_block_height = block_height,
-                        "ExecEventsBuffer received voted block event with lower height than existing voted block height"
+                        "BlockBuffer received voted block event with lower height than existing voted block height"
                     );
                 }
 
@@ -119,7 +132,8 @@ impl ExecEventsBuffer {
                 }
             }
             BlockCommitState::Proposed => {
-                self.latest_proposed
+                self.block_states
+                    .proposed
                     .fetch_max(block_height, Ordering::SeqCst);
             }
         }
@@ -142,7 +156,7 @@ impl ExecEventsBuffer {
                 ?block_height,
                 old_hash = ?old_block.header.hash,
                 new_hash = ?block_hash,
-                "ExecEventsBuffer received block event for existing block height, replacing old block"
+                "BlockBuffer received block event for existing block height, replacing old block"
             );
 
             // Remove old block's hash from by_hash
@@ -157,7 +171,7 @@ impl ExecEventsBuffer {
                 error!(
                     ?block_height,
                     old_hash =?old_block.header.hash,
-                    "ExecEventsBuffer stored block without full transactions"
+                    "BlockBuffer stored block without full transactions"
                 );
             }
         }
@@ -169,7 +183,7 @@ impl ExecEventsBuffer {
         {
             warn!(
                 ?block_hash,
-                "ExecEventsBuffer received block event for existing block hash"
+                "BlockBuffer received block event for existing block hash"
             );
         }
 
@@ -185,7 +199,7 @@ impl ExecEventsBuffer {
                 .insert(
                     tx_receipt.transaction_hash,
                     (
-                        TxLoc {
+                        BlockBufferTxLoc {
                             block_height,
                             tx_idx: tx_idx as u64,
                         },
@@ -196,17 +210,16 @@ impl ExecEventsBuffer {
             {
                 warn!(
                     ?tx_hash,
-                    "ExecEventsBuffer received block event with existing transaction hash"
+                    "BlockBuffer received block event with existing transaction hash"
                 );
             }
         }
 
-        let mut block_heights = self.block_heights.lock().await;
-        block_heights.push_front(block_height);
+        self.block_heights.push_front(block_height);
 
-        while block_heights.len() > self.block_heights_capacity {
-            let Some(evicted_block_height) = block_heights.pop_back() else {
-                continue;
+        while self.block_heights.len() > self.block_heights_capacity {
+            let Some(evicted_block_height) = self.block_heights.pop_back() else {
+                break;
             };
 
             if let Some((_, evicted_block)) = self.block_by_height.remove(&evicted_block_height) {
@@ -218,199 +231,16 @@ impl ExecEventsBuffer {
                         });
                     }
                     alloy_rpc_types::BlockTransactions::Hashes(_) => {
-                        error!("ExecEventsBuffer evicted block transactions contained hashes");
+                        error!("BlockBuffer evicted block transactions contained hashes");
                     }
                     alloy_rpc_types::BlockTransactions::Uncle => {
-                        error!("ExecEventsBuffer evicted block transactions were uncle");
+                        error!("BlockBuffer evicted block transactions were uncle");
                     }
                 }
 
                 self.block_height_by_hash.remove(&evicted_block.header.hash);
             }
         }
-    }
-
-    pub fn get_block_by_height(&self, height: u64) -> Option<Block> {
-        Some(self.block_by_height.get(&height)?.value().clone())
-    }
-
-    pub fn get_block_by_hash(&self, block_hash: &BlockHash) -> Option<Block> {
-        let block_height: u64 = *self.block_height_by_hash.get(block_hash)?.value();
-
-        Some(self.block_by_height.get(&block_height)?.value().clone())
-    }
-
-    pub fn latest_block(&self) -> Option<Block> {
-        let finalized_block_height = self.get_latest_finalized_block_num();
-
-        Some(
-            self.block_by_height
-                .get(&finalized_block_height)?
-                .value()
-                .clone(),
-        )
-    }
-
-    pub fn get_receipt_by_tx_hash(&self, tx_hash: &TxHash) -> Option<TransactionReceipt> {
-        Some(self.tx_by_hash.get(tx_hash)?.value().1.clone())
-    }
-
-    pub fn get_receipts_by_block_height(&self, height: u64) -> Option<Vec<TransactionReceipt>> {
-        let block = self.block_by_height.get(&height)?;
-
-        let tx_hashes = match &block.transactions {
-            BlockTransactions::Full(txs) => {
-                txs.iter().map(|tx| tx.inner.tx_hash()).collect::<Vec<_>>()
-            }
-            _ => return None,
-        };
-
-        let mut receipts = Vec::with_capacity(tx_hashes.len());
-
-        for tx_hash in tx_hashes {
-            let receipt = self.tx_by_hash.get(tx_hash)?.1.clone();
-            receipts.push(receipt);
-        }
-
-        Some(receipts)
-    }
-
-    pub fn get_bloom_filtered_header_transactions_receipts(
-        &self,
-        height: u64,
-        filter_match: impl Fn(Bloom) -> bool,
-    ) -> Option<(
-        BlockHeader,
-        Vec<TxEnvelopeWithSender>,
-        Vec<ReceiptWithLogIndex>,
-    )> {
-        let block = self.block_by_height.get(&height)?;
-
-        let header = BlockHeader {
-            hash: block.header.hash,
-            header: block.header.inner.clone(),
-        };
-
-        if !filter_match(header.header.logs_bloom) {
-            return Some((header, vec![], vec![]));
-        }
-
-        let transactions = match &block.transactions {
-            BlockTransactions::Full(txs) => txs
-                .iter()
-                .map(|tx| {
-                    let (envelope, sender) = tx.inner.clone().into_parts();
-                    TxEnvelopeWithSender {
-                        tx: envelope,
-                        sender,
-                    }
-                })
-                .collect::<Vec<_>>(),
-            _ => {
-                error!(
-                    ?height,
-                    "ExecEventsBuffer stored block without full transactions"
-                );
-
-                return None;
-            }
-        };
-
-        let mut log_index = 0u64;
-
-        let receipts = transactions
-            .iter()
-            .map(|transaction| {
-                let tx_hash = transaction.tx.tx_hash();
-
-                let Some(transaction_data) = self.tx_by_hash.get(tx_hash) else {
-                    error!(
-                        ?height,
-                        ?tx_hash,
-                        "ExecEventsBuffer stored block but transaction was not stored"
-                    );
-                    return Err(());
-                };
-
-                let transaction_receipt = &transaction_data.1;
-
-                let starting_log_index = log_index;
-
-                if let Some(first_log) = transaction_receipt.logs().first() {
-                    let Some(first_log_index) = first_log.log_index else {
-                        error!(
-                            ?height,
-                            expected_log_index = ?starting_log_index,
-                            "ExecEventsBuffer stored receipt in block where log does not have log_index"
-                        );
-                        return Err(());
-                    };
-
-                    if first_log_index != starting_log_index {
-                        error!(
-                            ?height,
-                            expected_log_index = ?starting_log_index,
-                            ?first_log_index,
-                            "ExecEventsBuffer stored receipt block with invalid log indexing"
-                        );
-                        return Err(());
-                    }
-                }
-
-                log_index += transaction_receipt.logs().len() as u64;
-
-                Ok(ReceiptWithLogIndex {
-                    receipt: transaction_receipt.inner.clone().into_primitives_receipt(),
-                    starting_log_index,
-                })
-            })
-            .collect::<Result<_, _>>();
-
-        match receipts {
-            Ok(receipts) => Some((header, transactions, receipts)),
-            Err(()) => None,
-        }
-    }
-
-    pub fn get_transaction_by_hash(&self, tx_hash: &TxHash) -> Option<Transaction<TxEnvelope>> {
-        let tx_loc = &self.tx_by_hash.get(tx_hash)?.0;
-
-        self.get_transaction_by_location(tx_loc.block_height, tx_loc.tx_idx)
-    }
-
-    pub fn get_transaction_by_location(
-        &self,
-        height: u64,
-        idx: u64,
-    ) -> Option<Transaction<TxEnvelope>> {
-        let block = self.block_by_height.get(&height)?;
-
-        if let alloy_rpc_types::BlockTransactions::Full(transactions) = &block.transactions {
-            transactions.get(idx as usize).cloned()
-        } else {
-            None
-        }
-    }
-
-    pub fn get_latest_proposed_block_num(&self) -> u64 {
-        self.latest_proposed.load(Ordering::SeqCst)
-    }
-
-    pub fn get_latest_voted_block_num(&self) -> u64 {
-        self.latest_voted.load(Ordering::SeqCst)
-    }
-
-    pub fn get_latest_finalized_block_num(&self) -> u64 {
-        self.latest_finalized.load(Ordering::SeqCst)
-    }
-}
-
-pub(super) fn block_height_from_tag(buffer: &ExecEventsBuffer, tag: &BlockTags) -> u64 {
-    match tag {
-        BlockTags::Number(n) => n.0,
-        BlockTags::Latest => buffer.get_latest_proposed_block_num(),
-        BlockTags::Safe => buffer.get_latest_voted_block_num(),
-        BlockTags::Finalized => buffer.get_latest_finalized_block_num(),
     }
 }
 
@@ -420,7 +250,7 @@ mod tests {
 
     use alloy_consensus::{
         transaction::Recovered, Eip658Value, Receipt, ReceiptEnvelope, ReceiptWithBloom,
-        SignableTransaction, TxEip1559,
+        SignableTransaction, TxEip1559, TxEnvelope,
     };
     use alloy_primitives::{Address, Bloom, TxKind, B256};
     use alloy_rpc_types::TransactionReceipt;
@@ -429,14 +259,19 @@ mod tests {
     use monad_types::BlockId;
 
     use super::*;
-    use crate::types::{eth_json::MonadNotification, serialize::JsonSerialized};
+    use crate::types::{
+        eth_json::{BlockTags, MonadNotification},
+        serialize::JsonSerialized,
+    };
 
-    #[tokio::test]
-    async fn test_many_proposed_blocks() {
+    #[test]
+    fn test_many_proposed_blocks() {
         // Buffer receives many proposed blocks in a row and should handle it correctly.
         // Make sure that the ring buffer is correctly updated and the cached values are correctly updated and removed.
         let capacity = 3;
-        let buffer = ExecEventsBuffer::new(capacity);
+        let mut buffer = BlockBuffer::new(capacity);
+
+        let view = buffer.create_view();
 
         // Generate and propose (capacity + 2) blocks, so oldest blocks are evicted from the ring.
         let total_blocks = capacity + 2;
@@ -445,23 +280,24 @@ mod tests {
             let block_hash = B256::from([i as u8; 32]);
 
             let event = create_test_block_event(height, block_hash, &[0]);
-            buffer.insert(event).await;
+            buffer.insert(event);
 
             // Check that the latest proposed height is correct.
-            assert_eq!(buffer.get_latest_proposed_block_num(), height);
-            assert_eq!(block_height_from_tag(&buffer, &BlockTags::Latest), height);
+            assert_eq!(view.get_latest_proposed_block_num(), height);
+            assert_eq!(
+                view.resolve_block_height_from_tag(&BlockTags::Latest),
+                height
+            );
 
             // Verify the ring buffer length
-            let ring = buffer.block_heights.lock().await;
             let expected_ring_len = if i < capacity { i + 1 } else { capacity };
             assert_eq!(
-                ring.len(),
+                buffer.block_heights.len(),
                 expected_ring_len,
                 "Ring buffer length should be {} at iteration {}",
                 expected_ring_len,
                 i
             );
-            drop(ring); // Release the lock before continuing
 
             // Verify by_height and by_hash buffer lengths match ring buffer
             assert_eq!(
@@ -497,14 +333,12 @@ mod tests {
         }
 
         // Verify final ring buffer length
-        let ring = buffer.block_heights.lock().await;
         assert_eq!(
-            ring.len(),
+            buffer.block_heights.len(),
             capacity,
             "Final ring buffer length should be {}",
             capacity
         );
-        drop(ring);
 
         // Verify final by_height and by_hash buffer lengths
         assert_eq!(
@@ -541,19 +375,21 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_duplicate_height_different_hash() {
+    #[test]
+    fn test_duplicate_height_different_hash() {
         // Test inserting two proposed blocks with the same height but different hashes.
 
         let capacity = 5;
-        let buffer = ExecEventsBuffer::new(capacity);
+        let mut buffer = BlockBuffer::new(capacity);
+
+        let view = buffer.create_view();
 
         let height = 1u64;
 
         // Create first block at height 1 with hash A
         let block_hash_a = B256::from([1u8; 32]);
         let event_a = create_test_block_event(height, block_hash_a, &[0]);
-        buffer.insert(event_a).await;
+        buffer.insert(event_a);
 
         // Capture block A's tx hash before it gets replaced
         let tx_hash_a = match &buffer.block_by_height.get(&height).unwrap().transactions {
@@ -563,29 +399,29 @@ mod tests {
 
         // Verify initial state
         assert_eq!(
-            buffer.block_by_height.len(),
+            view.block_by_height.len(),
             1,
             "Should have 1 entry in by_height after first insert"
         );
         assert_eq!(
-            buffer.block_height_by_hash.len(),
+            view.block_height_by_hash.len(),
             1,
             "Should have 1 entry in by_hash after first insert"
         );
         assert_eq!(
-            buffer.tx_by_hash.len(),
+            view.tx_by_hash.len(),
             1,
             "Should have 1 entry in tx_loc_by_hash after first insert"
         );
         assert!(
-            buffer.get_transaction_by_hash(&tx_hash_a).is_some(),
+            view.get_transaction_by_hash(&tx_hash_a).is_some(),
             "Block A's transaction should be findable by hash"
         );
 
         // Create second block at the same height 1 but with different hash B
         let block_hash_b = B256::from([2u8; 32]);
         let event_b = create_test_block_event(height, block_hash_b, &[0]);
-        buffer.insert(event_b).await;
+        buffer.insert(event_b);
 
         // Capture block B's tx hash
         let tx_hash_b = match &buffer.block_by_height.get(&height).unwrap().transactions {
@@ -622,26 +458,28 @@ mod tests {
             "tx_loc_by_hash should have exactly 1 entry after replacement"
         );
         assert!(
-            buffer.get_transaction_by_hash(&tx_hash_a).is_none(),
+            view.get_transaction_by_hash(&tx_hash_a).is_none(),
             "Block A's transaction should be removed from tx_loc_by_hash after replacement"
         );
         assert!(
-            buffer.get_transaction_by_hash(&tx_hash_b).is_some(),
+            view.get_transaction_by_hash(&tx_hash_b).is_some(),
             "Block B's transaction should be findable by hash after replacement"
         );
     }
 
-    #[tokio::test]
-    async fn test_bloom_mismatch_returns_empty_txs_and_receipts() {
-        let buffer = ExecEventsBuffer::new(5);
+    #[test]
+    fn test_bloom_mismatch_returns_empty_txs_and_receipts() {
+        let mut buffer = BlockBuffer::new(5);
+        let view = buffer.create_view();
+
         let height = 1u64;
         let block_hash = B256::from([1u8; 32]);
 
         let event = create_test_block_event(height, block_hash, &[0]);
-        buffer.insert(event).await;
+        buffer.insert(event);
 
         let always_reject_filter = |_bloom: Bloom| false;
-        let (header, transactions, receipts) = buffer
+        let (header, transactions, receipts) = view
             .get_bloom_filtered_header_transactions_receipts(height, always_reject_filter)
             .expect("should return Some for a known block");
 
@@ -650,18 +488,20 @@ mod tests {
         assert!(receipts.is_empty());
     }
 
-    #[tokio::test]
-    async fn test_bloom_match_returns_receipts_with_correct_log_indices() {
-        let buffer = ExecEventsBuffer::new(5);
+    #[test]
+    fn test_bloom_match_returns_receipts_with_correct_log_indices() {
+        let mut buffer = BlockBuffer::new(5);
+        let view = buffer.create_view();
+
         let height = 1u64;
         let block_hash = B256::from([1u8; 32]);
 
         let logs_per_transaction = [2, 3, 0];
         let event = create_test_block_event(height, block_hash, &logs_per_transaction);
-        buffer.insert(event).await;
+        buffer.insert(event);
 
         let always_accept_filter = |_bloom: Bloom| true;
-        let (header, transactions, receipts) = buffer
+        let (header, transactions, receipts) = view
             .get_bloom_filtered_header_transactions_receipts(height, always_accept_filter)
             .expect("should return Some for a known block");
 
@@ -678,13 +518,14 @@ mod tests {
         assert_eq!(receipts[2].receipt.logs().len(), 0);
     }
 
-    #[tokio::test]
-    async fn test_bloom_filter_returns_none_for_unknown_height() {
-        let buffer = ExecEventsBuffer::new(5);
+    #[test]
+    fn test_bloom_filter_returns_none_for_unknown_height() {
+        let mut buffer = BlockBuffer::new(5);
 
         let unknown_height = 999;
-        let result =
-            buffer.get_bloom_filtered_header_transactions_receipts(unknown_height, |_| true);
+        let result = buffer
+            .create_view()
+            .get_bloom_filtered_header_transactions_receipts(unknown_height, |_| true);
         assert!(result.is_none());
     }
 

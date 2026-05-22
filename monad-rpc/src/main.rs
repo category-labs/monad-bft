@@ -25,7 +25,7 @@ use monad_pprof::start_pprof_server;
 use monad_rpc::{
     comparator::RpcComparator,
     data::{
-        buffer::ExecEventsBuffer,
+        buffer::BlockBuffer,
         eth_call_handler::{EthCallHandler, EthCallHandlerConfig},
         DataProvider,
     },
@@ -326,14 +326,15 @@ async fn main() -> std::io::Result<()> {
         (None, None)
     };
 
-    let event_buffer = if let Some(mut events_for_cache) = events_for_cache {
-        let event_buffer = Arc::new(ExecEventsBuffer::new(1024));
+    let event_buffer_view = if let Some(mut events_for_cache) = events_for_cache {
+        let mut event_buffer = BlockBuffer::new(1024);
 
-        let event_buffer2 = event_buffer.clone();
+        let event_buffer_view = event_buffer.create_view();
+
         tokio::spawn(async move {
             loop {
                 match events_for_cache.recv().await {
-                    Ok(event) => event_buffer2.insert(event).await,
+                    Ok(event) => event_buffer.insert(event),
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(lag_count)) => {
                         warn!(
                             ?lag_count,
@@ -348,13 +349,13 @@ async fn main() -> std::io::Result<()> {
             }
         });
 
-        Some(event_buffer)
+        Some(event_buffer_view)
     } else {
         None
     };
 
     let data_provider =
-        triedb_env.map(|t| DataProvider::new(event_buffer, Arc::new(t), archive_reader));
+        triedb_env.map(|t| DataProvider::new(event_buffer_view, Arc::new(t), archive_reader));
 
     let rpc_comparator: Option<RpcComparator> = args
         .rpc_comparison_endpoint
