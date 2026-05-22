@@ -26,6 +26,7 @@ use monad_rpc::{
     comparator::RpcComparator,
     data::{
         buffer::BlockBuffer,
+        debug_trace_handler::DebugTraceHandler,
         eth_call_handler::{EthCallHandler, EthCallHandlerConfig},
         DataProvider,
     },
@@ -361,9 +362,13 @@ async fn main() -> std::io::Result<()> {
 
     let enable_websockets = event_server_client.is_some();
 
+    let debug_trace_handler =
+        DebugTraceHandler::new(args.debug_trace_max_concurrent_requests as usize);
+
     let app_state = MonadRpcResources::new(
         txpool_bridge_client,
         eth_call_handler,
+        debug_trace_handler,
         node_config.chain_id,
         data_provider,
         event_server_client.clone(),

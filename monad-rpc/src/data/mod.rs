@@ -59,6 +59,7 @@ use crate::{
 };
 
 pub mod buffer;
+pub mod debug_trace_handler;
 pub mod eth_call_handler;
 mod source;
 

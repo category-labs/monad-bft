@@ -48,6 +48,7 @@ use crate::{
     types::{
         eth_json::{BlockTagOrHash, MonadCreateAccessListResult},
         ethhex,
+        heuristic_size::serialized_size_at_most,
         jsonrpc::{JsonRpcError, JsonRpcResult},
     },
 };
@@ -745,7 +746,8 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
     method = "debug_traceCall",
     ignore = "eth_call_handler_config",
     ignore = "eth_call_executor",
-    ignore = "chain_id"
+    ignore = "chain_id",
+    ignore = "max_response_size"
 )]
 #[allow(non_snake_case)]
 pub async fn monad_debug_traceCall<T: Triedb + TriedbPath>(
@@ -753,6 +755,7 @@ pub async fn monad_debug_traceCall<T: Triedb + TriedbPath>(
     eth_call_handler_config: &EthCallHandlerConfig,
     eth_call_executor: &EthCallExecutor,
     chain_id: u64,
+    max_response_size: usize,
     params: MonadDebugTraceCallParams,
 ) -> JsonRpcResult<Box<RawValue>> {
     debug!(?params, "monad_debug_traceCall");
@@ -787,6 +790,9 @@ pub async fn monad_debug_traceCall<T: Triedb + TriedbPath>(
                 &tracer_params,
             )
             .await?;
+            if let Some(f) = &frame {
+                serialized_size_at_most(f, max_response_size)?;
+            }
             serde_json::value::to_raw_value(&frame).map_err(|e| {
                 JsonRpcError::internal_error(format!("json serialization error: {}", e))
             })
@@ -795,6 +801,7 @@ pub async fn monad_debug_traceCall<T: Triedb + TriedbPath>(
         MonadTracer::PreStateTracer | MonadTracer::StateDiffTracer => {
             let v: serde_cbor::Value = serde_cbor::from_slice(&raw_payload)
                 .map_err(|e| JsonRpcError::internal_error(format!("cbor decode error: {}", e)))?;
+            serialized_size_at_most(&v, max_response_size)?;
             serde_json::value::to_raw_value(&v).map_err(|e| {
                 JsonRpcError::internal_error(format!("json serialization error: {}", e))
             })

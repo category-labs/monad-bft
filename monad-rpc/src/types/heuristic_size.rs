@@ -17,9 +17,65 @@ use alloy_consensus::TxEnvelope;
 use alloy_primitives::FixedBytes;
 use alloy_rlp::Encodable;
 use alloy_rpc_types::Log;
+use serde::Serialize;
+
+use crate::types::jsonrpc::JsonRpcError;
 
 pub trait HeuristicSize {
     fn heuristic_json_len(&self) -> usize;
+}
+
+/// Returns the JSON-serialized byte length of `value`, aborting early once the running count
+/// exceeds `max_size` (returns [`JsonRpcError::max_size_exceeded`] in that case).
+///
+/// Prefer a [`HeuristicSize`] impl when the type is flat and stable — closed-form arithmetic
+/// is cheaper and pre-empts the work that produces the response. Use this helper when:
+///
+/// - the type is recursive (e.g. `MonadCallFrame`'s `calls` tree), so a `HeuristicSize` impl
+///   would need to walk it anyway, or
+/// - the type has many `skip_serializing_if`/`rename`/`skip` attributes that a hand-written
+///   heuristic would duplicate (and silently drift from) on every schema change.
+///
+/// The check counts bytes via a [`std::io::Write`] sink rather than materializing the JSON,
+/// so it doesn't allocate the serialized form just to measure it.
+pub fn serialized_size_at_most<T: Serialize>(
+    value: &T,
+    max_size: usize,
+) -> Result<usize, JsonRpcError> {
+    struct LimitedCounter {
+        count: usize,
+        limit: usize,
+        exceeded: bool,
+    }
+
+    impl std::io::Write for LimitedCounter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.count = self.count.saturating_add(buf.len());
+            if self.count > self.limit {
+                self.exceeded = true;
+                return Err(std::io::Error::other("response exceeds size limit"));
+            }
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let mut counter = LimitedCounter {
+        count: 0,
+        limit: max_size,
+        exceeded: false,
+    };
+    match serde_json::to_writer(&mut counter, value) {
+        Ok(()) => Ok(counter.count),
+        Err(_) if counter.exceeded => Err(JsonRpcError::max_size_exceeded()),
+        Err(e) => Err(JsonRpcError::internal_error(format!(
+            "serialization error: {}",
+            e
+        ))),
+    }
 }
 
 impl HeuristicSize for String {

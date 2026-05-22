@@ -121,6 +121,11 @@ pub struct Cli {
     #[arg(long, default_value_t = 20)]
     pub eth_trace_block_max_concurrent_requests: u32,
 
+    /// Set the max concurrent `debug_trace*` block/transaction requests served from triedb
+    /// (CallTracer reads, not EVM replay). Separate from the eth_call semaphore.
+    #[arg(long, default_value_t = 20)]
+    pub debug_trace_max_concurrent_requests: u32,
+
     /// Set the number of threads used for trace operations (shared by block and transaction execution)
     #[arg(long, default_value_t = 1)]
     pub eth_trace_block_executor_threads: u32,

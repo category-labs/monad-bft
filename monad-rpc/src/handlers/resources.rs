@@ -23,7 +23,9 @@ use tracing_actix_web::RootSpanBuilder;
 
 use crate::{
     comparator::RpcComparator,
-    data::{eth_call_handler::EthCallHandler, DataProvider},
+    data::{
+        debug_trace_handler::DebugTraceHandler, eth_call_handler::EthCallHandler, DataProvider,
+    },
     event::EventServerClient,
     middleware::Metrics,
     txpool::EthTxPoolBridgeClient,
@@ -33,6 +35,7 @@ use crate::{
 pub struct MonadRpcResources {
     pub txpool_bridge_client: Option<EthTxPoolBridgeClient>,
     pub eth_call_handler: Option<EthCallHandler>,
+    pub debug_trace_handler: DebugTraceHandler,
     pub chain_id: u64,
     pub data_provider: Option<DataProvider<TriedbEnv>>,
     pub event_server_client: Option<EventServerClient>,
@@ -54,6 +57,7 @@ impl MonadRpcResources {
     pub fn new(
         txpool_bridge_client: Option<EthTxPoolBridgeClient>,
         eth_call_handler: Option<EthCallHandler>,
+        debug_trace_handler: DebugTraceHandler,
         chain_id: u64,
         data_provider: Option<DataProvider<TriedbEnv>>,
         event_server_client: Option<EventServerClient>,
@@ -72,6 +76,7 @@ impl MonadRpcResources {
         Self {
             txpool_bridge_client,
             eth_call_handler,
+            debug_trace_handler,
             chain_id,
             data_provider,
             event_server_client,

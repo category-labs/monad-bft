@@ -35,7 +35,7 @@ use crate::{
             UnformattedData,
         },
         ethhex,
-        heuristic_size::HeuristicSize,
+        heuristic_size::{serialized_size_at_most, HeuristicSize},
         jsonrpc::{ChainStateResultExt, JsonRpcError, JsonRpcResult},
     },
 };
@@ -444,11 +444,12 @@ pub struct MonadDebugTraceBlockByHashParams {
     pub tracer: TracerObject,
 }
 
-#[rpc(method = "debug_traceBlockByHash")]
+#[rpc(method = "debug_traceBlockByHash", ignore = "max_response_size")]
 #[allow(non_snake_case)]
 /// Returns the tracing result by executing all transactions in the block specified by the block hash with a tracer.
 pub async fn monad_debug_traceBlockByHash<T: Triedb>(
     data_provider: &DataProvider<T>,
+    max_response_size: usize,
     params: MonadDebugTraceBlockByHashParams,
 ) -> JsonRpcResult<Vec<MonadDebugTraceBlockResult>> {
     trace!("monad_debugTraceBlockByHash: {params:?}");
@@ -465,6 +466,7 @@ pub async fn monad_debug_traceBlockByHash<T: Triedb>(
         tx_hashes,
         call_frames,
         &params.tracer,
+        max_response_size,
     )
     .await
 }
@@ -483,11 +485,12 @@ pub struct MonadDebugTraceBlockResult {
     result: MonadCallFrame,
 }
 
-#[rpc(method = "debug_traceBlockByNumber")]
+#[rpc(method = "debug_traceBlockByNumber", ignore = "max_response_size")]
 #[allow(non_snake_case)]
 /// Returns the tracing result by executing all transactions in the block specified by the block number with a tracer.
 pub async fn monad_debug_traceBlockByNumber<T: Triedb>(
     data_provider: &DataProvider<T>,
+    max_response_size: usize,
     params: MonadDebugTraceBlockByNumberParams,
 ) -> JsonRpcResult<Vec<MonadDebugTraceBlockResult>> {
     trace!("monad_debugTraceBlockByNumber: {params:?}");
@@ -504,15 +507,17 @@ pub async fn monad_debug_traceBlockByNumber<T: Triedb>(
         tx_hashes,
         call_frames,
         &params.tracer,
+        max_response_size,
     )
     .await
 }
 
-#[rpc(method = "debug_traceTransaction")]
+#[rpc(method = "debug_traceTransaction", ignore = "max_response_size")]
 #[allow(non_snake_case)]
 /// Returns all traces of a given transaction.
 pub async fn monad_debug_traceTransaction<T: Triedb>(
     data_provider: &DataProvider<T>,
+    max_response_size: usize,
     params: MonadDebugTraceTransactionParams,
 ) -> JsonRpcResult<Option<MonadCallFrame>> {
     trace!("monad_eth_debugTraceTransaction: {params:?}");
@@ -527,13 +532,17 @@ pub async fn monad_debug_traceTransaction<T: Triedb>(
     };
 
     let rlp_call_frame = &mut call_frame.as_slice();
-    decode_call_frame(
+    let result = decode_call_frame(
         &data_provider.triedb_env,
         rlp_call_frame,
         block_key,
         &params.tracer,
     )
-    .await
+    .await?;
+    if let Some(frame) = &result {
+        serialized_size_at_most(frame, max_response_size)?;
+    }
+    Ok(result)
 }
 
 async fn decode_block_call_frames<T: Triedb>(
@@ -542,8 +551,10 @@ async fn decode_block_call_frames<T: Triedb>(
     tx_hashes: Vec<alloy_primitives::TxHash>,
     call_frames: Vec<Vec<u8>>,
     tracer: &TracerObject,
+    max_response_size: usize,
 ) -> JsonRpcResult<Vec<MonadDebugTraceBlockResult>> {
     let mut resp = Vec::new();
+    let mut accumulated_size: usize = 0;
 
     for (call_frame, tx_id) in call_frames.into_iter().zip(tx_hashes.into_iter()) {
         let rlp_call_frame = &mut call_frame.as_slice();
@@ -551,10 +562,18 @@ async fn decode_block_call_frames<T: Triedb>(
         else {
             return Err(JsonRpcError::internal_error("traces not found".to_string()));
         };
-        resp.push(MonadDebugTraceBlockResult {
+        let result = MonadDebugTraceBlockResult {
             tx_hash: FixedData::<32>::from(tx_id),
             result: traces,
-        });
+        };
+
+        // Enforce a running cumulative budget across the block's transactions. The remaining
+        // budget shrinks each iteration; `serialized_size_at_most` rejects as soon as a tx
+        // would push the total over the cap.
+        let remaining = max_response_size.saturating_sub(accumulated_size);
+        let result_size = serialized_size_at_most(&result, remaining)?;
+        accumulated_size = accumulated_size.saturating_add(result_size);
+        resp.push(result);
     }
     Ok(resp)
 }
@@ -903,6 +922,7 @@ mod tests {
         let data_provider = DataProvider::new(None, Arc::new(mock_triedb), None);
         let resp = monad_debug_traceTransaction(
             &data_provider,
+            usize::MAX,
             MonadDebugTraceTransactionParams {
                 tx_hash: FixedData::<32>([0u8; 32]),
                 tracer: TracerObject::default(),
@@ -960,6 +980,7 @@ mod tests {
         let data_provider = DataProvider::new(None, Arc::new(mock_triedb), None);
         let resp: Option<MonadCallFrame> = monad_debug_traceTransaction(
             &data_provider,
+            usize::MAX,
             MonadDebugTraceTransactionParams {
                 tx_hash: FixedData::<32>([0u8; 32]),
                 tracer: TracerObject::default(),
@@ -1013,6 +1034,7 @@ mod tests {
         let data_provider = DataProvider::new(None, Arc::new(mock_triedb), None);
         let resp: Option<MonadCallFrame> = monad_debug_traceTransaction(
             &data_provider,
+            usize::MAX,
             MonadDebugTraceTransactionParams {
                 tx_hash: FixedData::<32>([0u8; 32]),
                 tracer: TracerObject {
@@ -1119,6 +1141,7 @@ mod tests {
         let data_provider = DataProvider::new(None, Arc::new(mock_triedb), None);
         let resp: Option<MonadCallFrame> = monad_debug_traceTransaction(
             &data_provider,
+            usize::MAX,
             MonadDebugTraceTransactionParams {
                 tx_hash: FixedData::<32>([0u8; 32]),
                 tracer: TracerObject {
@@ -1172,6 +1195,7 @@ mod tests {
         let data_provider = DataProvider::new(None, Arc::new(mock_triedb), None);
         let with_logs_resp = monad_debug_traceTransaction(
             &data_provider,
+            usize::MAX,
             MonadDebugTraceTransactionParams {
                 tx_hash: FixedData::<32>([0u8; 32]),
                 tracer: TracerObject {
@@ -1194,6 +1218,7 @@ mod tests {
 
         let no_logs_resp = monad_debug_traceTransaction(
             &data_provider,
+            usize::MAX,
             MonadDebugTraceTransactionParams {
                 tx_hash: FixedData::<32>([0u8; 32]),
                 tracer: TracerObject {
@@ -1269,6 +1294,90 @@ mod tests {
         assert_eq!(result.receipts.len(), 1);
         let expected_receipt = "0x02f9010801825208b9010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000c0";
         assert_eq!(result.receipts[0], expected_receipt);
+    }
+
+    #[tokio::test]
+    async fn debug_block_call_frames_cumulative_size_exceeded() {
+        // Two single-frame traces; each individually fits under `max_response_size`, but the
+        // cumulative size of both exceeds the cap. This exercises the running budget in
+        // `decode_block_call_frames` that this PR introduces — without the cumulative check,
+        // both frames would be materialized before the post-batch limit fires.
+        use monad_triedb_utils::triedb_env::{BlockKey, FinalizedBlockKey};
+
+        let frame_bytes = encode_trace(vec![make_frame_with_positions(1, &[0])]);
+        let mock_triedb = mock_triedb::MockTriedb::default();
+        let block_key = BlockKey::Finalized(FinalizedBlockKey(SeqNum(1)));
+
+        // Measure the size of one tx's serialized result so we can pick a `max_response_size`
+        // that admits one but not two.
+        let frame_decoded = decode_call_frame(
+            &mock_triedb,
+            &mut frame_bytes.as_slice(),
+            block_key,
+            &TracerObject::default(),
+        )
+        .await
+        .unwrap()
+        .expect("decoded frame should be present");
+        let wrapped = MonadDebugTraceBlockResult {
+            tx_hash: FixedData::<32>([0u8; 32]),
+            result: frame_decoded,
+        };
+        let one_tx_size = serde_json::to_string(&wrapped).unwrap().len();
+        // Budget admits the first tx but not the cumulative pair.
+        let max_response_size = one_tx_size + (one_tx_size / 2);
+
+        let error = decode_block_call_frames(
+            &mock_triedb,
+            block_key,
+            vec![
+                alloy_primitives::TxHash::ZERO,
+                alloy_primitives::TxHash::ZERO,
+            ],
+            vec![frame_bytes.clone(), frame_bytes],
+            &TracerObject::default(),
+            max_response_size,
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(error, JsonRpcError::max_size_exceeded());
+    }
+
+    #[tokio::test]
+    async fn debug_trace_transaction_max_size_exceeded() {
+        // Single-frame trace; with max_response_size = 1 byte we must hit the size limit
+        // regardless of payload contents.
+        let frame = encode_trace(vec![make_frame_with_positions(1, &[0])]);
+        let mut mock_triedb = mock_triedb::MockTriedb::default();
+        mock_triedb.set_transaction_location_by_hash(
+            EthTxHash::default(),
+            TransactionLocation {
+                block_num: 1,
+                tx_index: 0,
+            },
+        );
+        mock_triedb.set_call_frame(
+            TransactionLocation {
+                block_num: 1,
+                tx_index: 0,
+            },
+            frame,
+        );
+
+        let data_provider = DataProvider::new(None, Arc::new(mock_triedb), None);
+        let error = monad_debug_traceTransaction(
+            &data_provider,
+            1,
+            MonadDebugTraceTransactionParams {
+                tx_hash: FixedData::<32>([0u8; 32]),
+                tracer: TracerObject::default(),
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(error, JsonRpcError::max_size_exceeded());
     }
 
     #[tokio::test]

@@ -289,7 +289,12 @@ async fn debug_traceBlockByHash(
             .await
             .map(serialize_result)?;
     }
-    monad_debug_traceBlockByHash(data_provider, params)
+    // CallTracer reads call frames from triedb rather than running the EVM, but block-level
+    // traces can still materialize hundreds of MB. Gate on the dedicated debug-trace
+    // semaphore so a 1000-element batch can't fan out unbounded. Permit drops at scope end.
+    let _permit = app_state.debug_trace_handler.acquire()?;
+    let max_response_size = app_state.max_response_size as usize;
+    monad_debug_traceBlockByHash(data_provider, max_response_size, params)
         .await
         .map(serialize_result)?
 }
@@ -308,8 +313,9 @@ async fn debug_traceBlockByNumber(
             .await
             .map(serialize_result)?;
     }
-
-    monad_debug_traceBlockByNumber(data_provider, params)
+    let _permit = app_state.debug_trace_handler.acquire()?;
+    let max_response_size = app_state.max_response_size as usize;
+    monad_debug_traceBlockByNumber(data_provider, max_response_size, params)
         .await
         .map(serialize_result)?
 }
@@ -325,6 +331,7 @@ async fn debug_traceCall(
     let params = serde_json::from_str(params.get()).invalid_params()?;
     let permit = eth_call_handler.acquire(request_id).await?;
 
+    let max_response_size = app_state.max_response_size as usize;
     permit
         .execute(|eth_call_handler_config, executor| {
             monad_debug_traceCall(
@@ -332,6 +339,7 @@ async fn debug_traceCall(
                 eth_call_handler_config,
                 executor,
                 app_state.chain_id,
+                max_response_size,
                 params,
             )
         })
@@ -353,8 +361,9 @@ async fn debug_traceTransaction(
             .await
             .map(serialize_result)?;
     }
-
-    monad_debug_traceTransaction(data_provider, params)
+    let _permit = app_state.debug_trace_handler.acquire()?;
+    let max_response_size = app_state.max_response_size as usize;
+    monad_debug_traceTransaction(data_provider, max_response_size, params)
         .await
         .map(serialize_result)?
 }
