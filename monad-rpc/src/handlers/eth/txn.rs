@@ -13,12 +13,13 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::time::Duration;
+use std::{pin::pin, time::Duration};
 
 use alloy_consensus::{Transaction as _, TxEnvelope};
 use alloy_eips::Decodable2718;
-use alloy_primitives::{Address, FixedBytes, TxHash};
-use alloy_rpc_types::{Filter, TransactionReceipt};
+use alloy_primitives::{Address, FixedBytes};
+use alloy_rpc_types::Filter;
+use monad_exec_events::BlockCommitState;
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::Triedb;
 use schemars::JsonSchema;
@@ -27,13 +28,14 @@ use tracing::{debug, error, trace, warn};
 
 use crate::{
     data::DataProvider,
+    event::{EventServerClient, EventServerEvent},
     txpool::{EthTxPoolBridgeClient, TxStatus},
     types::{
         eth_json::{
             BlockTagOrHash, BlockTags, EthHash, MonadLog, MonadTransaction,
             MonadTransactionReceipt, Quantity, UnformattedData,
         },
-        jsonrpc::{ChainStateResultExt as _, ChainStateResultMap, JsonRpcError, JsonRpcResult},
+        jsonrpc::{ChainStateResultMap, JsonRpcError, JsonRpcResult},
     },
 };
 
@@ -241,49 +243,15 @@ pub struct MonadEthSendRawTransactionSyncParams {
     timeout_ms: Option<u64>,
 }
 
-/// Poll interval in milliseconds for checking receipt availability
-const RECEIPT_POLL_INTERVAL_MS: u64 = 100;
-/// Polls for transaction receipt with timeout
-async fn poll_for_receipt<T: Triedb>(
-    data_provider: &DataProvider<T>,
-    tx_hash: TxHash,
-    timeout_ms: u64,
-) -> Result<TransactionReceipt, JsonRpcError> {
-    let start_time = tokio::time::Instant::now();
-    let timeout = Duration::from_millis(timeout_ms);
-    let poll_interval = Duration::from_millis(RECEIPT_POLL_INTERVAL_MS);
-
-    loop {
-        if let Some(receipt) = data_provider
-            .get_transaction_receipt(&tx_hash)
-            .await
-            .to_jsonrpc_result()?
-        {
-            return Ok(receipt);
-        }
-
-        // Not found yet, check timeout
-        if start_time.elapsed() >= timeout {
-            // EIP-7966: Error code 4 with tx hash in data
-            return Err(JsonRpcError::tx_sync_timeout(
-                tx_hash.to_string(),
-                timeout_ms,
-            ));
-        }
-
-        tokio::time::sleep(poll_interval).await;
-    }
-}
-
 #[rpc(
     method = "eth_sendRawTransactionSync",
-    ignore = "txpool_bridge_client,data_provider,chain_id,allow_unprotected_txs,eth_send_raw_transaction_sync_default_timeout_ms,eth_send_raw_transaction_sync_max_timeout_ms"
+    ignore = "txpool_bridge_client,event_server_client,chain_id,allow_unprotected_txs,eth_send_raw_transaction_sync_default_timeout_ms,eth_send_raw_transaction_sync_max_timeout_ms"
 )]
 #[allow(non_snake_case)]
 #[tracing::instrument(level = "debug", skip_all)]
-pub async fn monad_eth_sendRawTransactionSync<T: Triedb>(
+pub async fn monad_eth_sendRawTransactionSync(
     txpool_bridge_client: &EthTxPoolBridgeClient,
-    data_provider: &DataProvider<T>,
+    event_server_client: &EventServerClient,
     params: MonadEthSendRawTransactionSyncParams,
     chain_id: u64,
     allow_unprotected_txs: bool,
@@ -304,13 +272,56 @@ pub async fn monad_eth_sendRawTransactionSync<T: Triedb>(
         JsonRpcError::tx_sync_unready,
     )?;
 
+    let Ok(mut event_server_subscription) = event_server_client.subscribe() else {
+        return Err(JsonRpcError::overloaded());
+    };
+
     let tx_hash = *tx.tx_hash();
     debug!(name = "sendRawTransactionSync", txn_hash = ?tx_hash);
     submit_to_txpool(txpool_bridge_client, tx).await?;
 
-    let receipt = poll_for_receipt(data_provider, tx_hash, timeout_ms).await?;
+    let mut timeout = pin!(tokio::time::sleep(Duration::from_millis(timeout_ms)));
 
-    Ok(MonadTransactionReceipt(receipt))
+    loop {
+        let result = tokio::select! {
+            result = event_server_subscription.recv() => result,
+
+            () = &mut timeout => {
+                // EIP-7966: Error code 4 with tx hash in data
+                return Err(JsonRpcError::tx_sync_timeout(
+                    tx_hash.to_string(),
+                    timeout_ms,
+                ));
+            }
+        };
+
+        let Ok(event) = result else {
+            return Err(JsonRpcError::overloaded());
+        };
+
+        match event {
+            EventServerEvent::Gap => {
+                return Err(JsonRpcError::overloaded());
+            }
+            EventServerEvent::Block {
+                commit_state,
+                header: _,
+                transactions,
+            } => {
+                if commit_state != BlockCommitState::Proposed {
+                    continue;
+                }
+
+                for (tx, tx_receipt, _) in transactions.iter() {
+                    if tx.value().inner.tx_hash() != &tx_hash {
+                        continue;
+                    }
+
+                    return Ok(MonadTransactionReceipt(tx_receipt.value().clone()));
+                }
+            }
+        }
+    }
 }
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
@@ -407,8 +418,6 @@ pub async fn monad_eth_getTransactionByBlockNumberAndIndex<T: Triedb>(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use alloy_consensus::{SignableTransaction, TxEip1559, TxEnvelope};
     use alloy_eips::eip2718::Encodable2718;
     use alloy_primitives::{Address, FixedBytes, TxKind};
@@ -416,6 +425,7 @@ mod tests {
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use monad_eth_types::EthAccount;
+    use monad_event_ring::SnapshotEventRing;
     use monad_triedb_utils::mock_triedb::MockTriedb;
 
     use super::{
@@ -423,7 +433,7 @@ mod tests {
         MonadEthSendRawTransactionParams, MonadEthSendRawTransactionSyncParams,
     };
     use crate::{
-        data::DataProvider, txpool::EthTxPoolBridgeClient, types::eth_json::UnformattedData,
+        event::EventServer, txpool::EthTxPoolBridgeClient, types::eth_json::UnformattedData,
     };
 
     fn serialize_tx(tx: impl Encodable + Encodable2718) -> UnformattedData {
@@ -516,7 +526,16 @@ mod tests {
             },
         );
 
-        let data_provider = DataProvider::new(None, Arc::new(triedb), None);
+        let snapshot_event_ring = SnapshotEventRing::new_from_zstd_bytes(
+            "TEST",
+            include_bytes!(
+                "../../../../monad-execution/rust/crates/monad-exec-events/test/data/exec-events-emn-30b-15m/snapshot.zst"
+            ),
+            None,
+        )
+        .unwrap();
+
+        let event_server_client = EventServer::start_for_testing(snapshot_event_ring);
 
         // Test the same validation failures as eth_sendRawTransaction
         // to ensure both methods have consistent validation
@@ -547,7 +566,7 @@ mod tests {
             assert!(
                 monad_eth_sendRawTransactionSync(
                     &EthTxPoolBridgeClient::for_testing(),
-                    &data_provider,
+                    &event_server_client,
                     case,
                     1,
                     true,

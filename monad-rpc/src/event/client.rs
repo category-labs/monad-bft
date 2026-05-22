@@ -33,18 +33,24 @@ impl EventServerClient {
         }
     }
 
-    pub fn subscribe(
-        &self,
-    ) -> Result<broadcast::Receiver<EventServerEvent>, EventServerClientError> {
+    pub fn subscribe(&self) -> Result<EventServerSubscription, EventServerClientError> {
         if self.handle.is_finished() {
             return Err(EventServerClientError::ServerCrashed);
         }
 
-        Ok(self.tx.subscribe())
+        Ok(EventServerSubscription(self.tx.subscribe()))
     }
 }
 
 #[derive(Debug)]
 pub enum EventServerClientError {
     ServerCrashed,
+}
+
+pub struct EventServerSubscription(broadcast::Receiver<EventServerEvent>);
+
+impl EventServerSubscription {
+    pub async fn recv(&mut self) -> Result<EventServerEvent, broadcast::error::RecvError> {
+        self.0.recv().await
+    }
 }
