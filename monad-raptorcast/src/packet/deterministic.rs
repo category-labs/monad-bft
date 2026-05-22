@@ -368,18 +368,17 @@ impl<PT: PubKey> InnerDeterministicEncoding<PT> {
     }
 }
 
-pub(crate) struct DeterministicEncoding<PT: PubKey, P: Partition<PT>> {
+pub(crate) struct DeterministicEncoding<P: Partition> {
     layout: PacketLayout,
     redundancy: Redundancy,
     app_message_len: usize,
     partition: P,
-    _pd: std::marker::PhantomData<PT>,
 }
 
-pub(crate) type PrimaryEncoding<PT> = DeterministicEncoding<PT, StakePartition<PT>>;
-pub(crate) type SecondaryEncoding<PT> = DeterministicEncoding<PT, EvenPartition<PT>>;
+pub(crate) type PrimaryEncoding<PT> = DeterministicEncoding<StakePartition<PT>>;
+pub(crate) type SecondaryEncoding<PT> = DeterministicEncoding<EvenPartition<PT>>;
 
-impl<PT: PubKey, P: Partition<PT>> DeterministicEncoding<PT, P> {
+impl<P: Partition> DeterministicEncoding<P> {
     // validate message size, find a merkle-tree depth that fits,
     // shuffle the partition with the caller-derived seed.
     fn build(app_message_len: usize, mut partition: P, seed: [u8; 32]) -> Result<Self, BuildError> {
@@ -407,7 +406,6 @@ impl<PT: PubKey, P: Partition<PT>> DeterministicEncoding<PT, P> {
             layout,
             app_message_len,
             partition,
-            _pd: std::marker::PhantomData,
         })
     }
 
@@ -415,19 +413,15 @@ impl<PT: PubKey, P: Partition<PT>> DeterministicEncoding<PT, P> {
         self.layout
     }
 
-    pub fn make_chunks(&self) -> Result<Vec<Chunk<PT>>, BuildError> {
+    pub fn make_chunks(&self) -> Result<Vec<Chunk<P::PubKey>>, BuildError> {
         let assignment = self.make_assignment()?;
-        let chunks = assignment.materialize(self.layout.segment_len(), &self.partition)?;
+        let chunks = assignment.materialize(self.layout.segment_len())?;
         Ok(chunks)
     }
 
-    pub fn make_assignment(&self) -> Result<ChunkAssignment, BuildError> {
+    pub fn make_assignment(&self) -> Result<ChunkAssignment<P::PubKey>, BuildError> {
         let num_base_symbols = self.layout.num_base_symbols(self.app_message_len);
         self.partition.assign(num_base_symbols, self.redundancy)
-    }
-
-    pub fn partition(&self) -> &P {
-        &self.partition
     }
 }
 
