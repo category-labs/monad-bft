@@ -411,17 +411,19 @@ async fn eth_sendRawTransactionSync(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    // Require both data_provider and txpool_bridge_client
     let txpool_bridge_client = app_state
         .txpool_bridge_client
         .as_ref()
         .method_not_supported()?;
-    let data_provider = app_state.data_provider.as_ref().method_not_supported()?;
+    let event_server_client = app_state
+        .event_server_client
+        .as_ref()
+        .method_not_supported()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
 
     monad_eth_sendRawTransactionSync(
         txpool_bridge_client,
-        data_provider,
+        event_server_client,
         params,
         app_state.chain_id,
         app_state.allow_unprotected_txs,

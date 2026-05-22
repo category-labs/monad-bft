@@ -15,7 +15,7 @@
 
 pub(crate) use self::events::EventServerEvent;
 pub use self::{
-    client::{EventServerClient, EventServerClientError},
+    client::{EventServerClient, EventServerClientError, EventServerSubscription},
     server::EventServer,
 };
 

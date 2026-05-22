@@ -304,37 +304,34 @@ async fn main() -> std::io::Result<()> {
     let decompression_guard = DecompressionGuard::new(args.max_request_size);
 
     // Configure event ring, websocket server and event cache.
-    let (events_client, events_for_cache) = if let Some(exec_event_path) = args.exec_event_path {
+    let event_server_client = if let Some(exec_event_path) = args.exec_event_path {
         let event_ring_path =
             EventRingPath::resolve(exec_event_path).expect("Execution event ring path resolves");
 
         let event_ring = EventRing::new(event_ring_path).expect("Execution event ring is ready");
 
-        let events_client = EventServer::start(event_ring);
-
-        // Subscribe to the event server to populate the event cache.
-        let events_for_cache = events_client
-            .subscribe()
-            .expect("Failed to subscribe to event server");
-
-        (Some(events_client), Some(events_for_cache))
+        Some(EventServer::start(event_ring))
     } else {
         if args.ws_enabled {
             panic!("exec-event-path is not set but is required for websockets");
         }
 
-        (None, None)
+        None
     };
 
-    let event_buffer_view = if let Some(mut events_for_cache) = events_for_cache {
-        let mut event_buffer = BlockBuffer::new(1024);
+    let block_buffer_view = if let Some(event_server_client) = event_server_client.as_ref() {
+        let mut event_server_subscription = event_server_client
+            .subscribe()
+            .expect("Failed to subscribe to event server");
 
-        let event_buffer_view = event_buffer.create_view();
+        let mut block_buffer = BlockBuffer::new(1024);
+
+        let block_buffer_view = block_buffer.create_view();
 
         tokio::spawn(async move {
             loop {
-                match events_for_cache.recv().await {
-                    Ok(event) => event_buffer.insert(event),
+                match event_server_subscription.recv().await {
+                    Ok(event) => block_buffer.insert(event),
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(lag_count)) => {
                         warn!(
                             ?lag_count,
@@ -349,24 +346,27 @@ async fn main() -> std::io::Result<()> {
             }
         });
 
-        Some(event_buffer_view)
+        Some(block_buffer_view)
     } else {
         None
     };
 
     let data_provider =
-        triedb_env.map(|t| DataProvider::new(event_buffer_view, Arc::new(t), archive_reader));
+        triedb_env.map(|t| DataProvider::new(block_buffer_view, Arc::new(t), archive_reader));
 
     let rpc_comparator: Option<RpcComparator> = args
         .rpc_comparison_endpoint
         .as_ref()
         .map(|endpoint| RpcComparator::new(endpoint.to_string(), node_config.node_name));
 
+    let enable_websockets = event_server_client.is_some();
+
     let app_state = MonadRpcResources::new(
         txpool_bridge_client,
         eth_call_handler,
         node_config.chain_id,
         data_provider,
+        event_server_client.clone(),
         args.batch_request_limit,
         args.max_response_size,
         args.allow_unprotected_txs,
@@ -381,30 +381,23 @@ async fn main() -> std::io::Result<()> {
     );
 
     // Configure the websocket server if enabled
-    let ws_server_handle = if let Some(events_client) = events_client {
+    let ws_server_handle = (args.ws_enabled && enable_websockets).then(|| {
         let ws_app_data = app_state.clone();
         let conn_limit = websocket::handler::ConnectionLimit::new(args.ws_conn_limit);
         let sub_limit = websocket::handler::SubscriptionLimit(args.ws_sub_per_conn_limit);
 
-        args.ws_enabled.then(|| {
-            HttpServer::new(move || {
-                App::new()
-                    .app_data(web::Data::new(conn_limit.clone()))
-                    .app_data(web::Data::new(events_client.clone()))
-                    .app_data(web::Data::new(ws_app_data.clone()))
-                    .app_data(web::Data::new(sub_limit.clone()))
-                    .service(
-                        web::resource("/").route(web::get().to(websocket::handler::ws_handler)),
-                    )
-            })
-            .bind((args.rpc_addr.clone(), args.ws_port))
-            .expect("Failed to bind WebSocket server")
-            .shutdown_timeout(1)
-            .workers(args.ws_worker_threads)
+        HttpServer::new(move || {
+            App::new()
+                .app_data(web::Data::new(conn_limit.clone()))
+                .app_data(web::Data::new(ws_app_data.clone()))
+                .app_data(web::Data::new(sub_limit.clone()))
+                .service(web::resource("/").route(web::get().to(websocket::handler::ws_handler)))
         })
-    } else {
-        None
-    };
+        .bind((args.rpc_addr.clone(), args.ws_port))
+        .expect("Failed to bind WebSocket server")
+        .shutdown_timeout(1)
+        .workers(args.ws_worker_threads)
+    });
 
     // Configure the rpc server with or without metrics
     let app = match with_metrics {

@@ -34,7 +34,9 @@ use tokio::sync::{broadcast, Semaphore, TryAcquireError};
 use tracing::{debug, error, warn};
 
 use crate::{
-    event::{events::LogNotification, EventServerClient, EventServerClientError, EventServerEvent},
+    event::{
+        events::LogNotification, EventServerClientError, EventServerEvent, EventServerSubscription,
+    },
     handlers::{resources::MonadRpcResources, rpc_select},
     middleware::TimingRequestId,
     types::{
@@ -75,7 +77,6 @@ pub async fn ws_handler(
     req: HttpRequest,
     stream: web::Payload,
     app_state: web::Data<MonadRpcResources>,
-    event_server_client: web::Data<EventServerClient>,
     conn_limit: web::Data<ConnectionLimit>,
     sub_limit: web::Data<SubscriptionLimit>,
 ) -> Result<HttpResponse, actix_web::Error> {
@@ -89,7 +90,13 @@ pub async fn ws_handler(
         Err(e) => return Err(actix_web::error::ErrorInternalServerError(e)),
     };
 
-    let rx = event_server_client.subscribe().map_err(|err| {
+    let Some(event_server_client) = app_state.event_server_client.as_ref() else {
+        return Err(actix_web::error::ErrorServiceUnavailable(
+            "WebSocket server is disabled",
+        ));
+    };
+
+    let event_server_subscription = event_server_client.subscribe().map_err(|err| {
         match err {
             EventServerClientError::ServerCrashed => {
                 warn!("Closing websocket connection with internal server error, reason: WebSocketServer crashed!");
@@ -118,7 +125,7 @@ pub async fn ws_handler(
             &hostname,
             &peer_addr,
             &mut subscriptions,
-            rx,
+            event_server_subscription,
             &app_state,
             sub_limit.0,
         )
@@ -148,7 +155,7 @@ async fn handler(
     hostname: &String,
     peer_addr: &Option<String>,
     subscriptions: &mut HashMap<SubscriptionKind, Vec<(SubscriptionId, Option<Filter>)>>,
-    rx: broadcast::Receiver<EventServerEvent>,
+    event_server_subscription: EventServerSubscription,
     app_state: &web::Data<MonadRpcResources>,
     subscription_limit: u16,
 ) -> Option<CloseReason> {
@@ -163,7 +170,7 @@ async fn handler(
         .max_continuation_size(RECV_MAX_CONTINUATION_SIZE);
 
     let mut msg_stream = pin!(msg_stream);
-    let mut broadcast_rx = pin!(rx);
+    let mut event_server_subscription = pin!(event_server_subscription);
 
     loop {
         tokio::select! {
@@ -250,7 +257,7 @@ async fn handler(
                     }
                 }
             }
-            cmd = broadcast_rx.recv() => {
+            cmd = event_server_subscription.recv() => {
                 match cmd {
                     Ok(msg) => {
                         if let Err(close_reason) = handle_notification(
@@ -709,7 +716,7 @@ mod tests {
             SnapshotEventRing::new_from_zstd_bytes(SNAPSHOT_NAME, SNAPSHOT_ZSTD_BYTES, None)
                 .unwrap();
 
-        let ws_server_handle =
+        let event_server_client =
             EventServer::start_for_testing_with_delay(snapshot, Duration::from_secs(1));
 
         let app_state = MonadRpcResources {
@@ -717,6 +724,7 @@ mod tests {
             eth_call_handler: None,
             chain_id: 1337,
             data_provider: None,
+            event_server_client: Some(event_server_client),
             batch_request_limit: 5,
             max_response_size: 25_000_000,
             allow_unprotected_txs: false,
@@ -735,7 +743,6 @@ mod tests {
         actix_test::start(move || {
             App::new()
                 .app_data(web::JsonConfig::default().limit(8192))
-                .app_data(web::Data::new(ws_server_handle.clone()))
                 .app_data(web::Data::new(app_state.clone()))
                 .app_data(web::Data::new(conn_limit.clone()))
                 .app_data(web::Data::new(sub_limit.clone()))
