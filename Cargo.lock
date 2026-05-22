@@ -5409,10 +5409,10 @@ dependencies = [
 name = "monad-eth-txpool-types"
 version = "0.1.0"
 dependencies = [
- "alloy-consensus",
  "alloy-primitives",
  "alloy-rlp",
  "monad-eth-block-policy",
+ "monad-eth-types",
  "serde",
 ]
 
@@ -5425,6 +5425,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-rlp",
  "monad-crypto",
+ "monad-tx-envelope",
  "monad-types",
  "serde",
  "serde_with",
@@ -5444,6 +5445,7 @@ dependencies = [
  "futures",
  "hex",
  "monad-cxx",
+ "monad-tx-envelope",
  "serde",
  "tracing",
 ]
@@ -5470,6 +5472,7 @@ dependencies = [
  "cc",
  "itertools 0.10.5",
  "monad-event-ring",
+ "monad-tx-envelope",
  "serde",
  "strum",
  "tracing",
@@ -6310,6 +6313,14 @@ dependencies = [
  "rand_chacha 0.3.1",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "monad-tx-envelope"
+version = "0.1.0"
+dependencies = [
+ "alloy-consensus",
+ "alloy-primitives",
 ]
 
 [[package]]

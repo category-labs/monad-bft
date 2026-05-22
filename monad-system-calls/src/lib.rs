@@ -19,15 +19,13 @@
 //! be used which can then be converted into SystemTransaction(s) and
 //! added to the block.
 
-use alloy_consensus::{
-    SignableTransaction, Transaction, TxEnvelope, TxLegacy, transaction::Recovered,
-};
+use alloy_consensus::{SignableTransaction, Transaction, TxLegacy, transaction::Recovered};
 use alloy_primitives::{Address, B256, U256, hex};
 use alloy_rlp::Encodable;
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
 use monad_chain_config::{ChainConfig, revision::ChainRevision};
-use monad_eth_types::ValidatedTx;
+use monad_eth_types::{MonadTxEnvelope, ValidatedTx};
 use monad_types::{Epoch, GENESIS_SEQ_NUM, SeqNum};
 use staking_contract::{StakingContractCall, StakingContractTransaction};
 use validator::SystemTransactionError;
@@ -46,14 +44,14 @@ const SYSTEM_SENDER_PRIV_KEY: B256 = B256::new(hex!(
 pub const SYSTEM_SENDER_ETH_ADDRESS: Address =
     Address::new(hex!("0x6f49a8F621353f12378d0046E7d7e4b9B249DC9e"));
 
-fn sign_with_system_sender(transaction: TxLegacy) -> Recovered<TxEnvelope> {
+fn sign_with_system_sender(transaction: TxLegacy) -> Recovered<MonadTxEnvelope> {
     let signer = PrivateKeySigner::from_bytes(&SYSTEM_SENDER_PRIV_KEY).unwrap();
     let signature = signer
         .sign_hash_sync(&transaction.signature_hash())
         .unwrap();
     let signed = transaction.into_signed(signature);
 
-    Recovered::new_unchecked(TxEnvelope::Legacy(signed), SYSTEM_SENDER_ETH_ADDRESS)
+    Recovered::new_unchecked(MonadTxEnvelope::Legacy(signed), SYSTEM_SENDER_ETH_ADDRESS)
 }
 
 #[derive(Debug)]
@@ -63,7 +61,7 @@ enum SystemCall {
 
 impl SystemCall {
     // Used to validate inputs of user transactions in RPC and TxPool
-    pub fn is_restricted_system_call(txn: &Recovered<TxEnvelope>) -> bool {
+    pub fn is_restricted_system_call(txn: &Recovered<MonadTxEnvelope>) -> bool {
         StakingContractCall::is_restricted_staking_contract_call(txn)
     }
 
@@ -123,7 +121,7 @@ impl SystemTransaction {
     }
 }
 
-impl From<SystemTransaction> for Recovered<TxEnvelope> {
+impl From<SystemTransaction> for Recovered<MonadTxEnvelope> {
     fn from(sys_txn: SystemTransaction) -> Self {
         match sys_txn {
             SystemTransaction::StakingContractTransaction(staking_txn) => staking_txn.into_inner(),
@@ -232,10 +230,11 @@ impl SystemTransactionGenerator {
 
 #[cfg(test)]
 mod test_utils {
-    use alloy_consensus::{SignableTransaction, TxEnvelope, TxLegacy, transaction::Recovered};
+    use alloy_consensus::{SignableTransaction, TxLegacy, transaction::Recovered};
     use alloy_primitives::{Address, Bytes, TxKind};
     use alloy_signer::SignerSync;
     use alloy_signer_local::LocalSigner;
+    use monad_eth_types::MonadTxEnvelope;
 
     use crate::{SYSTEM_SENDER_ETH_ADDRESS, SYSTEM_SENDER_PRIV_KEY};
 
@@ -251,13 +250,13 @@ mod test_utils {
         }
     }
 
-    pub fn sign_with_system_sender(transaction: TxLegacy) -> Recovered<TxEnvelope> {
+    pub fn sign_with_system_sender(transaction: TxLegacy) -> Recovered<MonadTxEnvelope> {
         let signature_hash = transaction.signature_hash();
         let local_signer = LocalSigner::from_bytes(&SYSTEM_SENDER_PRIV_KEY).unwrap();
         let signature = local_signer.sign_hash_sync(&signature_hash).unwrap();
 
         Recovered::new_unchecked(
-            TxEnvelope::Legacy(transaction.into_signed(signature)),
+            MonadTxEnvelope::Legacy(transaction.into_signed(signature)),
             SYSTEM_SENDER_ETH_ADDRESS,
         )
     }

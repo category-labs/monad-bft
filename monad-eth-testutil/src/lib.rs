@@ -23,7 +23,7 @@ use alloy_consensus::{
     proofs::calculate_transaction_root,
     transaction::{Recovered, SignerRecoverable},
     Eip658Value, Receipt, ReceiptWithBloom, SignableTransaction, Transaction, TxEip1559, TxEip7702,
-    TxEnvelope, TxLegacy, EMPTY_OMMER_ROOT_HASH,
+    TxLegacy, Typed2718, EMPTY_OMMER_ROOT_HASH,
 };
 use alloy_eips::eip7702::{
     Authorization, RecoveredAuthority, RecoveredAuthorization, SignedAuthorization,
@@ -50,7 +50,9 @@ use monad_eth_block_policy::{
     nonce_usage::{NonceUsage, NonceUsageMap},
     EthValidatedBlock,
 };
-use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ProposedEthHeader, ValidatedTx};
+use monad_eth_types::{
+    EthBlockBody, EthExecutionProtocol, MonadTxEnvelope, ProposedEthHeader, ValidatedTx,
+};
 use monad_secp::KeyPair;
 use monad_testutil::signing::MockSignatures;
 use monad_types::{Balance, Epoch, NodeId, Round, SeqNum};
@@ -101,7 +103,7 @@ pub fn make_legacy_tx(
     gas_limit: u64,
     nonce: u64,
     input_len: usize,
-) -> TxEnvelope {
+) -> MonadTxEnvelope {
     make_legacy_tx_with_value(sender, 0, gas_price, gas_limit, nonce, input_len)
 }
 
@@ -112,7 +114,7 @@ pub fn make_legacy_tx_with_value(
     gas_limit: u64,
     nonce: u64,
     input_len: usize,
-) -> TxEnvelope {
+) -> MonadTxEnvelope {
     let transaction = TxLegacy {
         chain_id: Some(1337),
         nonce,
@@ -137,7 +139,7 @@ pub fn make_eip1559_tx(
     gas_limit: u64,
     nonce: u64,
     input_len: usize,
-) -> TxEnvelope {
+) -> MonadTxEnvelope {
     make_eip1559_tx_with_value(
         sender,
         0,
@@ -157,7 +159,7 @@ pub fn make_eip1559_tx_with_value(
     gas_limit: u64,
     nonce: u64,
     input_len: usize,
-) -> TxEnvelope {
+) -> MonadTxEnvelope {
     let transaction = TxEip1559 {
         chain_id: 1337,
         nonce,
@@ -185,7 +187,7 @@ pub fn make_eip7702_tx(
     nonce: u64,
     authorization_list: Vec<SignedAuthorization>,
     input_len: usize,
-) -> TxEnvelope {
+) -> MonadTxEnvelope {
     make_eip7702_tx_with_value(
         sender,
         0,
@@ -207,7 +209,7 @@ pub fn make_eip7702_tx_with_value(
     nonce: u64,
     authorization_list: Vec<SignedAuthorization>,
     input_len: usize,
-) -> TxEnvelope {
+) -> MonadTxEnvelope {
     let transaction = TxEip7702 {
         chain_id: 1337,
         nonce,
@@ -253,7 +255,7 @@ pub fn sign_authorization(
     authorization.into_signed(signature)
 }
 
-pub fn recover_tx(tx: TxEnvelope) -> Recovered<TxEnvelope> {
+pub fn recover_tx(tx: MonadTxEnvelope) -> Recovered<MonadTxEnvelope> {
     let signer = tx.recover_signer().unwrap();
     Recovered::new_unchecked(tx, signer)
 }
@@ -282,7 +284,7 @@ pub fn secret_to_eth_address(mut secret: FixedBytes<32>) -> Address {
 }
 
 fn compute_expected_txn_fees_and_nonce_usages(
-    txs: &[Recovered<TxEnvelope>],
+    txs: &[Recovered<MonadTxEnvelope>],
 ) -> (BTreeMap<Address, TxnFee>, NonceUsageMap) {
     let mut txn_fees: BTreeMap<_, TxnFee> = BTreeMap::new();
 
@@ -361,7 +363,7 @@ fn compute_expected_txn_fees_and_nonce_usages(
     (txn_fees, nonce_usages)
 }
 
-pub fn compute_expected_nonce_usages(txs: &[Recovered<TxEnvelope>]) -> NonceUsageMap {
+pub fn compute_expected_nonce_usages(txs: &[Recovered<MonadTxEnvelope>]) -> NonceUsageMap {
     compute_expected_txn_fees_and_nonce_usages(txs).1
 }
 
@@ -370,7 +372,7 @@ pub fn generate_consensus_test_block(
     seq_num: SeqNum,
     base_fee: u64,
     chain_config: &MockChainConfig,
-    txs: Vec<Recovered<TxEnvelope>>,
+    txs: Vec<Recovered<MonadTxEnvelope>>,
 ) -> ConsensusTestBlock<NopSignature, MockSignatures<NopSignature>> {
     let chain_params = chain_config.get_chain_revision(round).chain_params();
 
@@ -449,7 +451,7 @@ pub fn generate_block_with_txs(
     seq_num: SeqNum,
     base_fee: u64,
     chain_config: &MockChainConfig,
-    txs: Vec<Recovered<TxEnvelope>>,
+    txs: Vec<Recovered<MonadTxEnvelope>>,
 ) -> EthValidatedBlock<NopSignature, MockSignatures<NopSignature>> {
     let test_block = generate_consensus_test_block(round, seq_num, base_fee, chain_config, txs);
 

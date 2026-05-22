@@ -15,7 +15,7 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use alloy_consensus::{SignableTransaction, TxEip1559, TxEnvelope};
+use alloy_consensus::{SignableTransaction, TxEip1559};
 use alloy_primitives::{Address, Bytes, TxKind, U256};
 use duplicates::DuplicateTxGenerator;
 use ecmul::ECMulGenerator;
@@ -26,6 +26,7 @@ use extreme_values::ExtremeValuesGenerator;
 use few_to_many::CreateAccountsGenerator;
 use high_call_data::HighCallDataTxGenerator;
 use many_to_many::ManyToManyGenerator;
+use monad_eth_types::MonadTxEnvelope;
 use nft_sale::NftSaleGenerator;
 use non_deterministic_storage::NonDeterministicStorageTxGenerator;
 use reserve_balance::ReserveBalanceGenerator;
@@ -258,7 +259,11 @@ impl Generator for NullGen {
         &mut self,
         _accts: &mut [SimpleAccount],
         _ctx: &GenCtx,
-    ) -> Vec<(TxEnvelope, Address, crate::shared::private_key::PrivateKey)> {
+    ) -> Vec<(
+        MonadTxEnvelope,
+        Address,
+        crate::shared::private_key::PrivateKey,
+    )> {
         vec![]
     }
 }
@@ -268,7 +273,7 @@ pub fn native_transfer(
     to: Address,
     amt: U256,
     ctx: &GenCtx,
-) -> TxEnvelope {
+) -> MonadTxEnvelope {
     native_transfer_priority_fee(from, to, amt, 0, ctx)
 }
 
@@ -282,7 +287,7 @@ pub fn native_transfer_with_params(
     max_priority_fee_per_gas: Option<u128>,
     input_data: Option<Bytes>,
     ctx: &GenCtx,
-) -> TxEnvelope {
+) -> MonadTxEnvelope {
     let nonce = nonce.unwrap_or(from.nonce);
     let gas_limit = gas_limit.unwrap_or(ctx.set_tx_gas_limit.unwrap_or(21_000));
     let max_fee_per_gas = max_fee_per_gas.unwrap_or(ctx.base_fee * 2);
@@ -315,7 +320,7 @@ pub fn native_transfer_with_params(
         .unwrap_or(U256::ZERO);
 
     let sig = from.key.sign_transaction(&tx);
-    TxEnvelope::Eip1559(tx.into_signed(sig))
+    MonadTxEnvelope::Eip1559(tx.into_signed(sig))
 }
 
 pub fn native_transfer_priority_fee(
@@ -324,7 +329,7 @@ pub fn native_transfer_priority_fee(
     amt: U256,
     priority_fee: u128,
     ctx: &GenCtx,
-) -> TxEnvelope {
+) -> MonadTxEnvelope {
     native_transfer_with_params(
         from,
         to,
@@ -344,7 +349,7 @@ pub fn erc20_transfer(
     amt: U256,
     erc20: &ERC20,
     ctx: &GenCtx,
-) -> TxEnvelope {
+) -> MonadTxEnvelope {
     let max_fee_per_gas = ctx.base_fee * 2;
     let tx = erc20.construct_transfer(
         &from.key,
@@ -369,7 +374,7 @@ pub fn erc20_transfer(
     tx
 }
 
-pub fn erc20_mint(from: &mut SimpleAccount, erc20: &ERC20, ctx: &GenCtx) -> TxEnvelope {
+pub fn erc20_mint(from: &mut SimpleAccount, erc20: &ERC20, ctx: &GenCtx) -> MonadTxEnvelope {
     let max_fee_per_gas = ctx.base_fee * 2;
     let tx = erc20.construct_mint(
         &from.key,

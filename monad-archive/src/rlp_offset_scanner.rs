@@ -212,13 +212,13 @@ pub fn get_all_tx_offsets(
 mod tests {
     const TEST_BLOCK: &str = "+QWh+QJloKSq1zbuA4rSAp0/EBEVZVtmIwXfHAteXRl48ZXLdyndoB3MTejex116q4W1Z7bM1BrTEkUblIp0E/ChQv1A1JNHlAAAAAAAAAAAAAAAAAAAAAAAAAAAoFnMCqDkgM2wLUKK9opNWj918d+lLBGkjaNVxgOrkHTKoEuicwIROzBpipCBq4BwlKqLnASmMdLmjctnnA+bg3xVoB0moWe9s04oyT0UXtgoMnALQPQK8l3jO4POdY7gtsCzuQEAAAAAGAAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAADIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAAAAAAAAAAAAAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACICDC/inhBHhowCDAXYnhGeJnV+gAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACgD3+hDqIPFFBJ4PtjZ/MkvrTVEyZGwVMgt4IySFubwdeIAAAAAAAAAACFC6Q7dACgVugfFxvMVab/g0XmksD4bltI4BuZbK3AAWIvteNjtCGAgKAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPkDNbkCegL5AnaCJ5+CO8CEdzWUAIUXv6x8AIMBDMCUGkkkHnG2C7pBHigp+n9U+AY5HFKAuQIEHnsulQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAeAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAAAAAAAAAAAAAAGiB8+MZ/OHRjeMCTXrRfwpWGydCAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAF0Pt6VoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAbWAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIAAAAAAAAAAAAAAAABogfPjGfzh0Y3jAk160X8KVhsnQgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABdJ42RmAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAG1gAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAwICgP/iGy74YHj9fh81YUULb4jpB10jN4kugRMmJYR4geWOgWJt2pM4KHTnKvnxR2o1S+L98sD0w4+oVZNlCstwuOIm4tgL4s4InnwqFDBtxCACFDBtxCACCcueU0QBH3BCRZ6pSYXt0zY9OlMkOBHmAuEQJXqezAAAAAAAAAAAAAAAAGgxsJC8y4Z3r3EH4/y3CuoA4wwsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQ8M8GTdWSAAAMCAoJoGR3heQyaPmhjmgbCBEdOA/8CbY6bCgA/IUztHcR5ZoG3DW+j/zCQs/E1rzpebyDW/ssrEM6cb1S/BAWI6UZ98wA==";
 
-    use alloy_consensus::{BlockBody, Header, SignableTransaction, TxEip1559, TxEnvelope};
+    use alloy_consensus::{BlockBody, Header, SignableTransaction, TxEip1559};
     use alloy_primitives::{B256, U256};
     use alloy_rlp::{Decodable, Encodable};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use base64::Engine;
-    use monad_eth_types::TxEnvelopeWithSender;
+    use monad_eth_types::{MonadTxEnvelope, TxEnvelopeWithSender};
 
     use super::*;
     use crate::prelude::Block;
@@ -236,7 +236,7 @@ mod tests {
         let tx = tx.into_signed(sig);
         TxEnvelopeWithSender {
             sender: signer.address(),
-            tx: TxEnvelope::from(tx),
+            tx: MonadTxEnvelope::from(tx),
         }
     }
 
@@ -392,12 +392,12 @@ mod tests {
 
         // Verify we can decode transactions from both methods
         for ((start, end), offset) in tx_ranges.iter().zip(offsets.iter()) {
-            let tx1 = TxEnvelope::decode(&mut &block_rlp[*start..*end]);
-            let tx2 = TxEnvelope::decode(&mut &block_rlp[offset.tx.start..offset.tx.end]);
+            let tx1 = MonadTxEnvelope::decode(&mut &block_rlp[*start..*end]);
+            let tx2 = MonadTxEnvelope::decode(&mut &block_rlp[offset.tx.start..offset.tx.end]);
 
             assert!(tx1.is_ok());
             assert!(tx2.is_ok());
-            // Could compare tx1 and tx2 if TxEnvelope implements PartialEq
+            // Could compare tx1 and tx2 if MonadTxEnvelope implements PartialEq
         }
     }
 

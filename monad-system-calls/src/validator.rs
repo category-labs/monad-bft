@@ -23,14 +23,14 @@
 
 use std::collections::VecDeque;
 
-use alloy_consensus::{Transaction, TxEnvelope, transaction::Recovered};
+use alloy_consensus::{Transaction, Typed2718, transaction::Recovered};
 use alloy_primitives::{Address, Bytes, TxKind, U256};
 use monad_chain_config::{ChainConfig, revision::ChainRevision};
 use monad_consensus_types::block::ConsensusBlockHeader;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_types::{EthExecutionProtocol, ExtractEthAddress, ValidatedTx};
+use monad_eth_types::{EthExecutionProtocol, ExtractEthAddress, MonadTxEnvelope, ValidatedTx};
 use monad_types::Epoch;
 use monad_validator::signature_collection::SignatureCollection;
 use tracing::{debug, info, warn};
@@ -77,13 +77,13 @@ impl SystemTransactionValidator {
     }
 
     // Used to validate inputs of user transactions in RPC and TxPool
-    pub fn is_restricted_system_call(txn: &Recovered<TxEnvelope>) -> bool {
+    pub fn is_restricted_system_call(txn: &Recovered<MonadTxEnvelope>) -> bool {
         SystemCall::is_restricted_system_call(txn)
     }
 
     /// Set as a public function for fuzzer integration but does not need to be called externally otherwise
     pub fn static_validate_system_transaction<CCT, CRT>(
-        txn: &Recovered<TxEnvelope>,
+        txn: &Recovered<MonadTxEnvelope>,
         chain_config: &CCT,
     ) -> Result<(), SystemTransactionError>
     where
@@ -126,9 +126,9 @@ impl SystemTransactionValidator {
     // Used to extract statically validated system transactions in block validator
     pub fn extract_system_transactions<ST, SCT, CCT, CRT>(
         block_header: &ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>,
-        mut recovered_txns: VecDeque<Recovered<TxEnvelope>>,
+        mut recovered_txns: VecDeque<Recovered<MonadTxEnvelope>>,
         chain_config: &CCT,
-    ) -> Result<(Vec<ValidatedTx>, Vec<Recovered<TxEnvelope>>), SystemTransactionValidationError>
+    ) -> Result<(Vec<ValidatedTx>, Vec<Recovered<MonadTxEnvelope>>), SystemTransactionValidationError>
     where
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -265,7 +265,7 @@ impl SystemTransactionValidator {
 #[cfg(test)]
 mod test {
     use alloy_consensus::{
-        SignableTransaction, TxEip1559, TxEnvelope,
+        SignableTransaction, TxEip1559,
         transaction::{Recovered, SignerRecoverable},
     };
     use alloy_eips::eip2930::AccessList;
@@ -280,7 +280,7 @@ mod test {
     };
     use monad_crypto::{NopKeyPair, NopSignature, certificate_signature::CertificateKeyPair};
     use monad_eth_testutil::make_legacy_tx;
-    use monad_eth_types::{EthExecutionProtocol, ProposedEthHeader, ValidatedTx};
+    use monad_eth_types::{EthExecutionProtocol, MonadTxEnvelope, ProposedEthHeader, ValidatedTx};
     use monad_testutil::signing::MockSignatures;
     use monad_types::{Epoch, GENESIS_SEQ_NUM, Hash, NodeId, Round, SeqNum};
 
@@ -303,7 +303,7 @@ mod test {
         let local_signer = LocalSigner::from_bytes(&B256::repeat_byte(1)).unwrap();
         let signature = local_signer.sign_hash_sync(&signature_hash).unwrap();
         let invalid_tx = Recovered::new_unchecked(
-            TxEnvelope::Legacy(tx.into_signed(signature)),
+            MonadTxEnvelope::Legacy(tx.into_signed(signature)),
             local_signer.address(),
         );
 
@@ -335,7 +335,7 @@ mod test {
         let signature = local_signer.sign_hash_sync(&signature_hash).unwrap();
 
         let recovered = Recovered::new_unchecked(
-            TxEnvelope::Eip1559(transaction.into_signed(signature)),
+            MonadTxEnvelope::Eip1559(transaction.into_signed(signature)),
             SYSTEM_SENDER_ETH_ADDRESS,
         );
 

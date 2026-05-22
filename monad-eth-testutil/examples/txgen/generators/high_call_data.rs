@@ -26,7 +26,11 @@ impl Generator for HighCallDataTxGenerator {
         &mut self,
         accts: &mut [SimpleAccount],
         ctx: &GenCtx,
-    ) -> Vec<(TxEnvelope, Address, crate::shared::private_key::PrivateKey)> {
+    ) -> Vec<(
+        MonadTxEnvelope,
+        Address,
+        crate::shared::private_key::PrivateKey,
+    )> {
         let mut txs = Vec::with_capacity(accts.len());
 
         for sender in accts {
@@ -45,7 +49,7 @@ pub fn high_calldata_erc20_call(
     from: &mut SimpleAccount,
     erc20: &crate::shared::erc20::ERC20,
     ctx: &GenCtx,
-) -> TxEnvelope {
+) -> MonadTxEnvelope {
     let max_fee_per_gas = ctx.base_fee * 2;
     let input = vec![0u8; 1 << 15];
     let tx = crate::shared::erc20::make_tx(

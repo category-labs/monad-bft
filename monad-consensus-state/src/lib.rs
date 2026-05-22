@@ -2042,7 +2042,7 @@ mod test {
 
     use alloy_consensus::{
         constants::{EMPTY_TRANSACTIONS, EMPTY_WITHDRAWALS},
-        Header, TxEnvelope, EMPTY_OMMER_ROOT_HASH,
+        Header, EMPTY_OMMER_ROOT_HASH,
     };
     use itertools::Itertools;
     use monad_chain_config::{
@@ -2080,7 +2080,9 @@ mod test {
     };
     use monad_eth_block_policy::EthBlockPolicy;
     use monad_eth_block_validator::EthBlockValidator;
-    use monad_eth_types::{EthBlockBody, EthExecutionProtocol, EthHeader, ProposedEthHeader};
+    use monad_eth_types::{
+        EthBlockBody, EthExecutionProtocol, EthHeader, MonadTxEnvelope, ProposedEthHeader,
+    };
     use monad_multi_sig::MultiSig;
     use monad_state_backend::{InMemoryState, InMemoryStateInner, MockExecution, StateBackend};
     use monad_testutil::{
@@ -2593,7 +2595,7 @@ mod test {
         (env, ctxs)
     }
 
-    fn generate_block_body(eth_tx_list: Vec<TxEnvelope>) -> EthBlockBody {
+    fn generate_block_body(eth_tx_list: Vec<MonadTxEnvelope>) -> EthBlockBody {
         EthBlockBody {
             transactions: eth_tx_list.into(),
             ommers: Default::default(),

@@ -230,8 +230,18 @@ impl RpcSender {
 
     fn create_size_aware_batches(
         &self,
-        txs: &[(TxEnvelope, Address, crate::shared::private_key::PrivateKey)],
-    ) -> Vec<Vec<(TxEnvelope, Address, crate::shared::private_key::PrivateKey)>> {
+        txs: &[(
+            MonadTxEnvelope,
+            Address,
+            crate::shared::private_key::PrivateKey,
+        )],
+    ) -> Vec<
+        Vec<(
+            MonadTxEnvelope,
+            Address,
+            crate::shared::private_key::PrivateKey,
+        )>,
+    > {
         let mut batches = Vec::new();
         let mut current_batch = Vec::new();
         let mut current_batch_size = 0;
@@ -263,7 +273,7 @@ impl RpcSender {
         batches
     }
 
-    fn calculate_tx_payload_size(&self, tx: &TxEnvelope) -> usize {
+    fn calculate_tx_payload_size(&self, tx: &MonadTxEnvelope) -> usize {
         let mut rlp_encoded_tx = Vec::new();
         tx.encode_2718(&mut rlp_encoded_tx);
         // Currently encoded as binary - get length as hex string prepended with "0x"
@@ -272,7 +282,11 @@ impl RpcSender {
 
     fn spawn_send_batch(
         &mut self,
-        batch: &[(TxEnvelope, Address, crate::shared::private_key::PrivateKey)],
+        batch: &[(
+            MonadTxEnvelope,
+            Address,
+            crate::shared::private_key::PrivateKey,
+        )],
     ) {
         if batch.is_empty() {
             return;
@@ -303,7 +317,7 @@ impl RpcSender {
 
 pub async fn send_batch(
     client: &ReqwestClient,
-    txs: impl Iterator<Item = &TxEnvelope>,
+    txs: impl Iterator<Item = &MonadTxEnvelope>,
     metrics: &Metrics,
 ) {
     let now = Instant::now();

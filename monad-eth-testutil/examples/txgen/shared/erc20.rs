@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use alloy_consensus::{SignableTransaction, TxEip1559, TxEnvelope};
+use alloy_consensus::{SignableTransaction, TxEip1559};
 use alloy_eips::eip2718::Encodable2718;
 use alloy_primitives::{
     hex::{self, FromHex},
@@ -24,6 +24,7 @@ use alloy_rpc_client::ReqwestClient;
 use alloy_sol_macro::sol;
 use alloy_sol_types::SolCall;
 use eyre::Result;
+use monad_eth_types::MonadTxEnvelope;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -78,7 +79,7 @@ impl ERC20 {
         max_fee_per_gas: u128,
         chain_id: u64,
         gas_limit: u64,
-    ) -> TxEnvelope {
+    ) -> MonadTxEnvelope {
         Self::deploy_tx_with_gas_limit_and_priority(
             nonce,
             deployer,
@@ -96,7 +97,7 @@ impl ERC20 {
         chain_id: u64,
         gas_limit: u64,
         priority_fee: u128,
-    ) -> TxEnvelope {
+    ) -> MonadTxEnvelope {
         let input = Bytes::from_hex(BYTECODE).unwrap();
         let tx = TxEip1559 {
             chain_id,
@@ -111,7 +112,7 @@ impl ERC20 {
         };
 
         let sig = deployer.sign_transaction(&tx);
-        TxEnvelope::Eip1559(tx.into_signed(sig))
+        MonadTxEnvelope::Eip1559(tx.into_signed(sig))
     }
 
     pub fn deploy_tx(
@@ -119,7 +120,7 @@ impl ERC20 {
         deployer: &PrivateKey,
         max_fee_per_gas: u128,
         chain_id: u64,
-    ) -> TxEnvelope {
+    ) -> MonadTxEnvelope {
         let input = Bytes::from_hex(BYTECODE).unwrap();
         let tx = TxEip1559 {
             chain_id,
@@ -134,7 +135,7 @@ impl ERC20 {
         };
 
         let sig = deployer.sign_transaction(&tx);
-        TxEnvelope::Eip1559(tx.into_signed(sig))
+        MonadTxEnvelope::Eip1559(tx.into_signed(sig))
     }
 
     pub fn self_destruct_tx(
@@ -144,7 +145,7 @@ impl ERC20 {
         chain_id: u64,
         gas_limit: Option<u64>,
         priority_fee: Option<u128>,
-    ) -> TxEnvelope {
+    ) -> MonadTxEnvelope {
         self.construct_tx(
             sender,
             IERC20::destroySmartContractCall {},
@@ -163,7 +164,7 @@ impl ERC20 {
         chain_id: u64,
         gas_limit: Option<u64>,
         priority_fee: Option<u128>,
-    ) -> TxEnvelope {
+    ) -> MonadTxEnvelope {
         let input = input.abi_encode();
         let tx = make_tx(
             sender.nonce,
@@ -188,7 +189,7 @@ impl ERC20 {
         chain_id: u64,
         gas_limit: Option<u64>,
         priority_fee: Option<u128>,
-    ) -> TxEnvelope {
+    ) -> MonadTxEnvelope {
         let input = IERC20::mintCall {}.abi_encode();
         make_tx(
             nonce,
@@ -213,7 +214,7 @@ impl ERC20 {
         chain_id: u64,
         gas_limit: Option<u64>,
         priority_fee: Option<u128>,
-    ) -> TxEnvelope {
+    ) -> MonadTxEnvelope {
         let input = IERC20::transferCall { recipient, amount }.abi_encode();
         make_tx(
             nonce,
@@ -238,7 +239,7 @@ impl ERC20 {
         chain_id: u64,
         gas_limit: Option<u64>,
         priority_fee: Option<u128>,
-    ) -> TxEnvelope {
+    ) -> MonadTxEnvelope {
         let input = IERC20::approveCall { spender, amount }.abi_encode();
         make_tx(
             nonce,
@@ -273,7 +274,7 @@ pub fn make_tx(
     chain_id: u64,
     gas_limit: Option<u64>,
     priority_fee: Option<u128>,
-) -> TxEnvelope {
+) -> MonadTxEnvelope {
     let tx = TxEip1559 {
         chain_id,
         nonce,
@@ -286,7 +287,7 @@ pub fn make_tx(
         input: input.into(),
     };
     let sig = signer.sign_transaction(&tx);
-    TxEnvelope::Eip1559(tx.into_signed(sig))
+    MonadTxEnvelope::Eip1559(tx.into_signed(sig))
 }
 
 pub fn calculate_contract_addr(deployer: &Address, nonce: u64) -> Address {

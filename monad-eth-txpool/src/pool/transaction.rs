@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use alloy_consensus::{transaction::Recovered, Transaction, TxEnvelope};
+use alloy_consensus::{transaction::Recovered, Transaction};
 use alloy_eips::eip7702::Authorization;
 use alloy_primitives::{Address, TxHash, U256};
 use alloy_rlp::Encodable;
@@ -27,7 +27,7 @@ use monad_eth_block_policy::{
     validation::{static_validate_transaction, StaticValidationError},
 };
 use monad_eth_txpool_types::{EthTxPoolDropReason, DEFAULT_TX_PRIORITY};
-use monad_eth_types::EthExecutionProtocol;
+use monad_eth_types::{EthExecutionProtocol, MonadTxEnvelope};
 use monad_system_calls::{validator::SystemTransactionValidator, SYSTEM_SENDER_ETH_ADDRESS};
 use monad_tfm::base_fee::MIN_BASE_FEE;
 use monad_types::{Balance, NodeId, Nonce, SeqNum};
@@ -57,7 +57,7 @@ impl<PT: PubKey> PoolTxKind<PT> {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PoolTx<PT: PubKey> {
-    tx: Recovered<TxEnvelope>,
+    tx: Recovered<MonadTxEnvelope>,
     kind: PoolTxKind<PT>,
     forward_last_seqnum: SeqNum,
     forward_retries: usize,
@@ -78,9 +78,9 @@ impl<PT: PubKey> PoolTx<PT> {
         chain_id: u64,
         chain_params: &ChainParams,
         execution_params: &ExecutionChainParams,
-        tx: Recovered<TxEnvelope>,
+        tx: Recovered<MonadTxEnvelope>,
         kind: PoolTxKind<PT>,
-    ) -> Result<Self, (Recovered<TxEnvelope>, EthTxPoolDropReason)>
+    ) -> Result<Self, (Recovered<MonadTxEnvelope>, EthTxPoolDropReason)>
     where
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -232,11 +232,11 @@ impl<PT: PubKey> PoolTx<PT> {
         self.tx.length() as u64
     }
 
-    pub const fn raw(&self) -> &Recovered<TxEnvelope> {
+    pub const fn raw(&self) -> &Recovered<MonadTxEnvelope> {
         &self.tx
     }
 
-    pub fn into_raw(self) -> Recovered<TxEnvelope> {
+    pub fn into_raw(self) -> Recovered<MonadTxEnvelope> {
         self.tx
     }
 
@@ -310,7 +310,7 @@ impl<PT: PubKey> PoolTx<PT> {
         &mut self,
         last_commit_seq_num: SeqNum,
         last_commit_base_fee: u64,
-    ) -> Option<&TxEnvelope> {
+    ) -> Option<&MonadTxEnvelope> {
         if !self.is_owned_and_forwardable() {
             return None;
         }

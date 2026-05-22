@@ -30,7 +30,7 @@ pub trait Generator {
         &mut self,
         accts: &mut [SimpleAccount],
         ctx: &GenCtx,
-    ) -> Vec<(TxEnvelope, Address, PrivateKey)>;
+    ) -> Vec<(MonadTxEnvelope, Address, PrivateKey)>;
 }
 
 pub struct GenCtx {

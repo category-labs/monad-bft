@@ -18,8 +18,8 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering::SeqCst},
 };
 
-use alloy_consensus::TxEnvelope;
 use futures::{stream::FuturesUnordered, StreamExt};
+use monad_eth_types::MonadTxEnvelope;
 
 use crate::{prelude::*, shared::eth_json_rpc::EthJsonRpc};
 
@@ -187,7 +187,11 @@ pub struct AddrsWithTime {
 
 pub struct AccountsWithTxs {
     pub accts: Accounts,
-    pub txs: Vec<(TxEnvelope, Address, crate::shared::private_key::PrivateKey)>,
+    pub txs: Vec<(
+        MonadTxEnvelope,
+        Address,
+        crate::shared::private_key::PrivateKey,
+    )>,
 }
 
 impl ExactSizeIterator for AccountsIter<'_> {}

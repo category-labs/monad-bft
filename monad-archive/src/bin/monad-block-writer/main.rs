@@ -395,7 +395,7 @@ mod tests {
                 .unwrap();
             let decompressed: Vec<u8> = decompressed.into();
 
-            let decoded = AlloyBlock::<alloy_consensus::TxEnvelope, Header>::decode(
+            let decoded = AlloyBlock::<monad_eth_types::MonadTxEnvelope, Header>::decode(
                 &mut decompressed.as_slice(),
             )
             .unwrap();

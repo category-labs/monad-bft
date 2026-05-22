@@ -10,9 +10,10 @@ bench = false
 
 [dependencies]
 monad-crypto = { workspace = true }
+monad-tx-envelope = { workspace = true }
 monad-types = { workspace = true }
 
-alloy-consensus = { workspace = true, features = ["serde"] }
+alloy-consensus = { workspace = true, features = ["k256", "serde"] }
 alloy-eips = { workspace = true }
 alloy-primitives = { workspace = true, features = ["serde"] }
 alloy-rlp = { workspace = true, features = ["derive"] }

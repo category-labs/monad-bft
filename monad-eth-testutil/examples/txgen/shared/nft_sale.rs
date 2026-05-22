@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use alloy_consensus::{SignableTransaction, TxEip1559, TxEnvelope};
+use alloy_consensus::{SignableTransaction, TxEip1559};
 use alloy_eips::eip2718::Encodable2718;
 use alloy_primitives::{
     hex::{self, FromHex},
@@ -24,6 +24,7 @@ use alloy_rpc_client::ReqwestClient;
 use alloy_sol_macro::sol;
 use alloy_sol_types::{SolCall, SolConstructor};
 use eyre::Result;
+use monad_eth_types::MonadTxEnvelope;
 use serde::Deserialize;
 
 use crate::{
@@ -81,7 +82,7 @@ impl NftSale {
         deployer: &PrivateKey,
         max_fee_per_gas: u128,
         chain_id: u64,
-    ) -> TxEnvelope {
+    ) -> MonadTxEnvelope {
         let bytecode = Bytes::from_hex(NFTSALE_BYTECODE).unwrap();
 
         let constructor = NFTSale::constructorCall {
@@ -106,7 +107,7 @@ impl NftSale {
         };
 
         let sig = deployer.sign_transaction(&tx);
-        TxEnvelope::Eip1559(tx.into_signed(sig))
+        MonadTxEnvelope::Eip1559(tx.into_signed(sig))
     }
 
     pub async fn get_current_price(client: &ReqwestClient, nft_sale_addr: Address) -> Result<U256> {
@@ -137,7 +138,7 @@ impl NftSale {
         chain_id: u64,
         gas_limit: Option<u64>,
         priority_fee: Option<u128>,
-    ) -> TxEnvelope {
+    ) -> MonadTxEnvelope {
         let calldata = NFTSale::buyCall {}.abi_encode();
         let value = self.current_sale_price + (self.current_sale_price / U256::from(100));
 
@@ -168,7 +169,7 @@ impl NftSale {
 
         self.current_sale_price = value;
 
-        TxEnvelope::Eip1559(tx.into_signed(sig))
+        MonadTxEnvelope::Eip1559(tx.into_signed(sig))
     }
 
     pub async fn get_owner(client: &ReqwestClient, nft_sale_addr: Address) -> Result<Address> {

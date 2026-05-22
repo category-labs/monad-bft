@@ -17,8 +17,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use alloy_primitives::Uint;
 use alloy_rlp::Encodable;
-use alloy_rpc_types::{Block, FilterChanges, TransactionReceipt};
+use alloy_rpc_types::{Block, FilterChanges, Transaction, TransactionReceipt};
 use eyre::Context;
+use monad_eth_types::MonadTxEnvelope;
 use serde_json::json;
 
 use super::*;
@@ -128,7 +129,7 @@ impl CommittedTxWatcher {
     async fn logs_for_block(
         client: ReqwestClient,
         metrics: Arc<Metrics>,
-        block: &Block,
+        block: &Block<Transaction<MonadTxEnvelope>>,
     ) -> Result<()> {
         let mut num_logs = 0;
         // let mut erc20_transfers = 0;
@@ -183,7 +184,7 @@ impl CommittedTxWatcher {
     async fn receipts_for_block(
         client: ReqwestClient,
         metrics: Arc<Metrics>,
-        block: &Block,
+        block: &Block<Transaction<MonadTxEnvelope>>,
     ) -> Result<()> {
         let mut tx_success = 0;
         let mut tx_failure = 0;
@@ -231,7 +232,7 @@ impl CommittedTxWatcher {
     async fn receipts_for_block_slow(
         client: ReqwestClient,
         metrics: Arc<Metrics>,
-        block: &Block,
+        block: &Block<Transaction<MonadTxEnvelope>>,
     ) -> Result<()> {
         let mut rpc_calls = 0;
         let mut rpc_calls_error = 0;

@@ -15,6 +15,7 @@
 
 use std::sync::Arc;
 
+use monad_eth_types::MonadTxEnvelope;
 use monad_exec_events::BlockCommitState;
 
 use crate::types::{eth_json::MonadNotification, serialize::SharedJsonSerialized};
@@ -25,7 +26,10 @@ pub type Header = SharedJsonSerialized<alloy_rpc_types::eth::Header>;
 pub type BlockTransactions = Arc<Box<[BlockTransaction]>>;
 pub type BlockTransaction = (Transaction, TransactionReceipt, Box<[LogNotification]>);
 
-pub type Transaction = SharedJsonSerialized<alloy_rpc_types::Transaction>;
+/// RPC-facing transaction parameterized over the Monad envelope. The
+/// underlying execution layer still produces `alloy_rpc_types::Transaction`
+/// over `alloy_consensus::TxEnvelope`; convert at the boundary.
+pub type Transaction = SharedJsonSerialized<alloy_rpc_types::Transaction<MonadTxEnvelope>>;
 pub type TransactionReceipt = SharedJsonSerialized<alloy_rpc_types::TransactionReceipt>;
 
 pub type LogNotification = SharedJsonSerialized<MonadNotification<Log>>;

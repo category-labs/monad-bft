@@ -22,12 +22,12 @@ use std::{
     },
 };
 
-use alloy_consensus::{transaction::SignerRecoverable as _, Header, Transaction, TxEnvelope};
+use alloy_consensus::{transaction::SignerRecoverable as _, Header, Transaction, Typed2718};
 use alloy_primitives::Address;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_types::{EthAccount, EthHeader};
+use monad_eth_types::{EthAccount, EthHeader, MonadTxEnvelope};
 use monad_types::{
     Balance, BlockId, Epoch, Nonce, Round, SeqNum, Stake, GENESIS_BLOCK_ID, GENESIS_ROUND,
     GENESIS_SEQ_NUM,
@@ -119,7 +119,7 @@ pub struct InMemoryBlockState {
     round: Round,
     parent_id: BlockId,
     /// the txns to execute for this seq_num
-    txns: Vec<TxEnvelope>,
+    txns: Vec<MonadTxEnvelope>,
     /// account states after executing this block seq_num
     accounts: BTreeMap<Address, AccountState>,
     /// all transaction senders and authority addresses in this block
@@ -201,7 +201,7 @@ where
         seq_num: SeqNum,
         round: Round,
         parent_id: BlockId,
-        txns: Vec<TxEnvelope>,
+        txns: Vec<MonadTxEnvelope>,
     ) {
         if self
             .commits

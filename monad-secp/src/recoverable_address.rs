@@ -13,8 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use alloy_consensus::TxEnvelope;
 use alloy_primitives::{keccak256, Address};
+use monad_eth_types::MonadTxEnvelope;
 use secp256k1::{
     ecdsa::{RecoverableSignature, RecoveryId},
     Message, Secp256k1,
@@ -26,7 +26,7 @@ pub trait RecoverableAddress {
     fn secp256k1_recover(&self) -> Result<Address, Error>;
 }
 
-impl RecoverableAddress for TxEnvelope {
+impl RecoverableAddress for MonadTxEnvelope {
     fn secp256k1_recover(&self) -> Result<Address, Error> {
         let signature_hash = self.signature_hash();
         let secp_message = Message::from_digest(*signature_hash.as_ref());
@@ -50,10 +50,7 @@ impl RecoverableAddress for TxEnvelope {
 
 #[cfg(test)]
 mod tests {
-    use alloy_consensus::{
-        SignableTransaction, Signed, TxEip1559, TxEip2930, TxEip4844, TxEip4844Variant, TxEip7702,
-        TxLegacy,
-    };
+    use alloy_consensus::{SignableTransaction, Signed, TxEip1559, TxEip2930, TxEip7702, TxLegacy};
     use alloy_primitives::{Bytes, Signature, U256};
     use alloy_signer::{k256::ecdsa::SigningKey, SignerSync};
     use alloy_signer_local::PrivateKeySigner;
@@ -113,22 +110,6 @@ mod tests {
         }
     }
 
-    fn create_eip4844_tx() -> TxEip4844 {
-        TxEip4844 {
-            chain_id: 1,
-            nonce: 42,
-            max_priority_fee_per_gas: 1_500_000_000,
-            max_fee_per_gas: 30_000_000_000,
-            gas_limit: 100_000,
-            to: generate_random_address(),
-            value: U256::from(1_000_000_000_000_000_000u64),
-            input: Bytes::from(vec![0x12, 0x34, 0x56, 0x78]),
-            access_list: Default::default(),
-            blob_versioned_hashes: vec![],
-            max_fee_per_blob_gas: 1_000_000_000,
-        }
-    }
-
     fn create_eip7702_tx() -> TxEip7702 {
         TxEip7702 {
             chain_id: 1,
@@ -148,12 +129,11 @@ mod tests {
         Legacy(TxLegacy),
         Eip2930(TxEip2930),
         Eip1559(TxEip1559),
-        Eip4844(TxEip4844),
         Eip7702(TxEip7702),
     }
 
     impl TestTransaction {
-        fn sign(self, signer: &PrivateKeySigner) -> TxEnvelope {
+        fn sign(self, signer: &PrivateKeySigner) -> MonadTxEnvelope {
             fn sign_tx<T: SignableTransaction<Signature>>(
                 tx: T,
                 signer: &PrivateKeySigner,
@@ -176,11 +156,6 @@ mod tests {
                     let (tx, sig, hash) = sign_tx(tx, signer);
                     Signed::new_unchecked(tx, sig, hash).into()
                 }
-                TestTransaction::Eip4844(tx) => {
-                    let (tx, sig, hash) = sign_tx(tx, signer);
-                    let variant: TxEip4844Variant = TxEip4844Variant::TxEip4844(tx);
-                    Signed::new_unchecked(variant, sig, hash).into()
-                }
                 TestTransaction::Eip7702(tx) => {
                     let (tx, sig, hash) = sign_tx(tx, signer);
                     Signed::new_unchecked(tx, sig, hash).into()
@@ -193,7 +168,6 @@ mod tests {
     #[case::legacy(TestTransaction::Legacy(create_legacy_tx()))]
     #[case::eip2930(TestTransaction::Eip2930(create_eip2930_tx()))]
     #[case::eip1559(TestTransaction::Eip1559(create_eip1559_tx()))]
-    #[case::eip4844(TestTransaction::Eip4844(create_eip4844_tx()))]
     #[case::eip7702(TestTransaction::Eip7702(create_eip7702_tx()))]
     fn test_tx_envelope_recovery(#[case] test_tx: TestTransaction) {
         let pk = generate_random_private_key();
@@ -223,7 +197,8 @@ mod tests {
         ]);
 
         let invalid_sig = Signature::new(invalid_r, invalid_s, false);
-        let signed_tx: TxEnvelope = Signed::new_unchecked(tx, invalid_sig, signature_hash).into();
+        let signed_tx: MonadTxEnvelope =
+            Signed::new_unchecked(tx, invalid_sig, signature_hash).into();
         assert!(signed_tx.secp256k1_recover().is_err());
     }
 }

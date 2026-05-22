@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use alloy_consensus::{SignableTransaction, TxEip1559, TxEnvelope};
+use alloy_consensus::{SignableTransaction, TxEip1559};
 use alloy_eips::eip2718::Encodable2718;
 use alloy_primitives::{
     hex::{self, FromHex},
@@ -23,6 +23,7 @@ use alloy_rlp::Encodable;
 use alloy_rpc_client::ReqwestClient;
 use alloy_sol_macro::sol;
 use eyre::Result;
+use monad_eth_types::MonadTxEnvelope;
 use serde::Deserialize;
 
 use super::ensure_contract_deployed;
@@ -69,7 +70,7 @@ impl WETH {
         };
 
         let sig = deployer.1.sign_transaction(&tx);
-        let tx = TxEnvelope::Eip1559(tx.into_signed(sig));
+        let tx = MonadTxEnvelope::Eip1559(tx.into_signed(sig));
         let mut rlp_encoded_tx = Vec::new();
         tx.encode_2718(&mut rlp_encoded_tx);
         let _: String = client

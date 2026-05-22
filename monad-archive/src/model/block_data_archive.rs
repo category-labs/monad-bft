@@ -17,14 +17,13 @@ use core::str;
 
 use alloy_consensus::{
     transaction::SignerRecoverable, Block as AlloyBlock, BlockBody, Header, ReceiptEnvelope,
-    TxEnvelope,
 };
 use alloy_primitives::{Address, BlockHash, Bytes, Log, U8};
 use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable, EMPTY_LIST_CODE};
 use bytes::BufMut;
 use eyre::bail;
 use futures::try_join;
-use monad_eth_types::{ReceiptWithLogIndex, TxEnvelopeWithSender};
+use monad_eth_types::{MonadTxEnvelope, ReceiptWithLogIndex, TxEnvelopeWithSender};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
 use crate::{kvstore::WritePolicy, prelude::*, rlp_offset_scanner::get_all_tx_offsets};
@@ -36,7 +35,7 @@ pub type BlockTraces = Vec<Vec<u8>>;
 const BLOCK_PADDING_WIDTH: usize = 12;
 
 pub(crate) enum BlockStorageRepr {
-    V0(AlloyBlock<TxEnvelope, Header>),
+    V0(AlloyBlock<MonadTxEnvelope, Header>),
     V1(Block),
     V2(Block),
 }
@@ -382,7 +381,7 @@ impl BlockStorageRepr {
         let marker_bytes = [buf[0], buf[1]];
         let decoding_result = match marker_bytes {
             [Self::SENTINEL, Self::V0_MARKER] => {
-                AlloyBlock::<TxEnvelope, Header>::decode(&mut &buf[2..]) // fmt
+                AlloyBlock::<MonadTxEnvelope, Header>::decode(&mut &buf[2..]) // fmt
                     .map(BlockStorageRepr::V0)
             }
             [Self::SENTINEL, Self::V1_MARKER] => {
@@ -392,7 +391,7 @@ impl BlockStorageRepr {
                 Block::decode(&mut &buf[2..]).map(BlockStorageRepr::V2)
             }
             _ => {
-                AlloyBlock::<TxEnvelope, Header>::decode(&mut &buf[..]) // fmt
+                AlloyBlock::<MonadTxEnvelope, Header>::decode(&mut &buf[..]) // fmt
                     .map(BlockStorageRepr::V0)
             }
         };
@@ -404,8 +403,9 @@ impl BlockStorageRepr {
                     ?e,
                     "Failed to parse BlockStorageRepr despite sentinel bit being set. Falling back to raw InlineV0 decoding..."
                 );
-                let v0 =
-                    BlockStorageRepr::V0(AlloyBlock::<TxEnvelope, Header>::decode(&mut &buf[..])?);
+                let v0 = BlockStorageRepr::V0(AlloyBlock::<MonadTxEnvelope, Header>::decode(
+                    &mut &buf[..],
+                )?);
                 v0.convert().await
             }
         }
@@ -723,7 +723,7 @@ mod tests {
         let signer = PrivateKeySigner::from_bytes(&B256::from(U256::from(123))).unwrap();
         let sig = signer.sign_hash_sync(&tx.signature_hash()).unwrap();
         let tx = tx.into_signed(sig);
-        let tx_envelope = TxEnvelope::from(tx);
+        let tx_envelope = MonadTxEnvelope::from(tx);
 
         TxEnvelopeWithSender {
             sender: tx_envelope.recover_signer().unwrap(),
@@ -748,7 +748,7 @@ mod tests {
     mod storage_repr {
         use super::*;
 
-        fn create_v0_block() -> AlloyBlock<TxEnvelope, Header> {
+        fn create_v0_block() -> AlloyBlock<MonadTxEnvelope, Header> {
             let tx = TxEip1559 {
                 nonce: 123,
                 gas_limit: 456,

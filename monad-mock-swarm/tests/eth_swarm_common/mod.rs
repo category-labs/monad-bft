@@ -20,7 +20,7 @@ use std::{
     time::Duration,
 };
 
-use alloy_consensus::{Transaction, TxEnvelope};
+use alloy_consensus::Transaction;
 use alloy_primitives::Address;
 use monad_bls::BlsSignatureCollection;
 use monad_chain_config::{
@@ -31,7 +31,7 @@ use monad_crypto::certificate_signature::CertificateSignaturePubKey;
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthBlockValidator;
 use monad_eth_ledger::MockEthLedger;
-use monad_eth_types::EthExecutionProtocol;
+use monad_eth_types::{EthExecutionProtocol, MonadTxEnvelope};
 use monad_mock_swarm::{
     mock::TimestamperConfig,
     mock_swarm::{Nodes, SwarmBuilder},
@@ -216,7 +216,7 @@ pub fn generate_eth_swarm(
 pub fn verify_transactions_in_ledger(
     swarm: &Nodes<EthSwarm>,
     node_ids: Vec<ID<PubKey>>,
-    txns: Vec<TxEnvelope>,
+    txns: Vec<MonadTxEnvelope>,
 ) -> bool {
     let txns: HashSet<_> = HashSet::from_iter(txns.iter().map(|t| *t.tx_hash()));
     for node_id in node_ids {

@@ -35,7 +35,7 @@ use monad_archive::{
     prelude::{ArchiveReader, Context, ContextCompat, IndexReader},
 };
 use monad_eth_types::{
-    BlockHeader, ReceiptWithLogIndex, TransactionLocation, TxEnvelopeWithSender,
+    BlockHeader, MonadTxEnvelope, ReceiptWithLogIndex, TransactionLocation, TxEnvelopeWithSender,
 };
 use monad_triedb_utils::triedb_env::{BlockKey, FinalizedBlockKey, Triedb};
 use monad_types::SeqNum;
@@ -280,7 +280,7 @@ where
         &self,
         block: BlockTagOrHash,
         index: u64,
-    ) -> Result<Transaction, ChainStateError> {
+    ) -> Result<Transaction<MonadTxEnvelope>, ChainStateError> {
         if let Some(buffer) = &self.buffer {
             if let Some(height) = resolve_block_height_from_buffer(buffer, &block) {
                 if let Some(tx) = buffer.get_transaction_by_location(height, index) {
@@ -360,7 +360,10 @@ where
         Err(ChainStateError::ResourceNotFound)
     }
 
-    pub async fn get_transaction(&self, tx_hash: &TxHash) -> Result<Transaction, ChainStateError> {
+    pub async fn get_transaction(
+        &self,
+        tx_hash: &TxHash,
+    ) -> Result<Transaction<MonadTxEnvelope>, ChainStateError> {
         if let Some(buffer) = &self.buffer {
             if let Some(tx) = buffer.get_transaction_by_hash(tx_hash) {
                 return Ok(tx);
@@ -438,7 +441,7 @@ where
         &self,
         block: BlockTagOrHash,
         return_full_txns: bool,
-    ) -> Result<Block, ChainStateError> {
+    ) -> Result<Block<Transaction<MonadTxEnvelope>>, ChainStateError> {
         if let Some(buffer) = &self.buffer {
             if let Some(height) = resolve_block_height_from_buffer(buffer, &block) {
                 if let Some(mut block) = buffer.get_block_by_height(height) {
@@ -1289,7 +1292,7 @@ async fn try_create_logs_stream_using_index<'a>(
 fn calculate_block_size(header: &RlpHeader, transactions: &[TxEnvelopeWithSender]) -> usize {
     let header_len = header.length();
 
-    // sum of each TxEnvelope length wrapped in RLP list
+    // sum of each MonadTxEnvelope length wrapped in RLP list
     let txs_payload_len: usize = transactions.iter().map(|tx| tx.tx.length()).sum();
     let txs_list_len = alloy_rlp::length_of_length(txs_payload_len) + txs_payload_len;
 
@@ -1306,7 +1309,7 @@ fn parse_block_content(
     header: RlpHeader,
     transactions: Vec<TxEnvelopeWithSender>,
     return_full_txns: bool,
-) -> Block {
+) -> Block<Transaction<MonadTxEnvelope>> {
     let block_size = U256::from(calculate_block_size(&header, &transactions));
 
     // parse transactions
@@ -1357,7 +1360,7 @@ pub fn parse_tx_content(
     base_fee: Option<u64>,
     tx: TxEnvelopeWithSender,
     tx_index: u64,
-) -> Transaction {
+) -> Transaction<MonadTxEnvelope> {
     let TxEnvelopeWithSender { tx, sender } = tx;
 
     // effective gas price is calculated according to eth json rpc specification
@@ -1546,7 +1549,7 @@ async fn get_transaction_from_triedb<T: Triedb>(
     triedb_env: &T,
     block_key: BlockKey,
     tx_index: u64,
-) -> Result<Option<Transaction>, ChainStateError> {
+) -> Result<Option<Transaction<MonadTxEnvelope>>, ChainStateError> {
     let header = match triedb_env
         .get_block_header(block_key)
         .await
@@ -1641,7 +1644,7 @@ async fn get_receipt_from_triedb<T: Triedb>(
 mod tests {
     use std::sync::Arc;
 
-    use alloy_consensus::{Block as ConsensusBlock, BlockBody, Header, TxEnvelope};
+    use alloy_consensus::{Block as ConsensusBlock, BlockBody, Header};
     use alloy_eips::BlockNumberOrTag;
     use alloy_rlp::Encodable;
     use alloy_rpc_types::{Filter, FilterBlockOption};
@@ -1650,7 +1653,7 @@ mod tests {
         prelude::{ArchiveReader, BlockDataArchive, IndexReaderImpl, TxIndexArchiver},
         test_utils::{mock_block, mock_rx, mock_tx, MemoryStorage},
     };
-    use monad_eth_types::TxEnvelopeWithSender;
+    use monad_eth_types::{MonadTxEnvelope, TxEnvelopeWithSender};
     use monad_triedb_utils::mock_triedb::MockTriedb;
 
     use crate::{
@@ -1665,7 +1668,7 @@ mod tests {
 
         let calculated_size = calculate_block_size(&header, &transactions);
 
-        let consensus_block: ConsensusBlock<TxEnvelope> = ConsensusBlock {
+        let consensus_block: ConsensusBlock<MonadTxEnvelope> = ConsensusBlock {
             header,
             body: BlockBody {
                 transactions: vec![],
@@ -1691,7 +1694,7 @@ mod tests {
 
         let calculated_size = calculate_block_size(&header, &transactions);
 
-        let consensus_block: ConsensusBlock<TxEnvelope> = ConsensusBlock {
+        let consensus_block: ConsensusBlock<MonadTxEnvelope> = ConsensusBlock {
             header,
             body: BlockBody {
                 transactions: vec![tx_with_sender.tx],

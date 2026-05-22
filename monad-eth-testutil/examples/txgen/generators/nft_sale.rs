@@ -26,7 +26,11 @@ impl Generator for NftSaleGenerator {
         &mut self,
         accts: &mut [SimpleAccount],
         ctx: &GenCtx,
-    ) -> Vec<(TxEnvelope, Address, crate::shared::private_key::PrivateKey)> {
+    ) -> Vec<(
+        MonadTxEnvelope,
+        Address,
+        crate::shared::private_key::PrivateKey,
+    )> {
         let mut txs = Vec::with_capacity(self.tx_per_sender * accts.len());
 
         // for each sender, buy an nft from the sale

@@ -15,9 +15,9 @@
 
 use std::{collections::HashMap, sync::Arc};
 
-use alloy_consensus::TxEnvelope;
 use alloy_primitives::{Address, TxHash};
 use flume::{Sender, TrySendError};
+use monad_eth_types::MonadTxEnvelope;
 
 use super::{
     state::{EthTxPoolBridgeStateView, TxStatusReceiverSender},
@@ -26,7 +26,7 @@ use super::{
 
 #[derive(Clone)]
 pub struct EthTxPoolBridgeClient {
-    tx_sender: Sender<(TxEnvelope, TxStatusReceiverSender)>,
+    tx_sender: Sender<(MonadTxEnvelope, TxStatusReceiverSender)>,
     tx_sender_capacity: usize,
 
     tx_inflight: Arc<()>,
@@ -36,7 +36,7 @@ pub struct EthTxPoolBridgeClient {
 
 impl EthTxPoolBridgeClient {
     pub(super) fn new(
-        tx_sender: Sender<(TxEnvelope, TxStatusReceiverSender)>,
+        tx_sender: Sender<(MonadTxEnvelope, TxStatusReceiverSender)>,
         state: EthTxPoolBridgeStateView,
     ) -> Self {
         let tx_sender_capacity = tx_sender
@@ -65,9 +65,9 @@ impl EthTxPoolBridgeClient {
 
     pub fn try_send(
         &self,
-        tx: TxEnvelope,
+        tx: MonadTxEnvelope,
         tx_status_recv_send: TxStatusReceiverSender,
-    ) -> Result<(), TrySendError<(TxEnvelope, TxStatusReceiverSender)>> {
+    ) -> Result<(), TrySendError<(MonadTxEnvelope, TxStatusReceiverSender)>> {
         self.tx_sender.try_send((tx, tx_status_recv_send))
     }
 
