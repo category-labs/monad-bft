@@ -42,7 +42,7 @@ use monad_types::SeqNum;
 use tracing::{debug, error, trace, warn};
 
 use self::{
-    buffer::{block_height_from_tag, ExecEventsBuffer},
+    buffer::BlockBufferView,
     source::{
         ArchiveDataSource, BlockCommitState, BlockPointer, DataSourceResult, DataSourceStack,
         HistoricalDataSource, HistoricalDataSourceStack,
@@ -64,7 +64,7 @@ mod source;
 
 #[derive(Clone)]
 pub struct DataProvider<T> {
-    buffer: Option<Arc<ExecEventsBuffer>>,
+    buffer: Option<BlockBufferView>,
     pub triedb_env: Arc<T>,
     archive_reader: Option<ArchiveReader>,
 
@@ -139,13 +139,10 @@ pub async fn get_block_key_from_tag_or_hash(
         .flatten()
 }
 
-fn resolve_block_height_from_buffer(
-    buffer: &ExecEventsBuffer,
-    block: &BlockTagOrHash,
-) -> Option<u64> {
+fn resolve_block_height_from_buffer(view: &BlockBufferView, block: &BlockTagOrHash) -> Option<u64> {
     match block {
-        BlockTagOrHash::BlockTags(tag) => Some(block_height_from_tag(buffer, tag)),
-        BlockTagOrHash::Hash(hash) => buffer
+        BlockTagOrHash::BlockTags(tag) => Some(view.resolve_block_height_from_tag(tag)),
+        BlockTagOrHash::Hash(hash) => view
             .get_block_by_hash(&FixedBytes(hash.0))
             .map(|block| block.header.number),
     }
@@ -187,7 +184,7 @@ where
     T: Triedb + Send + Sync + 'static,
 {
     pub fn new(
-        buffer: Option<Arc<ExecEventsBuffer>>,
+        buffer: Option<BlockBufferView>,
         triedb_env: Arc<T>,
         archive_reader: Option<ArchiveReader>,
     ) -> Self {
@@ -478,7 +475,7 @@ where
         block: BlockTags,
     ) -> Result<Vec<ReceiptEnvelope>, ChainStateError> {
         if let Some(buffer) = &self.buffer {
-            let height = block_height_from_tag(buffer, &block);
+            let height = buffer.resolve_block_height_from_tag(&block);
             if let Some(receipts) = buffer.get_receipts_by_block_height(height) {
                 return Ok(receipts
                     .into_iter()
