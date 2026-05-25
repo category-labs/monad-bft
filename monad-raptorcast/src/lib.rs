@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    collections::{BTreeMap, HashMap, HashSet, VecDeque},
+    collections::{BTreeMap, HashMap, VecDeque},
     future::Future as _,
     marker::PhantomData,
     net::{IpAddr, SocketAddr, SocketAddrV4},
@@ -38,9 +38,9 @@ use monad_crypto::{
     signing_domain,
 };
 use monad_dataplane::{
-    udp::{segment_size_for_mtu, DEFAULT_MTU, ETHERNET_SEGMENT_SIZE},
+    udp::{segment_size_for_mtu, DEFAULT_MTU},
     DataplaneBuilder, DataplaneControl, RecvTcpMsg, TcpMsg, TcpSocketHandle, TcpSocketId,
-    TcpSocketReader, TcpSocketWriter, UdpSocketHandle, UdpSocketId, UnicastMsg,
+    TcpSocketReader, TcpSocketWriter, UdpSocketHandle, UdpSocketId,
 };
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{
@@ -51,7 +51,7 @@ use monad_peer_discovery::{
     driver::{PeerDiscoveryDriver, PeerDiscoveryEmit},
     message::PeerDiscoveryMessage,
     mock::{NopDiscovery, NopDiscoveryBuilder},
-    NameRecord, PeerDiscoveryAlgo, PeerDiscoveryEvent,
+    MonadNameRecord, NameRecord, PeerDiscoveryAlgo, PeerDiscoveryEvent,
 };
 use monad_peer_score::IdentityScore;
 use monad_types::{DropTimer, Epoch, ExecutionProtocol, NodeId, Round, RouterTarget, UdpPriority};
@@ -64,7 +64,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tracing::{debug, debug_span, error, info, trace, warn};
 use util::{
     AutoRebroadcast, BroadcastGroup, BroadcastGroupError, BuildTarget, Collector, FullNodeGroupMap,
-    PeerAddrLookup, PrimaryBroadcastGroup, Recipient, Redundancy, SecondaryBroadcastGroup,
+    PeerAddrLookup, PrimaryBroadcastGroup, Redundancy, SecondaryBroadcastGroup,
     SecondaryGroupAssignment, UdpMessage,
 };
 
@@ -789,8 +789,36 @@ where
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Decodable,
     OM: Encodable + Into<M> + Clone,
 {
+    new_defaulted_raptorcast_for_tests_with_name_records(
+        dataplane,
+        known_addresses,
+        HashMap::new(),
+        shared_key,
+    )
+}
+
+pub fn new_defaulted_raptorcast_for_tests_with_name_records<ST, M, OM, SE>(
+    dataplane: DataplaneHandles,
+    known_addresses: HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddrV4>,
+    name_records: HashMap<NodeId<CertificateSignaturePubKey<ST>>, MonadNameRecord<ST>>,
+    shared_key: Arc<ST::KeyPairType>,
+) -> RaptorCast<
+    ST,
+    M,
+    OM,
+    SE,
+    NopDiscovery<ST>,
+    auth::NoopAuthProtocol<CertificateSignaturePubKey<ST>>,
+    auth::NopScore<NodeId<CertificateSignaturePubKey<ST>>>,
+>
+where
+    ST: CertificateSignatureRecoverable,
+    M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Decodable,
+    OM: Encodable + Into<M> + Clone,
+{
     let peer_discovery_builder = NopDiscoveryBuilder {
         known_addresses,
+        name_records,
         ..Default::default()
     };
     let config = config::RaptorCastConfig {
@@ -1599,7 +1627,6 @@ where
     dual_socket: &'a mut auth::DualSocketHandle<AP>,
     peer_disc_driver: &'a Arc<Mutex<PeerDiscoveryDriver<PD>>>,
     target_name_record: Option<TargetNameRecord<'a, ST>>,
-    targets: HashSet<Recipient<CertificateSignaturePubKey<ST>>>,
     priority: UdpPriority,
     _signature_type: PhantomData<ST>,
 }
@@ -1624,7 +1651,6 @@ where
             dual_socket,
             peer_disc_driver,
             target_name_record: None,
-            targets: Default::default(),
             priority: UdpPriority::Regular,
             _signature_type: PhantomData,
         }
@@ -1661,70 +1687,6 @@ where
             sink: self,
         }
     }
-
-    fn lookup_addr(
-        &self,
-        recipient: &Recipient<CertificateSignaturePubKey<ST>>,
-    ) -> Option<SocketAddr> {
-        if let Some(target_name_record) = self.target_name_record {
-            if recipient.node_id() != target_name_record.target {
-                return None;
-            }
-
-            let auth_addr = target_name_record.name_record.authenticated_udp_socket();
-            let addr = SocketAddr::V4(auth_addr);
-            if self
-                .dual_socket
-                .is_connected_socket_and_public_key(&addr, &recipient.node_id().pubkey())
-            {
-                return Some(addr);
-            }
-
-            target_name_record
-                .name_record
-                .udp_socket()
-                .map(SocketAddr::V4)
-        } else {
-            // otherwise lookup address using peer-discovery
-            let peer_lookup = (&*self.dual_socket, self.peer_disc_driver);
-            *recipient.lookup(&peer_lookup)
-        }
-    }
-}
-
-impl<'a, ST, PD, AP> Drop for DualUdpPacketSender<'a, ST, PD, AP>
-where
-    ST: CertificateSignatureRecoverable,
-    AP: auth::AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
-    PD: PeerDiscoveryAlgo<SignatureType = ST>,
-{
-    fn drop(&mut self) {
-        if let Some(target_name_record) = self.target_name_record {
-            let auth_addr = target_name_record.name_record.authenticated_udp_socket();
-            let addr = SocketAddr::V4(auth_addr);
-            if !self
-                .dual_socket
-                .is_connected_socket_and_public_key(&addr, &target_name_record.target.pubkey())
-            {
-                if let Err(e) = self.dual_socket.connect(
-                    &target_name_record.target.pubkey(),
-                    addr,
-                    DEFAULT_RETRY_ATTEMPTS,
-                ) {
-                    warn!(
-                        target = ?target_name_record.target,
-                        auth_addr = ?auth_addr,
-                        error = ?e,
-                        "failed to initiate connection to authenticated endpoint"
-                    );
-                }
-                self.dual_socket.flush();
-            }
-        } else {
-            let targets = self.targets.iter().map(|recipient| recipient.node_id());
-            ensure_authenticated_sessions(self.dual_socket, self.peer_disc_driver, targets);
-        }
-    }
 }
 
 impl<'a, ST, PD, AP> Collector<UdpMessage<CertificateSignaturePubKey<ST>>>
@@ -1735,22 +1697,46 @@ where
     PD: PeerDiscoveryAlgo<SignatureType = ST>,
 {
     fn push(&mut self, item: UdpMessage<CertificateSignaturePubKey<ST>>) {
-        let Some(dest) = self.lookup_addr(&item.recipient) else {
+        let public_key = item.recipient.node_id().pubkey();
+        let stride = item.stride as u16;
+
+        if let Some(target_name_record) = self.target_name_record {
+            if item.recipient.node_id() != target_name_record.target {
+                return;
+            }
+
+            self.dual_socket.write_to_name_record(
+                &public_key,
+                target_name_record.name_record,
+                item.payload,
+                stride,
+                self.priority,
+            );
+            return;
+        }
+
+        let Ok(peer_discovery) = self.peer_disc_driver.lock() else {
             return;
         };
 
-        if !self.targets.contains(&item.recipient) {
-            // used to initiate auth udp session
-            self.targets.insert(item.recipient.clone());
-        }
-
-        let msg = UnicastMsg {
-            stride: item.stride as u16,
-            msgs: vec![(dest, item.payload)],
+        let Some(name_record) = peer_discovery
+            .get_name_record(item.recipient.node_id())
+            .map(|record| &record.name_record)
+        else {
+            warn!(
+                "raptorcast: unknown name record for node {}",
+                item.recipient.node_id()
+            );
+            return;
         };
 
-        self.dual_socket
-            .write_unicast_with_priority(msg, self.priority);
+        self.dual_socket.write_to_name_record(
+            &public_key,
+            name_record,
+            item.payload,
+            stride,
+            self.priority,
+        );
     }
 }
 
@@ -1765,80 +1751,25 @@ fn rebroadcast_packet<ST, PD, AP>(
     PD: PeerDiscoveryAlgo<SignatureType = ST>,
     AP: auth::AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
 {
-    // if the packet was created by non-upgraded node we won't be able to fit auth header
-    let fits_with_auth_header =
-        payload.len() + AP::HEADER_SIZE as usize <= ETHERNET_SEGMENT_SIZE as usize;
-
-    // if we can fit auth header, check if connection exists, otherwise fallback to non-auth socket
-    let target_addr = if fits_with_auth_header {
-        dual_socket
-            .get_socket_by_public_key(&target.pubkey())
-            .or_else(|| {
-                peer_discovery_driver
-                    .lock()
-                    .ok()
-                    .and_then(|pd| pd.get_udp_addr(target))
-            })
-    } else {
-        peer_discovery_driver
-            .lock()
-            .ok()
-            .and_then(|pd| pd.get_udp_addr(target))
-    };
-
-    let Some(target_addr) = target_addr else {
-        warn!(target=?target, "failed to find address for rebroadcast target");
+    let Ok(peer_discovery) = peer_discovery_driver.lock() else {
         return;
     };
 
-    dual_socket.write_unicast_with_priority(
-        UnicastMsg {
-            msgs: vec![(target_addr, payload)],
-            stride: bcast_stride,
-        },
+    let Some(name_record) = peer_discovery
+        .get_name_record(target)
+        .map(|record| &record.name_record)
+    else {
+        warn!(target=?target, "failed to find name record for rebroadcast target");
+        return;
+    };
+
+    dual_socket.write_to_name_record(
+        &target.pubkey(),
+        name_record,
+        payload,
+        bcast_stride,
         UdpPriority::High,
     );
-
-    ensure_authenticated_sessions(dual_socket, peer_discovery_driver, std::iter::once(target));
-}
-
-fn ensure_authenticated_sessions<'a, ST, PD, AP>(
-    dual_socket: &mut auth::DualSocketHandle<AP>,
-    peer_discovery_driver: &Arc<Mutex<PeerDiscoveryDriver<PD>>>,
-    targets: impl Iterator<Item = &'a NodeId<CertificateSignaturePubKey<ST>>>,
-) where
-    ST: CertificateSignatureRecoverable,
-    PD: PeerDiscoveryAlgo<SignatureType = ST>,
-    AP: auth::AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
-{
-    let pd_driver = peer_discovery_driver.lock().unwrap();
-
-    targets
-        .filter_map(|target| {
-            pd_driver
-                .get_name_record(target)
-                .map(|record| (target, record.name_record.authenticated_udp_socket()))
-        })
-        .for_each(|(target, auth_addr)| {
-            if dual_socket.has_any_session_by_public_key(&target.pubkey()) {
-                return;
-            }
-
-            if let Err(e) = dual_socket.connect(
-                &target.pubkey(),
-                SocketAddr::V4(auth_addr),
-                DEFAULT_RETRY_ATTEMPTS,
-            ) {
-                warn!(
-                    target=?target,
-                    auth_addr=?auth_addr,
-                    error=?e,
-                    "failed to initiate connection to authenticated endpoint"
-                );
-            }
-        });
-
-    dual_socket.flush();
 }
 
 impl<PT, AP> PeerAddrLookup<PT> for auth::DualSocketHandle<AP>
