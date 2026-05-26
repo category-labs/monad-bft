@@ -48,3 +48,13 @@ pub enum BlockPointer {
     Finalized(u64),
     NonFinalized(u64, BlockId),
 }
+
+impl BlockPointer {
+    pub fn block_number(&self) -> u64 {
+        match self {
+            BlockPointer::Finalized(block_number) | BlockPointer::NonFinalized(block_number, _) => {
+                *block_number
+            }
+        }
+    }
+}
