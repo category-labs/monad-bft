@@ -36,6 +36,8 @@ use crate::{
         COUNTER_RAPTORCAST_V1_SECONDARY_CHUNKS_ACCEPTED,
         GAUGE_RAPTORCAST_DECODING_CACHE_SIGNATURE_VERIFICATIONS_RATE_LIMITED,
         GAUGE_RAPTORCAST_DETERMINISTIC_ROLLOUT_STAGE,
+        GAUGE_RAPTORCAST_ROUND_INFO_CACHE_PRIMARY_ENTRIES,
+        GAUGE_RAPTORCAST_ROUND_INFO_CACHE_SECONDARY_ENTRIES,
     },
     packet::deterministic,
     parser::{
@@ -124,6 +126,12 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
 
     pub fn update_current_round(&mut self, round: Round) {
         self.round_info_cache.update_current_round(round);
+
+        let m = self.metrics.executor_metrics_mut();
+        m[GAUGE_RAPTORCAST_ROUND_INFO_CACHE_PRIMARY_ENTRIES] =
+            self.round_info_cache.primary_entries() as u64;
+        m[GAUGE_RAPTORCAST_ROUND_INFO_CACHE_SECONDARY_ENTRIES] =
+            self.round_info_cache.secondary_entries() as u64;
     }
 
     pub fn handle_unicast(

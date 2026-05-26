@@ -76,6 +76,14 @@ monad_executor::metric_consts! {
         name: "monad.raptorcast.deterministic_rollout_stage",
         help: "Current deterministic raptorcast rollout stage (0=always_v0, 1=accept_both_publish_v0, 2=accept_both_publish_v1, 3=always_v1)",
     }
+    pub GAUGE_RAPTORCAST_ROUND_INFO_CACHE_PRIMARY_ENTRIES {
+        name: "monad.raptorcast.round_info_cache.primary_entries",
+        help: "Number of primary per-round entries currently held in RoundInfoCache",
+    }
+    pub GAUGE_RAPTORCAST_ROUND_INFO_CACHE_SECONDARY_ENTRIES {
+        name: "monad.raptorcast.round_info_cache.secondary_entries",
+        help: "Total (publisher, round) secondary entries currently held in RoundInfoCache",
+    }
     pub PRIMARY_BROADCAST_LATENCY_P99_MS {
         name: "monad.bft.raptorcast.udp.primary_broadcast_latency_p99_ms",
         help: "P99 primary UDP broadcast latency in ms (30s rolling window)",
