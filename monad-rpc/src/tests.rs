@@ -24,6 +24,7 @@ use test_case::test_case;
 use tracing_actix_web::TracingLogger;
 
 use crate::{
+    data::debug_trace_handler::DebugTraceHandler,
     handlers::{
         resources::{MonadJsonRootSpanBuilder, MonadRpcResources},
         rpc_handler,
@@ -38,6 +39,7 @@ pub async fn init_server(
     let app_state = MonadRpcResources {
         txpool_bridge_client: Some(EthTxPoolBridgeClient::for_testing()),
         eth_call_handler: None,
+        debug_trace_handler: DebugTraceHandler::new(20),
         chain_id: 1337,
         data_provider: None,
         event_server_client: None,

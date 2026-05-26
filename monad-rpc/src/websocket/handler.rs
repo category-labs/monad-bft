@@ -696,6 +696,7 @@ mod tests {
 
     use super::ws_handler;
     use crate::{
+        data::debug_trace_handler::DebugTraceHandler,
         event::EventServer,
         handlers::resources::MonadRpcResources,
         txpool::EthTxPoolBridgeClient,
@@ -722,6 +723,7 @@ mod tests {
         let app_state = MonadRpcResources {
             txpool_bridge_client: Some(EthTxPoolBridgeClient::for_testing()),
             eth_call_handler: None,
+            debug_trace_handler: DebugTraceHandler::new(20),
             chain_id: 1337,
             data_provider: None,
             event_server_client: Some(event_server_client),
