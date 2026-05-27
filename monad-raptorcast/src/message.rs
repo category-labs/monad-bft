@@ -63,7 +63,7 @@ impl NetworkMessageVersion {
     pub fn version() -> Self {
         Self {
             serialize_version: SERIALIZE_VERSION,
-            compression_version: CompressionVersion::UncompressedVersion,
+            compression_version: CompressionVersion::DefaultZSTDVersion,
         }
     }
 }
