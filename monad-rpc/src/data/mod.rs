@@ -53,7 +53,7 @@ use crate::{
     handlers::eth::txn::FilterError,
     types::{
         eth_json::{BlockTagOrHash, BlockTags, MonadLog, MonadTransactionReceipt, Quantity},
-        heuristic_size::HeuristicSize,
+        json_serialized_len::JsonSerializedLen,
         jsonrpc::{ArchiveErrorExt, JsonRpcError, JsonRpcResult},
     },
 };
@@ -1018,7 +1018,7 @@ async fn try_collect_logs_stream_with_heuristic_response_limit<E>(
                 }
 
                 response_logs.extend(logs.into_iter().map(|log| {
-                    heuristic_response_size += HeuristicSize::heuristic_json_len(&log) as u64;
+                    heuristic_response_size += JsonSerializedLen::json_serialized_len(&log) as u64;
                     MonadLog(log)
                 }));
 

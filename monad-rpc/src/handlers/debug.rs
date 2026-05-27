@@ -35,7 +35,6 @@ use crate::{
             UnformattedData,
         },
         ethhex,
-        heuristic_size::HeuristicSize,
         jsonrpc::{ChainStateResultExt, JsonRpcError, JsonRpcResult},
     },
 };
@@ -71,24 +70,29 @@ pub async fn monad_debug_getRawBlock<T: Triedb>(
                 transactions,
                 ..
             } = block;
+
             let header = header.inner;
 
-            let mut txs_heuristic_response_size = 0usize;
-            let mut raw_transactions = Vec::new();
+            let transactions = transactions
+                .into_transactions()
+                .map(|tx| tx.into_inner())
+                .collect::<Vec<_>>();
 
-            for tx in transactions.into_transactions() {
-                let tx = tx.into_inner();
-                txs_heuristic_response_size += tx.heuristic_json_len();
+            let mut txs_heuristic_response_size = 0usize;
+
+            for tx in transactions.iter() {
+                // 2 bytes per input byte
+                txs_heuristic_response_size += 2 * tx.length();
+
                 if txs_heuristic_response_size > max_response_size {
                     return Err(JsonRpcError::max_size_exceeded());
                 }
-                raw_transactions.push(tx);
             }
 
             encode_block(Block {
                 header,
                 body: BlockBody {
-                    transactions: raw_transactions,
+                    transactions,
                     ommers: vec![],
                     withdrawals: None,
                 },
@@ -150,7 +154,7 @@ pub async fn monad_debug_getRawReceipts<T: Triedb>(
         let mut res = Vec::new();
         r.encode_2718(&mut res);
         let receipt = ethhex::encode_bytes(&res);
-        heuristic_response_size += receipt.heuristic_json_len();
+        heuristic_response_size += 2 + receipt.len();
         if heuristic_response_size > max_response_size {
             return Err(JsonRpcError::max_size_exceeded());
         }

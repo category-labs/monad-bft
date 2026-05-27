@@ -15,6 +15,6 @@
 
 pub mod eth_json;
 pub mod ethhex;
-pub mod heuristic_size;
+pub mod json_serialized_len;
 pub mod jsonrpc;
 pub mod serialize;

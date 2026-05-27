@@ -103,6 +103,7 @@ awc = { workspace = true }
 brotli = { workspace = true }
 criterion = { workspace = true }
 flate2 = { workspace = true }
+paste = { workspace = true }
 proptest = { workspace = true }
 reqwest = { workspace = true }
 tempfile = { workspace = true }
