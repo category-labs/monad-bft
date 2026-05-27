@@ -6014,6 +6014,7 @@ dependencies = [
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
+ "paste",
  "pin-project",
  "proptest",
  "rand 0.8.5",
