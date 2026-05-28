@@ -1122,7 +1122,10 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
             execute_block_scan_query(&self.tables, &request, window).await?
         };
 
+        let mut relation_blocks_load_us = 0u64;
+        let mut relation_transactions_load_us = 0u64;
         if request.relations.blocks {
+            let relation_start = Instant::now();
             response.blocks = Some(
                 load_blocks_by_numbers(
                     self.tables.blocks(),
@@ -1130,9 +1133,11 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
                 )
                 .await?,
             );
+            relation_blocks_load_us = relation_start.elapsed().as_micros() as u64;
         }
 
         if request.relations.transactions {
+            let relation_start = Instant::now();
             response.transactions = Some(
                 load_txs_by_positions(
                     &self.tables,
@@ -1140,6 +1145,7 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
                 )
                 .await?,
             );
+            relation_transactions_load_us = relation_start.elapsed().as_micros() as u64;
         }
 
         trace!(
@@ -1148,6 +1154,8 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
             result_count = response.logs.len(),
             blocks_count = response.blocks.as_ref().map_or(0, Vec::len),
             transactions_count = response.transactions.as_ref().map_or(0, Vec::len),
+            relation_blocks_load_us,
+            relation_transactions_load_us,
             cursor_block = response.span.cursor_block.number,
             elapsed_ms = query_start.elapsed().as_millis() as u64,
             "chain data query completed"
@@ -1200,7 +1208,9 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
             execute_block_scan_tx_query(&self.tables, &request, window).await?
         };
 
+        let mut relation_blocks_load_us = 0u64;
         if request.relations.blocks {
+            let relation_start = Instant::now();
             response.blocks = Some(
                 load_blocks_by_numbers(
                     self.tables.blocks(),
@@ -1208,6 +1218,7 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
                 )
                 .await?,
             );
+            relation_blocks_load_us = relation_start.elapsed().as_micros() as u64;
         }
 
         trace!(
@@ -1215,6 +1226,7 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
             path,
             result_count = response.txs.len(),
             blocks_count = response.blocks.as_ref().map_or(0, Vec::len),
+            relation_blocks_load_us,
             cursor_block = response.span.cursor_block.number,
             elapsed_ms = query_start.elapsed().as_millis() as u64,
             "chain data query completed"
@@ -1283,7 +1295,10 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
             execute_block_scan_trace_query(&self.tables, &request, window).await?
         };
 
+        let mut relation_blocks_load_us = 0u64;
+        let mut relation_transactions_load_us = 0u64;
         if request.relations.blocks {
+            let relation_start = Instant::now();
             response.blocks = Some(
                 load_blocks_by_numbers(
                     self.tables.blocks(),
@@ -1291,9 +1306,11 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
                 )
                 .await?,
             );
+            relation_blocks_load_us = relation_start.elapsed().as_micros() as u64;
         }
 
         if request.relations.transactions {
+            let relation_start = Instant::now();
             response.transactions = Some(
                 load_txs_by_positions(
                     &self.tables,
@@ -1301,6 +1318,7 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
                 )
                 .await?,
             );
+            relation_transactions_load_us = relation_start.elapsed().as_micros() as u64;
         }
 
         trace!(
@@ -1309,6 +1327,8 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
             result_count = response.traces.len(),
             blocks_count = response.blocks.as_ref().map_or(0, Vec::len),
             transactions_count = response.transactions.as_ref().map_or(0, Vec::len),
+            relation_blocks_load_us,
+            relation_transactions_load_us,
             cursor_block = response.span.cursor_block.number,
             elapsed_ms = query_start.elapsed().as_millis() as u64,
             "chain data query completed"
@@ -1359,7 +1379,10 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
             execute_block_scan_transfer_query(&self.tables, &request, window).await?
         };
 
+        let mut relation_blocks_load_us = 0u64;
+        let mut relation_transactions_load_us = 0u64;
         if request.relations.blocks {
+            let relation_start = Instant::now();
             response.blocks = Some(
                 load_blocks_by_numbers(
                     self.tables.blocks(),
@@ -1367,9 +1390,11 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
                 )
                 .await?,
             );
+            relation_blocks_load_us = relation_start.elapsed().as_micros() as u64;
         }
 
         if request.relations.transactions {
+            let relation_start = Instant::now();
             response.transactions = Some(
                 load_txs_by_positions(
                     &self.tables,
@@ -1380,6 +1405,7 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
                 )
                 .await?,
             );
+            relation_transactions_load_us = relation_start.elapsed().as_micros() as u64;
         }
 
         trace!(
@@ -1388,6 +1414,8 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
             result_count = response.transfers.len(),
             blocks_count = response.blocks.as_ref().map_or(0, Vec::len),
             transactions_count = response.transactions.as_ref().map_or(0, Vec::len),
+            relation_blocks_load_us,
+            relation_transactions_load_us,
             cursor_block = response.span.cursor_block.number,
             elapsed_ms = query_start.elapsed().as_millis() as u64,
             "chain data query completed"
