@@ -15,7 +15,7 @@
 
 use std::{cell::RefCell, rc::Rc};
 
-use alloy_consensus::{Block, BlockBody, Header, TxEnvelope};
+use alloy_consensus::{Block, BlockBody, TxEnvelope};
 use alloy_eips::eip2718::Encodable2718;
 use alloy_primitives::{
     aliases::{U256, U64, U8},
@@ -54,52 +54,49 @@ pub async fn monad_debug_getRawBlock<T: Triedb>(
 ) -> JsonRpcResult<String> {
     trace!("monad_debug_getRawBlock: {params:?}");
 
-    let encode_block = |block: Block<TxEnvelope>| {
-        let mut res = Vec::new();
-        block.encode(&mut res);
-        Ok(ethhex::encode_bytes(&res))
-    };
-
-    match data_provider
+    let Ok(block) = data_provider
         .get_block(BlockTagOrHash::BlockTags(params.block), true)
         .await
-    {
-        Ok(block) => {
-            let alloy_rpc_types::Block {
-                header,
-                transactions,
-                ..
-            } = block;
+    else {
+        return Err(JsonRpcError::internal_error("block data not found".into()));
+    };
 
-            let header = header.inner;
+    let alloy_rpc_types::Block {
+        header,
+        transactions,
+        uncles: _,
+        withdrawals: _,
+    } = block;
 
-            let transactions = transactions
-                .into_transactions()
-                .map(|tx| tx.into_inner())
-                .collect::<Vec<_>>();
+    let transactions = transactions
+        .into_transactions()
+        .map(|tx| tx.into_inner())
+        .collect::<Vec<_>>();
 
-            let mut txs_heuristic_response_size = 0usize;
+    let mut txs_heuristic_response_size = 0usize;
 
-            for tx in transactions.iter() {
-                // 2 bytes per input byte
-                txs_heuristic_response_size += 2 * tx.length();
+    for tx in transactions.iter() {
+        // 2 bytes per input byte
+        txs_heuristic_response_size += 2 * tx.length();
 
-                if txs_heuristic_response_size > max_response_size {
-                    return Err(JsonRpcError::max_size_exceeded());
-                }
-            }
-
-            encode_block(Block {
-                header,
-                body: BlockBody {
-                    transactions,
-                    ommers: vec![],
-                    withdrawals: None,
-                },
-            })
+        if txs_heuristic_response_size > max_response_size {
+            return Err(JsonRpcError::max_size_exceeded());
         }
-        Err(_) => Err(JsonRpcError::internal_error("block data not found".into())),
     }
+
+    let block = Block {
+        header: header.inner,
+        body: BlockBody {
+            transactions,
+            ommers: vec![],
+            withdrawals: None,
+        },
+    };
+
+    let mut res = Vec::new();
+    block.encode(&mut res);
+
+    Ok(ethhex::encode_bytes(&res))
 }
 
 #[rpc(method = "debug_getRawHeader")]
@@ -111,19 +108,17 @@ pub async fn monad_debug_getRawHeader<T: Triedb>(
 ) -> JsonRpcResult<String> {
     trace!("monad_debug_getRawHeader: {params:?}");
 
-    let encode_header = |header: Header| {
-        let mut res = Vec::new();
-        header.encode(&mut res);
-        Ok(ethhex::encode_bytes(&res))
-    };
-
-    match data_provider
+    let Ok(header) = data_provider
         .get_block_header(BlockTagOrHash::BlockTags(params.block))
         .await
-    {
-        Ok(header) => encode_header(header),
-        Err(_) => Err(JsonRpcError::internal_error("block data not found".into())),
-    }
+    else {
+        return Err(JsonRpcError::internal_error("block data not found".into()));
+    };
+
+    let mut res = Vec::new();
+    header.encode(&mut res);
+
+    Ok(ethhex::encode_bytes(&res))
 }
 
 #[derive(Serialize, Debug, schemars::JsonSchema)]
@@ -153,11 +148,14 @@ pub async fn monad_debug_getRawReceipts<T: Triedb>(
     for r in raw_receipts {
         let mut res = Vec::new();
         r.encode_2718(&mut res);
+
         let receipt = ethhex::encode_bytes(&res);
         heuristic_response_size += 2 + receipt.len();
+
         if heuristic_response_size > max_response_size {
             return Err(JsonRpcError::max_size_exceeded());
         }
+
         receipts.push(receipt);
     }
 
@@ -178,18 +176,19 @@ pub async fn monad_debug_getRawTransaction<T: Triedb>(
 ) -> JsonRpcResult<String> {
     trace!("monad_debug_getRawTransaction: {params:?}");
 
-    match data_provider
+    let Ok(tx) = data_provider
         .get_transaction(&FixedBytes(params.tx_hash.0))
         .await
-    {
-        Ok(tx) => {
-            let mut res = Vec::new();
-            let tx: TxEnvelope = tx.into();
-            tx.encode_2718(&mut res);
-            Ok(ethhex::encode_bytes(&res))
-        }
-        Err(_) => Err(JsonRpcError::internal_error("block data not found".into())),
-    }
+    else {
+        return Err(JsonRpcError::internal_error("block data not found".into()));
+    };
+
+    let tx: &TxEnvelope = tx.inner.inner();
+
+    let mut res = Vec::new();
+    tx.encode_2718(&mut res);
+
+    Ok(ethhex::encode_bytes(&res))
 }
 
 #[derive(Clone, Debug, RlpDecodable)]
@@ -531,6 +530,7 @@ pub async fn monad_debug_traceTransaction<T: Triedb>(
     };
 
     let rlp_call_frame = &mut call_frame.as_slice();
+
     decode_call_frame(
         &data_provider.triedb_env,
         rlp_call_frame,
@@ -547,19 +547,28 @@ async fn decode_block_call_frames<T: Triedb>(
     call_frames: Vec<Vec<u8>>,
     tracer: &TracerObject,
 ) -> JsonRpcResult<Vec<MonadDebugTraceBlockResult>> {
+    if call_frames.len() != tx_hashes.len() {
+        return Err(JsonRpcError::internal_error(
+            "invalid block callframe input".to_string(),
+        ));
+    }
+
     let mut resp = Vec::new();
 
-    for (call_frame, tx_id) in call_frames.into_iter().zip(tx_hashes.into_iter()) {
+    for (call_frame, tx_id) in call_frames.into_iter().zip(tx_hashes) {
         let rlp_call_frame = &mut call_frame.as_slice();
+
         let Some(traces) = decode_call_frame(triedb_env, rlp_call_frame, block_key, tracer).await?
         else {
             return Err(JsonRpcError::internal_error("traces not found".to_string()));
         };
+
         resp.push(MonadDebugTraceBlockResult {
             tx_hash: FixedData::<32>::from(tx_id),
             result: traces,
         });
     }
+
     Ok(resp)
 }
 
@@ -606,41 +615,45 @@ pub async fn decode_call_frame<T: Triedb>(
         Tracer::CallTracer => {
             // Diff mode is supported only by the prestate tracer
             if tracer.config.diff_mode {
-                Err(JsonRpcError::method_not_supported())
-            } else if tracer.config.only_top_call {
-                if call_frames.is_empty() {
-                    Ok(None)
-                } else {
-                    if let Some(root_frame) = call_frames.first_mut() {
-                        include_code_output(root_frame, triedb_env, block_key).await?;
-                    }
-
-                    let mut root = build_call_tree(call_frames)
-                        .await?
-                        .and_then(|rc| Rc::try_unwrap(rc).ok().map(|refcell| refcell.into_inner()));
-                    if let Some(root) = root.as_mut() {
-                        root.calls.clear();
-                    }
-                    Ok(root)
-                }
-            } else {
-                let call_frames = futures::future::join_all(
-                    call_frames
-                        .into_iter()
-                        .map(|mut frame| async move {
-                            include_code_output(&mut frame, triedb_env, block_key).await?;
-                            Ok::<_, JsonRpcError>(frame)
-                        })
-                        .collect::<Vec<_>>(),
-                )
-                .await
-                .into_iter()
-                .collect::<Result<Vec<_>, JsonRpcError>>()?;
-
-                Ok(build_call_tree(call_frames)
-                    .await?
-                    .and_then(|rc| Rc::try_unwrap(rc).ok().map(|refcell| refcell.into_inner())))
+                return Err(JsonRpcError::method_not_supported());
             }
+
+            if tracer.config.only_top_call {
+                if call_frames.is_empty() {
+                    return Ok(None);
+                }
+
+                if let Some(root_frame) = call_frames.first_mut() {
+                    include_code_output(root_frame, triedb_env, block_key).await?;
+                }
+
+                let mut root = build_call_tree(call_frames)
+                    .await?
+                    .and_then(|rc| Rc::try_unwrap(rc).ok().map(|refcell| refcell.into_inner()));
+
+                if let Some(root) = root.as_mut() {
+                    root.calls.clear();
+                }
+
+                return Ok(root);
+            }
+
+            let call_frames = futures::future::join_all(
+                call_frames
+                    .into_iter()
+                    .map(|mut frame| async move {
+                        include_code_output(&mut frame, triedb_env, block_key).await?;
+                        Ok::<_, JsonRpcError>(frame)
+                    })
+                    .collect::<Vec<_>>(),
+            )
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, JsonRpcError>>()?;
+
+            Ok(build_call_tree(call_frames)
+                .await?
+                .and_then(|rc| Rc::try_unwrap(rc).ok().map(|refcell| refcell.into_inner())))
         }
         _ => Err(JsonRpcError::method_not_supported()),
     }
@@ -655,36 +668,35 @@ async fn include_code_output<T: Triedb>(
     // Historical traces may not include the code output in their output field.
     // This is because the code output was not stored in the call frame in the past.
     // Archiver uses this function to include the code output if it is not present.
-    if frame.output.is_empty()
-        && (matches!(frame.typ, CallKind::Create) || matches!(frame.typ, CallKind::Create2))
-    {
-        let Some(contract_addr) = &frame.to else {
-            if frame.status == 0 {
-                error!("expected contract address in call frame");
-                return Err(JsonRpcError::internal_error(
-                    "contract address not found in call frame".to_string(),
-                ));
-            } else {
-                return Ok(());
-            }
-        };
-
-        let account = triedb_env
-            .get_account(block_key, contract_addr.0.into())
-            .await
-            .map_err(JsonRpcError::internal_error)?;
-
-        frame.output = if let Some(code_hash) = account.code_hash {
-            let code = triedb_env
-                .get_code(block_key, code_hash)
-                .await
-                .map_err(JsonRpcError::internal_error)?;
-
-            code.into()
-        } else {
-            Bytes::default()
-        };
+    if !frame.output.is_empty() || !matches!(frame.typ, CallKind::Create | CallKind::Create2) {
+        return Ok(());
     }
+
+    let Some(contract_addr) = &frame.to else {
+        if frame.status == 0 {
+            error!("expected contract address in call frame");
+            return Err(JsonRpcError::internal_error(
+                "contract address not found in call frame".to_string(),
+            ));
+        }
+
+        return Ok(());
+    };
+
+    let account = triedb_env
+        .get_account(block_key, contract_addr.0.into())
+        .await
+        .map_err(JsonRpcError::internal_error)?;
+
+    frame.output = if let Some(code_hash) = account.code_hash {
+        triedb_env
+            .get_code(block_key, code_hash)
+            .await
+            .map_err(JsonRpcError::internal_error)?
+            .into()
+    } else {
+        Bytes::default()
+    };
 
     Ok(())
 }
@@ -729,29 +741,21 @@ async fn build_call_tree(
         stack.push(new_node);
     }
 
-    // Then, assign log indices
-    assign_log_indices(&root);
-
-    Ok(Some(root))
-}
-
-/// Assigns log indices across all frames in execution order.
-fn assign_log_indices(root: &Rc<RefCell<MonadCallFrame>>) {
-    let mut counter = 0u64;
+    // Next, assign log indices
+    drop(stack);
 
     // Stack is (node, next_position_to_process)
     // Position N means: process logs at position N, then recurse into child N (if exists)
-    let mut stack: Vec<(Rc<RefCell<MonadCallFrame>>, usize)> = vec![(Rc::clone(root), 0)];
+    let mut stack: Vec<(Rc<RefCell<MonadCallFrame>>, usize)> = vec![(Rc::clone(&root), 0)];
+
+    let mut counter = 0u64;
 
     while let Some((node, position)) = stack.pop() {
         // Assign all logs at this position
-        {
-            let mut borrowed = node.borrow_mut();
-            for log in borrowed.logs.iter_mut() {
-                if log.position.0 == position as u64 {
-                    log.index = Quantity(counter);
-                    counter += 1;
-                }
+        for log in node.borrow_mut().logs.iter_mut() {
+            if log.position.0 == position as u64 {
+                log.index = Quantity(counter);
+                counter += 1;
             }
         }
 
@@ -761,13 +765,15 @@ fn assign_log_indices(root: &Rc<RefCell<MonadCallFrame>>) {
             stack.push((Rc::clone(child), 0));
         }
     }
+
+    Ok(Some(root))
 }
 
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
 
-    use alloy_consensus::{BlockBody, ReceiptEnvelope, ReceiptWithBloom};
+    use alloy_consensus::{BlockBody, Header, ReceiptEnvelope, ReceiptWithBloom};
     use alloy_primitives::Bloom;
     use alloy_rlp::{BufMut, Encodable};
     use monad_archive::test_utils::mock_tx;
