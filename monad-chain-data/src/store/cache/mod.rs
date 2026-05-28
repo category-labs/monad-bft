@@ -20,6 +20,7 @@ use std::{
         atomic::{AtomicU64, Ordering},
         Arc, Mutex,
     },
+    time::Instant,
 };
 
 use bytes::Bytes;
@@ -55,11 +56,11 @@ impl Default for CacheConfig {
             dir_by_block_entries: 50_000,
             dir_bucket_entries: 4_096,
             bitmap_by_block_entries: 200_000,
-            bitmap_page_meta_entries: 8_192,
-            bitmap_page_blob_entries: 0,
+            bitmap_page_meta_entries: 1_000_000,
+            bitmap_page_blob_entries: 1_000_000,
             open_bitmap_stream_entries: 16_384,
-            block_record_entries: 4_096,
-            block_header_entries: 4_096,
+            block_record_entries: 1_000_000,
+            block_header_entries: 1_000_000,
             block_hash_to_number_entries: 4_096,
             tx_hash_index_entries: 0,
             block_blob_entries: 0,
@@ -197,6 +198,68 @@ pub enum CacheField {
     BlockBlob,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CacheSnapshot {
+    pub table: &'static str,
+    pub value_hits: u64,
+    pub none_hits: u64,
+    pub misses: u64,
+    pub insertions: u64,
+    pub evictions: u64,
+    pub lookup_us: u64,
+    pub lookup_lock_wait_us: u64,
+    pub miss_load_us: u64,
+    pub populate_us: u64,
+    pub hit_bytes: u64,
+    pub miss_bytes: u64,
+    pub uncached_ops: u64,
+    pub uncached_us: u64,
+    pub uncached_bytes: u64,
+    pub entries: u64,
+    pub capacity: u64,
+}
+
+impl CacheSnapshot {
+    pub fn total_hits(&self) -> u64 {
+        self.value_hits.saturating_add(self.none_hits)
+    }
+
+    pub fn total_lookups(&self) -> u64 {
+        self.total_hits().saturating_add(self.misses)
+    }
+
+    pub fn delta_since(&self, before: &Self) -> Self {
+        Self {
+            table: self.table,
+            value_hits: self.value_hits.saturating_sub(before.value_hits),
+            none_hits: self.none_hits.saturating_sub(before.none_hits),
+            misses: self.misses.saturating_sub(before.misses),
+            insertions: self.insertions.saturating_sub(before.insertions),
+            evictions: self.evictions.saturating_sub(before.evictions),
+            lookup_us: self.lookup_us.saturating_sub(before.lookup_us),
+            lookup_lock_wait_us: self
+                .lookup_lock_wait_us
+                .saturating_sub(before.lookup_lock_wait_us),
+            miss_load_us: self.miss_load_us.saturating_sub(before.miss_load_us),
+            populate_us: self.populate_us.saturating_sub(before.populate_us),
+            hit_bytes: self.hit_bytes.saturating_sub(before.hit_bytes),
+            miss_bytes: self.miss_bytes.saturating_sub(before.miss_bytes),
+            uncached_ops: self.uncached_ops.saturating_sub(before.uncached_ops),
+            uncached_us: self.uncached_us.saturating_sub(before.uncached_us),
+            uncached_bytes: self.uncached_bytes.saturating_sub(before.uncached_bytes),
+            entries: self.entries,
+            capacity: self.capacity,
+        }
+    }
+
+    pub fn has_activity(&self) -> bool {
+        self.total_lookups() != 0
+            || self.insertions != 0
+            || self.evictions != 0
+            || self.uncached_ops != 0
+    }
+}
+
 /// The per-key/per-counter machinery shared by every cached wrapper.
 /// Generic over the key type so the three table flavors (KV / scannable /
 /// blob) compose with the same LRU + hits/misses + populate/evict logic.
@@ -207,8 +270,20 @@ where
     K: Hash + Eq,
 {
     cache: Option<Mutex<LruCache<K, Option<Bytes>>>>,
-    hits: AtomicU64,
+    value_hits: AtomicU64,
+    none_hits: AtomicU64,
     misses: AtomicU64,
+    insertions: AtomicU64,
+    evictions: AtomicU64,
+    lookup_us: AtomicU64,
+    lookup_lock_wait_us: AtomicU64,
+    miss_load_us: AtomicU64,
+    populate_us: AtomicU64,
+    hit_bytes: AtomicU64,
+    miss_bytes: AtomicU64,
+    uncached_ops: AtomicU64,
+    uncached_us: AtomicU64,
+    uncached_bytes: AtomicU64,
 }
 
 impl<K> CachedInner<K>
@@ -218,25 +293,70 @@ where
     fn new(entries: usize) -> Arc<Self> {
         Arc::new(Self {
             cache: NonZeroUsize::new(entries).map(|cap| Mutex::new(LruCache::new(cap))),
-            hits: AtomicU64::new(0),
+            value_hits: AtomicU64::new(0),
+            none_hits: AtomicU64::new(0),
             misses: AtomicU64::new(0),
+            insertions: AtomicU64::new(0),
+            evictions: AtomicU64::new(0),
+            lookup_us: AtomicU64::new(0),
+            lookup_lock_wait_us: AtomicU64::new(0),
+            miss_load_us: AtomicU64::new(0),
+            populate_us: AtomicU64::new(0),
+            hit_bytes: AtomicU64::new(0),
+            miss_bytes: AtomicU64::new(0),
+            uncached_ops: AtomicU64::new(0),
+            uncached_us: AtomicU64::new(0),
+            uncached_bytes: AtomicU64::new(0),
         })
     }
 
     fn lookup(&self, key: &K) -> Option<Option<Bytes>> {
         let c = self.cache.as_ref()?;
-        let hit = c.lock().expect("cache mutex poisoned").get(key).cloned();
-        if hit.is_some() {
-            self.hits.fetch_add(1, Ordering::Relaxed);
-        } else {
-            self.misses.fetch_add(1, Ordering::Relaxed);
+        let lookup_start = Instant::now();
+        let lock_start = Instant::now();
+        let mut guard = c.lock().expect("cache mutex poisoned");
+        let lock_us = elapsed_us(lock_start);
+        let hit = guard.get(key).cloned();
+        drop(guard);
+
+        self.lookup_lock_wait_us
+            .fetch_add(lock_us, Ordering::Relaxed);
+        self.lookup_us
+            .fetch_add(elapsed_us(lookup_start), Ordering::Relaxed);
+
+        match &hit {
+            Some(Some(bytes)) => {
+                self.value_hits.fetch_add(1, Ordering::Relaxed);
+                self.hit_bytes
+                    .fetch_add(bytes.len() as u64, Ordering::Relaxed);
+            }
+            Some(None) => {
+                self.none_hits.fetch_add(1, Ordering::Relaxed);
+            }
+            None => {
+                self.misses.fetch_add(1, Ordering::Relaxed);
+            }
         }
         hit
     }
 
     fn store(&self, key: K, value: Option<Bytes>) {
         if let Some(c) = &self.cache {
-            c.lock().expect("cache mutex poisoned").put(key, value);
+            let populate_start = Instant::now();
+            let mut guard = c.lock().expect("cache mutex poisoned");
+            let existed = guard.contains(&key);
+            let before_len = guard.len();
+            let capacity = guard.cap().get();
+            guard.put(key, value);
+            let after_len = guard.len();
+            drop(guard);
+
+            self.insertions.fetch_add(1, Ordering::Relaxed);
+            if !existed && before_len == capacity && after_len == capacity {
+                self.evictions.fetch_add(1, Ordering::Relaxed);
+            }
+            self.populate_us
+                .fetch_add(elapsed_us(populate_start), Ordering::Relaxed);
         }
     }
 
@@ -250,11 +370,53 @@ where
         }
     }
 
+    fn record_miss_load(&self, elapsed_us: u64, value: Option<&Bytes>) {
+        self.miss_load_us.fetch_add(elapsed_us, Ordering::Relaxed);
+        if let Some(bytes) = value {
+            self.miss_bytes
+                .fetch_add(bytes.len() as u64, Ordering::Relaxed);
+        }
+    }
+
+    fn record_uncached_op(&self, elapsed_us: u64, bytes: u64) {
+        self.uncached_ops.fetch_add(1, Ordering::Relaxed);
+        self.uncached_us.fetch_add(elapsed_us, Ordering::Relaxed);
+        self.uncached_bytes.fetch_add(bytes, Ordering::Relaxed);
+    }
+
+    fn snapshot(&self, table: &'static str) -> CacheSnapshot {
+        let (entries, capacity) = self.cache.as_ref().map_or((0, 0), |c| {
+            let guard = c.lock().expect("cache mutex poisoned");
+            (guard.len() as u64, guard.cap().get() as u64)
+        });
+        CacheSnapshot {
+            table,
+            value_hits: self.value_hits.load(Ordering::Relaxed),
+            none_hits: self.none_hits.load(Ordering::Relaxed),
+            misses: self.misses.load(Ordering::Relaxed),
+            insertions: self.insertions.load(Ordering::Relaxed),
+            evictions: self.evictions.load(Ordering::Relaxed),
+            lookup_us: self.lookup_us.load(Ordering::Relaxed),
+            lookup_lock_wait_us: self.lookup_lock_wait_us.load(Ordering::Relaxed),
+            miss_load_us: self.miss_load_us.load(Ordering::Relaxed),
+            populate_us: self.populate_us.load(Ordering::Relaxed),
+            hit_bytes: self.hit_bytes.load(Ordering::Relaxed),
+            miss_bytes: self.miss_bytes.load(Ordering::Relaxed),
+            uncached_ops: self.uncached_ops.load(Ordering::Relaxed),
+            uncached_us: self.uncached_us.load(Ordering::Relaxed),
+            uncached_bytes: self.uncached_bytes.load(Ordering::Relaxed),
+            entries,
+            capacity,
+        }
+    }
+
     /// Atomically reads and zeroes the (hits, misses) counters since the last
     /// call. Used by the ingest binary to emit per-window hit-ratio metrics.
     pub(crate) fn take_window_stats(&self) -> (u64, u64) {
         (
-            self.hits.swap(0, Ordering::Relaxed),
+            self.value_hits
+                .swap(0, Ordering::Relaxed)
+                .saturating_add(self.none_hits.swap(0, Ordering::Relaxed)),
             self.misses.swap(0, Ordering::Relaxed),
         )
     }
@@ -281,7 +443,10 @@ impl<M: MetaStore> CachedKvTable<M> {
         if let Some(v) = self.cache.lookup(&key.to_vec()) {
             return Ok(v);
         }
+        let miss_start = Instant::now();
         let v = self.inner.get(key).await?;
+        self.cache
+            .record_miss_load(elapsed_us(miss_start), v.as_ref());
         self.cache.store(key.to_vec(), v.clone());
         Ok(v)
     }
@@ -298,6 +463,10 @@ impl<M: MetaStore> CachedKvTable<M> {
 
     pub fn take_window_stats(&self) -> (u64, u64) {
         self.cache.take_window_stats()
+    }
+
+    pub fn cache_snapshot(&self) -> CacheSnapshot {
+        self.cache.snapshot(self.table_id().as_str())
     }
 
     pub(crate) fn cache_handle(&self) -> Arc<CachedInner<Vec<u8>>> {
@@ -327,7 +496,10 @@ impl<M: MetaStore> CachedScannableTable<M> {
         if let Some(v) = self.cache.lookup(&key) {
             return Ok(v);
         }
+        let miss_start = Instant::now();
         let v = self.inner.get(partition, clustering).await?;
+        self.cache
+            .record_miss_load(elapsed_us(miss_start), v.as_ref());
         self.cache.store(key, v.clone());
         Ok(v)
     }
@@ -347,6 +519,10 @@ impl<M: MetaStore> CachedScannableTable<M> {
         self.cache.take_window_stats()
     }
 
+    pub fn cache_snapshot(&self) -> CacheSnapshot {
+        self.cache.snapshot(self.table_id().as_str())
+    }
+
     pub async fn list_prefix(
         &self,
         partition: &[u8],
@@ -358,9 +534,14 @@ impl<M: MetaStore> CachedScannableTable<M> {
         // result sets requires invalidation on every adjacent write. The
         // per-clustering point gets that follow benefit from populated
         // entries instead.
-        self.inner
+        let uncached_start = Instant::now();
+        let page = self
+            .inner
             .list_prefix(partition, prefix, cursor, limit)
-            .await
+            .await?;
+        self.cache
+            .record_uncached_op(elapsed_us(uncached_start), page.keys.len() as u64);
+        Ok(page)
     }
 
     pub(crate) fn cache_handle(&self) -> Arc<CachedInner<(Vec<u8>, Vec<u8>)>> {
@@ -389,7 +570,10 @@ impl<B: BlobStore> CachedBlobTable<B> {
         if let Some(v) = self.cache.lookup(&key.to_vec()) {
             return Ok(v);
         }
+        let miss_start = Instant::now();
         let v = self.inner.get(key).await?;
+        self.cache
+            .record_miss_load(elapsed_us(miss_start), v.as_ref());
         self.cache.store(key.to_vec(), v.clone());
         Ok(v)
     }
@@ -408,6 +592,10 @@ impl<B: BlobStore> CachedBlobTable<B> {
         self.cache.take_window_stats()
     }
 
+    pub fn cache_snapshot(&self) -> CacheSnapshot {
+        self.cache.snapshot(self.table_id().as_str())
+    }
+
     pub async fn read_range(
         &self,
         key: &[u8],
@@ -417,10 +605,20 @@ impl<B: BlobStore> CachedBlobTable<B> {
         // Range reads ignore the cache. Blob caches default to zero entries
         // and are not in the hot path; a partial-range hit would require
         // tracking full payload presence separately.
-        self.inner.read_range(key, start, end_exclusive).await
+        let uncached_start = Instant::now();
+        let value = self.inner.read_range(key, start, end_exclusive).await?;
+        self.cache.record_uncached_op(
+            elapsed_us(uncached_start),
+            value.as_ref().map_or(0, |bytes| bytes.len() as u64),
+        );
+        Ok(value)
     }
 
     pub(crate) fn cache_handle(&self) -> Arc<CachedInner<Vec<u8>>> {
         self.cache.clone()
     }
+}
+
+fn elapsed_us(start: Instant) -> u64 {
+    start.elapsed().as_micros().try_into().unwrap_or(u64::MAX)
 }

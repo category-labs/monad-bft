@@ -31,9 +31,9 @@ use crate::{
         EvmBlockHeader,
     },
     store::{
-        BlobStore, BlobWriteOp, CacheConfig, CachedBlobTable, CachedKvTable, CachedScannableTable,
-        CasOutcome, CasVersion, MetaStore, MetaStoreCas, MetaWriteOp, PublicationCasParams,
-        ScannableTableId, SessionFuture, TableId, WriteSession,
+        BlobStore, BlobWriteOp, CacheConfig, CacheSnapshot, CachedBlobTable, CachedKvTable,
+        CachedScannableTable, CasOutcome, CasVersion, MetaStore, MetaStoreCas, MetaWriteOp,
+        PublicationCasParams, ScannableTableId, SessionFuture, TableId, WriteSession,
     },
     txs::TxHashIndexTable,
 };
@@ -401,6 +401,30 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
         }
         out
     }
+
+    pub(crate) fn cache_snapshot(&self) -> Vec<CacheSnapshot> {
+        let mut out = Vec::new();
+        self.blocks.collect_cache_snapshots(&mut out);
+        self.tx_hash_index.collect_cache_snapshots(&mut out);
+        for fam in self.families.values() {
+            fam.collect_cache_snapshots(&mut out);
+        }
+        out
+    }
+
+    pub(crate) fn cache_delta_since(&self, before: &[CacheSnapshot]) -> Vec<CacheSnapshot> {
+        let after = self.cache_snapshot();
+        after
+            .iter()
+            .enumerate()
+            .map(|(idx, snapshot)| {
+                before
+                    .get(idx)
+                    .map_or_else(|| snapshot.clone(), |before| snapshot.delta_since(before))
+            })
+            .filter(CacheSnapshot::has_activity)
+            .collect()
+    }
 }
 
 /// Pushes one (name, hits, misses) tuple per cached wrapper, skipping rows
@@ -415,6 +439,13 @@ pub(crate) fn collect_kv_stats<M: MetaStore>(
     }
 }
 
+pub(crate) fn collect_kv_snapshot<M: MetaStore>(
+    out: &mut Vec<CacheSnapshot>,
+    table: &CachedKvTable<M>,
+) {
+    out.push(table.cache_snapshot());
+}
+
 pub(crate) fn collect_scan_stats<M: MetaStore>(
     out: &mut Vec<(&'static str, u64, u64)>,
     table: &CachedScannableTable<M>,
@@ -425,6 +456,13 @@ pub(crate) fn collect_scan_stats<M: MetaStore>(
     }
 }
 
+pub(crate) fn collect_scan_snapshot<M: MetaStore>(
+    out: &mut Vec<CacheSnapshot>,
+    table: &CachedScannableTable<M>,
+) {
+    out.push(table.cache_snapshot());
+}
+
 pub(crate) fn collect_blob_stats<B: BlobStore>(
     out: &mut Vec<(&'static str, u64, u64)>,
     table: &CachedBlobTable<B>,
@@ -433,6 +471,13 @@ pub(crate) fn collect_blob_stats<B: BlobStore>(
     if h != 0 || m != 0 {
         out.push((table.table_id().as_str(), h, m));
     }
+}
+
+pub(crate) fn collect_blob_snapshot<B: BlobStore>(
+    out: &mut Vec<CacheSnapshot>,
+    table: &CachedBlobTable<B>,
+) {
+    out.push(table.cache_snapshot());
 }
 
 fn block_number_key(block_number: u64) -> [u8; 8] {
@@ -714,6 +759,13 @@ impl<M: MetaStore> BlockTables<M> {
         collect_kv_stats(out, &self.block_records);
         collect_kv_stats(out, &self.block_headers);
         collect_kv_stats(out, &self.block_hash_to_number_index);
+    }
+
+    pub(crate) fn collect_cache_snapshots(&self, out: &mut Vec<CacheSnapshot>) {
+        collect_kv_snapshot(out, &self.block_metadata);
+        collect_kv_snapshot(out, &self.block_records);
+        collect_kv_snapshot(out, &self.block_headers);
+        collect_kv_snapshot(out, &self.block_hash_to_number_index);
     }
 
     pub async fn validate_continuity(
@@ -1030,5 +1082,16 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
         collect_kv_stats(out, self.bitmap.page_meta_cache());
         collect_kv_stats(out, self.bitmap.page_blobs_cache());
         collect_scan_stats(out, self.bitmap.open_streams_cache());
+    }
+
+    pub(crate) fn collect_cache_snapshots(&self, out: &mut Vec<CacheSnapshot>) {
+        collect_kv_snapshot(out, &self.block_headers);
+        collect_blob_snapshot(out, &self.block_blobs);
+        collect_scan_snapshot(out, self.dir.fragments_cache());
+        collect_kv_snapshot(out, self.dir.buckets_cache());
+        collect_scan_snapshot(out, self.bitmap.fragments_cache());
+        collect_kv_snapshot(out, self.bitmap.page_meta_cache());
+        collect_kv_snapshot(out, self.bitmap.page_blobs_cache());
+        collect_scan_snapshot(out, self.bitmap.open_streams_cache());
     }
 }

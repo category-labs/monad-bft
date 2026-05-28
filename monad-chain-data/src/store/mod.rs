@@ -25,7 +25,9 @@ pub use blob::{
     BlobCompressionConfig, BlobCompressionSnapshot, BlobCompressionStats, BlobCompressionStore,
     BlobStore, BlobTable, BlobTableId, BlobWriteOp, InMemoryBlobStore,
 };
-pub use cache::{CacheConfig, CacheField, CachedBlobTable, CachedKvTable, CachedScannableTable};
+pub use cache::{
+    CacheConfig, CacheField, CacheSnapshot, CachedBlobTable, CachedKvTable, CachedScannableTable,
+};
 pub use common::Page;
 #[cfg(feature = "fjall")]
 pub use fjall::{FjallKeyspaceStats, FjallStore, FjallTuning};

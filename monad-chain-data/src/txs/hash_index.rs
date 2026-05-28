@@ -18,7 +18,10 @@ use bytes::Bytes;
 use crate::{
     error::Result,
     family::Hash32,
-    store::{blob::BlobStore, CacheConfig, CachedKvTable, MetaStore, TableId, WriteSession},
+    store::{
+        blob::BlobStore, CacheConfig, CacheSnapshot, CachedKvTable, MetaStore, TableId,
+        WriteSession,
+    },
     txs::types::TxLocation,
 };
 
@@ -44,6 +47,10 @@ impl<M: MetaStore> TxHashIndexTable<M> {
 
     pub(crate) fn collect_window_stats(&self, out: &mut Vec<(&'static str, u64, u64)>) {
         crate::engine::tables::collect_kv_stats(out, &self.table);
+    }
+
+    pub(crate) fn collect_cache_snapshots(&self, out: &mut Vec<CacheSnapshot>) {
+        crate::engine::tables::collect_kv_snapshot(out, &self.table);
     }
 
     pub(crate) fn stage_put<B: BlobStore>(
