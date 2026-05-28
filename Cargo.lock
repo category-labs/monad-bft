@@ -6073,6 +6073,7 @@ dependencies = [
  "monad-crypto",
  "monad-eth-types",
  "monad-testutil",
+ "monad-types",
  "proptest",
  "rand 0.8.5",
  "rstest",
