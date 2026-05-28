@@ -16,6 +16,7 @@
 use std::path::PathBuf;
 
 use clap::Parser;
+use monad_archive::cli::BlockDataReaderArgs;
 
 #[derive(Debug, Parser)]
 #[command(name = "monad-rpc", about, long_about = None, version = monad_version::version!())]
@@ -52,6 +53,62 @@ pub struct Cli {
     /// Set the maximum resolved block range accepted by queryX methods
     #[arg(long, default_value_t = 100_000)]
     pub queryx_max_block_range: u64,
+
+    /// Archive source to continuously ingest into chain-data inside the RPC
+    /// process. Requires chain-data storage flags. Examples:
+    /// `"fs /var/lib/monad-archive"`, `"aws my-bucket"`.
+    #[arg(long, value_parser = clap::value_parser!(BlockDataReaderArgs))]
+    pub chain_data_ingest_block_data_source: Option<BlockDataReaderArgs>,
+
+    /// Skip execution trace ingestion for embedded chain-data ingest.
+    #[arg(long)]
+    pub chain_data_ingest_no_traces: bool,
+
+    /// Poll interval while embedded chain-data ingest waits for the next
+    /// archive block.
+    #[arg(long, default_value_t = 1000)]
+    pub chain_data_ingest_live_poll_ms: u64,
+
+    /// Maximum number of ready fetched blocks coalesced into one embedded
+    /// chain-data ingest batch.
+    #[arg(long, default_value_t = 1)]
+    pub chain_data_ingest_max_batch: usize,
+
+    /// Maximum number of block fetches in flight for embedded chain-data ingest.
+    #[arg(long, default_value_t = 512)]
+    pub chain_data_ingest_concurrency: usize,
+
+    /// Number of ordered fetch futures to keep buffered ahead of embedded ingest.
+    #[arg(long)]
+    pub chain_data_ingest_fetch_buffer: Option<usize>,
+
+    /// Enable adaptive fetch concurrency for embedded chain-data ingest.
+    #[arg(long)]
+    pub chain_data_ingest_autotune: bool,
+
+    /// Lower bound on adaptive embedded ingest fetch concurrency.
+    #[arg(long, default_value_t = 1)]
+    pub chain_data_ingest_min_concurrency: usize,
+
+    /// Upper bound on adaptive embedded ingest fetch concurrency.
+    #[arg(long, default_value_t = 5000)]
+    pub chain_data_ingest_max_concurrency: usize,
+
+    /// fjall total-journal cap in MiB for chain-data stores.
+    #[arg(long, default_value_t = 512)]
+    pub chain_data_fjall_journal_mib: u64,
+
+    /// Per-keyspace fjall memtable cap in MiB for chain-data stores.
+    #[arg(long, default_value_t = 64)]
+    pub chain_data_fjall_memtable_mib: u64,
+
+    /// fjall flush/compaction worker thread count for chain-data stores.
+    #[arg(long)]
+    pub chain_data_fjall_workers: Option<usize>,
+
+    /// Per-table chain-data read-cache budget in MiB.
+    #[arg(long)]
+    pub chain_data_cache_mib: Option<usize>,
 
     /// Set the address for RPC to bind to
     #[arg(long, default_value_t = String::from("0.0.0.0"))]

@@ -20,8 +20,12 @@ use agent::AgentBuilder;
 use clap::Parser;
 use monad_archive::archive_reader::{redact_mongo_url, ArchiveReader};
 use monad_chain_data::{
-    store::{BlobCompressionConfig, BlobCompressionStats, BlobCompressionStore, FjallStore},
+    store::{BlobCompressionStore, FjallStore},
     MonadChainDataService, QueryLimits,
+};
+use monad_chain_data_ingest::{
+    open_fjall_chain_data, BlobCompressionArg, ChainDataStoreConfig, Cli as ChainDataIngestCli,
+    OpenChainDataIngest,
 };
 use monad_event_ring::{EventRing, EventRingPath};
 use monad_node_config::MonadNodeConfig;
@@ -370,7 +374,8 @@ async fn main() -> std::io::Result<()> {
 
     let chain_state = triedb_env.map(|t| ChainState::new(event_buffer, t, archive_reader));
 
-    let chain_data = open_chain_data(&args, false)?;
+    let (chain_data, chain_data_ingest_handle) =
+        open_chain_data_with_optional_ingest(&args, false)?;
 
     let rpc_comparator: Option<RpcComparator> = args
         .rpc_comparison_endpoint
@@ -470,6 +475,18 @@ async fn main() -> std::io::Result<()> {
         } => {
             let () = result?;
         }
+
+        result = async {
+            if let Some(handle) = chain_data_ingest_handle {
+                handle.await
+            } else {
+                futures::future::pending().await
+            }
+        } => {
+            result
+                .map_err(|e| io::Error::other(format!("embedded chain-data ingest panicked: {e}")))?
+                .map_err(|e| io::Error::other(format!("embedded chain-data ingest failed: {e}")))?;
+        }
     }
 
     Ok(())
@@ -557,17 +574,62 @@ fn open_chain_data(
     args: &Cli,
     required: bool,
 ) -> io::Result<Option<Arc<MonadChainDataService<FjallStore, BlobCompressionStore<FjallStore>>>>> {
-    match &args.chain_data_path {
+    Ok(open_chain_data_opened(args, required)?.map(|opened| opened.service))
+}
+
+fn open_chain_data_with_optional_ingest(
+    args: &Cli,
+    required: bool,
+) -> io::Result<(
+    Option<Arc<MonadChainDataService<FjallStore, BlobCompressionStore<FjallStore>>>>,
+    Option<tokio::task::JoinHandle<io::Result<()>>>,
+)> {
+    let opened = open_chain_data_opened(
+        args,
+        required || args.chain_data_ingest_block_data_source.is_some(),
+    )?;
+    let Some(opened) = opened else {
+        return Ok((None, None));
+    };
+    let chain_data = opened.service.clone();
+    let ingest_handle = args
+        .chain_data_ingest_block_data_source
+        .clone()
+        .map(|block_data_source| {
+            let mut ingest = ChainDataIngestCli::live(block_data_source);
+            ingest.otel_endpoint = args.otel_endpoint.clone();
+            ingest.no_traces = args.chain_data_ingest_no_traces;
+            ingest.live_poll_ms = args.chain_data_ingest_live_poll_ms;
+            ingest.max_batch_size = args.chain_data_ingest_max_batch;
+            ingest.concurrency = args.chain_data_ingest_concurrency;
+            ingest.fetch_buffer = args.chain_data_ingest_fetch_buffer;
+            ingest.autotune = args.chain_data_ingest_autotune;
+            ingest.min_concurrency = args.chain_data_ingest_min_concurrency;
+            ingest.max_concurrency = args.chain_data_ingest_max_concurrency;
+            tokio::spawn(async move {
+                monad_chain_data_ingest::run_with_opened(ingest, opened)
+                    .await
+                    .map_err(|e| io::Error::other(e.to_string()))
+            })
+        });
+    Ok((Some(chain_data), ingest_handle))
+}
+
+fn open_chain_data_opened(args: &Cli, required: bool) -> io::Result<Option<OpenChainDataIngest>> {
+    let query_limits = QueryLimits::new(args.queryx_max_limit, args.queryx_max_block_range);
+    let store_config = match &args.chain_data_path {
         Some(path) => {
             info!(?path, "opening chain-data store for queryX methods");
-            let store = FjallStore::open(path, Default::default())
-                .map_err(|e| io::Error::other(format!("failed to open chain-data store: {e}")))?;
-            let blob_store = compressed_blob_store(store.clone());
-            Ok(Some(Arc::new(MonadChainDataService::new(
-                store.clone(),
-                blob_store,
-                QueryLimits::new(args.queryx_max_limit, args.queryx_max_block_range),
-            ))))
+            ChainDataStoreConfig {
+                data_dir: Some(path.clone()),
+                query_limits,
+                blob_compression: BlobCompressionArg::Zstd,
+                fjall_journal_mib: args.chain_data_fjall_journal_mib,
+                fjall_memtable_mib: args.chain_data_fjall_memtable_mib,
+                fjall_workers: args.chain_data_fjall_workers,
+                cache_mib: args.chain_data_cache_mib,
+                ..Default::default()
+            }
         }
         None if args.chain_data_meta_path.is_some() && args.chain_data_blob_path.is_some() => {
             let meta_path = args.chain_data_meta_path.as_ref().expect("checked is_some");
@@ -577,34 +639,28 @@ fn open_chain_data(
                 ?blob_path,
                 "opening split chain-data stores for queryX methods"
             );
-            let meta_store = FjallStore::open(meta_path, Default::default()).map_err(|e| {
-                io::Error::other(format!("failed to open chain-data meta store: {e}"))
-            })?;
-            let blob_store = FjallStore::open(blob_path, Default::default()).map_err(|e| {
-                io::Error::other(format!("failed to open chain-data blob store: {e}"))
-            })?;
-            let blob_store = compressed_blob_store(blob_store);
-            Ok(Some(Arc::new(MonadChainDataService::new(
-                meta_store,
-                blob_store,
-                QueryLimits::new(args.queryx_max_limit, args.queryx_max_block_range),
-            ))))
+            ChainDataStoreConfig {
+                meta_data_dir: Some(meta_path.clone()),
+                blob_data_dir: Some(blob_path.clone()),
+                query_limits,
+                blob_compression: BlobCompressionArg::Zstd,
+                fjall_journal_mib: args.chain_data_fjall_journal_mib,
+                fjall_memtable_mib: args.chain_data_fjall_memtable_mib,
+                fjall_workers: args.chain_data_fjall_workers,
+                cache_mib: args.chain_data_cache_mib,
+                ..Default::default()
+            }
         }
         None if required => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "--chain-data-path or both --chain-data-meta-path/--chain-data-blob-path are required",
-        )),
+        ))?,
         None => {
             debug!("--chain-data-path is not set, queryX methods will be disabled");
-            Ok(None)
+            return Ok(None);
         }
-    }
-}
-
-fn compressed_blob_store(store: FjallStore) -> BlobCompressionStore<FjallStore> {
-    BlobCompressionStore::new(
-        store,
-        BlobCompressionConfig::zstd(1, 1024),
-        BlobCompressionStats::default(),
-    )
+    };
+    open_fjall_chain_data(store_config)
+        .map(Some)
+        .map_err(|e| io::Error::other(format!("failed to open chain-data store: {e}")))
 }

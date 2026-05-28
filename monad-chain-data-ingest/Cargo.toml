@@ -1,0 +1,24 @@
+[package]
+name = "monad-chain-data-ingest"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+alloy-eips = { workspace = true }
+alloy-primitives = { workspace = true, features = ["rlp"] }
+bytes = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+eyre = { workspace = true }
+futures = { workspace = true }
+libc = { workspace = true }
+monad-archive = { workspace = true }
+monad-chain-data = { workspace = true, features = ["fjall"] }
+monad-eth-types = { workspace = true }
+opentelemetry = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+
+[[bin]]
+name = "chain-data-ingest"
+path = "src/bin/chain-data-ingest.rs"

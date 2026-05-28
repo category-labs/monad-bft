@@ -42,7 +42,7 @@ pub struct IngestTx {
 }
 
 /// Local mirror of the archive's `CallKind` so the library crate does not
-/// take a dependency on `monad-archive`. The ingest binary converts
+/// take a dependency on `monad-archive`. `monad-chain-data-ingest` converts
 /// archive `CallKind` values into this type at the boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CallKind {

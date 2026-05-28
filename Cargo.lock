@@ -5003,23 +5003,36 @@ dependencies = [
  "alloy-rpc-types-eth",
  "auto_impl",
  "bytes",
- "clap",
- "eyre",
  "fjall",
  "futures",
- "libc",
  "lru",
- "monad-archive",
- "monad-eth-types",
- "opentelemetry",
  "rayon",
  "roaring",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tracing",
- "tracing-subscriber",
  "zstd",
+]
+
+[[package]]
+name = "monad-chain-data-ingest"
+version = "0.1.0"
+dependencies = [
+ "alloy-eips",
+ "alloy-primitives",
+ "bytes",
+ "clap",
+ "eyre",
+ "futures",
+ "libc",
+ "monad-archive",
+ "monad-chain-data",
+ "monad-eth-types",
+ "opentelemetry",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -5981,6 +5994,7 @@ dependencies = [
  "monad-archive",
  "monad-chain-config",
  "monad-chain-data",
+ "monad-chain-data-ingest",
  "monad-eth-testutil",
  "monad-eth-txpool-ipc",
  "monad-eth-txpool-types",

@@ -34,8 +34,9 @@ use alloy_eips::eip2718::Encodable2718;
 use alloy_primitives::Bytes;
 use clap::{Parser, ValueEnum};
 use eyre::{bail, eyre, Context, Result};
-use futures::{stream, StreamExt};
+use futures::{stream, FutureExt, StreamExt};
 use monad_archive::{
+    archive_reader::LatestKind,
     cli::BlockDataReaderArgs,
     metrics::{MetricNames, Metrics},
     model::{
@@ -57,58 +58,60 @@ use monad_chain_data::{
 };
 use opentelemetry::KeyValue;
 use tokio::sync::{mpsc, Semaphore};
-use tracing::{debug, info, warn, Level};
+use tracing::{debug, info, warn};
 
 #[derive(Parser, Debug)]
 #[command(
     name = "chain-data-ingest",
     about = "Stream blocks + receipts from a monad-archive source into a local chain-data store"
 )]
-struct Cli {
+pub struct Cli {
     /// fjall data directory for both meta and blob stores. Use
     /// `--meta-data-dir` and `--blob-data-dir` to place them in separate DBs.
     #[arg(long, conflicts_with_all = ["meta_data_dir", "blob_data_dir"])]
-    data_dir: Option<PathBuf>,
+    pub data_dir: Option<PathBuf>,
 
     /// fjall data directory for metadata tables. Created on first run.
     #[arg(long)]
-    meta_data_dir: Option<PathBuf>,
+    pub meta_data_dir: Option<PathBuf>,
 
     /// fjall data directory for blob tables. Created on first run.
     #[arg(long)]
-    blob_data_dir: Option<PathBuf>,
+    pub blob_data_dir: Option<PathBuf>,
 
     /// Archive source. Examples: `"fs /var/lib/monad-archive"`,
     /// `"aws my-bucket"`, `"mongodb mongodb://host:27017 dbname"`.
     /// See `monad_archive::cli::BlockDataReaderArgs` for the full grammar.
     #[arg(long, value_parser = clap::value_parser!(BlockDataReaderArgs))]
-    block_data_source: BlockDataReaderArgs,
+    pub block_data_source: BlockDataReaderArgs,
 
     /// First block to ingest (inclusive). Defaults to `published_head + 1`
     /// (i.e. `1` on a fresh data directory). When provided explicitly, must
     /// match that value — the flag exists for assertion in scripted runs.
     #[arg(long)]
-    start: Option<u64>,
+    pub start: Option<u64>,
 
-    /// Last block to ingest (inclusive). Mutually exclusive with `--count`;
-    /// exactly one of the two must be set.
-    #[arg(long, conflicts_with = "count", required_unless_present = "count")]
-    end: Option<u64>,
+    /// Last block to ingest (inclusive). Mutually exclusive with `--count`.
+    /// If neither `--end` nor `--count` is set, the ingester follows the
+    /// archive source forever and polls for each next block as it appears.
+    #[arg(long, conflicts_with = "count")]
+    pub end: Option<u64>,
 
     /// Number of blocks to ingest from the resolved start (i.e.
     /// `published_head + 1`). End block is derived as `start + count - 1`.
-    /// Mutually exclusive with `--end`.
-    #[arg(long, conflicts_with = "end", required_unless_present = "end")]
-    count: Option<u64>,
+    /// Mutually exclusive with `--end`. If neither `--end` nor `--count`
+    /// is set, the ingester follows the archive source forever.
+    #[arg(long, conflicts_with = "end")]
+    pub count: Option<u64>,
 
     /// Optional OTel collector endpoint for archive-side metrics. Off by
     /// default; archive readers still build without it.
     #[arg(long)]
-    otel_endpoint: Option<String>,
+    pub otel_endpoint: Option<String>,
 
     /// How often to log progress, in blocks.
     #[arg(long, default_value_t = 1000)]
-    log_every: u64,
+    pub log_every: u64,
 
     /// Maximum number of block fetches in flight against the archive
     /// concurrently. Each in-flight slot issues block + receipts + traces
@@ -118,7 +121,7 @@ struct Cli {
     /// Memory ceiling is bounded by this many fetched-but-not-yet-ingested
     /// blocks held in the prefetch buffer.
     #[arg(long, default_value_t = 512)]
-    concurrency: usize,
+    pub concurrency: usize,
 
     /// Number of retry attempts after a fetch failure, per block. The
     /// first attempt is not counted, so `--max-retries 5` means up to 6
@@ -126,35 +129,40 @@ struct Cli {
     /// transform and ingest errors are deterministic and bail
     /// immediately.
     #[arg(long, default_value_t = 5)]
-    max_retries: u32,
+    pub max_retries: u32,
 
     /// Initial backoff between retry attempts, in milliseconds. Doubles
     /// after each failure (exponential, no jitter), so the default 200ms
     /// with 5 retries waits ~6.2s in total worst case.
     #[arg(long, default_value_t = 200)]
-    retry_backoff_ms: u64,
+    pub retry_backoff_ms: u64,
+
+    /// Poll interval while following the archive source and waiting for the
+    /// next block to be uploaded.
+    #[arg(long, default_value_t = 1000)]
+    pub live_poll_ms: u64,
 
     /// Enable adaptive concurrency. When set, `--concurrency` is the
     /// starting value; an AIMD controller scales it within
     /// `[--min-concurrency, --max-concurrency]` based on retry rate per
     /// window (halve above 5% retries, additive increase below 1%).
     #[arg(long)]
-    autotune: bool,
+    pub autotune: bool,
 
     /// Lower bound on adaptive concurrency. Ignored unless `--autotune`.
     #[arg(long, default_value_t = 1)]
-    min_concurrency: usize,
+    pub min_concurrency: usize,
 
     /// Upper bound on adaptive concurrency. Ignored unless `--autotune`.
     #[arg(long, default_value_t = 5000)]
-    max_concurrency: usize,
+    pub max_concurrency: usize,
 
     /// Number of ordered fetch futures to keep buffered ahead of ingest.
     /// This is separate from `--concurrency`: the buffer may hold many
     /// pending/completed block fetches while the concurrency semaphore caps
     /// active archive requests.
     #[arg(long)]
-    fetch_buffer: Option<usize>,
+    pub fetch_buffer: Option<usize>,
 
     /// Skip fetching and ingesting execution traces. With this flag set,
     /// `Family::Trace` stays empty for every ingested block, and both
@@ -162,54 +170,57 @@ struct Cli {
     /// those blocks (transfers is a derived view over traces). Drops the
     /// per-block archive fanout from 3 requests to 2.
     #[arg(long)]
-    no_traces: bool,
+    pub no_traces: bool,
 
-    /// Number of consecutive blocks coalesced into one ingest batch. 1
-    /// matches the pre-batching live-mode behavior; backfill should raise
-    /// this (e.g. 32-256) to amortize fjall WAL+commit cost. Each batch
-    /// buffers N fully-built `FinalizedBlock`s in memory.
-    #[arg(long, default_value_t = 1)]
-    batch_size: usize,
+    /// Maximum number of consecutive ready blocks coalesced into one ingest
+    /// batch. The ingester waits only when no fetched block is ready, then
+    /// drains already-ready fetched blocks up to this ceiling.
+    #[arg(
+        long = "max-batch",
+        visible_alias = "max-batch-size",
+        default_value_t = 1
+    )]
+    pub max_batch_size: usize,
 
     /// Number of fully planned ingest batches allowed to queue in front of
     /// the IO worker. This is the backpressure boundary between planning
     /// and write/CAS publication.
     #[arg(long, default_value_t = 2)]
-    plan_buffer: usize,
+    pub plan_buffer: usize,
 
     /// Number of retries for non-CAS meta/blob write failures. CAS is never
     /// retried; a CAS conflict means this writer lost the publication lease.
     #[arg(long, default_value_t = 0)]
-    io_max_retries: usize,
+    pub io_max_retries: usize,
 
     /// Retry non-CAS IO failures forever. Overrides --io-max-retries.
     #[arg(long)]
-    io_retry_forever: bool,
+    pub io_retry_forever: bool,
 
     /// Initial non-CAS IO retry backoff, in milliseconds.
     #[arg(long, default_value_t = 200)]
-    io_retry_backoff_ms: u64,
+    pub io_retry_backoff_ms: u64,
 
     /// Maximum non-CAS IO retry backoff, in milliseconds.
     #[arg(long, default_value_t = 10_000)]
-    io_retry_max_backoff_ms: u64,
+    pub io_retry_max_backoff_ms: u64,
 
     /// fjall total-journal cap in MiB. Default 512 matches fjall's default;
     /// raise (e.g. 4096 or 8192) for high-throughput backfill to reduce
     /// journal-rotation pressure. Must be >= 64.
     #[arg(long, default_value_t = 512)]
-    fjall_journal_mib: u64,
+    pub fjall_journal_mib: u64,
 
     /// Per-keyspace memtable cap in MiB. Default 64 matches fjall's default;
     /// raise (e.g. 256) so each keyspace amortizes more writes per flush.
     /// Total memtable footprint at steady state is roughly N_keyspaces * this.
     #[arg(long, default_value_t = 64)]
-    fjall_memtable_mib: u64,
+    pub fjall_memtable_mib: u64,
 
     /// fjall flush/compaction worker thread count. None lets fjall pick
     /// (min(CPU, 4)). Raise for many-core boxes under sustained write load.
     #[arg(long)]
-    fjall_workers: Option<usize>,
+    pub fjall_workers: Option<usize>,
 
     /// Per-table read-cache budget in MiB. Defaults to the budget implied by
     /// `CacheConfig::default()`; raising linearly scales every table's entry
@@ -219,38 +230,165 @@ struct Cli {
     /// roughly match the requested budget. `--cache-mib 0` disables caches
     /// entirely (compile-time skip).
     #[arg(long)]
-    cache_mib: Option<usize>,
+    pub cache_mib: Option<usize>,
 
     /// App-level blob compression for newly written block blobs. Reads remain
     /// compatible with old raw blobs because compressed values carry a magic
     /// header and raw values are left unwrapped.
     #[arg(long, value_enum, default_value_t = BlobCompressionArg::None)]
-    blob_compression: BlobCompressionArg,
+    pub blob_compression: BlobCompressionArg,
 
     /// zstd compression level used when `--blob-compression zstd`.
     #[arg(long, default_value_t = 1)]
-    blob_compression_level: i32,
+    pub blob_compression_level: i32,
 
     /// Minimum blob size eligible for app-level compression.
     #[arg(long, default_value_t = 1024)]
-    blob_compression_min_bytes: usize,
+    pub blob_compression_min_bytes: usize,
 
     /// Fetch and ingest into in-memory stores to profile blob compression
     /// ratio/cost without writing anything into fjall. Requires --start.
     #[arg(long)]
-    profile_blob_compression_only: bool,
+    pub profile_blob_compression_only: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-enum BlobCompressionArg {
+pub enum BlobCompressionArg {
     None,
     Zstd,
+}
+
+impl Cli {
+    pub fn live(block_data_source: BlockDataReaderArgs) -> Self {
+        Self {
+            data_dir: None,
+            meta_data_dir: None,
+            blob_data_dir: None,
+            block_data_source,
+            start: None,
+            end: None,
+            count: None,
+            otel_endpoint: None,
+            log_every: 1000,
+            concurrency: 512,
+            max_retries: 5,
+            retry_backoff_ms: 200,
+            live_poll_ms: 1000,
+            autotune: false,
+            min_concurrency: 1,
+            max_concurrency: 5000,
+            fetch_buffer: None,
+            no_traces: false,
+            max_batch_size: 1,
+            plan_buffer: 2,
+            io_max_retries: 0,
+            io_retry_forever: false,
+            io_retry_backoff_ms: 200,
+            io_retry_max_backoff_ms: 10_000,
+            fjall_journal_mib: 512,
+            fjall_memtable_mib: 64,
+            fjall_workers: None,
+            cache_mib: None,
+            blob_compression: BlobCompressionArg::None,
+            blob_compression_level: 1,
+            blob_compression_min_bytes: 1024,
+            profile_blob_compression_only: false,
+        }
+    }
 }
 
 struct StoreDirs {
     meta: PathBuf,
     blob: PathBuf,
     same_dir: bool,
+}
+
+pub type ChainDataService = MonadChainDataService<FjallStore, BlobCompressionStore<FjallStore>>;
+
+pub type SharedChainDataService = Arc<ChainDataService>;
+
+pub struct OpenChainDataIngest {
+    pub service: SharedChainDataService,
+    meta_store: FjallStore,
+    blob_fjall_store: FjallStore,
+    store_dirs: StoreDirs,
+    blob_compression_stats: BlobCompressionStats,
+}
+
+#[derive(Debug, Clone)]
+pub struct ChainDataStoreConfig {
+    pub data_dir: Option<PathBuf>,
+    pub meta_data_dir: Option<PathBuf>,
+    pub blob_data_dir: Option<PathBuf>,
+    pub query_limits: QueryLimits,
+    pub cache_mib: Option<usize>,
+    pub blob_compression: BlobCompressionArg,
+    pub blob_compression_level: i32,
+    pub blob_compression_min_bytes: usize,
+    pub fjall_journal_mib: u64,
+    pub fjall_memtable_mib: u64,
+    pub fjall_workers: Option<usize>,
+}
+
+impl ChainDataStoreConfig {
+    pub fn from_cli(cli: &Cli, query_limits: QueryLimits) -> Self {
+        Self {
+            data_dir: cli.data_dir.clone(),
+            meta_data_dir: cli.meta_data_dir.clone(),
+            blob_data_dir: cli.blob_data_dir.clone(),
+            query_limits,
+            cache_mib: cli.cache_mib,
+            blob_compression: cli.blob_compression,
+            blob_compression_level: cli.blob_compression_level,
+            blob_compression_min_bytes: cli.blob_compression_min_bytes,
+            fjall_journal_mib: cli.fjall_journal_mib,
+            fjall_memtable_mib: cli.fjall_memtable_mib,
+            fjall_workers: cli.fjall_workers,
+        }
+    }
+}
+
+impl Default for ChainDataStoreConfig {
+    fn default() -> Self {
+        Self {
+            data_dir: None,
+            meta_data_dir: None,
+            blob_data_dir: None,
+            query_limits: QueryLimits::UNLIMITED,
+            cache_mib: None,
+            blob_compression: BlobCompressionArg::None,
+            blob_compression_level: 1,
+            blob_compression_min_bytes: 1024,
+            fjall_journal_mib: 512,
+            fjall_memtable_mib: 64,
+            fjall_workers: None,
+        }
+    }
+}
+
+fn resolve_store_dirs_from_paths(
+    data_dir: Option<&Path>,
+    meta_data_dir: Option<&Path>,
+    blob_data_dir: Option<&Path>,
+) -> Result<StoreDirs> {
+    match (data_dir, meta_data_dir, blob_data_dir) {
+        (Some(data_dir), None, None) => Ok(StoreDirs {
+            meta: data_dir.to_path_buf(),
+            blob: data_dir.to_path_buf(),
+            same_dir: true,
+        }),
+        (None, Some(meta), Some(blob)) => Ok(StoreDirs {
+            meta: meta.to_path_buf(),
+            blob: blob.to_path_buf(),
+            same_dir: same_store_dir(meta, blob),
+        }),
+        (Some(_), _, _) => {
+            bail!("--data-dir cannot be combined with --meta-data-dir or --blob-data-dir")
+        }
+        (None, _, _) => {
+            bail!("provide either --data-dir or both --meta-data-dir and --blob-data-dir")
+        }
+    }
 }
 
 struct FetchedBatch {
@@ -275,27 +413,6 @@ struct AppliedBatch {
     total_ingest_ms: u64,
 }
 
-fn resolve_store_dirs(cli: &Cli) -> Result<StoreDirs> {
-    match (&cli.data_dir, &cli.meta_data_dir, &cli.blob_data_dir) {
-        (Some(data_dir), None, None) => Ok(StoreDirs {
-            meta: data_dir.clone(),
-            blob: data_dir.clone(),
-            same_dir: true,
-        }),
-        (None, Some(meta), Some(blob)) => Ok(StoreDirs {
-            meta: meta.clone(),
-            blob: blob.clone(),
-            same_dir: same_store_dir(meta, blob),
-        }),
-        (Some(_), _, _) => {
-            bail!("--data-dir cannot be combined with --meta-data-dir or --blob-data-dir")
-        }
-        (None, _, _) => {
-            bail!("provide either --data-dir or both --meta-data-dir and --blob-data-dir")
-        }
-    }
-}
-
 fn data_dir_fresh(path: &Path) -> bool {
     !path.exists()
         || path
@@ -314,17 +431,7 @@ fn same_store_dir(a: &Path, b: &Path) -> bool {
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_max_level(Level::INFO)
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::builder()
-                .with_default_directive(Level::INFO.into())
-                .from_env_lossy(),
-        )
-        .init();
-
+pub async fn run(cli: Cli) -> Result<()> {
     // High concurrency + fjall's per-SST FDs blow past the default 1024
     // soft NOFILE limit. Bump to the hard limit before any sockets or
     // keyspace files open. Best-effort: a warning here just means the
@@ -340,15 +447,14 @@ async fn main() -> Result<()> {
         ),
     }
 
-    let cli = Cli::parse();
     if cli.concurrency == 0 {
         bail!("--concurrency must be >= 1");
     }
     if matches!(cli.count, Some(0)) {
         bail!("--count must be >= 1");
     }
-    if cli.batch_size == 0 {
-        bail!("--batch-size must be >= 1");
+    if cli.max_batch_size == 0 {
+        bail!("--max-batch must be >= 1");
     }
     if cli.plan_buffer == 0 {
         bail!("--plan-buffer must be >= 1");
@@ -382,12 +488,26 @@ async fn main() -> Result<()> {
     if cli.profile_blob_compression_only {
         return profile_blob_compression_only(&cli).await;
     }
-    let store_dirs = resolve_store_dirs(&cli)?;
+    let opened =
+        open_fjall_chain_data(ChainDataStoreConfig::from_cli(&cli, QueryLimits::UNLIMITED))?;
+
+    run_with_opened(cli, opened).await
+}
+
+pub fn open_fjall_chain_data(config: ChainDataStoreConfig) -> Result<OpenChainDataIngest> {
+    if config.fjall_journal_mib < 64 {
+        bail!("--fjall-journal-mib must be >= 64");
+    }
+    let store_dirs = resolve_store_dirs_from_paths(
+        config.data_dir.as_deref(),
+        config.meta_data_dir.as_deref(),
+        config.blob_data_dir.as_deref(),
+    )?;
 
     let tuning = FjallTuning {
-        max_journaling_size_bytes: cli.fjall_journal_mib * 1024 * 1024,
-        max_memtable_size_bytes: cli.fjall_memtable_mib * 1024 * 1024,
-        worker_threads: cli.fjall_workers,
+        max_journaling_size_bytes: config.fjall_journal_mib * 1024 * 1024,
+        max_memtable_size_bytes: config.fjall_memtable_mib * 1024 * 1024,
+        worker_threads: config.fjall_workers,
     };
     // fjall persists max_memtable_size per-keyspace at creation, so the
     // value baked in at first open wins on every subsequent reopen — the
@@ -396,18 +516,18 @@ async fn main() -> Result<()> {
     let meta_dir_fresh = data_dir_fresh(&store_dirs.meta);
     let blob_dir_fresh = data_dir_fresh(&store_dirs.blob);
     info!(
-        fjall_journal_mib = cli.fjall_journal_mib,
-        fjall_memtable_mib = cli.fjall_memtable_mib,
-        fjall_workers = ?cli.fjall_workers,
+        fjall_journal_mib = config.fjall_journal_mib,
+        fjall_memtable_mib = config.fjall_memtable_mib,
+        fjall_workers = ?config.fjall_workers,
         meta_data_dir = %store_dirs.meta.display(),
         blob_data_dir = %store_dirs.blob.display(),
         meta_dir_fresh,
         blob_dir_fresh,
         "fjall tuning"
     );
-    if cli.fjall_memtable_mib != 64 && (!meta_dir_fresh || !blob_dir_fresh) {
+    if config.fjall_memtable_mib != 64 && (!meta_dir_fresh || !blob_dir_fresh) {
         warn!(
-            requested_memtable_mib = cli.fjall_memtable_mib,
+            requested_memtable_mib = config.fjall_memtable_mib,
             meta_dir_fresh,
             blob_dir_fresh,
             "--fjall-memtable-mib is persisted per-keyspace at first creation; existing data dirs will keep their baked-in values. Journal cap and worker_threads still apply."
@@ -423,22 +543,23 @@ async fn main() -> Result<()> {
     };
     let baseline_cache = CacheConfig::default();
     let baseline_total_mib = baseline_cache.approx_total_mib().max(1);
-    let cache_config = match cli.cache_mib {
+    let cache_config = match config.cache_mib {
         None => baseline_cache,
         Some(0) => baseline_cache.scale(0, 1),
         Some(target_mib) => baseline_cache.scale(target_mib, baseline_total_mib),
     };
     info!(
-        cache_mib_requested = ?cli.cache_mib,
+        cache_mib_requested = ?config.cache_mib,
         baseline_total_mib,
         scaled_total_entries = cache_config.total_entries(),
         "cache config"
     );
-    let blob_compression = match cli.blob_compression {
+    let blob_compression = match config.blob_compression {
         BlobCompressionArg::None => BlobCompressionConfig::none(),
-        BlobCompressionArg::Zstd => {
-            BlobCompressionConfig::zstd(cli.blob_compression_level, cli.blob_compression_min_bytes)
-        }
+        BlobCompressionArg::Zstd => BlobCompressionConfig::zstd(
+            config.blob_compression_level,
+            config.blob_compression_min_bytes,
+        ),
     };
     let blob_compression_stats = BlobCompressionStats::default();
     let blob_store = BlobCompressionStore::new(
@@ -447,17 +568,35 @@ async fn main() -> Result<()> {
         blob_compression_stats.clone(),
     );
     info!(
-        blob_compression = ?cli.blob_compression,
-        blob_compression_level = cli.blob_compression_level,
-        blob_compression_min_bytes = cli.blob_compression_min_bytes,
+        blob_compression = ?config.blob_compression,
+        blob_compression_level = config.blob_compression_level,
+        blob_compression_min_bytes = config.blob_compression_min_bytes,
         "blob compression config"
     );
     let service = Arc::new(MonadChainDataService::with_cache_config(
         meta_store.clone(),
         blob_store,
-        QueryLimits::UNLIMITED,
+        config.query_limits,
         cache_config,
     ));
+
+    Ok(OpenChainDataIngest {
+        service,
+        meta_store,
+        blob_fjall_store,
+        store_dirs,
+        blob_compression_stats,
+    })
+}
+
+pub async fn run_with_opened(cli: Cli, opened: OpenChainDataIngest) -> Result<()> {
+    let OpenChainDataIngest {
+        service,
+        meta_store,
+        blob_fjall_store,
+        store_dirs,
+        blob_compression_stats,
+    } = opened;
 
     // Resolve the block range against the current publication head before
     // any archive I/O, so a misconfigured range fails fast rather than
@@ -478,19 +617,20 @@ async fn main() -> Result<()> {
         );
     }
     let end = match (cli.end, cli.count) {
-        (Some(e), None) => e,
+        (Some(e), None) => Some(e),
         (None, Some(c)) => {
             let Some(e) = start.checked_add(c - 1) else {
                 bail!("start + count - 1 overflows u64 (start={start}, count={c})");
             };
-            e
+            Some(e)
         }
-        // clap's required_unless_present + conflicts_with constraints make
-        // the other two cases unreachable.
-        _ => unreachable!("clap enforces exactly one of --end or --count"),
+        (None, None) => None,
+        _ => unreachable!("clap prevents combining --end and --count"),
     };
-    if start > end {
-        bail!("start ({}) must be <= end ({})", start, end);
+    if let Some(end) = end {
+        if start > end {
+            bail!("start ({}) must be <= end ({})", start, end);
+        }
     }
 
     let metrics = Metrics::new(
@@ -534,10 +674,10 @@ async fn main() -> Result<()> {
     }
     info!(
         start,
-        end,
+        end = ?end,
         concurrency = cli.concurrency,
         fetch_buffer,
-        batch_size = cli.batch_size,
+        max_batch = cli.max_batch_size,
         plan_buffer = cli.plan_buffer,
         io_retry_forever = cli.io_retry_forever,
         io_max_retries = cli.io_max_retries,
@@ -585,69 +725,124 @@ async fn main() -> Result<()> {
         let max_retries = cli.max_retries;
         let initial_backoff = Duration::from_millis(cli.retry_backoff_ms);
         let fetch_traces = !cli.no_traces;
-        let batch_size = cli.batch_size;
+        let max_batch_size = cli.max_batch_size;
+        let live_poll = Duration::from_millis(cli.live_poll_ms);
         tokio::spawn(async move {
-            // Bounded prefetch. `buffered(fetch_buffer)` preserves input
-            // order; the semaphore inside the closure is the dynamic active
-            // fetch limit.
-            let fetch_stream = stream::iter(start..=end)
-                .map(move |n| {
-                    let reader = reader.clone();
-                    let stats = fetch_stats.clone();
-                    let progress = fetch_progress.clone();
-                    let permits = permits.clone();
-                    async move {
-                        let _permit = permits
-                            .acquire_owned()
+            let mut pending: Vec<(u64, FinalizedBlock)> = Vec::with_capacity(max_batch_size);
+            if let Some(end) = end {
+                // Bounded prefetch. `buffered(fetch_buffer)` preserves input
+                // order; the semaphore inside the closure is the dynamic active
+                // fetch limit.
+                let fetch_stream = stream::iter(start..=end)
+                    .map(move |n| {
+                        let reader = reader.clone();
+                        let stats = fetch_stats.clone();
+                        let progress = fetch_progress.clone();
+                        let permits = permits.clone();
+                        async move {
+                            let _permit = permits
+                                .acquire_owned()
+                                .await
+                                .expect("concurrency semaphore should never close");
+                            fetch_block_with_retry(
+                                &reader,
+                                n,
+                                max_retries,
+                                initial_backoff,
+                                &stats,
+                                &progress,
+                                fetch_traces,
+                            )
                             .await
-                            .expect("concurrency semaphore should never close");
-                        fetch_block_with_retry(
-                            &reader,
-                            n,
-                            max_retries,
-                            initial_backoff,
-                            &stats,
-                            &progress,
-                            fetch_traces,
-                        )
-                        .await
-                    }
-                })
-                .buffered(fetch_buffer);
-            futures::pin_mut!(fetch_stream);
+                        }
+                    })
+                    .buffered(fetch_buffer);
+                futures::pin_mut!(fetch_stream);
 
-            let mut pending: Vec<(u64, FinalizedBlock)> = Vec::with_capacity(batch_size);
-            loop {
-                pending.clear();
-                let wait_started = Instant::now();
-                let mut first_wait_ms = 0;
-                for slot in 0..batch_size {
+                loop {
+                    pending.clear();
+                    let wait_started = Instant::now();
                     let Some(item) = fetch_stream.next().await else {
                         break;
                     };
-                    if slot == 0 {
-                        first_wait_ms = wait_started.elapsed().as_millis() as u64;
+                    let first_wait_ms = wait_started.elapsed().as_millis() as u64;
+                    push_fetched_block(&mut pending, item?, &fetch_consumed_total)?;
+                    while pending.len() < max_batch_size {
+                        match fetch_stream.next().now_or_never() {
+                            Some(Some(item)) => {
+                                push_fetched_block(&mut pending, item?, &fetch_consumed_total)?;
+                            }
+                            Some(None) | None => break,
+                        }
                     }
-                    let (n, block, receipts, traces) = item?;
-                    fetch_consumed_total.fetch_add(1, Ordering::Relaxed);
-                    let finalized = into_finalized_block(block, receipts, traces)
-                        .with_context(|| format!("transforming block {n}"))?;
-                    pending.push((n, finalized));
+                    let last_block = pending.last().expect("pending non-empty").0;
+                    let blocks = pending.iter().map(|(_, b)| b.clone()).collect();
+                    fetched_tx
+                        .send(FetchedBatch {
+                            last_block,
+                            blocks,
+                            first_wait_ms,
+                            ingest_started: Instant::now(),
+                        })
+                        .await
+                        .map_err(|_| eyre!("planning worker stopped before fetch completed"))?;
                 }
-                if pending.is_empty() {
-                    break;
-                }
-                let last_block = pending.last().expect("pending non-empty").0;
-                let blocks = pending.iter().map(|(_, b)| b.clone()).collect();
-                fetched_tx
-                    .send(FetchedBatch {
-                        last_block,
-                        blocks,
-                        first_wait_ms,
-                        ingest_started: Instant::now(),
+            } else {
+                let fetch_stream = stream::iter(start..)
+                    .map(move |n| {
+                        let reader = reader.clone();
+                        let stats = fetch_stats.clone();
+                        let progress = fetch_progress.clone();
+                        let permits = permits.clone();
+                        async move {
+                            wait_for_archive_block(&reader, n, live_poll).await?;
+                            let _permit = permits
+                                .acquire_owned()
+                                .await
+                                .expect("concurrency semaphore should never close");
+                            fetch_block_with_retry(
+                                &reader,
+                                n,
+                                max_retries,
+                                initial_backoff,
+                                &stats,
+                                &progress,
+                                fetch_traces,
+                            )
+                            .await
+                        }
                     })
-                    .await
-                    .map_err(|_| eyre!("planning worker stopped before fetch completed"))?;
+                    .buffered(fetch_buffer);
+                futures::pin_mut!(fetch_stream);
+
+                loop {
+                    pending.clear();
+                    let wait_started = Instant::now();
+                    let Some(item) = fetch_stream.next().await else {
+                        break;
+                    };
+                    let first_wait_ms = wait_started.elapsed().as_millis() as u64;
+                    push_fetched_block(&mut pending, item?, &fetch_consumed_total)?;
+                    while pending.len() < max_batch_size {
+                        match fetch_stream.next().now_or_never() {
+                            Some(Some(item)) => {
+                                push_fetched_block(&mut pending, item?, &fetch_consumed_total)?;
+                            }
+                            Some(None) | None => break,
+                        }
+                    }
+                    let last_block = pending.last().expect("pending non-empty").0;
+                    let blocks = pending.iter().map(|(_, b)| b.clone()).collect();
+                    fetched_tx
+                        .send(FetchedBatch {
+                            last_block,
+                            blocks,
+                            first_wait_ms,
+                            ingest_started: Instant::now(),
+                        })
+                        .await
+                        .map_err(|_| eyre!("planning worker stopped before fetch completed"))?;
+                }
             }
             Ok::<_, eyre::Report>(())
         })
@@ -753,7 +948,7 @@ async fn main() -> Result<()> {
             window_traces += outcome.written_traces as u64;
         }
 
-        let flush = n == end
+        let flush = end.is_some_and(|end| n == end)
             || (window_blocks > 0
                 && (n % log_every == 0 || window_start.elapsed() >= WINDOW_MAX_WALL));
         if flush {
@@ -1031,7 +1226,7 @@ async fn main() -> Result<()> {
         .context("IO worker panicked")?
         .context("IO worker failed")?;
 
-    info!(end, total_txs, total_logs, total_traces, "ingest complete");
+    info!(end = ?end, total_txs, total_logs, total_traces, "ingest complete");
     Ok(())
 }
 
@@ -1115,7 +1310,7 @@ async fn profile_blob_compression_only(cli: &Cli) -> Result<()> {
         end,
         concurrency = cli.concurrency,
         fetch_buffer,
-        batch_size = cli.batch_size,
+        max_batch = cli.max_batch_size,
         blob_compression = ?cli.blob_compression,
         blob_compression_level = cli.blob_compression_level,
         blob_compression_min_bytes = cli.blob_compression_min_bytes,
@@ -1159,15 +1354,21 @@ async fn profile_blob_compression_only(cli: &Cli) -> Result<()> {
     let mut total_traces = 0_u64;
     let mut ingest_ms = Vec::new();
     let mut phase = PhaseStats::default();
-    let mut pending: Vec<(u64, FinalizedBlock)> = Vec::with_capacity(cli.batch_size);
-    let mut stream_done = false;
+    let mut pending: Vec<(u64, FinalizedBlock)> = Vec::with_capacity(cli.max_batch_size);
     let mut fetch_consumed_total = 0_u64;
 
     loop {
         pending.clear();
-        for _ in 0..cli.batch_size {
-            let Some(item) = fetch_stream.next().await else {
-                stream_done = true;
+        let Some(item) = fetch_stream.next().await else {
+            break;
+        };
+        let (n, block, receipts, traces) = item?;
+        fetch_consumed_total = fetch_consumed_total.saturating_add(1);
+        let finalized = into_finalized_block(block, receipts, traces)
+            .with_context(|| format!("transforming block {n}"))?;
+        pending.push((n, finalized));
+        while pending.len() < cli.max_batch_size {
+            let Some(Some(item)) = fetch_stream.next().now_or_never() else {
                 break;
             };
             let (n, block, receipts, traces) = item?;
@@ -1175,9 +1376,6 @@ async fn profile_blob_compression_only(cli: &Cli) -> Result<()> {
             let finalized = into_finalized_block(block, receipts, traces)
                 .with_context(|| format!("transforming block {n}"))?;
             pending.push((n, finalized));
-        }
-        if pending.is_empty() {
-            break;
         }
         let last_n = pending.last().expect("pending non-empty").0;
         let blocks: Vec<FinalizedBlock> = pending.iter().map(|(_, b)| b.clone()).collect();
@@ -1193,9 +1391,6 @@ async fn profile_blob_compression_only(cli: &Cli) -> Result<()> {
             total_txs += outcome.written_txs as u64;
             total_logs += outcome.written_logs as u64;
             total_traces += outcome.written_traces as u64;
-        }
-        if stream_done {
-            break;
         }
     }
 
@@ -1318,6 +1513,48 @@ async fn fetch_block(
     )
     .with_context(|| format!("fetching block {n}"))?;
     Ok((n, block, receipts, traces))
+}
+
+fn push_fetched_block(
+    pending: &mut Vec<(u64, FinalizedBlock)>,
+    item: (u64, Block, BlockReceipts, BlockTraces),
+    fetch_consumed_total: &AtomicU64,
+) -> Result<()> {
+    let (n, block, receipts, traces) = item;
+    fetch_consumed_total.fetch_add(1, Ordering::Relaxed);
+    let finalized = into_finalized_block(block, receipts, traces)
+        .with_context(|| format!("transforming block {n}"))?;
+    pending.push((n, finalized));
+    Ok(())
+}
+
+async fn wait_for_archive_block(
+    reader: &BlockDataReaderErased,
+    block_number: u64,
+    poll_interval: Duration,
+) -> Result<()> {
+    loop {
+        match reader.get_latest(LatestKind::Uploaded).await {
+            Ok(Some(latest)) if latest >= block_number => return Ok(()),
+            Ok(latest) => {
+                debug!(
+                    block_number,
+                    latest = ?latest,
+                    poll_ms = poll_interval.as_millis() as u64,
+                    "waiting for archive source to publish next block"
+                );
+            }
+            Err(error) => {
+                warn!(
+                    block_number,
+                    poll_ms = poll_interval.as_millis() as u64,
+                    error = %error,
+                    "failed to read archive latest block; retrying"
+                );
+            }
+        }
+        tokio::time::sleep(poll_interval).await;
+    }
 }
 
 /// Retries `fetch_block` with exponential backoff. Total attempts =
