@@ -245,10 +245,11 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
             }
 
             if let Some(rekey) = rekey {
+                let stored_cookie = self.state.lookup_cookie(&rekey.remote_public_key);
                 if let Ok((new_session_index, timer, message)) = self.init_session_with_cookie(
                     rekey.remote_public_key,
                     rekey.remote_addr,
-                    rekey.stored_cookie,
+                    stored_cookie,
                     rekey.retry_attempts,
                 ) {
                     self.metrics[self.metric_names.enqueued_handshake_init] += 1;
@@ -302,11 +303,7 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
             });
         }
 
-        // Cookies are looked up from initiated sessions for simplicity.
-        // In the future, this can be improved to look up from both initiated and accepted sessions.
-        let cookie = self
-            .state
-            .lookup_cookie_from_initiated_sessions(&remote_static_key);
+        let cookie = self.state.lookup_cookie(&remote_static_key);
 
         let (local_index, timer, message) = self
             .init_session_with_cookie(remote_static_key, remote_addr, cookie, retry_attempts)
@@ -458,10 +455,7 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
             return Err(Error::TimestampReplay);
         }
 
-        // Cookie is looked up from accepted sessions for simplicity.
-        // There is technically no reason not to reuse cookies between initiated and accepted sessions,
-        // and this can be improved in the future.
-        let stored_cookie = self.state.lookup_cookie_from_accepted_sessions(remote_key);
+        let stored_cookie = self.state.lookup_cookie(&remote_key);
 
         // Reservation should be committed only when code is no longer fallible
         // TODO(dshulyak): Get rid of reservation; code was refactored to be non-fallible when index is allocated
@@ -494,15 +488,25 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
 
     fn accept_cookie(&mut self, cookie_reply: &mut CookieReply) -> Result<()> {
         let receiver_session_index = cookie_reply.receiver_index.into();
+        let stored_cookie =
+            if let Some(session) = self.state.get_initiator_mut(&receiver_session_index) {
+                let remote_public_key = session.remote_public_key;
+                let cookie = session.handle_cookie(cookie_reply).inspect_err(|_| {
+                    self.metrics[self.metric_names.error_cookie_reply] += 1;
+                })?;
+                Some((remote_public_key, cookie))
+            } else if let Some(session) = self.state.get_responder_mut(&receiver_session_index) {
+                let remote_public_key = session.remote_public_key;
+                let cookie = session.handle_cookie(cookie_reply).inspect_err(|_| {
+                    self.metrics[self.metric_names.error_cookie_reply] += 1;
+                })?;
+                Some((remote_public_key, cookie))
+            } else {
+                None
+            };
 
-        if let Some(session) = self.state.get_initiator_mut(&receiver_session_index) {
-            session.handle_cookie(cookie_reply).inspect_err(|_| {
-                self.metrics[self.metric_names.error_cookie_reply] += 1;
-            })?;
-        } else if let Some(session) = self.state.get_responder_mut(&receiver_session_index) {
-            session.handle_cookie(cookie_reply).inspect_err(|_| {
-                self.metrics[self.metric_names.error_cookie_reply] += 1;
-            })?;
+        if let Some((remote_public_key, cookie)) = stored_cookie {
+            self.state.store_cookie(remote_public_key, cookie);
         }
         Ok(())
     }

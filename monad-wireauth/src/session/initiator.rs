@@ -81,7 +81,6 @@ impl InitiatorState {
             None,
             true,
         );
-        common.stored_cookie = cookie_secret;
         common.last_handshake_mac1 = Some(mac1);
 
         let mut session = InitiatorState {
@@ -155,7 +154,10 @@ impl InitiatorState {
         (transport, messages)
     }
 
-    pub fn handle_cookie(&mut self, cookie_reply: &mut CookieReply) -> Result<(), SessionError> {
+    pub fn handle_cookie(
+        &mut self,
+        cookie_reply: &mut CookieReply,
+    ) -> Result<[u8; 16], SessionError> {
         self.common.handle_cookie(cookie_reply)
     }
 
