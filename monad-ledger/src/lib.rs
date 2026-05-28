@@ -265,22 +265,22 @@ where
     fn exec(&mut self, commands: Vec<Self::Command>) {
         for command in commands {
             match command {
-                LedgerCommand::LedgerCommit(OptimisticCommit::Proposed {
-                    block,
-                    is_canonical,
-                }) => {
+                LedgerCommand::LedgerCommit(OptimisticCommit::Coherent(block)) => {
+                    // this can panic because failure to persist a block is fatal error
+                    self.write_bft_block(&block);
+                    self.update_cache(block);
+                }
+                LedgerCommand::LedgerCommit(OptimisticCommit::ProposedHead(block)) => {
                     // this can panic because failure to persist a block is fatal error
                     self.write_bft_block(&block);
 
-                    if is_canonical {
-                        self.bft_block_persist
-                            .update_proposed_head(&block.get_id())
-                            .unwrap();
-                    }
+                    self.bft_block_persist
+                        .update_proposed_head(&block.get_id())
+                        .unwrap();
 
                     self.update_cache(block);
                 }
-                LedgerCommand::LedgerCommit(OptimisticCommit::Voted(block)) => {
+                LedgerCommand::LedgerCommit(OptimisticCommit::VotedHead(block)) => {
                     let block_id = block.get_id();
                     self.update_cache(block);
 
