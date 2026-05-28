@@ -1,0 +1,35 @@
+[Unit]
+Description="Monad RPC queryX service with embedded chain-data ingest"
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/jhow/monad-bft
+Environment="RUST_LOG=warn,monad_chain_data=trace,monad_rpc::handlers::queryx=debug,monad_rpc::middleware::timing=debug"
+Environment="CHAIN_DATA_INGEST_BLOCK_DATA_SOURCE=aws mainnet-deu-009-0"
+EnvironmentFile=-/home/jhow/.env
+ExecStart=/bin/bash -lc 'exec cargo run -p monad-rpc --bin monad-rpc -- \
+    --queryx-only \
+    --chain-data-meta-path /home/jhow/meta-1 \
+    --chain-data-blob-path /var/lib/fjall/blob-1 \
+    --chain-data-ingest-block-data-source "$CHAIN_DATA_INGEST_BLOCK_DATA_SOURCE" \
+    --chain-data-ingest-no-traces \
+    --chain-data-ingest-concurrency 1000 \
+    --chain-data-ingest-fetch-buffer 100000 \
+    --chain-data-ingest-autotune \
+    --chain-data-ingest-max-concurrency 10000 \
+    --chain-data-ingest-max-batch 30000 \
+    --chain-data-fjall-journal-mib 16384 \
+    --chain-data-fjall-memtable-mib 512 \
+    --chain-data-cache-mib 12288 \
+    --rpc-addr 127.0.0.1 \
+    --rpc-port 8080 \
+    --queryx-max-limit 5000 \
+    --queryx-max-block-range 100000000'
+Restart=always
+User=jhow
+Group=jhow
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target
