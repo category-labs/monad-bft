@@ -13,8 +13,6 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{cell::RefCell, rc::Rc};
-
 use alloy_consensus::{Block, BlockBody, TxEnvelope};
 use alloy_eips::eip2718::Encodable2718;
 use alloy_primitives::{
@@ -363,10 +361,9 @@ pub struct MonadCallFrame {
     error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     revert_reason: Option<String>,
-    // FIXME why Rc<RefCell<_>> ?
     #[serde(skip_serializing_if = "Vec::is_empty")]
     #[schemars(skip)] // TODO: handle recursive generation in jsonrpc schema
-    calls: Vec<std::rc::Rc<std::cell::RefCell<MonadCallFrame>>>,
+    calls: Vec<MonadCallFrame>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     logs: Vec<MonadCallFrameLog>,
 }
@@ -627,9 +624,7 @@ pub async fn decode_call_frame<T: Triedb>(
                     include_code_output(root_frame, triedb_env, block_key).await?;
                 }
 
-                let mut root = build_call_tree(call_frames)
-                    .await?
-                    .and_then(|rc| Rc::try_unwrap(rc).ok().map(|refcell| refcell.into_inner()));
+                let mut root = build_call_tree(call_frames);
 
                 if let Some(root) = root.as_mut() {
                     root.calls.clear();
@@ -651,9 +646,7 @@ pub async fn decode_call_frame<T: Triedb>(
             .into_iter()
             .collect::<Result<Vec<_>, JsonRpcError>>()?;
 
-            Ok(build_call_tree(call_frames)
-                .await?
-                .and_then(|rc| Rc::try_unwrap(rc).ok().map(|refcell| refcell.into_inner())))
+            Ok(build_call_tree(call_frames))
         }
         _ => Err(JsonRpcError::method_not_supported()),
     }
@@ -701,72 +694,58 @@ async fn include_code_output<T: Triedb>(
     Ok(())
 }
 
-/// Build a call tree from a flat list of call frames.
-async fn build_call_tree(
-    nodes: Vec<CallFrame>,
-) -> JsonRpcResult<Option<Rc<RefCell<MonadCallFrame>>>> {
-    let mut nodes = nodes.into_iter();
+/// Build a call tree from a flat pre-order list of call frames.
+fn build_call_tree(frames: Vec<CallFrame>) -> Option<MonadCallFrame> {
+    let mut frames = frames.into_iter();
 
-    let Some(root) = nodes.next() else {
-        return Ok(None);
-    };
+    let mut root = MonadCallFrame::from(frames.next()?);
 
-    let root = Rc::new(RefCell::new(MonadCallFrame::from(root)));
+    // Children of the root frame that have not been completely reassembled
+    let mut incomplete_frames: Vec<MonadCallFrame> = Vec::new();
 
-    // First, build the tree structure from the flat frame list.
-    let mut stack = vec![Rc::clone(&root)];
+    for next_frame in frames.map(Some).chain(std::iter::once(None)) {
+        let next_frame_depth = next_frame
+            .as_ref()
+            .map_or(0, |frame| frame.depth.to::<usize>());
 
-    for value in nodes {
-        let depth = value.depth.to::<usize>();
-        let new_node = Rc::new(RefCell::new(MonadCallFrame::from(value)));
-
-        loop {
-            let Some(mut last) = stack.last().map(|last| last.borrow_mut()) else {
-                error!("Call tree root node was removed from stack");
-
-                return Err(JsonRpcError::internal_error(
-                    "call tree inconsistent".to_string(),
-                ));
-            };
-
-            if last.depth < depth {
-                last.calls.push(Rc::clone(&new_node));
-                break;
-            }
-
-            drop(last);
-            stack.pop();
+        while let Some(completed_frame) = incomplete_frames
+            .pop_if(|deepest_incomplete_frame| deepest_incomplete_frame.depth >= next_frame_depth)
+        {
+            let parent_frame = incomplete_frames.last_mut().unwrap_or(&mut root);
+            parent_frame.calls.push(completed_frame);
         }
 
-        stack.push(new_node);
-    }
-
-    // Next, assign log indices
-    drop(stack);
-
-    // Stack is (node, next_position_to_process)
-    // Position N means: process logs at position N, then recurse into child N (if exists)
-    let mut stack: Vec<(Rc<RefCell<MonadCallFrame>>, usize)> = vec![(Rc::clone(&root), 0)];
-
-    let mut counter = 0u64;
-
-    while let Some((node, position)) = stack.pop() {
-        // Assign all logs at this position
-        for log in node.borrow_mut().logs.iter_mut() {
-            if log.position.0 == position as u64 {
-                log.index = Quantity(counter);
-                counter += 1;
-            }
-        }
-
-        // If there's a child at index position, we must process it before we can move to the next position
-        if let Some(child) = node.borrow().calls.get(position) {
-            stack.push((Rc::clone(&node), position + 1));
-            stack.push((Rc::clone(child), 0));
+        if let Some(next_frame) = next_frame {
+            incomplete_frames.push(MonadCallFrame::from(next_frame));
         }
     }
 
-    Ok(Some(root))
+    fn extend_logs_by_emit_order<'a>(
+        frame: &'a mut MonadCallFrame,
+        logs_by_emit_order: &mut Vec<&'a mut MonadCallFrameLog>,
+    ) {
+        let mut frame_logs = frame.logs.iter_mut().peekable();
+
+        for (child_frame_pos, child_frame) in frame.calls.iter_mut().enumerate() {
+            while let Some(log) = frame_logs.next_if(|log| log.position.0 <= child_frame_pos as u64)
+            {
+                logs_by_emit_order.push(log);
+            }
+
+            extend_logs_by_emit_order(child_frame, logs_by_emit_order);
+        }
+
+        logs_by_emit_order.extend(frame_logs);
+    }
+
+    let mut logs_by_emit_order = Vec::new();
+    extend_logs_by_emit_order(&mut root, &mut logs_by_emit_order);
+
+    for (index, log) in logs_by_emit_order.into_iter().enumerate() {
+        log.index = Quantity(index as u64);
+    }
+
+    Some(root)
 }
 
 #[cfg(test)]
@@ -865,28 +844,27 @@ mod tests {
             .into_iter()
             .flatten()
             .collect::<Vec<_>>();
-        let result = build_call_tree(frames).await.unwrap();
+        let result = build_call_tree(frames);
 
         assert!(result.is_some());
-        let result: Rc<RefCell<MonadCallFrame>> = result.unwrap();
-        assert_eq!(result.borrow().calls.len(), 1);
+        let result: MonadCallFrame = result.unwrap();
+        assert_eq!(result.calls.len(), 1);
 
         result
-            .borrow()
             .calls
             .iter()
             .enumerate()
             .for_each(|(idx, frame)| match idx {
-                0 => assert_eq!(frame.borrow().calls.len(), 1),
+                0 => assert_eq!(frame.calls.len(), 1),
 
-                1 => assert_eq!(frame.borrow().calls.len(), 1),
+                1 => assert_eq!(frame.calls.len(), 1),
 
-                2 => assert_eq!(frame.borrow().calls.len(), 2),
+                2 => assert_eq!(frame.calls.len(), 2),
 
                 _ => panic!("unexpected index"),
             });
 
-        assert_eq!(result.borrow().error, None);
+        assert_eq!(result.error, None);
     }
 
     #[tokio::test]
@@ -1342,27 +1320,26 @@ mod tests {
             make_frame_with_positions(2, &[0, 0]), // child2: 2 logs (no children)
         ];
 
-        let result = build_call_tree(frames).await.unwrap();
+        let result = build_call_tree(frames);
         assert!(result.is_some());
 
         let root = result.unwrap();
-        let root_borrowed = root.borrow();
 
-        assert_eq!(root_borrowed.logs.len(), 2);
-        assert_eq!(root_borrowed.logs[0].index.0, 0);
-        assert_eq!(root_borrowed.logs[1].index.0, 7);
+        assert_eq!(root.logs.len(), 2);
+        assert_eq!(root.logs[0].index.0, 0);
+        assert_eq!(root.logs[1].index.0, 7);
 
-        let first_child = root_borrowed.calls[0].borrow();
+        let first_child = &root.calls[0];
         assert_eq!(first_child.logs.len(), 3);
         assert_eq!(first_child.logs[0].index.0, 1);
         assert_eq!(first_child.logs[1].index.0, 3);
         assert_eq!(first_child.logs[2].index.0, 4);
 
-        let grandchild = first_child.calls[0].borrow();
+        let grandchild = &first_child.calls[0];
         assert_eq!(grandchild.logs.len(), 1);
         assert_eq!(grandchild.logs[0].index.0, 2);
 
-        let second_child = root_borrowed.calls[1].borrow();
+        let second_child = &root.calls[1];
         assert_eq!(second_child.logs.len(), 2);
         assert_eq!(second_child.logs[0].index.0, 5);
         assert_eq!(second_child.logs[1].index.0, 6);
@@ -1386,21 +1363,19 @@ mod tests {
             make_frame_with_positions(2, &[0]),    // C.c: C0 at pos 0
         ];
 
-        let result = build_call_tree(frames).await.unwrap();
+        let result = build_call_tree(frames);
         assert!(result.is_some());
 
         let root = result.unwrap();
-        let root_borrowed = root.borrow();
 
-        assert_eq!(root_borrowed.logs.len(), 2);
-        assert_eq!(root_borrowed.logs[0].index.0, 0); // A0
-        assert_eq!(root_borrowed.logs[1].index.0, 2); // A1
+        assert_eq!(root.logs.len(), 2);
+        assert_eq!(root.logs[0].index.0, 0); // A0
+        assert_eq!(root.logs[1].index.0, 2); // A1
 
         let mut found_c0 = false;
-        for child in root_borrowed.calls.iter() {
-            let child_borrowed = child.borrow();
-            if !child_borrowed.logs.is_empty() {
-                assert_eq!(child_borrowed.logs[0].index.0, 1); // C0
+        for child in root.calls.iter() {
+            if !child.logs.is_empty() {
+                assert_eq!(child.logs[0].index.0, 1); // C0
                 found_c0 = true;
             }
         }
@@ -1432,17 +1407,16 @@ mod tests {
             logs: Some(vec![make_log(0), make_log(0), make_log(0)]),
         };
 
-        let result = build_call_tree(vec![frame]).await.unwrap();
+        let result = build_call_tree(vec![frame]);
         assert!(result.is_some());
 
         let root = result.unwrap();
-        let root_borrowed = root.borrow();
 
         // Single frame with no children should have all logs assigned sequentially
-        assert_eq!(root_borrowed.logs.len(), 3);
-        assert_eq!(root_borrowed.logs[0].index.0, 0);
-        assert_eq!(root_borrowed.logs[1].index.0, 1);
-        assert_eq!(root_borrowed.logs[2].index.0, 2);
+        assert_eq!(root.logs.len(), 3);
+        assert_eq!(root.logs[0].index.0, 0);
+        assert_eq!(root.logs[1].index.0, 1);
+        assert_eq!(root.logs[2].index.0, 2);
     }
 
     #[tokio::test]
@@ -1456,8 +1430,7 @@ mod tests {
             make_frame_with_positions(2, &[0]),             // child: 1 log at pos 0
         ];
 
-        let result = build_call_tree(frames).await.unwrap().unwrap();
-        let root = result.borrow();
+        let root = build_call_tree(frames).unwrap();
 
         assert_eq!(root.logs[0].index.0, 0);
         assert_eq!(root.logs[1].index.0, 1);
@@ -1465,7 +1438,7 @@ mod tests {
         assert_eq!(root.logs[3].index.0, 3);
         assert_eq!(root.logs[4].index.0, 4);
 
-        let child = root.calls[0].borrow();
+        let child = &root.calls[0];
         assert_eq!(child.logs[0].index.0, 5);
     }
 
@@ -1487,8 +1460,7 @@ mod tests {
             make_frame_with_positions(2, &[0]),    // C: C0 at pos 0
         ];
 
-        let result = build_call_tree(frames).await.unwrap().unwrap();
-        let root = result.borrow();
+        let root = build_call_tree(frames).unwrap();
 
         // A0 (pos 0) → index 0
         assert_eq!(root.logs[0].index.0, 0);
@@ -1496,11 +1468,11 @@ mod tests {
         assert_eq!(root.logs[1].index.0, 2);
 
         // B has no logs
-        let child_b = root.calls[0].borrow();
+        let child_b = &root.calls[0];
         assert!(child_b.logs.is_empty());
 
         // C0 (pos 0) → index 1
-        let child_c = root.calls[1].borrow();
+        let child_c = &root.calls[1];
         assert_eq!(child_c.logs[0].index.0, 1);
     }
 
@@ -1534,8 +1506,7 @@ mod tests {
             make_frame_with_positions(3, &[0]),    // C: log at pos 0
         ];
 
-        let result = build_call_tree(frames).await.unwrap().unwrap();
-        let main_frame = result.borrow();
+        let main_frame = build_call_tree(frames).unwrap();
 
         // Main frame has 2 logs
         assert_eq!(main_frame.logs.len(), 2);
@@ -1544,14 +1515,14 @@ mod tests {
 
         // E frame (child of Main)
         assert_eq!(main_frame.calls.len(), 1);
-        let e_frame = main_frame.calls[0].borrow();
+        let e_frame = &main_frame.calls[0];
         assert_eq!(e_frame.logs.len(), 2);
         assert_eq!(e_frame.logs[0].index.0, 1); // First E0
         assert_eq!(e_frame.logs[1].index.0, 3); // Second E0
 
         // C frame (child of E)
         assert_eq!(e_frame.calls.len(), 1);
-        let c_frame = e_frame.calls[0].borrow();
+        let c_frame = &e_frame.calls[0];
         assert_eq!(c_frame.logs.len(), 1);
         assert_eq!(c_frame.logs[0].index.0, 2); // C0
     }
