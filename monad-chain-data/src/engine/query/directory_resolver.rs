@@ -13,13 +13,17 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::{BTreeSet, HashMap};
+use std::{
+    collections::{BTreeSet, HashMap},
+    time::Instant,
+};
 
 use futures::{stream, StreamExt, TryStreamExt};
 
 use crate::{
     engine::{
         primary_dir::{bucket_start, PrimaryDirBucket, PrimaryDirFragment},
+        query::family_runner::elapsed_us,
         tables::FamilyTables,
     },
     error::{MonadChainDataError, Result},
@@ -49,7 +53,7 @@ impl<'a, M: MetaStore, B: BlobStore> PrimaryIdResolver<'a, M, B> {
     pub(crate) async fn resolve_many_ordered(
         &mut self,
         ids: &[PrimaryId],
-    ) -> Result<Vec<Option<ResolvedPrimaryIdLocation>>> {
+    ) -> Result<ResolvedPrimaryIdBatch> {
         let missing_buckets: BTreeSet<_> = ids
             .iter()
             .map(|id| bucket_start(id.as_u64()))
@@ -57,6 +61,7 @@ impl<'a, M: MetaStore, B: BlobStore> PrimaryIdResolver<'a, M, B> {
             .collect();
 
         let family = self.family;
+        let bucket_load_start = Instant::now();
         let loaded: Vec<_> = stream::iter(missing_buckets)
             .map(|bucket| async move {
                 load_cached_bucket(family, bucket)
@@ -66,12 +71,22 @@ impl<'a, M: MetaStore, B: BlobStore> PrimaryIdResolver<'a, M, B> {
             .buffered(DIRECTORY_BUCKET_LOAD_CONCURRENCY)
             .try_collect()
             .await?;
+        let bucket_load_us = elapsed_us(bucket_load_start);
 
         for (bucket, cached) in loaded {
             self.bucket_cache.insert(bucket, cached);
         }
 
-        ids.iter().map(|id| self.resolve_from_cache(*id)).collect()
+        let resolve_start = Instant::now();
+        let locations = ids
+            .iter()
+            .map(|id| self.resolve_from_cache(*id))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(ResolvedPrimaryIdBatch {
+            locations,
+            bucket_load_us,
+            resolve_us: elapsed_us(resolve_start),
+        })
     }
 
     fn resolve_from_cache(&self, id: PrimaryId) -> Result<Option<ResolvedPrimaryIdLocation>> {
@@ -84,6 +99,12 @@ impl<'a, M: MetaStore, B: BlobStore> PrimaryIdResolver<'a, M, B> {
             ))?;
         cached.resolve(id)
     }
+}
+
+pub(crate) struct ResolvedPrimaryIdBatch {
+    pub(crate) locations: Vec<Option<ResolvedPrimaryIdLocation>>,
+    pub(crate) bucket_load_us: u64,
+    pub(crate) resolve_us: u64,
 }
 
 async fn load_cached_bucket<M: MetaStore, B: BlobStore>(

@@ -31,6 +31,7 @@ pub(crate) async fn execute_block_scan_trace_query<M: MetaStore, B: BlobStore>(
 ) -> Result<QueryTracesResponse> {
     let materializer = TraceMaterializer::new(tables);
     let outcome = execute_block_scan_family_query(
+        tables,
         &materializer,
         &request.filter,
         window,

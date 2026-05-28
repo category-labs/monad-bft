@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::time::Instant;
+
 use futures::{stream, StreamExt, TryStreamExt};
 use roaring::RoaringBitmap;
 
@@ -20,15 +22,15 @@ use crate::{
     engine::{
         bitmap::{decode_bitmap_blob, page_start_local, LOCAL_ID_BITS, STREAM_PAGE_LOCAL_ID_SPAN},
         clause::IndexedClause,
-        query::family_runner::QueryExecutionStats,
+        query::family_runner::{elapsed_us, QueryExecutionStats},
         tables::FamilyTables,
     },
     error::Result,
     store::{BlobStore, MetaStore},
 };
 
-const BITMAP_CLAUSE_CONCURRENCY: usize = 4;
-const BITMAP_PAGE_CONCURRENCY: usize = 64;
+const BITMAP_PAGE_GROUP_CONCURRENCY: usize = 32;
+const BITMAP_CLAUSE_STREAM_CONCURRENCY: usize = 16;
 
 pub(crate) struct BitmapLoadOutcome {
     pub bitmap: RoaringBitmap,
@@ -45,46 +47,129 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
         shard: u64,
         local_from: u32,
         local_to: u32,
+        open_fragment_page_start: Option<u32>,
     ) -> Result<Option<BitmapLoadOutcome>> {
-        let mut accumulator: Option<RoaringBitmap> = None;
         let mut stats = QueryExecutionStats::default();
+        let pages = page_starts_in_range(local_from, local_to);
+        let clause_order = planned_clause_order(clauses);
+        let baseline_jobs = pages.len().saturating_mul(
+            clauses
+                .iter()
+                .map(|clause| clause.values.len())
+                .sum::<usize>(),
+        );
+        stats.bitmap_page_groups_planned = pages.len() as u64;
+        stats.bitmap_page_jobs_baseline = baseline_jobs as u64;
 
-        let clause_outcomes: Vec<BitmapLoadOutcome> = stream::iter(clauses)
-            .map(|clause| async move {
-                self.load_clause_bitmap(clause, shard, local_from, local_to)
+        let page_outcomes: Vec<BitmapLoadOutcome> = stream::iter(pages)
+            .map(|page_start| {
+                let clause_order = &clause_order;
+                async move {
+                    self.load_page_intersection_bitmap(
+                        clauses,
+                        clause_order,
+                        shard,
+                        page_start,
+                        open_fragment_page_start,
+                        local_from,
+                        local_to,
+                    )
                     .await
+                }
             })
-            .buffered(BITMAP_CLAUSE_CONCURRENCY)
+            .buffered(BITMAP_PAGE_GROUP_CONCURRENCY)
             .try_collect()
             .await?;
 
-        for outcome in clause_outcomes {
+        let merge_start = Instant::now();
+        let mut accumulator = RoaringBitmap::new();
+        for outcome in page_outcomes {
             stats.merge(&outcome.stats);
-            let clause_bitmap = outcome.bitmap;
-            if clause_bitmap.is_empty() {
-                return Ok(None);
+            accumulator |= outcome.bitmap;
+        }
+        stats.bitmap_cpu_us = stats.bitmap_cpu_us.saturating_add(elapsed_us(merge_start));
+        stats.bitmap_page_jobs_pruned = stats
+            .bitmap_page_jobs_baseline
+            .saturating_sub(stats.bitmap_page_probes);
+
+        Ok((!accumulator.is_empty()).then_some(BitmapLoadOutcome {
+            bitmap: accumulator,
+            stats,
+        }))
+    }
+
+    async fn load_page_intersection_bitmap(
+        &self,
+        clauses: &[IndexedClause],
+        clause_order: &[usize],
+        shard: u64,
+        page_start: u32,
+        open_fragment_page_start: Option<u32>,
+        local_from: u32,
+        local_to: u32,
+    ) -> Result<BitmapLoadOutcome> {
+        let mut stats = QueryExecutionStats::default();
+        let mut accumulator: Option<RoaringBitmap> = None;
+        let intersect_start = Instant::now();
+
+        for clause_idx in clause_order {
+            let outcome = self
+                .load_clause_page_bitmap(
+                    &clauses[*clause_idx],
+                    shard,
+                    page_start,
+                    open_fragment_page_start,
+                    local_from,
+                    local_to,
+                )
+                .await?;
+            stats.merge(&outcome.stats);
+            if outcome.bitmap.is_empty() {
+                stats.bitmap_page_groups_short_circuited =
+                    stats.bitmap_page_groups_short_circuited.saturating_add(1);
+                stats.bitmap_cpu_us = stats
+                    .bitmap_cpu_us
+                    .saturating_add(elapsed_us(intersect_start));
+                return Ok(BitmapLoadOutcome {
+                    bitmap: RoaringBitmap::new(),
+                    stats,
+                });
             }
 
             match accumulator.as_mut() {
                 Some(current) => {
-                    *current &= &clause_bitmap;
+                    *current &= &outcome.bitmap;
                     if current.is_empty() {
-                        return Ok(None);
+                        stats.bitmap_page_groups_short_circuited =
+                            stats.bitmap_page_groups_short_circuited.saturating_add(1);
+                        stats.bitmap_cpu_us = stats
+                            .bitmap_cpu_us
+                            .saturating_add(elapsed_us(intersect_start));
+                        return Ok(BitmapLoadOutcome {
+                            bitmap: RoaringBitmap::new(),
+                            stats,
+                        });
                     }
                 }
-                None => accumulator = Some(clause_bitmap),
+                None => accumulator = Some(outcome.bitmap),
             }
         }
 
-        Ok(accumulator
-            .filter(|bitmap| !bitmap.is_empty())
-            .map(|bitmap| BitmapLoadOutcome { bitmap, stats }))
+        stats.bitmap_cpu_us = stats
+            .bitmap_cpu_us
+            .saturating_add(elapsed_us(intersect_start));
+        Ok(BitmapLoadOutcome {
+            bitmap: accumulator.unwrap_or_default(),
+            stats,
+        })
     }
 
-    async fn load_clause_bitmap(
+    async fn load_clause_page_bitmap(
         &self,
         clause: &IndexedClause,
         shard: u64,
+        page_start: u32,
+        open_fragment_page_start: Option<u32>,
         local_from: u32,
         local_to: u32,
     ) -> Result<BitmapLoadOutcome> {
@@ -98,30 +183,22 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
         let mut stats = QueryExecutionStats::default();
         stats.clause_streams = stats.clause_streams.saturating_add(stream_ids.len() as u64);
 
-        let first_page_start = page_start_local(local_from);
-        let last_page_start = page_start_local(local_to);
-        let mut jobs = Vec::new();
-        for stream_id in &stream_ids {
-            let mut page_start = first_page_start;
-            loop {
-                jobs.push((stream_id.clone(), page_start));
-
-                if page_start == last_page_start {
-                    break;
-                }
-                page_start = page_start.saturating_add(STREAM_PAGE_LOCAL_ID_SPAN);
-            }
-        }
-
-        let page_outcomes: Vec<BitmapLoadOutcome> = stream::iter(jobs)
-            .map(|(stream_id, page_start)| async move {
-                self.load_bitmap_page(&stream_id, page_start, local_from, local_to)
-                    .await
+        let page_outcomes: Vec<BitmapLoadOutcome> = stream::iter(stream_ids)
+            .map(|stream_id| async move {
+                self.load_bitmap_page(
+                    &stream_id,
+                    page_start,
+                    open_fragment_page_start,
+                    local_from,
+                    local_to,
+                )
+                .await
             })
-            .buffer_unordered(BITMAP_PAGE_CONCURRENCY)
+            .buffer_unordered(BITMAP_CLAUSE_STREAM_CONCURRENCY)
             .try_collect()
             .await?;
 
+        let merge_start = Instant::now();
         let mut clause_bitmap = RoaringBitmap::new();
         for outcome in page_outcomes {
             stats.merge(&outcome.stats);
@@ -129,6 +206,7 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
         }
 
         clip_bitmap_to_local_range(&mut clause_bitmap, local_from, local_to);
+        stats.bitmap_cpu_us = stats.bitmap_cpu_us.saturating_add(elapsed_us(merge_start));
         Ok(BitmapLoadOutcome {
             bitmap: clause_bitmap,
             stats,
@@ -139,15 +217,20 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
         &self,
         stream_id: &str,
         page_start_local: u32,
+        open_fragment_page_start: Option<u32>,
         local_from: u32,
         local_to: u32,
     ) -> Result<BitmapLoadOutcome> {
         let mut stats = QueryExecutionStats::default();
         stats.bitmap_page_probes = stats.bitmap_page_probes.saturating_add(1);
-        if let Some(page) = self
+        let page_artifact_start = Instant::now();
+        let page_artifact = self
             .load_bitmap_page_artifact(stream_id, page_start_local)
-            .await?
-        {
+            .await?;
+        stats.bitmap_io_us = stats
+            .bitmap_io_us
+            .saturating_add(elapsed_us(page_artifact_start));
+        if let Some(page) = page_artifact {
             stats.compacted_bitmap_pages_read = stats.compacted_bitmap_pages_read.saturating_add(1);
             if !overlaps(
                 page.meta.min_local,
@@ -163,26 +246,43 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
 
             // Page loads may include out-of-range bits from a partially overlapping
             // page; the caller clips the final merged bitmap once per clause.
+            let decode_start = Instant::now();
+            let bitmap = decode_bitmap_blob(page.bitmap_blob.as_ref())?.bitmap;
+            stats.bitmap_cpu_us = stats.bitmap_cpu_us.saturating_add(elapsed_us(decode_start));
+            return Ok(BitmapLoadOutcome { bitmap, stats });
+        }
+
+        if open_fragment_page_start != Some(page_start_local) {
+            stats.bitmap_fragment_scans_skipped =
+                stats.bitmap_fragment_scans_skipped.saturating_add(1);
             return Ok(BitmapLoadOutcome {
-                bitmap: decode_bitmap_blob(page.bitmap_blob.as_ref())?.bitmap,
+                bitmap: RoaringBitmap::new(),
                 stats,
             });
         }
 
         let mut page_bitmap = RoaringBitmap::new();
+        let fragments_start = Instant::now();
         let fragments = self
             .load_bitmap_fragments(stream_id, page_start_local)
             .await?;
+        stats.bitmap_io_us = stats
+            .bitmap_io_us
+            .saturating_add(elapsed_us(fragments_start));
         stats.open_bitmap_pages_read = stats.open_bitmap_pages_read.saturating_add(1);
         stats.bitmap_fragments_read = stats
             .bitmap_fragments_read
             .saturating_add(fragments.len() as u64);
+        let decode_merge_start = Instant::now();
         for fragment in fragments {
             let fragment = decode_bitmap_blob(fragment.as_ref())?;
             if overlaps(fragment.min_local, fragment.max_local, local_from, local_to) {
                 page_bitmap |= fragment.bitmap;
             }
         }
+        stats.bitmap_cpu_us = stats
+            .bitmap_cpu_us
+            .saturating_add(elapsed_us(decode_merge_start));
 
         Ok(BitmapLoadOutcome {
             bitmap: page_bitmap,
@@ -205,5 +305,42 @@ fn clip_bitmap_to_local_range(bitmap: &mut RoaringBitmap, local_from: u32, local
     }
     if local_to < u32::MAX {
         bitmap.remove_range(local_to.saturating_add(1)..u32::MAX);
+    }
+}
+
+fn page_starts_in_range(local_from: u32, local_to: u32) -> Vec<u32> {
+    let mut pages = Vec::new();
+    let mut page_start = page_start_local(local_from);
+    let last_page_start = page_start_local(local_to);
+    loop {
+        pages.push(page_start);
+        if page_start == last_page_start {
+            break;
+        }
+        page_start = page_start.saturating_add(STREAM_PAGE_LOCAL_ID_SPAN);
+    }
+    pages
+}
+
+fn planned_clause_order(clauses: &[IndexedClause]) -> Vec<usize> {
+    let mut order: Vec<_> = (0..clauses.len()).collect();
+    order.sort_by_key(|idx| {
+        (
+            clause_rank(&clauses[*idx]),
+            clauses[*idx].values.len(),
+            *idx,
+        )
+    });
+    order
+}
+
+fn clause_rank(clause: &IndexedClause) -> u8 {
+    match clause.kind {
+        "addr" | "from" | "to" => 0,
+        "topic1" | "topic2" | "topic3" => 1,
+        "selector" => 2,
+        "top_level" => 3,
+        "topic0" | "has_transfer" => 4,
+        _ => 2,
     }
 }

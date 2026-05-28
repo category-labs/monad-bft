@@ -29,6 +29,7 @@ pub(crate) async fn execute_block_scan_tx_query<M: MetaStore, B: BlobStore>(
 ) -> Result<QueryTransactionsResponse> {
     let materializer = TxMaterializer::new(tables);
     let outcome = execute_block_scan_family_query(
+        tables,
         &materializer,
         &request.filter,
         window,

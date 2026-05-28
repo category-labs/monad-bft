@@ -355,6 +355,7 @@ pub(crate) async fn execute_block_scan_transfer_query<M: MetaStore, B: BlobStore
 ) -> Result<QueryTransfersResponse> {
     let materializer = TransferMaterializer::new(tables);
     let outcome = execute_block_scan_family_query(
+        tables,
         &materializer,
         &request.filter,
         window,
