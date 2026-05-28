@@ -1,0 +1,151 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  extract-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.extract_version.outputs.VERSION }}
+    steps:
+      - name: Extract version
+        id: extract_version
+        run: echo "VERSION=$(echo ${GITHUB_REF#refs/tags/})" >> $GITHUB_OUTPUT
+
+  generate-release-notes:
+    name: Generate Release Notes
+    needs: extract-version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get previous tag
+        id: previous_tag
+        run: |
+          PREVIOUS_TAG=$(git tag --sort=-version:refname | grep -v "${{ needs.extract-version.outputs.version }}" | head -n 1)
+          if [ -z "$PREVIOUS_TAG" ]; then
+            # If no previous tag, use the first commit
+            PREVIOUS_TAG=$(git rev-list --max-parents=0 HEAD)
+          fi
+          echo "PREVIOUS_TAG=${PREVIOUS_TAG}" >> $GITHUB_OUTPUT
+          echo "Previous release: ${PREVIOUS_TAG}"
+
+      - name: Generate PR list
+        id: pr_list
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "Generating PR list from ${{ steps.previous_tag.outputs.PREVIOUS_TAG }} to ${{ needs.extract-version.outputs.version }}"
+
+          # Get all commits between tags
+          COMMITS=$(git log ${{ steps.previous_tag.outputs.PREVIOUS_TAG }}..${{ needs.extract-version.outputs.version }} --pretty=format:"%H")
+
+          # Create temporary file for PR info
+          touch pr_list.md
+
+          echo "## Merged Pull Requests" >> pr_list.md
+          echo "" >> pr_list.md
+
+          # Track unique PRs
+          declare -A seen_prs
+
+          # Get PR information for each commit
+          for commit in $COMMITS; do
+            # Get PR number from commit
+            PR_NUMBER=$(gh pr list --search "$commit" --state merged --json number --jq '.[0].number' 2>/dev/null || echo "")
+
+            if [ -n "$PR_NUMBER" ] && [ -z "${seen_prs[$PR_NUMBER]}" ]; then
+              seen_prs[$PR_NUMBER]=1
+
+              # Get PR details
+              PR_INFO=$(gh pr view $PR_NUMBER --json title,author,url,mergedAt 2>/dev/null || echo "")
+
+              if [ -n "$PR_INFO" ]; then
+                TITLE=$(echo "$PR_INFO" | jq -r '.title')
+                AUTHOR=$(echo "$PR_INFO" | jq -r '.author.login')
+                URL=$(echo "$PR_INFO" | jq -r '.url')
+
+                echo "- [#${PR_NUMBER}](${URL}) ${TITLE} by @${AUTHOR}" >> pr_list.md
+              fi
+            fi
+          done
+
+          # If no PRs found, show commit history instead
+          if [ ! -s pr_list.md ] || [ $(wc -l < pr_list.md) -le 2 ]; then
+            echo "## Changes" > pr_list.md
+            echo "" >> pr_list.md
+            git log ${{ steps.previous_tag.outputs.PREVIOUS_TAG }}..${{ needs.extract-version.outputs.version }} \
+              --pretty=format:"- %s (%h) by %an" >> pr_list.md
+          fi
+
+          cat pr_list.md
+
+      - name: Get commit statistics
+        id: stats
+        run: |
+          # Count commits
+          COMMIT_COUNT=$(git rev-list --count ${{ steps.previous_tag.outputs.PREVIOUS_TAG }}..${{ needs.extract-version.outputs.version }})
+          echo "COMMIT_COUNT=${COMMIT_COUNT}" >> $GITHUB_OUTPUT
+
+          # Get unique contributors
+          CONTRIBUTORS=$(git log ${{ steps.previous_tag.outputs.PREVIOUS_TAG }}..${{ needs.extract-version.outputs.version }} --format='%an' | sort -u | wc -l)
+          echo "CONTRIBUTORS=${CONTRIBUTORS}" >> $GITHUB_OUTPUT
+
+          # Get files changed
+          FILES_CHANGED=$(git diff --name-only ${{ steps.previous_tag.outputs.PREVIOUS_TAG }}..${{ needs.extract-version.outputs.version }} | wc -l)
+          echo "FILES_CHANGED=${FILES_CHANGED}" >> $GITHUB_OUTPUT
+
+      - name: Generate contributor list
+        id: contributors
+        run: |
+          echo "## Contributors" > contributors.md
+          echo "" >> contributors.md
+          git log ${{ steps.previous_tag.outputs.PREVIOUS_TAG }}..${{ needs.extract-version.outputs.version }} \
+            --format='%an' | sort -u | while read -r author; do
+            echo "- ${author}" >> contributors.md
+          done
+          cat contributors.md
+
+      - name: Create Release Notes
+        id: release_notes
+        run: |
+          cat > release-notes.md << 'EOF'
+          # Monad BFT ${{ needs.extract-version.outputs.version }}
+
+          This release includes **${{ steps.stats.outputs.COMMIT_COUNT }} commits** from **${{ steps.stats.outputs.CONTRIBUTORS }} contributors**, changing **${{ steps.stats.outputs.FILES_CHANGED }} files**.
+
+          EOF
+
+          # Add PR list
+          cat pr_list.md >> release-notes.md
+          echo "" >> release-notes.md
+
+          # Add contributors
+          cat contributors.md >> release-notes.md
+
+          cat release-notes.md
+
+      - name: Create Draft Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Monad BFT ${{ needs.extract-version.outputs.version }}
+          tag_name: ${{ needs.extract-version.outputs.version }}
+          body_path: release-notes.md
+          draft: true
+          prerelease: ${{ contains(needs.extract-version.outputs.version, '-') }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
