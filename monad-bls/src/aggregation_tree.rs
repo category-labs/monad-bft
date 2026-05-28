@@ -60,10 +60,13 @@ fn verify_aggregate_sig<PT: PubKey, SD: SigningDomain>(
         }
     }
 
-    // infinity signature is invalid unless validator set is empty (signers
-    // bitmap length is zero) and signers are empty
-    if signers.is_empty() && signers_map.0.is_empty() && *sig == BlsAggregateSignature::infinity() {
-        return Ok(signers);
+    if *sig == BlsAggregateSignature::infinity() {
+        // infinity signature is invalid unless validator set is empty
+        // (signers bitmap length is zero) and signers are empty
+        if signers.is_empty() && signers_map.0.is_empty() {
+            return Ok(signers);
+        }
+        return Err(SignatureCollectionError::InvalidSignaturesVerify);
     }
 
     if sig.fast_verify::<SD>(msg, &aggpk).is_err() {
@@ -91,6 +94,10 @@ impl<PT: PubKey> AggregationTreeNode<PT> {
 
     fn num_signatures(&self) -> usize {
         self.signers.0.count_ones()
+    }
+
+    fn is_non_empty_infinity(&self) -> bool {
+        self.sig == BlsAggregateSignature::infinity() && self.num_signatures() > 0
     }
 
     fn verify<SD: SigningDomain>(
@@ -171,22 +178,17 @@ impl<PT: PubKey> AggregationTree<PT> {
         while !unverified_certs.is_empty() {
             let cert_idx = unverified_certs.pop_front().unwrap();
             let cert = &self.nodes[cert_idx];
+
+            if cert.is_non_empty_infinity() {
+                self.collect_leaf_signatures(cert_idx, validator_mapping, &mut invalid_sig);
+                continue;
+            }
+
             match cert.verify::<SD>(validator_mapping, msg) {
                 Ok(_) => {}
                 Err(_) => {
-                    if 2 * cert_idx + 1 >= self.nodes.len() {
-                        let signer_idx = cert
-                            .signers
-                            .0
-                            .first_one()
-                            .expect("signer should be one-hot encoded");
-                        let (node_id, _) = validator_mapping
-                            .map
-                            .iter()
-                            .nth(signer_idx)
-                            .expect("signer idx in range");
-
-                        invalid_sig.push((*node_id, cert.sig.as_signature()));
+                    if self.is_leaf(cert_idx) {
+                        invalid_sig.push(self.leaf_signature(cert_idx, validator_mapping));
                     } else {
                         unverified_certs.push_back(cert_idx * 2 + 1);
                         unverified_certs.push_back(cert_idx * 2 + 2);
@@ -200,6 +202,48 @@ impl<PT: PubKey> AggregationTree<PT> {
         } else {
             Err(invalid_sig)
         }
+    }
+
+    fn is_leaf(&self, cert_idx: usize) -> bool {
+        2 * cert_idx + 1 >= self.nodes.len()
+    }
+
+    fn collect_leaf_signatures(
+        &self,
+        cert_idx: usize,
+        validator_mapping: &ValidatorMapping<PT, BlsKeyPair>,
+        invalid_sig: &mut Vec<(NodeId<PT>, BlsSignature)>,
+    ) {
+        if self.is_leaf(cert_idx) {
+            invalid_sig.push(self.leaf_signature(cert_idx, validator_mapping));
+        } else {
+            self.collect_leaf_signatures(cert_idx * 2 + 1, validator_mapping, invalid_sig);
+            self.collect_leaf_signatures(cert_idx * 2 + 2, validator_mapping, invalid_sig);
+        }
+    }
+
+    fn leaf_signature(
+        &self,
+        cert_idx: usize,
+        validator_mapping: &ValidatorMapping<PT, BlsKeyPair>,
+    ) -> (NodeId<PT>, BlsSignature) {
+        debug_assert!(self.is_leaf(cert_idx));
+
+        let cert = &self.nodes[cert_idx];
+        let signer_idx = cert
+            .signers
+            .0
+            .first_one()
+            .expect("signer should be one-hot encoded");
+        debug_assert_eq!(cert.num_signatures(), 1);
+
+        let (node_id, _) = validator_mapping
+            .map
+            .iter()
+            .nth(signer_idx)
+            .expect("signer idx in range");
+
+        (*node_id, cert.sig.as_signature())
     }
 }
 
