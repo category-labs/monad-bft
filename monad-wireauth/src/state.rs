@@ -619,6 +619,7 @@ impl State {
         self.total_sessions
     }
 
+    #[cfg(test)]
     pub fn ip_session_count(&self, ip: &IpAddr) -> usize {
         self.ip_session_counts.get(ip).copied().unwrap_or(0)
     }
