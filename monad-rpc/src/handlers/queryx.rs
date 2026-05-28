@@ -19,12 +19,10 @@ use alloy_consensus::Transaction;
 use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, B256, U256};
 use monad_chain_data::{
-    Block, BlockRef, BlockSpan, CallKind, LogEntry, LogFilter, LogsRelations, MonadChainDataError,
+    Block, BlockRef, BlockSpan, LogEntry, LogFilter, LogsRelations, MonadChainDataError,
     QueryBlocksRequest, QueryBlocksResponse, QueryEnvelope, QueryLogsRequest, QueryLogsResponse,
-    QueryOrder, QueryTracesRequest, QueryTracesResponse, QueryTransactionsRequest,
-    QueryTransactionsResponse, QueryTransfersRequest, QueryTransfersResponse, TraceEntry,
-    TraceFilter, TracesRelations, TransferEntry, TransferFilter, TransfersRelations, TxEntry,
-    TxFilter, TxsRelations,
+    QueryOrder, QueryTransactionsRequest, QueryTransactionsResponse, TxEntry, TxFilter,
+    TxsRelations,
 };
 use serde::Deserialize;
 use serde_json::{value::RawValue, Map, Value};
@@ -84,34 +82,6 @@ const LOG_FIELDS: &[&str] = &[
     "topics",
     "data",
 ];
-const TRACE_FIELDS: &[&str] = &[
-    "blockNumber",
-    "blockHash",
-    "transactionIndex",
-    "traceAddress",
-    "type",
-    "from",
-    "to",
-    "value",
-    "gas",
-    "gasUsed",
-    "input",
-    "output",
-    "status",
-    "depth",
-    "txStatus",
-];
-const TRANSFER_FIELDS: &[&str] = &[
-    "blockNumber",
-    "blockHash",
-    "transactionIndex",
-    "traceAddress",
-    "type",
-    "from",
-    "to",
-    "value",
-];
-
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RawQueryRequest {
@@ -230,72 +200,6 @@ pub async fn eth_queryLogs(
         .await
         .map_err(chain_data_error_to_jsonrpc)?;
     serialize_queryx_result(project_logs_response(response, &fields)?, app_state)
-}
-
-#[allow(non_snake_case)]
-pub async fn eth_queryTraces(
-    _: TimingRequestId,
-    app_state: &MonadRpcResources,
-    params: RequestParams<'_>,
-) -> Result<Box<RawValue>, JsonRpcError> {
-    let service = app_state.chain_data.as_ref().method_not_supported()?;
-    let raw = decode_query_params(params)?;
-    let fields = fields_plan(
-        raw.fields.as_ref(),
-        "traces",
-        TRACE_FIELDS,
-        &[
-            ("traces", TRACE_FIELDS),
-            ("transactions", TX_FIELDS),
-            ("blocks", BLOCK_FIELDS),
-        ],
-    )?;
-    let request = QueryTracesRequest {
-        envelope: build_envelope(&raw, service).await?,
-        filter: parse_trace_filter(raw.filter.as_ref())?,
-        relations: TracesRelations {
-            blocks: fields.blocks.is_some(),
-            transactions: fields.transactions.is_some(),
-        },
-    };
-    let response = service
-        .query_traces(request)
-        .await
-        .map_err(chain_data_error_to_jsonrpc)?;
-    serialize_queryx_result(project_traces_response(response, &fields)?, app_state)
-}
-
-#[allow(non_snake_case)]
-pub async fn eth_queryTransfers(
-    _: TimingRequestId,
-    app_state: &MonadRpcResources,
-    params: RequestParams<'_>,
-) -> Result<Box<RawValue>, JsonRpcError> {
-    let service = app_state.chain_data.as_ref().method_not_supported()?;
-    let raw = decode_query_params(params)?;
-    let fields = fields_plan(
-        raw.fields.as_ref(),
-        "transfers",
-        TRANSFER_FIELDS,
-        &[
-            ("transfers", TRANSFER_FIELDS),
-            ("transactions", TX_FIELDS),
-            ("blocks", BLOCK_FIELDS),
-        ],
-    )?;
-    let request = QueryTransfersRequest {
-        envelope: build_envelope(&raw, service).await?,
-        filter: parse_transfer_filter(raw.filter.as_ref())?,
-        relations: TransfersRelations {
-            blocks: fields.blocks.is_some(),
-            transactions: fields.transactions.is_some(),
-        },
-    };
-    let response = service
-        .query_transfers(request)
-        .await
-        .map_err(chain_data_error_to_jsonrpc)?;
-    serialize_queryx_result(project_transfers_response(response, &fields)?, app_state)
 }
 
 fn decode_query_params(params: RequestParams<'_>) -> Result<RawQueryRequest, JsonRpcError> {
@@ -466,47 +370,8 @@ fn parse_log_filter(filter: Option<&Value>) -> Result<LogFilter, JsonRpcError> {
     Ok(out)
 }
 
-fn parse_trace_filter(filter: Option<&Value>) -> Result<TraceFilter, JsonRpcError> {
-    let Some(filter) = filter else {
-        return Ok(TraceFilter::default());
-    };
-    let object = as_object(filter)?;
-    let mut out = TraceFilter::default();
-    for (key, value) in object {
-        match key.as_str() {
-            "from" => out.from = Some(parse_address_set(value)?),
-            "to" => out.to = Some(parse_address_set(value)?),
-            "selector" => out.selector = Some(parse_selector_set(value)?),
-            "isTopLevel" => out.is_top_level = Some(as_bool(value)?),
-            _ => return Err(JsonRpcError::invalid_params()),
-        }
-    }
-    Ok(out)
-}
-
-fn parse_transfer_filter(filter: Option<&Value>) -> Result<TransferFilter, JsonRpcError> {
-    let Some(filter) = filter else {
-        return Ok(TransferFilter::default());
-    };
-    let object = as_object(filter)?;
-    let mut out = TransferFilter::default();
-    for (key, value) in object {
-        match key.as_str() {
-            "from" => out.from = Some(parse_address_set(value)?),
-            "to" => out.to = Some(parse_address_set(value)?),
-            "isTopLevel" => out.is_top_level = Some(as_bool(value)?),
-            _ => return Err(JsonRpcError::invalid_params()),
-        }
-    }
-    Ok(out)
-}
-
 fn as_object(value: &Value) -> Result<&Map<String, Value>, JsonRpcError> {
     value.as_object().ok_or_else(JsonRpcError::invalid_params)
-}
-
-fn as_bool(value: &Value) -> Result<bool, JsonRpcError> {
-    value.as_bool().ok_or_else(JsonRpcError::invalid_params)
 }
 
 fn parse_address_set(value: &Value) -> Result<HashSet<Address>, JsonRpcError> {
@@ -625,62 +490,6 @@ fn project_logs_response(
                 .logs
                 .iter()
                 .map(|log| project_log(log, &fields.primary))
-                .collect(),
-        ),
-    );
-    insert_blocks_relation(
-        &mut data,
-        response.blocks.as_deref(),
-        fields.blocks.as_deref(),
-    );
-    insert_txs_relation(
-        &mut data,
-        response.transactions.as_deref(),
-        fields.transactions.as_deref(),
-    )?;
-    Ok(response_value(data, response.span))
-}
-
-fn project_traces_response(
-    response: QueryTracesResponse,
-    fields: &QueryFieldPlan,
-) -> Result<Value, JsonRpcError> {
-    let mut data = Map::new();
-    data.insert(
-        "traces".to_string(),
-        Value::Array(
-            response
-                .traces
-                .iter()
-                .map(|trace| project_trace(trace, &fields.primary))
-                .collect(),
-        ),
-    );
-    insert_blocks_relation(
-        &mut data,
-        response.blocks.as_deref(),
-        fields.blocks.as_deref(),
-    );
-    insert_txs_relation(
-        &mut data,
-        response.transactions.as_deref(),
-        fields.transactions.as_deref(),
-    )?;
-    Ok(response_value(data, response.span))
-}
-
-fn project_transfers_response(
-    response: QueryTransfersResponse,
-    fields: &QueryFieldPlan,
-) -> Result<Value, JsonRpcError> {
-    let mut data = Map::new();
-    data.insert(
-        "transfers".to_string(),
-        Value::Array(
-            response
-                .transfers
-                .iter()
-                .map(|transfer| project_transfer(transfer, &fields.primary))
                 .collect(),
         ),
     );
@@ -833,51 +642,6 @@ fn project_log(log: &LogEntry, fields: &[&str]) -> Value {
     Value::Object(out)
 }
 
-fn project_trace(trace: &TraceEntry, fields: &[&str]) -> Value {
-    let mut out = Map::new();
-    for field in fields {
-        let value = match *field {
-            "blockNumber" => q_u64(trace.block_number),
-            "blockHash" => fixed(trace.block_hash),
-            "transactionIndex" => q_u64(u64::from(trace.tx_index)),
-            "traceAddress" => number_array(&trace.trace_address),
-            "type" => Value::String(call_kind(trace.typ).to_string()),
-            "from" => fixed(trace.from),
-            "to" => trace.to.map(fixed).unwrap_or(Value::Null),
-            "value" => q_u256(trace.value),
-            "gas" => q_u64(trace.gas),
-            "gasUsed" => q_u64(trace.gas_used),
-            "input" => bytes(&trace.input),
-            "output" => bytes(&trace.output),
-            "status" => q_u64(u64::from(trace.status)),
-            "depth" => q_u64(u64::from(trace.depth)),
-            "txStatus" => Value::Bool(trace.tx_status),
-            _ => continue,
-        };
-        out.insert((*field).to_string(), value);
-    }
-    Value::Object(out)
-}
-
-fn project_transfer(transfer: &TransferEntry, fields: &[&str]) -> Value {
-    let mut out = Map::new();
-    for field in fields {
-        let value = match *field {
-            "blockNumber" => q_u64(transfer.block_number),
-            "blockHash" => fixed(transfer.block_hash),
-            "transactionIndex" => q_u64(u64::from(transfer.tx_index)),
-            "traceAddress" => number_array(&transfer.trace_address),
-            "type" => Value::String(call_kind(transfer.typ).to_string()),
-            "from" => fixed(transfer.from),
-            "to" => fixed(transfer.to),
-            "value" => q_u256(transfer.value),
-            _ => continue,
-        };
-        out.insert((*field).to_string(), value);
-    }
-    Value::Object(out)
-}
-
 fn object<const N: usize>(fields: [(&str, Value); N]) -> Value {
     Value::Object(
         fields
@@ -909,22 +673,6 @@ fn fixed<T: std::fmt::LowerHex>(value: T) -> Value {
 
 fn bytes(value: &[u8]) -> Value {
     Value::String(ethhex::encode_bytes(value))
-}
-
-fn number_array(values: &[u32]) -> Value {
-    Value::Array(values.iter().copied().map(u64::from).map(q_u64).collect())
-}
-
-fn call_kind(kind: CallKind) -> &'static str {
-    match kind {
-        CallKind::Call => "call",
-        CallKind::DelegateCall => "delegatecall",
-        CallKind::CallCode => "callcode",
-        CallKind::Create => "create",
-        CallKind::Create2 => "create2",
-        CallKind::SelfDestruct => "selfdestruct",
-        CallKind::StaticCall => "staticcall",
-    }
 }
 
 fn serialize_queryx_result(
@@ -1092,6 +840,42 @@ mod tests {
         .unwrap_err();
 
         assert_eq!(err, JsonRpcError::method_not_found());
+    }
+
+    #[tokio::test]
+    async fn queryx_only_rejects_unindexed_queryx_families() {
+        let app_state = MonadRpcResources {
+            txpool_bridge_client: None,
+            queryx_only: true,
+            eth_call_handler: None,
+            chain_id: 1337,
+            chain_state: None,
+            chain_data: None,
+            batch_request_limit: 5,
+            max_response_size: 25_000_000,
+            allow_unprotected_txs: false,
+            logs_max_block_range: 1000,
+            eth_send_raw_transaction_sync_default_timeout_ms: 2_000,
+            eth_send_raw_transaction_sync_max_timeout_ms: 10_000,
+            dry_run_get_logs_index: false,
+            use_eth_get_logs_index: false,
+            max_finalized_block_cache_len: 200,
+            metrics: None,
+            rpc_comparator: None,
+        };
+
+        for method in ["eth_queryTraces", "eth_queryTransfers"] {
+            let err = crate::handlers::rpc_select(
+                &app_state,
+                method,
+                RequestParams::default(),
+                TimingRequestId::random(),
+            )
+            .await
+            .unwrap_err();
+
+            assert_eq!(err, JsonRpcError::method_not_found());
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]

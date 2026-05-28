@@ -50,9 +50,7 @@ use self::{
         },
     },
     meta::{monad_net_version, monad_web3_client_version},
-    queryx::{
-        eth_queryBlocks, eth_queryLogs, eth_queryTraces, eth_queryTransactions, eth_queryTransfers,
-    },
+    queryx::{eth_queryBlocks, eth_queryLogs, eth_queryTransactions},
     resources::MonadRpcResources,
     txpool::{monad_txpool_statusByAddress, monad_txpool_statusByHash},
 };
@@ -832,8 +830,6 @@ macro_rules! enabled_methods {
                     EnabledMethod::eth_queryBlocks
                         | EnabledMethod::eth_queryTransactions
                         | EnabledMethod::eth_queryLogs
-                        | EnabledMethod::eth_queryTraces
-                        | EnabledMethod::eth_queryTransfers
                 )
             }
 
@@ -903,9 +899,7 @@ enabled_methods!(
     eth_fillTransaction,
     eth_queryBlocks,
     eth_queryTransactions,
-    eth_queryLogs,
-    eth_queryTraces,
-    eth_queryTransfers
+    eth_queryLogs
 );
 
 #[tracing::instrument(level = "debug", skip_all)]
