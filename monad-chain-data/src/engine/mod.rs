@@ -13,15 +13,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-mod indexed_query;
-mod ingest;
-mod materialize;
-mod scan_query;
-mod types;
-
-pub(crate) use indexed_query::execute_indexed_log_query;
-pub use ingest::LogIngestPlan;
-pub(crate) use materialize::LogMaterializer;
-pub use materialize::{LogFilter, LogsRelations, QueryLogsRequest, QueryLogsResponse};
-pub(crate) use scan_query::execute_block_scan_query;
-pub use types::{LogBlockHeader, LogEntry, RawLogEntry};
+pub mod bitmap;
+pub mod clause;
+pub mod family;
+pub(crate) mod ingest;
+pub mod primary_dir;
+pub(crate) mod query;
+pub mod tables;

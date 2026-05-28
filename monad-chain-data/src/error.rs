@@ -15,6 +15,8 @@
 
 use thiserror::Error;
 
+use crate::primitives::limits::LimitExceededKind;
+
 pub type Result<T> = std::result::Result<T, MonadChainDataError>;
 
 #[derive(Debug, Error)]
@@ -29,4 +31,15 @@ pub enum MonadChainDataError {
     InvalidRequest(&'static str),
     #[error("missing data: {0}")]
     MissingData(&'static str),
+    #[error("limit exceeded ({kind}): max_limit={max_limit}, max_block_range={max_block_range}")]
+    LimitExceeded {
+        kind: LimitExceededKind,
+        max_limit: usize,
+        max_block_range: u64,
+    },
+    /// The publication head was advanced by another writer between this
+    /// writer's read and CAS. The caller is no longer the active writer
+    /// and should step down rather than retry.
+    #[error("fenced out by concurrent writer (current head: {current_head:?})")]
+    FencedOut { current_head: Option<u64> },
 }

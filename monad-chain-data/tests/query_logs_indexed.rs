@@ -1,0 +1,576 @@
+// Copyright (C) 2025 Category Labs, Inc.
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+use std::collections::HashSet;
+
+use monad_chain_data::{
+    engine::{bitmap::STREAM_PAGE_LOCAL_ID_SPAN, primary_dir::DIRECTORY_BUCKET_SIZE},
+    Address, Bytes, FinalizedBlock, InMemoryBlobStore, InMemoryMetaStore, Log, LogData, LogFilter,
+    LogsRelations, MonadChainDataService, QueryEnvelope, QueryLimits, QueryLogsRequest, QueryOrder,
+    Topic, B256,
+};
+
+mod common;
+
+use common::{chain_header, test_header};
+
+#[tokio::test(flavor = "current_thread")]
+async fn indexed_query_logs_respects_and_or_filter_semantics() {
+    let service = MonadChainDataService::new(
+        InMemoryMetaStore::default(),
+        InMemoryBlobStore::default(),
+        QueryLimits::UNLIMITED,
+    );
+
+    service
+        .ingest_block(FinalizedBlock {
+            header: test_header(1, B256::ZERO),
+            logs_by_tx: vec![vec![
+                log(Address::repeat_byte(1), vec![B256::repeat_byte(9)]),
+                log(
+                    Address::repeat_byte(2),
+                    vec![B256::repeat_byte(9), B256::repeat_byte(10)],
+                ),
+                log(
+                    Address::repeat_byte(3),
+                    vec![B256::repeat_byte(11), B256::repeat_byte(10)],
+                ),
+            ]],
+            txs: Vec::new(),
+        })
+        .await
+        .expect("ingest block");
+
+    let page = service
+        .query_logs(QueryLogsRequest {
+            envelope: QueryEnvelope {
+                from_block: Some(1),
+                to_block: Some(1),
+                order: QueryOrder::Ascending,
+                limit: 10,
+            },
+            filter: LogFilter {
+                address: Some(HashSet::from([
+                    Address::repeat_byte(2),
+                    Address::repeat_byte(3),
+                ])),
+                topics: [
+                    Some(HashSet::from([B256::repeat_byte(9)])),
+                    Some(HashSet::from([B256::repeat_byte(10)])),
+                    None,
+                    None,
+                ],
+            },
+            relations: LogsRelations::default(),
+        })
+        .await
+        .expect("query");
+
+    assert_eq!(page.logs.len(), 1);
+    assert_eq!(page.logs[0].address, Address::repeat_byte(2));
+    assert_eq!(page.span.cursor_block.number, 1);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn indexed_query_logs_descending_returns_newest_first() {
+    let service = MonadChainDataService::new(
+        InMemoryMetaStore::default(),
+        InMemoryBlobStore::default(),
+        QueryLimits::UNLIMITED,
+    );
+
+    let h1 = test_header(1, B256::ZERO);
+    let h2 = chain_header(2, &h1);
+
+    service
+        .ingest_block(FinalizedBlock {
+            header: h1,
+            logs_by_tx: vec![vec![log(
+                Address::repeat_byte(7),
+                vec![B256::repeat_byte(9)],
+            )]],
+            txs: Vec::new(),
+        })
+        .await
+        .expect("ingest block 1");
+
+    service
+        .ingest_block(FinalizedBlock {
+            header: h2,
+            logs_by_tx: vec![vec![
+                log(Address::repeat_byte(7), vec![B256::repeat_byte(9)]),
+                log(Address::repeat_byte(7), vec![B256::repeat_byte(9)]),
+            ]],
+            txs: Vec::new(),
+        })
+        .await
+        .expect("ingest block 2");
+
+    let page = service
+        .query_logs(QueryLogsRequest {
+            envelope: QueryEnvelope {
+                // Spec semantics: in descending order from_block is the upper
+                // bound and to_block is the lower bound.
+                from_block: Some(2),
+                to_block: Some(1),
+                order: QueryOrder::Descending,
+                limit: 1,
+            },
+            filter: LogFilter {
+                address: Some(HashSet::from([Address::repeat_byte(7)])),
+                topics: [
+                    Some(HashSet::from([B256::repeat_byte(9)])),
+                    None,
+                    None,
+                    None,
+                ],
+            },
+            relations: LogsRelations::default(),
+        })
+        .await
+        .expect("query");
+
+    assert_eq!(page.logs.len(), 2);
+    assert_eq!(page.logs[0].block_number, 2);
+    assert_eq!(page.logs[0].log_index, 1);
+    assert_eq!(page.logs[1].block_number, 2);
+    assert_eq!(page.logs[1].log_index, 0);
+    assert_eq!(page.span.cursor_block.number, 2);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn indexed_query_logs_paginates_at_block_boundaries() {
+    let service = MonadChainDataService::new(
+        InMemoryMetaStore::default(),
+        InMemoryBlobStore::default(),
+        QueryLimits::UNLIMITED,
+    );
+
+    let h1 = test_header(1, B256::ZERO);
+    let h2 = chain_header(2, &h1);
+
+    service
+        .ingest_block(FinalizedBlock {
+            header: h1,
+            logs_by_tx: vec![vec![
+                log(Address::repeat_byte(7), vec![B256::repeat_byte(9)]),
+                log(Address::repeat_byte(7), vec![B256::repeat_byte(9)]),
+            ]],
+            txs: Vec::new(),
+        })
+        .await
+        .expect("ingest block 1");
+
+    service
+        .ingest_block(FinalizedBlock {
+            header: h2,
+            logs_by_tx: vec![vec![log(
+                Address::repeat_byte(7),
+                vec![B256::repeat_byte(9)],
+            )]],
+            txs: Vec::new(),
+        })
+        .await
+        .expect("ingest block 2");
+
+    let first_page = service
+        .query_logs(QueryLogsRequest {
+            envelope: QueryEnvelope {
+                from_block: Some(1),
+                to_block: Some(2),
+                order: QueryOrder::Ascending,
+                limit: 1,
+            },
+            filter: LogFilter {
+                address: Some(HashSet::from([Address::repeat_byte(7)])),
+                topics: [
+                    Some(HashSet::from([B256::repeat_byte(9)])),
+                    None,
+                    None,
+                    None,
+                ],
+            },
+            relations: LogsRelations::default(),
+        })
+        .await
+        .expect("first page");
+
+    assert_eq!(first_page.logs.len(), 2);
+    assert_eq!(first_page.span.cursor_block.number, 1);
+
+    let second_page = service
+        .query_logs(QueryLogsRequest {
+            envelope: QueryEnvelope {
+                from_block: Some(first_page.span.cursor_block.number + 1),
+                to_block: Some(2),
+                order: QueryOrder::Ascending,
+                limit: 1,
+            },
+            filter: LogFilter {
+                address: Some(HashSet::from([Address::repeat_byte(7)])),
+                topics: [
+                    Some(HashSet::from([B256::repeat_byte(9)])),
+                    None,
+                    None,
+                    None,
+                ],
+            },
+            relations: LogsRelations::default(),
+        })
+        .await
+        .expect("second page");
+
+    assert_eq!(second_page.logs.len(), 1);
+    assert_eq!(second_page.span.cursor_block.number, 2);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn indexed_query_logs_scans_across_bucket_and_page_boundaries() {
+    let service = MonadChainDataService::new(
+        InMemoryMetaStore::default(),
+        InMemoryBlobStore::default(),
+        QueryLimits::UNLIMITED,
+    );
+
+    let h1 = test_header(1, B256::ZERO);
+    let h2 = chain_header(2, &h1);
+
+    service
+        .ingest_block(FinalizedBlock {
+            header: h1,
+            logs_by_tx: vec![repeated_logs(
+                Address::repeat_byte(1),
+                vec![B256::repeat_byte(3)],
+                usize::try_from(STREAM_PAGE_LOCAL_ID_SPAN - 2).expect("page span fits usize"),
+            )],
+            txs: Vec::new(),
+        })
+        .await
+        .expect("ingest block 1");
+
+    service
+        .ingest_block(FinalizedBlock {
+            header: h2,
+            logs_by_tx: vec![repeated_logs(
+                Address::repeat_byte(7),
+                vec![B256::repeat_byte(9)],
+                usize::try_from(DIRECTORY_BUCKET_SIZE + 4)
+                    .expect("directory bucket size fits usize"),
+            )],
+            txs: Vec::new(),
+        })
+        .await
+        .expect("ingest block 2");
+
+    let page = service
+        .query_logs(QueryLogsRequest {
+            envelope: QueryEnvelope {
+                from_block: Some(1),
+                to_block: Some(2),
+                order: QueryOrder::Ascending,
+                limit: 10,
+            },
+            filter: LogFilter {
+                address: Some(HashSet::from([Address::repeat_byte(7)])),
+                topics: [
+                    Some(HashSet::from([B256::repeat_byte(9)])),
+                    None,
+                    None,
+                    None,
+                ],
+            },
+            relations: LogsRelations::default(),
+        })
+        .await
+        .expect("query");
+
+    assert_eq!(
+        page.logs.len(),
+        usize::try_from(DIRECTORY_BUCKET_SIZE + 4).expect("directory bucket size fits usize")
+    );
+    assert!(page.logs.iter().all(|log| log.block_number == 2));
+    assert_eq!(page.span.cursor_block.number, 2);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn indexed_query_completes_current_block_when_limit_reached_mid_block() {
+    let service = MonadChainDataService::new(
+        InMemoryMetaStore::default(),
+        InMemoryBlobStore::default(),
+        QueryLimits::UNLIMITED,
+    );
+
+    let h1 = test_header(1, B256::ZERO);
+    let h2 = chain_header(2, &h1);
+    let h3 = chain_header(3, &h2);
+
+    service
+        .ingest_block(FinalizedBlock {
+            header: h1,
+            logs_by_tx: vec![vec![log(
+                Address::repeat_byte(7),
+                vec![B256::repeat_byte(9)],
+            )]],
+            txs: Vec::new(),
+        })
+        .await
+        .expect("ingest block 1");
+
+    service
+        .ingest_block(FinalizedBlock {
+            header: h2,
+            logs_by_tx: vec![vec![
+                log(Address::repeat_byte(7), vec![B256::repeat_byte(9)]),
+                log(Address::repeat_byte(7), vec![B256::repeat_byte(9)]),
+                log(Address::repeat_byte(7), vec![B256::repeat_byte(9)]),
+                log(Address::repeat_byte(7), vec![B256::repeat_byte(9)]),
+                log(Address::repeat_byte(7), vec![B256::repeat_byte(9)]),
+            ]],
+            txs: Vec::new(),
+        })
+        .await
+        .expect("ingest block 2");
+
+    service
+        .ingest_block(FinalizedBlock {
+            header: h3,
+            logs_by_tx: vec![vec![log(
+                Address::repeat_byte(7),
+                vec![B256::repeat_byte(9)],
+            )]],
+            txs: Vec::new(),
+        })
+        .await
+        .expect("ingest block 3");
+
+    let page = service
+        .query_logs(QueryLogsRequest {
+            envelope: QueryEnvelope {
+                from_block: Some(1),
+                to_block: Some(3),
+                order: QueryOrder::Ascending,
+                limit: 2,
+            },
+            filter: LogFilter {
+                address: Some(HashSet::from([Address::repeat_byte(7)])),
+                topics: [
+                    Some(HashSet::from([B256::repeat_byte(9)])),
+                    None,
+                    None,
+                    None,
+                ],
+            },
+            relations: LogsRelations::default(),
+        })
+        .await
+        .expect("query");
+
+    assert_eq!(page.logs.len(), 6);
+    assert!(page.logs.iter().take(1).all(|l| l.block_number == 1));
+    assert!(page.logs.iter().skip(1).all(|l| l.block_number == 2));
+    assert_eq!(page.span.cursor_block.number, 2);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn indexed_query_completes_current_block_when_limit_reached_mid_block_descending() {
+    let service = MonadChainDataService::new(
+        InMemoryMetaStore::default(),
+        InMemoryBlobStore::default(),
+        QueryLimits::UNLIMITED,
+    );
+
+    let h1 = test_header(1, B256::ZERO);
+    let h2 = chain_header(2, &h1);
+    let h3 = chain_header(3, &h2);
+
+    service
+        .ingest_block(FinalizedBlock {
+            header: h1,
+            logs_by_tx: vec![vec![log(
+                Address::repeat_byte(7),
+                vec![B256::repeat_byte(9)],
+            )]],
+            txs: Vec::new(),
+        })
+        .await
+        .expect("ingest block 1");
+
+    service
+        .ingest_block(FinalizedBlock {
+            header: h2,
+            logs_by_tx: vec![vec![
+                log(Address::repeat_byte(7), vec![B256::repeat_byte(9)]),
+                log(Address::repeat_byte(7), vec![B256::repeat_byte(9)]),
+                log(Address::repeat_byte(7), vec![B256::repeat_byte(9)]),
+                log(Address::repeat_byte(7), vec![B256::repeat_byte(9)]),
+                log(Address::repeat_byte(7), vec![B256::repeat_byte(9)]),
+            ]],
+            txs: Vec::new(),
+        })
+        .await
+        .expect("ingest block 2");
+
+    service
+        .ingest_block(FinalizedBlock {
+            header: h3,
+            logs_by_tx: vec![vec![log(
+                Address::repeat_byte(7),
+                vec![B256::repeat_byte(9)],
+            )]],
+            txs: Vec::new(),
+        })
+        .await
+        .expect("ingest block 3");
+
+    let page = service
+        .query_logs(QueryLogsRequest {
+            envelope: QueryEnvelope {
+                from_block: Some(3),
+                to_block: Some(1),
+                order: QueryOrder::Descending,
+                limit: 2,
+            },
+            filter: LogFilter {
+                address: Some(HashSet::from([Address::repeat_byte(7)])),
+                topics: [
+                    Some(HashSet::from([B256::repeat_byte(9)])),
+                    None,
+                    None,
+                    None,
+                ],
+            },
+            relations: LogsRelations::default(),
+        })
+        .await
+        .expect("query");
+
+    assert_eq!(page.logs.len(), 6);
+    assert!(page.logs.iter().take(1).all(|l| l.block_number == 3));
+    assert!(page.logs.iter().skip(1).all(|l| l.block_number == 2));
+    assert_eq!(page.span.cursor_block.number, 2);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn indexed_query_stops_at_block_when_limit_equals_block_match_count() {
+    let service = MonadChainDataService::new(
+        InMemoryMetaStore::default(),
+        InMemoryBlobStore::default(),
+        QueryLimits::UNLIMITED,
+    );
+
+    let h1 = test_header(1, B256::ZERO);
+    let h2 = chain_header(2, &h1);
+
+    service
+        .ingest_block(FinalizedBlock {
+            header: h1,
+            logs_by_tx: vec![vec![
+                log(Address::repeat_byte(7), vec![B256::repeat_byte(9)]),
+                log(Address::repeat_byte(7), vec![B256::repeat_byte(9)]),
+            ]],
+            txs: Vec::new(),
+        })
+        .await
+        .expect("ingest block 1");
+
+    service
+        .ingest_block(FinalizedBlock {
+            header: h2,
+            logs_by_tx: vec![vec![log(
+                Address::repeat_byte(7),
+                vec![B256::repeat_byte(9)],
+            )]],
+            txs: Vec::new(),
+        })
+        .await
+        .expect("ingest block 2");
+
+    let page = service
+        .query_logs(QueryLogsRequest {
+            envelope: QueryEnvelope {
+                from_block: Some(1),
+                to_block: Some(2),
+                order: QueryOrder::Ascending,
+                limit: 2,
+            },
+            filter: LogFilter {
+                address: Some(HashSet::from([Address::repeat_byte(7)])),
+                topics: [
+                    Some(HashSet::from([B256::repeat_byte(9)])),
+                    None,
+                    None,
+                    None,
+                ],
+            },
+            relations: LogsRelations::default(),
+        })
+        .await
+        .expect("query");
+
+    assert_eq!(page.logs.len(), 2);
+    assert!(page.logs.iter().all(|l| l.block_number == 1));
+    assert_eq!(page.span.cursor_block.number, 1);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn unindexed_query_logs_still_uses_block_scan_fallback() {
+    let service = MonadChainDataService::new(
+        InMemoryMetaStore::default(),
+        InMemoryBlobStore::default(),
+        QueryLimits::UNLIMITED,
+    );
+
+    service
+        .ingest_block(FinalizedBlock {
+            header: test_header(1, B256::ZERO),
+            logs_by_tx: vec![vec![
+                log(Address::repeat_byte(5), vec![B256::repeat_byte(8)]),
+                log(Address::repeat_byte(6), vec![B256::repeat_byte(9)]),
+            ]],
+            txs: Vec::new(),
+        })
+        .await
+        .expect("ingest");
+
+    let page = service
+        .query_logs(QueryLogsRequest {
+            envelope: QueryEnvelope {
+                from_block: Some(1),
+                to_block: Some(1),
+                order: QueryOrder::Ascending,
+                limit: 1,
+            },
+            filter: LogFilter::default(),
+            relations: LogsRelations::default(),
+        })
+        .await
+        .expect("query");
+
+    assert_eq!(page.logs.len(), 2);
+    assert_eq!(page.span.cursor_block.number, 1);
+}
+
+fn repeated_logs(address: Address, topics: Vec<Topic>, count: usize) -> Vec<Log> {
+    std::iter::repeat_with(|| log(address, topics.clone()))
+        .take(count)
+        .collect()
+}
+
+fn log(address: Address, topics: Vec<Topic>) -> Log {
+    Log {
+        address,
+        data: LogData::new_unchecked(topics, Bytes::from(vec![1, 2, 3])),
+    }
+}

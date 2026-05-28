@@ -15,11 +15,15 @@
 
 pub mod blob;
 pub mod common;
+#[cfg(feature = "fjall")]
+pub mod fjall;
 pub mod meta;
 
 pub use blob::{BlobStore, BlobTable, BlobTableId, InMemoryBlobStore};
 pub use common::Page;
+#[cfg(feature = "fjall")]
+pub use fjall::FjallStore;
 pub use meta::{
-    InMemoryMetaStore, KvTable, MetaStore, PutResult, Record, ScannableKvTable, ScannableTableId,
-    TableId,
+    CasOutcome, CasVersion, InMemoryMetaStore, KvTable, MetaStore, MetaStoreCas, ScannableKvTable,
+    ScannableTableId, TableId,
 };

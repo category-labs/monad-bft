@@ -22,6 +22,13 @@ pub struct BlockRef {
     pub parent_hash: Hash32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlockSpan {
+    pub from_block: BlockRef,
+    pub to_block: BlockRef,
+    pub cursor_block: BlockRef,
+}
+
 impl From<&BlockRecord> for BlockRef {
     fn from(value: &BlockRecord) -> Self {
         Self {

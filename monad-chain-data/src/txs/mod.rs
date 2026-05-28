@@ -13,15 +13,19 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+mod hash_index;
 mod indexed_query;
 mod ingest;
 mod materialize;
 mod scan_query;
 mod types;
 
-pub(crate) use indexed_query::execute_indexed_log_query;
-pub use ingest::LogIngestPlan;
-pub(crate) use materialize::LogMaterializer;
-pub use materialize::{LogFilter, LogsRelations, QueryLogsRequest, QueryLogsResponse};
-pub(crate) use scan_query::execute_block_scan_query;
-pub use types::{LogBlockHeader, LogEntry, RawLogEntry};
+pub use hash_index::TxHashIndexTable;
+pub(crate) use indexed_query::execute_indexed_tx_query;
+pub use ingest::TxIngestPlan;
+pub(crate) use materialize::{load_txs_by_positions, TxMaterializer};
+pub use materialize::{
+    QueryTransactionsRequest, QueryTransactionsResponse, TxFilter, TxsRelations,
+};
+pub(crate) use scan_query::execute_block_scan_tx_query;
+pub use types::{BlockTxHeader, StoredTxEnvelope, TxEntry};
