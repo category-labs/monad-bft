@@ -972,6 +972,40 @@ pub fn unix_ts_ms_now() -> u64 {
         .expect("unix epoch doesn't fit in u64")
 }
 
+// Expected proposer per round. Populated via
+// RouterCommand::ProposerScheduleResponse.
+pub struct ProposerMap<PT: PubKey> {
+    inner: BTreeMap<Round, NodeId<PT>>,
+}
+
+impl<PT: PubKey> Default for ProposerMap<PT> {
+    fn default() -> Self {
+        Self {
+            inner: BTreeMap::new(),
+        }
+    }
+}
+
+impl<PT: PubKey> ProposerMap<PT> {
+    pub fn get(&self, round: &Round) -> Option<&NodeId<PT>> {
+        self.inner.get(round)
+    }
+
+    #[expect(clippy::len_without_is_empty)]
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    pub fn extend(&mut self, entries: impl IntoIterator<Item = (Round, NodeId<PT>)>) {
+        self.inner.extend(entries);
+    }
+
+    // Drop entries with round strictly less than cutoff.
+    pub fn prune_past(&mut self, cutoff: Round) {
+        self.inner = self.inner.split_off(&cutoff);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
@@ -1556,5 +1590,21 @@ mod tests {
         .into_iter()
         .collect();
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn proposer_map_prune_past_drops_below_cutoff() {
+        let mut map = ProposerMap::<PT>::default();
+        map.extend([
+            (Round(10), nid(1)),
+            (Round(50), nid(2)),
+            (Round(99), nid(3)),
+        ]);
+
+        map.prune_past(Round(50));
+
+        assert!(map.get(&Round(10)).is_none());
+        assert!(map.get(&Round(50)).is_some());
+        assert!(map.get(&Round(99)).is_some());
     }
 }

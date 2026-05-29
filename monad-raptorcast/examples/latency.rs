@@ -264,6 +264,7 @@ where
             RaptorCastEvent::Message(event) => event,
             RaptorCastEvent::PeerManagerResponse(_) => unimplemented!(),
             RaptorCastEvent::SecondaryRaptorcastPeersUpdate(_, _) => unimplemented!(),
+            RaptorCastEvent::ProposerScheduleRequest(_) => unimplemented!(),
         }
     }
 }

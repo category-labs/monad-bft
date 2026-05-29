@@ -28,8 +28,8 @@ use crate::{
     SIGNATURE_SIZE,
 };
 
-const CACHE_MAX_FUTURE_ROUNDS: Round = Round(100);
-const CACHE_MAX_PAST_ROUNDS: Round = Round(100);
+pub(crate) const CACHE_MAX_FUTURE_ROUNDS: Round = Round(100);
+pub(crate) const CACHE_MAX_PAST_ROUNDS: Round = Round(100);
 
 // Stores information related to the current round.
 pub struct RoundInfoCache<PT: PubKey> {
@@ -116,14 +116,10 @@ impl<PT: PubKey> RoundInfoCache<PT> {
 
     fn check_round(&self, round: Round) -> Option<()> {
         if let Some(current) = self.current_round {
-            let max_round = current
-                .checked_add(CACHE_MAX_FUTURE_ROUNDS)
-                .unwrap_or(Round::MAX);
-            let min_round = current
-                .checked_sub(CACHE_MAX_PAST_ROUNDS)
-                .unwrap_or(Round::MIN);
+            let max_round = current.saturating_add(CACHE_MAX_FUTURE_ROUNDS);
+            let min_round = current.saturating_sub(CACHE_MAX_PAST_ROUNDS);
 
-            if round > max_round || round < min_round {
+            if round >= max_round || round < min_round {
                 return None;
             }
         }
@@ -402,12 +398,12 @@ mod tests {
         let mut cache = Cache::new();
         cache.update_current_round(Round(200));
 
-        // Exactly at future boundary: 200 + 100 = 300, accepted.
-        assert!(cache.get_or_insert_primary(Round(300)).is_some());
-        // One past: rejected.
-        assert!(cache.get_or_insert_primary(Round(301)).is_none());
+        // Future boundary is half-open: 200 + 100 = 300 is rejected.
+        assert!(cache.get_or_insert_primary(Round(300)).is_none());
+        // One inside: accepted.
+        assert!(cache.get_or_insert_primary(Round(299)).is_some());
 
-        // Exactly at past boundary: 200 - 100 = 100, accepted.
+        // Past boundary is inclusive: 200 - 100 = 100 is accepted.
         assert!(cache.get_or_insert_primary(Round(100)).is_some());
         // One past: rejected.
         assert!(cache.get_or_insert_primary(Round(99)).is_none());

@@ -54,7 +54,9 @@ use monad_peer_discovery::{
     NameRecord, PeerDiscoveryAlgo, PeerDiscoveryEvent,
 };
 use monad_peer_score::IdentityScore;
-use monad_types::{DropTimer, Epoch, ExecutionProtocol, NodeId, Round, RouterTarget, UdpPriority};
+use monad_types::{
+    DropTimer, Epoch, ExecutionProtocol, NodeId, Round, RoundSpan, RouterTarget, UdpPriority,
+};
 use monad_validator::{
     signature_collection::SignatureCollection,
     validator_set::{ValidatorSet, ValidatorSetType as _},
@@ -64,8 +66,8 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tracing::{debug, debug_span, error, info, trace, warn};
 use util::{
     AutoRebroadcast, BroadcastGroup, BroadcastGroupError, BuildTarget, Collector, FullNodeGroupMap,
-    PeerAddrLookup, PrimaryBroadcastGroup, Recipient, Redundancy, SecondaryBroadcastGroup,
-    SecondaryGroupAssignment, UdpMessage,
+    PeerAddrLookup, PrimaryBroadcastGroup, ProposerMap, Recipient, Redundancy,
+    SecondaryBroadcastGroup, SecondaryGroupAssignment, UdpMessage,
 };
 
 use crate::{
@@ -123,6 +125,7 @@ where
 
     epoch_validators: BTreeMap<Epoch, ValidatorSet<CertificateSignaturePubKey<ST>>>,
     full_node_groups: FullNodeGroupMap<CertificateSignaturePubKey<ST>>,
+    proposer_map: ProposerMap<CertificateSignaturePubKey<ST>>,
 
     dedicated_full_nodes: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
     peer_discovery_driver: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
@@ -162,6 +165,7 @@ pub enum RaptorCastEvent<E, ST: CertificateSignatureRecoverable> {
     Message(E),
     PeerManagerResponse(PeerManagerResponse<ST>),
     SecondaryRaptorcastPeersUpdate(Round, Vec<NodeId<CertificateSignaturePubKey<ST>>>),
+    ProposerScheduleRequest(RoundSpan),
 }
 
 impl<ST, M, OM, SE, PD, AP, DS> RaptorCast<ST, M, OM, SE, PD, AP, DS>
@@ -282,6 +286,7 @@ where
             is_dynamic_fullnode,
             epoch_validators: Default::default(),
             full_node_groups: Default::default(),
+            proposer_map: Default::default(),
 
             dedicated_full_nodes: config.primary_instance.fullnode_dedicated.clone(),
             peer_discovery_driver,
@@ -464,6 +469,18 @@ where
                     .unwrap_log_on_error(&msg_bytes, &build_target)
             }
         };
+    }
+
+    fn update_proposer_map(&mut self, round: Round) {
+        let cutoff = round.saturating_sub(round_info::CACHE_MAX_PAST_ROUNDS);
+        self.proposer_map.prune_past(cutoff);
+
+        let start = round.saturating_sub(round_info::CACHE_MAX_PAST_ROUNDS);
+        let end = round.saturating_add(round_info::CACHE_MAX_FUTURE_ROUNDS);
+        if let Some(span) = RoundSpan::new(start, end) {
+            self.pending_events
+                .push_back(RaptorCastEvent::ProposerScheduleRequest(span));
+        }
     }
 
     fn handle_publish(
@@ -949,6 +966,7 @@ where
 
                     self.udp_state.update_current_round(round);
                     self.full_node_groups.delete_expired(round);
+                    self.update_proposer_map(round);
                     self.peer_discovery_driver
                         .lock()
                         .unwrap()
@@ -1108,6 +1126,14 @@ where
                 } => {
                     self.dedicated_full_nodes = dedicated_full_nodes;
                 }
+                RouterCommand::ProposerScheduleResponse { proposers } => {
+                    trace!(
+                        num_proposers = proposers.len(),
+                        cached_proposers = self.proposer_map.len(),
+                        "RaptorCast ProposerScheduleResponse"
+                    );
+                    self.proposer_map.extend(proposers);
+                }
             }
         }
     }
@@ -1201,6 +1227,7 @@ where
                 this.udp_state.handle_message(
                     &this.epoch_validators,
                     &this.full_node_groups,
+                    &this.proposer_map,
                     |targets, payload, bcast_stride| {
                         for target in targets {
                             rebroadcast_packet(
@@ -1503,11 +1530,11 @@ where
                         if this.full_node_groups.try_insert(group).is_none() {
                             // TODO: convert to an assertion?
                             error!(
-                                round_span =? round_span,
-                                publisher_id =? publisher_id,
+                                round_span = ?round_span,
+                                publisher_id = ?publisher_id,
                                 "Accepted group assignment contains overlaps"
                             );
-                        };
+                        }
                     }
                     Poll::Ready(None) => {
                         error!("RaptorCast secondary->primary channel disconnected.");
@@ -1571,6 +1598,9 @@ where
                     expiry_round,
                     confirm_group_peers,
                 }
+            }
+            RaptorCastEvent::ProposerScheduleRequest(span) => {
+                MonadEvent::ProposerScheduleRequest(span)
             }
         }
     }

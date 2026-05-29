@@ -46,7 +46,7 @@ use crate::{
     util::{
         compute_app_message_hash, compute_hash, unix_ts_ms_now, AppMessageHash, BroadcastGroup,
         BroadcastMode, EncodingScheme, FullNodeGroupMap, GlobalMerkleRoot, MerkleRoot, NodeIdHash,
-        PrimaryBroadcastGroup, SecondaryBroadcastGroup,
+        PrimaryBroadcastGroup, ProposerMap, SecondaryBroadcastGroup,
     },
     v1_rollout::{self, DeterministicProtocolRolloutStage},
 };
@@ -169,6 +169,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
         &mut self,
         epoch_validators: &BTreeMap<Epoch, ValidatorSet<CertificateSignaturePubKey<ST>>>,
         full_node_group_map: &FullNodeGroupMap<CertificateSignaturePubKey<ST>>,
+        proposer_map: &ProposerMap<CertificateSignaturePubKey<ST>>,
         chunk: &ValidatedChunk<CertificateSignaturePubKey<ST>>,
         rebroadcast_to: &mut impl FnMut(Vec<NodeId<CertificateSignaturePubKey<ST>>>),
         sender: Option<&NodeId<CertificateSignaturePubKey<ST>>>,
@@ -207,7 +208,14 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
 
         match (chunk.encoding_scheme, &group) {
             (EncodingScheme::Deterministic25(round), BroadcastGroup::Primary(g)) => self
-                .handle_deterministic_primary(g, round, chunk, &decoding_context, rebroadcast_to),
+                .handle_deterministic_primary(
+                    g,
+                    proposer_map,
+                    round,
+                    chunk,
+                    &decoding_context,
+                    rebroadcast_to,
+                ),
             (EncodingScheme::Deterministic25(round), BroadcastGroup::Secondary(g)) => self
                 .handle_deterministic_secondary(g, round, chunk, &decoding_context, rebroadcast_to),
             _ => self.handle_regular(&group, chunk, &decoding_context, rebroadcast_to),
@@ -217,11 +225,35 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
     fn handle_deterministic_primary(
         &mut self,
         group: &PrimaryBroadcastGroup<'_, CertificateSignaturePubKey<ST>>,
+        proposer_map: &ProposerMap<CertificateSignaturePubKey<ST>>,
         round: Round,
         chunk: &ValidatedChunk<CertificateSignaturePubKey<ST>>,
         decoding_context: &DecodingContext<CertificateSignaturePubKey<ST>>,
         rebroadcast_to: &mut impl FnMut(Vec<NodeId<CertificateSignaturePubKey<ST>>>),
     ) -> Option<(NodeId<CertificateSignaturePubKey<ST>>, Bytes)> {
+        match proposer_map.get(&round) {
+            Some(expected_proposer) if expected_proposer == &chunk.author => {
+                // proposer expected, proceed
+            }
+            Some(expected_proposer) => {
+                tracing::debug!(
+                    ?round,
+                    author = ?chunk.author,
+                    ?expected_proposer,
+                    "dropping deterministic primary chunk from non-proposer"
+                );
+                return None;
+            }
+            None => {
+                tracing::debug!(
+                    ?round,
+                    author = ?chunk.author,
+                    "dropping deterministic primary chunk with unknown proposer"
+                );
+                return None;
+            }
+        }
+
         let Some(round_info) = self.round_info_cache.get_or_insert_primary(round) else {
             tracing::debug!(
                 ?chunk.group_id,
@@ -424,6 +456,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
         &mut self,
         epoch_validators: &BTreeMap<Epoch, ValidatorSet<CertificateSignaturePubKey<ST>>>,
         full_node_group_map: &FullNodeGroupMap<CertificateSignaturePubKey<ST>>,
+        proposer_map: &ProposerMap<CertificateSignaturePubKey<ST>>,
         rebroadcast: impl FnMut(Vec<NodeId<CertificateSignaturePubKey<ST>>>, Bytes, u16),
         message: crate::auth::AuthRecvMsg<CertificateSignaturePubKey<ST>>,
     ) -> Vec<(NodeId<CertificateSignaturePubKey<ST>>, Bytes)> {
@@ -542,6 +575,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                     self.handle_raptorcast(
                         epoch_validators,
                         full_node_group_map,
+                        proposer_map,
                         &chunk,
                         rebroadcast_to,
                         message.sender.as_ref(),
@@ -1200,6 +1234,7 @@ mod tests {
         udp_state.handle_message(
             &epoch_validators,
             &full_node_groups,
+            &Default::default(),
             |_targets, _payload, _stride| {},
             recv_msg,
         );
@@ -1434,7 +1469,7 @@ mod tests_deterministic {
         udp::SIGNATURE_CACHE_SIZE,
         util::{
             BroadcastMode, BuildTarget, EncodingScheme, FullNodeGroupMap, PrimaryBroadcastGroup,
-            UdpMessage, ValidatorGroupMap,
+            ProposerMap, UdpMessage, ValidatorGroupMap,
         },
         v1_rollout::DeterministicProtocolRolloutStage,
     };
@@ -1677,6 +1712,7 @@ mod tests_deterministic {
         udp_state.handle_message(
             &epoch_validators,
             &full_node_groups,
+            &Default::default(),
             |_targets, _payload, _stride| {},
             recv_msg,
         );
@@ -1824,6 +1860,8 @@ mod tests_deterministic {
             .unwrap();
         let epoch_validators: BTreeMap<_, _> = [(EPOCH, validators)].into();
         let full_node_groups = FullNodeGroupMap::default();
+        let mut proposer_schedule = ProposerMap::default();
+        proposer_schedule.extend([(ROUND, sender_id)]);
         let mut udp_state = UdpState::<SignatureType>::new(receiver_id, u64::MAX, 10_000);
         udp_state.set_v1_rollout(DeterministicProtocolRolloutStage::AlwaysV1);
 
@@ -1841,6 +1879,7 @@ mod tests_deterministic {
             let decoded = udp_state.handle_message(
                 &epoch_validators,
                 &full_node_groups,
+                &proposer_schedule,
                 |_targets, _payload, _stride| rebroadcast_count += 1,
                 recv_msg,
             );
@@ -1959,6 +1998,8 @@ mod tests_deterministic {
             .unwrap();
         let epoch_validators: BTreeMap<_, _> = [(EPOCH, validators)].into();
         let full_node_groups = FullNodeGroupMap::default();
+        let mut proposer_schedule = ProposerMap::default();
+        proposer_schedule.extend([(ROUND, sender_id)]);
         let mut udp_state = UdpState::<SignatureType>::new(receiver_id, u64::MAX, 10_000);
         udp_state.set_v1_rollout(DeterministicProtocolRolloutStage::AlwaysV1);
 
@@ -1976,6 +2017,7 @@ mod tests_deterministic {
             decoded.extend(udp_state.handle_message(
                 &epoch_validators,
                 &full_node_groups,
+                &proposer_schedule,
                 |_, _, _| {},
                 recv_msg,
             ));
@@ -1984,6 +2026,94 @@ mod tests_deterministic {
         assert_eq!(decoded.len(), 1, "should decode from 2/3 of chunks");
         assert_eq!(decoded[0].0, sender_id);
         assert_eq!(decoded[0].1, app_message);
+    }
+
+    #[test]
+    fn test_deterministic_primary_rejects_non_proposer_when_schedule_known() {
+        let (sender_key, validators, _) = validator_set();
+        let sender_id = NodeId::new(sender_key.pubkey());
+        let expected_proposer = validators
+            .get_members()
+            .keys()
+            .find(|id| **id != sender_id)
+            .copied()
+            .unwrap();
+        let group_map = make_group_map(&validators);
+        let group = PrimaryBroadcastGroup::of_epoch(EPOCH, &sender_id, &group_map).unwrap();
+        let app_message: Bytes = vec![0xCD_u8; 64 * 1024].into();
+        let packets = build_packets(&sender_key, &app_message, group);
+
+        let receiver_id = validators
+            .get_members()
+            .keys()
+            .find(|id| **id != sender_id && **id != expected_proposer)
+            .copied()
+            .unwrap_or(expected_proposer);
+        let epoch_validators: BTreeMap<_, _> = [(EPOCH, validators)].into();
+        let full_node_groups = FullNodeGroupMap::default();
+        let mut proposer_schedule = ProposerMap::default();
+        proposer_schedule.extend([(ROUND, expected_proposer)]);
+        let mut udp_state = UdpState::<SignatureType>::new(receiver_id, u64::MAX, 10_000);
+        udp_state.set_v1_rollout(DeterministicProtocolRolloutStage::AlwaysV1);
+
+        let mut decoded = Vec::new();
+        for packet in &packets {
+            let recv_msg = AuthRecvMsg {
+                src_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8000),
+                payload: packet.payload.clone(),
+                stride: deterministic::DEFAULT_SEGMENT_LEN as u16,
+                sender: None,
+            };
+            decoded.extend(udp_state.handle_message(
+                &epoch_validators,
+                &full_node_groups,
+                &proposer_schedule,
+                |_, _, _| {},
+                recv_msg,
+            ));
+        }
+
+        assert!(
+            decoded.is_empty(),
+            "chunks authored by a non-proposer must not decode"
+        );
+    }
+
+    #[test]
+    fn test_deterministic_primary_drops_when_schedule_unknown() {
+        let (sender_key, validators, _) = validator_set();
+        let sender_id = NodeId::new(sender_key.pubkey());
+        let group_map = make_group_map(&validators);
+        let group = PrimaryBroadcastGroup::of_epoch(EPOCH, &sender_id, &group_map).unwrap();
+        let app_message: Bytes = vec![0xEF_u8; 64 * 1024].into();
+        let packets = build_packets(&sender_key, &app_message, group);
+
+        let receiver_id = validators
+            .get_members()
+            .keys()
+            .find(|id| **id != sender_id)
+            .copied()
+            .unwrap();
+        let epoch_validators: BTreeMap<_, _> = [(EPOCH, validators)].into();
+        let full_node_groups = FullNodeGroupMap::default();
+        let mut udp_state = UdpState::<SignatureType>::new(receiver_id, u64::MAX, 10_000);
+        udp_state.set_v1_rollout(DeterministicProtocolRolloutStage::AlwaysV1);
+        let recv_msg = AuthRecvMsg {
+            src_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8000),
+            payload: packets[0].payload.clone(),
+            stride: deterministic::DEFAULT_SEGMENT_LEN as u16,
+            sender: None,
+        };
+
+        let decoded = udp_state.handle_message(
+            &epoch_validators,
+            &full_node_groups,
+            &Default::default(),
+            |_, _, _| {},
+            recv_msg,
+        );
+
+        assert!(decoded.is_empty());
     }
 
     #[test]
@@ -2012,6 +2142,8 @@ mod tests_deterministic {
         // Step 2: Validator receives and decodes
         let epoch_validators: BTreeMap<_, _> = [(EPOCH, validators)].into();
         let full_node_groups = FullNodeGroupMap::default();
+        let mut proposer_schedule = ProposerMap::default();
+        proposer_schedule.extend([(ROUND, proposer_id)]);
         let mut udp_state = UdpState::<SignatureType>::new(validator_id, u64::MAX, 10_000);
         udp_state.set_v1_rollout(DeterministicProtocolRolloutStage::AlwaysV1);
 
@@ -2028,6 +2160,7 @@ mod tests_deterministic {
             for (_, msg) in udp_state.handle_message(
                 &epoch_validators,
                 &full_node_groups,
+                &proposer_schedule,
                 |_, _, _| {},
                 recv_msg,
             ) {
