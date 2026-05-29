@@ -264,6 +264,12 @@ pub struct BlockRecord {
     /// of the on-disk RLP layout; data dirs from before the trace family
     /// existed must be wiped and re-ingested.
     pub traces: FamilyWindowRecord,
+    /// Running artifact checksum chained through this block: the head value of
+    /// the per-block content-digest chain (see [`crate::engine::digest`]). A
+    /// standby that re-derives the chain from the same finalized blocks must
+    /// arrive at this exact value, proving it would have written the same
+    /// artifacts. Adding this field is a hard break of the on-disk RLP layout.
+    pub artifact_checksum: Hash32,
 }
 
 impl BlockRecord {
@@ -284,28 +290,24 @@ impl BlockRecord {
 pub type SessionId = [u8; 16];
 
 /// The single CAS-guarded coordination row. `indexed_finalized_head` is the
-/// only reader-visible publication watermark; the lease fields
-/// (`owner_id` / `session_id` / `lease_valid_through_block`) are the outer-ring
-/// write-authority state and are never consulted by the query path.
+/// reader-visible publication watermark and `head_artifact_checksum` is the
+/// chained artifact checksum at that head (see [`crate::engine::digest`]); the
+/// lease fields (`owner_id` / `session_id` / `lease_valid_through_block`) are
+/// the outer-ring write-authority state and are never consulted by the query
+/// path.
 ///
 /// Field order is the on-disk RLP list order — do not reorder without a
-/// migration. The legacy single-`u64` layout (head only) still decodes via the
-/// backward-compatible fallback in [`Self::decode`].
+/// migration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 pub struct PublicationState {
     pub indexed_finalized_head: u64,
     pub owner_id: u64,
     pub session_id: SessionId,
     pub lease_valid_through_block: u64,
-}
-
-/// Legacy on-disk layout: a single-field RLP list carrying only the published
-/// head. Pre-lease data directories hold rows in this shape; [`PublicationState::decode`]
-/// falls back to it and materializes an owner-less / expired lease so the first
-/// write performs a clean acquire.
-#[derive(RlpDecodable)]
-struct LegacyPublicationState {
-    indexed_finalized_head: u64,
+    /// Chained artifact checksum at `indexed_finalized_head`, mirroring the
+    /// published head block's [`BlockRecord::artifact_checksum`]. Preserved
+    /// across lease renew/takeover; only a head advance updates it.
+    pub head_artifact_checksum: Hash32,
 }
 
 impl PublicationState {
@@ -313,67 +315,27 @@ impl PublicationState {
         alloy_rlp::encode(self)
     }
 
-    /// Decodes a publication-state row, accepting both the widened lease layout
-    /// and the legacy single-field layout (D3). The widened layout is tried
-    /// first; on failure the bytes are decoded as the legacy head-only list and
-    /// materialized as `{ head, owner_id: 0, session_id: [0; 16],
-    /// lease_valid_through_block: 0 }` — an owner-less, already-expired lease
-    /// that forces a clean acquire on the next write.
     pub fn decode(bytes: &[u8]) -> Result<Self> {
-        if let Ok(state) = alloy_rlp::decode_exact::<Self>(bytes) {
-            return Ok(state);
-        }
-        let legacy = alloy_rlp::decode_exact::<LegacyPublicationState>(bytes)
-            .map_err(|_| MonadChainDataError::Decode("invalid publication state rlp"))?;
-        Ok(Self {
-            indexed_finalized_head: legacy.indexed_finalized_head,
-            owner_id: 0,
-            session_id: [0u8; 16],
-            lease_valid_through_block: 0,
-        })
+        alloy_rlp::decode_exact::<Self>(bytes)
+            .map_err(|_| MonadChainDataError::Decode("invalid publication state rlp"))
     }
 }
 
 #[cfg(test)]
 mod publication_state_tests {
-    use super::PublicationState;
+    use super::{Hash32, PublicationState};
 
     #[test]
-    fn widened_publication_state_round_trips() {
+    fn publication_state_round_trips() {
         let state = PublicationState {
             indexed_finalized_head: 91,
             owner_id: 17,
             session_id: *b"session-id-00001",
             lease_valid_through_block: 123,
+            head_artifact_checksum: Hash32::repeat_byte(0xab),
         };
         let encoded = state.encode();
-        let decoded = PublicationState::decode(&encoded).expect("decode widened state");
+        let decoded = PublicationState::decode(&encoded).expect("decode state");
         assert_eq!(decoded, state);
-    }
-
-    #[derive(alloy_rlp::RlpEncodable)]
-    struct LegacyEncode {
-        indexed_finalized_head: u64,
-    }
-
-    #[test]
-    fn legacy_single_field_publication_state_decodes_as_expired_lease() {
-        // A pre-lease data dir holds a single-`u64` RLP list (the original
-        // `#[derive(RlpEncodable)] struct { indexed_finalized_head: u64 }`
-        // shape). It must keep loading, materialized as an owner-less /
-        // already-expired lease so the first write performs a clean acquire.
-        let legacy_encoded = alloy_rlp::encode(LegacyEncode {
-            indexed_finalized_head: 42,
-        });
-        let decoded = PublicationState::decode(&legacy_encoded).expect("decode legacy state");
-        assert_eq!(
-            decoded,
-            PublicationState {
-                indexed_finalized_head: 42,
-                owner_id: 0,
-                session_id: [0u8; 16],
-                lease_valid_through_block: 0,
-            }
-        );
     }
 }

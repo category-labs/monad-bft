@@ -31,6 +31,7 @@ use crate::{
             LeaseAuthority, ReadOnlyAuthority, WriteAuthority, WriteContinuity, WriteSession,
         },
         bitmap::{global_page_start, local_page_start, stream_page_global_start},
+        digest::{self, ArtifactChecksum, EMPTY_CHECKSUM},
         family::Family,
         ingest::{persist::PhaseAFragmentWriteFilter, ReadPlanningTimings},
         open_index::{
@@ -137,9 +138,52 @@ struct StageAPlanStarts {
 
 struct StageAPlanOutput {
     staged: StagedBlock,
+    /// Standalone (un-chained) content digest for this block; chained into the
+    /// running checksum in the sequential staging loop.
+    block_content_digest: ArtifactChecksum,
     log_plan_us: u64,
     tx_plan_us: u64,
     trace_plan_us: u64,
+}
+
+/// Computes the standalone content digest for one planned block: the logical
+/// (uncompressed, zstd-independent) artifacts the block would write. Folds the
+/// three per-family content digests with the block identity + EVM header. See
+/// [`crate::engine::digest`]. The running chain value is layered on top in the
+/// sequential staging loop.
+fn block_content_digest(
+    block: &FinalizedBlock,
+    log_plan: &LogIngestPlan,
+    tx_plan: &TxIngestPlan,
+    trace_plan: &TraceIngestPlan,
+) -> ArtifactChecksum {
+    let log_fc = digest::family_content_digest(
+        log_plan.log_window,
+        log_plan.block_log_header.dict_version,
+        log_plan.rows_digest,
+        &log_plan.bitmap_fragments,
+    );
+    let tx_fc = digest::family_content_digest(
+        tx_plan.tx_window,
+        tx_plan.block_tx_header.dict_version,
+        tx_plan.rows_digest,
+        &tx_plan.bitmap_fragments,
+    );
+    let trace_fc = digest::family_content_digest(
+        trace_plan.trace_window,
+        trace_plan.block_trace_header.dict_version,
+        trace_plan.rows_digest,
+        &trace_plan.bitmap_fragments,
+    );
+    digest::block_content_digest(
+        block.block_number(),
+        &block.block_hash(),
+        &block.parent_hash(),
+        &alloy_rlp::encode(&block.header),
+        log_fc,
+        tx_fc,
+        trace_fc,
+    )
 }
 
 fn family_ranges<F>(staged: &[StagedBlock], pick: F) -> Vec<(u64, u64)>
@@ -205,6 +249,30 @@ pub struct IngestOutcome {
     pub written_logs: usize,
     pub written_txs: usize,
     pub written_traces: usize,
+}
+
+/// Result of [`MonadChainDataService::verify_artifact_checksums`]: whether a
+/// standby's re-derived artifact-checksum chain matches what the primary
+/// published.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VerifyOutcome {
+    /// Every supplied block's re-derived running checksum matched the published
+    /// [`BlockRecord`]. `through_block` is the highest verified block number
+    /// (the prior published head when no blocks were supplied).
+    Match { through_block: u64 },
+    /// The first block whose published record was not found, so verification
+    /// cannot proceed past it — typically the standby is ahead of the primary's
+    /// published head. Blocks below `block_number` did match.
+    Pending { block_number: u64 },
+    /// The first block whose re-derived running checksum disagreed with the
+    /// published record. Blocks below `block_number` matched.
+    Mismatch {
+        block_number: u64,
+        /// The published (primary's) chained checksum for the block.
+        published: ArtifactChecksum,
+        /// The locally re-derived chained checksum.
+        computed: ArtifactChecksum,
+    },
 }
 
 /// Per-batch timing breakdown emitted by [`MonadChainDataService::ingest_blocks`].
@@ -288,14 +356,17 @@ pub struct IngestPlan {
 /// write-authority lease model the *bytes* of the published
 /// [`crate::primitives::state::PublicationState`] row can only be formed at
 /// publish time (they carry the owner/session/lease fields the authority
-/// stamps inside the CAS), so the plan carries just the target head plus the
-/// CAS table/key it will be written under. The authority builds the row in
-/// `apply_ingest_plan_with_retry`.
+/// stamps inside the CAS), so the plan carries just the target head, its
+/// chained artifact checksum, plus the CAS table/key it will be written under.
+/// The authority builds the row in `apply_ingest_plan_with_retry`.
 #[derive(Debug, Clone)]
 pub struct PublicationAdvance {
     pub table: crate::store::TableId,
     pub key: Vec<u8>,
     pub new_head: u64,
+    /// Chained artifact checksum at `new_head`, equal to the head block's
+    /// [`BlockRecord::artifact_checksum`](crate::primitives::state::BlockRecord::artifact_checksum).
+    pub head_artifact_checksum: ArtifactChecksum,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -571,6 +642,7 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
     async fn authority_publish(
         &self,
         new_head: u64,
+        head_artifact_checksum: ArtifactChecksum,
         observed_upstream_finalized_block: Option<u64>,
     ) -> Result<()> {
         match &self.authority {
@@ -593,12 +665,17 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
                     owner_id: 0,
                     session_id: [0u8; 16],
                     lease_valid_through_block: 0,
+                    head_artifact_checksum,
                 };
                 self.publication.cas_advance(expected, next).await
             }
             ServiceAuthority::Lease(a) => {
                 let result = a
-                    .publish_current(new_head, observed_upstream_finalized_block)
+                    .publish_current(
+                        new_head,
+                        head_artifact_checksum,
+                        observed_upstream_finalized_block,
+                    )
                     .await;
                 // On any invalidating error (lease lost, fenced, or a lost
                 // observation) drop the cached lease so the next begin_write
@@ -811,6 +888,12 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
             }
         }
         let first_previous = state.previous.clone();
+        // Seed the artifact-checksum chain from the previously published head
+        // (captured before `first_previous` is consumed below).
+        let seed_checksum = first_previous
+            .as_ref()
+            .map(|record| record.artifact_checksum)
+            .unwrap_or(EMPTY_CHECKSUM);
 
         let stage_a_start = Instant::now();
         let mut plan_starts: Vec<StageAPlanStarts> = Vec::with_capacity(blocks.len());
@@ -873,6 +956,9 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
                     first_primary_id: next_trace_id.into(),
                     count: trace_count,
                 },
+                // This record only seeds the next block's primary-id windows
+                // and parent-hash chain; its checksum is never read.
+                artifact_checksum: EMPTY_CHECKSUM,
             };
 
             prev_hash = block_record.block_hash;
@@ -936,6 +1022,11 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
                 let trace_plan = TraceIngestPlan::build(block, starts.trace, trace_codec_ref)?;
                 let trace_plan_us = trace_plan_start.elapsed().as_micros() as u64;
 
+                // Content digest folds the uncompressed artifacts in parallel;
+                // the chain over prior blocks is applied sequentially below.
+                let block_content_digest =
+                    block_content_digest(block, &log_plan, &tx_plan, &trace_plan);
+
                 let block_record = BlockRecord {
                     block_number: block.block_number(),
                     block_hash: block.block_hash(),
@@ -943,6 +1034,8 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
                     logs: log_plan.log_window,
                     txs: tx_plan.tx_window,
                     traces: trace_plan.trace_window,
+                    // Filled with the chained value in the sequential loop.
+                    artifact_checksum: EMPTY_CHECKSUM,
                 };
 
                 Ok(StageAPlanOutput {
@@ -952,6 +1045,7 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
                         trace_plan,
                         block_record,
                     },
+                    block_content_digest,
                     log_plan_us,
                     tx_plan_us,
                     trace_plan_us,
@@ -959,8 +1053,16 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
             })
             .collect::<Result<Vec<_>>>()?;
 
+        // Seed the artifact-checksum chain from the previously published head
+        // (or the empty seed for a fresh store), then fold each block's content
+        // digest in contiguous order. This is the sequential dependency the
+        // parallel plan build above cannot carry.
+        let mut cumulative_checksum = seed_checksum;
+
         let mut staged: Vec<StagedBlock> = Vec::with_capacity(planned.len());
-        for output in planned {
+        for mut output in planned {
+            cumulative_checksum = digest::chain(cumulative_checksum, output.block_content_digest);
+            output.staged.block_record.artifact_checksum = cumulative_checksum;
             timings.stage_a_log_plan_us = timings
                 .stage_a_log_plan_us
                 .saturating_add(output.log_plan_us);
@@ -1287,6 +1389,7 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
             table: PublicationTables::<M>::PUBLICATION_STATE_TABLE,
             key: PublicationTables::<M>::PUBLICATION_STATE_KEY.to_vec(),
             new_head,
+            head_artifact_checksum: last.block_record.artifact_checksum,
         };
 
         let mut combined_writes = phase_a_writes;
@@ -1569,13 +1672,117 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
         // a same-owner `FencedOut`; `authority_publish` clears the cached lease
         // on either so the next begin_write reacquires (and runs recovery).
         let cas_start = Instant::now();
-        self.authority_publish(publication.new_head, self.observe_upstream())
-            .await?;
+        self.authority_publish(
+            publication.new_head,
+            publication.head_artifact_checksum,
+            self.observe_upstream(),
+        )
+        .await?;
         timings.cas_ms = cas_start.elapsed().as_millis() as u64;
         let commit_elapsed_ms = commit_start.elapsed().as_millis() as u64;
         timings.commit_b_ms = commit_elapsed_ms
             .saturating_sub(timings.commit_a_meta_ms.max(timings.commit_a_blob_ms));
         Ok((outcomes, timings))
+    }
+
+    /// Re-derives the per-block artifact-checksum chain for a contiguous run of
+    /// finalized `blocks` and compares each running value against the published
+    /// [`BlockRecord`]. This is the standby verification primitive: it proves
+    /// the node would have written byte-equivalent artifacts (modulo zstd
+    /// framing — the digest folds *uncompressed* rows) WITHOUT acquiring the
+    /// write lease or performing any writes.
+    ///
+    /// Batch-independent: the chain is seeded from the published predecessor
+    /// record and folded one block at a time, so a standby may call this with
+    /// any grouping regardless of how the primary batched ingest. Returns at
+    /// the first block that mismatches ([`VerifyOutcome::Mismatch`]) or whose
+    /// record is not yet published ([`VerifyOutcome::Pending`]).
+    pub async fn verify_artifact_checksums(
+        &self,
+        blocks: &[FinalizedBlock],
+    ) -> Result<VerifyOutcome> {
+        let Some(first) = blocks.first() else {
+            return Ok(VerifyOutcome::Match { through_block: 0 });
+        };
+        let block_tables = self.tables.blocks();
+
+        // Seed the chain and the family primary-id frontier from the published
+        // predecessor (or the empty/zero seed when verifying from block 1).
+        let first_number = first.block_number();
+        let (mut cumulative, mut next_log, mut next_tx, mut next_trace) = if first_number <= 1 {
+            (EMPTY_CHECKSUM, LogId::ZERO, TxId::ZERO, TraceId::ZERO)
+        } else {
+            let prev = block_tables.load_record(first_number - 1).await?.ok_or(
+                MonadChainDataError::MissingData("missing predecessor record for verification"),
+            )?;
+            (
+                prev.artifact_checksum,
+                LogId::from(prev.logs.next_primary_id_exclusive()?),
+                TxId::from(prev.txs.next_primary_id_exclusive()?),
+                TraceId::from(prev.traces.next_primary_id_exclusive()?),
+            )
+        };
+
+        let epoch_blocks = self.tables.dicts().config().epoch_blocks;
+        let mut last_verified = first_number.saturating_sub(1);
+        for block in blocks {
+            let epoch = block.block_number() / epoch_blocks;
+            let version = u32::try_from(epoch)
+                .map_err(|_| MonadChainDataError::Decode("dict epoch/version overflow"))?;
+            self.ensure_epoch_dicts(version).await?;
+            let dicts = self.tables.dicts();
+            let log_codec =
+                dicts
+                    .write_codec(Family::Log, version)
+                    .ok_or(MonadChainDataError::MissingData(
+                        "epoch log codec not installed",
+                    ))?;
+            let tx_codec =
+                dicts
+                    .write_codec(Family::Tx, version)
+                    .ok_or(MonadChainDataError::MissingData(
+                        "epoch tx codec not installed",
+                    ))?;
+            let trace_codec = dicts.write_codec(Family::Trace, version).ok_or(
+                MonadChainDataError::MissingData("epoch trace codec not installed"),
+            )?;
+
+            let log_plan = LogIngestPlan::build(block, next_log, &log_codec)?;
+            let tx_plan = TxIngestPlan::build(block, next_tx, &tx_codec)?;
+            let trace_plan = TraceIngestPlan::build(block, next_trace, &trace_codec)?;
+
+            cumulative = digest::chain(
+                cumulative,
+                block_content_digest(block, &log_plan, &tx_plan, &trace_plan),
+            );
+
+            let number = block.block_number();
+            match block_tables.load_record(number).await? {
+                None => {
+                    return Ok(VerifyOutcome::Pending {
+                        block_number: number,
+                    })
+                }
+                Some(published) if published.artifact_checksum != cumulative => {
+                    return Ok(VerifyOutcome::Mismatch {
+                        block_number: number,
+                        published: published.artifact_checksum,
+                        computed: cumulative,
+                    });
+                }
+                Some(_) => {}
+            }
+
+            // Advance the family frontier for the next block.
+            next_log = LogId::from(log_plan.log_window.next_primary_id_exclusive()?);
+            next_tx = TxId::from(tx_plan.tx_window.next_primary_id_exclusive()?);
+            next_trace = TraceId::from(trace_plan.trace_window.next_primary_id_exclusive()?);
+            last_verified = number;
+        }
+
+        Ok(VerifyOutcome::Match {
+            through_block: last_verified,
+        })
     }
 
     /// Executes a finalized logs query over the current published head.

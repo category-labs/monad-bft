@@ -23,6 +23,7 @@ use crate::{
         encode_grouped_bitmap_fragments, sharded_stream_id, touched_streams_by_page,
         BitmapFragmentWrite,
     },
+    engine::digest::{ArtifactChecksum, RowDigest},
     engine::row_codec::RowCodec,
     error::{MonadChainDataError, Result},
     family::{CallKind, FinalizedBlock, IngestTrace},
@@ -36,6 +37,9 @@ pub struct TraceIngestPlan {
     pub block_trace_blob: Vec<u8>,
     pub bitmap_fragments: Vec<BitmapFragmentWrite>,
     pub touched_bitmap_streams_by_page: BTreeMap<u64, BTreeSet<String>>,
+    /// Checksum over this block's uncompressed trace row payloads, in order.
+    /// Fed into the per-block artifact digest for standby ingest verification.
+    pub rows_digest: ArtifactChecksum,
     pub written_traces: usize,
 }
 
@@ -53,7 +57,8 @@ impl TraceIngestPlan {
         let trace_count = u32::try_from(block.traces.len())
             .map_err(|_| MonadChainDataError::Decode("trace count overflow"))?;
 
-        let (block_trace_header, block_trace_blob) = encode_block_traces(&block.traces, codec)?;
+        let (block_trace_header, block_trace_blob, rows_digest) =
+            encode_block_traces(&block.traces, codec)?;
         let bitmap_fragments = collect_bitmap_fragments(&block.traces, first_trace_id)?;
         let touched_bitmap_streams_by_page = touched_streams_by_page(&bitmap_fragments)?;
         let trace_window = FamilyWindowRecord {
@@ -67,6 +72,7 @@ impl TraceIngestPlan {
             block_trace_blob,
             bitmap_fragments,
             touched_bitmap_streams_by_page,
+            rows_digest,
             written_traces: block.traces.len(),
         })
     }
@@ -75,9 +81,10 @@ impl TraceIngestPlan {
 fn encode_block_traces(
     traces: &[IngestTrace],
     codec: &RowCodec,
-) -> Result<(BlockTraceHeader, Vec<u8>)> {
+) -> Result<(BlockTraceHeader, Vec<u8>, ArtifactChecksum)> {
     let mut offsets = Vec::with_capacity(traces.len() + 1);
     let mut blob = Vec::new();
+    let mut rows_digest = RowDigest::new();
     let mut compressor = codec.block_compressor()?;
 
     for trace in traces.iter() {
@@ -87,6 +94,9 @@ fn encode_block_traces(
         );
         let stored = StoredTrace::from(trace);
         let raw = stored.encode();
+        // Fold the uncompressed payload before framing so the artifact
+        // checksum is independent of the zstd codec/version.
+        rows_digest.row(&raw);
         let frame = compressor.compress_row(&raw)?;
         blob.extend_from_slice(&frame);
     }
@@ -102,6 +112,7 @@ fn encode_block_traces(
             dict_version: codec.version(),
         },
         blob,
+        rows_digest.finish(),
     ))
 }
 

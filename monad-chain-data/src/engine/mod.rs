@@ -16,6 +16,7 @@
 pub mod authority;
 pub mod bitmap;
 pub mod clause;
+pub mod digest;
 pub mod family;
 pub(crate) mod ingest;
 pub mod open_index;

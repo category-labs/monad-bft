@@ -33,7 +33,7 @@
 use futures::lock::Mutex;
 
 use crate::{
-    engine::tables::PublicationTables,
+    engine::{digest::ArtifactChecksum, tables::PublicationTables},
     error::{MonadChainDataError, Result},
     primitives::state::{PublicationState, SessionId},
     store::meta::{CasOutcome, CasVersion, MetaStoreCas},
@@ -77,6 +77,7 @@ pub trait WriteSession: Send {
     async fn publish(
         self,
         new_head: u64,
+        head_artifact_checksum: ArtifactChecksum,
         observed_upstream_finalized_block: Option<u64>,
     ) -> Result<()>;
 }
@@ -120,6 +121,7 @@ impl WriteSession for ReadOnlyWriteSession<'_> {
     async fn publish(
         self,
         _new_head: u64,
+        _head_artifact_checksum: ArtifactChecksum,
         _observed_upstream_finalized_block: Option<u64>,
     ) -> Result<()> {
         unreachable!("reader-only authority never yields a write session")
@@ -154,6 +156,7 @@ struct PublicationLease {
     owner_id: u64,
     session_id: SessionId,
     indexed_finalized_head: u64,
+    head_artifact_checksum: ArtifactChecksum,
     lease_valid_through_block: u64,
     /// CAS version of the row this lease snapshot came from.
     version: CasVersion,
@@ -165,6 +168,7 @@ impl PublicationLease {
             owner_id: self.owner_id,
             session_id: self.session_id,
             indexed_finalized_head: self.indexed_finalized_head,
+            head_artifact_checksum: self.head_artifact_checksum,
             lease_valid_through_block: self.lease_valid_through_block,
         }
     }
@@ -278,6 +282,7 @@ impl<M: MetaStoreCas> LeaseAuthority<M> {
             owner_id: state.owner_id,
             session_id: state.session_id,
             indexed_finalized_head: state.indexed_finalized_head,
+            head_artifact_checksum: state.head_artifact_checksum,
             lease_valid_through_block: state.lease_valid_through_block,
             version,
         }
@@ -307,6 +312,7 @@ impl<M: MetaStoreCas> LeaseAuthority<M> {
                     owner_id: self.owner_id,
                     session_id: self.session_id,
                     indexed_finalized_head: 0,
+                    head_artifact_checksum: ArtifactChecksum::ZERO,
                     lease_valid_through_block: self
                         .lease_valid_through_block(observed_upstream_finalized_block),
                 };
@@ -341,6 +347,7 @@ impl<M: MetaStoreCas> LeaseAuthority<M> {
                     owner_id: self.owner_id,
                     session_id: self.session_id,
                     indexed_finalized_head: current.indexed_finalized_head,
+                    head_artifact_checksum: current.head_artifact_checksum,
                     lease_valid_through_block: extended,
                 };
                 match self.cas_state(Some(current.version), next).await? {
@@ -365,11 +372,12 @@ impl<M: MetaStoreCas> LeaseAuthority<M> {
 
             // Either our own expired lease, or a foreign lease past its
             // validity bound: take over with a fresh validity window, preserving
-            // the published head.
+            // the published head and its artifact checksum.
             let next = PublicationState {
                 owner_id: self.owner_id,
                 session_id: self.session_id,
                 indexed_finalized_head: current.indexed_finalized_head,
+                head_artifact_checksum: current.head_artifact_checksum,
                 lease_valid_through_block: self
                     .lease_valid_through_block(observed_upstream_finalized_block),
             };
@@ -497,6 +505,7 @@ impl<M: MetaStoreCas> LeaseAuthority<M> {
                 owner_id: current.owner_id,
                 session_id: current.session_id,
                 indexed_finalized_head: current.indexed_finalized_head,
+                head_artifact_checksum: current.head_artifact_checksum,
                 lease_valid_through_block: extended,
             };
             match self.cas_state(Some(current.version), next).await? {
@@ -510,16 +519,18 @@ impl<M: MetaStoreCas> LeaseAuthority<M> {
         }
     }
 
-    /// Publishes `new_head`: renews the lease if needed, then CASes the row to
-    /// the new head against the lease's current version. A conflict whose
-    /// reloaded owner/session differs is [`LeaseLost`]; same owner but a moved
-    /// version is [`FencedOut`] (a same-owner publication race).
+    /// Publishes `new_head` with its chained artifact checksum: renews the
+    /// lease if needed, then CASes the row to the new head against the lease's
+    /// current version. A conflict whose reloaded owner/session differs is
+    /// [`LeaseLost`]; same owner but a moved version is [`FencedOut`] (a
+    /// same-owner publication race).
     ///
     /// [`LeaseLost`]: MonadChainDataError::LeaseLost
     /// [`FencedOut`]: MonadChainDataError::FencedOut
     pub async fn publish_current(
         &self,
         new_head: u64,
+        head_artifact_checksum: ArtifactChecksum,
         observed_upstream_finalized_block: Option<u64>,
     ) -> Result<()> {
         let mut guard = self.lease.lock().await;
@@ -530,6 +541,7 @@ impl<M: MetaStoreCas> LeaseAuthority<M> {
 
         let mut next_state = lease.as_state();
         next_state.indexed_finalized_head = new_head;
+        next_state.head_artifact_checksum = head_artifact_checksum;
         match self.cas_state(Some(lease.version), next_state).await? {
             CasOutcome::Applied { new_version } => {
                 *guard = Some(self.lease_from(next_state, new_version));
@@ -573,11 +585,16 @@ impl<M: MetaStoreCas> WriteSession for LeaseWriteSession<'_, M> {
     async fn publish(
         self,
         new_head: u64,
+        head_artifact_checksum: ArtifactChecksum,
         observed_upstream_finalized_block: Option<u64>,
     ) -> Result<()> {
         let result = self
             .authority
-            .publish_current(new_head, observed_upstream_finalized_block)
+            .publish_current(
+                new_head,
+                head_artifact_checksum,
+                observed_upstream_finalized_block,
+            )
             .await;
         if let Some(error) = result.as_ref().err() {
             if LeaseAuthority::<M>::should_invalidate_cached_lease(error) {
@@ -732,10 +749,14 @@ mod tests {
             let store = InMemoryMetaStore::default();
             let a = authority(&store, 1, [1u8; 16], 50, 10);
             let sess = a.begin_write(Some(100)).await.expect("A acquires");
-            // A publishes head 5 before dying.
-            sess.publish(5, Some(100)).await.expect("A publishes");
+            // A publishes head 5 (with an artifact checksum) before dying.
+            let checksum = ArtifactChecksum::repeat_byte(0x5a);
+            sess.publish(5, checksum, Some(100))
+                .await
+                .expect("A publishes");
             let before = load_state(&store).await;
             assert_eq!(before.lease_valid_through_block, 149);
+            assert_eq!(before.head_artifact_checksum, checksum);
 
             // B observes a block past the validity bound (150 > 149) → takeover.
             let b = authority(&store, 2, [2u8; 16], 50, 10);
@@ -748,6 +769,8 @@ mod tests {
             assert_eq!(after.session_id, [2u8; 16]);
             assert_eq!(after.indexed_finalized_head, 5);
             assert_eq!(after.lease_valid_through_block, 199);
+            // The artifact checksum rides along with the preserved head.
+            assert_eq!(after.head_artifact_checksum, checksum);
         });
     }
 
@@ -757,7 +780,8 @@ mod tests {
             let store = InMemoryMetaStore::default();
             let authority = authority(&store, 7, [9u8; 16], 50, 10);
             let sess = authority.begin_write(Some(100)).await.expect("acquire");
-            sess.publish(3, Some(100)).await.expect("publish");
+            let checksum = ArtifactChecksum::repeat_byte(0x33);
+            sess.publish(3, checksum, Some(100)).await.expect("publish");
             let before = load_state(&store).await;
             assert_eq!(before.lease_valid_through_block, 149);
 
@@ -768,6 +792,8 @@ mod tests {
             assert_eq!(after.session_id, [9u8; 16]);
             assert_eq!(after.indexed_finalized_head, 3);
             assert_eq!(after.lease_valid_through_block, 194);
+            // Renewal preserves the published head's artifact checksum.
+            assert_eq!(after.head_artifact_checksum, checksum);
         });
     }
 
@@ -808,7 +834,7 @@ mod tests {
             // A's publish now finds a foreign owner → LeaseLost, and A clears
             // its cached lease so its next begin_write reacquires.
             let err = a_session
-                .publish(7, Some(150))
+                .publish(7, ArtifactChecksum::ZERO, Some(150))
                 .await
                 .expect_err("A must be fenced as lease-lost");
             assert!(matches!(err, MonadChainDataError::LeaseLost));

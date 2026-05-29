@@ -263,6 +263,7 @@ async fn head_zero_is_treated_as_no_published_blocks() {
                 owner_id: 7,
                 session_id: [1u8; 16],
                 lease_valid_through_block: 42,
+                head_artifact_checksum: Default::default(),
             },
         )
         .await

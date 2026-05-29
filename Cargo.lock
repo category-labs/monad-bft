@@ -5103,6 +5103,7 @@ dependencies = [
  "aws-config",
  "aws-sdk-dynamodb",
  "aws-sdk-s3",
+ "blake3",
  "bytes",
  "clap",
  "eyre",

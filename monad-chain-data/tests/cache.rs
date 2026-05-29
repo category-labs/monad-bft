@@ -37,6 +37,7 @@ fn block_record(number: u64) -> monad_chain_data::BlockRecord {
         logs: window,
         txs: window,
         traces: window,
+        artifact_checksum: Default::default(),
     }
 }
 

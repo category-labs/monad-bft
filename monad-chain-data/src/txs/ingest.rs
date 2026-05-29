@@ -23,6 +23,7 @@ use crate::{
         encode_grouped_bitmap_fragments, sharded_stream_id, touched_streams_by_page,
         BitmapFragmentWrite,
     },
+    engine::digest::{ArtifactChecksum, RowDigest},
     engine::row_codec::RowCodec,
     error::{MonadChainDataError, Result},
     family::{FinalizedBlock, Hash32, IngestTx},
@@ -40,6 +41,9 @@ pub struct TxIngestPlan {
     /// (tx_hash, location) pairs to write into `tx_hash_index` for this
     /// block. Caller-authoritative `tx_hash`; collisions last-write-win.
     pub(crate) hash_locations: Vec<(Hash32, TxLocation)>,
+    /// Checksum over this block's uncompressed tx row payloads, in order. Fed
+    /// into the per-block artifact digest for standby ingest verification.
+    pub rows_digest: ArtifactChecksum,
     pub written_txs: usize,
 }
 
@@ -49,7 +53,8 @@ impl TxIngestPlan {
         let tx_count = u32::try_from(block.txs.len())
             .map_err(|_| MonadChainDataError::Decode("tx count overflow"))?;
 
-        let (block_tx_header, block_tx_blob) = Self::encode_block_txs(&block.txs, codec)?;
+        let (block_tx_header, block_tx_blob, rows_digest) =
+            Self::encode_block_txs(&block.txs, codec)?;
         let bitmap_fragments = Self::collect_bitmap_fragments(&block.txs, first_tx_id)?;
         let touched_bitmap_streams_by_page = touched_streams_by_page(&bitmap_fragments)?;
         let hash_locations = Self::collect_hash_locations(block)?;
@@ -65,6 +70,7 @@ impl TxIngestPlan {
             bitmap_fragments,
             touched_bitmap_streams_by_page,
             hash_locations,
+            rows_digest,
             written_txs: block.txs.len(),
         })
     }
@@ -88,9 +94,13 @@ impl TxIngestPlan {
             .collect()
     }
 
-    fn encode_block_txs(txs: &[IngestTx], codec: &RowCodec) -> Result<(BlockTxHeader, Vec<u8>)> {
+    fn encode_block_txs(
+        txs: &[IngestTx],
+        codec: &RowCodec,
+    ) -> Result<(BlockTxHeader, Vec<u8>, ArtifactChecksum)> {
         let mut offsets = Vec::with_capacity(txs.len() + 1);
         let mut blob = Vec::new();
+        let mut rows_digest = RowDigest::new();
         let mut compressor = codec.block_compressor()?;
 
         for tx in txs.iter() {
@@ -104,6 +114,9 @@ impl TxIngestPlan {
                 signed_tx_bytes: tx.signed_tx_bytes.clone(),
             };
             let raw = stored.encode();
+            // Fold the uncompressed payload before framing so the artifact
+            // checksum is independent of the zstd codec/version.
+            rows_digest.row(&raw);
             let frame = compressor.compress_row(&raw)?;
             blob.extend_from_slice(&frame);
         }
@@ -119,6 +132,7 @@ impl TxIngestPlan {
                 dict_version: codec.version(),
             },
             blob,
+            rows_digest.finish(),
         ))
     }
 

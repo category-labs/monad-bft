@@ -15,6 +15,7 @@ alloy-primitives = { workspace = true, features = ["rlp"] }
 alloy-rlp = { workspace = true, features = ["derive"] }
 alloy-rpc-types-eth = { workspace = true, optional = true }
 auto_impl = { workspace = true }
+blake3 = { workspace = true }
 aws-config = { workspace = true, optional = true }
 aws-sdk-dynamodb = { workspace = true, optional = true }
 aws-sdk-s3 = { workspace = true, optional = true }
