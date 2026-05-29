@@ -13,11 +13,16 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use alloy_consensus::Transaction;
 
 use super::types::{decode_envelope, selector_from_envelope, BlockTxHeader, StoredTxEnvelope};
 use crate::{
-    engine::bitmap::{encode_grouped_bitmap_fragments, sharded_stream_id, BitmapFragmentWrite},
+    engine::bitmap::{
+        encode_grouped_bitmap_fragments, sharded_stream_id, touched_streams_by_page,
+        BitmapFragmentWrite,
+    },
     error::{MonadChainDataError, Result},
     family::{FinalizedBlock, Hash32, IngestTx},
     primitives::state::{FamilyWindowRecord, TxId},
@@ -30,6 +35,7 @@ pub struct TxIngestPlan {
     pub block_tx_header: BlockTxHeader,
     pub block_tx_blob: Vec<u8>,
     pub bitmap_fragments: Vec<BitmapFragmentWrite>,
+    pub touched_bitmap_streams_by_page: BTreeMap<u64, BTreeSet<String>>,
     /// (tx_hash, location) pairs to write into `tx_hash_index` for this
     /// block. Caller-authoritative `tx_hash`; collisions last-write-win.
     pub(crate) hash_locations: Vec<(Hash32, TxLocation)>,
@@ -44,6 +50,7 @@ impl TxIngestPlan {
 
         let (block_tx_header, block_tx_blob) = Self::encode_block_txs(&block.txs)?;
         let bitmap_fragments = Self::collect_bitmap_fragments(&block.txs, first_tx_id)?;
+        let touched_bitmap_streams_by_page = touched_streams_by_page(&bitmap_fragments)?;
         let hash_locations = Self::collect_hash_locations(block)?;
         let tx_window = FamilyWindowRecord {
             first_primary_id: first_tx_id.into(),
@@ -55,6 +62,7 @@ impl TxIngestPlan {
             block_tx_header,
             block_tx_blob,
             bitmap_fragments,
+            touched_bitmap_streams_by_page,
             hash_locations,
             written_txs: block.txs.len(),
         })

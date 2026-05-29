@@ -52,6 +52,7 @@ async fn ingest_compacts_sealed_pages_and_query_prefers_compacted_page_blobs() {
                 usize::try_from(STREAM_PAGE_LOCAL_ID_SPAN - 2).expect("page span fits usize"),
             )],
             txs: Vec::new(),
+            traces: vec![],
         })
         .await
         .expect("ingest block 1");
@@ -63,6 +64,7 @@ async fn ingest_compacts_sealed_pages_and_query_prefers_compacted_page_blobs() {
             header: h2,
             logs_by_tx: vec![repeated_logs(frontier_address, vec![frontier_topic], 4)],
             txs: Vec::new(),
+            traces: vec![],
         })
         .await
         .expect("ingest block 2");
@@ -72,9 +74,9 @@ async fn ingest_compacts_sealed_pages_and_query_prefers_compacted_page_blobs() {
     assert!(service
         .tables()
         .family(Family::Log)
-        .load_bitmap_page_meta(&old_stream, 0)
+        .load_bitmap_page_artifact(&old_stream, 0)
         .await
-        .expect("load old page meta")
+        .expect("load old page artifact")
         .is_some());
     assert!(service
         .tables()
@@ -86,16 +88,16 @@ async fn ingest_compacts_sealed_pages_and_query_prefers_compacted_page_blobs() {
     assert!(service
         .tables()
         .family(Family::Log)
-        .load_bitmap_page_meta(&frontier_stream, 0)
+        .load_bitmap_page_artifact(&frontier_stream, 0)
         .await
-        .expect("load sealed frontier page meta")
+        .expect("load sealed frontier page artifact")
         .is_some());
     assert!(service
         .tables()
         .family(Family::Log)
-        .load_bitmap_page_meta(&frontier_stream, STREAM_PAGE_LOCAL_ID_SPAN)
+        .load_bitmap_page_artifact(&frontier_stream, STREAM_PAGE_LOCAL_ID_SPAN)
         .await
-        .expect("load live frontier page meta")
+        .expect("load live frontier page artifact")
         .is_none());
 
     let partition = stream_page_key(&old_stream, 0);
@@ -171,6 +173,7 @@ async fn query_errors_when_compacted_page_meta_exists_but_blob_is_missing() {
                 usize::try_from(STREAM_PAGE_LOCAL_ID_SPAN - 2).expect("page span fits usize"),
             )],
             txs: Vec::new(),
+            traces: vec![],
         })
         .await
         .expect("ingest block 1");
@@ -183,6 +186,7 @@ async fn query_errors_when_compacted_page_meta_exists_but_blob_is_missing() {
                 4,
             )],
             txs: Vec::new(),
+            traces: vec![],
         })
         .await
         .expect("ingest block 2");

@@ -42,6 +42,7 @@ async fn ingest_persists_log_bitmap_fragments_for_address_and_topics() {
                 log(Address::repeat_byte(7), vec![B256::repeat_byte(9)]),
             ]],
             txs: Vec::new(),
+            traces: vec![],
         })
         .await
         .expect("ingest block 1");
@@ -106,6 +107,7 @@ async fn ingest_persists_log_bitmap_fragments_across_page_boundaries() {
                 usize::try_from(STREAM_PAGE_LOCAL_ID_SPAN - 2).expect("page span fits usize"),
             )],
             txs: Vec::new(),
+            traces: vec![],
         })
         .await
         .expect("ingest block 1");
@@ -119,17 +121,23 @@ async fn ingest_persists_log_bitmap_fragments_across_page_boundaries() {
                 4,
             )],
             txs: Vec::new(),
+            traces: vec![],
         })
         .await
         .expect("ingest block 2");
 
     let target_stream = sharded_stream_id("addr", Address::repeat_byte(7).as_slice(), 0);
-    let first_page = service
+    // Block 2 advances the frontier past the page-0 boundary, so page 0 is
+    // sealed: its raw fragment is dropped from the fragments table and
+    // compacted into a page-blob artifact. Read page 0 via the compacted
+    // artifact, and the live frontier page via the raw fragments table.
+    let first_page_artifact = service
         .tables()
         .family(Family::Log)
-        .load_bitmap_fragments(&target_stream, 0)
+        .load_bitmap_page_artifact(&target_stream, 0)
         .await
-        .expect("load first page");
+        .expect("load first page artifact")
+        .expect("first page must be sealed into a compacted artifact");
     let second_page = service
         .tables()
         .family(Family::Log)
@@ -137,7 +145,8 @@ async fn ingest_persists_log_bitmap_fragments_across_page_boundaries() {
         .await
         .expect("load second page");
 
-    let first_page_bitmap = decode_bitmap_blob(first_page[0].as_ref()).expect("decode first page");
+    let first_page_bitmap =
+        decode_bitmap_blob(first_page_artifact.bitmap_blob.as_ref()).expect("decode first page");
     assert_eq!(first_page_bitmap.count, 2);
     assert!(first_page_bitmap
         .bitmap
@@ -170,6 +179,7 @@ async fn ingest_empty_block_writes_no_log_bitmap_fragments() {
             header: test_header(1, B256::ZERO),
             logs_by_tx: vec![vec![]],
             txs: Vec::new(),
+            traces: vec![],
         })
         .await
         .expect("ingest block 1");

@@ -36,6 +36,7 @@ async fn ingest_persists_log_dir_fragment_for_single_bucket_block() {
             header: test_header(1, B256::ZERO),
             logs_by_tx: vec![vec![log(), log()]],
             txs: Vec::new(),
+            traces: vec![],
         })
         .await
         .expect("ingest block 1");
@@ -70,6 +71,7 @@ async fn ingest_persists_zero_width_fragment_for_empty_block() {
             header: test_header(1, B256::ZERO),
             logs_by_tx: vec![vec![]],
             txs: Vec::new(),
+            traces: vec![],
         })
         .await
         .expect("ingest block 1");
@@ -109,6 +111,7 @@ async fn ingest_persists_spanning_fragment_in_each_covered_bucket() {
                 usize::try_from(DIRECTORY_BUCKET_SIZE - 2).expect("bucket size fits usize"),
             )],
             txs: Vec::new(),
+            traces: vec![],
         })
         .await
         .expect("ingest block 1");
@@ -118,6 +121,7 @@ async fn ingest_persists_spanning_fragment_in_each_covered_bucket() {
             header: h2,
             logs_by_tx: vec![repeated_logs(4)],
             txs: Vec::new(),
+            traces: vec![],
         })
         .await
         .expect("ingest block 2");

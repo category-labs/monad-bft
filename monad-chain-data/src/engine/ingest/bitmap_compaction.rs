@@ -13,20 +13,31 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    ops::Bound::Excluded,
+    time::Instant,
+};
+
+use bytes::Bytes;
+use rayon::prelude::*;
 
 use crate::{
     engine::{
         bitmap::{
-            compact_bitmap_page, global_page_start, local_page_start, stream_page_global_start,
-            BitmapFragmentWrite,
+            compact_bitmap_page, global_page_start, local_page_start, BitmapPageArtifact,
+            BitmapPageMeta,
         },
+        family::Family,
+        ingest::ReadPlanningTimings,
+        open_index::{OpenIndexes, OpenIndexesEviction},
         tables::FamilyTables,
     },
     error::Result,
-    store::{BlobStore, MetaStore},
+    store::{BlobStore, MetaStore, WriteSession},
 };
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct BitmapCompactionPlan {
     sealed_pages: Vec<(u64, BTreeSet<String>)>,
@@ -34,89 +45,358 @@ struct BitmapCompactionPlan {
     final_open_streams: BTreeSet<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompactedPageWrite {
+    pub page_global_start: u64,
+    pub stream_id: String,
+    pub page_start_local: u32,
+    pub meta: BitmapPageMeta,
+    pub blob: Bytes,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BitmapCompactionJob {
+    page_global_start: u64,
+    stream_id: String,
+    page_start_local: u32,
+    fragments: Vec<Bytes>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BitmapBatchCompactionPlan {
+    pub compacted_pages: Vec<CompactedPageWrite>,
+    /// Per-frontier-page open-stream sets to record. The vec preserves
+    /// insertion order (one entry per frontier-page advance within the
+    /// batch); each entry's `BTreeSet` is the cumulative set for that page
+    /// at the point the frontier moved past it (for non-final entries) or
+    /// at the end of the batch (for the final entry).
+    pub open_stream_writes: Vec<(u64, BTreeSet<String>)>,
+    pub has_writes: bool,
+    pub(crate) timings: ReadPlanningTimings,
+}
+
+impl BitmapBatchCompactionPlan {
+    pub(crate) fn eviction(&self, family: Family) -> OpenIndexesEviction {
+        OpenIndexesEviction {
+            bitmap_pages: self
+                .compacted_pages
+                .iter()
+                .map(|page| (family, page.stream_id.clone(), page.page_start_local))
+                .collect(),
+            bitmap_open_pages: self
+                .compacted_pages
+                .iter()
+                .map(|page| (family, page.page_global_start))
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect(),
+            ..OpenIndexesEviction::default()
+        }
+    }
+}
+
 impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
-    /// Compacts every stream page sealed by the current ingest transition and
-    /// updates the frontier open-stream inventory for the page that remains live.
-    pub async fn compact_newly_sealed_bitmap_pages(
+    /// Reads the prior open-stream inventory and the sealed-page fragments
+    /// across a batch's primary-id ranges, returning the compacted page
+    /// artifacts the Phase B meta batch will stage. Pure I/O — no writes.
+    pub(crate) async fn plan_bitmap_compactions(
         &self,
-        written_fragments: &[BitmapFragmentWrite],
-        from_next_primary_id: u64,
-        next_primary_id: u64,
-    ) -> Result<()> {
-        if next_primary_id <= from_next_primary_id {
-            return Ok(());
+        open_indexes: &OpenIndexes,
+        touched_streams_by_page_per_block: &[&BTreeMap<u64, BTreeSet<String>>],
+        ranges: &[(u64, u64)],
+    ) -> Result<BitmapBatchCompactionPlan> {
+        debug_assert_eq!(touched_streams_by_page_per_block.len(), ranges.len());
+
+        if ranges.is_empty() {
+            return Ok(BitmapBatchCompactionPlan {
+                compacted_pages: Vec::new(),
+                open_stream_writes: Vec::new(),
+                has_writes: false,
+                timings: ReadPlanningTimings::default(),
+            });
         }
 
+        let mut compaction_jobs = Vec::new();
+        let mut open_stream_writes: Vec<(u64, BTreeSet<String>)> = Vec::new();
+        let mut timings = ReadPlanningTimings::default();
+
+        let Some((from_next_primary_id, next_primary_id, touched_by_page)) =
+            batch_bitmap_shape(touched_streams_by_page_per_block, ranges, &mut timings)
+        else {
+            return Ok(BitmapBatchCompactionPlan {
+                compacted_pages: Vec::new(),
+                open_stream_writes: Vec::new(),
+                has_writes: false,
+                timings,
+            });
+        };
+
+        let shape_start = Instant::now();
         let start_open_page = global_page_start(from_next_primary_id);
-        let previous_open_streams = self
-            .load_open_bitmap_streams(start_open_page)
-            .await?
-            .into_iter()
-            .collect();
-        let touched_by_page = touched_streams_by_page(written_fragments)?;
-        let plan = build_compaction_plan(
-            previous_open_streams,
-            touched_by_page,
-            from_next_primary_id,
-            next_primary_id,
+        let final_open_page_start = global_page_start(next_primary_id);
+        let open_streams_start = Instant::now();
+        let previous_open_streams =
+            open_indexes.bitmap_open_streams(self.family(), start_open_page);
+        timings.bitmap_open_streams_ms = timings
+            .bitmap_open_streams_ms
+            .saturating_add(open_streams_start.elapsed().as_millis() as u64);
+        timings.bitmap_open_streams_us = timings
+            .bitmap_open_streams_us
+            .saturating_add(open_streams_start.elapsed().as_micros() as u64);
+        timings.bitmap_open_streams_count = timings.bitmap_open_streams_count.saturating_add(1);
+        timings.bitmap_frontier_stream_count = timings
+            .bitmap_frontier_stream_count
+            .saturating_add(previous_open_streams.len() as u64);
+
+        let frontier_start = Instant::now();
+        let mut final_open_streams = touched_by_page
+            .get(&final_open_page_start)
+            .cloned()
+            .unwrap_or_default();
+        let mut start_page_streams = previous_open_streams;
+        if let Some(touched) = touched_by_page.get(&start_open_page) {
+            start_page_streams.extend(touched.iter().cloned());
+        }
+        let same_frontier_page = start_open_page == final_open_page_start;
+        if same_frontier_page {
+            final_open_streams.append(&mut start_page_streams);
+        }
+        timings.bitmap_frontier_us = timings
+            .bitmap_frontier_us
+            .saturating_add(frontier_start.elapsed().as_micros() as u64);
+        timings.bitmap_shape_ms = timings
+            .bitmap_shape_ms
+            .saturating_add(shape_start.elapsed().as_millis() as u64);
+        timings.bitmap_shape_us = timings
+            .bitmap_shape_us
+            .saturating_add(shape_start.elapsed().as_micros() as u64);
+
+        if !same_frontier_page && start_open_page < final_open_page_start {
+            if !start_page_streams.is_empty() {
+                self.plan_bitmap_page_from_streams(
+                    open_indexes,
+                    start_open_page,
+                    start_page_streams.iter(),
+                    &mut timings,
+                    &mut compaction_jobs,
+                )?;
+                record_open_stream_write(
+                    &mut open_stream_writes,
+                    start_open_page,
+                    start_page_streams,
+                    &mut timings,
+                );
+            }
+            for (page_global_start, streams) in
+                touched_by_page.range((Excluded(start_open_page), Excluded(final_open_page_start)))
+            {
+                self.plan_bitmap_page_from_streams(
+                    open_indexes,
+                    *page_global_start,
+                    streams.iter(),
+                    &mut timings,
+                    &mut compaction_jobs,
+                )?;
+            }
+        }
+        record_open_stream_write(
+            &mut open_stream_writes,
+            final_open_page_start,
+            final_open_streams,
+            &mut timings,
         );
 
-        for (page_start, streams) in &plan.sealed_pages {
-            self.compact_page_streams(*page_start, streams).await?;
-        }
-
-        self.record_open_bitmap_streams(plan.final_open_page_start, &plan.final_open_streams)
-            .await?;
-
-        Ok(())
+        let compacted_pages = compact_bitmap_jobs(&compaction_jobs, &mut timings)?;
+        let has_writes = !compacted_pages.is_empty() || !open_stream_writes.is_empty();
+        Ok(BitmapBatchCompactionPlan {
+            compacted_pages,
+            open_stream_writes,
+            has_writes,
+            timings,
+        })
     }
 
-    async fn compact_page_streams(
+    pub fn stage_bitmap_compactions(
         &self,
-        global_page_start: u64,
-        streams: &BTreeSet<String>,
-    ) -> Result<()> {
-        let page_start_local = local_page_start(global_page_start);
-
-        for stream_id in streams {
-            let fragments = self
-                .load_bitmap_fragments(stream_id, page_start_local)
-                .await?;
-            // Sealed-page fragments are intentionally retained after compaction —
-            // the query path falls back to fragments when the compacted page is
-            // missing, and keeping them lets a corrupted page-meta/page-blob write
-            // be reconstructed from source. Storage cost is bounded by retention
-            // policy, which lives outside this slice.
-            let (meta, bitmap_blob) = compact_bitmap_page(page_start_local, &fragments)?;
-
-            self.store_bitmap_page_blob(stream_id, page_start_local, bitmap_blob)
-                .await?;
-            self.store_bitmap_page_meta(stream_id, page_start_local, &meta)
-                .await?;
+        w: &WriteSession<'_, M, B>,
+        plan: &BitmapBatchCompactionPlan,
+    ) {
+        for page in &plan.compacted_pages {
+            self.bitmap().stage_page_artifact(
+                w,
+                &page.stream_id,
+                page.page_start_local,
+                &BitmapPageArtifact {
+                    meta: page.meta,
+                    bitmap_blob: page.blob.clone(),
+                },
+            );
         }
+        for (page_start, streams) in &plan.open_stream_writes {
+            self.bitmap().stage_open_streams(w, *page_start, streams);
+        }
+    }
 
+    fn plan_bitmap_page_from_streams<'a, I>(
+        &self,
+        open_indexes: &OpenIndexes,
+        page_global_start: u64,
+        streams: I,
+        timings: &mut ReadPlanningTimings,
+        compaction_jobs: &mut Vec<BitmapCompactionJob>,
+    ) -> Result<()>
+    where
+        I: IntoIterator<Item = &'a String>,
+    {
+        let page_start_local = local_page_start(page_global_start);
+        for stream_id in streams {
+            let index_start = Instant::now();
+            let fragments =
+                open_indexes.bitmap_fragments(self.family(), stream_id, page_start_local);
+            timings.bitmap_index_ms = timings
+                .bitmap_index_ms
+                .saturating_add(index_start.elapsed().as_millis() as u64);
+            timings.bitmap_index_us = timings
+                .bitmap_index_us
+                .saturating_add(index_start.elapsed().as_micros() as u64);
+            timings.bitmap_fragment_count = timings
+                .bitmap_fragment_count
+                .saturating_add(fragments.len() as u64);
+            timings.bitmap_fragment_bytes = timings.bitmap_fragment_bytes.saturating_add(
+                fragments
+                    .iter()
+                    .map(|fragment| fragment.len() as u64)
+                    .sum::<u64>(),
+            );
+            compaction_jobs.push(BitmapCompactionJob {
+                page_global_start,
+                stream_id: stream_id.clone(),
+                page_start_local,
+                fragments,
+            });
+        }
         Ok(())
     }
 }
 
-fn touched_streams_by_page(
-    written_fragments: &[BitmapFragmentWrite],
-) -> Result<BTreeMap<u64, BTreeSet<String>>> {
-    let mut out = BTreeMap::<u64, BTreeSet<String>>::new();
+fn compact_bitmap_jobs(
+    jobs: &[BitmapCompactionJob],
+    timings: &mut ReadPlanningTimings,
+) -> Result<Vec<CompactedPageWrite>> {
+    let wall_start = Instant::now();
+    let compacted = jobs
+        .par_iter()
+        .map(|job| {
+            let compact_start = Instant::now();
+            let (meta, bitmap_blob) = compact_bitmap_page(job.page_start_local, &job.fragments)?;
+            let elapsed_us = compact_start.elapsed().as_micros() as u64;
+            Ok((
+                CompactedPageWrite {
+                    page_global_start: job.page_global_start,
+                    stream_id: job.stream_id.clone(),
+                    page_start_local: job.page_start_local,
+                    meta,
+                    blob: bitmap_blob,
+                },
+                elapsed_us,
+            ))
+        })
+        .collect::<Result<Vec<_>>>()?;
 
-    for fragment in written_fragments {
-        let page_start = stream_page_global_start(&fragment.stream_id, fragment.page_start_local)?;
-        out.entry(page_start)
-            .or_default()
-            .insert(fragment.stream_id.clone());
-    }
+    timings.bitmap_compact_wall_us = timings
+        .bitmap_compact_wall_us
+        .saturating_add(wall_start.elapsed().as_micros() as u64);
+    timings.bitmap_compact_count = timings
+        .bitmap_compact_count
+        .saturating_add(compacted.len() as u64);
+    let compact_us = compacted
+        .iter()
+        .map(|(_, elapsed_us)| *elapsed_us)
+        .sum::<u64>();
+    timings.bitmap_compact_us = timings.bitmap_compact_us.saturating_add(compact_us);
+    timings.bitmap_compact_ms = timings.bitmap_compact_ms.saturating_add(compact_us / 1_000);
 
-    Ok(out)
+    Ok(compacted
+        .into_iter()
+        .map(|(page, _elapsed_us)| page)
+        .collect())
 }
 
+fn batch_bitmap_shape(
+    touched_streams_by_page_per_block: &[&BTreeMap<u64, BTreeSet<String>>],
+    ranges: &[(u64, u64)],
+    timings: &mut ReadPlanningTimings,
+) -> Option<(u64, u64, BTreeMap<u64, BTreeSet<String>>)> {
+    let union_start = Instant::now();
+    let mut from_next_primary_id = None;
+    let mut next_primary_id = None;
+    let mut touched_by_page = BTreeMap::<u64, BTreeSet<String>>::new();
+
+    for (block_idx, &(from, next)) in ranges.iter().enumerate() {
+        if next <= from {
+            continue;
+        }
+        from_next_primary_id.get_or_insert(from);
+        next_primary_id = Some(next);
+
+        let block_touched = touched_streams_by_page_per_block[block_idx];
+        timings.bitmap_touched_page_count = timings
+            .bitmap_touched_page_count
+            .saturating_add(block_touched.len() as u64);
+        timings.bitmap_touched_stream_count = timings.bitmap_touched_stream_count.saturating_add(
+            block_touched
+                .values()
+                .map(|streams| streams.len() as u64)
+                .sum::<u64>(),
+        );
+        for (page, streams) in block_touched {
+            touched_by_page
+                .entry(*page)
+                .or_default()
+                .extend(streams.iter().cloned());
+        }
+    }
+
+    timings.bitmap_union_us = timings
+        .bitmap_union_us
+        .saturating_add(union_start.elapsed().as_micros() as u64);
+    timings.bitmap_union_page_count = timings
+        .bitmap_union_page_count
+        .saturating_add(touched_by_page.len() as u64);
+    timings.bitmap_union_stream_count = timings.bitmap_union_stream_count.saturating_add(
+        touched_by_page
+            .values()
+            .map(|streams| streams.len() as u64)
+            .sum(),
+    );
+
+    Some((from_next_primary_id?, next_primary_id?, touched_by_page))
+}
+
+fn record_open_stream_write(
+    open_stream_writes: &mut Vec<(u64, BTreeSet<String>)>,
+    page_global_start: u64,
+    streams: BTreeSet<String>,
+    timings: &mut ReadPlanningTimings,
+) {
+    if streams.is_empty() {
+        return;
+    }
+
+    let open_write_start = Instant::now();
+    timings.bitmap_final_open_stream_count = timings
+        .bitmap_final_open_stream_count
+        .saturating_add(streams.len() as u64);
+    open_stream_writes.push((page_global_start, streams));
+    timings.bitmap_open_write_us = timings
+        .bitmap_open_write_us
+        .saturating_add(open_write_start.elapsed().as_micros() as u64);
+}
+
+#[cfg(test)]
 fn build_compaction_plan(
     previous_open_streams: BTreeSet<String>,
-    touched_by_page: BTreeMap<u64, BTreeSet<String>>,
+    touched_by_page: &BTreeMap<u64, BTreeSet<String>>,
     from_next_primary_id: u64,
     next_primary_id: u64,
 ) -> BitmapCompactionPlan {
@@ -155,10 +435,10 @@ fn build_compaction_plan(
     }
 
     for (page_start, streams) in touched_by_page {
-        if page_start <= start_open_page || page_start >= final_open_page_start {
+        if *page_start <= start_open_page || *page_start >= final_open_page_start {
             continue;
         }
-        sealed_pages.push((page_start, streams));
+        sealed_pages.push((*page_start, streams.clone()));
     }
 
     BitmapCompactionPlan {
@@ -177,14 +457,17 @@ mod tests {
 
     use bytes::Bytes;
 
-    use super::{build_compaction_plan, touched_streams_by_page, BitmapCompactionPlan};
-    use crate::engine::bitmap::{BitmapFragmentWrite, STREAM_PAGE_LOCAL_ID_SPAN};
+    use super::{batch_bitmap_shape, build_compaction_plan, BitmapCompactionPlan};
+    use crate::engine::{
+        bitmap::{touched_streams_by_page, BitmapFragmentWrite, STREAM_PAGE_LOCAL_ID_SPAN},
+        ingest::ReadPlanningTimings,
+    };
 
     #[test]
     fn compaction_plan_carries_previous_open_streams_into_the_sealed_start_page() {
         let plan = build_compaction_plan(
             BTreeSet::from(["addr/a/0000000000".to_string()]),
-            BTreeMap::from([(0, BTreeSet::from(["addr/b/0000000000".to_string()]))]),
+            &BTreeMap::from([(0, BTreeSet::from(["addr/b/0000000000".to_string()]))]),
             STREAM_PAGE_LOCAL_ID_SPAN as u64 - 2,
             STREAM_PAGE_LOCAL_ID_SPAN as u64 + 3,
         );
@@ -230,7 +513,7 @@ mod tests {
             ),
         ]);
 
-        let plan = build_compaction_plan(BTreeSet::new(), touched, from_next, next);
+        let plan = build_compaction_plan(BTreeSet::new(), &touched, from_next, next);
 
         assert_eq!(
             plan.sealed_pages,
@@ -263,7 +546,7 @@ mod tests {
         let touched =
             BTreeMap::from([(page_span, BTreeSet::from(["addr/b/0000000000".to_string()]))]);
 
-        let plan = build_compaction_plan(previous.clone(), touched, page_span, page_span - 1);
+        let plan = build_compaction_plan(previous.clone(), &touched, page_span, page_span - 1);
 
         assert_eq!(
             plan,
@@ -311,10 +594,62 @@ mod tests {
     }
 
     #[test]
+    fn batch_bitmap_shape_unions_touched_pages_once() {
+        let page_span = STREAM_PAGE_LOCAL_ID_SPAN as u64;
+        let block_a = BTreeMap::from_iter([(
+            0,
+            BTreeSet::from([
+                "addr/a/0000000000".to_string(),
+                "addr/b/0000000000".to_string(),
+            ]),
+        )]);
+        let block_b = BTreeMap::from_iter([
+            (
+                0,
+                BTreeSet::from([
+                    "addr/b/0000000000".to_string(),
+                    "addr/c/0000000000".to_string(),
+                ]),
+            ),
+            (page_span, BTreeSet::from(["addr/d/0000000001".to_string()])),
+        ]);
+        let inputs = vec![&block_a, &block_b];
+        let ranges = vec![
+            (page_span - 2, page_span - 1),
+            (page_span - 1, page_span + 1),
+        ];
+        let mut timings = ReadPlanningTimings::default();
+
+        let (from, next, grouped) =
+            batch_bitmap_shape(&inputs, &ranges, &mut timings).expect("advancing shape");
+
+        assert_eq!(from, page_span - 2);
+        assert_eq!(next, page_span + 1);
+        assert_eq!(
+            grouped,
+            BTreeMap::from_iter([
+                (
+                    0,
+                    BTreeSet::from([
+                        "addr/a/0000000000".to_string(),
+                        "addr/b/0000000000".to_string(),
+                        "addr/c/0000000000".to_string(),
+                    ]),
+                ),
+                (page_span, BTreeSet::from(["addr/d/0000000001".to_string()]),),
+            ])
+        );
+        assert_eq!(timings.bitmap_touched_page_count, 3);
+        assert_eq!(timings.bitmap_touched_stream_count, 5);
+        assert_eq!(timings.bitmap_union_page_count, 2);
+        assert_eq!(timings.bitmap_union_stream_count, 4);
+    }
+
+    #[test]
     fn compaction_plan_keeps_final_frontier_page_open_even_when_empty() {
         let plan = build_compaction_plan(
             BTreeSet::from(["addr/a/0000000000".to_string()]),
-            BTreeMap::from_iter(iter::once((
+            &BTreeMap::from_iter(iter::once((
                 0,
                 BTreeSet::from(["addr/a/0000000000".to_string()]),
             ))),

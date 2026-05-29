@@ -13,11 +13,16 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::{collections::BTreeMap, time::Instant};
+
 use bytes::Bytes;
 
 use crate::{
+    engine::ingest::ReadPlanningTimings,
     error::{MonadChainDataError, Result},
-    store::{KvTable, MetaStore, ScannableKvTable},
+    store::{
+        blob::BlobStore, CachedKvTable, CachedScannableTable, MetaStore, MetaWriteOp, WriteSession,
+    },
 };
 
 pub const DIRECTORY_BUCKET_SIZE: u64 = 10_000;
@@ -84,13 +89,21 @@ impl PrimaryDirFragment {
 }
 
 pub struct PrimaryDirTables<M: MetaStore> {
-    fragments: ScannableKvTable<M>,
-    buckets: KvTable<M>,
+    fragments: CachedScannableTable<M>,
+    buckets: CachedKvTable<M>,
 }
 
 impl<M: MetaStore> PrimaryDirTables<M> {
-    pub fn new(fragments: ScannableKvTable<M>, buckets: KvTable<M>) -> Self {
+    pub fn new(fragments: CachedScannableTable<M>, buckets: CachedKvTable<M>) -> Self {
         Self { fragments, buckets }
+    }
+
+    pub(crate) fn fragments_cache(&self) -> &CachedScannableTable<M> {
+        &self.fragments
+    }
+
+    pub(crate) fn buckets_cache(&self) -> &CachedKvTable<M> {
+        &self.buckets
     }
 
     /// Writes a directory fragment for the given block into every 10k bucket
@@ -109,20 +122,9 @@ impl<M: MetaStore> PrimaryDirTables<M> {
             end_primary_id_exclusive: first_primary_id.saturating_add(u64::from(count)),
         };
 
-        let mut current_bucket_start = bucket_start(first_primary_id);
-        let last_bucket_start = if count == 0 {
-            current_bucket_start
-        } else {
-            bucket_start(fragment.end_primary_id_exclusive.saturating_sub(1))
-        };
-
-        loop {
-            self.put_fragment(current_bucket_start, block_number, &fragment)
+        for bucket_start in fragment_bucket_starts(first_primary_id, count) {
+            self.put_fragment(bucket_start, block_number, &fragment)
                 .await?;
-            if current_bucket_start == last_bucket_start {
-                break;
-            }
-            current_bucket_start = current_bucket_start.saturating_add(DIRECTORY_BUCKET_SIZE);
         }
 
         Ok(())
@@ -143,29 +145,146 @@ impl<M: MetaStore> PrimaryDirTables<M> {
         &self,
         bucket_start: u64,
     ) -> Result<Vec<PrimaryDirFragment>> {
+        self.load_bucket_fragments_with_timings(bucket_start, None)
+            .await
+    }
+
+    pub(crate) async fn load_bucket_fragments_with_timings(
+        &self,
+        bucket_start: u64,
+        mut timings: Option<&mut ReadPlanningTimings>,
+    ) -> Result<Vec<PrimaryDirFragment>> {
         let partition = u64_key(bucket_start);
+        let list_start = Instant::now();
         let page = self
             .fragments
             .list_prefix(&partition, &[], None, usize::MAX)
             .await?;
+        if let Some(t) = timings.as_deref_mut() {
+            t.dir_list_ms = t
+                .dir_list_ms
+                .saturating_add(list_start.elapsed().as_millis() as u64);
+            t.dir_list_count = t.dir_list_count.saturating_add(1);
+        }
         let mut fragments = Vec::with_capacity(page.keys.len());
 
         for clustering in page.keys {
+            let get_start = Instant::now();
             let bytes = self.fragments.get(&partition, &clustering).await?.ok_or(
                 crate::error::MonadChainDataError::MissingData(
                     "missing primary directory fragment",
                 ),
             )?;
+            if let Some(t) = timings.as_deref_mut() {
+                t.dir_get_ms = t
+                    .dir_get_ms
+                    .saturating_add(get_start.elapsed().as_millis() as u64);
+                t.dir_get_count = t.dir_get_count.saturating_add(1);
+            }
             fragments.push(PrimaryDirFragment::decode(&bytes)?);
         }
 
         Ok(fragments)
     }
 
+    pub(crate) async fn list_bucket_fragments_for_rebuild(
+        &self,
+        bucket_start: u64,
+        published_head: u64,
+    ) -> Result<BTreeMap<u64, Bytes>> {
+        let partition = u64_key(bucket_start);
+        let page = self
+            .fragments
+            .list_prefix(&partition, &[], None, usize::MAX)
+            .await?;
+        let mut out = BTreeMap::new();
+        for key in page.keys {
+            let block = u64_from_key(&key)?;
+            if block <= published_head {
+                let bytes = self.fragments.get(&partition, &key).await?.ok_or(
+                    crate::error::MonadChainDataError::MissingData(
+                        "missing primary directory fragment",
+                    ),
+                )?;
+                out.insert(block, bytes);
+            }
+        }
+        Ok(out)
+    }
+
     pub async fn put_bucket(&self, bucket_start: u64, bucket: &PrimaryDirBucket) -> Result<()> {
         let key = u64_key(bucket_start);
         self.buckets.put(&key, Bytes::from(bucket.encode())).await?;
         Ok(())
+    }
+
+    pub fn stage_bucket<B: BlobStore>(
+        &self,
+        w: &WriteSession<'_, M, B>,
+        bucket_start: u64,
+        bucket: &PrimaryDirBucket,
+    ) {
+        let key = u64_key(bucket_start);
+        w.put(&self.buckets, &key, Bytes::from(bucket.encode()));
+    }
+
+    /// Stages every per-bucket fragment write the block contributes. Mirrors
+    /// [`Self::persist_block_fragment`] but pushes into a meta batch instead
+    /// of issuing one write per bucket.
+    pub fn stage_block_fragment<B: BlobStore>(
+        &self,
+        w: &WriteSession<'_, M, B>,
+        block_number: u64,
+        first_primary_id: u64,
+        count: u32,
+    ) {
+        let fragment = PrimaryDirFragment {
+            block_number,
+            first_primary_id,
+            end_primary_id_exclusive: first_primary_id.saturating_add(u64::from(count)),
+        };
+
+        let encoded = Bytes::from(fragment.encode());
+        for bucket_start in fragment_bucket_starts(first_primary_id, count) {
+            let partition = u64_key(bucket_start);
+            let clustering = u64_key(block_number);
+            w.scan_put(&self.fragments, &partition, &clustering, encoded.clone());
+        }
+    }
+
+    pub fn stage_block_fragment_filtered<B, F>(
+        &self,
+        w: &WriteSession<'_, M, B>,
+        block_number: u64,
+        first_primary_id: u64,
+        count: u32,
+        mut should_write_bucket: F,
+    ) where
+        B: BlobStore,
+        F: FnMut(u64) -> bool,
+    {
+        let fragment = PrimaryDirFragment {
+            block_number,
+            first_primary_id,
+            end_primary_id_exclusive: first_primary_id.saturating_add(u64::from(count)),
+        };
+
+        let encoded = Bytes::from(fragment.encode());
+        let clustering = u64_key(block_number);
+        let mut ops = Vec::new();
+        for bucket_start in fragment_bucket_starts(first_primary_id, count) {
+            if !should_write_bucket(bucket_start) {
+                continue;
+            }
+            let partition = u64_key(bucket_start);
+            ops.push(MetaWriteOp::ScanPut {
+                table: self.fragments.table_id(),
+                partition: partition.to_vec(),
+                clustering: clustering.to_vec(),
+                value: encoded.clone(),
+            });
+        }
+        w.extend_meta_uncached(ops);
     }
 
     async fn put_fragment(
@@ -187,10 +306,39 @@ pub fn bucket_start(primary_id: u64) -> u64 {
     aligned_u64_start(primary_id, DIRECTORY_BUCKET_SIZE)
 }
 
+pub(crate) fn fragment_bucket_starts(first_primary_id: u64, count: u32) -> Vec<u64> {
+    if count == 0 {
+        return vec![bucket_start(first_primary_id)];
+    }
+
+    let mut out = Vec::new();
+    let mut current = bucket_start(first_primary_id);
+    let last = bucket_start(
+        first_primary_id
+            .saturating_add(u64::from(count))
+            .saturating_sub(1),
+    );
+    loop {
+        out.push(current);
+        if current == last {
+            break;
+        }
+        current = current.saturating_add(DIRECTORY_BUCKET_SIZE);
+    }
+    out
+}
+
 fn aligned_u64_start(value: u64, alignment: u64) -> u64 {
     value - (value % alignment)
 }
 
 fn u64_key(value: u64) -> [u8; 8] {
     value.to_be_bytes()
+}
+
+fn u64_from_key(key: &[u8]) -> Result<u64> {
+    let bytes: [u8; 8] = key
+        .try_into()
+        .map_err(|_| MonadChainDataError::Decode("invalid u64 clustering key"))?;
+    Ok(u64::from_be_bytes(bytes))
 }
