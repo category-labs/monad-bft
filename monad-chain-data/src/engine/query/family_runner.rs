@@ -108,6 +108,11 @@ where
     // candidate analytically.
     let frontier_id = family_frontier_id(tables.blocks(), family, published_head).await?;
     let sealed_below = bucket_start(frontier_id.as_u64());
+    // The single open shard at the publication head. Any shard below it is
+    // fully sealed and carries an immutable page-count manifest the
+    // intersection may use to skip pages; the frontier shard's manifest is a
+    // hint only (see `load_intersection_bitmap`).
+    let frontier_shard = frontier_id.shard();
 
     let mut resolver = PrimaryIdResolver::new(tables.family(family), sealed_below);
     let mut records = Vec::new();
@@ -118,7 +123,7 @@ where
 
         let Some(candidate_bitmap) = tables
             .family(family)
-            .load_intersection_bitmap(&clauses, shard, local_from, local_to)
+            .load_intersection_bitmap(&clauses, shard, frontier_shard, local_from, local_to)
             .await?
         else {
             continue;

@@ -220,7 +220,7 @@ async fn intersection_is_empty_when_clauses_match_in_disjoint_pages() {
     let family = service.tables().family(Family::Log);
     // Cover both pages of the shard.
     let result = family
-        .load_intersection_bitmap(&clauses, 0, 0, STREAM_PAGE_LOCAL_ID_SPAN + 7)
+        .load_intersection_bitmap(&clauses, 0, 0, 0, STREAM_PAGE_LOCAL_ID_SPAN + 7)
         .await
         .expect("load intersection");
     assert!(
@@ -268,7 +268,7 @@ async fn intersection_keeps_only_ids_present_in_every_clause_per_page() {
     let clauses = vec![addr_clause(addr), topic0_clause(topic_shared)];
     let family = service.tables().family(Family::Log);
     let result = family
-        .load_intersection_bitmap(&clauses, 0, 0, STREAM_PAGE_LOCAL_ID_SPAN + 7)
+        .load_intersection_bitmap(&clauses, 0, 0, 0, STREAM_PAGE_LOCAL_ID_SPAN + 7)
         .await
         .expect("load intersection")
         .expect("non-empty intersection");
@@ -334,7 +334,7 @@ async fn per_page_short_circuit_skips_later_clause_fetches() {
     let result = service
         .tables()
         .family(Family::Log)
-        .load_intersection_bitmap(&clauses, 0, 0, 3 * STREAM_PAGE_LOCAL_ID_SPAN - 1)
+        .load_intersection_bitmap(&clauses, 0, 0, 0, 3 * STREAM_PAGE_LOCAL_ID_SPAN - 1)
         .await
         .expect("load intersection");
     let pruned_fetches = counting.get_calls(page_blob_table);
@@ -362,7 +362,7 @@ async fn per_page_short_circuit_skips_later_clause_fetches() {
     let _ = service
         .tables()
         .family(Family::Log)
-        .load_intersection_bitmap(&clauses_rev, 0, 0, 3 * STREAM_PAGE_LOCAL_ID_SPAN - 1)
+        .load_intersection_bitmap(&clauses_rev, 0, 0, 0, 3 * STREAM_PAGE_LOCAL_ID_SPAN - 1)
         .await
         .expect("load intersection rev");
     let rev_fetches = counting.get_calls(page_blob_table);

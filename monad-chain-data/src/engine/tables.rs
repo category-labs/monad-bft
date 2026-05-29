@@ -797,6 +797,10 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
                     meta_store.table(ids.bitmap_page_blob),
                     cache.bitmap_page_blob_entries,
                 ),
+                CachedKvTable::new(
+                    meta_store.table(ids.bitmap_page_counts),
+                    cache.bitmap_page_counts_entries,
+                ),
                 CachedScannableTable::new(
                     meta_store.scannable_table(ids.open_bitmap_stream),
                     cache.open_bitmap_stream_entries,
@@ -1007,6 +1011,22 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
             .await
     }
 
+    /// Loads the sealed-shard page-count manifest for one stream.
+    pub async fn load_bitmap_page_counts(
+        &self,
+        stream_id: &str,
+    ) -> Result<Option<crate::engine::bitmap::BitmapPageCounts>> {
+        self.bitmap.load_page_counts(stream_id).await
+    }
+
+    pub async fn store_bitmap_page_counts(
+        &self,
+        stream_id: &str,
+        counts: &crate::engine::bitmap::BitmapPageCounts,
+    ) -> Result<()> {
+        self.bitmap.store_page_counts(stream_id, counts).await
+    }
+
     /// Loads the open stream inventory for one frontier page.
     pub async fn load_open_bitmap_streams(&self, global_page_start: u64) -> Result<Vec<String>> {
         self.bitmap.load_open_streams(global_page_start).await
@@ -1034,6 +1054,7 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
         collect_scan_stats(out, self.bitmap.fragments_cache());
         collect_kv_stats(out, self.bitmap.page_meta_cache());
         collect_kv_stats(out, self.bitmap.page_blobs_cache());
+        collect_kv_stats(out, self.bitmap.page_counts_cache());
         collect_scan_stats(out, self.bitmap.open_streams_cache());
     }
 }

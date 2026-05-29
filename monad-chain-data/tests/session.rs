@@ -42,6 +42,7 @@ fn cache() -> CacheConfig {
         bitmap_by_block_entries: 64,
         bitmap_page_meta_entries: 64,
         bitmap_page_blob_entries: 64,
+        bitmap_page_counts_entries: 64,
         open_bitmap_stream_entries: 64,
         tx_hash_index_entries: 64,
         block_blob_entries: 64,

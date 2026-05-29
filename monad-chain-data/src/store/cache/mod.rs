@@ -64,6 +64,7 @@ pub struct CacheConfig {
     pub bitmap_by_block_entries: usize,
     pub bitmap_page_meta_entries: usize,
     pub bitmap_page_blob_entries: usize,
+    pub bitmap_page_counts_entries: usize,
     pub open_bitmap_stream_entries: usize,
     pub block_record_entries: usize,
     pub block_header_entries: usize,
@@ -80,6 +81,7 @@ impl Default for CacheConfig {
             bitmap_by_block_entries: 200_000,
             bitmap_page_meta_entries: 8_192,
             bitmap_page_blob_entries: 0,
+            bitmap_page_counts_entries: 8_192,
             open_bitmap_stream_entries: 16_384,
             block_record_entries: 4_096,
             block_header_entries: 4_096,
@@ -100,6 +102,7 @@ impl CacheConfig {
             .saturating_add(self.bitmap_by_block_entries)
             .saturating_add(self.bitmap_page_meta_entries)
             .saturating_add(self.bitmap_page_blob_entries)
+            .saturating_add(self.bitmap_page_counts_entries)
             .saturating_add(self.open_bitmap_stream_entries)
             .saturating_add(self.block_record_entries)
             .saturating_add(self.block_header_entries)
@@ -121,6 +124,8 @@ impl CacheConfig {
             CacheField::DirByBlock => 64,
             CacheField::TxHashIndex => 64,
             CacheField::BitmapPageMeta => 64,
+            // Sparse `(page, count)` rows: ≤256 pairs, typically far fewer.
+            CacheField::BitmapPageCounts => 256,
             CacheField::BlockHashToNumber => 40,
             CacheField::OpenBitmapStream => 32,
             CacheField::BlockBlob => 4 * 1024 * 1024,
@@ -157,6 +162,7 @@ impl CacheConfig {
                 bitmap_by_block_entries: 0,
                 bitmap_page_meta_entries: 0,
                 bitmap_page_blob_entries: 0,
+                bitmap_page_counts_entries: 0,
                 open_bitmap_stream_entries: 0,
                 block_record_entries: 0,
                 block_header_entries: 0,
@@ -173,6 +179,7 @@ impl CacheConfig {
             bitmap_by_block_entries: scale(self.bitmap_by_block_entries),
             bitmap_page_meta_entries: scale(self.bitmap_page_meta_entries),
             bitmap_page_blob_entries: scale(self.bitmap_page_blob_entries),
+            bitmap_page_counts_entries: scale(self.bitmap_page_counts_entries),
             open_bitmap_stream_entries: scale(self.open_bitmap_stream_entries),
             block_record_entries: scale(self.block_record_entries),
             block_header_entries: scale(self.block_header_entries),
@@ -182,13 +189,17 @@ impl CacheConfig {
         }
     }
 
-    fn per_field(&self) -> [(CacheField, usize); 11] {
+    fn per_field(&self) -> [(CacheField, usize); 12] {
         [
             (CacheField::DirByBlock, self.dir_by_block_entries),
             (CacheField::DirBucket, self.dir_bucket_entries),
             (CacheField::BitmapByBlock, self.bitmap_by_block_entries),
             (CacheField::BitmapPageMeta, self.bitmap_page_meta_entries),
             (CacheField::BitmapPageBlob, self.bitmap_page_blob_entries),
+            (
+                CacheField::BitmapPageCounts,
+                self.bitmap_page_counts_entries,
+            ),
             (
                 CacheField::OpenBitmapStream,
                 self.open_bitmap_stream_entries,
@@ -212,6 +223,7 @@ pub enum CacheField {
     BitmapByBlock,
     BitmapPageMeta,
     BitmapPageBlob,
+    BitmapPageCounts,
     OpenBitmapStream,
     BlockRecord,
     BlockHeader,

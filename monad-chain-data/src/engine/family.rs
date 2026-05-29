@@ -26,6 +26,7 @@ pub struct FamilyTableIds {
     pub bitmap_by_block: ScannableTableId,
     pub bitmap_page_meta: TableId,
     pub bitmap_page_blob: TableId,
+    pub bitmap_page_counts: TableId,
     pub open_bitmap_stream: ScannableTableId,
 }
 
@@ -39,6 +40,7 @@ macro_rules! family_table_ids {
             bitmap_by_block: ScannableTableId::new(concat!($prefix, "_bitmap_by_block")),
             bitmap_page_meta: TableId::new(concat!($prefix, "_bitmap_page_meta")),
             bitmap_page_blob: TableId::new(concat!($prefix, "_bitmap_page_blob")),
+            bitmap_page_counts: TableId::new(concat!($prefix, "_bitmap_page_counts")),
             open_bitmap_stream: ScannableTableId::new(concat!($prefix, "_open_bitmap_stream")),
         }
     };
