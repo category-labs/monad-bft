@@ -27,8 +27,20 @@ use crate::{
 
 impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
     /// Loads the AND-intersection of all clauses for one shard, clipped to
-    /// the local-id range. Returns `None` if any clause yields an empty
-    /// bitmap, meaning the shard cannot contribute candidates.
+    /// the local-id range. Returns `None` if the intersection is empty,
+    /// meaning the shard cannot contribute candidates.
+    ///
+    /// The shard's local-id space is partitioned into disjoint 64K pages
+    /// ([`STREAM_PAGE_LOCAL_ID_SPAN`]) and every clause bit in a page comes
+    /// only from that page's stream rows, so intersection distributes over
+    /// pages: `⋂_c (⋃_pages clause_c) = ⋃_pages (⋂_c clause_c_page)`. We walk
+    /// page-outer / clause-inner rather than the other way around: for each
+    /// page we fetch clause[0]'s page bitmap, and the moment the running
+    /// per-page intersection empties we break — skipping every remaining
+    /// clause's fetch for that page (including frontier-fragment scans). That
+    /// per-page short-circuit is the win over the old clause-outer loop, which
+    /// built each clause's full across-all-pages bitmap before ANDing and so
+    /// could only prune when an entire clause was empty across the shard.
     pub async fn load_intersection_bitmap(
         &self,
         clauses: &[IndexedClause],
@@ -36,62 +48,78 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
         local_from: u32,
         local_to: u32,
     ) -> Result<Option<RoaringBitmap>> {
-        let mut accumulator: Option<RoaringBitmap> = None;
-
-        for clause in clauses {
-            let clause_bitmap = self
-                .load_clause_bitmap(clause, shard, local_from, local_to)
-                .await?;
-            if clause_bitmap.is_empty() {
-                return Ok(None);
-            }
-
-            match accumulator.as_mut() {
-                Some(current) => {
-                    *current &= &clause_bitmap;
-                    if current.is_empty() {
-                        return Ok(None);
-                    }
-                }
-                None => accumulator = Some(clause_bitmap),
-            }
-        }
-
-        Ok(accumulator.filter(|bitmap| !bitmap.is_empty()))
-    }
-
-    async fn load_clause_bitmap(
-        &self,
-        clause: &IndexedClause,
-        shard: u64,
-        local_from: u32,
-        local_to: u32,
-    ) -> Result<RoaringBitmap> {
-        let stream_ids = clause.stream_ids_for_shard(shard);
-        if stream_ids.is_empty() {
-            return Ok(RoaringBitmap::new());
+        // Precompute each clause's shard streams once; reused across all pages.
+        let clause_streams: Vec<Vec<String>> = clauses
+            .iter()
+            .map(|clause| clause.stream_ids_for_shard(shard))
+            .collect();
+        // A clause with no streams in this shard contributes an empty bitmap to
+        // every page, so the whole shard intersection is empty. Bail before any
+        // fetch, matching the old loop's "empty clause => None" behavior.
+        if clause_streams.iter().any(|streams| streams.is_empty()) {
+            return Ok(None);
         }
 
         let first_page_start = page_start_local(local_from);
         let last_page_start = page_start_local(local_to);
-        let mut clause_bitmap = RoaringBitmap::new();
+        let mut result = RoaringBitmap::new();
 
-        for stream_id in stream_ids {
-            let mut page_start = first_page_start;
-            loop {
-                clause_bitmap |= self
-                    .load_bitmap_page(&stream_id, page_start, local_from, local_to)
-                    .await?;
+        let mut page_start = first_page_start;
+        loop {
+            // clause[0]'s page-P bitmap = OR over its stream values. If empty,
+            // page P contributes nothing and we skip every remaining clause's
+            // page-P fetch.
+            let mut page_intersection = self
+                .load_clause_page_bitmap(&clause_streams[0], page_start, local_from, local_to)
+                .await?;
 
-                if page_start == last_page_start {
+            for streams in &clause_streams[1..] {
+                if page_intersection.is_empty() {
+                    // Running per-page intersection is already empty; skip the
+                    // remaining clauses' page-P fetches and move to next page.
                     break;
                 }
-                page_start = page_start.saturating_add(STREAM_PAGE_LOCAL_ID_SPAN);
+                let clause_page = self
+                    .load_clause_page_bitmap(streams, page_start, local_from, local_to)
+                    .await?;
+                page_intersection &= &clause_page;
             }
+
+            // Union this page's surviving intersection into the shard result.
+            // Pages are disjoint, so this OR never double-counts.
+            if !page_intersection.is_empty() {
+                result |= page_intersection;
+            }
+
+            if page_start == last_page_start {
+                break;
+            }
+            page_start = page_start.saturating_add(STREAM_PAGE_LOCAL_ID_SPAN);
         }
 
-        clip_bitmap_to_local_range(&mut clause_bitmap, local_from, local_to);
-        Ok(clause_bitmap)
+        // Interior pages are fully inside the range; only the two boundary
+        // pages can carry out-of-range bits. As before, clip the merged shard
+        // result once at the end rather than per page.
+        clip_bitmap_to_local_range(&mut result, local_from, local_to);
+        Ok(Some(result).filter(|bitmap| !bitmap.is_empty()))
+    }
+
+    /// Loads one clause's bitmap for a single page: the OR over the clause's
+    /// stream values of that stream's page-P bitmap.
+    async fn load_clause_page_bitmap(
+        &self,
+        stream_ids: &[String],
+        page_start: u32,
+        local_from: u32,
+        local_to: u32,
+    ) -> Result<RoaringBitmap> {
+        let mut clause_page = RoaringBitmap::new();
+        for stream_id in stream_ids {
+            clause_page |= self
+                .load_bitmap_page(stream_id, page_start, local_from, local_to)
+                .await?;
+        }
+        Ok(clause_page)
     }
 
     async fn load_bitmap_page(
