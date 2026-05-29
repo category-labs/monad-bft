@@ -13,9 +13,13 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+#[cfg(feature = "dynamo")]
+mod dynamo;
 mod in_memory;
 
 use bytes::Bytes;
+#[cfg(feature = "dynamo")]
+pub use dynamo::{DynamoCredentials, DynamoMetaStore, DynamoMetaStoreConfig};
 pub use in_memory::InMemoryMetaStore;
 
 use crate::{error::Result, store::common::Page};

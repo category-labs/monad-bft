@@ -5101,6 +5101,7 @@ dependencies = [
  "alloy-rpc-types-eth",
  "auto_impl",
  "aws-config",
+ "aws-sdk-dynamodb",
  "aws-sdk-s3",
  "bytes",
  "clap",

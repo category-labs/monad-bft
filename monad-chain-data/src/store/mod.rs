@@ -35,4 +35,6 @@ pub use meta::{
     CasOutcome, CasVersion, InMemoryMetaStore, KvTable, MetaStore, MetaStoreCas, MetaWriteOp,
     PublicationCasParams, ScannableKvTable, ScannableTableId, TableId,
 };
+#[cfg(feature = "dynamo")]
+pub use meta::{DynamoCredentials, DynamoMetaStore, DynamoMetaStoreConfig};
 pub use session::{SessionFuture, WriteSession};
