@@ -20,6 +20,7 @@ clap = { workspace = true, features = ["derive"], optional = true }
 eyre = { workspace = true, optional = true }
 fjall = { workspace = true, optional = true }
 futures = { workspace = true }
+futures-timer = "3.0.3"
 itertools = { workspace = true }
 libc = { workspace = true, optional = true }
 lru = { workspace = true }

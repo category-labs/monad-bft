@@ -48,7 +48,7 @@ impl<M: MetaStore> TxHashIndexTable<M> {
 
     pub(crate) fn stage_put<B: BlobStore>(
         &self,
-        w: &WriteSession<'_, M, B>,
+        w: &mut WriteSession<'_, M, B>,
         tx_hash: &Hash32,
         location: TxLocation,
     ) {

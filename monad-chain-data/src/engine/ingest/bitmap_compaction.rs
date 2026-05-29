@@ -218,7 +218,7 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
 
     pub fn stage_bitmap_compactions(
         &self,
-        w: &WriteSession<'_, M, B>,
+        w: &mut WriteSession<'_, M, B>,
         plan: &BitmapBatchCompactionPlan,
     ) {
         for page in &plan.compacted_pages {

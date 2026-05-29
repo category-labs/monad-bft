@@ -220,7 +220,7 @@ impl<M: MetaStore> PrimaryDirTables<M> {
 
     pub fn stage_bucket<B: BlobStore>(
         &self,
-        w: &WriteSession<'_, M, B>,
+        w: &mut WriteSession<'_, M, B>,
         bucket_start: u64,
         bucket: &PrimaryDirBucket,
     ) {
@@ -233,7 +233,7 @@ impl<M: MetaStore> PrimaryDirTables<M> {
     /// of issuing one write per bucket.
     pub fn stage_block_fragment<B: BlobStore>(
         &self,
-        w: &WriteSession<'_, M, B>,
+        w: &mut WriteSession<'_, M, B>,
         block_number: u64,
         first_primary_id: u64,
         count: u32,
@@ -254,7 +254,7 @@ impl<M: MetaStore> PrimaryDirTables<M> {
 
     pub fn stage_block_fragment_filtered<B, F>(
         &self,
-        w: &WriteSession<'_, M, B>,
+        w: &mut WriteSession<'_, M, B>,
         block_number: u64,
         first_primary_id: u64,
         count: u32,
