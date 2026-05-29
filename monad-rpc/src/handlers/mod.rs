@@ -50,6 +50,9 @@ use self::{
         },
     },
     meta::{monad_net_version, monad_web3_client_version},
+    queryx::{
+        eth_queryBlocks, eth_queryLogs, eth_queryTraces, eth_queryTransactions, eth_queryTransfers,
+    },
     resources::MonadRpcResources,
     txpool::{monad_txpool_statusByAddress, monad_txpool_statusByHash},
 };
@@ -75,6 +78,7 @@ mod debug;
 mod debug_replay;
 pub mod eth;
 mod meta;
+pub mod queryx;
 pub mod resources;
 mod txpool;
 
@@ -885,8 +889,28 @@ enabled_methods!(
     txpool_statusByHash,
     txpool_statusByAddress,
     web3_clientVersion,
-    eth_fillTransaction
+    eth_fillTransaction,
+    eth_queryBlocks,
+    eth_queryTransactions,
+    eth_queryLogs,
+    eth_queryTraces,
+    eth_queryTransfers
 );
+
+impl EnabledMethod {
+    /// queryX methods are the only ones served when the RPC is configured
+    /// as a chain-data-only server (`--queryx-only`).
+    fn is_queryx(&self) -> bool {
+        matches!(
+            self,
+            EnabledMethod::eth_queryBlocks
+                | EnabledMethod::eth_queryTransactions
+                | EnabledMethod::eth_queryLogs
+                | EnabledMethod::eth_queryTraces
+                | EnabledMethod::eth_queryTransfers
+        )
+    }
+}
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn rpc_select(
@@ -896,6 +920,11 @@ pub async fn rpc_select(
     request_id: TimingRequestId,
 ) -> Result<Box<RawValue>, JsonRpcError> {
     let method: EnabledMethod = method.try_into()?;
+    // In queryX-only mode every non-queryX method is hidden, mirroring a
+    // dedicated chain-data query server.
+    if app_state.queryx_only && !method.is_queryx() {
+        return Err(JsonRpcError::method_not_found());
+    }
     let mut span = method.span();
     if let Some(metrics) = &app_state.metrics {
         span = span.with_main_timings(metrics.execution_histogram.clone());

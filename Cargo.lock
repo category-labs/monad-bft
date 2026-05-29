@@ -6086,6 +6086,7 @@ dependencies = [
  "itertools 0.13.0",
  "monad-archive",
  "monad-chain-config",
+ "monad-chain-data",
  "monad-eth-testutil",
  "monad-eth-txpool-ipc",
  "monad-eth-txpool-types",

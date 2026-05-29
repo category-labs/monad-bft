@@ -21,9 +21,12 @@ use actix_web::{
 use monad_triedb_utils::triedb_env::TriedbEnv;
 use tracing_actix_web::RootSpanBuilder;
 
+use std::sync::Arc;
+
 use crate::{
     chainstate::{eth_call_handler::EthCallHandler, ChainState},
     comparator::RpcComparator,
+    handlers::queryx::ChainDataService,
     middleware::Metrics,
     txpool::EthTxPoolBridgeClient,
 };
@@ -31,9 +34,16 @@ use crate::{
 #[derive(Clone)]
 pub struct MonadRpcResources {
     pub txpool_bridge_client: Option<EthTxPoolBridgeClient>,
+    /// When true, only the queryX methods are dispatched; every other
+    /// JSON-RPC method resolves to `method not found`. Used to run a
+    /// chain-data-only RPC server.
+    pub queryx_only: bool,
     pub eth_call_handler: Option<EthCallHandler>,
     pub chain_id: u64,
     pub chain_state: Option<ChainState<TriedbEnv>>,
+    /// Embedded chain-data service backing the queryX methods. `None`
+    /// disables those methods (they return `method not supported`).
+    pub chain_data: Option<Arc<ChainDataService>>,
     pub batch_request_limit: u16,
     pub max_response_size: u32,
     pub allow_unprotected_txs: bool,
@@ -51,9 +61,11 @@ impl MonadRpcResources {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         txpool_bridge_client: Option<EthTxPoolBridgeClient>,
+        queryx_only: bool,
         eth_call_handler: Option<EthCallHandler>,
         chain_id: u64,
         chain_state: Option<ChainState<TriedbEnv>>,
+        chain_data: Option<Arc<ChainDataService>>,
         batch_request_limit: u16,
         max_response_size: u32,
         allow_unprotected_txs: bool,
@@ -68,9 +80,11 @@ impl MonadRpcResources {
     ) -> Self {
         Self {
             txpool_bridge_client,
+            queryx_only,
             eth_call_handler,
             chain_id,
             chain_state,
+            chain_data,
             batch_request_limit,
             max_response_size,
             allow_unprotected_txs,
