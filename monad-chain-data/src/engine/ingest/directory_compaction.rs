@@ -91,7 +91,7 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
 
     pub fn stage_directory_compactions(
         &self,
-        w: &WriteSession<'_, M, B>,
+        w: &mut WriteSession<'_, M, B>,
         plan: &DirectoryCompactionPlan,
     ) {
         for (bucket_start, bucket) in &plan.buckets {

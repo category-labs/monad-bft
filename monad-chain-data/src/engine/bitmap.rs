@@ -135,7 +135,7 @@ impl<M: MetaStore> BitmapTables<M> {
 
     pub fn stage_fragment<B: BlobStore>(
         &self,
-        w: &WriteSession<'_, M, B>,
+        w: &mut WriteSession<'_, M, B>,
         fragment: &BitmapFragmentWrite,
         block_number: u64,
     ) {
@@ -151,7 +151,7 @@ impl<M: MetaStore> BitmapTables<M> {
 
     pub fn stage_fragments_for_global_page<B: BlobStore>(
         &self,
-        w: &WriteSession<'_, M, B>,
+        w: &mut WriteSession<'_, M, B>,
         fragments: &[BitmapFragmentWrite],
         block_number: u64,
         global_page_start: u64,
@@ -283,7 +283,7 @@ impl<M: MetaStore> BitmapTables<M> {
 
     pub fn stage_page_meta<B: BlobStore>(
         &self,
-        w: &WriteSession<'_, M, B>,
+        w: &mut WriteSession<'_, M, B>,
         stream_id: &str,
         page_start_local: u32,
         page_meta: &BitmapPageMeta,
@@ -336,7 +336,7 @@ impl<M: MetaStore> BitmapTables<M> {
 
     pub fn stage_page_artifact<B: BlobStore>(
         &self,
-        w: &WriteSession<'_, M, B>,
+        w: &mut WriteSession<'_, M, B>,
         stream_id: &str,
         page_start_local: u32,
         artifact: &BitmapPageArtifact,
@@ -378,7 +378,7 @@ impl<M: MetaStore> BitmapTables<M> {
 
     pub fn stage_page_blob<B: BlobStore>(
         &self,
-        w: &WriteSession<'_, M, B>,
+        w: &mut WriteSession<'_, M, B>,
         stream_id: &str,
         page_start_local: u32,
         bitmap_blob: Bytes,
@@ -443,7 +443,7 @@ impl<M: MetaStore> BitmapTables<M> {
 
     pub fn stage_open_streams<B: BlobStore>(
         &self,
-        w: &WriteSession<'_, M, B>,
+        w: &mut WriteSession<'_, M, B>,
         global_page_start: u64,
         streams: &BTreeSet<String>,
     ) {

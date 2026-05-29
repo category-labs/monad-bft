@@ -41,7 +41,7 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
     /// `plan_*_compactions` / `stage_*_compactions`.
     pub(crate) fn stage_indexed_family_ingest(
         &self,
-        w: &WriteSession<'_, M, B>,
+        w: &mut WriteSession<'_, M, B>,
         block_number: u64,
         block_blob: Vec<u8>,
         window: FamilyWindowRecord,

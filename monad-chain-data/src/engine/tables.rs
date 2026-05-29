@@ -224,7 +224,7 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
 
     pub async fn with_writes<'a, F>(&'a self, f: F) -> Result<()>
     where
-        F: for<'s> FnOnce(&'s WriteSession<'a, M, B>) -> SessionFuture<'s>,
+        F: for<'s> FnOnce(&'s mut WriteSession<'a, M, B>) -> SessionFuture<'s>,
     {
         let (result, _timings) = self.with_writes_timed(f).await;
         result
@@ -237,10 +237,10 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
     /// closure short-circuited the flush.
     pub async fn with_writes_timed<'a, F>(&'a self, f: F) -> (Result<()>, MetaBlobTimings)
     where
-        F: for<'s> FnOnce(&'s WriteSession<'a, M, B>) -> SessionFuture<'s>,
+        F: for<'s> FnOnce(&'s mut WriteSession<'a, M, B>) -> SessionFuture<'s>,
     {
-        let session = WriteSession::new(self);
-        let closure_result = f(&session).await;
+        let mut session = WriteSession::new(self);
+        let closure_result = f(&mut session).await;
         if let Err(e) = closure_result {
             session.invalidate_populated();
             return (Err(e), MetaBlobTimings::default());
@@ -279,10 +279,10 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
     /// may be applied later, retried, or abandoned by a pipelined caller.
     pub async fn stage_writes<'a, F>(&'a self, f: F) -> Result<StagedWrites>
     where
-        F: for<'s> FnOnce(&'s WriteSession<'a, M, B>) -> SessionFuture<'s>,
+        F: for<'s> FnOnce(&'s mut WriteSession<'a, M, B>) -> SessionFuture<'s>,
     {
-        let session = WriteSession::new(self);
-        let closure_result = f(&session).await;
+        let mut session = WriteSession::new(self);
+        let closure_result = f(&mut session).await;
         if let Err(e) = closure_result {
             session.invalidate_populated();
             return Err(e);
@@ -330,7 +330,7 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
     ) -> Result<CasOutcome>
     where
         M: MetaStoreCas,
-        F: for<'s> FnOnce(&'s WriteSession<'a, M, B>) -> SessionFuture<'s>,
+        F: for<'s> FnOnce(&'s mut WriteSession<'a, M, B>) -> SessionFuture<'s>,
     {
         self.with_writes_and_cas_timed(cas, f)
             .await
@@ -344,10 +344,10 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
     ) -> Result<(CasOutcome, MetaBlobTimings)>
     where
         M: MetaStoreCas,
-        F: for<'s> FnOnce(&'s WriteSession<'a, M, B>) -> SessionFuture<'s>,
+        F: for<'s> FnOnce(&'s mut WriteSession<'a, M, B>) -> SessionFuture<'s>,
     {
-        let session = WriteSession::new(self);
-        let closure_result = f(&session).await;
+        let mut session = WriteSession::new(self);
+        let closure_result = f(&mut session).await;
         if let Err(e) = closure_result {
             session.invalidate_populated();
             return Err(e);
@@ -594,7 +594,7 @@ impl<M: MetaStore> BlockTables<M> {
 
     pub fn stage_record<B: BlobStore>(
         &self,
-        w: &WriteSession<'_, M, B>,
+        w: &mut WriteSession<'_, M, B>,
         block_number: u64,
         block_record: &BlockRecord,
     ) {
@@ -608,7 +608,7 @@ impl<M: MetaStore> BlockTables<M> {
 
     pub fn stage_metadata<B: BlobStore>(
         &self,
-        w: &WriteSession<'_, M, B>,
+        w: &mut WriteSession<'_, M, B>,
         block_number: u64,
         block_record: &BlockRecord,
         evm_header: &EvmBlockHeader,
@@ -652,7 +652,7 @@ impl<M: MetaStore> BlockTables<M> {
 
     pub fn stage_header<B: BlobStore>(
         &self,
-        w: &WriteSession<'_, M, B>,
+        w: &mut WriteSession<'_, M, B>,
         block_number: u64,
         header: &EvmBlockHeader,
     ) {
@@ -698,7 +698,7 @@ impl<M: MetaStore> BlockTables<M> {
 
     pub fn stage_hash_index<B: BlobStore>(
         &self,
-        w: &WriteSession<'_, M, B>,
+        w: &mut WriteSession<'_, M, B>,
         block_hash: &Hash32,
         block_number: u64,
     ) {
@@ -873,7 +873,7 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
 
     pub fn stage_block_blob(
         &self,
-        w: &WriteSession<'_, M, B>,
+        w: &mut WriteSession<'_, M, B>,
         block_number: u64,
         block_log_blob: Vec<u8>,
     ) {
@@ -881,7 +881,12 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
         w.put_blob(&self.block_blobs, &key, Bytes::from(block_log_blob));
     }
 
-    pub fn stage_block_header(&self, w: &WriteSession<'_, M, B>, block_number: u64, bytes: Bytes) {
+    pub fn stage_block_header(
+        &self,
+        w: &mut WriteSession<'_, M, B>,
+        block_number: u64,
+        bytes: Bytes,
+    ) {
         let key = block_number_key(block_number);
         w.put(&self.block_headers, &key, bytes);
     }

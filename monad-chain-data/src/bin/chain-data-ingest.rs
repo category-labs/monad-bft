@@ -849,19 +849,6 @@ async fn main() -> Result<()> {
                 fetch_request_wall_total_ms,
                 ingest_batch_wall_total_ms,
                 stage_a_wall_total_ms = phase_summary.stage_a_wall_ms_total,
-                stage_a_log_plan_work_total_ms = phase_summary.stage_a_log_plan_ms_total,
-                stage_a_tx_plan_work_total_ms = phase_summary.stage_a_tx_plan_ms_total,
-                stage_a_trace_plan_work_total_ms = phase_summary.stage_a_trace_plan_ms_total,
-                stage_a_delta_work_total_ms = phase_summary.stage_a_delta_ms_total,
-                stage_a_session_stage_wall_total_ms = phase_summary.stage_a_session_stage_ms_total,
-                stage_a_bitmap_fragment_count = phase_summary.stage_a_bitmap_fragment_count,
-                stage_a_hash_location_count = phase_summary.stage_a_hash_location_count,
-                stage_a_dir_fragments_total = phase_summary.stage_a_dir_fragments_total,
-                stage_a_dir_fragments_written = phase_summary.stage_a_dir_fragments_written,
-                stage_a_dir_fragments_skipped = phase_summary.stage_a_dir_fragments_skipped,
-                stage_a_bitmap_fragments_total = phase_summary.stage_a_bitmap_fragments_total,
-                stage_a_bitmap_fragments_written = phase_summary.stage_a_bitmap_fragments_written,
-                stage_a_bitmap_fragments_skipped = phase_summary.stage_a_bitmap_fragments_skipped,
                 phase_a_write_ops_total = phase_summary.phase_a_write_ops_total,
                 phase_a_write_bytes_total = phase_summary.phase_a_write_bytes_total,
                 phase_a_write_ops_by_table = %phase_summary.phase_a_write_ops_by_table,
@@ -885,70 +872,6 @@ async fn main() -> Result<()> {
                 commit_a_blob_p99_ms = phase_summary.commit_a_blob_p99,
                 reads_p50_ms = phase_summary.reads_p50,
                 reads_p99_ms = phase_summary.reads_p99,
-                reads_dir_list_p50_ms = phase_summary.reads_dir_list_p50,
-                reads_dir_list_p99_ms = phase_summary.reads_dir_list_p99,
-                reads_dir_get_p50_ms = phase_summary.reads_dir_get_p50,
-                reads_dir_get_p99_ms = phase_summary.reads_dir_get_p99,
-                reads_bitmap_open_streams_p50_ms = phase_summary.reads_bitmap_open_streams_p50,
-                reads_bitmap_open_streams_p99_ms = phase_summary.reads_bitmap_open_streams_p99,
-                reads_bitmap_list_p50_ms = phase_summary.reads_bitmap_list_p50,
-                reads_bitmap_list_p99_ms = phase_summary.reads_bitmap_list_p99,
-                reads_bitmap_get_p50_ms = phase_summary.reads_bitmap_get_p50,
-                reads_bitmap_get_p99_ms = phase_summary.reads_bitmap_get_p99,
-                reads_bitmap_shape_p50_ms = phase_summary.reads_bitmap_shape_p50,
-                reads_bitmap_shape_p99_ms = phase_summary.reads_bitmap_shape_p99,
-                reads_bitmap_index_p50_ms = phase_summary.reads_bitmap_index_p50,
-                reads_bitmap_index_p99_ms = phase_summary.reads_bitmap_index_p99,
-                reads_bitmap_compact_p50_ms = phase_summary.reads_bitmap_compact_p50,
-                reads_bitmap_compact_p99_ms = phase_summary.reads_bitmap_compact_p99,
-                reads_dir_index_p50_ms = phase_summary.reads_dir_index_p50,
-                reads_dir_index_p99_ms = phase_summary.reads_dir_index_p99,
-                reads_dir_decode_p50_ms = phase_summary.reads_dir_decode_p50,
-                reads_dir_decode_p99_ms = phase_summary.reads_dir_decode_p99,
-                reads_unaccounted_p50_ms = phase_summary.reads_unaccounted_p50,
-                reads_unaccounted_p99_ms = phase_summary.reads_unaccounted_p99,
-                reads_bitmap_open_streams_total_ms =
-                    phase_summary.reads_bitmap_open_streams_ms_total,
-                reads_bitmap_shape_total_ms = phase_summary.reads_bitmap_shape_ms_total,
-                reads_bitmap_union_total_ms = phase_summary.reads_bitmap_union_ms_total,
-                reads_bitmap_frontier_total_ms = phase_summary.reads_bitmap_frontier_ms_total,
-                reads_bitmap_open_write_total_ms = phase_summary.reads_bitmap_open_write_ms_total,
-                reads_bitmap_index_total_ms = phase_summary.reads_bitmap_index_ms_total,
-                reads_bitmap_compact_total_ms = phase_summary.reads_bitmap_compact_ms_total,
-                reads_bitmap_compact_wall_total_ms =
-                    phase_summary.reads_bitmap_compact_wall_ms_total,
-                reads_dir_index_total_ms = phase_summary.reads_dir_index_ms_total,
-                reads_dir_decode_total_ms = phase_summary.reads_dir_decode_ms_total,
-                reads_unaccounted_total_ms = phase_summary.reads_unaccounted_ms_total,
-                reads_bitmap_open_streams_work_total_ms =
-                    phase_summary.reads_bitmap_open_streams_ms_total,
-                reads_bitmap_shape_work_total_ms = phase_summary.reads_bitmap_shape_ms_total,
-                reads_bitmap_union_work_total_ms = phase_summary.reads_bitmap_union_ms_total,
-                reads_bitmap_frontier_work_total_ms = phase_summary.reads_bitmap_frontier_ms_total,
-                reads_bitmap_open_write_work_total_ms =
-                    phase_summary.reads_bitmap_open_write_ms_total,
-                reads_bitmap_index_work_total_ms = phase_summary.reads_bitmap_index_ms_total,
-                reads_bitmap_compact_work_total_ms = phase_summary.reads_bitmap_compact_ms_total,
-                reads_dir_index_work_total_ms = phase_summary.reads_dir_index_ms_total,
-                reads_dir_decode_work_total_ms = phase_summary.reads_dir_decode_ms_total,
-                reads_unaccounted_work_total_ms = phase_summary.reads_unaccounted_ms_total,
-                reads_dir_list_count = phase_summary.reads_dir_list_count,
-                reads_dir_get_count = phase_summary.reads_dir_get_count,
-                reads_dir_fragment_count = phase_summary.reads_dir_fragment_count,
-                reads_bitmap_open_streams_count = phase_summary.reads_bitmap_open_streams_count,
-                reads_bitmap_list_count = phase_summary.reads_bitmap_list_count,
-                reads_bitmap_get_count = phase_summary.reads_bitmap_get_count,
-                reads_bitmap_fragment_count = phase_summary.reads_bitmap_fragment_count,
-                reads_bitmap_fragment_bytes = phase_summary.reads_bitmap_fragment_bytes,
-                reads_bitmap_frontier_stream_count =
-                    phase_summary.reads_bitmap_frontier_stream_count,
-                reads_bitmap_union_page_count = phase_summary.reads_bitmap_union_page_count,
-                reads_bitmap_union_stream_count = phase_summary.reads_bitmap_union_stream_count,
-                reads_bitmap_touched_page_count = phase_summary.reads_bitmap_touched_page_count,
-                reads_bitmap_touched_stream_count = phase_summary.reads_bitmap_touched_stream_count,
-                reads_bitmap_final_open_stream_count =
-                    phase_summary.reads_bitmap_final_open_stream_count,
-                reads_bitmap_compact_count = phase_summary.reads_bitmap_compact_count,
                 stage_b_p50_ms = phase_summary.stage_b_p50,
                 stage_b_p99_ms = phase_summary.stage_b_p99,
                 commit_b_p50_ms = phase_summary.commit_b_p50,
@@ -1406,64 +1329,14 @@ impl FetchProgress {
 #[derive(Default)]
 struct PhaseStats {
     stage_a: Vec<u64>,
-    stage_a_log_plan_us: u64,
-    stage_a_tx_plan_us: u64,
-    stage_a_trace_plan_us: u64,
-    stage_a_delta_us: u64,
-    stage_a_session_stage_us: u64,
-    stage_a_bitmap_fragment_count: u64,
-    stage_a_hash_location_count: u64,
-    stage_a_dir_fragments_total: u64,
-    stage_a_dir_fragments_written: u64,
-    stage_a_dir_fragments_skipped: u64,
-    stage_a_bitmap_fragments_total: u64,
-    stage_a_bitmap_fragments_written: u64,
-    stage_a_bitmap_fragments_skipped: u64,
     phase_a_write_counts: monad_chain_data::WriteOpCounts,
     phase_b_write_counts: monad_chain_data::WriteOpCounts,
     commit_a_meta: Vec<u64>,
     commit_a_blob: Vec<u64>,
     reads: Vec<u64>,
-    reads_dir_list: Vec<u64>,
-    reads_dir_get: Vec<u64>,
-    reads_bitmap_open_streams: Vec<u64>,
-    reads_bitmap_list: Vec<u64>,
-    reads_bitmap_get: Vec<u64>,
-    reads_bitmap_shape: Vec<u64>,
-    reads_bitmap_index: Vec<u64>,
-    reads_bitmap_compact: Vec<u64>,
-    reads_dir_index: Vec<u64>,
-    reads_dir_decode: Vec<u64>,
-    reads_unaccounted: Vec<u64>,
     stage_b: Vec<u64>,
     commit_b: Vec<u64>,
     cas: Vec<u64>,
-    reads_dir_list_count: u64,
-    reads_dir_get_count: u64,
-    reads_bitmap_open_streams_count: u64,
-    reads_bitmap_list_count: u64,
-    reads_bitmap_get_count: u64,
-    reads_bitmap_fragment_count: u64,
-    reads_bitmap_fragment_bytes: u64,
-    reads_bitmap_open_streams_us: u64,
-    reads_bitmap_shape_us: u64,
-    reads_bitmap_union_us: u64,
-    reads_bitmap_frontier_us: u64,
-    reads_bitmap_open_write_us: u64,
-    reads_bitmap_index_us: u64,
-    reads_bitmap_compact_us: u64,
-    reads_bitmap_compact_wall_us: u64,
-    reads_bitmap_compact_count: u64,
-    reads_bitmap_frontier_stream_count: u64,
-    reads_bitmap_union_page_count: u64,
-    reads_bitmap_union_stream_count: u64,
-    reads_bitmap_touched_page_count: u64,
-    reads_bitmap_touched_stream_count: u64,
-    reads_bitmap_final_open_stream_count: u64,
-    reads_dir_fragment_count: u64,
-    reads_dir_index_us: u64,
-    reads_dir_decode_us: u64,
-    reads_unaccounted_us: u64,
     phase_b_skipped: u64,
     phase_b_total: u64,
 }
@@ -1476,19 +1349,6 @@ struct PhaseSummary {
     stage_b_wall_ms_total: u64,
     commit_b_wall_ms_total: u64,
     cas_wall_ms_total: u64,
-    stage_a_log_plan_ms_total: f64,
-    stage_a_tx_plan_ms_total: f64,
-    stage_a_trace_plan_ms_total: f64,
-    stage_a_delta_ms_total: f64,
-    stage_a_session_stage_ms_total: f64,
-    stage_a_bitmap_fragment_count: u64,
-    stage_a_hash_location_count: u64,
-    stage_a_dir_fragments_total: u64,
-    stage_a_dir_fragments_written: u64,
-    stage_a_dir_fragments_skipped: u64,
-    stage_a_bitmap_fragments_total: u64,
-    stage_a_bitmap_fragments_written: u64,
-    stage_a_bitmap_fragments_skipped: u64,
     phase_a_write_ops_total: u64,
     phase_a_write_bytes_total: u64,
     phase_a_write_ops_by_table: String,
@@ -1505,54 +1365,6 @@ struct PhaseSummary {
     commit_a_blob_p99: u64,
     reads_p50: u64,
     reads_p99: u64,
-    reads_dir_list_p50: u64,
-    reads_dir_list_p99: u64,
-    reads_dir_get_p50: u64,
-    reads_dir_get_p99: u64,
-    reads_bitmap_open_streams_p50: u64,
-    reads_bitmap_open_streams_p99: u64,
-    reads_bitmap_list_p50: u64,
-    reads_bitmap_list_p99: u64,
-    reads_bitmap_get_p50: u64,
-    reads_bitmap_get_p99: u64,
-    reads_bitmap_shape_p50: u64,
-    reads_bitmap_shape_p99: u64,
-    reads_bitmap_index_p50: u64,
-    reads_bitmap_index_p99: u64,
-    reads_bitmap_compact_p50: u64,
-    reads_bitmap_compact_p99: u64,
-    reads_dir_index_p50: u64,
-    reads_dir_index_p99: u64,
-    reads_dir_decode_p50: u64,
-    reads_dir_decode_p99: u64,
-    reads_unaccounted_p50: u64,
-    reads_unaccounted_p99: u64,
-    reads_dir_list_count: u64,
-    reads_dir_get_count: u64,
-    reads_bitmap_open_streams_count: u64,
-    reads_bitmap_list_count: u64,
-    reads_bitmap_get_count: u64,
-    reads_bitmap_fragment_count: u64,
-    reads_bitmap_fragment_bytes: u64,
-    reads_bitmap_open_streams_ms_total: f64,
-    reads_bitmap_shape_ms_total: f64,
-    reads_bitmap_union_ms_total: f64,
-    reads_bitmap_frontier_ms_total: f64,
-    reads_bitmap_open_write_ms_total: f64,
-    reads_bitmap_index_ms_total: f64,
-    reads_bitmap_compact_ms_total: f64,
-    reads_bitmap_compact_wall_ms_total: f64,
-    reads_bitmap_compact_count: u64,
-    reads_bitmap_frontier_stream_count: u64,
-    reads_bitmap_union_page_count: u64,
-    reads_bitmap_union_stream_count: u64,
-    reads_bitmap_touched_page_count: u64,
-    reads_bitmap_touched_stream_count: u64,
-    reads_bitmap_final_open_stream_count: u64,
-    reads_dir_fragment_count: u64,
-    reads_dir_index_ms_total: f64,
-    reads_dir_decode_ms_total: f64,
-    reads_unaccounted_ms_total: f64,
     stage_b_p50: u64,
     stage_b_p99: u64,
     commit_b_p50: u64,
@@ -1564,137 +1376,14 @@ struct PhaseSummary {
 impl PhaseStats {
     fn record(&mut self, t: &monad_chain_data::IngestBatchTimings) {
         self.stage_a.push(t.stage_a_ms);
-        self.stage_a_log_plan_us = self
-            .stage_a_log_plan_us
-            .saturating_add(t.stage_a_log_plan_us);
-        self.stage_a_tx_plan_us = self.stage_a_tx_plan_us.saturating_add(t.stage_a_tx_plan_us);
-        self.stage_a_trace_plan_us = self
-            .stage_a_trace_plan_us
-            .saturating_add(t.stage_a_trace_plan_us);
-        self.stage_a_delta_us = self.stage_a_delta_us.saturating_add(t.stage_a_delta_us);
-        self.stage_a_session_stage_us = self
-            .stage_a_session_stage_us
-            .saturating_add(t.stage_a_session_stage_us);
-        self.stage_a_bitmap_fragment_count = self
-            .stage_a_bitmap_fragment_count
-            .saturating_add(t.stage_a_bitmap_fragment_count);
-        self.stage_a_hash_location_count = self
-            .stage_a_hash_location_count
-            .saturating_add(t.stage_a_hash_location_count);
-        self.stage_a_dir_fragments_total = self
-            .stage_a_dir_fragments_total
-            .saturating_add(t.stage_a_dir_fragments_total);
-        self.stage_a_dir_fragments_written = self
-            .stage_a_dir_fragments_written
-            .saturating_add(t.stage_a_dir_fragments_written);
-        self.stage_a_dir_fragments_skipped = self
-            .stage_a_dir_fragments_skipped
-            .saturating_add(t.stage_a_dir_fragments_skipped);
-        self.stage_a_bitmap_fragments_total = self
-            .stage_a_bitmap_fragments_total
-            .saturating_add(t.stage_a_bitmap_fragments_total);
-        self.stage_a_bitmap_fragments_written = self
-            .stage_a_bitmap_fragments_written
-            .saturating_add(t.stage_a_bitmap_fragments_written);
-        self.stage_a_bitmap_fragments_skipped = self
-            .stage_a_bitmap_fragments_skipped
-            .saturating_add(t.stage_a_bitmap_fragments_skipped);
         self.phase_a_write_counts.merge(&t.phase_a_write_counts);
         self.phase_b_write_counts.merge(&t.phase_b_write_counts);
         self.commit_a_meta.push(t.commit_a_meta_ms);
         self.commit_a_blob.push(t.commit_a_blob_ms);
         self.reads.push(t.reads_ms);
-        self.reads_dir_list.push(t.reads_dir_list_ms);
-        self.reads_dir_get.push(t.reads_dir_get_ms);
-        self.reads_bitmap_open_streams
-            .push(t.reads_bitmap_open_streams_ms);
-        self.reads_bitmap_list.push(t.reads_bitmap_list_ms);
-        self.reads_bitmap_get.push(t.reads_bitmap_get_ms);
-        self.reads_bitmap_shape.push(t.reads_bitmap_shape_ms);
-        self.reads_bitmap_index.push(t.reads_bitmap_index_ms);
-        self.reads_bitmap_compact.push(t.reads_bitmap_compact_ms);
-        self.reads_dir_index.push(t.reads_dir_index_ms);
-        self.reads_dir_decode.push(t.reads_dir_decode_ms);
-        self.reads_unaccounted.push(t.reads_unaccounted_ms);
         self.stage_b.push(t.stage_b_ms);
         self.commit_b.push(t.commit_b_ms);
         self.cas.push(t.cas_ms);
-        self.reads_dir_list_count = self
-            .reads_dir_list_count
-            .saturating_add(t.reads_dir_list_count);
-        self.reads_dir_get_count = self
-            .reads_dir_get_count
-            .saturating_add(t.reads_dir_get_count);
-        self.reads_bitmap_open_streams_count = self
-            .reads_bitmap_open_streams_count
-            .saturating_add(t.reads_bitmap_open_streams_count);
-        self.reads_bitmap_list_count = self
-            .reads_bitmap_list_count
-            .saturating_add(t.reads_bitmap_list_count);
-        self.reads_bitmap_get_count = self
-            .reads_bitmap_get_count
-            .saturating_add(t.reads_bitmap_get_count);
-        self.reads_bitmap_fragment_count = self
-            .reads_bitmap_fragment_count
-            .saturating_add(t.reads_bitmap_fragment_count);
-        self.reads_bitmap_fragment_bytes = self
-            .reads_bitmap_fragment_bytes
-            .saturating_add(t.reads_bitmap_fragment_bytes);
-        self.reads_bitmap_open_streams_us = self
-            .reads_bitmap_open_streams_us
-            .saturating_add(t.reads_bitmap_open_streams_us);
-        self.reads_bitmap_shape_us = self
-            .reads_bitmap_shape_us
-            .saturating_add(t.reads_bitmap_shape_us);
-        self.reads_bitmap_union_us = self
-            .reads_bitmap_union_us
-            .saturating_add(t.reads_bitmap_union_us);
-        self.reads_bitmap_frontier_us = self
-            .reads_bitmap_frontier_us
-            .saturating_add(t.reads_bitmap_frontier_us);
-        self.reads_bitmap_open_write_us = self
-            .reads_bitmap_open_write_us
-            .saturating_add(t.reads_bitmap_open_write_us);
-        self.reads_bitmap_index_us = self
-            .reads_bitmap_index_us
-            .saturating_add(t.reads_bitmap_index_us);
-        self.reads_bitmap_compact_us = self
-            .reads_bitmap_compact_us
-            .saturating_add(t.reads_bitmap_compact_us);
-        self.reads_bitmap_compact_wall_us = self
-            .reads_bitmap_compact_wall_us
-            .saturating_add(t.reads_bitmap_compact_wall_us);
-        self.reads_bitmap_compact_count = self
-            .reads_bitmap_compact_count
-            .saturating_add(t.reads_bitmap_compact_count);
-        self.reads_bitmap_frontier_stream_count = self
-            .reads_bitmap_frontier_stream_count
-            .saturating_add(t.reads_bitmap_frontier_stream_count);
-        self.reads_bitmap_union_page_count = self
-            .reads_bitmap_union_page_count
-            .saturating_add(t.reads_bitmap_union_page_count);
-        self.reads_bitmap_union_stream_count = self
-            .reads_bitmap_union_stream_count
-            .saturating_add(t.reads_bitmap_union_stream_count);
-        self.reads_bitmap_touched_page_count = self
-            .reads_bitmap_touched_page_count
-            .saturating_add(t.reads_bitmap_touched_page_count);
-        self.reads_bitmap_touched_stream_count = self
-            .reads_bitmap_touched_stream_count
-            .saturating_add(t.reads_bitmap_touched_stream_count);
-        self.reads_bitmap_final_open_stream_count = self
-            .reads_bitmap_final_open_stream_count
-            .saturating_add(t.reads_bitmap_final_open_stream_count);
-        self.reads_dir_fragment_count = self
-            .reads_dir_fragment_count
-            .saturating_add(t.reads_dir_fragment_count);
-        self.reads_dir_index_us = self.reads_dir_index_us.saturating_add(t.reads_dir_index_us);
-        self.reads_dir_decode_us = self
-            .reads_dir_decode_us
-            .saturating_add(t.reads_dir_decode_us);
-        self.reads_unaccounted_us = self
-            .reads_unaccounted_us
-            .saturating_add(t.reads_unaccounted_us);
         self.phase_b_total += 1;
         if t.phase_b_skipped {
             self.phase_b_skipped += 1;
@@ -1715,19 +1404,6 @@ impl PhaseStats {
             stage_b_wall_ms_total: sum_u64(&self.stage_b),
             commit_b_wall_ms_total: sum_u64(&self.commit_b),
             cas_wall_ms_total: sum_u64(&self.cas),
-            stage_a_log_plan_ms_total: round_2(self.stage_a_log_plan_us as f64 / 1_000.0),
-            stage_a_tx_plan_ms_total: round_2(self.stage_a_tx_plan_us as f64 / 1_000.0),
-            stage_a_trace_plan_ms_total: round_2(self.stage_a_trace_plan_us as f64 / 1_000.0),
-            stage_a_delta_ms_total: round_2(self.stage_a_delta_us as f64 / 1_000.0),
-            stage_a_session_stage_ms_total: round_2(self.stage_a_session_stage_us as f64 / 1_000.0),
-            stage_a_bitmap_fragment_count: self.stage_a_bitmap_fragment_count,
-            stage_a_hash_location_count: self.stage_a_hash_location_count,
-            stage_a_dir_fragments_total: self.stage_a_dir_fragments_total,
-            stage_a_dir_fragments_written: self.stage_a_dir_fragments_written,
-            stage_a_dir_fragments_skipped: self.stage_a_dir_fragments_skipped,
-            stage_a_bitmap_fragments_total: self.stage_a_bitmap_fragments_total,
-            stage_a_bitmap_fragments_written: self.stage_a_bitmap_fragments_written,
-            stage_a_bitmap_fragments_skipped: self.stage_a_bitmap_fragments_skipped,
             phase_a_write_ops_total: self.phase_a_write_counts.total_ops(),
             phase_a_write_bytes_total: self.phase_a_write_counts.total_bytes(),
             phase_a_write_ops_by_table: self.phase_a_write_counts.top_by_ops(12).to_string(),
@@ -1744,60 +1420,6 @@ impl PhaseStats {
             commit_a_blob_p99: percentile(&self.commit_a_blob, 0.99),
             reads_p50: percentile(&self.reads, 0.50),
             reads_p99: percentile(&self.reads, 0.99),
-            reads_dir_list_p50: percentile(&self.reads_dir_list, 0.50),
-            reads_dir_list_p99: percentile(&self.reads_dir_list, 0.99),
-            reads_dir_get_p50: percentile(&self.reads_dir_get, 0.50),
-            reads_dir_get_p99: percentile(&self.reads_dir_get, 0.99),
-            reads_bitmap_open_streams_p50: percentile(&self.reads_bitmap_open_streams, 0.50),
-            reads_bitmap_open_streams_p99: percentile(&self.reads_bitmap_open_streams, 0.99),
-            reads_bitmap_list_p50: percentile(&self.reads_bitmap_list, 0.50),
-            reads_bitmap_list_p99: percentile(&self.reads_bitmap_list, 0.99),
-            reads_bitmap_get_p50: percentile(&self.reads_bitmap_get, 0.50),
-            reads_bitmap_get_p99: percentile(&self.reads_bitmap_get, 0.99),
-            reads_bitmap_shape_p50: percentile(&self.reads_bitmap_shape, 0.50),
-            reads_bitmap_shape_p99: percentile(&self.reads_bitmap_shape, 0.99),
-            reads_bitmap_index_p50: percentile(&self.reads_bitmap_index, 0.50),
-            reads_bitmap_index_p99: percentile(&self.reads_bitmap_index, 0.99),
-            reads_bitmap_compact_p50: percentile(&self.reads_bitmap_compact, 0.50),
-            reads_bitmap_compact_p99: percentile(&self.reads_bitmap_compact, 0.99),
-            reads_dir_index_p50: percentile(&self.reads_dir_index, 0.50),
-            reads_dir_index_p99: percentile(&self.reads_dir_index, 0.99),
-            reads_dir_decode_p50: percentile(&self.reads_dir_decode, 0.50),
-            reads_dir_decode_p99: percentile(&self.reads_dir_decode, 0.99),
-            reads_unaccounted_p50: percentile(&self.reads_unaccounted, 0.50),
-            reads_unaccounted_p99: percentile(&self.reads_unaccounted, 0.99),
-            reads_dir_list_count: self.reads_dir_list_count,
-            reads_dir_get_count: self.reads_dir_get_count,
-            reads_bitmap_open_streams_count: self.reads_bitmap_open_streams_count,
-            reads_bitmap_list_count: self.reads_bitmap_list_count,
-            reads_bitmap_get_count: self.reads_bitmap_get_count,
-            reads_bitmap_fragment_count: self.reads_bitmap_fragment_count,
-            reads_bitmap_fragment_bytes: self.reads_bitmap_fragment_bytes,
-            reads_bitmap_open_streams_ms_total: round_2(
-                self.reads_bitmap_open_streams_us as f64 / 1_000.0,
-            ),
-            reads_bitmap_shape_ms_total: round_2(self.reads_bitmap_shape_us as f64 / 1_000.0),
-            reads_bitmap_union_ms_total: round_2(self.reads_bitmap_union_us as f64 / 1_000.0),
-            reads_bitmap_frontier_ms_total: round_2(self.reads_bitmap_frontier_us as f64 / 1_000.0),
-            reads_bitmap_open_write_ms_total: round_2(
-                self.reads_bitmap_open_write_us as f64 / 1_000.0,
-            ),
-            reads_bitmap_index_ms_total: round_2(self.reads_bitmap_index_us as f64 / 1_000.0),
-            reads_bitmap_compact_ms_total: round_2(self.reads_bitmap_compact_us as f64 / 1_000.0),
-            reads_bitmap_compact_wall_ms_total: round_2(
-                self.reads_bitmap_compact_wall_us as f64 / 1_000.0,
-            ),
-            reads_bitmap_compact_count: self.reads_bitmap_compact_count,
-            reads_bitmap_frontier_stream_count: self.reads_bitmap_frontier_stream_count,
-            reads_bitmap_union_page_count: self.reads_bitmap_union_page_count,
-            reads_bitmap_union_stream_count: self.reads_bitmap_union_stream_count,
-            reads_bitmap_touched_page_count: self.reads_bitmap_touched_page_count,
-            reads_bitmap_touched_stream_count: self.reads_bitmap_touched_stream_count,
-            reads_bitmap_final_open_stream_count: self.reads_bitmap_final_open_stream_count,
-            reads_dir_fragment_count: self.reads_dir_fragment_count,
-            reads_dir_index_ms_total: round_2(self.reads_dir_index_us as f64 / 1_000.0),
-            reads_dir_decode_ms_total: round_2(self.reads_dir_decode_us as f64 / 1_000.0),
-            reads_unaccounted_ms_total: round_2(self.reads_unaccounted_us as f64 / 1_000.0),
             stage_b_p50: percentile(&self.stage_b, 0.50),
             stage_b_p99: percentile(&self.stage_b, 0.99),
             commit_b_p50: percentile(&self.commit_b, 0.50),

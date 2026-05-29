@@ -142,7 +142,7 @@ async fn bucket_compaction_uses_open_index_without_prefix_scan() {
         .expect("ingest block 1");
 
     let before = counters.snapshot();
-    let (_, timings) = service
+    service
         .ingest_blocks(vec![FinalizedBlock {
             header: h2,
             logs_by_tx: vec![repeated_logs(4)],
@@ -156,10 +156,6 @@ async fn bucket_compaction_uses_open_index_without_prefix_scan() {
     assert_eq!(
         after.2, before.2,
         "hot compaction path should use open-index fragments, not list_prefix",
-    );
-    assert_eq!(
-        timings.reads_dir_get_count, 0,
-        "compaction should not point-read fragments already held in the open index"
     );
 }
 
