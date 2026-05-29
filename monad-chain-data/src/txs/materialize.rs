@@ -30,7 +30,7 @@ use crate::{
         clause::{IndexedClause, IndexedFilter},
         family::Family,
         query::family_runner::IndexedFamilyQuery,
-        row_codec::decode_row_frame,
+        row_codec::RowDecompressor,
         tables::Tables,
     },
     error::{MonadChainDataError, Result},
@@ -284,6 +284,7 @@ fn load_filtered_block_txs(
         QueryOrder::Descending => Box::new((0..count).rev()),
     };
 
+    let mut decompressor = RowDecompressor::new(decoder)?;
     let mut txs = Vec::new();
     for tx_idx in indices {
         let tx = decode_tx_at(
@@ -292,7 +293,7 @@ fn load_filtered_block_txs(
             tx_idx,
             block_record.block_number,
             block_record.block_hash,
-            decoder,
+            &mut decompressor,
         )?;
         if filter.matches(&tx) {
             txs.push(tx);
@@ -331,7 +332,7 @@ pub(crate) fn decode_tx_at(
     tx_idx: usize,
     block_number: u64,
     block_hash: Hash32,
-    decoder: Option<&Arc<DecoderDictionary<'static>>>,
+    decompressor: &mut RowDecompressor<'_>,
 ) -> Result<TxEntry> {
     if tx_idx + 1 >= header.offsets.len() {
         return Err(MonadChainDataError::Decode("tx index out of range"));
@@ -343,7 +344,7 @@ pub(crate) fn decode_tx_at(
         return Err(MonadChainDataError::Decode("invalid tx range"));
     }
 
-    let bytes = decode_row_frame(decoder, &blob[start..end])?;
+    let bytes = decompressor.decompress(&blob[start..end])?;
     let stored = StoredTxEnvelope::decode(&bytes)?;
     let tx_idx_u32 =
         u32::try_from(tx_idx).map_err(|_| MonadChainDataError::Decode("tx index overflow"))?;

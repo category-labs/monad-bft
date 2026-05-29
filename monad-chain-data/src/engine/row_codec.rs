@@ -45,18 +45,20 @@ pub const DICT_VERSION_NONE: u32 = 0;
 /// Default zstd level used for row frames.
 pub const ROW_ZSTD_LEVEL: i32 = 3;
 
-/// Upper bound on a single decompressed row. The safe bulk API needs an
-/// explicit capacity; rows are individual logs/txs/traces so this is generous.
+/// Fallback decompressed-size bound, used only when a frame's content size is
+/// somehow unavailable. Frames written by [`BlockRowCompressor`] always record
+/// their content size, so the exact size is normally used instead (see
+/// [`RowDecompressor`]).
 pub const ROW_DECODE_CAP: usize = 16 * 1024 * 1024;
 
-/// Cap on raw row samples collected from a single block for dict training, so
-/// a pathologically large block cannot dominate the reservoir. Rows beyond
-/// this many are uniformly strided.
+/// Cap on raw rows sampled from a single block for the dict-training corpus, so
+/// a pathologically large block cannot dominate it. Rows beyond this many are
+/// uniformly strided.
 pub const PER_BLOCK_SAMPLE_CAP: usize = 64;
 
 /// Picks up to [`PER_BLOCK_SAMPLE_CAP`] indices uniformly across `count` rows.
-/// Returns `true` for indices that should be sampled into the training
-/// reservoir during a single block's encode pass.
+/// Returns `true` for indices that should be pulled into the dict-training
+/// corpus when reading a block back during training.
 pub fn should_sample_row(idx: usize, count: usize) -> bool {
     if count <= PER_BLOCK_SAMPLE_CAP {
         return true;
@@ -154,27 +156,58 @@ impl BlockRowCompressor<'_> {
     }
 }
 
-/// Decompresses a single row frame. The supplied decoder is authoritative:
-/// `Some` means the frame was written under a non-empty dictionary, `None`
-/// means a plain (dict-less) frame — version 0, or a version `V >= 1` whose
-/// epoch published the empty-dict sentinel. The caller (the read-side
-/// resolver) is responsible for mapping `(family, version)` to the right
-/// decoder and for treating an *absent* published dictionary as a hard error
-/// before reaching here.
+/// A zstd decompressor for row frames, built once and reused across one
+/// block's rows on the full-scan path (so the underlying `DCtx` is allocated
+/// once rather than per row). The supplied decoder is authoritative: `Some`
+/// means the frames were written under a non-empty dictionary, `None` means
+/// plain (dict-less) frames — version 0, or a version `V >= 1` whose epoch
+/// published the empty-dict sentinel. Mapping `(family, version)` to the right
+/// decoder, and treating an *absent* published dictionary as a hard error, is
+/// the read-side resolver's job before reaching here.
+pub struct RowDecompressor<'a> {
+    inner: Decompressor<'a>,
+}
+
+impl<'a> RowDecompressor<'a> {
+    pub fn new(decoder: Option<&'a Arc<DecoderDictionary<'static>>>) -> Result<Self> {
+        let inner = match decoder {
+            Some(dec) => Decompressor::with_prepared_dictionary(dec)
+                .map_err(|e| MonadChainDataError::Backend(format!("zstd decompressor: {e}")))?,
+            None => Decompressor::new()
+                .map_err(|e| MonadChainDataError::Backend(format!("zstd decompressor: {e}")))?,
+        };
+        Ok(Self { inner })
+    }
+
+    /// Decompresses one row frame into an exactly-sized buffer. The output
+    /// length is read from the frame header (our bulk frames always carry it),
+    /// so this allocates the row's true size rather than a worst-case bound.
+    pub fn decompress(&mut self, frame: &[u8]) -> Result<Vec<u8>> {
+        let mut out = Vec::with_capacity(frame_decompressed_capacity(frame));
+        self.inner
+            .decompress_to_buffer(frame, &mut out)
+            .map_err(|e| MonadChainDataError::Backend(format!("zstd decompress row: {e}")))?;
+        Ok(out)
+    }
+}
+
+/// Exact decompressed length of a row frame, read from its header. Falls back
+/// to [`ROW_DECODE_CAP`] only if the size is absent — never the case for frames
+/// written by [`BlockRowCompressor`], which records the content size.
+fn frame_decompressed_capacity(frame: &[u8]) -> usize {
+    match zstd::zstd_safe::get_frame_content_size(frame) {
+        Ok(Some(size)) => usize::try_from(size).unwrap_or(ROW_DECODE_CAP),
+        _ => ROW_DECODE_CAP,
+    }
+}
+
+/// Decompresses a single row frame (one-shot — allocates a `DCtx`). To decode
+/// many rows of one block, use [`RowDecompressor`] to reuse the context.
 pub fn decode_row_frame(
     decoder: Option<&Arc<DecoderDictionary<'static>>>,
     frame: &[u8],
 ) -> Result<Bytes> {
-    let mut decompressor = match decoder {
-        Some(dec) => Decompressor::with_prepared_dictionary(dec)
-            .map_err(|e| MonadChainDataError::Backend(format!("zstd decompressor: {e}")))?,
-        None => Decompressor::new()
-            .map_err(|e| MonadChainDataError::Backend(format!("zstd decompressor: {e}")))?,
-    };
-    let decoded = decompressor
-        .decompress(frame, ROW_DECODE_CAP)
-        .map_err(|e| MonadChainDataError::Backend(format!("zstd decompress row: {e}")))?;
-    Ok(Bytes::from(decoded))
+    Ok(Bytes::from(RowDecompressor::new(decoder)?.decompress(frame)?))
 }
 
 #[cfg(test)]
