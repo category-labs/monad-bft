@@ -18,7 +18,7 @@
 use bytes::Bytes;
 use monad_chain_data::{
     primitives::state::PublicationState,
-    store::{BlobStore, BlobTableId, FjallStore},
+    store::{BlobStore, BlobTableId, FjallStore, FjallTuning},
     Family, FinalizedBlock, MonadChainDataError, MonadChainDataService, QueryLimits, B256,
 };
 use tempfile::tempdir;
@@ -30,7 +30,7 @@ use common::{chain_header, minimal_ingest_tx, test_header};
 #[tokio::test(flavor = "current_thread")]
 async fn fjall_round_trip_two_block_ingest() {
     let dir = tempdir().expect("tempdir");
-    let store = FjallStore::open(dir.path()).expect("open fjall");
+    let store = FjallStore::open(dir.path(), FjallTuning::default()).expect("open fjall");
     let service = MonadChainDataService::new(store.clone(), store, QueryLimits::UNLIMITED);
 
     let h1 = test_header(1, B256::ZERO);
@@ -39,6 +39,7 @@ async fn fjall_round_trip_two_block_ingest() {
             header: h1.clone(),
             logs_by_tx: vec![vec![], vec![]],
             txs: vec![minimal_ingest_tx(), minimal_ingest_tx()],
+            traces: vec![],
         })
         .await
         .expect("ingest block 1");
@@ -50,6 +51,7 @@ async fn fjall_round_trip_two_block_ingest() {
             header: h2,
             logs_by_tx: vec![vec![]],
             txs: vec![minimal_ingest_tx()],
+            traces: vec![],
         })
         .await
         .expect("ingest block 2");
@@ -79,19 +81,20 @@ async fn fjall_persists_across_reopen() {
     let dir = tempdir().expect("tempdir");
 
     {
-        let store = FjallStore::open(dir.path()).expect("open fjall");
+        let store = FjallStore::open(dir.path(), FjallTuning::default()).expect("open fjall");
         let service = MonadChainDataService::new(store.clone(), store, QueryLimits::UNLIMITED);
         service
             .ingest_block(FinalizedBlock {
                 header: test_header(1, B256::ZERO),
                 logs_by_tx: vec![vec![]],
                 txs: vec![minimal_ingest_tx()],
+                traces: vec![],
             })
             .await
             .expect("ingest");
     }
 
-    let store = FjallStore::open(dir.path()).expect("reopen fjall");
+    let store = FjallStore::open(dir.path(), FjallTuning::default()).expect("reopen fjall");
     let service = MonadChainDataService::new(store.clone(), store, QueryLimits::UNLIMITED);
     let head = service
         .publication()
@@ -108,7 +111,7 @@ async fn fjall_blob_roundtrips_value_above_kv_separation_threshold() {
     const TEST_TABLE: BlobTableId = BlobTableId::new("kv_sep_smoke");
 
     let dir = tempdir().expect("tempdir");
-    let store = FjallStore::open(dir.path()).expect("open fjall");
+    let store = FjallStore::open(dir.path(), FjallTuning::default()).expect("open fjall");
 
     let payload = Bytes::from(vec![0xAB; 64 * 1024]);
     store
@@ -123,10 +126,49 @@ async fn fjall_blob_roundtrips_value_above_kv_separation_threshold() {
     assert_eq!(got, payload);
 }
 
+// `keyspace_stats()` exposes fjall's runtime accounting for sampling
+// from the ingest binary. Keyspaces are opened lazily, so a fresh store
+// reports zero keyspaces until the first write — this test exercises
+// that lifecycle and asserts the touched keyspace shows up with a
+// non-zero approximate_len.
+#[tokio::test(flavor = "current_thread")]
+async fn fjall_keyspace_stats_reflects_writes() {
+    const TEST_TABLE: BlobTableId = BlobTableId::new("ks_stats_smoke");
+
+    let dir = tempdir().expect("tempdir");
+    let store = FjallStore::open(dir.path(), FjallTuning::default()).expect("open fjall");
+
+    assert!(
+        store.keyspace_stats().expect("stats").is_empty(),
+        "no keyspaces should be registered before first access"
+    );
+
+    for i in 0..4u8 {
+        store
+            .put_blob(TEST_TABLE, &[i], Bytes::from(vec![i; 32]))
+            .await
+            .expect("put_blob");
+    }
+
+    let stats = store.keyspace_stats().expect("stats");
+    assert!(
+        !stats.is_empty(),
+        "writes should have opened at least one keyspace"
+    );
+    let touched = stats
+        .iter()
+        .find(|s| s.name.ends_with("ks_stats_smoke"))
+        .expect("touched keyspace should appear in stats");
+    assert!(
+        touched.approximate_len > 0,
+        "approximate_len should reflect the 4 inserted blobs"
+    );
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn fjall_cas_advance_with_stale_version_returns_fenced_out() {
     let dir = tempdir().expect("tempdir");
-    let store = FjallStore::open(dir.path()).expect("open fjall");
+    let store = FjallStore::open(dir.path(), FjallTuning::default()).expect("open fjall");
     let service = MonadChainDataService::new(store.clone(), store, QueryLimits::UNLIMITED);
 
     service
@@ -134,6 +176,7 @@ async fn fjall_cas_advance_with_stale_version_returns_fenced_out() {
             header: test_header(1, B256::ZERO),
             logs_by_tx: vec![vec![]],
             txs: vec![minimal_ingest_tx()],
+            traces: vec![],
         })
         .await
         .expect("first ingest");

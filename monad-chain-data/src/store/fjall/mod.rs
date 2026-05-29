@@ -15,4 +15,4 @@
 
 mod store;
 
-pub use store::FjallStore;
+pub use store::{FjallKeyspaceStats, FjallStore, FjallTuning};

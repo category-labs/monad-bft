@@ -5008,14 +5008,19 @@ dependencies = [
  "fjall",
  "futures",
  "itertools 0.13.0",
+ "libc",
+ "lru",
  "monad-archive",
  "monad-eth-types",
+ "opentelemetry",
+ "rayon",
  "roaring",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "zstd",
 ]
 
 [[package]]
