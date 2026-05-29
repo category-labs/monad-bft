@@ -13,16 +13,23 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{collections::BTreeMap, fmt, time::Duration};
+use std::{
+    collections::{BTreeMap, HashMap},
+    fmt,
+    sync::{Arc, RwLock},
+    time::Duration,
+};
 
 use alloy_rlp::{Decodable, RlpDecodable, RlpEncodable};
 use bytes::Bytes;
+use zstd::dict::DecoderDictionary;
 
 use crate::{
     engine::{
         bitmap::{BitmapFragmentWrite, BitmapPageArtifact, BitmapPageMeta, BitmapTables},
         family::Family,
         primary_dir::{PrimaryDirBucket, PrimaryDirFragment, PrimaryDirTables},
+        row_codec::{decode_row_frame, RowCodec, RowCodecState, DICT_VERSION_NONE, ROW_ZSTD_LEVEL},
     },
     error::{MonadChainDataError, Result},
     family::{FinalizedBlock, Hash32},
@@ -37,6 +44,171 @@ use crate::{
     },
     txs::TxHashIndexTable,
 };
+
+/// Deterministic, epoch-based dictionary lifecycle parameters.
+///
+/// The dictionary version of block `n` is `n / epoch_blocks`; that epoch
+/// number *is* the version (still stamped on the header). Version `V >= 1` is
+/// trained from a sample of the first `sample_span` blocks of epoch `V - 1`
+/// and must be published before any block of epoch `V` is written. Epoch 0 is
+/// the version-0 plain bootstrap.
+#[derive(Debug, Clone, Copy)]
+pub struct DictConfig {
+    /// Blocks per epoch; the epoch number doubles as the dict version.
+    pub epoch_blocks: u64,
+    /// How many leading blocks of an epoch are sampled to train the next
+    /// epoch's dictionary. Clamped to `epoch_blocks` at read time.
+    pub sample_span: u64,
+    /// Maximum trained dictionary size in bytes.
+    pub max_dict_size_bytes: usize,
+    /// Minimum number of collected row samples before a non-empty dictionary
+    /// is trained; below this a family publishes the empty-dict sentinel.
+    pub min_training_samples: usize,
+}
+
+impl Default for DictConfig {
+    fn default() -> Self {
+        Self {
+            epoch_blocks: 1_000_000,
+            sample_span: 900_000,
+            max_dict_size_bytes: 112 * 1024,
+            min_training_samples: 4_096,
+        }
+    }
+}
+
+impl DictConfig {
+    /// The dictionary version (== epoch number) for a given block number.
+    pub fn version_for_block(&self, block_number: u64) -> u32 {
+        (block_number / self.epoch_blocks) as u32
+    }
+
+    /// Clamped training sample range `[start, end)` for version `V >= 1`,
+    /// drawn from the leading blocks of epoch `V - 1`.
+    pub fn training_range(&self, version: u32) -> (u64, u64) {
+        let prev_epoch = u64::from(version - 1);
+        let start = prev_epoch * self.epoch_blocks;
+        let span = self.sample_span.min(self.epoch_blocks);
+        (start, start + span)
+    }
+}
+
+/// Holds the per-family row-codec dictionary state: a write-side per-version
+/// codec map (version-0 plain pre-installed), a read-side decoder cache, and
+/// per-family single-flight training locks. Lives on [`Tables`] so both ingest
+/// and the materializers can reach it.
+pub struct DictManager {
+    /// Write-side prepared codecs keyed by `(family, version)`. The version-0
+    /// plain codec is pre-installed for every family; epochs `>= 1` are
+    /// installed by `install_version` once their dictionary is published.
+    codecs: RwLock<HashMap<(Family, u32), Arc<RowCodecState>>>,
+    decoders: RwLock<HashMap<(Family, u32), Arc<DecoderDictionary<'static>>>>,
+    /// Per-family single-flight gate so concurrent `ensure_epoch_dict` callers
+    /// (plan path + background pre-train) collapse onto one training run.
+    train_locks: BTreeMap<Family, futures::lock::Mutex<()>>,
+    config: DictConfig,
+}
+
+impl DictManager {
+    fn new(config: DictConfig) -> Self {
+        let mut codecs = HashMap::new();
+        let mut train_locks = BTreeMap::new();
+        for family in [Family::Log, Family::Tx, Family::Trace] {
+            codecs.insert(
+                (family, DICT_VERSION_NONE),
+                Arc::new(RowCodecState::bootstrap()),
+            );
+            train_locks.insert(family, futures::lock::Mutex::new(()));
+        }
+        Self {
+            codecs: RwLock::new(codecs),
+            decoders: RwLock::new(HashMap::new()),
+            train_locks,
+            config,
+        }
+    }
+
+    pub fn config(&self) -> &DictConfig {
+        &self.config
+    }
+
+    /// The single-flight training lock for one family.
+    pub fn train_lock(&self, family: Family) -> &futures::lock::Mutex<()> {
+        self.train_locks
+            .get(&family)
+            .expect("family registered at construction")
+    }
+
+    /// Returns the write-side codec for `(family, version)` if it has been
+    /// installed, else `None`.
+    pub fn write_codec(&self, family: Family, version: u32) -> Option<RowCodec> {
+        self.codecs
+            .read()
+            .expect("dict codecs lock poisoned")
+            .get(&(family, version))
+            .map(|state| state.snapshot())
+    }
+
+    /// Whether a write-side codec for `(family, version)` is installed.
+    pub fn has_codec(&self, family: Family, version: u32) -> bool {
+        self.codecs
+            .read()
+            .expect("dict codecs lock poisoned")
+            .contains_key(&(family, version))
+    }
+
+    /// Installs the write-side codec for a published dictionary version. Empty
+    /// `dict_bytes` is the sentinel "this epoch uses plain frames" — a plain
+    /// codec stamped with `version`. Non-empty bytes build a dictionary codec
+    /// and also seed the read-side decoder cache.
+    pub fn install_version(&self, family: Family, version: u32, dict_bytes: &[u8]) {
+        let state = if dict_bytes.is_empty() {
+            Arc::new(RowCodecState::plain(version))
+        } else {
+            Arc::new(RowCodecState::with_dictionary(
+                version,
+                dict_bytes,
+                ROW_ZSTD_LEVEL,
+            ))
+        };
+        self.codecs
+            .write()
+            .expect("dict codecs lock poisoned")
+            .insert((family, version), state);
+        if !dict_bytes.is_empty() {
+            self.insert_decoder(
+                family,
+                version,
+                Arc::new(DecoderDictionary::copy(dict_bytes)),
+            );
+        }
+    }
+
+    /// Pre-inserts a decoder dictionary into the read cache.
+    pub fn insert_decoder(
+        &self,
+        family: Family,
+        version: u32,
+        decoder: Arc<DecoderDictionary<'static>>,
+    ) {
+        self.decoders
+            .write()
+            .expect("dict decoder cache poisoned")
+            .insert((family, version), decoder);
+    }
+
+    fn cached_decoder(
+        &self,
+        family: Family,
+        version: u32,
+    ) -> Option<Arc<DecoderDictionary<'static>>> {
+        self.decoders
+            .read()
+            .expect("dict decoder cache poisoned")
+            .get(&(family, version))
+            .cloned()
+    }
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct MetaBlobTimings {
@@ -167,6 +339,7 @@ pub struct Tables<M: MetaStore, B: BlobStore> {
     blocks: BlockTables<M>,
     tx_hash_index: TxHashIndexTable<M>,
     families: BTreeMap<Family, FamilyTables<M, B>>,
+    dicts: DictManager,
 }
 
 impl<M: MetaStore, B: BlobStore> Tables<M, B> {
@@ -175,6 +348,18 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
     }
 
     pub fn with_cache_config(meta_store: M, blob_store: B, cache: CacheConfig) -> Self {
+        Self::with_configs(meta_store, blob_store, cache, DictConfig::default())
+    }
+
+    /// Full constructor letting callers (notably tests) thread a small
+    /// [`DictConfig`] so the epoch-based dictionary lifecycle can be exercised
+    /// over a handful of blocks.
+    pub fn with_configs(
+        meta_store: M,
+        blob_store: B,
+        cache: CacheConfig,
+        dict_config: DictConfig,
+    ) -> Self {
         let mut families = BTreeMap::new();
         families.insert(
             Family::Log,
@@ -194,6 +379,7 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
             meta_store,
             blob_store,
             families,
+            dicts: DictManager::new(dict_config),
         }
     }
 
@@ -220,6 +406,65 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
         self.families
             .get(&family)
             .expect("family registered at construction")
+    }
+
+    /// Per-family row-codec dictionary manager (write-side per-version codecs,
+    /// read-side decoder cache, single-flight training locks).
+    pub fn dicts(&self) -> &DictManager {
+        &self.dicts
+    }
+
+    /// Resolves the decoder dictionary for `(family, version)`, populating the
+    /// read cache from the durable dict table on a miss. Returns `None` for a
+    /// plain frame: version 0, or a version `>= 1` that published the
+    /// empty-dict sentinel. A version `>= 1` whose bytes are *absent* (never
+    /// published) is a hard error — an invariant violation, since every block
+    /// is written only after its epoch dictionary is durably published.
+    async fn resolve_decoder(
+        &self,
+        family: Family,
+        dict_version: u32,
+    ) -> Result<Option<Arc<DecoderDictionary<'static>>>> {
+        if dict_version == DICT_VERSION_NONE {
+            return Ok(None);
+        }
+        if let Some(decoder) = self.dicts.cached_decoder(family, dict_version) {
+            return Ok(Some(decoder));
+        }
+        let bytes = self.family(family).load_dict(dict_version).await?.ok_or(
+            MonadChainDataError::MissingData("missing row-codec dictionary for block"),
+        )?;
+        if bytes.is_empty() {
+            // Empty-dict sentinel: this epoch's frames are plain.
+            return Ok(None);
+        }
+        let decoder = Arc::new(DecoderDictionary::copy(&bytes));
+        self.dicts
+            .insert_decoder(family, dict_version, Arc::clone(&decoder));
+        Ok(Some(decoder))
+    }
+
+    /// Decodes a single compressed row frame for `family` written under
+    /// `dict_version`. The materializers' point-read path calls this after a
+    /// byte-range read returns the frame.
+    pub async fn decode_block_row(
+        &self,
+        family: Family,
+        dict_version: u32,
+        frame: &[u8],
+    ) -> Result<Bytes> {
+        let decoder = self.resolve_decoder(family, dict_version).await?;
+        decode_row_frame(decoder.as_ref(), frame)
+    }
+
+    /// Resolves the decoder dictionary once for a whole-block (full-scan)
+    /// decode pass. Returns `None` for version 0 (plain frames).
+    pub async fn block_decoder(
+        &self,
+        family: Family,
+        dict_version: u32,
+    ) -> Result<Option<Arc<DecoderDictionary<'static>>>> {
+        self.resolve_decoder(family, dict_version).await
     }
 
     pub async fn with_writes<'a, F>(&'a self, f: F) -> Result<()>
@@ -756,6 +1001,7 @@ pub struct FamilyTables<M: MetaStore, B: BlobStore> {
     block_metadata: CachedKvTable<M>,
     block_headers: CachedKvTable<M>,
     block_blobs: CachedBlobTable<B>,
+    dict_by_version: CachedKvTable<M>,
     dir: PrimaryDirTables<M>,
     bitmap: BitmapTables<M>,
 }
@@ -777,6 +1023,8 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
                 blob_store.table(ids.block_blob),
                 cache.block_blob_entries,
             ),
+            // Dictionaries are tiny and rarely minted; a small cache suffices.
+            dict_by_version: CachedKvTable::new(meta_store.table(ids.dict_by_version), 16),
             dir: PrimaryDirTables::new(
                 CachedScannableTable::new(
                     meta_store.scannable_table(ids.dir_by_block),
@@ -893,6 +1141,17 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
     ) {
         let key = block_number_key(block_number);
         w.put(&self.block_headers, &key, bytes);
+    }
+
+    /// Loads the raw bytes of the row-codec dictionary for `version`, or
+    /// `None` if no such version has been persisted.
+    pub async fn load_dict(&self, version: u32) -> Result<Option<Bytes>> {
+        self.dict_by_version.get(&version.to_be_bytes()).await
+    }
+
+    /// Stages a row-codec dictionary version into the durable write path.
+    pub fn stage_dict(&self, w: &mut WriteSession<'_, M, B>, version: u32, dict_bytes: Bytes) {
+        w.put(&self.dict_by_version, &version.to_be_bytes(), dict_bytes);
     }
 
     pub async fn load_bucket_fragments(
@@ -1048,6 +1307,7 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
 
     pub(crate) fn collect_window_stats(&self, out: &mut Vec<(&'static str, u64, u64)>) {
         collect_kv_stats(out, &self.block_headers);
+        collect_kv_stats(out, &self.dict_by_version);
         collect_blob_stats(out, &self.block_blobs);
         collect_scan_stats(out, self.dir.fragments_cache());
         collect_kv_stats(out, self.dir.buckets_cache());

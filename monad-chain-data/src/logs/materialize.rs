@@ -13,10 +13,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::HashSet;
+use std::{collections::HashSet, sync::Arc};
 
 use alloy_primitives::{Address, Bytes, B256};
 use bytes::Bytes as RawBytes;
+use zstd::dict::DecoderDictionary;
 
 use super::{LogBlockHeader, LogEntry, RawLogEntry};
 use crate::{
@@ -25,6 +26,7 @@ use crate::{
         clause::{IndexedClause, IndexedFilter},
         family::Family,
         query::family_runner::IndexedFamilyQuery,
+        row_codec::decode_row_frame,
         tables::Tables,
     },
     error::{MonadChainDataError, Result},
@@ -199,13 +201,17 @@ impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery<M, B> for LogMaterialize
         let start = header.offsets[idx_in_block] as usize;
         let end = header.offsets[idx_in_block + 1] as usize;
 
-        let bytes = self
+        let frame = self
             .tables
             .family(Family::Log)
             .read_block_blob_range(block_number, start, end)
             .await?
             .ok_or(MonadChainDataError::MissingData("missing block log blob"))?;
 
+        let bytes = self
+            .tables
+            .decode_block_row(Family::Log, header.dict_version, &frame)
+            .await?;
         let raw = RawLogEntry::decode(&bytes)?;
         Ok(raw.into_log_entry(block_record.block_number, block_record.block_hash))
     }
@@ -238,18 +244,31 @@ impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery<M, B> for LogMaterialize
             .await?
             .ok_or(MonadChainDataError::MissingData("missing block log blob"))?;
 
-        let logs = load_filtered_block_logs(&header, &blob, &block_record, order, filter)?;
+        let decoder = self
+            .tables
+            .block_decoder(Family::Log, header.dict_version)
+            .await?;
+        let logs = load_filtered_block_logs(
+            &header,
+            &blob,
+            &block_record,
+            order,
+            filter,
+            decoder.as_ref(),
+        )?;
 
         Ok((block_ref, logs))
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn load_filtered_block_logs(
     header: &LogBlockHeader,
     blob: &Bytes,
     block_record: &BlockRecord,
     order: QueryOrder,
     filter: &LogFilter,
+    decoder: Option<&Arc<DecoderDictionary<'static>>>,
 ) -> Result<Vec<LogEntry>> {
     let count = header.log_count();
     let indices: Box<dyn Iterator<Item = usize>> = match order {
@@ -265,6 +284,7 @@ fn load_filtered_block_logs(
             log_idx,
             block_record.block_number,
             block_record.block_hash,
+            decoder,
         )?;
         if filter.matches(&log) {
             logs.push(log);
@@ -280,6 +300,7 @@ pub(crate) fn decode_log_at(
     log_idx: usize,
     block_number: u64,
     block_hash: Hash32,
+    decoder: Option<&Arc<DecoderDictionary<'static>>>,
 ) -> Result<LogEntry> {
     if log_idx + 1 >= header.offsets.len() {
         return Err(MonadChainDataError::Decode("log index out of range"));
@@ -291,6 +312,7 @@ pub(crate) fn decode_log_at(
         return Err(MonadChainDataError::Decode("invalid log range"));
     }
 
-    let raw = RawLogEntry::decode(&blob[start..end])?;
+    let bytes = decode_row_frame(decoder, &blob[start..end])?;
+    let raw = RawLogEntry::decode(&bytes)?;
     Ok(raw.into_log_entry(block_number, block_hash))
 }

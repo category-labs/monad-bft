@@ -20,4 +20,5 @@ pub(crate) mod ingest;
 pub mod open_index;
 pub mod primary_dir;
 pub(crate) mod query;
+pub mod row_codec;
 pub mod tables;
