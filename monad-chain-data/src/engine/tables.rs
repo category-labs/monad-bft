@@ -451,6 +451,13 @@ impl<M: MetaStoreCas> PublicationTables<M> {
         Self { meta_store }
     }
 
+    /// The underlying CAS-capable meta store. Exposed so the write authority
+    /// (`engine::authority`) can drive the publication CAS directly while still
+    /// reusing `PublicationTables`' table/key constants and state codec.
+    pub(crate) fn meta_store(&self) -> &M {
+        &self.meta_store
+    }
+
     /// Loads the current publication state along with its CAS version.
     /// Writers must thread the version into the matching [`Self::cas_advance`]
     /// call; readers that only want the head can use [`Self::load_published_head`].

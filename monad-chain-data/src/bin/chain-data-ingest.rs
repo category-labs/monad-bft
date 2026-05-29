@@ -36,6 +36,7 @@ use clap::{Parser, ValueEnum};
 use eyre::{bail, eyre, Context, Result};
 use futures::{stream, StreamExt};
 use monad_archive::{
+    archive_reader::LatestKind,
     cli::BlockDataReaderArgs,
     metrics::{MetricNames, Metrics},
     model::{
@@ -239,6 +240,33 @@ struct Cli {
     /// ratio/cost without writing anything into fjall. Requires --start.
     #[arg(long)]
     profile_blob_compression_only: bool,
+
+    /// Run as a reader only — never take write authority and never ingest.
+    /// The ingest bin defaults to reader+writer; this flag is for running the
+    /// binary purely to observe the published head without contending for the
+    /// lease.
+    #[arg(long)]
+    reader_only: bool,
+
+    /// Stable node identity for the write-authority lease. Two processes that
+    /// must not both write share nothing *except* this when they are the same
+    /// logical node across restarts; distinct nodes use distinct ids. A restart
+    /// reuses `owner_id` but generates a fresh per-process session, so it always
+    /// takes the reacquire (recovery) path.
+    #[arg(long, default_value_t = 1)]
+    owner_id: u64,
+
+    /// Lease span in upstream finalized blocks. A lease acquired at observed
+    /// block `b` is valid through `b + lease_blocks - 1`; a standby may take
+    /// over once the observed upstream block passes that bound. Must be >= 1 and
+    /// greater than `--renew-threshold-blocks`.
+    #[arg(long, default_value_t = 64)]
+    lease_blocks: u64,
+
+    /// Renew the lease once `lease_valid_through_block - observed <=
+    /// renew_threshold_blocks`. Must be strictly less than `--lease-blocks`.
+    #[arg(long, default_value_t = 16)]
+    renew_threshold_blocks: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -452,12 +480,67 @@ async fn main() -> Result<()> {
         blob_compression_min_bytes = cli.blob_compression_min_bytes,
         "blob compression config"
     );
-    let service = Arc::new(MonadChainDataService::with_cache_config(
-        meta_store.clone(),
-        blob_store,
-        QueryLimits::UNLIMITED,
-        cache_config,
-    ));
+    if cli.lease_blocks == 0 {
+        bail!("--lease-blocks must be >= 1");
+    }
+    if cli.renew_threshold_blocks >= cli.lease_blocks {
+        bail!(
+            "--renew-threshold-blocks ({}) must be less than --lease-blocks ({})",
+            cli.renew_threshold_blocks,
+            cli.lease_blocks
+        );
+    }
+
+    // Lease clock cell. Holds the latest observed upstream finalized block
+    // (`u64::MAX` = unknown → the callback returns `None`, failing closed). It
+    // is seeded from the archive's latest available block once the reader is
+    // built, then refreshed by a background task that re-polls the archive
+    // periodically (see the lease-clock refresh task below), so lease
+    // renewal/expiry track a moving upstream head rather than a value frozen at
+    // startup.
+    let observed_upstream = Arc::new(AtomicU64::new(u64::MAX));
+    let service = if cli.reader_only {
+        info!("--reader-only set: this process will not take write authority or ingest");
+        Arc::new(MonadChainDataService::new_reader_only(
+            meta_store.clone(),
+            blob_store,
+            QueryLimits::UNLIMITED,
+            cache_config,
+        ))
+    } else {
+        let observe = observed_upstream.clone();
+        let observe_upstream: monad_chain_data::ObserveUpstream =
+            Arc::new(move || match observe.load(Ordering::SeqCst) {
+                u64::MAX => None,
+                block => Some(block),
+            });
+        info!(
+            owner_id = cli.owner_id,
+            lease_blocks = cli.lease_blocks,
+            renew_threshold_blocks = cli.renew_threshold_blocks,
+            "reader+writer mode: acquiring write authority lease"
+        );
+        Arc::new(MonadChainDataService::new_reader_writer_with_cache_config(
+            meta_store.clone(),
+            blob_store,
+            QueryLimits::UNLIMITED,
+            cache_config,
+            cli.owner_id,
+            cli.lease_blocks,
+            cli.renew_threshold_blocks,
+            observe_upstream,
+        ))
+    };
+
+    if cli.reader_only {
+        let head = service
+            .publication()
+            .load_published_head()
+            .await
+            .context("loading current publication head")?;
+        info!(?head, "reader-only: current published head");
+        return Ok(());
+    }
 
     // Resolve the block range against the current publication head before
     // any archive I/O, so a misconfigured range fails fast rather than
@@ -505,6 +588,53 @@ async fn main() -> Result<()> {
         .build(&metrics)
         .await
         .context("building block data reader")?;
+
+    // Seed the lease clock from the archive's latest available finalized
+    // block. The lease decisions are made against this observed upstream head;
+    // when the source has no current head the cell stays `u64::MAX` (unknown),
+    // so the authority fails closed rather than acting on a stale clock.
+    match reader
+        .get_latest(LatestKind::Uploaded)
+        .await
+        .context("reading archive latest available block")?
+    {
+        Some(latest) => {
+            observed_upstream.store(latest, Ordering::SeqCst);
+            info!(latest, "seeded lease clock from archive latest available block");
+        }
+        None => warn!(
+            "archive reports no latest available block; the write lease will fail closed until a block is observed"
+        ),
+    }
+
+    // Lease-clock refresh task. The seed above is a point-in-time snapshot; for
+    // a long-running ingest the upstream head advances, so re-poll the archive
+    // periodically and publish the max into the clock cell. `fetch_max` keeps
+    // the observation monotonic (a transient lower/None reading never rewinds
+    // the clock). Aborted once the ingest pipeline drains.
+    const LEASE_CLOCK_REFRESH: Duration = Duration::from_secs(30);
+    let clock_refresh_handle = {
+        let reader = reader.clone();
+        let observed_upstream = observed_upstream.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(LEASE_CLOCK_REFRESH);
+            // The first tick fires immediately; skip it since we just seeded.
+            tick.tick().await;
+            loop {
+                tick.tick().await;
+                match reader.get_latest(LatestKind::Uploaded).await {
+                    Ok(Some(latest)) => {
+                        observed_upstream.fetch_max(latest, Ordering::SeqCst);
+                    }
+                    Ok(None) => {}
+                    Err(error) => warn!(
+                        %error,
+                        "lease-clock refresh: failed to re-poll archive latest; keeping last observation"
+                    ),
+                }
+            }
+        })
+    };
 
     // Concurrency controller. When `--autotune` is off, min == max == initial
     // and `tune()` is never called, so the controller degenerates into a
@@ -954,6 +1084,9 @@ async fn main() -> Result<()> {
         .context("IO worker panicked")?
         .context("IO worker failed")?;
 
+    // The ingest pipeline has drained; stop refreshing the lease clock.
+    clock_refresh_handle.abort();
+
     info!(end, total_txs, total_logs, total_traces, "ingest complete");
     Ok(())
 }
@@ -1209,8 +1342,14 @@ async fn seed_profile_publication(
             b"state",
             None,
             bytes::Bytes::from(
+                // Seed an owner-less / already-expired lease so the
+                // single-writer service this profiling path uses cleanly
+                // reacquires on its first ingest.
                 monad_chain_data::primitives::state::PublicationState {
                     indexed_finalized_head: prev.block_number(),
+                    owner_id: 0,
+                    session_id: [0u8; 16],
+                    lease_valid_through_block: 0,
                 }
                 .encode(),
             ),

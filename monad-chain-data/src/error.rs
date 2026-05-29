@@ -71,4 +71,22 @@ pub enum MonadChainDataError {
     /// and should step down rather than retry.
     #[error("fenced out by concurrent writer (current head: {current_head:?})")]
     FencedOut { current_head: Option<u64> },
+    /// The publication row's owner/session changed under this writer — another
+    /// node took over the lease. The caller must step down durably and drop its
+    /// cached lease; the next `begin_write` reacquires (and thus runs recovery).
+    #[error("write lease lost to another owner/session")]
+    LeaseLost,
+    /// A different owner's lease is still valid (the observed upstream block has
+    /// not passed `lease_valid_through_block`). A standby that sees this stays
+    /// passive rather than seizing ownership.
+    #[error("another owner's write lease is still fresh")]
+    LeaseStillFresh,
+    /// No observed upstream finalized block was available at a point where a
+    /// lease decision (acquire / renew / publish) had to be made. Fail-closed:
+    /// the writer must not acquire, renew, or publish without a current clock.
+    #[error("no observed upstream finalized block; failing closed")]
+    LeaseObservationUnavailable,
+    /// A reader-only service attempted to take write authority.
+    #[error("read-only service cannot take write authority: {0}")]
+    ReadOnlyMode(&'static str),
 }

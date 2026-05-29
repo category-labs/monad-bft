@@ -13,7 +13,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::time::{Duration, Instant};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use bytes::Bytes;
 use futures::lock::Mutex;
@@ -24,6 +27,9 @@ use crate::{
         execute_query_blocks, load_blocks_by_numbers, QueryBlocksRequest, QueryBlocksResponse,
     },
     engine::{
+        authority::{
+            LeaseAuthority, ReadOnlyAuthority, WriteAuthority, WriteContinuity, WriteSession,
+        },
         bitmap::{global_page_start, local_page_start, stream_page_global_start},
         family::Family,
         ingest::{persist::PhaseAFragmentWriteFilter, ReadPlanningTimings},
@@ -61,12 +67,51 @@ use crate::{
     },
 };
 
+/// Fixed upper bound on the RLP-encoded width of a `PublicationState` row
+/// (a 4-field list: three `u64`s, each at most 9 bytes, plus a 16-byte
+/// `session_id` blob at 17 bytes, plus a 1-byte short-list header). Used only
+/// for write-volume accounting; the exact bytes are formed at publish time.
+const PUBLICATION_STATE_ENCODED_BYTES: usize = 1 + 9 * 3 + 17;
+
+/// Callback yielding the latest observed upstream finalized block number — the
+/// lease clock. Returns `None` when the upstream head is unknown, which forces
+/// the authority to fail closed (no acquire / renew / publish). Reader-only
+/// services default to `|| None`.
+pub type ObserveUpstream = Arc<dyn Fn() -> Option<u64> + Send + Sync>;
+
+/// The write-authority a service runs under. Kept as an enum (rather than a
+/// third generic on [`MonadChainDataService`]) so existing
+/// `MonadChainDataService<M, B>` call sites — fixtures, tests, the bin — keep
+/// compiling unchanged.
+///
+/// - `ReadOnly` — never takes ownership; `new_reader_only`.
+/// - `SingleWriter` — the historical "exactly one process writes" path used by
+///   `new` / `with_cache_config`: a plain version-CAS on the published head
+///   (no ownership, no lease clock, no acquire-time row write). This keeps the
+///   pre-lease behavior every fixture/test encodes, and crucially does *not*
+///   conflate single-writer with the lease machinery — there is no shared
+///   default identity to silently collide on.
+/// - `Lease` — multi-node leader/standby coordination; the explicit
+///   `new_reader_writer*` constructors.
+enum ServiceAuthority<M: MetaStoreCas> {
+    ReadOnly(ReadOnlyAuthority),
+    SingleWriter,
+    Lease(LeaseAuthority<M>),
+}
+
 pub struct MonadChainDataService<M: MetaStoreCas, B: BlobStore> {
     tables: Tables<M, B>,
     publication: PublicationTables<M>,
     limits: QueryLimits,
     open_indexes: OpenIndexes,
     planning_state: Mutex<Option<IngestPlanningState>>,
+    authority: ServiceAuthority<M>,
+    observe_upstream: ObserveUpstream,
+    /// Test-only counter of `ensure_open_indexes_rebuilt` invocations, used by
+    /// the recovery-gating test to prove `Reacquired` rebuilds and `Continuous`
+    /// skips. Not present in non-test builds.
+    #[cfg(test)]
+    recovery_runs: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 #[derive(Debug, Clone)]
@@ -238,11 +283,18 @@ pub struct IngestPlan {
     pub publication: PublicationAdvance,
 }
 
+/// The head a successfully-applied plan should publish. Under the
+/// write-authority lease model the *bytes* of the published
+/// [`crate::primitives::state::PublicationState`] row can only be formed at
+/// publish time (they carry the owner/session/lease fields the authority
+/// stamps inside the CAS), so the plan carries just the target head plus the
+/// CAS table/key it will be written under. The authority builds the row in
+/// `apply_ingest_plan_with_retry`.
 #[derive(Debug, Clone)]
 pub struct PublicationAdvance {
     pub table: crate::store::TableId,
     pub key: Vec<u8>,
-    pub value: Bytes,
+    pub new_head: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -294,6 +346,18 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
     /// Parallel constructor that lets the binary thread an operator-tuned
     /// `CacheConfig` through. Existing `new` keeps its three-arg shape so
     /// fixture call sites don't churn.
+    ///
+    /// C4 choice: `new` / `with_cache_config` stay **single-writer** — the
+    /// pre-lease publish path ([`ServiceAuthority::SingleWriter`]): a plain
+    /// version-CAS on the published head with no ownership, no lease clock, and
+    /// no acquire-time row write. This preserves the historic "exactly one
+    /// process writes" assumption every fixture/test encodes (they ingest
+    /// through `new`) without conflating it with the lease machinery — there is
+    /// no shared default identity for two such processes to silently clobber
+    /// each other through; concurrent writers fence via the version-CAS exactly
+    /// as they did before this layer existed. Multi-node coordination uses the
+    /// explicit [`Self::new_reader_writer`] / [`Self::new_reader_only`]
+    /// constructors, which wire a real upstream clock, owner identity, and role.
     pub fn with_cache_config(
         meta_store: M,
         blob_store: B,
@@ -306,6 +370,95 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
             limits,
             open_indexes: OpenIndexes::default(),
             planning_state: Mutex::new(None),
+            authority: ServiceAuthority::SingleWriter,
+            observe_upstream: Arc::new(|| None),
+            #[cfg(test)]
+            recovery_runs: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        }
+    }
+
+    /// Constructs a reader-only service. Queries read `load_published_head`
+    /// observationally; the service never takes ownership and `observe_upstream`
+    /// is `|| None`. Any ingest path errors with [`ReadOnlyMode`].
+    ///
+    /// [`ReadOnlyMode`]: MonadChainDataError::ReadOnlyMode
+    pub fn new_reader_only(
+        meta_store: M,
+        blob_store: B,
+        limits: QueryLimits,
+        cache: CacheConfig,
+    ) -> Self {
+        Self {
+            publication: PublicationTables::new(meta_store.clone()),
+            tables: Tables::with_cache_config(meta_store, blob_store, cache),
+            limits,
+            open_indexes: OpenIndexes::default(),
+            planning_state: Mutex::new(None),
+            authority: ServiceAuthority::ReadOnly(ReadOnlyAuthority),
+            observe_upstream: Arc::new(|| None),
+            #[cfg(test)]
+            recovery_runs: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        }
+    }
+
+    /// Constructs a reader+writer service backed by a [`LeaseAuthority`].
+    ///
+    /// `owner_id` is the stable node identity (a restart reuses it but
+    /// generates a fresh per-process `session_id`, so a restarted leader always
+    /// takes the reacquire path and runs recovery). `lease_blocks` /
+    /// `renew_threshold` are in upstream finalized blocks
+    /// (`renew_threshold < lease_blocks`, `lease_blocks > 0` — asserted by the
+    /// authority). `observe_upstream` yields the lease clock; returning `None`
+    /// fails closed.
+    pub fn new_reader_writer(
+        meta_store: M,
+        blob_store: B,
+        limits: QueryLimits,
+        owner_id: u64,
+        lease_blocks: u64,
+        renew_threshold: u64,
+        observe_upstream: ObserveUpstream,
+    ) -> Self {
+        Self::new_reader_writer_with_cache_config(
+            meta_store,
+            blob_store,
+            limits,
+            CacheConfig::default(),
+            owner_id,
+            lease_blocks,
+            renew_threshold,
+            observe_upstream,
+        )
+    }
+
+    /// [`Self::new_reader_writer`] with an explicit `CacheConfig`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_reader_writer_with_cache_config(
+        meta_store: M,
+        blob_store: B,
+        limits: QueryLimits,
+        cache: CacheConfig,
+        owner_id: u64,
+        lease_blocks: u64,
+        renew_threshold: u64,
+        observe_upstream: ObserveUpstream,
+    ) -> Self {
+        let authority = LeaseAuthority::new(
+            PublicationTables::new(meta_store.clone()),
+            owner_id,
+            lease_blocks,
+            renew_threshold,
+        );
+        Self {
+            publication: PublicationTables::new(meta_store.clone()),
+            tables: Tables::with_cache_config(meta_store, blob_store, cache),
+            limits,
+            open_indexes: OpenIndexes::default(),
+            planning_state: Mutex::new(None),
+            authority: ServiceAuthority::Lease(authority),
+            observe_upstream,
+            #[cfg(test)]
+            recovery_runs: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
     }
 
@@ -325,7 +478,105 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
         self.open_indexes.stats()
     }
 
+    /// The configured upstream-clock observation.
+    fn observe_upstream(&self) -> Option<u64> {
+        (self.observe_upstream)()
+    }
+
+    /// Begins a write-scoped authority session and returns its
+    /// [`AuthorityState`] (head + continuity). The session is dropped here: per
+    /// D1 option A we do not hold it across plan→apply; the cached lease lives
+    /// on the authority and is revalidated inside the publish CAS. A
+    /// reader-only service errors with [`ReadOnlyMode`].
+    ///
+    /// [`AuthorityState`]: crate::engine::authority::AuthorityState
+    /// [`ReadOnlyMode`]: MonadChainDataError::ReadOnlyMode
+    async fn authority_begin_write(
+        &self,
+        observed_upstream_finalized_block: Option<u64>,
+    ) -> Result<crate::engine::authority::AuthorityState> {
+        match &self.authority {
+            ServiceAuthority::ReadOnly(a) => {
+                let session = a.begin_write(observed_upstream_finalized_block).await?;
+                Ok(session.state())
+            }
+            // Single-writer has no lease/session: there is nothing to acquire.
+            // It reports the current published head and a continuity that always
+            // requires recovery on a cold cache (Fresh on an empty store, else
+            // Reacquired), matching the pre-lease behavior of unconditionally
+            // rebuilding open indexes from the published head on the first plan.
+            ServiceAuthority::SingleWriter => {
+                let head = self.publication.load_published_head().await?;
+                let continuity = match head {
+                    None => WriteContinuity::Fresh,
+                    Some(_) => WriteContinuity::Reacquired,
+                };
+                Ok(crate::engine::authority::AuthorityState {
+                    indexed_finalized_head: head.unwrap_or(0),
+                    continuity,
+                })
+            }
+            ServiceAuthority::Lease(a) => {
+                let session = a.begin_write(observed_upstream_finalized_block).await?;
+                Ok(session.state())
+            }
+        }
+    }
+
+    /// Publishes the new head through the active authority lease, revalidating
+    /// and renewing inside the CAS (D1 option A). A reader-only service errors
+    /// with [`ReadOnlyMode`].
+    ///
+    /// [`ReadOnlyMode`]: MonadChainDataError::ReadOnlyMode
+    async fn authority_publish(
+        &self,
+        new_head: u64,
+        observed_upstream_finalized_block: Option<u64>,
+    ) -> Result<()> {
+        match &self.authority {
+            ServiceAuthority::ReadOnly(_) => Err(MonadChainDataError::ReadOnlyMode(
+                "reader-only service cannot publish a new head",
+            )),
+            // Single-writer: the historical plain version-CAS publish. Load the
+            // current row version, CAS the head forward against it; a stale
+            // version (a concurrent writer moved the head) maps to `FencedOut`
+            // via `cas_advance`. The lease fields are written as zeros — an
+            // owner-less row — so the published bytes stay deterministic.
+            ServiceAuthority::SingleWriter => {
+                let expected = self
+                    .publication
+                    .load_state()
+                    .await?
+                    .map(|(version, _)| version);
+                let next = crate::primitives::state::PublicationState {
+                    indexed_finalized_head: new_head,
+                    owner_id: 0,
+                    session_id: [0u8; 16],
+                    lease_valid_through_block: 0,
+                };
+                self.publication.cas_advance(expected, next).await
+            }
+            ServiceAuthority::Lease(a) => {
+                let result = a
+                    .publish_current(new_head, observed_upstream_finalized_block)
+                    .await;
+                // On any invalidating error (lease lost, fenced, or a lost
+                // observation) drop the cached lease so the next begin_write
+                // reacquires from the store — and thus runs recovery.
+                if let Some(error) = result.as_ref().err() {
+                    if LeaseAuthority::<M>::should_invalidate_cached_lease(error) {
+                        a.clear_cached_lease().await;
+                    }
+                }
+                result
+            }
+        }
+    }
+
     async fn ensure_open_indexes_rebuilt(&self, current_head: Option<u64>) -> Result<()> {
+        #[cfg(test)]
+        self.recovery_runs
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if self.open_indexes.rebuilt_for_head() == Some(current_head) {
             return Ok(());
         }
@@ -456,8 +707,28 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
 
         let mut planning_state = self.planning_state.lock().await;
         if planning_state.is_none() {
-            let current_head = self.publication.load_published_head().await?;
-            self.ensure_open_indexes_rebuilt(current_head).await?;
+            // Cold cache: take (or renew) write authority to learn the
+            // authoritative head and whether ownership transitioned. The lease
+            // is cached in the authority; publish-time revalidation (D1 option
+            // A) re-checks it inside the CAS rather than holding a guard across
+            // plan→apply. The session itself is only read for its state here.
+            let begin = self.authority_begin_write(self.observe_upstream()).await?;
+            let current_head = match begin.indexed_finalized_head {
+                // Head 0 is the sentinel for "nothing published yet" — block
+                // numbers start at 1, so there is never a block-0 record. This
+                // holds regardless of how this writer learned head 0: a Fresh
+                // acquire that just wrote the row at head 0, OR a takeover
+                // (Reacquired) of a predecessor that acquired the lease but died
+                // before publishing block 1. Both must start clean, not try to
+                // load a nonexistent block-0 record.
+                0 => None,
+                head => Some(head),
+            };
+            // Recovery runs only after an ownership transition (Fresh /
+            // Reacquired); a Continuous renewal skips the open-index rebuild.
+            if begin.continuity.requires_recovery() {
+                self.ensure_open_indexes_rebuilt(current_head).await?;
+            }
             let previous = match current_head {
                 Some(head) => Some(block_tables.load_record(head).await?.ok_or(
                     MonadChainDataError::MissingData("missing published head block record"),
@@ -931,13 +1202,10 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
 
         let last = staged.last().expect("at least one block staged");
         let new_head = last.block_record.block_number;
-        let next_state = crate::primitives::state::PublicationState {
-            indexed_finalized_head: new_head,
-        };
         let publication = PublicationAdvance {
             table: PublicationTables::<M>::PUBLICATION_STATE_TABLE,
             key: PublicationTables::<M>::PUBLICATION_STATE_KEY.to_vec(),
-            value: Bytes::from(next_state.encode()),
+            new_head,
         };
 
         let mut combined_writes = phase_a_writes;
@@ -986,10 +1254,14 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
         } else {
             timings.phase_b_skipped = true;
         }
+        // The published row is stamped with the lease fields at publish time,
+        // so its exact bytes are not known here. The encoded width is a small
+        // fixed-shape RLP list (`PUBLICATION_STATE_ENCODED_BYTES`), used only
+        // for write-volume accounting.
         timings
             .phase_b_write_counts
-            .add_cas(publication.table, publication.value.len());
-        combined_writes.add_cas_count(publication.table, publication.value.len());
+            .add_cas(publication.table, PUBLICATION_STATE_ENCODED_BYTES);
+        combined_writes.add_cas_count(publication.table, PUBLICATION_STATE_ENCODED_BYTES);
 
         // Planning owns the ingest open-index state. Once a plan is emitted,
         // later plans should account for its open fragments even if the IO
@@ -1063,27 +1335,19 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
         };
         timings.commit_a_meta_ms = combined_timings.meta.as_millis() as u64;
         timings.commit_a_blob_ms = combined_timings.blob.as_millis() as u64;
-        let expected = self
-            .publication
-            .load_state()
-            .await?
-            .map(|(version, _)| version);
+        // Publish through the write authority: it revalidates and renews the
+        // lease inside the ownership-validating CAS (D1 option A), stamping the
+        // owner/session/lease fields onto the head row. This replaces the old
+        // inline load_state + cas_put. `LeaseLost` is surfaced distinctly from
+        // a same-owner `FencedOut`; `authority_publish` clears the cached lease
+        // on either so the next begin_write reacquires (and runs recovery).
         let cas_start = Instant::now();
-        let outcome = self
-            .tables
-            .meta_store()
-            .cas_put(
-                publication.table,
-                &publication.key,
-                expected,
-                publication.value,
-            )
+        self.authority_publish(publication.new_head, self.observe_upstream())
             .await?;
         timings.cas_ms = cas_start.elapsed().as_millis() as u64;
         let commit_elapsed_ms = commit_start.elapsed().as_millis() as u64;
         timings.commit_b_ms = commit_elapsed_ms
             .saturating_sub(timings.commit_a_meta_ms.max(timings.commit_a_blob_ms));
-        self.publication.cas_outcome_into_result(outcome).await?;
         Ok((outcomes, timings))
     }
 
@@ -1310,9 +1574,177 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
     }
 
     async fn load_published_head(&self) -> Result<u64> {
-        self.publication
-            .load_published_head()
-            .await?
-            .ok_or(MonadChainDataError::MissingData("no published blocks"))
+        match self.publication.load_published_head().await? {
+            // Head 0 is the acquire-before-first-publish sentinel: a lease
+            // writer has claimed ownership (writing the row at head 0) but no
+            // block is finalized yet. For a reader this is indistinguishable
+            // from a never-written store — there are no finalized blocks — so it
+            // reports "no published blocks" rather than resolving a range
+            // against head 0 (which would surface a confusing "block range
+            // starts above the published head"). Real published heads are always
+            // >= 1, since ingest starts at block 1.
+            None | Some(0) => Err(MonadChainDataError::MissingData("no published blocks")),
+            Some(head) => Ok(head),
+        }
+    }
+}
+
+#[cfg(test)]
+mod recovery_gating_tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use super::*;
+    use crate::{
+        family::FinalizedBlock,
+        primitives::EvmBlockHeader,
+        store::{InMemoryBlobStore, InMemoryMetaStore},
+    };
+
+    fn empty_block(number: u64, parent: crate::family::Hash32) -> FinalizedBlock {
+        FinalizedBlock {
+            header: EvmBlockHeader {
+                number,
+                parent_hash: parent,
+                ..EvmBlockHeader::default()
+            },
+            logs_by_tx: vec![],
+            txs: Vec::new(),
+            traces: vec![],
+        }
+    }
+
+    fn chain(n: u64) -> Vec<FinalizedBlock> {
+        let mut blocks = Vec::with_capacity(n as usize);
+        let mut parent = crate::family::Hash32::ZERO;
+        for number in 1..=n {
+            let block = empty_block(number, parent);
+            parent = block.header.hash_slow();
+            blocks.push(block);
+        }
+        blocks
+    }
+
+    fn writer(
+        meta: InMemoryMetaStore,
+        owner_id: u64,
+        clock: std::sync::Arc<AtomicU64>,
+        lease_blocks: u64,
+        renew_threshold: u64,
+    ) -> MonadChainDataService<InMemoryMetaStore, InMemoryBlobStore> {
+        MonadChainDataService::new_reader_writer(
+            meta,
+            InMemoryBlobStore::default(),
+            QueryLimits::UNLIMITED,
+            owner_id,
+            lease_blocks,
+            renew_threshold,
+            Arc::new(move || Some(clock.load(Ordering::SeqCst))),
+        )
+    }
+
+    // Reacquired (takeover) runs `ensure_open_indexes_rebuilt`; Continuous
+    // (in-window renewal) does not. The open-index rebuild signal
+    // (`rebuilt_for_head`) is the observable.
+    #[tokio::test(flavor = "current_thread")]
+    async fn reacquire_runs_recovery_continuous_skips_it() {
+        let meta = InMemoryMetaStore::default();
+        let blocks = chain(4);
+
+        // Node A (owner 1) acquires at observed=10 (lease through 13) and
+        // publishes blocks 1..=2.
+        let clock_a = Arc::new(AtomicU64::new(10));
+        let node_a = writer(meta.clone(), 1, clock_a.clone(), 4, 1);
+        node_a
+            .ingest_blocks(blocks[..2].to_vec())
+            .await
+            .expect("A publishes 1..=2");
+        assert_eq!(
+            node_a.publication().load_published_head().await.unwrap(),
+            Some(2)
+        );
+
+        // Node B (owner 2) observes 20 > 13: takeover → Reacquired → recovery
+        // rebuilds open indexes from the published head (2).
+        let clock_b = Arc::new(AtomicU64::new(20));
+        let node_b = writer(meta.clone(), 2, clock_b.clone(), 4, 1);
+        let runs_before = node_b.recovery_runs.load(Ordering::SeqCst);
+        let plan = node_b
+            .plan_ingest_blocks(blocks[2..3].to_vec())
+            .await
+            .expect("B plans block 3")
+            .expect("B has a plan");
+        assert_eq!(
+            node_b.recovery_runs.load(Ordering::SeqCst),
+            runs_before + 1,
+            "Reacquired must run the open-index rebuild exactly once"
+        );
+        node_b.apply_ingest_plan(plan).await.expect("B publishes 3");
+
+        // Same process B renews in-window (observe 21, lease now through 23):
+        // Continuous → recovery is skipped. Drop the planning cache so the
+        // cold-cache branch (the only place gating runs) is exercised again.
+        *node_b.planning_state.lock().await = None;
+        let runs_before = node_b.recovery_runs.load(Ordering::SeqCst);
+        clock_b.store(21, Ordering::SeqCst);
+        let plan = node_b
+            .plan_ingest_blocks(blocks[3..4].to_vec())
+            .await
+            .expect("B plans block 4")
+            .expect("B has a plan");
+        assert_eq!(
+            node_b.recovery_runs.load(Ordering::SeqCst),
+            runs_before,
+            "Continuous renewal must not re-run the open-index rebuild"
+        );
+        node_b.apply_ingest_plan(plan).await.expect("B publishes 4");
+        assert_eq!(
+            node_b.publication().load_published_head().await.unwrap(),
+            Some(4)
+        );
+    }
+
+    // A leader that acquires the lease (which writes the publication row at
+    // head 0) but dies before publishing block 1 leaves head 0 in the store. A
+    // standby taking over sees continuity `Reacquired` with head 0; it must
+    // start clean (head 0 == nothing published) rather than try to load a
+    // nonexistent block-0 record. Regression test for the over-narrow
+    // `0 if Fresh` head-0 guard.
+    #[tokio::test(flavor = "current_thread")]
+    async fn takeover_before_first_publish_starts_clean() {
+        let meta = InMemoryMetaStore::default();
+        let blocks = chain(1);
+
+        // Node A acquires the lease at observed=10 (writes head 0) by planning
+        // block 1, then "dies" without applying — the plan is dropped, so no
+        // head past 0 is ever published.
+        let clock_a = Arc::new(AtomicU64::new(10));
+        let node_a = writer(meta.clone(), 1, clock_a.clone(), 4, 1);
+        let _plan = node_a
+            .plan_ingest_blocks(blocks.clone())
+            .await
+            .expect("A plans block 1")
+            .expect("A has a plan");
+        // The acquire CAS wrote the row at head 0 even though nothing published.
+        assert_eq!(
+            node_a.publication().load_published_head().await.unwrap(),
+            Some(0)
+        );
+        drop(node_a);
+
+        // Node B observes 20 > A's lease bound (13): takeover with head still 0.
+        // It must plan and publish block 1 cleanly, not error on a missing
+        // block-0 record.
+        let clock_b = Arc::new(AtomicU64::new(20));
+        let node_b = writer(meta.clone(), 2, clock_b.clone(), 4, 1);
+        let plan = node_b
+            .plan_ingest_blocks(blocks)
+            .await
+            .expect("B plans block 1 after takeover")
+            .expect("B has a plan");
+        node_b.apply_ingest_plan(plan).await.expect("B publishes 1");
+        assert_eq!(
+            node_b.publication().load_published_head().await.unwrap(),
+            Some(1)
+        );
     }
 }

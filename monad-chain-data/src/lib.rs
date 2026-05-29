@@ -28,10 +28,14 @@ pub mod txs;
 pub use alloy_primitives::{Address, Bytes, Log, LogData, B256};
 pub use api::{
     IngestBatchTimings, IngestOutcome, IngestPlan, IoRetryPolicy, MonadChainDataService,
-    PublicationAdvance,
+    ObserveUpstream, PublicationAdvance,
 };
 pub use blocks::{Block, QueryBlocksRequest, QueryBlocksResponse};
 pub use engine::{
+    authority::{
+        AuthorityState, LeaseAuthority, ReadOnlyAuthority, WriteAuthority, WriteContinuity,
+        WriteSession as AuthorityWriteSession,
+    },
     family::Family,
     tables::{Tables, WriteOpCounts},
 };
