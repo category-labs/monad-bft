@@ -15,6 +15,8 @@ alloy-primitives = { workspace = true, features = ["rlp"] }
 alloy-rlp = { workspace = true, features = ["derive"] }
 alloy-rpc-types-eth = { workspace = true, optional = true }
 auto_impl = { workspace = true }
+aws-config = { workspace = true, optional = true }
+aws-sdk-s3 = { workspace = true, optional = true }
 bytes = { workspace = true }
 clap = { workspace = true, features = ["derive"], optional = true }
 eyre = { workspace = true, optional = true }
@@ -44,6 +46,11 @@ alloy-rpc-types-eth = ["dep:alloy-rpc-types-eth"]
 # Enables the embedded fjall backend (FjallStore). Pulls in tokio because
 # fjall is sync and the trait impls wrap blocking work in spawn_blocking.
 fjall = ["dep:fjall", "dep:tokio"]
+# Enables the S3-API-compatible blob backend (S3BlobStore): AWS S3, MinIO,
+# Cloudflare R2, Ceph RGW, etc. Pulls in the AWS SDK + tokio. Gated because
+# the AWS SDK is a heavy transitive dependency not needed by the embedded
+# fjall path.
+s3 = ["dep:aws-config", "dep:aws-sdk-s3", "dep:tokio"]
 # Enables the chain-data-ingest binary, which reads blocks + receipts from
 # a monad-archive backend (FS, S3, MongoDB, DynamoDB, TrieDB) and feeds
 # them into the chain-data ingest pipeline. Gated because monad-archive
@@ -71,4 +78,14 @@ required-features = ["archive-ingest"]
 [dev-dependencies]
 bytes = { workspace = true }
 tempfile = "3"
-tokio = { workspace = true, features = ["macros", "rt", "time"] }
+tokio = { workspace = true, features = ["macros", "net", "rt", "rt-multi-thread", "time"] }
+# In-process, filesystem-backed S3 server used only by the gated `s3_blobstore`
+# integration test (run with `--features s3`). `s3s` provides a hyper/tower
+# `S3Service`; `s3s-fs` is its filesystem backend. `hyper-util` serves the
+# service over a local TCP listener. These are dev-only and never affect the
+# library build (`cargo check` does not compile dev-dependencies).
+# Pinned to 0.12: s3s 0.13 raised its MSRV to rustc 1.92, above this
+# toolchain. 0.12 has MSRV 1.86 and the same in-process serving API.
+s3s = "=0.12.0"
+s3s-fs = "=0.12.0"
+hyper-util = { version = "0.1", features = ["server-auto", "http1", "http2", "tokio"] }

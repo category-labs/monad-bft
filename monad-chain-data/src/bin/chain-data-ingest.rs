@@ -267,6 +267,64 @@ struct Cli {
     /// renew_threshold_blocks`. Must be strictly less than `--lease-blocks`.
     #[arg(long, default_value_t = 16)]
     renew_threshold_blocks: u64,
+
+    /// Backend for the blob store (block bodies, receipts, bitmap artifacts).
+    /// `fjall` keeps blobs in the local embedded LSM; `s3` stores them in an
+    /// S3-API-compatible object store. The metadata store is always fjall.
+    /// `s3` requires the binary to be built with `--features s3`.
+    #[arg(long, value_enum, default_value_t = BlobBackendArg::Fjall)]
+    blob_backend: BlobBackendArg,
+
+    /// S3 bucket holding the blob objects. Required when `--blob-backend s3`.
+    #[cfg(feature = "s3")]
+    #[arg(long)]
+    s3_bucket: Option<String>,
+
+    /// AWS region for the S3 blob bucket. Defaults to the ambient AWS region
+    /// chain when unset.
+    #[cfg(feature = "s3")]
+    #[arg(long)]
+    s3_region: Option<String>,
+
+    /// Override the S3 endpoint URL for a compatible service (MinIO, R2, Ceph).
+    /// Leave unset to target real AWS S3.
+    #[cfg(feature = "s3")]
+    #[arg(long)]
+    s3_endpoint_url: Option<String>,
+
+    /// Object-key prefix prepended to every blob object, e.g. `chain-data`.
+    #[cfg(feature = "s3")]
+    #[arg(long, default_value = "")]
+    s3_prefix: String,
+
+    /// Use path-style S3 addressing (`endpoint/bucket/key`). Required by
+    /// MinIO/Ceph; leave off for real AWS S3 and R2.
+    #[cfg(feature = "s3")]
+    #[arg(long)]
+    s3_force_path_style: bool,
+
+    /// Max in-flight S3 PUTs per ingest batch.
+    #[cfg(feature = "s3")]
+    #[arg(long, default_value_t = 32)]
+    s3_max_concurrency: usize,
+
+    /// Static S3 access key id. Must be paired with --s3-secret-access-key.
+    /// Leave both unset to use the ambient AWS credential chain.
+    #[cfg(feature = "s3")]
+    #[arg(long)]
+    s3_access_key_id: Option<String>,
+
+    /// Static S3 secret access key. Must be paired with --s3-access-key-id.
+    #[cfg(feature = "s3")]
+    #[arg(long)]
+    s3_secret_access_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum BlobBackendArg {
+    Fjall,
+    #[cfg(feature = "s3")]
+    S3,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -469,17 +527,75 @@ async fn main() -> Result<()> {
         }
     };
     let blob_compression_stats = BlobCompressionStats::default();
-    let blob_store = BlobCompressionStore::new(
-        blob_fjall_store.clone(),
-        blob_compression,
-        blob_compression_stats.clone(),
-    );
     info!(
         blob_compression = ?cli.blob_compression,
         blob_compression_level = cli.blob_compression_level,
         blob_compression_min_bytes = cli.blob_compression_min_bytes,
         "blob compression config"
     );
+
+    // Select the blob backend at runtime. Both arms wrap the concrete backend
+    // in the same `BlobCompressionStore` and hand off to the generic
+    // `run_with_blob_store`, so the service's `B` type parameter is the only
+    // thing that differs between them.
+    match cli.blob_backend {
+        BlobBackendArg::Fjall => {
+            info!("blob backend: fjall");
+            let blob_store = BlobCompressionStore::new(
+                blob_fjall_store.clone(),
+                blob_compression,
+                blob_compression_stats.clone(),
+            );
+            run_with_blob_store(
+                &cli,
+                &store_dirs,
+                meta_store,
+                Some(blob_fjall_store),
+                blob_store,
+                cache_config,
+                blob_compression_stats,
+            )
+            .await
+        }
+        #[cfg(feature = "s3")]
+        BlobBackendArg::S3 => {
+            let s3_store = build_s3_blob_store(&cli).await?;
+            let blob_store = BlobCompressionStore::new(
+                s3_store,
+                blob_compression,
+                blob_compression_stats.clone(),
+            );
+            run_with_blob_store(
+                &cli,
+                &store_dirs,
+                meta_store,
+                None,
+                blob_store,
+                cache_config,
+                blob_compression_stats,
+            )
+            .await
+        }
+    }
+}
+
+/// Builds the service over the chosen blob backend and drives the full ingest
+/// pipeline. Generic over the concrete blob store `B` so the same body serves
+/// both the fjall and S3 backends without an enum over the service type.
+///
+/// `blob_fjall_store` is `Some` only when blobs live in a separate fjall DB; it
+/// feeds `collect_fjall_stats` so the blob keyspaces show up in progress logs.
+/// Non-fjall backends (S3) pass `None`.
+#[allow(clippy::too_many_arguments)]
+async fn run_with_blob_store<B: monad_chain_data::store::BlobStore>(
+    cli: &Cli,
+    store_dirs: &StoreDirs,
+    meta_store: FjallStore,
+    blob_fjall_store: Option<FjallStore>,
+    blob_store: B,
+    cache_config: CacheConfig,
+    blob_compression_stats: BlobCompressionStats,
+) -> Result<()> {
     if cli.lease_blocks == 0 {
         bail!("--lease-blocks must be >= 1");
     }
@@ -927,14 +1043,17 @@ async fn main() -> Result<()> {
             );
 
             let phase_summary = std::mem::take(&mut phase).summary();
-            let fjall_stats =
-                match collect_fjall_stats(&meta_store, &blob_fjall_store, store_dirs.same_dir) {
-                    Ok(stats) => stats,
-                    Err(e) => {
-                        warn!(error = %e, "fjall keyspace_stats failed");
-                        Vec::new()
-                    }
-                };
+            let fjall_stats = match collect_fjall_stats(
+                &meta_store,
+                blob_fjall_store.as_ref(),
+                store_dirs.same_dir,
+            ) {
+                Ok(stats) => stats,
+                Err(e) => {
+                    warn!(error = %e, "fjall keyspace_stats failed");
+                    Vec::new()
+                }
+            };
             let fjall_agg = FjallAggregates::from(fjall_stats.as_slice());
             emit_fjall_metrics(&metrics, &fjall_stats);
 
@@ -1089,6 +1208,51 @@ async fn main() -> Result<()> {
 
     info!(end, total_txs, total_logs, total_traces, "ingest complete");
     Ok(())
+}
+
+/// Builds an [`S3BlobStore`] from the `--s3-*` flags. Mirrors
+/// `monad-archive/src/aws_cli.rs`: a partial static credential pair is rejected
+/// rather than silently falling through to the ambient AWS credential chain.
+#[cfg(feature = "s3")]
+async fn build_s3_blob_store(cli: &Cli) -> Result<monad_chain_data::store::S3BlobStore> {
+    use monad_chain_data::store::{S3BlobStore, S3BlobStoreConfig, S3Credentials};
+
+    let Some(bucket) = cli.s3_bucket.clone() else {
+        bail!("--blob-backend s3 requires --s3-bucket");
+    };
+    let credentials = match (&cli.s3_access_key_id, &cli.s3_secret_access_key) {
+        (Some(access_key_id), Some(secret_access_key)) => Some(S3Credentials {
+            access_key_id: access_key_id.clone(),
+            secret_access_key: secret_access_key.clone(),
+            session_token: None,
+        }),
+        (Some(_), None) => bail!("--s3-access-key-id requires --s3-secret-access-key"),
+        (None, Some(_)) => bail!("--s3-secret-access-key requires --s3-access-key-id"),
+        // No static credentials: fall through to the ambient AWS chain.
+        (None, None) => None,
+    };
+    info!(
+        s3_bucket = %bucket,
+        s3_region = ?cli.s3_region,
+        s3_endpoint_url = ?cli.s3_endpoint_url,
+        s3_prefix = %cli.s3_prefix,
+        s3_force_path_style = cli.s3_force_path_style,
+        s3_max_concurrency = cli.s3_max_concurrency,
+        s3_static_credentials = credentials.is_some(),
+        "blob backend: s3"
+    );
+    let config = S3BlobStoreConfig {
+        bucket,
+        root_prefix: cli.s3_prefix.clone(),
+        endpoint_url: cli.s3_endpoint_url.clone(),
+        region: cli.s3_region.clone(),
+        force_path_style: cli.s3_force_path_style,
+        max_concurrency: cli.s3_max_concurrency,
+        credentials,
+    };
+    S3BlobStore::new(config)
+        .await
+        .context("building S3 blob store")
 }
 
 async fn profile_blob_compression_only(cli: &Cli) -> Result<()> {
@@ -1598,12 +1762,17 @@ impl FjallAggregates {
 
 fn collect_fjall_stats(
     meta_store: &FjallStore,
-    blob_store: &FjallStore,
+    blob_store: Option<&FjallStore>,
     same_dir: bool,
 ) -> Result<Vec<monad_chain_data::store::FjallKeyspaceStats>> {
     let mut stats = meta_store.keyspace_stats()?;
-    if !same_dir {
-        stats.extend(blob_store.keyspace_stats()?);
+    // The blob store only contributes keyspace stats when it is a separate
+    // fjall DB. A shared dir is already covered by the meta stats, and a
+    // non-fjall backend (e.g. S3) has no fjall keyspaces at all.
+    if let Some(blob_store) = blob_store {
+        if !same_dir {
+            stats.extend(blob_store.keyspace_stats()?);
+        }
     }
     Ok(stats)
 }
