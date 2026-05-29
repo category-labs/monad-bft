@@ -644,10 +644,8 @@ impl BitmapPageCounts {
     /// binary-search. Pages are expected unique; on a duplicate the last write
     /// wins, mirroring the immutable-once-sealed contract.
     pub fn from_pairs(pairs: impl IntoIterator<Item = (u32, u32)>) -> Self {
-        let mut pages: Vec<(u32, u32)> = pairs
-            .into_iter()
-            .filter(|(_, count)| *count != 0)
-            .collect();
+        let mut pages: Vec<(u32, u32)> =
+            pairs.into_iter().filter(|(_, count)| *count != 0).collect();
         pages.sort_by_key(|(page_start_local, _)| *page_start_local);
         pages.dedup_by_key(|(page_start_local, _)| *page_start_local);
         Self { pages }
@@ -949,7 +947,10 @@ mod tests {
         // Lookups: present pages return their count, the dropped/zero page and
         // an untouched page both return `None`.
         assert_eq!(decoded.count_for_page(0), Some(9));
-        assert_eq!(decoded.count_for_page(2 * STREAM_PAGE_LOCAL_ID_SPAN), Some(5));
+        assert_eq!(
+            decoded.count_for_page(2 * STREAM_PAGE_LOCAL_ID_SPAN),
+            Some(5)
+        );
         assert_eq!(decoded.count_for_page(STREAM_PAGE_LOCAL_ID_SPAN), None);
     }
 

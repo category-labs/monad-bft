@@ -265,7 +265,10 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
         // we never re-read a page whose count we just produced.
         let mut fresh_counts: BTreeMap<(&str, u32), u32> = BTreeMap::new();
         for page in compacted_pages {
-            fresh_counts.insert((page.stream_id.as_str(), page.page_start_local), page.meta.count);
+            fresh_counts.insert(
+                (page.stream_id.as_str(), page.page_start_local),
+                page.meta.count,
+            );
         }
 
         for sealed_shard in newly_sealed_shards(from_next_primary_id, next_primary_id) {
@@ -275,13 +278,15 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
             let mut pages_by_stream: BTreeMap<String, BTreeSet<u32>> = BTreeMap::new();
             for page_idx in 0..STREAM_PAGES_PER_SHARD {
                 let page_start_local = page_idx * STREAM_PAGE_LOCAL_ID_SPAN;
-                let page_global_start =
-                    sealed_shard.saturating_mul(SHARD_LOCAL_ID_SPAN).saturating_add(
-                        u64::from(page_idx) * u64::from(STREAM_PAGE_LOCAL_ID_SPAN),
-                    );
+                let page_global_start = sealed_shard
+                    .saturating_mul(SHARD_LOCAL_ID_SPAN)
+                    .saturating_add(u64::from(page_idx) * u64::from(STREAM_PAGE_LOCAL_ID_SPAN));
                 // Durable inventory for pages sealed in prior batches.
                 for stream in self.bitmap().load_open_streams(page_global_start).await? {
-                    pages_by_stream.entry(stream).or_default().insert(page_start_local);
+                    pages_by_stream
+                        .entry(stream)
+                        .or_default()
+                        .insert(page_start_local);
                 }
                 // In-memory projected inventory for pages this batch is sealing
                 // (staged to the durable table in the same session, not yet
@@ -805,7 +810,10 @@ mod tests {
             Vec::<u64>::new()
         );
         // Advance within a single shard never crosses its last page.
-        assert_eq!(newly_sealed_shards(1, SHARD_LOCAL_ID_SPAN - 1), Vec::<u64>::new());
+        assert_eq!(
+            newly_sealed_shards(1, SHARD_LOCAL_ID_SPAN - 1),
+            Vec::<u64>::new()
+        );
         // Landing exactly on the shard boundary seals the lower shard.
         assert_eq!(newly_sealed_shards(0, SHARD_LOCAL_ID_SPAN), vec![0]);
     }
@@ -878,9 +886,18 @@ mod tests {
         let s_b = sharded_stream_id("addr", &[0xBB], 0);
 
         // s_a: page 0 (count 3) and page 2 (count 5). s_b: page 1 (count 7).
-        family.store_bitmap_page_artifact(&s_a, 0, &artifact(3)).await.unwrap();
-        family.store_bitmap_page_artifact(&s_a, 2 * page_span, &artifact(5)).await.unwrap();
-        family.store_bitmap_page_artifact(&s_b, page_span, &artifact(7)).await.unwrap();
+        family
+            .store_bitmap_page_artifact(&s_a, 0, &artifact(3))
+            .await
+            .unwrap();
+        family
+            .store_bitmap_page_artifact(&s_a, 2 * page_span, &artifact(5))
+            .await
+            .unwrap();
+        family
+            .store_bitmap_page_artifact(&s_b, page_span, &artifact(7))
+            .await
+            .unwrap();
         family
             .record_open_bitmap_streams(0, &BTreeSet::from([s_a.clone()]))
             .await
@@ -890,10 +907,7 @@ mod tests {
             .await
             .unwrap();
         family
-            .record_open_bitmap_streams(
-                2 * u64::from(page_span),
-                &BTreeSet::from([s_a.clone()]),
-            )
+            .record_open_bitmap_streams(2 * u64::from(page_span), &BTreeSet::from([s_a.clone()]))
             .await
             .unwrap();
 

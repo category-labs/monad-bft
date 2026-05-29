@@ -340,10 +340,7 @@ where
             if let Some(existing) = map.get(&key) {
                 (existing.clone(), false)
             } else {
-                let shared = fetch
-                    .map(|r| r.map_err(Arc::new))
-                    .boxed()
-                    .shared();
+                let shared = fetch.map(|r| r.map_err(Arc::new)).boxed().shared();
                 map.insert(key.clone(), shared.clone());
                 (shared, true)
             }
@@ -359,7 +356,10 @@ where
         //     and remove the in-flight entry. The guard removes the key even
         //     on error or panic so a failed fetch is not cached and the next
         //     call retries (errors are never cached).
-        let _guard = InFlightGuard { inner: self, key: &key };
+        let _guard = InFlightGuard {
+            inner: self,
+            key: &key,
+        };
         let result = fut.await;
         if let Ok(value) = &result {
             // Negative caching matches the existing behavior: `None` is stored
@@ -765,24 +765,13 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(20)).await;
                 Err(MonadChainDataError::Backend("boom".to_string()))
             }
-            async fn scan_get(
-                &self,
-                _t: ScanId,
-                _p: &[u8],
-                _c: &[u8],
-            ) -> Result<Option<Bytes>> {
+            async fn scan_get(&self, _t: ScanId, _p: &[u8], _c: &[u8]) -> Result<Option<Bytes>> {
                 unimplemented!()
             }
             async fn put(&self, _t: TableId, _k: &[u8], _v: Bytes) -> Result<()> {
                 unimplemented!()
             }
-            async fn scan_put(
-                &self,
-                _t: ScanId,
-                _p: &[u8],
-                _c: &[u8],
-                _v: Bytes,
-            ) -> Result<()> {
+            async fn scan_put(&self, _t: ScanId, _p: &[u8], _c: &[u8], _v: Bytes) -> Result<()> {
                 unimplemented!()
             }
             async fn scan_list(

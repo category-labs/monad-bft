@@ -21,11 +21,7 @@ use std::sync::{atomic::Ordering, Arc};
 
 use bytes::Bytes as RawBytes;
 use monad_chain_data::{
-    engine::{
-        bitmap::STREAM_PAGE_LOCAL_ID_SPAN,
-        clause::IndexedClause,
-        family::Family,
-    },
+    engine::{bitmap::STREAM_PAGE_LOCAL_ID_SPAN, clause::IndexedClause, family::Family},
     error::Result,
     store::{
         common::Page,
@@ -34,8 +30,8 @@ use monad_chain_data::{
             ScannableTableId, TableId,
         },
     },
-    Address, Bytes, B256, FinalizedBlock, InMemoryBlobStore, InMemoryMetaStore, Log, LogData,
-    MonadChainDataService, QueryLimits, Topic,
+    Address, Bytes, FinalizedBlock, InMemoryBlobStore, InMemoryMetaStore, Log, LogData,
+    MonadChainDataService, QueryLimits, Topic, B256,
 };
 
 mod common;
@@ -113,7 +109,9 @@ impl<S: MetaStore> MetaStore for CountingMetaStore<S> {
         clustering: &[u8],
         value: RawBytes,
     ) -> Result<()> {
-        self.inner.scan_put(table, partition, clustering, value).await
+        self.inner
+            .scan_put(table, partition, clustering, value)
+            .await
     }
 
     async fn scan_list(

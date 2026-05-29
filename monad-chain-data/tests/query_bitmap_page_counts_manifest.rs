@@ -112,7 +112,9 @@ impl<S: MetaStore> MetaStore for CountingMetaStore<S> {
         clustering: &[u8],
         value: RawBytes,
     ) -> Result<()> {
-        self.inner.scan_put(table, partition, clustering, value).await
+        self.inner
+            .scan_put(table, partition, clustering, value)
+            .await
     }
 
     async fn scan_list(
@@ -250,7 +252,13 @@ async fn sealed_shard_skips_zero_count_pages_without_fetching() {
     counting.start_counting();
     // frontier_shard = 1 => shard 0 is sealed and the manifest may skip.
     let result = family
-        .load_intersection_bitmap(&clauses, sealed_shard, 1, 0, 3 * STREAM_PAGE_LOCAL_ID_SPAN - 1)
+        .load_intersection_bitmap(
+            &clauses,
+            sealed_shard,
+            1,
+            0,
+            3 * STREAM_PAGE_LOCAL_ID_SPAN - 1,
+        )
         .await
         .expect("load intersection");
     let fetches = counting.get_calls(page_blob_table);
@@ -369,7 +377,10 @@ async fn sealed_shard_orders_fetches_by_ascending_count() {
         .await
         .unwrap();
     family
-        .store_bitmap_page_counts(&s_sparse, &BitmapPageCounts::from_pairs([(page_start(0), 1)]))
+        .store_bitmap_page_counts(
+            &s_sparse,
+            &BitmapPageCounts::from_pairs([(page_start(0), 1)]),
+        )
         .await
         .unwrap();
     family
