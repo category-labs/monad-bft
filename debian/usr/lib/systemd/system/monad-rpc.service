@@ -20,6 +20,7 @@ ProtectHome=read-only
 NoNewPrivileges=yes
 RestrictSUIDSGID=yes
 LockPersonality=yes
+ReadWritePaths=/run/monad
 DeviceAllow=/dev/triedb rw
 LimitNOFILE=1048576
 AllowedCPUs=12-15

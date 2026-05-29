@@ -31,6 +31,8 @@ ProtectHome=read-only
 NoNewPrivileges=yes
 RestrictSUIDSGID=yes
 LockPersonality=yes
+ReadWritePaths=/var/lib/monad /run/monad
+AmbientCapabilities=CAP_FOWNER
 # Sockets in /run/monad/ inherit group monad-ipc via the setgid bit on the
 # directory, but file mode comes from the process umask. Default 0022 leaves
 # the group without write — connect(2) needs MAY_WRITE — so rpc/execution
