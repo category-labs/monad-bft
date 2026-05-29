@@ -79,6 +79,7 @@ mod debug_replay;
 pub mod eth;
 mod meta;
 pub mod queryx;
+mod queryx_docs;
 pub mod resources;
 mod txpool;
 
