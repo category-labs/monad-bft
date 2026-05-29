@@ -64,6 +64,7 @@ impl PartialEq for CheckerArchiveKey {
             }
             (ArchiveArgs::MongoDb(lhs), ArchiveArgs::MongoDb(rhs)) => lhs == rhs,
             (ArchiveArgs::Fs(lhs), ArchiveArgs::Fs(rhs)) => lhs == rhs,
+            (ArchiveArgs::Fjall(lhs), ArchiveArgs::Fjall(rhs)) => lhs == rhs,
             _ => false,
         }
     }
@@ -85,6 +86,10 @@ impl Hash for CheckerArchiveKey {
             }
             ArchiveArgs::Fs(args) => {
                 "fs".hash(state);
+                args.hash(state);
+            }
+            ArchiveArgs::Fjall(args) => {
+                "fjall".hash(state);
                 args.hash(state);
             }
         }

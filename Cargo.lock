@@ -4883,6 +4883,7 @@ dependencies = [
  "dashmap",
  "enum_dispatch",
  "eyre",
+ "fjall",
  "futures",
  "hex",
  "monad-compress",
