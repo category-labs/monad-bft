@@ -590,9 +590,7 @@ mod tests {
     use crate::store::{
         blob::BlobWriteOp,
         common::Page,
-        meta::{
-            CasOutcome, MetaWriteOp, PublicationCasParams, ScannableTableId as ScanId, TableId,
-        },
+        meta::{MetaWriteOp, ScannableTableId as ScanId, TableId},
     };
 
     /// Backend double that counts `get`/`get_blob`/`scan_get` calls and sleeps
@@ -662,13 +660,6 @@ mod tests {
             unimplemented!("not exercised by single-flight tests")
         }
         async fn apply_writes(&self, _writes: Vec<MetaWriteOp>) -> Result<()> {
-            unimplemented!("not exercised by single-flight tests")
-        }
-        async fn apply_writes_with_cas(
-            &self,
-            _writes: Vec<MetaWriteOp>,
-            _cas: PublicationCasParams,
-        ) -> Result<CasOutcome> {
             unimplemented!("not exercised by single-flight tests")
         }
     }
@@ -805,13 +796,6 @@ mod tests {
                 unimplemented!()
             }
             async fn apply_writes(&self, _w: Vec<MetaWriteOp>) -> Result<()> {
-                unimplemented!()
-            }
-            async fn apply_writes_with_cas(
-                &self,
-                _w: Vec<MetaWriteOp>,
-                _c: PublicationCasParams,
-            ) -> Result<CasOutcome> {
                 unimplemented!()
             }
         }

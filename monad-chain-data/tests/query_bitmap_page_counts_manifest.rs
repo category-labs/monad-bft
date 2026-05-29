@@ -36,8 +36,7 @@ use monad_chain_data::{
     store::{
         common::Page,
         meta::{
-            CasOutcome, CasVersion, MetaStore, MetaStoreCas, MetaWriteOp, PublicationCasParams,
-            ScannableTableId, TableId,
+            CasOutcome, CasVersion, MetaStore, MetaStoreCas, MetaWriteOp, ScannableTableId, TableId,
         },
         CacheConfig,
     },
@@ -134,14 +133,6 @@ impl<S: MetaStore> MetaStore for CountingMetaStore<S> {
 
     async fn apply_writes(&self, writes: Vec<MetaWriteOp>) -> Result<()> {
         self.inner.apply_writes(writes).await
-    }
-
-    async fn apply_writes_with_cas(
-        &self,
-        writes: Vec<MetaWriteOp>,
-        cas: PublicationCasParams,
-    ) -> Result<CasOutcome> {
-        self.inner.apply_writes_with_cas(writes, cas).await
     }
 }
 
