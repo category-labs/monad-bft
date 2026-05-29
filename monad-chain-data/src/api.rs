@@ -204,13 +204,15 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
         };
 
         if request.relations.blocks {
-            response.blocks = Some(
+            response.blocks = Some(if response.logs.is_empty() {
+                Vec::new()
+            } else {
                 load_blocks_by_numbers(
                     self.tables.blocks(),
                     response.logs.iter().map(|l| l.block_number),
                 )
-                .await?,
-            );
+                .await?
+            });
         }
 
         if request.relations.transactions {
@@ -251,13 +253,15 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
         };
 
         if request.relations.blocks {
-            response.blocks = Some(
+            response.blocks = Some(if response.txs.is_empty() {
+                Vec::new()
+            } else {
                 load_blocks_by_numbers(
                     self.tables.blocks(),
                     response.txs.iter().map(|t| t.block_number),
                 )
-                .await?,
-            );
+                .await?
+            });
         }
 
         Ok(response)

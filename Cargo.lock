@@ -5006,6 +5006,7 @@ dependencies = [
  "eyre",
  "fjall",
  "futures",
+ "itertools 0.13.0",
  "monad-archive",
  "monad-eth-types",
  "roaring",

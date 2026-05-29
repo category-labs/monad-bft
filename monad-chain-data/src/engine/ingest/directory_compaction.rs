@@ -13,30 +13,18 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use itertools::Itertools;
+
 use crate::{
-    engine::{
-        primary_dir::{
-            bucket_start, PrimaryDirBucket, PrimaryDirFragment, PrimaryDirTables,
-            DIRECTORY_BUCKET_SIZE,
-        },
-        tables::FamilyTables,
+    engine::primary_dir::{
+        bucket_start, PrimaryDirBucket, PrimaryDirFragment, PrimaryDirTables, DIRECTORY_BUCKET_SIZE,
     },
     error::{MonadChainDataError, Result},
-    store::{BlobStore, MetaStore},
+    store::MetaStore,
 };
 
-impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
-    /// Compacts every directory bucket sealed by the given ingest transition.
-    pub async fn compact_newly_sealed_directory_buckets(
-        &self,
-        from_next_primary_id: u64,
-        next_primary_id: u64,
-    ) -> Result<()> {
-        compact_newly_sealed_buckets(self.dir(), from_next_primary_id, next_primary_id).await
-    }
-}
-
-async fn compact_newly_sealed_buckets<M: MetaStore>(
+/// Compacts every directory bucket sealed by the given ingest transition.
+pub(crate) async fn compact_newly_sealed_buckets<M: MetaStore>(
     dir: &PrimaryDirTables<M>,
     from_next_primary_id: u64,
     next_primary_id: u64,
@@ -67,10 +55,7 @@ fn compact_bucket_from_fragments(fragments: &[PrimaryDirFragment]) -> Result<Pri
     let mut first_primary_ids = Vec::with_capacity(fragments.len() + 1);
     first_primary_ids.push(first_fragment.first_primary_id);
 
-    for window in fragments.windows(2) {
-        let [previous, fragment] = window else {
-            unreachable!("windows(2) yields slices of length 2");
-        };
+    for (previous, fragment) in fragments.iter().tuple_windows() {
         validate_fragment(fragment)?;
 
         if fragment.block_number != previous.block_number.saturating_add(1) {

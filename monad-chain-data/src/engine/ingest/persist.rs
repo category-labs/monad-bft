@@ -16,7 +16,10 @@
 use bytes::Bytes;
 
 use crate::{
-    engine::{bitmap::BitmapFragmentWrite, tables::FamilyTables},
+    engine::{
+        bitmap::BitmapFragmentWrite, ingest::directory_compaction::compact_newly_sealed_buckets,
+        tables::FamilyTables,
+    },
     error::Result,
     primitives::state::FamilyWindowRecord,
     store::{BlobStore, MetaStore},
@@ -47,7 +50,7 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
         for fragment in bitmap_fragments {
             self.store_bitmap_fragment(fragment, block_number).await?;
         }
-        self.compact_newly_sealed_directory_buckets(first_primary_id, next_primary_id_exclusive)
+        compact_newly_sealed_buckets(self.dir(), first_primary_id, next_primary_id_exclusive)
             .await?;
         self.compact_newly_sealed_bitmap_pages(
             bitmap_fragments,

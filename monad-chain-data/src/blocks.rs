@@ -15,6 +15,8 @@
 
 use std::collections::BTreeSet;
 
+use futures::future::try_join_all;
+
 use crate::{
     engine::tables::{BlockTables, Tables},
     error::{MonadChainDataError, Result},
@@ -91,11 +93,12 @@ pub async fn load_blocks_by_numbers<M: MetaStore, I: IntoIterator<Item = u64>>(
     numbers: I,
 ) -> Result<Vec<Block>> {
     let distinct: BTreeSet<u64> = numbers.into_iter().collect();
-    let mut out = Vec::with_capacity(distinct.len());
-    for number in distinct {
-        out.push(load_block(blocks, number).await?);
-    }
-    Ok(out)
+    try_join_all(
+        distinct
+            .into_iter()
+            .map(|number| load_block(blocks, number)),
+    )
+    .await
 }
 
 pub async fn load_block<M: MetaStore>(blocks: &BlockTables<M>, number: u64) -> Result<Block> {

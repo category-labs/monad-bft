@@ -360,7 +360,7 @@ pub(crate) fn global_page_start(primary_id: u64) -> u64 {
 
 pub(crate) fn stream_page_global_start(stream_id: &str, page_start_local: u32) -> Result<u64> {
     let shard = parse_stream_shard(stream_id)?;
-    Ok((shard << PrimaryId::LOCAL_ID_BITS) + u64::from(page_start_local))
+    Ok(PrimaryId::from_parts(shard, page_start_local)?.as_u64())
 }
 
 pub(crate) fn local_page_start(global_page_start: u64) -> u32 {

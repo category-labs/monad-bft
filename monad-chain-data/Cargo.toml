@@ -19,7 +19,8 @@ bytes = { workspace = true }
 clap = { workspace = true, features = ["derive"], optional = true }
 eyre = { workspace = true, optional = true }
 fjall = { version = "3.1", optional = true }
-futures = { workspace = true, optional = true }
+futures = { workspace = true }
+itertools = { workspace = true }
 monad-archive = { workspace = true, optional = true }
 monad-eth-types = { workspace = true, optional = true }
 roaring = "0.11"
@@ -46,7 +47,6 @@ archive-ingest = [
     "fjall",
     "dep:clap",
     "dep:eyre",
-    "dep:futures",
     "dep:monad-archive",
     "dep:monad-eth-types",
     "dep:tokio",

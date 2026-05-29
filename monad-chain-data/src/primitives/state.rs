@@ -54,8 +54,20 @@ impl PrimaryId {
         (self.0 & Self::LOCAL_ID_MASK) as u32
     }
 
-    pub const fn from_parts(shard: u64, local: u32) -> Self {
-        Self((shard << Self::LOCAL_ID_BITS) | (local as u64))
+    pub fn from_parts(shard: u64, local: u32) -> Result<Self> {
+        if u64::from(local) > Self::LOCAL_ID_MASK {
+            return Err(MonadChainDataError::Decode(
+                "primary id local part overflow",
+            ));
+        }
+        if shard > (u64::MAX >> Self::LOCAL_ID_BITS) {
+            return Err(MonadChainDataError::Decode("primary id shard overflow"));
+        }
+
+        let shifted_shard = shard
+            .checked_shl(Self::LOCAL_ID_BITS)
+            .ok_or(MonadChainDataError::Decode("primary id shard overflow"))?;
+        Ok(Self(shifted_shard | u64::from(local)))
     }
 
     pub fn idx_in_block(self, first: PrimaryId) -> Result<usize> {
@@ -96,8 +108,8 @@ impl LogId {
         self.0.local()
     }
 
-    pub const fn from_parts(shard: u64, local: u32) -> Self {
-        Self(PrimaryId::from_parts(shard, local))
+    pub fn from_parts(shard: u64, local: u32) -> Result<Self> {
+        PrimaryId::from_parts(shard, local).map(Self)
     }
 }
 
@@ -141,8 +153,8 @@ impl TxId {
         self.0.local()
     }
 
-    pub const fn from_parts(shard: u64, local: u32) -> Self {
-        Self(PrimaryId::from_parts(shard, local))
+    pub fn from_parts(shard: u64, local: u32) -> Result<Self> {
+        PrimaryId::from_parts(shard, local).map(Self)
     }
 }
 
@@ -155,6 +167,31 @@ impl From<PrimaryId> for TxId {
 impl From<TxId> for PrimaryId {
     fn from(id: TxId) -> Self {
         id.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PrimaryId;
+
+    #[test]
+    fn primary_id_from_parts_rejects_local_overflow() {
+        assert!(PrimaryId::from_parts(0, 1 << PrimaryId::LOCAL_ID_BITS).is_err());
+    }
+
+    #[test]
+    fn primary_id_from_parts_rejects_shard_overflow() {
+        let overflowing_shard = (u64::MAX >> PrimaryId::LOCAL_ID_BITS) + 1;
+
+        assert!(PrimaryId::from_parts(overflowing_shard, 0).is_err());
+    }
+
+    #[test]
+    fn primary_id_from_parts_round_trips_shard_and_local() {
+        let id = PrimaryId::from_parts(7, 42).expect("valid primary id parts");
+
+        assert_eq!(id.shard(), 7);
+        assert_eq!(id.local(), 42);
     }
 }
 

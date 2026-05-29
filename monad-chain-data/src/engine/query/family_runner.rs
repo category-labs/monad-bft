@@ -115,7 +115,7 @@ where
 
         let locals = locals_in_query_order(candidate_bitmap, order);
         for local in locals {
-            let id = PrimaryId::from_parts(shard, local);
+            let id = PrimaryId::from_parts(shard, local)?;
             let Some(location) = resolver.resolve(id).await? else {
                 continue;
             };
