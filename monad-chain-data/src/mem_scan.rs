@@ -1,0 +1,202 @@
+// Copyright (C) 2025 Category Labs, Inc.
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+//! In-memory block scanning for blocks that are not (yet) in the index.
+//!
+//! The indexed query path serves only finalized blocks (everything at or
+//! below the published head). To answer queries that reach the
+//! unfinalized tip (`latest`/default bounds), a caller can hand each
+//! proposed block's logs and transactions to the functions here and get
+//! back the exact same [`LogEntry`]/[`TxEntry`] rows the indexed path
+//! would have produced, filtered with the exact same [`LogFilter`] /
+//! [`TxFilter`] matchers. The caller is then free to merge these with the
+//! indexed results.
+//!
+//! `log_index` is assigned block-globally (a running counter across every
+//! log in the block, in transaction order), matching the assignment made
+//! at ingest in `logs::ingest`.
+
+use alloy_primitives::{Address, Bytes, Log};
+
+use crate::{
+    engine::clause::IndexedFilter, family::Hash32, logs::LogEntry, txs::TxEntry, LogFilter,
+    TxFilter,
+};
+
+/// One unfinalized block's logs, grouped per transaction in block order,
+/// for in-memory scanning. Index `i` holds the logs emitted by
+/// transaction `i`. Mirrors the per-tx grouping (`FinalizedBlock`) used at
+/// ingest so `log_index` is assigned identically.
+pub struct MemLogsBlock<'a> {
+    pub block_number: u64,
+    pub block_hash: Hash32,
+    pub logs_by_tx: &'a [Vec<Log>],
+}
+
+/// One unfinalized transaction for in-memory scanning. `sender` is
+/// caller-authoritative (not recovered from `signed_tx_bytes`), matching
+/// the ingest contract; `to`/`selector` filters decode `signed_tx_bytes`.
+pub struct MemTx {
+    pub tx_hash: Hash32,
+    pub sender: Address,
+    pub signed_tx_bytes: Bytes,
+}
+
+/// Builds the matching [`LogEntry`] rows for one in-memory block.
+///
+/// Returned rows are in block order (ascending `log_index`); the caller is
+/// responsible for any query-order reversal and limit handling across
+/// blocks.
+pub fn scan_block_logs(block: &MemLogsBlock<'_>, filter: &LogFilter) -> Vec<LogEntry> {
+    let mut matches = Vec::new();
+    let mut log_index: u32 = 0;
+
+    for (tx_index, tx_logs) in block.logs_by_tx.iter().enumerate() {
+        let tx_index = tx_index as u32;
+        for log in tx_logs {
+            let entry = LogEntry {
+                block_number: block.block_number,
+                block_hash: block.block_hash,
+                tx_index,
+                log_index,
+                address: log.address,
+                topics: log.data.topics().to_vec(),
+                data: log.data.data.clone(),
+            };
+            log_index = log_index.saturating_add(1);
+            if filter.matches(&entry) {
+                matches.push(entry);
+            }
+        }
+    }
+
+    matches
+}
+
+/// Builds the matching [`TxEntry`] rows for one in-memory block.
+///
+/// Returned rows are in block order (ascending `tx_idx`); the caller is
+/// responsible for any query-order reversal and limit handling across
+/// blocks.
+pub fn scan_block_txs(
+    block_number: u64,
+    block_hash: Hash32,
+    txs: &[MemTx],
+    filter: &TxFilter,
+) -> Vec<TxEntry> {
+    txs.iter()
+        .enumerate()
+        .filter_map(|(tx_idx, tx)| {
+            let entry = TxEntry {
+                block_number,
+                block_hash,
+                tx_idx: tx_idx as u32,
+                tx_hash: tx.tx_hash,
+                sender: tx.sender,
+                signed_tx_bytes: tx.signed_tx_bytes.clone(),
+            };
+            IndexedFilter::matches(filter, &entry).then_some(entry)
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use alloy_primitives::{Address, LogData, B256};
+
+    use super::*;
+
+    fn log(address: Address, topic: B256) -> Log {
+        Log {
+            address,
+            data: LogData::new_unchecked(vec![topic], Bytes::from_static(&[1, 2, 3])),
+        }
+    }
+
+    #[test]
+    fn scan_block_logs_assigns_block_global_log_index_and_filters() {
+        let a = Address::from([0xaa; 20]);
+        let b = Address::from([0xbb; 20]);
+        let t0 = B256::from([0x11; 32]);
+        let t1 = B256::from([0x22; 32]);
+
+        // tx0: two logs (a/t0, b/t1); tx1: one log (a/t1)
+        let logs_by_tx = vec![vec![log(a, t0), log(b, t1)], vec![log(a, t1)]];
+        let block = MemLogsBlock {
+            block_number: 7,
+            block_hash: B256::from([0x99; 32]),
+            logs_by_tx: &logs_by_tx,
+        };
+
+        // Unfiltered: all three, log_index 0,1,2 across the block.
+        let all = scan_block_logs(&block, &LogFilter::default());
+        assert_eq!(all.len(), 3);
+        assert_eq!(
+            all.iter()
+                .map(|l| (l.tx_index, l.log_index))
+                .collect::<Vec<_>>(),
+            vec![(0, 0), (0, 1), (1, 2)]
+        );
+
+        // Address `a` only: log_index 0 (tx0) and 2 (tx1) survive.
+        let filter = LogFilter {
+            address: Some([a].into_iter().collect()),
+            ..Default::default()
+        };
+        let only_a = scan_block_logs(&block, &filter);
+        assert_eq!(
+            only_a.iter().map(|l| l.log_index).collect::<Vec<_>>(),
+            vec![0, 2]
+        );
+
+        // topic0 == t1 AND address a: only the tx1 log.
+        let filter = LogFilter {
+            address: Some([a].into_iter().collect()),
+            topics: [Some([t1].into_iter().collect()), None, None, None],
+        };
+        let narrowed = scan_block_logs(&block, &filter);
+        assert_eq!(narrowed.len(), 1);
+        assert_eq!(narrowed[0].log_index, 2);
+        assert_eq!(narrowed[0].block_number, 7);
+    }
+
+    #[test]
+    fn scan_block_txs_filters_by_sender() {
+        let sender_a = Address::from([0x01; 20]);
+        let sender_b = Address::from([0x02; 20]);
+        let txs = vec![
+            MemTx {
+                tx_hash: B256::from([0x10; 32]),
+                sender: sender_a,
+                signed_tx_bytes: Bytes::new(),
+            },
+            MemTx {
+                tx_hash: B256::from([0x20; 32]),
+                sender: sender_b,
+                signed_tx_bytes: Bytes::new(),
+            },
+        ];
+
+        let filter = TxFilter {
+            from: Some([sender_b].into_iter().collect()),
+            ..Default::default()
+        };
+        let matched = scan_block_txs(3, B256::from([0x77; 32]), &txs, &filter);
+        assert_eq!(matched.len(), 1);
+        assert_eq!(matched[0].tx_idx, 1);
+        assert_eq!(matched[0].sender, sender_b);
+        assert_eq!(matched[0].block_number, 3);
+    }
+}

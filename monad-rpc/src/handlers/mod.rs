@@ -482,6 +482,7 @@ async fn eth_getLogs(
     if let Some(service) = app_state.chain_data.as_ref() {
         let logs = queryx::get_logs_via_chain_data(
             service,
+            app_state.chain_state.as_ref(),
             params.into_filter(),
             app_state.max_response_size,
             app_state.logs_max_block_range,

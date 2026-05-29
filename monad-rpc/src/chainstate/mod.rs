@@ -22,7 +22,7 @@ use alloy_consensus::{
     transaction::Recovered, Header as RlpHeader, ReceiptEnvelope, ReceiptWithBloom,
     Transaction as _,
 };
-use alloy_primitives::{Bloom, FixedBytes, TxHash, TxKind, U256};
+use alloy_primitives::{Bloom, FixedBytes, TxHash, TxKind, B256, U256};
 use alloy_rlp::Encodable;
 use alloy_rpc_types::{
     Block, BlockTransactions, Filter, FilterBlockOption, FilteredParams, Header, Log, Receipt,
@@ -60,6 +60,14 @@ pub struct ChainState<T> {
     pub triedb_env: T,
     pub archive_reader: Option<ArchiveReader>,
 }
+
+/// A single block's header plus its transactions and receipts, as fetched
+/// from the buffer/triedb/archive cascade for serving the unfinalized tip.
+pub type BlockLogData = (
+    BlockHeader,
+    Vec<TxEnvelopeWithSender>,
+    Vec<ReceiptWithLogIndex>,
+);
 
 #[derive(Debug)]
 pub enum ChainStateError {
@@ -837,6 +845,145 @@ impl<T: Triedb> ChainState<T> {
         }
 
         Ok(logs)
+    }
+
+    /// Fetches `(header, transactions, receipts)` for each block in the
+    /// inclusive `[from_block, to_block]` range. Used to serve the
+    /// unfinalized tip of `eth_getLogs` when chain-data only indexes
+    /// finalized blocks: each block is resolved from the exec-events buffer
+    /// first, falling back to triedb and then the archive (mirroring the
+    /// cascade in [`Self::get_logs`]). Blocks whose `logs_bloom` cannot match
+    /// `filter` carry empty `transactions`/`receipts` (the header is still
+    /// returned, so the bloom pre-filter short-circuits decoding). Blocks not
+    /// found in any source are skipped. Results are returned in ascending
+    /// block order.
+    pub async fn fetch_blocks_for_logs(
+        &self,
+        from_block: u64,
+        to_block: u64,
+        filter: &Filter,
+    ) -> JsonRpcResult<Vec<BlockLogData>> {
+        let address_filter = FilteredParams::address_filter(&filter.address);
+        let topics_filter = FilteredParams::topics_filter(&filter.topics);
+        let filter_match = |bloom: Bloom| -> bool {
+            FilteredParams::matches_address(bloom, &address_filter)
+                && FilteredParams::matches_topics(bloom, &topics_filter)
+        };
+
+        let mut blocks = Vec::new();
+        for block_num in from_block..=to_block {
+            // Every block in this range is at or below the proposed tip, so a
+            // `None` means it is genuinely unavailable on this node (an
+            // unindexed finalized block pruned from triedb with no archive).
+            // Fail loudly rather than silently omit its logs.
+            let data = self
+                .fetch_block_for_logs(block_num, filter_match)
+                .await?
+                .ok_or_else(|| {
+                    JsonRpcError::internal_error(format!(
+                        "block {block_num} is within the requested range but unavailable \
+                         from any source"
+                    ))
+                })?;
+            blocks.push(data);
+        }
+        Ok(blocks)
+    }
+
+    /// Fetches `(header, transactions, receipts)` for a single block,
+    /// resolving it from the exec-events buffer first, then triedb, then the
+    /// archive (mirroring the cascade in [`Self::get_logs`]). `filter_match`
+    /// is the block-level `logs_bloom` pre-filter: a block whose bloom cannot
+    /// match carries empty `transactions`/`receipts` (its header is still
+    /// returned, so the caller can short-circuit decoding). Returns `None`
+    /// when the block is unavailable in every source. Pass `|_| true` to
+    /// materialize unconditionally — e.g. for transaction scans, which have
+    /// no bloom and must see every block.
+    pub async fn fetch_block_for_logs(
+        &self,
+        block_num: u64,
+        filter_match: impl Fn(Bloom) -> bool,
+    ) -> JsonRpcResult<Option<BlockLogData>> {
+        // exec-events buffer first
+        if let Some(buffer) = &self.buffer {
+            if let Some(data) =
+                buffer.get_bloom_filtered_header_transactions_receipts(block_num, &filter_match)
+            {
+                return Ok(Some(data));
+            }
+        }
+
+        // triedb, with the header gating both the bloom check and the
+        // tx/receipt fetch
+        if let Some(block_key) = self.triedb_env.get_block_key(SeqNum(block_num)) {
+            if let Some(header) = self
+                .triedb_env
+                .get_block_header(block_key)
+                .await
+                .map_err(JsonRpcError::internal_error)?
+            {
+                if !filter_match(header.header.logs_bloom) {
+                    return Ok(Some((header, vec![], vec![])));
+                }
+
+                if let Ok(transactions) = self.triedb_env.get_transactions(block_key).await {
+                    let receipts = self
+                        .triedb_env
+                        .get_receipts(block_key)
+                        .await
+                        .map_err(JsonRpcError::internal_error)?;
+                    return Ok(Some((header, transactions, receipts)));
+                }
+                // header present but txs missing (state-synced): fall through
+                // to the archive
+            }
+        }
+
+        // archive fallback
+        if let Some(archive_reader) = &self.archive_reader {
+            let data = fetch_bloom_filtered_header_transactions_receipts_from_archive(
+                archive_reader,
+                block_num,
+                &filter_match,
+            )
+            .await?;
+            return Ok(Some(data));
+        }
+
+        // unavailable in every source
+        Ok(None)
+    }
+
+    /// Resolves a block hash to its number across the exec-events buffer,
+    /// triedb, and archive. Used to serve `eth_getLogs` block-hash filters
+    /// that may target an unfinalized block not yet present in chain-data.
+    pub async fn resolve_block_number_by_hash(
+        &self,
+        hash: B256,
+    ) -> JsonRpcResult<Option<u64>> {
+        if let Some(buffer) = &self.buffer {
+            if let Some(block) = buffer.get_block_by_hash(&FixedData(hash.0)) {
+                return Ok(Some(block.header.number));
+            }
+        }
+
+        let latest_block_key = get_latest_block_key(&self.triedb_env);
+        if let Some(block_num) = self
+            .triedb_env
+            .get_block_number_by_hash(latest_block_key, hash.0)
+            .await
+            .map_err(JsonRpcError::internal_error)?
+        {
+            return Ok(Some(block_num));
+        }
+
+        if let Some(archive_reader) = &self.archive_reader {
+            if let Some(block) = archive_reader.try_get_block_by_hash(&hash).await? {
+                return Ok(Some(block.header.number));
+            }
+        }
+
+        Ok(None)
     }
 
     /// Returns raw call frame bytes for all transactions in a block, producing the block key,

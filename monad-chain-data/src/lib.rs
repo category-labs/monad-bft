@@ -19,6 +19,7 @@ pub mod engine;
 pub mod error;
 pub mod family;
 pub mod logs;
+pub mod mem_scan;
 pub mod primitives;
 pub mod store;
 pub mod traces;
@@ -42,6 +43,7 @@ pub use engine::{
 pub use error::MonadChainDataError;
 pub use family::{CallKind, FinalizedBlock, Hash32, IngestTrace, IngestTx};
 pub use logs::{LogEntry, LogFilter, LogsRelations, QueryLogsRequest, QueryLogsResponse};
+pub use mem_scan::{scan_block_logs, scan_block_txs, MemLogsBlock, MemTx};
 pub use primitives::{
     limits::{LimitExceededKind, QueryEnvelope, QueryLimits},
     page::{QueryOrder, DEFAULT_QUERY_LIMIT},
