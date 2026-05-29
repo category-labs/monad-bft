@@ -203,6 +203,7 @@ where
                     control,
                     shared_peer_discovery_driver,
                     Epoch(0),
+                    monad_raptorcast::dummy_proposer_schedule(),
                 ))
             }
         },

@@ -81,7 +81,10 @@ fn two_nodes() {
                     ID::new(NodeId::new(state_builder.key.pubkey())),
                     state_builder,
                     NoSerRouterConfig::new(all_peers.clone()).build(),
-                    MockValSetUpdaterNop::new(validators.validators, SeqNum(2000)),
+                    // epoch length must match the chain config (MockChainConfig::new
+                    // uses SeqNum::MAX), otherwise the updater fabricates validator-set
+                    // updates for epochs the consensus epoch_manager never schedules.
+                    MockValSetUpdaterNop::new(validators.validators, SeqNum::MAX),
                     MockTxPoolExecutor::default().with_chain_params(&CHAIN_PARAMS),
                     MockLedger::new(state_backend.clone()),
                     MockStateSyncExecutor::new(state_backend),

@@ -1071,15 +1071,33 @@ where
                     ValidatorMapping::new(validator_set_data.validators.get_cert_pubkeys()),
                 );
 
-                let mut cmds = vec![
-                    Command::RouterCommand(RouterCommand::AddEpochValidatorSet {
-                        epoch: validator_set_data.epoch,
-                        validator_set: validator_set_data.validators.get_stakes(),
-                    }),
-                    Command::ConfigFileCommand(ConfigFileCommand::ValidatorSetData {
-                        validator_set_data,
-                    }),
-                ];
+                let mut cmds = Vec::new();
+
+                // The epoch start should already be scheduled in the
+                // epoch manager before its validator set update
+                // arrives. A missing start signals a bug or config
+                // mismatch.
+                match self.epoch_manager.get_epoch_start(validator_set_data.epoch) {
+                    Some(epoch_start) => {
+                        cmds.push(Command::RouterCommand(
+                            RouterCommand::AddEpochValidatorSet {
+                                epoch: validator_set_data.epoch,
+                                epoch_start,
+                                validator_set: validator_set_data.validators.get_stakes(),
+                            },
+                        ));
+                    }
+                    None => {
+                        tracing::error!(
+                            epoch = ?validator_set_data.epoch,
+                            "epoch start not scheduled for updated validator set"
+                        );
+                    }
+                }
+
+                cmds.push(Command::ConfigFileCommand(
+                    ConfigFileCommand::ValidatorSetData { validator_set_data },
+                ));
 
                 // if expand_to_group and not live and is_validator, emit
                 // validator peers to statesync
@@ -1514,6 +1532,10 @@ where
 
         // commit blocks
         for block in last_two_delay_committed_blocks {
+            // ensure that epoch_manager covers epochs for
+            // locked_epoch_validators.
+            self.epoch_manager
+                .schedule_epoch_start(block.get_seq_num(), block.get_block_round());
             commands.push(Command::LedgerCommand(LedgerCommand::LedgerCommit(
                 OptimisticCommit::Proposed {
                     block: block.deref().to_owned(),
