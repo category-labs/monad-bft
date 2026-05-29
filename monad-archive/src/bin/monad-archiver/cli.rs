@@ -74,6 +74,10 @@ pub struct Cli {
     pub traces_only: bool,
 
     #[serde(default)]
+    /// If set, archiver will skip traces entirely
+    pub skip_traces: bool,
+
+    #[serde(default)]
     /// If set, archiver will perform an asynchronous backfill of the archive
     /// This allows a second archiver to backfill a range while the first archiver is running
     pub async_backfill: bool,
@@ -212,6 +216,7 @@ impl Cli {
             skip_connectivity_check,
             require_traces,
             traces_only,
+            skip_traces,
             async_backfill,
         } = overrides;
 
@@ -253,6 +258,7 @@ impl Cli {
             skip_connectivity_check: skip_connectivity_check.unwrap_or(false),
             require_traces: require_traces.unwrap_or(false),
             traces_only: traces_only.unwrap_or(false),
+            skip_traces: skip_traces.unwrap_or(false),
             async_backfill: async_backfill.unwrap_or(false),
         })
     }
@@ -405,6 +411,10 @@ struct CliArgs {
     #[arg(long, action = ArgAction::SetTrue)]
     traces_only: bool,
 
+    /// If set, archiver will skip traces entirely (no fetch, no write)
+    #[arg(long, action = ArgAction::SetTrue)]
+    skip_traces: bool,
+
     /// If set, archiver will perform an asynchronous backfill of the archive
     #[arg(long, action = ArgAction::SetTrue)]
     async_backfill: bool,
@@ -518,6 +528,7 @@ impl CliArgs {
             unsafe_allow_traces_overwrite,
             require_traces,
             traces_only,
+            skip_traces,
             async_backfill,
         } = self;
 
@@ -549,6 +560,7 @@ impl CliArgs {
             unsafe_allow_traces_overwrite: bool_override(unsafe_allow_traces_overwrite),
             require_traces: bool_override(require_traces),
             traces_only: bool_override(traces_only),
+            skip_traces: bool_override(skip_traces),
             async_backfill: bool_override(async_backfill),
         };
 
@@ -567,6 +579,7 @@ struct CliOverrides {
     unsafe_skip_bad_blocks: Option<bool>,
     require_traces: Option<bool>,
     traces_only: Option<bool>,
+    skip_traces: Option<bool>,
     async_backfill: Option<bool>,
     bft_block_path: Option<PathBuf>,
     bft_block_poll_freq_secs: Option<u64>,
