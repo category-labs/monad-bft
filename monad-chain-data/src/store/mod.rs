@@ -21,10 +21,7 @@ pub mod fjall;
 pub mod meta;
 pub mod session;
 
-pub use blob::{
-    BlobCompressionConfig, BlobCompressionSnapshot, BlobCompressionStats, BlobCompressionStore,
-    BlobStore, BlobTable, BlobTableId, BlobWriteOp, InMemoryBlobStore,
-};
+pub use blob::{BlobStore, BlobTable, BlobTableId, BlobWriteOp, InMemoryBlobStore};
 #[cfg(feature = "s3")]
 pub use blob::{S3BlobStore, S3BlobStoreConfig, S3Credentials};
 pub use cache::{CacheConfig, CacheField, CachedBlobTable, CachedKvTable, CachedScannableTable};

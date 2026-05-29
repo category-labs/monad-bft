@@ -144,6 +144,9 @@ impl StoredTxEnvelope {
 #[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 pub struct BlockTxHeader {
     pub offsets: Vec<u32>,
+    /// Row-codec dictionary version every frame in this block's blob was
+    /// compressed under. `0` = plain zstd frames (no dictionary).
+    pub dict_version: u32,
 }
 
 impl BlockTxHeader {

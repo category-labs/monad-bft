@@ -39,7 +39,8 @@ use crate::{
         },
         primary_dir::{bucket_start, fragment_bucket_starts, PrimaryDirFragment},
         query::family_runner::IndexedFamilyQuery,
-        tables::{PublicationTables, StagedWrites, Tables, WriteOpCounts},
+        row_codec::{should_sample_row, RowCodec, DICT_VERSION_NONE},
+        tables::{DictConfig, PublicationTables, StagedWrites, Tables, WriteOpCounts},
     },
     error::{MonadChainDataError, Result},
     family::{FinalizedBlock, Hash32},
@@ -338,6 +339,35 @@ async fn retry_sleep(backoff: Duration) {
     futures_timer::Delay::new(backoff).await;
 }
 
+/// Decodes the per-family block header just far enough to recover the row
+/// frame layout (`offsets`) and the `dict_version` the frames were written
+/// under. Used only by the dict-training read-back path.
+fn decode_family_header_layout(family: Family, bytes: &[u8]) -> Result<(Vec<u32>, u32)> {
+    match family {
+        Family::Log => {
+            let h = crate::logs::LogBlockHeader::decode(bytes)?;
+            Ok((h.offsets, h.dict_version))
+        }
+        Family::Tx => {
+            let h = crate::txs::BlockTxHeader::decode(bytes)?;
+            Ok((h.offsets, h.dict_version))
+        }
+        Family::Trace => {
+            let h = crate::traces::BlockTraceHeader::decode(bytes)?;
+            Ok((h.offsets, h.dict_version))
+        }
+    }
+}
+
+/// Per-block cap on training samples collected from one block (keeps a
+/// pathologically large block from dominating the corpus). Also bounds the
+/// total rows pulled across all sampled blocks of an epoch.
+const TARGET_SAMPLE_BLOCKS: u64 = 256;
+
+/// Upper bound on rows pulled into one epoch's training corpus, so a dense
+/// epoch can't blow up memory during an off-thread training run.
+const MAX_TRAINING_ROWS: usize = 50_000;
+
 impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
     pub fn new(meta_store: M, blob_store: B, limits: QueryLimits) -> Self {
         Self::with_cache_config(meta_store, blob_store, limits, CacheConfig::default())
@@ -364,9 +394,22 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
         limits: QueryLimits,
         cache: CacheConfig,
     ) -> Self {
+        Self::with_configs(meta_store, blob_store, limits, cache, DictConfig::default())
+    }
+
+    /// Full constructor that also threads a [`DictConfig`], letting tests run
+    /// the epoch-based dictionary lifecycle over a handful of blocks (e.g.
+    /// `epoch_blocks = 8`).
+    pub fn with_configs(
+        meta_store: M,
+        blob_store: B,
+        limits: QueryLimits,
+        cache: CacheConfig,
+        dict_config: DictConfig,
+    ) -> Self {
         Self {
             publication: PublicationTables::new(meta_store.clone()),
-            tables: Tables::with_cache_config(meta_store, blob_store, cache),
+            tables: Tables::with_configs(meta_store, blob_store, cache, dict_config),
             limits,
             open_indexes: OpenIndexes::default(),
             planning_state: Mutex::new(None),
@@ -839,20 +882,61 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
             prev_record = Some(block_record);
         }
 
+        // Resolve the per-family row codec for every epoch this batch spans,
+        // BEFORE the parallel plan build. `ensure_epoch_dict` is the
+        // block-until-ready await point: it guarantees each epoch's dictionary
+        // is durably published (and its write-side codec installed) before any
+        // block of that epoch is framed. A batch is contiguous, so it usually
+        // touches a single epoch.
+        let epoch_blocks = self.tables.dicts().config().epoch_blocks;
+        let first_epoch = blocks[0].block_number() / epoch_blocks;
+        let last_epoch = blocks[blocks.len() - 1].block_number() / epoch_blocks;
+        let mut epoch_codecs: std::collections::HashMap<u64, (RowCodec, RowCodec, RowCodec)> =
+            std::collections::HashMap::new();
+        for epoch in first_epoch..=last_epoch {
+            let version = u32::try_from(epoch)
+                .map_err(|_| MonadChainDataError::Decode("dict epoch/version overflow"))?;
+            self.ensure_epoch_dicts(version).await?;
+            let dicts = self.tables.dicts();
+            let log_codec =
+                dicts
+                    .write_codec(Family::Log, version)
+                    .ok_or(MonadChainDataError::MissingData(
+                        "epoch log codec not installed",
+                    ))?;
+            let tx_codec =
+                dicts
+                    .write_codec(Family::Tx, version)
+                    .ok_or(MonadChainDataError::MissingData(
+                        "epoch tx codec not installed",
+                    ))?;
+            let trace_codec = dicts.write_codec(Family::Trace, version).ok_or(
+                MonadChainDataError::MissingData("epoch trace codec not installed"),
+            )?;
+            epoch_codecs.insert(epoch, (log_codec, tx_codec, trace_codec));
+        }
+        let epoch_codecs_ref = &epoch_codecs;
+
         let planned: Vec<StageAPlanOutput> = blocks
             .par_iter()
             .zip(plan_starts.par_iter())
             .map(|(block, starts)| {
+                let epoch = block.block_number() / epoch_blocks;
+                let (log_codec_ref, tx_codec_ref, trace_codec_ref) = epoch_codecs_ref
+                    .get(&epoch)
+                    .expect("epoch codec resolved before par_iter");
+                debug_assert_eq!(log_codec_ref.version() as u64, epoch);
+
                 let log_plan_start = Instant::now();
-                let log_plan = LogIngestPlan::build(block, starts.log)?;
+                let log_plan = LogIngestPlan::build(block, starts.log, log_codec_ref)?;
                 let log_plan_us = log_plan_start.elapsed().as_micros() as u64;
 
                 let tx_plan_start = Instant::now();
-                let tx_plan = TxIngestPlan::build(block, starts.tx)?;
+                let tx_plan = TxIngestPlan::build(block, starts.tx, tx_codec_ref)?;
                 let tx_plan_us = tx_plan_start.elapsed().as_micros() as u64;
 
                 let trace_plan_start = Instant::now();
-                let trace_plan = TraceIngestPlan::build(block, starts.trace)?;
+                let trace_plan = TraceIngestPlan::build(block, starts.trace, trace_codec_ref)?;
                 let trace_plan_us = trace_plan_start.elapsed().as_micros() as u64;
 
                 let block_record = BlockRecord {
@@ -1293,6 +1377,158 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
             writes: combined_writes,
             publication,
         }))
+    }
+
+    /// Ensures the row-codec dictionary for `(family, version)` is published
+    /// and its write-side codec installed, training it if necessary. This is
+    /// the **block-until-ready** primitive of the epoch-based lifecycle: a
+    /// block of epoch `V` is only ever framed after `ensure_epoch_dict(family,
+    /// V)` returns, so the durable dict for `V` always exists before any block
+    /// that references it.
+    ///
+    /// Single-flight: concurrent callers (the plan path and the binary's
+    /// background pre-train task) serialize on the per-family
+    /// [`DictManager::train_lock`] and double-check `has_codec`, so a given
+    /// `(family, version)` is trained at most once.
+    pub async fn ensure_epoch_dict(&self, family: Family, version: u32) -> Result<()> {
+        // Version 0 is the implicit plain bootstrap; its codec is pre-installed.
+        if version == DICT_VERSION_NONE {
+            return Ok(());
+        }
+        let dicts = self.tables.dicts();
+        // Fast path: already installed.
+        if dicts.has_codec(family, version) {
+            return Ok(());
+        }
+        // Single-flight gate + double-check.
+        let _g = dicts.train_lock(family).lock().await;
+        if dicts.has_codec(family, version) {
+            return Ok(());
+        }
+
+        // Durable dict already published (e.g. a peer/standby wrote it, or a
+        // prior run): adopt it. `Some(empty)` is the plain sentinel.
+        if let Some(bytes) = self.tables.family(family).load_dict(version).await? {
+            dicts.install_version(family, version, &bytes);
+            return Ok(());
+        }
+
+        // Otherwise train from epoch `version - 1`'s leading blocks.
+        let samples = self.read_back_training_samples(family, version).await?;
+        let dict_bytes: Vec<u8> = if samples.len() >= dicts.config().min_training_samples {
+            let max_size = dicts.config().max_dict_size_bytes;
+            // `from_samples` is CPU-bound; run it on rayon's pool and await the
+            // result so the async executor thread isn't blocked.
+            let (tx, rx) = futures::channel::oneshot::channel();
+            rayon::spawn(move || {
+                let _ = tx.send(zstd::dict::from_samples(&samples, max_size));
+            });
+            let trained = rx
+                .await
+                .map_err(|_| MonadChainDataError::Backend("dict training canceled".into()))?;
+            match trained {
+                // A non-empty trained dictionary; otherwise fall back to the
+                // empty-dict sentinel (this epoch uses plain frames).
+                Ok(bytes) if !bytes.is_empty() => bytes,
+                _ => Vec::new(),
+            }
+        } else {
+            // Too few samples: publish the empty-dict sentinel.
+            Vec::new()
+        };
+
+        // Persist durably BEFORE installing the codec, so a block written under
+        // `version` always has its dict (or sentinel) present on the read path.
+        let dict_for_write = Bytes::from(dict_bytes.clone());
+        self.tables
+            .with_writes(|w| {
+                let dict_for_write = dict_for_write.clone();
+                Box::pin(async move {
+                    self.tables
+                        .family(family)
+                        .stage_dict(w, version, dict_for_write);
+                    Ok(())
+                })
+            })
+            .await?;
+        dicts.install_version(family, version, &dict_bytes);
+        Ok(())
+    }
+
+    /// Ensures the epoch dictionaries for all three families at `version`.
+    pub async fn ensure_epoch_dicts(&self, version: u32) -> Result<()> {
+        for family in [Family::Log, Family::Tx, Family::Trace] {
+            self.ensure_epoch_dict(family, version).await?;
+        }
+        Ok(())
+    }
+
+    /// Collects a deterministic training corpus for `(family, version)` from
+    /// the leading blocks of epoch `version - 1`. Block selection is strided
+    /// (seeded by `version`, no RNG) so the corpus is reproducible. Per-block
+    /// rows are capped via [`should_sample_row`]; the total is capped at
+    /// [`MAX_TRAINING_ROWS`]. Sampled blocks belong to epoch `version - 1`,
+    /// whose dictionary was published earlier, so `decode_block_row` just
+    /// works.
+    async fn read_back_training_samples(
+        &self,
+        family: Family,
+        version: u32,
+    ) -> Result<Vec<Vec<u8>>> {
+        let dicts = self.tables.dicts();
+        let (start, end) = dicts.config().training_range(version);
+        let span = end.saturating_sub(start);
+        if span == 0 {
+            return Ok(Vec::new());
+        }
+        let count = span.min(TARGET_SAMPLE_BLOCKS);
+        let stride = (span / count).max(1);
+        let offset = u64::from(version) % stride;
+
+        let family_tables = self.tables.family(family);
+        let mut samples: Vec<Vec<u8>> = Vec::new();
+        for i in 0..count {
+            if samples.len() >= MAX_TRAINING_ROWS {
+                break;
+            }
+            let block_number = start + offset + i * stride;
+            if block_number >= end {
+                break;
+            }
+            let Some(header_bytes) = family_tables.load_block_header(block_number).await? else {
+                continue;
+            };
+            let (offsets, dict_version) = decode_family_header_layout(family, &header_bytes)?;
+            if offsets.len() < 2 {
+                continue;
+            }
+            let Some(blob) = family_tables.load_block_blob(block_number).await? else {
+                continue;
+            };
+            let row_count = offsets.len() - 1;
+            for idx in 0..row_count {
+                if samples.len() >= MAX_TRAINING_ROWS {
+                    break;
+                }
+                if !should_sample_row(idx, row_count) {
+                    continue;
+                }
+                let frame_start = offsets[idx] as usize;
+                let frame_end = offsets[idx + 1] as usize;
+                if frame_start > frame_end || frame_end > blob.len() {
+                    return Err(MonadChainDataError::Decode(
+                        "invalid row frame range while sampling for dict training",
+                    ));
+                }
+                let frame = &blob[frame_start..frame_end];
+                let raw = self
+                    .tables
+                    .decode_block_row(family, dict_version, frame)
+                    .await?;
+                samples.push(raw.to_vec());
+            }
+        }
+        Ok(samples)
     }
 
     pub async fn apply_ingest_plan(

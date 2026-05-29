@@ -27,6 +27,7 @@ use crate::{
         query::family_runner::{
             execute_block_scan_family_query, execute_indexed_family_query, IndexedFamilyQuery,
         },
+        row_codec::decode_row_frame,
         tables::Tables,
     },
     error::{MonadChainDataError, Result},
@@ -235,13 +236,17 @@ impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery<M, B> for TransferMateri
         let start = header.offsets[idx_in_block] as usize;
         let end = header.offsets[idx_in_block + 1] as usize;
 
-        let bytes = self
+        let frame = self
             .tables
             .family(Family::Trace)
             .read_block_blob_range(block_number, start, end)
             .await?
             .ok_or(MonadChainDataError::MissingData("missing block trace blob"))?;
 
+        let bytes = self
+            .tables
+            .decode_block_row(Family::Trace, header.dict_version, &frame)
+            .await?;
         let stored = StoredTrace::decode(&bytes)?;
         let trace = stored.into_trace_entry(block_record.block_number, block_record.block_hash);
         trace_into_transfer(trace)
@@ -277,6 +282,11 @@ impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery<M, B> for TransferMateri
             .await?
             .ok_or(MonadChainDataError::MissingData("missing block trace blob"))?;
 
+        let decoder = self
+            .tables
+            .block_decoder(Family::Trace, header.dict_version)
+            .await?;
+
         let count = header.trace_count();
         let indices: Box<dyn Iterator<Item = usize>> = match order {
             QueryOrder::Ascending => Box::new(0..count),
@@ -293,7 +303,8 @@ impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery<M, B> for TransferMateri
             if start > end || end > blob.len() {
                 return Err(MonadChainDataError::Decode("invalid trace range"));
             }
-            let stored = StoredTrace::decode(&blob[start..end])?;
+            let row = decode_row_frame(decoder.as_ref(), &blob[start..end])?;
+            let stored = StoredTrace::decode(&row)?;
             // The block-scan path can run when the indexed clause is not
             // viable; that path materializes every trace and filters
             // here. Re-check the transfer predicate so non-transfer

@@ -13,10 +13,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::HashSet;
+use std::{collections::HashSet, sync::Arc};
 
 use alloy_primitives::{Address, Bytes};
 use bytes::Bytes as RawBytes;
+use zstd::dict::DecoderDictionary;
 
 use super::types::{BlockTraceHeader, StoredTrace, TraceEntry};
 use crate::{
@@ -25,6 +26,7 @@ use crate::{
         clause::{IndexedClause, IndexedFilter},
         family::Family,
         query::family_runner::IndexedFamilyQuery,
+        row_codec::decode_row_frame,
         tables::Tables,
     },
     error::{MonadChainDataError, Result},
@@ -215,13 +217,17 @@ impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery<M, B> for TraceMateriali
         let start = header.offsets[idx_in_block] as usize;
         let end = header.offsets[idx_in_block + 1] as usize;
 
-        let bytes = self
+        let frame = self
             .tables
             .family(Family::Trace)
             .read_block_blob_range(block_number, start, end)
             .await?
             .ok_or(MonadChainDataError::MissingData("missing block trace blob"))?;
 
+        let bytes = self
+            .tables
+            .decode_block_row(Family::Trace, header.dict_version, &frame)
+            .await?;
         let stored = StoredTrace::decode(&bytes)?;
         Ok(stored.into_trace_entry(block_record.block_number, block_record.block_hash))
     }
@@ -259,18 +265,31 @@ impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery<M, B> for TraceMateriali
             .await?
             .ok_or(MonadChainDataError::MissingData("missing block trace blob"))?;
 
-        let traces = load_filtered_block_traces(&header, &blob, &block_record, order, filter)?;
+        let decoder = self
+            .tables
+            .block_decoder(Family::Trace, header.dict_version)
+            .await?;
+        let traces = load_filtered_block_traces(
+            &header,
+            &blob,
+            &block_record,
+            order,
+            filter,
+            decoder.as_ref(),
+        )?;
 
         Ok((block_ref, traces))
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn load_filtered_block_traces(
     header: &BlockTraceHeader,
     blob: &Bytes,
     block_record: &BlockRecord,
     order: QueryOrder,
     filter: &TraceFilter,
+    decoder: Option<&Arc<DecoderDictionary<'static>>>,
 ) -> Result<Vec<TraceEntry>> {
     let count = header.trace_count();
     let indices: Box<dyn Iterator<Item = usize>> = match order {
@@ -286,6 +305,7 @@ fn load_filtered_block_traces(
             idx,
             block_record.block_number,
             block_record.block_hash,
+            decoder,
         )?;
         if filter.matches(&trace) {
             traces.push(trace);
@@ -301,6 +321,7 @@ pub(crate) fn decode_trace_at(
     idx: usize,
     block_number: u64,
     block_hash: Hash32,
+    decoder: Option<&Arc<DecoderDictionary<'static>>>,
 ) -> Result<TraceEntry> {
     if idx + 1 >= header.offsets.len() {
         return Err(MonadChainDataError::Decode("trace index out of range"));
@@ -312,6 +333,7 @@ pub(crate) fn decode_trace_at(
         return Err(MonadChainDataError::Decode("invalid trace range"));
     }
 
-    let stored = StoredTrace::decode(&blob[start..end])?;
+    let bytes = decode_row_frame(decoder, &blob[start..end])?;
+    let stored = StoredTrace::decode(&bytes)?;
     Ok(stored.into_trace_entry(block_number, block_hash))
 }

@@ -13,15 +13,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-mod compression;
 mod in_memory;
 #[cfg(feature = "s3")]
 mod s3;
 
 use bytes::Bytes;
-pub use compression::{
-    BlobCompressionConfig, BlobCompressionSnapshot, BlobCompressionStats, BlobCompressionStore,
-};
 pub use in_memory::InMemoryBlobStore;
 #[cfg(feature = "s3")]
 pub use s3::{S3BlobStore, S3BlobStoreConfig, S3Credentials};

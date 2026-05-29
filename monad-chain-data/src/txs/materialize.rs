@@ -13,11 +13,15 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::{BTreeSet, HashSet};
+use std::{
+    collections::{BTreeSet, HashSet},
+    sync::Arc,
+};
 
 use alloy_consensus::Transaction;
 use alloy_primitives::{Address, Bytes};
 use bytes::Bytes as RawBytes;
+use zstd::dict::DecoderDictionary;
 
 use super::types::{selector_from_envelope, BlockTxHeader, StoredTxEnvelope, TxEntry};
 use crate::{
@@ -26,6 +30,7 @@ use crate::{
         clause::{IndexedClause, IndexedFilter},
         family::Family,
         query::family_runner::IndexedFamilyQuery,
+        row_codec::decode_row_frame,
         tables::Tables,
     },
     error::{MonadChainDataError, Result},
@@ -198,13 +203,17 @@ impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery<M, B> for TxMaterializer
         let start = header.offsets[idx_in_block] as usize;
         let end = header.offsets[idx_in_block + 1] as usize;
 
-        let bytes = self
+        let frame = self
             .tables
             .family(Family::Tx)
             .read_block_blob_range(block_number, start, end)
             .await?
             .ok_or(MonadChainDataError::MissingData("missing block tx blob"))?;
 
+        let bytes = self
+            .tables
+            .decode_block_row(Family::Tx, header.dict_version, &frame)
+            .await?;
         let stored = StoredTxEnvelope::decode(&bytes)?;
         let tx_idx_u32 = u32::try_from(idx_in_block)
             .map_err(|_| MonadChainDataError::Decode("tx index overflow"))?;
@@ -243,18 +252,31 @@ impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery<M, B> for TxMaterializer
             .await?
             .ok_or(MonadChainDataError::MissingData("missing block tx blob"))?;
 
-        let txs = load_filtered_block_txs(&header, &blob, &block_record, order, filter)?;
+        let decoder = self
+            .tables
+            .block_decoder(Family::Tx, header.dict_version)
+            .await?;
+        let txs = load_filtered_block_txs(
+            &header,
+            &blob,
+            &block_record,
+            order,
+            filter,
+            decoder.as_ref(),
+        )?;
 
         Ok((block_ref, txs))
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn load_filtered_block_txs(
     header: &BlockTxHeader,
     blob: &Bytes,
     block_record: &BlockRecord,
     order: QueryOrder,
     filter: &TxFilter,
+    decoder: Option<&Arc<DecoderDictionary<'static>>>,
 ) -> Result<Vec<TxEntry>> {
     let count = header.tx_count();
     let indices: Box<dyn Iterator<Item = usize>> = match order {
@@ -270,6 +292,7 @@ fn load_filtered_block_txs(
             tx_idx,
             block_record.block_number,
             block_record.block_hash,
+            decoder,
         )?;
         if filter.matches(&tx) {
             txs.push(tx);
@@ -308,6 +331,7 @@ pub(crate) fn decode_tx_at(
     tx_idx: usize,
     block_number: u64,
     block_hash: Hash32,
+    decoder: Option<&Arc<DecoderDictionary<'static>>>,
 ) -> Result<TxEntry> {
     if tx_idx + 1 >= header.offsets.len() {
         return Err(MonadChainDataError::Decode("tx index out of range"));
@@ -319,7 +343,8 @@ pub(crate) fn decode_tx_at(
         return Err(MonadChainDataError::Decode("invalid tx range"));
     }
 
-    let stored = StoredTxEnvelope::decode(&blob[start..end])?;
+    let bytes = decode_row_frame(decoder, &blob[start..end])?;
+    let stored = StoredTxEnvelope::decode(&bytes)?;
     let tx_idx_u32 =
         u32::try_from(tx_idx).map_err(|_| MonadChainDataError::Decode("tx index overflow"))?;
     Ok(stored.into_tx_entry(block_number, block_hash, tx_idx_u32))

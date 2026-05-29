@@ -32,7 +32,7 @@ use std::{
 
 use alloy_eips::eip2718::Encodable2718;
 use alloy_primitives::Bytes;
-use clap::{Parser, ValueEnum};
+use clap::Parser;
 use eyre::{bail, eyre, Context, Result};
 use futures::{stream, StreamExt};
 use monad_archive::{
@@ -48,13 +48,9 @@ use monad_archive::{
 };
 use monad_chain_data::{
     compute_trace_addresses,
-    store::{
-        BlobCompressionConfig, BlobCompressionSnapshot, BlobCompressionStats, BlobCompressionStore,
-        CacheConfig, FjallStore, FjallTuning, MetaStore, MetaStoreCas, TableId,
-    },
-    BlockRecord, CallKind, FamilyWindowRecord, FinalizedBlock, InMemoryBlobStore,
-    InMemoryMetaStore, IngestPlan, IngestTrace, IngestTx, IoRetryPolicy, MonadChainDataService,
-    PrimaryId, QueryLimits,
+    store::{CacheConfig, FjallStore, FjallTuning},
+    CallKind, FinalizedBlock, IngestPlan, IngestTrace, IngestTx, IoRetryPolicy,
+    MonadChainDataService, QueryLimits,
 };
 use opentelemetry::KeyValue;
 use tokio::sync::{mpsc, Semaphore};
@@ -222,25 +218,6 @@ struct Cli {
     #[arg(long)]
     cache_mib: Option<usize>,
 
-    /// App-level blob compression for newly written block blobs. Reads remain
-    /// compatible with old raw blobs because compressed values carry a magic
-    /// header and raw values are left unwrapped.
-    #[arg(long, value_enum, default_value_t = BlobCompressionArg::None)]
-    blob_compression: BlobCompressionArg,
-
-    /// zstd compression level used when `--blob-compression zstd`.
-    #[arg(long, default_value_t = 1)]
-    blob_compression_level: i32,
-
-    /// Minimum blob size eligible for app-level compression.
-    #[arg(long, default_value_t = 1024)]
-    blob_compression_min_bytes: usize,
-
-    /// Fetch and ingest into in-memory stores to profile blob compression
-    /// ratio/cost without writing anything into fjall. Requires --start.
-    #[arg(long)]
-    profile_blob_compression_only: bool,
-
     /// Run as a reader only — never take write authority and never ingest.
     /// The ingest bin defaults to reader+writer; this flag is for running the
     /// binary purely to observe the published head without contending for the
@@ -325,12 +302,6 @@ enum BlobBackendArg {
     Fjall,
     #[cfg(feature = "s3")]
     S3,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-enum BlobCompressionArg {
-    None,
-    Zstd,
 }
 
 struct StoreDirs {
@@ -465,9 +436,6 @@ async fn main() -> Result<()> {
             );
         }
     }
-    if cli.profile_blob_compression_only {
-        return profile_blob_compression_only(&cli).await;
-    }
     let store_dirs = resolve_store_dirs(&cli)?;
 
     let tuning = FjallTuning {
@@ -520,61 +488,27 @@ async fn main() -> Result<()> {
         scaled_total_entries = cache_config.total_entries(),
         "cache config"
     );
-    let blob_compression = match cli.blob_compression {
-        BlobCompressionArg::None => BlobCompressionConfig::none(),
-        BlobCompressionArg::Zstd => {
-            BlobCompressionConfig::zstd(cli.blob_compression_level, cli.blob_compression_min_bytes)
-        }
-    };
-    let blob_compression_stats = BlobCompressionStats::default();
-    info!(
-        blob_compression = ?cli.blob_compression,
-        blob_compression_level = cli.blob_compression_level,
-        blob_compression_min_bytes = cli.blob_compression_min_bytes,
-        "blob compression config"
-    );
-
-    // Select the blob backend at runtime. Both arms wrap the concrete backend
-    // in the same `BlobCompressionStore` and hand off to the generic
-    // `run_with_blob_store`, so the service's `B` type parameter is the only
-    // thing that differs between them.
+    // Select the blob backend at runtime. Both arms hand the concrete backend
+    // to the generic `run_with_blob_store`, so the service's `B` type parameter
+    // is the only thing that differs between them. Compression is no longer a
+    // store-layer wrapper — it happens per row at the family/codec layer.
     match cli.blob_backend {
         BlobBackendArg::Fjall => {
             info!("blob backend: fjall");
-            let blob_store = BlobCompressionStore::new(
-                blob_fjall_store.clone(),
-                blob_compression,
-                blob_compression_stats.clone(),
-            );
             run_with_blob_store(
                 &cli,
                 &store_dirs,
                 meta_store,
-                Some(blob_fjall_store),
-                blob_store,
+                Some(blob_fjall_store.clone()),
+                blob_fjall_store,
                 cache_config,
-                blob_compression_stats,
             )
             .await
         }
         #[cfg(feature = "s3")]
         BlobBackendArg::S3 => {
             let s3_store = build_s3_blob_store(&cli).await?;
-            let blob_store = BlobCompressionStore::new(
-                s3_store,
-                blob_compression,
-                blob_compression_stats.clone(),
-            );
-            run_with_blob_store(
-                &cli,
-                &store_dirs,
-                meta_store,
-                None,
-                blob_store,
-                cache_config,
-                blob_compression_stats,
-            )
-            .await
+            run_with_blob_store(&cli, &store_dirs, meta_store, None, s3_store, cache_config).await
         }
     }
 }
@@ -594,7 +528,6 @@ async fn run_with_blob_store<B: monad_chain_data::store::BlobStore>(
     blob_fjall_store: Option<FjallStore>,
     blob_store: B,
     cache_config: CacheConfig,
-    blob_compression_stats: BlobCompressionStats,
 ) -> Result<()> {
     if cli.lease_blocks == 0 {
         bail!("--lease-blocks must be >= 1");
@@ -975,7 +908,12 @@ async fn run_with_blob_store<B: monad_chain_data::store::BlobStore>(
     let mut ingest_ms: Vec<u64> = Vec::with_capacity(cli.log_every as usize);
     let mut wait_ms: Vec<u64> = Vec::with_capacity(cli.log_every as usize);
     let mut phase = PhaseStats::default();
-    let mut last_blob_compression = BlobCompressionSnapshot::default();
+    // Background dictionary pre-training: once an epoch passes its sampling
+    // window, kick off training for the *next* epoch's dictionary so it is
+    // published before the writer reaches that epoch. `ensure_epoch_dict` is
+    // single-flight, so this is safe even if it races the plan-path ensure.
+    let dict_config = *service.tables().dicts().config();
+    let mut last_pretrained: u32 = 0;
     while let Some(applied) = applied_rx.recv().await {
         let AppliedBatch {
             last_block: n,
@@ -997,6 +935,23 @@ async fn run_with_blob_store<B: monad_chain_data::store::BlobStore>(
             window_txs += outcome.written_txs as u64;
             window_logs += outcome.written_logs as u64;
             window_traces += outcome.written_traces as u64;
+        }
+
+        // Pre-train the next epoch's dictionary once the current epoch is past
+        // its sampling window. Training reads the already-published, sampled
+        // blocks of the current epoch, so the next epoch's dict is ready before
+        // the writer crosses the boundary.
+        if n % dict_config.epoch_blocks >= dict_config.sample_span {
+            let next_v = (n / dict_config.epoch_blocks + 1) as u32;
+            if next_v > last_pretrained {
+                last_pretrained = next_v;
+                let service = service.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = service.ensure_epoch_dicts(next_v).await {
+                        warn!(error = %e, version = next_v, "background dict pre-train failed");
+                    }
+                });
+            }
         }
 
         let flush = n == end
@@ -1061,10 +1016,6 @@ async fn run_with_blob_store<B: monad_chain_data::store::BlobStore>(
             let cache_hit_ratio_agg = aggregate_cache_hit_ratio(&cache_window);
             emit_cache_metrics(&metrics, &cache_window);
             let open_index_stats = service.open_index_stats();
-            let blob_compression_window = blob_compression_stats
-                .snapshot()
-                .saturating_sub(&last_blob_compression);
-            last_blob_compression = blob_compression_stats.snapshot();
 
             let blocks_per_sec = round_2(window_blocks as f64 / elapsed_secs);
             let txs_per_sec = round_2(window_txs as f64 / elapsed_secs);
@@ -1136,15 +1087,6 @@ async fn run_with_blob_store<B: monad_chain_data::store::BlobStore>(
                 consumer_wait_max_ms = wait_max_ms,
                 retries = fetch_window.retry_attempts,
                 cache_hit_ratio = round_2(cache_hit_ratio_agg),
-                blob_compression_raw_bytes = blob_compression_window.raw_input_bytes,
-                blob_compression_stored_bytes = blob_compression_window.stored_output_bytes,
-                blob_compression_ratio = round_2(blob_compression_window.ratio()),
-                blob_compression_compressed_count = blob_compression_window.compressed_count,
-                blob_compression_raw_count = blob_compression_window.raw_count,
-                blob_compression_encode_wall_total_ms =
-                    round_2(blob_compression_window.encode_wall_us as f64 / 1_000.0),
-                blob_compression_encode_work_total_ms =
-                    round_2(blob_compression_window.encode_work_us as f64 / 1_000.0),
                 open_index_directory_keys = open_index_stats.directory_keys,
                 open_index_directory_blocks = open_index_stats.directory_blocks,
                 open_index_bitmap_stream_pages = open_index_stats.bitmap_stream_pages,
@@ -1253,274 +1195,6 @@ async fn build_s3_blob_store(cli: &Cli) -> Result<monad_chain_data::store::S3Blo
     S3BlobStore::new(config)
         .await
         .context("building S3 blob store")
-}
-
-async fn profile_blob_compression_only(cli: &Cli) -> Result<()> {
-    if cli.blob_compression == BlobCompressionArg::None {
-        bail!("--profile-blob-compression-only requires --blob-compression zstd");
-    }
-    let Some(start) = cli.start else {
-        bail!("--profile-blob-compression-only requires explicit --start");
-    };
-    let end = match (cli.end, cli.count) {
-        (Some(e), None) => e,
-        (None, Some(c)) => {
-            let Some(e) = start.checked_add(c - 1) else {
-                bail!("start + count - 1 overflows u64 (start={start}, count={c})");
-            };
-            e
-        }
-        _ => unreachable!("clap enforces exactly one of --end or --count"),
-    };
-    if start > end {
-        bail!("start ({}) must be <= end ({})", start, end);
-    }
-
-    let metrics = Metrics::new(
-        cli.otel_endpoint.as_deref(),
-        "chain-data-ingest-compression-profile",
-        "0".to_string(),
-        Duration::from_secs(60),
-    )
-    .context("building metrics")?;
-    let reader = cli
-        .block_data_source
-        .build(&metrics)
-        .await
-        .context("building block data reader")?;
-
-    let blob_compression =
-        BlobCompressionConfig::zstd(cli.blob_compression_level, cli.blob_compression_min_bytes);
-    let compression_stats = BlobCompressionStats::default();
-    let meta_store = InMemoryMetaStore::default();
-    if start > 1 {
-        let (_, prev_block, prev_receipts, prev_traces) = fetch_block(&reader, start - 1, false)
-            .await
-            .with_context(|| {
-                format!(
-                    "fetching previous block {} for in-memory continuity seed",
-                    start - 1
-                )
-            })?;
-        let prev = into_finalized_block(prev_block, prev_receipts, prev_traces)
-            .with_context(|| format!("transforming previous block {}", start - 1))?;
-        seed_profile_publication(&meta_store, &prev).await?;
-    }
-
-    let blob_store = BlobCompressionStore::new(
-        InMemoryBlobStore::default(),
-        blob_compression,
-        compression_stats.clone(),
-    );
-    let service = MonadChainDataService::with_cache_config(
-        meta_store,
-        blob_store,
-        QueryLimits::UNLIMITED,
-        CacheConfig::default().scale(0, 1),
-    );
-
-    let fetch_buffer = cli.fetch_buffer.unwrap_or(cli.concurrency);
-    if fetch_buffer == 0 {
-        bail!("--fetch-buffer must be >= 1");
-    }
-    let permits = Arc::new(Semaphore::new(cli.concurrency));
-    let fetch_stats = Arc::new(Mutex::new(FetchStats::default()));
-    let fetch_progress = Arc::new(FetchProgress::default());
-    let max_retries = cli.max_retries;
-    let initial_backoff = Duration::from_millis(cli.retry_backoff_ms);
-    let fetch_traces = !cli.no_traces;
-
-    info!(
-        start,
-        end,
-        concurrency = cli.concurrency,
-        fetch_buffer,
-        batch_size = cli.batch_size,
-        blob_compression = ?cli.blob_compression,
-        blob_compression_level = cli.blob_compression_level,
-        blob_compression_min_bytes = cli.blob_compression_min_bytes,
-        "starting in-memory blob compression profile"
-    );
-
-    let fetch_stream = {
-        let fetch_stats = fetch_stats.clone();
-        let fetch_progress = fetch_progress.clone();
-        stream::iter(start..=end)
-            .map(move |n| {
-                let reader = reader.clone();
-                let stats = fetch_stats.clone();
-                let progress = fetch_progress.clone();
-                let permits = permits.clone();
-                async move {
-                    let _permit = permits
-                        .acquire_owned()
-                        .await
-                        .expect("concurrency semaphore should never close");
-                    fetch_block_with_retry(
-                        &reader,
-                        n,
-                        max_retries,
-                        initial_backoff,
-                        &stats,
-                        &progress,
-                        fetch_traces,
-                    )
-                    .await
-                }
-            })
-            .buffered(fetch_buffer)
-    };
-    futures::pin_mut!(fetch_stream);
-
-    let started = Instant::now();
-    let mut total_blocks = 0_u64;
-    let mut total_txs = 0_u64;
-    let mut total_logs = 0_u64;
-    let mut total_traces = 0_u64;
-    let mut ingest_ms = Vec::new();
-    let mut phase = PhaseStats::default();
-    let mut pending: Vec<(u64, FinalizedBlock)> = Vec::with_capacity(cli.batch_size);
-    let mut stream_done = false;
-    let mut fetch_consumed_total = 0_u64;
-
-    loop {
-        pending.clear();
-        for _ in 0..cli.batch_size {
-            let Some(item) = fetch_stream.next().await else {
-                stream_done = true;
-                break;
-            };
-            let (n, block, receipts, traces) = item?;
-            fetch_consumed_total = fetch_consumed_total.saturating_add(1);
-            let finalized = into_finalized_block(block, receipts, traces)
-                .with_context(|| format!("transforming block {n}"))?;
-            pending.push((n, finalized));
-        }
-        if pending.is_empty() {
-            break;
-        }
-        let last_n = pending.last().expect("pending non-empty").0;
-        let blocks: Vec<FinalizedBlock> = pending.iter().map(|(_, b)| b.clone()).collect();
-        let ingest_started = Instant::now();
-        let (outcomes, timings) = service
-            .ingest_blocks(blocks)
-            .await
-            .with_context(|| format!("profiling ingest batch ending at block {last_n}"))?;
-        ingest_ms.push(ingest_started.elapsed().as_millis() as u64);
-        phase.record(&timings);
-        for outcome in outcomes {
-            total_blocks += 1;
-            total_txs += outcome.written_txs as u64;
-            total_logs += outcome.written_logs as u64;
-            total_traces += outcome.written_traces as u64;
-        }
-        if stream_done {
-            break;
-        }
-    }
-
-    let fetch_window = fetch_stats.lock().expect("fetch stats poisoned");
-    let fetch_progress_snapshot = fetch_progress.snapshot();
-    let fetch_completed_backlog = fetch_progress_snapshot
-        .completed
-        .saturating_sub(fetch_consumed_total);
-    let fetch_in_flight = fetch_progress_snapshot
-        .started
-        .saturating_sub(fetch_progress_snapshot.completed);
-    let phase_summary = phase.summary();
-    let compression = compression_stats.snapshot();
-    let elapsed_secs = started.elapsed().as_secs_f64().max(1e-9);
-    info!(
-        total_blocks,
-        total_txs,
-        total_logs,
-        total_traces,
-        elapsed_secs = round_2(elapsed_secs),
-        blocks_per_sec = round_2(total_blocks as f64 / elapsed_secs),
-        fetch_completed_per_sec = round_2(fetch_window.completed as f64 / elapsed_secs),
-        fetch_started_total = fetch_progress_snapshot.started,
-        fetch_completed_total = fetch_progress_snapshot.completed,
-        fetch_consumed_total,
-        fetch_completed_backlog,
-        fetch_in_flight,
-        fetch_buffer_capacity = fetch_buffer,
-        fetch_p50_ms = percentile(&fetch_window.durations_ms, 0.50),
-        fetch_p99_ms = percentile(&fetch_window.durations_ms, 0.99),
-        ingest_p50_ms = percentile(&ingest_ms, 0.50),
-        ingest_p99_ms = percentile(&ingest_ms, 0.99),
-        stage_a_wall_total_ms = phase_summary.stage_a_wall_ms_total,
-        commit_a_blob_wall_total_ms = phase_summary.commit_a_blob_wall_ms_total,
-        phase_a_write_ops_total = phase_summary.phase_a_write_ops_total,
-        phase_a_write_bytes_total = phase_summary.phase_a_write_bytes_total,
-        phase_a_write_ops_by_table = %phase_summary.phase_a_write_ops_by_table,
-        phase_a_write_bytes_by_table = %phase_summary.phase_a_write_bytes_by_table,
-        phase_b_write_ops_total = phase_summary.phase_b_write_ops_total,
-        phase_b_write_bytes_total = phase_summary.phase_b_write_bytes_total,
-        phase_b_write_ops_by_table = %phase_summary.phase_b_write_ops_by_table,
-        phase_b_write_bytes_by_table = %phase_summary.phase_b_write_bytes_by_table,
-        blob_compression_raw_bytes = compression.raw_input_bytes,
-        blob_compression_stored_bytes = compression.stored_output_bytes,
-        blob_compression_saved_bytes = compression
-            .raw_input_bytes
-            .saturating_sub(compression.stored_output_bytes),
-        blob_compression_ratio = round_2(compression.ratio()),
-        blob_compression_compressed_count = compression.compressed_count,
-        blob_compression_raw_count = compression.raw_count,
-        blob_compression_encode_wall_total_ms =
-            round_2(compression.encode_wall_us as f64 / 1_000.0),
-        blob_compression_encode_work_total_ms =
-            round_2(compression.encode_work_us as f64 / 1_000.0),
-        retries = fetch_window.retry_attempts,
-        "blob compression profile complete"
-    );
-    Ok(())
-}
-
-async fn seed_profile_publication(
-    meta_store: &InMemoryMetaStore,
-    prev: &FinalizedBlock,
-) -> Result<()> {
-    let empty = FamilyWindowRecord {
-        first_primary_id: PrimaryId::ZERO,
-        count: 0,
-    };
-    let record = BlockRecord {
-        block_number: prev.block_number(),
-        block_hash: prev.block_hash(),
-        parent_hash: prev.parent_hash(),
-        logs: empty,
-        txs: empty,
-        traces: empty,
-    };
-    meta_store
-        .put(
-            TableId::new("block_record"),
-            &prev.block_number().to_be_bytes(),
-            bytes::Bytes::from(record.encode()),
-        )
-        .await
-        .context("seeding previous block record")?;
-    meta_store
-        .cas_put(
-            TableId::new("publication_state"),
-            b"state",
-            None,
-            bytes::Bytes::from(
-                // Seed an owner-less / already-expired lease so the
-                // single-writer service this profiling path uses cleanly
-                // reacquires on its first ingest.
-                monad_chain_data::primitives::state::PublicationState {
-                    indexed_finalized_head: prev.block_number(),
-                    owner_id: 0,
-                    session_id: [0u8; 16],
-                    lease_valid_through_block: 0,
-                }
-                .encode(),
-            ),
-        )
-        .await
-        .context("seeding publication state")?;
-    Ok(())
 }
 
 async fn fetch_block(
