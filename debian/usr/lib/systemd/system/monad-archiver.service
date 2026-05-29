@@ -11,11 +11,16 @@ ExecStart=/usr/local/bin/monad-archiver \
     --bft-block-path ${BFT_BLOCK_PATH} \
     --otel-endpoint ${OTEL_ENDPOINT} \
     --max-concurrent-blocks ${MAX_CONCURRENT_BLOCKS}
-EnvironmentFile=-/home/monad/.env
+EnvironmentFile=-/etc/monad/env
 Environment="RUST_LOG=debug,h2=warn,tower=warn"
 Restart=always
-User=monad
+DynamicUser=yes
 Group=monad
+SupplementaryGroups=monad-ipc
+ProtectHome=read-only
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
 AllowedCPUs=13-14
 DeviceAllow=/dev/triedb rw
 LimitNOFILE=1048576

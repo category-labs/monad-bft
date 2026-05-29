@@ -5,10 +5,15 @@ After=network.target
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/monad-blockcapd ${BLOCKCAPD_ROOT_DIR}
-EnvironmentFile=-/home/monad/.env
+EnvironmentFile=-/etc/monad/env
 Restart=no
-User=monad
+DynamicUser=yes
 Group=monad
+SupplementaryGroups=monad-ipc
+ProtectHome=read-only
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
 ProtectKernelModules=no
 ProtectKernelLogs=no
 

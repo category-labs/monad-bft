@@ -3,16 +3,21 @@ Description="Service file for Monad Indexer"
 After=network.target
 
 [Service]
-WorkingDirectory=/home/monad
+WorkingDirectory=/var/lib/monad
 Type=simple
 ExecStart=/usr/local/bin/monad-indexer \
     --block-data-source "${BLOCK_DATA_SOURCE}" \
     --archive-sink "${ARCHIVE_SINK}" \
     --otel-endpoint "http://127.0.0.1:4317"
-EnvironmentFile=-/home/monad/.env
+EnvironmentFile=-/etc/monad/env
 Restart=always
-User=monad
+DynamicUser=yes
 Group=monad
+SupplementaryGroups=monad-ipc
+ProtectHome=read-only
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
 DeviceAllow=/dev/triedb rw
 LimitNOFILE=1048576
 # Hugemem configs below

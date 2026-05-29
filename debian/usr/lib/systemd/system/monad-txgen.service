@@ -14,11 +14,16 @@ ExecStart=/usr/local/bin/monad-txgen \
       --sender-seed 100 \
       --tps 2000 \
       --erc20-balance-of
-EnvironmentFile=-/home/monad/.env
+EnvironmentFile=-/etc/monad/env
 Environment="RUST_LOG=info"
 Restart=no
-User=monad
+DynamicUser=yes
 Group=monad
+SupplementaryGroups=monad-ipc
+ProtectHome=read-only
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
 AllowedCPUs=15
 LimitNOFILE=1048576
 # Hugemem configs below

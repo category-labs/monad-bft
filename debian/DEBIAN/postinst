@@ -3,19 +3,77 @@ set -e
 case "$1" in
   configure)
     ldconfig
+
+    # Ensure the static "monad" and "monad-ipc" system groups exist. Services
+    # run as transient users via DynamicUser=yes but share access through these
+    # durable groups: "monad" for state/config, "monad-ipc" for socket-only
+    # access (so external services can opt-in to IPC without seeing keys).
+    if command -v systemd-sysusers >/dev/null 2>&1; then
+        systemd-sysusers /usr/lib/sysusers.d/monad.conf || true
+    else
+        getent group monad     >/dev/null 2>&1 || groupadd --system monad
+        getent group monad-ipc >/dev/null 2>&1 || groupadd --system monad-ipc
+    fi
+
+    # Create /etc/monad, /var/lib/monad, /var/lib/monad/private, /run/monad with
+    # the right ownership and modes. tmpfiles.d also recreates /run/monad on boot.
+    if command -v systemd-tmpfiles >/dev/null 2>&1; then
+        systemd-tmpfiles --create /usr/lib/tmpfiles.d/monad.conf || true
+    else
+        echo "WARN: systemd-tmpfiles missing — non-systemd targets are not supported by this package"
+    fi
+
+    # Drop a comment-only skeleton at /etc/monad/env so the file exists for
+    # every unit's EnvironmentFile=, but never overwrite an operator-edited
+    # one. Operators populate the variables listed below before starting any
+    # monad-* service. We write inline rather than installing a shipped
+    # env.example file so the package owns one less artifact and the
+    # canonical list of required vars lives next to the install logic.
+    if [ ! -e /etc/monad/env ]; then
+        cat >/etc/monad/env <<'EOF'
+# /etc/monad/env — environment for monad-* services
+#
+# Sourced by every monad-* systemd unit. Add or override variables here.
+# Upgrades from the legacy /home/monad/.env layout are handled by the
+# monad-upgrade.sh script fetched from the release bucket — not by this
+# postinst.
+#
+# Required for monad-bft:
+#   KEYSTORE_PASSWORD=
+#
+# Required for monad-execution / monad-execution-genesis:
+#   CHAIN=
+#
+# Required for monad-archiver / monad-exec-events-uploader:
+#   BFT_BLOCK_PATH=/var/lib/monad/ledger
+#   OTEL_ENDPOINT=http://127.0.0.1:4317
+#   MAX_CONCURRENT_BLOCKS=8
+#
+# Required for monad-archiver / monad-indexer / monad-checker:
+#   BLOCK_DATA_SOURCE=
+#   FALLBACK_BLOCK_DATA_SOURCE=
+#   ARCHIVE_SINK=
+#   INIT_REPLICAS=
+#
+# Optional (only for nodes running blockcapd):
+#   BLOCKCAPD_ROOT_DIR=
+#   BLOCKCAPD_MAX_GB=
+EOF
+        chgrp monad /etc/monad/env || true
+        chmod 0640  /etc/monad/env || true
+    fi
+
     if command -v systemctl >/dev/null 2>&1 && [ "$(ps -p 1 -o comm=)" = "systemd" ]; then
         echo "Detected systemd, enabling service..."
-        systemctl daemon-reexec
         systemctl daemon-reload
         systemctl start set-hugepages.service
         systemctl enable set-hugepages.service
         systemctl enable monad-cruft.timer
         systemctl start monad-cruft.timer
-        sysctl -p
     else
       echo "Skipping systemd setup: systemd not found or not running as init"
     fi
-    sysctl --system
+    sysctl --system || true
     ;;
   abort-upgrade|abort-remove)
     echo "Aborted state, nothing to configure."
@@ -25,5 +83,3 @@ case "$1" in
     exit 1
     ;;
 esac
-
-

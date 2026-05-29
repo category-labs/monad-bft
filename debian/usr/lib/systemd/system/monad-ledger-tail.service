@@ -5,14 +5,19 @@ After=network.target
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/monad-ledger-tail \
-    --ledger-path /home/monad/monad-bft/ledger \
-    --forkpoint-path /home/monad/monad-bft/config/forkpoint/forkpoint.toml \
-    --peers-path /home/monad/monad-bft/config/peers.toml \
-    --validators-path /home/monad/monad-bft/config/validators/validators.toml
-EnvironmentFile=-/home/monad/.env
-User=monad
+    --ledger-path /var/lib/monad/ledger \
+    --forkpoint-path /var/lib/monad/forkpoint/forkpoint.toml \
+    --peers-path /var/lib/monad/peers.toml \
+    --validators-path /var/lib/monad/validators/validators.toml
+EnvironmentFile=-/etc/monad/env
 Restart=always
+DynamicUser=yes
 Group=monad
+SupplementaryGroups=monad-ipc
+ProtectHome=read-only
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
 LimitNOFILE=1048576
 # Hugemem configs below
 LimitMEMLOCK=infinity

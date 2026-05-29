@@ -12,11 +12,16 @@ ExecStart=/usr/local/bin/monad-archiver \
     --skip-connectivity-check \
     --otel-endpoint ${OTEL_ENDPOINT} \
     --otel-replica-name-override "exec-events-archiver-%H"
-EnvironmentFile=-/home/monad/.env
+EnvironmentFile=-/etc/monad/env
 Environment="RUST_LOG=debug,h2=warn,tower=warn"
 Restart=no
-User=monad
+DynamicUser=yes
 Group=monad
+SupplementaryGroups=monad-ipc
+ProtectHome=read-only
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
 LimitNOFILE=1048576
 # Hugemem configs below
 LimitMEMLOCK=infinity

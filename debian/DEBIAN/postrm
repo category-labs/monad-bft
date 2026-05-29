@@ -1,29 +1,44 @@
-#!/bin/sh
+#!/bin/bash
 set -e
 
 case "$1" in
-  remove|purge)
+  remove)
     echo "Removing monadctl"
     rm -f /usr/local/bin/monadctl
 
-    echo "Removing configuration related with monad"
-    # Need to add commands for blkdiscard for triedb and wipe the state out.
+    echo "Removing system tunables installed by monad"
     rm -f /etc/security/limits.d/90-monad-nofile.conf
     rm -f /etc/sysctl.d/90-monad-network-buffer.conf
-    # NOTE: this leaves the backup keys folder
-    USER="monad"
-    crontab -u "$USER" -l 2>/dev/null | grep -v -F -x -f /opt/monad/scripts/clear-old-artifacts.cron | crontab -u "$USER" -
-    rm -f /opt/monad/scripts/clear-old-artifacts.cron && rm -f /opt/monad/opt/monad/scripts/clear-old-artifacts.sh
-    prefix="monad-"
-    for svc in $(systemctl list-units --type=service --all --no-legend | awk '{print $1}' | grep "^${prefix}"); do
-      systemctl reset-failed "$svc" || true
-    done
+
+    if command -v systemctl >/dev/null 2>&1 && [ "$(ps -p 1 -o comm=)" = "systemd" ]; then
+        prefix="monad-"
+        for svc in $(systemctl list-units --type=service --all --no-legend | awk '{print $1}' | grep "^${prefix}"); do
+            systemctl reset-failed "$svc" || true
+        done
+    fi
+    ;;
+
+  purge)
+    echo "Purging monad state (keys and config are preserved)"
+    if command -v systemctl >/dev/null 2>&1 && [ "$(ps -p 1 -o comm=)" = "systemd" ]; then
+        prefix="monad-"
+        for svc in $(systemctl list-units --type=service --all --no-legend | awk '{print $1}' | grep "^${prefix}"); do
+            systemctl reset-failed "$svc" || true
+        done
+    fi
+
+    rm -rf /run/monad
+    rm -f  /var/lib/monad/peers.toml
+    rm -f  /var/lib/monad/wal_*
+    echo "NOTE: /var/lib/monad/private (keys) and /etc/monad (config) are preserved."
+    echo "      Remove them manually if you really want to wipe the node."
+
     if ! [ -t 0 ]; then
-      echo "Non-interactive environment detected. Exiting triedb whiptail without running prompt."
+      echo "Non-interactive environment detected. Skipping triedb wipe prompt."
       exit 0
     fi
 
-    if whiptail --title "Wipe TrieDB" --yesno "Do you want to wipe TrieDB?" 10 60; then
+    if command -v whiptail >/dev/null 2>&1 && whiptail --title "Wipe TrieDB" --yesno "Do you want to wipe TrieDB?" 10 60; then
       blkdiscard /dev/triedb
     else
       echo "TrieDB remains intact"

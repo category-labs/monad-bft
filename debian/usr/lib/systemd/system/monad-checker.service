@@ -4,7 +4,7 @@ After=network.target
 PartOf=monad.target monad-init.target
 
 [Service]
-WorkingDirectory=/home/monad
+WorkingDirectory=/var/lib/monad
 Type=simple
 ExecStart=/usr/local/bin/monad-archive-checker \
     --bucket "${ARCHIVE_BUCKET}" \
@@ -13,10 +13,15 @@ ExecStart=/usr/local/bin/monad-archive-checker \
     checker \
     --recheck-freq-min 50 \
     --init-replicas "${INIT_REPLICAS}"
-EnvironmentFile=-/home/monad/.env
+EnvironmentFile=-/etc/monad/env
 Restart=always
-User=monad
+DynamicUser=yes
 Group=monad
+SupplementaryGroups=monad-ipc
+ProtectHome=read-only
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
 DeviceAllow=/dev/triedb rw
 LimitNOFILE=1048576
 # Hugemem configs below

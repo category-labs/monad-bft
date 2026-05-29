@@ -1,24 +1,33 @@
-#!/bin/sh
+#!/bin/bash
 set -e
+
+stop_monad_services() {
+    if command -v systemctl >/dev/null 2>&1 && [ "$(ps -p 1 -o comm=)" = "systemd" ]; then
+        # Collect unique unit names from both package dir and operator drop-ins,
+        # then stop each once (enabled units appear in both dirs as a symlink).
+        declare -A seen=()
+        for service_file in /usr/lib/systemd/system/monad-*.service \
+                            /etc/systemd/system/monad-*.service; do
+            [ -e "$service_file" ] || continue
+            service_name=$(basename "$service_file")
+            [[ -n "${seen[$service_name]+_}" ]] && continue
+            seen[$service_name]=1
+            systemctl stop "$service_name" || true
+        done
+    fi
+}
 
 case "$1" in
   remove)
     echo "Removing monad..."
-    SERVICE_DIR="/etc/systemd/system"
+    stop_monad_services
     if command -v systemctl >/dev/null 2>&1 && [ "$(ps -p 1 -o comm=)" = "systemd" ]; then
-      systemctl daemon-reload
-      for service_file in "$SERVICE_DIR"/monad-*.service; do
-        [ -e "$service_file" ] || continue
-
-        service_name=$(basename "$service_file")
-        systemctl stop "$service_name" || true
-      done
       systemctl stop set-hugepages.service && systemctl disable set-hugepages.service || true
-      rm -f /etc/systemd/system/set-hugepages.service
     fi
     ;;
   upgrade)
-    echo "Preparing to upgrade monad..."
+    echo "Stopping monad services for upgrade..."
+    stop_monad_services
     ;;
   *)
     echo "prerm called with unknown argument '$1'" >&2

@@ -1,12 +1,18 @@
 [Unit]
+Description=Monad cleanup: delete old ledger/WAL/forkpoint artifacts
 After=network.target
 
 [Service]
 Type=oneshot
-User=monad
-Group=monad
-EnvironmentFile=-/home/monad/.env
+EnvironmentFile=-/etc/monad/env
 ExecStart=/opt/monad/scripts/clear-old-artifacts.sh
+DynamicUser=yes
+Group=monad
+SupplementaryGroups=monad-ipc
+ProtectHome=read-only
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
 
 [Install]
 WantedBy=multi-user.target

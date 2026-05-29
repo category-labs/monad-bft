@@ -5,27 +5,38 @@ After=network.target
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/monad-node \
-    --secp-identity /home/monad/monad-bft/config/id-secp \
-    --bls-identity /home/monad/monad-bft/config/id-bls \
-    --node-config /home/monad/monad-bft/config/node.toml \
-    --forkpoint-config /home/monad/monad-bft/config/forkpoint/forkpoint.toml \
-    --wal-path /home/monad/monad-bft/wal \
-    --mempool-ipc-path /home/monad/monad-bft/mempool.sock \
-    --control-panel-ipc-path /home/monad/monad-bft/controlpanel.sock \
-    --statesync-ipc-path /home/monad/monad-bft/statesync.sock \
-    --ledger-path /home/monad/monad-bft/ledger \
+    --secp-identity /var/lib/monad/private/id-secp \
+    --bls-identity /var/lib/monad/private/id-bls \
+    --node-config /etc/monad/node.toml \
+    --forkpoint-config /var/lib/monad/forkpoint/forkpoint.toml \
+    --wal-path /var/lib/monad/wal \
+    --mempool-ipc-path /run/monad/mempool.sock \
+    --control-panel-ipc-path /run/monad/controlpanel.sock \
+    --statesync-ipc-path /run/monad/statesync.sock \
+    --ledger-path /var/lib/monad/ledger \
     --triedb-path /dev/triedb \
     --otel-endpoint "http://127.0.0.1:4317" \
     --statesync-sq-thread-cpu 8 \
     --record-metrics-interval-seconds 1 \
-    --validators-path /home/monad/monad-bft/config/validators/validators.toml \
-    --persisted-peers-path /home/monad/monad-bft/config/peers.toml \
+    --validators-path /var/lib/monad/validators/validators.toml \
+    --persisted-peers-path /var/lib/monad/peers.toml \
     --keystore-password "${KEYSTORE_PASSWORD}"
-EnvironmentFile=-/home/monad/.env
+EnvironmentFile=-/etc/monad/env
 Environment="RUST_LOG=debug,h2=warn,tower=warn,opentelemetry_sdk=warn,opentelemetry-otlp=warn"
 Restart=no
-User=monad
+DynamicUser=yes
 Group=monad
+SupplementaryGroups=monad-ipc
+ProtectHome=read-only
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+# Sockets in /run/monad/ inherit group monad-ipc via the setgid bit on the
+# directory, but file mode comes from the process umask. Default 0022 leaves
+# the group without write — connect(2) needs MAY_WRITE — so rpc/execution
+# (different DynamicUsers, both in monad-ipc) cannot connect. 0007 gives the
+# group rw and denies world.
+UMask=0007
 AllowedCPUs=8-11
 CPUAffinity=8,9,10,11
 DeviceAllow=/dev/triedb rw
