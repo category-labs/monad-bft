@@ -290,6 +290,7 @@ async fn main() -> std::io::Result<()> {
                 provider_gas_limit_eth_estimate_gas: args.eth_estimate_gas_provider_gas_limit,
                 provider_gas_limit_eth_simulate: args.eth_simulate_gas_limit,
                 provider_max_calls_eth_simulate: args.eth_simulate_max_calls,
+                provider_max_blocks_eth_simulate: args.eth_simulate_max_blocks,
             },
             triedb_path,
         )

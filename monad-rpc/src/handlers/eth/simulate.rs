@@ -13,21 +13,21 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::ops::Add;
+
 use alloy_consensus::TxEnvelope;
-use alloy_primitives::U256;
+use alloy_primitives::{U256, U64};
 use monad_ethcall::{
     eth_simulate_v1, BlockOverride, EthCallExecutor, SimulateResult, StateOverrideSet,
     SuccessSimulateResult,
 };
-use monad_triedb_utils::triedb_env::{
-    BlockKey, FinalizedBlockKey, ProposedBlockKey, Triedb, TriedbPath,
-};
-use monad_types::{BlockId, Hash, SeqNum};
+use monad_rpc_docs::rpc;
+use monad_triedb_utils::triedb_env::{Triedb, TriedbPath};
 use serde::Deserialize;
 use serde_json::value::RawValue;
 
 use crate::{
-    data::{get_block_key_from_tag_or_hash, DataProvider},
+    data::{block_key_to_parts, get_block_key_from_tag_or_hash, DataProvider},
     handlers::{
         eth::call::{fill_gas_params, CallRequest},
         parse_ethcall_chain_id,
@@ -38,17 +38,19 @@ use crate::{
     },
 };
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct MonadBlockStateCall {
+    #[schemars(skip)]
     #[serde(default)]
     pub block_overrides: BlockOverride,
+    #[schemars(skip)]
     #[serde(default)]
     pub state_overrides: StateOverrideSet,
     pub calls: Vec<CallRequest>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct MonadSimulation {
     pub block_state_calls: Vec<MonadBlockStateCall>,
@@ -63,23 +65,50 @@ fn validation_default() -> bool {
     true
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct MonadSimulateParams {
     pub simulation: MonadSimulation,
     pub block: BlockTagOrHash,
 }
 
+#[rpc(
+    method = "eth_simulateV1",
+    ignore = "chain_id,call_gas_limit,simulation_gas_limit,max_simulated_calls,max_simulated_blocks"
+)]
 pub async fn monad_simulate_v1<T: Triedb + TriedbPath>(
     data_provider: &DataProvider<T>,
     eth_call_executor: &EthCallExecutor,
     chain_id: u64,
-    gas_limit: u64,
-    max_calls: usize,
+    call_gas_limit: u64,
+    simulation_gas_limit: u64,
+    max_simulated_calls: usize,
+    max_simulated_blocks: usize,
     params: MonadSimulateParams,
 ) -> JsonRpcResult<Box<RawValue>> {
     if !params.simulation.validation {
         let msg = String::from("`\"validation\": false` is not supported yet");
         return Err(JsonRpcError::custom(msg));
+    }
+
+    let total_simulated_blocks = params.simulation.block_state_calls.len();
+    if total_simulated_blocks > max_simulated_blocks {
+        return Err(JsonRpcError::custom(format!(
+            "Too many block simulations: {}, maximum allowed is {}",
+            total_simulated_blocks, max_simulated_blocks
+        )));
+    }
+
+    let total_simulated_calls = params
+        .simulation
+        .block_state_calls
+        .iter()
+        .map(|bsc| bsc.calls.len())
+        .sum::<usize>();
+    if total_simulated_calls > max_simulated_calls {
+        return Err(JsonRpcError::custom(format!(
+            "Too many calls to simulate: {}, maximum allowed is {}",
+            total_simulated_calls, max_simulated_calls
+        )));
     }
 
     let block_key = get_block_key_from_tag_or_hash(&data_provider.triedb_env, params.block)
@@ -137,20 +166,27 @@ pub async fn monad_simulate_v1<T: Triedb + TriedbPath>(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
+    let mut accumulated_gas: U256 = U256::ZERO;
     for (call_list, (_, state_override)) in calls.iter_mut().zip(overrides.iter()) {
+        // Inherit the base header. The execution client applies overrides to the simulation header.
+        let mut header = header.header.clone();
         for call in call_list.iter_mut() {
-            // Inherit the base header. The execution client applies overrides to the simulation header.
-            let mut header = header.header.clone();
             fill_gas_params(
                 &data_provider.triedb_env,
                 block_key,
                 call,
                 &mut header,
                 state_override,
-                // TODO(dhil): This isn't entirely correct since the `gas_limit` is the limit of the entire simulation, not just this particular call.
-                U256::from(gas_limit),
+                U256::from(call_gas_limit),
             )
             .await?;
+            accumulated_gas = accumulated_gas.add(U256::from(call.gas.unwrap_or_default()));
+            if accumulated_gas > U256::from(simulation_gas_limit) {
+                return Err(JsonRpcError::custom(format!(
+                    "Gas limit for simulation exceeded: the simulation requires minimum {} gas which exceeds the maximum allowed {}",
+                    accumulated_gas, simulation_gas_limit
+                )));
+            }
         }
     }
 
@@ -159,17 +195,24 @@ pub async fn monad_simulate_v1<T: Triedb + TriedbPath>(
         .map(|call_list| {
             call_list
                 .into_iter()
-                .map(|call: CallRequest| {
-                    call.try_into().map_err(|_| JsonRpcError::invalid_params())
+                .map(|mut tx: CallRequest| {
+                    if let Some(tx_chain_id) = tx.chain_id {
+                        if tx_chain_id != U64::from(chain_id) {
+                            return Err(JsonRpcError::invalid_chain_id(
+                                chain_id,
+                                tx_chain_id.to::<u64>(),
+                            ));
+                        }
+                    } else {
+                        tx.chain_id = Some(U64::from(chain_id));
+                    }
+                    tx.try_into().map_err(|_| JsonRpcError::invalid_params())
                 })
                 .collect::<Result<Vec<_>, _>>()
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    let (block_number, block_id) = match block_key {
-        BlockKey::Finalized(FinalizedBlockKey(SeqNum(n))) => (n, None),
-        BlockKey::Proposed(ProposedBlockKey(SeqNum(n), BlockId(Hash(id)))) => (n, Some(id)),
-    };
+    let (block_number, block_id) = block_key_to_parts(block_key);
 
     let grandparent_block_id = if block_number > 0 {
         let block_key = get_block_key_from_tag_or_hash(
@@ -178,10 +221,7 @@ pub async fn monad_simulate_v1<T: Triedb + TriedbPath>(
         )
         .await
         .ok_or_else(JsonRpcError::block_not_found)?;
-        match block_key {
-            BlockKey::Finalized(FinalizedBlockKey(SeqNum(_))) => None,
-            BlockKey::Proposed(ProposedBlockKey(SeqNum(_), BlockId(Hash(id)))) => Some(id),
-        }
+        block_key_to_parts(block_key).1
     } else {
         None
     };
@@ -194,8 +234,8 @@ pub async fn monad_simulate_v1<T: Triedb + TriedbPath>(
         block_number,
         block_id,
         grandparent_block_id,
-        gas_limit,
-        max_calls,
+        simulation_gas_limit,
+        max_simulated_blocks,
         params.simulation.trace_transfers,
         eth_call_executor,
         &overrides,
