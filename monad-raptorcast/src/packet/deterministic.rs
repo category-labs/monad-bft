@@ -68,7 +68,7 @@ pub const MIN_SYMBOL_LEN: usize = DEFAULT_SEGMENT_LEN - PacketLayout::MAX_HEADER
 pub const MAX_SYMBOL_LEN: usize = DEFAULT_SEGMENT_LEN - PacketLayout::MIN_HEADER_LEN;
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct PacketLayout {
+pub struct PacketLayout {
     segment_len: usize,
     merkle_tree_depth: u8,
 }
@@ -368,14 +368,14 @@ impl<PT: PubKey> InnerDeterministicEncoding<PT> {
     }
 }
 
-pub(crate) struct DeterministicEncoding<P: Partition> {
+pub struct DeterministicEncoding<P: Partition> {
     layout: PacketLayout,
     redundancy: Redundancy,
     app_message_len: usize,
     partition: P,
 }
 
-pub(crate) type PrimaryEncoding<PT> = DeterministicEncoding<StakePartition<PT>>;
+pub type PrimaryEncoding<PT> = DeterministicEncoding<StakePartition<PT>>;
 pub(crate) type SecondaryEncoding<PT> = DeterministicEncoding<EvenPartition<PT>>;
 
 impl<P: Partition> DeterministicEncoding<P> {

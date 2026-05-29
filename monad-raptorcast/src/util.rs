@@ -413,6 +413,19 @@ impl<'a, PT: PubKey> PrimaryBroadcastGroup<'a, PT> {
         })
     }
 
+    // only used in mock-swarm
+    pub fn new_unchecked(
+        epoch: Epoch,
+        author: &'a NodeId<PT>,
+        group: &'a ValidatorSet<PT>,
+    ) -> Self {
+        Self {
+            epoch,
+            author,
+            group,
+        }
+    }
+
     pub fn author(&self) -> &NodeId<PT> {
         self.author
     }
