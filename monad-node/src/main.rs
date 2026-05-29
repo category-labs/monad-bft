@@ -69,7 +69,9 @@ use monad_updaters::{
     triedb_val_set::ValSetUpdater,
 };
 use monad_validator::{
-    signature_collection::SignatureCollection, validator_set::ValidatorSetFactory,
+    proposer_schedule::{BoxedProposerSchedule, ElectedProposerSchedule},
+    signature_collection::SignatureCollection,
+    validator_set::ValidatorSetFactory,
     weighted_round_robin::WeightedRoundRobin,
 };
 use monad_wal::wal::{WALLog, WALoggerConfig};
@@ -180,6 +182,10 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
             node_state.node_config.txpool_peer_score.clone(),
             StdClock,
         );
+    let leader_election: WeightedRoundRobin<_> = WeightedRoundRobin::default();
+    let proposer_schedule: BoxedProposerSchedule<_> =
+        Box::new(ElectedProposerSchedule::new(leader_election.clone()));
+
     let router = build_raptorcast_router::<
         SignatureType,
         SignatureCollectionType,
@@ -195,6 +201,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         locked_epoch_validators.clone(),
         current_epoch,
         current_round,
+        proposer_schedule,
         node_state.persisted_peers_path,
         score_reader.clone(),
     );
@@ -382,7 +389,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
 
     let builder = MonadStateBuilder {
         validator_set_factory: ValidatorSetFactory::default(),
-        leader_election: WeightedRoundRobin::default(),
+        leader_election,
         block_validator: EthBlockValidator::default(),
         block_policy: create_block_policy(),
         state_backend,
@@ -621,6 +628,7 @@ fn build_raptorcast_router<ST, SCT, M, OM, DS>(
     locked_epoch_validators: Vec<ValidatorSetDataWithEpoch<SCT>>,
     current_epoch: Epoch,
     current_round: Round,
+    proposer_schedule: BoxedProposerSchedule<CertificateSignaturePubKey<ST>>,
     persisted_peers_path: PathBuf,
     direct_udp_peer_score_reader: DS,
 ) -> MultiRouter<
@@ -846,6 +854,7 @@ where
         auth_protocol,
         direct_udp_auth_protocol,
         direct_udp_peer_score_reader,
+        proposer_schedule,
     )
 }
 

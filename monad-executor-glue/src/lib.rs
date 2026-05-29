@@ -85,6 +85,7 @@ pub enum RouterCommand<ST: CertificateSignatureRecoverable, OM> {
     },
     AddEpochValidatorSet {
         epoch: Epoch,
+        epoch_start: Round,
         validator_set: Vec<(NodeId<CertificateSignaturePubKey<ST>>, Stake)>,
     },
     UpdateCurrentRound(Epoch, Round),
@@ -127,10 +128,12 @@ impl<ST: CertificateSignatureRecoverable, OM> Debug for RouterCommand<ST, OM> {
                 .finish(),
             Self::AddEpochValidatorSet {
                 epoch,
+                epoch_start,
                 validator_set,
             } => f
                 .debug_struct("AddEpochValidatorSet")
                 .field("epoch", epoch)
+                .field("epoch_start", epoch_start)
                 .field("validator_set", validator_set)
                 .finish(),
             Self::UpdateCurrentRound(arg0, arg1) => f

@@ -28,8 +28,8 @@ use crate::{
     SIGNATURE_SIZE,
 };
 
-const CACHE_MAX_FUTURE_ROUNDS: Round = Round(100);
-const CACHE_MAX_PAST_ROUNDS: Round = Round(100);
+pub(crate) const CACHE_MAX_FUTURE_ROUNDS: Round = Round(100);
+pub(crate) const CACHE_MAX_PAST_ROUNDS: Round = Round(100);
 
 // Stores information related to the current round.
 pub struct RoundInfoCache<PT: PubKey> {

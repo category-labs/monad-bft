@@ -79,8 +79,16 @@ impl Round {
             .is_some_and(|next_round| next_round == self.as_u64())
     }
 
+    pub fn saturating_sub(self, count: Round) -> Self {
+        Round(self.0.saturating_sub(count.0))
+    }
+
     pub fn checked_sub(self, count: Round) -> Option<Self> {
         self.0.checked_sub(count.0).map(Round)
+    }
+
+    pub fn saturating_add(self, count: Round) -> Self {
+        Round(self.0.saturating_add(count.0))
     }
 
     pub fn checked_add(self, count: Round) -> Option<Self> {
@@ -188,6 +196,7 @@ impl RoundSpan {
     pub fn contains(&self, round: Round) -> bool {
         self.start <= round && round < self.end
     }
+
     pub fn overlaps(&self, other: &RoundSpan) -> bool {
         self.start < other.end && other.start < self.end
     }

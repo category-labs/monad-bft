@@ -257,6 +257,7 @@ fn spawn_noop_validator(
             dataplane.control,
             shared_pd,
             monad_types::Epoch(0),
+            monad_raptorcast::dummy_proposer_schedule(),
         );
 
         let mut cmd_rx = cmd_rx;
@@ -346,6 +347,7 @@ fn spawn_wireauth_validator(
             dataplane.control,
             shared_pd,
             monad_types::Epoch(0),
+            monad_raptorcast::dummy_proposer_schedule(),
         );
 
         let mut cmd_rx = cmd_rx;
@@ -407,6 +409,7 @@ async fn establish_connections(
         cmd_tx
             .send(RouterCommand::AddEpochValidatorSet {
                 epoch,
+                epoch_start: monad_types::Round(0),
                 validator_set: validator_set.clone(),
             })
             .unwrap();
@@ -908,6 +911,7 @@ async fn run_send_with_record_uses_name_record_address() {
     bob2.cmd_tx
         .send(RouterCommand::AddEpochValidatorSet {
             epoch,
+            epoch_start: monad_types::Round(0),
             validator_set,
         })
         .unwrap();

@@ -138,6 +138,7 @@ fn service(
 
                 service.exec(vec![RouterCommand::AddEpochValidatorSet {
                     epoch: Epoch(0),
+                    epoch_start: monad_types::Round(0),
                     validator_set: all_peers.iter().map(|peer| (*peer, Stake::ONE)).collect(),
                 }]);
 
