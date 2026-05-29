@@ -13,7 +13,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::{hash_map::Entry, HashMap};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 use crate::{
     engine::{
@@ -37,13 +40,23 @@ use crate::{
 ///
 /// Caches the chosen directory source for each 10k bucket so repeated id
 /// lookups do not re-read summaries or fragments.
+///
+/// Safe to share across the concurrent page futures of the indexed pipeline:
+/// `resolve` takes `&self` and guards the memo with a plain `Mutex` that is
+/// held ONLY for the in-memory check/insert and NEVER across the
+/// `load_bucket`/`load_bucket_fragments` `await` (mirroring the cache layer's
+/// no-await-under-lock discipline). Two tasks racing on the same bucket each
+/// fetch and the second insert wins harmlessly; concurrent `load_bucket` gets
+/// for the same sealed bucket are already coalesced by the cache-layer
+/// single-flight, so only the single open bucket's fragment scan can duplicate
+/// — an idempotent read.
 pub(crate) struct PrimaryIdResolver<'a, M: MetaStore, B: BlobStore> {
     family: &'a FamilyTables<M, B>,
     /// First bucket start that is *not* sealed — i.e. `bucket_start` of the
     /// family's frontier id at the publication head. Buckets strictly below
     /// this are sealed; the bucket at or above it is the single open bucket.
     sealed_below: u64,
-    bucket_cache: HashMap<u64, CachedBucket>,
+    bucket_cache: Mutex<HashMap<u64, Arc<CachedBucket>>>,
 }
 
 impl<'a, M: MetaStore, B: BlobStore> PrimaryIdResolver<'a, M, B> {
@@ -51,42 +64,58 @@ impl<'a, M: MetaStore, B: BlobStore> PrimaryIdResolver<'a, M, B> {
         Self {
             family,
             sealed_below,
-            bucket_cache: HashMap::new(),
+            bucket_cache: Mutex::new(HashMap::new()),
         }
     }
 
-    pub(crate) async fn resolve(
-        &mut self,
-        id: PrimaryId,
-    ) -> Result<Option<ResolvedPrimaryIdLocation>> {
+    pub(crate) async fn resolve(&self, id: PrimaryId) -> Result<Option<ResolvedPrimaryIdLocation>> {
         let bucket = bucket_start(id.as_u64());
-        if let Entry::Vacant(entry) = self.bucket_cache.entry(bucket) {
-            let cached = if bucket < self.sealed_below {
-                // Guaranteed sealed: its summary was flushed in the same
-                // `WriteSession` as the batch, before the publication CAS, so
-                // a missing summary breaks the commit contract — surface it
-                // loudly instead of falling back to a fragment scan.
-                let summary = self.family.load_bucket(bucket).await?.ok_or(
-                    MonadChainDataError::SealedDirectoryBucketMissingSummary {
-                        bucket_start: bucket,
-                    },
-                )?;
-                CachedBucket::Summary(summary)
-            } else {
-                // The single open/frontier bucket has no summary yet; resolve
-                // it from the retained fragments.
-                CachedBucket::Fragments(self.family.load_bucket_fragments(bucket).await?)
-            };
-            entry.insert(cached);
+
+        // Fast path: the bucket is already memoized. Lock, clone the resolved
+        // source out, drop the lock before doing any work. Never await here.
+        if let Some(cached) = self.lookup(bucket) {
+            return cached.resolve(id);
         }
 
-        let cached = self
-            .bucket_cache
+        // Miss: fetch the bucket's source WITHOUT holding the lock. A concurrent
+        // task may fetch the same bucket; that is acceptable (sealed gets are
+        // coalesced by the cache single-flight, the open bucket's fragment scan
+        // is idempotent), and the insert below is last-write-wins.
+        let cached = if bucket < self.sealed_below {
+            // Guaranteed sealed: its summary was flushed in the same
+            // `WriteSession` as the batch, before the publication CAS, so a
+            // missing summary breaks the commit contract — surface it loudly
+            // instead of falling back to a fragment scan.
+            let summary = self.family.load_bucket(bucket).await?.ok_or(
+                MonadChainDataError::SealedDirectoryBucketMissingSummary {
+                    bucket_start: bucket,
+                },
+            )?;
+            CachedBucket::Summary(summary)
+        } else {
+            // The single open/frontier bucket has no summary yet; resolve it
+            // from the retained fragments.
+            CachedBucket::Fragments(self.family.load_bucket_fragments(bucket).await?)
+        };
+
+        // Re-lock only to insert the memo entry and resolve against it.
+        let mut guard = self.bucket_cache.lock().expect("resolver mutex poisoned");
+        guard
+            .entry(bucket)
+            .or_insert_with(|| Arc::new(cached))
+            .resolve(id)
+    }
+
+    /// Clones the memoized source handle for `bucket`, if present. The value is
+    /// an `Arc`, so this bumps a refcount rather than deep-copying the bucket
+    /// summary or fragment list; the lock is held only for the in-memory `get`
+    /// and released before any `resolve` work.
+    fn lookup(&self, bucket: u64) -> Option<Arc<CachedBucket>> {
+        self.bucket_cache
+            .lock()
+            .expect("resolver mutex poisoned")
             .get(&bucket)
-            .ok_or(MonadChainDataError::Decode(
-                "missing cached primary directory bucket",
-            ))?;
-        cached.resolve(id)
+            .cloned()
     }
 }
 
@@ -249,7 +278,7 @@ mod tests {
             .expect("seed sealed summary");
 
         // sealed_below = DIRECTORY_BUCKET_SIZE => bucket 0 is sealed.
-        let mut resolver = PrimaryIdResolver::new(family, DIRECTORY_BUCKET_SIZE);
+        let resolver = PrimaryIdResolver::new(family, DIRECTORY_BUCKET_SIZE);
         let location = resolver
             .resolve(PrimaryId::new(5))
             .await
@@ -276,7 +305,7 @@ mod tests {
             .await
             .expect("seed fragments");
 
-        let mut resolver = PrimaryIdResolver::new(family, DIRECTORY_BUCKET_SIZE);
+        let resolver = PrimaryIdResolver::new(family, DIRECTORY_BUCKET_SIZE);
         let error = resolver
             .resolve(PrimaryId::new(5))
             .await
@@ -303,7 +332,7 @@ mod tests {
             .expect("seed fragments");
 
         // sealed_below = 0 => no bucket is sealed; everything routes to scan.
-        let mut resolver = PrimaryIdResolver::new(family, 0);
+        let resolver = PrimaryIdResolver::new(family, 0);
         let location = resolver
             .resolve(PrimaryId::new(5))
             .await

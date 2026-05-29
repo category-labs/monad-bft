@@ -30,22 +30,33 @@ use crate::{
     store::{BlobStore, MetaStore},
 };
 
+/// Precomputed per-shard intersection plan: the clause streams and the
+/// per-clause page-count manifest, both functions of the shard alone, so they
+/// are computed once and reused across every page of the shard. The concurrent
+/// pipeline (`execute_indexed_family_query`) builds one of these per shard and
+/// drives the per-page intersection ([`FamilyTables::intersect_shard_page`])
+/// across pages concurrently; the legacy whole-shard
+/// [`FamilyTables::load_intersection_bitmap`] folds the same per-page calls
+/// serially.
+pub(crate) struct ShardPagePlan {
+    /// Per-clause list of value-streams for this shard (the OR set the clause
+    /// expands to). Indexed by clause position.
+    clause_streams: Vec<Vec<String>>,
+    /// Per-clause page-count manifest, or `None` when no manifest covers the
+    /// clause (treated as "unknown", never "empty").
+    clause_counts: Vec<Option<BitmapPageCounts>>,
+    /// True iff the shard is fully sealed (below the frontier shard) and so its
+    /// manifest is authoritative for zero-fetch page skips. On the frontier
+    /// shard the manifest is an ordering hint only and never drives a skip.
+    shard_sealed: bool,
+}
+
 impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
-    /// Loads the AND-intersection of all clauses for one shard, clipped to
-    /// the local-id range. Returns `None` if the intersection is empty,
-    /// meaning the shard cannot contribute candidates.
-    ///
-    /// The shard's local-id space is partitioned into disjoint 64K pages
-    /// ([`STREAM_PAGE_LOCAL_ID_SPAN`]) and every clause bit in a page comes
-    /// only from that page's stream rows, so intersection distributes over
-    /// pages: `⋂_c (⋃_pages clause_c) = ⋃_pages (⋂_c clause_c_page)`. We walk
-    /// page-outer / clause-inner rather than the other way around: for each
-    /// page we fetch clause[0]'s page bitmap, and the moment the running
-    /// per-page intersection empties we break — skipping every remaining
-    /// clause's fetch for that page (including frontier-fragment scans). That
-    /// per-page short-circuit is the win over the old clause-outer loop, which
-    /// built each clause's full across-all-pages bitmap before ANDing and so
-    /// could only prune when an entire clause was empty across the shard.
+    /// Builds the per-shard plan (clause streams + manifest) shared by every
+    /// page of `shard`. Returns `None` when a clause has no streams in this
+    /// shard: it contributes an empty bitmap to every page, so the whole shard
+    /// intersection is empty and no page need be fetched — matching the old
+    /// loop's "empty clause => None" behavior.
     ///
     /// `frontier_shard` is the single open shard — the shard holding the
     /// family's id frontier at the publication head (`PrimaryId::shard` of the
@@ -57,14 +68,12 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
     /// shard the manifest is absent (the shard has not sealed), so it is a hint
     /// for ordering only and NEVER causes a page to be skipped — see
     /// [`Self::clause_page_order`].
-    pub async fn load_intersection_bitmap(
+    pub(crate) async fn build_shard_page_plan(
         &self,
         clauses: &[IndexedClause],
         shard: u64,
         frontier_shard: u64,
-        local_from: u32,
-        local_to: u32,
-    ) -> Result<Option<RoaringBitmap>> {
+    ) -> Result<Option<ShardPagePlan>> {
         // Precompute each clause's shard streams once; reused across all pages.
         let clause_streams: Vec<Vec<String>> = clauses
             .iter()
@@ -96,81 +105,134 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
         };
         let clause_counts = match manifest_shard {
             Some(manifest_shard) => {
-                self.load_clause_page_counts(clauses, manifest_shard).await?
+                self.load_clause_page_counts(clauses, manifest_shard)
+                    .await?
             }
             None => vec![None; clauses.len()],
         };
 
-        let first_page_start = page_start_local(local_from);
-        let last_page_start = page_start_local(local_to);
+        Ok(Some(ShardPagePlan {
+            clause_streams,
+            clause_counts,
+            shard_sealed,
+        }))
+    }
+
+    /// Loads the AND-intersection of all clauses for one shard, clipped to
+    /// the local-id range. Returns `None` if the intersection is empty,
+    /// meaning the shard cannot contribute candidates.
+    ///
+    /// The shard's local-id space is partitioned into disjoint 64K pages
+    /// ([`STREAM_PAGE_LOCAL_ID_SPAN`]) and every clause bit in a page comes
+    /// only from that page's stream rows, so intersection distributes over
+    /// pages: `⋂_c (⋃_pages clause_c) = ⋃_pages (⋂_c clause_c_page)`. This is
+    /// the serial fold over [`Self::intersect_shard_page`]; the concurrent
+    /// pipeline drives the same per-page calls across pages concurrently
+    /// instead. Each page fetches clause[0]'s page bitmap and the moment the
+    /// running per-page intersection empties it breaks — skipping every
+    /// remaining clause's fetch for that page (including frontier-fragment
+    /// scans). That per-page short-circuit is the win over the old
+    /// clause-outer loop, which built each clause's full across-all-pages
+    /// bitmap before ANDing and so could only prune when an entire clause was
+    /// empty across the shard.
+    pub async fn load_intersection_bitmap(
+        &self,
+        clauses: &[IndexedClause],
+        shard: u64,
+        frontier_shard: u64,
+        local_from: u32,
+        local_to: u32,
+    ) -> Result<Option<RoaringBitmap>> {
+        let Some(plan) = self
+            .build_shard_page_plan(clauses, shard, frontier_shard)
+            .await?
+        else {
+            return Ok(None);
+        };
+
         let mut result = RoaringBitmap::new();
-
-        let mut page_start = first_page_start;
-        loop {
-            // Per-clause count in this page from the manifest (`None` when the
-            // manifest is unavailable for this clause/page). On a sealed shard a
-            // `Some(0)` for any clause means the page cannot contribute, so we
-            // skip every clause's page fetch. On the frontier shard the counts
-            // only order the fetches.
-            let page_counts = clause_page_counts(&clause_counts, page_start);
-
-            if shard_sealed && page_counts.contains(&Some(0)) {
-                // Guaranteed-empty page on a sealed shard: zero fetches.
-                if page_start == last_page_start {
-                    break;
-                }
-                page_start = page_start.saturating_add(STREAM_PAGE_LOCAL_ID_SPAN);
-                continue;
-            }
-
-            // Fetch clauses most-selective-first so the running intersection
-            // collapses earliest and short-circuits the rest. Clauses with a
-            // known count sort ascending ahead of clauses with no estimate.
-            let order = clause_page_order(&page_counts);
-
-            let mut page_intersection: Option<RoaringBitmap> = None;
-            for clause_idx in order {
-                if matches!(&page_intersection, Some(bitmap) if bitmap.is_empty()) {
-                    // Running per-page intersection is already empty; skip the
-                    // remaining clauses' page-P fetches and move to next page.
-                    break;
-                }
-                let clause_page = self
-                    .load_clause_page_bitmap(
-                        &clause_streams[clause_idx],
-                        page_start,
-                        local_from,
-                        local_to,
-                    )
-                    .await?;
-                page_intersection = Some(match page_intersection {
-                    Some(mut acc) => {
-                        acc &= &clause_page;
-                        acc
-                    }
-                    None => clause_page,
-                });
-            }
-
-            // Union this page's surviving intersection into the shard result.
+        for page_start in plan.candidate_pages(local_from, local_to) {
+            // Union each surviving page intersection into the shard result.
             // Pages are disjoint, so this OR never double-counts.
-            if let Some(page_intersection) = page_intersection {
-                if !page_intersection.is_empty() {
-                    result |= page_intersection;
-                }
+            if let Some(page_intersection) = self
+                .intersect_shard_page(&plan, page_start, local_from, local_to)
+                .await?
+            {
+                result |= page_intersection;
             }
+        }
 
-            if page_start == last_page_start {
+        Ok(Some(result).filter(|bitmap| !bitmap.is_empty()))
+    }
+
+    /// Runs the per-`(shard, page)` clause intersection: fetch clauses
+    /// most-selective-first, AND down, and short-circuit the moment the running
+    /// set empties (skipping every remaining clause's page fetch). Returns the
+    /// surviving ids for this page, already clipped to `[local_from,
+    /// local_to]`, or `None` when the page contributes nothing. This is the
+    /// unit of work the concurrent pipeline runs per work-item.
+    ///
+    /// `page_start` must be a candidate page for `[local_from, local_to]` (see
+    /// [`ShardPagePlan::candidate_pages`]); the manifest skip is re-checked here
+    /// so the serial and concurrent callers agree even if a caller enqueues a
+    /// guaranteed-empty page.
+    pub(crate) async fn intersect_shard_page(
+        &self,
+        plan: &ShardPagePlan,
+        page_start: u32,
+        local_from: u32,
+        local_to: u32,
+    ) -> Result<Option<RoaringBitmap>> {
+        // Per-clause count in this page from the manifest (`None` when the
+        // manifest is unavailable for this clause/page). On a sealed shard a
+        // `Some(0)` for any clause means the page cannot contribute, so we skip
+        // every clause's page fetch. On the frontier shard the counts only
+        // order the fetches.
+        let page_counts = clause_page_counts(&plan.clause_counts, page_start);
+
+        if plan.shard_sealed && page_counts.contains(&Some(0)) {
+            // Guaranteed-empty page on a sealed shard: zero fetches.
+            return Ok(None);
+        }
+
+        // Fetch clauses most-selective-first so the running intersection
+        // collapses earliest and short-circuits the rest. Clauses with a known
+        // count sort ascending ahead of clauses with no estimate.
+        let order = clause_page_order(&page_counts);
+
+        let mut page_intersection: Option<RoaringBitmap> = None;
+        for clause_idx in order {
+            if matches!(&page_intersection, Some(bitmap) if bitmap.is_empty()) {
+                // Running per-page intersection is already empty; skip the
+                // remaining clauses' page-P fetches and return early.
                 break;
             }
-            page_start = page_start.saturating_add(STREAM_PAGE_LOCAL_ID_SPAN);
+            let clause_page = self
+                .load_clause_page_bitmap(
+                    &plan.clause_streams[clause_idx],
+                    page_start,
+                    local_from,
+                    local_to,
+                )
+                .await?;
+            page_intersection = Some(match page_intersection {
+                Some(mut acc) => {
+                    acc &= &clause_page;
+                    acc
+                }
+                None => clause_page,
+            });
         }
 
         // Interior pages are fully inside the range; only the two boundary
-        // pages can carry out-of-range bits. As before, clip the merged shard
-        // result once at the end rather than per page.
-        clip_bitmap_to_local_range(&mut result, local_from, local_to);
-        Ok(Some(result).filter(|bitmap| !bitmap.is_empty()))
+        // pages can carry out-of-range bits, so clip every surviving page once
+        // before returning it.
+        Ok(page_intersection
+            .map(|mut bitmap| {
+                clip_bitmap_to_local_range(&mut bitmap, local_from, local_to);
+                bitmap
+            })
+            .filter(|bitmap| !bitmap.is_empty()))
     }
 
     /// Loads the page-count manifest for each clause in `manifest_shard`. A
@@ -269,6 +331,34 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
         }
 
         Ok(page_bitmap)
+    }
+}
+
+impl ShardPagePlan {
+    /// Page starts in `[local_from, local_to]` that may contribute candidates,
+    /// in ascending page order. On a sealed shard a page whose manifest proves
+    /// any clause empty (`Some(0)`) is dropped here without any fetch, so the
+    /// pipeline never enqueues a guaranteed-empty page — the same pages the
+    /// serial loop skipped with zero fetches. On the frontier shard the
+    /// manifest is a hint only, so every page in range is a candidate.
+    pub(crate) fn candidate_pages(&self, local_from: u32, local_to: u32) -> Vec<u32> {
+        let first_page_start = page_start_local(local_from);
+        let last_page_start = page_start_local(local_to);
+
+        let mut pages = Vec::new();
+        let mut page_start = first_page_start;
+        loop {
+            let skip = self.shard_sealed
+                && clause_page_counts(&self.clause_counts, page_start).contains(&Some(0));
+            if !skip {
+                pages.push(page_start);
+            }
+            if page_start == last_page_start {
+                break;
+            }
+            page_start = page_start.saturating_add(STREAM_PAGE_LOCAL_ID_SPAN);
+        }
+        pages
     }
 }
 
