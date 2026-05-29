@@ -2,12 +2,23 @@
 
 set -ex
 
-# Source path config before doing anything destructive, so the operator's
-# MONAD_*_DIR overrides take effect for the wipe + restore steps below.
+# Pull MONAD_*_DIR overrides before doing anything destructive. The env file
+# is systemd EnvironmentFile format (values may be unquoted/spaced), so extract
+# the path vars instead of sourcing — sourcing would execute a spaced password.
+_envfile=""
 if [ -f /etc/monad/env ]; then
-  . /etc/monad/env
+  _envfile=/etc/monad/env
 elif [ -f /home/monad/.env ]; then
-  . /home/monad/.env
+  _envfile=/home/monad/.env
+fi
+if [ -n "$_envfile" ]; then
+  while IFS='=' read -r _k _v; do
+    case "$_k" in
+      MONAD_CONFIG_DIR)  MONAD_CONFIG_DIR="$_v" ;;
+      MONAD_DATA_DIR)    MONAD_DATA_DIR="$_v" ;;
+      MONAD_RUNTIME_DIR) MONAD_RUNTIME_DIR="$_v" ;;
+    esac
+  done < <(grep -E '^[[:space:]]*MONAD_(CONFIG|DATA|RUNTIME)_DIR=' "$_envfile")
 fi
 : "${MONAD_CONFIG_DIR:=/etc/monad}"
 : "${MONAD_DATA_DIR:=/var/lib/monad}"

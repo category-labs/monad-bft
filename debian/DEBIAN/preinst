@@ -35,7 +35,9 @@ case "$1" in
 
     CORES_PER_SOCKET=$(lscpu | awk '/Core\(s\) per socket:/ { print $4 }')
 
-    if [ "$CORES_PER_SOCKET" -lt 16 ]; then
+    if [ -z "$CORES_PER_SOCKET" ]; then
+        echo "WARN: could not determine cores per socket (lscpu unavailable)."
+    elif [ "$CORES_PER_SOCKET" -lt 16 ]; then
         echo "WARN: System has only $CORES_PER_SOCKET cores per socket. Minimum required: 16."
     else
         echo "System has $CORES_PER_SOCKET cores per socket."

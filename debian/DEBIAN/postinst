@@ -44,10 +44,10 @@ case "$1" in
 # helper scripts under /opt/monad/scripts/ reference these vars instead of
 # hardcoded paths, so changing them here re-points the binary side.
 #
-# Override ONLY if you also write a systemd drop-in widening
-# ReadWritePaths to match the new location — the package's shipped
-# hardening assumes these default values. Otherwise services will fail
-# with permission errors that don't obviously trace back to this file.
+# Override ONLY if you also provision the new location yourself: create it
+# owned by group "monad" mode 0770 (tmpfiles.d only creates the defaults at
+# /var/lib/monad), and set WorkingDirectory= via a drop-in where units use it
+# (that directive cannot read these vars). The shipped paths assume defaults.
 #
 # Note: systemd's EnvironmentFile= parser does not expand nested ${VARs}
 # in this file, so don't try to define one path in terms of another here.
@@ -77,6 +77,7 @@ MONAD_RUNTIME_DIR=/run/monad
 # Optional (only for nodes running blockcapd):
 #   BLOCKCAPD_ROOT_DIR=
 #   BLOCKCAPD_MAX_GB=
+#   BLOCKCAPD_S3_BUCKET=
 EOF
         chgrp monad /etc/monad/env || true
         chmod 0640  /etc/monad/env || true

@@ -1,10 +1,10 @@
 [Unit]
 Description="Service file for Monad Archiver"
 After=network.target
-[Service]
 
+[Service]
 Type=simple
-ExecStart=/usr/local/bin/monad-archiver \
+ExecStart=/usr/bin/monad-archiver \
     --block-data-source ${BLOCK_DATA_SOURCE} \
     --fallback-block-data-source ${FALLBACK_BLOCK_DATA_SOURCE} \
     --archive-sink ${ARCHIVE_SINK} \

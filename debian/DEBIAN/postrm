@@ -3,9 +3,6 @@ set -e
 
 case "$1" in
   remove)
-    echo "Removing monadctl"
-    rm -f /usr/local/bin/monadctl
-
     echo "Removing system tunables installed by monad"
     rm -f /etc/security/limits.d/90-monad-nofile.conf
     rm -f /etc/sysctl.d/90-monad-network-buffer.conf

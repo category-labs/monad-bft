@@ -4,7 +4,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/monad \
+ExecStart=/usr/bin/monad \
     --chain "$CHAIN" \
     --db /dev/triedb \
     --block_db ${MONAD_DATA_DIR}/ledger \

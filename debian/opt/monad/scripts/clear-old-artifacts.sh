@@ -1,10 +1,15 @@
 #!/bin/bash
 set -euo pipefail
 
-# Source path config — invoked by monad-cruft.service which already sets
-# EnvironmentFile=/etc/monad/env, but source again here so the script also
-# works when run manually outside the unit.
-[ -f /etc/monad/env ] && . /etc/monad/env
+# monad-cruft.service already sets EnvironmentFile=/etc/monad/env, but pull
+# MONAD_DATA_DIR here too so the script works when run manually. The file is
+# systemd EnvironmentFile format (values may be unquoted/spaced), so extract
+# the var instead of sourcing — sourcing would execute a spaced password line.
+if [ -f /etc/monad/env ]; then
+    while IFS='=' read -r _k _v; do
+        case "$_k" in MONAD_DATA_DIR) MONAD_DATA_DIR="$_v" ;; esac
+    done < <(grep -E '^[[:space:]]*MONAD_DATA_DIR=' /etc/monad/env)
+fi
 : "${MONAD_DATA_DIR:=/var/lib/monad}"
 
 TARGET_DIR="${MONAD_DATA_DIR}/ledger/"
@@ -17,7 +22,7 @@ RETENTION_WAL=${RETENTION_WAL:-300}                  # 5 hours (wal_* files)
 
 echo "Cleanup script started: RETENTION_LEDGER=${RETENTION_LEDGER}min, RETENTION_WAL=${RETENTION_WAL}min, RETENTION_FORKPOINT=${RETENTION_FORKPOINT}min, RETENTION_VALIDATORS=${RETENTION_VALIDATORS}min"
 
-NEW_FILES=$(find "$TARGET_DIR" -type f -mmin -20)
+NEW_FILES=$(find "$TARGET_DIR" -type f -mmin -20 2>/dev/null || true)
 if [ -n "$NEW_FILES" ]; then
     echo "New files detected in ledger, proceeding with cleanup"
     find "${MONAD_DATA_DIR}/forkpoint/"  -type f -name "forkpoint.rlp.*"    -mmin +${RETENTION_FORKPOINT}  -delete 2>/dev/null

@@ -4,7 +4,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/monad-ledger-tail \
+ExecStart=/usr/bin/monad-ledger-tail \
     --ledger-path ${MONAD_DATA_DIR}/ledger \
     --forkpoint-path ${MONAD_DATA_DIR}/forkpoint/forkpoint.toml \
     --peers-path ${MONAD_DATA_DIR}/peers.toml \

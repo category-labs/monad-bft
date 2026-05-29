@@ -1,12 +1,11 @@
 [Unit]
 Description="Service file for Monad Checker"
 After=network.target
-PartOf=monad.target monad-init.target
 
 [Service]
-WorkingDirectory=${MONAD_DATA_DIR}
+WorkingDirectory=/var/lib/monad
 Type=simple
-ExecStart=/usr/local/bin/monad-archive-checker \
+ExecStart=/usr/bin/monad-archive-checker \
     --bucket "${ARCHIVE_BUCKET}" \
     --otel-endpoint ${OTEL_ENDPOINT} \
     --max-compute-threads 2 \

@@ -4,7 +4,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/monad-rpc \
+ExecStart=/usr/bin/monad-rpc \
     --ipc-path ${MONAD_RUNTIME_DIR}/mempool.sock \
     --triedb-path /dev/triedb \
     --otel-endpoint "http://127.0.0.1:4317" \

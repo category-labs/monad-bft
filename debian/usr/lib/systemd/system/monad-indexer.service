@@ -3,9 +3,9 @@ Description="Service file for Monad Indexer"
 After=network.target
 
 [Service]
-WorkingDirectory=${MONAD_DATA_DIR}
+WorkingDirectory=/var/lib/monad
 Type=simple
-ExecStart=/usr/local/bin/monad-indexer \
+ExecStart=/usr/bin/monad-indexer \
     --block-data-source "${BLOCK_DATA_SOURCE}" \
     --archive-sink "${ARCHIVE_SINK}" \
     --otel-endpoint "http://127.0.0.1:4317"

@@ -4,7 +4,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/monad-txgen \
+ExecStart=/usr/bin/monad-txgen \
       --rpc-url $RPC_URL \
       --otel-endpoint $OTEL_ENDPOINT \
       few-to-many \

@@ -4,7 +4,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/monad-blockcapd ${BLOCKCAPD_ROOT_DIR}
+ExecStart=/usr/bin/monad-blockcapd ${BLOCKCAPD_ROOT_DIR}
 EnvironmentFile=-/etc/monad/env
 Restart=no
 DynamicUser=yes

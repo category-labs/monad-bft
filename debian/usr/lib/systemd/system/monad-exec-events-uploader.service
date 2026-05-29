@@ -4,7 +4,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/monad-archiver \
+ExecStart=/usr/bin/monad-archiver \
     --additional-dirs-to-archive ${BLOCKCAPD_ROOT_DIR} \
     --unsafe-disable-normal-archiving \
     --block-data-source "aws dummy" \

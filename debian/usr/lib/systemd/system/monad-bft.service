@@ -4,7 +4,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/monad-node \
+ExecStart=/usr/bin/monad-node \
     --secp-identity ${MONAD_DATA_DIR}/private/id-secp \
     --bls-identity ${MONAD_DATA_DIR}/private/id-bls \
     --node-config ${MONAD_CONFIG_DIR}/node.toml \
