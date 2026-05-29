@@ -14,24 +14,32 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 pub mod api;
+pub mod blocks;
+pub mod engine;
 pub mod error;
 pub mod family;
-pub mod kernel;
 pub mod logs;
 pub mod primitives;
-pub mod query;
 pub mod store;
+pub mod txs;
 
 pub use alloy_primitives::{Address, Bytes, Log, LogData, B256};
 pub use api::{IngestOutcome, MonadChainDataService};
-pub use family::{FinalizedBlock, Hash32};
-pub use kernel::tables::Tables;
-pub use logs::{LogEntry, LogFilter, QueryLogsRequest, QueryLogsResponse};
+pub use blocks::{Block, QueryBlocksRequest, QueryBlocksResponse};
+pub use engine::{family::Family, tables::Tables};
+pub use error::MonadChainDataError;
+pub use family::{FinalizedBlock, Hash32, IngestTx};
+pub use logs::{LogEntry, LogFilter, LogsRelations, QueryLogsRequest, QueryLogsResponse};
 pub use primitives::{
+    limits::{LimitExceededKind, QueryEnvelope, QueryLimits},
     page::{QueryOrder, DEFAULT_QUERY_LIMIT},
-    refs::BlockRef,
-    state::BlockRecord,
+    refs::{BlockRef, BlockSpan},
+    state::{BlockRecord, FamilyWindowRecord, LogId, PrimaryId, TxId},
+    EvmBlockHeader,
 };
 pub use store::{InMemoryBlobStore, InMemoryMetaStore};
+pub use txs::{
+    QueryTransactionsRequest, QueryTransactionsResponse, TxEntry, TxFilter, TxsRelations,
+};
 
 pub type Topic = B256;

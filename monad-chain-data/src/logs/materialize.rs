@@ -16,18 +16,27 @@
 use std::collections::HashSet;
 
 use alloy_primitives::{Address, Bytes, B256};
+use bytes::Bytes as RawBytes;
 
 use super::{LogBlockHeader, LogEntry, RawLogEntry};
 use crate::{
+    blocks::Block,
+    engine::{
+        clause::{IndexedClause, IndexedFilter},
+        family::Family,
+        query::family_runner::IndexedFamilyQuery,
+        tables::Tables,
+    },
     error::{MonadChainDataError, Result},
     family::Hash32,
-    kernel::tables::Tables,
     primitives::{
-        page::{QueryOrder, DEFAULT_QUERY_LIMIT},
-        refs::BlockRef,
+        limits::QueryEnvelope,
+        page::QueryOrder,
+        refs::{BlockRef, BlockSpan},
         state::BlockRecord,
     },
     store::{BlobStore, MetaStore},
+    txs::TxEntry,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -36,42 +45,53 @@ pub struct LogFilter {
     pub topics: [Option<HashSet<B256>>; 4],
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Opt-in relations joined onto a logs query response. Each field is a
+/// hint to the service; disabled relations leave the corresponding vec
+/// empty in the response.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct LogsRelations {
+    /// When true, `QueryLogsResponse::blocks` is populated with deduped
+    /// headers (sorted ascending by number) for the blocks that
+    /// contributed logs in this page.
+    pub blocks: bool,
+    /// When true, `QueryLogsResponse::transactions` is populated with
+    /// deduped txs (sorted ascending by block number, then tx index) for
+    /// the `(block_number, tx_index)` pairs carried on the logs in this
+    /// page.
+    pub transactions: bool,
+}
+
+/// Public log query in queryX spec semantics: `from_block`/`to_block` are
+/// the inclusive range start/end, with the lower/upper roles depending on
+/// `order`. Omitted bounds default to `"earliest"`/`"latest"` per order.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct QueryLogsRequest {
-    pub from_block: Option<u64>,
-    pub to_block: Option<u64>,
-    pub order: QueryOrder,
-    /// Target number of primary log objects to return.
-    ///
-    /// The server always completes the current block before stopping, so the
-    /// actual count may exceed this value. The server may also return fewer if
-    /// an internal constraint is reached. Defaults to
-    /// [`DEFAULT_QUERY_LIMIT`] (100).
-    pub limit: usize,
+    pub envelope: QueryEnvelope,
     pub filter: LogFilter,
+    pub relations: LogsRelations,
 }
 
-impl Default for QueryLogsRequest {
-    fn default() -> Self {
-        Self {
-            from_block: None,
-            to_block: None,
-            order: QueryOrder::default(),
-            limit: DEFAULT_QUERY_LIMIT,
-            filter: LogFilter::default(),
-        }
-    }
-}
-
+/// The span mirrors the resolved request bounds and records the last
+/// block scanned. When `logs` is empty there is no next page; callers
+/// should treat the response as terminal rather than advance the cursor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueryLogsResponse {
     pub logs: Vec<LogEntry>,
-    pub from_block: BlockRef,
-    pub to_block: BlockRef,
-    pub cursor_block: BlockRef,
+    /// Deduped blocks for the `logs` in this page, sorted ascending by
+    /// block number. `None` unless `QueryLogsRequest::relations.blocks`.
+    pub blocks: Option<Vec<Block>>,
+    /// Deduped transactions for the `logs` in this page, sorted ascending
+    /// by `(block_number, tx_index)`. `None` unless
+    /// `QueryLogsRequest::relations.transactions`.
+    pub transactions: Option<Vec<TxEntry>>,
+    pub span: BlockSpan,
 }
 
 impl LogFilter {
+    pub fn has_indexed_clause(&self) -> bool {
+        self.address.is_some() || self.topics.iter().any(Option::is_some)
+    }
+
     pub fn matches(&self, log: &LogEntry) -> bool {
         if let Some(addresses) = &self.address {
             if !addresses.contains(&log.address) {
@@ -92,6 +112,44 @@ impl LogFilter {
     }
 }
 
+impl IndexedFilter for LogFilter {
+    type Record = LogEntry;
+
+    fn indexed_clauses(&self) -> Vec<IndexedClause> {
+        const TOPIC_KINDS: [&str; 4] = ["topic0", "topic1", "topic2", "topic3"];
+
+        let mut clauses = Vec::new();
+
+        if let Some(addresses) = &self.address {
+            clauses.push(IndexedClause {
+                kind: "addr",
+                values: addresses
+                    .iter()
+                    .map(|a| RawBytes::copy_from_slice(a.as_slice()))
+                    .collect(),
+            });
+        }
+
+        for (position, topics) in self.topics.iter().enumerate() {
+            if let Some(values) = topics {
+                clauses.push(IndexedClause {
+                    kind: TOPIC_KINDS[position],
+                    values: values
+                        .iter()
+                        .map(|t| RawBytes::copy_from_slice(t.as_slice()))
+                        .collect(),
+                });
+            }
+        }
+
+        clauses
+    }
+
+    fn matches(&self, log: &LogEntry) -> bool {
+        LogFilter::matches(self, log)
+    }
+}
+
 pub struct LogMaterializer<'a, M: MetaStore, B: BlobStore> {
     tables: &'a Tables<M, B>,
 }
@@ -100,11 +158,63 @@ impl<'a, M: MetaStore, B: BlobStore> LogMaterializer<'a, M, B> {
     pub fn new(tables: &'a Tables<M, B>) -> Self {
         Self { tables }
     }
+}
 
-    pub async fn load_filtered_block_logs_for_block(
+impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery<M, B> for LogMaterializer<'a, M, B> {
+    type Filter = LogFilter;
+    type Record = LogEntry;
+
+    fn family() -> Family {
+        Family::Log
+    }
+
+    async fn load_block_ref(&self, block_number: u64) -> Result<BlockRef> {
+        let block_record = self
+            .tables
+            .blocks()
+            .load_record(block_number)
+            .await?
+            .ok_or(MonadChainDataError::MissingData("missing block record"))?;
+        Ok(BlockRef::from(&block_record))
+    }
+
+    async fn load_record_at(&self, block_number: u64, idx_in_block: usize) -> Result<LogEntry> {
+        let block_record = self
+            .tables
+            .blocks()
+            .load_record(block_number)
+            .await?
+            .ok_or(MonadChainDataError::MissingData("missing block record"))?;
+        let header_bytes = self
+            .tables
+            .family(Family::Log)
+            .load_block_header(block_number)
+            .await?
+            .ok_or(MonadChainDataError::MissingData("missing block log header"))?;
+        let header = LogBlockHeader::decode(&header_bytes)?;
+
+        if idx_in_block + 1 >= header.offsets.len() {
+            return Err(MonadChainDataError::Decode("log index out of range"));
+        }
+        let start = header.offsets[idx_in_block] as usize;
+        let end = header.offsets[idx_in_block + 1] as usize;
+
+        let bytes = self
+            .tables
+            .family(Family::Log)
+            .read_block_blob_range(block_number, start, end)
+            .await?
+            .ok_or(MonadChainDataError::MissingData("missing block log blob"))?;
+
+        let raw = RawLogEntry::decode(&bytes)?;
+        Ok(raw.into_log_entry(block_record.block_number, block_record.block_hash))
+    }
+
+    async fn load_filtered_block_records(
         &self,
         block_number: u64,
-        request: &QueryLogsRequest,
+        order: QueryOrder,
+        filter: &LogFilter,
     ) -> Result<(BlockRef, Vec<LogEntry>)> {
         let block_record = self
             .tables
@@ -114,20 +224,21 @@ impl<'a, M: MetaStore, B: BlobStore> LogMaterializer<'a, M, B> {
             .ok_or(MonadChainDataError::MissingData("missing block record"))?;
         let block_ref = BlockRef::from(&block_record);
 
-        let header = self
+        let header_bytes = self
             .tables
-            .logs()
+            .family(Family::Log)
             .load_block_header(block_number)
             .await?
             .ok_or(MonadChainDataError::MissingData("missing block log header"))?;
+        let header = LogBlockHeader::decode(&header_bytes)?;
         let blob = self
             .tables
-            .logs()
+            .family(Family::Log)
             .load_block_blob(block_number)
             .await?
             .ok_or(MonadChainDataError::MissingData("missing block log blob"))?;
 
-        let logs = load_filtered_block_logs(&header, &blob, &block_record, request)?;
+        let logs = load_filtered_block_logs(&header, &blob, &block_record, order, filter)?;
 
         Ok((block_ref, logs))
     }
@@ -137,10 +248,11 @@ fn load_filtered_block_logs(
     header: &LogBlockHeader,
     blob: &Bytes,
     block_record: &BlockRecord,
-    request: &QueryLogsRequest,
+    order: QueryOrder,
+    filter: &LogFilter,
 ) -> Result<Vec<LogEntry>> {
     let count = header.log_count();
-    let indices: Box<dyn Iterator<Item = usize>> = match request.order {
+    let indices: Box<dyn Iterator<Item = usize>> = match order {
         QueryOrder::Ascending => Box::new(0..count),
         QueryOrder::Descending => Box::new((0..count).rev()),
     };
@@ -154,7 +266,7 @@ fn load_filtered_block_logs(
             block_record.block_number,
             block_record.block_hash,
         )?;
-        if request.filter.matches(&log) {
+        if filter.matches(&log) {
             logs.push(log);
         }
     }
@@ -162,7 +274,7 @@ fn load_filtered_block_logs(
     Ok(logs)
 }
 
-fn decode_log_at(
+pub(crate) fn decode_log_at(
     header: &LogBlockHeader,
     blob: &[u8],
     log_idx: usize,

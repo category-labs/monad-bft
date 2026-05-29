@@ -57,18 +57,6 @@ impl ScannableTableId {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct Record {
-    pub version: u64,
-    pub value: Bytes,
-}
-
-#[derive(Debug, Clone)]
-pub struct PutResult {
-    pub applied: bool,
-    pub version: Option<u64>,
-}
-
 #[derive(Debug)]
 pub struct KvTable<M> {
     store: M,
@@ -91,11 +79,11 @@ impl<M: Clone> Clone for KvTable<M> {
 }
 
 impl<M: MetaStore> KvTable<M> {
-    pub async fn get(&self, key: &[u8]) -> Result<Option<Record>> {
+    pub async fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
         self.store.get(self.table, key).await
     }
 
-    pub async fn put(&self, key: &[u8], value: Bytes) -> Result<PutResult> {
+    pub async fn put(&self, key: &[u8], value: Bytes) -> Result<()> {
         self.store.put(self.table, key, value).await
     }
 }
@@ -122,16 +110,11 @@ impl<M: Clone> Clone for ScannableKvTable<M> {
 }
 
 impl<M: MetaStore> ScannableKvTable<M> {
-    pub async fn get(&self, partition: &[u8], clustering: &[u8]) -> Result<Option<Record>> {
+    pub async fn get(&self, partition: &[u8], clustering: &[u8]) -> Result<Option<Bytes>> {
         self.store.scan_get(self.table, partition, clustering).await
     }
 
-    pub async fn put(
-        &self,
-        partition: &[u8],
-        clustering: &[u8],
-        value: Bytes,
-    ) -> Result<PutResult> {
+    pub async fn put(&self, partition: &[u8], clustering: &[u8], value: Bytes) -> Result<()> {
         self.store
             .scan_put(self.table, partition, clustering, value)
             .await
@@ -150,7 +133,33 @@ impl<M: MetaStore> ScannableKvTable<M> {
     }
 }
 
-/// Versioned key-value and scannable metadata storage.
+/// Monotonic per-row version assigned by [`MetaStoreCas::cas_put`]. Opaque
+/// to callers — only equality with a previously observed value matters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CasVersion(pub u64);
+
+/// Result of a [`MetaStoreCas::cas_put`] attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CasOutcome {
+    Applied {
+        new_version: CasVersion,
+    },
+    /// `expected` did not match the row's current version. `current_version`
+    /// is `None` when the row does not exist but `expected` was `Some(_)`,
+    /// or some version when the row exists but `expected` was `None` or a
+    /// different version.
+    Conflict {
+        current_version: Option<CasVersion>,
+    },
+}
+
+/// Plain key-value and scannable metadata storage.
+///
+/// All writes are idempotent and content-deterministic at the chain-data
+/// layer (keys are derived from finalized block identity, values are
+/// the encoded artifacts), so the trait surface intentionally has no
+/// versioning or compare-and-set semantics. Fencing for the publication
+/// boundary lives on the separate [`MetaStoreCas`] trait.
 ///
 /// Implementations must be cheaply cloneable (e.g. via internal `Arc`).
 #[allow(async_fn_in_trait)]
@@ -172,22 +181,22 @@ pub trait MetaStore: Clone + Send + Sync {
         ScannableKvTable::new(self.clone(), table)
     }
 
-    async fn get(&self, table: TableId, key: &[u8]) -> Result<Option<Record>>;
+    async fn get(&self, table: TableId, key: &[u8]) -> Result<Option<Bytes>>;
     async fn scan_get(
         &self,
         table: ScannableTableId,
         partition: &[u8],
         clustering: &[u8],
-    ) -> Result<Option<Record>>;
+    ) -> Result<Option<Bytes>>;
 
-    async fn put(&self, table: TableId, key: &[u8], value: Bytes) -> Result<PutResult>;
+    async fn put(&self, table: TableId, key: &[u8], value: Bytes) -> Result<()>;
     async fn scan_put(
         &self,
         table: ScannableTableId,
         partition: &[u8],
         clustering: &[u8],
         value: Bytes,
-    ) -> Result<PutResult>;
+    ) -> Result<()>;
 
     async fn scan_list(
         &self,
@@ -197,4 +206,36 @@ pub trait MetaStore: Clone + Send + Sync {
         cursor: Option<Vec<u8>>,
         limit: usize,
     ) -> Result<Page>;
+}
+
+/// Versioned compare-and-set storage, used for fencing across writer
+/// failovers. Logically distinct from [`MetaStore`]: a row addressed via
+/// CAS is *not* the same row as one written through `put`, even if the
+/// `(table, key)` tuple is identical.
+///
+/// Local backends (in-memory, single-process Fjall) implement this with a
+/// process-local critical section. A future Scylla backend would map it
+/// to LWT. Either way, the publication head is the only chain-data row
+/// that uses this surface today; everything else is plain idempotent
+/// writes through [`MetaStore`].
+#[allow(async_fn_in_trait)]
+#[auto_impl::auto_impl(Arc)]
+pub trait MetaStoreCas: MetaStore {
+    /// Reads the current row, returning its version alongside the value.
+    async fn cas_get(&self, table: TableId, key: &[u8]) -> Result<Option<(CasVersion, Bytes)>>;
+
+    /// Conditionally writes the row.
+    ///
+    /// `expected = None` requires the row to be absent (insert-if-absent).
+    /// `expected = Some(v)` requires the row's current version to equal `v`.
+    /// On success the row is overwritten and a new monotonic version is
+    /// returned. On mismatch the row is unchanged and the caller learns
+    /// the current version (if any).
+    async fn cas_put(
+        &self,
+        table: TableId,
+        key: &[u8],
+        expected: Option<CasVersion>,
+        value: Bytes,
+    ) -> Result<CasOutcome>;
 }

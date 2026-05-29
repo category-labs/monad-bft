@@ -13,4 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-pub mod runner;
+pub(crate) mod bitmap;
+pub(crate) mod directory_resolver;
+pub(crate) mod family_runner;
+pub(crate) mod window;

@@ -13,14 +13,40 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use alloy_primitives::{Log, B256};
+use alloy_primitives::{Address, Bytes, Log, B256};
+
+use crate::primitives::EvmBlockHeader;
 
 pub type Hash32 = B256;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FinalizedBlock {
-    pub block_number: u64,
-    pub block_hash: Hash32,
-    pub parent_hash: Hash32,
+    pub header: EvmBlockHeader,
     pub logs_by_tx: Vec<Vec<Log>>,
+    pub txs: Vec<IngestTx>,
+}
+
+/// Per-transaction envelope carried by a finalized block. `sender` is
+/// caller-authoritative and is not recovered from `signed_tx_bytes`;
+/// indexed `from` queries read `sender` directly. Ingest validates
+/// `txs.len() == logs_by_tx.len()` when `txs` is non-empty.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct IngestTx {
+    pub tx_hash: Hash32,
+    pub sender: Address,
+    pub signed_tx_bytes: Bytes,
+}
+
+impl FinalizedBlock {
+    pub fn block_number(&self) -> u64 {
+        self.header.number
+    }
+
+    pub fn block_hash(&self) -> Hash32 {
+        self.header.hash_slow()
+    }
+
+    pub fn parent_hash(&self) -> Hash32 {
+        self.header.parent_hash
+    }
 }
