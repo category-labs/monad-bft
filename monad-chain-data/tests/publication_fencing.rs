@@ -36,6 +36,7 @@ async fn cas_advance_with_stale_version_returns_fenced_out() {
             header: test_header(1, B256::ZERO),
             logs_by_tx: vec![vec![]],
             txs: vec![minimal_ingest_tx()],
+            traces: vec![],
         })
         .await
         .expect("first ingest succeeds");
@@ -75,6 +76,7 @@ async fn cas_advance_with_wrong_expected_version_returns_fenced_out() {
             header: test_header(1, B256::ZERO),
             logs_by_tx: vec![vec![]],
             txs: vec![minimal_ingest_tx()],
+            traces: vec![],
         })
         .await
         .expect("first ingest succeeds");
@@ -126,6 +128,7 @@ async fn second_writer_capturing_stale_state_is_fenced_at_publish() {
             header: test_header(1, B256::ZERO),
             logs_by_tx: vec![vec![]],
             txs: vec![minimal_ingest_tx()],
+            traces: vec![],
         })
         .await
         .expect("active writer publishes block 1");
@@ -148,4 +151,75 @@ async fn second_writer_capturing_stale_state_is_fenced_at_publish() {
             current_head: Some(1)
         })
     ));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn multi_block_ingest_by_stale_writer_is_fenced_at_publish() {
+    let meta_store = InMemoryMetaStore::default();
+    let stale_writer = MonadChainDataService::new(
+        meta_store.clone(),
+        InMemoryBlobStore::default(),
+        QueryLimits::UNLIMITED,
+    );
+    let active_writer = MonadChainDataService::new(
+        meta_store.clone(),
+        InMemoryBlobStore::default(),
+        QueryLimits::UNLIMITED,
+    );
+
+    // Stale writer reads the empty initial state.
+    assert!(stale_writer
+        .publication()
+        .load_state()
+        .await
+        .unwrap()
+        .is_none());
+
+    // Active writer publishes block 1.
+    active_writer
+        .ingest_block(FinalizedBlock {
+            header: test_header(1, B256::ZERO),
+            logs_by_tx: vec![vec![]],
+            txs: vec![minimal_ingest_tx()],
+            traces: vec![],
+        })
+        .await
+        .expect("active writer publishes block 1");
+
+    // Stale writer tries to publish a 2-block batch on its stale view of the
+    // publication state (head=None, expected_version=None). The continuity
+    // check runs against the *current* published head and sees a mismatch
+    // before the CAS, so we get InvalidRequest. Either way: stale ingest
+    // must not advance the head.
+    let h2 = test_header(2, B256::ZERO);
+    let mut h3 = test_header(3, B256::ZERO);
+    h3.parent_hash = h2.hash_slow();
+    let outcome = stale_writer
+        .ingest_blocks(vec![
+            FinalizedBlock {
+                header: h2,
+                logs_by_tx: vec![vec![]],
+                txs: vec![minimal_ingest_tx()],
+                traces: vec![],
+            },
+            FinalizedBlock {
+                header: h3,
+                logs_by_tx: vec![vec![]],
+                txs: vec![minimal_ingest_tx()],
+                traces: vec![],
+            },
+        ])
+        .await;
+    assert!(matches!(
+        outcome,
+        Err(MonadChainDataError::FencedOut { .. }) | Err(MonadChainDataError::InvalidRequest(_))
+    ));
+    assert_eq!(
+        active_writer
+            .publication()
+            .load_published_head()
+            .await
+            .unwrap(),
+        Some(1),
+    );
 }

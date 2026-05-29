@@ -331,6 +331,7 @@ async fn ingest_three_block_chain_with_hashes(
                 header,
                 logs_by_tx: vec![vec![]],
                 txs: Vec::new(),
+                traces: vec![],
             })
             .await
             .expect("ingest block");

@@ -200,7 +200,10 @@ mod tests {
     fn explicit_block_zero_lower_bound_clamps_to_earliest() {
         // `[0, 5]` is the genesis-clamp case: block 0 has no record, so the
         // window resolves to `[1, 5]` rather than erroring.
-        assert_eq!(resolve(Some(0), Some(5), QueryOrder::Ascending).unwrap(), (1, 5));
+        assert_eq!(
+            resolve(Some(0), Some(5), QueryOrder::Ascending).unwrap(),
+            (1, 5)
+        );
     }
 
     #[test]
@@ -240,7 +243,10 @@ mod tests {
     #[test]
     fn descending_valid_range_resolves_low_to_high() {
         // In descending order `from` is the upper bound and `to` the lower.
-        assert_eq!(resolve(Some(5), Some(2), QueryOrder::Descending).unwrap(), (2, 5));
+        assert_eq!(
+            resolve(Some(5), Some(2), QueryOrder::Descending).unwrap(),
+            (2, 5)
+        );
     }
 
     #[test]

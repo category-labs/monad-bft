@@ -44,6 +44,7 @@ async fn get_transaction_returns_entry_for_ingested_hash() {
                 with_hash(ingest_tx(alice, Some(recipient), Vec::new()), hash_alice),
                 with_hash(ingest_tx(bob, Some(recipient), Vec::new()), hash_bob),
             ],
+            traces: vec![],
         })
         .await
         .expect("ingest");
@@ -79,6 +80,7 @@ async fn get_transaction_returns_none_for_unknown_hash() {
                 ingest_tx(sender, Some(recipient), Vec::new()),
                 known,
             )],
+            traces: vec![],
         })
         .await
         .expect("ingest");
@@ -105,6 +107,7 @@ async fn get_transaction_resolves_contract_creation_tx() {
             header: test_header(1, B256::ZERO),
             logs_by_tx: vec![vec![]],
             txs: vec![with_hash(ingest_tx(sender, None, Vec::new()), hash)],
+            traces: vec![],
         })
         .await
         .expect("ingest");
@@ -139,6 +142,7 @@ async fn get_transaction_resolves_across_multiple_blocks() {
                 ingest_tx(sender, Some(recipient), Vec::new()),
                 hash_b1,
             )],
+            traces: vec![],
         })
         .await
         .expect("ingest 1");
@@ -151,6 +155,7 @@ async fn get_transaction_resolves_across_multiple_blocks() {
                 ingest_tx(sender, Some(recipient), Vec::new()),
                 hash_b2,
             )],
+            traces: vec![],
         })
         .await
         .expect("ingest 2");
@@ -189,6 +194,7 @@ async fn failed_tx_ingest_does_not_index_transaction_hash() {
                 signed_tx_bytes: vec![0x01].into(),
                 ..Default::default()
             }],
+            traces: vec![],
         })
         .await
         .expect_err("invalid signed tx should fail ingest");
@@ -227,6 +233,7 @@ async fn get_transaction_ignores_index_hits_without_published_head() {
                 ingest_tx(sender, Some(recipient), Vec::new()),
                 tx_hash,
             )],
+            traces: vec![],
         })
         .await
         .expect("ingest");

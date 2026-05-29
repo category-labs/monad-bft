@@ -35,6 +35,7 @@ async fn ingest_persists_tx_artifacts_for_block_with_txs() {
             header: test_header(1, B256::ZERO),
             logs_by_tx: vec![vec![], vec![]],
             txs: vec![minimal_ingest_tx(), minimal_ingest_tx()],
+            traces: vec![],
         })
         .await
         .expect("ingest block 1");
@@ -77,6 +78,7 @@ async fn tx_id_window_advances_across_blocks() {
             header: h1.clone(),
             logs_by_tx: vec![vec![], vec![]],
             txs: vec![minimal_ingest_tx(), minimal_ingest_tx()],
+            traces: vec![],
         })
         .await
         .expect("ingest block 1");
@@ -89,6 +91,7 @@ async fn tx_id_window_advances_across_blocks() {
             header: h2,
             logs_by_tx: vec![vec![]],
             txs: vec![minimal_ingest_tx()],
+            traces: vec![],
         })
         .await
         .expect("ingest block 2");
@@ -116,6 +119,7 @@ async fn ingest_rejects_invalid_signed_tx_bytes_before_writing_tx_artifacts() {
                 signed_tx_bytes: vec![0x01].into(),
                 ..Default::default()
             }],
+            traces: vec![],
         })
         .await
         .expect_err("invalid signed tx should fail ingest");

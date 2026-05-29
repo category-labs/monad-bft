@@ -13,11 +13,16 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-pub mod bitmap;
-pub mod clause;
-pub mod family;
-pub(crate) mod ingest;
-pub mod open_index;
-pub mod primary_dir;
-pub(crate) mod query;
-pub mod tables;
+//! View over the trace family that exposes value-bearing transfers. No
+//! separate persistence: the materializer ANDs a `has_transfer` clause
+//! into trace queries and projects the matched `TraceEntry`s into
+//! `TransferEntry`s.
+
+mod materialize;
+mod types;
+
+pub(crate) use materialize::{execute_block_scan_transfer_query, execute_indexed_transfer_query};
+pub use materialize::{
+    QueryTransfersRequest, QueryTransfersResponse, TransferFilter, TransfersRelations,
+};
+pub use types::TransferEntry;

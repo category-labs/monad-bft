@@ -13,11 +13,16 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use alloy_primitives::B256;
 
 use super::{LogBlockHeader, RawLogEntry};
 use crate::{
-    engine::bitmap::{encode_grouped_bitmap_fragments, sharded_stream_id, BitmapFragmentWrite},
+    engine::bitmap::{
+        encode_grouped_bitmap_fragments, sharded_stream_id, touched_streams_by_page,
+        BitmapFragmentWrite,
+    },
     error::{MonadChainDataError, Result},
     family::FinalizedBlock,
     primitives::state::{FamilyWindowRecord, LogId},
@@ -29,6 +34,7 @@ pub struct LogIngestPlan {
     pub block_log_header: LogBlockHeader,
     pub block_log_blob: Vec<u8>,
     pub bitmap_fragments: Vec<BitmapFragmentWrite>,
+    pub touched_bitmap_streams_by_page: BTreeMap<u64, BTreeSet<String>>,
     pub written_logs: usize,
 }
 
@@ -42,6 +48,7 @@ impl LogIngestPlan {
 
         let (block_log_header, block_log_blob) = Self::encode_block_logs(&logs)?;
         let bitmap_fragments = Self::collect_bitmap_fragments(&logs, first_log_id)?;
+        let touched_bitmap_streams_by_page = touched_streams_by_page(&bitmap_fragments)?;
         let log_window = FamilyWindowRecord {
             first_primary_id: first_log_id.into(),
             count: log_count,
@@ -52,6 +59,7 @@ impl LogIngestPlan {
             block_log_header,
             block_log_blob,
             bitmap_fragments,
+            touched_bitmap_streams_by_page,
             written_logs: logs.len(),
         })
     }
