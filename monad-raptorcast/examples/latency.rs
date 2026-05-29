@@ -676,10 +676,12 @@ fn setup_node(
         dataplane_control,
         Arc::new(std::sync::Mutex::new(pd)),
         Epoch(0),
+        monad_raptorcast::dummy_proposer_schedule(),
     );
 
     raptorcast.exec(vec![RouterCommand::AddEpochValidatorSet {
         epoch: Epoch(0),
+        epoch_start: monad_types::Round(0),
         validator_set: epoch_validators
             .iter()
             .map(|(id, stake)| (*id, *stake))

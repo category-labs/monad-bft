@@ -39,7 +39,10 @@ use monad_crypto::{
     hasher::{Hasher, HasherType},
 };
 use monad_types::{Epoch, NodeId, Round, RoundSpan, Stake};
-use monad_validator::validator_set::{ValidatorSet, ValidatorSetType as _};
+use monad_validator::{
+    proposer_schedule::ProposerSchedule,
+    validator_set::{ValidatorSet, ValidatorSetType as _},
+};
 
 use crate::udp::GroupId;
 
@@ -970,6 +973,35 @@ pub fn unix_ts_ms_now() -> u64 {
         .as_millis()
         .try_into()
         .expect("unix epoch doesn't fit in u64")
+}
+
+// A proposer schedule with a constant verdict for check_*. Only used in testing.
+#[derive(Default)]
+pub struct StubProposerSchedule {
+    pub check_proposer: Option<bool>,
+    pub check_epoch: Option<bool>,
+}
+
+impl StubProposerSchedule {
+    // A schedule that accepts every proposer and epoch. For deterministic
+    // raptorcast tests where the proposer schedule itself is irrelevant.
+    pub const VALID: Self = Self {
+        check_proposer: Some(true),
+        check_epoch: Some(true),
+    };
+}
+
+impl<PT: PubKey> ProposerSchedule<PT> for StubProposerSchedule {
+    fn check_proposer(&self, _node: &NodeId<PT>, _round: Round) -> Option<bool> {
+        self.check_proposer
+    }
+
+    fn check_epoch(&self, _epoch: Epoch, _round: Round) -> Option<bool> {
+        self.check_epoch
+    }
+
+    fn insert_epoch(&mut self, _epoch: Epoch, _epoch_start: Round, _val_set: ValidatorSet<PT>) {}
+    fn prune_below(&mut self, _cutoff: Round) {}
 }
 
 #[cfg(test)]

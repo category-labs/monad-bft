@@ -358,6 +358,7 @@ pub fn set_up_test(
 
             service.exec(vec![RouterCommand::AddEpochValidatorSet {
                 epoch: Epoch(0),
+                epoch_start: monad_types::Round(0),
                 validator_set,
             }]);
 
@@ -511,6 +512,7 @@ async fn raptorcast_forwards_fullnodes_group_invite_at_cold_start() {
 
     fullnode_rc.exec(vec![RouterCommand::AddEpochValidatorSet {
         epoch,
+        epoch_start: monad_types::Round(0),
         validator_set: vec![(validator_nodeid, Stake::ONE)],
     }]);
 
@@ -645,6 +647,7 @@ async fn publish_to_full_nodes() {
     for service in [&mut validator_rc, &mut full_node1_rc, &mut full_node2_rc] {
         service.exec(vec![RouterCommand::AddEpochValidatorSet {
             epoch: Epoch(0),
+            epoch_start: monad_types::Round(0),
             validator_set: validator_set.clone(),
         }]);
     }
@@ -790,11 +793,13 @@ async fn test_priority_messages() {
 
     tx_rc.exec(vec![RouterCommand::AddEpochValidatorSet {
         epoch,
+        epoch_start: monad_types::Round(0),
         validator_set: validator_set.clone(),
     }]);
 
     rx_rc.exec(vec![RouterCommand::AddEpochValidatorSet {
         epoch,
+        epoch_start: monad_types::Round(0),
         validator_set: validator_set.clone(),
     }]);
 
@@ -938,16 +943,19 @@ async fn test_raptorcast_forwarding_priority() {
 
     validator1_rc.exec(vec![RouterCommand::AddEpochValidatorSet {
         epoch,
+        epoch_start: monad_types::Round(0),
         validator_set: validator_set.clone(),
     }]);
 
     validator2_rc.exec(vec![RouterCommand::AddEpochValidatorSet {
         epoch,
+        epoch_start: monad_types::Round(0),
         validator_set: validator_set.clone(),
     }]);
 
     validator_fullnode_rc.exec(vec![RouterCommand::AddEpochValidatorSet {
         epoch,
+        epoch_start: monad_types::Round(0),
         validator_set: validator_set.clone(),
     }]);
 
