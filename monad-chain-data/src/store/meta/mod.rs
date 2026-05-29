@@ -201,13 +201,20 @@ pub trait MetaStore: Clone + Send + Sync + 'static {
         ScannableKvTable::new(self.clone(), table)
     }
 
-    async fn get(&self, table: TableId, key: &[u8]) -> Result<Option<Bytes>>;
-    async fn scan_get(
+    // Point reads return `Send` futures so the cache layer can store them in a
+    // cross-thread single-flight `Shared` (see `store/cache`); the other
+    // methods keep the plain `async fn` form.
+    fn get(
+        &self,
+        table: TableId,
+        key: &[u8],
+    ) -> impl std::future::Future<Output = Result<Option<Bytes>>> + Send;
+    fn scan_get(
         &self,
         table: ScannableTableId,
         partition: &[u8],
         clustering: &[u8],
-    ) -> Result<Option<Bytes>>;
+    ) -> impl std::future::Future<Output = Result<Option<Bytes>>> + Send;
 
     async fn put(&self, table: TableId, key: &[u8], value: Bytes) -> Result<()>;
     async fn scan_put(

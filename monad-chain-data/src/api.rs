@@ -1103,7 +1103,7 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
         .await?;
 
         let mut response = if request.filter.has_indexed_clause() {
-            execute_indexed_log_query(&self.tables, &request, window).await?
+            execute_indexed_log_query(&self.tables, &request, window, head).await?
         } else {
             execute_block_scan_query(&self.tables, &request, window).await?
         };
@@ -1152,7 +1152,7 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
         .await?;
 
         let mut response = if request.filter.has_indexed_clause() {
-            execute_indexed_tx_query(&self.tables, &request, window).await?
+            execute_indexed_tx_query(&self.tables, &request, window, head).await?
         } else {
             execute_block_scan_tx_query(&self.tables, &request, window).await?
         };
@@ -1211,7 +1211,7 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
         .await?;
 
         let mut response = if request.filter.has_indexed_clause() {
-            execute_indexed_trace_query(&self.tables, &request, window).await?
+            execute_indexed_trace_query(&self.tables, &request, window, head).await?
         } else {
             execute_block_scan_trace_query(&self.tables, &request, window).await?
         };
@@ -1260,7 +1260,7 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
         .await?;
 
         let mut response = if request.filter.has_indexed_clause() {
-            execute_indexed_transfer_query(&self.tables, &request, window).await?
+            execute_indexed_transfer_query(&self.tables, &request, window, head).await?
         } else {
             execute_block_scan_transfer_query(&self.tables, &request, window).await?
         };

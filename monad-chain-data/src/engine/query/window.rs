@@ -66,13 +66,16 @@ pub(crate) async fn resolve_primary_id_window<M: MetaStore>(
     let start_block = block_window.low.number;
     let end_block = block_window.high.number;
 
-    let Some(start) = first_primary_id_in_range(blocks, family, start_block, end_block).await?
-    else {
-        return Ok(None);
-    };
-    let Some(end_exclusive) =
-        end_primary_id_exclusive_in_range(blocks, family, start_block, end_block).await?
-    else {
+    // The low walk (up from `start_block`) and the high walk (down from
+    // `end_block`) are independent reads over the shared `&BlockTables`, so run
+    // them concurrently to overlap their per-block fetches. `load_record` is
+    // `&self` + concurrency-safe. `try_join!` propagates either walk's error.
+    let (start, end_exclusive) = futures::try_join!(
+        first_primary_id_in_range(blocks, family, start_block, end_block),
+        end_primary_id_exclusive_in_range(blocks, family, start_block, end_block),
+    )?;
+    // If EITHER walk found no in-range id the window is empty.
+    let (Some(start), Some(end_exclusive)) = (start, end_exclusive) else {
         return Ok(None);
     };
 
