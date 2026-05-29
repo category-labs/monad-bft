@@ -37,8 +37,8 @@ use monad_archive::{
 use monad_eth_types::{
     BlockHeader, ReceiptWithLogIndex, TransactionLocation, TxEnvelopeWithSender,
 };
-use monad_triedb_utils::triedb_env::{BlockKey, FinalizedBlockKey, Triedb};
-use monad_types::SeqNum;
+use monad_triedb_utils::triedb_env::{BlockKey, FinalizedBlockKey, ProposedBlockKey, Triedb};
+use monad_types::{BlockId, Hash, SeqNum};
 use tracing::{debug, error, trace, warn};
 
 use self::{
@@ -90,6 +90,13 @@ impl From<monad_archive::prelude::Report> for ChainStateError {
 // BlockTags::Latest
 pub fn get_latest_block_key(triedb_env: &impl Triedb) -> BlockKey {
     triedb_env.get_latest_proposed_block_key()
+}
+
+pub fn block_key_to_parts(block_key: BlockKey) -> (u64, Option<[u8; 32]>) {
+    match block_key {
+        BlockKey::Finalized(FinalizedBlockKey(SeqNum(n))) => (n, None),
+        BlockKey::Proposed(ProposedBlockKey(SeqNum(n), BlockId(Hash(id)))) => (n, Some(id)),
+    }
 }
 
 pub fn get_block_key_from_tag(triedb_env: &impl Triedb, tag: BlockTags) -> Option<BlockKey> {
