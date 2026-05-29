@@ -19,8 +19,9 @@ use crate::{
     engine::{
         clause::IndexedFilter,
         family::Family,
+        primary_dir::bucket_start,
         query::{directory_resolver::PrimaryIdResolver, window::resolve_primary_id_window},
-        tables::Tables,
+        tables::{BlockTables, Tables},
     },
     error::{MonadChainDataError, Result},
     primitives::{
@@ -68,6 +69,7 @@ pub(crate) async fn execute_indexed_family_query<M, B, R>(
     runner: &R,
     filter: &R::Filter,
     block_window: ResolvedBlockWindow,
+    published_head: u64,
     order: QueryOrder,
     limit: usize,
 ) -> Result<IndexedQueryOutcome<R::Record>>
@@ -98,7 +100,16 @@ where
         ));
     }
 
-    let mut resolver = PrimaryIdResolver::new(tables.family(family));
+    // A bucket is sealed iff its whole 10k id range sits below the *global*
+    // family frontier at the publication head — the family-window end of the
+    // published-head block, not the query's high block. Deriving this from the
+    // query range would misclassify a globally-sealed bucket whose ids sit
+    // above the range as the open bucket. Compute it once and route every
+    // candidate analytically.
+    let frontier_id = family_frontier_id(tables.blocks(), family, published_head).await?;
+    let sealed_below = bucket_start(frontier_id.as_u64());
+
+    let mut resolver = PrimaryIdResolver::new(tables.family(family), sealed_below);
     let mut records = Vec::new();
     let mut stop_after_block = None;
 
@@ -203,6 +214,26 @@ where
             cursor_block,
         },
     })
+}
+
+/// Returns the family's global id frontier — the first id not yet assigned —
+/// at the publication head. This is the family-window end of the published-head
+/// block (`next_primary_id_exclusive`); even a zero-count window carries it,
+/// since `first_primary_id` is the running id cursor. If the published head has
+/// no block record (no data), there are no sealed buckets, so the frontier is
+/// `PrimaryId::ZERO` and every bucket routes to the open-bucket scan path.
+async fn family_frontier_id<M: MetaStore>(
+    blocks: &BlockTables<M>,
+    family: Family,
+    published_head: u64,
+) -> Result<PrimaryId> {
+    let Some(record) = blocks.load_record(published_head).await? else {
+        return Ok(PrimaryId::ZERO);
+    };
+    match family.window_in(&record) {
+        Some(window) => window.next_primary_id_exclusive(),
+        None => Ok(PrimaryId::ZERO),
+    }
 }
 
 fn locals_in_query_order(bitmap: RoaringBitmap, order: QueryOrder) -> Vec<u32> {

@@ -106,7 +106,13 @@ pub trait BlobStore: Clone + Send + Sync + 'static {
     }
 
     async fn put_blob(&self, table: BlobTableId, key: &[u8], value: Bytes) -> Result<()>;
-    async fn get_blob(&self, table: BlobTableId, key: &[u8]) -> Result<Option<Bytes>>;
+    // Point read returns a `Send` future so the cache layer can store it in a
+    // cross-thread single-flight `Shared` (see `store/cache`).
+    fn get_blob(
+        &self,
+        table: BlobTableId,
+        key: &[u8],
+    ) -> impl std::future::Future<Output = Result<Option<Bytes>>> + Send;
     async fn apply_writes(&self, writes: Vec<BlobWriteOp>) -> Result<()>;
     async fn read_range(
         &self,

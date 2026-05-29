@@ -31,6 +31,18 @@ pub enum MonadChainDataError {
     InvalidRequest(&'static str),
     #[error("missing data: {0}")]
     MissingData(&'static str),
+    /// A directory bucket the resolver classified as sealed (its entire 10k
+    /// id range lies below the published-head family frontier) had no
+    /// compacted summary. Ingestion flushes every sealed bucket's summary in
+    /// the same `WriteSession` as the batch, before the publication CAS, so a
+    /// sealed bucket without a summary means the ingestion/compaction commit
+    /// contract is broken. Surfaced loudly rather than masked by a fragment
+    /// scan.
+    #[error(
+        "sealed primary directory bucket {bucket_start} missing its compacted summary; \
+         the ingestion/compaction commit contract is broken"
+    )]
+    SealedDirectoryBucketMissingSummary { bucket_start: u64 },
     #[error("limit exceeded ({kind}): max_limit={max_limit}, max_block_range={max_block_range}")]
     LimitExceeded {
         kind: LimitExceededKind,

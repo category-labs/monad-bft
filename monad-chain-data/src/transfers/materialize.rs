@@ -328,6 +328,7 @@ pub(crate) async fn execute_indexed_transfer_query<M: MetaStore, B: BlobStore>(
     tables: &Tables<M, B>,
     request: &QueryTransfersRequest,
     block_window: ResolvedBlockWindow,
+    published_head: u64,
 ) -> Result<QueryTransfersResponse> {
     let materializer = TransferMaterializer::new(tables);
     let outcome = execute_indexed_family_query(
@@ -335,6 +336,7 @@ pub(crate) async fn execute_indexed_transfer_query<M: MetaStore, B: BlobStore>(
         &materializer,
         &request.filter,
         block_window,
+        published_head,
         request.envelope.order,
         request.envelope.limit,
     )

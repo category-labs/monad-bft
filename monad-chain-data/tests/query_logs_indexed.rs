@@ -578,6 +578,132 @@ async fn unindexed_query_logs_still_uses_block_scan_fallback() {
     assert_eq!(page.span.cursor_block.number, 1);
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn historical_indexed_query_resolves_through_the_sealed_summary() {
+    // Block 1 fills bucket 0 to one short of the 10k boundary; block 2 crosses
+    // it, sealing bucket 0 (its compacted summary is flushed before the
+    // publication CAS) and opening bucket 1. A query confined to the sealed
+    // range below the frontier must resolve every candidate through the summary
+    // path. We assert correctness across the full range to prove the analytic
+    // routing (summary for the sealed bucket, fragments for the open one)
+    // produces the same locations the probe-or-scan path did.
+    let service = MonadChainDataService::new(
+        InMemoryMetaStore::default(),
+        InMemoryBlobStore::default(),
+        QueryLimits::UNLIMITED,
+    );
+
+    let h1 = test_header(1, B256::ZERO);
+    let h2 = chain_header(2, &h1);
+
+    let block_1_logs = usize::try_from(DIRECTORY_BUCKET_SIZE - 2).expect("bucket size fits usize");
+    service
+        .ingest_block(FinalizedBlock {
+            header: h1,
+            logs_by_tx: vec![repeated_logs(
+                Address::repeat_byte(7),
+                vec![B256::repeat_byte(9)],
+                block_1_logs,
+            )],
+            txs: Vec::new(),
+            traces: vec![],
+        })
+        .await
+        .expect("ingest block 1");
+
+    service
+        .ingest_block(FinalizedBlock {
+            header: h2,
+            logs_by_tx: vec![repeated_logs(
+                Address::repeat_byte(7),
+                vec![B256::repeat_byte(9)],
+                4,
+            )],
+            txs: Vec::new(),
+            traces: vec![],
+        })
+        .await
+        .expect("ingest block 2");
+
+    // Bucket 0 is sealed once block 2 crosses the boundary; confirm the summary
+    // exists so the resolver's sealed-bucket route has something to read.
+    assert!(
+        service
+            .tables()
+            .family(monad_chain_data::Family::Log)
+            .load_bucket(0)
+            .await
+            .expect("load compacted bucket")
+            .is_some(),
+        "block 2 should have sealed bucket 0",
+    );
+
+    // Query the sealed range only (block 1): every candidate id lives in the
+    // sealed bucket 0, so the resolver takes the summary path.
+    let sealed_page = service
+        .query_logs(QueryLogsRequest {
+            envelope: QueryEnvelope {
+                from_block: Some(1),
+                to_block: Some(1),
+                order: QueryOrder::Ascending,
+                limit: usize::try_from(DIRECTORY_BUCKET_SIZE).expect("fits usize"),
+            },
+            filter: LogFilter {
+                address: Some(HashSet::from([Address::repeat_byte(7)])),
+                topics: [
+                    Some(HashSet::from([B256::repeat_byte(9)])),
+                    None,
+                    None,
+                    None,
+                ],
+            },
+            relations: LogsRelations::default(),
+        })
+        .await
+        .expect("sealed-range query");
+
+    assert_eq!(sealed_page.logs.len(), block_1_logs);
+    assert!(sealed_page.logs.iter().all(|l| l.block_number == 1));
+    assert_eq!(sealed_page.span.cursor_block.number, 1);
+
+    // Query the full range (sealed bucket 0 + open bucket 1) and confirm the
+    // mixed sealed/open routing still returns every log in order.
+    let full_page = service
+        .query_logs(QueryLogsRequest {
+            envelope: QueryEnvelope {
+                from_block: Some(1),
+                to_block: Some(2),
+                order: QueryOrder::Ascending,
+                limit: usize::try_from(DIRECTORY_BUCKET_SIZE + 8).expect("fits usize"),
+            },
+            filter: LogFilter {
+                address: Some(HashSet::from([Address::repeat_byte(7)])),
+                topics: [
+                    Some(HashSet::from([B256::repeat_byte(9)])),
+                    None,
+                    None,
+                    None,
+                ],
+            },
+            relations: LogsRelations::default(),
+        })
+        .await
+        .expect("full-range query");
+
+    assert_eq!(full_page.logs.len(), block_1_logs + 4);
+    assert!(full_page
+        .logs
+        .iter()
+        .take(block_1_logs)
+        .all(|l| l.block_number == 1));
+    assert!(full_page
+        .logs
+        .iter()
+        .skip(block_1_logs)
+        .all(|l| l.block_number == 2));
+    assert_eq!(full_page.span.cursor_block.number, 2);
+}
+
 fn repeated_logs(address: Address, topics: Vec<Topic>, count: usize) -> Vec<Log> {
     std::iter::repeat_with(|| log(address, topics.clone()))
         .take(count)
