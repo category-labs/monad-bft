@@ -20,6 +20,13 @@ pub use in_memory::InMemoryBlobStore;
 
 use crate::error::{MonadChainDataError, Result};
 
+#[derive(Debug, Clone)]
+pub struct BlobWriteOp {
+    pub table: BlobTableId,
+    pub key: Vec<u8>,
+    pub value: Bytes,
+}
+
 /// Logical identifier for a blob table.
 ///
 /// Identifiers are opaque names. Backends are responsible for any
@@ -86,9 +93,7 @@ impl<B: BlobStore> BlobTable<B> {
 ///
 /// Implementations must be cheaply cloneable (e.g. via internal `Arc`).
 #[allow(async_fn_in_trait)]
-#[auto_impl::auto_impl(Arc)]
-pub trait BlobStore: Clone + Send + Sync {
-    #[auto_impl(keep_default_for(Arc))]
+pub trait BlobStore: Clone + Send + Sync + 'static {
     fn table(&self, table: BlobTableId) -> BlobTable<Self>
     where
         Self: Sized,
@@ -98,6 +103,7 @@ pub trait BlobStore: Clone + Send + Sync {
 
     async fn put_blob(&self, table: BlobTableId, key: &[u8], value: Bytes) -> Result<()>;
     async fn get_blob(&self, table: BlobTableId, key: &[u8]) -> Result<Option<Bytes>>;
+    async fn apply_writes(&self, writes: Vec<BlobWriteOp>) -> Result<()>;
     async fn read_range(
         &self,
         table: BlobTableId,
