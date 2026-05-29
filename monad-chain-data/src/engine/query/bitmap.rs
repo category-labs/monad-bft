@@ -146,6 +146,9 @@ fn clip_bitmap_to_local_range(bitmap: &mut RoaringBitmap, local_from: u32, local
         bitmap.remove_range(0..local_from);
     }
     if local_to < u32::MAX {
-        bitmap.remove_range(local_to.saturating_add(1)..u32::MAX);
+        // Inclusive of `u32::MAX` so a bit at the very top of the id space is
+        // also cleared; an exclusive `..u32::MAX` would leave it set. The guard
+        // keeps `local_to + 1` from overflowing.
+        bitmap.remove_range((local_to + 1)..=u32::MAX);
     }
 }

@@ -145,7 +145,13 @@ impl ResolvedBlockWindow {
             ));
         }
         let high = high.min(published_head);
-        // Floors an explicit `from_block = 0` to avoid loading a nonexistent record.
+        // Clamp an explicit lower bound of 0 up to the earliest queryable block.
+        // Block 0 has no record in this slice (ingest starts at block 1), so a
+        // request like `[0, N]` resolves to `[1, N]` — the same genesis-clamp
+        // behavior as `eth_getLogs`. Unlike the above-head case this clamp is
+        // intentionally silent: 0 expresses "from the start", not a typo. A
+        // request for block 0 *alone* (`[0, 0]`) still fails the `low > high`
+        // check below rather than silently returning block 1's data.
         let low = low.max(EARLIEST_QUERYABLE_BLOCK);
 
         if low > high {
@@ -154,5 +160,116 @@ impl ResolvedBlockWindow {
             ));
         }
         Ok((low, high))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ResolvedBlockWindow, EARLIEST_QUERYABLE_BLOCK};
+    use crate::{error::MonadChainDataError, primitives::page::QueryOrder};
+
+    const HEAD: u64 = 100;
+
+    fn resolve(
+        from: Option<u64>,
+        to: Option<u64>,
+        order: QueryOrder,
+    ) -> Result<(u64, u64), MonadChainDataError> {
+        ResolvedBlockWindow::resolve_block_numbers(from, to, order, HEAD)
+    }
+
+    #[test]
+    fn ascending_defaults_span_earliest_to_head() {
+        assert_eq!(
+            resolve(None, None, QueryOrder::Ascending).unwrap(),
+            (EARLIEST_QUERYABLE_BLOCK, HEAD)
+        );
+    }
+
+    #[test]
+    fn descending_defaults_span_earliest_to_head() {
+        // Internal `(low, high)` is order-independent; direction is applied at
+        // iteration time. Defaults resolve to the full ingested range either way.
+        assert_eq!(
+            resolve(None, None, QueryOrder::Descending).unwrap(),
+            (EARLIEST_QUERYABLE_BLOCK, HEAD)
+        );
+    }
+
+    #[test]
+    fn explicit_block_zero_lower_bound_clamps_to_earliest() {
+        // `[0, 5]` is the genesis-clamp case: block 0 has no record, so the
+        // window resolves to `[1, 5]` rather than erroring.
+        assert_eq!(resolve(Some(0), Some(5), QueryOrder::Ascending).unwrap(), (1, 5));
+    }
+
+    #[test]
+    fn block_zero_alone_is_rejected_not_clamped() {
+        // The clamp must not silently turn a request for block 0 into block 1's
+        // data: `[0, 0]` resolves to `low = 1 > high = 0` and is rejected.
+        assert!(matches!(
+            resolve(Some(0), Some(0), QueryOrder::Ascending),
+            Err(MonadChainDataError::InvalidRequest(_))
+        ));
+    }
+
+    #[test]
+    fn high_bound_is_clamped_to_published_head() {
+        assert_eq!(
+            resolve(Some(10), Some(HEAD + 50), QueryOrder::Ascending).unwrap(),
+            (10, HEAD)
+        );
+    }
+
+    #[test]
+    fn lower_bound_above_head_is_rejected() {
+        assert!(matches!(
+            resolve(Some(HEAD + 1), Some(HEAD + 5), QueryOrder::Ascending),
+            Err(MonadChainDataError::InvalidRequest(_))
+        ));
+    }
+
+    #[test]
+    fn ascending_inverted_range_is_rejected() {
+        assert!(matches!(
+            resolve(Some(5), Some(3), QueryOrder::Ascending),
+            Err(MonadChainDataError::InvalidRequest(_))
+        ));
+    }
+
+    #[test]
+    fn descending_valid_range_resolves_low_to_high() {
+        // In descending order `from` is the upper bound and `to` the lower.
+        assert_eq!(resolve(Some(5), Some(2), QueryOrder::Descending).unwrap(), (2, 5));
+    }
+
+    #[test]
+    fn descending_inverted_range_is_rejected() {
+        assert!(matches!(
+            resolve(Some(2), Some(5), QueryOrder::Descending),
+            Err(MonadChainDataError::InvalidRequest(_))
+        ));
+    }
+
+    #[test]
+    fn iter_walks_inclusive_range_in_requested_direction() {
+        use crate::primitives::refs::BlockRef;
+        let block_ref = |number| BlockRef {
+            number,
+            hash: Default::default(),
+            parent_hash: Default::default(),
+        };
+        let window = ResolvedBlockWindow {
+            low: block_ref(2),
+            high: block_ref(4),
+        };
+        assert_eq!(
+            window.iter(QueryOrder::Ascending).collect::<Vec<_>>(),
+            vec![2, 3, 4]
+        );
+        assert_eq!(
+            window.iter(QueryOrder::Descending).collect::<Vec<_>>(),
+            vec![4, 3, 2]
+        );
     }
 }

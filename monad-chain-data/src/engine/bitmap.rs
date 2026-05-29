@@ -259,6 +259,25 @@ pub fn decode_bitmap_blob(bytes: &[u8]) -> Result<BitmapBlob> {
     let bitmap = RoaringBitmap::deserialize_from(&bytes[BITMAP_BLOB_HEADER_LEN..])
         .map_err(|e| MonadChainDataError::Backend(format!("deserialize bitmap blob: {e}")))?;
 
+    // The framing header duplicates the bitmap's own bounds and cardinality.
+    // Query-time skip decisions trust `min_local`/`max_local` (see
+    // `engine::query::bitmap::overlaps`), so a corrupted header with a
+    // too-narrow range would silently drop a page from the result rather than
+    // surface an error. Validate the header against the decoded payload and
+    // fail loudly on any drift. We already paid for the full deserialize, so
+    // recomputing the bounds here is effectively free.
+    let header_matches_payload = match bitmap.min().zip(bitmap.max()) {
+        Some((actual_min, actual_max)) => {
+            u64::from(count) == bitmap.len() && min_local == actual_min && max_local == actual_max
+        }
+        None => count == 0,
+    };
+    if !header_matches_payload {
+        return Err(MonadChainDataError::Decode(
+            "bitmap blob header does not match payload",
+        ));
+    }
+
     Ok(BitmapBlob {
         min_local,
         max_local,
@@ -398,4 +417,59 @@ pub(crate) fn parse_stream_shard(stream_id: &str) -> Result<u64> {
         .ok_or(MonadChainDataError::Decode("empty stream id"))?;
     u64::from_str_radix(shard_hex, 16)
         .map_err(|_| MonadChainDataError::Decode("invalid stream id shard"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_blob() -> BitmapBlob {
+        let mut bitmap = RoaringBitmap::new();
+        for v in [3u32, 7, 42, 1000] {
+            bitmap.insert(v);
+        }
+        BitmapBlob {
+            min_local: 3,
+            max_local: 1000,
+            count: 4,
+            bitmap,
+        }
+    }
+
+    #[test]
+    fn bitmap_blob_round_trips() {
+        let encoded = encode_bitmap_blob(&sample_blob()).unwrap();
+        let decoded = decode_bitmap_blob(encoded.as_ref()).unwrap();
+        assert_eq!(decoded.min_local, 3);
+        assert_eq!(decoded.max_local, 1000);
+        assert_eq!(decoded.count, 4);
+        assert_eq!(decoded.bitmap.len(), 4);
+    }
+
+    #[test]
+    fn decode_rejects_header_with_wrong_max_local() {
+        let mut encoded = encode_bitmap_blob(&sample_blob()).unwrap().to_vec();
+        // Corrupt `max_local` (bytes 5..9) to a too-narrow value that would
+        // make the query-time overlap check skip a page that actually matches.
+        encoded[5..9].copy_from_slice(&10u32.to_be_bytes());
+        assert!(matches!(
+            decode_bitmap_blob(&encoded),
+            Err(MonadChainDataError::Decode(
+                "bitmap blob header does not match payload"
+            ))
+        ));
+    }
+
+    #[test]
+    fn decode_rejects_header_with_wrong_count() {
+        let mut encoded = encode_bitmap_blob(&sample_blob()).unwrap().to_vec();
+        // Corrupt `count` (bytes 9..13).
+        encoded[9..13].copy_from_slice(&99u32.to_be_bytes());
+        assert!(matches!(
+            decode_bitmap_blob(&encoded),
+            Err(MonadChainDataError::Decode(
+                "bitmap blob header does not match payload"
+            ))
+        ));
+    }
 }
