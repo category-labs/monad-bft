@@ -64,6 +64,13 @@ pub struct MonadEthGetLogsParams {
     filters: Filter,
 }
 
+impl MonadEthGetLogsParams {
+    /// Consumes the params and returns the inner `eth_getLogs` filter.
+    pub fn into_filter(self) -> Filter {
+        self.filters
+    }
+}
+
 fn schema_for_filter(_: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
     schemars::schema_for_value!(Filter::new().from_block(0).to_block(1).address(
         "0xAc4b3DacB91461209Ae9d41EC517c2B9Cb1B7DAF"

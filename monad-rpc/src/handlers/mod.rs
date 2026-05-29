@@ -474,8 +474,23 @@ async fn eth_getLogs(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
+    let params: crate::handlers::eth::txn::MonadEthGetLogsParams =
+        serde_json::from_str(params.get()).invalid_params()?;
+
+    // When the chain-data index is configured, serve eth_getLogs from it via
+    // the queryX logs path rather than the triedb/archive scan.
+    if let Some(service) = app_state.chain_data.as_ref() {
+        let logs = queryx::get_logs_via_chain_data(
+            service,
+            params.into_filter(),
+            app_state.max_response_size,
+            app_state.logs_max_block_range,
+        )
+        .await?;
+        return serialize_result(crate::handlers::eth::txn::MonadEthGetLogsResult(logs));
+    }
+
     let chain_state = app_state.chain_state.as_ref().method_not_supported()?;
-    let params = serde_json::from_str(params.get()).invalid_params()?;
     monad_eth_getLogs(
         chain_state,
         app_state.max_response_size,

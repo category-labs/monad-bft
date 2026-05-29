@@ -26,28 +26,30 @@
 use std::collections::{HashMap, HashSet};
 
 use alloy_consensus::Transaction;
-use alloy_eips::eip2718::Typed2718;
-use alloy_primitives::{Address, B256, U256};
+use alloy_eips::{eip2718::Typed2718, BlockNumberOrTag};
+use alloy_primitives::{Address, Log as PrimitiveLog, LogData, B256, U256};
+use alloy_rpc_types::{Filter, FilterBlockOption, Log as RpcLog};
 use monad_chain_data::{
     store::{BlobCompressionStore, FjallStore},
-    Block, BlockRef, BlockSpan, CallKind, LogEntry, LogFilter, LogsRelations, MonadChainDataError,
-    MonadChainDataService, QueryBlocksRequest, QueryBlocksResponse, QueryEnvelope,
-    QueryLogsRequest, QueryLogsResponse, QueryOrder, QueryTracesRequest, QueryTracesResponse,
-    QueryTransactionsRequest, QueryTransactionsResponse, QueryTransfersRequest,
-    QueryTransfersResponse, TraceEntry, TraceFilter, TracesRelations, TransferEntry,
-    TransferFilter, TransfersRelations, TxEntry, TxFilter, TxsRelations,
+    Block, BlockRef, BlockSpan, CallKind, Hash32, LogEntry, LogFilter, LogsRelations,
+    MonadChainDataError, MonadChainDataService, QueryBlocksRequest, QueryBlocksResponse,
+    QueryEnvelope, QueryLogsRequest, QueryLogsResponse, QueryOrder, QueryTracesRequest,
+    QueryTracesResponse, QueryTransactionsRequest, QueryTransactionsResponse,
+    QueryTransfersRequest, QueryTransfersResponse, TraceEntry, TraceFilter, TracesRelations,
+    TransferEntry, TransferFilter, TransfersRelations, TxEntry, TxFilter, TxsRelations,
 };
 use serde::Deserialize;
 use serde_json::{value::RawValue, Map, Value};
 use tracing::debug;
 
 use crate::{
-    handlers::resources::MonadRpcResources,
+    handlers::{eth::txn::FilterError, resources::MonadRpcResources},
     middleware::TimingRequestId,
     types::{
-        eth_json::serialize_result,
+        eth_json::{serialize_result, MonadLog},
         ethhex,
-        jsonrpc::{JsonRpcError, JsonRpcResultExt, RequestParams},
+        heuristic_size::HeuristicSize,
+        jsonrpc::{JsonRpcError, JsonRpcResult, JsonRpcResultExt, RequestParams},
     },
 };
 
@@ -950,7 +952,7 @@ fn serialize_queryx_result(
     app_state: &MonadRpcResources,
 ) -> Result<Box<RawValue>, JsonRpcError> {
     let raw = serialize_result(value)?;
-    let response_size_bytes = raw.get().as_bytes().len();
+    let response_size_bytes = raw.get().len();
     debug!(response_size_bytes, "queryX result projection size");
     if response_size_bytes > app_state.max_response_size as usize {
         return Err(JsonRpcError::max_size_exceeded());
@@ -995,6 +997,176 @@ fn chain_data_error_to_jsonrpc(error: MonadChainDataError) -> JsonRpcError {
         MonadChainDataError::FencedOut { .. } => {
             JsonRpcError::internal_error("chain-data writer fenced out during query".to_string())
         }
+    }
+}
+
+/// Serves `eth_getLogs` from the chain-data index by translating the
+/// request into one or more `query_logs` calls.
+///
+/// chain-data only holds finalized blocks, so all block tags resolve
+/// against the published head: `latest`/`safe`/`finalized`/`pending` and
+/// an omitted bound all map to the head, `earliest` maps to 0. The
+/// `to_block` is clamped to the head. Because `query_logs` returns at most
+/// `limit` logs per page (completing the current block), this pages
+/// through the resolved range until the cursor reaches `to_block`,
+/// requesting the `blocks` and `transactions` relations so each returned
+/// log carries `blockTimestamp` and `transactionHash`.
+pub async fn get_logs_via_chain_data(
+    service: &ChainDataService,
+    filter: Filter,
+    max_response_size: u32,
+    max_block_range: u64,
+) -> JsonRpcResult<Vec<MonadLog>> {
+    let Some(head) = service
+        .publication()
+        .load_published_head()
+        .await
+        .map_err(chain_data_error_to_jsonrpc)?
+    else {
+        // No finalized blocks indexed yet.
+        return Ok(Vec::new());
+    };
+
+    let (from_block, to_block) = match filter.block_option {
+        FilterBlockOption::Range {
+            from_block,
+            to_block,
+        } => (
+            resolve_eth_block_bound(from_block, head),
+            resolve_eth_block_bound(to_block, head).min(head),
+        ),
+        FilterBlockOption::AtBlockHash(block_hash) => {
+            match service
+                .tables()
+                .blocks()
+                .block_number_by_hash(&block_hash)
+                .await
+                .map_err(chain_data_error_to_jsonrpc)?
+            {
+                Some(number) => (number, number),
+                None => return Ok(Vec::new()),
+            }
+        }
+    };
+
+    if from_block > to_block {
+        return Err(FilterError::InvalidBlockRange.into());
+    }
+    if to_block - from_block > max_block_range {
+        return Err(FilterError::RangeTooLarge.into());
+    }
+
+    let log_filter = LogFilter {
+        address: filter_set_to_opt(filter.address.iter().copied()),
+        topics: std::array::from_fn(|i| filter_set_to_opt(filter.topics[i].iter().copied())),
+    };
+
+    let page_limit = service.limits().max_limit.max(1);
+    let mut logs = Vec::new();
+    let mut heuristic_response_size = 0u64;
+    let mut cursor = from_block;
+
+    loop {
+        let response = service
+            .query_logs(QueryLogsRequest {
+                envelope: QueryEnvelope {
+                    from_block: Some(cursor),
+                    to_block: Some(to_block),
+                    order: QueryOrder::Ascending,
+                    limit: page_limit,
+                },
+                filter: log_filter.clone(),
+                relations: LogsRelations {
+                    blocks: true,
+                    transactions: true,
+                },
+            })
+            .await
+            .map_err(chain_data_error_to_jsonrpc)?;
+
+        let timestamp_by_block: HashMap<u64, u64> = response
+            .blocks
+            .iter()
+            .flatten()
+            .map(|block| (block.header.number, block.header.timestamp))
+            .collect();
+        let tx_hash_by_location: HashMap<(u64, u32), Hash32> = response
+            .transactions
+            .iter()
+            .flatten()
+            .map(|tx| ((tx.block_number, tx.tx_idx), tx.tx_hash))
+            .collect();
+
+        for entry in &response.logs {
+            let log = log_entry_to_rpc_log(entry, &timestamp_by_block, &tx_hash_by_location);
+            heuristic_response_size += log.heuristic_json_len() as u64;
+            if heuristic_response_size > max_response_size as u64 {
+                return Err(JsonRpcError::max_size_exceeded());
+            }
+            logs.push(MonadLog(log));
+        }
+
+        let scanned = response.span.cursor_block.number;
+        // Empty page => the whole remaining window was scanned with no
+        // matches (the limit bounds matched logs, not blocks scanned), so
+        // we are done. `scanned >= to_block` means the range is exhausted.
+        // `scanned < cursor` should never happen but guards against a
+        // non-advancing cursor.
+        if response.logs.is_empty() || scanned >= to_block || scanned < cursor {
+            break;
+        }
+        cursor = scanned + 1;
+    }
+
+    Ok(logs)
+}
+
+fn resolve_eth_block_bound(tag: Option<BlockNumberOrTag>, head: u64) -> u64 {
+    match tag {
+        None => head,
+        Some(BlockNumberOrTag::Number(number)) => number,
+        Some(BlockNumberOrTag::Earliest) => 0,
+        // chain-data is finalized-only; every non-finalized tag resolves to
+        // the published (finalized) head.
+        Some(
+            BlockNumberOrTag::Latest
+            | BlockNumberOrTag::Safe
+            | BlockNumberOrTag::Finalized
+            | BlockNumberOrTag::Pending,
+        ) => head,
+    }
+}
+
+fn filter_set_to_opt<T: Eq + std::hash::Hash>(
+    values: impl Iterator<Item = T>,
+) -> Option<HashSet<T>> {
+    let set: HashSet<T> = values.collect();
+    if set.is_empty() {
+        None
+    } else {
+        Some(set)
+    }
+}
+
+fn log_entry_to_rpc_log(
+    entry: &LogEntry,
+    timestamp_by_block: &HashMap<u64, u64>,
+    tx_hash_by_location: &HashMap<(u64, u32), Hash32>,
+) -> RpcLog {
+    RpcLog {
+        inner: PrimitiveLog {
+            address: entry.address,
+            data: LogData::new_unchecked(entry.topics.clone(), entry.data.clone()),
+        },
+        block_hash: Some(entry.block_hash),
+        block_number: Some(entry.block_number),
+        block_timestamp: timestamp_by_block.get(&entry.block_number).copied(),
+        transaction_hash: tx_hash_by_location
+            .get(&(entry.block_number, entry.tx_index))
+            .copied(),
+        transaction_index: Some(u64::from(entry.tx_index)),
+        log_index: Some(u64::from(entry.log_index)),
+        removed: false,
     }
 }
 
@@ -1177,6 +1349,98 @@ mod tests {
         assert_eq!(result["data"]["blocks"][0]["timestamp"], "0x7b");
         assert_eq!(result["data"]["blocks"][0]["gasLimit"], "0x2aea540");
         assert!(result["data"]["blocks"][0].get("hash").is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn get_logs_via_chain_data_builds_full_eth_log() {
+        use alloy_consensus::{SignableTransaction, TxEnvelope, TxLegacy};
+        use alloy_eips::eip2718::Encodable2718;
+        use alloy_primitives::{Bytes, Signature, TxKind};
+        use monad_chain_data::IngestTx;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = FjallStore::open(dir.path(), Default::default()).unwrap();
+        let blob_store = BlobCompressionStore::new(
+            store.clone(),
+            BlobCompressionConfig::zstd(1, 1024),
+            BlobCompressionStats::default(),
+        );
+        let service =
+            MonadChainDataService::new(store.clone(), blob_store, QueryLimits::new(100, 1000));
+
+        let address = Address::from([0x11u8; 20]);
+        let topic = B256::from([0x22u8; 32]);
+        let sender = Address::from([0x44u8; 20]);
+
+        // A real (if dummily-signed) legacy tx so ingest and the tx
+        // materializer can decode the stored envelope.
+        let signature = Signature::new(U256::from(1), U256::from(1), false);
+        let tx = TxLegacy {
+            chain_id: Some(1),
+            nonce: 0,
+            gas_price: 1,
+            gas_limit: 21_000,
+            to: TxKind::Call(Address::ZERO),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        };
+        let envelope: TxEnvelope = tx.into_signed(signature).into();
+        let tx_hash = *envelope.tx_hash();
+        let signed_tx_bytes = Bytes::from(envelope.encoded_2718());
+
+        service
+            .ingest_block(FinalizedBlock {
+                header: EvmBlockHeader {
+                    number: 1,
+                    timestamp: 0x7b,
+                    gas_limit: 45_000_000,
+                    ..Default::default()
+                },
+                logs_by_tx: vec![vec![PrimitiveLog {
+                    address,
+                    data: LogData::new_unchecked(vec![topic], Bytes::from_static(&[0xde, 0xad])),
+                }]],
+                txs: vec![IngestTx {
+                    tx_hash,
+                    sender,
+                    signed_tx_bytes,
+                }],
+                traces: Vec::new(),
+            })
+            .await
+            .unwrap();
+
+        // Address-filtered query over the finalized block. The relations
+        // join must fill blockTimestamp (from the block) and
+        // transactionHash (from the tx).
+        let filter = Filter::new()
+            .from_block(1u64)
+            .to_block(1u64)
+            .address(address);
+        let logs = get_logs_via_chain_data(&service, filter, u32::MAX, 1000)
+            .await
+            .unwrap();
+
+        assert_eq!(logs.len(), 1);
+        let log = &logs[0].0;
+        assert_eq!(log.block_number, Some(1));
+        assert_eq!(log.block_timestamp, Some(0x7b));
+        assert_eq!(log.transaction_hash, Some(tx_hash));
+        assert_eq!(log.transaction_index, Some(0));
+        assert_eq!(log.log_index, Some(0));
+        assert_eq!(log.address(), address);
+        assert_eq!(log.topics()[0], topic);
+        assert_eq!(log.inner.data.data, Bytes::from_static(&[0xde, 0xad]));
+
+        // A filter that matches no address yields no logs.
+        let other = Filter::new()
+            .from_block(1u64)
+            .to_block(1u64)
+            .address(Address::from([0x99u8; 20]));
+        let empty = get_logs_via_chain_data(&service, other, u32::MAX, 1000)
+            .await
+            .unwrap();
+        assert!(empty.is_empty());
     }
 
     fn queryx_only_resources(chain_data: Option<Arc<ChainDataService>>) -> MonadRpcResources {
