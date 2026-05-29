@@ -24,7 +24,10 @@ use crate::{
     error::Result,
     store::{
         common::Page,
-        meta::{CasOutcome, CasVersion, MetaStore, MetaStoreCas, ScannableTableId, TableId},
+        meta::{
+            CasOutcome, CasVersion, MetaStore, MetaStoreCas, MetaWriteOp, PublicationCasParams,
+            ScannableTableId, TableId,
+        },
     },
 };
 
@@ -75,6 +78,31 @@ impl InMemoryMetaStore {
             guard.remove(&(table, key.to_vec()));
         }
     }
+
+    /// Test-only: clones the entire kv map. Enables byte-equality assertions
+    /// across two fixture instances without exposing the internal `RwLock`.
+    pub fn kv_snapshot(&self) -> BTreeMap<(TableId, Vec<u8>), Bytes> {
+        self.kv_records
+            .read()
+            .map(|guard| guard.clone())
+            .unwrap_or_default()
+    }
+
+    /// Test-only: clones the entire scan map.
+    pub fn scan_snapshot(&self) -> BTreeMap<(ScannableTableId, Vec<u8>, Vec<u8>), Bytes> {
+        self.scan_records
+            .read()
+            .map(|guard| guard.clone())
+            .unwrap_or_default()
+    }
+
+    /// Test-only: clones the entire CAS map (version + value per key).
+    pub fn cas_snapshot(&self) -> BTreeMap<(TableId, Vec<u8>), (u64, Bytes)> {
+        self.cas_records
+            .read()
+            .map(|guard| guard.clone())
+            .unwrap_or_default()
+    }
 }
 
 impl MetaStore for InMemoryMetaStore {
@@ -123,6 +151,79 @@ impl MetaStore for InMemoryMetaStore {
             .map_err(|_| crate::error::MonadChainDataError::Backend("poisoned lock".to_string()))?;
         guard.insert((table, partition.to_vec(), clustering.to_vec()), value);
         Ok(())
+    }
+
+    async fn apply_writes(&self, writes: Vec<MetaWriteOp>) -> Result<()> {
+        let mut kv_guard = self
+            .kv_records
+            .write()
+            .map_err(|_| crate::error::MonadChainDataError::Backend("poisoned lock".to_string()))?;
+        let mut scan_guard = self
+            .scan_records
+            .write()
+            .map_err(|_| crate::error::MonadChainDataError::Backend("poisoned lock".to_string()))?;
+        for op in writes {
+            match op {
+                MetaWriteOp::Put { table, key, value } => {
+                    kv_guard.insert((table, key), value);
+                }
+                MetaWriteOp::ScanPut {
+                    table,
+                    partition,
+                    clustering,
+                    value,
+                } => {
+                    scan_guard.insert((table, partition, clustering), value);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn apply_writes_with_cas(
+        &self,
+        writes: Vec<MetaWriteOp>,
+        cas: PublicationCasParams,
+    ) -> Result<CasOutcome> {
+        let mut kv_guard = self
+            .kv_records
+            .write()
+            .map_err(|_| crate::error::MonadChainDataError::Backend("poisoned lock".to_string()))?;
+        let mut scan_guard = self
+            .scan_records
+            .write()
+            .map_err(|_| crate::error::MonadChainDataError::Backend("poisoned lock".to_string()))?;
+        let mut cas_guard = self
+            .cas_records
+            .write()
+            .map_err(|_| crate::error::MonadChainDataError::Backend("poisoned lock".to_string()))?;
+        let entry_key = (cas.table, cas.key);
+        let current = cas_guard.get(&entry_key).map(|(v, _)| CasVersion(*v));
+        if current != cas.expected {
+            return Ok(CasOutcome::Conflict {
+                current_version: current,
+            });
+        }
+        for op in writes {
+            match op {
+                MetaWriteOp::Put { table, key, value } => {
+                    kv_guard.insert((table, key), value);
+                }
+                MetaWriteOp::ScanPut {
+                    table,
+                    partition,
+                    clustering,
+                    value,
+                } => {
+                    scan_guard.insert((table, partition, clustering), value);
+                }
+            }
+        }
+        let new_version = current.map_or(1, |v| v.0 + 1);
+        cas_guard.insert(entry_key, (new_version, cas.value));
+        Ok(CasOutcome::Applied {
+            new_version: CasVersion(new_version),
+        })
     }
 
     async fn scan_list(

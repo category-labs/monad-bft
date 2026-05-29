@@ -61,5 +61,6 @@ name = "chain-data-ingest"
 required-features = ["archive-ingest"]
 
 [dev-dependencies]
+bytes = { workspace = true }
 tempfile = "3"
 tokio = { workspace = true, features = ["macros", "rt"] }
