@@ -34,7 +34,7 @@ use alloy_primitives::{Address, Bytes, Log as PrimitiveLog, LogData, B256, U256}
 use alloy_rpc_types::{Filter, FilterBlockOption, Log as RpcLog};
 use monad_chain_data::{
     scan_block_logs, scan_block_txs,
-    store::{BlobCompressionStore, FjallStore},
+    store::FjallStore,
     Block, BlockRef, BlockSpan, CallKind, EvmBlockHeader, Hash32, LimitExceededKind, LogEntry,
     LogFilter, LogsRelations, MemLogsBlock, MemTx, MonadChainDataError, MonadChainDataService,
     QueryBlocksRequest, QueryBlocksResponse, QueryEnvelope, QueryLogsRequest, QueryLogsResponse,
@@ -62,7 +62,7 @@ use crate::{
 
 /// Concrete embedded chain-data service backing the queryX methods: an
 /// fjall meta store paired with a zstd-compressed fjall blob store.
-pub type ChainDataService = MonadChainDataService<FjallStore, BlobCompressionStore<FjallStore>>;
+pub type ChainDataService = MonadChainDataService<FjallStore, FjallStore>;
 
 const BLOCK_FIELDS: &[&str] = &[
     "number",
@@ -1001,6 +1001,14 @@ fn chain_data_error_to_jsonrpc(error: MonadChainDataError) -> JsonRpcError {
         ),
         MonadChainDataError::FencedOut { .. } => {
             JsonRpcError::internal_error("chain-data writer fenced out during query".to_string())
+        }
+        // Write-authority / lease errors belong to the ingest/write path and
+        // should never surface on the read-only query path; treat as internal.
+        MonadChainDataError::LeaseLost
+        | MonadChainDataError::LeaseStillFresh
+        | MonadChainDataError::LeaseObservationUnavailable
+        | MonadChainDataError::ReadOnlyMode(_) => {
+            JsonRpcError::internal_error("chain-data write-authority error during query".to_string())
         }
     }
 }
@@ -2001,7 +2009,7 @@ mod tests {
     use std::sync::Arc;
 
     use monad_chain_data::{
-        store::{BlobCompressionConfig, BlobCompressionStats, BlobCompressionStore, FjallStore},
+        store::FjallStore,
         EvmBlockHeader, FinalizedBlock, MonadChainDataService, QueryLimits,
     };
     use monad_triedb_utils::mock_triedb::MockTriedb;
@@ -2124,11 +2132,7 @@ mod tests {
     async fn eth_query_blocks_handler_projects_selected_fields() {
         let dir = tempfile::tempdir().unwrap();
         let store = FjallStore::open(dir.path(), Default::default()).unwrap();
-        let blob_store = BlobCompressionStore::new(
-            store.clone(),
-            BlobCompressionConfig::zstd(1, 1024),
-            BlobCompressionStats::default(),
-        );
+        let blob_store = store.clone();
         let service = Arc::new(MonadChainDataService::new(
             store.clone(),
             blob_store,
@@ -2187,11 +2191,7 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let store = FjallStore::open(dir.path(), Default::default()).unwrap();
-        let blob_store = BlobCompressionStore::new(
-            store.clone(),
-            BlobCompressionConfig::zstd(1, 1024),
-            BlobCompressionStats::default(),
-        );
+        let blob_store = store.clone();
         let service =
             MonadChainDataService::new(store.clone(), blob_store, QueryLimits::new(100, 1000));
 
@@ -2311,11 +2311,7 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let store = FjallStore::open(dir.path(), Default::default()).unwrap();
-        let blob_store = BlobCompressionStore::new(
-            store.clone(),
-            BlobCompressionConfig::zstd(1, 1024),
-            BlobCompressionStats::default(),
-        );
+        let blob_store = store.clone();
         let service =
             MonadChainDataService::new(store.clone(), blob_store, QueryLimits::new(100, 1000));
 
@@ -2583,11 +2579,7 @@ mod tests {
         // not just the finalized sub-range.
         let dir = tempfile::tempdir().unwrap();
         let store = FjallStore::open(dir.path(), Default::default()).unwrap();
-        let blob_store = BlobCompressionStore::new(
-            store.clone(),
-            BlobCompressionConfig::zstd(1, 1024),
-            BlobCompressionStats::default(),
-        );
+        let blob_store = store.clone();
         // max_block_range = 4; nothing indexed yet (head_final = None).
         let service =
             MonadChainDataService::new(store.clone(), blob_store, QueryLimits::new(100, 4));

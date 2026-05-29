@@ -20,7 +20,7 @@ use agent::AgentBuilder;
 use clap::Parser;
 use monad_archive::archive_reader::{redact_mongo_url, ArchiveReader};
 use monad_chain_data::{
-    store::{BlobCompressionConfig, BlobCompressionStats, BlobCompressionStore, FjallStore},
+    store::FjallStore,
     MonadChainDataService, QueryLimits,
 };
 use monad_event_ring::{EventRing, EventRingPath};
@@ -527,10 +527,8 @@ fn open_chain_data(args: &Cli) -> io::Result<Option<Arc<ChainDataService>>> {
     Ok(Some(Arc::new(service)))
 }
 
-fn compressed_blob_store(store: FjallStore) -> BlobCompressionStore<FjallStore> {
-    BlobCompressionStore::new(
-        store,
-        BlobCompressionConfig::zstd(1, 1024),
-        BlobCompressionStats::default(),
-    )
+// Compression is now transparent (row-level, internal to the engine), so the
+// blob store is the FjallStore itself — no wrapper needed.
+fn compressed_blob_store(store: FjallStore) -> FjallStore {
+    store
 }
