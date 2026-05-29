@@ -359,14 +359,11 @@ fn decode_family_header_layout(family: Family, bytes: &[u8]) -> Result<(Vec<u32>
     }
 }
 
-/// Per-block cap on training samples collected from one block (keeps a
-/// pathologically large block from dominating the corpus). Also bounds the
-/// total rows pulled across all sampled blocks of an epoch.
+/// Number of blocks sampled from an epoch's leading range to build its
+/// training corpus. Together with `PER_BLOCK_SAMPLE_CAP` this bounds the
+/// corpus (`TARGET_SAMPLE_BLOCKS * PER_BLOCK_SAMPLE_CAP` rows at most), so a
+/// dense epoch can't blow up memory during an off-thread training run.
 const TARGET_SAMPLE_BLOCKS: u64 = 256;
-
-/// Upper bound on rows pulled into one epoch's training corpus, so a dense
-/// epoch can't blow up memory during an off-thread training run.
-const MAX_TRAINING_ROWS: usize = 50_000;
 
 impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
     pub fn new(meta_store: M, blob_store: B, limits: QueryLimits) -> Self {
@@ -1465,11 +1462,11 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
 
     /// Collects a deterministic training corpus for `(family, version)` from
     /// the leading blocks of epoch `version - 1`. Block selection is strided
-    /// (seeded by `version`, no RNG) so the corpus is reproducible. Per-block
-    /// rows are capped via [`should_sample_row`]; the total is capped at
-    /// [`MAX_TRAINING_ROWS`]. Sampled blocks belong to epoch `version - 1`,
-    /// whose dictionary was published earlier, so `decode_block_row` just
-    /// works.
+    /// (seeded by `version`, no RNG) so the corpus is reproducible. At most
+    /// [`TARGET_SAMPLE_BLOCKS`] blocks are sampled, each contributing up to
+    /// `PER_BLOCK_SAMPLE_CAP` rows via [`should_sample_row`], which bounds the
+    /// corpus. Sampled blocks belong to epoch `version - 1`, whose dictionary
+    /// was published earlier, so `decode_block_row` just works.
     async fn read_back_training_samples(
         &self,
         family: Family,
@@ -1488,9 +1485,6 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
         let family_tables = self.tables.family(family);
         let mut samples: Vec<Vec<u8>> = Vec::new();
         for i in 0..count {
-            if samples.len() >= MAX_TRAINING_ROWS {
-                break;
-            }
             let block_number = start + offset + i * stride;
             if block_number >= end {
                 break;
@@ -1507,9 +1501,6 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
             };
             let row_count = offsets.len() - 1;
             for idx in 0..row_count {
-                if samples.len() >= MAX_TRAINING_ROWS {
-                    break;
-                }
                 if !should_sample_row(idx, row_count) {
                     continue;
                 }

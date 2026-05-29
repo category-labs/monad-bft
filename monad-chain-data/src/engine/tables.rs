@@ -78,11 +78,6 @@ impl Default for DictConfig {
 }
 
 impl DictConfig {
-    /// The dictionary version (== epoch number) for a given block number.
-    pub fn version_for_block(&self, block_number: u64) -> u32 {
-        (block_number / self.epoch_blocks) as u32
-    }
-
     /// Clamped training sample range `[start, end)` for version `V >= 1`,
     /// drawn from the leading blocks of epoch `V - 1`.
     pub fn training_range(&self, version: u32) -> (u64, u64) {

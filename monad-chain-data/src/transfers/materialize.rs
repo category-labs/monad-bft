@@ -27,7 +27,7 @@ use crate::{
         query::family_runner::{
             execute_block_scan_family_query, execute_indexed_family_query, IndexedFamilyQuery,
         },
-        row_codec::decode_row_frame,
+        row_codec::RowDecompressor,
         tables::Tables,
     },
     error::{MonadChainDataError, Result},
@@ -293,6 +293,7 @@ impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery<M, B> for TransferMateri
             QueryOrder::Descending => Box::new((0..count).rev()),
         };
 
+        let mut decompressor = RowDecompressor::new(decoder.as_ref())?;
         let mut transfers = Vec::new();
         for idx in indices {
             if idx + 1 >= header.offsets.len() {
@@ -303,7 +304,7 @@ impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery<M, B> for TransferMateri
             if start > end || end > blob.len() {
                 return Err(MonadChainDataError::Decode("invalid trace range"));
             }
-            let row = decode_row_frame(decoder.as_ref(), &blob[start..end])?;
+            let row = decompressor.decompress(&blob[start..end])?;
             let stored = StoredTrace::decode(&row)?;
             // The block-scan path can run when the indexed clause is not
             // viable; that path materializes every trace and filters

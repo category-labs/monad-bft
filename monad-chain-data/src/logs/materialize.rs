@@ -26,7 +26,7 @@ use crate::{
         clause::{IndexedClause, IndexedFilter},
         family::Family,
         query::family_runner::IndexedFamilyQuery,
-        row_codec::decode_row_frame,
+        row_codec::RowDecompressor,
         tables::Tables,
     },
     error::{MonadChainDataError, Result},
@@ -276,6 +276,7 @@ fn load_filtered_block_logs(
         QueryOrder::Descending => Box::new((0..count).rev()),
     };
 
+    let mut decompressor = RowDecompressor::new(decoder)?;
     let mut logs = Vec::new();
     for log_idx in indices {
         let log = decode_log_at(
@@ -284,7 +285,7 @@ fn load_filtered_block_logs(
             log_idx,
             block_record.block_number,
             block_record.block_hash,
-            decoder,
+            &mut decompressor,
         )?;
         if filter.matches(&log) {
             logs.push(log);
@@ -300,7 +301,7 @@ pub(crate) fn decode_log_at(
     log_idx: usize,
     block_number: u64,
     block_hash: Hash32,
-    decoder: Option<&Arc<DecoderDictionary<'static>>>,
+    decompressor: &mut RowDecompressor<'_>,
 ) -> Result<LogEntry> {
     if log_idx + 1 >= header.offsets.len() {
         return Err(MonadChainDataError::Decode("log index out of range"));
@@ -312,7 +313,7 @@ pub(crate) fn decode_log_at(
         return Err(MonadChainDataError::Decode("invalid log range"));
     }
 
-    let bytes = decode_row_frame(decoder, &blob[start..end])?;
+    let bytes = decompressor.decompress(&blob[start..end])?;
     let raw = RawLogEntry::decode(&bytes)?;
     Ok(raw.into_log_entry(block_number, block_hash))
 }
