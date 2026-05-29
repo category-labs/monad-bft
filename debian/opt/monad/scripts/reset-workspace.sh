@@ -1,25 +1,32 @@
 #!/bin/bash
 
 set -ex
-systemctl stop monad-bft monad-execution monad-rpc monad-mpt monad-execution-genesis || true
-mkdir -p /var/lib/monad/empty-dir
-rsync -r --delete /var/lib/monad/empty-dir/ /var/lib/monad/ledger/
-rsync -r --delete /var/lib/monad/empty-dir/ /var/lib/monad/forkpoint/
-rsync -r --delete /var/lib/monad/empty-dir/ /var/lib/monad/validators/
-touch /var/lib/monad/ledger/wal
-rm -rf /var/lib/monad/empty-dir
-rm -rf /var/lib/monad/snapshots
-rm -f /run/monad/mempool.sock
-rm -f /run/monad/controlpanel.sock
-rm -f /run/monad/statesync.sock
-rm -f /var/lib/monad/wal_*
-rm -f /var/lib/monad/peers.toml
-rm -rf /var/lib/monad/blockdb
+
+# Source path config before doing anything destructive, so the operator's
+# MONAD_*_DIR overrides take effect for the wipe + restore steps below.
 if [ -f /etc/monad/env ]; then
   . /etc/monad/env
 elif [ -f /home/monad/.env ]; then
   . /home/monad/.env
 fi
+: "${MONAD_CONFIG_DIR:=/etc/monad}"
+: "${MONAD_DATA_DIR:=/var/lib/monad}"
+: "${MONAD_RUNTIME_DIR:=/run/monad}"
+
+systemctl stop monad-bft monad-execution monad-rpc monad-mpt monad-execution-genesis || true
+mkdir -p "${MONAD_DATA_DIR}/empty-dir"
+rsync -r --delete "${MONAD_DATA_DIR}/empty-dir/" "${MONAD_DATA_DIR}/ledger/"
+rsync -r --delete "${MONAD_DATA_DIR}/empty-dir/" "${MONAD_DATA_DIR}/forkpoint/"
+rsync -r --delete "${MONAD_DATA_DIR}/empty-dir/" "${MONAD_DATA_DIR}/validators/"
+touch "${MONAD_DATA_DIR}/ledger/wal"
+rm -rf "${MONAD_DATA_DIR}/empty-dir"
+rm -rf "${MONAD_DATA_DIR}/snapshots"
+rm -f  "${MONAD_RUNTIME_DIR}/mempool.sock"
+rm -f  "${MONAD_RUNTIME_DIR}/controlpanel.sock"
+rm -f  "${MONAD_RUNTIME_DIR}/statesync.sock"
+rm -f  "${MONAD_DATA_DIR}"/wal_*
+rm -f  "${MONAD_DATA_DIR}/peers.toml"
+rm -rf "${MONAD_DATA_DIR}/blockdb"
 monad-mpt --storage /dev/triedb --truncate --yes
 restore_genesis() {
   local new_path="$1" legacy_path="$2" target="$3"
@@ -30,5 +37,5 @@ restore_genesis() {
   fi
 }
 
-restore_genesis /etc/monad/genesis/forkpoint.toml  /home/monad/.config/forkpoint.genesis.toml  /var/lib/monad/forkpoint/forkpoint.toml
-restore_genesis /etc/monad/genesis/validators.toml /home/monad/.config/validators.genesis.toml /var/lib/monad/validators/validators.toml
+restore_genesis "${MONAD_CONFIG_DIR}/genesis/forkpoint.toml"  /home/monad/.config/forkpoint.genesis.toml  "${MONAD_DATA_DIR}/forkpoint/forkpoint.toml"
+restore_genesis "${MONAD_CONFIG_DIR}/genesis/validators.toml" /home/monad/.config/validators.genesis.toml "${MONAD_DATA_DIR}/validators/validators.toml"

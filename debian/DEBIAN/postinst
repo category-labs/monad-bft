@@ -37,19 +37,38 @@ case "$1" in
 # Upgrades from the legacy /home/monad/.env layout are handled by the
 # monad-upgrade.sh script fetched from the release bucket — not by this
 # postinst.
+
+# ---- Path layout ----
 #
-# Required for monad-bft:
+# These declare where on-disk state lives. Every unit's ExecStart and the
+# helper scripts under /opt/monad/scripts/ reference these vars instead of
+# hardcoded paths, so changing them here re-points the binary side.
+#
+# Override ONLY if you also write a systemd drop-in widening
+# ReadWritePaths to match the new location — the package's shipped
+# hardening assumes these default values. Otherwise services will fail
+# with permission errors that don't obviously trace back to this file.
+#
+# Note: systemd's EnvironmentFile= parser does not expand nested ${VARs}
+# in this file, so don't try to define one path in terms of another here.
+MONAD_CONFIG_DIR=/etc/monad
+MONAD_DATA_DIR=/var/lib/monad
+MONAD_RUNTIME_DIR=/run/monad
+
+# ---- Required service variables ----
+#
+# monad-bft:
 #   KEYSTORE_PASSWORD=
 #
-# Required for monad-execution / monad-execution-genesis:
+# monad-execution / monad-execution-genesis:
 #   CHAIN=
 #
-# Required for monad-archiver / monad-exec-events-uploader:
-#   BFT_BLOCK_PATH=/var/lib/monad/ledger
+# monad-archiver / monad-exec-events-uploader:
+#   BFT_BLOCK_PATH=/var/lib/monad/ledger    (must match MONAD_DATA_DIR/ledger)
 #   OTEL_ENDPOINT=http://127.0.0.1:4317
 #   MAX_CONCURRENT_BLOCKS=8
 #
-# Required for monad-archiver / monad-indexer / monad-checker:
+# monad-archiver / monad-indexer / monad-checker:
 #   BLOCK_DATA_SOURCE=
 #   FALLBACK_BLOCK_DATA_SOURCE=
 #   ARCHIVE_SINK=

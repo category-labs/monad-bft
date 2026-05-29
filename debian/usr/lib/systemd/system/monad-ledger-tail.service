@@ -5,10 +5,10 @@ After=network.target
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/monad-ledger-tail \
-    --ledger-path /var/lib/monad/ledger \
-    --forkpoint-path /var/lib/monad/forkpoint/forkpoint.toml \
-    --peers-path /var/lib/monad/peers.toml \
-    --validators-path /var/lib/monad/validators/validators.toml
+    --ledger-path ${MONAD_DATA_DIR}/ledger \
+    --forkpoint-path ${MONAD_DATA_DIR}/forkpoint/forkpoint.toml \
+    --peers-path ${MONAD_DATA_DIR}/peers.toml \
+    --validators-path ${MONAD_DATA_DIR}/validators/validators.toml
 EnvironmentFile=-/etc/monad/env
 Restart=always
 DynamicUser=yes

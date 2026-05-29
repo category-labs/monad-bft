@@ -4,7 +4,7 @@ After=network.target
 PartOf=monad.target monad-init.target
 
 [Service]
-WorkingDirectory=/var/lib/monad
+WorkingDirectory=${MONAD_DATA_DIR}
 Type=simple
 ExecStart=/usr/local/bin/monad-archive-checker \
     --bucket "${ARCHIVE_BUCKET}" \

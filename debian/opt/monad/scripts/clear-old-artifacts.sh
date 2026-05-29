@@ -1,7 +1,13 @@
 #!/bin/bash
 set -euo pipefail
 
-TARGET_DIR="/var/lib/monad/ledger/"
+# Source path config — invoked by monad-cruft.service which already sets
+# EnvironmentFile=/etc/monad/env, but source again here so the script also
+# works when run manually outside the unit.
+[ -f /etc/monad/env ] && . /etc/monad/env
+: "${MONAD_DATA_DIR:=/var/lib/monad}"
+
+TARGET_DIR="${MONAD_DATA_DIR}/ledger/"
 
 # Retention times in minutes
 RETENTION_FORKPOINT=${RETENTION_FORKPOINT:-300}      # 5 hours (forkpoint.rlp.* and forkpoint.toml.*)
@@ -14,12 +20,12 @@ echo "Cleanup script started: RETENTION_LEDGER=${RETENTION_LEDGER}min, RETENTION
 NEW_FILES=$(find "$TARGET_DIR" -type f -mmin -20)
 if [ -n "$NEW_FILES" ]; then
     echo "New files detected in ledger, proceeding with cleanup"
-    find /var/lib/monad/forkpoint/ -type f -name "forkpoint.rlp.*" -mmin +${RETENTION_FORKPOINT} -delete 2>/dev/null
-    find /var/lib/monad/forkpoint/ -type f -name "forkpoint.toml.*" -mmin +${RETENTION_FORKPOINT} -delete 2>/dev/null
-    find /var/lib/monad/validators/ -type f -name "validators.toml.*" -mmin +${RETENTION_VALIDATORS} -delete 2>/dev/null
-    find /var/lib/monad/ledger/headers -type f -mmin +${RETENTION_LEDGER} -delete 2>/dev/null
-    find /var/lib/monad/ledger/bodies -type f -mmin +${RETENTION_LEDGER} -delete 2>/dev/null
-    find /var/lib/monad/ -maxdepth 1 -type f -name "wal_*" -mmin +${RETENTION_WAL} -delete 2>/dev/null
+    find "${MONAD_DATA_DIR}/forkpoint/"  -type f -name "forkpoint.rlp.*"    -mmin +${RETENTION_FORKPOINT}  -delete 2>/dev/null
+    find "${MONAD_DATA_DIR}/forkpoint/"  -type f -name "forkpoint.toml.*"   -mmin +${RETENTION_FORKPOINT}  -delete 2>/dev/null
+    find "${MONAD_DATA_DIR}/validators/" -type f -name "validators.toml.*"  -mmin +${RETENTION_VALIDATORS} -delete 2>/dev/null
+    find "${MONAD_DATA_DIR}/ledger/headers" -type f                          -mmin +${RETENTION_LEDGER}     -delete 2>/dev/null
+    find "${MONAD_DATA_DIR}/ledger/bodies"  -type f                          -mmin +${RETENTION_LEDGER}     -delete 2>/dev/null
+    find "${MONAD_DATA_DIR}/" -maxdepth 1 -type f -name "wal_*"             -mmin +${RETENTION_WAL}        -delete 2>/dev/null
     echo "Cleanup completed successfully"
 else
     echo "No new files detected. Skipping deletion of ledger files."

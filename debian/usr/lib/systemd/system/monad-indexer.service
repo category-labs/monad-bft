@@ -3,7 +3,7 @@ Description="Service file for Monad Indexer"
 After=network.target
 
 [Service]
-WorkingDirectory=/var/lib/monad
+WorkingDirectory=${MONAD_DATA_DIR}
 Type=simple
 ExecStart=/usr/local/bin/monad-indexer \
     --block-data-source "${BLOCK_DATA_SOURCE}" \

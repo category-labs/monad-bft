@@ -5,21 +5,21 @@ After=network.target
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/monad-node \
-    --secp-identity /var/lib/monad/private/id-secp \
-    --bls-identity /var/lib/monad/private/id-bls \
-    --node-config /etc/monad/node.toml \
-    --forkpoint-config /var/lib/monad/forkpoint/forkpoint.toml \
-    --wal-path /var/lib/monad/wal \
-    --mempool-ipc-path /run/monad/mempool.sock \
-    --control-panel-ipc-path /run/monad/controlpanel.sock \
-    --statesync-ipc-path /run/monad/statesync.sock \
-    --ledger-path /var/lib/monad/ledger \
+    --secp-identity ${MONAD_DATA_DIR}/private/id-secp \
+    --bls-identity ${MONAD_DATA_DIR}/private/id-bls \
+    --node-config ${MONAD_CONFIG_DIR}/node.toml \
+    --forkpoint-config ${MONAD_DATA_DIR}/forkpoint/forkpoint.toml \
+    --wal-path ${MONAD_DATA_DIR}/wal \
+    --mempool-ipc-path ${MONAD_RUNTIME_DIR}/mempool.sock \
+    --control-panel-ipc-path ${MONAD_RUNTIME_DIR}/controlpanel.sock \
+    --statesync-ipc-path ${MONAD_RUNTIME_DIR}/statesync.sock \
+    --ledger-path ${MONAD_DATA_DIR}/ledger \
     --triedb-path /dev/triedb \
     --otel-endpoint "http://127.0.0.1:4317" \
     --statesync-sq-thread-cpu 8 \
     --record-metrics-interval-seconds 1 \
-    --validators-path /var/lib/monad/validators/validators.toml \
-    --persisted-peers-path /var/lib/monad/peers.toml \
+    --validators-path ${MONAD_DATA_DIR}/validators/validators.toml \
+    --persisted-peers-path ${MONAD_DATA_DIR}/peers.toml \
     --keystore-password "${KEYSTORE_PASSWORD}"
 EnvironmentFile=-/etc/monad/env
 Environment="RUST_LOG=debug,h2=warn,tower=warn,opentelemetry_sdk=warn,opentelemetry-otlp=warn"

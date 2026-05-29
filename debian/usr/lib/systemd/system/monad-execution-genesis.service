@@ -7,7 +7,7 @@ Type=oneshot
 ExecStart=/usr/local/bin/monad \
     --chain "$CHAIN" \
     --db /dev/triedb \
-    --block_db /var/lib/monad/ledger \
+    --block_db ${MONAD_DATA_DIR}/ledger \
     --nblocks 0 \
     --sq_thread_cpu 1 \
     --log_level INFO

@@ -7,8 +7,8 @@ Type=simple
 ExecStart=/usr/local/bin/monad \
     --chain "$CHAIN" \
     --db /dev/triedb \
-    --block_db /var/lib/monad/ledger \
-    --statesync /run/monad/statesync.sock \
+    --block_db ${MONAD_DATA_DIR}/ledger \
+    --statesync ${MONAD_RUNTIME_DIR}/statesync.sock \
     --sq_thread_cpu 1 \
     --log_level INFO
 EnvironmentFile=-/etc/monad/env
