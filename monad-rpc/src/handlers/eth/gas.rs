@@ -1104,6 +1104,7 @@ mod tests {
             provider_gas_limit_eth_estimate_gas: 30_000_000,
             provider_gas_limit_eth_simulate: 0,
             provider_max_calls_eth_simulate: 0,
+            provider_max_blocks_eth_simulate: 0,
         }
     }
 
