@@ -31,6 +31,35 @@ pub enum MonadChainDataError {
     InvalidRequest(&'static str),
     #[error("missing data: {0}")]
     MissingData(&'static str),
+    /// A directory bucket the resolver classified as sealed (its entire 10k
+    /// id range lies below the published-head family frontier) had no
+    /// compacted summary. Ingestion flushes every sealed bucket's summary in
+    /// the same `WriteSession` as the batch, before the publication CAS, so a
+    /// sealed bucket without a summary means the ingestion/compaction commit
+    /// contract is broken. Surfaced loudly rather than masked by a fragment
+    /// scan.
+    #[error(
+        "sealed primary directory bucket {bucket_start} missing its compacted summary; \
+         the ingestion/compaction commit contract is broken"
+    )]
+    SealedDirectoryBucketMissingSummary { bucket_start: u64 },
+    /// A page the open-stream inventory recorded a touch for, in a shard that
+    /// fully sealed in this batch, had no compacted bitmap artifact. On a
+    /// sealing shard every referenced page must already have a compacted
+    /// artifact (fresh in this batch's compacted pages or durable from a prior
+    /// batch), so a missing one means the ingestion/compaction commit contract
+    /// is broken. Surfaced loudly rather than silently dropped from the
+    /// page-count manifest: a page absent from a PRESENT manifest reads as
+    /// count 0 on the query side, so on a sealed shard it would be skipped with
+    /// zero fetches, silently dropping real matches.
+    #[error(
+        "sealing shard stream {stream_id} page {page_start_local} missing its compacted bitmap \
+         artifact; the ingestion/compaction commit contract is broken"
+    )]
+    SealedShardPageMissingArtifact {
+        stream_id: String,
+        page_start_local: u32,
+    },
     #[error("limit exceeded ({kind}): max_limit={max_limit}, max_block_range={max_block_range}")]
     LimitExceeded {
         kind: LimitExceededKind,
@@ -42,4 +71,22 @@ pub enum MonadChainDataError {
     /// and should step down rather than retry.
     #[error("fenced out by concurrent writer (current head: {current_head:?})")]
     FencedOut { current_head: Option<u64> },
+    /// The publication row's owner/session changed under this writer — another
+    /// node took over the lease. The caller must step down durably and drop its
+    /// cached lease; the next `begin_write` reacquires (and thus runs recovery).
+    #[error("write lease lost to another owner/session")]
+    LeaseLost,
+    /// A different owner's lease is still valid (the observed upstream block has
+    /// not passed `lease_valid_through_block`). A standby that sees this stays
+    /// passive rather than seizing ownership.
+    #[error("another owner's write lease is still fresh")]
+    LeaseStillFresh,
+    /// No observed upstream finalized block was available at a point where a
+    /// lease decision (acquire / renew / publish) had to be made. Fail-closed:
+    /// the writer must not acquire, renew, or publish without a current clock.
+    #[error("no observed upstream finalized block; failing closed")]
+    LeaseObservationUnavailable,
+    /// A reader-only service attempted to take write authority.
+    #[error("read-only service cannot take write authority: {0}")]
+    ReadOnlyMode(&'static str),
 }

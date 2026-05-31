@@ -13,9 +13,13 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+#[cfg(feature = "dynamo")]
+mod dynamo;
 mod in_memory;
 
 use bytes::Bytes;
+#[cfg(feature = "dynamo")]
+pub use dynamo::{DynamoCredentials, DynamoMetaStore, DynamoMetaStoreConfig};
 pub use in_memory::InMemoryMetaStore;
 
 use crate::{error::Result, store::common::Page};
@@ -201,13 +205,20 @@ pub trait MetaStore: Clone + Send + Sync + 'static {
         ScannableKvTable::new(self.clone(), table)
     }
 
-    async fn get(&self, table: TableId, key: &[u8]) -> Result<Option<Bytes>>;
-    async fn scan_get(
+    // Point reads return `Send` futures so the cache layer can store them in a
+    // cross-thread single-flight `Shared` (see `store/cache`); the other
+    // methods keep the plain `async fn` form.
+    fn get(
+        &self,
+        table: TableId,
+        key: &[u8],
+    ) -> impl std::future::Future<Output = Result<Option<Bytes>>> + Send;
+    fn scan_get(
         &self,
         table: ScannableTableId,
         partition: &[u8],
         clustering: &[u8],
-    ) -> Result<Option<Bytes>>;
+    ) -> impl std::future::Future<Output = Result<Option<Bytes>>> + Send;
 
     async fn put(&self, table: TableId, key: &[u8], value: Bytes) -> Result<()>;
     async fn scan_put(
@@ -228,18 +239,6 @@ pub trait MetaStore: Clone + Send + Sync + 'static {
     ) -> Result<Page>;
 
     async fn apply_writes(&self, writes: Vec<MetaWriteOp>) -> Result<()>;
-
-    /// Atomically applies metadata writes and the publication CAS in one
-    /// backend transaction when a backend can provide that shape. Current
-    /// ingest callers intentionally use a write-then-CAS publication path
-    /// instead so meta and blob artifacts are durable before the published
-    /// head advances; this method remains as an atomic alternative and is
-    /// covered by backend tests.
-    async fn apply_writes_with_cas(
-        &self,
-        writes: Vec<MetaWriteOp>,
-        cas: PublicationCasParams,
-    ) -> Result<CasOutcome>;
 }
 
 /// Versioned compare-and-set storage, used for fencing across writer

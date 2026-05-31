@@ -21,11 +21,14 @@ use crate::{
 pub struct FamilyTableIds {
     pub block_header: TableId,
     pub block_blob: BlobTableId,
+    /// Versioned per-family row-codec dictionary store: `version (u32 BE)`
+    /// -> dict bytes. Shared by transfers via [`Family::Trace`].
+    pub dict_by_version: TableId,
     pub dir_by_block: ScannableTableId,
     pub dir_bucket: TableId,
     pub bitmap_by_block: ScannableTableId,
-    pub bitmap_page_meta: TableId,
     pub bitmap_page_blob: TableId,
+    pub bitmap_page_counts: TableId,
     pub open_bitmap_stream: ScannableTableId,
 }
 
@@ -34,11 +37,12 @@ macro_rules! family_table_ids {
         FamilyTableIds {
             block_header: TableId::new(concat!($prefix, "_block_header")),
             block_blob: BlobTableId::new(concat!($prefix, "_block_blob")),
+            dict_by_version: TableId::new(concat!($prefix, "_dict_by_version")),
             dir_by_block: ScannableTableId::new(concat!($prefix, "_dir_by_block")),
             dir_bucket: TableId::new(concat!($prefix, "_dir_bucket")),
             bitmap_by_block: ScannableTableId::new(concat!($prefix, "_bitmap_by_block")),
-            bitmap_page_meta: TableId::new(concat!($prefix, "_bitmap_page_meta")),
             bitmap_page_blob: TableId::new(concat!($prefix, "_bitmap_page_blob")),
+            bitmap_page_counts: TableId::new(concat!($prefix, "_bitmap_page_counts")),
             open_bitmap_stream: ScannableTableId::new(concat!($prefix, "_open_bitmap_stream")),
         }
     };

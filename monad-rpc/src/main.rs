@@ -13,12 +13,16 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{sync::Arc, time::Duration};
+use std::{io, sync::Arc, time::Duration};
 
 use actix_web::{web, App, HttpServer};
 use agent::AgentBuilder;
 use clap::Parser;
 use monad_archive::archive_reader::{redact_mongo_url, ArchiveReader};
+use monad_chain_data::{
+    store::FjallStore,
+    MonadChainDataService, QueryLimits,
+};
 use monad_event_ring::{EventRing, EventRingPath};
 use monad_node_config::MonadNodeConfig;
 use monad_pprof::start_pprof_server;
@@ -31,6 +35,7 @@ use monad_rpc::{
     comparator::RpcComparator,
     event::EventServer,
     handlers::{
+        queryx::ChainDataService,
         resources::{MonadJsonRootSpanBuilder, MonadRpcResources},
         rpc_handler,
     },
@@ -107,6 +112,10 @@ async fn main() -> std::io::Result<()> {
         tracing::subscriber::set_global_default(s).expect("failed to set logger");
         None
     };
+
+    // Open the chain-data store(s) backing the queryX methods up front,
+    // before `args` fields start getting moved into spawned tasks below.
+    let chain_data = open_chain_data(&args)?;
 
     if !args.pprof.is_empty() {
         tokio::spawn(async {
@@ -362,9 +371,11 @@ async fn main() -> std::io::Result<()> {
 
     let app_state = MonadRpcResources::new(
         txpool_bridge_client,
+        args.queryx_only,
         eth_call_handler,
         node_config.chain_id,
         chain_state,
+        chain_data,
         args.batch_request_limit,
         args.max_response_size,
         args.allow_unprotected_txs,
@@ -454,4 +465,70 @@ async fn main() -> std::io::Result<()> {
     }
 
     Ok(())
+}
+
+/// Opens the embedded chain-data store(s) backing the queryX methods.
+///
+/// The store is opened read-side only; this RPC process never ingests.
+/// Operators run a separate `chain-data-ingest` process that populates
+/// the same fjall store(s) this RPC reads from. Returns `None` (queryX
+/// methods disabled) when no chain-data path is configured, unless
+/// `--queryx-only` is set, which requires a store.
+fn open_chain_data(args: &Cli) -> io::Result<Option<Arc<ChainDataService>>> {
+    let limits = QueryLimits::new(args.queryx_max_limit, args.queryx_max_block_range);
+
+    let service = match (
+        &args.chain_data_path,
+        &args.chain_data_meta_path,
+        &args.chain_data_blob_path,
+    ) {
+        (Some(path), None, None) => {
+            info!(?path, "opening chain-data store for queryX methods");
+            let store = FjallStore::open(path, Default::default())
+                .map_err(|e| io::Error::other(format!("failed to open chain-data store: {e}")))?;
+            let blob_store = compressed_blob_store(store.clone());
+            MonadChainDataService::new(store, blob_store, limits)
+        }
+        (None, Some(meta_path), Some(blob_path)) => {
+            info!(
+                ?meta_path,
+                ?blob_path,
+                "opening split chain-data stores for queryX methods"
+            );
+            let meta_store = FjallStore::open(meta_path, Default::default()).map_err(|e| {
+                io::Error::other(format!("failed to open chain-data meta store: {e}"))
+            })?;
+            let blob_store = FjallStore::open(blob_path, Default::default()).map_err(|e| {
+                io::Error::other(format!("failed to open chain-data blob store: {e}"))
+            })?;
+            let blob_store = compressed_blob_store(blob_store);
+            MonadChainDataService::new(meta_store, blob_store, limits)
+        }
+        (None, None, None) => {
+            if args.queryx_only {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "--queryx-only requires --chain-data-path or both \
+                     --chain-data-meta-path and --chain-data-blob-path",
+                ));
+            }
+            debug!("chain-data store not configured, queryX methods will be disabled");
+            return Ok(None);
+        }
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "set either --chain-data-path or both --chain-data-meta-path and \
+                 --chain-data-blob-path, not a mix",
+            ))
+        }
+    };
+
+    Ok(Some(Arc::new(service)))
+}
+
+// Compression is now transparent (row-level, internal to the engine), so the
+// blob store is the FjallStore itself — no wrapper needed.
+fn compressed_blob_store(store: FjallStore) -> FjallStore {
+    store
 }

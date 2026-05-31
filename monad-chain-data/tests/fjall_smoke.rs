@@ -187,6 +187,10 @@ async fn fjall_cas_advance_with_stale_version_returns_fenced_out() {
             None,
             PublicationState {
                 indexed_finalized_head: 1,
+                owner_id: 0,
+                session_id: [0u8; 16],
+                lease_valid_through_block: 0,
+                head_artifact_checksum: Default::default(),
             },
         )
         .await;

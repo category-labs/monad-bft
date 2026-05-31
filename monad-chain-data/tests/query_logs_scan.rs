@@ -326,6 +326,120 @@ async fn block_scan_completes_current_block_when_limit_reached_mid_block() {
     assert_eq!(page.span.cursor_block.number, 1);
 }
 
+/// The block-scan runner reads blocks concurrently (buffered over the window).
+/// `buffered` preserves input order, so a multi-block unindexed scan must still
+/// return blocks in query order and land the cursor on the block where `limit`
+/// is reached — identical to a serial walk. Exercise both directions and the
+/// block-aligned limit stop.
+#[tokio::test(flavor = "current_thread")]
+async fn block_scan_orders_blocks_and_lands_cursor_under_concurrency() {
+    let service = MonadChainDataService::new(
+        InMemoryMetaStore::default(),
+        InMemoryBlobStore::default(),
+        QueryLimits::UNLIMITED,
+    );
+
+    // Ingest a chain of blocks, each with a single log, so the unindexed scan
+    // visits one record per block and the per-block order is unambiguous.
+    let mut prev = test_header(1, B256::ZERO);
+    service
+        .ingest_block(FinalizedBlock {
+            header: prev.clone(),
+            logs_by_tx: vec![vec![log(Address::repeat_byte(5), B256::repeat_byte(8))]],
+            txs: Vec::new(),
+            traces: vec![],
+        })
+        .await
+        .expect("ingest block 1");
+    for n in 2..=5u64 {
+        let h = chain_header(n, &prev);
+        service
+            .ingest_block(FinalizedBlock {
+                header: h.clone(),
+                logs_by_tx: vec![vec![log(Address::repeat_byte(5), B256::repeat_byte(8))]],
+                txs: Vec::new(),
+                traces: vec![],
+            })
+            .await
+            .unwrap_or_else(|_| panic!("ingest block {n}"));
+        prev = h;
+    }
+
+    // Ascending, unbounded: blocks 1..=5 in order.
+    let asc = service
+        .query_logs(QueryLogsRequest {
+            envelope: QueryEnvelope {
+                from_block: Some(1),
+                to_block: Some(5),
+                order: QueryOrder::Ascending,
+                limit: 1_000,
+            },
+            filter: LogFilter::default(),
+            relations: LogsRelations::default(),
+        })
+        .await
+        .expect("ascending scan");
+    let asc_blocks: Vec<u64> = asc.logs.iter().map(|l| l.block_number).collect();
+    assert_eq!(asc_blocks, vec![1, 2, 3, 4, 5]);
+    assert_eq!(asc.span.cursor_block.number, 5);
+
+    // Descending, unbounded: blocks 5..=1 in order. For descending, `from_block`
+    // is the high (newest) end and `to_block` the low end.
+    let desc = service
+        .query_logs(QueryLogsRequest {
+            envelope: QueryEnvelope {
+                from_block: Some(5),
+                to_block: Some(1),
+                order: QueryOrder::Descending,
+                limit: 1_000,
+            },
+            filter: LogFilter::default(),
+            relations: LogsRelations::default(),
+        })
+        .await
+        .expect("descending scan");
+    let desc_blocks: Vec<u64> = desc.logs.iter().map(|l| l.block_number).collect();
+    assert_eq!(desc_blocks, vec![5, 4, 3, 2, 1]);
+    assert_eq!(desc.span.cursor_block.number, 1);
+
+    // Limit stop is block-aligned: with one log per block, `limit = 3` consumes
+    // exactly blocks 1..=3 ascending and the cursor lands on block 3.
+    let asc_limited = service
+        .query_logs(QueryLogsRequest {
+            envelope: QueryEnvelope {
+                from_block: Some(1),
+                to_block: Some(5),
+                order: QueryOrder::Ascending,
+                limit: 3,
+            },
+            filter: LogFilter::default(),
+            relations: LogsRelations::default(),
+        })
+        .await
+        .expect("ascending limited scan");
+    let limited_blocks: Vec<u64> = asc_limited.logs.iter().map(|l| l.block_number).collect();
+    assert_eq!(limited_blocks, vec![1, 2, 3]);
+    assert_eq!(asc_limited.span.cursor_block.number, 3);
+
+    // Same in descending: `limit = 3` consumes blocks 5,4,3 and stops on 3.
+    let desc_limited = service
+        .query_logs(QueryLogsRequest {
+            envelope: QueryEnvelope {
+                from_block: Some(5),
+                to_block: Some(1),
+                order: QueryOrder::Descending,
+                limit: 3,
+            },
+            filter: LogFilter::default(),
+            relations: LogsRelations::default(),
+        })
+        .await
+        .expect("descending limited scan");
+    let desc_limited_blocks: Vec<u64> = desc_limited.logs.iter().map(|l| l.block_number).collect();
+    assert_eq!(desc_limited_blocks, vec![5, 4, 3]);
+    assert_eq!(desc_limited.span.cursor_block.number, 3);
+}
+
 fn log(address: Address, topic0: B256) -> Log {
     Log {
         address,

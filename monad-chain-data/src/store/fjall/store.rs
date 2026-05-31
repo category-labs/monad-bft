@@ -28,8 +28,7 @@ use crate::{
         blob::{BlobStore, BlobTableId, BlobWriteOp},
         common::Page,
         meta::{
-            CasOutcome, CasVersion, MetaStore, MetaStoreCas, MetaWriteOp, PublicationCasParams,
-            ScannableTableId, TableId,
+            CasOutcome, CasVersion, MetaStore, MetaStoreCas, MetaWriteOp, ScannableTableId, TableId,
         },
     },
 };
@@ -422,73 +421,6 @@ impl MetaStore for FjallStore {
                 .commit()
                 .map_err(|e| MonadChainDataError::Backend(format!("fjall apply_writes: {e}")))?;
             Ok(())
-        })
-        .await
-    }
-
-    async fn apply_writes_with_cas(
-        &self,
-        writes: Vec<MetaWriteOp>,
-        cas: PublicationCasParams,
-    ) -> Result<CasOutcome> {
-        let inner = Arc::clone(&self.inner);
-        let cas_name = format!("{CAS_PREFIX}{}", cas.table.as_str());
-        let PublicationCasParams {
-            table: _,
-            key,
-            expected,
-            value,
-        } = cas;
-        let cas_value = value.to_vec();
-        blocking(move || {
-            let mut cache: HashMap<String, Keyspace> = HashMap::new();
-            let cas_ks = ks_cached(&inner, &mut cache, cas_name)?;
-            let _guard = inner
-                .cas_lock
-                .lock()
-                .map_err(|_| MonadChainDataError::Backend("fjall cas lock poisoned".into()))?;
-            let raw = cas_ks
-                .get(&key)
-                .map_err(|e| MonadChainDataError::Backend(format!("fjall cas read: {e}")))?;
-            let current_version = match raw {
-                None => None,
-                Some(raw) => {
-                    let (version, _) = decode_cas_row(raw.as_ref())?;
-                    Some(CasVersion(version))
-                }
-            };
-            if current_version != expected {
-                return Ok(CasOutcome::Conflict { current_version });
-            }
-            let new_version = current_version.map_or(1, |v| v.0 + 1);
-            let mut batch = inner.db.batch();
-            for op in writes {
-                match op {
-                    MetaWriteOp::Put { table, key, value } => {
-                        let name = format!("{KV_PREFIX}{}", table.as_str());
-                        let ks = ks_cached(&inner, &mut cache, name)?;
-                        batch.insert(&ks, key, value.as_ref());
-                    }
-                    MetaWriteOp::ScanPut {
-                        table,
-                        partition,
-                        clustering,
-                        value,
-                    } => {
-                        let name = format!("{SCAN_PREFIX}{}", table.as_str());
-                        let ks = ks_cached(&inner, &mut cache, name)?;
-                        let composite = scan_key(&partition, &clustering);
-                        batch.insert(&ks, composite, value.as_ref());
-                    }
-                }
-            }
-            batch.insert(&cas_ks, key, encode_cas_row(new_version, &cas_value));
-            batch.commit().map_err(|e| {
-                MonadChainDataError::Backend(format!("fjall cas apply_writes: {e}"))
-            })?;
-            Ok(CasOutcome::Applied {
-                new_version: CasVersion(new_version),
-            })
         })
         .await
     }

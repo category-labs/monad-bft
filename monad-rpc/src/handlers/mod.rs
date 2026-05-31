@@ -50,6 +50,9 @@ use self::{
         },
     },
     meta::{monad_net_version, monad_web3_client_version},
+    queryx::{
+        eth_queryBlocks, eth_queryLogs, eth_queryTraces, eth_queryTransactions, eth_queryTransfers,
+    },
     resources::MonadRpcResources,
     txpool::{monad_txpool_statusByAddress, monad_txpool_statusByHash},
 };
@@ -75,6 +78,8 @@ mod debug;
 mod debug_replay;
 pub mod eth;
 mod meta;
+pub mod queryx;
+mod queryx_docs;
 pub mod resources;
 mod txpool;
 
@@ -469,8 +474,24 @@ async fn eth_getLogs(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
+    let params: crate::handlers::eth::txn::MonadEthGetLogsParams =
+        serde_json::from_str(params.get()).invalid_params()?;
+
+    // When the chain-data index is configured, serve eth_getLogs from it via
+    // the queryX logs path rather than the triedb/archive scan.
+    if let Some(service) = app_state.chain_data.as_ref() {
+        let logs = queryx::get_logs_via_chain_data(
+            service,
+            app_state.chain_state.as_ref(),
+            params.into_filter(),
+            app_state.max_response_size,
+            app_state.logs_max_block_range,
+        )
+        .await?;
+        return serialize_result(crate::handlers::eth::txn::MonadEthGetLogsResult(logs));
+    }
+
     let chain_state = app_state.chain_state.as_ref().method_not_supported()?;
-    let params = serde_json::from_str(params.get()).invalid_params()?;
     monad_eth_getLogs(
         chain_state,
         app_state.max_response_size,
@@ -885,8 +906,28 @@ enabled_methods!(
     txpool_statusByHash,
     txpool_statusByAddress,
     web3_clientVersion,
-    eth_fillTransaction
+    eth_fillTransaction,
+    eth_queryBlocks,
+    eth_queryTransactions,
+    eth_queryLogs,
+    eth_queryTraces,
+    eth_queryTransfers
 );
+
+impl EnabledMethod {
+    /// queryX methods are the only ones served when the RPC is configured
+    /// as a chain-data-only server (`--queryx-only`).
+    fn is_queryx(&self) -> bool {
+        matches!(
+            self,
+            EnabledMethod::eth_queryBlocks
+                | EnabledMethod::eth_queryTransactions
+                | EnabledMethod::eth_queryLogs
+                | EnabledMethod::eth_queryTraces
+                | EnabledMethod::eth_queryTransfers
+        )
+    }
+}
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn rpc_select(
@@ -896,6 +937,11 @@ pub async fn rpc_select(
     request_id: TimingRequestId,
 ) -> Result<Box<RawValue>, JsonRpcError> {
     let method: EnabledMethod = method.try_into()?;
+    // In queryX-only mode every non-queryX method is hidden, mirroring a
+    // dedicated chain-data query server.
+    if app_state.queryx_only && !method.is_queryx() {
+        return Err(JsonRpcError::method_not_found());
+    }
     let mut span = method.span();
     if let Some(metrics) = &app_state.metrics {
         span = span.with_main_timings(metrics.execution_histogram.clone());

@@ -13,7 +13,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::time::{Duration, Instant};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use bytes::Bytes;
 use futures::lock::Mutex;
@@ -24,7 +27,11 @@ use crate::{
         execute_query_blocks, load_blocks_by_numbers, QueryBlocksRequest, QueryBlocksResponse,
     },
     engine::{
+        authority::{
+            LeaseAuthority, ReadOnlyAuthority, WriteAuthority, WriteContinuity, WriteSession,
+        },
         bitmap::{global_page_start, local_page_start, stream_page_global_start},
+        digest::{self, ArtifactChecksum, EMPTY_CHECKSUM},
         family::Family,
         ingest::{persist::PhaseAFragmentWriteFilter, ReadPlanningTimings},
         open_index::{
@@ -33,7 +40,8 @@ use crate::{
         },
         primary_dir::{bucket_start, fragment_bucket_starts, PrimaryDirFragment},
         query::family_runner::IndexedFamilyQuery,
-        tables::{PublicationTables, StagedWrites, Tables, WriteOpCounts},
+        row_codec::{should_sample_row, RowCodec, DICT_VERSION_NONE},
+        tables::{DictConfig, PublicationTables, StagedWrites, Tables, WriteOpCounts},
     },
     error::{MonadChainDataError, Result},
     family::{FinalizedBlock, Hash32},
@@ -61,12 +69,51 @@ use crate::{
     },
 };
 
+/// Fixed upper bound on the RLP-encoded width of a `PublicationState` row
+/// (a 4-field list: three `u64`s, each at most 9 bytes, plus a 16-byte
+/// `session_id` blob at 17 bytes, plus a 1-byte short-list header). Used only
+/// for write-volume accounting; the exact bytes are formed at publish time.
+const PUBLICATION_STATE_ENCODED_BYTES: usize = 1 + 9 * 3 + 17;
+
+/// Callback yielding the latest observed upstream finalized block number — the
+/// lease clock. Returns `None` when the upstream head is unknown, which forces
+/// the authority to fail closed (no acquire / renew / publish). Reader-only
+/// services default to `|| None`.
+pub type ObserveUpstream = Arc<dyn Fn() -> Option<u64> + Send + Sync>;
+
+/// The write-authority a service runs under. Kept as an enum (rather than a
+/// third generic on [`MonadChainDataService`]) so existing
+/// `MonadChainDataService<M, B>` call sites — fixtures, tests, the bin — keep
+/// compiling unchanged.
+///
+/// - `ReadOnly` — never takes ownership; `new_reader_only`.
+/// - `SingleWriter` — the historical "exactly one process writes" path used by
+///   `new` / `with_cache_config`: a plain version-CAS on the published head
+///   (no ownership, no lease clock, no acquire-time row write). This keeps the
+///   pre-lease behavior every fixture/test encodes, and crucially does *not*
+///   conflate single-writer with the lease machinery — there is no shared
+///   default identity to silently collide on.
+/// - `Lease` — multi-node leader/standby coordination; the explicit
+///   `new_reader_writer*` constructors.
+enum ServiceAuthority<M: MetaStoreCas> {
+    ReadOnly(ReadOnlyAuthority),
+    SingleWriter,
+    Lease(LeaseAuthority<M>),
+}
+
 pub struct MonadChainDataService<M: MetaStoreCas, B: BlobStore> {
     tables: Tables<M, B>,
     publication: PublicationTables<M>,
     limits: QueryLimits,
     open_indexes: OpenIndexes,
     planning_state: Mutex<Option<IngestPlanningState>>,
+    authority: ServiceAuthority<M>,
+    observe_upstream: ObserveUpstream,
+    /// Test-only counter of `ensure_open_indexes_rebuilt` invocations, used by
+    /// the recovery-gating test to prove `Reacquired` rebuilds and `Continuous`
+    /// skips. Not present in non-test builds.
+    #[cfg(test)]
+    recovery_runs: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 #[derive(Debug, Clone)]
@@ -91,9 +138,52 @@ struct StageAPlanStarts {
 
 struct StageAPlanOutput {
     staged: StagedBlock,
+    /// Standalone (un-chained) content digest for this block; chained into the
+    /// running checksum in the sequential staging loop.
+    block_content_digest: ArtifactChecksum,
     log_plan_us: u64,
     tx_plan_us: u64,
     trace_plan_us: u64,
+}
+
+/// Computes the standalone content digest for one planned block: the logical
+/// (uncompressed, zstd-independent) artifacts the block would write. Folds the
+/// three per-family content digests with the block identity + EVM header. See
+/// [`crate::engine::digest`]. The running chain value is layered on top in the
+/// sequential staging loop.
+fn block_content_digest(
+    block: &FinalizedBlock,
+    log_plan: &LogIngestPlan,
+    tx_plan: &TxIngestPlan,
+    trace_plan: &TraceIngestPlan,
+) -> ArtifactChecksum {
+    let log_fc = digest::family_content_digest(
+        log_plan.log_window,
+        log_plan.block_log_header.dict_version,
+        log_plan.rows_digest,
+        &log_plan.bitmap_fragments,
+    );
+    let tx_fc = digest::family_content_digest(
+        tx_plan.tx_window,
+        tx_plan.block_tx_header.dict_version,
+        tx_plan.rows_digest,
+        &tx_plan.bitmap_fragments,
+    );
+    let trace_fc = digest::family_content_digest(
+        trace_plan.trace_window,
+        trace_plan.block_trace_header.dict_version,
+        trace_plan.rows_digest,
+        &trace_plan.bitmap_fragments,
+    );
+    digest::block_content_digest(
+        block.block_number(),
+        &block.block_hash(),
+        &block.parent_hash(),
+        &alloy_rlp::encode(&block.header),
+        log_fc,
+        tx_fc,
+        trace_fc,
+    )
 }
 
 fn family_ranges<F>(staged: &[StagedBlock], pick: F) -> Vec<(u64, u64)>
@@ -159,6 +249,30 @@ pub struct IngestOutcome {
     pub written_logs: usize,
     pub written_txs: usize,
     pub written_traces: usize,
+}
+
+/// Result of [`MonadChainDataService::verify_artifact_checksums`]: whether a
+/// standby's re-derived artifact-checksum chain matches what the primary
+/// published.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VerifyOutcome {
+    /// Every supplied block's re-derived running checksum matched the published
+    /// [`BlockRecord`]. `through_block` is the highest verified block number
+    /// (the prior published head when no blocks were supplied).
+    Match { through_block: u64 },
+    /// The first block whose published record was not found, so verification
+    /// cannot proceed past it — typically the standby is ahead of the primary's
+    /// published head. Blocks below `block_number` did match.
+    Pending { block_number: u64 },
+    /// The first block whose re-derived running checksum disagreed with the
+    /// published record. Blocks below `block_number` matched.
+    Mismatch {
+        block_number: u64,
+        /// The published (primary's) chained checksum for the block.
+        published: ArtifactChecksum,
+        /// The locally re-derived chained checksum.
+        computed: ArtifactChecksum,
+    },
 }
 
 /// Per-batch timing breakdown emitted by [`MonadChainDataService::ingest_blocks`].
@@ -238,11 +352,21 @@ pub struct IngestPlan {
     pub publication: PublicationAdvance,
 }
 
+/// The head a successfully-applied plan should publish. Under the
+/// write-authority lease model the *bytes* of the published
+/// [`crate::primitives::state::PublicationState`] row can only be formed at
+/// publish time (they carry the owner/session/lease fields the authority
+/// stamps inside the CAS), so the plan carries just the target head, its
+/// chained artifact checksum, plus the CAS table/key it will be written under.
+/// The authority builds the row in `apply_ingest_plan_with_retry`.
 #[derive(Debug, Clone)]
 pub struct PublicationAdvance {
     pub table: crate::store::TableId,
     pub key: Vec<u8>,
-    pub value: Bytes,
+    pub new_head: u64,
+    /// Chained artifact checksum at `new_head`, equal to the head block's
+    /// [`BlockRecord::artifact_checksum`](crate::primitives::state::BlockRecord::artifact_checksum).
+    pub head_artifact_checksum: ArtifactChecksum,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -286,6 +410,32 @@ async fn retry_sleep(backoff: Duration) {
     futures_timer::Delay::new(backoff).await;
 }
 
+/// Decodes the per-family block header just far enough to recover the row
+/// frame layout (`offsets`) and the `dict_version` the frames were written
+/// under. Used only by the dict-training read-back path.
+fn decode_family_header_layout(family: Family, bytes: &[u8]) -> Result<(Vec<u32>, u32)> {
+    match family {
+        Family::Log => {
+            let h = crate::logs::LogBlockHeader::decode(bytes)?;
+            Ok((h.offsets, h.dict_version))
+        }
+        Family::Tx => {
+            let h = crate::txs::BlockTxHeader::decode(bytes)?;
+            Ok((h.offsets, h.dict_version))
+        }
+        Family::Trace => {
+            let h = crate::traces::BlockTraceHeader::decode(bytes)?;
+            Ok((h.offsets, h.dict_version))
+        }
+    }
+}
+
+/// Number of blocks sampled from an epoch's leading range to build its
+/// training corpus. Together with `PER_BLOCK_SAMPLE_CAP` this bounds the
+/// corpus (`TARGET_SAMPLE_BLOCKS * PER_BLOCK_SAMPLE_CAP` rows at most), so a
+/// dense epoch can't blow up memory during an off-thread training run.
+const TARGET_SAMPLE_BLOCKS: u64 = 256;
+
 impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
     pub fn new(meta_store: M, blob_store: B, limits: QueryLimits) -> Self {
         Self::with_cache_config(meta_store, blob_store, limits, CacheConfig::default())
@@ -294,7 +444,56 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
     /// Parallel constructor that lets the binary thread an operator-tuned
     /// `CacheConfig` through. Existing `new` keeps its three-arg shape so
     /// fixture call sites don't churn.
+    ///
+    /// C4 choice: `new` / `with_cache_config` stay **single-writer** — the
+    /// pre-lease publish path ([`ServiceAuthority::SingleWriter`]): a plain
+    /// version-CAS on the published head with no ownership, no lease clock, and
+    /// no acquire-time row write. This preserves the historic "exactly one
+    /// process writes" assumption every fixture/test encodes (they ingest
+    /// through `new`) without conflating it with the lease machinery — there is
+    /// no shared default identity for two such processes to silently clobber
+    /// each other through; concurrent writers fence via the version-CAS exactly
+    /// as they did before this layer existed. Multi-node coordination uses the
+    /// explicit [`Self::new_reader_writer`] / [`Self::new_reader_only`]
+    /// constructors, which wire a real upstream clock, owner identity, and role.
     pub fn with_cache_config(
+        meta_store: M,
+        blob_store: B,
+        limits: QueryLimits,
+        cache: CacheConfig,
+    ) -> Self {
+        Self::with_configs(meta_store, blob_store, limits, cache, DictConfig::default())
+    }
+
+    /// Full constructor that also threads a [`DictConfig`], letting tests run
+    /// the epoch-based dictionary lifecycle over a handful of blocks (e.g.
+    /// `epoch_blocks = 8`).
+    pub fn with_configs(
+        meta_store: M,
+        blob_store: B,
+        limits: QueryLimits,
+        cache: CacheConfig,
+        dict_config: DictConfig,
+    ) -> Self {
+        Self {
+            publication: PublicationTables::new(meta_store.clone()),
+            tables: Tables::with_configs(meta_store, blob_store, cache, dict_config),
+            limits,
+            open_indexes: OpenIndexes::default(),
+            planning_state: Mutex::new(None),
+            authority: ServiceAuthority::SingleWriter,
+            observe_upstream: Arc::new(|| None),
+            #[cfg(test)]
+            recovery_runs: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        }
+    }
+
+    /// Constructs a reader-only service. Queries read `load_published_head`
+    /// observationally; the service never takes ownership and `observe_upstream`
+    /// is `|| None`. Any ingest path errors with [`ReadOnlyMode`].
+    ///
+    /// [`ReadOnlyMode`]: MonadChainDataError::ReadOnlyMode
+    pub fn new_reader_only(
         meta_store: M,
         blob_store: B,
         limits: QueryLimits,
@@ -306,6 +505,71 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
             limits,
             open_indexes: OpenIndexes::default(),
             planning_state: Mutex::new(None),
+            authority: ServiceAuthority::ReadOnly(ReadOnlyAuthority),
+            observe_upstream: Arc::new(|| None),
+            #[cfg(test)]
+            recovery_runs: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        }
+    }
+
+    /// Constructs a reader+writer service backed by a [`LeaseAuthority`].
+    ///
+    /// `owner_id` is the stable node identity (a restart reuses it but
+    /// generates a fresh per-process `session_id`, so a restarted leader always
+    /// takes the reacquire path and runs recovery). `lease_blocks` /
+    /// `renew_threshold` are in upstream finalized blocks
+    /// (`renew_threshold < lease_blocks`, `lease_blocks > 0` — asserted by the
+    /// authority). `observe_upstream` yields the lease clock; returning `None`
+    /// fails closed.
+    pub fn new_reader_writer(
+        meta_store: M,
+        blob_store: B,
+        limits: QueryLimits,
+        owner_id: u64,
+        lease_blocks: u64,
+        renew_threshold: u64,
+        observe_upstream: ObserveUpstream,
+    ) -> Self {
+        Self::new_reader_writer_with_cache_config(
+            meta_store,
+            blob_store,
+            limits,
+            CacheConfig::default(),
+            owner_id,
+            lease_blocks,
+            renew_threshold,
+            observe_upstream,
+        )
+    }
+
+    /// [`Self::new_reader_writer`] with an explicit `CacheConfig`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_reader_writer_with_cache_config(
+        meta_store: M,
+        blob_store: B,
+        limits: QueryLimits,
+        cache: CacheConfig,
+        owner_id: u64,
+        lease_blocks: u64,
+        renew_threshold: u64,
+        observe_upstream: ObserveUpstream,
+    ) -> Self {
+        let authority = LeaseAuthority::new(
+            PublicationTables::new(meta_store.clone()),
+            owner_id,
+            lease_blocks,
+            renew_threshold,
+        );
+        Self {
+            publication: PublicationTables::new(meta_store.clone()),
+            tables: Tables::with_cache_config(meta_store, blob_store, cache),
+            limits,
+            open_indexes: OpenIndexes::default(),
+            planning_state: Mutex::new(None),
+            authority: ServiceAuthority::Lease(authority),
+            observe_upstream,
+            #[cfg(test)]
+            recovery_runs: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
     }
 
@@ -325,7 +589,111 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
         self.open_indexes.stats()
     }
 
+    /// The configured upstream-clock observation.
+    fn observe_upstream(&self) -> Option<u64> {
+        (self.observe_upstream)()
+    }
+
+    /// Begins a write-scoped authority session and returns its
+    /// [`AuthorityState`] (head + continuity). The session is dropped here: per
+    /// D1 option A we do not hold it across plan→apply; the cached lease lives
+    /// on the authority and is revalidated inside the publish CAS. A
+    /// reader-only service errors with [`ReadOnlyMode`].
+    ///
+    /// [`AuthorityState`]: crate::engine::authority::AuthorityState
+    /// [`ReadOnlyMode`]: MonadChainDataError::ReadOnlyMode
+    async fn authority_begin_write(
+        &self,
+        observed_upstream_finalized_block: Option<u64>,
+    ) -> Result<crate::engine::authority::AuthorityState> {
+        match &self.authority {
+            ServiceAuthority::ReadOnly(a) => {
+                let session = a.begin_write(observed_upstream_finalized_block).await?;
+                Ok(session.state())
+            }
+            // Single-writer has no lease/session: there is nothing to acquire.
+            // It reports the current published head and a continuity that always
+            // requires recovery on a cold cache (Fresh on an empty store, else
+            // Reacquired), matching the pre-lease behavior of unconditionally
+            // rebuilding open indexes from the published head on the first plan.
+            ServiceAuthority::SingleWriter => {
+                let head = self.publication.load_published_head().await?;
+                let continuity = match head {
+                    None => WriteContinuity::Fresh,
+                    Some(_) => WriteContinuity::Reacquired,
+                };
+                Ok(crate::engine::authority::AuthorityState {
+                    indexed_finalized_head: head.unwrap_or(0),
+                    continuity,
+                })
+            }
+            ServiceAuthority::Lease(a) => {
+                let session = a.begin_write(observed_upstream_finalized_block).await?;
+                Ok(session.state())
+            }
+        }
+    }
+
+    /// Publishes the new head through the active authority lease, revalidating
+    /// and renewing inside the CAS (D1 option A). A reader-only service errors
+    /// with [`ReadOnlyMode`].
+    ///
+    /// [`ReadOnlyMode`]: MonadChainDataError::ReadOnlyMode
+    async fn authority_publish(
+        &self,
+        new_head: u64,
+        head_artifact_checksum: ArtifactChecksum,
+        observed_upstream_finalized_block: Option<u64>,
+    ) -> Result<()> {
+        match &self.authority {
+            ServiceAuthority::ReadOnly(_) => Err(MonadChainDataError::ReadOnlyMode(
+                "reader-only service cannot publish a new head",
+            )),
+            // Single-writer: the historical plain version-CAS publish. Load the
+            // current row version, CAS the head forward against it; a stale
+            // version (a concurrent writer moved the head) maps to `FencedOut`
+            // via `cas_advance`. The lease fields are written as zeros — an
+            // owner-less row — so the published bytes stay deterministic.
+            ServiceAuthority::SingleWriter => {
+                let expected = self
+                    .publication
+                    .load_state()
+                    .await?
+                    .map(|(version, _)| version);
+                let next = crate::primitives::state::PublicationState {
+                    indexed_finalized_head: new_head,
+                    owner_id: 0,
+                    session_id: [0u8; 16],
+                    lease_valid_through_block: 0,
+                    head_artifact_checksum,
+                };
+                self.publication.cas_advance(expected, next).await
+            }
+            ServiceAuthority::Lease(a) => {
+                let result = a
+                    .publish_current(
+                        new_head,
+                        head_artifact_checksum,
+                        observed_upstream_finalized_block,
+                    )
+                    .await;
+                // On any invalidating error (lease lost, fenced, or a lost
+                // observation) drop the cached lease so the next begin_write
+                // reacquires from the store — and thus runs recovery.
+                if let Some(error) = result.as_ref().err() {
+                    if LeaseAuthority::<M>::should_invalidate_cached_lease(error) {
+                        a.clear_cached_lease().await;
+                    }
+                }
+                result
+            }
+        }
+    }
+
     async fn ensure_open_indexes_rebuilt(&self, current_head: Option<u64>) -> Result<()> {
+        #[cfg(test)]
+        self.recovery_runs
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if self.open_indexes.rebuilt_for_head() == Some(current_head) {
             return Ok(());
         }
@@ -456,8 +824,28 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
 
         let mut planning_state = self.planning_state.lock().await;
         if planning_state.is_none() {
-            let current_head = self.publication.load_published_head().await?;
-            self.ensure_open_indexes_rebuilt(current_head).await?;
+            // Cold cache: take (or renew) write authority to learn the
+            // authoritative head and whether ownership transitioned. The lease
+            // is cached in the authority; publish-time revalidation (D1 option
+            // A) re-checks it inside the CAS rather than holding a guard across
+            // plan→apply. The session itself is only read for its state here.
+            let begin = self.authority_begin_write(self.observe_upstream()).await?;
+            let current_head = match begin.indexed_finalized_head {
+                // Head 0 is the sentinel for "nothing published yet" — block
+                // numbers start at 1, so there is never a block-0 record. This
+                // holds regardless of how this writer learned head 0: a Fresh
+                // acquire that just wrote the row at head 0, OR a takeover
+                // (Reacquired) of a predecessor that acquired the lease but died
+                // before publishing block 1. Both must start clean, not try to
+                // load a nonexistent block-0 record.
+                0 => None,
+                head => Some(head),
+            };
+            // Recovery runs only after an ownership transition (Fresh /
+            // Reacquired); a Continuous renewal skips the open-index rebuild.
+            if begin.continuity.requires_recovery() {
+                self.ensure_open_indexes_rebuilt(current_head).await?;
+            }
             let previous = match current_head {
                 Some(head) => Some(block_tables.load_record(head).await?.ok_or(
                     MonadChainDataError::MissingData("missing published head block record"),
@@ -500,6 +888,12 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
             }
         }
         let first_previous = state.previous.clone();
+        // Seed the artifact-checksum chain from the previously published head
+        // (captured before `first_previous` is consumed below).
+        let seed_checksum = first_previous
+            .as_ref()
+            .map(|record| record.artifact_checksum)
+            .unwrap_or(EMPTY_CHECKSUM);
 
         let stage_a_start = Instant::now();
         let mut plan_starts: Vec<StageAPlanStarts> = Vec::with_capacity(blocks.len());
@@ -562,27 +956,76 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
                     first_primary_id: next_trace_id.into(),
                     count: trace_count,
                 },
+                // This record only seeds the next block's primary-id windows
+                // and parent-hash chain; its checksum is never read.
+                artifact_checksum: EMPTY_CHECKSUM,
             };
 
             prev_hash = block_record.block_hash;
             prev_record = Some(block_record);
         }
 
+        // Resolve the per-family row codec for every epoch this batch spans,
+        // BEFORE the parallel plan build. `ensure_epoch_dict` is the
+        // block-until-ready await point: it guarantees each epoch's dictionary
+        // is durably published (and its write-side codec installed) before any
+        // block of that epoch is framed. A batch is contiguous, so it usually
+        // touches a single epoch.
+        let epoch_blocks = self.tables.dicts().config().epoch_blocks;
+        let first_epoch = blocks[0].block_number() / epoch_blocks;
+        let last_epoch = blocks[blocks.len() - 1].block_number() / epoch_blocks;
+        let mut epoch_codecs: std::collections::HashMap<u64, (RowCodec, RowCodec, RowCodec)> =
+            std::collections::HashMap::new();
+        for epoch in first_epoch..=last_epoch {
+            let version = u32::try_from(epoch)
+                .map_err(|_| MonadChainDataError::Decode("dict epoch/version overflow"))?;
+            self.ensure_epoch_dicts(version).await?;
+            let dicts = self.tables.dicts();
+            let log_codec =
+                dicts
+                    .write_codec(Family::Log, version)
+                    .ok_or(MonadChainDataError::MissingData(
+                        "epoch log codec not installed",
+                    ))?;
+            let tx_codec =
+                dicts
+                    .write_codec(Family::Tx, version)
+                    .ok_or(MonadChainDataError::MissingData(
+                        "epoch tx codec not installed",
+                    ))?;
+            let trace_codec = dicts.write_codec(Family::Trace, version).ok_or(
+                MonadChainDataError::MissingData("epoch trace codec not installed"),
+            )?;
+            epoch_codecs.insert(epoch, (log_codec, tx_codec, trace_codec));
+        }
+        let epoch_codecs_ref = &epoch_codecs;
+
         let planned: Vec<StageAPlanOutput> = blocks
             .par_iter()
             .zip(plan_starts.par_iter())
             .map(|(block, starts)| {
+                let epoch = block.block_number() / epoch_blocks;
+                let (log_codec_ref, tx_codec_ref, trace_codec_ref) = epoch_codecs_ref
+                    .get(&epoch)
+                    .expect("epoch codec resolved before par_iter");
+                debug_assert_eq!(log_codec_ref.version() as u64, epoch);
+
                 let log_plan_start = Instant::now();
-                let log_plan = LogIngestPlan::build(block, starts.log)?;
+                let log_plan = LogIngestPlan::build(block, starts.log, log_codec_ref)?;
                 let log_plan_us = log_plan_start.elapsed().as_micros() as u64;
 
                 let tx_plan_start = Instant::now();
-                let tx_plan = TxIngestPlan::build(block, starts.tx)?;
+                let tx_plan = TxIngestPlan::build(block, starts.tx, tx_codec_ref)?;
                 let tx_plan_us = tx_plan_start.elapsed().as_micros() as u64;
 
                 let trace_plan_start = Instant::now();
-                let trace_plan = TraceIngestPlan::build(block, starts.trace)?;
+                let trace_plan = TraceIngestPlan::build(block, starts.trace, trace_codec_ref)?;
                 let trace_plan_us = trace_plan_start.elapsed().as_micros() as u64;
+
+                // Content digest folds the uncompressed artifacts in parallel;
+                // the chain over prior blocks is applied sequentially below.
+                let block_content_digest =
+                    block_content_digest(block, &log_plan, &tx_plan, &trace_plan);
 
                 let block_record = BlockRecord {
                     block_number: block.block_number(),
@@ -591,6 +1034,8 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
                     logs: log_plan.log_window,
                     txs: tx_plan.tx_window,
                     traces: trace_plan.trace_window,
+                    // Filled with the chained value in the sequential loop.
+                    artifact_checksum: EMPTY_CHECKSUM,
                 };
 
                 Ok(StageAPlanOutput {
@@ -600,6 +1045,7 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
                         trace_plan,
                         block_record,
                     },
+                    block_content_digest,
                     log_plan_us,
                     tx_plan_us,
                     trace_plan_us,
@@ -607,8 +1053,16 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
             })
             .collect::<Result<Vec<_>>>()?;
 
+        // Seed the artifact-checksum chain from the previously published head
+        // (or the empty seed for a fresh store), then fold each block's content
+        // digest in contiguous order. This is the sequential dependency the
+        // parallel plan build above cannot carry.
+        let mut cumulative_checksum = seed_checksum;
+
         let mut staged: Vec<StagedBlock> = Vec::with_capacity(planned.len());
-        for output in planned {
+        for mut output in planned {
+            cumulative_checksum = digest::chain(cumulative_checksum, output.block_content_digest);
+            output.staged.block_record.artifact_checksum = cumulative_checksum;
             timings.stage_a_log_plan_us = timings
                 .stage_a_log_plan_us
                 .saturating_add(output.log_plan_us);
@@ -931,13 +1385,11 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
 
         let last = staged.last().expect("at least one block staged");
         let new_head = last.block_record.block_number;
-        let next_state = crate::primitives::state::PublicationState {
-            indexed_finalized_head: new_head,
-        };
         let publication = PublicationAdvance {
             table: PublicationTables::<M>::PUBLICATION_STATE_TABLE,
             key: PublicationTables::<M>::PUBLICATION_STATE_KEY.to_vec(),
-            value: Bytes::from(next_state.encode()),
+            new_head,
+            head_artifact_checksum: last.block_record.artifact_checksum,
         };
 
         let mut combined_writes = phase_a_writes;
@@ -986,10 +1438,14 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
         } else {
             timings.phase_b_skipped = true;
         }
+        // The published row is stamped with the lease fields at publish time,
+        // so its exact bytes are not known here. The encoded width is a small
+        // fixed-shape RLP list (`PUBLICATION_STATE_ENCODED_BYTES`), used only
+        // for write-volume accounting.
         timings
             .phase_b_write_counts
-            .add_cas(publication.table, publication.value.len());
-        combined_writes.add_cas_count(publication.table, publication.value.len());
+            .add_cas(publication.table, PUBLICATION_STATE_ENCODED_BYTES);
+        combined_writes.add_cas_count(publication.table, PUBLICATION_STATE_ENCODED_BYTES);
 
         // Planning owns the ingest open-index state. Once a plan is emitted,
         // later plans should account for its open fragments even if the IO
@@ -1021,6 +1477,152 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
             writes: combined_writes,
             publication,
         }))
+    }
+
+    /// Ensures the row-codec dictionary for `(family, version)` is published
+    /// and its write-side codec installed, training it if necessary. This is
+    /// the **block-until-ready** primitive of the epoch-based lifecycle: a
+    /// block of epoch `V` is only ever framed after `ensure_epoch_dict(family,
+    /// V)` returns, so the durable dict for `V` always exists before any block
+    /// that references it.
+    ///
+    /// Single-flight: concurrent callers (the plan path and the binary's
+    /// background pre-train task) serialize on the per-family
+    /// [`DictManager::train_lock`] and double-check `has_codec`, so a given
+    /// `(family, version)` is trained at most once.
+    pub async fn ensure_epoch_dict(&self, family: Family, version: u32) -> Result<()> {
+        // Version 0 is the implicit plain bootstrap; its codec is pre-installed.
+        if version == DICT_VERSION_NONE {
+            return Ok(());
+        }
+        let dicts = self.tables.dicts();
+        // Fast path: already installed.
+        if dicts.has_codec(family, version) {
+            return Ok(());
+        }
+        // Single-flight gate + double-check.
+        let _g = dicts.train_lock(family).lock().await;
+        if dicts.has_codec(family, version) {
+            return Ok(());
+        }
+
+        // Durable dict already published (e.g. a peer/standby wrote it, or a
+        // prior run): adopt it. `Some(empty)` is the plain sentinel.
+        if let Some(bytes) = self.tables.family(family).load_dict(version).await? {
+            dicts.install_version(family, version, &bytes);
+            return Ok(());
+        }
+
+        // Otherwise train from epoch `version - 1`'s leading blocks.
+        let samples = self.read_back_training_samples(family, version).await?;
+        let dict_bytes: Vec<u8> = if samples.len() >= dicts.config().min_training_samples {
+            let max_size = dicts.config().max_dict_size_bytes;
+            // `from_samples` is CPU-bound; run it on rayon's pool and await the
+            // result so the async executor thread isn't blocked.
+            let (tx, rx) = futures::channel::oneshot::channel();
+            rayon::spawn(move || {
+                let _ = tx.send(zstd::dict::from_samples(&samples, max_size));
+            });
+            let trained = rx
+                .await
+                .map_err(|_| MonadChainDataError::Backend("dict training canceled".into()))?;
+            match trained {
+                // A non-empty trained dictionary; otherwise fall back to the
+                // empty-dict sentinel (this epoch uses plain frames).
+                Ok(bytes) if !bytes.is_empty() => bytes,
+                _ => Vec::new(),
+            }
+        } else {
+            // Too few samples: publish the empty-dict sentinel.
+            Vec::new()
+        };
+
+        // Persist durably BEFORE installing the codec, so a block written under
+        // `version` always has its dict (or sentinel) present on the read path.
+        let dict_for_write = Bytes::from(dict_bytes.clone());
+        self.tables
+            .with_writes(|w| {
+                let dict_for_write = dict_for_write.clone();
+                Box::pin(async move {
+                    self.tables
+                        .family(family)
+                        .stage_dict(w, version, dict_for_write);
+                    Ok(())
+                })
+            })
+            .await?;
+        dicts.install_version(family, version, &dict_bytes);
+        Ok(())
+    }
+
+    /// Ensures the epoch dictionaries for all three families at `version`.
+    pub async fn ensure_epoch_dicts(&self, version: u32) -> Result<()> {
+        for family in [Family::Log, Family::Tx, Family::Trace] {
+            self.ensure_epoch_dict(family, version).await?;
+        }
+        Ok(())
+    }
+
+    /// Collects a deterministic training corpus for `(family, version)` from
+    /// the leading blocks of epoch `version - 1`. Block selection is strided
+    /// (seeded by `version`, no RNG) so the corpus is reproducible. At most
+    /// [`TARGET_SAMPLE_BLOCKS`] blocks are sampled, each contributing up to
+    /// `PER_BLOCK_SAMPLE_CAP` rows via [`should_sample_row`], which bounds the
+    /// corpus. Sampled blocks belong to epoch `version - 1`, whose dictionary
+    /// was published earlier, so `decode_block_row` just works.
+    async fn read_back_training_samples(
+        &self,
+        family: Family,
+        version: u32,
+    ) -> Result<Vec<Vec<u8>>> {
+        let dicts = self.tables.dicts();
+        let (start, end) = dicts.config().training_range(version);
+        let span = end.saturating_sub(start);
+        if span == 0 {
+            return Ok(Vec::new());
+        }
+        let count = span.min(TARGET_SAMPLE_BLOCKS);
+        let stride = (span / count).max(1);
+        let offset = u64::from(version) % stride;
+
+        let family_tables = self.tables.family(family);
+        let mut samples: Vec<Vec<u8>> = Vec::new();
+        for i in 0..count {
+            let block_number = start + offset + i * stride;
+            if block_number >= end {
+                break;
+            }
+            let Some(header_bytes) = family_tables.load_block_header(block_number).await? else {
+                continue;
+            };
+            let (offsets, dict_version) = decode_family_header_layout(family, &header_bytes)?;
+            if offsets.len() < 2 {
+                continue;
+            }
+            let Some(blob) = family_tables.load_block_blob(block_number).await? else {
+                continue;
+            };
+            let row_count = offsets.len() - 1;
+            for idx in 0..row_count {
+                if !should_sample_row(idx, row_count) {
+                    continue;
+                }
+                let frame_start = offsets[idx] as usize;
+                let frame_end = offsets[idx + 1] as usize;
+                if frame_start > frame_end || frame_end > blob.len() {
+                    return Err(MonadChainDataError::Decode(
+                        "invalid row frame range while sampling for dict training",
+                    ));
+                }
+                let frame = &blob[frame_start..frame_end];
+                let raw = self
+                    .tables
+                    .decode_block_row(family, dict_version, frame)
+                    .await?;
+                samples.push(raw.to_vec());
+            }
+        }
+        Ok(samples)
     }
 
     pub async fn apply_ingest_plan(
@@ -1063,28 +1665,124 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
         };
         timings.commit_a_meta_ms = combined_timings.meta.as_millis() as u64;
         timings.commit_a_blob_ms = combined_timings.blob.as_millis() as u64;
-        let expected = self
-            .publication
-            .load_state()
-            .await?
-            .map(|(version, _)| version);
+        // Publish through the write authority: it revalidates and renews the
+        // lease inside the ownership-validating CAS (D1 option A), stamping the
+        // owner/session/lease fields onto the head row. This replaces the old
+        // inline load_state + cas_put. `LeaseLost` is surfaced distinctly from
+        // a same-owner `FencedOut`; `authority_publish` clears the cached lease
+        // on either so the next begin_write reacquires (and runs recovery).
         let cas_start = Instant::now();
-        let outcome = self
-            .tables
-            .meta_store()
-            .cas_put(
-                publication.table,
-                &publication.key,
-                expected,
-                publication.value,
-            )
-            .await?;
+        self.authority_publish(
+            publication.new_head,
+            publication.head_artifact_checksum,
+            self.observe_upstream(),
+        )
+        .await?;
         timings.cas_ms = cas_start.elapsed().as_millis() as u64;
         let commit_elapsed_ms = commit_start.elapsed().as_millis() as u64;
         timings.commit_b_ms = commit_elapsed_ms
             .saturating_sub(timings.commit_a_meta_ms.max(timings.commit_a_blob_ms));
-        self.publication.cas_outcome_into_result(outcome).await?;
         Ok((outcomes, timings))
+    }
+
+    /// Re-derives the per-block artifact-checksum chain for a contiguous run of
+    /// finalized `blocks` and compares each running value against the published
+    /// [`BlockRecord`]. This is the standby verification primitive: it proves
+    /// the node would have written byte-equivalent artifacts (modulo zstd
+    /// framing — the digest folds *uncompressed* rows) WITHOUT acquiring the
+    /// write lease or performing any writes.
+    ///
+    /// Batch-independent: the chain is seeded from the published predecessor
+    /// record and folded one block at a time, so a standby may call this with
+    /// any grouping regardless of how the primary batched ingest. Returns at
+    /// the first block that mismatches ([`VerifyOutcome::Mismatch`]) or whose
+    /// record is not yet published ([`VerifyOutcome::Pending`]).
+    pub async fn verify_artifact_checksums(
+        &self,
+        blocks: &[FinalizedBlock],
+    ) -> Result<VerifyOutcome> {
+        let Some(first) = blocks.first() else {
+            return Ok(VerifyOutcome::Match { through_block: 0 });
+        };
+        let block_tables = self.tables.blocks();
+
+        // Seed the chain and the family primary-id frontier from the published
+        // predecessor (or the empty/zero seed when verifying from block 1).
+        let first_number = first.block_number();
+        let (mut cumulative, mut next_log, mut next_tx, mut next_trace) = if first_number <= 1 {
+            (EMPTY_CHECKSUM, LogId::ZERO, TxId::ZERO, TraceId::ZERO)
+        } else {
+            let prev = block_tables.load_record(first_number - 1).await?.ok_or(
+                MonadChainDataError::MissingData("missing predecessor record for verification"),
+            )?;
+            (
+                prev.artifact_checksum,
+                LogId::from(prev.logs.next_primary_id_exclusive()?),
+                TxId::from(prev.txs.next_primary_id_exclusive()?),
+                TraceId::from(prev.traces.next_primary_id_exclusive()?),
+            )
+        };
+
+        let epoch_blocks = self.tables.dicts().config().epoch_blocks;
+        let mut last_verified = first_number.saturating_sub(1);
+        for block in blocks {
+            let epoch = block.block_number() / epoch_blocks;
+            let version = u32::try_from(epoch)
+                .map_err(|_| MonadChainDataError::Decode("dict epoch/version overflow"))?;
+            self.ensure_epoch_dicts(version).await?;
+            let dicts = self.tables.dicts();
+            let log_codec =
+                dicts
+                    .write_codec(Family::Log, version)
+                    .ok_or(MonadChainDataError::MissingData(
+                        "epoch log codec not installed",
+                    ))?;
+            let tx_codec =
+                dicts
+                    .write_codec(Family::Tx, version)
+                    .ok_or(MonadChainDataError::MissingData(
+                        "epoch tx codec not installed",
+                    ))?;
+            let trace_codec = dicts.write_codec(Family::Trace, version).ok_or(
+                MonadChainDataError::MissingData("epoch trace codec not installed"),
+            )?;
+
+            let log_plan = LogIngestPlan::build(block, next_log, &log_codec)?;
+            let tx_plan = TxIngestPlan::build(block, next_tx, &tx_codec)?;
+            let trace_plan = TraceIngestPlan::build(block, next_trace, &trace_codec)?;
+
+            cumulative = digest::chain(
+                cumulative,
+                block_content_digest(block, &log_plan, &tx_plan, &trace_plan),
+            );
+
+            let number = block.block_number();
+            match block_tables.load_record(number).await? {
+                None => {
+                    return Ok(VerifyOutcome::Pending {
+                        block_number: number,
+                    })
+                }
+                Some(published) if published.artifact_checksum != cumulative => {
+                    return Ok(VerifyOutcome::Mismatch {
+                        block_number: number,
+                        published: published.artifact_checksum,
+                        computed: cumulative,
+                    });
+                }
+                Some(_) => {}
+            }
+
+            // Advance the family frontier for the next block.
+            next_log = LogId::from(log_plan.log_window.next_primary_id_exclusive()?);
+            next_tx = TxId::from(tx_plan.tx_window.next_primary_id_exclusive()?);
+            next_trace = TraceId::from(trace_plan.trace_window.next_primary_id_exclusive()?);
+            last_verified = number;
+        }
+
+        Ok(VerifyOutcome::Match {
+            through_block: last_verified,
+        })
     }
 
     /// Executes a finalized logs query over the current published head.
@@ -1103,7 +1801,7 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
         .await?;
 
         let mut response = if request.filter.has_indexed_clause() {
-            execute_indexed_log_query(&self.tables, &request, window).await?
+            execute_indexed_log_query(&self.tables, &request, window, head).await?
         } else {
             execute_block_scan_query(&self.tables, &request, window).await?
         };
@@ -1152,7 +1850,7 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
         .await?;
 
         let mut response = if request.filter.has_indexed_clause() {
-            execute_indexed_tx_query(&self.tables, &request, window).await?
+            execute_indexed_tx_query(&self.tables, &request, window, head).await?
         } else {
             execute_block_scan_tx_query(&self.tables, &request, window).await?
         };
@@ -1211,7 +1909,7 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
         .await?;
 
         let mut response = if request.filter.has_indexed_clause() {
-            execute_indexed_trace_query(&self.tables, &request, window).await?
+            execute_indexed_trace_query(&self.tables, &request, window, head).await?
         } else {
             execute_block_scan_trace_query(&self.tables, &request, window).await?
         };
@@ -1260,7 +1958,7 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
         .await?;
 
         let mut response = if request.filter.has_indexed_clause() {
-            execute_indexed_transfer_query(&self.tables, &request, window).await?
+            execute_indexed_transfer_query(&self.tables, &request, window, head).await?
         } else {
             execute_block_scan_transfer_query(&self.tables, &request, window).await?
         };
@@ -1310,9 +2008,177 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
     }
 
     async fn load_published_head(&self) -> Result<u64> {
-        self.publication
-            .load_published_head()
-            .await?
-            .ok_or(MonadChainDataError::MissingData("no published blocks"))
+        match self.publication.load_published_head().await? {
+            // Head 0 is the acquire-before-first-publish sentinel: a lease
+            // writer has claimed ownership (writing the row at head 0) but no
+            // block is finalized yet. For a reader this is indistinguishable
+            // from a never-written store — there are no finalized blocks — so it
+            // reports "no published blocks" rather than resolving a range
+            // against head 0 (which would surface a confusing "block range
+            // starts above the published head"). Real published heads are always
+            // >= 1, since ingest starts at block 1.
+            None | Some(0) => Err(MonadChainDataError::MissingData("no published blocks")),
+            Some(head) => Ok(head),
+        }
+    }
+}
+
+#[cfg(test)]
+mod recovery_gating_tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use super::*;
+    use crate::{
+        family::FinalizedBlock,
+        primitives::EvmBlockHeader,
+        store::{InMemoryBlobStore, InMemoryMetaStore},
+    };
+
+    fn empty_block(number: u64, parent: crate::family::Hash32) -> FinalizedBlock {
+        FinalizedBlock {
+            header: EvmBlockHeader {
+                number,
+                parent_hash: parent,
+                ..EvmBlockHeader::default()
+            },
+            logs_by_tx: vec![],
+            txs: Vec::new(),
+            traces: vec![],
+        }
+    }
+
+    fn chain(n: u64) -> Vec<FinalizedBlock> {
+        let mut blocks = Vec::with_capacity(n as usize);
+        let mut parent = crate::family::Hash32::ZERO;
+        for number in 1..=n {
+            let block = empty_block(number, parent);
+            parent = block.header.hash_slow();
+            blocks.push(block);
+        }
+        blocks
+    }
+
+    fn writer(
+        meta: InMemoryMetaStore,
+        owner_id: u64,
+        clock: std::sync::Arc<AtomicU64>,
+        lease_blocks: u64,
+        renew_threshold: u64,
+    ) -> MonadChainDataService<InMemoryMetaStore, InMemoryBlobStore> {
+        MonadChainDataService::new_reader_writer(
+            meta,
+            InMemoryBlobStore::default(),
+            QueryLimits::UNLIMITED,
+            owner_id,
+            lease_blocks,
+            renew_threshold,
+            Arc::new(move || Some(clock.load(Ordering::SeqCst))),
+        )
+    }
+
+    // Reacquired (takeover) runs `ensure_open_indexes_rebuilt`; Continuous
+    // (in-window renewal) does not. The open-index rebuild signal
+    // (`rebuilt_for_head`) is the observable.
+    #[tokio::test(flavor = "current_thread")]
+    async fn reacquire_runs_recovery_continuous_skips_it() {
+        let meta = InMemoryMetaStore::default();
+        let blocks = chain(4);
+
+        // Node A (owner 1) acquires at observed=10 (lease through 13) and
+        // publishes blocks 1..=2.
+        let clock_a = Arc::new(AtomicU64::new(10));
+        let node_a = writer(meta.clone(), 1, clock_a.clone(), 4, 1);
+        node_a
+            .ingest_blocks(blocks[..2].to_vec())
+            .await
+            .expect("A publishes 1..=2");
+        assert_eq!(
+            node_a.publication().load_published_head().await.unwrap(),
+            Some(2)
+        );
+
+        // Node B (owner 2) observes 20 > 13: takeover → Reacquired → recovery
+        // rebuilds open indexes from the published head (2).
+        let clock_b = Arc::new(AtomicU64::new(20));
+        let node_b = writer(meta.clone(), 2, clock_b.clone(), 4, 1);
+        let runs_before = node_b.recovery_runs.load(Ordering::SeqCst);
+        let plan = node_b
+            .plan_ingest_blocks(blocks[2..3].to_vec())
+            .await
+            .expect("B plans block 3")
+            .expect("B has a plan");
+        assert_eq!(
+            node_b.recovery_runs.load(Ordering::SeqCst),
+            runs_before + 1,
+            "Reacquired must run the open-index rebuild exactly once"
+        );
+        node_b.apply_ingest_plan(plan).await.expect("B publishes 3");
+
+        // Same process B renews in-window (observe 21, lease now through 23):
+        // Continuous → recovery is skipped. Drop the planning cache so the
+        // cold-cache branch (the only place gating runs) is exercised again.
+        *node_b.planning_state.lock().await = None;
+        let runs_before = node_b.recovery_runs.load(Ordering::SeqCst);
+        clock_b.store(21, Ordering::SeqCst);
+        let plan = node_b
+            .plan_ingest_blocks(blocks[3..4].to_vec())
+            .await
+            .expect("B plans block 4")
+            .expect("B has a plan");
+        assert_eq!(
+            node_b.recovery_runs.load(Ordering::SeqCst),
+            runs_before,
+            "Continuous renewal must not re-run the open-index rebuild"
+        );
+        node_b.apply_ingest_plan(plan).await.expect("B publishes 4");
+        assert_eq!(
+            node_b.publication().load_published_head().await.unwrap(),
+            Some(4)
+        );
+    }
+
+    // A leader that acquires the lease (which writes the publication row at
+    // head 0) but dies before publishing block 1 leaves head 0 in the store. A
+    // standby taking over sees continuity `Reacquired` with head 0; it must
+    // start clean (head 0 == nothing published) rather than try to load a
+    // nonexistent block-0 record. Regression test for the over-narrow
+    // `0 if Fresh` head-0 guard.
+    #[tokio::test(flavor = "current_thread")]
+    async fn takeover_before_first_publish_starts_clean() {
+        let meta = InMemoryMetaStore::default();
+        let blocks = chain(1);
+
+        // Node A acquires the lease at observed=10 (writes head 0) by planning
+        // block 1, then "dies" without applying — the plan is dropped, so no
+        // head past 0 is ever published.
+        let clock_a = Arc::new(AtomicU64::new(10));
+        let node_a = writer(meta.clone(), 1, clock_a.clone(), 4, 1);
+        let _plan = node_a
+            .plan_ingest_blocks(blocks.clone())
+            .await
+            .expect("A plans block 1")
+            .expect("A has a plan");
+        // The acquire CAS wrote the row at head 0 even though nothing published.
+        assert_eq!(
+            node_a.publication().load_published_head().await.unwrap(),
+            Some(0)
+        );
+        drop(node_a);
+
+        // Node B observes 20 > A's lease bound (13): takeover with head still 0.
+        // It must plan and publish block 1 cleanly, not error on a missing
+        // block-0 record.
+        let clock_b = Arc::new(AtomicU64::new(20));
+        let node_b = writer(meta.clone(), 2, clock_b.clone(), 4, 1);
+        let plan = node_b
+            .plan_ingest_blocks(blocks)
+            .await
+            .expect("B plans block 1 after takeover")
+            .expect("B has a plan");
+        node_b.apply_ingest_plan(plan).await.expect("B publishes 1");
+        assert_eq!(
+            node_b.publication().load_published_head().await.unwrap(),
+            Some(1)
+        );
     }
 }

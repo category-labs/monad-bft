@@ -26,16 +26,22 @@ use crate::{
     engine::{
         bitmap::{
             compact_bitmap_page, global_page_start, local_page_start, BitmapPageArtifact,
-            BitmapPageMeta,
+            BitmapPageCounts, BitmapPageMeta, STREAM_PAGES_PER_SHARD, STREAM_PAGE_LOCAL_ID_SPAN,
         },
         family::Family,
         ingest::ReadPlanningTimings,
         open_index::{OpenIndexes, OpenIndexesEviction},
         tables::FamilyTables,
     },
-    error::Result,
+    error::{MonadChainDataError, Result},
+    primitives::state::PrimaryId,
     store::{BlobStore, MetaStore, WriteSession},
 };
+
+/// Local-id span of one shard (`2^LOCAL_ID_BITS`). A shard fully seals once
+/// the ingestion frontier crosses this boundary, at which point every one of
+/// its pages is compacted and its per-stream page-count manifests are final.
+const SHARD_LOCAL_ID_SPAN: u64 = 1u64 << PrimaryId::LOCAL_ID_BITS;
 
 #[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,6 +77,10 @@ pub struct BitmapBatchCompactionPlan {
     /// at the point the frontier moved past it (for non-final entries) or
     /// at the end of the batch (for the final entry).
     pub open_stream_writes: Vec<(u64, BTreeSet<String>)>,
+    /// Per-stream page-count manifests for shards that fully sealed in this
+    /// batch (the frontier crossed their last page). One entry per stream that
+    /// has any non-empty page in a newly-sealed shard; immutable once written.
+    pub page_count_manifests: Vec<(String, BitmapPageCounts)>,
     pub has_writes: bool,
     pub(crate) timings: ReadPlanningTimings,
 }
@@ -111,6 +121,7 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
             return Ok(BitmapBatchCompactionPlan {
                 compacted_pages: Vec::new(),
                 open_stream_writes: Vec::new(),
+                page_count_manifests: Vec::new(),
                 has_writes: false,
                 timings: ReadPlanningTimings::default(),
             });
@@ -126,6 +137,7 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
             return Ok(BitmapBatchCompactionPlan {
                 compacted_pages: Vec::new(),
                 open_stream_writes: Vec::new(),
+                page_count_manifests: Vec::new(),
                 has_writes: false,
                 timings,
             });
@@ -207,13 +219,130 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
         );
 
         let compacted_pages = compact_bitmap_jobs(&compaction_jobs, &mut timings)?;
-        let has_writes = !compacted_pages.is_empty() || !open_stream_writes.is_empty();
+
+        // A shard fully seals once the frontier crosses its last page; at that
+        // point every page in the shard is compacted, so its per-stream
+        // page-count manifests are final and never change again. Roll them up
+        // from this batch's compacted page metas plus the already-durable
+        // per-page metas of pages this shard sealed in earlier batches.
+        let page_count_manifests = self
+            .plan_page_count_manifests(
+                open_indexes,
+                from_next_primary_id,
+                next_primary_id,
+                &compacted_pages,
+            )
+            .await?;
+
+        let has_writes = !compacted_pages.is_empty()
+            || !open_stream_writes.is_empty()
+            || !page_count_manifests.is_empty();
         Ok(BitmapBatchCompactionPlan {
             compacted_pages,
             open_stream_writes,
+            page_count_manifests,
             has_writes,
             timings,
         })
+    }
+
+    /// Builds the per-stream page-count manifests for every shard the frontier
+    /// fully sealed in this batch. For each newly-sealed shard the streams come
+    /// from the durable, append-only open-stream inventory (committed by prior
+    /// batches) unioned with the streams this batch is sealing; the per-page
+    /// counts come from this batch's compacted metas where available, else the
+    /// already-durable per-page metas. The 256 inventory probes per sealed
+    /// shard are amortized over a full shard's worth of ingested ids.
+    async fn plan_page_count_manifests(
+        &self,
+        open_indexes: &OpenIndexes,
+        from_next_primary_id: u64,
+        next_primary_id: u64,
+        compacted_pages: &[CompactedPageWrite],
+    ) -> Result<Vec<(String, BitmapPageCounts)>> {
+        let mut manifests = Vec::new();
+        // This batch's compacted page counts, indexed by (stream_id, page) so
+        // we never re-read a page whose count we just produced.
+        let mut fresh_counts: BTreeMap<(&str, u32), u32> = BTreeMap::new();
+        for page in compacted_pages {
+            fresh_counts.insert(
+                (page.stream_id.as_str(), page.page_start_local),
+                page.meta.count,
+            );
+        }
+
+        for sealed_shard in newly_sealed_shards(from_next_primary_id, next_primary_id) {
+            // Map each stream that ever touched this shard to the local page
+            // starts it touched, so the per-page meta reads below probe only
+            // the cells that actually carry data rather than all 256 pages.
+            let mut pages_by_stream: BTreeMap<String, BTreeSet<u32>> = BTreeMap::new();
+            for page_idx in 0..STREAM_PAGES_PER_SHARD {
+                let page_start_local = page_idx * STREAM_PAGE_LOCAL_ID_SPAN;
+                let page_global_start = sealed_shard
+                    .saturating_mul(SHARD_LOCAL_ID_SPAN)
+                    .saturating_add(u64::from(page_idx) * u64::from(STREAM_PAGE_LOCAL_ID_SPAN));
+                // Durable inventory for pages sealed in prior batches.
+                for stream in self.bitmap().load_open_streams(page_global_start).await? {
+                    pages_by_stream
+                        .entry(stream)
+                        .or_default()
+                        .insert(page_start_local);
+                }
+                // In-memory projected inventory for pages this batch is sealing
+                // (staged to the durable table in the same session, not yet
+                // committed when planning runs).
+                for stream in open_indexes.bitmap_open_streams(self.family(), page_global_start) {
+                    pages_by_stream
+                        .entry(stream)
+                        .or_default()
+                        .insert(page_start_local);
+                }
+            }
+
+            for (stream_id, pages) in pages_by_stream {
+                let mut pairs = Vec::new();
+                for page_start_local in pages {
+                    let count = if let Some(count) =
+                        fresh_counts.get(&(stream_id.as_str(), page_start_local))
+                    {
+                        *count
+                    } else if let Some(artifact) = self
+                        .bitmap()
+                        .load_page_artifact(&stream_id, page_start_local)
+                        .await?
+                    {
+                        // Pages sealed in earlier batches keep their count in
+                        // the durable compacted artifact (its meta header), so
+                        // no fragment re-read is needed for the roll-up.
+                        artifact.meta.count
+                    } else {
+                        // Inventory recorded a touch but no compacted page
+                        // artifact exists for it. On a sealing shard every
+                        // referenced page must already be compacted (fresh in
+                        // this batch's `fresh_counts` or durable from a prior
+                        // batch), so a missing one means the
+                        // ingestion/compaction commit contract is broken. We
+                        // cannot silently drop the cell: a page absent from a
+                        // PRESENT manifest reads as count 0 on the query side
+                        // (`query::bitmap::clause_page_counts` -> `unwrap_or(0)`),
+                        // so on this now-sealed shard the page would be skipped
+                        // with zero fetches, silently dropping real matches.
+                        // Surface it loudly instead.
+                        return Err(MonadChainDataError::SealedShardPageMissingArtifact {
+                            stream_id: stream_id.clone(),
+                            page_start_local,
+                        });
+                    };
+                    pairs.push((page_start_local, count));
+                }
+                let counts = BitmapPageCounts::from_pairs(pairs);
+                if !counts.pages.is_empty() {
+                    manifests.push((stream_id, counts));
+                }
+            }
+        }
+
+        Ok(manifests)
     }
 
     pub fn stage_bitmap_compactions(
@@ -234,6 +363,9 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
         }
         for (page_start, streams) in &plan.open_stream_writes {
             self.bitmap().stage_open_streams(w, *page_start, streams);
+        }
+        for (stream_id, counts) in &plan.page_count_manifests {
+            self.bitmap().stage_page_counts(w, stream_id, counts);
         }
     }
 
@@ -277,6 +409,32 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
         }
         Ok(())
     }
+}
+
+/// Shard indices the frontier *fully sealed* moving from `from_next_primary_id`
+/// (this batch's first id) to `next_primary_id` (its exclusive end). A shard
+/// `S` seals when the frontier reaches `(S + 1) * SHARD_LOCAL_ID_SPAN`; a shard
+/// already fully below `from_next_primary_id` sealed in an earlier batch and is
+/// excluded. Mirrors `directory_compaction::sealed_ranges`.
+fn newly_sealed_shards(from_next_primary_id: u64, next_primary_id: u64) -> Vec<u64> {
+    if next_primary_id <= from_next_primary_id {
+        return Vec::new();
+    }
+
+    let mut shard = from_next_primary_id / SHARD_LOCAL_ID_SPAN;
+    let mut out = Vec::new();
+    loop {
+        let shard_end = shard.saturating_add(1).saturating_mul(SHARD_LOCAL_ID_SPAN);
+        if shard_end > next_primary_id {
+            break;
+        }
+        if shard_end > from_next_primary_id {
+            out.push(shard);
+        }
+        shard = shard.saturating_add(1);
+    }
+
+    out
 }
 
 fn compact_bitmap_jobs(
@@ -457,7 +615,10 @@ mod tests {
 
     use bytes::Bytes;
 
-    use super::{batch_bitmap_shape, build_compaction_plan, BitmapCompactionPlan};
+    use super::{
+        batch_bitmap_shape, build_compaction_plan, newly_sealed_shards, BitmapCompactionPlan,
+        SHARD_LOCAL_ID_SPAN,
+    };
     use crate::engine::{
         bitmap::{touched_streams_by_page, BitmapFragmentWrite, STREAM_PAGE_LOCAL_ID_SPAN},
         ingest::ReadPlanningTimings,
@@ -646,6 +807,28 @@ mod tests {
     }
 
     #[test]
+    fn newly_sealed_shards_reports_each_fully_crossed_shard() {
+        // Frontier moves from inside shard 0 to inside shard 2: shards 0 and 1
+        // fully sealed; shard 2 is the new open frontier shard.
+        assert_eq!(
+            newly_sealed_shards(SHARD_LOCAL_ID_SPAN - 2, SHARD_LOCAL_ID_SPAN * 2 + 3),
+            vec![0, 1]
+        );
+        // No advance: nothing seals.
+        assert_eq!(
+            newly_sealed_shards(SHARD_LOCAL_ID_SPAN + 5, SHARD_LOCAL_ID_SPAN + 5),
+            Vec::<u64>::new()
+        );
+        // Advance within a single shard never crosses its last page.
+        assert_eq!(
+            newly_sealed_shards(1, SHARD_LOCAL_ID_SPAN - 1),
+            Vec::<u64>::new()
+        );
+        // Landing exactly on the shard boundary seals the lower shard.
+        assert_eq!(newly_sealed_shards(0, SHARD_LOCAL_ID_SPAN), vec![0]);
+    }
+
+    #[test]
     fn compaction_plan_keeps_final_frontier_page_open_even_when_empty() {
         let plan = build_compaction_plan(
             BTreeSet::from(["addr/a/0000000000".to_string()]),
@@ -665,5 +848,134 @@ mod tests {
                 final_open_streams: BTreeSet::new(),
             }
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn plan_page_count_manifests_rolls_up_sealed_shard_counts() {
+        use roaring::RoaringBitmap;
+
+        use crate::{
+            engine::{
+                bitmap::{
+                    encode_bitmap_blob, sharded_stream_id, BitmapBlob, BitmapPageArtifact,
+                    BitmapPageMeta,
+                },
+                family::Family,
+                open_index::OpenIndexes,
+                tables::Tables,
+            },
+            store::{InMemoryBlobStore, InMemoryMetaStore},
+        };
+
+        let tables = Tables::new(InMemoryMetaStore::default(), InMemoryBlobStore::default());
+        let family = tables.family(Family::Log);
+        let page_span = STREAM_PAGE_LOCAL_ID_SPAN;
+
+        // Build a sealed shard 0 with two streams across distinct pages, seeding
+        // both the durable compacted artifact (the count source for prior-batch
+        // pages) and the durable open-stream inventory (the stream-set source).
+        let artifact = |count: u32| {
+            let bitmap = RoaringBitmap::from_iter(0..count);
+            let blob = BitmapBlob {
+                min_local: 0,
+                max_local: count.saturating_sub(1),
+                count,
+                bitmap,
+            };
+            BitmapPageArtifact {
+                meta: BitmapPageMeta {
+                    min_local: 0,
+                    max_local: count.saturating_sub(1),
+                    count,
+                },
+                bitmap_blob: encode_bitmap_blob(&blob).unwrap(),
+            }
+        };
+
+        let s_a = sharded_stream_id("addr", &[0xAA], 0);
+        let s_b = sharded_stream_id("addr", &[0xBB], 0);
+
+        // s_a: page 0 (count 3) and page 2 (count 5). s_b: page 1 (count 7).
+        family
+            .store_bitmap_page_artifact(&s_a, 0, &artifact(3))
+            .await
+            .unwrap();
+        family
+            .store_bitmap_page_artifact(&s_a, 2 * page_span, &artifact(5))
+            .await
+            .unwrap();
+        family
+            .store_bitmap_page_artifact(&s_b, page_span, &artifact(7))
+            .await
+            .unwrap();
+        family
+            .record_open_bitmap_streams(0, &BTreeSet::from([s_a.clone()]))
+            .await
+            .unwrap();
+        family
+            .record_open_bitmap_streams(u64::from(page_span), &BTreeSet::from([s_b.clone()]))
+            .await
+            .unwrap();
+        family
+            .record_open_bitmap_streams(2 * u64::from(page_span), &BTreeSet::from([s_a.clone()]))
+            .await
+            .unwrap();
+
+        // Frontier crosses shard 0's last page => shard 0 fully seals. No
+        // fresh compacted pages in this batch (all sealed earlier).
+        let manifests = family
+            .plan_page_count_manifests(&OpenIndexes::default(), 0, SHARD_LOCAL_ID_SPAN, &[])
+            .await
+            .expect("plan manifests");
+
+        let by_stream: BTreeMap<_, _> = manifests.into_iter().collect();
+        assert_eq!(
+            by_stream.get(&s_a).map(|m| m.pages.clone()),
+            Some(vec![(0, 3), (2 * page_span, 5)])
+        );
+        assert_eq!(
+            by_stream.get(&s_b).map(|m| m.pages.clone()),
+            Some(vec![(page_span, 7)])
+        );
+        assert_eq!(by_stream.len(), 2);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn plan_page_count_manifests_hard_errors_on_missing_artifact() {
+        use crate::{
+            engine::{
+                bitmap::sharded_stream_id, family::Family, open_index::OpenIndexes, tables::Tables,
+            },
+            error::MonadChainDataError,
+            store::{InMemoryBlobStore, InMemoryMetaStore},
+        };
+
+        let tables = Tables::new(InMemoryMetaStore::default(), InMemoryBlobStore::default());
+        let family = tables.family(Family::Log);
+
+        let s_a = sharded_stream_id("addr", &[0xAA], 0);
+
+        // Seed the durable open-stream inventory with a (stream, page) touch in
+        // sealing shard 0, but write NO compacted artifact for it. On a sealing
+        // shard this is a broken commit contract, not a skippable cell.
+        family
+            .record_open_bitmap_streams(0, &BTreeSet::from([s_a.clone()]))
+            .await
+            .unwrap();
+
+        // Frontier crosses shard 0's last page => shard 0 fully seals. No fresh
+        // compacted pages in this batch, so the missing artifact must surface.
+        let err = family
+            .plan_page_count_manifests(&OpenIndexes::default(), 0, SHARD_LOCAL_ID_SPAN, &[])
+            .await
+            .expect_err("missing artifact on a sealing shard must hard-error");
+
+        assert!(matches!(
+            err,
+            MonadChainDataError::SealedShardPageMissingArtifact {
+                stream_id,
+                page_start_local: 0,
+            } if stream_id == s_a
+        ));
     }
 }

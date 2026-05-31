@@ -23,6 +23,8 @@ use crate::{
         encode_grouped_bitmap_fragments, sharded_stream_id, touched_streams_by_page,
         BitmapFragmentWrite,
     },
+    engine::digest::{ArtifactChecksum, RowDigest},
+    engine::row_codec::RowCodec,
     error::{MonadChainDataError, Result},
     family::FinalizedBlock,
     primitives::state::{FamilyWindowRecord, LogId},
@@ -35,18 +37,22 @@ pub struct LogIngestPlan {
     pub block_log_blob: Vec<u8>,
     pub bitmap_fragments: Vec<BitmapFragmentWrite>,
     pub touched_bitmap_streams_by_page: BTreeMap<u64, BTreeSet<String>>,
+    /// Checksum over this block's uncompressed log row payloads, in order. Fed
+    /// into the per-block artifact digest for standby ingest verification.
+    pub rows_digest: ArtifactChecksum,
     pub written_logs: usize,
 }
 
 impl LogIngestPlan {
     /// Derives the per-block log artifacts and index fragments for one finalized block.
-    pub fn build(block: &FinalizedBlock, first_log_id: LogId) -> Result<Self> {
+    pub fn build(block: &FinalizedBlock, first_log_id: LogId, codec: &RowCodec) -> Result<Self> {
         Self::validate_logs(block)?;
         let logs = Self::flatten_logs(block)?;
         let log_count = u32::try_from(logs.len())
             .map_err(|_| MonadChainDataError::Decode("log count overflow"))?;
 
-        let (block_log_header, block_log_blob) = Self::encode_block_logs(&logs)?;
+        let (block_log_header, block_log_blob, rows_digest) =
+            Self::encode_block_logs(&logs, codec)?;
         let bitmap_fragments = Self::collect_bitmap_fragments(&logs, first_log_id)?;
         let touched_bitmap_streams_by_page = touched_streams_by_page(&bitmap_fragments)?;
         let log_window = FamilyWindowRecord {
@@ -60,6 +66,7 @@ impl LogIngestPlan {
             block_log_blob,
             bitmap_fragments,
             touched_bitmap_streams_by_page,
+            rows_digest,
             written_logs: logs.len(),
         })
     }
@@ -100,16 +107,26 @@ impl LogIngestPlan {
         Ok(logs)
     }
 
-    fn encode_block_logs(logs: &[RawLogEntry]) -> Result<(LogBlockHeader, Vec<u8>)> {
+    fn encode_block_logs(
+        logs: &[RawLogEntry],
+        codec: &RowCodec,
+    ) -> Result<(LogBlockHeader, Vec<u8>, ArtifactChecksum)> {
         let mut offsets = Vec::with_capacity(logs.len() + 1);
         let mut blob = Vec::new();
+        let mut rows_digest = RowDigest::new();
+        let mut compressor = codec.block_compressor()?;
 
-        for log in logs {
+        for log in logs.iter() {
             offsets.push(
                 u32::try_from(blob.len())
                     .map_err(|_| MonadChainDataError::Decode("block log blob too large"))?,
             );
-            blob.extend_from_slice(&log.encode());
+            let raw = log.encode();
+            // Fold the uncompressed payload before framing so the artifact
+            // checksum is independent of the zstd codec/version.
+            rows_digest.row(&raw);
+            let frame = compressor.compress_row(&raw)?;
+            blob.extend_from_slice(&frame);
         }
 
         offsets.push(
@@ -117,7 +134,14 @@ impl LogIngestPlan {
                 .map_err(|_| MonadChainDataError::Decode("block log blob too large"))?,
         );
 
-        Ok((LogBlockHeader { offsets }, blob))
+        Ok((
+            LogBlockHeader {
+                offsets,
+                dict_version: codec.version(),
+            },
+            blob,
+            rows_digest.finish(),
+        ))
     }
 
     fn collect_bitmap_fragments(

@@ -13,14 +13,14 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-mod compression;
 mod in_memory;
+#[cfg(feature = "s3")]
+mod s3;
 
 use bytes::Bytes;
-pub use compression::{
-    BlobCompressionConfig, BlobCompressionSnapshot, BlobCompressionStats, BlobCompressionStore,
-};
 pub use in_memory::InMemoryBlobStore;
+#[cfg(feature = "s3")]
+pub use s3::{S3BlobStore, S3BlobStoreConfig, S3Credentials};
 
 use crate::error::{MonadChainDataError, Result};
 
@@ -105,22 +105,42 @@ pub trait BlobStore: Clone + Send + Sync + 'static {
         BlobTable::new(self.clone(), table)
     }
 
-    async fn put_blob(&self, table: BlobTableId, key: &[u8], value: Bytes) -> Result<()>;
-    async fn get_blob(&self, table: BlobTableId, key: &[u8]) -> Result<Option<Bytes>>;
-    async fn apply_writes(&self, writes: Vec<BlobWriteOp>) -> Result<()>;
-    async fn read_range(
+    // These all return `Send` futures so callers can drive them across thread
+    // boundaries (e.g. the ingest binary spawns the IO/plan workers that call
+    // through here on a `tokio::spawn`ed task, which requires `Send`). Impls may
+    // still use plain `async fn` as long as their bodies are `Send`.
+    fn put_blob(
+        &self,
+        table: BlobTableId,
+        key: &[u8],
+        value: Bytes,
+    ) -> impl std::future::Future<Output = Result<()>> + Send;
+    // Point read returns a `Send` future so the cache layer can store it in a
+    // cross-thread single-flight `Shared` (see `store/cache`).
+    fn get_blob(
+        &self,
+        table: BlobTableId,
+        key: &[u8],
+    ) -> impl std::future::Future<Output = Result<Option<Bytes>>> + Send;
+    fn apply_writes(
+        &self,
+        writes: Vec<BlobWriteOp>,
+    ) -> impl std::future::Future<Output = Result<()>> + Send;
+    fn read_range(
         &self,
         table: BlobTableId,
         key: &[u8],
         start: usize,
         end_exclusive: usize,
-    ) -> Result<Option<Bytes>> {
-        let Some(blob) = self.get_blob(table, key).await? else {
-            return Ok(None);
-        };
-        if start > end_exclusive || start > blob.len() {
-            return Err(MonadChainDataError::Decode("invalid blob range"));
+    ) -> impl std::future::Future<Output = Result<Option<Bytes>>> + Send {
+        async move {
+            let Some(blob) = self.get_blob(table, key).await? else {
+                return Ok(None);
+            };
+            if start > end_exclusive || start > blob.len() {
+                return Err(MonadChainDataError::Decode("invalid blob range"));
+            }
+            Ok(Some(blob.slice(start..end_exclusive.min(blob.len()))))
         }
-        Ok(Some(blob.slice(start..end_exclusive.min(blob.len()))))
     }
 }

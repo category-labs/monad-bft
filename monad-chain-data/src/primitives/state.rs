@@ -264,6 +264,12 @@ pub struct BlockRecord {
     /// of the on-disk RLP layout; data dirs from before the trace family
     /// existed must be wiped and re-ingested.
     pub traces: FamilyWindowRecord,
+    /// Running artifact checksum chained through this block: the head value of
+    /// the per-block content-digest chain (see [`crate::engine::digest`]). A
+    /// standby that re-derives the chain from the same finalized blocks must
+    /// arrive at this exact value, proving it would have written the same
+    /// artifacts. Adding this field is a hard break of the on-disk RLP layout.
+    pub artifact_checksum: Hash32,
 }
 
 impl BlockRecord {
@@ -277,9 +283,31 @@ impl BlockRecord {
     }
 }
 
+/// Per-process session identity for the write-authority lease. Distinct from
+/// the stable per-node `owner_id`: a restarted process reuses its `owner_id`
+/// but generates a fresh `session_id`, so it always takes the takeover /
+/// reacquire path (and thus runs recovery). See `engine::authority`.
+pub type SessionId = [u8; 16];
+
+/// The single CAS-guarded coordination row. `indexed_finalized_head` is the
+/// reader-visible publication watermark and `head_artifact_checksum` is the
+/// chained artifact checksum at that head (see [`crate::engine::digest`]); the
+/// lease fields (`owner_id` / `session_id` / `lease_valid_through_block`) are
+/// the outer-ring write-authority state and are never consulted by the query
+/// path.
+///
+/// Field order is the on-disk RLP list order — do not reorder without a
+/// migration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 pub struct PublicationState {
     pub indexed_finalized_head: u64,
+    pub owner_id: u64,
+    pub session_id: SessionId,
+    pub lease_valid_through_block: u64,
+    /// Chained artifact checksum at `indexed_finalized_head`, mirroring the
+    /// published head block's [`BlockRecord::artifact_checksum`]. Preserved
+    /// across lease renew/takeover; only a head advance updates it.
+    pub head_artifact_checksum: Hash32,
 }
 
 impl PublicationState {
@@ -288,7 +316,26 @@ impl PublicationState {
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self> {
-        alloy_rlp::decode_exact(bytes)
+        alloy_rlp::decode_exact::<Self>(bytes)
             .map_err(|_| MonadChainDataError::Decode("invalid publication state rlp"))
+    }
+}
+
+#[cfg(test)]
+mod publication_state_tests {
+    use super::{Hash32, PublicationState};
+
+    #[test]
+    fn publication_state_round_trips() {
+        let state = PublicationState {
+            indexed_finalized_head: 91,
+            owner_id: 17,
+            session_id: *b"session-id-00001",
+            lease_valid_through_block: 123,
+            head_artifact_checksum: Hash32::repeat_byte(0xab),
+        };
+        let encoded = state.encode();
+        let decoded = PublicationState::decode(&encoded).expect("decode state");
+        assert_eq!(decoded, state);
     }
 }

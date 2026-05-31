@@ -19,8 +19,8 @@ use bytes::Bytes;
 use monad_chain_data::{
     engine::tables::PublicationTables,
     store::{
-        BlobStore, BlobTableId, BlobWriteOp, CasOutcome, FjallStore, FjallTuning, MetaStore,
-        MetaStoreCas, MetaWriteOp, PublicationCasParams, ScannableTableId, TableId,
+        BlobStore, BlobTableId, BlobWriteOp, FjallStore, FjallTuning, MetaStore, MetaStoreCas,
+        MetaWriteOp, ScannableTableId, TableId,
     },
     FinalizedBlock, IngestTx, MonadChainDataService, QueryLimits, B256,
 };
@@ -30,7 +30,6 @@ use common::{minimal_ingest_tx, test_header};
 
 const T_KV: TableId = TableId::new("fjall_batch_atomicity_kv");
 const T_SCAN: ScannableTableId = ScannableTableId::new("fjall_batch_atomicity_scan");
-const T_CAS: TableId = TableId::new("fjall_batch_atomicity_cas");
 const T_BLOB: BlobTableId = BlobTableId::new("fjall_batch_atomicity_blob");
 
 #[tokio::test(flavor = "current_thread")]
@@ -89,44 +88,6 @@ async fn blob_apply_writes_survive_reopen() {
         store.get_blob(T_BLOB, b"k").await.unwrap().as_deref(),
         Some(&b"v"[..])
     );
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn apply_writes_with_cas_conflict_does_not_persist_meta_writes() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let store = FjallStore::open(dir.path(), FjallTuning::default()).expect("open");
-    store
-        .cas_put(T_CAS, b"head", None, Bytes::from_static(b"v0"))
-        .await
-        .expect("seed");
-
-    let outcome = store
-        .apply_writes_with_cas(
-            vec![MetaWriteOp::Put {
-                table: T_KV,
-                key: b"orphan".to_vec(),
-                value: Bytes::from_static(b"x"),
-            }],
-            PublicationCasParams {
-                table: T_CAS,
-                key: b"head".to_vec(),
-                expected: None,
-                value: Bytes::from_static(b"v1"),
-            },
-        )
-        .await
-        .expect("apply_writes_with_cas");
-    assert!(matches!(outcome, CasOutcome::Conflict { .. }));
-
-    drop(store);
-    let store = FjallStore::open(dir.path(), FjallTuning::default()).expect("reopen");
-    assert!(store.get(T_KV, b"orphan").await.unwrap().is_none());
-    let (_, value) = store
-        .cas_get(T_CAS, b"head")
-        .await
-        .unwrap()
-        .expect("seeded");
-    assert_eq!(value.as_ref(), b"v0");
 }
 
 fn block_with_tx(number: u64, parent_hash: B256, sender_byte: u8) -> FinalizedBlock {

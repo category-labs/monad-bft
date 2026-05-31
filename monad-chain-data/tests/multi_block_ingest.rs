@@ -108,12 +108,13 @@ async fn ingest_plans_can_be_built_ahead_of_publication() {
         .expect("plan second")
         .expect("second plan");
 
-    assert!(service
-        .publication()
-        .load_published_head()
-        .await
-        .unwrap()
-        .is_none());
+    // The single-writer path writes the publication row only at publish time
+    // (no acquire-time row write), so before any apply there is no published
+    // head yet.
+    assert_eq!(
+        service.publication().load_published_head().await.unwrap(),
+        None
+    );
 
     let (first_outcomes, _) = service.apply_ingest_plan(first).await.expect("apply first");
     assert_eq!(first_outcomes.last().unwrap().indexed_finalized_head, 2);
@@ -144,12 +145,12 @@ async fn ingest_blocks_rejects_mismatched_continuity_within_batch() {
         .await
         .expect_err("mismatched parent_hash within batch must reject");
     assert!(matches!(err, MonadChainDataError::InvalidRequest(_)));
-    assert!(service
-        .publication()
-        .load_published_head()
-        .await
-        .unwrap()
-        .is_none());
+    // The rejected batch never published, and the single-writer path writes no
+    // row before publish, so there is still no published head.
+    assert_eq!(
+        service.publication().load_published_head().await.unwrap(),
+        None
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -163,8 +164,9 @@ async fn ingest_blocks_advances_head_exactly_once() {
     );
 
     service.ingest_blocks(blocks.clone()).await.expect("ingest");
-    // CAS version after a single batch ingest must be 1 — proving the head
-    // advanced exactly once across the whole batch.
+    // The single-writer path advances the head with exactly one CAS per batch
+    // (no per-block CAS, no acquire-time write), so a fresh writer's first batch
+    // lands the publication row at version 1.
     let (version, _) = service
         .publication()
         .load_state()
@@ -208,14 +210,13 @@ async fn ingest_blocks_skips_phase_b_when_no_family_writes_seal() {
         .await
         .unwrap()
         .expect("state");
+    // Version 1: the single-writer path advances the head with one CAS for the
+    // whole batch (no acquire-time write).
     assert_eq!(version.0, 1, "head advanced exactly once across the batch");
 
     const LOG_DIR_BUCKET: TableId = TableId::new("log_dir_bucket");
     const TX_DIR_BUCKET: TableId = TableId::new("tx_dir_bucket");
     const TRACE_DIR_BUCKET: TableId = TableId::new("trace_dir_bucket");
-    const LOG_BITMAP_PAGE_META: TableId = TableId::new("log_bitmap_page_meta");
-    const TX_BITMAP_PAGE_META: TableId = TableId::new("tx_bitmap_page_meta");
-    const TRACE_BITMAP_PAGE_META: TableId = TableId::new("trace_bitmap_page_meta");
 
     let kv = meta.kv_snapshot();
     for ((table, _), _) in &kv {
@@ -230,18 +231,6 @@ async fn ingest_blocks_skips_phase_b_when_no_family_writes_seal() {
         assert_ne!(
             *table, TRACE_DIR_BUCKET,
             "phase-B-skipped path must not write trace_dir_bucket rows"
-        );
-        assert_ne!(
-            *table, LOG_BITMAP_PAGE_META,
-            "phase-B-skipped path must not write log_bitmap_page_meta rows"
-        );
-        assert_ne!(
-            *table, TX_BITMAP_PAGE_META,
-            "phase-B-skipped path must not write tx_bitmap_page_meta rows"
-        );
-        assert_ne!(
-            *table, TRACE_BITMAP_PAGE_META,
-            "phase-B-skipped path must not write trace_bitmap_page_meta rows"
         );
     }
 }

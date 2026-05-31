@@ -13,7 +13,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::{hash_map::Entry, HashMap};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 use crate::{
     engine::{
@@ -27,42 +30,92 @@ use crate::{
 
 /// Resolves a primary id to its block number and position within that block.
 ///
+/// A bucket's representation is a pure function of the family id frontier:
+/// every bucket whose entire 10k id range lies below the published-head
+/// frontier is sealed and carries a compacted summary; at most one bucket —
+/// the one holding the frontier — is open and resolves from fragments. The
+/// resolver routes each lookup analytically on `sealed_below` rather than
+/// probing the summary and scanning fragments on a miss. Sealed buckets take
+/// a single summary `get`; only the open bucket scans.
+///
 /// Caches the chosen directory source for each 10k bucket so repeated id
 /// lookups do not re-read summaries or fragments.
+///
+/// Safe to share across the concurrent page futures of the indexed pipeline:
+/// `resolve` takes `&self` and guards the memo with a plain `Mutex` that is
+/// held ONLY for the in-memory check/insert and NEVER across the
+/// `load_bucket`/`load_bucket_fragments` `await` (mirroring the cache layer's
+/// no-await-under-lock discipline). Two tasks racing on the same bucket each
+/// fetch and the second insert wins harmlessly; concurrent `load_bucket` gets
+/// for the same sealed bucket are already coalesced by the cache-layer
+/// single-flight, so only the single open bucket's fragment scan can duplicate
+/// — an idempotent read.
 pub(crate) struct PrimaryIdResolver<'a, M: MetaStore, B: BlobStore> {
     family: &'a FamilyTables<M, B>,
-    bucket_cache: HashMap<u64, CachedBucket>,
+    /// First bucket start that is *not* sealed — i.e. `bucket_start` of the
+    /// family's frontier id at the publication head. Buckets strictly below
+    /// this are sealed; the bucket at or above it is the single open bucket.
+    sealed_below: u64,
+    bucket_cache: Mutex<HashMap<u64, Arc<CachedBucket>>>,
 }
 
 impl<'a, M: MetaStore, B: BlobStore> PrimaryIdResolver<'a, M, B> {
-    pub(crate) fn new(family: &'a FamilyTables<M, B>) -> Self {
+    pub(crate) fn new(family: &'a FamilyTables<M, B>, sealed_below: u64) -> Self {
         Self {
             family,
-            bucket_cache: HashMap::new(),
+            sealed_below,
+            bucket_cache: Mutex::new(HashMap::new()),
         }
     }
 
-    pub(crate) async fn resolve(
-        &mut self,
-        id: PrimaryId,
-    ) -> Result<Option<ResolvedPrimaryIdLocation>> {
+    pub(crate) async fn resolve(&self, id: PrimaryId) -> Result<Option<ResolvedPrimaryIdLocation>> {
         let bucket = bucket_start(id.as_u64());
-        if let Entry::Vacant(entry) = self.bucket_cache.entry(bucket) {
-            let cached = if let Some(summary) = self.family.load_bucket(bucket).await? {
-                CachedBucket::Summary(summary)
-            } else {
-                CachedBucket::Fragments(self.family.load_bucket_fragments(bucket).await?)
-            };
-            entry.insert(cached);
+
+        // Fast path: the bucket is already memoized. Lock, clone the resolved
+        // source out, drop the lock before doing any work. Never await here.
+        if let Some(cached) = self.lookup(bucket) {
+            return cached.resolve(id);
         }
 
-        let cached = self
-            .bucket_cache
+        // Miss: fetch the bucket's source WITHOUT holding the lock. A concurrent
+        // task may fetch the same bucket; that is acceptable (sealed gets are
+        // coalesced by the cache single-flight, the open bucket's fragment scan
+        // is idempotent), and the insert below is last-write-wins.
+        let cached = if bucket < self.sealed_below {
+            // Guaranteed sealed: its summary was flushed in the same
+            // `WriteSession` as the batch, before the publication CAS, so a
+            // missing summary breaks the commit contract — surface it loudly
+            // instead of falling back to a fragment scan.
+            let summary = self.family.load_bucket(bucket).await?.ok_or(
+                MonadChainDataError::SealedDirectoryBucketMissingSummary {
+                    bucket_start: bucket,
+                },
+            )?;
+            CachedBucket::Summary(summary)
+        } else {
+            // The single open/frontier bucket has no summary yet; resolve it
+            // from the retained fragments.
+            CachedBucket::Fragments(self.family.load_bucket_fragments(bucket).await?)
+        };
+
+        // Re-lock only to insert the memo entry and resolve against it.
+        let mut guard = self.bucket_cache.lock().expect("resolver mutex poisoned");
+        guard
+            .entry(bucket)
+            .or_insert_with(|| Arc::new(cached))
+            .resolve(id)
+    }
+
+    /// Clones the memoized source handle for `bucket`, if present. The value is
+    /// an `Arc`, so this bumps a refcount rather than deep-copying the bucket
+    /// summary or fragment list; the lock is held only for the in-memory `get`
+    /// and released before any `resolve` work.
+    fn lookup(&self, bucket: u64) -> Option<Arc<CachedBucket>> {
+        self.bucket_cache
+            .lock()
+            .expect("resolver mutex poisoned")
             .get(&bucket)
-            .ok_or(MonadChainDataError::Decode(
-                "missing cached primary directory bucket",
-            ))?;
-        cached.resolve(id)
+            .cloned()
     }
 }
 
@@ -146,8 +199,21 @@ fn resolved_location_from_fragments(
 mod tests {
     use super::{
         containing_bucket_entry, resolved_location_from_bucket, CachedBucket, PrimaryDirFragment,
+        PrimaryIdResolver,
     };
-    use crate::{engine::primary_dir::PrimaryDirBucket, primitives::state::PrimaryId};
+    use crate::{
+        engine::{
+            family::Family,
+            primary_dir::{PrimaryDirBucket, DIRECTORY_BUCKET_SIZE},
+            tables::Tables,
+        },
+        primitives::state::PrimaryId,
+        store::{InMemoryBlobStore, InMemoryMetaStore},
+    };
+
+    fn tables() -> Tables<InMemoryMetaStore, InMemoryBlobStore> {
+        Tables::new(InMemoryMetaStore::default(), InMemoryBlobStore::default())
+    }
 
     #[test]
     fn bucket_lookup_uses_last_duplicate_boundary() {
@@ -189,5 +255,91 @@ mod tests {
             error.to_string(),
             "decode error: primary directory fragments missing queried id"
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn sealed_bucket_resolves_from_summary_without_a_fragment_scan() {
+        let tables = tables();
+        let family = tables.family(Family::Log);
+
+        // Bucket 0 is sealed: its summary is the only directory artifact. No
+        // fragments are written, so a routing bug that scanned would resolve to
+        // `None`/error instead of finding the id.
+        family
+            .dir()
+            .put_bucket(
+                0,
+                &PrimaryDirBucket {
+                    start_block: 7,
+                    first_primary_ids: vec![0, 3, 8],
+                },
+            )
+            .await
+            .expect("seed sealed summary");
+
+        // sealed_below = DIRECTORY_BUCKET_SIZE => bucket 0 is sealed.
+        let resolver = PrimaryIdResolver::new(family, DIRECTORY_BUCKET_SIZE);
+        let location = resolver
+            .resolve(PrimaryId::new(5))
+            .await
+            .expect("resolve sealed id")
+            .expect("id contained in summary");
+
+        // Second entry: ids [3, 8) at start_block + 1.
+        assert_eq!(location.block_number, 8);
+        assert_eq!(location.idx_in_block, 2);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn sealed_bucket_missing_summary_is_a_hard_error_not_a_scan() {
+        let tables = tables();
+        let family = tables.family(Family::Log);
+
+        // Fragments exist for bucket 0 but the summary does not. A correct
+        // routing implementation must NOT fall back to these fragments for a
+        // bucket it classified as sealed; it must surface the broken commit
+        // contract loudly. (If it scanned, id 5 would resolve cleanly.)
+        family
+            .dir()
+            .persist_block_fragment(7, 0, 8)
+            .await
+            .expect("seed fragments");
+
+        let resolver = PrimaryIdResolver::new(family, DIRECTORY_BUCKET_SIZE);
+        let error = resolver
+            .resolve(PrimaryId::new(5))
+            .await
+            .expect_err("sealed bucket without summary must fail loud");
+
+        assert_eq!(
+            error.to_string(),
+            "sealed primary directory bucket 0 missing its compacted summary; \
+             the ingestion/compaction commit contract is broken"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn open_bucket_resolves_from_fragments() {
+        let tables = tables();
+        let family = tables.family(Family::Log);
+
+        // The frontier sits inside bucket 0, so bucket 0 is the single open
+        // bucket and resolves from fragments — no summary is written.
+        family
+            .dir()
+            .persist_block_fragment(7, 0, 8)
+            .await
+            .expect("seed fragments");
+
+        // sealed_below = 0 => no bucket is sealed; everything routes to scan.
+        let resolver = PrimaryIdResolver::new(family, 0);
+        let location = resolver
+            .resolve(PrimaryId::new(5))
+            .await
+            .expect("resolve open id")
+            .expect("id contained in fragments");
+
+        assert_eq!(location.block_number, 7);
+        assert_eq!(location.idx_in_block, 5);
     }
 }

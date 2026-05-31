@@ -37,6 +37,7 @@ fn block_record(number: u64) -> monad_chain_data::BlockRecord {
         logs: window,
         txs: window,
         traces: window,
+        artifact_checksum: Default::default(),
     }
 }
 
@@ -61,8 +62,8 @@ fn small_cache() -> CacheConfig {
         dir_by_block_entries: 64,
         dir_bucket_entries: 64,
         bitmap_by_block_entries: 64,
-        bitmap_page_meta_entries: 64,
         bitmap_page_blob_entries: 64,
+        bitmap_page_counts_entries: 64,
         open_bitmap_stream_entries: 64,
         tx_hash_index_entries: 64,
         block_blob_entries: 64,

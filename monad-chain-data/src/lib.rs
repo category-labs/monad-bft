@@ -19,6 +19,7 @@ pub mod engine;
 pub mod error;
 pub mod family;
 pub mod logs;
+pub mod mem_scan;
 pub mod primitives;
 pub mod store;
 pub mod traces;
@@ -28,16 +29,22 @@ pub mod txs;
 pub use alloy_primitives::{Address, Bytes, Log, LogData, B256};
 pub use api::{
     IngestBatchTimings, IngestOutcome, IngestPlan, IoRetryPolicy, MonadChainDataService,
-    PublicationAdvance,
+    ObserveUpstream, PublicationAdvance, VerifyOutcome,
 };
 pub use blocks::{Block, QueryBlocksRequest, QueryBlocksResponse};
 pub use engine::{
+    authority::{
+        AuthorityState, LeaseAuthority, ReadOnlyAuthority, WriteAuthority, WriteContinuity,
+        WriteSession as AuthorityWriteSession,
+    },
+    digest::{ArtifactChecksum, EMPTY_CHECKSUM},
     family::Family,
     tables::{Tables, WriteOpCounts},
 };
 pub use error::MonadChainDataError;
 pub use family::{CallKind, FinalizedBlock, Hash32, IngestTrace, IngestTx};
 pub use logs::{LogEntry, LogFilter, LogsRelations, QueryLogsRequest, QueryLogsResponse};
+pub use mem_scan::{scan_block_logs, scan_block_txs, MemLogsBlock, MemTx};
 pub use primitives::{
     limits::{LimitExceededKind, QueryEnvelope, QueryLimits},
     page::{QueryOrder, DEFAULT_QUERY_LIMIT},

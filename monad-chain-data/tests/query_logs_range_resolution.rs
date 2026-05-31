@@ -14,9 +14,9 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use monad_chain_data::{
-    Address, Bytes, FinalizedBlock, InMemoryBlobStore, InMemoryMetaStore, Log, LogData, LogFilter,
-    LogsRelations, MonadChainDataError, MonadChainDataService, QueryEnvelope, QueryLimits,
-    QueryLogsRequest, QueryOrder, B256,
+    primitives::state::PublicationState, Address, Bytes, FinalizedBlock, InMemoryBlobStore,
+    InMemoryMetaStore, Log, LogData, LogFilter, LogsRelations, MonadChainDataError,
+    MonadChainDataService, QueryEnvelope, QueryLimits, QueryLogsRequest, QueryOrder, B256,
 };
 
 mod common;
@@ -238,6 +238,55 @@ async fn defaulted_range_resolves_to_full_chain() {
 
     assert_eq!(page.span.from_block.number, 1);
     assert_eq!(page.span.to_block.number, 2);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn head_zero_is_treated_as_no_published_blocks() {
+    // A lease writer that has acquired ownership but not yet published any
+    // block leaves the publication row at head 0 (block numbers start at 1, so
+    // head 0 means "nothing finalized yet"). A reader must treat this exactly
+    // like an unpublished store — "no published blocks" — rather than resolving
+    // a range against head 0, which would surface a confusing "block range
+    // starts above the published head". Seed the head-0 row directly to isolate
+    // the query-path behavior from the lease machinery.
+    let service = MonadChainDataService::new(
+        InMemoryMetaStore::default(),
+        InMemoryBlobStore::default(),
+        QueryLimits::UNLIMITED,
+    );
+    service
+        .publication()
+        .cas_advance(
+            None,
+            PublicationState {
+                indexed_finalized_head: 0,
+                owner_id: 7,
+                session_id: [1u8; 16],
+                lease_valid_through_block: 42,
+                head_artifact_checksum: Default::default(),
+            },
+        )
+        .await
+        .expect("seed head-0 publication row");
+
+    let err = service
+        .query_logs(QueryLogsRequest {
+            envelope: QueryEnvelope {
+                from_block: None,
+                to_block: None,
+                order: QueryOrder::Ascending,
+                limit: 10,
+            },
+            filter: LogFilter::default(),
+            relations: LogsRelations::default(),
+        })
+        .await
+        .expect_err("query against head 0 must report no published blocks");
+
+    assert!(
+        matches!(err, MonadChainDataError::MissingData("no published blocks")),
+        "expected MissingData(no published blocks), got {err:?}"
+    );
 }
 
 async fn ingest_two_block_chain() -> MonadChainDataService<InMemoryMetaStore, InMemoryBlobStore> {

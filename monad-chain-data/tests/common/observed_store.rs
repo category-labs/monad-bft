@@ -33,8 +33,7 @@ use monad_chain_data::{
     error::{MonadChainDataError, Result},
     store::{
         BlobStore, BlobTableId, BlobWriteOp, CasOutcome, CasVersion, InMemoryBlobStore,
-        InMemoryMetaStore, MetaStore, MetaStoreCas, MetaWriteOp, Page, PublicationCasParams,
-        ScannableTableId, TableId,
+        InMemoryMetaStore, MetaStore, MetaStoreCas, MetaWriteOp, Page, ScannableTableId, TableId,
     },
 };
 
@@ -187,19 +186,6 @@ impl MetaStore for ObservedMetaStore {
             *self.timings.apply_finished_at.lock().unwrap() = Some(Instant::now());
         }
         r
-    }
-
-    async fn apply_writes_with_cas(
-        &self,
-        writes: Vec<MetaWriteOp>,
-        cas: PublicationCasParams,
-    ) -> Result<CasOutcome> {
-        if self.mode.fail_next_apply.swap(0, Ordering::Relaxed) > 0 {
-            return Err(MonadChainDataError::Backend(
-                "ObservedMetaStore: injected cas failure".into(),
-            ));
-        }
-        self.inner.apply_writes_with_cas(writes, cas).await
     }
 }
 

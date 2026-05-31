@@ -13,11 +13,14 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+pub mod authority;
 pub mod bitmap;
 pub mod clause;
+pub mod digest;
 pub mod family;
 pub(crate) mod ingest;
 pub mod open_index;
 pub mod primary_dir;
 pub(crate) mod query;
+pub mod row_codec;
 pub mod tables;
