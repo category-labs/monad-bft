@@ -192,10 +192,20 @@ async fn cache_eviction_is_not_correctness_bug() {
             ..Default::default()
         };
         let header_ref = &header;
+        let record = block_record(i);
+        let record_ref = &record;
         tables
             .with_writes(|w| {
                 Box::pin(async move {
-                    tables_ref.blocks().stage_header(w, i, header_ref);
+                    tables_ref.blocks().stage_metadata(
+                        w,
+                        i,
+                        record_ref,
+                        header_ref,
+                        Bytes::new(),
+                        Bytes::new(),
+                        Bytes::new(),
+                    );
                     Ok(())
                 })
             })
@@ -293,11 +303,21 @@ async fn concurrent_reader_during_populate() {
                 ..Default::default()
             };
             let header_ref = &header;
+            let record = block_record(i);
+            let record_ref = &record;
             let tables_w_inner = tables_w.clone();
             tables_w
                 .with_writes(|w| {
                     Box::pin(async move {
-                        tables_w_inner.blocks().stage_header(w, i, header_ref);
+                        tables_w_inner.blocks().stage_metadata(
+                            w,
+                            i,
+                            record_ref,
+                            header_ref,
+                            Bytes::new(),
+                            Bytes::new(),
+                            Bytes::new(),
+                        );
                         Ok(())
                     })
                 })

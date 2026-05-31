@@ -57,6 +57,22 @@ fn test_hash(byte: u8) -> Hash32 {
     Hash32::from([byte; 32])
 }
 
+fn block_record(number: u64) -> monad_chain_data::BlockRecord {
+    let window = monad_chain_data::FamilyWindowRecord {
+        first_primary_id: monad_chain_data::PrimaryId::ZERO,
+        count: 0,
+    };
+    monad_chain_data::BlockRecord {
+        block_number: number,
+        block_hash: Default::default(),
+        parent_hash: Default::default(),
+        logs: window,
+        txs: window,
+        traces: window,
+        artifact_checksum: Default::default(),
+    }
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn closure_error_does_not_flush() {
     let meta = ObservedMetaStore::new();
@@ -96,11 +112,21 @@ async fn closure_error_evicts_populated_cache_entries() {
         ..Default::default()
     };
     let header_ref = &header;
+    let record = block_record(1);
+    let record_ref = &record;
 
     let _ = tables
         .with_writes(|w| {
             Box::pin(async move {
-                tables_ref.blocks().stage_header(w, 1, header_ref);
+                tables_ref.blocks().stage_metadata(
+                    w,
+                    1,
+                    record_ref,
+                    header_ref,
+                    Bytes::new(),
+                    Bytes::new(),
+                    Bytes::new(),
+                );
                 Err(MonadChainDataError::Backend("intentional".into()))
             })
         })
@@ -125,11 +151,21 @@ async fn partial_flush_failure_evicts_cache() {
         ..Default::default()
     };
     let header_ref = &header;
+    let record = block_record(1);
+    let record_ref = &record;
 
     let result = tables
         .with_writes(|w| {
             Box::pin(async move {
-                tables_ref.blocks().stage_header(w, 1, header_ref);
+                tables_ref.blocks().stage_metadata(
+                    w,
+                    1,
+                    record_ref,
+                    header_ref,
+                    Bytes::new(),
+                    Bytes::new(),
+                    Bytes::new(),
+                );
                 Ok(())
             })
         })
@@ -230,6 +266,8 @@ async fn cas_conflict_keeps_populated_cache_entries() {
         ..Default::default()
     };
     let header_ref = &header;
+    let record = block_record(1);
+    let record_ref = &record;
 
     let cas = PublicationCasParams {
         table: PublicationTables::<ObservedMetaStore>::PUBLICATION_STATE_TABLE,
@@ -240,7 +278,15 @@ async fn cas_conflict_keeps_populated_cache_entries() {
     let outcome = tables
         .with_writes_and_cas(cas, |w| {
             Box::pin(async move {
-                tables_ref.blocks().stage_header(w, 1, header_ref);
+                tables_ref.blocks().stage_metadata(
+                    w,
+                    1,
+                    record_ref,
+                    header_ref,
+                    Bytes::new(),
+                    Bytes::new(),
+                    Bytes::new(),
+                );
                 Ok(())
             })
         })
@@ -342,12 +388,22 @@ async fn panic_in_closure_evicts_populated_cache_entries() {
         ..Default::default()
     };
     let header_ref = &header;
+    let record = block_record(1);
+    let record_ref = &record;
 
     let panicked = std::panic::AssertUnwindSafe(async {
         tables
             .with_writes(|w| {
                 Box::pin(async move {
-                    tables_ref.blocks().stage_header(w, 1, header_ref);
+                    tables_ref.blocks().stage_metadata(
+                        w,
+                        1,
+                        record_ref,
+                        header_ref,
+                        Bytes::new(),
+                        Bytes::new(),
+                        Bytes::new(),
+                    );
                     panic!("intentional panic");
                     #[allow(unreachable_code)]
                     Ok(())
@@ -384,17 +440,27 @@ async fn parallel_meta_and_blob_flush() {
         ..Default::default()
     };
     let header_ref = &header;
+    let record = block_record(1);
+    let record_ref = &record;
     tables
         .with_writes(|w| {
             Box::pin(async move {
-                // stage_block_blob covers the BlobStore side, stage_header
+                // stage_block_blob covers the BlobStore side, stage_metadata
                 // covers the MetaStore side; both writes flush concurrently
                 // because the framework fires apply_writes on both stores
                 // before awaiting either future.
                 tables_ref
                     .family(monad_chain_data::engine::family::Family::Log)
                     .stage_block_blob(w, 1, b"payload".to_vec());
-                tables_ref.blocks().stage_header(w, 1, header_ref);
+                tables_ref.blocks().stage_metadata(
+                    w,
+                    1,
+                    record_ref,
+                    header_ref,
+                    Bytes::new(),
+                    Bytes::new(),
+                    Bytes::new(),
+                );
                 Ok(())
             })
         })

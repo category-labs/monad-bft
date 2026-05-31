@@ -831,28 +831,6 @@ impl<M: MetaStore> BlockTables<M> {
         Ok(Some(BlockRecord::decode(&bytes)?))
     }
 
-    pub async fn store_record(&self, block_number: u64, block_record: &BlockRecord) -> Result<()> {
-        let key = block_number_key(block_number);
-        self.block_records
-            .put(&key, Bytes::from(block_record.encode()))
-            .await?;
-        Ok(())
-    }
-
-    pub fn stage_record<B: BlobStore>(
-        &self,
-        w: &mut WriteSession<'_, M, B>,
-        block_number: u64,
-        block_record: &BlockRecord,
-    ) {
-        let key = block_number_key(block_number);
-        w.put(
-            &self.block_records,
-            &key,
-            Bytes::from(block_record.encode()),
-        );
-    }
-
     pub fn stage_metadata<B: BlobStore>(
         &self,
         w: &mut WriteSession<'_, M, B>,
@@ -887,28 +865,6 @@ impl<M: MetaStore> BlockTables<M> {
         let header = EvmBlockHeader::decode(&mut bytes.as_ref())
             .map_err(|_| MonadChainDataError::Decode("invalid block header rlp"))?;
         Ok(Some(header))
-    }
-
-    pub async fn store_header(&self, block_number: u64, header: &EvmBlockHeader) -> Result<()> {
-        let key = block_number_key(block_number);
-        self.block_headers
-            .put(&key, Bytes::from(alloy_rlp::encode(header)))
-            .await?;
-        Ok(())
-    }
-
-    pub fn stage_header<B: BlobStore>(
-        &self,
-        w: &mut WriteSession<'_, M, B>,
-        block_number: u64,
-        header: &EvmBlockHeader,
-    ) {
-        let key = block_number_key(block_number);
-        w.put(
-            &self.block_headers,
-            &key,
-            Bytes::from(alloy_rlp::encode(header)),
-        );
     }
 
     /// Resolves a block hash to its block number via the hash-to-number index.
@@ -1087,12 +1043,6 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
         self.block_headers.get(&key).await
     }
 
-    pub async fn store_block_header(&self, block_number: u64, bytes: Bytes) -> Result<()> {
-        let key = block_number_key(block_number);
-        self.block_headers.put(&key, bytes).await?;
-        Ok(())
-    }
-
     pub async fn load_block_blob(
         &self,
         block_number: u64,
@@ -1129,16 +1079,6 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
     ) {
         let key = block_number_key(block_number);
         w.put_blob(&self.block_blobs, &key, Bytes::from(block_log_blob));
-    }
-
-    pub fn stage_block_header(
-        &self,
-        w: &mut WriteSession<'_, M, B>,
-        block_number: u64,
-        bytes: Bytes,
-    ) {
-        let key = block_number_key(block_number);
-        w.put(&self.block_headers, &key, bytes);
     }
 
     /// Loads the raw bytes of the row-codec dictionary for `version`, or
