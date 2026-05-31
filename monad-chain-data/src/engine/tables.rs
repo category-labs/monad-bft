@@ -759,8 +759,6 @@ impl<M: MetaStoreCas> PublicationTables<M> {
 
 pub struct BlockTables<M: MetaStore> {
     block_metadata: CachedKvTable<M>,
-    block_records: CachedKvTable<M>,
-    block_headers: CachedKvTable<M>,
     block_hash_to_number_index: CachedKvTable<M>,
 }
 
@@ -786,8 +784,6 @@ impl BlockMetadataRecord {
 
 impl<M: MetaStore> BlockTables<M> {
     pub const BLOCK_METADATA_TABLE: TableId = TableId::new("block_metadata");
-    pub const BLOCK_RECORD_TABLE: TableId = TableId::new("block_record");
-    pub const BLOCK_HEADER_TABLE: TableId = TableId::new("block_header");
     pub const BLOCK_HASH_TO_NUMBER_INDEX_TABLE: TableId =
         TableId::new("block_hash_to_number_index");
 
@@ -795,14 +791,6 @@ impl<M: MetaStore> BlockTables<M> {
         Self {
             block_metadata: CachedKvTable::new(
                 meta_store.table(Self::BLOCK_METADATA_TABLE),
-                cache.block_header_entries,
-            ),
-            block_records: CachedKvTable::new(
-                meta_store.table(Self::BLOCK_RECORD_TABLE),
-                cache.block_record_entries,
-            ),
-            block_headers: CachedKvTable::new(
-                meta_store.table(Self::BLOCK_HEADER_TABLE),
                 cache.block_header_entries,
             ),
             block_hash_to_number_index: CachedKvTable::new(
@@ -821,14 +809,10 @@ impl<M: MetaStore> BlockTables<M> {
     }
 
     pub async fn load_record(&self, block_number: u64) -> Result<Option<BlockRecord>> {
-        if let Some(metadata) = self.load_metadata(block_number).await? {
-            return BlockRecord::decode(&metadata.block_record).map(Some);
-        }
-        let key = block_number_key(block_number);
-        let Some(bytes) = self.block_records.get(&key).await? else {
+        let Some(metadata) = self.load_metadata(block_number).await? else {
             return Ok(None);
         };
-        Ok(Some(BlockRecord::decode(&bytes)?))
+        BlockRecord::decode(&metadata.block_record).map(Some)
     }
 
     pub fn stage_metadata<B: BlobStore>(
@@ -853,16 +837,10 @@ impl<M: MetaStore> BlockTables<M> {
     }
 
     pub async fn load_header(&self, block_number: u64) -> Result<Option<EvmBlockHeader>> {
-        if let Some(metadata) = self.load_metadata(block_number).await? {
-            let header = EvmBlockHeader::decode(&mut metadata.evm_header.as_ref())
-                .map_err(|_| MonadChainDataError::Decode("invalid block header rlp"))?;
-            return Ok(Some(header));
-        }
-        let key = block_number_key(block_number);
-        let Some(bytes) = self.block_headers.get(&key).await? else {
+        let Some(metadata) = self.load_metadata(block_number).await? else {
             return Ok(None);
         };
-        let header = EvmBlockHeader::decode(&mut bytes.as_ref())
+        let header = EvmBlockHeader::decode(&mut metadata.evm_header.as_ref())
             .map_err(|_| MonadChainDataError::Decode("invalid block header rlp"))?;
         Ok(Some(header))
     }
@@ -914,8 +892,6 @@ impl<M: MetaStore> BlockTables<M> {
 
     pub(crate) fn collect_window_stats(&self, out: &mut Vec<(&'static str, u64, u64)>) {
         collect_kv_stats(out, &self.block_metadata);
-        collect_kv_stats(out, &self.block_records);
-        collect_kv_stats(out, &self.block_headers);
         collect_kv_stats(out, &self.block_hash_to_number_index);
     }
 
@@ -957,7 +933,6 @@ impl<M: MetaStore> BlockTables<M> {
 pub struct FamilyTables<M: MetaStore, B: BlobStore> {
     family: Family,
     block_metadata: CachedKvTable<M>,
-    block_headers: CachedKvTable<M>,
     block_blobs: CachedBlobTable<B>,
     dict_by_version: CachedKvTable<M>,
     dir: PrimaryDirTables<M>,
@@ -971,10 +946,6 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
             family,
             block_metadata: CachedKvTable::new(
                 meta_store.table(BlockTables::<M>::BLOCK_METADATA_TABLE),
-                cache.block_header_entries,
-            ),
-            block_headers: CachedKvTable::new(
-                meta_store.table(ids.block_header),
                 cache.block_header_entries,
             ),
             block_blobs: CachedBlobTable::new(
@@ -1031,16 +1002,15 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
     /// the consumer's responsibility; the engine treats the value as opaque.
     pub async fn load_block_header(&self, block_number: u64) -> Result<Option<Bytes>> {
         let key = block_number_key(block_number);
-        if let Some(bytes) = self.block_metadata.get(&key).await? {
-            let metadata = BlockMetadataRecord::decode(&bytes)?;
-            return Ok(Some(match self.family {
-                Family::Log => metadata.log_header,
-                Family::Tx => metadata.tx_header,
-                Family::Trace => metadata.trace_header,
-            }));
-        }
-        let key = block_number_key(block_number);
-        self.block_headers.get(&key).await
+        let Some(bytes) = self.block_metadata.get(&key).await? else {
+            return Ok(None);
+        };
+        let metadata = BlockMetadataRecord::decode(&bytes)?;
+        Ok(Some(match self.family {
+            Family::Log => metadata.log_header,
+            Family::Tx => metadata.tx_header,
+            Family::Trace => metadata.trace_header,
+        }))
     }
 
     pub async fn load_block_blob(
@@ -1200,7 +1170,6 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
     }
 
     pub(crate) fn collect_window_stats(&self, out: &mut Vec<(&'static str, u64, u64)>) {
-        collect_kv_stats(out, &self.block_headers);
         collect_kv_stats(out, &self.dict_by_version);
         collect_blob_stats(out, &self.block_blobs);
         collect_scan_stats(out, self.dir.fragments_cache());

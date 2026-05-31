@@ -19,7 +19,6 @@ use crate::{
 };
 
 pub struct FamilyTableIds {
-    pub block_header: TableId,
     pub block_blob: BlobTableId,
     /// Versioned per-family row-codec dictionary store: `version (u32 BE)`
     /// -> dict bytes. Shared by transfers via [`Family::Trace`].
@@ -35,7 +34,6 @@ pub struct FamilyTableIds {
 macro_rules! family_table_ids {
     ($prefix:literal) => {
         FamilyTableIds {
-            block_header: TableId::new(concat!($prefix, "_block_header")),
             block_blob: BlobTableId::new(concat!($prefix, "_block_blob")),
             dict_by_version: TableId::new(concat!($prefix, "_dict_by_version")),
             dir_by_block: ScannableTableId::new(concat!($prefix, "_dir_by_block")),

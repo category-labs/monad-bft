@@ -34,7 +34,6 @@ use crate::common::observed_store::{ObservedBlobStore, ObservedMetaStore};
 
 fn cache() -> CacheConfig {
     CacheConfig {
-        block_record_entries: 64,
         block_header_entries: 64,
         block_hash_to_number_entries: 64,
         dir_by_block_entries: 64,
