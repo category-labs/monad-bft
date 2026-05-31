@@ -125,6 +125,7 @@ const CHAIN_PARAMS_V_0_11_0: ChainParams = chain_params! {
 };
 
 // NOTE: when adding a new revision, chain_params! asserts that tx_limit is <= MAX_TRANSACTIONS_PER_BLOCK
+// NOTE: if max_reserve_balance is changed, need to make sure that consensus and execution forking logic matches for the execution delay blocks
 
 #[cfg(test)]
 mod test {
