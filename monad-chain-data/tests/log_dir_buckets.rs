@@ -21,7 +21,7 @@ use monad_chain_data::{
 
 mod common;
 
-use common::{chain_header, test_header};
+use common::{chain_header, observed_store::ObservedMetaStore, test_header};
 
 #[tokio::test(flavor = "current_thread")]
 async fn ingest_compacts_a_sealed_directory_bucket_when_crossing_the_boundary() {
@@ -41,6 +41,7 @@ async fn ingest_compacts_a_sealed_directory_bucket_when_crossing_the_boundary() 
                 usize::try_from(DIRECTORY_BUCKET_SIZE - 2).expect("bucket size fits usize"),
             )],
             txs: Vec::new(),
+            traces: vec![],
         })
         .await
         .expect("ingest block 1");
@@ -50,6 +51,7 @@ async fn ingest_compacts_a_sealed_directory_bucket_when_crossing_the_boundary() 
             header: h2,
             logs_by_tx: vec![repeated_logs(4)],
             txs: Vec::new(),
+            traces: vec![],
         })
         .await
         .expect("ingest block 2");
@@ -112,4 +114,81 @@ fn log() -> Log {
         address: Address::repeat_byte(7),
         data: LogData::new_unchecked(vec![B256::repeat_byte(9)], Bytes::from(vec![1, 2, 3])),
     }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn bucket_compaction_uses_open_index_without_prefix_scan() {
+    let meta_store = ObservedMetaStore::counting();
+    let counters = meta_store.counters.clone();
+    let service = MonadChainDataService::new(
+        meta_store,
+        InMemoryBlobStore::default(),
+        QueryLimits::UNLIMITED,
+    );
+
+    let h1 = test_header(1, B256::ZERO);
+    let h2 = chain_header(2, &h1);
+
+    service
+        .ingest_block(FinalizedBlock {
+            header: h1,
+            logs_by_tx: vec![repeated_logs(
+                usize::try_from(DIRECTORY_BUCKET_SIZE - 2).expect("bucket size fits usize"),
+            )],
+            txs: Vec::new(),
+            traces: vec![],
+        })
+        .await
+        .expect("ingest block 1");
+
+    let before = counters.snapshot();
+    service
+        .ingest_blocks(vec![FinalizedBlock {
+            header: h2,
+            logs_by_tx: vec![repeated_logs(4)],
+            txs: Vec::new(),
+            traces: vec![],
+        }])
+        .await
+        .expect("ingest block 2");
+    let after = counters.snapshot();
+
+    assert_eq!(
+        after.2, before.2,
+        "hot compaction path should use open-index fragments, not list_prefix",
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn empty_families_keep_dense_directory_fragments() {
+    let service = MonadChainDataService::new(
+        InMemoryMetaStore::default(),
+        InMemoryBlobStore::default(),
+        QueryLimits::UNLIMITED,
+    );
+
+    let h1 = test_header(1, B256::ZERO);
+    service
+        .ingest_block(FinalizedBlock {
+            header: h1,
+            logs_by_tx: vec![vec![log()]],
+            txs: Vec::new(),
+            traces: vec![],
+        })
+        .await
+        .expect("ingest block");
+
+    let stats = service.open_index_stats();
+    assert_eq!(
+        stats.directory_keys, 3,
+        "all families keep open directory buckets so compaction sees dense block sequences",
+    );
+    assert_eq!(
+        stats.directory_blocks, 3,
+        "empty tx/trace windows index zero-width fragments",
+    );
+    assert!(
+        stats.fragment_value_bytes > 0,
+        "open index should retain fragment values for hot compaction"
+    );
 }

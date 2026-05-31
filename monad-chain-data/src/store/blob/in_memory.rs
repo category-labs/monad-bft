@@ -22,7 +22,7 @@ use bytes::Bytes;
 
 use crate::{
     error::Result,
-    store::blob::{BlobStore, BlobTableId},
+    store::blob::{BlobStore, BlobTableId, BlobWriteOp},
 };
 
 /// Test-only blob fixture. Holds blobs in memory behind a sync `RwLock`.
@@ -43,6 +43,15 @@ impl InMemoryBlobStore {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    /// Test-only: clones the entire blob map. Enables byte-equality assertions
+    /// across two fixture instances without exposing the internal `RwLock`.
+    pub fn blob_snapshot(&self) -> BTreeMap<(BlobTableId, Vec<u8>), Bytes> {
+        self.blobs
+            .read()
+            .map(|guard| guard.clone())
+            .unwrap_or_default()
+    }
 }
 
 impl BlobStore for InMemoryBlobStore {
@@ -52,6 +61,17 @@ impl BlobStore for InMemoryBlobStore {
             .write()
             .map_err(|_| crate::error::MonadChainDataError::Backend("poisoned lock".to_string()))?;
         guard.insert((table, key.to_vec()), value);
+        Ok(())
+    }
+
+    async fn apply_writes(&self, writes: Vec<BlobWriteOp>) -> Result<()> {
+        let mut guard = self
+            .blobs
+            .write()
+            .map_err(|_| crate::error::MonadChainDataError::Backend("poisoned lock".to_string()))?;
+        for BlobWriteOp { table, key, value } in writes {
+            guard.insert((table, key), value);
+        }
         Ok(())
     }
 

@@ -18,16 +18,22 @@ auto_impl = { workspace = true }
 bytes = { workspace = true }
 clap = { workspace = true, features = ["derive"], optional = true }
 eyre = { workspace = true, optional = true }
-fjall = { version = "3.1", optional = true }
+fjall = { workspace = true, optional = true }
 futures = { workspace = true }
+futures-timer = "3.0.3"
 itertools = { workspace = true }
+libc = { workspace = true, optional = true }
+lru = { workspace = true }
 monad-archive = { workspace = true, optional = true }
 monad-eth-types = { workspace = true, optional = true }
+opentelemetry = { workspace = true, optional = true }
+rayon = { workspace = true }
 roaring = "0.11"
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt"], optional = true }
 tracing = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"], optional = true }
+zstd = { workspace = true }
 
 [features]
 default = []
@@ -47,8 +53,10 @@ archive-ingest = [
     "fjall",
     "dep:clap",
     "dep:eyre",
+    "dep:libc",
     "dep:monad-archive",
     "dep:monad-eth-types",
+    "dep:opentelemetry",
     "dep:tokio",
     "tokio/rt-multi-thread",
     "tokio/macros",
@@ -61,5 +69,6 @@ name = "chain-data-ingest"
 required-features = ["archive-ingest"]
 
 [dev-dependencies]
+bytes = { workspace = true }
 tempfile = "3"
-tokio = { workspace = true, features = ["macros", "rt"] }
+tokio = { workspace = true, features = ["macros", "rt", "time"] }

@@ -16,30 +16,92 @@
 use itertools::Itertools;
 
 use crate::{
-    engine::primary_dir::{
-        bucket_start, PrimaryDirBucket, PrimaryDirFragment, PrimaryDirTables, DIRECTORY_BUCKET_SIZE,
+    engine::{
+        family::Family,
+        ingest::ReadPlanningTimings,
+        open_index::{OpenIndexes, OpenIndexesEviction},
+        primary_dir::{bucket_start, PrimaryDirBucket, PrimaryDirFragment, DIRECTORY_BUCKET_SIZE},
+        tables::FamilyTables,
     },
     error::{MonadChainDataError, Result},
-    store::MetaStore,
+    store::{BlobStore, MetaStore, WriteSession},
 };
 
-/// Compacts every directory bucket sealed by the given ingest transition.
-pub(crate) async fn compact_newly_sealed_buckets<M: MetaStore>(
-    dir: &PrimaryDirTables<M>,
-    from_next_primary_id: u64,
-    next_primary_id: u64,
-) -> Result<()> {
-    for sealed_bucket_start in sealed_ranges(from_next_primary_id, next_primary_id) {
-        let bucket =
-            compact_bucket_from_fragments(&dir.load_bucket_fragments(sealed_bucket_start).await?)?;
-        // Sealed fragments are intentionally retained after the compacted bucket
-        // is written. Reads prefer the bucket via `load_bucket`, so the fragments
-        // are unreferenced but kept available for replay/recovery. Eager deletion
-        // is deferred to a backend that exposes safe delete semantics.
-        dir.put_bucket(sealed_bucket_start, &bucket).await?;
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirectoryCompactionPlan {
+    pub buckets: Vec<(u64, PrimaryDirBucket)>,
+    pub(crate) timings: ReadPlanningTimings,
+}
+
+impl DirectoryCompactionPlan {
+    pub(crate) fn eviction(&self, family: Family) -> OpenIndexesEviction {
+        OpenIndexesEviction {
+            directory_buckets: self
+                .buckets
+                .iter()
+                .map(|(bucket_start, _)| (family, *bucket_start))
+                .collect(),
+            ..OpenIndexesEviction::default()
+        }
+    }
+}
+
+impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
+    /// Reads every sealed bucket's fragments and folds them into compacted
+    /// bucket summaries. Pure I/O — no writes — so callers can fan out across
+    /// families with `try_join_all` before opening the Phase B meta batch.
+    pub(crate) async fn plan_directory_compactions(
+        &self,
+        open_indexes: &OpenIndexes,
+        ranges: &[(u64, u64)],
+    ) -> Result<DirectoryCompactionPlan> {
+        let mut buckets = Vec::new();
+        let mut timings = ReadPlanningTimings::default();
+        for &(from_next_primary_id, next_primary_id) in ranges {
+            for sealed_bucket_start in sealed_ranges(from_next_primary_id, next_primary_id) {
+                let index_start = std::time::Instant::now();
+                let encoded_fragments =
+                    open_indexes.directory_fragments(self.family(), sealed_bucket_start);
+                timings.dir_index_ms = timings
+                    .dir_index_ms
+                    .saturating_add(index_start.elapsed().as_millis() as u64);
+                timings.dir_index_us = timings
+                    .dir_index_us
+                    .saturating_add(index_start.elapsed().as_micros() as u64);
+                timings.dir_fragment_count = timings
+                    .dir_fragment_count
+                    .saturating_add(encoded_fragments.len() as u64);
+                let decode_start = std::time::Instant::now();
+                let fragments = encoded_fragments
+                    .iter()
+                    .map(|bytes| PrimaryDirFragment::decode(bytes))
+                    .collect::<Result<Vec<_>>>()?;
+                timings.dir_decode_ms = timings
+                    .dir_decode_ms
+                    .saturating_add(decode_start.elapsed().as_millis() as u64);
+                timings.dir_decode_us = timings
+                    .dir_decode_us
+                    .saturating_add(decode_start.elapsed().as_micros() as u64);
+                let bucket = compact_bucket_from_fragments(&fragments)?;
+                buckets.push((sealed_bucket_start, bucket));
+            }
+        }
+        Ok(DirectoryCompactionPlan { buckets, timings })
     }
 
-    Ok(())
+    pub fn stage_directory_compactions(
+        &self,
+        w: &mut WriteSession<'_, M, B>,
+        plan: &DirectoryCompactionPlan,
+    ) {
+        for (bucket_start, bucket) in &plan.buckets {
+            // Sealed fragments are intentionally retained after the compacted bucket
+            // is written. Reads prefer the bucket via `load_bucket`, so the fragments
+            // are unreferenced but kept available for replay/recovery. Eager deletion
+            // is deferred to a backend that exposes safe delete semantics.
+            self.dir().stage_bucket(w, *bucket_start, bucket);
+        }
+    }
 }
 
 fn compact_bucket_from_fragments(fragments: &[PrimaryDirFragment]) -> Result<PrimaryDirBucket> {

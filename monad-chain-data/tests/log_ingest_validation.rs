@@ -47,6 +47,7 @@ async fn ingest_rejects_log_with_more_than_four_topics_before_writing_log_artifa
                 ),
             }]],
             txs: Vec::new(),
+            traces: vec![],
         })
         .await
         .expect_err("log with too many topics should fail ingest");

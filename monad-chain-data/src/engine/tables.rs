@@ -13,14 +13,14 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, fmt, time::Duration};
 
-use alloy_rlp::Decodable;
+use alloy_rlp::{Decodable, RlpDecodable, RlpEncodable};
 use bytes::Bytes;
 
 use crate::{
     engine::{
-        bitmap::{BitmapFragmentWrite, BitmapPageMeta, BitmapTables},
+        bitmap::{BitmapFragmentWrite, BitmapPageArtifact, BitmapPageMeta, BitmapTables},
         family::Family,
         primary_dir::{PrimaryDirBucket, PrimaryDirFragment, PrimaryDirTables},
     },
@@ -31,13 +31,139 @@ use crate::{
         EvmBlockHeader,
     },
     store::{
-        BlobStore, BlobTable, CasOutcome, CasVersion, KvTable, MetaStore, MetaStoreCas,
-        ScannableTableId, TableId,
+        BlobStore, BlobWriteOp, CacheConfig, CachedBlobTable, CachedKvTable, CachedScannableTable,
+        CasOutcome, CasVersion, MetaStore, MetaStoreCas, MetaWriteOp, PublicationCasParams,
+        ScannableTableId, SessionFuture, TableId, WriteSession,
     },
     txs::TxHashIndexTable,
 };
 
+#[derive(Debug, Clone, Default)]
+pub struct MetaBlobTimings {
+    pub meta: Duration,
+    pub blob: Duration,
+    pub writes: WriteOpCounts,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct StagedWrites {
+    pub meta_ops: Vec<MetaWriteOp>,
+    pub blob_ops: Vec<BlobWriteOp>,
+    pub counts: WriteOpCounts,
+}
+
+impl StagedWrites {
+    pub fn merge(&mut self, mut other: Self) {
+        self.meta_ops.append(&mut other.meta_ops);
+        self.blob_ops.append(&mut other.blob_ops);
+        self.counts.merge(&other.counts);
+    }
+
+    pub fn add_cas_count(&mut self, table: TableId, bytes: usize) {
+        self.counts.add_cas(table, bytes);
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WriteOpCount {
+    pub ops: u64,
+    pub bytes: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WriteOpCounts {
+    by_table: BTreeMap<String, WriteOpCount>,
+}
+
+impl WriteOpCounts {
+    pub fn from_writes(meta_ops: &[MetaWriteOp], blob_ops: &[BlobWriteOp]) -> Self {
+        let mut counts = Self::default();
+        for op in meta_ops {
+            match op {
+                MetaWriteOp::Put { table, value, .. } => {
+                    counts.add(format!("kv:{}", table.as_str()), value.len());
+                }
+                MetaWriteOp::ScanPut { table, value, .. } => {
+                    counts.add(format!("scan:{}", table.as_str()), value.len());
+                }
+            }
+        }
+        for BlobWriteOp { table, value, .. } in blob_ops {
+            counts.add(format!("blob:{}", table.as_str()), value.len());
+        }
+        counts
+    }
+
+    pub fn add_cas(&mut self, table: TableId, bytes: usize) {
+        self.add(format!("cas:{}", table.as_str()), bytes);
+    }
+
+    pub fn merge(&mut self, other: &Self) {
+        for (table, count) in &other.by_table {
+            let entry = self.by_table.entry(table.clone()).or_default();
+            entry.ops = entry.ops.saturating_add(count.ops);
+            entry.bytes = entry.bytes.saturating_add(count.bytes);
+        }
+    }
+
+    pub fn total_ops(&self) -> u64 {
+        self.by_table.values().map(|count| count.ops).sum()
+    }
+
+    pub fn total_bytes(&self) -> u64 {
+        self.by_table.values().map(|count| count.bytes).sum()
+    }
+
+    pub fn top_by_ops(&self, limit: usize) -> WriteOpTopList<'_> {
+        WriteOpTopList {
+            counts: self,
+            limit,
+            sort_by_bytes: false,
+        }
+    }
+
+    pub fn top_by_bytes(&self, limit: usize) -> WriteOpTopList<'_> {
+        WriteOpTopList {
+            counts: self,
+            limit,
+            sort_by_bytes: true,
+        }
+    }
+
+    fn add(&mut self, table: String, bytes: usize) {
+        let entry = self.by_table.entry(table).or_default();
+        entry.ops = entry.ops.saturating_add(1);
+        entry.bytes = entry.bytes.saturating_add(bytes as u64);
+    }
+}
+
+pub struct WriteOpTopList<'a> {
+    counts: &'a WriteOpCounts,
+    limit: usize,
+    sort_by_bytes: bool,
+}
+
+impl fmt::Display for WriteOpTopList<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut entries: Vec<_> = self.counts.by_table.iter().collect();
+        if self.sort_by_bytes {
+            entries.sort_by(|a, b| b.1.bytes.cmp(&a.1.bytes).then_with(|| a.0.cmp(b.0)));
+        } else {
+            entries.sort_by(|a, b| b.1.ops.cmp(&a.1.ops).then_with(|| a.0.cmp(b.0)));
+        }
+        for (idx, (table, count)) in entries.into_iter().take(self.limit).enumerate() {
+            if idx > 0 {
+                f.write_str(",")?;
+            }
+            write!(f, "{}:{}ops/{}bytes", table, count.ops, count.bytes)?;
+        }
+        Ok(())
+    }
+}
+
 pub struct Tables<M: MetaStore, B: BlobStore> {
+    meta_store: M,
+    blob_store: B,
     blocks: BlockTables<M>,
     tx_hash_index: TxHashIndexTable<M>,
     families: BTreeMap<Family, FamilyTables<M, B>>,
@@ -45,20 +171,38 @@ pub struct Tables<M: MetaStore, B: BlobStore> {
 
 impl<M: MetaStore, B: BlobStore> Tables<M, B> {
     pub fn new(meta_store: M, blob_store: B) -> Self {
+        Self::with_cache_config(meta_store, blob_store, CacheConfig::default())
+    }
+
+    pub fn with_cache_config(meta_store: M, blob_store: B, cache: CacheConfig) -> Self {
         let mut families = BTreeMap::new();
         families.insert(
             Family::Log,
-            FamilyTables::new(meta_store.clone(), blob_store.clone(), Family::Log),
+            FamilyTables::new(meta_store.clone(), blob_store.clone(), Family::Log, cache),
         );
         families.insert(
             Family::Tx,
-            FamilyTables::new(meta_store.clone(), blob_store, Family::Tx),
+            FamilyTables::new(meta_store.clone(), blob_store.clone(), Family::Tx, cache),
+        );
+        families.insert(
+            Family::Trace,
+            FamilyTables::new(meta_store.clone(), blob_store.clone(), Family::Trace, cache),
         );
         Self {
-            blocks: BlockTables::new(meta_store.clone()),
-            tx_hash_index: TxHashIndexTable::new(meta_store),
+            blocks: BlockTables::new(meta_store.clone(), cache),
+            tx_hash_index: TxHashIndexTable::new(meta_store.clone(), cache),
+            meta_store,
+            blob_store,
             families,
         }
+    }
+
+    pub fn meta_store(&self) -> &M {
+        &self.meta_store
+    }
+
+    pub fn blob_store(&self) -> &B {
+        &self.blob_store
     }
 
     pub fn blocks(&self) -> &BlockTables<M> {
@@ -76,6 +220,218 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
         self.families
             .get(&family)
             .expect("family registered at construction")
+    }
+
+    pub async fn with_writes<'a, F>(&'a self, f: F) -> Result<()>
+    where
+        F: for<'s> FnOnce(&'s mut WriteSession<'a, M, B>) -> SessionFuture<'s>,
+    {
+        let (result, _timings) = self.with_writes_timed(f).await;
+        result
+    }
+
+    /// Like [`Self::with_writes`] but returns the meta/blob apply durations
+    /// separately so callers preserving per-phase instrumentation can
+    /// attribute commit latency. On closure error or backend error the
+    /// returned durations reflect work actually performed; zero when the
+    /// closure short-circuited the flush.
+    pub async fn with_writes_timed<'a, F>(&'a self, f: F) -> (Result<()>, MetaBlobTimings)
+    where
+        F: for<'s> FnOnce(&'s mut WriteSession<'a, M, B>) -> SessionFuture<'s>,
+    {
+        let mut session = WriteSession::new(self);
+        let closure_result = f(&mut session).await;
+        if let Err(e) = closure_result {
+            session.invalidate_populated();
+            return (Err(e), MetaBlobTimings::default());
+        }
+        let meta_ops = session.take_meta();
+        let blob_ops = session.take_blob();
+        let writes = WriteOpCounts::from_writes(&meta_ops, &blob_ops);
+        let meta_apply = async {
+            let t = std::time::Instant::now();
+            self.meta_store.apply_writes(meta_ops).await?;
+            Ok::<_, crate::error::MonadChainDataError>(t.elapsed())
+        };
+        let blob_apply = async {
+            let t = std::time::Instant::now();
+            self.blob_store.apply_writes(blob_ops).await?;
+            Ok::<_, crate::error::MonadChainDataError>(t.elapsed())
+        };
+        match futures::try_join!(meta_apply, blob_apply) {
+            Ok((meta_elapsed, blob_elapsed)) => (
+                Ok(()),
+                MetaBlobTimings {
+                    meta: meta_elapsed,
+                    blob: blob_elapsed,
+                    writes,
+                },
+            ),
+            Err(e) => {
+                session.invalidate_populated();
+                (Err(e), MetaBlobTimings::default())
+            }
+        }
+    }
+
+    /// Stages write operations without applying them. Any cache entries
+    /// populated while staging are evicted before returning because the writes
+    /// may be applied later, retried, or abandoned by a pipelined caller.
+    pub async fn stage_writes<'a, F>(&'a self, f: F) -> Result<StagedWrites>
+    where
+        F: for<'s> FnOnce(&'s mut WriteSession<'a, M, B>) -> SessionFuture<'s>,
+    {
+        let mut session = WriteSession::new(self);
+        let closure_result = f(&mut session).await;
+        if let Err(e) = closure_result {
+            session.invalidate_populated();
+            return Err(e);
+        }
+        let meta_ops = session.take_meta();
+        let blob_ops = session.take_blob();
+        session.invalidate_populated();
+        let counts = WriteOpCounts::from_writes(&meta_ops, &blob_ops);
+        Ok(StagedWrites {
+            meta_ops,
+            blob_ops,
+            counts,
+        })
+    }
+
+    pub async fn apply_staged_writes_timed(&self, writes: StagedWrites) -> Result<MetaBlobTimings> {
+        let counts = writes.counts;
+        let meta_apply = async {
+            let t = std::time::Instant::now();
+            self.meta_store.apply_writes(writes.meta_ops).await?;
+            Ok::<_, crate::error::MonadChainDataError>(t.elapsed())
+        };
+        let blob_apply = async {
+            let t = std::time::Instant::now();
+            self.blob_store.apply_writes(writes.blob_ops).await?;
+            Ok::<_, crate::error::MonadChainDataError>(t.elapsed())
+        };
+        let (meta, blob) = futures::try_join!(meta_apply, blob_apply)?;
+        Ok(MetaBlobTimings {
+            meta,
+            blob,
+            writes: counts,
+        })
+    }
+
+    /// Stages writes, flushes meta and blob artifacts, and only then attempts
+    /// the publication CAS. A CAS conflict therefore means the staged
+    /// artifacts may already be durable; callers must make those writes
+    /// idempotent and retry-safe. On closure or flush error, populated cache
+    /// entries are invalidated because the durable state may not match them.
+    pub async fn with_writes_and_cas<'a, F>(
+        &'a self,
+        cas: PublicationCasParams,
+        f: F,
+    ) -> Result<CasOutcome>
+    where
+        M: MetaStoreCas,
+        F: for<'s> FnOnce(&'s mut WriteSession<'a, M, B>) -> SessionFuture<'s>,
+    {
+        self.with_writes_and_cas_timed(cas, f)
+            .await
+            .map(|(outcome, _timings)| outcome)
+    }
+
+    pub async fn with_writes_and_cas_timed<'a, F>(
+        &'a self,
+        cas: PublicationCasParams,
+        f: F,
+    ) -> Result<(CasOutcome, MetaBlobTimings)>
+    where
+        M: MetaStoreCas,
+        F: for<'s> FnOnce(&'s mut WriteSession<'a, M, B>) -> SessionFuture<'s>,
+    {
+        let mut session = WriteSession::new(self);
+        let closure_result = f(&mut session).await;
+        if let Err(e) = closure_result {
+            session.invalidate_populated();
+            return Err(e);
+        }
+        let meta_ops = session.take_meta();
+        let blob_ops = session.take_blob();
+        let mut writes = WriteOpCounts::from_writes(&meta_ops, &blob_ops);
+        writes.add_cas(cas.table, cas.value.len());
+        let meta_start = std::time::Instant::now();
+        let blob_start = std::time::Instant::now();
+        match futures::try_join!(
+            async {
+                self.meta_store.apply_writes(meta_ops).await?;
+                Ok::<_, crate::error::MonadChainDataError>(meta_start.elapsed())
+            },
+            async {
+                self.blob_store.apply_writes(blob_ops).await?;
+                Ok::<_, crate::error::MonadChainDataError>(blob_start.elapsed())
+            },
+        ) {
+            Ok((meta_elapsed, blob_elapsed)) => {
+                let outcome = self
+                    .meta_store
+                    .cas_put(cas.table, &cas.key, cas.expected, cas.value)
+                    .await?;
+                return Ok((
+                    outcome,
+                    MetaBlobTimings {
+                        meta: meta_elapsed,
+                        blob: blob_elapsed,
+                        writes,
+                    },
+                ));
+            }
+            Err(e) => {
+                session.invalidate_populated();
+                return Err(e);
+            }
+        }
+    }
+
+    /// Drains and returns the (hits, misses) counters for every cached
+    /// wrapper, tagged with its logical table name. Each call resets the
+    /// counters so consumers see per-window deltas.
+    pub fn take_cache_window_stats(&self) -> Vec<(&'static str, u64, u64)> {
+        let mut out = Vec::new();
+        self.blocks.collect_window_stats(&mut out);
+        self.tx_hash_index.collect_window_stats(&mut out);
+        for fam in self.families.values() {
+            fam.collect_window_stats(&mut out);
+        }
+        out
+    }
+}
+
+/// Pushes one (name, hits, misses) tuple per cached wrapper, skipping rows
+/// where both counters are zero so the per-window log line stays compact.
+pub(crate) fn collect_kv_stats<M: MetaStore>(
+    out: &mut Vec<(&'static str, u64, u64)>,
+    table: &CachedKvTable<M>,
+) {
+    let (h, m) = table.take_window_stats();
+    if h != 0 || m != 0 {
+        out.push((table.table_id().as_str(), h, m));
+    }
+}
+
+pub(crate) fn collect_scan_stats<M: MetaStore>(
+    out: &mut Vec<(&'static str, u64, u64)>,
+    table: &CachedScannableTable<M>,
+) {
+    let (h, m) = table.take_window_stats();
+    if h != 0 || m != 0 {
+        out.push((table.table_id().as_str(), h, m));
+    }
+}
+
+pub(crate) fn collect_blob_stats<B: BlobStore>(
+    out: &mut Vec<(&'static str, u64, u64)>,
+    table: &CachedBlobTable<B>,
+) {
+    let (h, m) = table.take_window_stats();
+    if h != 0 || m != 0 {
+        out.push((table.table_id().as_str(), h, m));
     }
 }
 
@@ -136,6 +492,14 @@ impl<M: MetaStoreCas> PublicationTables<M> {
                 Bytes::from(next.encode()),
             )
             .await?;
+        self.cas_outcome_into_result(outcome).await
+    }
+
+    /// Folds a [`CasOutcome`] from a publication-state write into the
+    /// service-level `Result`. Centralized so the Phase B path in
+    /// `MonadChainDataService::ingest_blocks` and the Phase-B-skipped path
+    /// in [`Self::cas_advance`] map `Conflict` to `FencedOut` identically.
+    pub(crate) async fn cas_outcome_into_result(&self, outcome: CasOutcome) -> Result<()> {
         match outcome {
             CasOutcome::Applied { .. } => Ok(()),
             CasOutcome::Conflict { .. } => {
@@ -147,26 +511,72 @@ impl<M: MetaStoreCas> PublicationTables<M> {
 }
 
 pub struct BlockTables<M: MetaStore> {
-    block_records: KvTable<M>,
-    block_headers: KvTable<M>,
-    block_hash_to_number_index: KvTable<M>,
+    block_metadata: CachedKvTable<M>,
+    block_records: CachedKvTable<M>,
+    block_headers: CachedKvTable<M>,
+    block_hash_to_number_index: CachedKvTable<M>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+struct BlockMetadataRecord {
+    block_record: Bytes,
+    evm_header: Bytes,
+    log_header: Bytes,
+    tx_header: Bytes,
+    trace_header: Bytes,
+}
+
+impl BlockMetadataRecord {
+    fn encode(&self) -> Bytes {
+        Bytes::from(alloy_rlp::encode(self))
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self> {
+        alloy_rlp::decode_exact(bytes)
+            .map_err(|_| MonadChainDataError::Decode("invalid block metadata rlp"))
+    }
 }
 
 impl<M: MetaStore> BlockTables<M> {
+    pub const BLOCK_METADATA_TABLE: TableId = TableId::new("block_metadata");
     pub const BLOCK_RECORD_TABLE: TableId = TableId::new("block_record");
     pub const BLOCK_HEADER_TABLE: TableId = TableId::new("block_header");
     pub const BLOCK_HASH_TO_NUMBER_INDEX_TABLE: TableId =
         TableId::new("block_hash_to_number_index");
 
-    fn new(meta_store: M) -> Self {
+    fn new(meta_store: M, cache: CacheConfig) -> Self {
         Self {
-            block_records: meta_store.table(Self::BLOCK_RECORD_TABLE),
-            block_headers: meta_store.table(Self::BLOCK_HEADER_TABLE),
-            block_hash_to_number_index: meta_store.table(Self::BLOCK_HASH_TO_NUMBER_INDEX_TABLE),
+            block_metadata: CachedKvTable::new(
+                meta_store.table(Self::BLOCK_METADATA_TABLE),
+                cache.block_header_entries,
+            ),
+            block_records: CachedKvTable::new(
+                meta_store.table(Self::BLOCK_RECORD_TABLE),
+                cache.block_record_entries,
+            ),
+            block_headers: CachedKvTable::new(
+                meta_store.table(Self::BLOCK_HEADER_TABLE),
+                cache.block_header_entries,
+            ),
+            block_hash_to_number_index: CachedKvTable::new(
+                meta_store.table(Self::BLOCK_HASH_TO_NUMBER_INDEX_TABLE),
+                cache.block_hash_to_number_entries,
+            ),
         }
     }
 
+    async fn load_metadata(&self, block_number: u64) -> Result<Option<BlockMetadataRecord>> {
+        let key = block_number_key(block_number);
+        let Some(bytes) = self.block_metadata.get(&key).await? else {
+            return Ok(None);
+        };
+        BlockMetadataRecord::decode(&bytes).map(Some)
+    }
+
     pub async fn load_record(&self, block_number: u64) -> Result<Option<BlockRecord>> {
+        if let Some(metadata) = self.load_metadata(block_number).await? {
+            return BlockRecord::decode(&metadata.block_record).map(Some);
+        }
         let key = block_number_key(block_number);
         let Some(bytes) = self.block_records.get(&key).await? else {
             return Ok(None);
@@ -182,7 +592,47 @@ impl<M: MetaStore> BlockTables<M> {
         Ok(())
     }
 
+    pub fn stage_record<B: BlobStore>(
+        &self,
+        w: &mut WriteSession<'_, M, B>,
+        block_number: u64,
+        block_record: &BlockRecord,
+    ) {
+        let key = block_number_key(block_number);
+        w.put(
+            &self.block_records,
+            &key,
+            Bytes::from(block_record.encode()),
+        );
+    }
+
+    pub fn stage_metadata<B: BlobStore>(
+        &self,
+        w: &mut WriteSession<'_, M, B>,
+        block_number: u64,
+        block_record: &BlockRecord,
+        evm_header: &EvmBlockHeader,
+        log_header: Bytes,
+        tx_header: Bytes,
+        trace_header: Bytes,
+    ) {
+        let key = block_number_key(block_number);
+        let metadata = BlockMetadataRecord {
+            block_record: Bytes::from(block_record.encode()),
+            evm_header: Bytes::from(alloy_rlp::encode(evm_header)),
+            log_header,
+            tx_header,
+            trace_header,
+        };
+        w.put(&self.block_metadata, &key, metadata.encode());
+    }
+
     pub async fn load_header(&self, block_number: u64) -> Result<Option<EvmBlockHeader>> {
+        if let Some(metadata) = self.load_metadata(block_number).await? {
+            let header = EvmBlockHeader::decode(&mut metadata.evm_header.as_ref())
+                .map_err(|_| MonadChainDataError::Decode("invalid block header rlp"))?;
+            return Ok(Some(header));
+        }
         let key = block_number_key(block_number);
         let Some(bytes) = self.block_headers.get(&key).await? else {
             return Ok(None);
@@ -198,6 +648,20 @@ impl<M: MetaStore> BlockTables<M> {
             .put(&key, Bytes::from(alloy_rlp::encode(header)))
             .await?;
         Ok(())
+    }
+
+    pub fn stage_header<B: BlobStore>(
+        &self,
+        w: &mut WriteSession<'_, M, B>,
+        block_number: u64,
+        header: &EvmBlockHeader,
+    ) {
+        let key = block_number_key(block_number);
+        w.put(
+            &self.block_headers,
+            &key,
+            Bytes::from(alloy_rlp::encode(header)),
+        );
     }
 
     /// Resolves a block hash to its block number via the hash-to-number index.
@@ -232,7 +696,26 @@ impl<M: MetaStore> BlockTables<M> {
         Ok(())
     }
 
-    /// Validates that a new block extends the currently published chain.
+    pub fn stage_hash_index<B: BlobStore>(
+        &self,
+        w: &mut WriteSession<'_, M, B>,
+        block_hash: &Hash32,
+        block_number: u64,
+    ) {
+        w.put(
+            &self.block_hash_to_number_index,
+            block_hash.as_slice(),
+            Bytes::copy_from_slice(&block_number.to_be_bytes()),
+        );
+    }
+
+    pub(crate) fn collect_window_stats(&self, out: &mut Vec<(&'static str, u64, u64)>) {
+        collect_kv_stats(out, &self.block_metadata);
+        collect_kv_stats(out, &self.block_records);
+        collect_kv_stats(out, &self.block_headers);
+        collect_kv_stats(out, &self.block_hash_to_number_index);
+    }
+
     pub async fn validate_continuity(
         &self,
         block: &FinalizedBlock,
@@ -269,27 +752,55 @@ impl<M: MetaStore> BlockTables<M> {
 }
 
 pub struct FamilyTables<M: MetaStore, B: BlobStore> {
-    block_headers: KvTable<M>,
-    block_blobs: BlobTable<B>,
+    family: Family,
+    block_metadata: CachedKvTable<M>,
+    block_headers: CachedKvTable<M>,
+    block_blobs: CachedBlobTable<B>,
     dir: PrimaryDirTables<M>,
     bitmap: BitmapTables<M>,
 }
 
 impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
-    fn new(meta_store: M, blob_store: B, family: Family) -> Self {
+    fn new(meta_store: M, blob_store: B, family: Family, cache: CacheConfig) -> Self {
         let ids = family.table_ids();
         Self {
-            block_headers: meta_store.table(ids.block_header),
-            block_blobs: blob_store.table(ids.block_blob),
+            family,
+            block_metadata: CachedKvTable::new(
+                meta_store.table(BlockTables::<M>::BLOCK_METADATA_TABLE),
+                cache.block_header_entries,
+            ),
+            block_headers: CachedKvTable::new(
+                meta_store.table(ids.block_header),
+                cache.block_header_entries,
+            ),
+            block_blobs: CachedBlobTable::new(
+                blob_store.table(ids.block_blob),
+                cache.block_blob_entries,
+            ),
             dir: PrimaryDirTables::new(
-                meta_store.scannable_table(ids.dir_by_block),
-                meta_store.table(ids.dir_bucket),
+                CachedScannableTable::new(
+                    meta_store.scannable_table(ids.dir_by_block),
+                    cache.dir_by_block_entries,
+                ),
+                CachedKvTable::new(meta_store.table(ids.dir_bucket), cache.dir_bucket_entries),
             ),
             bitmap: BitmapTables::new(
-                meta_store.scannable_table(ids.bitmap_by_block),
-                meta_store.table(ids.bitmap_page_meta),
-                meta_store.table(ids.bitmap_page_blob),
-                meta_store.scannable_table(ids.open_bitmap_stream),
+                CachedScannableTable::new(
+                    meta_store.scannable_table(ids.bitmap_by_block),
+                    cache.bitmap_by_block_entries,
+                ),
+                CachedKvTable::new(
+                    meta_store.table(ids.bitmap_page_meta),
+                    cache.bitmap_page_meta_entries,
+                ),
+                CachedKvTable::new(
+                    meta_store.table(ids.bitmap_page_blob),
+                    cache.bitmap_page_blob_entries,
+                ),
+                CachedScannableTable::new(
+                    meta_store.scannable_table(ids.open_bitmap_stream),
+                    cache.open_bitmap_stream_entries,
+                ),
             ),
         }
     }
@@ -306,9 +817,22 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
         self.bitmap.fragments_table()
     }
 
+    pub fn family(&self) -> Family {
+        self.family
+    }
+
     /// Loads the raw per-block header bytes for this family. The codec is
     /// the consumer's responsibility; the engine treats the value as opaque.
     pub async fn load_block_header(&self, block_number: u64) -> Result<Option<Bytes>> {
+        let key = block_number_key(block_number);
+        if let Some(bytes) = self.block_metadata.get(&key).await? {
+            let metadata = BlockMetadataRecord::decode(&bytes)?;
+            return Ok(Some(match self.family {
+                Family::Log => metadata.log_header,
+                Family::Tx => metadata.tx_header,
+                Family::Trace => metadata.trace_header,
+            }));
+        }
         let key = block_number_key(block_number);
         self.block_headers.get(&key).await
     }
@@ -347,11 +871,41 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
         Ok(())
     }
 
+    pub fn stage_block_blob(
+        &self,
+        w: &mut WriteSession<'_, M, B>,
+        block_number: u64,
+        block_log_blob: Vec<u8>,
+    ) {
+        let key = block_number_key(block_number);
+        w.put_blob(&self.block_blobs, &key, Bytes::from(block_log_blob));
+    }
+
+    pub fn stage_block_header(
+        &self,
+        w: &mut WriteSession<'_, M, B>,
+        block_number: u64,
+        bytes: Bytes,
+    ) {
+        let key = block_number_key(block_number);
+        w.put(&self.block_headers, &key, bytes);
+    }
+
     pub async fn load_bucket_fragments(
         &self,
         bucket_start: u64,
     ) -> Result<Vec<PrimaryDirFragment>> {
         self.dir.load_bucket_fragments(bucket_start).await
+    }
+
+    pub(crate) async fn list_bucket_fragments_for_rebuild(
+        &self,
+        bucket_start: u64,
+        published_head: u64,
+    ) -> Result<BTreeMap<u64, Bytes>> {
+        self.dir
+            .list_bucket_fragments_for_rebuild(bucket_start, published_head)
+            .await
     }
 
     pub async fn load_bucket(&self, bucket_start: u64) -> Result<Option<PrimaryDirBucket>> {
@@ -376,6 +930,17 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
             .await
     }
 
+    pub(crate) async fn list_bitmap_fragments_for_rebuild(
+        &self,
+        stream_id: &str,
+        page_start_local: u32,
+        published_head: u64,
+    ) -> Result<BTreeMap<u64, Bytes>> {
+        self.bitmap
+            .list_fragments_for_rebuild(stream_id, page_start_local, published_head)
+            .await
+    }
+
     /// Loads the compacted page metadata for one sealed stream page.
     pub async fn load_bitmap_page_meta(
         &self,
@@ -395,6 +960,28 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
     ) -> Result<()> {
         self.bitmap
             .store_page_meta(stream_id, page_start_local, meta)
+            .await
+    }
+
+    /// Loads a compacted bitmap page artifact for one sealed stream page.
+    pub async fn load_bitmap_page_artifact(
+        &self,
+        stream_id: &str,
+        page_start_local: u32,
+    ) -> Result<Option<BitmapPageArtifact>> {
+        self.bitmap
+            .load_page_artifact(stream_id, page_start_local)
+            .await
+    }
+
+    pub async fn store_bitmap_page_artifact(
+        &self,
+        stream_id: &str,
+        page_start_local: u32,
+        artifact: &BitmapPageArtifact,
+    ) -> Result<()> {
+        self.bitmap
+            .store_page_artifact(stream_id, page_start_local, artifact)
             .await
     }
 
@@ -437,5 +1024,16 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
         self.bitmap
             .record_open_streams(global_page_start, streams)
             .await
+    }
+
+    pub(crate) fn collect_window_stats(&self, out: &mut Vec<(&'static str, u64, u64)>) {
+        collect_kv_stats(out, &self.block_headers);
+        collect_blob_stats(out, &self.block_blobs);
+        collect_scan_stats(out, self.dir.fragments_cache());
+        collect_kv_stats(out, self.dir.buckets_cache());
+        collect_scan_stats(out, self.bitmap.fragments_cache());
+        collect_kv_stats(out, self.bitmap.page_meta_cache());
+        collect_kv_stats(out, self.bitmap.page_blobs_cache());
+        collect_scan_stats(out, self.bitmap.open_streams_cache());
     }
 }

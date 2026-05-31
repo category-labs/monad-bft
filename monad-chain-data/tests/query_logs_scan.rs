@@ -44,6 +44,7 @@ async fn query_logs_paginates_at_block_boundaries() {
                 log(Address::repeat_byte(7), B256::repeat_byte(9)),
             ]],
             txs: Vec::new(),
+            traces: vec![],
         })
         .await
         .expect("ingest block 1");
@@ -53,6 +54,7 @@ async fn query_logs_paginates_at_block_boundaries() {
             header: h2,
             logs_by_tx: vec![vec![log(Address::repeat_byte(7), B256::repeat_byte(9))]],
             txs: Vec::new(),
+            traces: vec![],
         })
         .await
         .expect("ingest block 2");
@@ -127,6 +129,7 @@ async fn query_logs_descending_returns_newest_first() {
                 log(Address::repeat_byte(5), B256::repeat_byte(8)),
             ]],
             txs: Vec::new(),
+            traces: vec![],
         })
         .await
         .expect("ingest");
@@ -171,6 +174,7 @@ async fn query_logs_rejects_from_block_above_published_head() {
             header: test_header(1, B256::ZERO),
             logs_by_tx: vec![vec![log(Address::repeat_byte(5), B256::repeat_byte(8))]],
             txs: Vec::new(),
+            traces: vec![],
         })
         .await
         .expect("ingest");
@@ -213,6 +217,7 @@ async fn ingest_assigns_contiguous_log_id_windows_across_empty_blocks() {
                 log(Address::repeat_byte(3), B256::repeat_byte(4)),
             ]],
             txs: Vec::new(),
+            traces: vec![],
         })
         .await
         .expect("ingest block 1");
@@ -222,6 +227,7 @@ async fn ingest_assigns_contiguous_log_id_windows_across_empty_blocks() {
             header: h2,
             logs_by_tx: vec![vec![]],
             txs: Vec::new(),
+            traces: vec![],
         })
         .await
         .expect("ingest block 2");
@@ -231,6 +237,7 @@ async fn ingest_assigns_contiguous_log_id_windows_across_empty_blocks() {
             header: h3,
             logs_by_tx: vec![vec![log(Address::repeat_byte(3), B256::repeat_byte(4))]],
             txs: Vec::new(),
+            traces: vec![],
         })
         .await
         .expect("ingest block 3");
@@ -285,6 +292,7 @@ async fn block_scan_completes_current_block_when_limit_reached_mid_block() {
                 log(Address::repeat_byte(5), B256::repeat_byte(8)),
             ]],
             txs: Vec::new(),
+            traces: vec![],
         })
         .await
         .expect("ingest block 1");
@@ -294,6 +302,7 @@ async fn block_scan_completes_current_block_when_limit_reached_mid_block() {
             header: h2,
             logs_by_tx: vec![vec![log(Address::repeat_byte(5), B256::repeat_byte(8))]],
             txs: Vec::new(),
+            traces: vec![],
         })
         .await
         .expect("ingest block 2");

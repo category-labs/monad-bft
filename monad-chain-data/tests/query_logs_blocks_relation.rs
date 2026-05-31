@@ -186,6 +186,7 @@ async fn ingest(
             header,
             logs_by_tx: vec![logs],
             txs: Vec::new(),
+            traces: vec![],
         })
         .await
         .expect("ingest");

@@ -20,6 +20,29 @@ pub use in_memory::InMemoryMetaStore;
 
 use crate::{error::Result, store::common::Page};
 
+#[derive(Debug, Clone)]
+pub enum MetaWriteOp {
+    Put {
+        table: TableId,
+        key: Vec<u8>,
+        value: Bytes,
+    },
+    ScanPut {
+        table: ScannableTableId,
+        partition: Vec<u8>,
+        clustering: Vec<u8>,
+        value: Bytes,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct PublicationCasParams {
+    pub table: TableId,
+    pub key: Vec<u8>,
+    pub expected: Option<CasVersion>,
+    pub value: Bytes,
+}
+
 /// Logical identifier for a key/value table.
 ///
 /// Identifiers are opaque names. Backends are responsible for any
@@ -163,9 +186,7 @@ pub enum CasOutcome {
 ///
 /// Implementations must be cheaply cloneable (e.g. via internal `Arc`).
 #[allow(async_fn_in_trait)]
-#[auto_impl::auto_impl(Arc)]
-pub trait MetaStore: Clone + Send + Sync {
-    #[auto_impl(keep_default_for(Arc))]
+pub trait MetaStore: Clone + Send + Sync + 'static {
     fn table(&self, table: TableId) -> KvTable<Self>
     where
         Self: Sized,
@@ -173,7 +194,6 @@ pub trait MetaStore: Clone + Send + Sync {
         KvTable::new(self.clone(), table)
     }
 
-    #[auto_impl(keep_default_for(Arc))]
     fn scannable_table(&self, table: ScannableTableId) -> ScannableKvTable<Self>
     where
         Self: Sized,
@@ -206,6 +226,20 @@ pub trait MetaStore: Clone + Send + Sync {
         cursor: Option<Vec<u8>>,
         limit: usize,
     ) -> Result<Page>;
+
+    async fn apply_writes(&self, writes: Vec<MetaWriteOp>) -> Result<()>;
+
+    /// Atomically applies metadata writes and the publication CAS in one
+    /// backend transaction when a backend can provide that shape. Current
+    /// ingest callers intentionally use a write-then-CAS publication path
+    /// instead so meta and blob artifacts are durable before the published
+    /// head advances; this method remains as an atomic alternative and is
+    /// covered by backend tests.
+    async fn apply_writes_with_cas(
+        &self,
+        writes: Vec<MetaWriteOp>,
+        cas: PublicationCasParams,
+    ) -> Result<CasOutcome>;
 }
 
 /// Versioned compare-and-set storage, used for fencing across writer
@@ -219,7 +253,6 @@ pub trait MetaStore: Clone + Send + Sync {
 /// that uses this surface today; everything else is plain idempotent
 /// writes through [`MetaStore`].
 #[allow(async_fn_in_trait)]
-#[auto_impl::auto_impl(Arc)]
 pub trait MetaStoreCas: MetaStore {
     /// Reads the current row, returning its version alongside the value.
     async fn cas_get(&self, table: TableId, key: &[u8]) -> Result<Option<(CasVersion, Bytes)>>;

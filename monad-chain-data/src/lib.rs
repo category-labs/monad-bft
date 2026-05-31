@@ -21,23 +21,39 @@ pub mod family;
 pub mod logs;
 pub mod primitives;
 pub mod store;
+pub mod traces;
+pub mod transfers;
 pub mod txs;
 
 pub use alloy_primitives::{Address, Bytes, Log, LogData, B256};
-pub use api::{IngestOutcome, MonadChainDataService};
+pub use api::{
+    IngestBatchTimings, IngestOutcome, IngestPlan, IoRetryPolicy, MonadChainDataService,
+    PublicationAdvance,
+};
 pub use blocks::{Block, QueryBlocksRequest, QueryBlocksResponse};
-pub use engine::{family::Family, tables::Tables};
+pub use engine::{
+    family::Family,
+    tables::{Tables, WriteOpCounts},
+};
 pub use error::MonadChainDataError;
-pub use family::{FinalizedBlock, Hash32, IngestTx};
+pub use family::{CallKind, FinalizedBlock, Hash32, IngestTrace, IngestTx};
 pub use logs::{LogEntry, LogFilter, LogsRelations, QueryLogsRequest, QueryLogsResponse};
 pub use primitives::{
     limits::{LimitExceededKind, QueryEnvelope, QueryLimits},
     page::{QueryOrder, DEFAULT_QUERY_LIMIT},
     refs::{BlockRef, BlockSpan},
-    state::{BlockRecord, FamilyWindowRecord, LogId, PrimaryId, TxId},
+    state::{BlockRecord, FamilyWindowRecord, LogId, PrimaryId, TraceId, TxId},
     EvmBlockHeader,
 };
 pub use store::{InMemoryBlobStore, InMemoryMetaStore};
+pub use traces::{
+    compute_trace_addresses, QueryTracesRequest, QueryTracesResponse, TraceEntry, TraceFilter,
+    TracesRelations,
+};
+pub use transfers::{
+    QueryTransfersRequest, QueryTransfersResponse, TransferEntry, TransferFilter,
+    TransfersRelations,
+};
 pub use txs::{
     QueryTransactionsRequest, QueryTransactionsResponse, TxEntry, TxFilter, TxsRelations,
 };

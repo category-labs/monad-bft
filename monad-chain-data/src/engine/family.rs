@@ -50,6 +50,7 @@ macro_rules! family_table_ids {
 pub enum Family {
     Log,
     Tx,
+    Trace,
 }
 
 impl Family {
@@ -57,6 +58,7 @@ impl Family {
         match self {
             Family::Log => family_table_ids!("log"),
             Family::Tx => family_table_ids!("tx"),
+            Family::Trace => family_table_ids!("trace"),
         }
     }
 
@@ -66,6 +68,7 @@ impl Family {
         match self {
             Family::Log => Some(block.logs),
             Family::Tx => Some(block.txs),
+            Family::Trace => Some(block.traces),
         }
     }
 }

@@ -14,16 +14,23 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 pub mod blob;
+pub mod cache;
 pub mod common;
 #[cfg(feature = "fjall")]
 pub mod fjall;
 pub mod meta;
+pub mod session;
 
-pub use blob::{BlobStore, BlobTable, BlobTableId, InMemoryBlobStore};
+pub use blob::{
+    BlobCompressionConfig, BlobCompressionSnapshot, BlobCompressionStats, BlobCompressionStore,
+    BlobStore, BlobTable, BlobTableId, BlobWriteOp, InMemoryBlobStore,
+};
+pub use cache::{CacheConfig, CacheField, CachedBlobTable, CachedKvTable, CachedScannableTable};
 pub use common::Page;
 #[cfg(feature = "fjall")]
-pub use fjall::FjallStore;
+pub use fjall::{FjallKeyspaceStats, FjallStore, FjallTuning};
 pub use meta::{
-    CasOutcome, CasVersion, InMemoryMetaStore, KvTable, MetaStore, MetaStoreCas, ScannableKvTable,
-    ScannableTableId, TableId,
+    CasOutcome, CasVersion, InMemoryMetaStore, KvTable, MetaStore, MetaStoreCas, MetaWriteOp,
+    PublicationCasParams, ScannableKvTable, ScannableTableId, TableId,
 };
+pub use session::{SessionFuture, WriteSession};

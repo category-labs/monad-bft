@@ -15,8 +15,8 @@
 
 use alloy_primitives::{aliases::B64, Address, Bloom, Bytes as AlloyBytes, U256};
 use monad_chain_data::{
-    EvmBlockHeader, FinalizedBlock, InMemoryBlobStore, InMemoryMetaStore, MonadChainDataService,
-    QueryLimits, B256,
+    store::TableId, EvmBlockHeader, FinalizedBlock, InMemoryBlobStore, InMemoryMetaStore,
+    MonadChainDataService, QueryLimits, B256,
 };
 
 mod common;
@@ -25,8 +25,9 @@ use common::test_header;
 
 #[tokio::test(flavor = "current_thread")]
 async fn ingest_persists_block_header() {
+    let meta = InMemoryMetaStore::default();
     let service = MonadChainDataService::new(
-        InMemoryMetaStore::default(),
+        meta.clone(),
         InMemoryBlobStore::default(),
         QueryLimits::UNLIMITED,
     );
@@ -43,6 +44,7 @@ async fn ingest_persists_block_header() {
             header: header.clone(),
             logs_by_tx: vec![vec![]],
             txs: Vec::new(),
+            traces: vec![],
         })
         .await
         .expect("ingest block 1");
@@ -56,6 +58,24 @@ async fn ingest_persists_block_header() {
         .expect("header present");
 
     assert_eq!(loaded, header);
+
+    let kv = meta.kv_snapshot();
+    assert!(kv
+        .keys()
+        .any(|(table, _)| *table == TableId::new("block_metadata")));
+    for legacy_table in [
+        "block_record",
+        "block_header",
+        "log_block_header",
+        "tx_block_header",
+        "trace_block_header",
+    ] {
+        assert!(
+            !kv.keys()
+                .any(|(table, _)| *table == TableId::new(legacy_table)),
+            "ingest should not write legacy {legacy_table} rows"
+        );
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -113,6 +133,7 @@ async fn block_header_roundtrips_with_all_optional_fields_populated() {
             header: header.clone(),
             logs_by_tx: vec![vec![]],
             txs: Vec::new(),
+            traces: vec![],
         })
         .await
         .expect("ingest block 1");
