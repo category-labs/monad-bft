@@ -62,7 +62,6 @@ fn small_cache() -> CacheConfig {
         dir_by_block_entries: 64,
         dir_bucket_entries: 64,
         bitmap_by_block_entries: 64,
-        bitmap_page_meta_entries: 64,
         bitmap_page_blob_entries: 64,
         bitmap_page_counts_entries: 64,
         open_bitmap_stream_entries: 64,

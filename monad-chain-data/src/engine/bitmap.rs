@@ -65,27 +65,15 @@ pub struct BitmapPageArtifact {
     pub bitmap_blob: Bytes,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BitmapPageMeta {
     pub min_local: u32,
     pub max_local: u32,
     pub count: u32,
 }
 
-impl BitmapPageMeta {
-    pub fn encode(&self) -> Vec<u8> {
-        alloy_rlp::encode(self)
-    }
-
-    pub fn decode(bytes: &[u8]) -> Result<Self> {
-        alloy_rlp::decode_exact(bytes)
-            .map_err(|_| MonadChainDataError::Decode("invalid bitmap page meta rlp"))
-    }
-}
-
 pub struct BitmapTables<M: MetaStore> {
     fragments: CachedScannableTable<M>,
-    page_meta: CachedKvTable<M>,
     page_blobs: CachedKvTable<M>,
     page_counts: CachedKvTable<M>,
     open_streams: CachedScannableTable<M>,
@@ -94,14 +82,12 @@ pub struct BitmapTables<M: MetaStore> {
 impl<M: MetaStore> BitmapTables<M> {
     pub fn new(
         fragments: CachedScannableTable<M>,
-        page_meta: CachedKvTable<M>,
         page_blobs: CachedKvTable<M>,
         page_counts: CachedKvTable<M>,
         open_streams: CachedScannableTable<M>,
     ) -> Self {
         Self {
             fragments,
-            page_meta,
             page_blobs,
             page_counts,
             open_streams,
@@ -114,10 +100,6 @@ impl<M: MetaStore> BitmapTables<M> {
 
     pub(crate) fn fragments_cache(&self) -> &CachedScannableTable<M> {
         &self.fragments
-    }
-
-    pub(crate) fn page_meta_cache(&self) -> &CachedKvTable<M> {
-        &self.page_meta
     }
 
     pub(crate) fn page_blobs_cache(&self) -> &CachedKvTable<M> {
@@ -269,44 +251,7 @@ impl<M: MetaStore> BitmapTables<M> {
         Ok(out)
     }
 
-    /// Loads the compacted page metadata for one sealed stream page.
-    pub async fn load_page_meta(
-        &self,
-        stream_id: &str,
-        page_start_local: u32,
-    ) -> Result<Option<BitmapPageMeta>> {
-        let key = stream_page_key(stream_id, page_start_local);
-        let Some(bytes) = self.page_meta.get(&key).await? else {
-            return Ok(None);
-        };
-
-        Ok(Some(BitmapPageMeta::decode(&bytes)?))
-    }
-
-    pub async fn store_page_meta(
-        &self,
-        stream_id: &str,
-        page_start_local: u32,
-        meta: &BitmapPageMeta,
-    ) -> Result<()> {
-        let key = stream_page_key(stream_id, page_start_local);
-        self.page_meta.put(&key, Bytes::from(meta.encode())).await?;
-        Ok(())
-    }
-
-    pub fn stage_page_meta<B: BlobStore>(
-        &self,
-        w: &mut WriteSession<'_, M, B>,
-        stream_id: &str,
-        page_start_local: u32,
-        page_meta: &BitmapPageMeta,
-    ) {
-        let key = stream_page_key(stream_id, page_start_local);
-        w.put(&self.page_meta, &key, Bytes::from(page_meta.encode()));
-    }
-
-    /// Loads a compacted bitmap page, supporting both the current combined
-    /// artifact row and the legacy split page-meta/page-blob representation.
+    /// Loads a compacted bitmap page from its combined artifact row.
     pub async fn load_page_artifact(
         &self,
         stream_id: &str,
@@ -314,24 +259,12 @@ impl<M: MetaStore> BitmapTables<M> {
     ) -> Result<Option<BitmapPageArtifact>> {
         let key = stream_page_key(stream_id, page_start_local);
         let Some(bytes) = self.page_blobs.get(&key).await? else {
-            if self.page_meta.get(&key).await?.is_some() {
-                return Err(MonadChainDataError::MissingData("missing bitmap page blob"));
-            }
             return Ok(None);
         };
 
-        if let Some(artifact) = decode_bitmap_page_artifact(bytes.as_ref())? {
-            return Ok(Some(artifact));
-        }
-
-        let meta = self
-            .load_page_meta(stream_id, page_start_local)
-            .await?
-            .ok_or(MonadChainDataError::MissingData("missing bitmap page meta"))?;
-        Ok(Some(BitmapPageArtifact {
-            meta,
-            bitmap_blob: bytes,
-        }))
+        decode_bitmap_page_artifact(bytes.as_ref())?
+            .ok_or(MonadChainDataError::Decode("invalid bitmap page artifact"))
+            .map(Some)
     }
 
     pub async fn store_page_artifact(
@@ -360,44 +293,6 @@ impl<M: MetaStore> BitmapTables<M> {
             &key,
             encode_bitmap_page_artifact(artifact),
         );
-    }
-
-    /// Loads the compacted bitmap blob for one sealed stream page.
-    pub async fn load_page_blob(
-        &self,
-        stream_id: &str,
-        page_start_local: u32,
-    ) -> Result<Option<Bytes>> {
-        let key = stream_page_key(stream_id, page_start_local);
-        let Some(bytes) = self.page_blobs.get(&key).await? else {
-            return Ok(None);
-        };
-        if let Some(artifact) = decode_bitmap_page_artifact(bytes.as_ref())? {
-            return Ok(Some(artifact.bitmap_blob));
-        }
-        Ok(Some(bytes))
-    }
-
-    pub async fn store_page_blob(
-        &self,
-        stream_id: &str,
-        page_start_local: u32,
-        bitmap_blob: Bytes,
-    ) -> Result<()> {
-        let key = stream_page_key(stream_id, page_start_local);
-        self.page_blobs.put(&key, bitmap_blob).await?;
-        Ok(())
-    }
-
-    pub fn stage_page_blob<B: BlobStore>(
-        &self,
-        w: &mut WriteSession<'_, M, B>,
-        stream_id: &str,
-        page_start_local: u32,
-        bitmap_blob: Bytes,
-    ) {
-        let key = stream_page_key(stream_id, page_start_local);
-        w.put(&self.page_blobs, &key, bitmap_blob);
     }
 
     /// Loads the sealed-shard page-count manifest for one stream, if its

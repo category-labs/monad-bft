@@ -18,7 +18,7 @@ use std::{collections::HashSet, convert::TryFrom};
 use bytes::Bytes as StorageBytes;
 use monad_chain_data::{
     engine::bitmap::{sharded_stream_id, stream_page_key, STREAM_PAGE_LOCAL_ID_SPAN},
-    store::{MetaStore, TableId},
+    store::MetaStore,
     Address, Bytes, Family, FinalizedBlock, InMemoryBlobStore, InMemoryMetaStore, Log, LogData,
     LogFilter, LogsRelations, MonadChainDataService, QueryEnvelope, QueryLimits, QueryLogsRequest,
     QueryOrder, Topic, B256,
@@ -77,13 +77,6 @@ async fn ingest_compacts_sealed_pages_and_query_prefers_compacted_page_blobs() {
         .load_bitmap_page_artifact(&old_stream, 0)
         .await
         .expect("load old page artifact")
-        .is_some());
-    assert!(service
-        .tables()
-        .family(Family::Log)
-        .load_bitmap_page_blob(&old_stream, 0)
-        .await
-        .expect("load old page blob")
         .is_some());
     assert!(service
         .tables()
@@ -149,72 +142,6 @@ async fn ingest_compacts_sealed_pages_and_query_prefers_compacted_page_blobs() {
         .await
         .expect("query live frontier page");
     assert_eq!(frontier_page.logs.len(), 4);
-}
-
-#[tokio::test(flavor = "current_thread")]
-#[ignore = "slow: ingests ~65k logs to force page seal"]
-async fn query_errors_when_compacted_page_meta_exists_but_blob_is_missing() {
-    let meta_store = InMemoryMetaStore::default();
-    let blob_store = InMemoryBlobStore::default();
-    let service =
-        MonadChainDataService::new(meta_store.clone(), blob_store, QueryLimits::UNLIMITED);
-
-    let address = Address::repeat_byte(7);
-    let topic = B256::repeat_byte(9);
-    let h1 = test_header(1, B256::ZERO);
-    let h2 = chain_header(2, &h1);
-
-    service
-        .ingest_block(FinalizedBlock {
-            header: h1,
-            logs_by_tx: vec![repeated_logs(
-                address,
-                vec![topic],
-                usize::try_from(STREAM_PAGE_LOCAL_ID_SPAN - 2).expect("page span fits usize"),
-            )],
-            txs: Vec::new(),
-            traces: vec![],
-        })
-        .await
-        .expect("ingest block 1");
-    service
-        .ingest_block(FinalizedBlock {
-            header: h2,
-            logs_by_tx: vec![repeated_logs(
-                Address::repeat_byte(8),
-                vec![B256::repeat_byte(10)],
-                4,
-            )],
-            txs: Vec::new(),
-            traces: vec![],
-        })
-        .await
-        .expect("ingest block 2");
-
-    let stream = sharded_stream_id("addr", address.as_slice(), 0);
-    meta_store.clear_key(
-        TableId::new("log_bitmap_page_blob"),
-        &stream_page_key(&stream, 0),
-    );
-
-    let error = service
-        .query_logs(QueryLogsRequest {
-            envelope: QueryEnvelope {
-                from_block: Some(1),
-                to_block: Some(2),
-                order: QueryOrder::Ascending,
-                limit: 10,
-            },
-            filter: LogFilter {
-                address: Some(HashSet::from([address])),
-                topics: [Some(HashSet::from([topic])), None, None, None],
-            },
-            relations: LogsRelations::default(),
-        })
-        .await
-        .expect_err("missing page blob should error");
-
-    assert_eq!(error.to_string(), "missing data: missing bitmap page blob");
 }
 
 fn repeated_logs(address: Address, topics: Vec<Topic>, count: usize) -> Vec<Log> {

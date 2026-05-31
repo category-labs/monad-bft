@@ -217,9 +217,6 @@ async fn ingest_blocks_skips_phase_b_when_no_family_writes_seal() {
     const LOG_DIR_BUCKET: TableId = TableId::new("log_dir_bucket");
     const TX_DIR_BUCKET: TableId = TableId::new("tx_dir_bucket");
     const TRACE_DIR_BUCKET: TableId = TableId::new("trace_dir_bucket");
-    const LOG_BITMAP_PAGE_META: TableId = TableId::new("log_bitmap_page_meta");
-    const TX_BITMAP_PAGE_META: TableId = TableId::new("tx_bitmap_page_meta");
-    const TRACE_BITMAP_PAGE_META: TableId = TableId::new("trace_bitmap_page_meta");
 
     let kv = meta.kv_snapshot();
     for ((table, _), _) in &kv {
@@ -234,18 +231,6 @@ async fn ingest_blocks_skips_phase_b_when_no_family_writes_seal() {
         assert_ne!(
             *table, TRACE_DIR_BUCKET,
             "phase-B-skipped path must not write trace_dir_bucket rows"
-        );
-        assert_ne!(
-            *table, LOG_BITMAP_PAGE_META,
-            "phase-B-skipped path must not write log_bitmap_page_meta rows"
-        );
-        assert_ne!(
-            *table, TX_BITMAP_PAGE_META,
-            "phase-B-skipped path must not write tx_bitmap_page_meta rows"
-        );
-        assert_ne!(
-            *table, TRACE_BITMAP_PAGE_META,
-            "phase-B-skipped path must not write trace_bitmap_page_meta rows"
         );
     }
 }

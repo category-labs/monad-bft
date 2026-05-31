@@ -26,7 +26,7 @@ use zstd::dict::DecoderDictionary;
 
 use crate::{
     engine::{
-        bitmap::{BitmapFragmentWrite, BitmapPageArtifact, BitmapPageMeta, BitmapTables},
+        bitmap::{BitmapFragmentWrite, BitmapPageArtifact, BitmapTables},
         family::Family,
         primary_dir::{PrimaryDirBucket, PrimaryDirFragment, PrimaryDirTables},
         row_codec::{decode_row_frame, RowCodec, RowCodecState, DICT_VERSION_NONE, ROW_ZSTD_LEVEL},
@@ -1040,10 +1040,6 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
                     cache.bitmap_by_block_entries,
                 ),
                 CachedKvTable::new(
-                    meta_store.table(ids.bitmap_page_meta),
-                    cache.bitmap_page_meta_entries,
-                ),
-                CachedKvTable::new(
                     meta_store.table(ids.bitmap_page_blob),
                     cache.bitmap_page_blob_entries,
                 ),
@@ -1206,28 +1202,6 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
             .await
     }
 
-    /// Loads the compacted page metadata for one sealed stream page.
-    pub async fn load_bitmap_page_meta(
-        &self,
-        stream_id: &str,
-        page_start_local: u32,
-    ) -> Result<Option<BitmapPageMeta>> {
-        self.bitmap
-            .load_page_meta(stream_id, page_start_local)
-            .await
-    }
-
-    pub async fn store_bitmap_page_meta(
-        &self,
-        stream_id: &str,
-        page_start_local: u32,
-        meta: &BitmapPageMeta,
-    ) -> Result<()> {
-        self.bitmap
-            .store_page_meta(stream_id, page_start_local, meta)
-            .await
-    }
-
     /// Loads a compacted bitmap page artifact for one sealed stream page.
     pub async fn load_bitmap_page_artifact(
         &self,
@@ -1247,28 +1221,6 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
     ) -> Result<()> {
         self.bitmap
             .store_page_artifact(stream_id, page_start_local, artifact)
-            .await
-    }
-
-    /// Loads the compacted bitmap blob for one sealed stream page.
-    pub async fn load_bitmap_page_blob(
-        &self,
-        stream_id: &str,
-        page_start_local: u32,
-    ) -> Result<Option<Bytes>> {
-        self.bitmap
-            .load_page_blob(stream_id, page_start_local)
-            .await
-    }
-
-    pub async fn store_bitmap_page_blob(
-        &self,
-        stream_id: &str,
-        page_start_local: u32,
-        bitmap_blob: Bytes,
-    ) -> Result<()> {
-        self.bitmap
-            .store_page_blob(stream_id, page_start_local, bitmap_blob)
             .await
     }
 
@@ -1314,7 +1266,6 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
         collect_scan_stats(out, self.dir.fragments_cache());
         collect_kv_stats(out, self.dir.buckets_cache());
         collect_scan_stats(out, self.bitmap.fragments_cache());
-        collect_kv_stats(out, self.bitmap.page_meta_cache());
         collect_kv_stats(out, self.bitmap.page_blobs_cache());
         collect_kv_stats(out, self.bitmap.page_counts_cache());
         collect_scan_stats(out, self.bitmap.open_streams_cache());
