@@ -5115,7 +5115,6 @@ dependencies = [
  "libc",
  "lru",
  "monad-archive",
- "monad-eth-types",
  "opentelemetry",
  "rayon",
  "roaring",

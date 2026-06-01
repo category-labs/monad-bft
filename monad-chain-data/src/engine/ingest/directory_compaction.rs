@@ -13,7 +13,6 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use itertools::Itertools;
 
 use crate::{
     engine::{
@@ -117,7 +116,8 @@ fn compact_bucket_from_fragments(fragments: &[PrimaryDirFragment]) -> Result<Pri
     let mut first_primary_ids = Vec::with_capacity(fragments.len() + 1);
     first_primary_ids.push(first_fragment.first_primary_id);
 
-    for (previous, fragment) in fragments.iter().tuple_windows() {
+    for pair in fragments.windows(2) {
+        let (previous, fragment) = (&pair[0], &pair[1]);
         validate_fragment(fragment)?;
 
         if fragment.block_number != previous.block_number.saturating_add(1) {

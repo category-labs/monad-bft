@@ -29,7 +29,6 @@ itertools = { workspace = true }
 libc = { workspace = true, optional = true }
 lru = { workspace = true }
 monad-archive = { workspace = true, optional = true }
-monad-eth-types = { workspace = true, optional = true }
 opentelemetry = { workspace = true, optional = true }
 rayon = { workspace = true }
 roaring = "0.11"
@@ -69,7 +68,6 @@ archive-ingest = [
     "dep:eyre",
     "dep:libc",
     "dep:monad-archive",
-    "dep:monad-eth-types",
     "dep:opentelemetry",
     "dep:tokio",
     "tokio/rt-multi-thread",
