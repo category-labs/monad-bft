@@ -19,7 +19,8 @@ use alloy_primitives::{Address, Bytes};
 use bytes::Bytes as RawBytes;
 use zstd::dict::DecoderDictionary;
 
-use super::types::{BlockTraceHeader, StoredTrace, TraceEntry};
+use super::types::{StoredTrace, TraceEntry};
+use super::BlockBlobHeader;
 use crate::{
     blocks::Block,
     engine::{
@@ -209,7 +210,7 @@ impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery for TraceMaterializer<'a
             .ok_or(MonadChainDataError::MissingData(
                 "missing block trace header",
             ))?;
-        let header = BlockTraceHeader::decode(&header_bytes)?;
+        let header = BlockBlobHeader::decode(&header_bytes)?;
 
         if idx_in_block + 1 >= header.offsets.len() {
             return Err(MonadChainDataError::Decode("trace index out of range"));
@@ -257,7 +258,7 @@ impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery for TraceMaterializer<'a
             .ok_or(MonadChainDataError::MissingData(
                 "missing block trace header",
             ))?;
-        let header = BlockTraceHeader::decode(&header_bytes)?;
+        let header = BlockBlobHeader::decode(&header_bytes)?;
         let blob = self
             .tables
             .family(Family::Trace)
@@ -284,14 +285,14 @@ impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery for TraceMaterializer<'a
 
 #[allow(clippy::too_many_arguments)]
 fn load_filtered_block_traces(
-    header: &BlockTraceHeader,
+    header: &BlockBlobHeader,
     blob: &Bytes,
     block_record: &BlockRecord,
     order: QueryOrder,
     filter: &TraceFilter,
     decoder: Option<&Arc<DecoderDictionary<'static>>>,
 ) -> Result<Vec<TraceEntry>> {
-    let count = header.trace_count();
+    let count = header.row_count();
     let indices: Box<dyn Iterator<Item = usize>> = match order {
         QueryOrder::Ascending => Box::new(0..count),
         QueryOrder::Descending => Box::new((0..count).rev()),
@@ -317,7 +318,7 @@ fn load_filtered_block_traces(
 }
 
 pub(crate) fn decode_trace_at(
-    header: &BlockTraceHeader,
+    header: &BlockBlobHeader,
     blob: &[u8],
     idx: usize,
     block_number: u64,

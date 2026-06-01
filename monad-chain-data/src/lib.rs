@@ -49,7 +49,9 @@ pub use primitives::{
     limits::{LimitExceededKind, QueryEnvelope, QueryLimits},
     page::{QueryOrder, DEFAULT_QUERY_LIMIT},
     refs::{BlockRef, BlockSpan},
-    state::{BlockRecord, FamilyWindowRecord, LogId, PrimaryId, TraceId, TxId},
+    state::{
+        BlockBlobHeader, BlockRecord, FamilyWindowRecord, LogId, PrimaryId, TraceId, TxId,
+    },
     EvmBlockHeader,
 };
 pub use store::{InMemoryBlobStore, InMemoryMetaStore};

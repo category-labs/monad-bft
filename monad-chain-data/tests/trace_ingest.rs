@@ -15,7 +15,7 @@
 
 use alloy_primitives::{Address, U256};
 use monad_chain_data::{
-    compute_trace_addresses, traces::BlockTraceHeader, Family, FinalizedBlock, InMemoryBlobStore,
+    compute_trace_addresses, traces::BlockBlobHeader, Family, FinalizedBlock, InMemoryBlobStore,
     InMemoryMetaStore, MonadChainDataService, PrimaryId, QueryLimits, B256,
 };
 
@@ -64,8 +64,8 @@ async fn ingest_persists_trace_artifacts_for_block_with_traces() {
         .await
         .expect("load trace header")
         .expect("trace header present");
-    let trace_header = BlockTraceHeader::decode(&header_bytes).expect("decode trace header");
-    assert_eq!(trace_header.trace_count(), 3);
+    let trace_header = BlockBlobHeader::decode(&header_bytes).expect("decode trace header");
+    assert_eq!(trace_header.row_count(), 3);
 
     let blob = trace_family
         .load_block_blob(1)

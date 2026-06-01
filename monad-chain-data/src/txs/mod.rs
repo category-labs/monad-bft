@@ -28,4 +28,5 @@ pub use materialize::{
     QueryTransactionsRequest, QueryTransactionsResponse, TxFilter, TxsRelations,
 };
 pub(crate) use scan_query::execute_block_scan_tx_query;
-pub use types::{BlockTxHeader, StoredTxEnvelope, TxEntry};
+pub use crate::primitives::state::BlockBlobHeader;
+pub use types::{StoredTxEnvelope, TxEntry};

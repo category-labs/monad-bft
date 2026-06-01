@@ -66,25 +66,3 @@ impl RawLogEntry {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
-pub struct LogBlockHeader {
-    pub offsets: Vec<u32>,
-    /// Row-codec dictionary version every frame in this block's blob was
-    /// compressed under. `0` = plain zstd frames (no dictionary).
-    pub dict_version: u32,
-}
-
-impl LogBlockHeader {
-    pub fn log_count(&self) -> usize {
-        self.offsets.len().saturating_sub(1)
-    }
-
-    pub fn encode(&self) -> Vec<u8> {
-        alloy_rlp::encode(self)
-    }
-
-    pub fn decode(bytes: &[u8]) -> Result<Self> {
-        alloy_rlp::decode_exact(bytes)
-            .map_err(|_| MonadChainDataError::Decode("invalid log header rlp"))
-    }
-}

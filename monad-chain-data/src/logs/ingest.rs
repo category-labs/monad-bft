@@ -17,7 +17,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use alloy_primitives::B256;
 
-use super::{LogBlockHeader, RawLogEntry};
+use super::{BlockBlobHeader, RawLogEntry};
 use crate::{
     engine::bitmap::{
         encode_grouped_bitmap_fragments, sharded_stream_id, touched_streams_by_page,
@@ -33,7 +33,7 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogIngestPlan {
     pub log_window: FamilyWindowRecord,
-    pub block_log_header: LogBlockHeader,
+    pub block_log_header: BlockBlobHeader,
     pub block_log_blob: Vec<u8>,
     pub bitmap_fragments: Vec<BitmapFragmentWrite>,
     pub touched_bitmap_streams_by_page: BTreeMap<u64, BTreeSet<String>>,
@@ -110,7 +110,7 @@ impl LogIngestPlan {
     fn encode_block_logs(
         logs: &[RawLogEntry],
         codec: &RowCodec,
-    ) -> Result<(LogBlockHeader, Vec<u8>, ArtifactChecksum)> {
+    ) -> Result<(BlockBlobHeader, Vec<u8>, ArtifactChecksum)> {
         let mut offsets = Vec::with_capacity(logs.len() + 1);
         let mut blob = Vec::new();
         let mut rows_digest = RowDigest::new();
@@ -135,7 +135,7 @@ impl LogIngestPlan {
         );
 
         Ok((
-            LogBlockHeader {
+            BlockBlobHeader {
                 offsets,
                 dict_version: codec.version(),
             },

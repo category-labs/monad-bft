@@ -23,7 +23,8 @@ use alloy_primitives::{Address, Bytes};
 use bytes::Bytes as RawBytes;
 use zstd::dict::DecoderDictionary;
 
-use super::types::{selector_from_envelope, BlockTxHeader, StoredTxEnvelope, TxEntry};
+use super::types::{selector_from_envelope, StoredTxEnvelope, TxEntry};
+use super::BlockBlobHeader;
 use crate::{
     blocks::Block,
     engine::{
@@ -195,7 +196,7 @@ impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery for TxMaterializer<'a, M
             .load_block_header(block_number)
             .await?
             .ok_or(MonadChainDataError::MissingData("missing block tx header"))?;
-        let header = BlockTxHeader::decode(&header_bytes)?;
+        let header = BlockBlobHeader::decode(&header_bytes)?;
 
         if idx_in_block + 1 >= header.offsets.len() {
             return Err(MonadChainDataError::Decode("tx index out of range"));
@@ -244,7 +245,7 @@ impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery for TxMaterializer<'a, M
             .load_block_header(block_number)
             .await?
             .ok_or(MonadChainDataError::MissingData("missing block tx header"))?;
-        let header = BlockTxHeader::decode(&header_bytes)?;
+        let header = BlockBlobHeader::decode(&header_bytes)?;
         let blob = self
             .tables
             .family(Family::Tx)
@@ -271,14 +272,14 @@ impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery for TxMaterializer<'a, M
 
 #[allow(clippy::too_many_arguments)]
 fn load_filtered_block_txs(
-    header: &BlockTxHeader,
+    header: &BlockBlobHeader,
     blob: &Bytes,
     block_record: &BlockRecord,
     order: QueryOrder,
     filter: &TxFilter,
     decoder: Option<&Arc<DecoderDictionary<'static>>>,
 ) -> Result<Vec<TxEntry>> {
-    let count = header.tx_count();
+    let count = header.row_count();
     let indices: Box<dyn Iterator<Item = usize>> = match order {
         QueryOrder::Ascending => Box::new(0..count),
         QueryOrder::Descending => Box::new((0..count).rev()),
@@ -327,7 +328,7 @@ where
 }
 
 pub(crate) fn decode_tx_at(
-    header: &BlockTxHeader,
+    header: &BlockBlobHeader,
     blob: &[u8],
     tx_idx: usize,
     block_number: u64,

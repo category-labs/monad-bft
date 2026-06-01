@@ -17,7 +17,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use alloy_primitives::U256;
 
-use super::types::{BlockTraceHeader, StoredTrace};
+use super::types::StoredTrace;
+use super::BlockBlobHeader;
 use crate::{
     engine::bitmap::{
         encode_grouped_bitmap_fragments, sharded_stream_id, touched_streams_by_page,
@@ -33,7 +34,7 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TraceIngestPlan {
     pub trace_window: FamilyWindowRecord,
-    pub block_trace_header: BlockTraceHeader,
+    pub block_trace_header: BlockBlobHeader,
     pub block_trace_blob: Vec<u8>,
     pub bitmap_fragments: Vec<BitmapFragmentWrite>,
     pub touched_bitmap_streams_by_page: BTreeMap<u64, BTreeSet<String>>,
@@ -81,7 +82,7 @@ impl TraceIngestPlan {
 fn encode_block_traces(
     traces: &[IngestTrace],
     codec: &RowCodec,
-) -> Result<(BlockTraceHeader, Vec<u8>, ArtifactChecksum)> {
+) -> Result<(BlockBlobHeader, Vec<u8>, ArtifactChecksum)> {
     let mut offsets = Vec::with_capacity(traces.len() + 1);
     let mut blob = Vec::new();
     let mut rows_digest = RowDigest::new();
@@ -107,7 +108,7 @@ fn encode_block_traces(
     );
 
     Ok((
-        BlockTraceHeader {
+        BlockBlobHeader {
             offsets,
             dict_version: codec.version(),
         },

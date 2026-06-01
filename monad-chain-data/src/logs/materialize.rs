@@ -19,7 +19,7 @@ use alloy_primitives::{Address, Bytes, B256};
 use bytes::Bytes as RawBytes;
 use zstd::dict::DecoderDictionary;
 
-use super::{LogBlockHeader, LogEntry, RawLogEntry};
+use super::{BlockBlobHeader, LogEntry, RawLogEntry};
 use crate::{
     blocks::Block,
     engine::{
@@ -193,7 +193,7 @@ impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery for LogMaterializer<'a, 
             .load_block_header(block_number)
             .await?
             .ok_or(MonadChainDataError::MissingData("missing block log header"))?;
-        let header = LogBlockHeader::decode(&header_bytes)?;
+        let header = BlockBlobHeader::decode(&header_bytes)?;
 
         if idx_in_block + 1 >= header.offsets.len() {
             return Err(MonadChainDataError::Decode("log index out of range"));
@@ -236,7 +236,7 @@ impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery for LogMaterializer<'a, 
             .load_block_header(block_number)
             .await?
             .ok_or(MonadChainDataError::MissingData("missing block log header"))?;
-        let header = LogBlockHeader::decode(&header_bytes)?;
+        let header = BlockBlobHeader::decode(&header_bytes)?;
         let blob = self
             .tables
             .family(Family::Log)
@@ -263,14 +263,14 @@ impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery for LogMaterializer<'a, 
 
 #[allow(clippy::too_many_arguments)]
 fn load_filtered_block_logs(
-    header: &LogBlockHeader,
+    header: &BlockBlobHeader,
     blob: &Bytes,
     block_record: &BlockRecord,
     order: QueryOrder,
     filter: &LogFilter,
     decoder: Option<&Arc<DecoderDictionary<'static>>>,
 ) -> Result<Vec<LogEntry>> {
-    let count = header.log_count();
+    let count = header.row_count();
     let indices: Box<dyn Iterator<Item = usize>> = match order {
         QueryOrder::Ascending => Box::new(0..count),
         QueryOrder::Descending => Box::new((0..count).rev()),
@@ -296,7 +296,7 @@ fn load_filtered_block_logs(
 }
 
 pub(crate) fn decode_log_at(
-    header: &LogBlockHeader,
+    header: &BlockBlobHeader,
     blob: &[u8],
     log_idx: usize,
     block_number: u64,

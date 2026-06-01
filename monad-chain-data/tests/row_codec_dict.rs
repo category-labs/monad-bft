@@ -117,7 +117,7 @@ async fn epochs_stamp_versions_and_round_trip_across_boundaries() {
             .await
             .expect("load header")
             .expect("header present");
-        let header = monad_chain_data::logs::LogBlockHeader::decode(&raw).expect("decode header");
+        let header = monad_chain_data::logs::BlockBlobHeader::decode(&raw).expect("decode header");
         assert_eq!(
             u64::from(header.dict_version),
             n / EPOCH_BLOCKS,

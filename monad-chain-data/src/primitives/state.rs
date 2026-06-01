@@ -127,6 +127,34 @@ family_id!(LogId, "log");
 family_id!(TxId, "tx");
 family_id!(TraceId, "trace");
 
+/// Byte offsets into one family's per-block blob: one entry per stored row plus
+/// a trailing sentinel equal to the total blob length, so the length is
+/// `row_count + 1`. The log, tx and trace families all use this identical
+/// on-disk layout.
+#[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+pub struct BlockBlobHeader {
+    pub offsets: Vec<u32>,
+    /// Row-codec dictionary version every frame in this block's blob was
+    /// compressed under. `0` = plain zstd frames (no dictionary).
+    pub dict_version: u32,
+}
+
+impl BlockBlobHeader {
+    /// Number of stored rows in this block (offsets length minus the sentinel).
+    pub fn row_count(&self) -> usize {
+        self.offsets.len().saturating_sub(1)
+    }
+
+    pub fn encode(&self) -> Vec<u8> {
+        alloy_rlp::encode(self)
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
+        alloy_rlp::decode_exact(bytes)
+            .map_err(|_| MonadChainDataError::Decode("invalid block blob header rlp"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::PrimaryId;

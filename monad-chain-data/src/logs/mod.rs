@@ -24,4 +24,5 @@ pub use ingest::LogIngestPlan;
 pub(crate) use materialize::LogMaterializer;
 pub use materialize::{LogFilter, LogsRelations, QueryLogsRequest, QueryLogsResponse};
 pub(crate) use scan_query::execute_block_scan_query;
-pub use types::{LogBlockHeader, LogEntry, RawLogEntry};
+pub use crate::primitives::state::BlockBlobHeader;
+pub use types::{LogEntry, RawLogEntry};

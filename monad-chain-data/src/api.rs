@@ -52,7 +52,7 @@ use crate::{
     primitives::{
         limits::QueryLimits,
         range::ResolvedBlockWindow,
-        state::{BlockRecord, LogId, TraceId, TxId},
+        state::{BlockBlobHeader, BlockRecord, LogId, TraceId, TxId},
     },
     store::{BlobStore, CacheConfig, MetaStoreCas},
     traces::{
@@ -410,24 +410,12 @@ async fn retry_sleep(backoff: Duration) {
     futures_timer::Delay::new(backoff).await;
 }
 
-/// Decodes the per-family block header just far enough to recover the row
-/// frame layout (`offsets`) and the `dict_version` the frames were written
-/// under. Used only by the dict-training read-back path.
-fn decode_family_header_layout(family: Family, bytes: &[u8]) -> Result<(Vec<u32>, u32)> {
-    match family {
-        Family::Log => {
-            let h = crate::logs::LogBlockHeader::decode(bytes)?;
-            Ok((h.offsets, h.dict_version))
-        }
-        Family::Tx => {
-            let h = crate::txs::BlockTxHeader::decode(bytes)?;
-            Ok((h.offsets, h.dict_version))
-        }
-        Family::Trace => {
-            let h = crate::traces::BlockTraceHeader::decode(bytes)?;
-            Ok((h.offsets, h.dict_version))
-        }
-    }
+/// Decodes a block header just far enough to recover the row frame layout
+/// (`offsets`) and the `dict_version` the frames were written under. Used only
+/// by the dict-training read-back path. All families share `BlockBlobHeader`.
+fn decode_family_header_layout(bytes: &[u8]) -> Result<(Vec<u32>, u32)> {
+    let h = BlockBlobHeader::decode(bytes)?;
+    Ok((h.offsets, h.dict_version))
 }
 
 /// Number of blocks sampled from an epoch's leading range to build its
@@ -1595,7 +1583,7 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
             let Some(header_bytes) = family_tables.load_block_header(block_number).await? else {
                 continue;
             };
-            let (offsets, dict_version) = decode_family_header_layout(family, &header_bytes)?;
+            let (offsets, dict_version) = decode_family_header_layout(&header_bytes)?;
             if offsets.len() < 2 {
                 continue;
             }

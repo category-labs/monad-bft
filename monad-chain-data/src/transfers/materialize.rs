@@ -38,7 +38,7 @@ use crate::{
         refs::{BlockRef, BlockSpan},
     },
     store::{BlobStore, MetaStore},
-    traces::{BlockTraceHeader, StoredTrace, TraceEntry},
+    traces::{BlockBlobHeader, StoredTrace, TraceEntry},
     txs::TxEntry,
 };
 
@@ -228,7 +228,7 @@ impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery for TransferMaterializer
             .ok_or(MonadChainDataError::MissingData(
                 "missing block trace header",
             ))?;
-        let header = BlockTraceHeader::decode(&header_bytes)?;
+        let header = BlockBlobHeader::decode(&header_bytes)?;
 
         if idx_in_block + 1 >= header.offsets.len() {
             return Err(MonadChainDataError::Decode("trace index out of range"));
@@ -274,7 +274,7 @@ impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery for TransferMaterializer
             .ok_or(MonadChainDataError::MissingData(
                 "missing block trace header",
             ))?;
-        let header = BlockTraceHeader::decode(&header_bytes)?;
+        let header = BlockBlobHeader::decode(&header_bytes)?;
         let blob: Bytes = self
             .tables
             .family(Family::Trace)
@@ -287,7 +287,7 @@ impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery for TransferMaterializer
             .block_decoder(Family::Trace, header.dict_version)
             .await?;
 
-        let count = header.trace_count();
+        let count = header.row_count();
         let indices: Box<dyn Iterator<Item = usize>> = match order {
             QueryOrder::Ascending => Box::new(0..count),
             QueryOrder::Descending => Box::new((0..count).rev()),

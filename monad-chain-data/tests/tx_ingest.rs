@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use monad_chain_data::{
-    txs::BlockTxHeader, Family, FinalizedBlock, InMemoryBlobStore, InMemoryMetaStore, IngestTx,
+    txs::BlockBlobHeader, Family, FinalizedBlock, InMemoryBlobStore, InMemoryMetaStore, IngestTx,
     MonadChainDataError, MonadChainDataService, PrimaryId, QueryLimits, B256,
 };
 
@@ -50,8 +50,8 @@ async fn ingest_persists_tx_artifacts_for_block_with_txs() {
         .await
         .expect("load tx header")
         .expect("tx header present");
-    let tx_header = BlockTxHeader::decode(&header_bytes).expect("decode tx header");
-    assert_eq!(tx_header.tx_count(), 2);
+    let tx_header = BlockBlobHeader::decode(&header_bytes).expect("decode tx header");
+    assert_eq!(tx_header.row_count(), 2);
 
     let blob = tx_family
         .load_block_blob(1)

@@ -17,7 +17,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use alloy_consensus::Transaction;
 
-use super::types::{decode_envelope, selector_from_envelope, BlockTxHeader, StoredTxEnvelope};
+use super::types::{decode_envelope, selector_from_envelope, StoredTxEnvelope};
+use super::BlockBlobHeader;
 use crate::{
     engine::bitmap::{
         encode_grouped_bitmap_fragments, sharded_stream_id, touched_streams_by_page,
@@ -34,7 +35,7 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TxIngestPlan {
     pub tx_window: FamilyWindowRecord,
-    pub block_tx_header: BlockTxHeader,
+    pub block_tx_header: BlockBlobHeader,
     pub block_tx_blob: Vec<u8>,
     pub bitmap_fragments: Vec<BitmapFragmentWrite>,
     pub touched_bitmap_streams_by_page: BTreeMap<u64, BTreeSet<String>>,
@@ -97,7 +98,7 @@ impl TxIngestPlan {
     fn encode_block_txs(
         txs: &[IngestTx],
         codec: &RowCodec,
-    ) -> Result<(BlockTxHeader, Vec<u8>, ArtifactChecksum)> {
+    ) -> Result<(BlockBlobHeader, Vec<u8>, ArtifactChecksum)> {
         let mut offsets = Vec::with_capacity(txs.len() + 1);
         let mut blob = Vec::new();
         let mut rows_digest = RowDigest::new();
@@ -127,7 +128,7 @@ impl TxIngestPlan {
         );
 
         Ok((
-            BlockTxHeader {
+            BlockBlobHeader {
                 offsets,
                 dict_version: codec.version(),
             },

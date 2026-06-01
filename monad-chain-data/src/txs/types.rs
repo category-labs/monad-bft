@@ -109,7 +109,7 @@ impl TxLocation {
 
 /// Per-tx fields stored in the block blob. Block-level fields
 /// (block_number, block_hash, tx_idx) are reconstructed from the
-/// `BlockRecord` and `BlockTxHeader` at read time.
+/// `BlockRecord` and `BlockBlobHeader` at read time.
 #[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 pub struct StoredTxEnvelope {
     pub tx_hash: Hash32,
@@ -136,31 +136,6 @@ impl StoredTxEnvelope {
             sender: self.sender,
             signed_tx_bytes: self.signed_tx_bytes,
         }
-    }
-}
-
-/// Byte offsets into `block_tx_blob` for each `tx_idx`. Length is
-/// `tx_count + 1`; the final sentinel is the total blob length.
-#[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
-pub struct BlockTxHeader {
-    pub offsets: Vec<u32>,
-    /// Row-codec dictionary version every frame in this block's blob was
-    /// compressed under. `0` = plain zstd frames (no dictionary).
-    pub dict_version: u32,
-}
-
-impl BlockTxHeader {
-    pub fn tx_count(&self) -> usize {
-        self.offsets.len().saturating_sub(1)
-    }
-
-    pub fn encode(&self) -> Vec<u8> {
-        alloy_rlp::encode(self)
-    }
-
-    pub fn decode(bytes: &[u8]) -> Result<Self> {
-        alloy_rlp::decode_exact(bytes)
-            .map_err(|_| MonadChainDataError::Decode("invalid tx header rlp"))
     }
 }
 
