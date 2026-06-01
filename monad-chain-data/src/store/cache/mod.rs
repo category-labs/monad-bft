@@ -411,9 +411,6 @@ impl<M: MetaStore> CachedKvTable<M> {
         }
     }
 
-    pub fn inner(&self) -> &KvTable<M> {
-        &self.inner
-    }
 
     pub async fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
         // Build an owned, `'static` fetch by cloning the inner handle and key
@@ -457,9 +454,6 @@ impl<M: MetaStore> CachedScannableTable<M> {
         }
     }
 
-    pub fn inner(&self) -> &ScannableKvTable<M> {
-        &self.inner
-    }
 
     pub async fn get(&self, partition: &[u8], clustering: &[u8]) -> Result<Option<Bytes>> {
         let key = (partition.to_vec(), clustering.to_vec());
@@ -521,9 +515,6 @@ impl<B: BlobStore> CachedBlobTable<B> {
         }
     }
 
-    pub fn inner(&self) -> &BlobTable<B> {
-        &self.inner
-    }
 
     pub async fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
         // Build an owned, `'static` fetch by cloning the inner handle and key

@@ -86,21 +86,6 @@ impl<'a, M: MetaStore, B: BlobStore> WriteSession<'a, M, B> {
         });
     }
 
-    pub fn scan_put_uncached(
-        &mut self,
-        table: &CachedScannableTable<M>,
-        partition: &[u8],
-        clustering: &[u8],
-        value: Bytes,
-    ) {
-        self.meta_pending.push(MetaWriteOp::ScanPut {
-            table: table.table_id(),
-            partition: partition.to_vec(),
-            clustering: clustering.to_vec(),
-            value,
-        });
-    }
-
     pub fn extend_meta_uncached(&mut self, ops: Vec<MetaWriteOp>) {
         self.meta_pending.extend(ops);
     }

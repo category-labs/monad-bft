@@ -114,36 +114,6 @@ impl<M: MetaStore> BitmapTables<M> {
         &self.open_streams
     }
 
-    /// Stores one bitmap fragment for a block within the stream page it covers.
-    pub async fn store_fragment(
-        &self,
-        fragment: &BitmapFragmentWrite,
-        block_number: u64,
-    ) -> Result<()> {
-        let partition = stream_page_key(&fragment.stream_id, fragment.page_start_local);
-        let clustering = block_number_key(block_number);
-        self.fragments
-            .put(&partition, &clustering, fragment.bitmap_blob.clone())
-            .await?;
-        Ok(())
-    }
-
-    pub fn stage_fragment<B: BlobStore>(
-        &self,
-        w: &mut WriteSession<'_, M, B>,
-        fragment: &BitmapFragmentWrite,
-        block_number: u64,
-    ) {
-        let partition = stream_page_key(&fragment.stream_id, fragment.page_start_local);
-        let clustering = block_number_key(block_number);
-        w.scan_put_uncached(
-            &self.fragments,
-            &partition,
-            &clustering,
-            fragment.bitmap_blob.clone(),
-        );
-    }
-
     pub fn stage_fragments_for_global_page<B: BlobStore>(
         &self,
         w: &mut WriteSession<'_, M, B>,

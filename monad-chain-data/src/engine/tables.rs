@@ -26,7 +26,7 @@ use zstd::dict::DecoderDictionary;
 
 use crate::{
     engine::{
-        bitmap::{BitmapFragmentWrite, BitmapPageArtifact, BitmapTables},
+        bitmap::{BitmapPageArtifact, BitmapTables},
         family::Family,
         primary_dir::{PrimaryDirBucket, PrimaryDirFragment, PrimaryDirTables},
         row_codec::{decode_row_frame, RowCodec, RowCodecState, DICT_VERSION_NONE, ROW_ZSTD_LEVEL},
@@ -867,16 +867,6 @@ impl<M: MetaStore> BlockTables<M> {
         Ok(Some(u64::from_be_bytes(bytes)))
     }
 
-    pub async fn store_hash_index(&self, block_hash: &Hash32, block_number: u64) -> Result<()> {
-        self.block_hash_to_number_index
-            .put(
-                block_hash.as_slice(),
-                Bytes::copy_from_slice(&block_number.to_be_bytes()),
-            )
-            .await?;
-        Ok(())
-    }
-
     pub fn stage_hash_index<B: BlobStore>(
         &self,
         w: &mut WriteSession<'_, M, B>,
@@ -1033,14 +1023,6 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
             .await
     }
 
-    pub async fn store_block_blob(&self, block_number: u64, block_log_blob: Vec<u8>) -> Result<()> {
-        let key = block_number_key(block_number);
-        self.block_blobs
-            .put(&key, Bytes::from(block_log_blob))
-            .await?;
-        Ok(())
-    }
-
     pub fn stage_block_blob(
         &self,
         w: &mut WriteSession<'_, M, B>,
@@ -1081,14 +1063,6 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
 
     pub async fn load_bucket(&self, bucket_start: u64) -> Result<Option<PrimaryDirBucket>> {
         self.dir.load_bucket(bucket_start).await
-    }
-
-    pub async fn store_bitmap_fragment(
-        &self,
-        fragment: &BitmapFragmentWrite,
-        block_number: u64,
-    ) -> Result<()> {
-        self.bitmap.store_fragment(fragment, block_number).await
     }
 
     pub async fn load_bitmap_fragments(

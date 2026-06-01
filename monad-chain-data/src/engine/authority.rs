@@ -144,9 +144,6 @@ impl WriteAuthority for ReadOnlyAuthority {
 
 // --- lease authority ---
 
-/// Default lease span, in upstream finalized blocks, when none is configured.
-pub const DEFAULT_LEASE_BLOCKS: u64 = 10;
-
 /// A lease the local process believes it holds, along with the [`CasVersion`]
 /// of the publication row it was last observed/written at. The version is the
 /// CAS precondition for the next renew/publish (D2: version-CAS, not the
