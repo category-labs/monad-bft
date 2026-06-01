@@ -1754,10 +1754,12 @@ mod test {
     #[test]
     fn test_forkpoint_validate_1() {
         let (mut forkpoint, mut locked_validator_sets, election) = get_forkpoint();
-        let locked_epoch_1 = forkpoint.0.validator_sets.pop().unwrap();
+        let mut validator_sets: Vec<_> = forkpoint.0.validator_sets.clone().into_inner();
+        let locked_epoch_1 = validator_sets.pop().unwrap();
         let locked_val_set_1 = locked_validator_sets.pop().unwrap();
-        let _ = forkpoint.0.validator_sets.pop().unwrap();
+        let _ = validator_sets.pop().unwrap();
         let _ = locked_validator_sets.pop().unwrap();
+        forkpoint.0.validator_sets = validator_sets.clone().into();
 
         assert_eq!(
             forkpoint.validate(
@@ -1768,9 +1770,10 @@ mod test {
             Err(ForkpointValidationError::TooFewValidatorSets)
         );
 
-        forkpoint.0.validator_sets.push(locked_epoch_1.clone());
-        forkpoint.0.validator_sets.push(locked_epoch_1.clone());
-        forkpoint.0.validator_sets.push(locked_epoch_1);
+        validator_sets.push(locked_epoch_1.clone());
+        validator_sets.push(locked_epoch_1.clone());
+        validator_sets.push(locked_epoch_1);
+        forkpoint.0.validator_sets = validator_sets.into();
         locked_validator_sets.push(locked_val_set_1.clone());
         locked_validator_sets.push(locked_val_set_1.clone());
         locked_validator_sets.push(locked_val_set_1);
