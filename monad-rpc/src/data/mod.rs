@@ -139,12 +139,18 @@ pub async fn get_block_key_from_tag_or_hash(
         .flatten()
 }
 
-fn resolve_block_height_from_buffer(view: &BlockBufferView, block: &BlockTagOrHash) -> Option<u64> {
+async fn resolve_block_height_from_buffer(
+    view: &BlockBufferView,
+    block: &BlockTagOrHash,
+) -> Option<u64> {
     match block {
         BlockTagOrHash::BlockTags(tag) => Some(view.resolve_block_height_from_tag(tag)),
         BlockTagOrHash::Hash(hash) => view
-            .get_block_by_hash(&FixedBytes(hash.0))
-            .map(|block| block.header.number),
+            .try_resolve_block_hash(FixedBytes(hash.0))
+            .await
+            .ok()
+            .flatten()
+            .map(|block_pointer| block_pointer.block_number()),
     }
 }
 
@@ -184,17 +190,22 @@ where
     T: Triedb + Send + Sync + 'static,
 {
     pub fn new(
-        buffer: Option<BlockBufferView>,
+        block_buffer_view: Option<BlockBufferView>,
         triedb_env: Arc<T>,
         archive_reader: Option<ArchiveReader>,
     ) -> Self {
         DataProvider {
-            buffer,
+            buffer: block_buffer_view.clone(),
             triedb_env: triedb_env.clone(),
             archive_reader: archive_reader.clone(),
 
             historical: DataSourceStack::new(
-                std::iter::once(Box::new(TriedbDataSource::new(triedb_env)) as Box<_>)
+                block_buffer_view
+                    .into_iter()
+                    .map(|block_buffer_view| Box::new(block_buffer_view) as Box<_>)
+                    .chain(std::iter::once(
+                        Box::new(TriedbDataSource::new(triedb_env)) as Box<_>
+                    ))
                     .chain(archive_reader.into_iter().map(|archive_reader| {
                         Box::new(ArchiveDataSource::new(archive_reader)) as Box<_>
                     }))
@@ -279,7 +290,7 @@ where
         index: u64,
     ) -> Result<Transaction, ChainStateError> {
         if let Some(buffer) = &self.buffer {
-            if let Some(height) = resolve_block_height_from_buffer(buffer, &block) {
+            if let Some(height) = resolve_block_height_from_buffer(buffer, &block).await {
                 if let Some(tx) = buffer.get_transaction_by_location(height, index) {
                     return Ok(tx);
                 }
@@ -406,14 +417,6 @@ where
         &self,
         block: BlockTagOrHash,
     ) -> Result<alloy_consensus::Header, ChainStateError> {
-        if let Some(buffer) = &self.buffer {
-            if let Some(height) = resolve_block_height_from_buffer(buffer, &block) {
-                if let Some(block) = buffer.get_block_by_height(height) {
-                    return Ok(block.header.inner);
-                }
-            }
-        }
-
         if let Some(block_pointer) = resolve_block_tag_or_hash(&self.historical, block)
             .await
             .map_err(ChainStateError::DataSource)?
@@ -436,17 +439,6 @@ where
         block: BlockTagOrHash,
         return_full_txns: bool,
     ) -> Result<Block, ChainStateError> {
-        if let Some(buffer) = &self.buffer {
-            if let Some(height) = resolve_block_height_from_buffer(buffer, &block) {
-                if let Some(mut block) = buffer.get_block_by_height(height) {
-                    if !return_full_txns {
-                        block.transactions = block.transactions.into_hashes();
-                    }
-                    return Ok(block);
-                }
-            }
-        }
-
         if let Some(block_pointer) = resolve_block_tag_or_hash(&self.historical, block)
             .await
             .map_err(ChainStateError::DataSource)?
@@ -515,7 +507,7 @@ where
         block: BlockTagOrHash,
     ) -> Result<Vec<MonadTransactionReceipt>, ChainStateError> {
         if let Some(buffer) = &self.buffer {
-            if let Some(height) = resolve_block_height_from_buffer(buffer, &block) {
+            if let Some(height) = resolve_block_height_from_buffer(buffer, &block).await {
                 if let Some(receipts) = buffer.get_receipts_by_block_height(height) {
                     return Ok(receipts.into_iter().map(MonadTransactionReceipt).collect());
                 }

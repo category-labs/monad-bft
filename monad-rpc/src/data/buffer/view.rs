@@ -15,15 +15,20 @@
 
 use std::sync::{atomic::Ordering, Arc};
 
-use alloy_consensus::TxEnvelope;
+use alloy_consensus::{Header, TxEnvelope};
 use alloy_primitives::{BlockHash, Bloom, TxHash};
 use alloy_rpc_types::{Block, BlockTransactions, Transaction, TransactionReceipt};
-use dashmap::DashMap;
+use async_trait::async_trait;
+use dashmap::{mapref::one::Ref as DashMapRef, DashMap};
 use monad_eth_types::{BlockHeader, ReceiptWithLogIndex, TxEnvelopeWithSender};
-use tracing::error;
+use monad_types::{BlockId, Hash};
+use tracing::{error, warn};
 
 use super::{BlockBufferBlockStates, BlockBufferTxLoc};
-use crate::types::eth_json::BlockTags;
+use crate::{
+    data::source::{BlockCommitState, BlockPointer, DataSourceResult, HistoricalDataSource},
+    types::eth_json::BlockTags,
+};
 
 #[derive(Clone)]
 pub struct BlockBufferView {
@@ -57,10 +62,6 @@ impl BlockBufferView {
             BlockTags::Safe => self.get_latest_voted_block_num(),
             BlockTags::Finalized => self.get_latest_finalized_block_num(),
         }
-    }
-
-    pub fn get_block_by_height(&self, height: u64) -> Option<Block> {
-        Some(self.block_by_height.get(&height)?.value().clone())
     }
 
     pub fn get_block_by_hash(&self, block_hash: &BlockHash) -> Option<Block> {
@@ -208,5 +209,143 @@ impl BlockBufferView {
         } else {
             None
         }
+    }
+
+    fn get_block_ref(&self, pointer: BlockPointer) -> Option<DashMapRef<'_, u64, Block>> {
+        match pointer {
+            BlockPointer::Finalized(block_number) => self.block_by_height.get(&block_number),
+            BlockPointer::NonFinalized(block_number, block_id) => {
+                let block = self.block_by_height.get(&block_number)?;
+
+                if block.hash().0 != block_id.0 .0 {
+                    return None;
+                }
+
+                Some(block)
+            }
+        }
+    }
+}
+
+#[async_trait]
+impl HistoricalDataSource for BlockBufferView {
+    async fn try_resolve_block_commit_state(
+        &self,
+        commit_state: BlockCommitState,
+    ) -> DataSourceResult<Option<BlockPointer>> {
+        let block_number = match commit_state {
+            BlockCommitState::Finalized => {
+                return Ok(Some(BlockPointer::Finalized(
+                    self.get_latest_finalized_block_num(),
+                )))
+            }
+            BlockCommitState::Voted => self.get_latest_voted_block_num(),
+            BlockCommitState::Proposed => self.get_latest_proposed_block_num(),
+        };
+
+        let Some(block) = self.block_by_height.get(&block_number) else {
+            return Ok(None);
+        };
+
+        Ok(Some(BlockPointer::NonFinalized(
+            block_number,
+            monad_types::BlockId(monad_types::Hash(block.hash().0)),
+        )))
+    }
+
+    async fn try_resolve_block_number(
+        &self,
+        block_number: u64,
+    ) -> DataSourceResult<Option<BlockPointer>> {
+        let finalized_block_number = self.get_latest_finalized_block_num();
+
+        if block_number <= finalized_block_number {
+            return Ok(Some(BlockPointer::Finalized(block_number)));
+        }
+
+        let Some(block) = self.block_by_height.get(&block_number) else {
+            return Ok(None);
+        };
+
+        Ok(Some(BlockPointer::NonFinalized(
+            block_number,
+            monad_types::BlockId(monad_types::Hash(block.hash().0)),
+        )))
+    }
+
+    async fn try_resolve_block_hash(
+        &self,
+        block_hash: BlockHash,
+    ) -> DataSourceResult<Option<BlockPointer>> {
+        let Some(block_number) = self
+            .block_height_by_hash
+            .get(&block_hash)
+            .map(|block_number| *block_number.value())
+        else {
+            return Ok(None);
+        };
+
+        let Some(block_hash_at_block_number) = self
+            .block_by_height
+            .get(&block_number)
+            .map(|block| block.hash().0)
+        else {
+            return Ok(None);
+        };
+
+        if block_hash_at_block_number != block_hash.0 {
+            return Ok(None);
+        }
+
+        let finalized_block_number = self.get_latest_finalized_block_num();
+
+        if block_number <= finalized_block_number {
+            Ok(Some(BlockPointer::Finalized(block_number)))
+        } else {
+            Ok(Some(BlockPointer::NonFinalized(
+                block_number,
+                BlockId(Hash(block_hash.0)),
+            )))
+        }
+    }
+
+    async fn get_block(
+        &self,
+        pointer: BlockPointer,
+    ) -> DataSourceResult<Option<(Header, Vec<TxEnvelopeWithSender>)>> {
+        let Some(block) = self.get_block_ref(pointer) else {
+            return Ok(None);
+        };
+
+        let BlockTransactions::Full(txs) = &block.value().transactions else {
+            warn!(
+                block_number = block.value().header.number,
+                "BlockBufferView block does not contain full transaction list"
+            );
+            return Ok(None);
+        };
+
+        Ok(Some((
+            block.value().header.inner.clone(),
+            txs.iter()
+                .map(|tx| {
+                    let tx = tx.as_recovered();
+                    let sender = tx.signer();
+
+                    TxEnvelopeWithSender {
+                        tx: tx.into_inner().clone(),
+                        sender,
+                    }
+                })
+                .collect(),
+        )))
+    }
+
+    async fn get_block_header(&self, pointer: BlockPointer) -> DataSourceResult<Option<Header>> {
+        let Some(block) = self.get_block_ref(pointer) else {
+            return Ok(None);
+        };
+
+        Ok(Some(block.value().header.inner.clone()))
     }
 }
