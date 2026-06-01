@@ -20,6 +20,7 @@ use std::{
 
 use bytes::Bytes;
 use eyre::{Context, Result};
+use sha2::{Digest, Sha256};
 use tokio::{fs, io::AsyncWriteExt, task::spawn_blocking};
 
 use super::{
@@ -32,6 +33,12 @@ pub struct FsStorage {
     pub root: PathBuf,
     metrics: Metrics,
     name: String,
+}
+
+fn checksum_path(payload_path: &Path) -> PathBuf {
+    let mut p = payload_path.as_os_str().to_owned();
+    p.push(".sha256");
+    PathBuf::from(p)
 }
 
 impl FsStorage {
@@ -142,6 +149,11 @@ impl KVStore for FsStorage {
         &self.name
     }
 
+    /// Writes a key's payload and its `.sha256` checksum sidecar.
+    ///
+    /// Keys whose final path component ends in `.sha256` are reserved: such a
+    /// key would collide with another key's sidecar. The archive keyspace
+    /// (`block/N`, `receipts/N`, `traces/N`) never uses them.
     async fn put(
         &self,
         key: impl AsRef<str>,
@@ -150,12 +162,15 @@ impl KVStore for FsStorage {
     ) -> Result<PutResult> {
         let key = key.as_ref();
         let path = self.key_path(key)?;
+        let checksum_path = checksum_path(&path);
 
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
                 .await
                 .wrap_err_with(|| format!("Failed to create directory {parent:?}"))?;
         }
+
+        let checksum_sha256: [u8; 32] = Sha256::digest(&data).into();
 
         let start = Instant::now();
 
@@ -168,16 +183,33 @@ impl KVStore for FsStorage {
                 .await
             {
                 Ok(mut file) => {
-                    file.write_all(&data)
-                        .await
-                        .wrap_err_with(|| format!("Failed to write key {key} to path {path:?}"))?;
+                    // One metric for the whole write, so a sidecar failure isn't counted as success.
+                    let result = async {
+                        file.write_all(&data).await.wrap_err_with(|| {
+                            format!("Failed to write key {key} to path {path:?}")
+                        })?;
+                        // Flush so the payload is durable before the sidecar lands.
+                        file.flush().await.wrap_err_with(|| {
+                            format!("Failed to flush key {key} to path {path:?}")
+                        })?;
+                        // Sidecar after the payload, so a crash never leaves a sidecar without its payload.
+                        fs::write(&checksum_path, checksum_sha256)
+                            .await
+                            .wrap_err_with(|| {
+                                format!("Failed to write checksum sidecar for key {key} at {checksum_path:?}")
+                            })?;
+                        Ok::<_, eyre::Report>(())
+                    }
+                    .await;
+
                     kvstore_put_metrics(
                         start.elapsed(),
-                        true,
+                        result.is_ok(),
                         KVStoreType::FileSystem,
                         &self.metrics,
                     );
-                    Ok(PutResult::Written)
+                    result?;
+                    Ok(PutResult::Written { checksum_sha256 })
                 }
                 Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
                     kvstore_put_metrics(
@@ -200,11 +232,30 @@ impl KVStore for FsStorage {
                 }
             }
         } else {
-            fs::write(&path, &data)
-                .await
-                .write_put_metrics(start.elapsed(), KVStoreType::FileSystem, &self.metrics)
-                .wrap_err_with(|| format!("Failed to write key {key} to path {path:?}"))?;
-            Ok(PutResult::Written)
+            // One metric for the whole write, so a sidecar failure isn't counted as success.
+            let result = async {
+                fs::write(&path, &data)
+                    .await
+                    .wrap_err_with(|| format!("Failed to write key {key} to path {path:?}"))?;
+                fs::write(&checksum_path, checksum_sha256)
+                    .await
+                    .wrap_err_with(|| {
+                        format!(
+                            "Failed to write checksum sidecar for key {key} at {checksum_path:?}"
+                        )
+                    })?;
+                Ok::<_, eyre::Report>(())
+            }
+            .await;
+
+            kvstore_put_metrics(
+                start.elapsed(),
+                result.is_ok(),
+                KVStoreType::FileSystem,
+                &self.metrics,
+            );
+            result?;
+            Ok(PutResult::Written { checksum_sha256 })
         }
     }
 
@@ -233,6 +284,11 @@ impl KVStore for FsStorage {
                         continue;
                     }
 
+                    // Skip checksum sidecars; they are not keys themselves.
+                    if path.extension().and_then(|e| e.to_str()) == Some("sha256") {
+                        continue;
+                    }
+
                     let key = Self::path_to_key(&root, &name, &path)?;
 
                     if key.starts_with(&prefix) {
@@ -249,6 +305,20 @@ impl KVStore for FsStorage {
     async fn delete(&self, key: impl AsRef<str>) -> Result<()> {
         let key = key.as_ref();
         let path = self.key_path(key)?;
+
+        // Best-effort removal of the checksum sidecar; ignore if absent.
+        let checksum_path = checksum_path(&path);
+        match fs::remove_file(&checksum_path).await {
+            Ok(_) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => {
+                return Err(err).wrap_err_with(|| {
+                    format!(
+                        "Failed to delete checksum sidecar for key {key} at path {checksum_path:?}"
+                    )
+                });
+            }
+        }
 
         match fs::remove_file(&path).await {
             Ok(_) => Ok(()),
@@ -320,10 +390,15 @@ mod tests {
         storage
             .put("delete/me", b"bye".to_vec(), WritePolicy::AllowOverwrite)
             .await?;
+
+        let sidecar = checksum_path(&dir.path().join("delete/me"));
+        assert!(sidecar.is_file());
+
         storage.delete("delete/me").await?;
 
         let result = storage.get("delete/me").await?;
         assert!(result.is_none());
+        assert!(!sidecar.exists());
 
         // Deleting a missing key should be a no-op
         storage.delete("delete/me").await?;
@@ -372,7 +447,7 @@ mod tests {
         let result = storage
             .put(key, original_data.clone(), WritePolicy::NoClobber)
             .await?;
-        assert_eq!(result, PutResult::Written);
+        assert!(matches!(result, PutResult::Written { .. }));
 
         // Second write with NoClobber should be skipped
         let result = storage.put(key, new_data, WritePolicy::NoClobber).await?;
@@ -381,6 +456,35 @@ mod tests {
         // Verify original data is preserved
         let stored = storage.get(key).await?.unwrap();
         assert_eq!(stored, Bytes::from(original_data));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_put_returns_sha256_checksum_and_writes_sidecar() -> Result<()> {
+        use sha2::{Digest, Sha256};
+
+        let dir = tempfile::tempdir()?;
+        let storage = FsStorage::new(dir.path(), Metrics::none())?;
+
+        let key = "checksum/key";
+        let input = b"some payload bytes".to_vec();
+        let expected: [u8; 32] = Sha256::digest(&input).into();
+
+        let result = storage
+            .put(key, input.clone(), WritePolicy::AllowOverwrite)
+            .await?;
+
+        let PutResult::Written { checksum_sha256 } = result else {
+            panic!("expected PutResult::Written, got {result:?}");
+        };
+        assert_eq!(checksum_sha256, expected);
+
+        let sidecar = checksum_path(&dir.path().join(key));
+        assert!(sidecar.is_file());
+        let sidecar_bytes = fs::read(&sidecar).await?;
+        assert_eq!(sidecar_bytes.len(), 32);
+        assert_eq!(sidecar_bytes.as_slice(), expected.as_slice());
 
         Ok(())
     }
@@ -403,7 +507,7 @@ mod tests {
         let result = storage
             .put(key, new_data.clone(), WritePolicy::AllowOverwrite)
             .await?;
-        assert_eq!(result, PutResult::Written);
+        assert!(matches!(result, PutResult::Written { .. }));
 
         // Verify new data is stored
         let stored = storage.get(key).await?.unwrap();

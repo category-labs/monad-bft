@@ -20,6 +20,7 @@ use std::{
 
 use bytes::Bytes;
 use eyre::Result;
+use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
 use super::{PutResult, WritePolicy};
@@ -27,7 +28,7 @@ use crate::prelude::*;
 
 #[derive(Clone)]
 pub struct MemoryStorage {
-    pub db: Arc<Mutex<HashMap<String, Bytes>>>,
+    pub db: Arc<Mutex<HashMap<String, (Bytes, [u8; 32])>>>,
     pub should_fail: Arc<AtomicBool>,
     pub name: String,
 }
@@ -51,7 +52,12 @@ impl KVReader for MemoryStorage {
             return Err(eyre::eyre!("MemoryStorage simulated failure"));
         }
 
-        Ok(self.db.lock().await.get(key).map(ToOwned::to_owned))
+        Ok(self
+            .db
+            .lock()
+            .await
+            .get(key)
+            .map(|(bytes, _checksum)| bytes.clone()))
     }
 
     async fn exists(&self, key: &str) -> Result<bool> {
@@ -84,6 +90,10 @@ impl KVStore for MemoryStorage {
         }
 
         let key = key.as_ref();
+
+        // Hash before locking so the CPU-bound digest doesn't block other ops.
+        let checksum_sha256: [u8; 32] = Sha256::digest(&data).into();
+
         let mut db = self.db.lock().await;
 
         if policy == WritePolicy::NoClobber && db.contains_key(key) {
@@ -94,8 +104,8 @@ impl KVStore for MemoryStorage {
             return Ok(PutResult::Skipped);
         }
 
-        db.insert(key.to_owned(), data.into());
-        Ok(PutResult::Written)
+        db.insert(key.to_owned(), (data.into(), checksum_sha256));
+        Ok(PutResult::Written { checksum_sha256 })
     }
 
     async fn scan_prefix(&self, prefix: &str) -> Result<Vec<String>> {
@@ -202,7 +212,7 @@ mod tests {
         let result = storage
             .put(key, original_data.clone(), WritePolicy::NoClobber)
             .await?;
-        assert_eq!(result, PutResult::Written);
+        assert!(matches!(result, PutResult::Written { .. }));
 
         // Second write with NoClobber should be skipped
         let result = storage.put(key, new_data, WritePolicy::NoClobber).await?;
@@ -211,6 +221,28 @@ mod tests {
         // Verify original data is preserved
         let stored = storage.get(key).await?.unwrap();
         assert_eq!(stored, Bytes::from(original_data));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_put_returns_sha256_checksum() -> Result<()> {
+        use sha2::{Digest, Sha256};
+
+        let storage = MemoryStorage::new("test-bucket");
+
+        let key = "checksum-key";
+        let input = b"some payload bytes".to_vec();
+        let expected: [u8; 32] = Sha256::digest(&input).into();
+
+        let result = storage
+            .put(key, input.clone(), WritePolicy::AllowOverwrite)
+            .await?;
+
+        let PutResult::Written { checksum_sha256 } = result else {
+            panic!("expected PutResult::Written, got {result:?}");
+        };
+        assert_eq!(checksum_sha256, expected);
 
         Ok(())
     }
@@ -232,7 +264,7 @@ mod tests {
         let result = storage
             .put(key, new_data.clone(), WritePolicy::AllowOverwrite)
             .await?;
-        assert_eq!(result, PutResult::Written);
+        assert!(matches!(result, PutResult::Written { .. }));
 
         // Verify new data is stored
         let stored = storage.get(key).await?.unwrap();

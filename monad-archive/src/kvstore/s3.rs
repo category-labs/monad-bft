@@ -29,8 +29,10 @@ use aws_sdk_s3::{
     primitives::ByteStream,
     Client,
 };
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use bytes::Bytes;
 use eyre::{Context, Result};
+use sha2::{Digest, Sha256};
 use tracing::trace;
 
 use super::{kvstore_get_metrics, kvstore_put_metrics, KVStoreType, PutResult, WritePolicy};
@@ -278,11 +280,17 @@ impl KVStore for Bucket {
         let key = key.as_ref();
         let client = self.client();
 
+        // Hash once locally, then hand S3 the checksum so it server-verifies the
+        // upload against x-amz-checksum-sha256 (rejecting in-flight corruption)
+        // without re-hashing the body itself.
+        let checksum_sha256: [u8; 32] = Sha256::digest(&data).into();
+
         let mut req = client
             .put_object()
             .bucket(&self.inner.bucket)
             .key(key)
-            .body(ByteStream::from(data.clone()))
+            .body(ByteStream::from(data))
+            .checksum_sha256(BASE64.encode(checksum_sha256))
             .request_payer(aws_sdk_s3::types::RequestPayer::Requester);
 
         if policy == WritePolicy::NoClobber {
@@ -295,7 +303,9 @@ impl KVStore for Bucket {
         match result {
             Ok(_) => {
                 self.record_put_metrics(start.elapsed(), true);
-                Ok(PutResult::Written)
+                // S3 accepted the upload, so it verified the body against the
+                // checksum we supplied; return the same value.
+                Ok(PutResult::Written { checksum_sha256 })
             }
             Err(SdkError::ServiceError(service_err))
                 if policy == WritePolicy::NoClobber
@@ -414,5 +424,39 @@ mod tests {
             .unwrap();
         let value = bucket.get("test-key").await.unwrap().unwrap();
         assert_eq!(value, Bytes::from(vec![1, 2, 3]));
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_s3_put_returns_sha256_checksum() {
+        use sha2::{Digest, Sha256};
+
+        let minio = TestMinioContainer::new().await.unwrap();
+
+        let arg_string = format!(
+            "aws test-bucket  --endpoint http://127.0.0.1:{port} --access-key-id minioadmin --secret-access-key minioadmin",
+            port = minio.port
+        );
+        let sdk_config = AwsCliArgs::parse(&arg_string)
+            .unwrap()
+            .config()
+            .await
+            .unwrap();
+
+        let bucket = Bucket::new("test-bucket".to_string(), &sdk_config, Metrics::none());
+        bucket.create_bucket().await.unwrap();
+
+        let input = b"some payload bytes".to_vec();
+        let expected: [u8; 32] = Sha256::digest(&input).into();
+
+        let result = bucket
+            .put("checksum-key", input.clone(), WritePolicy::AllowOverwrite)
+            .await
+            .unwrap();
+
+        let PutResult::Written { checksum_sha256 } = result else {
+            panic!("expected PutResult::Written, got {result:?}");
+        };
+        assert_eq!(checksum_sha256, expected);
     }
 }

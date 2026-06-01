@@ -17,16 +17,18 @@ use std::{collections::HashMap, sync::Arc};
 
 use aws_config::SdkConfig;
 use aws_sdk_dynamodb::{
+    primitives::Blob,
     types::{AttributeValue, KeysAndAttributes, PutRequest, WriteRequest},
     Client,
 };
 use bytes::Bytes;
 use eyre::{bail, Context, Result};
 use futures::future::try_join_all;
+use sha2::{Digest, Sha256};
 use tokio::sync::Semaphore;
 use tracing::error;
 
-use super::{KVStoreType, MetricsResultExt, PutResult, WritePolicy};
+use super::{BulkPutResult, KVStoreType, MetricsResultExt, PutResult, WritePolicy};
 use crate::prelude::*;
 
 #[derive(Clone)]
@@ -88,14 +90,19 @@ impl KVStore for DynamoDBArchive {
         &self,
         kvs: impl IntoIterator<Item = (String, Vec<u8>)>,
         _policy: WritePolicy,
-    ) -> Result<PutResult> {
+    ) -> Result<BulkPutResult> {
         // Note: WritePolicy is ignored for DynamoDB - always overwrites
         let requests = kvs
             .into_iter()
             .filter_map(|(key, data)| {
+                let checksum: [u8; 32] = Sha256::digest(&data).into();
                 let attribute_map: HashMap<String, AttributeValue> = HashMap::from_iter([
                     ("tx_hash".to_owned(), AttributeValue::S(key)),
                     ("data".to_owned(), AttributeValue::B(data.into())),
+                    (
+                        "checksum".to_owned(),
+                        AttributeValue::B(Blob::new(checksum)),
+                    ),
                 ]);
                 match PutRequest::builder().set_item(Some(attribute_map)).build() {
                     Ok(put_request) => {
@@ -125,7 +132,8 @@ impl KVStore for DynamoDBArchive {
             });
 
         try_join_all(batch_writes).await?;
-        Ok(PutResult::Written)
+        // WritePolicy is ignored, so nothing is ever skipped.
+        Ok(BulkPutResult::Written)
     }
 
     async fn put(
@@ -135,8 +143,10 @@ impl KVStore for DynamoDBArchive {
         _policy: WritePolicy,
     ) -> Result<PutResult> {
         // Note: WritePolicy is ignored for DynamoDB - always overwrites
+        let checksum_sha256: [u8; 32] = Sha256::digest(&data).into();
         let put_request = PutRequest::builder()
             .item(key.as_ref(), AttributeValue::B(data.into()))
+            .item("checksum", AttributeValue::B(Blob::new(checksum_sha256)))
             .build()
             .wrap_err_with(|| format!("Failed to build put request, key: {}", key.as_ref()))?;
         let request = WriteRequest::builder().put_request(put_request).build();
@@ -147,7 +157,7 @@ impl KVStore for DynamoDBArchive {
             KVStoreType::AwsDynamoDB,
             &self.metrics,
         )?;
-        Ok(PutResult::Written)
+        Ok(PutResult::Written { checksum_sha256 })
     }
 
     async fn delete(&self, _key: impl AsRef<str>) -> Result<()> {
@@ -285,5 +295,50 @@ fn extract_kv_from_map(mut item: HashMap<String, AttributeValue>) -> Option<(Str
             Some((key, Bytes::from(data.into_inner())))
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{cli::AwsCliArgs, test_utils::TestMinioContainer};
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_dynamodb_put_returns_sha256_checksum() {
+        use sha2::{Digest, Sha256};
+
+        let minio = TestMinioContainer::new().await.unwrap();
+        let arg_string = format!(
+            "aws test-bucket  --endpoint http://127.0.0.1:{port} --access-key-id minioadmin --secret-access-key minioadmin",
+            port = minio.port
+        );
+        let sdk_config = AwsCliArgs::parse(&arg_string)
+            .unwrap()
+            .config()
+            .await
+            .unwrap();
+
+        let bucket = Bucket::new("test-bucket".to_string(), &sdk_config, Metrics::none());
+        let archive = DynamoDBArchive::new(
+            bucket,
+            "test-table".to_string(),
+            &sdk_config,
+            1,
+            Metrics::none(),
+        );
+
+        let input = b"some payload bytes".to_vec();
+        let expected: [u8; 32] = Sha256::digest(&input).into();
+
+        let result = archive
+            .put("checksum-key", input.clone(), WritePolicy::AllowOverwrite)
+            .await
+            .unwrap();
+
+        let PutResult::Written { checksum_sha256 } = result else {
+            panic!("expected PutResult::Written, got {result:?}");
+        };
+        assert_eq!(checksum_sha256, expected);
     }
 }

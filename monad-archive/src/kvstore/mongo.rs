@@ -22,6 +22,7 @@ use mongodb::{
     Client, Collection,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tracing::trace;
 
 use crate::{
@@ -50,6 +51,10 @@ pub struct KeyValueDocument {
     pub value: Option<Binary>,
     /// If the size of value is above CHUNK_SIZE, data is stored in `chunks` documents with _id's {id}_chunk_{chunk_idx}
     pub chunks: Option<u32>,
+    /// SHA256 of the full payload (before chunking). `Option` so pre-existing
+    /// documents still decode; set on the main document only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checksum: Option<Binary>,
 }
 
 impl KeyValueDocument {
@@ -276,6 +281,13 @@ impl KVStore for MongoDbStorage {
         let key_str = key.as_ref();
         let start = Instant::now();
 
+        // Hash the full payload before chunking, so it covers the reassembled value.
+        let checksum: [u8; 32] = Sha256::digest(&data).into();
+        let checksum_binary = Binary {
+            subtype: mongodb::bson::spec::BinarySubtype::Generic,
+            bytes: checksum.into(),
+        };
+
         let doc = if data.len() > CHUNK_SIZE {
             // For chunked data with NoClobber, check if main document exists first.
             // This avoids writing orphaned chunks if the key already exists.
@@ -303,6 +315,8 @@ impl KVStore for MongoDbStorage {
                         bytes: chunk.to_vec(),
                     }),
                     chunks: None,
+                    // Checksum lives on the main document only.
+                    checksum: None,
                 };
                 // TODO: parallelize
                 self.collection
@@ -319,6 +333,7 @@ impl KVStore for MongoDbStorage {
                 _id: key_str.to_string(),
                 value: None,
                 chunks: Some(data.len().div_ceil(CHUNK_SIZE) as u32),
+                checksum: Some(checksum_binary),
             }
         } else {
             KeyValueDocument {
@@ -328,6 +343,7 @@ impl KVStore for MongoDbStorage {
                     bytes: data,
                 }),
                 chunks: None,
+                checksum: Some(checksum_binary),
             }
         };
 
@@ -342,7 +358,9 @@ impl KVStore for MongoDbStorage {
                             KVStoreType::Mongo,
                             &self.metrics,
                         );
-                        Ok(PutResult::Written)
+                        Ok(PutResult::Written {
+                            checksum_sha256: checksum,
+                        })
                     }
                     Err(e) if is_duplicate_key_error(&e) => {
                         kvstore_put_metrics(
@@ -375,7 +393,9 @@ impl KVStore for MongoDbStorage {
                     .await
                     .wrap_err("MongoDB put operation failed")
                     .write_put_metrics(start.elapsed(), KVStoreType::Mongo, &self.metrics)?;
-                Ok(PutResult::Written)
+                Ok(PutResult::Written {
+                    checksum_sha256: checksum,
+                })
             }
         }
     }
@@ -601,7 +621,7 @@ pub mod mongo_tests {
             .put(key, original_data.clone(), WritePolicy::NoClobber)
             .await
             .unwrap();
-        assert_eq!(result, PutResult::Written);
+        assert!(matches!(result, PutResult::Written { .. }));
 
         // Second write with NoClobber should be skipped
         let result = storage
@@ -629,18 +649,69 @@ pub mod mongo_tests {
             .put(key, original_data, WritePolicy::AllowOverwrite)
             .await
             .unwrap();
-        assert_eq!(result, PutResult::Written);
+        assert!(matches!(result, PutResult::Written { .. }));
 
         // Second write with AllowOverwrite should succeed and overwrite
         let result = storage
             .put(key, new_data.clone(), WritePolicy::AllowOverwrite)
             .await
             .unwrap();
-        assert_eq!(result, PutResult::Written);
+        assert!(matches!(result, PutResult::Written { .. }));
 
         // New data should be stored
         let stored = storage.get(key).await.unwrap().unwrap();
         assert_eq!(stored.as_ref(), new_data.as_slice());
+    }
+
+    #[ignore]
+    #[tokio::test]
+    async fn test_put_returns_sha256_checksum() {
+        use sha2::{Digest, Sha256};
+
+        let (_container, storage) = setup().await.unwrap();
+
+        let key = "checksum_test_key";
+        let input = b"some payload bytes".to_vec();
+        let expected: [u8; 32] = Sha256::digest(&input).into();
+
+        let result = storage
+            .put(key, input.clone(), WritePolicy::AllowOverwrite)
+            .await
+            .unwrap();
+
+        let PutResult::Written { checksum_sha256 } = result else {
+            panic!("expected PutResult::Written, got {result:?}");
+        };
+        assert_eq!(checksum_sha256, expected);
+    }
+
+    #[ignore]
+    #[tokio::test]
+    async fn test_put_returns_sha256_checksum_for_chunked_payload() {
+        use sha2::{Digest, Sha256};
+
+        let (_container, storage) = setup().await.unwrap();
+
+        let key = "checksum_chunked_test_key";
+        // Span multiple chunk docs; the checksum must still cover the full payload.
+        let mut input = b"a".repeat(CHUNK_SIZE * 2);
+        input.extend(&b"b".repeat(CHUNK_SIZE + 123));
+        let expected: [u8; 32] = Sha256::digest(&input).into();
+
+        let result = storage
+            .put(key, input.clone(), WritePolicy::AllowOverwrite)
+            .await
+            .unwrap();
+
+        let PutResult::Written { checksum_sha256 } = result else {
+            panic!("expected PutResult::Written, got {result:?}");
+        };
+        assert_eq!(checksum_sha256, expected);
+
+        let stored = storage.get(key).await.unwrap().unwrap();
+        assert_eq!(stored.as_ref(), input.as_slice());
+        let stored_digest: [u8; 32] = Sha256::digest(&stored).into();
+        assert_eq!(checksum_sha256, stored_digest);
     }
 
     #[ignore]
@@ -658,7 +729,7 @@ pub mod mongo_tests {
             .put(key, original_data.clone(), WritePolicy::NoClobber)
             .await
             .unwrap();
-        assert_eq!(result, PutResult::Written);
+        assert!(matches!(result, PutResult::Written { .. }));
 
         // Second write with NoClobber should be skipped
         let result = storage

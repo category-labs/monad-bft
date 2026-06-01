@@ -62,8 +62,23 @@ pub enum WritePolicy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PutResult {
     /// Data was successfully written to the store.
-    Written,
+    ///
+    /// `checksum_sha256` is the SHA256 of the written payload, computed and
+    /// persisted durably at put time (server-verified on S3, atomically
+    /// co-written on the other backends).
+    Written { checksum_sha256: [u8; 32] },
     /// Write was skipped because the key already exists (NoClobber policy).
+    Skipped,
+}
+
+/// Result of a `bulk_put`. Unlike [`PutResult`], it carries no checksum: a bulk
+/// write spans many independent payloads with no single meaningful digest. Use
+/// `put` when you need a per-key checksum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BulkPutResult {
+    /// Every key was written.
+    Written,
+    /// At least one key was skipped because it already existed (NoClobber policy).
     Skipped,
 }
 
@@ -126,17 +141,16 @@ pub trait KVStore: KVReader {
         &self,
         kvs: impl IntoIterator<Item = (String, Vec<u8>)>,
         policy: WritePolicy,
-    ) -> Result<PutResult> {
+    ) -> Result<BulkPutResult> {
         let results: Vec<PutResult> = futures::stream::iter(kvs)
             .map(|(k, v)| self.put(k, v, policy))
             .buffer_unordered(10)
             .try_collect()
             .await?;
-        // Return Skipped if any put was skipped
         if results.iter().any(|r| matches!(r, PutResult::Skipped)) {
-            Ok(PutResult::Skipped)
+            Ok(BulkPutResult::Skipped)
         } else {
-            Ok(PutResult::Written)
+            Ok(BulkPutResult::Written)
         }
     }
     async fn scan_prefix(&self, prefix: &str) -> Result<Vec<String>>;
