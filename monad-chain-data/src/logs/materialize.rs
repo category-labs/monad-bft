@@ -25,7 +25,9 @@ use crate::{
     engine::{
         clause::{IndexedClause, IndexedFilter},
         family::Family,
-        query::family_runner::IndexedFamilyQuery,
+        query::family_runner::{
+            execute_block_scan_family_query, execute_indexed_family_query, IndexedFamilyQuery,
+        },
         row_codec::RowDecompressor,
         tables::Tables,
     },
@@ -34,6 +36,7 @@ use crate::{
     primitives::{
         limits::QueryEnvelope,
         page::QueryOrder,
+        range::ResolvedBlockWindow,
         refs::{BlockRef, BlockSpan},
         state::BlockRecord,
     },
@@ -316,4 +319,52 @@ pub(crate) fn decode_log_at(
     let bytes = decompressor.decompress(&blob[start..end])?;
     let raw = RawLogEntry::decode(&bytes)?;
     Ok(raw.into_log_entry(block_number, block_hash))
+}
+
+pub(crate) async fn execute_indexed_log_query<M: MetaStore, B: BlobStore>(
+    tables: &Tables<M, B>,
+    request: &QueryLogsRequest,
+    block_window: ResolvedBlockWindow,
+    published_head: u64,
+) -> Result<QueryLogsResponse> {
+    let materializer = LogMaterializer::new(tables);
+    let outcome = execute_indexed_family_query(
+        tables,
+        &materializer,
+        &request.filter,
+        block_window,
+        published_head,
+        request.envelope.order,
+        request.envelope.limit,
+    )
+    .await?;
+    Ok(QueryLogsResponse {
+        logs: outcome.records,
+        blocks: None,
+        transactions: None,
+        span: outcome.span,
+    })
+}
+
+/// Walks blocks in query order, applying `LogFilter` to each block's logs.
+pub(crate) async fn execute_block_scan_query<M: MetaStore, B: BlobStore>(
+    tables: &Tables<M, B>,
+    request: &QueryLogsRequest,
+    window: ResolvedBlockWindow,
+) -> Result<QueryLogsResponse> {
+    let materializer = LogMaterializer::new(tables);
+    let outcome = execute_block_scan_family_query(
+        &materializer,
+        &request.filter,
+        window,
+        request.envelope.order,
+        request.envelope.limit,
+    )
+    .await?;
+    Ok(QueryLogsResponse {
+        logs: outcome.records,
+        blocks: None,
+        transactions: None,
+        span: outcome.span,
+    })
 }

@@ -26,7 +26,9 @@ use crate::{
     engine::{
         clause::{IndexedClause, IndexedFilter},
         family::Family,
-        query::family_runner::IndexedFamilyQuery,
+        query::family_runner::{
+            execute_block_scan_family_query, execute_indexed_family_query, IndexedFamilyQuery,
+        },
         row_codec::RowDecompressor,
         tables::Tables,
     },
@@ -35,6 +37,7 @@ use crate::{
     primitives::{
         limits::QueryEnvelope,
         page::QueryOrder,
+        range::ResolvedBlockWindow,
         refs::{BlockRef, BlockSpan},
         state::BlockRecord,
     },
@@ -338,4 +341,54 @@ pub(crate) fn decode_trace_at(
     let bytes = decompressor.decompress(&blob[start..end])?;
     let stored = StoredTrace::decode(&bytes)?;
     Ok(stored.into_trace_entry(block_number, block_hash))
+}
+
+pub(crate) async fn execute_indexed_trace_query<M: MetaStore, B: BlobStore>(
+    tables: &Tables<M, B>,
+    request: &QueryTracesRequest,
+    block_window: ResolvedBlockWindow,
+    published_head: u64,
+) -> Result<QueryTracesResponse> {
+    let materializer = TraceMaterializer::new(tables);
+    let outcome = execute_indexed_family_query(
+        tables,
+        &materializer,
+        &request.filter,
+        block_window,
+        published_head,
+        request.envelope.order,
+        request.envelope.limit,
+    )
+    .await?;
+    Ok(QueryTracesResponse {
+        traces: outcome.records,
+        blocks: None,
+        transactions: None,
+        span: outcome.span,
+    })
+}
+
+/// Walks blocks in query order, applying `TraceFilter` to each block's
+/// traces. Used when the filter has no indexed clause (e.g.
+/// `is_top_level: Some(false)` alone, or no filter at all).
+pub(crate) async fn execute_block_scan_trace_query<M: MetaStore, B: BlobStore>(
+    tables: &Tables<M, B>,
+    request: &QueryTracesRequest,
+    window: ResolvedBlockWindow,
+) -> Result<QueryTracesResponse> {
+    let materializer = TraceMaterializer::new(tables);
+    let outcome = execute_block_scan_family_query(
+        &materializer,
+        &request.filter,
+        window,
+        request.envelope.order,
+        request.envelope.limit,
+    )
+    .await?;
+    Ok(QueryTracesResponse {
+        traces: outcome.records,
+        blocks: None,
+        transactions: None,
+        span: outcome.span,
+    })
 }

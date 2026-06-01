@@ -30,7 +30,9 @@ use crate::{
     engine::{
         clause::{IndexedClause, IndexedFilter},
         family::Family,
-        query::family_runner::IndexedFamilyQuery,
+        query::family_runner::{
+            execute_block_scan_family_query, execute_indexed_family_query, IndexedFamilyQuery,
+        },
         row_codec::RowDecompressor,
         tables::Tables,
     },
@@ -39,6 +41,7 @@ use crate::{
     primitives::{
         limits::QueryEnvelope,
         page::QueryOrder,
+        range::ResolvedBlockWindow,
         refs::{BlockRef, BlockSpan},
         state::BlockRecord,
     },
@@ -350,4 +353,50 @@ pub(crate) fn decode_tx_at(
     let tx_idx_u32 =
         u32::try_from(tx_idx).map_err(|_| MonadChainDataError::Decode("tx index overflow"))?;
     Ok(stored.into_tx_entry(block_number, block_hash, tx_idx_u32))
+}
+
+pub(crate) async fn execute_indexed_tx_query<M: MetaStore, B: BlobStore>(
+    tables: &Tables<M, B>,
+    request: &QueryTransactionsRequest,
+    block_window: ResolvedBlockWindow,
+    published_head: u64,
+) -> Result<QueryTransactionsResponse> {
+    let materializer = TxMaterializer::new(tables);
+    let outcome = execute_indexed_family_query(
+        tables,
+        &materializer,
+        &request.filter,
+        block_window,
+        published_head,
+        request.envelope.order,
+        request.envelope.limit,
+    )
+    .await?;
+    Ok(QueryTransactionsResponse {
+        txs: outcome.records,
+        blocks: None,
+        span: outcome.span,
+    })
+}
+
+/// Walks blocks in query order, applying `TxFilter` to each block's txs.
+pub(crate) async fn execute_block_scan_tx_query<M: MetaStore, B: BlobStore>(
+    tables: &Tables<M, B>,
+    request: &QueryTransactionsRequest,
+    window: ResolvedBlockWindow,
+) -> Result<QueryTransactionsResponse> {
+    let materializer = TxMaterializer::new(tables);
+    let outcome = execute_block_scan_family_query(
+        &materializer,
+        &request.filter,
+        window,
+        request.envelope.order,
+        request.envelope.limit,
+    )
+    .await?;
+    Ok(QueryTransactionsResponse {
+        txs: outcome.records,
+        blocks: None,
+        span: outcome.span,
+    })
 }

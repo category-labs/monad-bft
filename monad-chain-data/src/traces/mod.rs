@@ -13,16 +13,12 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-mod indexed_query;
 mod ingest;
 mod materialize;
-mod scan_query;
 mod types;
 
-pub(crate) use indexed_query::execute_indexed_trace_query;
 pub use ingest::{compute_trace_addresses, is_transfer_frame, TraceIngestPlan};
-pub(crate) use materialize::TraceMaterializer;
+pub(crate) use materialize::{execute_block_scan_trace_query, execute_indexed_trace_query};
 pub use materialize::{QueryTracesRequest, QueryTracesResponse, TraceFilter, TracesRelations};
-pub(crate) use scan_query::execute_block_scan_trace_query;
 pub use crate::primitives::state::BlockBlobHeader;
 pub use types::{StoredTrace, TraceEntry};
