@@ -162,7 +162,7 @@ impl<'a, M: MetaStore, B: BlobStore> LogMaterializer<'a, M, B> {
     }
 }
 
-impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery<M, B> for LogMaterializer<'a, M, B> {
+impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery for LogMaterializer<'a, M, B> {
     type Filter = LogFilter;
     type Record = LogEntry;
 

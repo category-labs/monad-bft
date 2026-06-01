@@ -191,7 +191,7 @@ impl<'a, M: MetaStore, B: BlobStore> TransferMaterializer<'a, M, B> {
     }
 }
 
-impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery<M, B> for TransferMaterializer<'a, M, B> {
+impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery for TransferMaterializer<'a, M, B> {
     type Filter = TransferFilter;
     type Record = TransferEntry;
 

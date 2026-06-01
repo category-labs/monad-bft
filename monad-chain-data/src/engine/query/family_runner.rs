@@ -72,7 +72,7 @@ pub(crate) struct IndexedQueryOutcome<T> {
 
 /// Per-family interface consumed by the shared indexed and block-scan
 /// runners. Implemented by each family's materializer.
-pub(crate) trait IndexedFamilyQuery<M: MetaStore, B: BlobStore> {
+pub(crate) trait IndexedFamilyQuery {
     type Filter: IndexedFilter<Record = Self::Record>;
     type Record;
 
@@ -106,7 +106,7 @@ pub(crate) async fn execute_indexed_family_query<M, B, R>(
 where
     M: MetaStore,
     B: BlobStore,
-    R: IndexedFamilyQuery<M, B>,
+    R: IndexedFamilyQuery,
 {
     let (from_block, to_block) = block_window.request_endpoints(order);
     let family = R::family();
@@ -306,7 +306,7 @@ struct PageWorkItem {
 /// Shared block-scan runner used when the query filter carries no indexed
 /// clause. Walks blocks in query order, lets the family filter each
 /// block's records, and stops once `limit` is reached.
-pub(crate) async fn execute_block_scan_family_query<M, B, R>(
+pub(crate) async fn execute_block_scan_family_query<R>(
     runner: &R,
     filter: &R::Filter,
     block_window: ResolvedBlockWindow,
@@ -314,9 +314,7 @@ pub(crate) async fn execute_block_scan_family_query<M, B, R>(
     limit: usize,
 ) -> Result<IndexedQueryOutcome<R::Record>>
 where
-    M: MetaStore,
-    B: BlobStore,
-    R: IndexedFamilyQuery<M, B>,
+    R: IndexedFamilyQuery,
 {
     let (from_block, to_block) = block_window.request_endpoints(order);
     let mut records = Vec::new();

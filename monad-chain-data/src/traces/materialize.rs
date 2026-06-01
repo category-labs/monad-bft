@@ -176,7 +176,7 @@ impl<'a, M: MetaStore, B: BlobStore> TraceMaterializer<'a, M, B> {
     }
 }
 
-impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery<M, B> for TraceMaterializer<'a, M, B> {
+impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery for TraceMaterializer<'a, M, B> {
     type Filter = TraceFilter;
     type Record = TraceEntry;
 

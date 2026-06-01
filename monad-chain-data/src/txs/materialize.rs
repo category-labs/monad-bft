@@ -164,7 +164,7 @@ impl<'a, M: MetaStore, B: BlobStore> TxMaterializer<'a, M, B> {
     }
 }
 
-impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery<M, B> for TxMaterializer<'a, M, B> {
+impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery for TxMaterializer<'a, M, B> {
     type Filter = TxFilter;
     type Record = TxEntry;
 
