@@ -113,6 +113,13 @@ pub fn set_source_and_sink_metrics(
                 vec![opentelemetry::KeyValue::new("sink_store_type", "fjall")],
             );
         }
+        ArchiveArgs::Scylla(_) => {
+            metrics.periodic_gauge_with_attrs(
+                MetricNames::SINK_STORE_TYPE,
+                4,
+                vec![opentelemetry::KeyValue::new("sink_store_type", "scylla")],
+            );
+        }
     }
 
     match source {
@@ -149,6 +156,13 @@ pub fn set_source_and_sink_metrics(
                 MetricNames::SOURCE_STORE_TYPE,
                 5,
                 vec![opentelemetry::KeyValue::new("source_store_type", "fjall")],
+            );
+        }
+        BlockDataReaderArgs::Scylla(_) => {
+            metrics.periodic_gauge_with_attrs(
+                MetricNames::SOURCE_STORE_TYPE,
+                6,
+                vec![opentelemetry::KeyValue::new("source_store_type", "scylla")],
             );
         }
     }
@@ -191,6 +205,7 @@ pub enum BlockDataReaderArgs {
     MongoDb(MongoDbCliArgs),
     Fs(FsCliArgs),
     Fjall(FjallCliArgs),
+    Scylla(ScyllaCliArgs),
 }
 
 #[derive(Debug, Clone, Serialize, Eq, PartialEq, Hash)]
@@ -199,6 +214,7 @@ pub enum ArchiveArgs {
     MongoDb(MongoDbCliArgs),
     Fs(FsCliArgs),
     Fjall(FjallCliArgs),
+    Scylla(ScyllaCliArgs),
 }
 
 impl FromStr for BlockDataReaderArgs {
@@ -214,6 +230,7 @@ impl FromStr for BlockDataReaderArgs {
             "mongodb" => MongoDb(MongoDbCliArgs::parse(args)?),
             "fs" => Fs(FsCliArgs::parse(args)?),
             "fjall" => Fjall(FjallCliArgs::parse(args)?),
+            "scylla" => Scylla(ScyllaCliArgs::parse(args)?),
             _ => {
                 bail!("Unrecognized storage args variant: {storage_type}");
             }
@@ -233,6 +250,7 @@ impl FromStr for ArchiveArgs {
             "mongodb" => MongoDb(MongoDbCliArgs::parse(args)?),
             "fs" => Fs(FsCliArgs::parse(args)?),
             "fjall" => Fjall(FjallCliArgs::parse(args)?),
+            "scylla" => Scylla(ScyllaCliArgs::parse(args)?),
             _ => {
                 bail!("Unrecognized storage args variant: {storage_type}");
             }
@@ -283,6 +301,7 @@ impl BlockDataReaderArgs {
                 metrics.clone(),
             )?)
             .into(),
+            Scylla(args) => BlockDataArchive::new(args.block_store(metrics).await?).into(),
         })
     }
 
@@ -294,6 +313,7 @@ impl BlockDataReaderArgs {
             MongoDb(mongo_db_cli_args) => mongo_db_cli_args.replica_name(),
             Fs(fs_cli_args) => fs_cli_args.path.to_string_lossy().into_owned(),
             Fjall(fjall_cli_args) => fjall_cli_args.path.to_string_lossy().into_owned(),
+            Scylla(scylla_cli_args) => scylla_cli_args.replica_name(),
         }
     }
 }
@@ -316,6 +336,7 @@ impl ArchiveArgs {
             ArchiveArgs::Fjall(args) => {
                 FjallKvStore::open(args.block_store_path(), metrics.clone())?.into()
             }
+            ArchiveArgs::Scylla(args) => args.block_store(metrics).await?.into(),
         };
         Ok(BlockDataArchive::new(store))
     }
@@ -329,10 +350,10 @@ impl ArchiveArgs {
             ArchiveArgs::Aws(args) => {
                 let config = args.config().await?;
                 let bucket = Bucket::new(args.bucket.clone(), &config, metrics.clone());
+                let index_config = args.index_config().await?;
                 let index = DynamoDBArchive::new(
-                    bucket.clone(),
                     args.bucket.clone(),
-                    &config,
+                    &index_config,
                     args.concurrency,
                     metrics.clone(),
                 );
@@ -354,6 +375,10 @@ impl ArchiveArgs {
                 FjallKvStore::open(args.block_store_path(), metrics.clone())?.into(),
                 FjallKvStore::open(args.index_store_path(), metrics.clone())?.into(),
             ),
+            ArchiveArgs::Scylla(args) => {
+                let (block, index) = args.stores(metrics).await?;
+                (block.into(), index.into())
+            }
         };
         Ok(TxIndexArchiver::new(
             index,
@@ -367,10 +392,10 @@ impl ArchiveArgs {
             ArchiveArgs::Aws(args) => {
                 let config = args.config().await?;
                 let bucket = Bucket::new(args.bucket.clone(), &config, metrics.clone());
+                let index_config = args.index_config().await?;
                 let index = DynamoDBArchive::new(
-                    bucket.clone(),
                     args.bucket.clone(),
-                    &config,
+                    &index_config,
                     // TODO: remove me, concurrency should be handled elsewhere
                     args.concurrency,
                     metrics.clone(),
@@ -393,6 +418,10 @@ impl ArchiveArgs {
                 FjallKvStore::open(args.block_store_path(), metrics.clone())?.into(),
                 FjallKvStore::open(args.index_store_path(), metrics.clone())?.into(),
             ),
+            ArchiveArgs::Scylla(args) => {
+                let (block, index) = args.stores(metrics).await?;
+                (block.into(), index.into())
+            }
         };
         let bdr = BlockDataReaderErased::from(BlockDataArchive::new(blob));
         Ok(ArchiveReader::new(
@@ -411,6 +440,7 @@ impl ArchiveArgs {
             ArchiveArgs::Fjall(fjall_cli_args) => {
                 fjall_cli_args.path.to_string_lossy().into_owned()
             }
+            ArchiveArgs::Scylla(scylla_cli_args) => scylla_cli_args.replica_name(),
         }
     }
 }
@@ -440,6 +470,8 @@ fn parse_block_data_reader_args<E: de::Error>(value: JsonValue) -> Result<BlockD
             "fjall" => {
                 deserialize_variant(cfg, "fjall block_data_source").map(BlockDataReaderArgs::Fjall)
             }
+            "scylla" => deserialize_variant(cfg, "scylla block_data_source")
+                .map(BlockDataReaderArgs::Scylla),
             other => Err(E::custom(format!(
                 "unsupported block_data_source type '{other}'",
             ))),
@@ -456,6 +488,8 @@ fn parse_block_data_reader_args<E: de::Error>(value: JsonValue) -> Result<BlockD
             "Fjall" => {
                 deserialize_variant(cfg, "Fjall block_data_source").map(BlockDataReaderArgs::Fjall)
             }
+            "Scylla" => deserialize_variant(cfg, "Scylla block_data_source")
+                .map(BlockDataReaderArgs::Scylla),
             other => Err(E::custom(format!(
                 "unsupported block_data_source variant '{other}'",
             ))),
@@ -481,6 +515,7 @@ fn parse_archive_args<E: de::Error>(value: JsonValue) -> Result<ArchiveArgs, E> 
             "mongodb" => deserialize_variant(cfg, "mongodb archive_sink").map(ArchiveArgs::MongoDb),
             "fs" => deserialize_variant(cfg, "fs archive_sink").map(ArchiveArgs::Fs),
             "fjall" => deserialize_variant(cfg, "fjall archive_sink").map(ArchiveArgs::Fjall),
+            "scylla" => deserialize_variant(cfg, "scylla archive_sink").map(ArchiveArgs::Scylla),
             other => Err(E::custom(format!(
                 "unsupported archive_sink type '{other}'",
             ))),
@@ -490,6 +525,7 @@ fn parse_archive_args<E: de::Error>(value: JsonValue) -> Result<ArchiveArgs, E> 
             "MongoDb" => deserialize_variant(cfg, "MongoDb archive_sink").map(ArchiveArgs::MongoDb),
             "Fs" => deserialize_variant(cfg, "Fs archive_sink").map(ArchiveArgs::Fs),
             "Fjall" => deserialize_variant(cfg, "Fjall archive_sink").map(ArchiveArgs::Fjall),
+            "Scylla" => deserialize_variant(cfg, "Scylla archive_sink").map(ArchiveArgs::Scylla),
             other => Err(E::custom(format!(
                 "unsupported archive_sink variant '{other}'",
             ))),
@@ -546,6 +582,11 @@ pub struct AwsCliArgs {
     pub region: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
+    /// Optional separate endpoint for the index (DynamoDB) store. When set, the
+    /// S3 bucket uses `endpoint` while the DynamoDB index client uses this,
+    /// allowing e.g. blocks/blobs on S3 and the index on ScyllaDB Alternator.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index_endpoint: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -570,6 +611,7 @@ impl std::fmt::Debug for AwsCliArgs {
             .field("bucket", &self.bucket)
             .field("region", &self.region)
             .field("endpoint", &self.endpoint)
+            .field("index_endpoint", &self.index_endpoint)
             .field("profile", &self.profile)
             .field(
                 "access_key_id",
@@ -612,6 +654,7 @@ impl AwsCliArgs {
                 .ok_or_eyre("storage args missing bucket")?,
             region: kv.remove("region"),
             endpoint: kv.remove("endpoint"),
+            index_endpoint: kv.remove("index-endpoint"),
             profile: kv.remove("profile"),
             access_key_id: kv.remove("access-key-id"),
             secret_access_key: kv.remove("secret-access-key"),
@@ -800,6 +843,132 @@ impl FjallCliArgs {
 
     pub fn index_store_path(&self) -> PathBuf {
         self.path.join("index")
+    }
+}
+
+/// Configuration for a ScyllaDB backend reached through its DynamoDB-compatible
+/// Alternator API. Usable both as a `block_data_source` and an `archive_sink`,
+/// analogous to the `mongodb` backend.
+///
+/// Locator format: `scylla <endpoint> <namespace> [--region R] \
+///   [--access-key-id ID] [--secret-access-key SECRET] [--concurrency N]`
+///
+/// The `namespace` is used as a table-name prefix, yielding two tables
+/// (`<namespace>_block_level` for block data and `<namespace>_tx_index` for the
+/// index), mirroring the Mongo backend's two collections. Tables are created on
+/// demand if missing.
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct ScyllaCliArgs {
+    /// Alternator endpoint URL, e.g. `http://scylla:8000`.
+    pub endpoint: String,
+    /// Table-name prefix shared by the block and index tables.
+    pub namespace: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_key_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret_access_key: Option<String>,
+    #[serde(default = "default_aws_concurrency")]
+    pub concurrency: usize,
+}
+
+impl std::fmt::Debug for ScyllaCliArgs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ScyllaCliArgs")
+            .field("endpoint", &self.endpoint)
+            .field("namespace", &self.namespace)
+            .field("region", &self.region)
+            .field(
+                "access_key_id",
+                &self.access_key_id.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field(
+                "secret_access_key",
+                &self.secret_access_key.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("concurrency", &self.concurrency)
+            .finish()
+    }
+}
+
+impl ScyllaCliArgs {
+    pub fn parse(s: &str) -> Result<Self> {
+        let (positional, mut kv) = parse_str_positional_and_kv(s)?;
+        let args = Self {
+            endpoint: kv
+                .remove("endpoint")
+                .or_else(|| positional.first().cloned())
+                .ok_or_eyre("scylla storage args missing endpoint")?,
+            namespace: kv
+                .remove("namespace")
+                .or_else(|| positional.get(1).cloned())
+                .ok_or_eyre("scylla storage args missing namespace")?,
+            region: kv.remove("region"),
+            access_key_id: kv.remove("access-key-id"),
+            secret_access_key: kv.remove("secret-access-key"),
+            concurrency: kv
+                .remove("concurrency")
+                .and_then(|s| usize::from_str(&s).ok())
+                .unwrap_or(DEFAULT_CONCURRENCY),
+        };
+
+        if matches!(
+            (&args.access_key_id, &args.secret_access_key),
+            (Some(_), None) | (None, Some(_))
+        ) {
+            return Err(eyre::eyre!(
+                "scylla config for '{}' must set both --access-key-id and --secret-access-key",
+                args.namespace
+            ));
+        }
+
+        Ok(args)
+    }
+
+    /// DynamoDB table holding block-level data.
+    pub fn block_table(&self) -> String {
+        format!("{}_block_level", self.namespace)
+    }
+
+    /// DynamoDB table holding the transaction index.
+    pub fn index_table(&self) -> String {
+        format!("{}_tx_index", self.namespace)
+    }
+
+    pub fn replica_name(&self) -> String {
+        format!("scylla://{}/{}", self.endpoint, self.namespace)
+    }
+
+    /// Build the block-data store, creating its table if missing.
+    pub async fn block_store(&self, metrics: &Metrics) -> Result<DynamoDBArchive> {
+        let config = self.config().await?;
+        self.store_from_config(&config, self.block_table(), metrics)
+            .await
+    }
+
+    /// Build both the block-data and index stores from a single SDK config,
+    /// creating their tables if missing.
+    pub async fn stores(&self, metrics: &Metrics) -> Result<(DynamoDBArchive, DynamoDBArchive)> {
+        let config = self.config().await?;
+        let block = self
+            .store_from_config(&config, self.block_table(), metrics)
+            .await?;
+        let index = self
+            .store_from_config(&config, self.index_table(), metrics)
+            .await?;
+        Ok((block, index))
+    }
+
+    async fn store_from_config(
+        &self,
+        config: &SdkConfig,
+        table: String,
+        metrics: &Metrics,
+    ) -> Result<DynamoDBArchive> {
+        let store = DynamoDBArchive::new(table, config, self.concurrency, metrics.clone());
+        store.ensure_table().await?;
+        Ok(store)
     }
 }
 
@@ -1112,6 +1281,7 @@ mod tests {
             bucket: "my-bucket".to_string(),
             region: Some("us-east-1".to_string()),
             endpoint: Some("https://s3.amazonaws.com".to_string()),
+            index_endpoint: None,
             profile: Some("mainnet".to_string()),
             access_key_id: Some("AKIAIOSFODNN7EXAMPLE".to_string()),
             secret_access_key: Some("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY".to_string()),
@@ -1142,6 +1312,7 @@ mod tests {
             bucket: "my-bucket".to_string(),
             region: None,
             endpoint: None,
+            index_endpoint: None,
             profile: None,
             access_key_id: None,
             secret_access_key: None,
@@ -1164,6 +1335,7 @@ mod tests {
             bucket: "test".to_string(),
             region: None,
             endpoint: None,
+            index_endpoint: None,
             profile: None,
             access_key_id: Some("SECRET_KEY_ID".to_string()),
             secret_access_key: Some("SECRET_ACCESS_KEY".to_string()),
@@ -1181,6 +1353,91 @@ mod tests {
         assert!(!debug_output.contains("SECRET_ACCESS_KEY"));
         assert!(!pretty_output.contains("SECRET_KEY_ID"));
         assert!(!pretty_output.contains("SECRET_ACCESS_KEY"));
+    }
+
+    #[test]
+    fn aws_index_endpoint_parses_and_defaults() {
+        let args = AwsCliArgs::parse("my-bucket").unwrap();
+        assert_eq!(args.index_endpoint, None);
+
+        let args = AwsCliArgs::parse(
+            "my-bucket --endpoint http://s3:9000 --index-endpoint http://scylla:8000",
+        )
+        .unwrap();
+        assert_eq!(args.endpoint.as_deref(), Some("http://s3:9000"));
+        assert_eq!(args.index_endpoint.as_deref(), Some("http://scylla:8000"));
+    }
+
+    #[test]
+    fn scylla_fromstr_block_and_archive() {
+        // Usable as a block_data_source
+        let src = BlockDataReaderArgs::from_str("scylla http://scylla:8000 mainnet").unwrap();
+        match src {
+            BlockDataReaderArgs::Scylla(args) => {
+                assert_eq!(args.endpoint, "http://scylla:8000");
+                assert_eq!(args.namespace, "mainnet");
+                assert_eq!(args.block_table(), "mainnet_block_level");
+                assert_eq!(args.index_table(), "mainnet_tx_index");
+                assert_eq!(args.concurrency, DEFAULT_CONCURRENCY);
+                assert_eq!(args.replica_name(), "scylla://http://scylla:8000/mainnet");
+            }
+            _ => panic!("expected Scylla variant"),
+        }
+
+        // ...and as an archive_sink, with overrides
+        let sink = ArchiveArgs::from_str(
+            "scylla http://scylla:8000 testnet --region eu-west-1 \
+             --access-key-id id --secret-access-key secret --concurrency 8",
+        )
+        .unwrap();
+        match sink {
+            ArchiveArgs::Scylla(args) => {
+                assert_eq!(args.namespace, "testnet");
+                assert_eq!(args.region.as_deref(), Some("eu-west-1"));
+                assert_eq!(args.access_key_id.as_deref(), Some("id"));
+                assert_eq!(args.concurrency, 8);
+            }
+            _ => panic!("expected Scylla variant"),
+        }
+    }
+
+    #[test]
+    fn scylla_partial_credentials_rejected() {
+        let err = ArchiveArgs::from_str("scylla http://scylla:8000 ns --access-key-id only-id")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("--secret-access-key"));
+    }
+
+    #[test]
+    fn scylla_debug_redacts_secret() {
+        let args = ScyllaCliArgs {
+            endpoint: "http://scylla:8000".to_string(),
+            namespace: "ns".to_string(),
+            region: None,
+            access_key_id: Some("AKIA_EXAMPLE".to_string()),
+            secret_access_key: Some("super-secret".to_string()),
+            concurrency: 50,
+        };
+        let debug = format!("{args:?}");
+        assert!(!debug.contains("super-secret"));
+        assert!(!debug.contains("AKIA_EXAMPLE"));
+        assert!(debug.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn scylla_toml_roundtrip_as_sink() {
+        let json =
+            r#"{ "type": "scylla", "endpoint": "http://scylla:8000", "namespace": "mainnet" }"#;
+        let args: ArchiveArgs = serde_json::from_str(json).unwrap();
+        match args {
+            ArchiveArgs::Scylla(args) => {
+                assert_eq!(args.endpoint, "http://scylla:8000");
+                assert_eq!(args.namespace, "mainnet");
+                assert_eq!(args.concurrency, DEFAULT_CONCURRENCY);
+            }
+            _ => panic!("expected Scylla variant"),
+        }
     }
 
     #[test]
