@@ -100,6 +100,14 @@ impl<PT: PubKey> RoundInfoCache<PT> {
         Some(by_round.entry(round).or_default())
     }
 
+    pub fn primary_entries(&self) -> usize {
+        self.primary.len()
+    }
+
+    pub fn secondary_entries(&self) -> usize {
+        self.secondary.values().map(BTreeMap::len).sum()
+    }
+
     #[cfg(test)]
     fn get_primary(&self, round: Round) -> Option<&PrimaryRoundInfo<PT>> {
         self.primary.get(&round)
