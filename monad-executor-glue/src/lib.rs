@@ -50,8 +50,8 @@ use monad_crypto::certificate_signature::{
 };
 use monad_state_backend::StateBackend;
 use monad_types::{
-    deserialize_pubkey, serialize_pubkey, Epoch, ExecutionProtocol, LimitedVec, NodeId, Round,
-    RouterTarget, SeqNum, Stake, UdpPriority,
+    deserialize_pubkey, serialize_pubkey, Epoch, ExecutionProtocol, ForwardedTxList, LimitedVec,
+    NodeId, Round, RouterTarget, SeqNum, Stake, UdpPriority,
 };
 use monad_validator::signature_collection::SignatureCollection;
 use serde::{Deserialize, Serialize};
@@ -661,7 +661,7 @@ where
 
     InsertForwardedTxs {
         sender: NodeId<SCT::NodeIdPubKey>,
-        txs: Vec<Bytes>,
+        txs: ForwardedTxList,
     },
 
     EnterRound {
@@ -1245,12 +1245,11 @@ where
     /// Txs that are incoming via other nodes
     ForwardedTxs {
         sender: NodeId<SCT::NodeIdPubKey>,
-        #[serde_as(as = "Vec<serde_with::hex::Hex>")]
-        txs: Vec<Bytes>,
+        txs: ForwardedTxList,
     },
 
     /// Txs that should be forwarded to upcoming leaders
-    ForwardTxs(#[serde_as(as = "Vec<serde_with::hex::Hex>")] Vec<Bytes>),
+    ForwardTxs(ForwardedTxList),
 }
 
 impl<ST, SCT, EPT> Encodable for MempoolEvent<ST, SCT, EPT>
@@ -1385,11 +1384,11 @@ where
             }
             2 => {
                 let sender = NodeId::<SCT::NodeIdPubKey>::decode(&mut payload)?;
-                let txs = Vec::<Bytes>::decode(&mut payload)?;
+                let txs = ForwardedTxList::decode(&mut payload)?;
                 Ok(Self::ForwardedTxs { sender, txs })
             }
             3 => {
-                let txs = Vec::<Bytes>::decode(&mut payload)?;
+                let txs = ForwardedTxList::decode(&mut payload)?;
                 Ok(Self::ForwardTxs(txs))
             }
             _ => Err(alloy_rlp::Error::Custom(

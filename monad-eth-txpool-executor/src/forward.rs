@@ -31,6 +31,7 @@ use monad_crypto::certificate_signature::{
 use monad_eth_txpool::{max_eip2718_encoded_length, EthTxPool};
 use monad_eth_types::ExtractEthAddress;
 use monad_state_backend::StateBackend;
+use monad_types::ForwardedTxList;
 use monad_validator::signature_collection::SignatureCollection;
 use pin_project::pin_project;
 use tracing::error;
@@ -94,7 +95,7 @@ impl<S> EthTxPoolForwardingManager<S> {
         self: Pin<&mut Self>,
         execution_params: &ExecutionChainParams,
         cx: &mut Context<'_>,
-    ) -> Poll<Vec<Bytes>> {
+    ) -> Poll<ForwardedTxList> {
         let EthTxPoolForwardingManagerProjected {
             egress,
             egress_waker,
@@ -113,15 +114,21 @@ impl<S> EthTxPoolForwardingManager<S> {
 
             let egress_max_size_bytes = egress_max_size_bytes(execution_params);
 
-            let mut txs = Vec::default();
+            let mut txs = ForwardedTxList::default();
             let mut total_bytes = 0;
 
             while let Some(tx) = egress.front() {
                 let new_total_bytes = total_bytes + tx.len();
 
                 if new_total_bytes <= egress_max_size_bytes {
-                    txs.push(egress.pop_front().unwrap());
-                    total_bytes = new_total_bytes;
+                    let tx = egress.pop_front().unwrap();
+                    match txs.try_push(tx) {
+                        Ok(()) => total_bytes = new_total_bytes,
+                        Err(tx) => {
+                            egress.push_front(tx);
+                            break;
+                        }
+                    }
                     continue;
                 }
 
