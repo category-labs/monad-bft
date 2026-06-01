@@ -33,7 +33,7 @@ use crate::{
         bitmap::{global_page_start, local_page_start, stream_page_global_start},
         digest::{self, ArtifactChecksum, EMPTY_CHECKSUM},
         family::Family,
-        ingest::{persist::PhaseAFragmentWriteFilter, ReadPlanningTimings},
+        ingest::persist::PhaseAFragmentWriteFilter,
         open_index::{
             insert_bitmap_set, insert_directory_set, OpenIndexStats, OpenIndexes, OpenIndexesDelta,
             OpenIndexesEviction,
@@ -141,9 +141,6 @@ struct StageAPlanOutput {
     /// Standalone (un-chained) content digest for this block; chained into the
     /// running checksum in the sequential staging loop.
     block_content_digest: ArtifactChecksum,
-    log_plan_us: u64,
-    tx_plan_us: u64,
-    trace_plan_us: u64,
 }
 
 /// Computes the standalone content digest for one planned block: the logical
@@ -282,61 +279,11 @@ pub enum VerifyOutcome {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct IngestBatchTimings {
     pub stage_a_ms: u64,
-    pub(crate) stage_a_log_plan_us: u64,
-    pub(crate) stage_a_tx_plan_us: u64,
-    pub(crate) stage_a_trace_plan_us: u64,
-    pub(crate) stage_a_delta_us: u64,
-    pub(crate) stage_a_session_stage_us: u64,
-    pub(crate) stage_a_bitmap_fragment_count: u64,
-    pub(crate) stage_a_hash_location_count: u64,
-    pub(crate) stage_a_dir_fragments_total: u64,
-    pub(crate) stage_a_dir_fragments_written: u64,
-    pub(crate) stage_a_dir_fragments_skipped: u64,
-    pub(crate) stage_a_bitmap_fragments_total: u64,
-    pub(crate) stage_a_bitmap_fragments_written: u64,
-    pub(crate) stage_a_bitmap_fragments_skipped: u64,
     pub phase_a_write_counts: WriteOpCounts,
     pub phase_b_write_counts: WriteOpCounts,
     pub commit_a_meta_ms: u64,
     pub commit_a_blob_ms: u64,
     pub reads_ms: u64,
-    pub(crate) reads_dir_list_ms: u64,
-    pub(crate) reads_dir_get_ms: u64,
-    pub(crate) reads_dir_list_count: u64,
-    pub(crate) reads_dir_get_count: u64,
-    pub(crate) reads_bitmap_open_streams_ms: u64,
-    pub(crate) reads_bitmap_open_streams_us: u64,
-    pub(crate) reads_bitmap_open_streams_count: u64,
-    pub(crate) reads_bitmap_list_ms: u64,
-    pub(crate) reads_bitmap_get_ms: u64,
-    pub(crate) reads_bitmap_shape_ms: u64,
-    pub(crate) reads_bitmap_shape_us: u64,
-    pub(crate) reads_bitmap_union_us: u64,
-    pub(crate) reads_bitmap_frontier_us: u64,
-    pub(crate) reads_bitmap_open_write_us: u64,
-    pub(crate) reads_bitmap_index_ms: u64,
-    pub(crate) reads_bitmap_index_us: u64,
-    pub(crate) reads_bitmap_compact_ms: u64,
-    pub(crate) reads_bitmap_compact_us: u64,
-    pub(crate) reads_bitmap_compact_wall_us: u64,
-    pub(crate) reads_bitmap_list_count: u64,
-    pub(crate) reads_bitmap_get_count: u64,
-    pub(crate) reads_bitmap_fragment_count: u64,
-    pub(crate) reads_bitmap_fragment_bytes: u64,
-    pub(crate) reads_bitmap_compact_count: u64,
-    pub(crate) reads_bitmap_frontier_stream_count: u64,
-    pub(crate) reads_bitmap_union_page_count: u64,
-    pub(crate) reads_bitmap_union_stream_count: u64,
-    pub(crate) reads_bitmap_touched_page_count: u64,
-    pub(crate) reads_bitmap_touched_stream_count: u64,
-    pub(crate) reads_bitmap_final_open_stream_count: u64,
-    pub(crate) reads_dir_index_ms: u64,
-    pub(crate) reads_dir_index_us: u64,
-    pub(crate) reads_dir_decode_ms: u64,
-    pub(crate) reads_dir_decode_us: u64,
-    pub(crate) reads_dir_fragment_count: u64,
-    pub(crate) reads_unaccounted_ms: u64,
-    pub(crate) reads_unaccounted_us: u64,
     pub stage_b_ms: u64,
     pub commit_b_ms: u64,
     pub cas_ms: u64,
@@ -998,17 +945,9 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
                     .expect("epoch codec resolved before par_iter");
                 debug_assert_eq!(log_codec_ref.version() as u64, epoch);
 
-                let log_plan_start = Instant::now();
                 let log_plan = LogIngestPlan::build(block, starts.log, log_codec_ref)?;
-                let log_plan_us = log_plan_start.elapsed().as_micros() as u64;
-
-                let tx_plan_start = Instant::now();
                 let tx_plan = TxIngestPlan::build(block, starts.tx, tx_codec_ref)?;
-                let tx_plan_us = tx_plan_start.elapsed().as_micros() as u64;
-
-                let trace_plan_start = Instant::now();
                 let trace_plan = TraceIngestPlan::build(block, starts.trace, trace_codec_ref)?;
-                let trace_plan_us = trace_plan_start.elapsed().as_micros() as u64;
 
                 // Content digest folds the uncompressed artifacts in parallel;
                 // the chain over prior blocks is applied sequentially below.
@@ -1034,9 +973,6 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
                         block_record,
                     },
                     block_content_digest,
-                    log_plan_us,
-                    tx_plan_us,
-                    trace_plan_us,
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -1051,28 +987,11 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
         for mut output in planned {
             cumulative_checksum = digest::chain(cumulative_checksum, output.block_content_digest);
             output.staged.block_record.artifact_checksum = cumulative_checksum;
-            timings.stage_a_log_plan_us = timings
-                .stage_a_log_plan_us
-                .saturating_add(output.log_plan_us);
-            timings.stage_a_tx_plan_us =
-                timings.stage_a_tx_plan_us.saturating_add(output.tx_plan_us);
-            timings.stage_a_trace_plan_us = timings
-                .stage_a_trace_plan_us
-                .saturating_add(output.trace_plan_us);
-            timings.stage_a_bitmap_fragment_count = timings
-                .stage_a_bitmap_fragment_count
-                .saturating_add(output.staged.log_plan.bitmap_fragments.len() as u64)
-                .saturating_add(output.staged.tx_plan.bitmap_fragments.len() as u64)
-                .saturating_add(output.staged.trace_plan.bitmap_fragments.len() as u64);
-            timings.stage_a_hash_location_count = timings
-                .stage_a_hash_location_count
-                .saturating_add(output.staged.tx_plan.hash_locations.len() as u64);
             staged.push(output.staged);
         }
 
         timings.stage_a_ms = stage_a_start.elapsed().as_millis() as u64;
 
-        let phase_a_delta_start = Instant::now();
         let mut phase_a_delta = OpenIndexesDelta::default();
         for st in &staged {
             let block_number = st.block_record.block_number;
@@ -1098,8 +1017,6 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
                 &st.trace_plan.bitmap_fragments,
             )?;
         }
-        timings.stage_a_delta_us = phase_a_delta_start.elapsed().as_micros() as u64;
-
         let last_staged = staged.last().expect("at least one block staged");
         let log_filter = PhaseAFragmentWriteFilter {
             open_bitmap_page: global_page_start(
@@ -1134,11 +1051,6 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
         // populating per-table caches for the Phase B compaction reads.
         let blocks_ref = &blocks;
         let staged_ref = &staged;
-        let stage_a_ms_cell = std::sync::atomic::AtomicU64::new(0);
-        let dir_fragments_total_cell = std::sync::atomic::AtomicU64::new(0);
-        let dir_fragments_written_cell = std::sync::atomic::AtomicU64::new(0);
-        let bitmap_fragments_total_cell = std::sync::atomic::AtomicU64::new(0);
-        let bitmap_fragments_written_cell = std::sync::atomic::AtomicU64::new(0);
         let projected_open_indexes = self
             .open_indexes
             .projected_with_delta(phase_a_delta.clone());
@@ -1160,13 +1072,7 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
             .collect();
 
         let phase_a_stage = self.tables.stage_writes(|w| {
-            let stage_a_ms_cell = &stage_a_ms_cell;
-            let dir_fragments_total_cell = &dir_fragments_total_cell;
-            let dir_fragments_written_cell = &dir_fragments_written_cell;
-            let bitmap_fragments_total_cell = &bitmap_fragments_total_cell;
-            let bitmap_fragments_written_cell = &bitmap_fragments_written_cell;
             Box::pin(async move {
-                let stage_a_session_stage_start = Instant::now();
                 for (block, st) in blocks_ref.iter().zip(staged_ref.iter()) {
                     block_tables.stage_metadata(
                         w,
@@ -1177,7 +1083,7 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
                         Bytes::from(st.tx_plan.block_tx_header.encode()),
                         Bytes::from(st.trace_plan.block_trace_header.encode()),
                     );
-                    let log_stats = logs.stage_indexed_family_ingest(
+                    logs.stage_indexed_family_ingest(
                         w,
                         block.block_number(),
                         st.log_plan.block_log_blob.clone(),
@@ -1185,7 +1091,7 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
                         &st.log_plan.bitmap_fragments,
                         log_filter,
                     )?;
-                    let tx_stats = txs.stage_indexed_family_ingest(
+                    txs.stage_indexed_family_ingest(
                         w,
                         block.block_number(),
                         st.tx_plan.block_tx_blob.clone(),
@@ -1193,7 +1099,7 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
                         &st.tx_plan.bitmap_fragments,
                         tx_filter,
                     )?;
-                    let trace_stats = traces.stage_indexed_family_ingest(
+                    traces.stage_indexed_family_ingest(
                         w,
                         block.block_number(),
                         st.trace_plan.block_trace_blob.clone(),
@@ -1201,24 +1107,6 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
                         &st.trace_plan.bitmap_fragments,
                         trace_filter,
                     )?;
-                    for stats in [log_stats, tx_stats, trace_stats] {
-                        dir_fragments_total_cell.fetch_add(
-                            stats.dir_fragments_total,
-                            std::sync::atomic::Ordering::Relaxed,
-                        );
-                        dir_fragments_written_cell.fetch_add(
-                            stats.dir_fragments_written,
-                            std::sync::atomic::Ordering::Relaxed,
-                        );
-                        bitmap_fragments_total_cell.fetch_add(
-                            stats.bitmap_fragments_total,
-                            std::sync::atomic::Ordering::Relaxed,
-                        );
-                        bitmap_fragments_written_cell.fetch_add(
-                            stats.bitmap_fragments_written,
-                            std::sync::atomic::Ordering::Relaxed,
-                        );
-                    }
                     block_tables.stage_hash_index(
                         w,
                         &st.block_record.block_hash,
@@ -1228,10 +1116,6 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
                         w.tables().tx_hash_index().stage_put(w, tx_hash, *location);
                     }
                 }
-                stage_a_ms_cell.store(
-                    stage_a_session_stage_start.elapsed().as_micros() as u64,
-                    std::sync::atomic::Ordering::Relaxed,
-                );
                 Ok(())
             })
         });
@@ -1258,32 +1142,12 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
                     &trace_ranges
                 ),
             )?;
-            Ok::<_, MonadChainDataError>((
-                plans,
-                reads_start.elapsed().as_millis() as u64,
-                reads_start.elapsed().as_micros() as u64,
-            ))
+            Ok::<_, MonadChainDataError>((plans, reads_start.elapsed().as_millis() as u64))
         };
 
         let (phase_a_writes_result, stage_b_plan_result) =
             futures::join!(phase_a_stage, stage_b_plan);
         let phase_a_writes = phase_a_writes_result?;
-        timings.stage_a_session_stage_us =
-            stage_a_ms_cell.load(std::sync::atomic::Ordering::Relaxed);
-        timings.stage_a_dir_fragments_total =
-            dir_fragments_total_cell.load(std::sync::atomic::Ordering::Relaxed);
-        timings.stage_a_dir_fragments_written =
-            dir_fragments_written_cell.load(std::sync::atomic::Ordering::Relaxed);
-        timings.stage_a_dir_fragments_skipped = timings
-            .stage_a_dir_fragments_total
-            .saturating_sub(timings.stage_a_dir_fragments_written);
-        timings.stage_a_bitmap_fragments_total =
-            bitmap_fragments_total_cell.load(std::sync::atomic::Ordering::Relaxed);
-        timings.stage_a_bitmap_fragments_written =
-            bitmap_fragments_written_cell.load(std::sync::atomic::Ordering::Relaxed);
-        timings.stage_a_bitmap_fragments_skipped = timings
-            .stage_a_bitmap_fragments_total
-            .saturating_sub(timings.stage_a_bitmap_fragments_written);
         timings.phase_a_write_counts = phase_a_writes.counts.clone();
 
         let (
@@ -1296,73 +1160,8 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
                 trace_bitmap_plan,
             ),
             reads_elapsed_ms,
-            reads_elapsed_us,
         ) = stage_b_plan_result?;
-        let mut read_plan_timings = ReadPlanningTimings::default();
-        read_plan_timings.merge(log_dir_plan.timings);
-        read_plan_timings.merge(log_bitmap_plan.timings);
-        read_plan_timings.merge(tx_dir_plan.timings);
-        read_plan_timings.merge(tx_bitmap_plan.timings);
-        read_plan_timings.merge(trace_dir_plan.timings);
-        read_plan_timings.merge(trace_bitmap_plan.timings);
         timings.reads_ms = reads_elapsed_ms;
-        timings.reads_dir_list_ms = read_plan_timings.dir_list_ms;
-        timings.reads_dir_get_ms = read_plan_timings.dir_get_ms;
-        timings.reads_dir_list_count = read_plan_timings.dir_list_count;
-        timings.reads_dir_get_count = read_plan_timings.dir_get_count;
-        timings.reads_bitmap_open_streams_ms = read_plan_timings.bitmap_open_streams_ms;
-        timings.reads_bitmap_open_streams_us = read_plan_timings.bitmap_open_streams_us;
-        timings.reads_bitmap_open_streams_count = read_plan_timings.bitmap_open_streams_count;
-        timings.reads_bitmap_list_ms = read_plan_timings.bitmap_list_ms;
-        timings.reads_bitmap_get_ms = read_plan_timings.bitmap_get_ms;
-        timings.reads_bitmap_shape_ms = read_plan_timings.bitmap_shape_ms;
-        timings.reads_bitmap_shape_us = read_plan_timings.bitmap_shape_us;
-        timings.reads_bitmap_union_us = read_plan_timings.bitmap_union_us;
-        timings.reads_bitmap_frontier_us = read_plan_timings.bitmap_frontier_us;
-        timings.reads_bitmap_open_write_us = read_plan_timings.bitmap_open_write_us;
-        timings.reads_bitmap_index_ms = read_plan_timings.bitmap_index_ms;
-        timings.reads_bitmap_index_us = read_plan_timings.bitmap_index_us;
-        timings.reads_bitmap_compact_ms = read_plan_timings.bitmap_compact_ms;
-        timings.reads_bitmap_compact_us = read_plan_timings.bitmap_compact_us;
-        timings.reads_bitmap_compact_wall_us = read_plan_timings.bitmap_compact_wall_us;
-        timings.reads_bitmap_list_count = read_plan_timings.bitmap_list_count;
-        timings.reads_bitmap_get_count = read_plan_timings.bitmap_get_count;
-        timings.reads_bitmap_fragment_count = read_plan_timings.bitmap_fragment_count;
-        timings.reads_bitmap_fragment_bytes = read_plan_timings.bitmap_fragment_bytes;
-        timings.reads_bitmap_compact_count = read_plan_timings.bitmap_compact_count;
-        timings.reads_bitmap_frontier_stream_count = read_plan_timings.bitmap_frontier_stream_count;
-        timings.reads_bitmap_union_page_count = read_plan_timings.bitmap_union_page_count;
-        timings.reads_bitmap_union_stream_count = read_plan_timings.bitmap_union_stream_count;
-        timings.reads_bitmap_touched_page_count = read_plan_timings.bitmap_touched_page_count;
-        timings.reads_bitmap_touched_stream_count = read_plan_timings.bitmap_touched_stream_count;
-        timings.reads_bitmap_final_open_stream_count =
-            read_plan_timings.bitmap_final_open_stream_count;
-        timings.reads_dir_index_ms = read_plan_timings.dir_index_ms;
-        timings.reads_dir_index_us = read_plan_timings.dir_index_us;
-        timings.reads_dir_decode_ms = read_plan_timings.dir_decode_ms;
-        timings.reads_dir_decode_us = read_plan_timings.dir_decode_us;
-        timings.reads_dir_fragment_count = read_plan_timings.dir_fragment_count;
-        let accounted_reads_ms = timings
-            .reads_dir_list_ms
-            .saturating_add(timings.reads_dir_get_ms)
-            .saturating_add(timings.reads_dir_index_ms)
-            .saturating_add(timings.reads_dir_decode_ms)
-            .saturating_add(timings.reads_bitmap_open_streams_ms)
-            .saturating_add(timings.reads_bitmap_list_ms)
-            .saturating_add(timings.reads_bitmap_get_ms)
-            .saturating_add(timings.reads_bitmap_shape_ms)
-            .saturating_add(timings.reads_bitmap_index_ms)
-            .saturating_add(timings.reads_bitmap_compact_wall_us / 1_000);
-        timings.reads_unaccounted_ms = timings.reads_ms.saturating_sub(accounted_reads_ms);
-        let accounted_reads_us = timings
-            .reads_dir_index_us
-            .saturating_add(timings.reads_dir_decode_us)
-            .saturating_add(timings.reads_bitmap_open_streams_us)
-            .saturating_add(timings.reads_bitmap_union_us)
-            .saturating_add(timings.reads_bitmap_shape_us)
-            .saturating_add(timings.reads_bitmap_index_us)
-            .saturating_add(timings.reads_bitmap_compact_wall_us);
-        timings.reads_unaccounted_us = reads_elapsed_us.saturating_sub(accounted_reads_us);
 
         let phase_b_has_writes = !log_dir_plan.buckets.is_empty()
             || log_bitmap_plan.has_writes

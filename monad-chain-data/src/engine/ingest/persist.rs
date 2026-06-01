@@ -25,14 +25,6 @@ pub(crate) struct PhaseAFragmentWriteFilter {
     pub open_bitmap_page: u64,
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct PhaseAFragmentStageStats {
-    pub dir_fragments_total: u64,
-    pub dir_fragments_written: u64,
-    pub bitmap_fragments_total: u64,
-    pub bitmap_fragments_written: u64,
-}
-
 impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
     /// Stages one block's family Phase A artifacts via the write session:
     /// per-block blob, primary-directory fragment writes (one per overlapped
@@ -47,9 +39,8 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
         window: FamilyWindowRecord,
         bitmap_fragments: &[BitmapFragmentWrite],
         fragment_filter: PhaseAFragmentWriteFilter,
-    ) -> Result<PhaseAFragmentStageStats> {
+    ) -> Result<()> {
         let first_primary_id = window.first_primary_id.as_u64();
-        let mut stats = PhaseAFragmentStageStats::default();
 
         self.stage_block_blob(w, block_number, block_blob);
         self.dir().stage_block_fragment_filtered(
@@ -57,22 +48,14 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
             block_number,
             first_primary_id,
             window.count,
-            |_| {
-                stats.dir_fragments_total = stats.dir_fragments_total.saturating_add(1);
-                stats.dir_fragments_written = stats.dir_fragments_written.saturating_add(1);
-                true
-            },
+            |_| true,
         );
-        let (bitmap_total, bitmap_written) = self.bitmap().stage_fragments_for_global_page(
+        self.bitmap().stage_fragments_for_global_page(
             w,
             bitmap_fragments,
             block_number,
             fragment_filter.open_bitmap_page,
         )?;
-        stats.bitmap_fragments_total = stats.bitmap_fragments_total.saturating_add(bitmap_total);
-        stats.bitmap_fragments_written = stats
-            .bitmap_fragments_written
-            .saturating_add(bitmap_written);
-        Ok(stats)
+        Ok(())
     }
 }

@@ -13,12 +13,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{collections::BTreeMap, time::Instant};
+use std::collections::BTreeMap;
 
 use bytes::Bytes;
 
 use crate::{
-    engine::ingest::ReadPlanningTimings,
     error::{MonadChainDataError, Result},
     store::{
         blob::BlobStore, CachedKvTable, CachedScannableTable, MetaStore, MetaWriteOp, WriteSession,
@@ -145,42 +144,19 @@ impl<M: MetaStore> PrimaryDirTables<M> {
         &self,
         bucket_start: u64,
     ) -> Result<Vec<PrimaryDirFragment>> {
-        self.load_bucket_fragments_with_timings(bucket_start, None)
-            .await
-    }
-
-    pub(crate) async fn load_bucket_fragments_with_timings(
-        &self,
-        bucket_start: u64,
-        mut timings: Option<&mut ReadPlanningTimings>,
-    ) -> Result<Vec<PrimaryDirFragment>> {
         let partition = u64_key(bucket_start);
-        let list_start = Instant::now();
         let page = self
             .fragments
             .list_prefix(&partition, &[], None, usize::MAX)
             .await?;
-        if let Some(t) = timings.as_deref_mut() {
-            t.dir_list_ms = t
-                .dir_list_ms
-                .saturating_add(list_start.elapsed().as_millis() as u64);
-            t.dir_list_count = t.dir_list_count.saturating_add(1);
-        }
         let mut fragments = Vec::with_capacity(page.keys.len());
 
         for clustering in page.keys {
-            let get_start = Instant::now();
             let bytes = self.fragments.get(&partition, &clustering).await?.ok_or(
                 crate::error::MonadChainDataError::MissingData(
                     "missing primary directory fragment",
                 ),
             )?;
-            if let Some(t) = timings.as_deref_mut() {
-                t.dir_get_ms = t
-                    .dir_get_ms
-                    .saturating_add(get_start.elapsed().as_millis() as u64);
-                t.dir_get_count = t.dir_get_count.saturating_add(1);
-            }
             fragments.push(PrimaryDirFragment::decode(&bytes)?);
         }
 

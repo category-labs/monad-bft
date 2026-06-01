@@ -13,16 +13,12 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    time::Instant,
-};
+use std::collections::{BTreeMap, BTreeSet};
 
 use bytes::Bytes;
 use roaring::RoaringBitmap;
 
 use crate::{
-    engine::ingest::ReadPlanningTimings,
     error::{MonadChainDataError, Result},
     primitives::state::PrimaryId,
     store::{
@@ -148,49 +144,26 @@ impl<M: MetaStore> BitmapTables<M> {
     }
 
     /// Loads all retained fragments for one stream page.
+    ///
+    /// Keeps scan-keys + point gets explicit: point-table caches often make
+    /// this faster than value-bearing scans, and the store API can stay simple
+    /// until a backend proves it needs batched value reads.
     pub async fn load_fragments(
         &self,
         stream_id: &str,
         page_start_local: u32,
     ) -> Result<Vec<Bytes>> {
-        self.load_fragments_with_timings(stream_id, page_start_local, None)
-            .await
-    }
-
-    pub(crate) async fn load_fragments_with_timings(
-        &self,
-        stream_id: &str,
-        page_start_local: u32,
-        mut timings: Option<&mut ReadPlanningTimings>,
-    ) -> Result<Vec<Bytes>> {
         let partition = stream_page_key(stream_id, page_start_local);
-        // Keep scan-keys + point gets explicit: point-table caches often make
-        // this faster than value-bearing scans, and the store API can stay
-        // simple until a backend proves it needs batched value reads.
-        let list_start = Instant::now();
         let page = self
             .fragments
             .list_prefix(&partition, &[], None, usize::MAX)
             .await?;
-        if let Some(t) = timings.as_deref_mut() {
-            t.bitmap_list_ms = t
-                .bitmap_list_ms
-                .saturating_add(list_start.elapsed().as_millis() as u64);
-            t.bitmap_list_count = t.bitmap_list_count.saturating_add(1);
-        }
         let mut fragments = Vec::with_capacity(page.keys.len());
 
         for clustering in page.keys {
-            let get_start = Instant::now();
             let bytes = self.fragments.get(&partition, &clustering).await?.ok_or(
                 MonadChainDataError::MissingData("missing log bitmap fragment"),
             )?;
-            if let Some(t) = timings.as_deref_mut() {
-                t.bitmap_get_ms = t
-                    .bitmap_get_ms
-                    .saturating_add(get_start.elapsed().as_millis() as u64);
-                t.bitmap_get_count = t.bitmap_get_count.saturating_add(1);
-            }
             fragments.push(bytes);
         }
 
@@ -297,27 +270,11 @@ impl<M: MetaStore> BitmapTables<M> {
 
     /// Loads the open stream inventory for one frontier page.
     pub async fn load_open_streams(&self, global_page_start: u64) -> Result<Vec<String>> {
-        self.load_open_streams_with_timings(global_page_start, None)
-            .await
-    }
-
-    pub(crate) async fn load_open_streams_with_timings(
-        &self,
-        global_page_start: u64,
-        mut timings: Option<&mut ReadPlanningTimings>,
-    ) -> Result<Vec<String>> {
         let partition = global_page_start.to_be_bytes();
-        let list_start = Instant::now();
         let page = self
             .open_streams
             .list_prefix(&partition, &[], None, usize::MAX)
             .await?;
-        if let Some(t) = timings.as_deref_mut() {
-            t.bitmap_open_streams_ms = t
-                .bitmap_open_streams_ms
-                .saturating_add(list_start.elapsed().as_millis() as u64);
-            t.bitmap_open_streams_count = t.bitmap_open_streams_count.saturating_add(1);
-        }
         let mut streams = Vec::with_capacity(page.keys.len());
 
         for key in page.keys {
