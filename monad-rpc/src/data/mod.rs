@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     sync::Arc,
 };
 
@@ -1207,6 +1207,7 @@ async fn get_receipts_stream_using_index<'a>(
              }| {
                 (
                     header_subset.block_number,
+                    header_subset.tx_index,
                     parse_receipt_envelope(
                         header_subset.block_hash,
                         header_subset.block_number,
@@ -1221,41 +1222,43 @@ async fn get_receipts_stream_using_index<'a>(
 
     Ok(async_stream::stream! {
         let mut block_number = None;
-        let mut block_receipts = Vec::new();
+        let mut block_receipts = BTreeMap::<u64, ReceiptEnvelope<Log>>::default();
 
         while let Some(result) = stream.next().await {
-            match result {
+            let (receipt_block_number, receipt_tx_index, receipt) = match result {
+                Ok(value) => value,
                 Err(err) => {
                     yield Err(err);
 
                     block_number = None;
                     break;
                 }
-                Ok((next_block_number, receipt)) => match block_number {
-                    None => {
-                        block_number = Some(next_block_number);
-                        block_receipts.push(receipt);
-                    }
-                    Some(current_block_number) if current_block_number == next_block_number => {
-                        block_receipts.push(receipt);
-                    }
-                    Some(current_block_number) => {
-                        assert!(current_block_number < next_block_number);
-                        assert!(!block_receipts.is_empty());
+            };
 
-                        yield Ok((current_block_number, std::mem::take(&mut block_receipts)));
+            if let Some(block_number) = block_number {
+                assert!(block_number <= receipt_block_number);
+                assert!(!block_receipts.is_empty());
 
-                        block_number = Some(next_block_number);
-                        block_receipts.push(receipt);
-                    }
+                if block_number != receipt_block_number {
+                    yield Ok((
+                        block_number,
+                        std::mem::take(&mut block_receipts)
+                            .into_values()
+                            .collect::<Vec<_>>()
+                    ));
                 }
             }
+
+            block_number = Some(receipt_block_number);
+
+            let existing_receipt = block_receipts.insert(receipt_tx_index, receipt);
+            assert!(existing_receipt.is_none());
         }
 
         if let Some(block_number) = block_number {
             assert!(!block_receipts.is_empty());
 
-            yield Ok((block_number, block_receipts));
+            yield Ok((block_number, block_receipts.into_values().collect::<Vec<_>>()));
         }
     })
 }
