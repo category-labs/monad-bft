@@ -210,19 +210,6 @@ impl<M: MetaStore> BitmapTables<M> {
             .map(Some)
     }
 
-    pub async fn store_page_artifact(
-        &self,
-        stream_id: &str,
-        page_start_local: u32,
-        artifact: &BitmapPageArtifact,
-    ) -> Result<()> {
-        let key = stream_page_key(stream_id, page_start_local);
-        self.page_blobs
-            .put(&key, encode_bitmap_page_artifact(artifact))
-            .await?;
-        Ok(())
-    }
-
     pub fn stage_page_artifact<B: BlobStore>(
         &self,
         w: &mut WriteSession<'_, M, B>,
@@ -246,17 +233,6 @@ impl<M: MetaStore> BitmapTables<M> {
             return Ok(None);
         };
         Ok(Some(BitmapPageCounts::decode(&bytes)?))
-    }
-
-    pub async fn store_page_counts(
-        &self,
-        stream_id: &str,
-        counts: &BitmapPageCounts,
-    ) -> Result<()> {
-        self.page_counts
-            .put(stream_id.as_bytes(), counts.encode())
-            .await?;
-        Ok(())
     }
 
     pub fn stage_page_counts<B: BlobStore>(

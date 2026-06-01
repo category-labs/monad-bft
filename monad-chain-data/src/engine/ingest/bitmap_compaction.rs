@@ -668,8 +668,7 @@ mod tests {
             (page_span - 2, page_span - 1),
             (page_span - 1, page_span + 1),
         ];
-        let (from, next, grouped) =
-            batch_bitmap_shape(&inputs, &ranges).expect("advancing shape");
+        let (from, next, grouped) = batch_bitmap_shape(&inputs, &ranges).expect("advancing shape");
 
         assert_eq!(from, page_span - 2);
         assert_eq!(next, page_span + 1);
@@ -779,18 +778,15 @@ mod tests {
         let s_b = sharded_stream_id("addr", &[0xBB], 0);
 
         // s_a: page 0 (count 3) and page 2 (count 5). s_b: page 1 (count 7).
-        family
-            .store_bitmap_page_artifact(&s_a, 0, &artifact(3))
-            .await
-            .unwrap();
-        family
-            .store_bitmap_page_artifact(&s_a, 2 * page_span, &artifact(5))
-            .await
-            .unwrap();
-        family
-            .store_bitmap_page_artifact(&s_b, page_span, &artifact(7))
-            .await
-            .unwrap();
+        tables
+            .seed_bitmap_page_artifact(Family::Log, &s_a, 0, &artifact(3))
+            .await;
+        tables
+            .seed_bitmap_page_artifact(Family::Log, &s_a, 2 * page_span, &artifact(5))
+            .await;
+        tables
+            .seed_bitmap_page_artifact(Family::Log, &s_b, page_span, &artifact(7))
+            .await;
         family
             .record_open_bitmap_streams(0, &BTreeSet::from([s_a.clone()]))
             .await

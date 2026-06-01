@@ -265,17 +265,16 @@ mod tests {
         // Bucket 0 is sealed: its summary is the only directory artifact. No
         // fragments are written, so a routing bug that scanned would resolve to
         // `None`/error instead of finding the id.
-        family
-            .dir()
-            .put_bucket(
+        tables
+            .seed_dir_bucket(
+                Family::Log,
                 0,
                 &PrimaryDirBucket {
                     start_block: 7,
                     first_primary_ids: vec![0, 3, 8],
                 },
             )
-            .await
-            .expect("seed sealed summary");
+            .await;
 
         // sealed_below = DIRECTORY_BUCKET_SIZE => bucket 0 is sealed.
         let resolver = PrimaryIdResolver::new(family, DIRECTORY_BUCKET_SIZE);
@@ -299,11 +298,7 @@ mod tests {
         // routing implementation must NOT fall back to these fragments for a
         // bucket it classified as sealed; it must surface the broken commit
         // contract loudly. (If it scanned, id 5 would resolve cleanly.)
-        family
-            .dir()
-            .persist_block_fragment(7, 0, 8)
-            .await
-            .expect("seed fragments");
+        tables.seed_dir_fragment(Family::Log, 7, 0, 8).await;
 
         let resolver = PrimaryIdResolver::new(family, DIRECTORY_BUCKET_SIZE);
         let error = resolver
@@ -325,11 +320,7 @@ mod tests {
 
         // The frontier sits inside bucket 0, so bucket 0 is the single open
         // bucket and resolves from fragments — no summary is written.
-        family
-            .dir()
-            .persist_block_fragment(7, 0, 8)
-            .await
-            .expect("seed fragments");
+        tables.seed_dir_fragment(Family::Log, 7, 0, 8).await;
 
         // sealed_below = 0 => no bucket is sealed; everything routes to scan.
         let resolver = PrimaryIdResolver::new(family, 0);

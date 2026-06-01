@@ -23,6 +23,8 @@
 use std::sync::{atomic::Ordering, Arc};
 
 use bytes::Bytes as RawBytes;
+mod common;
+
 use monad_chain_data::{
     engine::{
         bitmap::{
@@ -217,31 +219,47 @@ async fn sealed_shard_skips_zero_count_pages_without_fetching() {
     let s_b = sharded_stream_id("addr", addr_b.as_slice(), sealed_shard);
 
     // Page artifacts (a single bit each is enough for the count manifest).
-    family
-        .store_bitmap_page_artifact(&s_a, page_start(0), &page_artifact(&[page_start(0) + 1]))
-        .await
-        .unwrap();
-    family
-        .store_bitmap_page_artifact(&s_a, page_start(2), &page_artifact(&[page_start(2) + 1]))
-        .await
-        .unwrap();
-    family
-        .store_bitmap_page_artifact(&s_b, page_start(1), &page_artifact(&[page_start(1) + 1]))
-        .await
-        .unwrap();
+    let t = service.tables();
+    common::seed_bitmap_page_artifact(
+        t,
+        Family::Log,
+        &s_a,
+        page_start(0),
+        &page_artifact(&[page_start(0) + 1]),
+    )
+    .await;
+    common::seed_bitmap_page_artifact(
+        t,
+        Family::Log,
+        &s_a,
+        page_start(2),
+        &page_artifact(&[page_start(2) + 1]),
+    )
+    .await;
+    common::seed_bitmap_page_artifact(
+        t,
+        Family::Log,
+        &s_b,
+        page_start(1),
+        &page_artifact(&[page_start(1) + 1]),
+    )
+    .await;
 
     // Manifests: addr_a -> pages 0,2; addr_b -> page 1.
-    family
-        .store_bitmap_page_counts(
-            &s_a,
-            &BitmapPageCounts::from_pairs([(page_start(0), 1), (page_start(2), 1)]),
-        )
-        .await
-        .unwrap();
-    family
-        .store_bitmap_page_counts(&s_b, &BitmapPageCounts::from_pairs([(page_start(1), 1)]))
-        .await
-        .unwrap();
+    common::seed_bitmap_page_counts(
+        t,
+        Family::Log,
+        &s_a,
+        &BitmapPageCounts::from_pairs([(page_start(0), 1), (page_start(2), 1)]),
+    )
+    .await;
+    common::seed_bitmap_page_counts(
+        t,
+        Family::Log,
+        &s_b,
+        &BitmapPageCounts::from_pairs([(page_start(1), 1)]),
+    )
+    .await;
 
     let page_blob_table = Family::Log.table_ids().bitmap_page_blob;
     let clauses = vec![addr_clause(addr_a), addr_clause(addr_b)];
@@ -296,31 +314,47 @@ async fn frontier_shard_never_skips_a_non_empty_page() {
     let s_a = sharded_stream_id("addr", addr_a.as_slice(), shard);
     let s_b = sharded_stream_id("addr", addr_b.as_slice(), shard);
 
-    family
-        .store_bitmap_page_artifact(&s_a, page_start(0), &page_artifact(&[page_start(0) + 1]))
-        .await
-        .unwrap();
-    family
-        .store_bitmap_page_artifact(&s_a, page_start(2), &page_artifact(&[page_start(2) + 1]))
-        .await
-        .unwrap();
-    family
-        .store_bitmap_page_artifact(&s_b, page_start(1), &page_artifact(&[page_start(1) + 1]))
-        .await
-        .unwrap();
+    let t = service.tables();
+    common::seed_bitmap_page_artifact(
+        t,
+        Family::Log,
+        &s_a,
+        page_start(0),
+        &page_artifact(&[page_start(0) + 1]),
+    )
+    .await;
+    common::seed_bitmap_page_artifact(
+        t,
+        Family::Log,
+        &s_a,
+        page_start(2),
+        &page_artifact(&[page_start(2) + 1]),
+    )
+    .await;
+    common::seed_bitmap_page_artifact(
+        t,
+        Family::Log,
+        &s_b,
+        page_start(1),
+        &page_artifact(&[page_start(1) + 1]),
+    )
+    .await;
     // Even if (incorrectly) a manifest existed for the open shard, it must not
     // drive a skip. Seed one to prove the never-skip guard holds.
-    family
-        .store_bitmap_page_counts(
-            &s_a,
-            &BitmapPageCounts::from_pairs([(page_start(0), 1), (page_start(2), 1)]),
-        )
-        .await
-        .unwrap();
-    family
-        .store_bitmap_page_counts(&s_b, &BitmapPageCounts::from_pairs([(page_start(1), 1)]))
-        .await
-        .unwrap();
+    common::seed_bitmap_page_counts(
+        t,
+        Family::Log,
+        &s_a,
+        &BitmapPageCounts::from_pairs([(page_start(0), 1), (page_start(2), 1)]),
+    )
+    .await;
+    common::seed_bitmap_page_counts(
+        t,
+        Family::Log,
+        &s_b,
+        &BitmapPageCounts::from_pairs([(page_start(1), 1)]),
+    )
+    .await;
 
     let page_blob_table = Family::Log.table_ids().bitmap_page_blob;
     let clauses = vec![addr_clause(addr_a), addr_clause(addr_b)];
@@ -373,28 +407,37 @@ async fn sealed_shard_orders_fetches_by_ascending_count() {
 
     let shared_id = page_start(0) + 5;
     let dense_ids: Vec<u32> = (0..1000u32).map(|i| page_start(0) + i).collect();
-    family
-        .store_bitmap_page_artifact(&s_sparse, page_start(0), &page_artifact(&[shared_id]))
-        .await
-        .unwrap();
-    family
-        .store_bitmap_page_artifact(&s_dense, page_start(0), &page_artifact(&dense_ids))
-        .await
-        .unwrap();
-    family
-        .store_bitmap_page_counts(
-            &s_sparse,
-            &BitmapPageCounts::from_pairs([(page_start(0), 1)]),
-        )
-        .await
-        .unwrap();
-    family
-        .store_bitmap_page_counts(
-            &s_dense,
-            &BitmapPageCounts::from_pairs([(page_start(0), dense_ids.len() as u32)]),
-        )
-        .await
-        .unwrap();
+    let t = service.tables();
+    common::seed_bitmap_page_artifact(
+        t,
+        Family::Log,
+        &s_sparse,
+        page_start(0),
+        &page_artifact(&[shared_id]),
+    )
+    .await;
+    common::seed_bitmap_page_artifact(
+        t,
+        Family::Log,
+        &s_dense,
+        page_start(0),
+        &page_artifact(&dense_ids),
+    )
+    .await;
+    common::seed_bitmap_page_counts(
+        t,
+        Family::Log,
+        &s_sparse,
+        &BitmapPageCounts::from_pairs([(page_start(0), 1)]),
+    )
+    .await;
+    common::seed_bitmap_page_counts(
+        t,
+        Family::Log,
+        &s_dense,
+        &BitmapPageCounts::from_pairs([(page_start(0), dense_ids.len() as u32)]),
+    )
+    .await;
 
     // Forward order [dense, sparse]: the manifest reorders to fetch sparse
     // first (count 1), so both pages are fetched but the order is selectivity

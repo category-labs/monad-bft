@@ -154,3 +154,56 @@ pub fn nested_call(
         true,
     )
 }
+
+/// Test seed: durably write one compacted bitmap page artifact via the staged
+/// write path (the production write path), for tests that need pre-existing
+/// page artifacts.
+pub async fn seed_bitmap_page_artifact<M, B>(
+    tables: &monad_chain_data::engine::tables::Tables<M, B>,
+    family: monad_chain_data::engine::family::Family,
+    stream_id: &str,
+    page_start_local: u32,
+    artifact: &monad_chain_data::engine::bitmap::BitmapPageArtifact,
+) where
+    M: monad_chain_data::store::MetaStore,
+    B: monad_chain_data::store::BlobStore,
+{
+    tables
+        .with_writes(|w| {
+            Box::pin(async move {
+                tables.family(family).bitmap().stage_page_artifact(
+                    w,
+                    stream_id,
+                    page_start_local,
+                    artifact,
+                );
+                Ok(())
+            })
+        })
+        .await
+        .expect("seed bitmap page artifact");
+}
+
+/// Test seed: durably write one sealed-shard page-count manifest.
+pub async fn seed_bitmap_page_counts<M, B>(
+    tables: &monad_chain_data::engine::tables::Tables<M, B>,
+    family: monad_chain_data::engine::family::Family,
+    stream_id: &str,
+    counts: &monad_chain_data::engine::bitmap::BitmapPageCounts,
+) where
+    M: monad_chain_data::store::MetaStore,
+    B: monad_chain_data::store::BlobStore,
+{
+    tables
+        .with_writes(|w| {
+            Box::pin(async move {
+                tables
+                    .family(family)
+                    .bitmap()
+                    .stage_page_counts(w, stream_id, counts);
+                Ok(())
+            })
+        })
+        .await
+        .expect("seed bitmap page counts");
+}

@@ -679,6 +679,75 @@ fn block_number_key(block_number: u64) -> [u8; 8] {
     block_number.to_be_bytes()
 }
 
+#[cfg(test)]
+impl<M: MetaStore, B: BlobStore> Tables<M, B> {
+    /// Test seed: durably write one compacted bitmap page artifact through the
+    /// staged write path (the sole production write path).
+    pub(crate) async fn seed_bitmap_page_artifact(
+        &self,
+        family: Family,
+        stream_id: &str,
+        page_start_local: u32,
+        artifact: &BitmapPageArtifact,
+    ) {
+        self.with_writes(|w| {
+            Box::pin(async move {
+                self.family(family).bitmap().stage_page_artifact(
+                    w,
+                    stream_id,
+                    page_start_local,
+                    artifact,
+                );
+                Ok(())
+            })
+        })
+        .await
+        .expect("seed bitmap page artifact");
+    }
+
+    /// Test seed: durably write one sealed 10k directory bucket summary.
+    pub(crate) async fn seed_dir_bucket(
+        &self,
+        family: Family,
+        bucket_start: u64,
+        bucket: &PrimaryDirBucket,
+    ) {
+        self.with_writes(|w| {
+            Box::pin(async move {
+                self.family(family)
+                    .dir()
+                    .stage_bucket(w, bucket_start, bucket);
+                Ok(())
+            })
+        })
+        .await
+        .expect("seed dir bucket");
+    }
+
+    /// Test seed: durably write one block's primary-directory fragments.
+    pub(crate) async fn seed_dir_fragment(
+        &self,
+        family: Family,
+        block_number: u64,
+        first_primary_id: u64,
+        count: u32,
+    ) {
+        self.with_writes(|w| {
+            Box::pin(async move {
+                self.family(family).dir().stage_block_fragment(
+                    w,
+                    block_number,
+                    first_primary_id,
+                    count,
+                );
+                Ok(())
+            })
+        })
+        .await
+        .expect("seed dir fragment");
+    }
+}
+
 pub struct PublicationTables<M: MetaStoreCas> {
     meta_store: M,
 }
@@ -1097,31 +1166,12 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
             .await
     }
 
-    pub async fn store_bitmap_page_artifact(
-        &self,
-        stream_id: &str,
-        page_start_local: u32,
-        artifact: &BitmapPageArtifact,
-    ) -> Result<()> {
-        self.bitmap
-            .store_page_artifact(stream_id, page_start_local, artifact)
-            .await
-    }
-
     /// Loads the sealed-shard page-count manifest for one stream.
     pub async fn load_bitmap_page_counts(
         &self,
         stream_id: &str,
     ) -> Result<Option<crate::engine::bitmap::BitmapPageCounts>> {
         self.bitmap.load_page_counts(stream_id).await
-    }
-
-    pub async fn store_bitmap_page_counts(
-        &self,
-        stream_id: &str,
-        counts: &crate::engine::bitmap::BitmapPageCounts,
-    ) -> Result<()> {
-        self.bitmap.store_page_counts(stream_id, counts).await
     }
 
     /// Loads the open stream inventory for one frontier page.

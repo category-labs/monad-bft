@@ -105,30 +105,6 @@ impl<M: MetaStore> PrimaryDirTables<M> {
         &self.buckets
     }
 
-    /// Writes a directory fragment for the given block into every 10k bucket
-    /// its log-ID window overlaps. A single block can span multiple buckets
-    /// when its ID range crosses a 10k boundary, so the same fragment is stored
-    /// in each one to allow readers to locate it from any covered bucket.
-    pub async fn persist_block_fragment(
-        &self,
-        block_number: u64,
-        first_primary_id: u64,
-        count: u32,
-    ) -> Result<()> {
-        let fragment = PrimaryDirFragment {
-            block_number,
-            first_primary_id,
-            end_primary_id_exclusive: first_primary_id.saturating_add(u64::from(count)),
-        };
-
-        for bucket_start in fragment_bucket_starts(first_primary_id, count) {
-            self.put_fragment(bucket_start, block_number, &fragment)
-                .await?;
-        }
-
-        Ok(())
-    }
-
     /// Loads the compacted summary for one sealed 10k bucket.
     pub async fn load_bucket(&self, bucket_start: u64) -> Result<Option<PrimaryDirBucket>> {
         let key = u64_key(bucket_start);
@@ -186,12 +162,6 @@ impl<M: MetaStore> PrimaryDirTables<M> {
             }
         }
         Ok(out)
-    }
-
-    pub async fn put_bucket(&self, bucket_start: u64, bucket: &PrimaryDirBucket) -> Result<()> {
-        let key = u64_key(bucket_start);
-        self.buckets.put(&key, Bytes::from(bucket.encode())).await?;
-        Ok(())
     }
 
     pub fn stage_bucket<B: BlobStore>(
@@ -261,20 +231,6 @@ impl<M: MetaStore> PrimaryDirTables<M> {
             });
         }
         w.extend_meta_uncached(ops);
-    }
-
-    async fn put_fragment(
-        &self,
-        bucket_start: u64,
-        block_number: u64,
-        fragment: &PrimaryDirFragment,
-    ) -> Result<()> {
-        let partition = u64_key(bucket_start);
-        let clustering = u64_key(block_number);
-        self.fragments
-            .put(&partition, &clustering, Bytes::from(fragment.encode()))
-            .await?;
-        Ok(())
     }
 }
 
