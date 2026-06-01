@@ -14,7 +14,6 @@ alloy-eips = { workspace = true }
 alloy-primitives = { workspace = true, features = ["rlp"] }
 alloy-rlp = { workspace = true, features = ["derive"] }
 alloy-rpc-types-eth = { workspace = true, optional = true }
-auto_impl = { workspace = true }
 blake3 = { workspace = true }
 aws-config = { workspace = true, optional = true }
 aws-sdk-dynamodb = { workspace = true, optional = true }
@@ -25,7 +24,6 @@ eyre = { workspace = true, optional = true }
 fjall = { workspace = true, optional = true }
 futures = { workspace = true }
 futures-timer = "3.0.3"
-itertools = { workspace = true }
 libc = { workspace = true, optional = true }
 lru = { workspace = true }
 monad-archive = { workspace = true, optional = true }

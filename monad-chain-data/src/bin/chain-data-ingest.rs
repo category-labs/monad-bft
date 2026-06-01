@@ -32,7 +32,7 @@ use std::{
 
 use alloy_eips::eip2718::Encodable2718;
 use alloy_primitives::Bytes;
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use eyre::{bail, eyre, Context, Result};
 use futures::{stream, StreamExt};
 use monad_archive::{
