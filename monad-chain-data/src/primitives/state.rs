@@ -80,141 +80,52 @@ impl PrimaryId {
     }
 }
 
-/// `PrimaryId` scoped to the log family. Kept as a distinct type so log-domain
-/// signatures don't accept primary ids from other families by mistake.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, RlpEncodable, RlpDecodable)]
-pub struct LogId(PrimaryId);
+/// Defines a `PrimaryId` newtype scoped to one record family, so a family's
+/// signatures can't accidentally accept ids minted for another family. Each
+/// variant shares `PrimaryId`'s representation and forwards to the inner id.
+macro_rules! family_id {
+    ($name:ident, $family:literal) => {
+        #[doc = concat!("`PrimaryId` scoped to the ", $family, " family. Kept as a distinct")]
+        #[doc = "type so that family's signatures don't accept primary ids from other"]
+        #[doc = "families by mistake."]
+        #[derive(
+            Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, RlpEncodable, RlpDecodable,
+        )]
+        pub struct $name(PrimaryId);
 
-impl LogId {
-    pub const ZERO: Self = Self(PrimaryId::ZERO);
+        impl $name {
+            pub const ZERO: Self = Self(PrimaryId::ZERO);
 
-    pub const fn new(value: u64) -> Self {
-        Self(PrimaryId::new(value))
-    }
+            pub fn checked_add(self, rhs: u64) -> Result<Self> {
+                self.0.checked_add(rhs).map(Self)
+            }
 
-    pub const fn as_u64(self) -> u64 {
-        self.0.as_u64()
-    }
+            pub const fn shard(self) -> u64 {
+                self.0.shard()
+            }
 
-    pub fn checked_add(self, rhs: u64) -> Result<Self> {
-        self.0.checked_add(rhs).map(Self)
-    }
+            pub const fn local(self) -> u32 {
+                self.0.local()
+            }
+        }
 
-    pub const fn shard(self) -> u64 {
-        self.0.shard()
-    }
+        impl From<PrimaryId> for $name {
+            fn from(id: PrimaryId) -> Self {
+                Self(id)
+            }
+        }
 
-    pub const fn local(self) -> u32 {
-        self.0.local()
-    }
-
-    pub fn from_parts(shard: u64, local: u32) -> Result<Self> {
-        PrimaryId::from_parts(shard, local).map(Self)
-    }
+        impl From<$name> for PrimaryId {
+            fn from(id: $name) -> Self {
+                id.0
+            }
+        }
+    };
 }
 
-impl From<PrimaryId> for LogId {
-    fn from(id: PrimaryId) -> Self {
-        Self(id)
-    }
-}
-
-impl From<LogId> for PrimaryId {
-    fn from(id: LogId) -> Self {
-        id.0
-    }
-}
-
-/// `PrimaryId` scoped to the tx family. Kept as a distinct type so tx-domain
-/// signatures don't accept primary ids from other families by mistake.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, RlpEncodable, RlpDecodable)]
-pub struct TxId(PrimaryId);
-
-impl TxId {
-    pub const ZERO: Self = Self(PrimaryId::ZERO);
-
-    pub const fn new(value: u64) -> Self {
-        Self(PrimaryId::new(value))
-    }
-
-    pub const fn as_u64(self) -> u64 {
-        self.0.as_u64()
-    }
-
-    pub fn checked_add(self, rhs: u64) -> Result<Self> {
-        self.0.checked_add(rhs).map(Self)
-    }
-
-    pub const fn shard(self) -> u64 {
-        self.0.shard()
-    }
-
-    pub const fn local(self) -> u32 {
-        self.0.local()
-    }
-
-    pub fn from_parts(shard: u64, local: u32) -> Result<Self> {
-        PrimaryId::from_parts(shard, local).map(Self)
-    }
-}
-
-impl From<PrimaryId> for TxId {
-    fn from(id: PrimaryId) -> Self {
-        Self(id)
-    }
-}
-
-impl From<TxId> for PrimaryId {
-    fn from(id: TxId) -> Self {
-        id.0
-    }
-}
-
-/// `PrimaryId` scoped to the trace family. Kept as a distinct type so
-/// trace-domain signatures don't accept primary ids from other families
-/// by mistake.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, RlpEncodable, RlpDecodable)]
-pub struct TraceId(PrimaryId);
-
-impl TraceId {
-    pub const ZERO: Self = Self(PrimaryId::ZERO);
-
-    pub const fn new(value: u64) -> Self {
-        Self(PrimaryId::new(value))
-    }
-
-    pub const fn as_u64(self) -> u64 {
-        self.0.as_u64()
-    }
-
-    pub fn checked_add(self, rhs: u64) -> Result<Self> {
-        self.0.checked_add(rhs).map(Self)
-    }
-
-    pub const fn shard(self) -> u64 {
-        self.0.shard()
-    }
-
-    pub const fn local(self) -> u32 {
-        self.0.local()
-    }
-
-    pub fn from_parts(shard: u64, local: u32) -> Result<Self> {
-        PrimaryId::from_parts(shard, local).map(Self)
-    }
-}
-
-impl From<PrimaryId> for TraceId {
-    fn from(id: PrimaryId) -> Self {
-        Self(id)
-    }
-}
-
-impl From<TraceId> for PrimaryId {
-    fn from(id: TraceId) -> Self {
-        id.0
-    }
-}
+family_id!(LogId, "log");
+family_id!(TxId, "tx");
+family_id!(TraceId, "trace");
 
 #[cfg(test)]
 mod tests {
