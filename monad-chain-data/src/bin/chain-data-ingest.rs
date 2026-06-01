@@ -48,7 +48,7 @@ use monad_archive::{
 };
 use monad_chain_data::{
     compute_trace_addresses,
-    store::{CacheConfig, FjallStore, FjallTuning},
+    store::{CacheConfig, FjallStore, FjallTuning, MetaStoreCas},
     CallKind, FinalizedBlock, IngestPlan, IngestTrace, IngestTx, IoRetryPolicy,
     MonadChainDataService, QueryLimits,
 };
@@ -62,16 +62,22 @@ use tracing::{debug, info, warn, Level};
     about = "Stream blocks + receipts from a monad-archive source into a local chain-data store"
 )]
 struct Cli {
-    /// fjall data directory for both meta and blob stores. Use
-    /// `--meta-data-dir` and `--blob-data-dir` to place them in separate DBs.
+    /// fjall data directory shared by the meta and blob stores. Requires both
+    /// `--meta-backend fjall` and `--blob-backend fjall`. Use `--meta-data-dir`
+    /// and `--blob-data-dir` to place them in separate DBs, or for mixed
+    /// fjall/remote setups.
     #[arg(long, conflicts_with_all = ["meta_data_dir", "blob_data_dir"])]
     data_dir: Option<PathBuf>,
 
-    /// fjall data directory for metadata tables. Created on first run.
+    /// fjall data directory for metadata tables. Created on first run. Required
+    /// when `--meta-backend fjall` (and `--data-dir` is not given); rejected
+    /// otherwise.
     #[arg(long)]
     meta_data_dir: Option<PathBuf>,
 
-    /// fjall data directory for blob tables. Created on first run.
+    /// fjall data directory for blob tables. Created on first run. Required when
+    /// `--blob-backend fjall` (and `--data-dir` is not given); rejected
+    /// otherwise.
     #[arg(long)]
     blob_data_dir: Option<PathBuf>,
 
@@ -245,10 +251,19 @@ struct Cli {
     #[arg(long, default_value_t = 16)]
     renew_threshold_blocks: u64,
 
-    /// Backend for the blob store (block bodies, receipts, bitmap artifacts).
+    /// Backend for the metadata store (primary directory, bitmap index,
+    /// dictionaries, block records, and the publication-head CAS row).
+    /// `fjall` keeps metadata in the local embedded LSM; `dynamo` stores it in a
+    /// DynamoDB-API-compatible store (AWS DynamoDB or ScyllaDB Alternator).
+    /// `dynamo` requires the binary to be built with `--features dynamo`.
+    #[arg(long, value_enum, default_value_t = MetaBackendArg::Fjall)]
+    meta_backend: MetaBackendArg,
+
+    /// Backend for the blob store (compressed row payloads for each family).
     /// `fjall` keeps blobs in the local embedded LSM; `s3` stores them in an
-    /// S3-API-compatible object store. The metadata store is always fjall.
-    /// `s3` requires the binary to be built with `--features s3`.
+    /// S3-API-compatible object store. `s3` requires the binary to be built with
+    /// `--features s3`. Combine `--meta-backend dynamo --blob-backend s3` for a
+    /// fully remote deployment with no local fjall DB.
     #[arg(long, value_enum, default_value_t = BlobBackendArg::Fjall)]
     blob_backend: BlobBackendArg,
 
@@ -295,6 +310,64 @@ struct Cli {
     #[cfg(feature = "s3")]
     #[arg(long)]
     s3_secret_access_key: Option<String>,
+
+    /// DynamoDB/Alternator table holding every metadata row (kv, scannable
+    /// index/directory, and the publication-head CAS row share one table via a
+    /// fixed binary `pk`/`sk` schema). Required when `--meta-backend dynamo`.
+    #[cfg(feature = "dynamo")]
+    #[arg(long)]
+    dynamo_table: Option<String>,
+
+    /// Override the DynamoDB endpoint URL for a compatible service: DynamoDB
+    /// Local or ScyllaDB Alternator (point this at the Alternator port). Leave
+    /// unset to target real AWS DynamoDB.
+    #[cfg(feature = "dynamo")]
+    #[arg(long)]
+    dynamo_endpoint_url: Option<String>,
+
+    /// AWS region for the DynamoDB table. Defaults to the ambient AWS region
+    /// chain when unset. Alternator accepts any value (commonly `us-east-1`).
+    #[cfg(feature = "dynamo")]
+    #[arg(long)]
+    dynamo_region: Option<String>,
+
+    /// Max in-flight BatchWriteItem calls per metadata write batch.
+    #[cfg(feature = "dynamo")]
+    #[arg(long, default_value_t = 16)]
+    dynamo_max_concurrency: usize,
+
+    /// Create the DynamoDB/Alternator table if it does not already exist before
+    /// ingesting. Convenience for dev/test; production tables are usually
+    /// provisioned out of band.
+    #[cfg(feature = "dynamo")]
+    #[arg(long)]
+    dynamo_create_table: bool,
+
+    /// Static DynamoDB access key id. Must be paired with
+    /// --dynamo-secret-access-key. Leave both unset to use the ambient AWS
+    /// credential chain. DynamoDB Local / Alternator accept any non-empty pair.
+    #[cfg(feature = "dynamo")]
+    #[arg(long)]
+    dynamo_access_key_id: Option<String>,
+
+    /// Static DynamoDB secret access key. Must be paired with
+    /// --dynamo-access-key-id.
+    #[cfg(feature = "dynamo")]
+    #[arg(long)]
+    dynamo_secret_access_key: Option<String>,
+
+    /// Optional DynamoDB session token, used alongside the static credential
+    /// pair above.
+    #[cfg(feature = "dynamo")]
+    #[arg(long)]
+    dynamo_session_token: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum MetaBackendArg {
+    Fjall,
+    #[cfg(feature = "dynamo")]
+    Dynamo,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -304,10 +377,27 @@ enum BlobBackendArg {
     S3,
 }
 
-struct StoreDirs {
-    meta: PathBuf,
-    blob: PathBuf,
+/// fjall data directories actually required by the chosen backends. A field is
+/// `Some` only when the corresponding store is fjall-backed; a fully remote
+/// deployment (dynamo meta + s3 blobs) leaves both `None` and touches no disk.
+struct FjallDirs {
+    meta: Option<PathBuf>,
+    blob: Option<PathBuf>,
+    /// True when meta and blob share one fjall `Database` (`--data-dir`). Only
+    /// possible when both stores are fjall.
     same_dir: bool,
+}
+
+/// Backend handles + labels threaded into the pipeline for stats and logging.
+/// The `*_fjall` handles feed `collect_fjall_stats` (which can only inspect
+/// fjall keyspaces); they are `None` for remote backends. The labels are purely
+/// for the "starting ingest" log line.
+struct StoreContext {
+    meta_fjall: Option<FjallStore>,
+    blob_fjall: Option<FjallStore>,
+    same_dir: bool,
+    meta_backend: &'static str,
+    blob_backend: &'static str,
 }
 
 struct FetchedBatch {
@@ -332,25 +422,48 @@ struct AppliedBatch {
     total_ingest_ms: u64,
 }
 
-fn resolve_store_dirs(cli: &Cli) -> Result<StoreDirs> {
-    match (&cli.data_dir, &cli.meta_data_dir, &cli.blob_data_dir) {
-        (Some(data_dir), None, None) => Ok(StoreDirs {
-            meta: data_dir.clone(),
-            blob: data_dir.clone(),
+/// Resolves the fjall directories required by the selected backends. A fjall
+/// store needs a directory; a remote store (dynamo/s3) needs none. `--data-dir`
+/// is the shared-DB shortcut and is only valid when both stores are fjall;
+/// otherwise each fjall store takes its own `--meta-data-dir`/`--blob-data-dir`.
+/// A dir flag set for a non-fjall store is rejected so misconfigurations fail
+/// fast rather than silently opening an unused DB.
+fn resolve_fjall_dirs(cli: &Cli, meta_is_fjall: bool, blob_is_fjall: bool) -> Result<FjallDirs> {
+    if let Some(data_dir) = &cli.data_dir {
+        if !(meta_is_fjall && blob_is_fjall) {
+            bail!(
+                "--data-dir shares one fjall DB and requires --meta-backend fjall and \
+                 --blob-backend fjall; use --meta-data-dir/--blob-data-dir for mixed backends"
+            );
+        }
+        return Ok(FjallDirs {
+            meta: Some(data_dir.clone()),
+            blob: Some(data_dir.clone()),
             same_dir: true,
-        }),
-        (None, Some(meta), Some(blob)) => Ok(StoreDirs {
-            meta: meta.clone(),
-            blob: blob.clone(),
-            same_dir: same_store_dir(meta, blob),
-        }),
-        (Some(_), _, _) => {
-            bail!("--data-dir cannot be combined with --meta-data-dir or --blob-data-dir")
-        }
-        (None, _, _) => {
-            bail!("provide either --data-dir or both --meta-data-dir and --blob-data-dir")
-        }
+        });
     }
+
+    let meta = match (meta_is_fjall, &cli.meta_data_dir) {
+        (true, Some(p)) => Some(p.clone()),
+        (true, None) => bail!("--meta-backend fjall requires --meta-data-dir (or --data-dir)"),
+        (false, Some(_)) => bail!("--meta-data-dir is set but --meta-backend is not fjall"),
+        (false, None) => None,
+    };
+    let blob = match (blob_is_fjall, &cli.blob_data_dir) {
+        (true, Some(p)) => Some(p.clone()),
+        (true, None) => bail!("--blob-backend fjall requires --blob-data-dir (or --data-dir)"),
+        (false, Some(_)) => bail!("--blob-data-dir is set but --blob-backend is not fjall"),
+        (false, None) => None,
+    };
+    let same_dir = match (&meta, &blob) {
+        (Some(meta), Some(blob)) => same_store_dir(meta, blob),
+        _ => false,
+    };
+    Ok(FjallDirs {
+        meta,
+        blob,
+        same_dir,
+    })
 }
 
 fn data_dir_fresh(path: &Path) -> bool {
@@ -436,45 +549,69 @@ async fn main() -> Result<()> {
             );
         }
     }
-    let store_dirs = resolve_store_dirs(&cli)?;
+    let meta_is_fjall = matches!(cli.meta_backend, MetaBackendArg::Fjall);
+    let blob_is_fjall = matches!(cli.blob_backend, BlobBackendArg::Fjall);
+    let dirs = resolve_fjall_dirs(&cli, meta_is_fjall, blob_is_fjall)?;
 
-    let tuning = FjallTuning {
-        max_journaling_size_bytes: cli.fjall_journal_mib * 1024 * 1024,
-        max_memtable_size_bytes: cli.fjall_memtable_mib * 1024 * 1024,
-        worker_threads: cli.fjall_workers,
-    };
-    // fjall persists max_memtable_size per-keyspace at creation, so the
-    // value baked in at first open wins on every subsequent reopen — the
-    // flag silently does nothing on existing data dirs. Journal cap and
-    // worker_threads are not persisted and always take effect.
-    let meta_dir_fresh = data_dir_fresh(&store_dirs.meta);
-    let blob_dir_fresh = data_dir_fresh(&store_dirs.blob);
-    info!(
-        fjall_journal_mib = cli.fjall_journal_mib,
-        fjall_memtable_mib = cli.fjall_memtable_mib,
-        fjall_workers = ?cli.fjall_workers,
-        meta_data_dir = %store_dirs.meta.display(),
-        blob_data_dir = %store_dirs.blob.display(),
-        meta_dir_fresh,
-        blob_dir_fresh,
-        "fjall tuning"
-    );
-    if cli.fjall_memtable_mib != 64 && (!meta_dir_fresh || !blob_dir_fresh) {
-        warn!(
-            requested_memtable_mib = cli.fjall_memtable_mib,
-            meta_dir_fresh,
-            blob_dir_fresh,
-            "--fjall-memtable-mib is persisted per-keyspace at first creation; existing data dirs will keep their baked-in values. Journal cap and worker_threads still apply."
+    // Open the fjall stores actually required by the chosen backends. A fully
+    // remote deployment (dynamo meta + s3 blobs) opens nothing here and never
+    // touches local disk. The returned handles also feed `collect_fjall_stats`,
+    // so a backend with no fjall keyspaces simply contributes no stats.
+    let (meta_fjall, blob_fjall) = if meta_is_fjall || blob_is_fjall {
+        let tuning = FjallTuning {
+            max_journaling_size_bytes: cli.fjall_journal_mib * 1024 * 1024,
+            max_memtable_size_bytes: cli.fjall_memtable_mib * 1024 * 1024,
+            worker_threads: cli.fjall_workers,
+        };
+        // fjall persists max_memtable_size per-keyspace at creation, so the
+        // value baked in at first open wins on every subsequent reopen — the
+        // flag silently does nothing on existing data dirs. Journal cap and
+        // worker_threads are not persisted and always take effect.
+        let meta_dir_fresh = dirs.meta.as_deref().map(data_dir_fresh);
+        let blob_dir_fresh = dirs.blob.as_deref().map(data_dir_fresh);
+        info!(
+            fjall_journal_mib = cli.fjall_journal_mib,
+            fjall_memtable_mib = cli.fjall_memtable_mib,
+            fjall_workers = ?cli.fjall_workers,
+            meta_data_dir = ?dirs.meta.as_ref().map(|p| p.display().to_string()),
+            blob_data_dir = ?dirs.blob.as_ref().map(|p| p.display().to_string()),
+            ?meta_dir_fresh,
+            ?blob_dir_fresh,
+            same_dir = dirs.same_dir,
+            "fjall tuning"
         );
-    }
-    let meta_store = FjallStore::open(&store_dirs.meta, tuning)
-        .with_context(|| format!("opening fjall meta store at {}", store_dirs.meta.display()))?;
-    let blob_fjall_store = if store_dirs.same_dir {
-        meta_store.clone()
+        if cli.fjall_memtable_mib != 64
+            && (meta_dir_fresh == Some(false) || blob_dir_fresh == Some(false))
+        {
+            warn!(
+                requested_memtable_mib = cli.fjall_memtable_mib,
+                ?meta_dir_fresh,
+                ?blob_dir_fresh,
+                "--fjall-memtable-mib is persisted per-keyspace at first creation; existing data dirs will keep their baked-in values. Journal cap and worker_threads still apply."
+            );
+        }
+        let meta_fjall = match &dirs.meta {
+            Some(path) => Some(
+                FjallStore::open(path, tuning)
+                    .with_context(|| format!("opening fjall meta store at {}", path.display()))?,
+            ),
+            None => None,
+        };
+        let blob_fjall = match &dirs.blob {
+            // A shared `--data-dir` puts blobs in the same Database as meta.
+            Some(_) if dirs.same_dir => meta_fjall.clone(),
+            Some(path) => Some(
+                FjallStore::open(path, tuning)
+                    .with_context(|| format!("opening fjall blob store at {}", path.display()))?,
+            ),
+            None => None,
+        };
+        (meta_fjall, blob_fjall)
     } else {
-        FjallStore::open(&store_dirs.blob, tuning)
-            .with_context(|| format!("opening fjall blob store at {}", store_dirs.blob.display()))?
+        info!("meta + blob backends are both remote; skipping local fjall setup");
+        (None, None)
     };
+
     let baseline_cache = CacheConfig::default();
     let baseline_total_mib = baseline_cache.approx_total_mib().max(1);
     let cache_config = match cli.cache_mib {
@@ -488,45 +625,101 @@ async fn main() -> Result<()> {
         scaled_total_entries = cache_config.total_entries(),
         "cache config"
     );
-    // Select the blob backend at runtime. Both arms hand the concrete backend
-    // to the generic `run_with_blob_store`, so the service's `B` type parameter
-    // is the only thing that differs between them. Compression is no longer a
-    // store-layer wrapper — it happens per row at the family/codec layer.
-    match cli.blob_backend {
-        BlobBackendArg::Fjall => {
-            info!("blob backend: fjall");
-            run_with_blob_store(
+
+    // Select the meta backend, then the blob backend, at runtime. Each concrete
+    // backend pair is handed to the generic `run_ingest`, so the service's
+    // `M`/`B` type parameters are the only thing that differs between arms — no
+    // enum over the service type. Compression happens per row at the
+    // family/codec layer, not in the store.
+    match cli.meta_backend {
+        MetaBackendArg::Fjall => {
+            info!("meta backend: fjall");
+            let meta_store = meta_fjall
+                .clone()
+                .expect("fjall meta store opened for --meta-backend fjall");
+            dispatch_blob(
                 &cli,
-                &store_dirs,
                 meta_store,
-                Some(blob_fjall_store.clone()),
-                blob_fjall_store,
+                meta_fjall,
+                blob_fjall,
+                dirs.same_dir,
+                "fjall",
                 cache_config,
             )
             .await
         }
-        #[cfg(feature = "s3")]
-        BlobBackendArg::S3 => {
-            let s3_store = build_s3_blob_store(&cli).await?;
-            run_with_blob_store(&cli, &store_dirs, meta_store, None, s3_store, cache_config).await
+        #[cfg(feature = "dynamo")]
+        MetaBackendArg::Dynamo => {
+            let meta_store = build_dynamo_meta_store(&cli).await?;
+            dispatch_blob(
+                &cli,
+                meta_store,
+                None,
+                blob_fjall,
+                dirs.same_dir,
+                "dynamo",
+                cache_config,
+            )
+            .await
         }
     }
 }
 
-/// Builds the service over the chosen blob backend and drives the full ingest
-/// pipeline. Generic over the concrete blob store `B` so the same body serves
-/// both the fjall and S3 backends without an enum over the service type.
-///
-/// `blob_fjall_store` is `Some` only when blobs live in a separate fjall DB; it
-/// feeds `collect_fjall_stats` so the blob keyspaces show up in progress logs.
-/// Non-fjall backends (S3) pass `None`.
+/// Selects the blob backend and drives the pipeline. Generic over the concrete
+/// meta store `M` so the same body serves every meta backend; the chosen blob
+/// store fixes `run_ingest`'s `B` type parameter.
 #[allow(clippy::too_many_arguments)]
-async fn run_with_blob_store<B: monad_chain_data::store::BlobStore>(
+async fn dispatch_blob<M: MetaStoreCas>(
     cli: &Cli,
-    store_dirs: &StoreDirs,
-    meta_store: FjallStore,
-    blob_fjall_store: Option<FjallStore>,
+    meta_store: M,
+    meta_fjall: Option<FjallStore>,
+    blob_fjall: Option<FjallStore>,
+    same_dir: bool,
+    meta_backend: &'static str,
+    cache_config: CacheConfig,
+) -> Result<()> {
+    match cli.blob_backend {
+        BlobBackendArg::Fjall => {
+            info!("blob backend: fjall");
+            let blob_store = blob_fjall
+                .clone()
+                .expect("fjall blob store opened for --blob-backend fjall");
+            let ctx = StoreContext {
+                meta_fjall,
+                blob_fjall,
+                same_dir,
+                meta_backend,
+                blob_backend: "fjall",
+            };
+            run_ingest(cli, meta_store, blob_store, ctx, cache_config).await
+        }
+        #[cfg(feature = "s3")]
+        BlobBackendArg::S3 => {
+            let blob_store = build_s3_blob_store(cli).await?;
+            let ctx = StoreContext {
+                meta_fjall,
+                // S3 blobs have no fjall keyspaces to report.
+                blob_fjall: None,
+                same_dir,
+                meta_backend,
+                blob_backend: "s3",
+            };
+            run_ingest(cli, meta_store, blob_store, ctx, cache_config).await
+        }
+    }
+}
+
+/// Builds the service over the chosen meta + blob backends and drives the full
+/// ingest pipeline. Generic over both store types (`M`/`B`) so the same body
+/// serves every backend combination without an enum over the service type.
+///
+/// `ctx` carries the optional fjall handles (`Some` only for fjall-backed
+/// stores) that feed `collect_fjall_stats`, plus backend labels for logging.
+async fn run_ingest<M: MetaStoreCas, B: monad_chain_data::store::BlobStore>(
+    cli: &Cli,
+    meta_store: M,
     blob_store: B,
+    ctx: StoreContext,
     cache_config: CacheConfig,
 ) -> Result<()> {
     if cli.lease_blocks == 0 {
@@ -720,8 +913,8 @@ async fn run_with_blob_store<B: monad_chain_data::store::BlobStore>(
         plan_buffer = cli.plan_buffer,
         io_retry_forever = cli.io_retry_forever,
         io_max_retries = cli.io_max_retries,
-        meta_data_dir = %store_dirs.meta.display(),
-        blob_data_dir = %store_dirs.blob.display(),
+        meta_backend = ctx.meta_backend,
+        blob_backend = ctx.blob_backend,
         "starting ingest"
     );
 
@@ -999,9 +1192,9 @@ async fn run_with_blob_store<B: monad_chain_data::store::BlobStore>(
 
             let phase_summary = std::mem::take(&mut phase).summary();
             let fjall_stats = match collect_fjall_stats(
-                &meta_store,
-                blob_fjall_store.as_ref(),
-                store_dirs.same_dir,
+                ctx.meta_fjall.as_ref(),
+                ctx.blob_fjall.as_ref(),
+                ctx.same_dir,
             ) {
                 Ok(stats) => stats,
                 Err(e) => {
@@ -1195,6 +1388,58 @@ async fn build_s3_blob_store(cli: &Cli) -> Result<monad_chain_data::store::S3Blo
     S3BlobStore::new(config)
         .await
         .context("building S3 blob store")
+}
+
+/// Builds a [`DynamoMetaStore`] from the `--dynamo-*` flags. Mirrors
+/// [`build_s3_blob_store`]: a partial static credential pair is rejected rather
+/// than silently falling through to the ambient AWS credential chain. Targets
+/// AWS DynamoDB by default, or any DynamoDB-API-compatible service (DynamoDB
+/// Local, ScyllaDB Alternator) via `--dynamo-endpoint-url`.
+#[cfg(feature = "dynamo")]
+async fn build_dynamo_meta_store(cli: &Cli) -> Result<monad_chain_data::store::DynamoMetaStore> {
+    use monad_chain_data::store::{DynamoCredentials, DynamoMetaStore, DynamoMetaStoreConfig};
+
+    let Some(table_name) = cli.dynamo_table.clone() else {
+        bail!("--meta-backend dynamo requires --dynamo-table");
+    };
+    let credentials = match (&cli.dynamo_access_key_id, &cli.dynamo_secret_access_key) {
+        (Some(access_key_id), Some(secret_access_key)) => Some(DynamoCredentials {
+            access_key_id: access_key_id.clone(),
+            secret_access_key: secret_access_key.clone(),
+            session_token: cli.dynamo_session_token.clone(),
+        }),
+        (Some(_), None) => bail!("--dynamo-access-key-id requires --dynamo-secret-access-key"),
+        (None, Some(_)) => bail!("--dynamo-secret-access-key requires --dynamo-access-key-id"),
+        // No static credentials: fall through to the ambient AWS chain.
+        (None, None) => None,
+    };
+    info!(
+        dynamo_table = %table_name,
+        dynamo_region = ?cli.dynamo_region,
+        dynamo_endpoint_url = ?cli.dynamo_endpoint_url,
+        dynamo_max_concurrency = cli.dynamo_max_concurrency,
+        dynamo_create_table = cli.dynamo_create_table,
+        dynamo_static_credentials = credentials.is_some(),
+        "meta backend: dynamo"
+    );
+    let config = DynamoMetaStoreConfig {
+        table_name,
+        endpoint_url: cli.dynamo_endpoint_url.clone(),
+        region: cli.dynamo_region.clone(),
+        batch_max_concurrency: cli.dynamo_max_concurrency,
+        credentials,
+    };
+    let store = DynamoMetaStore::new(config)
+        .await
+        .context("building DynamoDB meta store")?;
+    if cli.dynamo_create_table {
+        info!("--dynamo-create-table set: ensuring the metadata table exists");
+        store
+            .create_table()
+            .await
+            .context("creating DynamoDB meta table")?;
+    }
+    Ok(store)
 }
 
 async fn fetch_block(
@@ -1435,14 +1680,18 @@ impl FjallAggregates {
 }
 
 fn collect_fjall_stats(
-    meta_store: &FjallStore,
+    meta_store: Option<&FjallStore>,
     blob_store: Option<&FjallStore>,
     same_dir: bool,
 ) -> Result<Vec<monad_chain_data::store::FjallKeyspaceStats>> {
-    let mut stats = meta_store.keyspace_stats()?;
-    // The blob store only contributes keyspace stats when it is a separate
-    // fjall DB. A shared dir is already covered by the meta stats, and a
-    // non-fjall backend (e.g. S3) has no fjall keyspaces at all.
+    // Each store contributes keyspace stats only when it is fjall-backed; a
+    // remote backend (dynamo/s3) has no fjall keyspaces at all.
+    let mut stats = Vec::new();
+    if let Some(meta_store) = meta_store {
+        stats.extend(meta_store.keyspace_stats()?);
+    }
+    // A shared dir means the blob store is the same Database as meta and is
+    // already covered by the meta stats above.
     if let Some(blob_store) = blob_store {
         if !same_dir {
             stats.extend(blob_store.keyspace_stats()?);

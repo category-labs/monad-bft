@@ -205,9 +205,13 @@ pub trait MetaStore: Clone + Send + Sync + 'static {
         ScannableKvTable::new(self.clone(), table)
     }
 
-    // Point reads return `Send` futures so the cache layer can store them in a
-    // cross-thread single-flight `Shared` (see `store/cache`); the other
-    // methods keep the plain `async fn` form.
+    // Every method returns a `Send` future. Point reads need it so the cache
+    // layer can store them in a cross-thread single-flight `Shared` (see
+    // `store/cache`); the rest need it so a generic `MetaStore` can be driven
+    // from a `tokio::spawn`ed task (see the ingest binary's IO worker), which is
+    // why the trait declares `impl Future + Send` rather than bare `async fn`.
+    // Implementations may still use `async fn`; that satisfies the RPITIT bound
+    // as long as the produced future is `Send`.
     fn get(
         &self,
         table: TableId,
@@ -220,25 +224,33 @@ pub trait MetaStore: Clone + Send + Sync + 'static {
         clustering: &[u8],
     ) -> impl std::future::Future<Output = Result<Option<Bytes>>> + Send;
 
-    async fn put(&self, table: TableId, key: &[u8], value: Bytes) -> Result<()>;
-    async fn scan_put(
+    fn put(
+        &self,
+        table: TableId,
+        key: &[u8],
+        value: Bytes,
+    ) -> impl std::future::Future<Output = Result<()>> + Send;
+    fn scan_put(
         &self,
         table: ScannableTableId,
         partition: &[u8],
         clustering: &[u8],
         value: Bytes,
-    ) -> Result<()>;
+    ) -> impl std::future::Future<Output = Result<()>> + Send;
 
-    async fn scan_list(
+    fn scan_list(
         &self,
         table: ScannableTableId,
         partition: &[u8],
         prefix: &[u8],
         cursor: Option<Vec<u8>>,
         limit: usize,
-    ) -> Result<Page>;
+    ) -> impl std::future::Future<Output = Result<Page>> + Send;
 
-    async fn apply_writes(&self, writes: Vec<MetaWriteOp>) -> Result<()>;
+    fn apply_writes(
+        &self,
+        writes: Vec<MetaWriteOp>,
+    ) -> impl std::future::Future<Output = Result<()>> + Send;
 }
 
 /// Versioned compare-and-set storage, used for fencing across writer
@@ -254,7 +266,11 @@ pub trait MetaStore: Clone + Send + Sync + 'static {
 #[allow(async_fn_in_trait)]
 pub trait MetaStoreCas: MetaStore {
     /// Reads the current row, returning its version alongside the value.
-    async fn cas_get(&self, table: TableId, key: &[u8]) -> Result<Option<(CasVersion, Bytes)>>;
+    fn cas_get(
+        &self,
+        table: TableId,
+        key: &[u8],
+    ) -> impl std::future::Future<Output = Result<Option<(CasVersion, Bytes)>>> + Send;
 
     /// Conditionally writes the row.
     ///
@@ -263,11 +279,11 @@ pub trait MetaStoreCas: MetaStore {
     /// On success the row is overwritten and a new monotonic version is
     /// returned. On mismatch the row is unchanged and the caller learns
     /// the current version (if any).
-    async fn cas_put(
+    fn cas_put(
         &self,
         table: TableId,
         key: &[u8],
         expected: Option<CasVersion>,
         value: Bytes,
-    ) -> Result<CasOutcome>;
+    ) -> impl std::future::Future<Output = Result<CasOutcome>> + Send;
 }
