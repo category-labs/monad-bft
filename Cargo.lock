@@ -5950,6 +5950,7 @@ dependencies = [
  "monad-peer-score",
  "monad-raptorcast",
  "monad-types",
+ "monad-validator",
  "tokio",
  "tracing",
 ]

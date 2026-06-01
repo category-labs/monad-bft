@@ -56,6 +56,7 @@ use monad_peer_discovery::{
 use monad_peer_score::IdentityScore;
 use monad_types::{DropTimer, Epoch, ExecutionProtocol, NodeId, Round, RouterTarget, UdpPriority};
 use monad_validator::{
+    proposer_schedule::BoxedProposerSchedule,
     signature_collection::SignatureCollection,
     validator_set::{ValidatorSet, ValidatorSetType as _},
 };
@@ -123,6 +124,7 @@ where
 
     epoch_validators: BTreeMap<Epoch, ValidatorSet<CertificateSignaturePubKey<ST>>>,
     full_node_groups: FullNodeGroupMap<CertificateSignaturePubKey<ST>>,
+    proposer_schedule: BoxedProposerSchedule<CertificateSignaturePubKey<ST>>,
 
     dedicated_full_nodes: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
     peer_discovery_driver: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
@@ -184,6 +186,7 @@ where
         control: DataplaneControl,
         peer_discovery_driver: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
         current_epoch: Epoch,
+        proposer_schedule: BoxedProposerSchedule<CertificateSignaturePubKey<ST>>,
     ) -> Self {
         let (tcp_reader, tcp_writer) = tcp_socket.split();
 
@@ -283,6 +286,7 @@ where
             is_dynamic_fullnode,
             epoch_validators: Default::default(),
             full_node_groups: Default::default(),
+            proposer_schedule,
 
             dedicated_full_nodes: config.primary_instance.fullnode_dedicated.clone(),
             peer_discovery_driver,
@@ -782,6 +786,12 @@ pub fn create_dataplane_for_tests(with_direct_udp: bool) -> DataplaneHandles {
     }
 }
 
+// used where the proposer schedule is irrelevant (e.g. v0): every round
+// resolves to an unknown proposer.
+pub fn dummy_proposer_schedule<PT: PubKey>() -> BoxedProposerSchedule<PT> {
+    Box::new(crate::util::StubProposerSchedule(None))
+}
+
 pub fn new_defaulted_raptorcast_for_tests<ST, M, OM, SE>(
     dataplane: DataplaneHandles,
     known_addresses: HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddrV4>,
@@ -844,6 +854,7 @@ where
         dataplane.control,
         shared_pd,
         current_epoch,
+        dummy_proposer_schedule(),
     )
 }
 
@@ -910,6 +921,7 @@ where
         dataplane.control,
         shared_pd,
         current_epoch,
+        dummy_proposer_schedule(),
     )
 }
 
@@ -958,6 +970,8 @@ where
 
                     self.udp_state.update_current_round(round);
                     self.full_node_groups.delete_expired(round);
+                    let proposer_cutoff = round.saturating_sub(round_info::CACHE_MAX_PAST_ROUNDS);
+                    self.proposer_schedule.prune_below(proposer_cutoff);
                     self.peer_discovery_driver
                         .lock()
                         .unwrap()
@@ -965,9 +979,20 @@ where
                 }
                 RouterCommand::AddEpochValidatorSet {
                     epoch,
+                    epoch_start,
                     validator_set,
                 } => {
-                    trace!(?epoch, ?validator_set, "RaptorCast AddEpochValidatorSet");
+                    trace!(
+                        ?epoch,
+                        ?epoch_start,
+                        ?validator_set,
+                        "RaptorCast AddEpochValidatorSet"
+                    );
+                    // SAFETY: the validator_set comes from
+                    // ValidatorSetData, which should not have duplicates
+                    // or invalid entries.
+                    let validators =
+                        ValidatorSet::new_unchecked(validator_set.iter().cloned().collect());
                     if let Some(epoch_validators) = self.epoch_validators.get(&epoch) {
                         assert_eq!(validator_set.len(), epoch_validators.len());
 
@@ -980,15 +1005,12 @@ where
 
                         warn!("duplicate validator set update (this is safe but unexpected)")
                     } else {
-                        // SAFETY: the validator_set comes from
-                        // ValidatorSetData, which should not have
-                        // duplicates or invalid entries.
-                        let validators = ValidatorSet::new_unchecked(
-                            validator_set.clone().into_iter().collect(),
-                        );
-                        let removed = self.epoch_validators.insert(epoch, validators);
+                        let removed = self.epoch_validators.insert(epoch, validators.clone());
                         assert!(removed.is_none());
                     }
+
+                    self.proposer_schedule
+                        .insert_epoch(epoch, epoch_start, validators);
                     self.peer_discovery_driver.lock().unwrap().update(
                         PeerDiscoveryEvent::UpdateValidatorSet {
                             epoch,
@@ -1212,6 +1234,7 @@ where
                 this.udp_state.handle_message(
                     &this.epoch_validators,
                     &this.full_node_groups,
+                    &*this.proposer_schedule,
                     |targets, payload, bcast_stride| {
                         for target in targets {
                             rebroadcast_packet(
@@ -1515,11 +1538,11 @@ where
                         if this.full_node_groups.try_insert(group).is_none() {
                             // TODO: convert to an assertion?
                             error!(
-                                round_span =? round_span,
-                                publisher_id =? publisher_id,
+                                round_span = ?round_span,
+                                publisher_id = ?publisher_id,
                                 "Accepted group assignment contains overlaps"
                             );
-                        };
+                        }
                     }
                     Poll::Ready(None) => {
                         error!("RaptorCast secondary->primary channel disconnected.");

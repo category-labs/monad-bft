@@ -100,6 +100,7 @@ mod tests {
         util::{
             BuildTarget, FullNodeGroupMap, PrimaryBroadcastGroup, RaptorcastMode, Redundancy,
             SecondaryBroadcastGroup, SecondaryGroup, SecondaryGroupAssignment,
+            StubProposerSchedule,
         },
     };
 
@@ -135,6 +136,7 @@ mod tests {
         let sender_id = NodeId::new(sender_key.pubkey());
         let group_map = [(EPOCH, validators.clone())].into();
         let fn_group_map = FullNodeGroupMap::default();
+        let proposer_schedule = StubProposerSchedule(Some(true));
         let group = PrimaryBroadcastGroup::of_epoch(EPOCH, &sender_id, &group_map).unwrap();
 
         let app_message: Bytes = vec![0xAB_u8; 64 * 1024].into();
@@ -167,8 +169,13 @@ mod tests {
                 stride: packet.stride as u16,
                 sender: None,
             };
-            let decoded =
-                udp_state.handle_message(&group_map, &fn_group_map, |_, _, _| {}, recv_msg);
+            let decoded = udp_state.handle_message(
+                &group_map,
+                &fn_group_map,
+                &proposer_schedule,
+                |_, _, _| {},
+                recv_msg,
+            );
             decoded_count += decoded.len();
         }
 
@@ -248,6 +255,7 @@ mod tests {
         let mut udp_state = UdpState::<SignatureType>::new(receiver_id, u64::MAX, 10_000);
         udp_state.set_v1_rollout(receiver_stage);
 
+        let proposer_map = StubProposerSchedule(None);
         let mut decoded_count = 0;
         for packet in &packets {
             let recv_msg = AuthRecvMsg {
@@ -256,8 +264,13 @@ mod tests {
                 stride: packet.stride as u16,
                 sender: None,
             };
-            let decoded =
-                udp_state.handle_message(&group_map, &fn_group_map, |_, _, _| {}, recv_msg);
+            let decoded = udp_state.handle_message(
+                &group_map,
+                &fn_group_map,
+                &proposer_map,
+                |_, _, _| {},
+                recv_msg,
+            );
             decoded_count += decoded.len();
         }
         decoded_count
@@ -367,6 +380,7 @@ mod tests {
         udp_state.set_v1_rollout(DeterministicProtocolRolloutStage::AlwaysV1);
 
         let group_map: std::collections::BTreeMap<_, _> = std::collections::BTreeMap::new();
+        let proposer_map = StubProposerSchedule(None);
         let mut rebroadcast_count = 0usize;
         for packet in &packets {
             let recv_msg = AuthRecvMsg {
@@ -378,6 +392,7 @@ mod tests {
             udp_state.handle_message(
                 &group_map,
                 &fn_group_map,
+                &proposer_map,
                 |_targets, _payload, _stride| rebroadcast_count += 1,
                 recv_msg,
             );
@@ -455,6 +470,7 @@ mod tests {
         udp_state.set_v1_rollout(DeterministicProtocolRolloutStage::AlwaysV1);
 
         let group_map: std::collections::BTreeMap<_, _> = std::collections::BTreeMap::new();
+        let proposer_map = StubProposerSchedule(None);
         let mut decoded = Vec::new();
         for packet in packets_a.iter().chain(packets_b.iter()) {
             let recv_msg = AuthRecvMsg {
@@ -466,6 +482,7 @@ mod tests {
             decoded.extend(udp_state.handle_message(
                 &group_map,
                 &fn_group_map,
+                &proposer_map,
                 |_, _, _| {},
                 recv_msg,
             ));
