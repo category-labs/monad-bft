@@ -169,6 +169,18 @@ pub struct Cli {
     #[arg(long, default_value_t = 2)]
     pub eth_call_executor_queuing_timeout: u32,
 
+    /// Set the gas limit for `eth_simulateV1` (default is 8 times Monad's block gas limit)
+    #[arg(long, default_value_t = 200_000_000 * 8)]
+    pub eth_simulate_gas_limit: u64,
+
+    /// Set the maximum number of blocks that can be simulated in a single `eth_simulateV1` request
+    #[arg(long, default_value_t = 256)]
+    pub eth_simulate_max_blocks: usize,
+
+    /// Set the maximum number of calls that can be simulated in a single `eth_simulateV1` request
+    #[arg(long, default_value_t = 2000)]
+    pub eth_simulate_max_calls: usize,
+
     /// Set the memory limit of the node cache for RPC requests other than eth_call and eth_estimateGas
     #[arg(long, default_value_t = 100 << 20)] // 100MB
     pub triedb_node_lru_max_mem: u64,

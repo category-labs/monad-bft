@@ -30,14 +30,13 @@ use monad_ethcall::{
     CallResult, EthCallExecutor, EthCallRequest, MonadTracer, StateOverrideObject, StateOverrideSet,
 };
 use monad_rpc_docs::rpc;
-use monad_triedb_utils::triedb_env::{BlockKey, FinalizedBlockKey, ProposedBlockKey, Triedb};
-use monad_types::{BlockId, Hash, SeqNum};
+use monad_triedb_utils::triedb_env::{BlockKey, Triedb};
 use serde::Deserialize;
 use tracing::trace;
 
 use crate::{
     data::{
-        eth_call_handler::EthCallHandlerConfig, get_block_key_from_tag,
+        block_key_to_parts, eth_call_handler::EthCallHandlerConfig, get_block_key_from_tag,
         get_block_key_from_tag_or_hash, DataProvider,
     },
     handlers::{
@@ -55,13 +54,6 @@ use crate::{
 
 /// Additional gas added during a CALL.
 const CALL_STIPEND: u64 = 2_300;
-
-fn block_key_to_parts(block_key: BlockKey) -> (u64, Option<[u8; 32]>) {
-    match block_key {
-        BlockKey::Finalized(FinalizedBlockKey(SeqNum(n))) => (n, None),
-        BlockKey::Proposed(ProposedBlockKey(SeqNum(n), BlockId(Hash(id)))) => (n, Some(id)),
-    }
-}
 
 async fn estimate_gas(
     eth_call_fn: impl AsyncFn(&TxEnvelope) -> CallResult,
@@ -1110,6 +1102,9 @@ mod tests {
             max_concurrent_permits: 0,
             provider_gas_limit_eth_call: 30_000_000,
             provider_gas_limit_eth_estimate_gas: 30_000_000,
+            provider_gas_limit_eth_simulate: 0,
+            provider_max_calls_eth_simulate: 0,
+            provider_max_blocks_eth_simulate: 0,
         }
     }
 
@@ -1131,7 +1126,7 @@ mod tests {
             },
         );
         mock_triedb.set_finalized_block(
-            SeqNum(latest_block),
+            monad_types::SeqNum(latest_block),
             make_block(latest_block, base_fee, vec![]),
         );
 
@@ -1305,6 +1300,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_eth_fee_history() {
+        use monad_types::SeqNum;
         let mut mock_triedb = MockTriedb::default();
         mock_triedb.set_latest_block(1000);
         let sender = FixedBytes::<32>::from([1u8; 32]);

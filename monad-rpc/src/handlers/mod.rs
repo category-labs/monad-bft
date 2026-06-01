@@ -42,6 +42,7 @@ use self::{
             monad_eth_estimateGas, monad_eth_feeHistory, monad_eth_fillTransaction,
             monad_eth_gasPrice, monad_eth_maxPriorityFeePerGas,
         },
+        simulate::monad_simulate_v1,
         txn::{
             monad_eth_getLogs, monad_eth_getTransactionByBlockHashAndIndex,
             monad_eth_getTransactionByBlockNumberAndIndex, monad_eth_getTransactionByHash,
@@ -377,6 +378,35 @@ async fn eth_call(
                 eth_call_handler_config,
                 executor,
                 app_state.chain_id,
+                params,
+            )
+        })
+        .await
+        .map(serialize_result)?
+}
+
+#[allow(non_snake_case)]
+async fn eth_simulateV1(
+    request_id: TimingRequestId,
+    app_state: &MonadRpcResources,
+    params: RequestParams<'_>,
+) -> Result<Box<RawValue>, JsonRpcError> {
+    let data_provider = app_state.data_provider.as_ref().method_not_supported()?;
+    let eth_call_handler = app_state.eth_call_handler.as_ref().method_not_supported()?;
+    let params = serde_json::from_str(params.get()).invalid_params()?;
+    let permit = eth_call_handler.acquire(request_id).await?;
+
+    permit
+        .execute(|config, executor| {
+            monad_simulate_v1(
+                data_provider,
+                executor,
+                app_state.chain_id,
+                // TODO(dhil): We use the eth call gas limit for individual calls within the simulation. We should consider adding more granular gas limits in the future.
+                config.provider_gas_limit_eth_call,
+                config.provider_gas_limit_eth_simulate,
+                config.provider_max_calls_eth_simulate,
+                config.provider_max_blocks_eth_simulate,
                 params,
             )
         })
@@ -878,6 +908,7 @@ enabled_methods!(
     debug_traceCall,
     debug_traceTransaction,
     eth_call,
+    eth_simulateV1,
     eth_sendRawTransaction,
     eth_sendRawTransactionSync,
     eth_createAccessList,
