@@ -22,7 +22,7 @@ use eyre::Result;
 use reqwest::{header::HeaderValue, StatusCode};
 use url::Url;
 
-use super::{KVStoreType, MetricsResultExt};
+use super::{KVStoreType, MetricsResultExt, ObjectMeta};
 use crate::prelude::*;
 
 #[derive(Clone)]
@@ -73,6 +73,9 @@ impl CloudProxyReader {
 struct ProxyResponse {
     tx_hash: TxHash,
     data: String,
+    /// Base64-encoded SHA256 of the payload; absent on older proxy responses.
+    #[serde(default)]
+    checksum: Option<String>,
 }
 
 impl KVReader for CloudProxyReader {
@@ -115,5 +118,74 @@ impl KVReader for CloudProxyReader {
         .await;
 
         result.write_get_metrics(start.elapsed(), KVStoreType::CloudProxy, &self.0.metrics)
+    }
+
+    async fn metadata(&self, key: &str) -> Result<Option<ObjectMeta>> {
+        use sha2::{Digest, Sha256};
+
+        let start = Instant::now();
+        let result = async {
+            // Same GET the proxy `get` performs -- the proxy has no cheaper HEAD
+            // that returns a checksum, so we issue the GET and use the proxy's
+            // checksum when present, hashing the returned body otherwise.
+            let url = self.build_url(key);
+            let resp = self.0.client.get(url).send().await?;
+            let status = resp.status();
+            if status == StatusCode::NOT_FOUND {
+                return Ok(None);
+            }
+            if !status.is_success() {
+                bail!("cloud proxy metadata get failed with status: {status}");
+            }
+            let resp: ProxyResponse = resp.json().await?;
+
+            if let Some(checksum_b64) = resp.checksum {
+                let decoded = base64::prelude::BASE64_STANDARD.decode(checksum_b64)?;
+                let checksum_sha256: [u8; 32] = decoded
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| eyre!("cloud proxy checksum had unexpected length"))?;
+                return Ok(Some(ObjectMeta { checksum_sha256 }));
+            }
+
+            // No checksum from the proxy: hash the body we already fetched.
+            let bytes = base64::prelude::BASE64_STANDARD.decode(resp.data)?;
+            let checksum_sha256: [u8; 32] = Sha256::digest(&bytes).into();
+            Ok(Some(ObjectMeta { checksum_sha256 }))
+        }
+        .await;
+
+        result.write_get_metrics(start.elapsed(), KVStoreType::CloudProxy, &self.0.metrics)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TX_HASH: &str = "0x0000000000000000000000000000000000000000000000000000000000000001";
+
+    #[test]
+    fn proxy_response_deserializes_with_checksum() {
+        let json = format!(r#"{{"tx_hash":"{TX_HASH}","data":"YWJj","checksum":"YWJjZA=="}}"#);
+        let resp: ProxyResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(resp.checksum.as_deref(), Some("YWJjZA=="));
+        assert_eq!(resp.data, "YWJj");
+    }
+
+    #[test]
+    fn proxy_response_deserializes_without_checksum() {
+        // Older proxy responses omit `checksum`; `#[serde(default)]` must allow it.
+        let json = format!(r#"{{"tx_hash":"{TX_HASH}","data":"YWJj"}}"#);
+        let resp: ProxyResponse = serde_json::from_str(&json).unwrap();
+        assert!(resp.checksum.is_none());
+        assert_eq!(resp.data, "YWJj");
+    }
+
+    #[test]
+    fn proxy_response_deserializes_with_null_checksum() {
+        let json = format!(r#"{{"tx_hash":"{TX_HASH}","data":"YWJj","checksum":null}}"#);
+        let resp: ProxyResponse = serde_json::from_str(&json).unwrap();
+        assert!(resp.checksum.is_none());
     }
 }

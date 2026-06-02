@@ -28,7 +28,7 @@ use sha2::{Digest, Sha256};
 use tokio::sync::Semaphore;
 use tracing::error;
 
-use super::{BulkPutResult, KVStoreType, MetricsResultExt, PutResult, WritePolicy};
+use super::{BulkPutResult, KVStoreType, MetricsResultExt, ObjectMeta, PutResult, WritePolicy};
 use crate::prelude::*;
 
 #[derive(Clone)]
@@ -74,6 +74,60 @@ impl KVReader for DynamoDBArchive {
             KVStoreType::AwsDynamoDB,
             &self.metrics,
         )
+    }
+
+    async fn metadata(&self, key: &str) -> Result<Option<ObjectMeta>> {
+        let start = Instant::now();
+
+        // Cheap path: project only `checksum`, never `data` -- fetching the body
+        // would defeat the cheap path. Strip the `0x` prefix to match the key
+        // form `batch_get` (and thus `get`) stores and queries under.
+        let stored_key = key.trim_start_matches("0x");
+        let result = self
+            .client
+            .get_item()
+            .table_name(&self.table)
+            .key("tx_hash", AttributeValue::S(stored_key.to_owned()))
+            .projection_expression("tx_hash, checksum")
+            .send()
+            .await
+            .wrap_err("DynamoDB metadata get_item failed")
+            .write_get_metrics_on_err(start.elapsed(), KVStoreType::AwsDynamoDB, &self.metrics)?;
+
+        let Some(item) = result.item else {
+            return Ok(None).write_get_metrics(
+                start.elapsed(),
+                KVStoreType::AwsDynamoDB,
+                &self.metrics,
+            );
+        };
+
+        if let Some(AttributeValue::B(blob)) = item.get("checksum") {
+            let checksum_sha256: [u8; 32] = blob.as_ref().try_into().wrap_err_with(|| {
+                format!(
+                    "DynamoDB checksum for key {key} had unexpected length {}",
+                    blob.as_ref().len()
+                )
+            })?;
+            return Ok(Some(ObjectMeta { checksum_sha256 })).write_get_metrics(
+                start.elapsed(),
+                KVStoreType::AwsDynamoDB,
+                &self.metrics,
+            );
+        }
+
+        // Legacy fallback: item exists but has no stored checksum. Fetch the
+        // full payload and hash it.
+        let Some(bytes) = self
+            .get(key)
+            .await
+            .wrap_err("DynamoDB metadata legacy fallback fetch failed")?
+        else {
+            // Raced with a delete between the two reads.
+            return Ok(None);
+        };
+        let checksum_sha256: [u8; 32] = Sha256::digest(&bytes).into();
+        Ok(Some(ObjectMeta { checksum_sha256 }))
     }
 }
 
@@ -340,5 +394,101 @@ mod tests {
             panic!("expected PutResult::Written, got {result:?}");
         };
         assert_eq!(checksum_sha256, expected);
+    }
+
+    async fn minio_archive(minio: &TestMinioContainer) -> DynamoDBArchive {
+        let arg_string = format!(
+            "aws test-bucket  --endpoint http://127.0.0.1:{port} --access-key-id minioadmin --secret-access-key minioadmin",
+            port = minio.port
+        );
+        let sdk_config = AwsCliArgs::parse(&arg_string)
+            .unwrap()
+            .config()
+            .await
+            .unwrap();
+
+        let bucket = Bucket::new("test-bucket".to_string(), &sdk_config, Metrics::none());
+        DynamoDBArchive::new(
+            bucket,
+            "test-table".to_string(),
+            &sdk_config,
+            1,
+            Metrics::none(),
+        )
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_dynamodb_metadata_returns_some_with_checksum() {
+        use sha2::{Digest, Sha256};
+
+        let minio = TestMinioContainer::new().await.unwrap();
+        let archive = minio_archive(&minio).await;
+
+        let input = b"some payload bytes".to_vec();
+        let expected: [u8; 32] = Sha256::digest(&input).into();
+
+        archive
+            .put("meta-key", input.clone(), WritePolicy::AllowOverwrite)
+            .await
+            .unwrap();
+
+        let meta = archive
+            .metadata("meta-key")
+            .await
+            .unwrap()
+            .expect("expected Some metadata");
+        assert_eq!(meta.checksum_sha256, expected);
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_dynamodb_metadata_missing_key_returns_none() {
+        let minio = TestMinioContainer::new().await.unwrap();
+        let archive = minio_archive(&minio).await;
+
+        let meta = archive.metadata("does-not-exist").await.unwrap();
+        assert!(meta.is_none());
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_dynamodb_metadata_legacy_fallback_hashes_body() {
+        use sha2::{Digest, Sha256};
+
+        let minio = TestMinioContainer::new().await.unwrap();
+        let archive = minio_archive(&minio).await;
+
+        let input = b"legacy payload without stored checksum".to_vec();
+        let expected: [u8; 32] = Sha256::digest(&input).into();
+
+        // Simulate a pre-checksum item: write tx_hash + data only, no checksum.
+        let item: HashMap<String, AttributeValue> = HashMap::from_iter([
+            (
+                "tx_hash".to_owned(),
+                AttributeValue::S("legacy-key".to_owned()),
+            ),
+            (
+                "data".to_owned(),
+                AttributeValue::B(Blob::new(input.clone())),
+            ),
+        ]);
+        archive
+            .client
+            .put_item()
+            .table_name(&archive.table)
+            .set_item(Some(item))
+            .send()
+            .await
+            .unwrap();
+
+        // No stored checksum, so metadata falls back to reading + hashing the
+        // body.
+        let meta = archive
+            .metadata("legacy-key")
+            .await
+            .unwrap()
+            .expect("expected Some metadata");
+        assert_eq!(meta.checksum_sha256, expected);
     }
 }

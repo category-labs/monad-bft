@@ -24,7 +24,8 @@ use sha2::{Digest, Sha256};
 use tokio::{fs, io::AsyncWriteExt, task::spawn_blocking};
 
 use super::{
-    kvstore_get_metrics, kvstore_put_metrics, KVStoreType, MetricsResultExt, PutResult, WritePolicy,
+    kvstore_get_metrics, kvstore_put_metrics, KVStoreType, MetricsResultExt, ObjectMeta, PutResult,
+    WritePolicy,
 };
 use crate::{metrics::Metrics, prelude::*};
 
@@ -138,6 +139,94 @@ impl KVReader for FsStorage {
             Err(err) => Err(err)
                 .wrap_err_with(|| {
                     format!("Failed to check existence of key {key} at path {path:?}")
+                })
+                .write_get_metrics_on_err(start.elapsed(), KVStoreType::FileSystem, &self.metrics),
+        }
+    }
+
+    async fn metadata(&self, key: &str) -> Result<Option<ObjectMeta>> {
+        let path = self.key_path(key)?;
+        let start = Instant::now();
+
+        // Cheap path: stat for existence and read the `.sha256` sidecar; the
+        // payload body is never read unless the sidecar is missing (legacy
+        // fallback).
+        match fs::metadata(&path).await {
+            Ok(_) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                kvstore_get_metrics(
+                    start.elapsed(),
+                    true,
+                    KVStoreType::FileSystem,
+                    &self.metrics,
+                );
+                return Ok(None);
+            }
+            Err(err) => {
+                return Err(err)
+                    .wrap_err_with(|| format!("Failed to stat key {key} at path {path:?}"))
+                    .write_get_metrics_on_err(
+                        start.elapsed(),
+                        KVStoreType::FileSystem,
+                        &self.metrics,
+                    );
+            }
+        }
+
+        let sidecar = checksum_path(&path);
+        match fs::read(&sidecar).await {
+            Ok(bytes) => {
+                let checksum_sha256: [u8; 32] =
+                    bytes.as_slice().try_into().wrap_err_with(|| {
+                        format!(
+                        "FS checksum sidecar for key {key} had unexpected length {} at {sidecar:?}",
+                        bytes.len()
+                    )
+                    })?;
+                kvstore_get_metrics(
+                    start.elapsed(),
+                    true,
+                    KVStoreType::FileSystem,
+                    &self.metrics,
+                );
+                Ok(Some(ObjectMeta { checksum_sha256 }))
+            }
+            // Legacy fallback: payload exists but no sidecar. Read the body and
+            // hash it.
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                match fs::read(&path).await {
+                    Ok(bytes) => {
+                        let checksum_sha256: [u8; 32] = Sha256::digest(&bytes).into();
+                        kvstore_get_metrics(
+                            start.elapsed(),
+                            true,
+                            KVStoreType::FileSystem,
+                            &self.metrics,
+                        );
+                        Ok(Some(ObjectMeta { checksum_sha256 }))
+                    }
+                    // Raced with a delete between the stat and the read.
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                        kvstore_get_metrics(
+                            start.elapsed(),
+                            true,
+                            KVStoreType::FileSystem,
+                            &self.metrics,
+                        );
+                        Ok(None)
+                    }
+                    Err(err) => Err(err)
+                        .wrap_err_with(|| format!("Failed to read key {key} from path {path:?}"))
+                        .write_get_metrics_on_err(
+                            start.elapsed(),
+                            KVStoreType::FileSystem,
+                            &self.metrics,
+                        ),
+                }
+            }
+            Err(err) => Err(err)
+                .wrap_err_with(|| {
+                    format!("Failed to read checksum sidecar for key {key} at {sidecar:?}")
                 })
                 .write_get_metrics_on_err(start.elapsed(), KVStoreType::FileSystem, &self.metrics),
         }
@@ -485,6 +574,72 @@ mod tests {
         let sidecar_bytes = fs::read(&sidecar).await?;
         assert_eq!(sidecar_bytes.len(), 32);
         assert_eq!(sidecar_bytes.as_slice(), expected.as_slice());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_metadata_returns_some_with_checksum_from_sidecar() -> Result<()> {
+        use sha2::{Digest, Sha256};
+
+        let dir = tempfile::tempdir()?;
+        let storage = FsStorage::new(dir.path(), Metrics::none())?;
+
+        let key = "metadata/key";
+        let input = b"some payload bytes".to_vec();
+        let expected: [u8; 32] = Sha256::digest(&input).into();
+
+        storage
+            .put(key, input.clone(), WritePolicy::AllowOverwrite)
+            .await?;
+
+        let meta = storage
+            .metadata(key)
+            .await?
+            .expect("expected Some metadata");
+        assert_eq!(meta.checksum_sha256, expected);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_metadata_missing_key_returns_none() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let storage = FsStorage::new(dir.path(), Metrics::none())?;
+
+        let meta = storage.metadata("missing/key").await?;
+        assert!(meta.is_none());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_metadata_legacy_fallback_hashes_body_when_sidecar_absent() -> Result<()> {
+        use sha2::{Digest, Sha256};
+
+        let dir = tempfile::tempdir()?;
+        let storage = FsStorage::new(dir.path(), Metrics::none())?;
+
+        let key = "legacy/key";
+        let input = b"legacy payload without sidecar".to_vec();
+        let expected: [u8; 32] = Sha256::digest(&input).into();
+
+        storage
+            .put(key, input.clone(), WritePolicy::AllowOverwrite)
+            .await?;
+
+        // Simulate a pre-checksum object: payload present, sidecar removed.
+        let sidecar = checksum_path(&dir.path().join(key));
+        assert!(sidecar.is_file());
+        fs::remove_file(&sidecar).await?;
+        assert!(!sidecar.exists());
+
+        // No sidecar, so metadata must fall back to hashing the body.
+        let meta = storage
+            .metadata(key)
+            .await?
+            .expect("expected Some metadata");
+        assert_eq!(meta.checksum_sha256, expected);
 
         Ok(())
     }

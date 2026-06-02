@@ -35,7 +35,9 @@ use eyre::{Context, Result};
 use sha2::{Digest, Sha256};
 use tracing::trace;
 
-use super::{kvstore_get_metrics, kvstore_put_metrics, KVStoreType, PutResult, WritePolicy};
+use super::{
+    kvstore_get_metrics, kvstore_put_metrics, KVStoreType, ObjectMeta, PutResult, WritePolicy,
+};
 use crate::{metrics::Metrics, prelude::*};
 
 const CLIENT_RECREATE_AFTER_SECS: u64 = 60;
@@ -268,6 +270,67 @@ impl KVReader for Bucket {
             }
         }
     }
+
+    async fn metadata(&self, key: &str) -> Result<Option<ObjectMeta>> {
+        trace!(key, "S3 metadata");
+        let client = self.client();
+
+        // Cheap path: HEAD with checksum mode enabled returns the stored
+        // x-amz-checksum-sha256 (see `put`), no body transfer.
+        let start = Instant::now();
+        let resp = client
+            .head_object()
+            .bucket(&self.inner.bucket)
+            .key(key)
+            .checksum_mode(aws_sdk_s3::types::ChecksumMode::Enabled)
+            .request_payer(aws_sdk_s3::types::RequestPayer::Requester)
+            .send()
+            .await;
+        let duration = start.elapsed();
+
+        // One get-metric per metadata() call: the HEAD is recorded only when it
+        // is terminal (miss, error, or cheap-path hit). On the legacy fall-
+        // through, `self.get()` records the body fetch instead, so we don't
+        // record the HEAD here -- matching the other backends' single-record
+        // accounting.
+        let head = match resp {
+            Ok(head) => head,
+            Err(SdkError::ServiceError(service_err)) if service_err.err().is_not_found() => {
+                self.record_get_metrics(duration, true);
+                return Ok(None);
+            }
+            Err(e) => {
+                self.record_get_metrics(duration, false);
+                return Err(e).wrap_err_with(|| format!("S3 metadata HEAD failed for key {key}"));
+            }
+        };
+
+        if let Some(checksum_b64) = head.checksum_sha256() {
+            let decoded = BASE64
+                .decode(checksum_b64)
+                .wrap_err_with(|| format!("Failed to decode S3 checksum for key {key}"))?;
+            let checksum_sha256: [u8; 32] = decoded.as_slice().try_into().wrap_err_with(|| {
+                format!(
+                    "S3 checksum for key {key} had unexpected length {}",
+                    decoded.len()
+                )
+            })?;
+            self.record_get_metrics(duration, true);
+            return Ok(Some(ObjectMeta { checksum_sha256 }));
+        }
+
+        // Legacy fallback: object exists but has no stored sha256. Fetch the
+        // body and hash it ourselves.
+        trace!(key, "S3 metadata: no stored checksum, hashing body");
+        match self.get(key).await? {
+            Some(bytes) => {
+                let checksum_sha256: [u8; 32] = Sha256::digest(&bytes).into();
+                Ok(Some(ObjectMeta { checksum_sha256 }))
+            }
+            // Raced with a delete between HEAD and GET.
+            None => Ok(None),
+        }
+    }
 }
 
 impl KVStore for Bucket {
@@ -458,5 +521,83 @@ mod tests {
             panic!("expected PutResult::Written, got {result:?}");
         };
         assert_eq!(checksum_sha256, expected);
+    }
+
+    async fn minio_bucket(minio: &TestMinioContainer) -> Bucket {
+        let arg_string = format!(
+            "aws test-bucket  --endpoint http://127.0.0.1:{port} --access-key-id minioadmin --secret-access-key minioadmin",
+            port = minio.port
+        );
+        let sdk_config = AwsCliArgs::parse(&arg_string)
+            .unwrap()
+            .config()
+            .await
+            .unwrap();
+        let bucket = Bucket::new("test-bucket".to_string(), &sdk_config, Metrics::none());
+        bucket.create_bucket().await.unwrap();
+        bucket
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_s3_metadata_returns_some_with_checksum() {
+        let minio = TestMinioContainer::new().await.unwrap();
+        let bucket = minio_bucket(&minio).await;
+
+        let input = b"some payload bytes".to_vec();
+        let expected: [u8; 32] = Sha256::digest(&input).into();
+
+        bucket
+            .put("meta-key", input.clone(), WritePolicy::AllowOverwrite)
+            .await
+            .unwrap();
+
+        let meta = bucket
+            .metadata("meta-key")
+            .await
+            .unwrap()
+            .expect("expected Some metadata");
+        assert_eq!(meta.checksum_sha256, expected);
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_s3_metadata_missing_key_returns_none() {
+        let minio = TestMinioContainer::new().await.unwrap();
+        let bucket = minio_bucket(&minio).await;
+
+        let meta = bucket.metadata("does-not-exist").await.unwrap();
+        assert!(meta.is_none());
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_s3_metadata_legacy_fallback_hashes_body() {
+        let minio = TestMinioContainer::new().await.unwrap();
+        let bucket = minio_bucket(&minio).await;
+
+        let input = b"legacy payload without stored checksum".to_vec();
+        let expected: [u8; 32] = Sha256::digest(&input).into();
+
+        // Simulate a pre-checksum object: write directly with the raw client and
+        // do NOT supply checksum_sha256, so S3 stores no sha256.
+        let client = bucket.client();
+        client
+            .put_object()
+            .bucket(bucket.bucket_name())
+            .key("legacy-key")
+            .body(ByteStream::from(input.clone()))
+            .request_payer(aws_sdk_s3::types::RequestPayer::Requester)
+            .send()
+            .await
+            .unwrap();
+
+        // HEAD finds no stored sha256, so metadata must fall back to the body.
+        let meta = bucket
+            .metadata("legacy-key")
+            .await
+            .unwrap()
+            .expect("expected Some metadata");
+        assert_eq!(meta.checksum_sha256, expected);
     }
 }

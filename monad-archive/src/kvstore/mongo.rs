@@ -27,7 +27,9 @@ use tracing::trace;
 
 use crate::{
     archive_reader::redact_mongo_url,
-    kvstore::{kvstore_put_metrics, KVStoreType, MetricsResultExt, PutResult, WritePolicy},
+    kvstore::{
+        kvstore_put_metrics, KVStoreType, MetricsResultExt, ObjectMeta, PutResult, WritePolicy,
+    },
     prelude::*,
 };
 
@@ -104,6 +106,13 @@ impl KeyValueDocument {
 
 fn chunk_id(id: &str, chunk_idx: u32) -> String {
     format!("{}_chunk_{}", id, chunk_idx)
+}
+
+/// Lightweight projection of [`KeyValueDocument`] for `metadata`: pulls
+/// `checksum` only, never the (potentially multi-megabyte) payload itself.
+#[derive(Deserialize)]
+struct KeyValueMeta {
+    checksum: Option<Binary>,
 }
 
 /// MongoDB duplicate key error code
@@ -264,6 +273,52 @@ impl KVReader for MongoDbStorage {
             .await
             .wrap_err("MongoDB bulk_get operation failed")
             .write_get_metrics(start.elapsed(), KVStoreType::Mongo, &self.metrics)
+    }
+
+    async fn metadata(&self, key: &str) -> Result<Option<ObjectMeta>> {
+        let start = Instant::now();
+
+        let meta = self
+            .collection
+            .clone_with_type::<KeyValueMeta>()
+            .find_one(doc! { "_id": key })
+            .projection(doc! {
+                "_id": 0,
+                "checksum": 1,
+            })
+            .max_time(self.max_time_get)
+            .await
+            .wrap_err("MongoDB metadata operation failed")
+            .write_get_metrics_on_err(start.elapsed(), KVStoreType::Mongo, &self.metrics)?;
+
+        let Some(meta) = meta else {
+            return Ok(None).write_get_metrics(start.elapsed(), KVStoreType::Mongo, &self.metrics);
+        };
+
+        if let Some(checksum) = meta.checksum {
+            let checksum_sha256: [u8; 32] =
+                checksum.bytes.as_slice().try_into().wrap_err_with(|| {
+                    format!("MongoDB checksum for key {key} had unexpected length")
+                })?;
+            return Ok(Some(ObjectMeta { checksum_sha256 })).write_get_metrics(
+                start.elapsed(),
+                KVStoreType::Mongo,
+                &self.metrics,
+            );
+        }
+
+        // Legacy fallback: main doc has no stored checksum. Fetch the full
+        // payload (reassembling chunks via `resolve`) and hash it.
+        let Some(bytes) = self
+            .get(key)
+            .await
+            .wrap_err("MongoDB metadata legacy fallback fetch failed")?
+        else {
+            // Raced with a delete between the two reads.
+            return Ok(None);
+        };
+        let checksum_sha256: [u8; 32] = Sha256::digest(&bytes).into();
+        Ok(Some(ObjectMeta { checksum_sha256 }))
     }
 }
 
@@ -741,5 +796,108 @@ pub mod mongo_tests {
         // Original data should be preserved
         let stored = storage.get(key).await.unwrap().unwrap();
         assert_eq!(stored.as_ref(), original_data.as_slice());
+    }
+
+    #[ignore]
+    #[tokio::test]
+    async fn test_metadata_returns_some_with_checksum() {
+        use sha2::{Digest, Sha256};
+
+        let (_container, storage) = setup().await.unwrap();
+
+        let key = "metadata_key";
+        let input = b"some payload bytes".to_vec();
+        let expected: [u8; 32] = Sha256::digest(&input).into();
+
+        storage
+            .put(key, input.clone(), WritePolicy::AllowOverwrite)
+            .await
+            .unwrap();
+
+        let meta = storage
+            .metadata(key)
+            .await
+            .unwrap()
+            .expect("expected Some metadata");
+        assert_eq!(meta.checksum_sha256, expected);
+    }
+
+    #[ignore]
+    #[tokio::test]
+    async fn test_metadata_missing_key_returns_none() {
+        let (_container, storage) = setup().await.unwrap();
+
+        let meta = storage.metadata("nonexistent").await.unwrap();
+        assert!(meta.is_none());
+    }
+
+    #[ignore]
+    #[tokio::test]
+    async fn test_metadata_legacy_fallback_hashes_body() {
+        use sha2::{Digest, Sha256};
+
+        let (_container, storage) = setup().await.unwrap();
+
+        let key = "legacy_inline_key";
+        let input = b"legacy inline payload".to_vec();
+        let expected: [u8; 32] = Sha256::digest(&input).into();
+
+        storage
+            .put(key, input.clone(), WritePolicy::AllowOverwrite)
+            .await
+            .unwrap();
+
+        // Simulate a pre-checksum document: unset the stored checksum.
+        storage
+            .collection
+            .update_one(doc! { "_id": key }, doc! { "$unset": { "checksum": "" } })
+            .await
+            .unwrap();
+
+        // No stored checksum, so metadata must fall back to fetching + hashing.
+        let meta = storage
+            .metadata(key)
+            .await
+            .unwrap()
+            .expect("expected Some metadata");
+        assert_eq!(meta.checksum_sha256, expected);
+    }
+
+    #[ignore]
+    #[tokio::test]
+    async fn test_metadata_legacy_fallback_hashes_chunked_body() {
+        use sha2::{Digest, Sha256};
+
+        let (_container, storage) = setup().await.unwrap();
+
+        let key = "legacy_chunked_key";
+        // Span multiple chunk docs so the fallback exercises chunk reassembly
+        // via `resolve()`.
+        let mut input = b"a".repeat(CHUNK_SIZE * 2);
+        input.extend(&b"b".repeat(CHUNK_SIZE + 123));
+        let expected: [u8; 32] = Sha256::digest(&input).into();
+
+        storage
+            .put(key, input.clone(), WritePolicy::AllowOverwrite)
+            .await
+            .unwrap();
+
+        // Simulate a pre-checksum chunked document: null out the checksum on the
+        // main doc. The chunk docs never carry a checksum.
+        storage
+            .collection
+            .update_one(
+                doc! { "_id": key },
+                doc! { "$set": { "checksum": mongodb::bson::Bson::Null } },
+            )
+            .await
+            .unwrap();
+
+        let meta = storage
+            .metadata(key)
+            .await
+            .unwrap()
+            .expect("expected Some metadata");
+        assert_eq!(meta.checksum_sha256, expected);
     }
 }

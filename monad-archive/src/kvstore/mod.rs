@@ -58,6 +58,13 @@ pub enum WritePolicy {
     NoClobber,
 }
 
+/// Metadata about a stored object: the SHA256 of its current bytes. Returned by
+/// [`KVReader::metadata`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ObjectMeta {
+    pub checksum_sha256: [u8; 32],
+}
+
 /// Result of a `put` operation indicating whether data was written.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PutResult {
@@ -164,6 +171,16 @@ pub trait KVReader: Clone {
 
     /// Lightweight existence check; prefer this over `get` when you don't need payload bytes.
     async fn exists(&self, key: &str) -> Result<bool>;
+
+    /// Returns [`ObjectMeta`] for `key`, or `Ok(None)` if the key does not exist.
+    ///
+    /// The returned checksum is guaranteed to be a valid SHA256 over the current
+    /// bytes. Implementations SHOULD use a cheap path (HEAD, attribute
+    /// projection, sidecar read) when a checksum was atomically stored at
+    /// put-time, and MUST fall back to fetching the body and computing SHA256
+    /// internally when it wasn't (legacy data). A present-but-legacy object must
+    /// therefore still return `Ok(Some(_))` with a correct checksum.
+    async fn metadata(&self, key: &str) -> Result<Option<ObjectMeta>>;
 
     async fn bulk_get(&self, keys: &[String]) -> Result<HashMap<String, Bytes>> {
         // Note: a stream based approach runs into lifetime generality errors for some reason here.

@@ -23,7 +23,7 @@ use eyre::Result;
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
-use super::{PutResult, WritePolicy};
+use super::{ObjectMeta, PutResult, WritePolicy};
 use crate::prelude::*;
 
 #[derive(Clone)]
@@ -68,6 +68,24 @@ impl KVReader for MemoryStorage {
         }
 
         Ok(self.db.lock().await.contains_key(key))
+    }
+
+    async fn metadata(&self, key: &str) -> Result<Option<ObjectMeta>> {
+        use std::sync::atomic::Ordering;
+
+        if self.should_fail.load(Ordering::SeqCst) {
+            return Err(eyre::eyre!("MemoryStorage simulated failure"));
+        }
+
+        // The map stores the checksum alongside the bytes; no legacy state exists.
+        Ok(self
+            .db
+            .lock()
+            .await
+            .get(key)
+            .map(|(_bytes, checksum_sha256)| ObjectMeta {
+                checksum_sha256: *checksum_sha256,
+            }))
     }
 }
 
@@ -244,6 +262,37 @@ mod tests {
         };
         assert_eq!(checksum_sha256, expected);
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_metadata_returns_some_with_checksum() -> Result<()> {
+        use sha2::{Digest, Sha256};
+
+        let storage = MemoryStorage::new("test-bucket");
+
+        let key = "metadata-key";
+        let input = b"some payload bytes".to_vec();
+        let expected: [u8; 32] = Sha256::digest(&input).into();
+
+        storage
+            .put(key, input.clone(), WritePolicy::AllowOverwrite)
+            .await?;
+
+        let meta = storage
+            .metadata(key)
+            .await?
+            .expect("expected Some metadata");
+        assert_eq!(meta.checksum_sha256, expected);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_metadata_missing_key_returns_none() -> Result<()> {
+        let storage = MemoryStorage::new("test-bucket");
+        let meta = storage.metadata("does-not-exist").await?;
+        assert!(meta.is_none());
         Ok(())
     }
 
