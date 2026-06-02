@@ -19,6 +19,7 @@ LOG_FILE="${LOG_FILE:-remote-ingest-$(date +%Y%m%d-%H%M%S).log}"
 echo "logging to $(pwd)/$LOG_FILE"
 
 target/release/chain-data-ingest \
+  --single-writer \
   --meta-backend dynamo \
   --dynamo-table mainnet_deu_009 \
   --dynamo-endpoint-url http://100.81.221.102:8000 \

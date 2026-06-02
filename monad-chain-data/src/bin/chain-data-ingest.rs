@@ -231,6 +231,14 @@ struct Cli {
     #[arg(long)]
     reader_only: bool,
 
+    /// Ingest as the sole writer: publish via a plain version-CAS on the head
+    /// with no lease to acquire, renew, or release (and no `--owner-id` /
+    /// `--lease-blocks` machinery). Use this only when exactly one process ever
+    /// writes — e.g. a backfill — to skip the lease round-trips. Mutually
+    /// exclusive with `--reader-only`.
+    #[arg(long, conflicts_with = "reader_only")]
+    single_writer: bool,
+
     /// Stable node identity for the write-authority lease. Two processes that
     /// must not both write share nothing *except* this when they are the same
     /// logical node across restarts; distinct nodes use distinct ids. A restart
@@ -744,6 +752,14 @@ async fn run_ingest<M: MetaStoreCas, B: monad_chain_data::store::BlobStore>(
     let service = if cli.reader_only {
         info!("--reader-only set: this process will not take write authority or ingest");
         Arc::new(MonadChainDataService::new_reader_only(
+            meta_store.clone(),
+            blob_store,
+            QueryLimits::UNLIMITED,
+            cache_config,
+        ))
+    } else if cli.single_writer {
+        info!("single-writer mode: version-CAS publish, no lease to acquire/renew/release");
+        Arc::new(MonadChainDataService::with_cache_config(
             meta_store.clone(),
             blob_store,
             QueryLimits::UNLIMITED,
