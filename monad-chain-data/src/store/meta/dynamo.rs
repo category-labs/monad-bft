@@ -483,17 +483,27 @@ impl MetaStore for DynamoMetaStore {
                 .client
                 .query()
                 .table_name(&self.inner.table_name)
-                .key_condition_expression("pk = :p AND begins_with(sk, :prefix)")
                 .expression_attribute_values(":p", AttributeValue::B(Blob::new(pk.clone())))
-                .expression_attribute_values(
-                    ":prefix",
-                    AttributeValue::B(Blob::new(prefix.to_vec())),
-                )
                 // Callers only consume the clustering (`sk`); projecting it
                 // alone keeps `val` off the wire.
                 .projection_expression(ATTR_SK)
                 .consistent_read(true)
                 .scan_index_forward(true);
+            // An empty prefix means "every clustering in the partition" (matching
+            // fjall/in-memory). DynamoDB/Alternator rejects `begins_with(sk, "")`
+            // -- an empty value on a key attribute -- so drop the term entirely
+            // and let `pk = :p` select the whole partition. A non-empty prefix
+            // keeps the `begins_with` filter (and only then binds `:prefix`, so
+            // no unused expression value is sent).
+            req = if prefix.is_empty() {
+                req.key_condition_expression("pk = :p")
+            } else {
+                req.key_condition_expression("pk = :p AND begins_with(sk, :prefix)")
+                    .expression_attribute_values(
+                        ":prefix",
+                        AttributeValue::B(Blob::new(prefix.to_vec())),
+                    )
+            };
             // Bound each page to what we still need (when finite).
             if let Ok(remaining) = i32::try_from(want - keys.len()) {
                 req = req.limit(remaining);

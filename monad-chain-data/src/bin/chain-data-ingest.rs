@@ -1325,18 +1325,18 @@ async fn run_ingest<M: MetaStoreCas, B: monad_chain_data::store::BlobStore>(
         }
     }
 
-    fetch_handle
-        .await
-        .context("fetch worker panicked")?
-        .context("fetch worker failed")?;
-    plan_handle
-        .await
-        .context("planning worker panicked")?
-        .context("planning worker failed")?;
-    io_handle
-        .await
-        .context("IO worker panicked")?
-        .context("IO worker failed")?;
+    // Await all three workers, then surface the deepest-stage failure first.
+    // When a planning/IO worker fails it drops its channel, which makes the
+    // upstream worker fail with a cascade ("X stopped before Y completed").
+    // Reporting the downstream (root-cause) error ahead of those cascades keeps
+    // the real failure from being masked. A panic (JoinError) always wins.
+    let (fetch_res, plan_res, io_res) = tokio::join!(fetch_handle, plan_handle, io_handle);
+    let io_res = io_res.context("IO worker panicked")?;
+    let plan_res = plan_res.context("planning worker panicked")?;
+    let fetch_res = fetch_res.context("fetch worker panicked")?;
+    io_res.context("IO worker failed")?;
+    plan_res.context("planning worker failed")?;
+    fetch_res.context("fetch worker failed")?;
 
     // The ingest pipeline has drained; stop refreshing the lease clock.
     clock_refresh_handle.abort();
