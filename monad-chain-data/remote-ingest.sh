@@ -4,8 +4,12 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."   # -> monad-bft repo root
 
+# Always build the release binary first (incremental; fast when up to date).
+cargo build --release -p monad-chain-data --bin chain-data-ingest \
+  --features archive-ingest,s3,dynamo
+
 # triedb/execution C++ libs (the binary has no rpath baked in)
-export LD_LIBRARY_PATH="$(find target/debug/build -path '*/out/*' -name '*.so' -printf '%h\n' | sort -u | paste -sd:)"
+export LD_LIBRARY_PATH="$(find target/release/build -path '*/out/*' -name '*.so' -printf '%h\n' | sort -u | paste -sd:)"
 export AWS_PROFILE=telling-narlikar          # OVH blob credentials
 export AWS_EC2_METADATA_DISABLED=true
 
@@ -14,7 +18,7 @@ export AWS_EC2_METADATA_DISABLED=true
 LOG_FILE="${LOG_FILE:-remote-ingest-$(date +%Y%m%d-%H%M%S).log}"
 echo "logging to $(pwd)/$LOG_FILE"
 
-target/debug/chain-data-ingest \
+target/release/chain-data-ingest \
   --meta-backend dynamo \
   --dynamo-table mainnet_deu_009 \
   --dynamo-endpoint-url http://100.81.221.102:8000 \
