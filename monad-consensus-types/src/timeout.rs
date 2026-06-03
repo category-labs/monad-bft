@@ -506,7 +506,9 @@ where
         Ok(Self {
             epoch,
             round,
-            tip_rounds: tip_rounds.into(),
+            tip_rounds: tip_rounds
+                .try_into()
+                .expect("tip_rounds length exceeds MAX_VALIDATOR_SET_SIZE"),
             high_extend: highest_extend,
         })
     }

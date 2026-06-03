@@ -365,7 +365,9 @@ where
                 .into_iter()
                 .chain(user_transactions)
                 .map(|tx| tx.into_inner())
-                .collect(),
+                .collect::<Vec<_>>()
+                .try_into()
+                .expect("block transactions exceeds MAX_TRANSACTIONS_PER_BLOCK"),
             ommers: Default::default(),
             withdrawals: Default::default(),
         };

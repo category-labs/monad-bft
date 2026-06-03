@@ -257,8 +257,8 @@ mod tests {
     fn serialize_roundtrip_group_conf() {
         let org_msg = ConfirmGroup {
             prepare: make_prep_group(7),
-            peers: [nid(8), nid(9), nid(10)].to_vec().into(),
-            name_records: make_name_records(11, 3).into(),
+            peers: [nid(8), nid(9), nid(10)].to_vec().try_into().unwrap(),
+            name_records: make_name_records(11, 3).try_into().unwrap(),
         };
         let org_enum = FullNodesGroupMessage::ConfirmGroup(org_msg);
 
@@ -322,7 +322,8 @@ mod tests {
                     participation_score: BoundedU64::new(0).unwrap(),
                 },
             ]
-            .into(),
+            .try_into()
+            .unwrap(),
         };
         let message = FullNodesGroupMessage::ParticipationReport(org_msg);
 

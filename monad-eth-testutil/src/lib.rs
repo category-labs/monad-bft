@@ -376,7 +376,12 @@ pub fn generate_consensus_test_block(
 
     let body = ConsensusBlockBody::new(ConsensusBlockBodyInner {
         execution_body: EthBlockBody {
-            transactions: txs.iter().map(|tx| tx.inner().to_owned()).collect(),
+            transactions: txs
+                .iter()
+                .map(|tx| tx.inner().to_owned())
+                .collect::<Vec<_>>()
+                .try_into()
+                .expect("block transactions exceeds MAX_TRANSACTIONS_PER_BLOCK"),
             ommers: Default::default(),
             withdrawals: Default::default(),
         },

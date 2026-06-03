@@ -848,9 +848,14 @@ impl MonadVersion {
     }
 }
 
-/// A `Vec<T>` that enforces a maximum length during RLP deserialization.
+/// A `Vec<T>` whose length is bounded by `N`. The bound is enforced by every
+/// constructor: RLP `Decodable` and serde `Deserialize` reject oversize input,
+/// and `TryFrom<Vec<T>>` returns an error instead of constructing an oversize
+/// value. The inner `Vec` is private so the invariant cannot be bypassed via
+/// direct construction. Build one from an iterator the same way as `[T; N]`:
+/// `iter.collect::<Vec<_>>().try_into()`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LimitedVec<T, const N: usize>(pub Vec<T>);
+pub struct LimitedVec<T, const N: usize>(Vec<T>);
 
 impl<T, const N: usize> Default for LimitedVec<T, N> {
     fn default() -> Self {
@@ -877,7 +882,10 @@ impl<T, const N: usize> LimitedVec<T, N> {
     }
 }
 
-/// Error returned by [`LimitedVec::try_push`] when the vector is already at capacity.
+/// Error returned by [`LimitedVec`] constructors when the capacity bound `N`
+/// would be exceeded. `rejected` is the payload that did not fit: the item for
+/// [`LimitedVec::try_push`], or the whole `Vec<T>` for [`TryFrom<Vec<T>>`], so
+/// the caller can recover the data.
 #[derive(Debug, PartialEq, Eq)]
 pub struct LimitedVecCapacityError<T> {
     pub rejected: T,
@@ -944,9 +952,17 @@ where
     }
 }
 
-impl<T, const N: usize> From<Vec<T>> for LimitedVec<T, N> {
-    fn from(vec: Vec<T>) -> Self {
-        Self(vec)
+impl<T, const N: usize> TryFrom<Vec<T>> for LimitedVec<T, N> {
+    type Error = LimitedVecCapacityError<Vec<T>>;
+
+    fn try_from(vec: Vec<T>) -> Result<Self, Self::Error> {
+        if vec.len() > N {
+            return Err(LimitedVecCapacityError {
+                rejected: vec,
+                capacity: N,
+            });
+        }
+        Ok(Self(vec))
     }
 }
 
@@ -958,13 +974,15 @@ impl<T: Serialize, const N: usize> Serialize for LimitedVec<T, N> {
 
 impl<'de, T: Deserialize<'de>, const N: usize> Deserialize<'de> for LimitedVec<T, N> {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Vec::<T>::deserialize(deserializer).map(Self)
-    }
-}
-
-impl<T, const N: usize> FromIterator<T> for LimitedVec<T, N> {
-    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
-        Self(iter.into_iter().collect())
+        let vec = Vec::<T>::deserialize(deserializer)?;
+        if vec.len() > N {
+            return Err(serde::de::Error::custom(format!(
+                "LimitedVec length {} exceeds maximum {}",
+                vec.len(),
+                N,
+            )));
+        }
+        Ok(Self(vec))
     }
 }
 
@@ -1120,7 +1138,7 @@ mod test {
 
     #[test]
     fn test_limited_vec_roundtrip() {
-        let original: LimitedVec<u32, 5> = vec![1u32, 2, 3].into();
+        let original: LimitedVec<u32, 5> = vec![1u32, 2, 3].try_into().unwrap();
         let mut buf = Vec::new();
         original.encode(&mut buf);
 
@@ -1130,14 +1148,14 @@ mod test {
 
     #[test]
     fn test_limited_vec_rejects_overflow() {
-        let exact: LimitedVec<u32, 100> = vec![1u32, 2, 3].into();
+        let exact: LimitedVec<u32, 100> = vec![1u32, 2, 3].try_into().unwrap();
         let mut buf = Vec::new();
         exact.encode(&mut buf);
         let decoded = LimitedVec::<u32, 3>::decode(&mut buf.as_slice()).unwrap();
         assert_eq!(decoded.len(), 3);
 
         // N+1 elements should fail
-        let over: LimitedVec<u32, 100> = vec![1u32, 2, 3, 4].into();
+        let over: LimitedVec<u32, 100> = vec![1u32, 2, 3, 4].try_into().unwrap();
         let mut buf = Vec::new();
         over.encode(&mut buf);
         assert!(LimitedVec::<u32, 3>::decode(&mut buf.as_slice()).is_err());
@@ -1145,7 +1163,7 @@ mod test {
 
     #[test]
     fn test_limited_vec_empty() {
-        let empty: LimitedVec<u32, 0> = Vec::new().into();
+        let empty: LimitedVec<u32, 0> = Vec::new().try_into().unwrap();
         let mut buf = Vec::new();
         empty.encode(&mut buf);
 
@@ -1180,6 +1198,39 @@ mod test {
         let err = v.try_push(7).unwrap_err();
         assert_eq!(err.rejected, 7);
         assert_eq!(err.capacity, 0);
+    }
+
+    #[test]
+    fn test_limited_vec_deserialize_rejects_overflow() {
+        let json = "[1,2,3,4]";
+        let result: Result<LimitedVec<u32, 3>, _> = serde_json::from_str(json);
+        let err = result.expect_err("expected Err for length 4 > N=3");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("LimitedVec length 4 exceeds maximum 3"),
+            "unexpected error message: {msg}",
+        );
+    }
+
+    #[test]
+    fn test_limited_vec_deserialize_accepts_exact_capacity() {
+        let json = "[1,2,3]";
+        let decoded: LimitedVec<u32, 3> = serde_json::from_str(json).unwrap();
+        assert_eq!(decoded.len(), 3);
+    }
+
+    #[test]
+    fn test_limited_vec_try_from_vec_rejects_overflow() {
+        let err = LimitedVec::<u32, 3>::try_from(vec![1u32, 2, 3, 4]).unwrap_err();
+        assert_eq!(err.capacity, 3);
+        // The rejected Vec is handed back so the caller can recover the data.
+        assert_eq!(err.rejected, vec![1u32, 2, 3, 4]);
+    }
+
+    #[test]
+    fn test_limited_vec_try_from_vec_accepts_exact_capacity() {
+        let v: LimitedVec<u32, 3> = vec![1u32, 2, 3].try_into().unwrap();
+        assert_eq!(v.len(), 3);
     }
 
     #[test]

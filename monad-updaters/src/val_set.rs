@@ -236,8 +236,16 @@ where
         Self {
             epoch: Epoch(1),
             genesis_val_data: genesis_validator_data,
-            val_data_1: ValidatorSetData(val_data_1.into()),
-            val_data_2: ValidatorSetData(val_data_2.into()),
+            val_data_1: ValidatorSetData(
+                val_data_1
+                    .try_into()
+                    .expect("val_data_1 exceeds MAX_VALIDATOR_SET_SIZE"),
+            ),
+            val_data_2: ValidatorSetData(
+                val_data_2
+                    .try_into()
+                    .expect("val_data_2 exceeds MAX_VALIDATOR_SET_SIZE"),
+            ),
             next_val_data: None,
             epoch_length,
 

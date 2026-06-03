@@ -195,7 +195,8 @@ where
                 epoch: Epoch(1),
                 round: GENESIS_ROUND,
             }]
-            .into(),
+            .try_into()
+            .expect("genesis checkpoint validator_sets exceeds MAX_VALIDATOR_SETS"),
         }
         .into()
     }
@@ -1734,7 +1735,8 @@ mod test {
                     round: Round(4050),
                 },
             ]
-            .into(),
+            .try_into()
+            .unwrap(),
         }
         .into();
 
@@ -1782,14 +1784,14 @@ mod test {
         // `validate` touches the locked sets, so `&[]` suffices.
 
         // Too few: zero validator sets.
-        forkpoint.0.validator_sets = Vec::new().into();
+        forkpoint.0.validator_sets = Vec::new().try_into().unwrap();
         assert_eq!(
             forkpoint.validate(&ValidatorSetFactory::default(), &[], &election),
             Err(ForkpointValidationError::TooFewValidatorSets)
         );
 
         // Too many: > 2 (count rejected before consecutiveness, so dupes are fine).
-        forkpoint.0.validator_sets = vec![one.clone(), one.clone(), one].into();
+        forkpoint.0.validator_sets = vec![one.clone(), one.clone(), one].try_into().unwrap();
         assert_eq!(
             forkpoint.validate(&ValidatorSetFactory::default(), &[], &election),
             Err(ForkpointValidationError::TooManyValidatorSets)

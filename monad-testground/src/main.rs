@@ -287,7 +287,9 @@ where
                 stake: Stake::ONE,
                 cert_pubkey: cert_keypair.pubkey(),
             })
-            .collect(),
+            .collect::<Vec<_>>()
+            .try_into()
+            .expect("validator set size exceeds MAX_VALIDATOR_SET_SIZE"),
     );
 
     let all_peers: Vec<NodeId<_>> = validators.0.iter().map(|data| data.node_id).collect();

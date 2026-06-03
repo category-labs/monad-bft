@@ -1422,7 +1422,9 @@ where
                 // next val_set might not be ready
                 get_locked_epoch(base_epoch + Epoch(1)),
             )
-            .collect(),
+            .collect::<Vec<_>>()
+            .try_into()
+            .expect("checkpoint validator_sets exceeds MAX_VALIDATOR_SETS"),
         }
     }
 
@@ -2637,7 +2639,7 @@ mod test {
 
     fn generate_block_body(eth_tx_list: Vec<TxEnvelope>) -> EthBlockBody {
         EthBlockBody {
-            transactions: eth_tx_list.into(),
+            transactions: eth_tx_list.try_into().unwrap(),
             ommers: Default::default(),
             withdrawals: Default::default(),
         }

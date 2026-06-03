@@ -1346,7 +1346,8 @@ mod test {
                 high_tip_round: GENESIS_ROUND,
                 sigs: sigcol,
             }]
-            .into(),
+            .try_into()
+            .unwrap(),
             high_extend,
         }
     }
@@ -1398,7 +1399,9 @@ mod test {
                 sigs: sigcol,
             }
         })
-        .collect();
+        .collect::<Vec<_>>()
+        .try_into()
+        .unwrap();
 
         let qc = {
             let vote = Vote {
@@ -1573,7 +1576,9 @@ mod test {
                 sigs: sigcol,
             }
         })
-        .collect();
+        .collect::<Vec<_>>()
+        .try_into()
+        .unwrap();
 
         let qc = {
             let vote = Vote {
@@ -1652,7 +1657,9 @@ mod test {
                 sigs: sigcol,
             }
         })
-        .collect();
+        .collect::<Vec<_>>()
+        .try_into()
+        .unwrap();
 
         let tc: TimeoutCertificate<SignatureType, SignatureCollectionType, ExecutionProtocolType> =
             TimeoutCertificate {
@@ -1710,7 +1717,9 @@ mod test {
                     sigs: sigcol,
                 }
             })
-            .collect();
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap();
 
         let tc: TimeoutCertificate<SignatureType, SignatureCollectionType, ExecutionProtocolType> =
             TimeoutCertificate {
@@ -1771,7 +1780,8 @@ mod test {
                     high_tip_round: GENESIS_ROUND,
                     sigs: sigcol,
                 }]
-                .into(),
+                .try_into()
+                .unwrap(),
                 high_extend: HighExtend::Qc(QuorumCertificate::genesis_qc()),
             };
 
@@ -1901,7 +1911,8 @@ mod test {
                     high_tip_round: GENESIS_ROUND,
                     sigs: sigcol,
                 }]
-                .into(),
+                .try_into()
+                .unwrap(),
                 high_extend: HighExtend::Qc(QuorumCertificate::genesis_qc()),
             };
 
@@ -2883,7 +2894,7 @@ mod test {
             TimeoutCertificate {
                 epoch: Epoch(2), // wrong epoch here
                 round: Round(11),
-                tip_rounds: vec![high_qc_sig_tuple].into(),
+                tip_rounds: vec![high_qc_sig_tuple].try_into().unwrap(),
                 high_extend: HighExtend::Qc(qc.clone()),
             };
 

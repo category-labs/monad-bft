@@ -180,12 +180,6 @@ impl<SCT: SignatureCollection> ValidatorSetData<SCT> {
     pub fn new(
         validators: Vec<(SCT::NodeIdPubKey, Stake, SignatureCollectionPubKeyType<SCT>)>,
     ) -> Self {
-        assert!(
-            validators.len() <= MAX_VALIDATOR_SET_SIZE,
-            "validator set size {} exceeds MAX_VALIDATOR_SET_SIZE {}",
-            validators.len(),
-            MAX_VALIDATOR_SET_SIZE,
-        );
         Self(
             validators
                 .into_iter()
@@ -194,7 +188,9 @@ impl<SCT: SignatureCollection> ValidatorSetData<SCT> {
                     stake,
                     cert_pubkey,
                 })
-                .collect(),
+                .collect::<Vec<_>>()
+                .try_into()
+                .expect("validator set size exceeds MAX_VALIDATOR_SET_SIZE"),
         )
     }
 
@@ -278,15 +274,17 @@ where
 
 #[cfg(test)]
 mod test {
-    use monad_crypto::NopSignature;
-    use monad_testutil::signing::MockSignatures;
-    use monad_types::{BlockId, Epoch, Hash, LimitedVec, Round};
+    use monad_crypto::{certificate_signature::CertificateKeyPair, NopSignature};
+    use monad_testutil::signing::{create_certificate_keys, create_keys, MockSignatures};
+    use monad_types::{BlockId, Epoch, Hash, NodeId, Round, Stake};
+    use monad_validator::validator_set::MAX_VALIDATOR_SET_SIZE;
+    use serde::Serialize;
 
     use crate::{
         block::MockExecutionProtocol,
         checkpoint::{Checkpoint, LockedEpoch},
         quorum_certificate::QuorumCertificate,
-        validator_data::{ValidatorSetData, ValidatorsConfig},
+        validator_data::{ValidatorData, ValidatorSetData, ValidatorsConfig},
         RoundCertificate,
     };
 
@@ -310,7 +308,7 @@ mod test {
         let forkpoint_success = Checkpoint {
             root: BlockId(Hash::default()),
             high_certificate: RoundCertificate::Qc(QuorumCertificate::genesis_qc()),
-            validator_sets: LimitedVec(vec![
+            validator_sets: vec![
                 LockedEpoch {
                     epoch: Epoch(1),
                     round: Round(10),
@@ -319,7 +317,9 @@ mod test {
                     epoch: Epoch(2),
                     round: Round(20),
                 },
-            ]),
+            ]
+            .try_into()
+            .unwrap(),
         };
         assert!(validators_config
             .get_locked_validator_sets::<SignatureType, ExecutionProtocolType>(&forkpoint_success)
@@ -328,7 +328,7 @@ mod test {
         let forkpoint_failure = Checkpoint {
             root: BlockId(Hash::default()),
             high_certificate: RoundCertificate::Qc(QuorumCertificate::genesis_qc()),
-            validator_sets: LimitedVec(vec![
+            validator_sets: vec![
                 LockedEpoch {
                     epoch: Epoch(2),
                     round: Round(10),
@@ -337,10 +337,108 @@ mod test {
                     epoch: Epoch(3),
                     round: Round(20),
                 },
-            ]),
+            ]
+            .try_into()
+            .unwrap(),
         };
         assert!(validators_config
             .get_locked_validator_sets::<SignatureType, ExecutionProtocolType>(&forkpoint_failure)
             .is_err_and(|missing_epoch| missing_epoch == Epoch(3)));
+    }
+
+    fn make_validator_data(num: u32) -> Vec<ValidatorData<SignatureCollectionType>> {
+        let keys = create_keys::<SignatureType>(num);
+        let cert_keys = create_certificate_keys::<SignatureCollectionType>(num);
+        keys.iter()
+            .zip(cert_keys.iter())
+            .map(|(k, ck)| ValidatorData {
+                node_id: NodeId::new(k.pubkey()),
+                stake: Stake::ONE,
+                cert_pubkey: ck.pubkey(),
+            })
+            .collect()
+    }
+
+    /// Mirror of `ValidatorsConfigFile` whose innermost validator list is an
+    /// unbounded `Vec` instead of `LimitedVec<_, MAX_VALIDATOR_SET_SIZE>`.
+    /// Serializes to the same TOML wire shape, so the produced string can be
+    /// fed to `ValidatorsConfig::read_from_str` to drive the rejection path
+    /// for oversize input. Test-only.
+    #[derive(Serialize)]
+    struct OversizeConfigFile {
+        validator_sets: Vec<OversizeSetWithEpoch>,
+    }
+
+    #[derive(Serialize)]
+    struct OversizeSetWithEpoch {
+        epoch: Epoch,
+        validators: Vec<ValidatorData<SignatureCollectionType>>,
+    }
+
+    #[test]
+    fn read_from_str_rejects_oversize_validator_set() {
+        let oversize = (MAX_VALIDATOR_SET_SIZE + 1) as u32;
+        let validators = make_validator_data(oversize);
+        let config_file = OversizeConfigFile {
+            validator_sets: vec![OversizeSetWithEpoch {
+                epoch: Epoch(1),
+                validators,
+            }],
+        };
+        let toml_str = toml::to_string(&config_file).expect("serialize oversize config");
+
+        let err = match ValidatorsConfig::<SignatureCollectionType>::read_from_str(&toml_str) {
+            Ok(_) => panic!("read_from_str must reject oversize validator set"),
+            Err(e) => e,
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("LimitedVec length") && msg.contains("exceeds maximum"),
+            "unexpected error message: {msg}",
+        );
+    }
+
+    #[test]
+    fn read_from_str_accepts_max_validator_set() {
+        let exact = MAX_VALIDATOR_SET_SIZE as u32;
+        let validators = make_validator_data(exact);
+        let config_file = OversizeConfigFile {
+            validator_sets: vec![OversizeSetWithEpoch {
+                epoch: Epoch(1),
+                validators,
+            }],
+        };
+        let toml_str = toml::to_string(&config_file).expect("serialize exact-size config");
+
+        ValidatorsConfig::<SignatureCollectionType>::read_from_str(&toml_str)
+            .expect("read_from_str must accept exact-size validator set");
+    }
+
+    #[test]
+    #[should_panic(expected = "validator set size exceeds MAX_VALIDATOR_SET_SIZE")]
+    fn new_panics_on_oversize_input() {
+        let oversize = (MAX_VALIDATOR_SET_SIZE + 1) as u32;
+        let keys = create_keys::<SignatureType>(oversize);
+        let cert_keys = create_certificate_keys::<SignatureCollectionType>(oversize);
+        let triples: Vec<_> = keys
+            .iter()
+            .zip(cert_keys.iter())
+            .map(|(k, ck)| (k.pubkey(), Stake::ONE, ck.pubkey()))
+            .collect();
+        let _ = ValidatorSetData::<SignatureCollectionType>::new(triples);
+    }
+
+    #[test]
+    fn new_accepts_max_input() {
+        let exact = MAX_VALIDATOR_SET_SIZE as u32;
+        let keys = create_keys::<SignatureType>(exact);
+        let cert_keys = create_certificate_keys::<SignatureCollectionType>(exact);
+        let triples: Vec<_> = keys
+            .iter()
+            .zip(cert_keys.iter())
+            .map(|(k, ck)| (k.pubkey(), Stake::ONE, ck.pubkey()))
+            .collect();
+        let set = ValidatorSetData::<SignatureCollectionType>::new(triples);
+        assert_eq!(set.0.len(), MAX_VALIDATOR_SET_SIZE);
     }
 }

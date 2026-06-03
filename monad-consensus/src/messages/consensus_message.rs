@@ -345,7 +345,7 @@ mod tests {
         TimeoutCertificate {
             epoch: Epoch(1),
             round,
-            tip_rounds: vec![].into(),
+            tip_rounds: vec![].try_into().unwrap(),
             high_extend: HighExtend::Qc(QuorumCertificate::genesis_qc()),
         }
     }
