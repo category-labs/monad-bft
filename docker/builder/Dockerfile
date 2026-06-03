@@ -1,4 +1,4 @@
-FROM ubuntu:25.10 AS base
+FROM ubuntu:26.04 AS base
 
 RUN apt update && apt install -y \
   binutils \
