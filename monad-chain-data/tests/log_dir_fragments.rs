@@ -59,7 +59,7 @@ async fn ingest_persists_log_dir_fragment_for_single_bucket_block() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn ingest_persists_zero_width_fragment_for_empty_block() {
+async fn ingest_writes_no_dir_fragment_for_empty_block() {
     let service = MonadChainDataService::new(
         InMemoryMetaStore::default(),
         InMemoryBlobStore::default(),
@@ -83,14 +83,9 @@ async fn ingest_persists_zero_width_fragment_for_empty_block() {
         .await
         .expect("load fragments");
 
-    assert_eq!(
-        fragments,
-        vec![PrimaryDirFragment {
-            block_number: 1,
-            first_primary_id: 0,
-            end_primary_id_exclusive: 0,
-        }]
-    );
+    // An empty block mints no ids, so it writes no directory fragment — empty
+    // blocks no longer cost a per-block row.
+    assert_eq!(fragments, vec![]);
 }
 
 #[tokio::test(flavor = "current_thread")]

@@ -17,7 +17,10 @@ use crate::{
     engine::{
         family::Family,
         open_index::{OpenIndexes, OpenIndexesEviction},
-        primary_dir::{bucket_start, PrimaryDirBucket, PrimaryDirFragment, DIRECTORY_BUCKET_SIZE},
+        primary_dir::{
+            bucket_start, PrimaryDirBucket, PrimaryDirEntry, PrimaryDirFragment,
+            DIRECTORY_BUCKET_SIZE,
+        },
         tables::FamilyTables,
     },
     error::{MonadChainDataError, Result},
@@ -91,15 +94,26 @@ fn compact_bucket_from_fragments(fragments: &[PrimaryDirFragment]) -> Result<Pri
     let last_fragment = fragments.last().expect("fragments.first() returned Some");
     validate_fragment(first_fragment)?;
 
-    let start_block = first_fragment.block_number;
-    let mut first_primary_ids = Vec::with_capacity(fragments.len() + 1);
-    first_primary_ids.push(first_fragment.first_primary_id);
+    // The fragment list is the bucket's full, contiguous per-block record (one
+    // fragment per block, empty or not), so we still validate block- and
+    // id-continuity across *all* of it. But we only emit an entry for blocks
+    // that mint ids; empty blocks (`first == end`) would each cost a `u64` while
+    // resolving to nothing, which is exactly what let sparse buckets overflow
+    // the backend write limit. The sentinel comes from the last fragment's end,
+    // closing the final retained entry's range across any trailing empty blocks.
+    let mut entries = Vec::new();
+    push_entry_if_id_producing(&mut entries, first_fragment);
 
     for pair in fragments.windows(2) {
         let (previous, fragment) = (&pair[0], &pair[1]);
         validate_fragment(fragment)?;
 
-        if fragment.block_number != previous.block_number.saturating_add(1) {
+        // Block numbers must strictly increase, but need not be contiguous:
+        // empty blocks mint no ids and so write no fragment, leaving legitimate
+        // gaps. Id continuity is the real integrity check — empty blocks don't
+        // advance the frontier, so consecutive id-producing blocks still chain
+        // exactly (`previous.end == current.first`).
+        if fragment.block_number <= previous.block_number {
             return Err(MonadChainDataError::Decode(
                 "inconsistent primary directory bucket block sequence",
             ));
@@ -110,12 +124,19 @@ fn compact_bucket_from_fragments(fragments: &[PrimaryDirFragment]) -> Result<Pri
             ));
         }
 
-        first_primary_ids.push(fragment.first_primary_id);
+        push_entry_if_id_producing(&mut entries, fragment);
     }
 
-    first_primary_ids.push(last_fragment.end_primary_id_exclusive);
+    PrimaryDirBucket::new(entries, last_fragment.end_primary_id_exclusive)
+}
 
-    PrimaryDirBucket::new(start_block, first_primary_ids)
+fn push_entry_if_id_producing(entries: &mut Vec<PrimaryDirEntry>, fragment: &PrimaryDirFragment) {
+    if fragment.end_primary_id_exclusive > fragment.first_primary_id {
+        entries.push(PrimaryDirEntry {
+            block_number: fragment.block_number,
+            first_primary_id: fragment.first_primary_id,
+        });
+    }
 }
 
 fn sealed_ranges(from_next_primary_id: u64, next_primary_id: u64) -> Vec<u64> {
@@ -152,12 +173,14 @@ fn validate_fragment(fragment: &PrimaryDirFragment) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        compact_bucket_from_fragments, sealed_ranges, PrimaryDirBucket, PrimaryDirFragment,
-        DIRECTORY_BUCKET_SIZE,
+        compact_bucket_from_fragments, sealed_ranges, PrimaryDirBucket, PrimaryDirEntry,
+        PrimaryDirFragment, DIRECTORY_BUCKET_SIZE,
     };
 
     #[test]
-    fn compact_bucket_from_fragments_builds_summary_with_sentinel() {
+    fn compact_bucket_from_fragments_omits_empty_blocks_and_keeps_sentinel() {
+        // Block 8 is empty (103 == 103): it must not cost an entry, but the run
+        // of ids it spans is still closed by the trailing sentinel.
         let bucket = compact_bucket_from_fragments(&[
             PrimaryDirFragment {
                 block_number: 7,
@@ -180,15 +203,58 @@ mod tests {
         assert_eq!(
             bucket,
             PrimaryDirBucket {
-                start_block: 7,
-                first_primary_ids: vec![100, 103, 103, 108],
+                entries: vec![
+                    PrimaryDirEntry {
+                        block_number: 7,
+                        first_primary_id: 100,
+                    },
+                    PrimaryDirEntry {
+                        block_number: 9,
+                        first_primary_id: 103,
+                    },
+                ],
+                end_primary_id_exclusive: 108,
             }
         );
     }
 
     #[test]
-    fn compact_bucket_from_fragments_rejects_noncontiguous_blocks() {
-        let error = compact_bucket_from_fragments(&[
+    fn compact_bucket_from_fragments_collapses_long_empty_run() {
+        // One id-producing block followed by a million empty blocks compacts to a
+        // single entry plus the sentinel — the whole point of the sparse format.
+        let mut fragments = vec![PrimaryDirFragment {
+            block_number: 0,
+            first_primary_id: 0,
+            end_primary_id_exclusive: 5,
+        }];
+        for block_number in 1..=1_000_000 {
+            fragments.push(PrimaryDirFragment {
+                block_number,
+                first_primary_id: 5,
+                end_primary_id_exclusive: 5,
+            });
+        }
+
+        let bucket = compact_bucket_from_fragments(&fragments).expect("compact bucket");
+
+        assert_eq!(
+            bucket,
+            PrimaryDirBucket {
+                entries: vec![PrimaryDirEntry {
+                    block_number: 0,
+                    first_primary_id: 0,
+                }],
+                end_primary_id_exclusive: 5,
+            }
+        );
+    }
+
+    #[test]
+    fn compact_bucket_from_fragments_allows_block_gaps_from_omitted_empty_blocks() {
+        // Block 8 was empty and wrote no fragment, so the surviving fragments
+        // skip from block 7 to block 9. The frontier is unchanged across the gap
+        // (103 == 103), so this is valid and compacts cleanly.
+        let bucket = compact_bucket_from_fragments(&[
             PrimaryDirFragment {
                 block_number: 7,
                 first_primary_id: 100,
@@ -200,11 +266,69 @@ mod tests {
                 end_primary_id_exclusive: 108,
             },
         ])
-        .expect_err("detect gap");
+        .expect("compact bucket across block gap");
+
+        assert_eq!(
+            bucket,
+            PrimaryDirBucket {
+                entries: vec![
+                    PrimaryDirEntry {
+                        block_number: 7,
+                        first_primary_id: 100,
+                    },
+                    PrimaryDirEntry {
+                        block_number: 9,
+                        first_primary_id: 103,
+                    },
+                ],
+                end_primary_id_exclusive: 108,
+            }
+        );
+    }
+
+    #[test]
+    fn compact_bucket_from_fragments_rejects_out_of_order_blocks() {
+        let error = compact_bucket_from_fragments(&[
+            PrimaryDirFragment {
+                block_number: 9,
+                first_primary_id: 100,
+                end_primary_id_exclusive: 103,
+            },
+            PrimaryDirFragment {
+                block_number: 7,
+                first_primary_id: 103,
+                end_primary_id_exclusive: 108,
+            },
+        ])
+        .expect_err("detect out-of-order blocks");
 
         assert_eq!(
             error.to_string(),
             "decode error: inconsistent primary directory bucket block sequence"
+        );
+    }
+
+    #[test]
+    fn compact_bucket_from_fragments_rejects_id_gaps() {
+        // A gap in the id chain (103 -> 105) means a fragment was lost, not that
+        // an empty block was skipped — empty blocks leave the frontier unchanged.
+        let error = compact_bucket_from_fragments(&[
+            PrimaryDirFragment {
+                block_number: 7,
+                first_primary_id: 100,
+                end_primary_id_exclusive: 103,
+            },
+            PrimaryDirFragment {
+                block_number: 8,
+                first_primary_id: 105,
+                end_primary_id_exclusive: 108,
+            },
+        ])
+        .expect_err("detect id gap");
+
+        assert_eq!(
+            error.to_string(),
+            "decode error: inconsistent primary directory bucket primary-id sequence"
         );
     }
 

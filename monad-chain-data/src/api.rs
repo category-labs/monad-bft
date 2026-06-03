@@ -209,18 +209,24 @@ fn append_family_phase_a_delta(
     bitmap_fragments: &[crate::engine::bitmap::BitmapFragmentWrite],
 ) -> Result<()> {
     let first_primary_id = window.first_primary_id.as_u64();
-    for bucket in fragment_bucket_starts(first_primary_id, window.count) {
-        let fragment = PrimaryDirFragment {
-            block_number,
-            first_primary_id,
-            end_primary_id_exclusive: first_primary_id.saturating_add(u64::from(window.count)),
-        };
-        delta.directory_fragments.push((
-            family,
-            bucket,
-            block_number,
-            Bytes::from(fragment.encode()),
-        ));
+    // Empty blocks mint no ids, so a fragment for them resolves nothing and is
+    // pure write/memory amplification. Skip them: the compacted bucket's sentinel
+    // (the next id-producing block's first id, or the bucket's final frontier)
+    // already closes the id range across any empty blocks in between.
+    if window.count > 0 {
+        for bucket in fragment_bucket_starts(first_primary_id, window.count) {
+            let fragment = PrimaryDirFragment {
+                block_number,
+                first_primary_id,
+                end_primary_id_exclusive: first_primary_id.saturating_add(u64::from(window.count)),
+            };
+            delta.directory_fragments.push((
+                family,
+                bucket,
+                block_number,
+                Bytes::from(fragment.encode()),
+            ));
+        }
     }
     for fragment in bitmap_fragments {
         let page_global_start =
@@ -656,16 +662,19 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
             .unwrap_or(window.first_primary_id.as_u64());
         let family_tables = self.tables.family(family);
 
-        // Rebuild only the current open directory bucket. Earlier buckets are
-        // sealed behind durable summaries, and future/ahead-of-head fragments
-        // are speculative write-before-CAS artifacts that retry will restage.
-        if window.count > 0 {
-            let open_bucket = bucket_start(next_primary_id);
-            let directory_fragments = family_tables
-                .list_bucket_fragments_for_rebuild(open_bucket, published_head)
-                .await?;
-            insert_directory_set(delta, family, open_bucket, directory_fragments);
-        }
+        // Rebuild the current open directory bucket unconditionally — even when
+        // the published head block itself minted no ids. The open bucket can hold
+        // id-producing fragments from *earlier* blocks that a later batch will
+        // seal; skipping the reload when the head happens to be empty would leave
+        // the open index short those fragments and compact an incomplete summary.
+        // Earlier buckets are sealed behind durable summaries, and `_for_rebuild`
+        // already drops ahead-of-head fragments, so this loads exactly the open
+        // bucket's published fragments (empty when the frontier is brand new).
+        let open_bucket = bucket_start(next_primary_id);
+        let directory_fragments = family_tables
+            .list_bucket_fragments_for_rebuild(open_bucket, published_head)
+            .await?;
+        insert_directory_set(delta, family, open_bucket, directory_fragments);
 
         // Likewise, only the current open bitmap page needs fragment block
         // sets. Sealed pages have compacted page artifacts; ahead-of-head

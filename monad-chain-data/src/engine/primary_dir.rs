@@ -26,34 +26,54 @@ use crate::{
 
 pub const DIRECTORY_BUCKET_SIZE: u64 = 10_000;
 
+/// One stored block within a compacted bucket: the block number and the first
+/// primary id it minted. Only blocks that actually mint ids (`count > 0`) get an
+/// entry — empty blocks consume no ids and are omitted, so a bucket's encoded
+/// size is bounded by the number of *id-producing* blocks it spans, not its full
+/// block range. (Storing one entry per block, empty or not, is what let a sparse
+/// 10k-id bucket spanning millions of blocks balloon past the backend's 16 MiB
+/// write limit.)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable)]
+pub struct PrimaryDirEntry {
+    pub block_number: u64,
+    pub first_primary_id: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable)]
 pub struct PrimaryDirBucket {
-    pub start_block: u64,
-    pub first_primary_ids: Vec<u64>,
+    /// Id-producing blocks in the bucket, ordered by `first_primary_id` (which is
+    /// therefore strictly increasing, since each entry mints at least one id).
+    pub entries: Vec<PrimaryDirEntry>,
+    /// Exclusive id frontier after the bucket's last block — the upper bound that
+    /// closes the final entry's id range.
+    pub end_primary_id_exclusive: u64,
 }
 
 impl PrimaryDirBucket {
-    /// Constructs a bucket after enforcing the sentinel and nondecreasing
-    /// invariants. All bucket producers — RLP decode and ingest-side
-    /// compaction — funnel through here so the type's invariants live in
-    /// one place.
-    pub(crate) fn new(start_block: u64, first_primary_ids: Vec<u64>) -> Result<Self> {
-        if first_primary_ids.len() < 2 {
+    /// Constructs a bucket after enforcing its invariants. All producers — RLP
+    /// decode and ingest-side compaction — funnel through here so the type's
+    /// invariants live in one place: entries are strictly increasing in both
+    /// `first_primary_id` and `block_number`, and the sentinel sits strictly
+    /// above the last entry's first id.
+    pub(crate) fn new(entries: Vec<PrimaryDirEntry>, end_primary_id_exclusive: u64) -> Result<Self> {
+        if entries.windows(2).any(|window| {
+            window[0].first_primary_id >= window[1].first_primary_id
+                || window[0].block_number >= window[1].block_number
+        }) {
             return Err(MonadChainDataError::Decode(
-                "primary directory bucket missing sentinel",
+                "primary directory bucket entries must be strictly increasing",
             ));
         }
-        if first_primary_ids
-            .windows(2)
-            .any(|window| window[0] > window[1])
-        {
-            return Err(MonadChainDataError::Decode(
-                "primary directory bucket ids must be nondecreasing",
-            ));
+        if let Some(last) = entries.last() {
+            if last.first_primary_id >= end_primary_id_exclusive {
+                return Err(MonadChainDataError::Decode(
+                    "primary directory bucket sentinel must exceed its last id",
+                ));
+            }
         }
         Ok(Self {
-            start_block,
-            first_primary_ids,
+            entries,
+            end_primary_id_exclusive,
         })
     }
 
@@ -64,7 +84,7 @@ impl PrimaryDirBucket {
     pub fn decode(bytes: &[u8]) -> Result<Self> {
         let raw: Self = alloy_rlp::decode_exact(bytes)
             .map_err(|_| MonadChainDataError::Decode("invalid primary directory bucket rlp"))?;
-        Self::new(raw.start_block, raw.first_primary_ids)
+        Self::new(raw.entries, raw.end_primary_id_exclusive)
     }
 }
 
@@ -209,6 +229,13 @@ impl<M: MetaStore> PrimaryDirTables<M> {
         B: BlobStore,
         F: FnMut(u64) -> bool,
     {
+        // Empty blocks (`count == 0`) mint no ids; a fragment for them resolves
+        // nothing, so we omit it. Bucket compaction closes the id range across
+        // omitted empty blocks via the next id-producing block (or the sentinel).
+        if count == 0 {
+            return;
+        }
+
         let fragment = PrimaryDirFragment {
             block_number,
             first_primary_id,

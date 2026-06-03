@@ -20,7 +20,7 @@ use std::{
 
 use crate::{
     engine::{
-        primary_dir::{bucket_start, PrimaryDirBucket, PrimaryDirFragment},
+        primary_dir::{bucket_start, PrimaryDirBucket, PrimaryDirEntry, PrimaryDirFragment},
         tables::FamilyTables,
     },
     error::{MonadChainDataError, Result},
@@ -152,31 +152,34 @@ fn resolved_location_from_bucket(
     bucket: &PrimaryDirBucket,
     id: PrimaryId,
 ) -> Result<Option<ResolvedPrimaryIdLocation>> {
-    let Some(entry_index) = containing_bucket_entry(bucket, id.as_u64()) else {
+    let Some(entry) = containing_bucket_entry(bucket, id.as_u64()) else {
         return Ok(None);
     };
 
     Ok(Some(ResolvedPrimaryIdLocation {
-        block_number: bucket.start_block.saturating_add(entry_index as u64),
-        idx_in_block: id.idx_in_block(PrimaryId::new(bucket.first_primary_ids[entry_index]))?,
+        block_number: entry.block_number,
+        idx_in_block: id.idx_in_block(PrimaryId::new(entry.first_primary_id))?,
     }))
 }
 
-fn containing_bucket_entry(bucket: &PrimaryDirBucket, id: u64) -> Option<usize> {
-    if bucket.first_primary_ids.len() < 2 {
-        return None;
-    }
-
+fn containing_bucket_entry(bucket: &PrimaryDirBucket, id: u64) -> Option<&PrimaryDirEntry> {
+    // Entries are strictly increasing in `first_primary_id`; the entry holding
+    // `id` is the last one whose first id is `<= id`, and `id` must fall below
+    // the next entry's first id (or the bucket sentinel for the last entry).
     let upper = bucket
-        .first_primary_ids
-        .partition_point(|first_primary_id| *first_primary_id <= id);
-    if upper == 0 || upper >= bucket.first_primary_ids.len() {
+        .entries
+        .partition_point(|entry| entry.first_primary_id <= id);
+    if upper == 0 {
         return None;
     }
 
-    let entry_index = upper - 1;
-    let end = bucket.first_primary_ids[upper];
-    (id < end).then_some(entry_index)
+    let entry = &bucket.entries[upper - 1];
+    let end = bucket
+        .entries
+        .get(upper)
+        .map(|next| next.first_primary_id)
+        .unwrap_or(bucket.end_primary_id_exclusive);
+    (id < end).then_some(entry)
 }
 
 fn resolved_location_from_fragments(
@@ -204,7 +207,7 @@ mod tests {
     use crate::{
         engine::{
             family::Family,
-            primary_dir::{PrimaryDirBucket, DIRECTORY_BUCKET_SIZE},
+            primary_dir::{PrimaryDirBucket, PrimaryDirEntry, DIRECTORY_BUCKET_SIZE},
             tables::Tables,
         },
         primitives::state::PrimaryId,
@@ -216,13 +219,31 @@ mod tests {
     }
 
     #[test]
-    fn bucket_lookup_uses_last_duplicate_boundary() {
+    fn bucket_lookup_routes_past_omitted_empty_blocks() {
+        // Block 50 minted ids [1000, 1003), block 51 was empty (omitted), block 52
+        // minted [1003, 1008). An id in block 52's range must resolve to block 52,
+        // not to the omitted empty block between them.
         let bucket = PrimaryDirBucket {
-            start_block: 50,
-            first_primary_ids: vec![1000, 1003, 1003, 1008],
+            entries: vec![
+                PrimaryDirEntry {
+                    block_number: 50,
+                    first_primary_id: 1000,
+                },
+                PrimaryDirEntry {
+                    block_number: 52,
+                    first_primary_id: 1003,
+                },
+            ],
+            end_primary_id_exclusive: 1008,
         };
 
-        assert_eq!(containing_bucket_entry(&bucket, 1006), Some(2));
+        assert_eq!(
+            containing_bucket_entry(&bucket, 1006),
+            Some(&PrimaryDirEntry {
+                block_number: 52,
+                first_primary_id: 1003,
+            })
+        );
 
         let location =
             resolved_location_from_bucket(&bucket, PrimaryId::new(1006)).expect("resolve bucket");
@@ -234,8 +255,17 @@ mod tests {
     #[test]
     fn bucket_lookup_rejects_ids_past_the_sentinel() {
         let bucket = PrimaryDirBucket {
-            start_block: 50,
-            first_primary_ids: vec![1000, 1003, 1003, 1008],
+            entries: vec![
+                PrimaryDirEntry {
+                    block_number: 50,
+                    first_primary_id: 1000,
+                },
+                PrimaryDirEntry {
+                    block_number: 52,
+                    first_primary_id: 1003,
+                },
+            ],
+            end_primary_id_exclusive: 1008,
         };
 
         assert_eq!(containing_bucket_entry(&bucket, 1008), None);
@@ -270,8 +300,17 @@ mod tests {
                 Family::Log,
                 0,
                 &PrimaryDirBucket {
-                    start_block: 7,
-                    first_primary_ids: vec![0, 3, 8],
+                    entries: vec![
+                        PrimaryDirEntry {
+                            block_number: 7,
+                            first_primary_id: 0,
+                        },
+                        PrimaryDirEntry {
+                            block_number: 8,
+                            first_primary_id: 3,
+                        },
+                    ],
+                    end_primary_id_exclusive: 8,
                 },
             )
             .await;
