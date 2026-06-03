@@ -137,12 +137,27 @@ pub struct BlockBlobHeader {
     /// Row-codec dictionary version every frame in this block's blob was
     /// compressed under. `0` = plain zstd frames (no dictionary).
     pub dict_version: u32,
+    /// Start of this family's region within the shared per-block blob.
+    pub base_offset: u32,
 }
 
 impl BlockBlobHeader {
     /// Number of stored rows in this block (offsets length minus the sentinel).
     pub fn row_count(&self) -> usize {
         self.offsets.len().saturating_sub(1)
+    }
+
+    pub fn abs_range(&self, idx: usize) -> (usize, usize) {
+        let base = self.base_offset as usize;
+        (
+            base + self.offsets[idx] as usize,
+            base + self.offsets[idx + 1] as usize,
+        )
+    }
+
+    pub fn region_range(&self) -> (usize, usize) {
+        let base = self.base_offset as usize;
+        (base, base + *self.offsets.last().unwrap_or(&0) as usize)
     }
 
     pub fn encode(&self) -> Vec<u8> {

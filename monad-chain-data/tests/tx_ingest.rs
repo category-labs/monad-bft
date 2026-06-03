@@ -53,7 +53,8 @@ async fn ingest_persists_tx_artifacts_for_block_with_txs() {
     let tx_header = BlockBlobHeader::decode(&header_bytes).expect("decode tx header");
     assert_eq!(tx_header.row_count(), 2);
 
-    let blob = tx_family
+    let blob = service
+        .tables()
         .load_block_blob(1)
         .await
         .expect("load tx blob")
@@ -138,7 +139,8 @@ async fn ingest_rejects_invalid_signed_tx_bytes_before_writing_tx_artifacts() {
         .await
         .expect("load tx header")
         .is_none());
-    assert!(tx_family
+    assert!(service
+        .tables()
         .load_block_blob(1)
         .await
         .expect("load tx blob")

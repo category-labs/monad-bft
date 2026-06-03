@@ -111,6 +111,7 @@ fn encode_block_traces(
         BlockBlobHeader {
             offsets,
             dict_version: codec.version(),
+            base_offset: 0,
         },
         blob,
         rows_digest.finish(),

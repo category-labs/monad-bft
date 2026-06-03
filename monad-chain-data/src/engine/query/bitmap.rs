@@ -27,7 +27,7 @@ use crate::{
         tables::FamilyTables,
     },
     error::Result,
-    store::{BlobStore, MetaStore},
+    store::MetaStore,
 };
 
 /// Precomputed per-shard intersection plan: the clause streams and the
@@ -51,7 +51,7 @@ pub(crate) struct ShardPagePlan {
     shard_sealed: bool,
 }
 
-impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
+impl<M: MetaStore> FamilyTables<M> {
     /// Builds the per-shard plan (clause streams + manifest) shared by every
     /// page of `shard`. Returns `None` when a clause has no streams in this
     /// shard: it contributes an empty bitmap to every page, so the whole shard

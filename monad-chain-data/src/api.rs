@@ -357,14 +357,6 @@ async fn retry_sleep(backoff: Duration) {
     futures_timer::Delay::new(backoff).await;
 }
 
-/// Decodes a block header just far enough to recover the row frame layout
-/// (`offsets`) and the `dict_version` the frames were written under. Used only
-/// by the dict-training read-back path. All families share `BlockBlobHeader`.
-fn decode_family_header_layout(bytes: &[u8]) -> Result<(Vec<u32>, u32)> {
-    let h = BlockBlobHeader::decode(bytes)?;
-    Ok((h.offsets, h.dict_version))
-}
-
 /// Number of blocks sampled from an epoch's leading range to build its
 /// training corpus. Together with `PER_BLOCK_SAMPLE_CAP` this bounds the
 /// corpus (`TARGET_SAMPLE_BLOCKS * PER_BLOCK_SAMPLE_CAP` rows at most), so a
@@ -945,9 +937,22 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
                     .expect("epoch codec resolved before par_iter");
                 debug_assert_eq!(log_codec_ref.version() as u64, epoch);
 
-                let log_plan = LogIngestPlan::build(block, starts.log, log_codec_ref)?;
-                let tx_plan = TxIngestPlan::build(block, starts.tx, tx_codec_ref)?;
-                let trace_plan = TraceIngestPlan::build(block, starts.trace, trace_codec_ref)?;
+                let mut log_plan = LogIngestPlan::build(block, starts.log, log_codec_ref)?;
+                let mut tx_plan = TxIngestPlan::build(block, starts.tx, tx_codec_ref)?;
+                let mut trace_plan = TraceIngestPlan::build(block, starts.trace, trace_codec_ref)?;
+
+                let log_len = u32::try_from(log_plan.block_log_blob.len())
+                    .map_err(|_| MonadChainDataError::Decode("block log blob too large"))?;
+                let tx_len = u32::try_from(tx_plan.block_tx_blob.len())
+                    .map_err(|_| MonadChainDataError::Decode("block tx blob too large"))?;
+                let trace_base = log_len
+                    .checked_add(tx_len)
+                    .ok_or(MonadChainDataError::Decode(
+                        "combined block blob base offset overflow",
+                    ))?;
+                log_plan.block_log_header.base_offset = 0;
+                tx_plan.block_tx_header.base_offset = log_len;
+                trace_plan.block_trace_header.base_offset = trace_base;
 
                 // Content digest folds the uncompressed artifacts in parallel;
                 // the chain over prior blocks is applied sequentially below.
@@ -1083,10 +1088,14 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
                         Bytes::from(st.tx_plan.block_tx_header.encode()),
                         Bytes::from(st.trace_plan.block_trace_header.encode()),
                     );
+                    let mut combined = st.log_plan.block_log_blob.clone();
+                    combined.extend_from_slice(&st.tx_plan.block_tx_blob);
+                    combined.extend_from_slice(&st.trace_plan.block_trace_blob);
+                    w.tables()
+                        .stage_block_blob(w, block.block_number(), combined);
                     logs.stage_indexed_family_ingest(
                         w,
                         block.block_number(),
-                        st.log_plan.block_log_blob.clone(),
                         st.log_plan.log_window,
                         &st.log_plan.bitmap_fragments,
                         log_filter,
@@ -1094,7 +1103,6 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
                     txs.stage_indexed_family_ingest(
                         w,
                         block.block_number(),
-                        st.tx_plan.block_tx_blob.clone(),
                         st.tx_plan.tx_window,
                         &st.tx_plan.bitmap_fragments,
                         tx_filter,
@@ -1102,7 +1110,6 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
                     traces.stage_indexed_family_ingest(
                         w,
                         block.block_number(),
-                        st.trace_plan.block_trace_blob.clone(),
                         st.trace_plan.trace_window,
                         &st.trace_plan.bitmap_fragments,
                         trace_filter,
@@ -1382,29 +1389,34 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
             let Some(header_bytes) = family_tables.load_block_header(block_number).await? else {
                 continue;
             };
-            let (offsets, dict_version) = decode_family_header_layout(&header_bytes)?;
-            if offsets.len() < 2 {
+            let header = BlockBlobHeader::decode(&header_bytes)?;
+            if header.offsets.len() < 2 {
                 continue;
             }
-            let Some(blob) = family_tables.load_block_blob(block_number).await? else {
+            let (region_start, region_end) = header.region_range();
+            let Some(region) = self
+                .tables
+                .read_block_blob_range(block_number, region_start, region_end)
+                .await?
+            else {
                 continue;
             };
-            let row_count = offsets.len() - 1;
+            let row_count = header.offsets.len() - 1;
             for idx in 0..row_count {
                 if !should_sample_row(idx, row_count) {
                     continue;
                 }
-                let frame_start = offsets[idx] as usize;
-                let frame_end = offsets[idx + 1] as usize;
-                if frame_start > frame_end || frame_end > blob.len() {
+                let frame_start = header.offsets[idx] as usize;
+                let frame_end = header.offsets[idx + 1] as usize;
+                if frame_start > frame_end || frame_end > region.len() {
                     return Err(MonadChainDataError::Decode(
                         "invalid row frame range while sampling for dict training",
                     ));
                 }
-                let frame = &blob[frame_start..frame_end];
+                let frame = &region[frame_start..frame_end];
                 let raw = self
                     .tables
-                    .decode_block_row(family, dict_version, frame)
+                    .decode_block_row(family, header.dict_version, frame)
                     .await?;
                 samples.push(raw.to_vec());
             }

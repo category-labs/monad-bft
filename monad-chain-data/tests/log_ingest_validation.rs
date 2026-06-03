@@ -66,7 +66,8 @@ async fn ingest_rejects_log_with_more_than_four_topics_before_writing_log_artifa
         .await
         .expect("load log header")
         .is_none());
-    assert!(log_family
+    assert!(service
+        .tables()
         .load_block_blob(1)
         .await
         .expect("load log blob")

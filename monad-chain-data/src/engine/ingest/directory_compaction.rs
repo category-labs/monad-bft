@@ -13,7 +13,6 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-
 use crate::{
     engine::{
         family::Family,
@@ -43,7 +42,7 @@ impl DirectoryCompactionPlan {
     }
 }
 
-impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
+impl<M: MetaStore> FamilyTables<M> {
     /// Reads every sealed bucket's fragments and folds them into compacted
     /// bucket summaries. Pure I/O — no writes — so callers can fan out across
     /// families with `try_join_all` before opening the Phase B meta batch.
@@ -68,7 +67,7 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
         Ok(DirectoryCompactionPlan { buckets })
     }
 
-    pub fn stage_directory_compactions(
+    pub fn stage_directory_compactions<B: BlobStore>(
         &self,
         w: &mut WriteSession<'_, M, B>,
         plan: &DirectoryCompactionPlan,

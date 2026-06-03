@@ -25,24 +25,22 @@ pub(crate) struct PhaseAFragmentWriteFilter {
     pub open_bitmap_page: u64,
 }
 
-impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
+impl<M: MetaStore> FamilyTables<M> {
     /// Stages one block's family Phase A artifacts via the write session:
-    /// per-block blob, primary-directory fragment writes (one per overlapped
-    /// bucket), and one bitmap-fragment scan_put per bitmap fragment. Pure —
-    /// no I/O. Phase B compactions are planned and staged separately by
+    /// primary-directory fragment writes (one per overlapped bucket), and one
+    /// bitmap-fragment scan_put per bitmap fragment. Pure — no I/O. Phase B
+    /// compactions are planned and staged separately by
     /// `plan_*_compactions` / `stage_*_compactions`.
-    pub(crate) fn stage_indexed_family_ingest(
+    pub(crate) fn stage_indexed_family_ingest<B: BlobStore>(
         &self,
         w: &mut WriteSession<'_, M, B>,
         block_number: u64,
-        block_blob: Vec<u8>,
         window: FamilyWindowRecord,
         bitmap_fragments: &[BitmapFragmentWrite],
         fragment_filter: PhaseAFragmentWriteFilter,
     ) -> Result<()> {
         let first_primary_id = window.first_primary_id.as_u64();
 
-        self.stage_block_blob(w, block_number, block_blob);
         self.dir().stage_block_fragment_filtered(
             w,
             block_number,

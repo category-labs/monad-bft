@@ -20,7 +20,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use monad_chain_data::{
     engine::{
-        family::Family,
+        family::BLOCK_BLOB_TABLE,
         tables::{BlockTables, PublicationTables, Tables},
     },
     error::MonadChainDataError,
@@ -318,9 +318,7 @@ async fn with_writes_and_cas_flushes_blobs_before_cas_conflict() {
     let outcome = tables
         .with_writes_and_cas(cas, |w| {
             Box::pin(async move {
-                tables_ref
-                    .family(Family::Log)
-                    .stage_block_blob(w, 1, b"payload".to_vec());
+                tables_ref.stage_block_blob(w, 1, b"payload".to_vec());
                 Ok(())
             })
         })
@@ -328,10 +326,9 @@ async fn with_writes_and_cas_flushes_blobs_before_cas_conflict() {
         .expect("conflict still returns Ok(outcome)");
     assert!(matches!(outcome, CasOutcome::Conflict { .. }));
 
-    let ids = Family::Log.table_ids();
     let stored = blob_for_check
         .blob_snapshot()
-        .get(&(ids.block_blob, 1u64.to_be_bytes().to_vec()))
+        .get(&(BLOCK_BLOB_TABLE, 1u64.to_be_bytes().to_vec()))
         .cloned();
     assert_eq!(
         stored.as_deref(),
@@ -448,9 +445,7 @@ async fn parallel_meta_and_blob_flush() {
                 // covers the MetaStore side; both writes flush concurrently
                 // because the framework fires apply_writes on both stores
                 // before awaiting either future.
-                tables_ref
-                    .family(monad_chain_data::engine::family::Family::Log)
-                    .stage_block_blob(w, 1, b"payload".to_vec());
+                tables_ref.stage_block_blob(w, 1, b"payload".to_vec());
                 tables_ref.blocks().stage_metadata(
                     w,
                     1,

@@ -27,7 +27,7 @@ use zstd::dict::DecoderDictionary;
 use crate::{
     engine::{
         bitmap::{BitmapPageArtifact, BitmapTables},
-        family::Family,
+        family::{Family, BLOCK_BLOB_TABLE},
         primary_dir::{PrimaryDirBucket, PrimaryDirFragment, PrimaryDirTables},
         row_codec::{decode_row_frame, RowCodec, RowCodecState, DICT_VERSION_NONE, ROW_ZSTD_LEVEL},
     },
@@ -333,7 +333,8 @@ pub struct Tables<M: MetaStore, B: BlobStore> {
     blob_store: B,
     blocks: BlockTables<M>,
     tx_hash_index: TxHashIndexTable<M>,
-    families: BTreeMap<Family, FamilyTables<M, B>>,
+    block_blobs: CachedBlobTable<B>,
+    families: BTreeMap<Family, FamilyTables<M>>,
     dicts: DictManager,
 }
 
@@ -358,19 +359,23 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
         let mut families = BTreeMap::new();
         families.insert(
             Family::Log,
-            FamilyTables::new(meta_store.clone(), blob_store.clone(), Family::Log, cache),
+            FamilyTables::new(meta_store.clone(), Family::Log, cache),
         );
         families.insert(
             Family::Tx,
-            FamilyTables::new(meta_store.clone(), blob_store.clone(), Family::Tx, cache),
+            FamilyTables::new(meta_store.clone(), Family::Tx, cache),
         );
         families.insert(
             Family::Trace,
-            FamilyTables::new(meta_store.clone(), blob_store.clone(), Family::Trace, cache),
+            FamilyTables::new(meta_store.clone(), Family::Trace, cache),
         );
         Self {
             blocks: BlockTables::new(meta_store.clone(), cache),
             tx_hash_index: TxHashIndexTable::new(meta_store.clone(), cache),
+            block_blobs: CachedBlobTable::new(
+                blob_store.table(BLOCK_BLOB_TABLE),
+                cache.block_blob_entries,
+            ),
             meta_store,
             blob_store,
             families,
@@ -394,10 +399,42 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
         &self.tx_hash_index
     }
 
+    pub async fn load_block_blob(
+        &self,
+        block_number: u64,
+    ) -> Result<Option<alloy_primitives::Bytes>> {
+        let key = block_number_key(block_number);
+        Ok(self.block_blobs.get(&key).await?.map(Into::into))
+    }
+
+    pub async fn read_block_blob_range(
+        &self,
+        block_number: u64,
+        start: usize,
+        end_exclusive: usize,
+    ) -> Result<Option<alloy_primitives::Bytes>> {
+        let key = block_number_key(block_number);
+        Ok(self
+            .block_blobs
+            .read_range(&key, start, end_exclusive)
+            .await?
+            .map(Into::into))
+    }
+
+    pub fn stage_block_blob(
+        &self,
+        w: &mut WriteSession<'_, M, B>,
+        block_number: u64,
+        combined: Vec<u8>,
+    ) {
+        let key = block_number_key(block_number);
+        w.put_blob(&self.block_blobs, &key, Bytes::from(combined));
+    }
+
     /// Returns the table set for a family. Panics if the family was not
     /// registered at construction; the `Family` enum is closed, so missing
     /// a variant here is a programmer error, not a data error.
-    pub fn family(&self, family: Family) -> &FamilyTables<M, B> {
+    pub fn family(&self, family: Family) -> &FamilyTables<M> {
         self.families
             .get(&family)
             .expect("family registered at construction")
@@ -636,6 +673,7 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
         let mut out = Vec::new();
         self.blocks.collect_window_stats(&mut out);
         self.tx_hash_index.collect_window_stats(&mut out);
+        collect_blob_stats(&mut out, &self.block_blobs);
         for fam in self.families.values() {
             fam.collect_window_stats(&mut out);
         }
@@ -989,27 +1027,22 @@ impl<M: MetaStore> BlockTables<M> {
     }
 }
 
-pub struct FamilyTables<M: MetaStore, B: BlobStore> {
+pub struct FamilyTables<M: MetaStore> {
     family: Family,
     block_metadata: CachedKvTable<M>,
-    block_blobs: CachedBlobTable<B>,
     dict_by_version: CachedKvTable<M>,
     dir: PrimaryDirTables<M>,
     bitmap: BitmapTables<M>,
 }
 
-impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
-    fn new(meta_store: M, blob_store: B, family: Family, cache: CacheConfig) -> Self {
+impl<M: MetaStore> FamilyTables<M> {
+    fn new(meta_store: M, family: Family, cache: CacheConfig) -> Self {
         let ids = family.table_ids();
         Self {
             family,
             block_metadata: CachedKvTable::new(
                 meta_store.table(BlockTables::<M>::BLOCK_METADATA_TABLE),
                 cache.block_header_entries,
-            ),
-            block_blobs: CachedBlobTable::new(
-                blob_store.table(ids.block_blob),
-                cache.block_blob_entries,
             ),
             // Dictionaries are tiny and rarely minted; a small cache suffices.
             dict_by_version: CachedKvTable::new(meta_store.table(ids.dict_by_version), 16),
@@ -1072,36 +1105,6 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
         }))
     }
 
-    pub async fn load_block_blob(
-        &self,
-        block_number: u64,
-    ) -> Result<Option<alloy_primitives::Bytes>> {
-        let key = block_number_key(block_number);
-        Ok(self.block_blobs.get(&key).await?.map(Into::into))
-    }
-
-    pub async fn read_block_blob_range(
-        &self,
-        block_number: u64,
-        start: usize,
-        end_exclusive: usize,
-    ) -> Result<Option<bytes::Bytes>> {
-        let key = block_number_key(block_number);
-        self.block_blobs
-            .read_range(&key, start, end_exclusive)
-            .await
-    }
-
-    pub fn stage_block_blob(
-        &self,
-        w: &mut WriteSession<'_, M, B>,
-        block_number: u64,
-        block_log_blob: Vec<u8>,
-    ) {
-        let key = block_number_key(block_number);
-        w.put_blob(&self.block_blobs, &key, Bytes::from(block_log_blob));
-    }
-
     /// Loads the raw bytes of the row-codec dictionary for `version`, or
     /// `None` if no such version has been persisted.
     pub async fn load_dict(&self, version: u32) -> Result<Option<Bytes>> {
@@ -1109,7 +1112,12 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
     }
 
     /// Stages a row-codec dictionary version into the durable write path.
-    pub fn stage_dict(&self, w: &mut WriteSession<'_, M, B>, version: u32, dict_bytes: Bytes) {
+    pub fn stage_dict<B: BlobStore>(
+        &self,
+        w: &mut WriteSession<'_, M, B>,
+        version: u32,
+        dict_bytes: Bytes,
+    ) {
         w.put(&self.dict_by_version, &version.to_be_bytes(), dict_bytes);
     }
 
@@ -1195,7 +1203,6 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
 
     pub(crate) fn collect_window_stats(&self, out: &mut Vec<(&'static str, u64, u64)>) {
         collect_kv_stats(out, &self.dict_by_version);
-        collect_blob_stats(out, &self.block_blobs);
         collect_scan_stats(out, self.dir.fragments_cache());
         collect_kv_stats(out, self.dir.buckets_cache());
         collect_scan_stats(out, self.bitmap.fragments_cache());

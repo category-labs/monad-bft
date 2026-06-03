@@ -131,6 +131,7 @@ impl TxIngestPlan {
             BlockBlobHeader {
                 offsets,
                 dict_version: codec.version(),
+                base_offset: 0,
             },
             blob,
             rows_digest.finish(),

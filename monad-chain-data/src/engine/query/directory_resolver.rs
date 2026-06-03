@@ -25,7 +25,7 @@ use crate::{
     },
     error::{MonadChainDataError, Result},
     primitives::state::PrimaryId,
-    store::{BlobStore, MetaStore},
+    store::MetaStore,
 };
 
 /// Resolves a primary id to its block number and position within that block.
@@ -50,8 +50,8 @@ use crate::{
 /// for the same sealed bucket are already coalesced by the cache-layer
 /// single-flight, so only the single open bucket's fragment scan can duplicate
 /// — an idempotent read.
-pub(crate) struct PrimaryIdResolver<'a, M: MetaStore, B: BlobStore> {
-    family: &'a FamilyTables<M, B>,
+pub(crate) struct PrimaryIdResolver<'a, M: MetaStore> {
+    family: &'a FamilyTables<M>,
     /// First bucket start that is *not* sealed — i.e. `bucket_start` of the
     /// family's frontier id at the publication head. Buckets strictly below
     /// this are sealed; the bucket at or above it is the single open bucket.
@@ -59,8 +59,8 @@ pub(crate) struct PrimaryIdResolver<'a, M: MetaStore, B: BlobStore> {
     bucket_cache: Mutex<HashMap<u64, Arc<CachedBucket>>>,
 }
 
-impl<'a, M: MetaStore, B: BlobStore> PrimaryIdResolver<'a, M, B> {
-    pub(crate) fn new(family: &'a FamilyTables<M, B>, sealed_below: u64) -> Self {
+impl<'a, M: MetaStore> PrimaryIdResolver<'a, M> {
+    pub(crate) fn new(family: &'a FamilyTables<M>, sealed_below: u64) -> Self {
         Self {
             family,
             sealed_below,

@@ -102,7 +102,7 @@ impl BitmapBatchCompactionPlan {
     }
 }
 
-impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
+impl<M: MetaStore> FamilyTables<M> {
     /// Reads the prior open-stream inventory and the sealed-page fragments
     /// across a batch's primary-id ranges, returning the compacted page
     /// artifacts the Phase B meta batch will stage. Pure I/O — no writes.
@@ -312,7 +312,7 @@ impl<M: MetaStore, B: BlobStore> FamilyTables<M, B> {
         Ok(manifests)
     }
 
-    pub fn stage_bitmap_compactions(
+    pub fn stage_bitmap_compactions<B: BlobStore>(
         &self,
         w: &mut WriteSession<'_, M, B>,
         plan: &BitmapBatchCompactionPlan,
