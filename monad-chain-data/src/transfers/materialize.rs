@@ -263,6 +263,9 @@ impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery for TransferMaterializer
             .await?
             .ok_or(MonadChainDataError::MissingData("missing block record"))?;
         let block_ref = BlockRef::from(&block_record);
+        if block_record.traces.count == 0 {
+            return Ok((block_ref, Vec::new()));
+        }
 
         let header_bytes = self
             .tables

@@ -427,6 +427,10 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
         block_number: u64,
         combined: Vec<u8>,
     ) {
+        if combined.is_empty() {
+            return;
+        }
+
         let key = block_number_key(block_number);
         w.put_blob(&self.block_blobs, &key, Bytes::from(combined));
     }

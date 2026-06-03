@@ -241,6 +241,9 @@ impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery for TxMaterializer<'a, M
             .await?
             .ok_or(MonadChainDataError::MissingData("missing block record"))?;
         let block_ref = BlockRef::from(&block_record);
+        if block_record.txs.count == 0 {
+            return Ok((block_ref, Vec::new()));
+        }
 
         let header_bytes = self
             .tables

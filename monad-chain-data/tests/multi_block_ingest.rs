@@ -14,8 +14,10 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use monad_chain_data::{
-    store::TableId, Address, Bytes, EvmBlockHeader, FinalizedBlock, InMemoryBlobStore,
-    InMemoryMetaStore, Log, LogData, MonadChainDataError, MonadChainDataService, QueryLimits, B256,
+    engine::family::BLOCK_BLOB_TABLE, store::TableId, Address, Bytes, EvmBlockHeader,
+    FinalizedBlock, InMemoryBlobStore, InMemoryMetaStore, Log, LogData, MonadChainDataError,
+    MonadChainDataService, QueryLimits, QueryLogsRequest, QueryTracesRequest,
+    QueryTransactionsRequest, QueryTransfersRequest, B256,
 };
 
 mod common;
@@ -203,6 +205,38 @@ async fn ingest_blocks_skips_phase_b_when_no_family_writes_seal() {
     let service = MonadChainDataService::new(meta.clone(), blob.clone(), QueryLimits::UNLIMITED);
 
     service.ingest_blocks(blocks.clone()).await.expect("ingest");
+
+    let blob_snapshot = blob.blob_snapshot();
+    assert!(
+        !blob_snapshot
+            .keys()
+            .any(|(table, _)| *table == BLOCK_BLOB_TABLE),
+        "empty blocks must not write empty per-block blobs"
+    );
+    assert!(service
+        .query_logs(QueryLogsRequest::default())
+        .await
+        .expect("query logs over empty blobs")
+        .logs
+        .is_empty());
+    assert!(service
+        .query_transactions(QueryTransactionsRequest::default())
+        .await
+        .expect("query txs over empty blobs")
+        .txs
+        .is_empty());
+    assert!(service
+        .query_traces(QueryTracesRequest::default())
+        .await
+        .expect("query traces over empty blobs")
+        .traces
+        .is_empty());
+    assert!(service
+        .query_transfers(QueryTransfersRequest::default())
+        .await
+        .expect("query transfers over empty blobs")
+        .transfers
+        .is_empty());
 
     let (version, _) = service
         .publication()
