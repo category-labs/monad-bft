@@ -74,6 +74,14 @@ pub struct CacheConfig {
     /// the other fields, which are entry counts; this is integrated into the
     /// `--cache-mib` byte math at a 1:1 weight (it already IS bytes).
     pub block_region_cache_bytes: usize,
+    /// Upper bound on the compressed region size admitted into the region
+    /// cache. A region larger than this is read uncached: full scans still read
+    /// the whole region, and one-shot point reads fall back to a single-frame
+    /// range read so we never pull a huge object into RAM for one row. This is a
+    /// per-region size CAP, not a budget, so it does NOT scale with
+    /// `--cache-mib`. Default is comfortably above a typical block's compressed
+    /// per-family region (a few KiB–tens of KiB).
+    pub block_region_max_bytes: usize,
 }
 
 impl Default for CacheConfig {
@@ -98,6 +106,10 @@ impl Default for CacheConfig {
             // 128 MiB holds thousands of recently queried blocks. Operators
             // scale this with the rest via `--cache-mib`.
             block_region_cache_bytes: 128 * 1024 * 1024,
+            // 1 MiB: only excludes pathological outliers while keeping the
+            // per-entry footprint bounded. A size cap, not a budget, so it is
+            // not scaled by `--cache-mib`.
+            block_region_max_bytes: 1024 * 1024,
         }
     }
 }
@@ -175,6 +187,9 @@ impl CacheConfig {
                 block_hash_to_number_entries: 0,
                 tx_hash_index_entries: 0,
                 block_region_cache_bytes: 0,
+                // A per-region size cap, not a budget; preserved as-is (it is
+                // irrelevant once the region cache budget is 0/disabled).
+                block_region_max_bytes: self.block_region_max_bytes,
             };
         }
         let denom = denom.max(1);
@@ -193,6 +208,8 @@ impl CacheConfig {
             // per-entry weight is 1, so it contributes its bytes 1:1 to the
             // byte budget that drives `--cache-mib` scaling.
             block_region_cache_bytes: scale(self.block_region_cache_bytes),
+            // Per-region size cap, not a budget: passed through unscaled.
+            block_region_max_bytes: self.block_region_max_bytes,
         }
     }
 

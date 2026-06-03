@@ -66,6 +66,7 @@ fn small_cache() -> CacheConfig {
         open_bitmap_stream_entries: 64,
         tx_hash_index_entries: 64,
         block_region_cache_bytes: 64 * 1024,
+        block_region_max_bytes: 1024 * 1024,
     }
 }
 

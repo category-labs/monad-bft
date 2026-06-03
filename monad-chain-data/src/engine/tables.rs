@@ -328,18 +328,6 @@ impl fmt::Display for WriteOpTopList<'_> {
     }
 }
 
-/// Upper bound on the compressed region size we will admit into the
-/// [`BlockRegionCache`]. A region larger than this is NOT cached: full-scans
-/// over it still read the whole region (uncached), and one-shot point reads
-/// fall back to a single-frame range read so we never pull a huge object into
-/// RAM just to satisfy one row.
-///
-/// 1 MiB is comfortably above a typical block's compressed per-family region
-/// (a few KiB to tens of KiB), so the cap only excludes pathological outliers
-/// while keeping per-entry footprint bounded and the budget predictable. A
-/// const for now (not config-driven); revisit if real region sizes shift.
-const REGION_CACHE_MAX_BYTES: usize = 1024 * 1024;
-
 pub struct Tables<M: MetaStore, B: BlobStore> {
     meta_store: M,
     blob_store: B,
@@ -352,6 +340,11 @@ pub struct Tables<M: MetaStore, B: BlobStore> {
     /// In-memory cache of compressed per-(family, block) regions, serving both
     /// point and full-scan reads. See [`BlockRegionCache`].
     block_regions: BlockRegionCache<B>,
+    /// Compressed-region size cap: regions larger than this are read uncached
+    /// (full scans read the whole region; point reads do a single-frame range
+    /// read) so a giant object is never pulled into RAM. From
+    /// [`CacheConfig::block_region_max_bytes`].
+    block_region_max_bytes: usize,
     families: BTreeMap<Family, FamilyTables<M>>,
     dicts: DictManager,
 }
@@ -395,6 +388,7 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
                 blob_store.table(BLOCK_BLOB_TABLE),
                 cache.block_region_cache_bytes,
             ),
+            block_region_max_bytes: cache.block_region_max_bytes,
             meta_store,
             blob_store,
             families,
@@ -441,7 +435,7 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
     /// FAMILY-RELATIVE offsets (`header.offsets[i]`), which line up exactly
     /// because the returned buffer starts at the family's `base_offset`.
     ///
-    /// A region larger than [`REGION_CACHE_MAX_BYTES`] is read uncached (the
+    /// A region larger than [`CacheConfig::block_region_max_bytes`] is read uncached (the
     /// caller still gets the bytes, we just never resident-cache a giant
     /// object). The full-scan read paths always go through here.
     pub async fn read_block_blob_region(
@@ -452,7 +446,7 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
     ) -> Result<Option<Bytes>> {
         let (region_start, region_end) = header.region_range();
         let region_len = region_end.saturating_sub(region_start);
-        if region_len > REGION_CACHE_MAX_BYTES {
+        if region_len > self.block_region_max_bytes {
             // Too big to cache: read it directly without admitting it.
             return Ok(self
                 .read_block_blob_range(block_number, region_start, region_end)
@@ -469,7 +463,7 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
     /// On a region-cache hit (or for a small uncached region we choose to
     /// admit) this slices the frame out of the cached region using
     /// FAMILY-RELATIVE offsets. For a LARGE region (above
-    /// [`REGION_CACHE_MAX_BYTES`]) it falls back to a single-frame ABSOLUTE
+    /// [`CacheConfig::block_region_max_bytes`]) it falls back to a single-frame ABSOLUTE
     /// range read so a one-shot point read never pulls a huge region into RAM.
     pub async fn read_block_blob_frame(
         &self,
@@ -480,7 +474,7 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
     ) -> Result<Option<Bytes>> {
         let (region_start, region_end) = header.region_range();
         let region_len = region_end.saturating_sub(region_start);
-        if region_len > REGION_CACHE_MAX_BYTES {
+        if region_len > self.block_region_max_bytes {
             // Bandwidth-frugal large-region path: one absolute single-frame
             // read, no caching.
             let (start, end) = header.abs_range(idx_in_block);

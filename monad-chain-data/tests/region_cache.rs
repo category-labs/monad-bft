@@ -45,6 +45,8 @@ fn tables_with_region_cache(
         block_hash_to_number_entries: 0,
         tx_hash_index_entries: 0,
         block_region_cache_bytes: budget_bytes,
+        // The oversized-region test relies on this 1 MiB cap.
+        block_region_max_bytes: 1024 * 1024,
     };
     let tables = Tables::with_cache_config(InMemoryMetaStore::default(), blob.clone(), cache);
     (tables, blob)
