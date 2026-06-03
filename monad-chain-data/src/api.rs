@@ -1068,6 +1068,11 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
         let projected_open_indexes = self
             .open_indexes
             .projected_with_delta(phase_a_delta.clone());
+        // Pre-batch (committed) inventory: the baseline for deciding which
+        // open-bitmap-stream rows are genuinely new this batch. The projected
+        // view above already folds in this batch's touched streams, so it can't
+        // serve as that baseline.
+        let committed_open_indexes = &self.open_indexes;
         let log_ranges = family_ranges(&staged, |s| s.log_plan.log_window);
         let tx_ranges = family_ranges(&staged, |s| s.tx_plan.tx_window);
         let trace_ranges = family_ranges(&staged, |s| s.trace_plan.trace_window);
@@ -1142,18 +1147,21 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
                 logs.plan_directory_compactions(&projected_open_indexes, &log_ranges),
                 logs.plan_bitmap_compactions(
                     &projected_open_indexes,
+                    committed_open_indexes,
                     &log_touched_bitmap_per_block,
                     &log_ranges
                 ),
                 txs.plan_directory_compactions(&projected_open_indexes, &tx_ranges),
                 txs.plan_bitmap_compactions(
                     &projected_open_indexes,
+                    committed_open_indexes,
                     &tx_touched_bitmap_per_block,
                     &tx_ranges
                 ),
                 traces.plan_directory_compactions(&projected_open_indexes, &trace_ranges),
                 traces.plan_bitmap_compactions(
                     &projected_open_indexes,
+                    committed_open_indexes,
                     &trace_touched_bitmap_per_block,
                     &trace_ranges
                 ),

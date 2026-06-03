@@ -277,6 +277,13 @@ impl WriteOpCounts {
         self.by_table.values().map(|count| count.ops).sum()
     }
 
+    /// Write-op count for one prefixed table key (e.g. `scan:log_open_bitmap_stream`,
+    /// `kv:block_metadata`), or 0 if the table saw no writes. Used by telemetry
+    /// drill-downs and by tests asserting per-table write behavior.
+    pub fn ops_for_table(&self, table: &str) -> u64 {
+        self.by_table.get(table).map_or(0, |count| count.ops)
+    }
+
     pub fn total_bytes(&self) -> u64 {
         self.by_table.values().map(|count| count.bytes).sum()
     }
@@ -954,13 +961,19 @@ impl<M: MetaStoreCas> PublicationTables<M> {
 
 pub struct BlockTables<M: MetaStore> {
     block_metadata: CachedKvTable<M>,
+    evm_header: CachedKvTable<M>,
     block_hash_to_number_index: CachedKvTable<M>,
 }
 
+/// The per-block metadata row. Holds only what the hot path needs: the
+/// `block_record` (window/continuity/recovery via `load_record`) and the three
+/// per-family blob headers (read by the family materializers). The bulky
+/// `EvmBlockHeader` is stored separately (`evm_header` table) because it is read
+/// only when serving a full block to a client (`load_block`), so bundling it
+/// here made every `load_record` pay for ~500 B it never decodes.
 #[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 struct BlockMetadataRecord {
     block_record: Bytes,
-    evm_header: Bytes,
     log_header: Bytes,
     tx_header: Bytes,
     trace_header: Bytes,
@@ -979,6 +992,7 @@ impl BlockMetadataRecord {
 
 impl<M: MetaStore> BlockTables<M> {
     pub const BLOCK_METADATA_TABLE: TableId = TableId::new("block_metadata");
+    pub const BLOCK_EVM_HEADER_TABLE: TableId = TableId::new("block_evm_header");
     pub const BLOCK_HASH_TO_NUMBER_INDEX_TABLE: TableId =
         TableId::new("block_hash_to_number_index");
 
@@ -986,6 +1000,11 @@ impl<M: MetaStore> BlockTables<M> {
         Self {
             block_metadata: CachedKvTable::new(
                 meta_store.table(Self::BLOCK_METADATA_TABLE),
+                cache.block_header_entries,
+            ),
+            // Cold path (only `load_block` reads it); sized off the same knob.
+            evm_header: CachedKvTable::new(
+                meta_store.table(Self::BLOCK_EVM_HEADER_TABLE),
                 cache.block_header_entries,
             ),
             block_hash_to_number_index: CachedKvTable::new(
@@ -1023,19 +1042,24 @@ impl<M: MetaStore> BlockTables<M> {
         let key = block_number_key(block_number);
         let metadata = BlockMetadataRecord {
             block_record: Bytes::from(block_record.encode()),
-            evm_header: Bytes::from(alloy_rlp::encode(evm_header)),
             log_header,
             tx_header,
             trace_header,
         };
         w.put(&self.block_metadata, &key, metadata.encode());
+        w.put(
+            &self.evm_header,
+            &key,
+            Bytes::from(alloy_rlp::encode(evm_header)),
+        );
     }
 
     pub async fn load_header(&self, block_number: u64) -> Result<Option<EvmBlockHeader>> {
-        let Some(metadata) = self.load_metadata(block_number).await? else {
+        let key = block_number_key(block_number);
+        let Some(bytes) = self.evm_header.get(&key).await? else {
             return Ok(None);
         };
-        let header = EvmBlockHeader::decode(&mut metadata.evm_header.as_ref())
+        let header = EvmBlockHeader::decode(&mut bytes.as_ref())
             .map_err(|_| MonadChainDataError::Decode("invalid block header rlp"))?;
         Ok(Some(header))
     }
@@ -1077,6 +1101,7 @@ impl<M: MetaStore> BlockTables<M> {
 
     pub(crate) fn collect_window_stats(&self, out: &mut Vec<(&'static str, u64, u64)>) {
         collect_kv_stats(out, &self.block_metadata);
+        collect_kv_stats(out, &self.evm_header);
         collect_kv_stats(out, &self.block_hash_to_number_index);
     }
 

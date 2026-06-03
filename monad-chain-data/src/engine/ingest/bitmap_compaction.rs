@@ -109,6 +109,7 @@ impl<M: MetaStore> FamilyTables<M> {
     pub(crate) async fn plan_bitmap_compactions(
         &self,
         open_indexes: &OpenIndexes,
+        committed_open_indexes: &OpenIndexes,
         touched_streams_by_page_per_block: &[&BTreeMap<u64, BTreeSet<String>>],
         ranges: &[(u64, u64)],
     ) -> Result<BitmapBatchCompactionPlan> {
@@ -139,35 +140,58 @@ impl<M: MetaStore> FamilyTables<M> {
 
         let start_open_page = global_page_start(from_next_primary_id);
         let final_open_page_start = global_page_start(next_primary_id);
-        let previous_open_streams =
+        // Full inventory for the start page (committed ∪ this batch's touched) —
+        // what a sealing page must be compacted from. `open_indexes` is the
+        // projected view, so it already folds in this batch's touched streams.
+        let projected_start_streams =
             open_indexes.bitmap_open_streams(self.family(), start_open_page);
+        // Pre-batch durable inventory for the start page — the baseline for
+        // deciding which open-stream rows actually need writing.
+        let durable_start_streams =
+            committed_open_indexes.bitmap_open_streams(self.family(), start_open_page);
 
-        let mut final_open_streams = touched_by_page
-            .get(&final_open_page_start)
-            .cloned()
-            .unwrap_or_default();
-        let mut start_page_streams = previous_open_streams;
-        if let Some(touched) = touched_by_page.get(&start_open_page) {
-            start_page_streams.extend(touched.iter().cloned());
-        }
         let same_frontier_page = start_open_page == final_open_page_start;
-        if same_frontier_page {
-            final_open_streams.append(&mut start_page_streams);
-        }
 
-        if !same_frontier_page && start_open_page < final_open_page_start {
-            if !start_page_streams.is_empty() {
+        // The open-stream inventory is an append-only set keyed by stream_id, so
+        // only streams NOT already durable — i.e. newly touched this batch — need
+        // a write. Re-writing the full cumulative set every batch (the projected
+        // inventory, which folds in prior batches) was the dominant Phase B
+        // write-op source (the 0-byte `*_open_bitmap_stream` re-puts). Diffing
+        // against the *committed* baseline is safe because both readers union the
+        // durable rows with the in-memory projected inventory: recovery seeds the
+        // open index from the durable table, and the page-count manifest roll-up
+        // reads `bitmap_open_streams` (kept complete by the per-fragment
+        // `delta.bitmap_open_streams`).
+        if same_frontier_page {
+            // Frontier stayed on one page; nothing seals. Write only new streams.
+            if let Some(touched) = touched_by_page.get(&final_open_page_start) {
+                let new_streams: BTreeSet<String> =
+                    touched.difference(&durable_start_streams).cloned().collect();
+                record_open_stream_write(
+                    &mut open_stream_writes,
+                    final_open_page_start,
+                    new_streams,
+                );
+            }
+        } else if start_open_page < final_open_page_start {
+            // Seal the start page from its FULL (projected) inventory, but durably
+            // write only the streams new to it this batch.
+            if !projected_start_streams.is_empty() {
                 self.plan_bitmap_page_from_streams(
                     open_indexes,
                     start_open_page,
-                    start_page_streams.iter(),
+                    projected_start_streams.iter(),
                     &mut compaction_jobs,
                 )?;
-                record_open_stream_write(
-                    &mut open_stream_writes,
-                    start_open_page,
-                    start_page_streams,
-                );
+                if let Some(touched) = touched_by_page.get(&start_open_page) {
+                    let new_streams: BTreeSet<String> =
+                        touched.difference(&durable_start_streams).cloned().collect();
+                    record_open_stream_write(
+                        &mut open_stream_writes,
+                        start_open_page,
+                        new_streams,
+                    );
+                }
             }
             for (page_global_start, streams) in
                 touched_by_page.range((Excluded(start_open_page), Excluded(final_open_page_start)))
@@ -179,12 +203,16 @@ impl<M: MetaStore> FamilyTables<M> {
                     &mut compaction_jobs,
                 )?;
             }
+            // The new frontier page is fresh (the monotonic frontier was never on
+            // it before), so every stream it touched this batch is new.
+            if let Some(touched) = touched_by_page.get(&final_open_page_start) {
+                record_open_stream_write(
+                    &mut open_stream_writes,
+                    final_open_page_start,
+                    touched.clone(),
+                );
+            }
         }
-        record_open_stream_write(
-            &mut open_stream_writes,
-            final_open_page_start,
-            final_open_streams,
-        );
 
         let compacted_pages = compact_bitmap_jobs(&compaction_jobs)?;
 

@@ -144,6 +144,61 @@ async fn ingest_compacts_sealed_pages_and_query_prefers_compacted_page_blobs() {
     assert_eq!(frontier_page.logs.len(), 4);
 }
 
+// Re-touching streams already in the durable open-stream inventory must not
+// re-write their (0-byte) rows: the planner diffs this batch's touched streams
+// against the committed baseline, so a batch that adds no new streams on the
+// frontier page issues zero `*_open_bitmap_stream` writes.
+#[tokio::test(flavor = "current_thread")]
+async fn re_touching_open_streams_writes_no_redundant_rows() {
+    let service = MonadChainDataService::new(
+        InMemoryMetaStore::default(),
+        InMemoryBlobStore::default(),
+        QueryLimits::UNLIMITED,
+    );
+
+    let address = Address::repeat_byte(7);
+    let topic = B256::repeat_byte(9);
+
+    let h1 = test_header(1, B256::ZERO);
+    let (_o1, timings1) = service
+        .ingest_blocks(vec![FinalizedBlock {
+            header: h1.clone(),
+            logs_by_tx: vec![repeated_logs(address, vec![topic], 4)],
+            txs: Vec::new(),
+            traces: vec![],
+        }])
+        .await
+        .expect("ingest block 1");
+    // First sight of these streams on the frontier page: their inventory rows
+    // are genuinely new and must be written.
+    assert!(
+        timings1
+            .phase_b_write_counts
+            .ops_for_table("scan:log_open_bitmap_stream")
+            > 0,
+        "new streams must write open-stream rows on first appearance"
+    );
+
+    let h2 = chain_header(2, &h1);
+    let (_o2, timings2) = service
+        .ingest_blocks(vec![FinalizedBlock {
+            header: h2,
+            // Same address+topic, still on page 0 — no new streams, no page seal.
+            logs_by_tx: vec![repeated_logs(address, vec![topic], 4)],
+            txs: Vec::new(),
+            traces: vec![],
+        }])
+        .await
+        .expect("ingest block 2");
+    assert_eq!(
+        timings2
+            .phase_b_write_counts
+            .ops_for_table("scan:log_open_bitmap_stream"),
+        0,
+        "re-touching already-durable streams must not re-write their inventory rows"
+    );
+}
+
 fn repeated_logs(address: Address, topics: Vec<Topic>, count: usize) -> Vec<Log> {
     std::iter::repeat_with(|| log(address, topics.clone()))
         .take(count)
