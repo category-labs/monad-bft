@@ -73,6 +73,7 @@ use aws_sdk_dynamodb::{
 };
 use bytes::Bytes;
 use futures::stream::{StreamExt, TryStreamExt};
+use tracing::warn;
 
 use crate::{
     error::{MonadChainDataError, Result},
@@ -101,6 +102,11 @@ const SK_SENTINEL: &[u8] = &[0x00];
 
 /// DynamoDB caps `BatchWriteItem` at 25 write requests per call.
 const BATCH_WRITE_LIMIT: usize = 25;
+
+/// Alternator rejects oversized HTTP request bodies. DynamoDB's documented
+/// BatchWriteItem payload cap is 16 MiB; keep a margin for JSON/base64 framing.
+const BATCH_WRITE_PAYLOAD_SOFT_LIMIT: usize = 12 * 1024 * 1024;
+const BATCH_WRITE_ITEM_OVERHEAD: usize = 512;
 
 /// Static credentials supplied explicitly rather than via the ambient AWS
 /// credential chain. Required for DynamoDB Local / Alternator deployments that
@@ -364,6 +370,57 @@ impl DynamoMetaStore {
             "dynamo create_table: table {table} did not become ACTIVE in time"
         )))
     }
+
+    /// Startup connectivity/schema check. Verifies the configured table exists,
+    /// is ACTIVE, and has the expected binary `pk` hash + binary `sk` range
+    /// key schema before ingest workers begin writing.
+    pub async fn validate_table(&self) -> Result<()> {
+        let table = &self.inner.table_name;
+        let desc = self
+            .inner
+            .client
+            .describe_table()
+            .table_name(table)
+            .send()
+            .await
+            .map_err(|e| backend_err("describe_table", e))?;
+        let Some(table_desc) = desc.table else {
+            return Err(MonadChainDataError::Backend(format!(
+                "dynamo describe_table: table {table} missing from response"
+            )));
+        };
+        if table_desc.table_status != Some(TableStatus::Active) {
+            return Err(MonadChainDataError::Backend(format!(
+                "dynamo table {table} is not ACTIVE: {:?}",
+                table_desc.table_status
+            )));
+        }
+
+        let attrs = table_desc.attribute_definitions.unwrap_or_default();
+        let attr_type = |name: &str| {
+            attrs
+                .iter()
+                .find(|a| a.attribute_name == name)
+                .map(|a| a.attribute_type.clone())
+        };
+        let keys = table_desc.key_schema.unwrap_or_default();
+        let key_type = |name: &str| {
+            keys.iter()
+                .find(|k| k.attribute_name == name)
+                .map(|k| k.key_type.clone())
+        };
+
+        if attr_type(ATTR_PK) != Some(ScalarAttributeType::B)
+            || attr_type(ATTR_SK) != Some(ScalarAttributeType::B)
+            || key_type(ATTR_PK) != Some(KeyType::Hash)
+            || key_type(ATTR_SK) != Some(KeyType::Range)
+        {
+            return Err(MonadChainDataError::Backend(format!(
+                "dynamo table {table} schema mismatch: expected binary pk HASH + binary sk RANGE"
+            )));
+        }
+        Ok(())
+    }
 }
 
 impl MetaStore for DynamoMetaStore {
@@ -401,7 +458,7 @@ impl MetaStore for DynamoMetaStore {
         if writes.is_empty() {
             return Ok(());
         }
-        let requests: Vec<WriteRequest> = writes
+        let requests: Vec<(WriteRequest, usize)> = writes
             .into_iter()
             .map(|op| {
                 let (pk, sk, value) = match op {
@@ -415,6 +472,8 @@ impl MetaStore for DynamoMetaStore {
                         value,
                     } => (scan_pk(table, &partition), clustering, value),
                 };
+                let estimated_wire_bytes =
+                    estimated_batch_write_item_bytes(pk.len(), sk.len(), value.len());
                 let put = PutRequest::builder()
                     .item(ATTR_PK, AttributeValue::B(Blob::new(pk)))
                     .item(ATTR_SK, AttributeValue::B(Blob::new(sk)))
@@ -423,15 +482,28 @@ impl MetaStore for DynamoMetaStore {
                     .map_err(|e| {
                         MonadChainDataError::Backend(format!("dynamo build put_request: {e}"))
                     })?;
-                Ok(WriteRequest::builder().put_request(put).build())
+                Ok((
+                    WriteRequest::builder().put_request(put).build(),
+                    estimated_wire_bytes,
+                ))
             })
             .collect::<Result<Vec<_>>>()?;
 
+        let request_count = requests.len();
+        let estimated_wire_bytes = requests.iter().map(|(_, bytes)| *bytes).sum::<usize>();
         let concurrency = self.inner.batch_max_concurrency;
-        let chunks: Vec<Vec<WriteRequest>> = requests
-            .chunks(BATCH_WRITE_LIMIT)
-            .map(<[WriteRequest]>::to_vec)
-            .collect();
+        let chunks = split_batch_write_chunks(requests);
+        let count_only_chunks = request_count.div_ceil(BATCH_WRITE_LIMIT);
+        if chunks.len() > count_only_chunks {
+            warn!(
+                request_count,
+                chunks = chunks.len(),
+                count_only_chunks,
+                estimated_wire_bytes,
+                payload_soft_limit = BATCH_WRITE_PAYLOAD_SOFT_LIMIT,
+                "dynamo batch_write_item split by estimated payload size"
+            );
+        }
         futures::stream::iter(chunks.into_iter().map(|chunk| {
             let store = self.clone();
             async move { store.write_chunk(chunk).await }
@@ -750,6 +822,41 @@ where
     MonadChainDataError::Backend(format!("dynamo {op}: {detail}"))
 }
 
+fn estimated_batch_write_item_bytes(pk_len: usize, sk_len: usize, value_len: usize) -> usize {
+    BATCH_WRITE_ITEM_OVERHEAD
+        + base64_encoded_len(pk_len)
+        + base64_encoded_len(sk_len)
+        + base64_encoded_len(value_len)
+}
+
+fn base64_encoded_len(raw_len: usize) -> usize {
+    raw_len.div_ceil(3).saturating_mul(4)
+}
+
+fn split_batch_write_chunks<T>(items: Vec<(T, usize)>) -> Vec<Vec<T>> {
+    let mut chunks = Vec::new();
+    let mut current = Vec::new();
+    let mut current_bytes = 0usize;
+
+    for (item, estimated_wire_bytes) in items {
+        let exceeds_count = current.len() >= BATCH_WRITE_LIMIT;
+        let exceeds_bytes = !current.is_empty()
+            && current_bytes.saturating_add(estimated_wire_bytes) > BATCH_WRITE_PAYLOAD_SOFT_LIMIT;
+        if exceeds_count || exceeds_bytes {
+            chunks.push(std::mem::take(&mut current));
+            current_bytes = 0;
+        }
+        current.push(item);
+        current_bytes = current_bytes.saturating_add(estimated_wire_bytes);
+    }
+
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+
+    chunks
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -830,6 +937,28 @@ mod tests {
             AttributeValue::N("42".to_string()),
         );
         assert_eq!(take_version(&mut item).unwrap(), 42);
+    }
+
+    #[test]
+    fn batch_write_chunks_respect_item_count_limit() {
+        let items = (0..(BATCH_WRITE_LIMIT * 2 + 1))
+            .map(|i| (i, 1usize))
+            .collect();
+
+        let chunks = split_batch_write_chunks(items);
+
+        assert_eq!(chunks.len(), 3);
+        assert_eq!(chunks[0].len(), BATCH_WRITE_LIMIT);
+        assert_eq!(chunks[1].len(), BATCH_WRITE_LIMIT);
+        assert_eq!(chunks[2].len(), 1);
+    }
+
+    #[test]
+    fn batch_write_chunks_respect_payload_soft_limit() {
+        let large = BATCH_WRITE_PAYLOAD_SOFT_LIMIT / 2 + 1;
+        let chunks = split_batch_write_chunks(vec![(0, large), (1, large), (2, large)]);
+
+        assert_eq!(chunks, vec![vec![0], vec![1], vec![2]]);
     }
 
     #[test]

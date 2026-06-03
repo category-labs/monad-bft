@@ -128,8 +128,8 @@ async fn admin_client(endpoint_url: &str) -> Client {
 async fn setup() -> (S3BlobStore, TestServer) {
     let server = spawn_s3_server().await;
 
-    // Create the bucket out of band -- the store never creates buckets. Retry
-    // briefly in case the accept loop hasn't fully warmed up yet.
+    // Create the bucket out of band for this fixture. Retry briefly in case the
+    // accept loop hasn't fully warmed up yet.
     let client = admin_client(&server.endpoint_url).await;
     let mut last_err = None;
     for _ in 0..20 {
@@ -155,6 +155,7 @@ async fn setup() -> (S3BlobStore, TestServer) {
         region: Some(REGION.to_string()),
         force_path_style: true,
         max_concurrency: 8,
+        create_bucket: false,
         credentials: Some(S3Credentials {
             access_key_id: ACCESS_KEY.to_string(),
             secret_access_key: SECRET_KEY.to_string(),

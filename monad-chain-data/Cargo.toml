@@ -49,12 +49,12 @@ fjall = ["dep:fjall", "dep:tokio"]
 # Cloudflare R2, Ceph RGW, etc. Pulls in the AWS SDK + tokio. Gated because
 # the AWS SDK is a heavy transitive dependency not needed by the embedded
 # fjall path.
-s3 = ["dep:aws-config", "dep:aws-sdk-s3", "dep:tokio"]
+s3 = ["dep:aws-config", "dep:aws-sdk-s3", "dep:tokio", "dep:tracing"]
 # Enables the DynamoDB-API-compatible meta backend (DynamoMetaStore): AWS
 # DynamoDB, DynamoDB Local, and ScyllaDB Alternator. Pulls in the AWS SDK +
 # tokio. Gated for the same reason as `s3`: the AWS SDK is a heavy transitive
 # dependency the embedded fjall path does not need.
-dynamo = ["dep:aws-config", "dep:aws-sdk-dynamodb", "dep:tokio"]
+dynamo = ["dep:aws-config", "dep:aws-sdk-dynamodb", "dep:tokio", "dep:tracing"]
 # Enables the chain-data-ingest binary, which reads blocks + receipts from
 # a monad-archive backend (FS, S3, MongoDB, DynamoDB, TrieDB) and feeds
 # them into the chain-data ingest pipeline. Gated because monad-archive

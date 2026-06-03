@@ -109,7 +109,7 @@ struct Cli {
     #[arg(long)]
     otel_endpoint: Option<String>,
 
-    /// How often to log progress, in blocks.
+    /// How often to log progress, in applied ingest batches.
     #[arg(long, default_value_t = 1000)]
     log_every: u64,
 
@@ -307,6 +307,13 @@ struct Cli {
     #[cfg(feature = "s3")]
     #[arg(long, default_value_t = 32)]
     s3_max_concurrency: usize,
+
+    /// Create the S3 bucket if it does not already exist before ingesting.
+    /// Existing buckets owned by the caller are accepted. For real AWS S3,
+    /// non-us-east-1 buckets are created with the configured --s3-region.
+    #[cfg(feature = "s3")]
+    #[arg(long)]
+    s3_create_bucket: bool,
 
     /// Static S3 access key id. Must be paired with --s3-secret-access-key.
     /// Leave both unset to use the ambient AWS credential chain.
@@ -934,19 +941,7 @@ async fn run_ingest<M: MetaStoreCas, B: monad_chain_data::store::BlobStore>(
         "starting ingest"
     );
 
-    // A window narrower than the prefetch buffer can fall entirely inside
-    // a drain phase — the consumer empties already-completed slots while
-    // no new fetches finish in that span — producing an all-zero stats
-    // window that flips the classifier to nonsense. Floor `log_every` at
-    // `fetch_buffer` so each window must span at least one buffer refill.
-    let log_every = cli.log_every.max(fetch_buffer as u64);
-    if log_every != cli.log_every {
-        info!(
-            requested = cli.log_every,
-            effective = log_every,
-            "log_every raised to span at least one prefetch refill"
-        );
-    }
+    let log_every_batches = cli.log_every.max(1);
     // Wall-clock cap on window length. When throughput collapses (e.g.
     // throttled at high concurrency) the modulus trigger can take an
     // hour to fire; the wall-clock fallback keeps feedback flowing.
@@ -962,6 +957,29 @@ async fn run_ingest<M: MetaStoreCas, B: monad_chain_data::store::BlobStore>(
     let (planned_tx, mut planned_rx) = mpsc::channel::<PlannedBatch>(cli.plan_buffer);
     let (applied_tx, mut applied_rx) = mpsc::channel::<AppliedBatch>(cli.plan_buffer);
     let fetch_consumed_total = Arc::new(AtomicU64::new(0));
+    let ingest_heartbeat_handle = {
+        let fetch_progress = fetch_progress.clone();
+        let fetch_consumed_total = fetch_consumed_total.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(WINDOW_MAX_WALL);
+            tick.tick().await;
+            loop {
+                tick.tick().await;
+                let snapshot = fetch_progress.snapshot();
+                let consumed = fetch_consumed_total.load(Ordering::Relaxed);
+                let completed_backlog = snapshot.completed.saturating_sub(consumed);
+                let in_flight = snapshot.started.saturating_sub(snapshot.completed);
+                info!(
+                    fetch_started_total = snapshot.started,
+                    fetch_completed_total = snapshot.completed,
+                    fetch_consumed_total = consumed,
+                    fetch_completed_backlog = completed_backlog,
+                    fetch_in_flight = in_flight,
+                    "ingest heartbeat"
+                );
+            }
+        })
+    };
 
     let fetch_handle = {
         let reader = reader.clone();
@@ -1109,13 +1127,15 @@ async fn run_ingest<M: MetaStoreCas, B: monad_chain_data::store::BlobStore>(
     let mut total_logs: u64 = 0;
     let mut total_txs: u64 = 0;
     let mut total_traces: u64 = 0;
+    let mut applied_batches: u64 = 0;
     let mut window_start = Instant::now();
+    let mut window_batches: u64 = 0;
     let mut window_blocks: u64 = 0;
     let mut window_txs: u64 = 0;
     let mut window_logs: u64 = 0;
     let mut window_traces: u64 = 0;
-    let mut ingest_ms: Vec<u64> = Vec::with_capacity(cli.log_every as usize);
-    let mut wait_ms: Vec<u64> = Vec::with_capacity(cli.log_every as usize);
+    let mut ingest_ms: Vec<u64> = Vec::with_capacity(log_every_batches as usize);
+    let mut wait_ms: Vec<u64> = Vec::with_capacity(log_every_batches as usize);
     let mut phase = PhaseStats::default();
     // Background dictionary pre-training: once an epoch passes its sampling
     // window, kick off training for the *next* epoch's dictionary so it is
@@ -1135,6 +1155,8 @@ async fn run_ingest<M: MetaStoreCas, B: monad_chain_data::store::BlobStore>(
         wait_ms.push(first_wait_ms);
         phase.record(&timings);
         emit_phase_metrics(&metrics, &timings, total_ingest_ms);
+        applied_batches += 1;
+        window_batches += 1;
 
         for outcome in &outcomes {
             total_logs += outcome.written_logs as u64;
@@ -1165,7 +1187,8 @@ async fn run_ingest<M: MetaStoreCas, B: monad_chain_data::store::BlobStore>(
 
         let flush = n == end
             || (window_blocks > 0
-                && (n % log_every == 0 || window_start.elapsed() >= WINDOW_MAX_WALL));
+                && (window_batches >= log_every_batches
+                    || window_start.elapsed() >= WINDOW_MAX_WALL));
         if flush {
             let elapsed_secs = window_start.elapsed().as_secs_f64().max(1e-9);
             let fetch_window =
@@ -1236,6 +1259,9 @@ async fn run_ingest<M: MetaStoreCas, B: monad_chain_data::store::BlobStore>(
                 total_txs,
                 total_logs,
                 total_traces,
+                applied_batches_total = applied_batches,
+                window_batches,
+                log_every_batches,
                 bottleneck,
                 hint,
                 concurrency = concurrency_observed,
@@ -1332,6 +1358,7 @@ async fn run_ingest<M: MetaStoreCas, B: monad_chain_data::store::BlobStore>(
             }
 
             window_start = Instant::now();
+            window_batches = 0;
             window_blocks = 0;
             window_txs = 0;
             window_logs = 0;
@@ -1355,6 +1382,7 @@ async fn run_ingest<M: MetaStoreCas, B: monad_chain_data::store::BlobStore>(
     fetch_res.context("fetch worker failed")?;
 
     // The ingest pipeline has drained; stop refreshing the lease clock.
+    ingest_heartbeat_handle.abort();
     clock_refresh_handle.abort();
 
     info!(end, total_txs, total_logs, total_traces, "ingest complete");
@@ -1382,6 +1410,7 @@ async fn build_s3_blob_store(cli: &Cli) -> Result<monad_chain_data::store::S3Blo
         // No static credentials: fall through to the ambient AWS chain.
         (None, None) => None,
     };
+    let s3_static_credentials = credentials.is_some();
     info!(
         s3_bucket = %bucket,
         s3_region = ?cli.s3_region,
@@ -1389,21 +1418,33 @@ async fn build_s3_blob_store(cli: &Cli) -> Result<monad_chain_data::store::S3Blo
         s3_prefix = %cli.s3_prefix,
         s3_force_path_style = cli.s3_force_path_style,
         s3_max_concurrency = cli.s3_max_concurrency,
-        s3_static_credentials = credentials.is_some(),
+        s3_create_bucket = cli.s3_create_bucket,
+        s3_static_credentials,
         "blob backend: s3"
     );
+    info!(
+        s3_bucket = %bucket,
+        s3_region = ?cli.s3_region,
+        s3_endpoint_url = ?cli.s3_endpoint_url,
+        s3_create_bucket = cli.s3_create_bucket,
+        s3_credentials = if s3_static_credentials { "static flags" } else { "ambient AWS credential chain" },
+        "startup validation: ensuring S3 bucket is reachable"
+    );
     let config = S3BlobStoreConfig {
-        bucket,
+        bucket: bucket.clone(),
         root_prefix: cli.s3_prefix.clone(),
         endpoint_url: cli.s3_endpoint_url.clone(),
         region: cli.s3_region.clone(),
         force_path_style: cli.s3_force_path_style,
         max_concurrency: cli.s3_max_concurrency,
+        create_bucket: cli.s3_create_bucket,
         credentials,
     };
-    S3BlobStore::new(config)
+    let store = S3BlobStore::new(config)
         .await
-        .context("building S3 blob store")
+        .context("building and validating S3 blob store")?;
+    info!(s3_bucket = %bucket, "startup validation: S3 bucket is reachable");
+    Ok(store)
 }
 
 /// Builds a [`DynamoMetaStore`] from the `--dynamo-*` flags. Mirrors
@@ -1429,17 +1470,18 @@ async fn build_dynamo_meta_store(cli: &Cli) -> Result<monad_chain_data::store::D
         // No static credentials: fall through to the ambient AWS chain.
         (None, None) => None,
     };
+    let dynamo_static_credentials = credentials.is_some();
     info!(
         dynamo_table = %table_name,
         dynamo_region = ?cli.dynamo_region,
         dynamo_endpoint_url = ?cli.dynamo_endpoint_url,
         dynamo_max_concurrency = cli.dynamo_max_concurrency,
         dynamo_create_table = cli.dynamo_create_table,
-        dynamo_static_credentials = credentials.is_some(),
+        dynamo_static_credentials,
         "meta backend: dynamo"
     );
     let config = DynamoMetaStoreConfig {
-        table_name,
+        table_name: table_name.clone(),
         endpoint_url: cli.dynamo_endpoint_url.clone(),
         region: cli.dynamo_region.clone(),
         batch_max_concurrency: cli.dynamo_max_concurrency,
@@ -1455,6 +1497,22 @@ async fn build_dynamo_meta_store(cli: &Cli) -> Result<monad_chain_data::store::D
             .await
             .context("creating DynamoDB meta table")?;
     }
+    info!(
+        dynamo_table = %table_name,
+        dynamo_region = ?cli.dynamo_region,
+        dynamo_endpoint_url = ?cli.dynamo_endpoint_url,
+        dynamo_create_table = cli.dynamo_create_table,
+        dynamo_credentials = if dynamo_static_credentials { "static flags" } else { "ambient AWS credential chain" },
+        "startup validation: checking DynamoDB table connectivity and schema"
+    );
+    store
+        .validate_table()
+        .await
+        .context("validating DynamoDB meta table")?;
+    info!(
+        dynamo_table = %table_name,
+        "startup validation: DynamoDB table is reachable and schema matches"
+    );
     Ok(store)
 }
 

@@ -58,10 +58,12 @@ use aws_sdk_s3::{
     error::{ProvideErrorMetadata, SdkError},
     operation::get_object::GetObjectError,
     primitives::ByteStream,
+    types::{BucketLocationConstraint, CreateBucketConfiguration},
     Client,
 };
 use bytes::Bytes;
 use futures::stream::{StreamExt, TryStreamExt};
+use tracing::{debug, warn};
 
 use crate::{
     error::{MonadChainDataError, Result},
@@ -112,6 +114,9 @@ pub struct S3BlobStoreConfig {
     pub force_path_style: bool,
     /// Max in-flight PUTs for [`S3BlobStore::apply_writes`]. Clamped to >= 1.
     pub max_concurrency: usize,
+    /// Create the bucket before returning the store. Intended for real AWS
+    /// bootstrap/dev flows; existing buckets owned by the caller are accepted.
+    pub create_bucket: bool,
     /// Explicit static credentials. `None` uses the ambient AWS credential
     /// chain (env, profile, instance role, ...).
     pub credentials: Option<S3Credentials>,
@@ -128,6 +133,7 @@ impl S3BlobStoreConfig {
             region: None,
             force_path_style: false,
             max_concurrency: 32,
+            create_bucket: false,
             credentials: None,
         }
     }
@@ -169,8 +175,10 @@ impl S3BlobStore {
             region,
             force_path_style,
             max_concurrency,
+            create_bucket,
             credentials,
         } = config;
+        let endpoint_is_aws = endpoint_url.is_none();
 
         let mut loader = aws_config::defaults(BehaviorVersion::latest());
         if let Some(region) = region {
@@ -189,6 +197,7 @@ impl S3BlobStore {
             ));
         }
         let sdk_config = loader.load().await;
+        let region_for_create = sdk_config.region().map(|r| r.as_ref().to_string());
 
         // force_path_style lives on the S3-specific config, not SdkConfig.
         let mut s3_builder = aws_sdk_s3::config::Builder::from(&sdk_config);
@@ -196,6 +205,17 @@ impl S3BlobStore {
             s3_builder = s3_builder.force_path_style(true);
         }
         let client = Client::from_conf(s3_builder.build());
+
+        if create_bucket {
+            create_bucket_if_needed(
+                &client,
+                &bucket,
+                region_for_create.as_deref(),
+                endpoint_is_aws,
+            )
+            .await?;
+        }
+        validate_bucket_access(&client, &bucket).await?;
 
         Ok(Self {
             inner: std::sync::Arc::new(Inner {
@@ -246,18 +266,86 @@ impl S3BlobStore {
     }
 }
 
+/// Idempotent-ish bucket provisioning for startup bootstrap. AWS S3 requires a
+/// location constraint outside us-east-1; most compatible endpoints either
+/// ignore it or reject it, so only set it when targeting real AWS.
+async fn create_bucket_if_needed(
+    client: &Client,
+    bucket: &str,
+    region: Option<&str>,
+    endpoint_is_aws: bool,
+) -> Result<()> {
+    let mut req = client.create_bucket().bucket(bucket);
+    if endpoint_is_aws {
+        let region = region.unwrap_or("us-east-1");
+        if region != "us-east-1" {
+            let cfg = CreateBucketConfiguration::builder()
+                .location_constraint(BucketLocationConstraint::from(region))
+                .build();
+            req = req.create_bucket_configuration(cfg);
+        }
+    }
+
+    match req.send().await {
+        Ok(_) => Ok(()),
+        // Re-running bootstrap against a bucket we own should be harmless.
+        Err(e) if e.code() == Some("BucketAlreadyOwnedByYou") => Ok(()),
+        Err(e) => Err(backend_err("create_bucket", bucket, e)),
+    }
+}
+
+async fn validate_bucket_access(client: &Client, bucket: &str) -> Result<()> {
+    client
+        .head_bucket()
+        .bucket(bucket)
+        .send()
+        .await
+        .map_err(|e| backend_err("head_bucket", bucket, e))?;
+    Ok(())
+}
+
 impl BlobStore for S3BlobStore {
     async fn put_blob(&self, table: BlobTableId, key: &[u8], value: Bytes) -> Result<()> {
         let object_key = self.object_key(table, key);
-        self.inner
+        let value_len = value.len();
+        let started = std::time::Instant::now();
+        let put = self
+            .inner
             .client
             .put_object()
             .bucket(&self.inner.bucket)
             .key(&object_key)
             .body(ByteStream::from(value))
-            .send()
-            .await
-            .map_err(|e| backend_err("put_object", &object_key, e))?;
+            .send();
+        tokio::pin!(put);
+
+        let mut next_warn = std::time::Duration::from_secs(30);
+        let resp = loop {
+            tokio::select! {
+                result = &mut put => break result,
+                _ = tokio::time::sleep(next_warn) => {
+                    warn!(
+                        table = %table.as_str(),
+                        object_key = %object_key,
+                        value_len,
+                        elapsed_ms = started.elapsed().as_millis() as u64,
+                        "s3 put_object still in flight"
+                    );
+                    next_warn = std::time::Duration::from_secs(120);
+                }
+            }
+        };
+
+        resp.map_err(|e| backend_err("put_object", &object_key, e))?;
+        if started.elapsed() >= std::time::Duration::from_secs(10) {
+            debug!(
+                table = %table.as_str(),
+                object_key = %object_key,
+                value_len,
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "s3 put_object completed slowly"
+            );
+        }
         Ok(())
     }
 
