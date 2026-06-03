@@ -1,4 +1,4 @@
-FROM ubuntu:25.10 AS base
+FROM ubuntu:26.04 AS base
 
 WORKDIR /usr/src/monad-bft
 
