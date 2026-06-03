@@ -60,6 +60,16 @@ pub struct BlockDataArchive {
     pub traces_table_prefix: &'static str,
 }
 
+/// SHA256 checksums of a block's three archived payloads, as returned by
+/// [`BlockDataArchive::block_data_checksums`]. Each is the SHA256 of the
+/// stored (RLP-encoded) bytes for that key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlockDataChecksums {
+    pub block: [u8; 32],
+    pub receipts: [u8; 32],
+    pub traces: [u8; 32],
+}
+
 impl BlockDataReader for BlockDataArchive {
     fn get_bucket(&self) -> &str {
         self.store.bucket_name()
@@ -335,6 +345,29 @@ impl BlockDataArchive {
             .put(&self.traces_key(block_num), rlp_traces, policy)
             .await?;
         Ok(())
+    }
+
+    /// Returns `Ok(Some(_))` only if all three keys (block, receipts, traces)
+    /// for `block_num` exist on this archive; `Ok(None)` if any is absent.
+    /// `metadata()` handles legacy data transparently, so a returned `Some`
+    /// always carries real, current checksums.
+    pub async fn block_data_checksums(&self, block_num: u64) -> Result<Option<BlockDataChecksums>> {
+        let block_key = self.block_key(block_num);
+        let receipts_key = self.receipts_key(block_num);
+        let traces_key = self.traces_key(block_num);
+        let (block, receipts, traces) = try_join!(
+            self.store.metadata(&block_key),
+            self.store.metadata(&receipts_key),
+            self.store.metadata(&traces_key),
+        )?;
+        Ok(match (block, receipts, traces) {
+            (Some(block), Some(receipts), Some(traces)) => Some(BlockDataChecksums {
+                block: block.checksum_sha256,
+                receipts: receipts.checksum_sha256,
+                traces: traces.checksum_sha256,
+            }),
+            _ => None,
+        })
     }
 }
 
@@ -1246,5 +1279,148 @@ mod tests {
             data.offsets.unwrap().len(),
             data.block.body.transactions.len()
         );
+    }
+
+    #[tokio::test]
+    async fn test_block_data_checksums_all_present() {
+        use sha2::{Digest, Sha256};
+
+        let archive = BlockDataArchive::new(MemoryStorage::new("checksums_all_present"));
+        let block_num = 7;
+
+        let block = create_test_block(block_num);
+        // Use receipts/traces payloads that differ from each other (and from the
+        // block) so a field transposition in `block_data_checksums` would fail.
+        let receipt = ReceiptWithLogIndex {
+            receipt: ReceiptEnvelope::Eip1559(make_receipt(5)),
+            starting_log_index: 0,
+        };
+        let receipts = vec![receipt];
+        let traces = vec![vec![9, 8, 7, 6]];
+
+        archive
+            .archive_block(block, WritePolicy::AllowOverwrite)
+            .await
+            .unwrap();
+        archive
+            .archive_receipts(receipts, block_num, WritePolicy::AllowOverwrite)
+            .await
+            .unwrap();
+        archive
+            .archive_traces(traces, block_num, WritePolicy::AllowOverwrite)
+            .await
+            .unwrap();
+
+        let checksums = archive
+            .block_data_checksums(block_num)
+            .await
+            .unwrap()
+            .expect("all three keys present, expected Some");
+
+        // Compute expected checksums by hashing the exact bytes stored at each key.
+        let stored_block = archive
+            .store
+            .get(&archive.block_key(block_num))
+            .await
+            .unwrap()
+            .unwrap();
+        let stored_receipts = archive
+            .store
+            .get(&archive.receipts_key(block_num))
+            .await
+            .unwrap()
+            .unwrap();
+        let stored_traces = archive
+            .store
+            .get(&archive.traces_key(block_num))
+            .await
+            .unwrap()
+            .unwrap();
+
+        let expected_block: [u8; 32] = Sha256::digest(&stored_block).into();
+        let expected_receipts: [u8; 32] = Sha256::digest(&stored_receipts).into();
+        let expected_traces: [u8; 32] = Sha256::digest(&stored_traces).into();
+
+        // Guard against field transposition: the three payloads differ, so each
+        // assertion only passes if the right field carries the right checksum.
+        assert_eq!(checksums.block, expected_block);
+        assert_eq!(checksums.receipts, expected_receipts);
+        assert_eq!(checksums.traces, expected_traces);
+    }
+
+    #[tokio::test]
+    async fn test_block_data_checksums_missing_all() {
+        let archive = BlockDataArchive::new(MemoryStorage::new("checksums_missing_all"));
+        assert_eq!(archive.block_data_checksums(42).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn test_block_data_checksums_only_block_present() {
+        let archive = BlockDataArchive::new(MemoryStorage::new("checksums_only_block"));
+        let block_num = 3;
+        archive
+            .archive_block(create_test_block(block_num), WritePolicy::AllowOverwrite)
+            .await
+            .unwrap();
+        // Receipts and traces are absent, so the result must be None.
+        assert_eq!(archive.block_data_checksums(block_num).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn test_block_data_checksums_block_and_receipts_no_traces() {
+        let archive = BlockDataArchive::new(MemoryStorage::new("checksums_block_and_receipts"));
+        let block_num = 4;
+
+        archive
+            .archive_block(create_test_block(block_num), WritePolicy::AllowOverwrite)
+            .await
+            .unwrap();
+        let receipt = ReceiptWithLogIndex {
+            receipt: ReceiptEnvelope::Eip1559(make_receipt(5)),
+            starting_log_index: 0,
+        };
+        archive
+            .archive_receipts(vec![receipt], block_num, WritePolicy::AllowOverwrite)
+            .await
+            .unwrap();
+
+        // Two of three present (traces absent), so the result must still be None.
+        assert_eq!(archive.block_data_checksums(block_num).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn test_block_data_checksums_backend_error_is_err() {
+        let store = MemoryStorage::new("checksums_backend_error");
+        let failure_ptr = store.should_fail.clone();
+        let archive = BlockDataArchive::new(store);
+        let block_num = 9;
+
+        // Archive all three so every key exists; the failure below, not a
+        // missing key, is what must surface.
+        archive
+            .archive_block(create_test_block(block_num), WritePolicy::AllowOverwrite)
+            .await
+            .unwrap();
+        let receipt = ReceiptWithLogIndex {
+            receipt: ReceiptEnvelope::Eip1559(make_receipt(5)),
+            starting_log_index: 0,
+        };
+        archive
+            .archive_receipts(vec![receipt], block_num, WritePolicy::AllowOverwrite)
+            .await
+            .unwrap();
+        archive
+            .archive_traces(
+                vec![vec![9, 8, 7, 6]],
+                block_num,
+                WritePolicy::AllowOverwrite,
+            )
+            .await
+            .unwrap();
+
+        // Now make the backend fail: `metadata()` returns Err, which
+        // `try_join!(...)?` must propagate as Err rather than swallow as Ok(None).
+        failure_ptr.store(true, Ordering::SeqCst);
+        assert!(archive.block_data_checksums(block_num).await.is_err());
     }
 }

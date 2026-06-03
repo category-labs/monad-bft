@@ -509,6 +509,21 @@ impl CheckerModel {
             }
         }
     }
+
+    /// Fetches the SHA256 checksums of a single block's archived payloads from a
+    /// specific replica, without downloading the bodies. `Ok(None)` if the block
+    /// is not fully present (any of block/receipts/traces missing) on that replica.
+    pub async fn fetch_block_data_checksums_for_replica(
+        &self,
+        block_num: u64,
+        replica_name: &str,
+    ) -> Result<Option<BlockDataChecksums>> {
+        let reader = self
+            .block_data_readers
+            .get(replica_name)
+            .with_context(|| format!("Unknown replica: {replica_name}"))?;
+        reader.block_data_checksums(block_num).await
+    }
 }
 /// Types of faults that can be detected in blocks
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash)]
@@ -1370,5 +1385,141 @@ mod tests {
             assert!(result.contains(&(100_000 + i * 1000)));
         }
         assert!(!result.contains(&200_000));
+    }
+
+    /// Builds an empty-transaction block (the signing helpers from
+    /// block_data_archive.rs are not available in this binary crate).
+    fn checksum_test_block(block_num: u64) -> Block {
+        Block {
+            header: Header {
+                number: block_num,
+                ..Default::default()
+            },
+            body: BlockBody {
+                transactions: vec![],
+                ommers: vec![],
+                withdrawals: None,
+            },
+        }
+    }
+
+    /// Constructs a `CheckerModel` whose `block_data_readers` map contains a
+    /// single replica named "replica1" backed by `replica`. Cloning a
+    /// `BlockDataArchive` (via `MemoryStorage`) shares the underlying
+    /// `Arc<Mutex<_>>`, so the model's reader observes the same data.
+    fn model_with_replica(replica: &BlockDataArchive) -> CheckerModel {
+        let mut readers = HashMap::new();
+        readers.insert("replica1".to_string(), replica.clone());
+        CheckerModel {
+            store: MemoryStorage::new("checker-store").into(),
+            block_data_readers: Arc::new(readers),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_fetch_block_data_checksums_for_replica_all_present() {
+        use sha2::{Digest, Sha256};
+
+        let block_num = 11;
+        let replica = BlockDataArchive::new(MemoryStorage::new("replica1"));
+
+        replica
+            .archive_block(checksum_test_block(block_num), WritePolicy::AllowOverwrite)
+            .await
+            .unwrap();
+        let receipts: BlockReceipts = vec![];
+        // The three stored payloads are structurally distinct (the block header
+        // repr, the encoded empty-receipt-list `ReceiptStorageRepr::V1(vec![])`,
+        // and the traces `Vec<Vec<u8>>` RLP), so any transposition of the three
+        // checksum fields would make the asserts below fail.
+        let traces: BlockTraces = vec![vec![1, 2, 3]];
+        replica
+            .archive_receipts(receipts, block_num, WritePolicy::AllowOverwrite)
+            .await
+            .unwrap();
+        replica
+            .archive_traces(traces, block_num, WritePolicy::AllowOverwrite)
+            .await
+            .unwrap();
+
+        let model = model_with_replica(&replica);
+
+        let checksums = model
+            .fetch_block_data_checksums_for_replica(block_num, "replica1")
+            .await
+            .unwrap()
+            .expect("all three keys present, expected Some");
+
+        // Compute expected checksums by hashing the exact stored bytes.
+        let stored_block = replica
+            .store
+            .get(&replica.block_key(block_num))
+            .await
+            .unwrap()
+            .unwrap();
+        let stored_receipts = replica
+            .store
+            .get(&replica.receipts_key(block_num))
+            .await
+            .unwrap()
+            .unwrap();
+        let stored_traces = replica
+            .store
+            .get(&replica.traces_key(block_num))
+            .await
+            .unwrap()
+            .unwrap();
+
+        let expected_block: [u8; 32] = Sha256::digest(&stored_block).into();
+        let expected_receipts: [u8; 32] = Sha256::digest(&stored_receipts).into();
+        let expected_traces: [u8; 32] = Sha256::digest(&stored_traces).into();
+
+        assert_eq!(checksums.block, expected_block);
+        assert_eq!(checksums.receipts, expected_receipts);
+        assert_eq!(checksums.traces, expected_traces);
+    }
+
+    #[tokio::test]
+    async fn test_fetch_block_data_checksums_for_replica_missing() {
+        let replica = BlockDataArchive::new(MemoryStorage::new("replica1"));
+        let model = model_with_replica(&replica);
+        // Replica is present in the map but no block has been archived.
+        assert_eq!(
+            model
+                .fetch_block_data_checksums_for_replica(11, "replica1")
+                .await
+                .unwrap(),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn test_fetch_block_data_checksums_for_replica_only_block_present() {
+        let block_num = 11;
+        let replica = BlockDataArchive::new(MemoryStorage::new("replica1"));
+        replica
+            .archive_block(checksum_test_block(block_num), WritePolicy::AllowOverwrite)
+            .await
+            .unwrap();
+        let model = model_with_replica(&replica);
+        // Receipts and traces are absent, so the result must be None.
+        assert_eq!(
+            model
+                .fetch_block_data_checksums_for_replica(block_num, "replica1")
+                .await
+                .unwrap(),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn test_fetch_block_data_checksums_for_replica_unknown_replica() {
+        let replica = BlockDataArchive::new(MemoryStorage::new("replica1"));
+        let model = model_with_replica(&replica);
+        // "replica2" is not in the map, so this must error.
+        let result = model
+            .fetch_block_data_checksums_for_replica(11, "replica2")
+            .await;
+        assert!(result.is_err());
     }
 }
