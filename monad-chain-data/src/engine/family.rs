@@ -64,6 +64,27 @@ impl Family {
         }
     }
 
+    /// Dense 0-based index for this family, matching the `[log, tx, trace]`
+    /// region order in the shared per-block blob. Used to index per-family
+    /// fixed-size arrays such as the block-region cache.
+    pub const fn slot(self) -> usize {
+        match self {
+            Family::Log => 0,
+            Family::Tx => 1,
+            Family::Trace => 2,
+        }
+    }
+
+    /// Inverse of [`Self::slot`]: the family occupying a given array slot.
+    pub const fn from_slot(slot: usize) -> Option<Family> {
+        match slot {
+            0 => Some(Family::Log),
+            1 => Some(Family::Tx),
+            2 => Some(Family::Trace),
+            _ => None,
+        }
+    }
+
     /// Returns the per-block window for this family, if this block recorded
     /// any records in the family.
     pub fn window_in(self, block: &BlockRecord) -> Option<FamilyWindowRecord> {

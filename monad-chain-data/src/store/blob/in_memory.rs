@@ -15,7 +15,10 @@
 
 use std::{
     collections::BTreeMap,
-    sync::{Arc, RwLock},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, RwLock,
+    },
 };
 
 use bytes::Bytes;
@@ -30,6 +33,10 @@ use crate::{
 #[derive(Debug, Clone, Default)]
 pub struct InMemoryBlobStore {
     blobs: Arc<RwLock<BTreeMap<(BlobTableId, Vec<u8>), Bytes>>>,
+    /// Count of backend object accesses (`get_blob`, which also backs the
+    /// default `read_range`). Lets cache tests assert that single-flight +
+    /// region caching collapse N row reads of one block onto one fetch.
+    get_blob_calls: Arc<AtomicU64>,
 }
 
 impl InMemoryBlobStore {
@@ -42,6 +49,12 @@ impl InMemoryBlobStore {
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// Number of object-level reads served so far. One range read counts as one
+    /// access (the default `read_range` fetches the object via `get_blob`).
+    pub fn get_blob_calls(&self) -> u64 {
+        self.get_blob_calls.load(Ordering::SeqCst)
     }
 
     /// Test-only: clones the entire blob map. Enables byte-equality assertions
@@ -76,6 +89,7 @@ impl BlobStore for InMemoryBlobStore {
     }
 
     async fn get_blob(&self, table: BlobTableId, key: &[u8]) -> Result<Option<Bytes>> {
+        self.get_blob_calls.fetch_add(1, Ordering::SeqCst);
         let guard = self
             .blobs
             .read()

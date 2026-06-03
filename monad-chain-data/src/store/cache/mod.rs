@@ -17,7 +17,6 @@ use std::{
     collections::HashMap,
     future::Future,
     hash::Hash,
-    num::NonZeroUsize,
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc, Mutex,
@@ -40,17 +39,19 @@ use crate::{
 /// Output stored in the single-flight map. [`Shared`] requires its output to
 /// be `Clone`, but [`MonadChainDataError`] is not `Clone`, so the error is
 /// wrapped in an `Arc`. Converted back to the crate `Result` at the boundary
-/// by [`unshare`].
-type SharedResult = std::result::Result<Option<Bytes>, Arc<MonadChainDataError>>;
+/// by [`unshare`]. Generic over the cached value type `V` so the byte-budgeted
+/// region cache (`V = Bytes`) shares the same single-flight machinery as the
+/// byte-payload tables (also `V = Bytes`).
+type SharedResult<V> = std::result::Result<Option<V>, Arc<MonadChainDataError>>;
 
 /// A boxed, `'static` backend-fetch future shared by every coalesced caller.
-type SharedFetch = Shared<BoxFuture<'static, SharedResult>>;
+type SharedFetch<V> = Shared<BoxFuture<'static, SharedResult<V>>>;
 
 /// Maps a shared (Arc-wrapped error) fetch result back to the crate `Result`.
 /// The leader usually owns the only `Arc` and hands the original error back
 /// untouched; a follower that raced onto the same fetch re-wraps the message
 /// in [`MonadChainDataError::Backend`] so callers still get a crate `Result`.
-fn unshare(shared: SharedResult) -> Result<Option<Bytes>> {
+fn unshare<V>(shared: SharedResult<V>) -> Result<Option<V>> {
     shared.map_err(|e| match Arc::try_unwrap(e) {
         Ok(err) => err,
         Err(shared) => MonadChainDataError::Backend(shared.to_string()),
@@ -68,7 +69,11 @@ pub struct CacheConfig {
     pub block_header_entries: usize,
     pub block_hash_to_number_entries: usize,
     pub tx_hash_index_entries: usize,
-    pub block_blob_entries: usize,
+    /// Byte budget (NOT an entry count) for the in-memory compressed
+    /// per-(family, block) region cache on the query read path. Distinct from
+    /// the other fields, which are entry counts; this is integrated into the
+    /// `--cache-mib` byte math at a 1:1 weight (it already IS bytes).
+    pub block_region_cache_bytes: usize,
 }
 
 impl Default for CacheConfig {
@@ -87,15 +92,21 @@ impl Default for CacheConfig {
             block_header_entries: 4_096,
             block_hash_to_number_entries: 4_096,
             tx_hash_index_entries: 0,
-            block_blob_entries: 0,
+            // 128 MiB of compressed per-(family, block) regions by default.
+            // Regions are the dominant historical-query miss cost (each is an
+            // object-store fetch) and compress to a few KiB–tens of KiB, so
+            // 128 MiB holds thousands of recently queried blocks. Operators
+            // scale this with the rest via `--cache-mib`.
+            block_region_cache_bytes: 128 * 1024 * 1024,
         }
     }
 }
 
 impl CacheConfig {
-    /// Total entry count across every table. Retained for diagnostic logging;
-    /// cache budgeting itself goes through per-table size weights via
-    /// [`Self::approx_total_bytes`].
+    /// Total entry count across every entry-counted table. Retained for
+    /// diagnostic logging; cache budgeting itself goes through per-table size
+    /// weights via [`Self::approx_total_bytes`]. `block_region_cache_bytes` is
+    /// a byte budget, not an entry count, so it is intentionally excluded here.
     pub fn total_entries(&self) -> usize {
         self.dir_by_block_entries
             .saturating_add(self.dir_bucket_entries)
@@ -106,7 +117,6 @@ impl CacheConfig {
             .saturating_add(self.block_header_entries)
             .saturating_add(self.block_hash_to_number_entries)
             .saturating_add(self.tx_hash_index_entries)
-            .saturating_add(self.block_blob_entries)
     }
 
     /// Per-entry size estimate in bytes for each cached table. Roaring-bitmap
@@ -124,7 +134,9 @@ impl CacheConfig {
             CacheField::BitmapPageCounts => 256,
             CacheField::BlockHashToNumber => 40,
             CacheField::OpenBitmapStream => 32,
-            CacheField::BlockBlob => 4 * 1024 * 1024,
+            // The region cache field already carries a byte budget, so its
+            // per-"entry" weight is 1: `count * weight == bytes` directly.
+            CacheField::BlockRegionBytes => 1,
         }
     }
 
@@ -162,7 +174,7 @@ impl CacheConfig {
                 block_header_entries: 0,
                 block_hash_to_number_entries: 0,
                 tx_hash_index_entries: 0,
-                block_blob_entries: 0,
+                block_region_cache_bytes: 0,
             };
         }
         let denom = denom.max(1);
@@ -177,7 +189,10 @@ impl CacheConfig {
             block_header_entries: scale(self.block_header_entries),
             block_hash_to_number_entries: scale(self.block_hash_to_number_entries),
             tx_hash_index_entries: scale(self.tx_hash_index_entries),
-            block_blob_entries: scale(self.block_blob_entries),
+            // Scaled like everything else; it is bytes, and the region field's
+            // per-entry weight is 1, so it contributes its bytes 1:1 to the
+            // byte budget that drives `--cache-mib` scaling.
+            block_region_cache_bytes: scale(self.block_region_cache_bytes),
         }
     }
 
@@ -201,7 +216,7 @@ impl CacheConfig {
                 self.block_hash_to_number_entries,
             ),
             (CacheField::TxHashIndex, self.tx_hash_index_entries),
-            (CacheField::BlockBlob, self.block_blob_entries),
+            (CacheField::BlockRegionBytes, self.block_region_cache_bytes),
         ]
     }
 }
@@ -217,43 +232,93 @@ pub enum CacheField {
     BlockHeader,
     BlockHashToNumber,
     TxHashIndex,
-    BlockBlob,
+    BlockRegionBytes,
+}
+
+/// LRU cache plus its running weighted size, guarded by ONE mutex so the
+/// size counter can never drift from the map under concurrent inserts/evicts.
+/// Holding both behind a single lock preserves the crate-wide invariant that
+/// the cache lock is never held across an `.await`.
+struct WeightedLru<K, V>
+where
+    K: Hash + Eq,
+{
+    lru: LruCache<K, Option<V>>,
+    /// Sum of `weigher(value)` over every resident entry. Kept in lockstep
+    /// with `lru` (add on insert, refund the replaced value's weight, subtract
+    /// on eviction) so it always equals the true resident byte weight.
+    size: usize,
+    /// Maximum total weight. For count-based caches this is the entry count and
+    /// the weigher returns 1 per entry, reproducing the old behavior exactly.
+    budget: usize,
 }
 
 /// The per-key/per-counter machinery shared by every cached wrapper.
 /// Generic over the key type so the three table flavors (KV / scannable /
-/// blob) compose with the same LRU + hits/misses + populate/evict logic.
-/// Wrapped in `Arc` by every owner so WriteSession can capture an eviction
-/// handle without going back through the parent `Tables` to re-resolve.
-pub(crate) struct CachedInner<K>
+/// blob) compose with the same LRU + hits/misses + populate/evict logic, and
+/// over the value type `V` (defaulting to [`Bytes`]) so the byte-budgeted
+/// region cache reuses the same single-flight + eviction logic. Wrapped in
+/// `Arc` by every owner so WriteSession can capture an eviction handle without
+/// going back through the parent `Tables` to re-resolve.
+pub(crate) struct CachedInner<K, V = Bytes>
 where
     K: Hash + Eq,
 {
-    cache: Option<Mutex<LruCache<K, Option<Bytes>>>>,
+    cache: Option<Mutex<WeightedLru<K, V>>>,
+    /// Per-value weight function (in bytes). Count-based caches use a unit
+    /// weigher; the region cache weighs the exact compressed-region length.
+    /// `None` (a negatively cached miss) weighs 0.
+    weigher: fn(&Option<V>) -> usize,
     /// Single-flight map: concurrent misses on the same key share the one
     /// in-flight backend fetch held here instead of each issuing their own.
     /// Kept separate from the LRU mutex so neither is held across an `.await`.
-    in_flight: Mutex<HashMap<K, SharedFetch>>,
+    in_flight: Mutex<HashMap<K, SharedFetch<V>>>,
     hits: AtomicU64,
     misses: AtomicU64,
 }
 
-impl<K> CachedInner<K>
+impl<K, V> CachedInner<K, V>
 where
     K: Hash + Eq,
+    V: Clone,
 {
+    /// Count-based cache: at most `entries` resident values, every value
+    /// weighing 1. Byte-for-byte the historical behavior (the budget *is* the
+    /// entry count). `entries == 0` disables the cache entirely.
     fn new(entries: usize) -> Arc<Self> {
+        Self::build(entries, |_| 1)
+    }
+
+    /// Byte-budgeted cache: evicts LRU entries until the summed `weigher`
+    /// weight is `<= budget` bytes. `budget == 0` disables the cache.
+    fn with_weigher(budget: usize, weigher: fn(&Option<V>) -> usize) -> Arc<Self> {
+        Self::build(budget, weigher)
+    }
+
+    fn build(budget: usize, weigher: fn(&Option<V>) -> usize) -> Arc<Self> {
+        // The LRU is `unbounded()` because eviction is driven by the weight
+        // budget, not an entry count; capping by count too would evict early.
+        // `lru 0.16` provides both `unbounded()` and `pop_lru()` (verified
+        // against Cargo.lock), so no count-cap fallback is needed.
+        let cache = (budget > 0).then(|| {
+            Mutex::new(WeightedLru {
+                lru: LruCache::unbounded(),
+                size: 0,
+                budget,
+            })
+        });
         Arc::new(Self {
-            cache: NonZeroUsize::new(entries).map(|cap| Mutex::new(LruCache::new(cap))),
+            cache,
+            weigher,
             in_flight: Mutex::new(HashMap::new()),
             hits: AtomicU64::new(0),
             misses: AtomicU64::new(0),
         })
     }
 
-    fn lookup(&self, key: &K) -> Option<Option<Bytes>> {
+    fn lookup(&self, key: &K) -> Option<Option<V>> {
         let c = self.cache.as_ref()?;
-        let hit = c.lock().expect("cache mutex poisoned").get(key).cloned();
+        let hit = c.lock().expect("cache mutex poisoned").lru.get(key).cloned();
         if hit.is_some() {
             self.hits.fetch_add(1, Ordering::Relaxed);
         } else {
@@ -262,19 +327,42 @@ where
         hit
     }
 
-    fn store(&self, key: K, value: Option<Bytes>) {
+    fn store(&self, key: K, value: Option<V>) {
         if let Some(c) = &self.cache {
-            c.lock().expect("cache mutex poisoned").put(key, value);
+            let added = (self.weigher)(&value);
+            let mut guard = c.lock().expect("cache mutex poisoned");
+            // Refund the weight of any value this key replaces before adding
+            // the new one, so `size` tracks resident weight exactly.
+            if let Some(old) = guard.lru.put(key, value) {
+                let refund = (self.weigher)(&old);
+                guard.size = guard.size.saturating_sub(refund);
+            }
+            guard.size = guard.size.saturating_add(added);
+            // Evict the least-recently-used entries until back within budget.
+            // A single oversized value can leave `size > budget` with one
+            // entry resident; callers gate that with a size threshold, but the
+            // loop still terminates because `pop_lru` eventually empties.
+            while guard.size > guard.budget {
+                let Some((_, evicted)) = guard.lru.pop_lru() else {
+                    break;
+                };
+                let freed = (self.weigher)(&evicted);
+                guard.size = guard.size.saturating_sub(freed);
+            }
         }
     }
 
-    pub(crate) fn populate(&self, key: K, value: Bytes) {
+    pub(crate) fn populate(&self, key: K, value: V) {
         self.store(key, Some(value));
     }
 
     pub(crate) fn evict(&self, key: &K) {
         if let Some(c) = &self.cache {
-            c.lock().expect("cache mutex poisoned").pop(key);
+            let mut guard = c.lock().expect("cache mutex poisoned");
+            if let Some(old) = guard.lru.pop(key) {
+                let refund = (self.weigher)(&old);
+                guard.size = guard.size.saturating_sub(refund);
+            }
         }
     }
 
@@ -288,9 +376,10 @@ where
     }
 }
 
-impl<K> CachedInner<K>
+impl<K, V> CachedInner<K, V>
 where
     K: Hash + Eq + Clone + Send + 'static,
+    V: Clone + Send + 'static,
 {
     /// Point-read with cache + single-flight (in-flight request coalescing).
     ///
@@ -321,9 +410,9 @@ where
     /// a cache miss — so the miss counter reflects "requests not served from
     /// the LRU", and the win from single-flight shows up as fewer backend
     /// round-trips rather than in the ratio.
-    async fn get_or_fetch<Fut>(&self, key: K, fetch: Fut) -> Result<Option<Bytes>>
+    async fn get_or_fetch<Fut>(&self, key: K, fetch: Fut) -> Result<Option<V>>
     where
-        Fut: Future<Output = Result<Option<Bytes>>> + Send + 'static,
+        Fut: Future<Output = Result<Option<V>>> + Send + 'static,
     {
         // 1. Fast path: serve from the LRU (and count hit/miss).
         if let Some(v) = self.lookup(&key) {
@@ -377,15 +466,15 @@ where
 /// Removes a key from the single-flight map when the leader's drive scope
 /// ends, including on early return, error, or panic. Guarantees a failed or
 /// cancelled fetch never leaves a stale entry that would wedge later callers.
-struct InFlightGuard<'a, K>
+struct InFlightGuard<'a, K, V>
 where
     K: Hash + Eq,
 {
-    inner: &'a CachedInner<K>,
+    inner: &'a CachedInner<K, V>,
     key: &'a K,
 }
 
-impl<K> Drop for InFlightGuard<'_, K>
+impl<K, V> Drop for InFlightGuard<'_, K, V>
 where
     K: Hash + Eq,
 {
@@ -551,9 +640,74 @@ impl<B: BlobStore> CachedBlobTable<B> {
         // tracking full payload presence separately.
         self.inner.read_range(key, start, end_exclusive).await
     }
+}
 
-    pub(crate) fn cache_handle(&self) -> Arc<CachedInner<Vec<u8>>> {
-        self.cache.clone()
+/// Byte-budgeted, in-memory cache of COMPRESSED per-(family, block) blob
+/// regions, keyed by `block_number`. One [`CachedInner`] per family shares the
+/// single byte budget split evenly, so a hot family cannot starve the others
+/// of a shared pool, and per-family hit/miss stats stay legible. Values are the
+/// raw compressed region [`Bytes`] (`base_offset .. region_end` of the shared
+/// per-block object); callers slice individual frames out with FAMILY-RELATIVE
+/// offsets. Regions are immutable once written, so there is no invalidation.
+///
+/// The cache stores compressed (not decompressed) regions because memory is the
+/// binding constraint and decompress is cheap relative to an object-store miss;
+/// the compressed form packs the most rows per resident MiB.
+pub struct BlockRegionCache<B: BlobStore> {
+    inner: BlobTable<B>,
+    /// One cache per family, indexed by `family_slot(family)`. Each gets an
+    /// equal share of the configured byte budget.
+    per_family: [Arc<CachedInner<u64, Bytes>>; 3],
+}
+
+/// Maps a family to its slot in [`BlockRegionCache::per_family`]. Kept local so
+/// the cache module does not depend on the engine `Family` enum; callers pass
+/// the slot index they derive from their own `Family`.
+pub const REGION_CACHE_FAMILIES: usize = 3;
+
+impl<B: BlobStore> BlockRegionCache<B> {
+    /// `budget_bytes` is the TOTAL byte budget; it is split evenly across the
+    /// three families. `0` disables the cache (every family resolves straight
+    /// to the backend).
+    pub fn new(inner: BlobTable<B>, budget_bytes: usize) -> Self {
+        // Exact weigher: a resident region weighs its compressed length; a
+        // negatively cached `None` weighs 0. Empty regions weigh ~0 and never
+        // panic (no division), satisfying the zero-row family edge.
+        let weigher: fn(&Option<Bytes>) -> usize = |v| v.as_ref().map_or(0, Bytes::len);
+        let per_family_budget = budget_bytes / REGION_CACHE_FAMILIES;
+        Self {
+            inner,
+            per_family: std::array::from_fn(|_| {
+                CachedInner::with_weigher(per_family_budget, weigher)
+            }),
+        }
+    }
+
+    /// Returns the whole compressed region for `(family_slot, block_number)`,
+    /// fetching `region_start..region_end` from the backend on a miss and
+    /// caching it. Concurrent callers for the same block coalesce onto ONE
+    /// backend fetch via the single-flight path, so N point reads of distinct
+    /// rows in one uncached block issue exactly one region fetch.
+    pub async fn get_region(
+        &self,
+        family_slot: usize,
+        block_number: u64,
+        region_start: usize,
+        region_end: usize,
+    ) -> Result<Option<Bytes>> {
+        let inner = self.inner.clone();
+        let key = block_number.to_be_bytes();
+        self.per_family[family_slot]
+            .get_or_fetch(block_number, async move {
+                inner.read_range(&key, region_start, region_end).await
+            })
+            .await
+    }
+
+    /// Drains the per-family (hits, misses) window counters, tagged by family
+    /// slot, so the caller can label them with the matching family name.
+    pub fn take_window_stats(&self) -> [(u64, u64); REGION_CACHE_FAMILIES] {
+        std::array::from_fn(|slot| self.per_family[slot].take_window_stats())
     }
 }
 
@@ -841,5 +995,62 @@ mod tests {
             1,
             "follower must have populated the cache"
         );
+    }
+
+    /// Exact byte weigher for region-cache values: `None` weighs 0.
+    fn byte_weigher(v: &Option<Bytes>) -> usize {
+        v.as_ref().map_or(0, Bytes::len)
+    }
+
+    /// The byte-budgeted cache evicts LRU entries until resident weight is back
+    /// within budget, and refunds a replaced key's old weight before adding the
+    /// new one so `size` never drifts.
+    #[test]
+    fn byte_budget_evicts_lru_until_within_budget() {
+        // Budget of 10 bytes. Each value below is 4 bytes.
+        let cache = CachedInner::<u64, Bytes>::with_weigher(10, byte_weigher);
+        cache.populate(1, Bytes::from_static(b"aaaa")); // size 4
+        cache.populate(2, Bytes::from_static(b"bbbb")); // size 8
+                                                        // Touch key 1 so key 2 becomes the LRU victim.
+        assert_eq!(cache.lookup(&1), Some(Some(Bytes::from_static(b"aaaa"))));
+        cache.populate(3, Bytes::from_static(b"cccc")); // size 12 -> evict LRU (key 2) -> size 8
+
+        assert_eq!(cache.lookup(&1), Some(Some(Bytes::from_static(b"aaaa"))));
+        assert_eq!(cache.lookup(&3), Some(Some(Bytes::from_static(b"cccc"))));
+        assert_eq!(cache.lookup(&2), None, "LRU entry evicted to honor budget");
+    }
+
+    /// Replacing a key refunds the old value's weight, so a same-key overwrite
+    /// does not inflate `size` and wrongly evict other entries.
+    #[test]
+    fn byte_budget_refunds_replaced_weight() {
+        let cache = CachedInner::<u64, Bytes>::with_weigher(10, byte_weigher);
+        cache.populate(1, Bytes::from_static(b"aaaa")); // size 4
+        cache.populate(2, Bytes::from_static(b"bbbb")); // size 8
+                                                        // Overwrite key 1 with an equal-size value: size stays 8, no eviction.
+        cache.populate(1, Bytes::from_static(b"AAAA"));
+        assert_eq!(cache.lookup(&1), Some(Some(Bytes::from_static(b"AAAA"))));
+        assert_eq!(cache.lookup(&2), Some(Some(Bytes::from_static(b"bbbb"))));
+    }
+
+    /// A zero-byte (empty-region) value weighs 0 and is cached without
+    /// tripping the budget or dividing by anything.
+    #[test]
+    fn byte_budget_handles_empty_value() {
+        let cache = CachedInner::<u64, Bytes>::with_weigher(8, byte_weigher);
+        cache.populate(1, Bytes::new()); // weighs 0
+        assert_eq!(cache.lookup(&1), Some(Some(Bytes::new())));
+        // Room remains for an 8-byte value alongside the empty one.
+        cache.populate(2, Bytes::from_static(b"bbbbbbbb"));
+        assert_eq!(cache.lookup(&1), Some(Some(Bytes::new())));
+        assert_eq!(cache.lookup(&2), Some(Some(Bytes::from_static(b"bbbbbbbb"))));
+    }
+
+    /// A zero budget disables the cache entirely (every lookup misses).
+    #[test]
+    fn zero_budget_disables_cache() {
+        let cache = CachedInner::<u64, Bytes>::with_weigher(0, byte_weigher);
+        cache.populate(1, Bytes::from_static(b"x"));
+        assert_eq!(cache.lookup(&1), None);
     }
 }

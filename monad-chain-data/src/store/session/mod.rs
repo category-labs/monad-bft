@@ -21,8 +21,8 @@ use crate::{
     engine::tables::Tables,
     error::Result,
     store::{
-        blob::{BlobStore, BlobWriteOp},
-        cache::{CachedBlobTable, CachedInner, CachedKvTable, CachedScannableTable},
+        blob::{BlobStore, BlobTable, BlobWriteOp},
+        cache::{CachedInner, CachedKvTable, CachedScannableTable},
         meta::{MetaStore, MetaWriteOp},
     },
 };
@@ -37,7 +37,6 @@ pub struct WriteSession<'a, M: MetaStore, B: BlobStore> {
     blob_pending: Vec<BlobWriteOp>,
     populated_kv: Vec<(Arc<CachedInner<Vec<u8>>>, Vec<u8>)>,
     populated_scan: Vec<(Arc<CachedInner<(Vec<u8>, Vec<u8>)>>, Vec<u8>, Vec<u8>)>,
-    populated_blob: Vec<(Arc<CachedInner<Vec<u8>>>, Vec<u8>)>,
 }
 
 impl<'a, M: MetaStore, B: BlobStore> WriteSession<'a, M, B> {
@@ -52,7 +51,6 @@ impl<'a, M: MetaStore, B: BlobStore> WriteSession<'a, M, B> {
             blob_pending: Vec::new(),
             populated_kv: Vec::new(),
             populated_scan: Vec::new(),
-            populated_blob: Vec::new(),
         }
     }
 
@@ -90,12 +88,13 @@ impl<'a, M: MetaStore, B: BlobStore> WriteSession<'a, M, B> {
         self.meta_pending.extend(ops);
     }
 
-    pub fn put_blob(&mut self, table: &CachedBlobTable<B>, key: &[u8], value: Bytes) {
-        let handle = table.cache_handle();
-        handle.populate(key.to_vec(), value.clone());
-        self.populated_blob.push((handle, key.to_vec()));
+    /// Stages a blob write. Unlike [`Self::put`], this populates no read cache:
+    /// the compressed per-(family, block) region cache that serves blob reads
+    /// is read-populated only (regions are immutable once written), so the
+    /// ingest write path leaves it untouched.
+    pub fn put_blob(&mut self, table: &BlobTable<B>, key: &[u8], value: Bytes) {
         self.blob_pending.push(BlobWriteOp {
-            table: table.table_id(),
+            table: table.table,
             key: key.to_vec(),
             value,
         });
@@ -117,10 +116,6 @@ impl<'a, M: MetaStore, B: BlobStore> WriteSession<'a, M, B> {
         let scan = std::mem::take(&mut self.populated_scan);
         for (cache, partition, clustering) in scan {
             cache.evict(&(partition, clustering));
-        }
-        let blob = std::mem::take(&mut self.populated_blob);
-        for (cache, key) in blob {
-            cache.evict(&key);
         }
     }
 }

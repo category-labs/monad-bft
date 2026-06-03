@@ -15,7 +15,7 @@
 
 use std::{collections::HashSet, sync::Arc};
 
-use alloy_primitives::{Address, Bytes};
+use alloy_primitives::Address;
 use bytes::Bytes as RawBytes;
 use zstd::dict::DecoderDictionary;
 
@@ -220,11 +220,10 @@ impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery for TraceMaterializer<'a
         if idx_in_block + 1 >= header.offsets.len() {
             return Err(MonadChainDataError::Decode("trace index out of range"));
         }
-        let (start, end) = header.abs_range(idx_in_block);
 
         let frame = self
             .tables
-            .read_block_blob_range(block_number, start, end)
+            .read_block_blob_frame(Family::Trace, block_number, &header, idx_in_block)
             .await?
             .ok_or(MonadChainDataError::MissingData("missing block trace blob"))?;
 
@@ -262,10 +261,9 @@ impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery for TraceMaterializer<'a
                 "missing block trace header",
             ))?;
         let header = BlockBlobHeader::decode(&header_bytes)?;
-        let (region_start, region_end) = header.region_range();
         let blob = self
             .tables
-            .read_block_blob_range(block_number, region_start, region_end)
+            .read_block_blob_region(Family::Trace, block_number, &header)
             .await?
             .ok_or(MonadChainDataError::MissingData("missing block trace blob"))?;
 
@@ -289,7 +287,7 @@ impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery for TraceMaterializer<'a
 #[allow(clippy::too_many_arguments)]
 fn load_filtered_block_traces(
     header: &BlockBlobHeader,
-    blob: &Bytes,
+    blob: &RawBytes,
     block_record: &BlockRecord,
     order: QueryOrder,
     filter: &TraceFilter,

@@ -95,11 +95,11 @@ async fn ingest_stores_one_shared_blob_with_family_relative_headers() {
         tx_header.base_offset + *tx_header.offsets.last().unwrap()
     );
 
-    let combined = service
-        .tables()
-        .load_block_blob(1)
-        .await
-        .expect("load shared blob")
+    // The whole shared object is the concatenation of every family region;
+    // read it straight from the raw blob fixture (the region cache only ever
+    // holds per-family slices, never the combined object).
+    let combined = snapshot
+        .get(&(BLOCK_BLOB_TABLE, 1u64.to_be_bytes().to_vec()))
         .expect("shared blob present");
     assert_eq!(
         combined.len(),

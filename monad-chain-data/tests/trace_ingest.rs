@@ -67,12 +67,13 @@ async fn ingest_persists_trace_artifacts_for_block_with_traces() {
     let trace_header = BlockBlobHeader::decode(&header_bytes).expect("decode trace header");
     assert_eq!(trace_header.row_count(), 3);
 
+    // Read the trace family's region through the region-cache path.
     let blob = service
         .tables()
-        .load_block_blob(1)
+        .read_block_blob_region(Family::Trace, 1, &trace_header)
         .await
-        .expect("load trace blob")
-        .expect("trace blob present");
+        .expect("load trace region")
+        .expect("trace region present");
     assert_eq!(
         blob.len(),
         usize::try_from(*trace_header.offsets.last().unwrap()).unwrap()

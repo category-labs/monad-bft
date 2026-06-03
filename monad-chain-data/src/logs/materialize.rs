@@ -15,7 +15,7 @@
 
 use std::{collections::HashSet, sync::Arc};
 
-use alloy_primitives::{Address, Bytes, B256};
+use alloy_primitives::{Address, B256};
 use bytes::Bytes as RawBytes;
 use zstd::dict::DecoderDictionary;
 
@@ -201,11 +201,10 @@ impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery for LogMaterializer<'a, 
         if idx_in_block + 1 >= header.offsets.len() {
             return Err(MonadChainDataError::Decode("log index out of range"));
         }
-        let (start, end) = header.abs_range(idx_in_block);
 
         let frame = self
             .tables
-            .read_block_blob_range(block_number, start, end)
+            .read_block_blob_frame(Family::Log, block_number, &header, idx_in_block)
             .await?
             .ok_or(MonadChainDataError::MissingData("missing block log blob"))?;
 
@@ -241,10 +240,9 @@ impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery for LogMaterializer<'a, 
             .await?
             .ok_or(MonadChainDataError::MissingData("missing block log header"))?;
         let header = BlockBlobHeader::decode(&header_bytes)?;
-        let (region_start, region_end) = header.region_range();
         let blob = self
             .tables
-            .read_block_blob_range(block_number, region_start, region_end)
+            .read_block_blob_region(Family::Log, block_number, &header)
             .await?
             .ok_or(MonadChainDataError::MissingData("missing block log blob"))?;
 
@@ -268,7 +266,7 @@ impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery for LogMaterializer<'a, 
 #[allow(clippy::too_many_arguments)]
 fn load_filtered_block_logs(
     header: &BlockBlobHeader,
-    blob: &Bytes,
+    blob: &RawBytes,
     block_record: &BlockRecord,
     order: QueryOrder,
     filter: &LogFilter,

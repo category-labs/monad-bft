@@ -24,7 +24,10 @@ pub mod session;
 pub use blob::{BlobStore, BlobTable, BlobTableId, BlobWriteOp, InMemoryBlobStore};
 #[cfg(feature = "s3")]
 pub use blob::{S3BlobStore, S3BlobStoreConfig, S3Credentials};
-pub use cache::{CacheConfig, CacheField, CachedBlobTable, CachedKvTable, CachedScannableTable};
+pub use cache::{
+    BlockRegionCache, CacheConfig, CacheField, CachedBlobTable, CachedKvTable, CachedScannableTable,
+    REGION_CACHE_FAMILIES,
+};
 pub use common::Page;
 #[cfg(feature = "fjall")]
 pub use fjall::{FjallKeyspaceStats, FjallStore, FjallTuning};

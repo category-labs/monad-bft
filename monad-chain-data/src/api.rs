@@ -1393,10 +1393,9 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
             if header.offsets.len() < 2 {
                 continue;
             }
-            let (region_start, region_end) = header.region_range();
             let Some(region) = self
                 .tables
-                .read_block_blob_range(block_number, region_start, region_end)
+                .read_block_blob_region(family, block_number, &header)
                 .await?
             else {
                 continue;

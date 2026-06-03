@@ -15,7 +15,7 @@
 
 use std::collections::HashSet;
 
-use alloy_primitives::{Address, Bytes, U256};
+use alloy_primitives::{Address, U256};
 use bytes::Bytes as RawBytes;
 
 use super::types::TransferEntry;
@@ -233,11 +233,10 @@ impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery for TransferMaterializer
         if idx_in_block + 1 >= header.offsets.len() {
             return Err(MonadChainDataError::Decode("trace index out of range"));
         }
-        let (start, end) = header.abs_range(idx_in_block);
 
         let frame = self
             .tables
-            .read_block_blob_range(block_number, start, end)
+            .read_block_blob_frame(Family::Trace, block_number, &header, idx_in_block)
             .await?
             .ok_or(MonadChainDataError::MissingData("missing block trace blob"))?;
 
@@ -276,10 +275,9 @@ impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery for TransferMaterializer
                 "missing block trace header",
             ))?;
         let header = BlockBlobHeader::decode(&header_bytes)?;
-        let (region_start, region_end) = header.region_range();
-        let blob: Bytes = self
+        let blob: RawBytes = self
             .tables
-            .read_block_blob_range(block_number, region_start, region_end)
+            .read_block_blob_region(Family::Trace, block_number, &header)
             .await?
             .ok_or(MonadChainDataError::MissingData("missing block trace blob"))?;
 

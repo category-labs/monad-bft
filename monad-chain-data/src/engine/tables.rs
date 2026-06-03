@@ -34,13 +34,13 @@ use crate::{
     error::{MonadChainDataError, Result},
     family::{FinalizedBlock, Hash32},
     primitives::{
-        state::{BlockRecord, PublicationState},
+        state::{BlockBlobHeader, BlockRecord, PublicationState},
         EvmBlockHeader,
     },
     store::{
-        BlobStore, BlobWriteOp, CacheConfig, CachedBlobTable, CachedKvTable, CachedScannableTable,
-        CasOutcome, CasVersion, MetaStore, MetaStoreCas, MetaWriteOp, PublicationCasParams,
-        ScannableTableId, SessionFuture, TableId, WriteSession,
+        BlobStore, BlobTable, BlobWriteOp, BlockRegionCache, CacheConfig, CachedKvTable,
+        CachedScannableTable, CasOutcome, CasVersion, MetaStore, MetaStoreCas, MetaWriteOp,
+        PublicationCasParams, ScannableTableId, SessionFuture, TableId, WriteSession,
     },
     txs::TxHashIndexTable,
 };
@@ -328,12 +328,30 @@ impl fmt::Display for WriteOpTopList<'_> {
     }
 }
 
+/// Upper bound on the compressed region size we will admit into the
+/// [`BlockRegionCache`]. A region larger than this is NOT cached: full-scans
+/// over it still read the whole region (uncached), and one-shot point reads
+/// fall back to a single-frame range read so we never pull a huge object into
+/// RAM just to satisfy one row.
+///
+/// 1 MiB is comfortably above a typical block's compressed per-family region
+/// (a few KiB to tens of KiB), so the cap only excludes pathological outliers
+/// while keeping per-entry footprint bounded and the budget predictable. A
+/// const for now (not config-driven); revisit if real region sizes shift.
+const REGION_CACHE_MAX_BYTES: usize = 1024 * 1024;
+
 pub struct Tables<M: MetaStore, B: BlobStore> {
     meta_store: M,
     blob_store: B,
     blocks: BlockTables<M>,
     tx_hash_index: TxHashIndexTable<M>,
-    block_blobs: CachedBlobTable<B>,
+    /// Raw shared-per-block blob table. Writes go here directly (the region
+    /// cache is read-populated only); range reads on a region-cache miss also
+    /// go here.
+    block_blobs: BlobTable<B>,
+    /// In-memory cache of compressed per-(family, block) regions, serving both
+    /// point and full-scan reads. See [`BlockRegionCache`].
+    block_regions: BlockRegionCache<B>,
     families: BTreeMap<Family, FamilyTables<M>>,
     dicts: DictManager,
 }
@@ -372,9 +390,10 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
         Self {
             blocks: BlockTables::new(meta_store.clone(), cache),
             tx_hash_index: TxHashIndexTable::new(meta_store.clone(), cache),
-            block_blobs: CachedBlobTable::new(
+            block_blobs: blob_store.table(BLOCK_BLOB_TABLE),
+            block_regions: BlockRegionCache::new(
                 blob_store.table(BLOCK_BLOB_TABLE),
-                cache.block_blob_entries,
+                cache.block_region_cache_bytes,
             ),
             meta_store,
             blob_store,
@@ -399,14 +418,9 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
         &self.tx_hash_index
     }
 
-    pub async fn load_block_blob(
-        &self,
-        block_number: u64,
-    ) -> Result<Option<alloy_primitives::Bytes>> {
-        let key = block_number_key(block_number);
-        Ok(self.block_blobs.get(&key).await?.map(Into::into))
-    }
-
+    /// Raw byte-range read of the shared per-block blob object, bypassing the
+    /// region cache. Used for the large-region point-read fallback and as the
+    /// single backend fetch the region cache coalesces concurrent misses onto.
     pub async fn read_block_blob_range(
         &self,
         block_number: u64,
@@ -419,6 +433,79 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
             .read_range(&key, start, end_exclusive)
             .await?
             .map(Into::into))
+    }
+
+    /// Returns this family's WHOLE compressed region for `block_number`,
+    /// serving it from the [`BlockRegionCache`] (populating on miss when the
+    /// region is small enough to admit). Callers slice frames out with
+    /// FAMILY-RELATIVE offsets (`header.offsets[i]`), which line up exactly
+    /// because the returned buffer starts at the family's `base_offset`.
+    ///
+    /// A region larger than [`REGION_CACHE_MAX_BYTES`] is read uncached (the
+    /// caller still gets the bytes, we just never resident-cache a giant
+    /// object). The full-scan read paths always go through here.
+    pub async fn read_block_blob_region(
+        &self,
+        family: Family,
+        block_number: u64,
+        header: &BlockBlobHeader,
+    ) -> Result<Option<Bytes>> {
+        let (region_start, region_end) = header.region_range();
+        let region_len = region_end.saturating_sub(region_start);
+        if region_len > REGION_CACHE_MAX_BYTES {
+            // Too big to cache: read it directly without admitting it.
+            return Ok(self
+                .read_block_blob_range(block_number, region_start, region_end)
+                .await?
+                .map(Into::into));
+        }
+        self.block_regions
+            .get_region(family.slot(), block_number, region_start, region_end)
+            .await
+    }
+
+    /// Returns the single compressed frame for row `idx_in_block` of `family`.
+    ///
+    /// On a region-cache hit (or for a small uncached region we choose to
+    /// admit) this slices the frame out of the cached region using
+    /// FAMILY-RELATIVE offsets. For a LARGE region (above
+    /// [`REGION_CACHE_MAX_BYTES`]) it falls back to a single-frame ABSOLUTE
+    /// range read so a one-shot point read never pulls a huge region into RAM.
+    pub async fn read_block_blob_frame(
+        &self,
+        family: Family,
+        block_number: u64,
+        header: &BlockBlobHeader,
+        idx_in_block: usize,
+    ) -> Result<Option<Bytes>> {
+        let (region_start, region_end) = header.region_range();
+        let region_len = region_end.saturating_sub(region_start);
+        if region_len > REGION_CACHE_MAX_BYTES {
+            // Bandwidth-frugal large-region path: one absolute single-frame
+            // read, no caching.
+            let (start, end) = header.abs_range(idx_in_block);
+            return Ok(self
+                .read_block_blob_range(block_number, start, end)
+                .await?
+                .map(Into::into));
+        }
+        // Small region: fetch (or hit) the whole region via the cache, then
+        // slice the row's frame with family-relative offsets. region-relative
+        // offset = abs offset - base_offset, and the cached buffer starts at
+        // base_offset, so `header.offsets[idx]` indexes the buffer directly.
+        let Some(region) = self
+            .block_regions
+            .get_region(family.slot(), block_number, region_start, region_end)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let start = header.offsets[idx_in_block] as usize;
+        let end = header.offsets[idx_in_block + 1] as usize;
+        if start > end || end > region.len() {
+            return Err(MonadChainDataError::Decode("invalid block blob frame range"));
+        }
+        Ok(Some(region.slice(start..end)))
     }
 
     pub fn stage_block_blob(
@@ -677,7 +764,20 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
         let mut out = Vec::new();
         self.blocks.collect_window_stats(&mut out);
         self.tx_hash_index.collect_window_stats(&mut out);
-        collect_blob_stats(&mut out, &self.block_blobs);
+        // Per-family region-cache hit/miss, tagged with a stable per-family
+        // label so the log line stays legible.
+        for (slot, (h, m)) in self.block_regions.take_window_stats().into_iter().enumerate() {
+            if h == 0 && m == 0 {
+                continue;
+            }
+            let name = match Family::from_slot(slot) {
+                Some(Family::Log) => "block_region:log",
+                Some(Family::Tx) => "block_region:tx",
+                Some(Family::Trace) => "block_region:trace",
+                None => "block_region:?",
+            };
+            out.push((name, h, m));
+        }
         for fam in self.families.values() {
             fam.collect_window_stats(&mut out);
         }
@@ -700,16 +800,6 @@ pub(crate) fn collect_kv_stats<M: MetaStore>(
 pub(crate) fn collect_scan_stats<M: MetaStore>(
     out: &mut Vec<(&'static str, u64, u64)>,
     table: &CachedScannableTable<M>,
-) {
-    let (h, m) = table.take_window_stats();
-    if h != 0 || m != 0 {
-        out.push((table.table_id().as_str(), h, m));
-    }
-}
-
-pub(crate) fn collect_blob_stats<B: BlobStore>(
-    out: &mut Vec<(&'static str, u64, u64)>,
-    table: &CachedBlobTable<B>,
 ) {
     let (h, m) = table.take_window_stats();
     if h != 0 || m != 0 {

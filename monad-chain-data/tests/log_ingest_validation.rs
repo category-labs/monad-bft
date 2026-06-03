@@ -66,10 +66,11 @@ async fn ingest_rejects_log_with_more_than_four_topics_before_writing_log_artifa
         .await
         .expect("load log header")
         .is_none());
+    // No shared blob object was written, so a raw range read finds nothing.
     assert!(service
         .tables()
-        .load_block_blob(1)
+        .read_block_blob_range(1, 0, 0)
         .await
-        .expect("load log blob")
+        .expect("read log blob range")
         .is_none());
 }

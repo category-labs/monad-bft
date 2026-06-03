@@ -53,12 +53,14 @@ async fn ingest_persists_tx_artifacts_for_block_with_txs() {
     let tx_header = BlockBlobHeader::decode(&header_bytes).expect("decode tx header");
     assert_eq!(tx_header.row_count(), 2);
 
+    // Read this family's whole region through the region-cache path; for a
+    // single-family block it equals the entire shared object.
     let blob = service
         .tables()
-        .load_block_blob(1)
+        .read_block_blob_region(Family::Tx, 1, &tx_header)
         .await
-        .expect("load tx blob")
-        .expect("tx blob present");
+        .expect("load tx region")
+        .expect("tx region present");
     assert_eq!(
         blob.len(),
         usize::try_from(*tx_header.offsets.last().unwrap()).unwrap()
@@ -139,10 +141,11 @@ async fn ingest_rejects_invalid_signed_tx_bytes_before_writing_tx_artifacts() {
         .await
         .expect("load tx header")
         .is_none());
+    // No shared blob object was written, so a raw range read finds nothing.
     assert!(service
         .tables()
-        .load_block_blob(1)
+        .read_block_blob_range(1, 0, 0)
         .await
-        .expect("load tx blob")
+        .expect("read tx blob range")
         .is_none());
 }
