@@ -19,12 +19,14 @@ use alloy_primitives::B256;
 
 use super::{BlockBlobHeader, RawLogEntry};
 use crate::{
-    engine::bitmap::{
-        encode_grouped_bitmap_fragments, sharded_stream_id, touched_streams_by_page,
-        BitmapFragmentWrite,
+    engine::{
+        bitmap::{
+            encode_grouped_bitmap_fragments, sharded_stream_id, touched_streams_by_page,
+            BitmapFragmentWrite,
+        },
+        digest::{ArtifactChecksum, RowDigest},
+        row_codec::RowCodec,
     },
-    engine::digest::{ArtifactChecksum, RowDigest},
-    engine::row_codec::RowCodec,
     error::{MonadChainDataError, Result},
     family::FinalizedBlock,
     primitives::state::{FamilyWindowRecord, LogId},

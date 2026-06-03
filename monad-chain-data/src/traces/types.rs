@@ -198,4 +198,3 @@ impl From<&IngestTrace> for StoredTrace {
         }
     }
 }
-

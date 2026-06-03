@@ -504,7 +504,9 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
         let start = header.offsets[idx_in_block] as usize;
         let end = header.offsets[idx_in_block + 1] as usize;
         if start > end || end > region.len() {
-            return Err(MonadChainDataError::Decode("invalid block blob frame range"));
+            return Err(MonadChainDataError::Decode(
+                "invalid block blob frame range",
+            ));
         }
         Ok(Some(region.slice(start..end)))
     }
@@ -767,7 +769,12 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
         self.tx_hash_index.collect_window_stats(&mut out);
         // Per-family region-cache hit/miss, tagged with a stable per-family
         // label so the log line stays legible.
-        for (slot, (h, m)) in self.block_regions.take_window_stats().into_iter().enumerate() {
+        for (slot, (h, m)) in self
+            .block_regions
+            .take_window_stats()
+            .into_iter()
+            .enumerate()
+        {
             if h == 0 && m == 0 {
                 continue;
             }

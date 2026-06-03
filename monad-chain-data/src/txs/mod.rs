@@ -26,5 +26,6 @@ pub(crate) use materialize::{
 pub use materialize::{
     QueryTransactionsRequest, QueryTransactionsResponse, TxFilter, TxsRelations,
 };
-pub use crate::primitives::state::BlockBlobHeader;
 pub use types::{StoredTxEnvelope, TxEntry};
+
+pub use crate::primitives::state::BlockBlobHeader;

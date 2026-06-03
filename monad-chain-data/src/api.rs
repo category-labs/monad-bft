@@ -1453,6 +1453,23 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
         plan: IngestPlan,
         retry: IoRetryPolicy,
     ) -> Result<(Vec<IngestOutcome>, IngestBatchTimings)> {
+        let (outcomes, mut timings, publication) =
+            self.apply_ingest_writes_with_retry(plan, retry).await?;
+        let cas_ms = self.publish_ingest_advance(publication).await?;
+        timings.cas_ms = cas_ms;
+        timings.commit_b_ms = timings.commit_b_ms.saturating_add(cas_ms);
+        Ok((outcomes, timings))
+    }
+
+    /// Applies an ingest plan's durable writes without advancing the published
+    /// head. Callers must later publish the latest returned
+    /// [`PublicationAdvance`] in-order; until then readers must treat these
+    /// artifacts as pre-publication state.
+    pub async fn apply_ingest_writes_with_retry(
+        &self,
+        plan: IngestPlan,
+        retry: IoRetryPolicy,
+    ) -> Result<(Vec<IngestOutcome>, IngestBatchTimings, PublicationAdvance)> {
         let IngestPlan {
             outcomes,
             mut timings,
@@ -1480,12 +1497,22 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
         };
         timings.commit_a_meta_ms = combined_timings.meta.as_millis() as u64;
         timings.commit_a_blob_ms = combined_timings.blob.as_millis() as u64;
+        let commit_elapsed_ms = commit_start.elapsed().as_millis() as u64;
+        timings.commit_b_ms = commit_elapsed_ms
+            .saturating_sub(timings.commit_a_meta_ms.max(timings.commit_a_blob_ms));
+        timings.cas_ms = 0;
+        Ok((outcomes, timings, publication))
+    }
+
+    /// Publishes a previously applied ingest advance through the active write
+    /// authority and returns the CAS/publication duration in milliseconds.
+    pub async fn publish_ingest_advance(&self, publication: PublicationAdvance) -> Result<u64> {
         // Publish through the write authority: it revalidates and renews the
         // lease inside the ownership-validating CAS (D1 option A), stamping the
-        // owner/session/lease fields onto the head row. This replaces the old
-        // inline load_state + cas_put. `LeaseLost` is surfaced distinctly from
-        // a same-owner `FencedOut`; `authority_publish` clears the cached lease
-        // on either so the next begin_write reacquires (and runs recovery).
+        // owner/session/lease fields onto the head row. `LeaseLost` is surfaced
+        // distinctly from a same-owner `FencedOut`; `authority_publish` clears
+        // the cached lease on either so the next begin_write reacquires (and
+        // runs recovery).
         let cas_start = Instant::now();
         self.authority_publish(
             publication.new_head,
@@ -1493,11 +1520,7 @@ impl<M: MetaStoreCas, B: BlobStore> MonadChainDataService<M, B> {
             self.observe_upstream(),
         )
         .await?;
-        timings.cas_ms = cas_start.elapsed().as_millis() as u64;
-        let commit_elapsed_ms = commit_start.elapsed().as_millis() as u64;
-        timings.commit_b_ms = commit_elapsed_ms
-            .saturating_sub(timings.commit_a_meta_ms.max(timings.commit_a_blob_ms));
-        Ok((outcomes, timings))
+        Ok(cas_start.elapsed().as_millis() as u64)
     }
 
     /// Re-derives the per-block artifact-checksum chain for a contiguous run of

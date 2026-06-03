@@ -29,7 +29,10 @@ mod common;
 /// mid-test, and returns the blob fixture so the test can read its fetch count.
 fn tables_with_region_cache(
     budget_bytes: usize,
-) -> (Tables<InMemoryMetaStore, InMemoryBlobStore>, InMemoryBlobStore) {
+) -> (
+    Tables<InMemoryMetaStore, InMemoryBlobStore>,
+    InMemoryBlobStore,
+) {
     let blob = InMemoryBlobStore::default();
     let cache = CacheConfig {
         // Everything but the region cache disabled: this test only asserts on
@@ -185,7 +188,10 @@ async fn oversized_region_is_not_cached_and_falls_back_to_single_frame() {
         .filter(|(name, _, _)| name.starts_with("block_region"))
         .map(|(_, h, _)| *h)
         .sum();
-    assert_eq!(region_hits, 0, "oversized region must never produce a cache hit");
+    assert_eq!(
+        region_hits, 0,
+        "oversized region must never produce a cache hit"
+    );
 }
 
 /// Three point reads of distinct rows in the SAME block resolve to ONE backend

@@ -20,5 +20,6 @@ mod types;
 pub use ingest::{compute_trace_addresses, is_transfer_frame, TraceIngestPlan};
 pub(crate) use materialize::{execute_block_scan_trace_query, execute_indexed_trace_query};
 pub use materialize::{QueryTracesRequest, QueryTracesResponse, TraceFilter, TracesRelations};
-pub use crate::primitives::state::BlockBlobHeader;
 pub use types::{StoredTrace, TraceEntry};
+
+pub use crate::primitives::state::BlockBlobHeader;

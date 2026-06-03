@@ -165,8 +165,10 @@ impl<M: MetaStore> FamilyTables<M> {
         if same_frontier_page {
             // Frontier stayed on one page; nothing seals. Write only new streams.
             if let Some(touched) = touched_by_page.get(&final_open_page_start) {
-                let new_streams: BTreeSet<String> =
-                    touched.difference(&durable_start_streams).cloned().collect();
+                let new_streams: BTreeSet<String> = touched
+                    .difference(&durable_start_streams)
+                    .cloned()
+                    .collect();
                 record_open_stream_write(
                     &mut open_stream_writes,
                     final_open_page_start,
@@ -184,13 +186,11 @@ impl<M: MetaStore> FamilyTables<M> {
                     &mut compaction_jobs,
                 )?;
                 if let Some(touched) = touched_by_page.get(&start_open_page) {
-                    let new_streams: BTreeSet<String> =
-                        touched.difference(&durable_start_streams).cloned().collect();
-                    record_open_stream_write(
-                        &mut open_stream_writes,
-                        start_open_page,
-                        new_streams,
-                    );
+                    let new_streams: BTreeSet<String> = touched
+                        .difference(&durable_start_streams)
+                        .cloned()
+                        .collect();
+                    record_open_stream_write(&mut open_stream_writes, start_open_page, new_streams);
                 }
             }
             for (page_global_start, streams) in

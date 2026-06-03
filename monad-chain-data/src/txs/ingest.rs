@@ -17,15 +17,19 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use alloy_consensus::Transaction;
 
-use super::types::{decode_envelope, selector_from_envelope, StoredTxEnvelope};
-use super::BlockBlobHeader;
+use super::{
+    types::{decode_envelope, selector_from_envelope, StoredTxEnvelope},
+    BlockBlobHeader,
+};
 use crate::{
-    engine::bitmap::{
-        encode_grouped_bitmap_fragments, sharded_stream_id, touched_streams_by_page,
-        BitmapFragmentWrite,
+    engine::{
+        bitmap::{
+            encode_grouped_bitmap_fragments, sharded_stream_id, touched_streams_by_page,
+            BitmapFragmentWrite,
+        },
+        digest::{ArtifactChecksum, RowDigest},
+        row_codec::RowCodec,
     },
-    engine::digest::{ArtifactChecksum, RowDigest},
-    engine::row_codec::RowCodec,
     error::{MonadChainDataError, Result},
     family::{FinalizedBlock, Hash32, IngestTx},
     primitives::state::{FamilyWindowRecord, TxId},

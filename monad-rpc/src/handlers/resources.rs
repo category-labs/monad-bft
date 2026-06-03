@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::sync::Arc;
+
 use actix::{Actor, Context};
 use actix_web::{
     dev::{ServiceRequest, ServiceResponse},
@@ -20,8 +22,6 @@ use actix_web::{
 };
 use monad_triedb_utils::triedb_env::TriedbEnv;
 use tracing_actix_web::RootSpanBuilder;
-
-use std::sync::Arc;
 
 use crate::{
     chainstate::{eth_call_handler::EthCallHandler, ChainState},

@@ -335,7 +335,12 @@ where
 
     fn lookup(&self, key: &K) -> Option<Option<V>> {
         let c = self.cache.as_ref()?;
-        let hit = c.lock().expect("cache mutex poisoned").lru.get(key).cloned();
+        let hit = c
+            .lock()
+            .expect("cache mutex poisoned")
+            .lru
+            .get(key)
+            .cloned();
         if hit.is_some() {
             self.hits.fetch_add(1, Ordering::Relaxed);
         } else {
@@ -517,7 +522,6 @@ impl<M: MetaStore> CachedKvTable<M> {
         }
     }
 
-
     pub async fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
         // Build an owned, `'static` fetch by cloning the inner handle and key
         // so it can live in the single-flight `Shared`.
@@ -559,7 +563,6 @@ impl<M: MetaStore> CachedScannableTable<M> {
             cache: CachedInner::new(entries),
         }
     }
-
 
     pub async fn get(&self, partition: &[u8], clustering: &[u8]) -> Result<Option<Bytes>> {
         let key = (partition.to_vec(), clustering.to_vec());
@@ -620,7 +623,6 @@ impl<B: BlobStore> CachedBlobTable<B> {
             cache: CachedInner::new(entries),
         }
     }
-
 
     pub async fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
         // Build an owned, `'static` fetch by cloning the inner handle and key
@@ -1060,7 +1062,10 @@ mod tests {
         // Room remains for an 8-byte value alongside the empty one.
         cache.populate(2, Bytes::from_static(b"bbbbbbbb"));
         assert_eq!(cache.lookup(&1), Some(Some(Bytes::new())));
-        assert_eq!(cache.lookup(&2), Some(Some(Bytes::from_static(b"bbbbbbbb"))));
+        assert_eq!(
+            cache.lookup(&2),
+            Some(Some(Bytes::from_static(b"bbbbbbbb")))
+        );
     }
 
     /// A zero budget disables the cache entirely (every lookup misses).

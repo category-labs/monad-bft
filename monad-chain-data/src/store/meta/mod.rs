@@ -19,7 +19,7 @@ mod in_memory;
 
 use bytes::Bytes;
 #[cfg(feature = "dynamo")]
-pub use dynamo::{DynamoCredentials, DynamoMetaStore, DynamoMetaStoreConfig};
+pub use dynamo::{DynamoCredentials, DynamoMetaStore, DynamoMetaStoreConfig, DynamoTableLayout};
 pub use in_memory::InMemoryMetaStore;
 
 use crate::{error::Result, store::common::Page};

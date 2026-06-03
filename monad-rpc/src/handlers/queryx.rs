@@ -33,15 +33,13 @@ use alloy_eips::{
 use alloy_primitives::{Address, Bytes, Log as PrimitiveLog, LogData, B256, U256};
 use alloy_rpc_types::{Filter, FilterBlockOption, Log as RpcLog};
 use monad_chain_data::{
-    scan_block_logs, scan_block_txs,
-    store::FjallStore,
-    Block, BlockRef, BlockSpan, CallKind, EvmBlockHeader, Hash32, LimitExceededKind, LogEntry,
-    LogFilter, LogsRelations, MemLogsBlock, MemTx, MonadChainDataError, MonadChainDataService,
-    QueryBlocksRequest, QueryBlocksResponse, QueryEnvelope, QueryLogsRequest, QueryLogsResponse,
-    QueryOrder, QueryTracesRequest, QueryTracesResponse, QueryTransactionsRequest,
-    QueryTransactionsResponse, QueryTransfersRequest, QueryTransfersResponse, TraceEntry,
-    TraceFilter, TracesRelations, TransferEntry, TransferFilter, TransfersRelations, TxEntry,
-    TxFilter, TxsRelations,
+    scan_block_logs, scan_block_txs, store::FjallStore, Block, BlockRef, BlockSpan, CallKind,
+    EvmBlockHeader, Hash32, LimitExceededKind, LogEntry, LogFilter, LogsRelations, MemLogsBlock,
+    MemTx, MonadChainDataError, MonadChainDataService, QueryBlocksRequest, QueryBlocksResponse,
+    QueryEnvelope, QueryLogsRequest, QueryLogsResponse, QueryOrder, QueryTracesRequest,
+    QueryTracesResponse, QueryTransactionsRequest, QueryTransactionsResponse,
+    QueryTransfersRequest, QueryTransfersResponse, TraceEntry, TraceFilter, TracesRelations,
+    TransferEntry, TransferFilter, TransfersRelations, TxEntry, TxFilter, TxsRelations,
 };
 use monad_triedb_utils::triedb_env::Triedb;
 use serde::Deserialize;
@@ -1007,9 +1005,9 @@ fn chain_data_error_to_jsonrpc(error: MonadChainDataError) -> JsonRpcError {
         MonadChainDataError::LeaseLost
         | MonadChainDataError::LeaseStillFresh
         | MonadChainDataError::LeaseObservationUnavailable
-        | MonadChainDataError::ReadOnlyMode(_) => {
-            JsonRpcError::internal_error("chain-data write-authority error during query".to_string())
-        }
+        | MonadChainDataError::ReadOnlyMode(_) => JsonRpcError::internal_error(
+            "chain-data write-authority error during query".to_string(),
+        ),
     }
 }
 
@@ -1264,8 +1262,7 @@ async fn append_unfinalized_logs<T: Triedb>(
             continue;
         }
 
-        let timestamp_by_block =
-            HashMap::from([(header.header.number, header.header.timestamp)]);
+        let timestamp_by_block = HashMap::from([(header.header.number, header.header.timestamp)]);
         let tx_hash_by_location: HashMap<(u64, u32), Hash32> = transactions
             .iter()
             .enumerate()
@@ -1418,8 +1415,20 @@ async fn resolve_merge_bounds<T: Triedb>(
         return Ok(None);
     };
 
-    let from = resolve_queryx_bound(raw.from_block.as_deref(), head_final, head_latest, order, true)?;
-    let to = resolve_queryx_bound(raw.to_block.as_deref(), head_final, head_latest, order, false)?;
+    let from = resolve_queryx_bound(
+        raw.from_block.as_deref(),
+        head_final,
+        head_latest,
+        order,
+        true,
+    )?;
+    let to = resolve_queryx_bound(
+        raw.to_block.as_deref(),
+        head_final,
+        head_latest,
+        order,
+        false,
+    )?;
     let (lo, hi) = match order {
         QueryOrder::Ascending => (from, to),
         QueryOrder::Descending => (to, from),
@@ -2009,8 +2018,7 @@ mod tests {
     use std::sync::Arc;
 
     use monad_chain_data::{
-        store::FjallStore,
-        EvmBlockHeader, FinalizedBlock, MonadChainDataService, QueryLimits,
+        store::FjallStore, EvmBlockHeader, FinalizedBlock, MonadChainDataService, QueryLimits,
     };
     use monad_triedb_utils::mock_triedb::MockTriedb;
 
@@ -2448,7 +2456,10 @@ mod tests {
         assert_eq!(tip.transaction_hash, Some(f.tip_tx_hash));
         assert_eq!(tip.transaction_index, Some(0));
         assert_eq!(tip.log_index, Some(0));
-        assert_eq!(tip.inner.data.data, alloy_primitives::Bytes::from_static(&[0xbe, 0xef]));
+        assert_eq!(
+            tip.inner.data.data,
+            alloy_primitives::Bytes::from_static(&[0xbe, 0xef])
+        );
 
         // `toBlock: finalized` (and `safe`) must stop at the finalized head
         // and exclude the unfinalized tip, even though `latest` reaches it.
@@ -2468,7 +2479,12 @@ mod tests {
         }
     }
 
-    fn logs_request(order: Option<&str>, from: &str, to: &str, limit: Option<&str>) -> RawQueryRequest {
+    fn logs_request(
+        order: Option<&str>,
+        from: &str,
+        to: &str,
+        limit: Option<&str>,
+    ) -> RawQueryRequest {
         RawQueryRequest {
             filter: None,
             fields: None,
@@ -2535,7 +2551,11 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(
-            resp_desc.logs.iter().map(|l| l.block_number).collect::<Vec<_>>(),
+            resp_desc
+                .logs
+                .iter()
+                .map(|l| l.block_number)
+                .collect::<Vec<_>>(),
             vec![2, 1]
         );
 
@@ -2550,7 +2570,11 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(
-            resp_limit.logs.iter().map(|l| l.block_number).collect::<Vec<_>>(),
+            resp_limit
+                .logs
+                .iter()
+                .map(|l| l.block_number)
+                .collect::<Vec<_>>(),
             vec![1]
         );
         assert_eq!(resp_limit.span.cursor_block.number, 1);
@@ -2566,7 +2590,11 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(
-            resp_final.logs.iter().map(|l| l.block_number).collect::<Vec<_>>(),
+            resp_final
+                .logs
+                .iter()
+                .map(|l| l.block_number)
+                .collect::<Vec<_>>(),
             vec![1]
         );
     }

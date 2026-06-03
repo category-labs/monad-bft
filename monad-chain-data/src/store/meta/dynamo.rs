@@ -132,11 +132,29 @@ impl std::fmt::Debug for DynamoCredentials {
     }
 }
 
+/// Physical DynamoDB table mapping for logical metadata tables.
+#[derive(Debug, Clone)]
+pub enum DynamoTableLayout {
+    /// All kv/scan/cas rows share one physical DynamoDB table.
+    Single { table_name: String },
+    /// Each logical table id maps to one physical DynamoDB table named
+    /// `{prefix}-{logical-table-name}` after Dynamo-safe normalization.
+    PerLogicalTable { prefix: String },
+}
+
+impl DynamoTableLayout {
+    pub fn single(table_name: impl Into<String>) -> Self {
+        Self::Single {
+            table_name: table_name.into(),
+        }
+    }
+}
+
 /// Construction parameters for [`DynamoMetaStore`].
 #[derive(Debug, Clone)]
 pub struct DynamoMetaStoreConfig {
-    /// The single shared table holding every logical kv/scan/cas row.
-    pub table_name: String,
+    /// Physical table layout for logical kv/scan/cas rows.
+    pub table_layout: DynamoTableLayout,
     /// Override the endpoint for DynamoDB Local / Alternator. Leave `None` to
     /// target real AWS DynamoDB via the default endpoint resolver.
     pub endpoint_url: Option<String>,
@@ -156,7 +174,7 @@ impl DynamoMetaStoreConfig {
     /// the default region chain. Callers tweak the remaining fields as needed.
     pub fn new(table_name: impl Into<String>) -> Self {
         Self {
-            table_name: table_name.into(),
+            table_layout: DynamoTableLayout::single(table_name),
             endpoint_url: None,
             region: None,
             batch_max_concurrency: 16,
@@ -167,7 +185,7 @@ impl DynamoMetaStoreConfig {
 
 struct Inner {
     client: Client,
-    table_name: String,
+    table_layout: DynamoTableLayout,
     batch_max_concurrency: usize,
 }
 
@@ -182,7 +200,7 @@ pub struct DynamoMetaStore {
 impl std::fmt::Debug for DynamoMetaStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DynamoMetaStore")
-            .field("table_name", &self.inner.table_name)
+            .field("table_layout", &self.inner.table_layout)
             .field("batch_max_concurrency", &self.inner.batch_max_concurrency)
             .finish_non_exhaustive()
     }
@@ -195,7 +213,7 @@ impl DynamoMetaStore {
     /// opt-in test/dev provisioning helper).
     pub async fn new(config: DynamoMetaStoreConfig) -> Result<Self> {
         let DynamoMetaStoreConfig {
-            table_name,
+            table_layout,
             endpoint_url,
             region,
             batch_max_concurrency,
@@ -224,20 +242,56 @@ impl DynamoMetaStore {
         Ok(Self {
             inner: Arc::new(Inner {
                 client,
-                table_name,
+                table_layout,
                 batch_max_concurrency: batch_max_concurrency.max(1),
             }),
         })
     }
 
+    fn table_name_for_kv(&self, table: TableId) -> String {
+        self.table_name_for(table.as_str())
+    }
+
+    fn table_name_for_scan(&self, table: ScannableTableId) -> String {
+        self.table_name_for(table.as_str())
+    }
+
+    fn table_name_for_cas(&self, table: TableId) -> String {
+        self.table_name_for(table.as_str())
+    }
+
+    fn table_name_for(&self, logical_table: &str) -> String {
+        match &self.inner.table_layout {
+            DynamoTableLayout::Single { table_name } => table_name.clone(),
+            DynamoTableLayout::PerLogicalTable { prefix } => {
+                format!("{prefix}-{}", dynamo_safe_name(logical_table))
+            }
+        }
+    }
+
+    fn physical_table_names(&self) -> Vec<String> {
+        match &self.inner.table_layout {
+            DynamoTableLayout::Single { table_name } => vec![table_name.clone()],
+            DynamoTableLayout::PerLogicalTable { prefix } => known_logical_table_names()
+                .into_iter()
+                .map(|logical| format!("{prefix}-{}", dynamo_safe_name(logical)))
+                .collect(),
+        }
+    }
+
     /// Single strongly-consistent `GetItem` returning the `val` bytes, or
     /// `Ok(None)` when the item is absent.
-    async fn get_val(&self, pk: Vec<u8>, sk: Vec<u8>) -> Result<Option<Bytes>> {
+    async fn get_val(
+        &self,
+        physical_table: String,
+        pk: Vec<u8>,
+        sk: Vec<u8>,
+    ) -> Result<Option<Bytes>> {
         let resp = self
             .inner
             .client
             .get_item()
-            .table_name(&self.inner.table_name)
+            .table_name(physical_table)
             .key(ATTR_PK, AttributeValue::B(Blob::new(pk)))
             .key(ATTR_SK, AttributeValue::B(Blob::new(sk)))
             .consistent_read(true)
@@ -252,11 +306,17 @@ impl DynamoMetaStore {
     }
 
     /// Single `PutItem` of `(pk, sk, val)`.
-    async fn put_val(&self, pk: Vec<u8>, sk: Vec<u8>, value: Bytes) -> Result<()> {
+    async fn put_val(
+        &self,
+        physical_table: String,
+        pk: Vec<u8>,
+        sk: Vec<u8>,
+        value: Bytes,
+    ) -> Result<()> {
         self.inner
             .client
             .put_item()
-            .table_name(&self.inner.table_name)
+            .table_name(physical_table)
             .item(ATTR_PK, AttributeValue::B(Blob::new(pk)))
             .item(ATTR_SK, AttributeValue::B(Blob::new(sk)))
             .item(ATTR_VAL, AttributeValue::B(Blob::new(value.to_vec())))
@@ -268,8 +328,7 @@ impl DynamoMetaStore {
 
     /// One `BatchWriteItem` call (<= 25 items), retrying `UnprocessedItems`
     /// until they drain.
-    async fn write_chunk(&self, requests: Vec<WriteRequest>) -> Result<()> {
-        let table = self.inner.table_name.clone();
+    async fn write_chunk(&self, table: String, requests: Vec<WriteRequest>) -> Result<()> {
         let mut pending: HashMap<String, Vec<WriteRequest>> = HashMap::new();
         pending.insert(table.clone(), requests);
 
@@ -313,7 +372,13 @@ impl DynamoMetaStore {
     /// mode, treating `ResourceInUseException` (table already exists) as
     /// success, then polls `DescribeTable` until the table is `ACTIVE`.
     pub async fn create_table(&self) -> Result<()> {
-        let table = &self.inner.table_name;
+        for table in self.physical_table_names() {
+            self.create_one_table(&table).await?;
+        }
+        Ok(())
+    }
+
+    async fn create_one_table(&self, table: &str) -> Result<()> {
         let attr = |name: &str| {
             AttributeDefinition::builder()
                 .attribute_name(name)
@@ -333,7 +398,7 @@ impl DynamoMetaStore {
             .inner
             .client
             .create_table()
-            .table_name(table)
+            .table_name(table.to_string())
             .attribute_definitions(attr(ATTR_PK))
             .attribute_definitions(attr(ATTR_SK))
             .key_schema(key(ATTR_PK, KeyType::Hash))
@@ -356,7 +421,7 @@ impl DynamoMetaStore {
                 .inner
                 .client
                 .describe_table()
-                .table_name(table)
+                .table_name(table.to_string())
                 .send()
                 .await
                 .map_err(|e| backend_err("describe_table", e))?;
@@ -375,12 +440,18 @@ impl DynamoMetaStore {
     /// is ACTIVE, and has the expected binary `pk` hash + binary `sk` range
     /// key schema before ingest workers begin writing.
     pub async fn validate_table(&self) -> Result<()> {
-        let table = &self.inner.table_name;
+        for table in self.physical_table_names() {
+            self.validate_one_table(&table).await?;
+        }
+        Ok(())
+    }
+
+    async fn validate_one_table(&self, table: &str) -> Result<()> {
         let desc = self
             .inner
             .client
             .describe_table()
-            .table_name(table)
+            .table_name(table.to_string())
             .send()
             .await
             .map_err(|e| backend_err("describe_table", e))?;
@@ -425,7 +496,12 @@ impl DynamoMetaStore {
 
 impl MetaStore for DynamoMetaStore {
     async fn get(&self, table: TableId, key: &[u8]) -> Result<Option<Bytes>> {
-        self.get_val(kv_pk(table, key), SK_SENTINEL.to_vec()).await
+        self.get_val(
+            self.table_name_for_kv(table),
+            kv_pk(table, key),
+            SK_SENTINEL.to_vec(),
+        )
+        .await
     }
 
     async fn scan_get(
@@ -434,13 +510,22 @@ impl MetaStore for DynamoMetaStore {
         partition: &[u8],
         clustering: &[u8],
     ) -> Result<Option<Bytes>> {
-        self.get_val(scan_pk(table, partition), clustering.to_vec())
-            .await
+        self.get_val(
+            self.table_name_for_scan(table),
+            scan_pk(table, partition),
+            clustering.to_vec(),
+        )
+        .await
     }
 
     async fn put(&self, table: TableId, key: &[u8], value: Bytes) -> Result<()> {
-        self.put_val(kv_pk(table, key), SK_SENTINEL.to_vec(), value)
-            .await
+        self.put_val(
+            self.table_name_for_kv(table),
+            kv_pk(table, key),
+            SK_SENTINEL.to_vec(),
+            value,
+        )
+        .await
     }
 
     async fn scan_put(
@@ -450,27 +535,40 @@ impl MetaStore for DynamoMetaStore {
         clustering: &[u8],
         value: Bytes,
     ) -> Result<()> {
-        self.put_val(scan_pk(table, partition), clustering.to_vec(), value)
-            .await
+        self.put_val(
+            self.table_name_for_scan(table),
+            scan_pk(table, partition),
+            clustering.to_vec(),
+            value,
+        )
+        .await
     }
 
     async fn apply_writes(&self, writes: Vec<MetaWriteOp>) -> Result<()> {
         if writes.is_empty() {
             return Ok(());
         }
-        let requests: Vec<(WriteRequest, usize)> = writes
+        let requests: Vec<(String, WriteRequest, usize)> = writes
             .into_iter()
             .map(|op| {
-                let (pk, sk, value) = match op {
-                    MetaWriteOp::Put { table, key, value } => {
-                        (kv_pk(table, &key), SK_SENTINEL.to_vec(), value)
-                    }
+                let (physical_table, pk, sk, value) = match op {
+                    MetaWriteOp::Put { table, key, value } => (
+                        self.table_name_for_kv(table),
+                        kv_pk(table, &key),
+                        SK_SENTINEL.to_vec(),
+                        value,
+                    ),
                     MetaWriteOp::ScanPut {
                         table,
                         partition,
                         clustering,
                         value,
-                    } => (scan_pk(table, &partition), clustering, value),
+                    } => (
+                        self.table_name_for_scan(table),
+                        scan_pk(table, &partition),
+                        clustering,
+                        value,
+                    ),
                 };
                 let estimated_wire_bytes =
                     estimated_batch_write_item_bytes(pk.len(), sk.len(), value.len());
@@ -483,6 +581,7 @@ impl MetaStore for DynamoMetaStore {
                         MonadChainDataError::Backend(format!("dynamo build put_request: {e}"))
                     })?;
                 Ok((
+                    physical_table,
                     WriteRequest::builder().put_request(put).build(),
                     estimated_wire_bytes,
                 ))
@@ -490,10 +589,10 @@ impl MetaStore for DynamoMetaStore {
             .collect::<Result<Vec<_>>>()?;
 
         let request_count = requests.len();
-        let estimated_wire_bytes = requests.iter().map(|(_, bytes)| *bytes).sum::<usize>();
+        let estimated_wire_bytes = requests.iter().map(|(_, _, bytes)| *bytes).sum::<usize>();
         let concurrency = self.inner.batch_max_concurrency;
+        let count_only_chunks = count_only_chunks_by_table(&requests);
         let chunks = split_batch_write_chunks(requests);
-        let count_only_chunks = request_count.div_ceil(BATCH_WRITE_LIMIT);
         if chunks.len() > count_only_chunks {
             warn!(
                 request_count,
@@ -506,7 +605,10 @@ impl MetaStore for DynamoMetaStore {
         }
         futures::stream::iter(chunks.into_iter().map(|chunk| {
             let store = self.clone();
-            async move { store.write_chunk(chunk).await }
+            async move {
+                let (table, requests): (String, Vec<WriteRequest>) = chunk;
+                store.write_chunk(table, requests).await
+            }
         }))
         .buffer_unordered(concurrency)
         .try_collect::<Vec<()>>()
@@ -523,6 +625,7 @@ impl MetaStore for DynamoMetaStore {
         limit: usize,
     ) -> Result<Page> {
         let pk = scan_pk(table, partition);
+        let physical_table = self.table_name_for_scan(table);
         // A DynamoDB `Query` returns at most 1 MB per response (and at most
         // `Limit` items), signalling more via `LastEvaluatedKey`. The trait
         // contract -- matching fjall/in-memory -- is to return the whole
@@ -554,7 +657,7 @@ impl MetaStore for DynamoMetaStore {
                 .inner
                 .client
                 .query()
-                .table_name(&self.inner.table_name)
+                .table_name(physical_table.clone())
                 .expression_attribute_values(":p", AttributeValue::B(Blob::new(pk.clone())))
                 // Callers only consume the clustering (`sk`); projecting it
                 // alone keeps `val` off the wire.
@@ -617,11 +720,12 @@ impl MetaStore for DynamoMetaStore {
 
 impl MetaStoreCas for DynamoMetaStore {
     async fn cas_get(&self, table: TableId, key: &[u8]) -> Result<Option<(CasVersion, Bytes)>> {
+        let physical_table = self.table_name_for_cas(table);
         let resp = self
             .inner
             .client
             .get_item()
-            .table_name(&self.inner.table_name)
+            .table_name(physical_table)
             .key(ATTR_PK, AttributeValue::B(Blob::new(cas_pk(table, key))))
             .key(ATTR_SK, AttributeValue::B(Blob::new(SK_SENTINEL.to_vec())))
             .consistent_read(true)
@@ -647,6 +751,7 @@ impl MetaStoreCas for DynamoMetaStore {
         value: Bytes,
     ) -> Result<CasOutcome> {
         let pk = cas_pk(table, key);
+        let physical_table = self.table_name_for_cas(table);
         let new_version = match expected {
             None => 1,
             Some(v) => v.0 + 1,
@@ -656,7 +761,7 @@ impl MetaStoreCas for DynamoMetaStore {
             .inner
             .client
             .put_item()
-            .table_name(&self.inner.table_name)
+            .table_name(physical_table.clone())
             .item(ATTR_PK, AttributeValue::B(Blob::new(pk.clone())))
             .item(ATTR_SK, AttributeValue::B(Blob::new(SK_SENTINEL.to_vec())))
             .item(ATTR_VAL, AttributeValue::B(Blob::new(value.to_vec())))
@@ -680,7 +785,7 @@ impl MetaStoreCas for DynamoMetaStore {
                 // (DynamoDB / newer Alternator), else a follow-up GetItem.
                 let current_version = match current_version_from_error(&e) {
                     Some(v) => v,
-                    None => self.read_cas_version(&pk).await?,
+                    None => self.read_cas_version(&physical_table, &pk).await?,
                 };
                 Ok(CasOutcome::Conflict { current_version })
             }
@@ -693,12 +798,16 @@ impl DynamoMetaStore {
     /// Follow-up consistent read of a CAS row's version, used to populate
     /// `Conflict.current_version` when the conditional-failure response did not
     /// carry ALL_OLD (older Alternator).
-    async fn read_cas_version(&self, pk: &[u8]) -> Result<Option<CasVersion>> {
+    async fn read_cas_version(
+        &self,
+        physical_table: &str,
+        pk: &[u8],
+    ) -> Result<Option<CasVersion>> {
         let resp = self
             .inner
             .client
             .get_item()
-            .table_name(&self.inner.table_name)
+            .table_name(physical_table.to_string())
             .key(ATTR_PK, AttributeValue::B(Blob::new(pk.to_vec())))
             .key(ATTR_SK, AttributeValue::B(Blob::new(SK_SENTINEL.to_vec())))
             .consistent_read(true)
@@ -742,6 +851,41 @@ fn scan_pk(table: ScannableTableId, partition: &[u8]) -> Vec<u8> {
 
 fn cas_pk(table: TableId, key: &[u8]) -> Vec<u8> {
     encode_pk(KIND_CAS, table.as_str(), key)
+}
+
+fn dynamo_safe_name(logical_table: &str) -> String {
+    logical_table.replace('_', "-")
+}
+
+fn known_logical_table_names() -> Vec<&'static str> {
+    vec![
+        "publication_state",
+        "block_metadata",
+        "block_evm_header",
+        "block_hash_to_number_index",
+        "tx_hash_index",
+        "log_dict_by_version",
+        "log_dir_by_block",
+        "log_dir_bucket",
+        "log_bitmap_by_block",
+        "log_bitmap_page_blob",
+        "log_bitmap_page_counts",
+        "log_open_bitmap_stream",
+        "tx_dict_by_version",
+        "tx_dir_by_block",
+        "tx_dir_bucket",
+        "tx_bitmap_by_block",
+        "tx_bitmap_page_blob",
+        "tx_bitmap_page_counts",
+        "tx_open_bitmap_stream",
+        "trace_dict_by_version",
+        "trace_dir_by_block",
+        "trace_dir_bucket",
+        "trace_bitmap_by_block",
+        "trace_bitmap_page_blob",
+        "trace_bitmap_page_counts",
+        "trace_open_bitmap_stream",
+    ]
 }
 
 // ----- attribute extraction -----
@@ -833,28 +977,50 @@ fn base64_encoded_len(raw_len: usize) -> usize {
     raw_len.div_ceil(3).saturating_mul(4)
 }
 
-fn split_batch_write_chunks<T>(items: Vec<(T, usize)>) -> Vec<Vec<T>> {
-    let mut chunks = Vec::new();
-    let mut current = Vec::new();
-    let mut current_bytes = 0usize;
-
-    for (item, estimated_wire_bytes) in items {
-        let exceeds_count = current.len() >= BATCH_WRITE_LIMIT;
-        let exceeds_bytes = !current.is_empty()
-            && current_bytes.saturating_add(estimated_wire_bytes) > BATCH_WRITE_PAYLOAD_SOFT_LIMIT;
-        if exceeds_count || exceeds_bytes {
-            chunks.push(std::mem::take(&mut current));
-            current_bytes = 0;
-        }
-        current.push(item);
-        current_bytes = current_bytes.saturating_add(estimated_wire_bytes);
+fn split_batch_write_chunks<T>(items: Vec<(String, T, usize)>) -> Vec<(String, Vec<T>)> {
+    let mut by_table: HashMap<String, Vec<(T, usize)>> = HashMap::new();
+    for (table, item, estimated_wire_bytes) in items {
+        by_table
+            .entry(table)
+            .or_default()
+            .push((item, estimated_wire_bytes));
     }
 
-    if !current.is_empty() {
-        chunks.push(current);
+    let mut chunks = Vec::new();
+    for (table, table_items) in by_table {
+        let mut current = Vec::new();
+        let mut current_bytes = 0usize;
+
+        for (item, estimated_wire_bytes) in table_items {
+            let exceeds_count = current.len() >= BATCH_WRITE_LIMIT;
+            let exceeds_bytes = !current.is_empty()
+                && current_bytes.saturating_add(estimated_wire_bytes)
+                    > BATCH_WRITE_PAYLOAD_SOFT_LIMIT;
+            if exceeds_count || exceeds_bytes {
+                chunks.push((table.clone(), std::mem::take(&mut current)));
+                current_bytes = 0;
+            }
+            current.push(item);
+            current_bytes = current_bytes.saturating_add(estimated_wire_bytes);
+        }
+
+        if !current.is_empty() {
+            chunks.push((table, current));
+        }
     }
 
     chunks
+}
+
+fn count_only_chunks_by_table<T>(items: &[(String, T, usize)]) -> usize {
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+    for (table, _, _) in items {
+        *counts.entry(table.as_str()).or_default() += 1;
+    }
+    counts
+        .values()
+        .map(|count| count.div_ceil(BATCH_WRITE_LIMIT))
+        .sum()
 }
 
 #[cfg(test)]
@@ -942,23 +1108,73 @@ mod tests {
     #[test]
     fn batch_write_chunks_respect_item_count_limit() {
         let items = (0..(BATCH_WRITE_LIMIT * 2 + 1))
-            .map(|i| (i, 1usize))
+            .map(|i| ("table-a".to_string(), i, 1usize))
             .collect();
 
         let chunks = split_batch_write_chunks(items);
 
         assert_eq!(chunks.len(), 3);
-        assert_eq!(chunks[0].len(), BATCH_WRITE_LIMIT);
-        assert_eq!(chunks[1].len(), BATCH_WRITE_LIMIT);
-        assert_eq!(chunks[2].len(), 1);
+        let mut lens: Vec<_> = chunks
+            .iter()
+            .map(|(table, chunk)| (table.as_str(), chunk.len()))
+            .collect();
+        lens.sort();
+        assert_eq!(
+            lens,
+            vec![
+                ("table-a", 1),
+                ("table-a", BATCH_WRITE_LIMIT),
+                ("table-a", BATCH_WRITE_LIMIT)
+            ]
+        );
     }
 
     #[test]
     fn batch_write_chunks_respect_payload_soft_limit() {
         let large = BATCH_WRITE_PAYLOAD_SOFT_LIMIT / 2 + 1;
-        let chunks = split_batch_write_chunks(vec![(0, large), (1, large), (2, large)]);
+        let chunks = split_batch_write_chunks(vec![
+            ("table-a".to_string(), 0, large),
+            ("table-a".to_string(), 1, large),
+            ("table-a".to_string(), 2, large),
+        ]);
 
-        assert_eq!(chunks, vec![vec![0], vec![1], vec![2]]);
+        let mut payloads: Vec<_> = chunks
+            .into_iter()
+            .map(|(table, chunk)| (table, chunk))
+            .collect();
+        payloads.sort_by(|a, b| a.1[0].cmp(&b.1[0]));
+        assert_eq!(
+            payloads,
+            vec![
+                ("table-a".to_string(), vec![0]),
+                ("table-a".to_string(), vec![1]),
+                ("table-a".to_string(), vec![2])
+            ]
+        );
+    }
+
+    #[test]
+    fn batch_write_chunks_do_not_mix_physical_tables() {
+        let chunks = split_batch_write_chunks(vec![
+            ("table-a".to_string(), 1, 1),
+            ("table-b".to_string(), 2, 1),
+            ("table-a".to_string(), 3, 1),
+        ]);
+
+        let mut chunks: Vec<_> = chunks.into_iter().collect();
+        chunks.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(
+            chunks,
+            vec![
+                ("table-a".to_string(), vec![1, 3]),
+                ("table-b".to_string(), vec![2])
+            ]
+        );
+    }
+
+    #[test]
+    fn logical_table_names_are_dynamo_safe() {
+        assert_eq!(dynamo_safe_name("block_evm_header"), "block-evm-header");
     }
 
     #[test]

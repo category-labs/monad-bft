@@ -50,7 +50,7 @@ use monad_chain_data::{
     compute_trace_addresses,
     store::{CacheConfig, FjallStore, FjallTuning, MetaStoreCas},
     CallKind, FinalizedBlock, IngestPlan, IngestTrace, IngestTx, IoRetryPolicy,
-    MonadChainDataService, QueryLimits,
+    MonadChainDataService, PublicationAdvance, QueryLimits,
 };
 use opentelemetry::KeyValue;
 use tokio::sync::{mpsc, Semaphore};
@@ -94,14 +94,14 @@ struct Cli {
     start: Option<u64>,
 
     /// Last block to ingest (inclusive). Mutually exclusive with `--count`;
-    /// exactly one of the two must be set.
-    #[arg(long, conflicts_with = "count", required_unless_present = "count")]
+    /// required unless `--reader-only` is set.
+    #[arg(long, conflicts_with = "count")]
     end: Option<u64>,
 
     /// Number of blocks to ingest from the resolved start (i.e.
     /// `published_head + 1`). End block is derived as `start + count - 1`.
-    /// Mutually exclusive with `--end`.
-    #[arg(long, conflicts_with = "end", required_unless_present = "end")]
+    /// Mutually exclusive with `--end`; required unless `--reader-only` is set.
+    #[arg(long, conflicts_with = "end")]
     count: Option<u64>,
 
     /// Optional OTel collector endpoint for archive-side metrics. Off by
@@ -159,6 +159,17 @@ struct Cli {
     #[arg(long)]
     fetch_buffer: Option<usize>,
 
+    /// Fetch pipeline shape. `semaphore-buffer` is the existing strategy:
+    /// keep `--fetch-buffer` ordered futures alive while a semaphore caps
+    /// active archive reads at `--concurrency`. `bounded-channel` starts only
+    /// `--concurrency` ordered fetch futures and materializes ordered results
+    /// into a bounded channel sized by `--fetch-buffer`. `spawned-tasks` is
+    /// like `bounded-channel`, but each active block fetch runs in its own
+    /// Tokio task to reveal whether synchronous archive decode work is being
+    /// serialized in the producer task.
+    #[arg(long, value_enum, default_value_t = FetchStrategyArg::SemaphoreBuffer)]
+    fetch_strategy: FetchStrategyArg,
+
     /// Skip fetching and ingesting execution traces. With this flag set,
     /// `Family::Trace` stays empty for every ingested block, and both
     /// `query_traces` and `query_transfers` will return zero results for
@@ -176,9 +187,19 @@ struct Cli {
 
     /// Number of fully planned ingest batches allowed to queue in front of
     /// the IO worker. This is the backpressure boundary between planning
-    /// and write/CAS publication.
-    #[arg(long, default_value_t = 2)]
+    /// and durable writes.
+    #[arg(long, default_value_t = 8)]
     plan_buffer: usize,
+
+    /// Number of successfully written, unpublished batches allowed to queue
+    /// in front of the publish worker.
+    #[arg(long, default_value_t = 8)]
+    write_buffer: usize,
+
+    /// Number of published batches allowed to queue in front of progress
+    /// accounting/logging.
+    #[arg(long, default_value_t = 16)]
+    progress_buffer: usize,
 
     /// Number of retries for non-CAS meta/blob write failures. CAS is never
     /// retried; a CAS conflict means this writer lost the publication lease.
@@ -326,12 +347,24 @@ struct Cli {
     #[arg(long)]
     s3_secret_access_key: Option<String>,
 
-    /// DynamoDB/Alternator table holding every metadata row (kv, scannable
-    /// index/directory, and the publication-head CAS row share one table via a
-    /// fixed binary `pk`/`sk` schema). Required when `--meta-backend dynamo`.
+    /// DynamoDB/Alternator table holding metadata rows in the single-table
+    /// layout. Required when `--meta-backend dynamo` and
+    /// `--dynamo-table-layout=single`.
     #[cfg(feature = "dynamo")]
     #[arg(long)]
     dynamo_table: Option<String>,
+
+    /// Physical DynamoDB table layout for metadata. `single` maps every logical
+    /// kv/scan/cas row to `--dynamo-table`; `per-logical-table` maps each
+    /// logical table id to `{--dynamo-table-prefix}-{logical-table-name}`.
+    #[cfg(feature = "dynamo")]
+    #[arg(long, value_enum, default_value_t = DynamoTableLayoutArg::Single)]
+    dynamo_table_layout: DynamoTableLayoutArg,
+
+    /// Prefix for `--dynamo-table-layout=per-logical-table`.
+    #[cfg(feature = "dynamo")]
+    #[arg(long)]
+    dynamo_table_prefix: Option<String>,
 
     /// Override the DynamoDB endpoint URL for a compatible service: DynamoDB
     /// Local or ScyllaDB Alternator (point this at the Alternator port). Leave
@@ -392,6 +425,20 @@ enum BlobBackendArg {
     S3,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum FetchStrategyArg {
+    SemaphoreBuffer,
+    BoundedChannel,
+    SpawnedTasks,
+}
+
+#[cfg(feature = "dynamo")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum DynamoTableLayoutArg {
+    Single,
+    PerLogicalTable,
+}
+
 /// fjall data directories actually required by the chosen backends. A field is
 /// `Some` only when the corresponding store is fjall-backed; a fully remote
 /// deployment (dynamo meta + s3 blobs) leaves both `None` and touches no disk.
@@ -419,14 +466,20 @@ struct FetchedBatch {
     last_block: u64,
     blocks: Vec<FinalizedBlock>,
     first_wait_ms: u64,
+    fetch_batch_collect_ms: u64,
     ingest_started: Instant,
+    fetched_ready_at: Instant,
 }
 
 struct PlannedBatch {
     last_block: u64,
     plan: IngestPlan,
     first_wait_ms: u64,
+    fetch_batch_collect_ms: u64,
+    plan_queue_wait_ms: u64,
+    plan_ms: u64,
     ingest_started: Instant,
+    planned_ready_at: Instant,
 }
 
 struct AppliedBatch {
@@ -434,7 +487,40 @@ struct AppliedBatch {
     outcomes: Vec<monad_chain_data::IngestOutcome>,
     timings: monad_chain_data::IngestBatchTimings,
     first_wait_ms: u64,
+    fetch_batch_collect_ms: u64,
+    plan_queue_wait_ms: u64,
+    plan_ms: u64,
+    io_queue_wait_ms: u64,
+    io_apply_ms: u64,
+    publish_queue_wait_ms: u64,
+    publish_group_batches: u64,
+    applied_ready_at: Instant,
     total_ingest_ms: u64,
+}
+
+struct WrittenBatch {
+    last_block: u64,
+    outcomes: Vec<monad_chain_data::IngestOutcome>,
+    timings: monad_chain_data::IngestBatchTimings,
+    publication: PublicationAdvance,
+    first_wait_ms: u64,
+    fetch_batch_collect_ms: u64,
+    plan_queue_wait_ms: u64,
+    plan_ms: u64,
+    io_queue_wait_ms: u64,
+    io_apply_ms: u64,
+    ingest_started: Instant,
+    written_ready_at: Instant,
+}
+
+type TimedFetchResult = Result<(u64, Block, BlockReceipts, BlockTraces, FetchTimings)>;
+
+#[derive(Debug, Clone, Copy, Default)]
+struct FetchTimings {
+    total_ms: u64,
+    block_ms: u64,
+    receipts_ms: u64,
+    traces_ms: u64,
 }
 
 /// Resolves the fjall directories required by the selected backends. A fjall
@@ -537,6 +623,12 @@ async fn main() -> Result<()> {
     }
     if cli.plan_buffer == 0 {
         bail!("--plan-buffer must be >= 1");
+    }
+    if cli.write_buffer == 0 {
+        bail!("--write-buffer must be >= 1");
+    }
+    if cli.progress_buffer == 0 {
+        bail!("--progress-buffer must be >= 1");
     }
     if cli.io_retry_max_backoff_ms < cli.io_retry_backoff_ms {
         bail!("--io-retry-max-backoff-ms must be >= --io-retry-backoff-ms");
@@ -833,9 +925,8 @@ async fn run_ingest<M: MetaStoreCas, B: monad_chain_data::store::BlobStore>(
             };
             e
         }
-        // clap's required_unless_present + conflicts_with constraints make
-        // the other two cases unreachable.
-        _ => unreachable!("clap enforces exactly one of --end or --count"),
+        (None, None) => bail!("ingest requires exactly one of --end or --count"),
+        (Some(_), Some(_)) => unreachable!("clap enforces --end conflicts with --count"),
     };
     if start > end {
         bail!("start ({}) must be <= end ({})", start, end);
@@ -934,10 +1025,13 @@ async fn run_ingest<M: MetaStoreCas, B: monad_chain_data::store::BlobStore>(
         fetch_buffer,
         batch_size = cli.batch_size,
         plan_buffer = cli.plan_buffer,
+        write_buffer = cli.write_buffer,
+        progress_buffer = cli.progress_buffer,
         io_retry_forever = cli.io_retry_forever,
         io_max_retries = cli.io_max_retries,
         meta_backend = ctx.meta_backend,
         blob_backend = ctx.blob_backend,
+        fetch_strategy = ?cli.fetch_strategy,
         "starting ingest"
     );
 
@@ -949,16 +1043,19 @@ async fn run_ingest<M: MetaStoreCas, B: monad_chain_data::store::BlobStore>(
 
     let fetch_stats = Arc::new(Mutex::new(FetchStats::default()));
     let fetch_progress = Arc::new(FetchProgress::default());
+    let pipeline_progress = Arc::new(PipelineProgress::default());
     if cli.no_traces {
         info!("--no-traces set: skipping trace fetch and ingest");
     }
 
     let (fetched_tx, mut fetched_rx) = mpsc::channel::<FetchedBatch>(cli.plan_buffer);
     let (planned_tx, mut planned_rx) = mpsc::channel::<PlannedBatch>(cli.plan_buffer);
-    let (applied_tx, mut applied_rx) = mpsc::channel::<AppliedBatch>(cli.plan_buffer);
+    let (written_tx, mut written_rx) = mpsc::channel::<WrittenBatch>(cli.write_buffer);
+    let (applied_tx, mut applied_rx) = mpsc::channel::<AppliedBatch>(cli.progress_buffer);
     let fetch_consumed_total = Arc::new(AtomicU64::new(0));
     let ingest_heartbeat_handle = {
         let fetch_progress = fetch_progress.clone();
+        let pipeline_progress = pipeline_progress.clone();
         let fetch_consumed_total = fetch_consumed_total.clone();
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(WINDOW_MAX_WALL);
@@ -966,6 +1063,7 @@ async fn run_ingest<M: MetaStoreCas, B: monad_chain_data::store::BlobStore>(
             loop {
                 tick.tick().await;
                 let snapshot = fetch_progress.snapshot();
+                let pipeline = pipeline_progress.snapshot();
                 let consumed = fetch_consumed_total.load(Ordering::Relaxed);
                 let completed_backlog = snapshot.completed.saturating_sub(consumed);
                 let in_flight = snapshot.started.saturating_sub(snapshot.completed);
@@ -975,6 +1073,13 @@ async fn run_ingest<M: MetaStoreCas, B: monad_chain_data::store::BlobStore>(
                     fetch_consumed_total = consumed,
                     fetch_completed_backlog = completed_backlog,
                     fetch_in_flight = in_flight,
+                    planned_batches_total = pipeline.planned,
+                    write_started_batches_total = pipeline.write_started,
+                    write_completed_batches_total = pipeline.write_completed,
+                    publish_started_groups_total = pipeline.publish_started,
+                    publish_completed_groups_total = pipeline.publish_completed,
+                    published_batches_total = pipeline.published_batches,
+                    applied_sent_batches_total = pipeline.applied_sent,
                     "ingest heartbeat"
                 );
             }
@@ -992,35 +1097,131 @@ async fn run_ingest<M: MetaStoreCas, B: monad_chain_data::store::BlobStore>(
         let initial_backoff = Duration::from_millis(cli.retry_backoff_ms);
         let fetch_traces = !cli.no_traces;
         let batch_size = cli.batch_size;
+        let fetch_strategy = cli.fetch_strategy;
+        let fetch_active_concurrency = control.current();
         tokio::spawn(async move {
-            // Bounded prefetch. `buffered(fetch_buffer)` preserves input
-            // order; the semaphore inside the closure is the dynamic active
-            // fetch limit.
-            let fetch_stream = stream::iter(start..=end)
-                .map(move |n| {
+            let (ordered_tx, mut ordered_rx) = mpsc::channel::<TimedFetchResult>(fetch_buffer);
+            let produce_handle = match fetch_strategy {
+                FetchStrategyArg::SemaphoreBuffer => {
                     let reader = reader.clone();
-                    let stats = fetch_stats.clone();
-                    let progress = fetch_progress.clone();
+                    let fetch_stats = fetch_stats.clone();
+                    let fetch_progress = fetch_progress.clone();
                     let permits = permits.clone();
-                    async move {
-                        let _permit = permits
-                            .acquire_owned()
-                            .await
-                            .expect("concurrency semaphore should never close");
-                        fetch_block_with_retry(
-                            &reader,
-                            n,
-                            max_retries,
-                            initial_backoff,
-                            &stats,
-                            &progress,
-                            fetch_traces,
-                        )
-                        .await
-                    }
-                })
-                .buffered(fetch_buffer);
-            futures::pin_mut!(fetch_stream);
+                    let ordered_tx = ordered_tx.clone();
+                    tokio::spawn(async move {
+                        // Existing strategy: large ordered lookahead plus a
+                        // semaphore that caps active archive reads.
+                        let fetch_stream = stream::iter(start..=end)
+                            .map(move |n| {
+                                let reader = reader.clone();
+                                let stats = fetch_stats.clone();
+                                let progress = fetch_progress.clone();
+                                let permits = permits.clone();
+                                async move {
+                                    let _permit = permits
+                                        .acquire_owned()
+                                        .await
+                                        .expect("concurrency semaphore should never close");
+                                    fetch_block_with_retry(
+                                        &reader,
+                                        n,
+                                        max_retries,
+                                        initial_backoff,
+                                        &stats,
+                                        &progress,
+                                        fetch_traces,
+                                    )
+                                    .await
+                                }
+                            })
+                            .buffered(fetch_buffer);
+                        futures::pin_mut!(fetch_stream);
+                        while let Some(item) = fetch_stream.next().await {
+                            if ordered_tx.send(item).await.is_err() {
+                                break;
+                            }
+                        }
+                    })
+                }
+                FetchStrategyArg::BoundedChannel => {
+                    let reader = reader.clone();
+                    let fetch_stats = fetch_stats.clone();
+                    let fetch_progress = fetch_progress.clone();
+                    let ordered_tx = ordered_tx.clone();
+                    tokio::spawn(async move {
+                        // Proposed strategy: ordered fetch stream has only
+                        // `concurrency` futures alive; ordered outputs then
+                        // materialize into the bounded fetch-buffer channel.
+                        let fetch_stream = stream::iter(start..=end)
+                            .map(move |n| {
+                                let reader = reader.clone();
+                                let stats = fetch_stats.clone();
+                                let progress = fetch_progress.clone();
+                                async move {
+                                    fetch_block_with_retry(
+                                        &reader,
+                                        n,
+                                        max_retries,
+                                        initial_backoff,
+                                        &stats,
+                                        &progress,
+                                        fetch_traces,
+                                    )
+                                    .await
+                                }
+                            })
+                            .buffered(fetch_active_concurrency);
+                        futures::pin_mut!(fetch_stream);
+                        while let Some(item) = fetch_stream.next().await {
+                            if ordered_tx.send(item).await.is_err() {
+                                break;
+                            }
+                        }
+                    })
+                }
+                FetchStrategyArg::SpawnedTasks => {
+                    let reader = reader.clone();
+                    let fetch_stats = fetch_stats.clone();
+                    let fetch_progress = fetch_progress.clone();
+                    let ordered_tx = ordered_tx.clone();
+                    tokio::spawn(async move {
+                        // Spawn each active block fetch so archive reader
+                        // polling/decode work can run across Tokio workers,
+                        // then drain ordered results into the bounded read
+                        // buffer before the batch builder.
+                        let fetch_stream = stream::iter(start..=end)
+                            .map(move |n| {
+                                let reader = reader.clone();
+                                let stats = fetch_stats.clone();
+                                let progress = fetch_progress.clone();
+                                tokio::spawn(async move {
+                                    fetch_block_with_retry(
+                                        &reader,
+                                        n,
+                                        max_retries,
+                                        initial_backoff,
+                                        &stats,
+                                        &progress,
+                                        fetch_traces,
+                                    )
+                                    .await
+                                })
+                            })
+                            .buffered(fetch_active_concurrency);
+                        futures::pin_mut!(fetch_stream);
+                        while let Some(item) = fetch_stream.next().await {
+                            let item = match item {
+                                Ok(item) => item,
+                                Err(e) => Err(eyre!("spawned fetch task panicked: {e}")),
+                            };
+                            if ordered_tx.send(item).await.is_err() {
+                                break;
+                            }
+                        }
+                    })
+                }
+            };
+            drop(ordered_tx);
 
             let mut pending: Vec<(u64, FinalizedBlock)> = Vec::with_capacity(batch_size);
             loop {
@@ -1028,16 +1229,22 @@ async fn run_ingest<M: MetaStoreCas, B: monad_chain_data::store::BlobStore>(
                 let wait_started = Instant::now();
                 let mut first_wait_ms = 0;
                 for slot in 0..batch_size {
-                    let Some(item) = fetch_stream.next().await else {
+                    let Some(item) = ordered_rx.recv().await else {
                         break;
                     };
                     if slot == 0 {
                         first_wait_ms = wait_started.elapsed().as_millis() as u64;
                     }
-                    let (n, block, receipts, traces) = item?;
+                    let (n, block, receipts, traces, _fetch_timings) = item?;
                     fetch_consumed_total.fetch_add(1, Ordering::Relaxed);
+                    let transform_started = Instant::now();
                     let finalized = into_finalized_block(block, receipts, traces)
                         .with_context(|| format!("transforming block {n}"))?;
+                    fetch_stats
+                        .lock()
+                        .expect("fetch stats poisoned")
+                        .transform_ms
+                        .push(transform_started.elapsed().as_millis() as u64);
                     pending.push((n, finalized));
                 }
                 if pending.is_empty() {
@@ -1045,16 +1252,22 @@ async fn run_ingest<M: MetaStoreCas, B: monad_chain_data::store::BlobStore>(
                 }
                 let last_block = pending.last().expect("pending non-empty").0;
                 let blocks = pending.iter().map(|(_, b)| b.clone()).collect();
+                let fetched_ready_at = Instant::now();
                 fetched_tx
                     .send(FetchedBatch {
                         last_block,
                         blocks,
                         first_wait_ms,
-                        ingest_started: Instant::now(),
+                        fetch_batch_collect_ms: wait_started.elapsed().as_millis() as u64,
+                        ingest_started: fetched_ready_at,
+                        fetched_ready_at,
                     })
                     .await
                     .map_err(|_| eyre!("planning worker stopped before fetch completed"))?;
             }
+            produce_handle
+                .await
+                .map_err(|e| eyre!("fetch producer panicked: {e}"))?;
             Ok::<_, eyre::Report>(())
         })
     };
@@ -1063,8 +1276,11 @@ async fn run_ingest<M: MetaStoreCas, B: monad_chain_data::store::BlobStore>(
 
     let plan_handle = {
         let service = service.clone();
+        let pipeline_progress = pipeline_progress.clone();
         tokio::spawn(async move {
             while let Some(batch) = fetched_rx.recv().await {
+                let plan_queue_wait_ms = batch.fetched_ready_at.elapsed().as_millis() as u64;
+                let plan_started = Instant::now();
                 let plan = service
                     .plan_ingest_blocks(batch.blocks)
                     .await
@@ -1072,15 +1288,21 @@ async fn run_ingest<M: MetaStoreCas, B: monad_chain_data::store::BlobStore>(
                         format!("planning batch ending at block {}", batch.last_block)
                     })?
                     .expect("fetch worker never sends empty batches");
+                let planned_ready_at = Instant::now();
                 planned_tx
                     .send(PlannedBatch {
                         last_block: batch.last_block,
                         plan,
                         first_wait_ms: batch.first_wait_ms,
+                        fetch_batch_collect_ms: batch.fetch_batch_collect_ms,
+                        plan_queue_wait_ms,
+                        plan_ms: plan_started.elapsed().as_millis() as u64,
                         ingest_started: batch.ingest_started,
+                        planned_ready_at,
                     })
                     .await
                     .map_err(|_| eyre!("IO worker stopped before planning completed"))?;
+                pipeline_progress.planned.fetch_add(1, Ordering::Relaxed);
             }
             Ok::<_, eyre::Report>(())
         })
@@ -1100,25 +1322,126 @@ async fn run_ingest<M: MetaStoreCas, B: monad_chain_data::store::BlobStore>(
     };
     let io_handle = {
         let service = service.clone();
+        let pipeline_progress = pipeline_progress.clone();
         tokio::spawn(async move {
             while let Some(batch) = planned_rx.recv().await {
-                let (outcomes, timings) = service
-                    .apply_ingest_plan_with_retry(batch.plan, io_retry)
+                pipeline_progress
+                    .write_started
+                    .fetch_add(1, Ordering::Relaxed);
+                let io_queue_wait_ms = batch.planned_ready_at.elapsed().as_millis() as u64;
+                let io_apply_started = Instant::now();
+                let (outcomes, timings, publication) = service
+                    .apply_ingest_writes_with_retry(batch.plan, io_retry)
                     .await
                     .with_context(|| {
-                        format!("applying batch ending at block {}", batch.last_block)
+                        format!(
+                            "applying writes for batch ending at block {}",
+                            batch.last_block
+                        )
                     })?;
-                let total_ingest_ms = batch.ingest_started.elapsed().as_millis() as u64;
-                applied_tx
-                    .send(AppliedBatch {
+                written_tx
+                    .send(WrittenBatch {
                         last_block: batch.last_block,
                         outcomes,
                         timings,
+                        publication,
                         first_wait_ms: batch.first_wait_ms,
-                        total_ingest_ms,
+                        fetch_batch_collect_ms: batch.fetch_batch_collect_ms,
+                        plan_queue_wait_ms: batch.plan_queue_wait_ms,
+                        plan_ms: batch.plan_ms,
+                        io_queue_wait_ms,
+                        io_apply_ms: io_apply_started.elapsed().as_millis() as u64,
+                        ingest_started: batch.ingest_started,
+                        written_ready_at: Instant::now(),
                     })
                     .await
-                    .map_err(|_| eyre!("progress consumer stopped before IO completed"))?;
+                    .map_err(|_| eyre!("publisher stopped before IO completed"))?;
+                pipeline_progress
+                    .write_completed
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            Ok::<_, eyre::Report>(())
+        })
+    };
+    let publisher_handle = {
+        let service = service.clone();
+        let pipeline_progress = pipeline_progress.clone();
+        tokio::spawn(async move {
+            let mut pending_publish: Vec<WrittenBatch> = Vec::new();
+            while let Some(first) = written_rx.recv().await {
+                pending_publish.push(first);
+                while let Ok(written) = written_rx.try_recv() {
+                    pending_publish.push(written);
+                }
+                let publication = pending_publish
+                    .last()
+                    .expect("pending publish non-empty")
+                    .publication
+                    .clone();
+                let publish_started = Instant::now();
+                pipeline_progress
+                    .publish_started
+                    .fetch_add(1, Ordering::Relaxed);
+                let cas_ms = service
+                    .publish_ingest_advance(publication)
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "publishing written batch group ending at block {}",
+                            pending_publish
+                                .last()
+                                .expect("pending publish non-empty")
+                                .last_block
+                        )
+                    })?;
+                let publish_elapsed_ms = publish_started.elapsed().as_millis() as u64;
+                let publish_idx = pending_publish.len().saturating_sub(1);
+                let publish_group_batches = pending_publish.len() as u64;
+                pipeline_progress
+                    .publish_completed
+                    .fetch_add(1, Ordering::Relaxed);
+                pipeline_progress
+                    .published_batches
+                    .fetch_add(publish_group_batches, Ordering::Relaxed);
+                let applied_ready_at = Instant::now();
+                for (idx, mut written) in pending_publish.drain(..).enumerate() {
+                    let publish_queue_wait_ms = publish_started
+                        .duration_since(written.written_ready_at)
+                        .as_millis() as u64;
+                    if idx == publish_idx {
+                        written.timings.cas_ms = cas_ms;
+                        written.timings.commit_b_ms =
+                            written.timings.commit_b_ms.saturating_add(cas_ms);
+                        written.io_apply_ms =
+                            written.io_apply_ms.saturating_add(publish_elapsed_ms);
+                    }
+                    let total_ingest_ms = written.ingest_started.elapsed().as_millis() as u64;
+                    applied_tx
+                        .send(AppliedBatch {
+                            last_block: written.last_block,
+                            outcomes: written.outcomes,
+                            timings: written.timings,
+                            first_wait_ms: written.first_wait_ms,
+                            fetch_batch_collect_ms: written.fetch_batch_collect_ms,
+                            plan_queue_wait_ms: written.plan_queue_wait_ms,
+                            plan_ms: written.plan_ms,
+                            io_queue_wait_ms: written.io_queue_wait_ms,
+                            io_apply_ms: written.io_apply_ms,
+                            publish_queue_wait_ms,
+                            publish_group_batches: if idx == publish_idx {
+                                publish_group_batches
+                            } else {
+                                0
+                            },
+                            applied_ready_at,
+                            total_ingest_ms,
+                        })
+                        .await
+                        .map_err(|_| eyre!("progress consumer stopped before publish completed"))?;
+                    pipeline_progress
+                        .applied_sent
+                        .fetch_add(1, Ordering::Relaxed);
+                }
             }
             Ok::<_, eyre::Report>(())
         })
@@ -1136,6 +1459,14 @@ async fn run_ingest<M: MetaStoreCas, B: monad_chain_data::store::BlobStore>(
     let mut window_traces: u64 = 0;
     let mut ingest_ms: Vec<u64> = Vec::with_capacity(log_every_batches as usize);
     let mut wait_ms: Vec<u64> = Vec::with_capacity(log_every_batches as usize);
+    let mut fetch_batch_collect_ms: Vec<u64> = Vec::with_capacity(log_every_batches as usize);
+    let mut plan_queue_wait_ms: Vec<u64> = Vec::with_capacity(log_every_batches as usize);
+    let mut plan_ms: Vec<u64> = Vec::with_capacity(log_every_batches as usize);
+    let mut io_queue_wait_ms: Vec<u64> = Vec::with_capacity(log_every_batches as usize);
+    let mut io_apply_ms: Vec<u64> = Vec::with_capacity(log_every_batches as usize);
+    let mut publish_queue_wait_ms: Vec<u64> = Vec::with_capacity(log_every_batches as usize);
+    let mut publish_group_batches: Vec<u64> = Vec::with_capacity(log_every_batches as usize);
+    let mut progress_queue_wait_ms: Vec<u64> = Vec::with_capacity(log_every_batches as usize);
     let mut phase = PhaseStats::default();
     // Background dictionary pre-training: once an epoch passes its sampling
     // window, kick off training for the *next* epoch's dictionary so it is
@@ -1149,10 +1480,29 @@ async fn run_ingest<M: MetaStoreCas, B: monad_chain_data::store::BlobStore>(
             outcomes,
             timings,
             first_wait_ms,
+            fetch_batch_collect_ms: batch_fetch_batch_collect_ms,
+            plan_queue_wait_ms: batch_plan_queue_wait_ms,
+            plan_ms: batch_plan_ms,
+            io_queue_wait_ms: batch_io_queue_wait_ms,
+            io_apply_ms: batch_io_apply_ms,
+            publish_queue_wait_ms: batch_publish_queue_wait_ms,
+            publish_group_batches: batch_publish_group_batches,
+            applied_ready_at,
             total_ingest_ms,
         } = applied;
+        let batch_progress_queue_wait_ms = applied_ready_at.elapsed().as_millis() as u64;
         ingest_ms.push(total_ingest_ms);
         wait_ms.push(first_wait_ms);
+        fetch_batch_collect_ms.push(batch_fetch_batch_collect_ms);
+        plan_queue_wait_ms.push(batch_plan_queue_wait_ms);
+        plan_ms.push(batch_plan_ms);
+        io_queue_wait_ms.push(batch_io_queue_wait_ms);
+        io_apply_ms.push(batch_io_apply_ms);
+        publish_queue_wait_ms.push(batch_publish_queue_wait_ms);
+        if batch_publish_group_batches > 0 {
+            publish_group_batches.push(batch_publish_group_batches);
+        }
+        progress_queue_wait_ms.push(batch_progress_queue_wait_ms);
         phase.record(&timings);
         emit_phase_metrics(&metrics, &timings, total_ingest_ms);
         applied_batches += 1;
@@ -1204,7 +1554,22 @@ async fn run_ingest<M: MetaStoreCas, B: monad_chain_data::store::BlobStore>(
             let fetch_completed_per_sec = round_2(fetch_window.completed as f64 / elapsed_secs);
             let fetch_p50 = percentile(&fetch_window.durations_ms, 0.50);
             let fetch_p99 = percentile(&fetch_window.durations_ms, 0.99);
+            let fetch_join_p50 = percentile(&fetch_window.join_ms, 0.50);
+            let fetch_join_p99 = percentile(&fetch_window.join_ms, 0.99);
+            let fetch_block_p50 = percentile(&fetch_window.block_ms, 0.50);
+            let fetch_block_p99 = percentile(&fetch_window.block_ms, 0.99);
+            let fetch_receipts_p50 = percentile(&fetch_window.receipts_ms, 0.50);
+            let fetch_receipts_p99 = percentile(&fetch_window.receipts_ms, 0.99);
+            let fetch_traces_p50 = percentile(&fetch_window.traces_ms, 0.50);
+            let fetch_traces_p99 = percentile(&fetch_window.traces_ms, 0.99);
+            let transform_p50 = percentile(&fetch_window.transform_ms, 0.50);
+            let transform_p99 = percentile(&fetch_window.transform_ms, 0.99);
             let fetch_request_wall_total_ms = sum_u64(&fetch_window.durations_ms);
+            let fetch_join_wall_total_ms = sum_u64(&fetch_window.join_ms);
+            let fetch_block_wall_total_ms = sum_u64(&fetch_window.block_ms);
+            let fetch_receipts_wall_total_ms = sum_u64(&fetch_window.receipts_ms);
+            let fetch_traces_wall_total_ms = sum_u64(&fetch_window.traces_ms);
+            let transform_wall_total_ms = sum_u64(&fetch_window.transform_ms);
             let ingest_p50 = percentile(&ingest_ms, 0.50);
             let ingest_p99 = percentile(&ingest_ms, 0.99);
             let ingest_batch_wall_total_ms = sum_u64(&ingest_ms);
@@ -1215,6 +1580,34 @@ async fn run_ingest<M: MetaStoreCas, B: monad_chain_data::store::BlobStore>(
             };
             let wait_max_ms = wait_ms.iter().copied().max().unwrap_or(0);
             let consumer_wait_wall_total_ms = sum_u64(&wait_ms);
+            let fetch_batch_collect_wall_total_ms = sum_u64(&fetch_batch_collect_ms);
+            let plan_queue_wait_wall_total_ms = sum_u64(&plan_queue_wait_ms);
+            let plan_wall_total_ms = sum_u64(&plan_ms);
+            let io_queue_wait_wall_total_ms = sum_u64(&io_queue_wait_ms);
+            let io_apply_wall_total_ms = sum_u64(&io_apply_ms);
+            let publish_queue_wait_wall_total_ms = sum_u64(&publish_queue_wait_ms);
+            let progress_queue_wait_wall_total_ms = sum_u64(&progress_queue_wait_ms);
+            let fetch_batch_collect_p50 = percentile(&fetch_batch_collect_ms, 0.50);
+            let fetch_batch_collect_p99 = percentile(&fetch_batch_collect_ms, 0.99);
+            let plan_queue_wait_p50 = percentile(&plan_queue_wait_ms, 0.50);
+            let plan_queue_wait_p99 = percentile(&plan_queue_wait_ms, 0.99);
+            let plan_p50 = percentile(&plan_ms, 0.50);
+            let plan_p99 = percentile(&plan_ms, 0.99);
+            let io_queue_wait_p50 = percentile(&io_queue_wait_ms, 0.50);
+            let io_queue_wait_p99 = percentile(&io_queue_wait_ms, 0.99);
+            let io_apply_p50 = percentile(&io_apply_ms, 0.50);
+            let io_apply_p99 = percentile(&io_apply_ms, 0.99);
+            let publish_queue_wait_p50 = percentile(&publish_queue_wait_ms, 0.50);
+            let publish_queue_wait_p99 = percentile(&publish_queue_wait_ms, 0.99);
+            let publish_group_max = publish_group_batches.iter().copied().max().unwrap_or(0);
+            let publish_group_avg = if publish_group_batches.is_empty() {
+                0.0
+            } else {
+                publish_group_batches.iter().sum::<u64>() as f64
+                    / publish_group_batches.len() as f64
+            };
+            let progress_queue_wait_p50 = percentile(&progress_queue_wait_ms, 0.50);
+            let progress_queue_wait_p99 = percentile(&progress_queue_wait_ms, 0.99);
             let retry_rate = if window_blocks == 0 {
                 0.0
             } else {
@@ -1227,6 +1620,15 @@ async fn run_ingest<M: MetaStoreCas, B: monad_chain_data::store::BlobStore>(
                 wait_avg_ms,
                 retry_rate,
                 concurrency_observed,
+            );
+            let (pipeline_limiter, pipeline_hint) = classify_pipeline_limiter(
+                fetch_batch_collect_p50,
+                plan_queue_wait_p50,
+                plan_p50,
+                io_queue_wait_p50,
+                io_apply_p50,
+                publish_queue_wait_p50,
+                progress_queue_wait_p50,
             );
 
             let phase_summary = std::mem::take(&mut phase).summary();
@@ -1264,6 +1666,8 @@ async fn run_ingest<M: MetaStoreCas, B: monad_chain_data::store::BlobStore>(
                 log_every_batches,
                 bottleneck,
                 hint,
+                pipeline_limiter,
+                pipeline_hint,
                 concurrency = concurrency_observed,
                 blocks_per_sec,
                 fetch_completed_per_sec,
@@ -1278,11 +1682,33 @@ async fn run_ingest<M: MetaStoreCas, B: monad_chain_data::store::BlobStore>(
                 traces_per_sec,
                 fetch_p50_ms = fetch_p50,
                 fetch_p99_ms = fetch_p99,
+                fetch_join_p50_ms = fetch_join_p50,
+                fetch_join_p99_ms = fetch_join_p99,
+                fetch_block_p50_ms = fetch_block_p50,
+                fetch_block_p99_ms = fetch_block_p99,
+                fetch_receipts_p50_ms = fetch_receipts_p50,
+                fetch_receipts_p99_ms = fetch_receipts_p99,
+                fetch_traces_p50_ms = fetch_traces_p50,
+                fetch_traces_p99_ms = fetch_traces_p99,
+                transform_p50_ms = transform_p50,
+                transform_p99_ms = transform_p99,
                 ingest_p50_ms = ingest_p50,
                 ingest_p99_ms = ingest_p99,
                 window_wall_ms = round_2(elapsed_secs * 1_000.0),
                 fetch_request_wall_total_ms,
+                fetch_join_wall_total_ms,
+                fetch_block_wall_total_ms,
+                fetch_receipts_wall_total_ms,
+                fetch_traces_wall_total_ms,
+                transform_wall_total_ms,
+                fetch_batch_collect_wall_total_ms,
                 ingest_batch_wall_total_ms,
+                plan_queue_wait_wall_total_ms,
+                plan_wall_total_ms,
+                io_queue_wait_wall_total_ms,
+                io_apply_wall_total_ms,
+                publish_queue_wait_wall_total_ms,
+                progress_queue_wait_wall_total_ms,
                 stage_a_wall_total_ms = phase_summary.stage_a_wall_ms_total,
                 phase_a_write_ops_total = phase_summary.phase_a_write_ops_total,
                 phase_a_write_bytes_total = phase_summary.phase_a_write_bytes_total,
@@ -1299,6 +1725,22 @@ async fn run_ingest<M: MetaStoreCas, B: monad_chain_data::store::BlobStore>(
                 commit_b_wall_total_ms = phase_summary.commit_b_wall_ms_total,
                 cas_wall_total_ms = phase_summary.cas_wall_ms_total,
                 consumer_wait_wall_total_ms,
+                fetch_batch_collect_p50_ms = fetch_batch_collect_p50,
+                fetch_batch_collect_p99_ms = fetch_batch_collect_p99,
+                plan_queue_wait_p50_ms = plan_queue_wait_p50,
+                plan_queue_wait_p99_ms = plan_queue_wait_p99,
+                plan_p50_ms = plan_p50,
+                plan_p99_ms = plan_p99,
+                io_queue_wait_p50_ms = io_queue_wait_p50,
+                io_queue_wait_p99_ms = io_queue_wait_p99,
+                io_apply_p50_ms = io_apply_p50,
+                io_apply_p99_ms = io_apply_p99,
+                publish_queue_wait_p50_ms = publish_queue_wait_p50,
+                publish_queue_wait_p99_ms = publish_queue_wait_p99,
+                publish_group_max,
+                publish_group_avg = round_2(publish_group_avg),
+                progress_queue_wait_p50_ms = progress_queue_wait_p50,
+                progress_queue_wait_p99_ms = progress_queue_wait_p99,
                 stage_a_p50_ms = phase_summary.stage_a_p50,
                 stage_a_p99_ms = phase_summary.stage_a_p99,
                 commit_a_meta_p50_ms = phase_summary.commit_a_meta_p50,
@@ -1365,18 +1807,29 @@ async fn run_ingest<M: MetaStoreCas, B: monad_chain_data::store::BlobStore>(
             window_traces = 0;
             ingest_ms.clear();
             wait_ms.clear();
+            fetch_batch_collect_ms.clear();
+            plan_queue_wait_ms.clear();
+            plan_ms.clear();
+            io_queue_wait_ms.clear();
+            io_apply_ms.clear();
+            publish_queue_wait_ms.clear();
+            publish_group_batches.clear();
+            progress_queue_wait_ms.clear();
         }
     }
 
-    // Await all three workers, then surface the deepest-stage failure first.
+    // Await all four workers, then surface the deepest-stage failure first.
     // When a planning/IO worker fails it drops its channel, which makes the
     // upstream worker fail with a cascade ("X stopped before Y completed").
     // Reporting the downstream (root-cause) error ahead of those cascades keeps
     // the real failure from being masked. A panic (JoinError) always wins.
-    let (fetch_res, plan_res, io_res) = tokio::join!(fetch_handle, plan_handle, io_handle);
+    let (fetch_res, plan_res, io_res, publisher_res) =
+        tokio::join!(fetch_handle, plan_handle, io_handle, publisher_handle);
+    let publisher_res = publisher_res.context("publish worker panicked")?;
     let io_res = io_res.context("IO worker panicked")?;
     let plan_res = plan_res.context("planning worker panicked")?;
     let fetch_res = fetch_res.context("fetch worker panicked")?;
+    publisher_res.context("publish worker failed")?;
     io_res.context("IO worker failed")?;
     plan_res.context("planning worker failed")?;
     fetch_res.context("fetch worker failed")?;
@@ -1454,10 +1907,29 @@ async fn build_s3_blob_store(cli: &Cli) -> Result<monad_chain_data::store::S3Blo
 /// Local, ScyllaDB Alternator) via `--dynamo-endpoint-url`.
 #[cfg(feature = "dynamo")]
 async fn build_dynamo_meta_store(cli: &Cli) -> Result<monad_chain_data::store::DynamoMetaStore> {
-    use monad_chain_data::store::{DynamoCredentials, DynamoMetaStore, DynamoMetaStoreConfig};
+    use monad_chain_data::store::{
+        DynamoCredentials, DynamoMetaStore, DynamoMetaStoreConfig, DynamoTableLayout,
+    };
 
-    let Some(table_name) = cli.dynamo_table.clone() else {
-        bail!("--meta-backend dynamo requires --dynamo-table");
+    let table_layout = match cli.dynamo_table_layout {
+        DynamoTableLayoutArg::Single => {
+            if cli.dynamo_table_prefix.is_some() {
+                bail!("--dynamo-table-prefix requires --dynamo-table-layout=per-logical-table");
+            }
+            let Some(table_name) = cli.dynamo_table.clone() else {
+                bail!("--meta-backend dynamo requires --dynamo-table when --dynamo-table-layout=single");
+            };
+            DynamoTableLayout::single(table_name)
+        }
+        DynamoTableLayoutArg::PerLogicalTable => {
+            if cli.dynamo_table.is_some() {
+                bail!("--dynamo-table cannot be combined with --dynamo-table-layout=per-logical-table; use --dynamo-table-prefix");
+            }
+            let Some(prefix) = cli.dynamo_table_prefix.clone() else {
+                bail!("--dynamo-table-layout=per-logical-table requires --dynamo-table-prefix");
+            };
+            DynamoTableLayout::PerLogicalTable { prefix }
+        }
     };
     let credentials = match (&cli.dynamo_access_key_id, &cli.dynamo_secret_access_key) {
         (Some(access_key_id), Some(secret_access_key)) => Some(DynamoCredentials {
@@ -1472,7 +1944,9 @@ async fn build_dynamo_meta_store(cli: &Cli) -> Result<monad_chain_data::store::D
     };
     let dynamo_static_credentials = credentials.is_some();
     info!(
-        dynamo_table = %table_name,
+        dynamo_table = ?cli.dynamo_table,
+        dynamo_table_prefix = ?cli.dynamo_table_prefix,
+        dynamo_table_layout = ?cli.dynamo_table_layout,
         dynamo_region = ?cli.dynamo_region,
         dynamo_endpoint_url = ?cli.dynamo_endpoint_url,
         dynamo_max_concurrency = cli.dynamo_max_concurrency,
@@ -1481,7 +1955,7 @@ async fn build_dynamo_meta_store(cli: &Cli) -> Result<monad_chain_data::store::D
         "meta backend: dynamo"
     );
     let config = DynamoMetaStoreConfig {
-        table_name: table_name.clone(),
+        table_layout,
         endpoint_url: cli.dynamo_endpoint_url.clone(),
         region: cli.dynamo_region.clone(),
         batch_max_concurrency: cli.dynamo_max_concurrency,
@@ -1491,14 +1965,16 @@ async fn build_dynamo_meta_store(cli: &Cli) -> Result<monad_chain_data::store::D
         .await
         .context("building DynamoDB meta store")?;
     if cli.dynamo_create_table {
-        info!("--dynamo-create-table set: ensuring the metadata table exists");
+        info!("--dynamo-create-table set: ensuring DynamoDB metadata table(s) exist");
         store
             .create_table()
             .await
-            .context("creating DynamoDB meta table")?;
+            .context("creating DynamoDB meta table(s)")?;
     }
     info!(
-        dynamo_table = %table_name,
+        dynamo_table = ?cli.dynamo_table,
+        dynamo_table_prefix = ?cli.dynamo_table_prefix,
+        dynamo_table_layout = ?cli.dynamo_table_layout,
         dynamo_region = ?cli.dynamo_region,
         dynamo_endpoint_url = ?cli.dynamo_endpoint_url,
         dynamo_create_table = cli.dynamo_create_table,
@@ -1508,10 +1984,12 @@ async fn build_dynamo_meta_store(cli: &Cli) -> Result<monad_chain_data::store::D
     store
         .validate_table()
         .await
-        .context("validating DynamoDB meta table")?;
+        .context("validating DynamoDB meta table(s)")?;
     info!(
-        dynamo_table = %table_name,
-        "startup validation: DynamoDB table is reachable and schema matches"
+        dynamo_table = ?cli.dynamo_table,
+        dynamo_table_prefix = ?cli.dynamo_table_prefix,
+        dynamo_table_layout = ?cli.dynamo_table_layout,
+        "startup validation: DynamoDB table(s) are reachable and schema matches"
     );
     Ok(store)
 }
@@ -1520,11 +1998,25 @@ async fn fetch_block(
     reader: &BlockDataReaderErased,
     n: u64,
     fetch_traces: bool,
-) -> Result<(u64, Block, BlockReceipts, BlockTraces)> {
+) -> Result<(u64, Block, BlockReceipts, BlockTraces, FetchTimings)> {
+    let total_started = Instant::now();
     let (block, receipts, traces) = tokio::try_join!(
-        reader.get_block_by_number(n),
-        reader.get_block_receipts(n),
         async {
+            let started = Instant::now();
+            reader
+                .get_block_by_number(n)
+                .await
+                .map(|block| (block, started.elapsed().as_millis() as u64))
+        },
+        async {
+            let started = Instant::now();
+            reader
+                .get_block_receipts(n)
+                .await
+                .map(|receipts| (receipts, started.elapsed().as_millis() as u64))
+        },
+        async {
+            let started = Instant::now();
             if fetch_traces {
                 reader
                     .try_get_block_traces(n)
@@ -1533,10 +2025,17 @@ async fn fetch_block(
             } else {
                 Ok(BlockTraces::default())
             }
+            .map(|traces| (traces, started.elapsed().as_millis() as u64))
         },
     )
     .with_context(|| format!("fetching block {n}"))?;
-    Ok((n, block, receipts, traces))
+    let timings = FetchTimings {
+        total_ms: total_started.elapsed().as_millis() as u64,
+        block_ms: block.1,
+        receipts_ms: receipts.1,
+        traces_ms: traces.1,
+    };
+    Ok((n, block.0, receipts.0, traces.0, timings))
 }
 
 /// Retries `fetch_block` with exponential backoff. Total attempts =
@@ -1552,7 +2051,7 @@ async fn fetch_block_with_retry(
     stats: &Mutex<FetchStats>,
     progress: &FetchProgress,
     fetch_traces: bool,
-) -> Result<(u64, Block, BlockReceipts, BlockTraces)> {
+) -> TimedFetchResult {
     let mut backoff = initial_backoff;
     // Wall time across all attempts: a retried fetch's "latency" is what
     // the consumer actually waits for, not just the successful attempt.
@@ -1566,6 +2065,10 @@ async fn fetch_block_with_retry(
                 let mut stats = stats.lock().expect("fetch stats poisoned");
                 stats.completed = stats.completed.saturating_add(1);
                 stats.durations_ms.push(elapsed_ms);
+                stats.block_ms.push(item.4.block_ms);
+                stats.receipts_ms.push(item.4.receipts_ms);
+                stats.traces_ms.push(item.4.traces_ms);
+                stats.join_ms.push(item.4.total_ms);
                 return Ok(item);
             }
             Err(e) if attempt < max_retries => {
@@ -1594,6 +2097,11 @@ async fn fetch_block_with_retry(
 #[derive(Default)]
 struct FetchStats {
     durations_ms: Vec<u64>,
+    join_ms: Vec<u64>,
+    block_ms: Vec<u64>,
+    receipts_ms: Vec<u64>,
+    traces_ms: Vec<u64>,
+    transform_ms: Vec<u64>,
     completed: u64,
     retry_attempts: u64,
 }
@@ -1615,6 +2123,42 @@ impl FetchProgress {
         FetchProgressSnapshot {
             started: self.started.load(Ordering::Relaxed),
             completed: self.completed.load(Ordering::Relaxed),
+        }
+    }
+}
+
+#[derive(Default)]
+struct PipelineProgress {
+    planned: AtomicU64,
+    write_started: AtomicU64,
+    write_completed: AtomicU64,
+    publish_started: AtomicU64,
+    publish_completed: AtomicU64,
+    published_batches: AtomicU64,
+    applied_sent: AtomicU64,
+}
+
+#[derive(Clone, Copy)]
+struct PipelineProgressSnapshot {
+    planned: u64,
+    write_started: u64,
+    write_completed: u64,
+    publish_started: u64,
+    publish_completed: u64,
+    published_batches: u64,
+    applied_sent: u64,
+}
+
+impl PipelineProgress {
+    fn snapshot(&self) -> PipelineProgressSnapshot {
+        PipelineProgressSnapshot {
+            planned: self.planned.load(Ordering::Relaxed),
+            write_started: self.write_started.load(Ordering::Relaxed),
+            write_completed: self.write_completed.load(Ordering::Relaxed),
+            publish_started: self.publish_started.load(Ordering::Relaxed),
+            publish_completed: self.publish_completed.load(Ordering::Relaxed),
+            published_batches: self.published_batches.load(Ordering::Relaxed),
+            applied_sent: self.applied_sent.load(Ordering::Relaxed),
         }
     }
 }
@@ -2004,6 +2548,66 @@ fn classify_bottleneck(
         );
     }
     ("s3_pipelined", "raise --concurrency if retries stay low")
+}
+
+/// Classifies the limiter inside the already-pipelined ingest path. Queue-wait
+/// labels mean a downstream stage is slower than its producer; service-time
+/// labels mean the stage itself is setting batch cadence.
+fn classify_pipeline_limiter(
+    fetch_batch_collect_p50_ms: u64,
+    plan_queue_wait_p50_ms: u64,
+    plan_p50_ms: u64,
+    io_queue_wait_p50_ms: u64,
+    io_apply_p50_ms: u64,
+    publish_queue_wait_p50_ms: u64,
+    progress_queue_wait_p50_ms: u64,
+) -> (&'static str, &'static str) {
+    let candidates = [
+        (
+            "fetch_collect",
+            fetch_batch_collect_p50_ms,
+            "archive fetch/order/transform is setting batch cadence",
+        ),
+        (
+            "plan_queue",
+            plan_queue_wait_p50_ms,
+            "planner is backlogged behind fetched batches",
+        ),
+        (
+            "plan",
+            plan_p50_ms,
+            "planning CPU/read path is setting batch cadence",
+        ),
+        (
+            "io_queue",
+            io_queue_wait_p50_ms,
+            "IO worker is backlogged behind planned batches",
+        ),
+        (
+            "io_apply",
+            io_apply_p50_ms,
+            "remote writes/CAS are setting batch cadence",
+        ),
+        (
+            "publish_queue",
+            publish_queue_wait_p50_ms,
+            "publisher is backlogged behind durable writes",
+        ),
+        (
+            "progress_queue",
+            progress_queue_wait_p50_ms,
+            "progress consumer/logging is backlogged behind applied batches",
+        ),
+    ];
+    let (label, value, hint) = candidates
+        .into_iter()
+        .max_by_key(|(_, value, _)| *value)
+        .expect("non-empty limiter candidates");
+    if value == 0 {
+        ("unknown", "all p50 pipeline stage timings rounded to 0ms")
+    } else {
+        (label, hint)
+    }
 }
 
 fn into_finalized_block(

@@ -19,10 +19,7 @@ use actix_web::{web, App, HttpServer};
 use agent::AgentBuilder;
 use clap::Parser;
 use monad_archive::archive_reader::{redact_mongo_url, ArchiveReader};
-use monad_chain_data::{
-    store::FjallStore,
-    MonadChainDataService, QueryLimits,
-};
+use monad_chain_data::{store::FjallStore, MonadChainDataService, QueryLimits};
 use monad_event_ring::{EventRing, EventRingPath};
 use monad_node_config::MonadNodeConfig;
 use monad_pprof::start_pprof_server;

@@ -207,7 +207,9 @@ pub fn decode_row_frame(
     decoder: Option<&Arc<DecoderDictionary<'static>>>,
     frame: &[u8],
 ) -> Result<Bytes> {
-    Ok(Bytes::from(RowDecompressor::new(decoder)?.decompress(frame)?))
+    Ok(Bytes::from(
+        RowDecompressor::new(decoder)?.decompress(frame)?,
+    ))
 }
 
 #[cfg(test)]

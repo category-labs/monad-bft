@@ -957,10 +957,7 @@ impl<T: Triedb> ChainState<T> {
     /// Resolves a block hash to its number across the exec-events buffer,
     /// triedb, and archive. Used to serve `eth_getLogs` block-hash filters
     /// that may target an unfinalized block not yet present in chain-data.
-    pub async fn resolve_block_number_by_hash(
-        &self,
-        hash: B256,
-    ) -> JsonRpcResult<Option<u64>> {
+    pub async fn resolve_block_number_by_hash(&self, hash: B256) -> JsonRpcResult<Option<u64>> {
         if let Some(buffer) = &self.buffer {
             if let Some(block) = buffer.get_block_by_hash(&FixedData(hash.0)) {
                 return Ok(Some(block.header.number));

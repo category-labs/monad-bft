@@ -48,8 +48,8 @@
 
 use bytes::Bytes;
 use monad_chain_data::store::{
-    CasOutcome, CasVersion, DynamoCredentials, DynamoMetaStore, DynamoMetaStoreConfig, MetaStore,
-    MetaStoreCas, MetaWriteOp, ScannableTableId, TableId,
+    CasOutcome, CasVersion, DynamoCredentials, DynamoMetaStore, DynamoMetaStoreConfig,
+    DynamoTableLayout, MetaStore, MetaStoreCas, MetaWriteOp, ScannableTableId, TableId,
 };
 
 const KV: TableId = TableId::new("it_kv");
@@ -71,7 +71,7 @@ async fn fresh_store(test: &str) -> DynamoMetaStore {
         .as_nanos();
     let table_name = format!("chain-data-it-{test}-{nanos}");
     let config = DynamoMetaStoreConfig {
-        table_name,
+        table_layout: DynamoTableLayout::single(table_name),
         endpoint_url: Some(endpoint),
         region: Some("us-east-1".to_string()),
         batch_max_concurrency: 8,

@@ -20,5 +20,6 @@ mod types;
 pub use ingest::LogIngestPlan;
 pub(crate) use materialize::{execute_block_scan_query, execute_indexed_log_query};
 pub use materialize::{LogFilter, LogsRelations, QueryLogsRequest, QueryLogsResponse};
-pub use crate::primitives::state::BlockBlobHeader;
 pub use types::{LogEntry, RawLogEntry};
+
+pub use crate::primitives::state::BlockBlobHeader;

@@ -17,15 +17,16 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use alloy_primitives::U256;
 
-use super::types::StoredTrace;
-use super::BlockBlobHeader;
+use super::{types::StoredTrace, BlockBlobHeader};
 use crate::{
-    engine::bitmap::{
-        encode_grouped_bitmap_fragments, sharded_stream_id, touched_streams_by_page,
-        BitmapFragmentWrite,
+    engine::{
+        bitmap::{
+            encode_grouped_bitmap_fragments, sharded_stream_id, touched_streams_by_page,
+            BitmapFragmentWrite,
+        },
+        digest::{ArtifactChecksum, RowDigest},
+        row_codec::RowCodec,
     },
-    engine::digest::{ArtifactChecksum, RowDigest},
-    engine::row_codec::RowCodec,
     error::{MonadChainDataError, Result},
     family::{CallKind, FinalizedBlock, IngestTrace},
     primitives::state::{FamilyWindowRecord, TraceId},
