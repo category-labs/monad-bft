@@ -302,7 +302,8 @@ mod test {
                     &key3,
                 ),
             ]
-            .into(),
+            .try_into()
+            .unwrap(),
         };
         let message = PeerDiscoveryMessage::PeerLookupResponse(response.clone());
 

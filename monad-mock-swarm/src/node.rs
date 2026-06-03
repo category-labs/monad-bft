@@ -354,7 +354,11 @@ impl<S: SwarmRelation> Node<S> {
                 cert_pubkey: *cert_pubkey,
             });
         }
-        ValidatorSetData(validator_set_data.into())
+        ValidatorSetData(
+            validator_set_data
+                .try_into()
+                .expect("validator set size exceeds MAX_VALIDATOR_SET_SIZE"),
+        )
     }
 
     pub fn get_forkpoint(

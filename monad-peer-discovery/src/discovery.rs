@@ -1217,7 +1217,9 @@ where
         let peer_lookup_response = PeerLookupResponse {
             lookup_id: request.lookup_id,
             target,
-            name_records: name_records.into(),
+            name_records: name_records
+                .try_into()
+                .expect("name_records exceeds MAX_PEER_IN_RESPONSE"),
         };
 
         cmds.push(PeerDiscoveryCommand::RouterCommand {
@@ -1253,17 +1255,6 @@ where
             warn!(
                 ?response,
                 "peer lookup response not in outstanding requests, dropping response..."
-            );
-            self.metrics
-                .gauge(GAUGE_PEER_DISC_DROP_LOOKUP_RESPONSE)
-                .inc();
-            return cmds;
-        }
-
-        if response.name_records.len() > MAX_PEER_IN_RESPONSE {
-            warn!(
-                ?response,
-                "response includes number of peers larger than max, dropping response..."
             );
             self.metrics
                 .gauge(GAUGE_PEER_DISC_DROP_LOOKUP_RESPONSE)
@@ -2451,7 +2442,7 @@ mod tests {
             PeerLookupResponse {
                 lookup_id: requests[0].lookup_id,
                 target: peer2_pubkey,
-                name_records: vec![record.clone()].into(),
+                name_records: vec![record.clone()].try_into().unwrap(),
             },
         );
 
@@ -2693,40 +2684,7 @@ mod tests {
             PeerLookupResponse {
                 lookup_id: 1,
                 target: peer1_pubkey,
-                name_records: vec![record].into(),
-            },
-        );
-        assert!(cmds.is_empty());
-        assert!(!state.pending_queue.contains_key(&peer1_pubkey));
-        assert!(!state.routing_info.contains_key(&peer1_pubkey));
-    }
-
-    #[test]
-    fn test_drop_lookup_response_that_exceeds_max_peers() {
-        let keys = create_keys::<SignatureType>(3);
-        let peer0 = &keys[0];
-        let peer1 = &keys[1];
-        let peer1_pubkey = NodeId::new(peer1.pubkey());
-
-        let lookup_id = 1;
-        let (mut state, _clock) = generate_test_state(peer0, vec![]);
-        state.outstanding_lookup_requests.insert(
-            lookup_id,
-            LookupInfo {
-                num_retries: 0,
-                receiver: peer1_pubkey,
-                open_discovery: false,
-            },
-        );
-
-        // should not record peer lookup response if number of records exceed max
-        let record = generate_name_record(peer1, 0);
-        let cmds = state.handle_peer_lookup_response(
-            peer_source_from_record(peer1),
-            PeerLookupResponse {
-                lookup_id,
-                target: peer1_pubkey,
-                name_records: vec![record; MAX_PEER_IN_RESPONSE + 1].into(),
+                name_records: vec![record].try_into().unwrap(),
             },
         );
         assert!(cmds.is_empty());

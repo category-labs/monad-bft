@@ -279,7 +279,8 @@ where
                 high_tip_round: GENESIS_ROUND,
                 sigs: tmo_sig_col,
             }]
-            .into(),
+            .try_into()
+            .expect("tip_rounds length exceeds MAX_VALIDATOR_SET_SIZE"),
             high_extend: HighExtend::Qc(self.high_qc.clone()),
         };
 

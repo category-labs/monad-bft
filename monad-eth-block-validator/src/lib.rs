@@ -709,7 +709,7 @@ mod test {
         let txs = vec![txn1, txn2];
         let payload = ConsensusBlockBody::new(ConsensusBlockBodyInner {
             execution_body: EthBlockBody {
-                transactions: txs.into(),
+                transactions: txs.try_into().unwrap(),
                 ommers: Default::default(),
                 withdrawals: Default::default(),
             },
@@ -760,7 +760,7 @@ mod test {
         let txs = vec![txn1, txn2, txn3];
         let payload = ConsensusBlockBody::new(ConsensusBlockBodyInner {
             execution_body: EthBlockBody {
-                transactions: txs.into(),
+                transactions: txs.try_into().unwrap(),
                 ommers: Default::default(),
                 withdrawals: Default::default(),
             },
@@ -801,7 +801,7 @@ mod test {
         let txs = vec![txn1, txn2];
         let payload = ConsensusBlockBody::new(ConsensusBlockBodyInner {
             execution_body: EthBlockBody {
-                transactions: txs.into(),
+                transactions: txs.try_into().unwrap(),
                 ommers: Default::default(),
                 withdrawals: Default::default(),
             },
@@ -845,7 +845,7 @@ mod test {
         let txs = vec![txn1, txn2];
         let payload = ConsensusBlockBody::new(ConsensusBlockBodyInner {
             execution_body: EthBlockBody {
-                transactions: txs.into(),
+                transactions: txs.try_into().unwrap(),
                 ommers: Default::default(),
                 withdrawals: Default::default(),
             },
@@ -893,7 +893,7 @@ mod test {
         let txs = vec![txn1, txn2];
         let payload = ConsensusBlockBody::new(ConsensusBlockBodyInner {
             execution_body: EthBlockBody {
-                transactions: txs.into(),
+                transactions: txs.try_into().unwrap(),
                 ommers: Default::default(),
                 withdrawals: Default::default(),
             },
@@ -925,7 +925,7 @@ mod test {
         let txs = vec![txn1, txn2];
         let payload = ConsensusBlockBody::new(ConsensusBlockBodyInner {
             execution_body: EthBlockBody {
-                transactions: txs.into(),
+                transactions: txs.try_into().unwrap(),
                 ommers: Default::default(),
                 withdrawals: Default::default(),
             },
@@ -968,7 +968,7 @@ mod test {
         let txs = vec![txn1];
         let payload = ConsensusBlockBody::new(ConsensusBlockBodyInner {
             execution_body: EthBlockBody {
-                transactions: txs.into(),
+                transactions: txs.try_into().unwrap(),
                 ommers: Default::default(),
                 withdrawals: Default::default(),
             },
@@ -998,7 +998,7 @@ mod test {
         let txs = vec![valid_txn.clone()];
         let payload = ConsensusBlockBody::new(ConsensusBlockBodyInner {
             execution_body: EthBlockBody {
-                transactions: txs.into(),
+                transactions: txs.try_into().unwrap(),
                 ommers: Default::default(),
                 withdrawals: Default::default(),
             },
@@ -1044,7 +1044,7 @@ mod test {
         let txs = vec![invalid_txn];
         let payload = ConsensusBlockBody::new(ConsensusBlockBodyInner {
             execution_body: EthBlockBody {
-                transactions: txs.into(),
+                transactions: txs.try_into().unwrap(),
                 ommers: Default::default(),
                 withdrawals: Default::default(),
             },
@@ -1098,7 +1098,7 @@ mod test {
         let txs = vec![txn1, txn2, txn3];
         let payload = ConsensusBlockBody::new(ConsensusBlockBodyInner {
             execution_body: EthBlockBody {
-                transactions: txs.into(),
+                transactions: txs.try_into().unwrap(),
                 ommers: Default::default(),
                 withdrawals: Default::default(),
             },
@@ -1144,7 +1144,7 @@ mod test {
         let txs = vec![txn1, txn2, txn3];
         let payload = ConsensusBlockBody::new(ConsensusBlockBodyInner {
             execution_body: EthBlockBody {
-                transactions: txs.into(),
+                transactions: txs.try_into().unwrap(),
                 ommers: Default::default(),
                 withdrawals: Default::default(),
             },
@@ -1190,7 +1190,7 @@ mod test {
         let txs = vec![txn1, txn2, txn3];
         let payload = ConsensusBlockBody::new(ConsensusBlockBodyInner {
             execution_body: EthBlockBody {
-                transactions: txs.into(),
+                transactions: txs.try_into().unwrap(),
                 ommers: Default::default(),
                 withdrawals: Default::default(),
             },
@@ -1238,7 +1238,7 @@ mod test {
         let txs = vec![txn1, txn2, txn3, txn4];
         let payload = ConsensusBlockBody::new(ConsensusBlockBodyInner {
             execution_body: EthBlockBody {
-                transactions: txs.into(),
+                transactions: txs.try_into().unwrap(),
                 ommers: Default::default(),
                 withdrawals: Default::default(),
             },
@@ -1291,7 +1291,7 @@ mod test {
         let txs = vec![txn1, txn2, txn3, txn4];
         let payload = ConsensusBlockBody::new(ConsensusBlockBodyInner {
             execution_body: EthBlockBody {
-                transactions: txs.into(),
+                transactions: txs.try_into().unwrap(),
                 ommers: Default::default(),
                 withdrawals: Default::default(),
             },

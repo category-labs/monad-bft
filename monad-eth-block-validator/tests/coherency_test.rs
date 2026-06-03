@@ -642,7 +642,12 @@ fn create_block_body_helper(
 ) -> ConsensusBlockBody<EthExecutionProtocol> {
     ConsensusBlockBody::new(ConsensusBlockBodyInner {
         execution_body: EthBlockBody {
-            transactions: txs.iter().map(|tx| tx.inner().to_owned()).collect(),
+            transactions: txs
+                .iter()
+                .map(|tx| tx.inner().to_owned())
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap(),
             ommers: Default::default(),
             withdrawals: Default::default(),
         },

@@ -682,7 +682,11 @@ where
             self.next_invite_tp = TimePoint::MAX; // lock the group
             let confirm_data = ConfirmGroup {
                 prepare: prep_grp_data,
-                peers: self.full_nodes_accepted.clone().into(),
+                peers: self
+                    .full_nodes_accepted
+                    .clone()
+                    .try_into()
+                    .expect("full_nodes_accepted exceeds MAX_PEERS_IN_GROUP"),
                 name_records: Default::default(), // to be filled by next layer
             };
             // ConfirmGroup is sent to all accepted peers
@@ -1642,7 +1646,7 @@ mod tests {
 
         let make_confirm_msg = |start_round: u64| ConfirmGroup {
             prepare: make_prep_data(start_round),
-            peers: node_ids_vec![10, 11].into(),
+            peers: node_ids_vec![10, 11].try_into().unwrap(),
             name_records: Default::default(),
         };
 
@@ -1751,7 +1755,7 @@ mod tests {
 
         let make_confirm_msg = |start_round: u64| ConfirmGroup {
             prepare: make_prep_data(start_round),
-            peers: node_ids_vec![10, 10 + start_round].into(),
+            peers: node_ids_vec![10, 10 + start_round].try_into().unwrap(),
             name_records: Default::default(),
         };
 
@@ -1866,7 +1870,7 @@ mod tests {
 
         let make_confirm_msg = |start_round: u64| ConfirmGroup {
             prepare: make_prep_data(start_round),
-            peers: node_ids_vec![10, 10 + start_round].into(),
+            peers: node_ids_vec![10, 10 + start_round].try_into().unwrap(),
             name_records: Default::default(),
         };
 
@@ -1999,7 +2003,7 @@ mod tests {
 
         let make_confirm_msg = |start_round: u64, validator_id: u64| ConfirmGroup {
             prepare: invite_data(start_round, validator_id),
-            peers: node_ids_vec![me, me + start_round].into(),
+            peers: node_ids_vec![me, me + start_round].try_into().unwrap(),
             name_records: Default::default(),
         };
 
@@ -2877,7 +2881,8 @@ mod tests {
                     participation_score: BoundedU64::new(score).unwrap(),
                 })
                 .collect::<Vec<_>>()
-                .into(),
+                .try_into()
+                .unwrap(),
         }
     }
 
