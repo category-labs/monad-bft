@@ -25,3 +25,16 @@ perf.data*
 **/proptest-regressions/
 /reports
 deployed_contracts.json
+
+# Local chain-data benchmark/provisioning byproducts.
+/.last-chain-data-*
+/chain-data-*.log.time
+/chain-data-*.nohup
+/chain-data-*.out
+/chain-data-*.prefix
+/chain-data-*.snapshot
+/chain-data-dynamo-prefixes-*.txt
+/chain-data-direct-created-prefixes-*.txt
+/chain-data-cleanup-prefixes-*.txt
+/monad-chain-data-pt-*.open-index.snapshot
+/rustfs-ingest-matrix-*/

@@ -71,6 +71,14 @@ pub struct DataProvider<T> {
     historical: HistoricalDataSourceStack,
 }
 
+/// A single block's header plus its transactions and receipts, as fetched
+/// from the buffer/triedb/archive cascade for serving the unfinalized tip.
+pub type BlockLogData = (
+    BlockHeader,
+    Vec<TxEnvelopeWithSender>,
+    Vec<ReceiptWithLogIndex>,
+);
+
 #[derive(Debug)]
 pub enum ChainStateError {
     Triedb(String),
@@ -222,6 +230,116 @@ where
         // For example, a wallet might call `eth_getBalance` after calling `eth_getBlockByNumber`
         // and the balance might not be updated in triedb yet.
         self.triedb_env.get_latest_proposed_block_key().seq_num().0
+    }
+
+    pub async fn resolve_block_number_by_hash(
+        &self,
+        block_hash: BlockHash,
+    ) -> JsonRpcResult<Option<u64>> {
+        let latest_block_key = get_latest_block_key(&self.triedb_env);
+        if let Some(block_num) = self
+            .triedb_env
+            .get_block_number_by_hash(latest_block_key, block_hash.into())
+            .await
+            .map_err(|e| {
+                warn!("Error getting block number by hash: {e:?}");
+                JsonRpcError::internal_error("could not get block hash".to_string())
+            })?
+        {
+            return Ok(Some(block_num));
+        }
+
+        let Some(block_pointer) = self
+            .historical
+            .try_resolve_block_hash(block_hash)
+            .await
+            .map_err(|e| JsonRpcError::internal_error(e.to_string()))?
+        else {
+            return Ok(None);
+        };
+
+        match block_pointer {
+            BlockPointer::Finalized(block_num) => Ok(Some(block_num)),
+            BlockPointer::NonFinalized(_, _) => Err(JsonRpcError::internal_error(
+                "historical source produced non-finalized block number after resolving block hash"
+                    .to_string(),
+            )),
+        }
+    }
+
+    pub async fn fetch_block_for_logs(
+        &self,
+        block_number: u64,
+        filter_match: impl Fn(Bloom) -> bool,
+    ) -> JsonRpcResult<Option<BlockLogData>> {
+        if let Some(buffer) = &self.buffer {
+            if let Some(data) =
+                buffer.get_bloom_filtered_header_transactions_receipts(block_number, &filter_match)
+            {
+                return Ok(Some(data));
+            }
+        }
+
+        if let Some(block_key) = self.triedb_env.get_block_key(SeqNum(block_number)) {
+            if let Some(header) = self
+                .triedb_env
+                .get_block_header(block_key)
+                .await
+                .map_err(JsonRpcError::internal_error)?
+            {
+                if !filter_match(header.header.logs_bloom) {
+                    return Ok(Some((header, vec![], vec![])));
+                }
+
+                if let Ok(transactions) = self.triedb_env.get_transactions(block_key).await {
+                    let receipts = self
+                        .triedb_env
+                        .get_receipts(block_key)
+                        .await
+                        .map_err(JsonRpcError::internal_error)?;
+                    return Ok(Some((header, transactions, receipts)));
+                }
+            }
+        }
+
+        if let Some(archive_reader) = &self.archive_reader {
+            return fetch_bloom_filtered_header_transactions_receipts_from_archive(
+                &self.historical,
+                archive_reader,
+                block_number,
+                filter_match,
+            )
+            .await
+            .map(Some);
+        }
+
+        Ok(None)
+    }
+
+    pub async fn fetch_blocks_for_logs(
+        &self,
+        from_block: u64,
+        to_block: u64,
+        filter: &Filter,
+    ) -> JsonRpcResult<Vec<BlockLogData>> {
+        let address_filter = FilteredParams::address_filter(&filter.address);
+        let topics_filter = FilteredParams::topics_filter(&filter.topics);
+
+        let filter_match = |bloom: Bloom| -> bool {
+            FilteredParams::matches_address(bloom, &address_filter)
+                && FilteredParams::matches_topics(bloom, &topics_filter)
+        };
+
+        let mut blocks = Vec::new();
+        for block_number in from_block..=to_block {
+            if let Some(block) = self
+                .fetch_block_for_logs(block_number, filter_match)
+                .await?
+            {
+                blocks.push(block);
+            }
+        }
+        Ok(blocks)
     }
 
     pub async fn get_transaction_receipt(

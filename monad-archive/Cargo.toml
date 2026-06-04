@@ -52,6 +52,7 @@ clap = { workspace = true, features = ["derive"] }
 dashmap = { workspace = true }
 enum_dispatch = { workspace = true }
 eyre = { workspace = true }
+fjall = { workspace = true }
 futures = { workspace = true }
 hex = { workspace = true }
 mongodb = { workspace = true }
@@ -59,6 +60,8 @@ opentelemetry = { workspace = true }
 opentelemetry-otlp = { workspace = true, features = ["metrics", "grpc-tonic"] }
 opentelemetry-semantic-conventions = { workspace = true }
 opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }
+rand = { workspace = true }
+rand_chacha = { workspace = true }
 rayon = { workspace = true }
 regex = { workspace = true }
 reqwest = { workspace = true }
@@ -74,5 +77,3 @@ url = { workspace = true }
 
 [dev-dependencies]
 monad-eth-testutil = { workspace = true }
-
-rand = { workspace = true }

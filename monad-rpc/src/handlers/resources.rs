@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::sync::Arc;
+
 use actix::{Actor, Context};
 use actix_web::{
     dev::{ServiceRequest, ServiceResponse},
@@ -25,6 +27,7 @@ use crate::{
     comparator::RpcComparator,
     data::{eth_call_handler::EthCallHandler, DataProvider},
     event::EventServerClient,
+    handlers::queryx::ChainDataService,
     middleware::Metrics,
     txpool::EthTxPoolBridgeClient,
 };
@@ -32,9 +35,16 @@ use crate::{
 #[derive(Clone)]
 pub struct MonadRpcResources {
     pub txpool_bridge_client: Option<EthTxPoolBridgeClient>,
+    /// When true, only the queryX methods are dispatched; every other
+    /// JSON-RPC method resolves to `method not found`. Used to run a
+    /// chain-data-only RPC server.
+    pub queryx_only: bool,
     pub eth_call_handler: Option<EthCallHandler>,
     pub chain_id: u64,
     pub data_provider: Option<DataProvider<TriedbEnv>>,
+    /// Embedded chain-data service backing the queryX methods. `None`
+    /// disables those methods (they return `method not supported`).
+    pub chain_data: Option<Arc<ChainDataService>>,
     pub event_server_client: Option<EventServerClient>,
     pub batch_request_limit: u16,
     pub max_response_size: u32,
@@ -53,9 +63,11 @@ impl MonadRpcResources {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         txpool_bridge_client: Option<EthTxPoolBridgeClient>,
+        queryx_only: bool,
         eth_call_handler: Option<EthCallHandler>,
         chain_id: u64,
         data_provider: Option<DataProvider<TriedbEnv>>,
+        chain_data: Option<Arc<ChainDataService>>,
         event_server_client: Option<EventServerClient>,
         batch_request_limit: u16,
         max_response_size: u32,
@@ -71,9 +83,11 @@ impl MonadRpcResources {
     ) -> Self {
         Self {
             txpool_bridge_client,
+            queryx_only,
             eth_call_handler,
             chain_id,
             data_provider,
+            chain_data,
             event_server_client,
             batch_request_limit,
             max_response_size,

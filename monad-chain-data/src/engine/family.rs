@@ -1,0 +1,99 @@
+// Copyright (C) 2025 Category Labs, Inc.
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+use serde::{Deserialize, Serialize};
+
+use crate::{
+    primitives::state::{BlockRecord, FamilyWindowRecord},
+    store::{BlobTableId, ScannableTableId, TableId},
+};
+
+pub const BLOCK_BLOB_TABLE: BlobTableId = BlobTableId::new("block_blob");
+
+pub struct FamilyTableIds {
+    /// Versioned per-family row-codec dictionary store: `version (u32 BE)`
+    /// -> dict bytes. Shared by transfers via [`Family::Trace`].
+    pub dict_by_version: TableId,
+    pub dir_by_block: ScannableTableId,
+    pub dir_bucket: TableId,
+    pub bitmap_by_block: ScannableTableId,
+    pub bitmap_page_blob: TableId,
+    pub bitmap_page_counts: TableId,
+    pub open_bitmap_stream: ScannableTableId,
+}
+
+macro_rules! family_table_ids {
+    ($prefix:literal) => {
+        FamilyTableIds {
+            dict_by_version: TableId::new(concat!($prefix, "_dict_by_version")),
+            dir_by_block: ScannableTableId::new(concat!($prefix, "_dir_by_block")),
+            dir_bucket: TableId::new(concat!($prefix, "_dir_bucket")),
+            bitmap_by_block: ScannableTableId::new(concat!($prefix, "_bitmap_by_block")),
+            bitmap_page_blob: TableId::new(concat!($prefix, "_bitmap_page_blob")),
+            bitmap_page_counts: TableId::new(concat!($prefix, "_bitmap_page_counts")),
+            open_bitmap_stream: ScannableTableId::new(concat!($prefix, "_open_bitmap_stream")),
+        }
+    };
+}
+
+/// Indexed record family served by the engine. The variant set is the
+/// canonical list of domains the engine supports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum Family {
+    Log,
+    Tx,
+    Trace,
+}
+
+impl Family {
+    pub const fn table_ids(self) -> FamilyTableIds {
+        match self {
+            Family::Log => family_table_ids!("log"),
+            Family::Tx => family_table_ids!("tx"),
+            Family::Trace => family_table_ids!("trace"),
+        }
+    }
+
+    /// Dense 0-based index for this family, matching the `[log, tx, trace]`
+    /// region order in the shared per-block blob. Used to index per-family
+    /// fixed-size arrays such as the block-region cache.
+    pub const fn slot(self) -> usize {
+        match self {
+            Family::Log => 0,
+            Family::Tx => 1,
+            Family::Trace => 2,
+        }
+    }
+
+    /// Inverse of [`Self::slot`]: the family occupying a given array slot.
+    pub const fn from_slot(slot: usize) -> Option<Family> {
+        match slot {
+            0 => Some(Family::Log),
+            1 => Some(Family::Tx),
+            2 => Some(Family::Trace),
+            _ => None,
+        }
+    }
+
+    /// Returns the per-block window for this family, if this block recorded
+    /// any records in the family.
+    pub fn window_in(self, block: &BlockRecord) -> Option<FamilyWindowRecord> {
+        match self {
+            Family::Log => Some(block.logs),
+            Family::Tx => Some(block.txs),
+            Family::Trace => Some(block.traces),
+        }
+    }
+}

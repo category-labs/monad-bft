@@ -1,0 +1,90 @@
+[package]
+name = "monad-chain-data"
+version = "0.1.0"
+edition = "2021"
+
+# this is necessary for criterion bench options
+# https://bheisler.github.io/criterion.rs/book/faq.html#cargo-bench-gives-unrecognized-option-errors-for-valid-command-line-options
+[lib]
+bench = false
+
+[dependencies]
+alloy-consensus = { workspace = true }
+alloy-eips = { workspace = true }
+alloy-primitives = { workspace = true, features = ["rlp"] }
+alloy-rlp = { workspace = true, features = ["derive"] }
+alloy-rpc-types-eth = { workspace = true, optional = true }
+blake3 = { workspace = true }
+aws-config = { workspace = true, optional = true }
+aws-sdk-dynamodb = { workspace = true, optional = true }
+aws-sdk-s3 = { workspace = true, optional = true }
+bytes = { workspace = true }
+bincode = { workspace = true }
+clap = { workspace = true, features = ["derive"], optional = true }
+console-subscriber = { version = "0.5", optional = true }
+eyre = { workspace = true }
+fjall = { workspace = true, optional = true }
+futures = { workspace = true }
+futures-timer = "3.0.3"
+libc = { workspace = true, optional = true }
+lru = { workspace = true }
+opentelemetry = { workspace = true, optional = true }
+rayon = { workspace = true }
+rand = { workspace = true, optional = true }
+roaring = "0.11"
+serde = { workspace = true, features = ["derive"] }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"], optional = true }
+zstd = { workspace = true }
+
+[features]
+default = []
+# Enables `TxEntry::to_rpc_transaction`, converting a stored tx into an
+# `alloy_rpc_types_eth::Transaction`. Off by default so the crate stays
+# narrow; the consensus envelope is always accessible via `TxEntry::envelope`.
+alloy-rpc-types-eth = ["dep:alloy-rpc-types-eth"]
+# Enables the embedded fjall backend (FjallStore). Pulls in tokio because
+# fjall is sync and the trait impls wrap blocking work in spawn_blocking.
+fjall = ["dep:fjall"]
+# Enables the S3-API-compatible blob backend (S3BlobStore): AWS S3, MinIO,
+# Cloudflare R2, Ceph RGW, etc. Pulls in the AWS SDK + tokio. Gated because
+# the AWS SDK is a heavy transitive dependency not needed by the embedded
+# fjall path.
+s3 = ["dep:aws-config", "dep:aws-sdk-s3"]
+# Enables the DynamoDB-API-compatible meta backend (DynamoMetaStore): AWS
+# DynamoDB, DynamoDB Local, and ScyllaDB Alternator. Pulls in the AWS SDK +
+# tokio. Gated for the same reason as `s3`: the AWS SDK is a heavy transitive
+# dependency the embedded fjall path does not need.
+dynamo = ["dep:aws-config", "dep:aws-sdk-dynamodb"]
+tokio-console = ["dep:console-subscriber"]
+# Compatibility feature for the standalone ingest binary's old feature set.
+# The `chain-data-ingest` target now lives in the `monad-chain-data-ingest`
+# package so `monad-archive` can depend on this library without a Cargo package
+# cycle.
+archive-ingest = [
+    "fjall",
+    "dep:clap",
+    "dep:libc",
+    "dep:opentelemetry",
+    "dep:rand",
+    "tokio/rt-multi-thread",
+    "tokio/macros",
+    "dep:tracing-subscriber",
+]
+
+[dev-dependencies]
+bytes = { workspace = true }
+tempfile = "3"
+tokio = { workspace = true, features = ["macros", "net", "rt", "rt-multi-thread", "time"] }
+# In-process, filesystem-backed S3 server used only by the gated `s3_blobstore`
+# integration test (run with `--features s3`). `s3s` provides a hyper/tower
+# `S3Service`; `s3s-fs` is its filesystem backend. `hyper-util` serves the
+# service over a local TCP listener. These are dev-only and never affect the
+# library build (`cargo check` does not compile dev-dependencies).
+# Pinned to 0.12: s3s 0.13 raised its MSRV to rustc 1.92, above this
+# toolchain. 0.12 has MSRV 1.86 and the same in-process serving API.
+s3s = "=0.12.0"
+s3s-fs = "=0.12.0"
+hyper-util = { version = "0.1", features = ["server-auto", "http1", "http2", "tokio"] }

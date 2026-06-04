@@ -273,4 +273,43 @@ pub struct Cli {
 
     #[arg(long)]
     pub manytrace_socket: Option<String>,
+
+    /* Chain-data queryX options */
+    /// TOML file containing either a bare chain-data store config or an
+    /// archiver config with `[chain_data_ingest.store]`. Allows queryX to
+    /// read remote DynamoDB/Scylla metadata and S3-compatible blobs. Mutually
+    /// exclusive with the fjall path flags below.
+    #[arg(long)]
+    pub chain_data_config: Option<PathBuf>,
+
+    /// Path to a single chain-data fjall store (meta + blobs colocated)
+    /// to serve the `eth_query*` methods from. The store is opened
+    /// read-side; ingest is expected to run in a separate process. If
+    /// unset (and the split paths below are also unset), the queryX
+    /// methods are disabled.
+    #[arg(long)]
+    pub chain_data_path: Option<PathBuf>,
+
+    /// Path to the chain-data meta store, when meta and blobs live on
+    /// separate disks. Must be set together with `--chain-data-blob-path`
+    /// and is mutually exclusive with `--chain-data-path`.
+    #[arg(long)]
+    pub chain_data_meta_path: Option<PathBuf>,
+
+    /// Path to the chain-data blob store. See `--chain-data-meta-path`.
+    #[arg(long)]
+    pub chain_data_blob_path: Option<PathBuf>,
+
+    /// Run as a chain-data-only RPC server: only the `eth_query*` methods
+    /// are served and every other method returns `method not found`.
+    #[arg(long, default_value_t = false)]
+    pub queryx_only: bool,
+
+    /// Maximum `limit` a single queryX request may ask for.
+    #[arg(long, default_value_t = 10_000)]
+    pub queryx_max_limit: usize,
+
+    /// Maximum resolved block-range span a queryX request may scan.
+    #[arg(long, default_value_t = 100_000)]
+    pub queryx_max_block_range: u64,
 }

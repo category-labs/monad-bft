@@ -13,6 +13,7 @@ monad-blocksync = { path = "./monad-blocksync" }
 monad-blocktree = { path = "./monad-blocktree" }
 monad-bls = { path = "./monad-bls" }
 monad-chain-config = { path = "./monad-chain-config" }
+monad-chain-data = { path = "./monad-chain-data" }
 monad-compress = { path = "./monad-compress" }
 monad-consensus = { path = "./monad-consensus" }
 monad-consensus-state = { path = "./monad-consensus-state" }
@@ -136,6 +137,7 @@ enum_dispatch = "0.3.13"
 env_logger = "0.10"
 eyre = "0.6.12"
 fixed = "1.29.0"
+fjall = "3.1"
 flate2 = "1.0"
 flume = "0.11.0"
 futures = "0.3"

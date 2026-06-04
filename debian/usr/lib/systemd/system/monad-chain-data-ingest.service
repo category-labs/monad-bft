@@ -1,0 +1,24 @@
+[Unit]
+Description="Service file for Monad Chain Data Ingest"
+After=network.target
+
+[Service]
+WorkingDirectory=/home/monad
+Type=simple
+ExecStart=/opt/monad/scripts/chain-data-ingest.sh
+EnvironmentFile=-/home/monad/.env
+Environment="RUST_LOG=info,h2=warn,tower=warn,aws_smithy_runtime=warn"
+Environment="AWS_EC2_METADATA_DISABLED=true"
+Restart=always
+User=monad
+Group=monad
+LimitNOFILE=1048576
+# Hugemem configs below
+LimitMEMLOCK=infinity
+MemoryDenyWriteExecute=false
+#SystemCallFilter=~@memlock
+ProtectKernelModules=no
+ProtectKernelLogs=no
+
+[Install]
+WantedBy=multi-user.target
