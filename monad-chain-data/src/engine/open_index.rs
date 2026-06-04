@@ -316,10 +316,10 @@ impl OpenIndexes {
             .expect("open index poisoned")
             .bitmap_open_streams
             .iter()
-            .filter_map(|(key, streams)| {
-                (key.family == family && key.page_global_start < before_page_global_start)
-                    .then(|| (key.page_global_start, streams.clone()))
+            .filter(|(key, _)| {
+                key.family == family && key.page_global_start < before_page_global_start
             })
+            .map(|(key, streams)| (key.page_global_start, streams.clone()))
             .collect()
     }
 
@@ -414,39 +414,40 @@ impl OpenIndexes {
         if snapshot.version != OPEN_INDEX_SNAPSHOT_VERSION {
             return false;
         }
-        let mut delta = OpenIndexesDelta::default();
-        delta.directory_fragments = snapshot
-            .directory_fragments
-            .into_iter()
-            .map(|(family, bucket_start, block_number, value)| {
-                (family, bucket_start, block_number, Bytes::from(value))
-            })
-            .collect();
-        delta.bitmap_fragments = snapshot
-            .bitmap_fragments
-            .into_iter()
-            .map(
-                |(family, stream_id, page_start_local, block_number, value)| {
-                    (
-                        family,
-                        stream_id,
-                        page_start_local,
-                        block_number,
-                        Bytes::from(value),
-                    )
-                },
-            )
-            .collect();
-        delta.bitmap_open_streams = snapshot
-            .bitmap_open_streams
-            .into_iter()
-            .flat_map(|(family, page_global_start, streams)| {
-                streams
-                    .into_iter()
-                    .map(move |stream_id| (family, page_global_start, stream_id))
-            })
-            .collect();
-        delta.bitmap_page_counts = snapshot.bitmap_page_counts;
+        let delta = OpenIndexesDelta {
+            directory_fragments: snapshot
+                .directory_fragments
+                .into_iter()
+                .map(|(family, bucket_start, block_number, value)| {
+                    (family, bucket_start, block_number, Bytes::from(value))
+                })
+                .collect(),
+            bitmap_fragments: snapshot
+                .bitmap_fragments
+                .into_iter()
+                .map(
+                    |(family, stream_id, page_start_local, block_number, value)| {
+                        (
+                            family,
+                            stream_id,
+                            page_start_local,
+                            block_number,
+                            Bytes::from(value),
+                        )
+                    },
+                )
+                .collect(),
+            bitmap_open_streams: snapshot
+                .bitmap_open_streams
+                .into_iter()
+                .flat_map(|(family, page_global_start, streams)| {
+                    streams
+                        .into_iter()
+                        .map(move |stream_id| (family, page_global_start, stream_id))
+                })
+                .collect(),
+            bitmap_page_counts: snapshot.bitmap_page_counts,
+        };
         let mut inner = self.inner.write().expect("open index poisoned");
         inner.directory.fragments_by_key.clear();
         inner.bitmap.fragments_by_key.clear();

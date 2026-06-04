@@ -126,6 +126,8 @@ async fn block_header_roundtrips_with_all_optional_fields_populated() {
         excess_blob_gas: Some(262_144),
         parent_beacon_block_root: Some(B256::repeat_byte(11)),
         requests_hash: Some(B256::repeat_byte(12)),
+        block_access_list_hash: Some(B256::repeat_byte(13)),
+        slot_number: Some(14),
     };
 
     service

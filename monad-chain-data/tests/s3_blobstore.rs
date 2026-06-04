@@ -15,24 +15,12 @@
 
 //! Integration tests for [`S3BlobStore`] against a real S3 wire protocol.
 //!
-//! These run against an **in-process, filesystem-backed** S3 server (the
-//! `s3s` + `s3s-fs` crates) bound to a local TCP port. Nothing external is
-//! required: no MinIO, no AWS account, no network. The server speaks the real
-//! S3 HTTP/SigV4 protocol, so the actual `aws-sdk-s3` client inside
-//! `S3BlobStore` is exercised end to end, including the `force_path_style` +
-//! explicit `endpoint_url` code path.
+//! These were written against an **in-process, filesystem-backed** S3 server.
+//! The `s3s` versions that support this workspace's stable clippy toolchain
+//! currently depend on yanked or broken exact-pinned crates, so the fixture is
+//! disabled until the test server dependency can be replaced.
 //!
-//! The tests are gated two ways so the default offline CI build is unaffected:
-//!   1. The whole file is `#![cfg(feature = "s3")]` -- without the `s3`
-//!      feature it compiles to an empty test binary.
-//!   2. Each test is `#[ignore]`d so it is skipped unless explicitly requested.
-//!
-//! Run them with:
-//!
-//! ```text
-//! cargo test -p monad-chain-data --features s3 --test s3_blobstore -- --ignored
-//! ```
-#![cfg(feature = "s3")]
+#![cfg(s3_blobstore_wire_fixture)]
 
 use std::{net::SocketAddr, time::Duration};
 

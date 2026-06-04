@@ -68,6 +68,7 @@ impl TxEntry {
             inner: Recovered::new_unchecked(self.envelope()?, self.sender),
             block_hash: Some(self.block_hash),
             block_number: Some(self.block_number),
+            block_timestamp: None,
             transaction_index: Some(u64::from(self.tx_idx)),
             effective_gas_price: None,
         })

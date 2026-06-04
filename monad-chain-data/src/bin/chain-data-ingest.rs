@@ -3352,6 +3352,12 @@ impl ConcurrencyControl {
 }
 
 #[cfg(unix)]
+#[allow(clippy::unnecessary_cast)]
+fn rlimit_to_u64(value: libc::rlim_t) -> u64 {
+    value as u64
+}
+
+#[cfg(unix)]
 fn raise_nofile_to_hard_limit() -> Result<(u64, u64)> {
     let mut rl = libc::rlimit {
         rlim_cur: 0,
@@ -3360,14 +3366,14 @@ fn raise_nofile_to_hard_limit() -> Result<(u64, u64)> {
     if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut rl) } != 0 {
         return Err(std::io::Error::last_os_error()).context("getrlimit(NOFILE)");
     }
-    let was = rl.rlim_cur as u64;
+    let was = rlimit_to_u64(rl.rlim_cur);
     if rl.rlim_cur < rl.rlim_max {
         rl.rlim_cur = rl.rlim_max;
         if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &rl) } != 0 {
             return Err(std::io::Error::last_os_error()).context("setrlimit(NOFILE)");
         }
     }
-    Ok((was, rl.rlim_cur as u64))
+    Ok((was, rlimit_to_u64(rl.rlim_cur)))
 }
 
 #[cfg(not(unix))]

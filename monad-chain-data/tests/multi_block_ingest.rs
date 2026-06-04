@@ -253,7 +253,7 @@ async fn ingest_blocks_skips_phase_b_when_no_family_writes_seal() {
     const TRACE_DIR_BUCKET: TableId = TableId::new("trace_dir_bucket");
 
     let kv = meta.kv_snapshot();
-    for ((table, _), _) in &kv {
+    for (table, _) in kv.keys() {
         assert_ne!(
             *table, LOG_DIR_BUCKET,
             "phase-B-skipped path must not write log_dir_bucket rows"

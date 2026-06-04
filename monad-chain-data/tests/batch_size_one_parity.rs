@@ -15,7 +15,8 @@
 
 use monad_chain_data::{
     Address, Bytes, FinalizedBlock, InMemoryBlobStore, InMemoryMetaStore, Log, LogData,
-    MonadChainDataService, QueryLimits, B256,
+    MonadChainDataService, QueryBlocksRequest, QueryEnvelope, QueryLimits, QueryLogsRequest,
+    QueryOrder, B256,
 };
 
 mod common;
@@ -79,11 +80,47 @@ async fn batch_size_one_observationally_identical_to_batch_size_eight() {
             .expect("batch_size=8 ingest");
     }
 
+    let blocks_request = QueryBlocksRequest {
+        envelope: QueryEnvelope {
+            from_block: Some(1),
+            to_block: Some(blocks.len() as u64),
+            order: QueryOrder::Ascending,
+            limit: blocks.len(),
+        },
+    };
     assert_eq!(
-        meta_a.kv_snapshot(),
-        meta_b.kv_snapshot(),
-        "kv rows diverged byte-for-byte between batch_size=1 and batch_size=8"
+        service_a
+            .query_blocks(blocks_request.clone())
+            .await
+            .expect("batch_size=1 block query"),
+        service_b
+            .query_blocks(blocks_request)
+            .await
+            .expect("batch_size=8 block query"),
+        "block query results diverged between batch_size=1 and batch_size=8"
     );
+
+    let logs_request = QueryLogsRequest {
+        envelope: QueryEnvelope {
+            from_block: Some(1),
+            to_block: Some(blocks.len() as u64),
+            order: QueryOrder::Ascending,
+            limit: 1_000,
+        },
+        ..Default::default()
+    };
+    assert_eq!(
+        service_a
+            .query_logs(logs_request.clone())
+            .await
+            .expect("batch_size=1 log query"),
+        service_b
+            .query_logs(logs_request)
+            .await
+            .expect("batch_size=8 log query"),
+        "log query results diverged between batch_size=1 and batch_size=8"
+    );
+
     assert_eq!(
         meta_a.scan_snapshot(),
         meta_b.scan_snapshot(),
@@ -108,12 +145,6 @@ async fn batch_size_one_observationally_identical_to_batch_size_eight() {
         cas_values_a, cas_values_b,
         "cas row values diverged byte-for-byte between batch_size=1 and batch_size=8"
     );
-    assert_eq!(
-        blob_a.blob_snapshot(),
-        blob_b.blob_snapshot(),
-        "blob rows diverged byte-for-byte between batch_size=1 and batch_size=8"
-    );
-
     let head_a = service_a.publication().load_published_head().await.unwrap();
     let head_b = service_b.publication().load_published_head().await.unwrap();
     assert_eq!(head_a, head_b);

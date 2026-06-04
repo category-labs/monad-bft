@@ -459,11 +459,10 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
         if region_len > self.block_region_max_bytes {
             // Too big to cache: read it directly without admitting it.
             let default_key = block_number_key(block_number);
-            return Ok(self
+            return self
                 .block_blobs
                 .read_range(header.physical_key(&default_key), region_start, region_end)
-                .await?
-                .map(Into::into));
+                .await;
         }
         let default_key = block_number_key(block_number);
         self.block_regions
@@ -498,11 +497,10 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
             // read, no caching.
             let (start, end) = header.abs_range(idx_in_block);
             let default_key = block_number_key(block_number);
-            return Ok(self
+            return self
                 .block_blobs
                 .read_range(header.physical_key(&default_key), start, end)
-                .await?
-                .map(Into::into));
+                .await;
         }
         // Small region: fetch (or hit) the whole region via the cache, then
         // slice the row's frame with family-relative offsets. region-relative
@@ -770,18 +768,18 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
                     .meta_store
                     .cas_put(cas.table, &cas.key, cas.expected, cas.value)
                     .await?;
-                return Ok((
+                Ok((
                     outcome,
                     MetaBlobTimings {
                         meta: meta_elapsed,
                         blob: blob_elapsed,
                         writes,
                     },
-                ));
+                ))
             }
             Err(e) => {
                 session.invalidate_populated();
-                return Err(e);
+                Err(e)
             }
         }
     }

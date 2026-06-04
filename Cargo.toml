@@ -5,6 +5,7 @@ exclude = ["monad-execution", "monad-fuzz", "monad-scripts"]
 
 [workspace.metadata.cargo-shear]
 ignored = ["alloy-transport-http", "getrandom", "monad-peer-disc-swarm"]
+ignored-paths = ["monad-chain-data/src/bin/chain-data-ingest.rs"]
 
 [workspace.dependencies]
 monad-archive = { path = "./monad-archive" }

@@ -1503,10 +1503,7 @@ mod tests {
             ("table-a".to_string(), 2, large),
         ]);
 
-        let mut payloads: Vec<_> = chunks
-            .into_iter()
-            .map(|(table, chunk)| (table, chunk))
-            .collect();
+        let mut payloads: Vec<_> = chunks.into_iter().collect();
         payloads.sort_by(|a, b| a.1[0].cmp(&b.1[0]));
         assert_eq!(
             payloads,

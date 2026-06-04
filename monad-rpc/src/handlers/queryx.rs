@@ -2418,7 +2418,7 @@ mod tests {
         TipFixture {
             _dir: dir,
             service,
-            data_provider: DataProvider::new(None, mock, None),
+            data_provider: DataProvider::new(None, mock.into(), None),
             final_address,
             tip_address,
             final_tx_hash,
@@ -2615,7 +2615,7 @@ mod tests {
         // data_provider reports a tip far ahead of the (empty) index.
         let mut mock = MockTriedb::default();
         mock.set_latest_block(1000);
-        let data_provider = DataProvider::new(None, mock, None);
+        let data_provider = DataProvider::new(None, mock.into(), None);
 
         // `1..=latest` spans 1000 blocks; the merge must refuse it (-32005)
         // before attempting any per-block fetch.

@@ -795,7 +795,7 @@ mod tests {
                 max_local: 19,
                 count: 2,
             },
-            bitmap_blob: encoded_blob.clone(),
+            bitmap_blob: encoded_blob,
         };
         let encoded_artifact = encode_bitmap_page_artifact(&artifact);
         let decoded = decode_bitmap_page_artifact(encoded_artifact.as_ref())
