@@ -69,7 +69,8 @@ pub async fn checker_worker(
         info!(next_to_check, end_block, "Processing block batch");
 
         // Process a batch of blocks and update the min_latest_checked
-        next_to_check = process_block_batch(&model, next_to_check, end_block, concurrency).await?;
+        next_to_check =
+            process_block_batch(&model, next_to_check, end_block, concurrency, &metrics).await?;
         info!(new_next_to_check = next_to_check, "Block batch processed");
     }
 }
@@ -87,6 +88,7 @@ async fn process_block_batch(
     start_block: u64,
     end_block: u64,
     concurrency: usize,
+    metrics: &Metrics,
 ) -> Result<u64> {
     let replicas = model
         .block_data_readers
@@ -115,9 +117,10 @@ async fn process_block_batch(
     for block_num in start_block..=end_block {
         let block_checksums = checksums_by_block.get(&block_num);
 
-        match try_check_block_via_checksums(model, block_num, block_checksums, &prev_headers)
-            .await?
-        {
+        let outcome =
+            try_check_block_via_checksums(model, block_num, block_checksums, &prev_headers).await?;
+        metrics.inc_counter(outcome.fast_path_metric());
+        match outcome {
             FastPathOutcome::Verified {
                 good_replicas,
                 parent_faulted_replicas,
@@ -322,6 +325,17 @@ enum FastPathOutcome {
     /// Present replicas disagreed (or the canonical body failed to download); the caller
     /// runs [`check_block_via_full_body_fetch`], which records everything for this block.
     Disagreement,
+}
+
+impl FastPathOutcome {
+    fn fast_path_metric(&self) -> MetricNames {
+        match self {
+            FastPathOutcome::Verified { .. } | FastPathOutcome::VerifyFailed { .. } => {
+                MetricNames::ARCHIVE_CHECKER_FAST_PATH_HITS
+            }
+            FastPathOutcome::Disagreement => MetricNames::ARCHIVE_CHECKER_FAST_PATH_MISSES,
+        }
+    }
 }
 
 /// Verifies one block from checksums alone, downloading at most one body. `block_checksums`
@@ -1733,7 +1747,7 @@ pub mod tests {
         populate_test_replicas(&model, start_block..=end_block, false).await;
 
         // Process the batch
-        let next_block = process_block_batch(&model, start_block, end_block, 20)
+        let next_block = process_block_batch(&model, start_block, end_block, 20, &Metrics::none())
             .await
             .unwrap();
 
@@ -1828,7 +1842,7 @@ pub mod tests {
         }
 
         // Process the batch
-        let next_block = process_block_batch(&model, start_block, end_block, 20)
+        let next_block = process_block_batch(&model, start_block, end_block, 20, &Metrics::none())
             .await
             .unwrap();
 
@@ -1886,7 +1900,7 @@ pub mod tests {
         };
 
         // Process the batch
-        let next_block = process_block_batch(&model, start_block, end_block, 20)
+        let next_block = process_block_batch(&model, start_block, end_block, 20, &Metrics::none())
             .await
             .unwrap();
 
@@ -1984,7 +1998,7 @@ pub mod tests {
         s2.reset_get_count();
         s3.reset_get_count();
 
-        let next_block = process_block_batch(&model, block_num, block_num, 20)
+        let next_block = process_block_batch(&model, block_num, block_num, 20, &Metrics::none())
             .await
             .unwrap();
         assert_eq!(next_block, block_num + 1);
@@ -2061,7 +2075,7 @@ pub mod tests {
         );
 
         // End-to-end via the fallback: outlier faulted, agreeing pair recorded good.
-        let next_block = process_block_batch(&model, block_num, block_num, 20)
+        let next_block = process_block_batch(&model, block_num, block_num, 20, &Metrics::none())
             .await
             .unwrap();
         assert_eq!(next_block, block_num + 1);
@@ -2128,7 +2142,7 @@ pub mod tests {
         }
 
         // End-to-end: replica3 -> MissingBlock; a good block recorded for the present pair.
-        let next_block = process_block_batch(&model, block_num, block_num, 20)
+        let next_block = process_block_batch(&model, block_num, block_num, 20, &Metrics::none())
             .await
             .unwrap();
         assert_eq!(next_block, block_num + 1);
@@ -2193,7 +2207,7 @@ pub mod tests {
         }
 
         // End-to-end: all three replicas carry the fault; no good block recorded.
-        let next_block = process_block_batch(&model, block_num, block_num, 20)
+        let next_block = process_block_batch(&model, block_num, block_num, 20, &Metrics::none())
             .await
             .unwrap();
         assert_eq!(next_block, block_num + 1);
@@ -2247,7 +2261,7 @@ pub mod tests {
             archive_to_replica(&model, replica, block_num, &cur_data).await;
         }
 
-        let next_block = process_block_batch(&model, prev_num, block_num, 20)
+        let next_block = process_block_batch(&model, prev_num, block_num, 20, &Metrics::none())
             .await
             .unwrap();
         assert_eq!(next_block, block_num + 1);
@@ -2270,6 +2284,39 @@ pub mod tests {
         // Block N-1 (the batch's first block) has no parent and is recorded good.
         let good_blocks = model.get_good_blocks(prev_num).await.unwrap();
         assert!(good_blocks.block_num_to_replica.contains_key(&prev_num));
+    }
+
+    #[test]
+    fn test_fast_path_metric_mapping() {
+        // `MetricNames` has no `Debug`, so compare with `==` rather than `assert_eq!`.
+        let header = create_test_block_data(1, 1, None).0.header;
+
+        assert!(
+            FastPathOutcome::Verified {
+                good_replicas: vec![],
+                parent_faulted_replicas: vec![],
+                missing_replicas: vec![],
+                header: None,
+            }
+            .fast_path_metric()
+                == MetricNames::ARCHIVE_CHECKER_FAST_PATH_HITS
+        );
+        assert!(
+            FastPathOutcome::VerifyFailed {
+                fault: FaultKind::InconsistentBlock(
+                    InconsistentBlockReason::InvalidTransactionRoot
+                ),
+                fault_replicas: vec![],
+                missing_replicas: vec![],
+                header,
+            }
+            .fast_path_metric()
+                == MetricNames::ARCHIVE_CHECKER_FAST_PATH_HITS
+        );
+        assert!(
+            FastPathOutcome::Disagreement.fast_path_metric()
+                == MetricNames::ARCHIVE_CHECKER_FAST_PATH_MISSES
+        );
     }
 
     /// Regression test for the resilience fix: a single replica's backend read error during
@@ -2295,7 +2342,7 @@ pub mod tests {
         // complete rather than propagating the error out of the checker worker.
         s3.should_fail.store(true, Ordering::SeqCst);
 
-        let next_block = process_block_batch(&model, block_num, block_num, 20)
+        let next_block = process_block_batch(&model, block_num, block_num, 20, &Metrics::none())
             .await
             .expect("a single replica's backend error must not fail the batch");
         assert_eq!(next_block, block_num + 1);
@@ -2350,7 +2397,7 @@ pub mod tests {
             archive_to_replica(&model, replica, block_num, &cur_data).await;
         }
 
-        process_block_batch(&model, prev_num, block_num, 20)
+        process_block_batch(&model, prev_num, block_num, 20, &Metrics::none())
             .await
             .unwrap();
 
@@ -2468,7 +2515,7 @@ pub mod tests {
         }
 
         // Process blocks with checker
-        let next_block = process_block_batch(&model, start_block, end_block, 20)
+        let next_block = process_block_batch(&model, start_block, end_block, 20, &Metrics::none())
             .await
             .unwrap();
 

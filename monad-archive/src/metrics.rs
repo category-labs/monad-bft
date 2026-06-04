@@ -79,6 +79,8 @@ pub enum MetricNames {
     REPLICA_FAULTS_FIX_SUCCESS,
     REPLICA_FAULTS_BY_KIND,
     REPLICA_FAULTS_TOTAL,
+    ARCHIVE_CHECKER_FAST_PATH_HITS,
+    ARCHIVE_CHECKER_FAST_PATH_MISSES,
 
     // Index Checker
     FAULTS_BLOCKS_WITH_FAULTS,
@@ -127,6 +129,8 @@ impl MetricNames {
             MetricNames::BFT_BLOCKS_UPLOADED => "bft_blocks_uploaded",
             MetricNames::REPLICA_FAULTS_BY_KIND => "replica_faults__by_kind",
             MetricNames::REPLICA_FAULTS_TOTAL => "replica_faults__total",
+            MetricNames::ARCHIVE_CHECKER_FAST_PATH_HITS => "archive_checker_fast_path_hits",
+            MetricNames::ARCHIVE_CHECKER_FAST_PATH_MISSES => "archive_checker_fast_path_misses",
             MetricNames::FAULTS_BLOCKS_WITH_FAULTS => "faults_blocks_with_faults",
             MetricNames::FAULTS_ERROR_CHECKING => "faults_error_checking",
             MetricNames::FAULTS_CORRUPTED_BLOCKS => "faults_corrupted_blocks",
@@ -209,6 +213,12 @@ impl MetricNames {
             MetricNames::REPLICA_FAULTS_FIX_SUCCESS => "Successful replica fault fixes",
             MetricNames::REPLICA_FAULTS_BY_KIND => "Current replica faults by kind (snapshot)",
             MetricNames::REPLICA_FAULTS_TOTAL => "Current total replica faults (snapshot)",
+            MetricNames::ARCHIVE_CHECKER_FAST_PATH_HITS => {
+                "Blocks verified via the checksum fast path"
+            }
+            MetricNames::ARCHIVE_CHECKER_FAST_PATH_MISSES => {
+                "Blocks that fell back to full-body fetch on checksum disagreement"
+            }
             // Index Checker
             MetricNames::FAULTS_BLOCKS_WITH_FAULTS => "Blocks with faults",
             MetricNames::FAULTS_ERROR_CHECKING => "Errors during fault checking",
