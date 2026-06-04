@@ -74,22 +74,20 @@ pub async fn checker_worker(
     }
 }
 
-/// Processes a batch of blocks, finds consensus, and stores results
+/// Verifies a batch of blocks, stores the results, and returns the next block to check.
 ///
-/// This function:
-/// 1. Fetches block data from all replicas for the given range
-/// 2. Processes blocks to find faults and good blocks
-/// 3. Stores results in S3
-/// 4. Updates the latest checked block for each replica
-///
-/// Returns the next block number to check
+/// Concurrently prefetches every block's per-replica checksums, then walks the blocks in
+/// order preferring the fast path: when all present replicas agree it downloads one body
+/// to run `verify_block` and marks them good, eliminating the other N-1 fetches; on
+/// disagreement it falls back to [`check_block_via_full_body_fetch`]. The walk is
+/// sequential so each block's parent header threads into the next block's parent-link
+/// check (mirroring [`get_prev_header`]).
 async fn process_block_batch(
     model: &CheckerModel,
     start_block: u64,
     end_block: u64,
     concurrency: usize,
 ) -> Result<u64> {
-    // Fetch block data from all replicas
     let replicas = model
         .block_data_readers
         .keys()
@@ -98,18 +96,87 @@ async fn process_block_batch(
 
     info!(
         replica_count = replicas.len(),
-        "Fetching block data from replicas"
+        "Fetching block data checksums from replicas"
     );
 
-    let data_by_block_num =
-        fetch_block_data(model, start_block..=end_block, &replicas, concurrency).await;
+    // Phase 1: concurrently prefetch every block's per-replica checksums.
+    let checksums_by_block =
+        fetch_block_data_checksums(model, start_block..=end_block, &replicas, concurrency).await;
 
-    debug!("Fetched data for {} blocks", data_by_block_num.len());
+    // Phase 2: walk blocks in order, deciding from the prefetched checksums.
+    let mut faults_by_replica: HashMap<String, Vec<Fault>> = HashMap::new();
+    let mut good_blocks = GoodBlocks {
+        block_num_to_replica: HashMap::new(),
+    };
+    // Each replica's previous-block header for the parent-link check, rebuilt after every
+    // block (only present replicas carry forward), mirroring `get_prev_header`. Starts empty.
+    let mut prev_headers: HashMap<String, Header> = HashMap::new();
 
-    // Process blocks to find faults and good blocks
-    info!("Processing blocks to find faults and good blocks");
-    let (faults_by_replica, good_blocks) =
-        process_blocks(&data_by_block_num, start_block, end_block);
+    for block_num in start_block..=end_block {
+        let block_checksums = checksums_by_block.get(&block_num);
+
+        match try_check_block_via_checksums(model, block_num, block_checksums, &prev_headers)
+            .await?
+        {
+            FastPathOutcome::Verified {
+                good_replicas,
+                parent_faulted_replicas,
+                missing_replicas,
+                header,
+            } => {
+                // One canonical replica per good block: the lex-smallest good replica
+                // (matches `choose_good_replica`, which sorts and takes the smallest).
+                if let Some(good_replica) = good_replicas.iter().min() {
+                    good_blocks
+                        .block_num_to_replica
+                        .insert(block_num, good_replica.clone());
+                }
+                for replica in &parent_faulted_replicas {
+                    record_fault(
+                        &mut faults_by_replica,
+                        block_num,
+                        replica,
+                        FaultKind::InconsistentBlock(InconsistentBlockReason::InvalidParentHash),
+                    );
+                }
+                record_missing(&mut faults_by_replica, block_num, &missing_replicas);
+
+                prev_headers =
+                    headers_for_present(&header, &good_replicas, &parent_faulted_replicas);
+            }
+            FastPathOutcome::VerifyFailed {
+                fault,
+                fault_replicas,
+                missing_replicas,
+                header,
+            } => {
+                for replica in &fault_replicas {
+                    record_fault(&mut faults_by_replica, block_num, replica, fault.clone());
+                }
+                record_missing(&mut faults_by_replica, block_num, &missing_replicas);
+
+                prev_headers = headers_for_present(&Some(header), &fault_replicas, &[]);
+            }
+            FastPathOutcome::Disagreement => {
+                // Fall back to the full-download path; it records all faults/good blocks
+                // and returns each replica's data, from which we thread the next parents.
+                let replica_data = check_block_via_full_body_fetch(
+                    model,
+                    block_num,
+                    &replicas,
+                    &prev_headers,
+                    &mut faults_by_replica,
+                    &mut good_blocks,
+                )
+                .await;
+
+                prev_headers = replica_data
+                    .into_iter()
+                    .filter_map(|(replica, data)| Some((replica, data?.0.header)))
+                    .collect();
+            }
+        }
+    }
 
     // Count total faults and good blocks
     let total_faults: usize = faults_by_replica.values().map(|v| v.len()).sum();
@@ -133,6 +200,272 @@ async fn process_block_batch(
     }
 
     Ok(end_block + 1)
+}
+
+fn record_fault(
+    faults_by_replica: &mut HashMap<String, Vec<Fault>>,
+    block_num: u64,
+    replica: &str,
+    fault: FaultKind,
+) {
+    faults_by_replica
+        .entry(replica.to_owned())
+        .or_default()
+        .push(Fault {
+            block_num,
+            replica: replica.to_owned(),
+            fault,
+        });
+}
+
+fn record_missing(
+    faults_by_replica: &mut HashMap<String, Vec<Fault>>,
+    block_num: u64,
+    missing_replicas: &[String],
+) {
+    for replica in missing_replicas {
+        debug!(block_num, %replica, "Missing block in replica");
+        record_fault(
+            faults_by_replica,
+            block_num,
+            replica,
+            FaultKind::MissingBlock,
+        );
+    }
+}
+
+/// Maps every present replica (good or parent-faulted) to the single shared header for
+/// the next block's parent check; empty when no replica was present.
+fn headers_for_present(
+    header: &Option<Header>,
+    good_replicas: &[String],
+    parent_faulted_replicas: &[String],
+) -> HashMap<String, Header> {
+    let Some(header) = header else {
+        return HashMap::new();
+    };
+    good_replicas
+        .iter()
+        .chain(parent_faulted_replicas)
+        .map(|replica| (replica.clone(), header.clone()))
+        .collect()
+}
+
+/// Concurrently fetches the per-replica [`BlockDataChecksums`] for a range of blocks,
+/// mirroring [`fetch_block_data`] but transferring only checksums. A per-replica fetch
+/// error is swallowed to `None` (that replica is treated as missing the block), so one
+/// replica's backend outage records a `MissingBlock` rather than aborting the run.
+pub async fn fetch_block_data_checksums(
+    model: &CheckerModel,
+    block_nums: impl IntoIterator<Item = u64>,
+    replicas: &[&str],
+    concurrency: usize,
+) -> HashMap<u64, HashMap<String, Option<BlockDataChecksums>>> {
+    stream::iter(block_nums)
+        .map(|block_num| async move {
+            // A per-replica error is logged and treated as that replica missing the block.
+            let per_replica =
+                futures::future::join_all(replicas.iter().map(|&replica_name| async move {
+                    let checksums = match model
+                        .fetch_block_data_checksums_for_replica(block_num, replica_name)
+                        .await
+                    {
+                        Ok(checksums) => checksums,
+                        Err(e) => {
+                            warn!(
+                                block_num,
+                                %replica_name,
+                                ?e,
+                                "Failed to fetch block data checksums, treating replica as missing this block"
+                            );
+                            None
+                        }
+                    };
+                    (replica_name.to_owned(), checksums)
+                }))
+                .await;
+            (block_num, per_replica.into_iter().collect())
+        })
+        .buffered(concurrency)
+        .collect::<Vec<(u64, HashMap<String, Option<BlockDataChecksums>>)>>()
+        .await
+        .into_iter()
+        .collect()
+}
+
+/// Outcome of the checksum fast path for one block. Replicas are partitioned into
+/// *present* (all three checksums found) and *missing* (`MissingBlock`). When all present
+/// replicas agree we download one body and verify it; otherwise we report
+/// [`Disagreement`] for the caller's full-body fallback.
+///
+/// The one downloaded `header` (shared by all present replicas, since they hold identical
+/// bytes) is threaded into the next block's per-replica parent check; missing replicas
+/// drop out.
+enum FastPathOutcome {
+    /// Present replicas agreed and the shared body passed intra-block checks; the
+    /// parent-link check splits them into `good_replicas` and `parent_faulted_replicas`.
+    /// `header` is `None` only when no replica was present.
+    Verified {
+        good_replicas: Vec<String>,
+        parent_faulted_replicas: Vec<String>,
+        missing_replicas: Vec<String>,
+        header: Option<Header>,
+    },
+    /// Present replicas agreed but the shared body failed intra-block verification; every
+    /// present replica gets `fault`.
+    VerifyFailed {
+        fault: FaultKind,
+        fault_replicas: Vec<String>,
+        missing_replicas: Vec<String>,
+        header: Header,
+    },
+    /// Present replicas disagreed (or the canonical body failed to download); the caller
+    /// runs [`check_block_via_full_body_fetch`], which records everything for this block.
+    Disagreement,
+}
+
+/// Verifies one block from checksums alone, downloading at most one body. `block_checksums`
+/// is the prefetched per-replica checksums (`None` = not fully present); `prev_headers`
+/// feeds the per-replica parent check. See [`FastPathOutcome`].
+async fn try_check_block_via_checksums(
+    model: &CheckerModel,
+    block_num: u64,
+    block_checksums: Option<&HashMap<String, Option<BlockDataChecksums>>>,
+    prev_headers: &HashMap<String, Header>,
+) -> Result<FastPathOutcome> {
+    // Partition into present (Some checksums) and missing (None / absent).
+    let mut present: Vec<(String, BlockDataChecksums)> = Vec::new();
+    let mut missing_replicas: Vec<String> = Vec::new();
+    if let Some(block_checksums) = block_checksums {
+        for (replica, checksums) in block_checksums {
+            match checksums {
+                Some(checksums) => present.push((replica.clone(), *checksums)),
+                None => missing_replicas.push(replica.clone()),
+            }
+        }
+    }
+
+    // No present replicas: nothing to verify, no good block, no header to thread.
+    let Some((_, first_checksums)) = present.first() else {
+        return Ok(FastPathOutcome::Verified {
+            good_replicas: Vec::new(),
+            parent_faulted_replicas: Vec::new(),
+            missing_replicas,
+            header: None,
+        });
+    };
+
+    // Disagreement: present replicas do not all share identical checksums.
+    if !present
+        .iter()
+        .all(|(_, checksums)| checksums == first_checksums)
+    {
+        debug!(block_num, "Replicas disagree on checksums, falling back");
+        return Ok(FastPathOutcome::Disagreement);
+    }
+
+    // All present replicas agree: download exactly one body (the lex-smallest present
+    // replica) and verify it. Its result is shared by every present replica because they
+    // all hold identical bytes.
+    let canonical = present
+        .iter()
+        .map(|(replica, _)| replica)
+        .min()
+        .expect("present is non-empty");
+
+    let Some((block, receipts, traces)) = model
+        .fetch_block_data_for_replica(block_num, canonical)
+        .await
+    else {
+        // Checksums agreed but the canonical body would not download/decode. Treat as a
+        // disagreement so the full-body fallback handles it robustly.
+        debug!(
+            block_num,
+            %canonical,
+            "Canonical body unavailable despite checksum agreement, falling back"
+        );
+        return Ok(FastPathOutcome::Disagreement);
+    };
+
+    // Intra-block checks only; the parent link is checked per replica below.
+    //
+    // NOTE: on intra-block failure every present replica gets that one fault. The old
+    // `verify_block` checks the parent before the tx/receipt roots, so if all present
+    // replicas hold byte-identical intra-invalid data *and* a replica's parent is broken,
+    // the old code reported `InvalidParentHash` there while we report the intra reason --
+    // same faulted set, only the reason differs, only under cluster-wide identical
+    // corruption. Intentional, so roots are hashed once per block, not once per replica.
+    if let Err(fault) = verify_block(block_num, &block, &receipts, &traces, None) {
+        debug!(block_num, ?fault, "Shared body failed verification");
+        let fault_replicas = present.into_iter().map(|(replica, _)| replica).collect();
+        return Ok(FastPathOutcome::VerifyFailed {
+            fault,
+            fault_replicas,
+            missing_replicas,
+            header: block.header,
+        });
+    }
+
+    // Per-replica parent-link check: all present replicas share `parent_hash`, but each is
+    // linked against its own previous block, so divergent parents fault individually.
+    let mut good_replicas = Vec::new();
+    let mut parent_faulted_replicas = Vec::new();
+    for (replica, _) in present {
+        match prev_headers.get(&replica) {
+            Some(parent) if block.header.parent_hash != parent.hash_slow() => {
+                debug!(
+                    block_num,
+                    %replica,
+                    expected = %parent.hash_slow(),
+                    actual = %block.header.parent_hash,
+                    "Invalid parent hash"
+                );
+                parent_faulted_replicas.push(replica);
+            }
+            _ => good_replicas.push(replica),
+        }
+    }
+
+    Ok(FastPathOutcome::Verified {
+        good_replicas,
+        parent_faulted_replicas,
+        missing_replicas,
+        header: Some(block.header),
+    })
+}
+
+/// The disagreement (or defensive download-failure) fallback: downloads every replica's
+/// full body for `block_num` and runs the unchanged [`process_single_block`], recording
+/// all faults/good blocks. Returns each replica's data so the caller can thread parents.
+async fn check_block_via_full_body_fetch(
+    model: &CheckerModel,
+    block_num: u64,
+    replicas: &[&str],
+    prev_headers: &HashMap<String, Header>,
+    faults_by_replica: &mut HashMap<String, Vec<Fault>>,
+    good_blocks: &mut GoodBlocks,
+) -> HashMap<String, Option<(Block, BlockReceipts, BlockTraces)>> {
+    // Fetch all replicas' bodies for this single block. Fanned out concurrently across
+    // replicas; the resulting map is identical to what `fetch_block_data` produces.
+    let fetched = futures::future::join_all(replicas.iter().map(|&replica_name| async move {
+        let data = model
+            .fetch_block_data_for_replica(block_num, replica_name)
+            .await;
+        (replica_name.to_owned(), data)
+    }))
+    .await;
+    let replica_data: HashMap<String, Option<(Block, BlockReceipts, BlockTraces)>> =
+        fetched.into_iter().collect();
+
+    process_single_block(
+        block_num,
+        &replica_data,
+        prev_headers.clone(),
+        faults_by_replica,
+        good_blocks,
+    );
+
+    replica_data
 }
 
 /// Fetches block data from all replicas for a range of blocks.
@@ -1574,6 +1907,468 @@ pub mod tests {
             has_invalid_block_fault,
             "Expected InvalidBlockNumber fault for block {invalid_block_num}"
         );
+    }
+
+    // NOTE: the "replica carries legacy data with no checksum at rest" scenario is not
+    // exercised here -- `MemoryStorage::metadata()` always stores the checksum alongside
+    // the bytes and cannot model it. That fallback is covered by the kvstore backend tests.
+
+    /// Builds a `CheckerModel` whose three replica readers are backed by the supplied
+    /// `MemoryStorage` handles, so a caller can retain clones and inspect per-store
+    /// `get_count()`s. The checker's own result store is a separate `MemoryStorage`.
+    fn model_with_stores(s1: MemoryStorage, s2: MemoryStorage, s3: MemoryStorage) -> CheckerModel {
+        let mut readers = HashMap::new();
+        let s1: KVStoreErased = s1.into();
+        let s2: KVStoreErased = s2.into();
+        let s3: KVStoreErased = s3.into();
+        readers.insert("replica1".to_string(), BlockDataArchive::new(s1));
+        readers.insert("replica2".to_string(), BlockDataArchive::new(s2));
+        readers.insert("replica3".to_string(), BlockDataArchive::new(s3));
+        let store: KVStoreErased = MemoryStorage::new("checker-store").into();
+        CheckerModel {
+            store,
+            block_data_readers: Arc::new(readers),
+        }
+    }
+
+    /// Archives the given block data to a replica reader using `NoClobber` and marks it
+    /// uploaded, mirroring `populate_test_replicas`.
+    async fn archive_to_replica(
+        model: &CheckerModel,
+        replica: &str,
+        block_num: u64,
+        data: &(Block, BlockReceipts, BlockTraces),
+    ) {
+        let archiver = model.block_data_readers.get(replica).unwrap();
+        let (block, receipts, traces) = data;
+        archiver
+            .archive_block(block.clone(), WritePolicy::NoClobber)
+            .await
+            .unwrap();
+        archiver
+            .archive_receipts(receipts.clone(), block_num, WritePolicy::NoClobber)
+            .await
+            .unwrap();
+        archiver
+            .archive_traces(traces.clone(), block_num, WritePolicy::NoClobber)
+            .await
+            .unwrap();
+        archiver
+            .update_latest(block_num, LatestKind::Uploaded)
+            .await
+            .unwrap();
+    }
+
+    /// Test 1: the checksum fast path downloads exactly ONE replica's body when all
+    /// present replicas agree. This is the core bandwidth-saving guarantee: the canonical
+    /// (lex-smallest) replica is fully read (3 GETs: block + receipts + traces) and the
+    /// other N-1 replicas' bodies are NOT downloaded at all.
+    #[tokio::test]
+    async fn test_fast_path_downloads_only_one_body() {
+        let s1 = MemoryStorage::new("replica1");
+        let s2 = MemoryStorage::new("replica2");
+        let s3 = MemoryStorage::new("replica3");
+        let model = model_with_stores(s1.clone(), s2.clone(), s3.clone());
+
+        // Single-block batch (start == end) so `prev_headers` is empty: no parent check,
+        // hence no parent noise. Identical data on all three replicas.
+        let block_num = 500;
+        let data = create_test_block_data(block_num, 1, None);
+        archive_to_replica(&model, "replica1", block_num, &data).await;
+        archive_to_replica(&model, "replica2", block_num, &data).await;
+        archive_to_replica(&model, "replica3", block_num, &data).await;
+
+        // Archiving uses `put`, never `get`, so the counters are already 0; reset
+        // defensively to make the post-condition unambiguous.
+        s1.reset_get_count();
+        s2.reset_get_count();
+        s3.reset_get_count();
+
+        let next_block = process_block_batch(&model, block_num, block_num, 20)
+            .await
+            .unwrap();
+        assert_eq!(next_block, block_num + 1);
+
+        let good_blocks = model.get_good_blocks(block_num).await.unwrap();
+        assert_eq!(
+            good_blocks.block_num_to_replica.get(&block_num),
+            Some(&"replica1".to_string()),
+            "lex-smallest present replica should be the canonical good block"
+        );
+
+        for replica in ["replica1", "replica2", "replica3"] {
+            let faults = model.get_faults_chunk(replica, block_num).await.unwrap();
+            assert!(
+                faults.is_empty(),
+                "expected no faults for {replica}, got {faults:?}"
+            );
+        }
+
+        // The bandwidth-saving proof: only the canonical replica's body was downloaded
+        // (3 GETs = block + receipts + traces), and the other two replicas' bodies were
+        // NOT downloaded at all.
+        assert_eq!(
+            s1.get_count(),
+            3,
+            "canonical replica1 body (block+receipts+traces) should be downloaded exactly once"
+        );
+        assert_eq!(
+            s2.get_count(),
+            0,
+            "replica2 body must NOT be downloaded on the fast path"
+        );
+        assert_eq!(
+            s3.get_count(),
+            0,
+            "replica3 body must NOT be downloaded on the fast path"
+        );
+    }
+
+    /// Test 2: when present replicas disagree on checksums the fast path reports
+    /// `Disagreement` and the caller falls back to the full-body path, reproducing the
+    /// legacy behavior (outlier faulted, agreeing pair recorded good).
+    #[tokio::test]
+    async fn test_fast_path_disagreement_falls_back() {
+        let s1 = MemoryStorage::new("replica1");
+        let s2 = MemoryStorage::new("replica2");
+        let s3 = MemoryStorage::new("replica3");
+        let model = model_with_stores(s1.clone(), s2.clone(), s3.clone());
+
+        // Single-block batch: replica1 & replica2 identical, replica3 mutated (different
+        // header `variant` byte -> different block checksum).
+        let block_num = 600;
+        let agreed = create_test_block_data(block_num, 1, None);
+        let outlier = create_test_block_data(block_num, 2, None);
+        archive_to_replica(&model, "replica1", block_num, &agreed).await;
+        archive_to_replica(&model, "replica2", block_num, &agreed).await;
+        archive_to_replica(&model, "replica3", block_num, &outlier).await;
+
+        // Direct outcome assertion: present replicas disagree -> Disagreement.
+        let replicas = ["replica1", "replica2", "replica3"];
+        let checksums_by_block =
+            fetch_block_data_checksums(&model, block_num..=block_num, &replicas, 20).await;
+        let outcome = try_check_block_via_checksums(
+            &model,
+            block_num,
+            checksums_by_block.get(&block_num),
+            &HashMap::new(),
+        )
+        .await
+        .unwrap();
+        assert!(
+            matches!(outcome, FastPathOutcome::Disagreement),
+            "expected Disagreement, got a different outcome"
+        );
+
+        // End-to-end via the fallback: outlier faulted, agreeing pair recorded good.
+        let next_block = process_block_batch(&model, block_num, block_num, 20)
+            .await
+            .unwrap();
+        assert_eq!(next_block, block_num + 1);
+
+        let r3_faults = model.get_faults_chunk("replica3", block_num).await.unwrap();
+        assert!(
+            r3_faults
+                .iter()
+                .any(|f| f.block_num == block_num
+                    && matches!(f.fault, FaultKind::InconsistentBlock(_))),
+            "expected InconsistentBlock fault for replica3, got {r3_faults:?}"
+        );
+
+        let good_blocks = model.get_good_blocks(block_num).await.unwrap();
+        let good = good_blocks.block_num_to_replica.get(&block_num);
+        assert!(
+            good == Some(&"replica1".to_string()) || good == Some(&"replica2".to_string()),
+            "expected the agreeing pair to be recorded good, got {good:?}"
+        );
+    }
+
+    /// Test 3: a replica missing the block is reported `MissingBlock`, while the present
+    /// pair is verified and one of them recorded good.
+    #[tokio::test]
+    async fn test_fast_path_missing_replica() {
+        let s1 = MemoryStorage::new("replica1");
+        let s2 = MemoryStorage::new("replica2");
+        let s3 = MemoryStorage::new("replica3");
+        let model = model_with_stores(s1.clone(), s2.clone(), s3.clone());
+
+        // replica3 is absent for this block.
+        let block_num = 700;
+        let data = create_test_block_data(block_num, 1, None);
+        archive_to_replica(&model, "replica1", block_num, &data).await;
+        archive_to_replica(&model, "replica2", block_num, &data).await;
+
+        // Direct outcome assertion: present pair Verified, replica3 missing.
+        let replicas = ["replica1", "replica2", "replica3"];
+        let checksums_by_block =
+            fetch_block_data_checksums(&model, block_num..=block_num, &replicas, 20).await;
+        let outcome = try_check_block_via_checksums(
+            &model,
+            block_num,
+            checksums_by_block.get(&block_num),
+            &HashMap::new(),
+        )
+        .await
+        .unwrap();
+        match outcome {
+            FastPathOutcome::Verified {
+                mut good_replicas,
+                parent_faulted_replicas,
+                mut missing_replicas,
+                header,
+            } => {
+                good_replicas.sort();
+                assert_eq!(good_replicas, vec!["replica1", "replica2"]);
+                assert!(parent_faulted_replicas.is_empty());
+                missing_replicas.sort();
+                assert_eq!(missing_replicas, vec!["replica3"]);
+                assert!(header.is_some());
+            }
+            _ => panic!("expected Verified with one missing replica"),
+        }
+
+        // End-to-end: replica3 -> MissingBlock; a good block recorded for the present pair.
+        let next_block = process_block_batch(&model, block_num, block_num, 20)
+            .await
+            .unwrap();
+        assert_eq!(next_block, block_num + 1);
+
+        let r3_faults = model.get_faults_chunk("replica3", block_num).await.unwrap();
+        assert!(
+            r3_faults
+                .iter()
+                .any(|f| f.block_num == block_num && matches!(f.fault, FaultKind::MissingBlock)),
+            "expected MissingBlock fault for replica3, got {r3_faults:?}"
+        );
+        let good_blocks = model.get_good_blocks(block_num).await.unwrap();
+        assert!(good_blocks.block_num_to_replica.contains_key(&block_num));
+    }
+
+    /// All replicas agree on identical bytes that fail intra-block verification (a
+    /// corrupted `transactions_root`): every present replica gets the fault, no good block.
+    #[tokio::test]
+    async fn test_fast_path_all_agree_but_verify_fails() {
+        let s1 = MemoryStorage::new("replica1");
+        let s2 = MemoryStorage::new("replica2");
+        let s3 = MemoryStorage::new("replica3");
+        let model = model_with_stores(s1.clone(), s2.clone(), s3.clone());
+
+        // Single-block batch: corrupt the tx root, then archive the SAME bytes to all 3.
+        let block_num = 800;
+        let (mut block, receipts, traces) = create_test_block_data(block_num, 1, None);
+        block.header.transactions_root = FixedBytes::<32>::from([0xAB; 32]);
+        let data = (block, receipts, traces);
+        archive_to_replica(&model, "replica1", block_num, &data).await;
+        archive_to_replica(&model, "replica2", block_num, &data).await;
+        archive_to_replica(&model, "replica3", block_num, &data).await;
+
+        // Direct outcome assertion: VerifyFailed with InvalidTransactionRoot for all 3.
+        let replicas = ["replica1", "replica2", "replica3"];
+        let checksums_by_block =
+            fetch_block_data_checksums(&model, block_num..=block_num, &replicas, 20).await;
+        let outcome = try_check_block_via_checksums(
+            &model,
+            block_num,
+            checksums_by_block.get(&block_num),
+            &HashMap::new(),
+        )
+        .await
+        .unwrap();
+        match outcome {
+            FastPathOutcome::VerifyFailed {
+                fault,
+                mut fault_replicas,
+                missing_replicas,
+                ..
+            } => {
+                assert_eq!(
+                    fault,
+                    FaultKind::InconsistentBlock(InconsistentBlockReason::InvalidTransactionRoot)
+                );
+                fault_replicas.sort();
+                assert_eq!(fault_replicas, vec!["replica1", "replica2", "replica3"]);
+                assert!(missing_replicas.is_empty());
+            }
+            _ => panic!("expected VerifyFailed for all present replicas"),
+        }
+
+        // End-to-end: all three replicas carry the fault; no good block recorded.
+        let next_block = process_block_batch(&model, block_num, block_num, 20)
+            .await
+            .unwrap();
+        assert_eq!(next_block, block_num + 1);
+
+        for replica in ["replica1", "replica2", "replica3"] {
+            let faults = model.get_faults_chunk(replica, block_num).await.unwrap();
+            assert!(
+                faults.iter().any(|f| f.block_num == block_num
+                    && matches!(
+                        f.fault,
+                        FaultKind::InconsistentBlock(
+                            InconsistentBlockReason::InvalidTransactionRoot
+                        )
+                    )),
+                "expected InvalidTransactionRoot fault for {replica}, got {faults:?}"
+            );
+        }
+        let good_blocks = model.get_good_blocks(block_num).await.unwrap();
+        assert!(
+            !good_blocks.block_num_to_replica.contains_key(&block_num),
+            "no good block should be recorded when the shared body fails verification"
+        );
+    }
+
+    /// Test 5: the fast path still performs the per-replica parent-link check across
+    /// blocks. All replicas agree on the bytes of both block N-1 and block N, but block
+    /// N's `parent_hash` does not match block N-1's hash, so every present replica is
+    /// faulted with `InvalidParentHash` at block N (preserving cross-block behavior).
+    #[tokio::test]
+    async fn test_fast_path_invalid_parent_hash_preserved() {
+        let s1 = MemoryStorage::new("replica1");
+        let s2 = MemoryStorage::new("replica2");
+        let s3 = MemoryStorage::new("replica3");
+        let model = model_with_stores(s1.clone(), s2.clone(), s3.clone());
+
+        // Two consecutive blocks. Built independently (not chained), so block N's default
+        // zero parent_hash will NOT match block N-1's real hash -> parent check fires.
+        let prev_num = 900;
+        let block_num = 901;
+        let prev_data = create_test_block_data(prev_num, 1, None);
+        let cur_data = create_test_block_data(block_num, 1, None);
+        // Sanity: the parent link really is broken.
+        assert_ne!(
+            cur_data.0.header.parent_hash,
+            prev_data.0.header.hash_slow(),
+            "test setup must produce a broken parent link"
+        );
+
+        for replica in ["replica1", "replica2", "replica3"] {
+            archive_to_replica(&model, replica, prev_num, &prev_data).await;
+            archive_to_replica(&model, replica, block_num, &cur_data).await;
+        }
+
+        let next_block = process_block_batch(&model, prev_num, block_num, 20)
+            .await
+            .unwrap();
+        assert_eq!(next_block, block_num + 1);
+
+        // Every present replica is faulted with InvalidParentHash at block N.
+        for replica in ["replica1", "replica2", "replica3"] {
+            let faults = model.get_faults_chunk(replica, prev_num).await.unwrap();
+            assert!(
+                faults.iter().any(|f| f.block_num == block_num
+                    && matches!(
+                        f.fault,
+                        FaultKind::InconsistentBlock(
+                            InconsistentBlockReason::InvalidParentHash
+                        )
+                    )),
+                "expected InvalidParentHash fault at block {block_num} for {replica}, got {faults:?}"
+            );
+        }
+
+        // Block N-1 (the batch's first block) has no parent and is recorded good.
+        let good_blocks = model.get_good_blocks(prev_num).await.unwrap();
+        assert!(good_blocks.block_num_to_replica.contains_key(&prev_num));
+    }
+
+    /// Regression test for the resilience fix: a single replica's backend read error during
+    /// the checksum prefetch must NOT abort the batch. The erroring replica is recorded
+    /// `MissingBlock` (mirroring the old full-body path's error swallowing) while the other
+    /// replicas are still checked and the batch completes successfully.
+    #[tokio::test]
+    async fn test_fast_path_replica_error_is_non_fatal() {
+        use std::sync::atomic::Ordering;
+
+        let s1 = MemoryStorage::new("replica1");
+        let s2 = MemoryStorage::new("replica2");
+        let s3 = MemoryStorage::new("replica3");
+        let model = model_with_stores(s1.clone(), s2.clone(), s3.clone());
+
+        let block_num = 600;
+        let data = create_test_block_data(block_num, 1, None);
+        archive_to_replica(&model, "replica1", block_num, &data).await;
+        archive_to_replica(&model, "replica2", block_num, &data).await;
+        archive_to_replica(&model, "replica3", block_num, &data).await;
+
+        // After populating, make replica3's backend fail every read. The batch must still
+        // complete rather than propagating the error out of the checker worker.
+        s3.should_fail.store(true, Ordering::SeqCst);
+
+        let next_block = process_block_batch(&model, block_num, block_num, 20)
+            .await
+            .expect("a single replica's backend error must not fail the batch");
+        assert_eq!(next_block, block_num + 1);
+
+        // replica3 is recorded missing (its checksum read errored -> treated as absent).
+        let r3_faults = model.get_faults_chunk("replica3", block_num).await.unwrap();
+        assert!(
+            r3_faults
+                .iter()
+                .any(|f| f.block_num == block_num && matches!(f.fault, FaultKind::MissingBlock)),
+            "expected MissingBlock for the erroring replica, got {r3_faults:?}"
+        );
+
+        // replica1 and replica2 were still checked: a good block is recorded and they carry
+        // no faults.
+        let good_blocks = model.get_good_blocks(block_num).await.unwrap();
+        assert!(good_blocks.block_num_to_replica.contains_key(&block_num));
+        for replica in ["replica1", "replica2"] {
+            let faults = model.get_faults_chunk(replica, block_num).await.unwrap();
+            assert!(
+                faults.is_empty(),
+                "expected no faults for {replica}, got {faults:?}"
+            );
+        }
+    }
+
+    /// Locks in the documented fault-reason divergence: when all replicas share identical
+    /// intra-invalid bytes and the parent is broken, the fast path reports the intra reason
+    /// (`InvalidTransactionRoot`), not `InvalidParentHash`. If changed, update the NOTE.
+    #[tokio::test]
+    async fn test_fast_path_intra_invalid_with_broken_parent() {
+        let s1 = MemoryStorage::new("replica1");
+        let s2 = MemoryStorage::new("replica2");
+        let s3 = MemoryStorage::new("replica3");
+        let model = model_with_stores(s1.clone(), s2.clone(), s3.clone());
+
+        let prev_num = 700;
+        let block_num = 701;
+        let prev_data = create_test_block_data(prev_num, 1, None);
+        // Build block N with a broken parent link (independent block), then corrupt its
+        // transactions_root so intra-block verification fails on the tx root.
+        let mut cur_data = create_test_block_data(block_num, 1, None);
+        cur_data.0.header.transactions_root = FixedBytes::<32>::from([0xAB; 32]);
+        assert_ne!(
+            cur_data.0.header.parent_hash,
+            prev_data.0.header.hash_slow(),
+            "test setup must produce a broken parent link"
+        );
+
+        for replica in ["replica1", "replica2", "replica3"] {
+            archive_to_replica(&model, replica, prev_num, &prev_data).await;
+            archive_to_replica(&model, replica, block_num, &cur_data).await;
+        }
+
+        process_block_batch(&model, prev_num, block_num, 20)
+            .await
+            .unwrap();
+
+        // Every present replica gets the intra-block reason (InvalidTransactionRoot), NOT
+        // InvalidParentHash, at block N -- the documented trade-off.
+        for replica in ["replica1", "replica2", "replica3"] {
+            let faults = model.get_faults_chunk(replica, prev_num).await.unwrap();
+            let n_fault = faults.iter().find(|f| f.block_num == block_num);
+            assert!(
+                matches!(
+                    n_fault.map(|f| &f.fault),
+                    Some(FaultKind::InconsistentBlock(
+                        InconsistentBlockReason::InvalidTransactionRoot
+                    ))
+                ),
+                "expected InvalidTransactionRoot (the documented intra reason) at block {block_num} for {replica}, got {n_fault:?}"
+            );
+        }
     }
 
     #[ignore]

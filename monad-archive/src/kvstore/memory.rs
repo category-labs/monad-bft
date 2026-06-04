@@ -15,7 +15,10 @@
 
 use std::{
     collections::HashMap,
-    sync::{atomic::AtomicBool, Arc},
+    sync::{
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc,
+    },
 };
 
 use bytes::Bytes;
@@ -31,6 +34,10 @@ pub struct MemoryStorage {
     pub db: Arc<Mutex<HashMap<String, (Bytes, [u8; 32])>>>,
     pub should_fail: Arc<AtomicBool>,
     pub name: String,
+    /// Counts body `get()` calls only (not `metadata`/`exists`/`put`/`scan_prefix`/
+    /// `delete`). Test-support instrumentation used to prove the checker's checksum
+    /// fast path avoids downloading bodies it doesn't need.
+    get_count: Arc<AtomicUsize>,
 }
 
 impl MemoryStorage {
@@ -39,13 +46,27 @@ impl MemoryStorage {
             db: Arc::new(Mutex::new(HashMap::default())),
             should_fail: Arc::new(AtomicBool::new(false)),
             name: name.into(),
+            get_count: Arc::new(AtomicUsize::new(0)),
         }
+    }
+
+    /// Number of `get()` (body download) calls observed so far. Cloned handles share
+    /// the same counter (the inner `Arc` is shared).
+    pub fn get_count(&self) -> usize {
+        self.get_count.load(Ordering::Relaxed)
+    }
+
+    /// Resets the body `get()` counter to zero.
+    pub fn reset_get_count(&self) {
+        self.get_count.store(0, Ordering::Relaxed);
     }
 }
 
 impl KVReader for MemoryStorage {
     async fn get(&self, key: &str) -> Result<Option<Bytes>> {
-        use std::sync::atomic::Ordering;
+        // Count body downloads only (see `get_count`). Done before the failure check so
+        // even a simulated-failure `get` is observed as an attempted body download.
+        self.get_count.fetch_add(1, Ordering::Relaxed);
 
         // Check if we should simulate a failure
         if self.should_fail.load(Ordering::SeqCst) {
@@ -61,8 +82,6 @@ impl KVReader for MemoryStorage {
     }
 
     async fn exists(&self, key: &str) -> Result<bool> {
-        use std::sync::atomic::Ordering;
-
         if self.should_fail.load(Ordering::SeqCst) {
             return Err(eyre::eyre!("MemoryStorage simulated failure"));
         }
@@ -71,8 +90,6 @@ impl KVReader for MemoryStorage {
     }
 
     async fn metadata(&self, key: &str) -> Result<Option<ObjectMeta>> {
-        use std::sync::atomic::Ordering;
-
         if self.should_fail.load(Ordering::SeqCst) {
             return Err(eyre::eyre!("MemoryStorage simulated failure"));
         }
@@ -100,8 +117,6 @@ impl KVStore for MemoryStorage {
         data: Vec<u8>,
         policy: WritePolicy,
     ) -> Result<PutResult> {
-        use std::sync::atomic::Ordering;
-
         // Check if we should simulate a failure
         if self.should_fail.load(Ordering::SeqCst) {
             return Err(eyre::eyre!("MemoryStorage simulated failure"));
@@ -127,8 +142,6 @@ impl KVStore for MemoryStorage {
     }
 
     async fn scan_prefix(&self, prefix: &str) -> Result<Vec<String>> {
-        use std::sync::atomic::Ordering;
-
         // Check if we should simulate a failure
         if self.should_fail.load(Ordering::SeqCst) {
             return Err(eyre::eyre!("MemoryStorage simulated failure"));
@@ -293,6 +306,56 @@ mod tests {
         let storage = MemoryStorage::new("test-bucket");
         let meta = storage.metadata("does-not-exist").await?;
         assert!(meta.is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_get_count_increments_on_get_only() -> Result<()> {
+        let storage = MemoryStorage::new("test-bucket");
+
+        let key = "count-key";
+        let data = b"payload".to_vec();
+        // `put` must not increment the body-get counter.
+        storage
+            .put(key, data.clone(), WritePolicy::AllowOverwrite)
+            .await?;
+        assert_eq!(storage.get_count(), 0, "put must not count as a body get");
+
+        // Cheap metadata reads (used by the checker fast path) must not count.
+        let _ = storage.metadata(key).await?;
+        let _ = storage.metadata("missing").await?;
+        assert_eq!(
+            storage.get_count(),
+            0,
+            "metadata must not count as a body get"
+        );
+
+        // `exists` and `scan_prefix` must not count either.
+        let _ = storage.exists(key).await?;
+        let _ = storage.scan_prefix("count").await?;
+        assert_eq!(
+            storage.get_count(),
+            0,
+            "exists/scan_prefix must not count as a body get"
+        );
+
+        // Only `get` increments, once per call, including misses.
+        let _ = storage.get(key).await?;
+        assert_eq!(storage.get_count(), 1);
+        let _ = storage.get("missing").await?;
+        assert_eq!(storage.get_count(), 2, "a get miss still counts");
+
+        // A cloned handle shares the same counter (shared inner Arc).
+        let clone = storage.clone();
+        assert_eq!(clone.get_count(), 2);
+        let _ = clone.get(key).await?;
+        assert_eq!(storage.get_count(), 3, "clone observes the same counter");
+
+        // Reset zeroes it for both handles.
+        storage.reset_get_count();
+        assert_eq!(storage.get_count(), 0);
+        assert_eq!(clone.get_count(), 0);
+
         Ok(())
     }
 
