@@ -304,8 +304,6 @@ async fn main() -> std::io::Result<()> {
         )
     });
 
-    let decompression_guard = DecompressionGuard::new(args.max_request_size);
-
     // Configure event ring, websocket server and event cache.
     let event_server_client = if let Some(exec_event_path) = args.exec_event_path {
         let event_ring_path =
@@ -406,8 +404,8 @@ async fn main() -> std::io::Result<()> {
     let app = match with_metrics {
         Some(metrics) => HttpServer::new(move || {
             App::new()
-                .wrap(decompression_guard.clone())
                 .wrap(metrics.clone())
+                .wrap(DecompressionGuard::default())
                 .wrap(TracingLogger::<MonadJsonRootSpanBuilder>::new())
                 .wrap(TimingMiddleware)
                 .app_data(web::PayloadConfig::default().limit(args.max_request_size))
@@ -420,7 +418,7 @@ async fn main() -> std::io::Result<()> {
         .run(),
         None => HttpServer::new(move || {
             App::new()
-                .wrap(decompression_guard.clone())
+                .wrap(DecompressionGuard::default())
                 .wrap(TracingLogger::<MonadJsonRootSpanBuilder>::new())
                 .wrap(TimingMiddleware)
                 .app_data(web::PayloadConfig::default().limit(args.max_request_size))
