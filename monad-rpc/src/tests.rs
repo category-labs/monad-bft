@@ -56,7 +56,7 @@ pub async fn init_server(
 
     test::init_service(
         App::new()
-            .wrap(DecompressionGuard::new(2_000_000))
+            .wrap(DecompressionGuard::default())
             .wrap(TracingLogger::<MonadJsonRootSpanBuilder>::new())
             .app_data(web::PayloadConfig::default().limit(2_000_000))
             .app_data(web::Data::new(app_state.clone()))
