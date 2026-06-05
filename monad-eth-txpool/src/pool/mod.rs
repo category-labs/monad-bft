@@ -136,7 +136,7 @@ where
         &mut self,
         event_tracker: &mut EthTxPoolEventTracker<'_>,
         block_policy: &EthBlockPolicy<ST, SCT, CCT, CRT>,
-        state_backend: &SBT,
+        state_backend: &mut SBT,
         chain_config: &CCT,
         txs: Vec<(
             Recovered<TxEnvelope>,
@@ -282,7 +282,7 @@ where
         extending_blocks: Vec<EthValidatedBlock<ST, SCT>>,
 
         block_policy: &EthBlockPolicy<ST, SCT, CCT, CRT>,
-        state_backend: &SBT,
+        state_backend: &mut SBT,
         chain_config: &CCT,
     ) -> Result<ProposalWithSenderGas<ST>, BlockPolicyError> {
         info!(
@@ -564,7 +564,7 @@ where
         block_author: Address,
         extending_blocks: &Vec<&EthValidatedBlock<ST, SCT>>,
         block_policy: &EthBlockPolicy<ST, SCT, CCT, CRT>,
-        state_backend: &SBT,
+        state_backend: &mut SBT,
         chain_config: &impl ChainConfig<CRT>,
     ) -> Result<Vec<Recovered<TxEnvelope>>, StateBackendError> {
         // TODO this should be inside SystemTransactionGenerator to prevent
@@ -619,7 +619,7 @@ where
         proposal_byte_limit: u64,
         extending_blocks: Vec<&EthValidatedBlock<ST, SCT>>,
         block_policy: &EthBlockPolicy<ST, SCT, CCT, CRT>,
-        state_backend: &SBT,
+        state_backend: &mut SBT,
         chain_config: &CCT,
     ) -> Result<Proposal<ST>, BlockPolicyError> {
         let _timer = DropTimer::start(Duration::ZERO, |elapsed| {

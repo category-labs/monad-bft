@@ -242,7 +242,7 @@ impl TriedbReader {
 
 impl StateBackend<SecpSignature, BlsSignatureCollection<monad_secp::PubKey>> for TriedbReader {
     fn get_account_statuses<'a>(
-        &self,
+        &mut self,
         block_id: &BlockId,
         seq_num: &SeqNum,
         is_finalized: bool,
@@ -295,7 +295,7 @@ impl StateBackend<SecpSignature, BlsSignatureCollection<monad_secp::PubKey>> for
     }
 
     fn get_execution_result(
-        &self,
+        &mut self,
         block_id: &BlockId,
         seq_num: &SeqNum,
         is_finalized: bool,
@@ -333,7 +333,7 @@ impl StateBackend<SecpSignature, BlsSignatureCollection<monad_secp::PubKey>> for
     }
 
     fn read_valset_at_block(
-        &self,
+        &mut self,
         block_num: SeqNum,
         requested_epoch: Epoch,
     ) -> Vec<(monad_secp::PubKey, BlsPubKey, Stake)> {

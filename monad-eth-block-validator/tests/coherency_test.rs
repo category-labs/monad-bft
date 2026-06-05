@@ -447,7 +447,7 @@ fn check_txpool_coherency(
     chain_config: &MonadChainConfig,
     extending_blocks: &[EthValidatedBlock<NopSignature, MockSignatures<NopSignature>>],
     block_under_test: &EthValidatedBlock<NopSignature, MockSignatures<NopSignature>>,
-    state_backend: &NopStateBackend,
+    state_backend: &mut NopStateBackend,
     root_info: RootInfo,
 ) {
     let block_policy = TestBlockPolicy::new(GENESIS_SEQ_NUM, 3);
@@ -553,7 +553,7 @@ fn check_txpool_coherency(
 fn test_runner(
     chain_config: MonadChainConfig,
     block_policy: TestBlockPolicy,
-    state_backend: NopStateBackend,
+    mut state_backend: NopStateBackend,
     txs: BTreeMap<SeqNum, Vec<Recovered<TxEnvelope>>>,
     expect_coherent: bool,
 ) {
@@ -572,7 +572,7 @@ fn test_runner(
             block_under_test,
             extending.iter().collect(),
             root_info,
-            &state_backend,
+            &mut state_backend,
             &chain_config,
         );
 
@@ -586,7 +586,7 @@ fn test_runner(
                 &chain_config,
                 extending,
                 block_under_test,
-                &state_backend,
+                &mut state_backend,
                 root_info,
             );
         }

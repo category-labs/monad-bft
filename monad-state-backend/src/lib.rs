@@ -49,7 +49,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     fn get_account_statuses<'a>(
-        &self,
+        &mut self,
         block_id: &BlockId,
         seq_num: &SeqNum,
         is_finalized: bool,
@@ -57,7 +57,7 @@ where
     ) -> Result<Vec<Option<EthAccount>>, StateBackendError>;
 
     fn get_execution_result(
-        &self,
+        &mut self,
         block_id: &BlockId,
         seq_num: &SeqNum,
         is_finalized: bool,
@@ -69,7 +69,7 @@ where
     fn raw_read_latest_finalized_block(&self) -> Option<SeqNum>;
 
     fn read_valset_at_block(
-        &self,
+        &mut self,
         block_num: SeqNum,
         requested_epoch: Epoch,
     ) -> Vec<(SCT::NodeIdPubKey, SignatureCollectionPubKeyType<SCT>, Stake)>;
@@ -101,23 +101,23 @@ where
     T: StateBackend<ST, SCT>,
 {
     fn get_account_statuses<'a>(
-        &self,
+        &mut self,
         block_id: &BlockId,
         seq_num: &SeqNum,
         is_finalized: bool,
         addresses: impl Iterator<Item = &'a Address>,
     ) -> Result<Vec<Option<EthAccount>>, StateBackendError> {
-        let state = self.lock().unwrap();
+        let mut state = self.lock().unwrap();
         state.get_account_statuses(block_id, seq_num, is_finalized, addresses)
     }
 
     fn get_execution_result(
-        &self,
+        &mut self,
         block_id: &BlockId,
         seq_num: &SeqNum,
         is_finalized: bool,
     ) -> Result<EthHeader, StateBackendError> {
-        let state = self.lock().unwrap();
+        let mut state = self.lock().unwrap();
         state.get_execution_result(block_id, seq_num, is_finalized)
     }
 
@@ -132,7 +132,7 @@ where
     }
 
     fn read_valset_at_block(
-        &self,
+        &mut self,
         block_num: SeqNum,
         requested_epoch: Epoch,
     ) -> Vec<(
@@ -140,7 +140,7 @@ where
         SignatureCollectionPubKeyType<SCT>,
         Stake,
     )> {
-        let state = self.lock().unwrap();
+        let mut state = self.lock().unwrap();
         state.read_valset_at_block(block_num, requested_epoch)
     }
 

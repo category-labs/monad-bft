@@ -459,7 +459,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     fn get_account_statuses<'a>(
-        &self,
+        &mut self,
         block_id: &BlockId,
         seq_num: &SeqNum,
         is_finalized: bool,
@@ -505,7 +505,7 @@ where
     }
 
     fn get_execution_result(
-        &self,
+        &mut self,
         block_id: &BlockId,
         seq_num: &SeqNum,
         is_finalized: bool,
@@ -553,7 +553,7 @@ where
     }
 
     fn read_valset_at_block(
-        &self,
+        &mut self,
         _block_num: SeqNum,
         _requested_epoch: Epoch,
     ) -> Vec<(SCT::NodeIdPubKey, SignatureCollectionPubKeyType<SCT>, Stake)> {

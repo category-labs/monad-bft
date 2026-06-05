@@ -136,7 +136,7 @@ fn run_custom_iter<const N: usize>(
     events: [TxPoolTestEvent<'_>; N],
     owned: bool,
 ) {
-    let state_backend = {
+    let mut state_backend = {
         let nonces = if let Some(nonces) = nonces_override {
             nonces
         } else {
@@ -209,7 +209,7 @@ fn run_custom_iter<const N: usize>(
                     pool.insert_txs(
                         &mut event_tracker,
                         &eth_block_policy,
-                        &state_backend,
+                        &mut state_backend,
                         &MockChainConfig::DEFAULT,
                         vec![(
                             tx.clone(),
@@ -264,7 +264,7 @@ fn run_custom_iter<const N: usize>(
                 pool.insert_txs(
                     &mut event_tracker,
                     &eth_block_policy,
-                    &state_backend,
+                    &mut state_backend,
                     &MockChainConfig::DEFAULT,
                     txs.into_iter()
                         .map(ToOwned::to_owned)
@@ -308,7 +308,7 @@ fn run_custom_iter<const N: usize>(
                 pool.insert_txs(
                     &mut event_tracker,
                     &eth_block_policy,
-                    &state_backend,
+                    &mut state_backend,
                     &MockChainConfig::DEFAULT,
                     txs.into_iter()
                         .map(|(tx, kind)| (recover_tx(tx.to_owned()), kind))
@@ -344,7 +344,7 @@ fn run_custom_iter<const N: usize>(
                         RoundSignature::new(Round(0), &mock_keypair),
                         pending_blocks.iter().cloned().collect_vec(),
                         &eth_block_policy,
-                        &state_backend,
+                        &mut state_backend,
                         &MockChainConfig::DEFAULT,
                     )
                     .expect("create proposal succeeds");
@@ -450,7 +450,7 @@ fn run_custom_iter<const N: usize>(
                 let mut nonces = eth_block_policy
                     .get_account_base_nonces(
                         SeqNum(current_seq_num),
-                        &state_backend,
+                        &mut state_backend,
                         &pending_blocks.iter().collect_vec(),
                         [&address].into_iter(),
                     )

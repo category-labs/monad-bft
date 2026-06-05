@@ -197,7 +197,7 @@ where
     /// Policy for validating chain extension
     /// Mutable because consensus tip will be updated
     pub block_policy: &'a mut BPT,
-    pub state_backend: &'a SBT,
+    pub state_backend: &'a mut SBT,
 
     pub val_epoch_map: &'a ValidatorsEpochMapping<VTF, SCT>,
     pub election: &'a LT,
@@ -2249,7 +2249,7 @@ mod test {
 
                 block_validator: &self.block_validator,
                 block_policy: &mut self.block_policy,
-                state_backend: &self.state_backend,
+                state_backend: &mut self.state_backend,
                 block_timestamp: &mut self.block_timestamp,
                 beneficiary: &self.beneficiary,
                 nodeid: &self.nodeid,
