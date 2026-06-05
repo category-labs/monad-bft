@@ -620,7 +620,7 @@ where
     pub fn get_account_base_nonces<'a>(
         &self,
         consensus_block_seq_num: SeqNum,
-        state_backend: &impl StateBackend<ST, SCT>,
+        state_backend: &mut impl StateBackend<ST, SCT>,
         extending_blocks: &Vec<&EthValidatedBlock<ST, SCT>>,
         addresses: impl Iterator<Item = &'a Address>,
     ) -> Result<BTreeMap<&'a Address, Nonce>, StateBackendError> {
@@ -762,7 +762,7 @@ where
 
     fn get_account_statuses<'a>(
         &self,
-        state_backend: &impl StateBackend<ST, SCT>,
+        state_backend: &mut impl StateBackend<ST, SCT>,
         extending_blocks: &Option<&Vec<&EthValidatedBlock<ST, SCT>>>,
         addresses: impl Iterator<Item = &'a Address>,
         base_seq_num: &SeqNum,
@@ -780,7 +780,7 @@ where
     pub fn compute_account_base_balances<'a>(
         &self,
         consensus_block_seq_num: SeqNum,
-        state_backend: &impl StateBackend<ST, SCT>,
+        state_backend: &mut impl StateBackend<ST, SCT>,
         chain_config: &CCT,
         extending_blocks: Option<&Vec<&EthValidatedBlock<ST, SCT>>>,
         addresses: impl Iterator<Item = &'a Address>,
@@ -1145,7 +1145,7 @@ where
         block: &Self::ValidatedBlock,
         extending_blocks: Vec<&Self::ValidatedBlock>,
         blocktree_root: RootInfo,
-        state_backend: &SBT,
+        state_backend: &mut SBT,
         chain_config: &CCT,
     ) -> Result<(), BlockPolicyError> {
         let chain_id = chain_config.chain_id();
@@ -1272,7 +1272,7 @@ where
         &self,
         block_seq_num: SeqNum,
         extending_blocks: Vec<&Self::ValidatedBlock>,
-        state_backend: &SBT,
+        state_backend: &mut SBT,
     ) -> Result<Vec<EthHeader>, StateBackendError> {
         if block_seq_num < self.execution_delay {
             return Ok(Vec::new());
@@ -1453,7 +1453,7 @@ mod test {
         >,
         incoming_block: EthValidatedBlock<SignatureType, SignatureCollectionType>,
         extending_blocks: Vec<&EthValidatedBlock<SignatureType, SignatureCollectionType>>,
-        state_backend: &impl StateBackend<SignatureType, SignatureCollectionType>,
+        state_backend: &mut impl StateBackend<SignatureType, SignatureCollectionType>,
         addresses: Vec<Address>,
     ) -> Result<(), BlockPolicyError> {
         let mut account_balances = block_policy.compute_account_base_balances(
@@ -1487,7 +1487,7 @@ mod test {
         >,
         incoming_block: EthValidatedBlock<SignatureType, SignatureCollectionType>,
         extending_blocks: Vec<&EthValidatedBlock<SignatureType, SignatureCollectionType>>,
-        state_backend: &impl StateBackend<SignatureType, SignatureCollectionType>,
+        state_backend: &mut impl StateBackend<SignatureType, SignatureCollectionType>,
         addresses: Vec<Address>,
     ) -> Result<(), BlockPolicyError> {
         let mut account_nonces = block_policy.get_account_base_nonces(
@@ -1514,7 +1514,7 @@ mod test {
     fn setup_block_policy_with_txs(
         txs: BTreeMap<u64, Vec<Recovered<TxEnvelope>>>,
         signers: Vec<Address>,
-        state_backend: &impl StateBackend<SignatureType, SignatureCollectionType>,
+        state_backend: &mut impl StateBackend<SignatureType, SignatureCollectionType>,
         num_committed_blocks: usize,
         coherency_check_mode: CoherencyCheckMode,
     ) -> Result<(), BlockPolicyError> {
@@ -1580,7 +1580,7 @@ mod test {
         // balance of signer at block n-3
         // minimum balance required is gas limit * gas bid
         let gas_cost = 50000 * BASE_FEE as u128;
-        let state_backend = NopStateBackend {
+        let mut state_backend = NopStateBackend {
             balances: BTreeMap::from([(signer, U256::from(gas_cost))]),
             ..Default::default()
         };
@@ -1588,21 +1588,21 @@ mod test {
         let result = setup_block_policy_with_txs(
             txs.clone(),
             vec![signer],
-            &state_backend,
+            &mut state_backend,
             num_committed_blocks,
             CoherencyCheckMode::ReserveBalanceCoherency,
         );
         assert!(result.is_ok(), "Block coherency check failed: {:?}", result);
 
         // should return error if fall below minimum balance
-        let state_backend = NopStateBackend {
+        let mut state_backend = NopStateBackend {
             balances: BTreeMap::from([(signer, U256::from(gas_cost - 1))]),
             ..Default::default()
         };
         let result = setup_block_policy_with_txs(
             txs,
             vec![signer],
-            &state_backend,
+            &mut state_backend,
             num_committed_blocks,
             CoherencyCheckMode::ReserveBalanceCoherency,
         );
@@ -1625,7 +1625,7 @@ mod test {
         let txs = BTreeMap::from([(4, vec![tx1, tx2])]); // txs in block n
 
         // balance of signer at block n-3
-        let state_backend = NopStateBackend {
+        let mut state_backend = NopStateBackend {
             balances: BTreeMap::from([(signer, U256::from(ONE_ETHER + HALF_ETHER))]),
             ..Default::default()
         };
@@ -1633,7 +1633,7 @@ mod test {
         let result = setup_block_policy_with_txs(
             txs,
             vec![signer],
-            &state_backend,
+            &mut state_backend,
             num_committed_blocks,
             CoherencyCheckMode::ReserveBalanceCoherency,
         );
@@ -1647,7 +1647,7 @@ mod test {
         // balance of signer at block n-3
         let gas_cost = 50000 * BASE_FEE as u128;
         let balance = ONE_ETHER + (2 * gas_cost) - 1;
-        let state_backend = NopStateBackend {
+        let mut state_backend = NopStateBackend {
             balances: BTreeMap::from([(signer, U256::from(balance))]),
             ..Default::default()
         };
@@ -1655,7 +1655,7 @@ mod test {
         let result = setup_block_policy_with_txs(
             txs,
             vec![signer],
-            &state_backend,
+            &mut state_backend,
             num_committed_blocks,
             CoherencyCheckMode::ReserveBalanceCoherency,
         );
@@ -1676,7 +1676,7 @@ mod test {
 
         // balance of signer at block n-3
         let balance = 100 * ONE_ETHER;
-        let state_backend = NopStateBackend {
+        let mut state_backend = NopStateBackend {
             balances: BTreeMap::from([(signer, U256::from(balance))]),
             ..Default::default()
         };
@@ -1684,7 +1684,7 @@ mod test {
         let result = setup_block_policy_with_txs(
             txs,
             vec![signer],
-            &state_backend,
+            &mut state_backend,
             num_committed_blocks,
             CoherencyCheckMode::ReserveBalanceCoherency,
         );
@@ -1707,7 +1707,7 @@ mod test {
         let first_tx_gas_cost = 50000 * BASE_FEE as u128;
         let second_tx_gas_cost = RESERVE_BALANCE;
         let balance = first_tx_gas_cost + second_tx_gas_cost;
-        let state_backend = NopStateBackend {
+        let mut state_backend = NopStateBackend {
             balances: BTreeMap::from([(signer, U256::from(balance))]),
             ..Default::default()
         };
@@ -1715,7 +1715,7 @@ mod test {
         let result = setup_block_policy_with_txs(
             txs,
             vec![signer],
-            &state_backend,
+            &mut state_backend,
             num_committed_blocks,
             CoherencyCheckMode::ReserveBalanceCoherency,
         );
@@ -1732,7 +1732,7 @@ mod test {
         let txs = BTreeMap::from([(2, vec![tx1]), (4, vec![tx2])]);
 
         // balance of signer at block n-3
-        let state_backend = NopStateBackend {
+        let mut state_backend = NopStateBackend {
             balances: BTreeMap::from([(signer, U256::from(ONE_ETHER + HALF_ETHER))]),
             ..Default::default()
         };
@@ -1740,7 +1740,7 @@ mod test {
         let result = setup_block_policy_with_txs(
             txs,
             vec![signer],
-            &state_backend,
+            &mut state_backend,
             num_committed_blocks,
             CoherencyCheckMode::ReserveBalanceCoherency,
         );
@@ -1755,7 +1755,7 @@ mod test {
         // balance of signer at block n-3
         let gas_cost = 50000 * BASE_FEE as u128;
         let balance = ONE_ETHER + (2 * gas_cost) - 1;
-        let state_backend = NopStateBackend {
+        let mut state_backend = NopStateBackend {
             balances: BTreeMap::from([(signer, U256::from(balance))]),
             ..Default::default()
         };
@@ -1763,7 +1763,7 @@ mod test {
         let result = setup_block_policy_with_txs(
             txs,
             vec![signer],
-            &state_backend,
+            &mut state_backend,
             num_committed_blocks,
             CoherencyCheckMode::ReserveBalanceCoherency,
         );
@@ -1785,7 +1785,7 @@ mod test {
 
         // balance of signer at block n-3
         let balance = 100 * ONE_ETHER;
-        let state_backend = NopStateBackend {
+        let mut state_backend = NopStateBackend {
             balances: BTreeMap::from([(signer, U256::from(balance))]),
             ..Default::default()
         };
@@ -1793,7 +1793,7 @@ mod test {
         let result = setup_block_policy_with_txs(
             txs,
             vec![signer],
-            &state_backend,
+            &mut state_backend,
             num_committed_blocks,
             CoherencyCheckMode::ReserveBalanceCoherency,
         );
@@ -1817,7 +1817,7 @@ mod test {
         let first_tx_gas_cost = 50000 * BASE_FEE as u128;
         let second_tx_gas_cost = RESERVE_BALANCE;
         let balance = first_tx_gas_cost + second_tx_gas_cost;
-        let state_backend = NopStateBackend {
+        let mut state_backend = NopStateBackend {
             balances: BTreeMap::from([(signer, U256::from(balance))]),
             ..Default::default()
         };
@@ -1825,7 +1825,7 @@ mod test {
         let result = setup_block_policy_with_txs(
             txs,
             vec![signer],
-            &state_backend,
+            &mut state_backend,
             num_committed_blocks,
             CoherencyCheckMode::ReserveBalanceCoherency,
         );
@@ -1844,7 +1844,7 @@ mod test {
 
         // balance of signer at block n-3
         let gas_cost = 50000 * 2 * BASE_FEE as u128;
-        let state_backend = NopStateBackend {
+        let mut state_backend = NopStateBackend {
             balances: BTreeMap::from([(signer, U256::from(gas_cost))]),
             ..Default::default()
         };
@@ -1852,7 +1852,7 @@ mod test {
         let result = setup_block_policy_with_txs(
             txs,
             vec![signer],
-            &state_backend,
+            &mut state_backend,
             num_committed_blocks,
             CoherencyCheckMode::ReserveBalanceCoherency,
         );
@@ -1867,7 +1867,7 @@ mod test {
 
         // balance of signer at block n-3
         let gas_cost = 50000 * 2 * BASE_FEE as u128;
-        let state_backend = NopStateBackend {
+        let mut state_backend = NopStateBackend {
             balances: BTreeMap::from([(signer, U256::from(gas_cost))]),
             ..Default::default()
         };
@@ -1875,7 +1875,7 @@ mod test {
         let result = setup_block_policy_with_txs(
             txs,
             vec![signer],
-            &state_backend,
+            &mut state_backend,
             num_committed_blocks,
             CoherencyCheckMode::ReserveBalanceCoherency,
         );
@@ -1900,7 +1900,7 @@ mod test {
 
         // balance of signer at block n-3
         let balance = 100 * ONE_ETHER;
-        let state_backend = NopStateBackend {
+        let mut state_backend = NopStateBackend {
             balances: BTreeMap::from([(signer, U256::from(balance))]),
             ..Default::default()
         };
@@ -1908,7 +1908,7 @@ mod test {
         let result = setup_block_policy_with_txs(
             txs,
             vec![signer],
-            &state_backend,
+            &mut state_backend,
             num_committed_blocks,
             CoherencyCheckMode::ReserveBalanceCoherency,
         );
@@ -1947,7 +1947,7 @@ mod test {
 
         // balance of signer at block n-3
         let gas_cost = 50000 * 2 * BASE_FEE as u128;
-        let state_backend = NopStateBackend {
+        let mut state_backend = NopStateBackend {
             balances: BTreeMap::from([(signer, U256::from(gas_cost))]),
             ..Default::default()
         };
@@ -1955,7 +1955,7 @@ mod test {
         let result = setup_block_policy_with_txs(
             txs,
             vec![signer],
-            &state_backend,
+            &mut state_backend,
             num_committed_blocks,
             CoherencyCheckMode::ReserveBalanceCoherency,
         );
@@ -1987,7 +1987,7 @@ mod test {
 
         // balance of signer at block n-3
         let gas_cost = 50000 * BASE_FEE as u128;
-        let state_backend = NopStateBackend {
+        let mut state_backend = NopStateBackend {
             balances: BTreeMap::from([
                 (signer1, U256::from(gas_cost)),
                 (signer2, U256::from(gas_cost)),
@@ -1998,7 +1998,7 @@ mod test {
         let result = setup_block_policy_with_txs(
             txs,
             vec![signer1, signer2],
-            &state_backend,
+            &mut state_backend,
             num_committed_blocks,
             CoherencyCheckMode::ReserveBalanceCoherency,
         );
@@ -2040,7 +2040,7 @@ mod test {
 
         // balance of signer at block n-3
         let gas_cost = 50000 * BASE_FEE as u128;
-        let state_backend = NopStateBackend {
+        let mut state_backend = NopStateBackend {
             balances: BTreeMap::from([
                 (signer1, U256::from(gas_cost)),
                 (signer2, U256::from(gas_cost)),
@@ -2051,7 +2051,7 @@ mod test {
         let result = setup_block_policy_with_txs(
             txs,
             vec![signer1, signer2],
-            &state_backend,
+            &mut state_backend,
             num_committed_blocks,
             CoherencyCheckMode::ReserveBalanceCoherency,
         );
@@ -2086,7 +2086,7 @@ mod test {
 
         // balance of signer at block n-3
         let gas_cost = 50000 * BASE_FEE as u128;
-        let state_backend = NopStateBackend {
+        let mut state_backend = NopStateBackend {
             balances: BTreeMap::from([
                 (signer1, U256::from(gas_cost + HALF_ETHER)),
                 (signer2, U256::from(gas_cost)),
@@ -2097,7 +2097,7 @@ mod test {
         let result = setup_block_policy_with_txs(
             txs,
             vec![signer1, signer2],
-            &state_backend,
+            &mut state_backend,
             num_committed_blocks,
             CoherencyCheckMode::ReserveBalanceCoherency,
         );
@@ -2135,7 +2135,7 @@ mod test {
         let txs = BTreeMap::from([(4, vec![tx])]);
 
         // balance of signer at block n-3
-        let state_backend = NopStateBackend {
+        let mut state_backend = NopStateBackend {
             balances: BTreeMap::from([(signer, U256::from(2 * RESERVE_BALANCE))]),
             ..Default::default()
         };
@@ -2145,7 +2145,7 @@ mod test {
         let result = setup_block_policy_with_txs(
             txs,
             vec![signer],
-            &state_backend,
+            &mut state_backend,
             num_committed_blocks,
             CoherencyCheckMode::ReserveBalanceCoherency,
         );
@@ -2188,7 +2188,7 @@ mod test {
 
         // balance of signer at block n-3
         let gas_cost = 50000 * BASE_FEE as u128;
-        let state_backend = NopStateBackend {
+        let mut state_backend = NopStateBackend {
             balances: BTreeMap::from([
                 (signer1, U256::from(gas_cost)),
                 (signer2, U256::from(2 * RESERVE_BALANCE)),
@@ -2199,7 +2199,7 @@ mod test {
         let result = setup_block_policy_with_txs(
             txs,
             vec![signer1, signer2],
-            &state_backend,
+            &mut state_backend,
             num_committed_blocks,
             CoherencyCheckMode::ReserveBalanceCoherency,
         );
@@ -2243,7 +2243,7 @@ mod test {
 
         // balance of signer at block n-3
         let gas_cost = 50000 * BASE_FEE as u128;
-        let state_backend = NopStateBackend {
+        let mut state_backend = NopStateBackend {
             balances: BTreeMap::from([
                 (signer1, U256::from(2 * RESERVE_BALANCE)),
                 (signer2, U256::from(gas_cost)),
@@ -2254,7 +2254,7 @@ mod test {
         let result = setup_block_policy_with_txs(
             txs,
             vec![signer1, signer2],
-            &state_backend,
+            &mut state_backend,
             num_committed_blocks,
             CoherencyCheckMode::ReserveBalanceCoherency,
         );
@@ -2276,7 +2276,7 @@ mod test {
 
         // balance of signer at block n-3
         let gas_cost = 2 * 50000 * BASE_FEE as u128;
-        let state_backend = NopStateBackend {
+        let mut state_backend = NopStateBackend {
             balances: BTreeMap::from([
                 (signer1, U256::from(gas_cost)),
                 (signer2, U256::from(gas_cost)),
@@ -2287,7 +2287,7 @@ mod test {
         let result = setup_block_policy_with_txs(
             txs,
             vec![signer1, signer2],
-            &state_backend,
+            &mut state_backend,
             num_committed_blocks,
             CoherencyCheckMode::ReserveBalanceCoherency,
         );
@@ -2309,7 +2309,7 @@ mod test {
         let txs = BTreeMap::from([(2, vec![tx1]), (3, vec![tx2, tx3]), (4, vec![tx4])]);
 
         // balance of signer at block n-3
-        let state_backend = NopStateBackend {
+        let mut state_backend = NopStateBackend {
             balances: BTreeMap::from([(signer, U256::from(ONE_ETHER))]),
             ..Default::default()
         };
@@ -2317,7 +2317,7 @@ mod test {
         let result = setup_block_policy_with_txs(
             txs,
             vec![signer],
-            &state_backend,
+            &mut state_backend,
             num_committed_blocks,
             CoherencyCheckMode::NonceCoherency,
         );
@@ -2349,7 +2349,7 @@ mod test {
         let txs = BTreeMap::from([(2, vec![tx1]), (4, vec![tx2, tx3])]);
 
         // balance of signer at block n-3
-        let state_backend = NopStateBackend {
+        let mut state_backend = NopStateBackend {
             balances: BTreeMap::from([(signer1, U256::from(ONE_ETHER))]),
             nonces: BTreeMap::from([(signer1, 0), (signer2, 0)]),
         };
@@ -2357,7 +2357,7 @@ mod test {
         let result = setup_block_policy_with_txs(
             txs,
             vec![signer1, signer2],
-            &state_backend,
+            &mut state_backend,
             num_committed_blocks,
             CoherencyCheckMode::NonceCoherency,
         );
@@ -2385,7 +2385,7 @@ mod test {
         let txs = BTreeMap::from([(2, vec![tx1]), (4, vec![tx2, tx3])]);
 
         // balance of signer at block n-3
-        let state_backend = NopStateBackend {
+        let mut state_backend = NopStateBackend {
             balances: BTreeMap::from([(signer1, U256::from(ONE_ETHER))]),
             nonces: BTreeMap::from([(signer1, 0), (signer2, 0)]),
         };
@@ -2393,7 +2393,7 @@ mod test {
         let result = setup_block_policy_with_txs(
             txs,
             vec![signer1, signer2],
-            &state_backend,
+            &mut state_backend,
             num_committed_blocks,
             CoherencyCheckMode::NonceCoherency,
         );
@@ -2425,7 +2425,7 @@ mod test {
         let txs = BTreeMap::from([(2, vec![tx1]), (4, vec![tx2, tx3])]);
 
         // balance of signer at block n-3
-        let state_backend = NopStateBackend {
+        let mut state_backend = NopStateBackend {
             balances: BTreeMap::from([(signer1, U256::from(ONE_ETHER))]),
             nonces: BTreeMap::from([(signer1, 0), (signer2, 0)]),
         };
@@ -2433,7 +2433,7 @@ mod test {
         let result = setup_block_policy_with_txs(
             txs,
             vec![signer1, signer2],
-            &state_backend,
+            &mut state_backend,
             num_committed_blocks,
             CoherencyCheckMode::NonceCoherency,
         );
@@ -2470,7 +2470,7 @@ mod test {
         ]);
 
         // balance of signer at block n-3
-        let state_backend = NopStateBackend {
+        let mut state_backend = NopStateBackend {
             balances: BTreeMap::from([(signer1, U256::from(ONE_ETHER))]),
             nonces: BTreeMap::from([(signer1, 0), (signer2, 0)]),
         };
@@ -2478,7 +2478,7 @@ mod test {
         let result = setup_block_policy_with_txs(
             txs,
             vec![signer1, signer2],
-            &state_backend,
+            &mut state_backend,
             num_committed_blocks,
             CoherencyCheckMode::NonceCoherency,
         );
@@ -2489,7 +2489,7 @@ mod test {
         let txs = BTreeMap::from([(2, vec![tx1]), (3, vec![tx2]), (4, vec![tx3])]);
 
         // balance of signer at block n-3
-        let state_backend = NopStateBackend {
+        let mut state_backend = NopStateBackend {
             balances: BTreeMap::from([(signer1, U256::from(ONE_ETHER))]),
             nonces: BTreeMap::from([(signer1, 0), (signer2, 0)]),
         };
@@ -2497,7 +2497,7 @@ mod test {
         let result = setup_block_policy_with_txs(
             txs,
             vec![signer1, signer2],
-            &state_backend,
+            &mut state_backend,
             num_committed_blocks,
             CoherencyCheckMode::NonceCoherency,
         );
@@ -3567,7 +3567,7 @@ mod test {
             ChainRevisionType,
         >::new(GENESIS_SEQ_NUM, EXEC_DELAY.0);
 
-        let state_backend = NopStateBackend::default();
+        let mut state_backend = NopStateBackend::default();
 
         let addresses = [secret_to_eth_address(S2)];
 
@@ -3576,7 +3576,7 @@ mod test {
             let (s2, s2_nonce) = block_policy
                 .get_account_base_nonces(
                     SeqNum(1),
-                    &state_backend,
+                    &mut state_backend,
                     &vec![&make_test_block(
                         Round(1),
                         SeqNum(1),
@@ -3605,7 +3605,7 @@ mod test {
             let (s2, s2_nonce) = block_policy
                 .get_account_base_nonces(
                     SeqNum(1),
-                    &state_backend,
+                    &mut state_backend,
                     &vec![&make_test_block(
                         Round(1),
                         SeqNum(1),
@@ -3634,7 +3634,7 @@ mod test {
             let (s2, s2_nonce) = block_policy
                 .get_account_base_nonces(
                     SeqNum(10),
-                    &state_backend,
+                    &mut state_backend,
                     &vec![
                         // nonces beyond execution_delay should not be taken into account
                         &make_test_block(
@@ -3829,7 +3829,7 @@ mod test {
 
     #[test]
     fn test_non_consecutive_seqnum() {
-        let state_backend = NopStateBackend::default();
+        let mut state_backend = NopStateBackend::default();
         let block_policy = EthBlockPolicy::<
             SignatureType,
             SignatureCollectionType,
@@ -3850,7 +3850,7 @@ mod test {
                 block_id: GENESIS_BLOCK_ID,
                 timestamp_ns: GENESIS_TIMESTAMP,
             },
-            &state_backend,
+            &mut state_backend,
             &MockChainConfig::default(),
         );
         assert_eq!(result, Err(BlockPolicyError::BlockNotCoherent));

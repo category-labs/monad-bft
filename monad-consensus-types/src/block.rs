@@ -360,15 +360,15 @@ where
         block: &Self::ValidatedBlock,
         extending_blocks: Vec<&Self::ValidatedBlock>,
         blocktree_root: RootInfo,
-        state_backend: &SBT,
-        chain_cnfig: &CCT,
+        state_backend: &mut SBT,
+        chain_config: &CCT,
     ) -> Result<(), BlockPolicyError>;
 
     fn get_expected_execution_results(
         &self,
         block_seq_num: SeqNum,
         extending_blocks: Vec<&Self::ValidatedBlock>,
-        state_backend: &SBT,
+        state_backend: &mut SBT,
     ) -> Result<Vec<EPT::FinalizedHeader>, StateBackendError>;
 
     // TODO delete this function, pass recently committed blocks to check_coherency instead
@@ -429,7 +429,7 @@ where
         block: &Self::ValidatedBlock,
         extending_blocks: Vec<&Self::ValidatedBlock>,
         blocktree_root: RootInfo,
-        state_backend: &InMemoryState<ST, SCT>,
+        state_backend: &mut InMemoryState<ST, SCT>,
         _chain_config: &MockChainConfig,
     ) -> Result<(), BlockPolicyError> {
         // check coherency against the block being extended or against the root of the blocktree if
@@ -466,7 +466,7 @@ where
         &self,
         _block_seq_num: SeqNum,
         _extending_blocks: Vec<&Self::ValidatedBlock>,
-        _state_backend: &InMemoryState<ST, SCT>,
+        _state_backend: &mut InMemoryState<ST, SCT>,
     ) -> Result<Vec<EPT::FinalizedHeader>, StateBackendError> {
         Ok(Vec::new())
     }

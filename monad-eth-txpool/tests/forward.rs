@@ -55,7 +55,7 @@ fn with_txpool(
         MockChainConfig,
         MockChainRevision,
     >::new(GENESIS_SEQ_NUM, 4);
-    let state_backend = InMemoryStateInner::new(
+    let mut state_backend = InMemoryStateInner::new(
         SeqNum(4),
         InMemoryBlockState::genesis(BTreeMap::from_iter(vec![(
             tx.signer(),
@@ -98,7 +98,7 @@ fn with_txpool(
     pool.insert_txs(
         &mut event_tracker,
         &eth_block_policy,
-        &state_backend,
+        &mut state_backend,
         &MockChainConfig::DEFAULT,
         vec![(
             tx,

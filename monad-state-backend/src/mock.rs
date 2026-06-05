@@ -38,7 +38,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     fn get_account_statuses<'a>(
-        &self,
+        &mut self,
         _block_id: &BlockId,
         _seq_num: &SeqNum,
         _is_finalized: bool,
@@ -57,7 +57,7 @@ where
     }
 
     fn get_execution_result(
-        &self,
+        &mut self,
         _block_id: &BlockId,
         _seq_num: &SeqNum,
         _is_finalized: bool,
@@ -76,7 +76,7 @@ where
     }
 
     fn read_valset_at_block(
-        &self,
+        &mut self,
         block_num: SeqNum,
         requested_epoch: monad_types::Epoch,
     ) -> Vec<(

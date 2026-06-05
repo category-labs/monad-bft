@@ -482,7 +482,7 @@ where
                         round_signature.clone(),
                         extending_blocks,
                         &self.block_policy,
-                        &self.state_backend,
+                        &mut self.state_backend,
                         &self.chain_config,
                     ) {
                         Ok(ProposalWithSenderGas {

@@ -62,7 +62,7 @@ fn txpool_create_proposal_lookups_bound_by_tx_limit() {
 
         let eth_block_policy = EthBlockPolicy::new(GENESIS_SEQ_NUM, u64::MAX);
 
-        let state_backend: StateBackendType = InMemoryStateInner::new(
+        let mut state_backend: StateBackendType = InMemoryStateInner::new(
             SeqNum::MAX,
             InMemoryBlockState::genesis(BTreeMap::from_iter([
                 (secret_to_eth_address(S1), AccountState::max_balance()),
@@ -73,7 +73,7 @@ fn txpool_create_proposal_lookups_bound_by_tx_limit() {
         pool.insert_txs(
             &mut event_tracker,
             &eth_block_policy,
-            &state_backend,
+            &mut state_backend,
             &MockChainConfig::DEFAULT,
             vec![
                 recover_tx(make_legacy_tx(S1, MIN_BASE_FEE.into(), 100_000, 0, 0)),
@@ -106,7 +106,7 @@ fn txpool_create_proposal_lookups_bound_by_tx_limit() {
                 RoundSignature::new(Round(0), &mock_keypair),
                 vec![],
                 &eth_block_policy,
-                &state_backend,
+                &mut state_backend,
                 &MockChainConfig::DEFAULT,
             )
             .unwrap();
@@ -142,7 +142,7 @@ fn txpool_create_proposal_no_lookup_for_unknown_authorizations() {
 
         let eth_block_policy = EthBlockPolicy::new(GENESIS_SEQ_NUM, u64::MAX);
 
-        let state_backend: StateBackendType = InMemoryStateInner::new(
+        let mut state_backend: StateBackendType = InMemoryStateInner::new(
             SeqNum::MAX,
             InMemoryBlockState::genesis(BTreeMap::from_iter([
                 (secret_to_eth_address(S1), AccountState::max_balance()),
@@ -153,7 +153,7 @@ fn txpool_create_proposal_no_lookup_for_unknown_authorizations() {
         pool.insert_txs(
             &mut event_tracker,
             &eth_block_policy,
-            &state_backend,
+            &mut state_backend,
             &MockChainConfig::DEFAULT,
             vec![recover_tx(make_eip7702_tx(
                 S1,
@@ -191,7 +191,7 @@ fn txpool_create_proposal_no_lookup_for_unknown_authorizations() {
                 RoundSignature::new(Round(0), &mock_keypair),
                 vec![],
                 &eth_block_policy,
-                &state_backend,
+                &mut state_backend,
                 &MockChainConfig::DEFAULT,
             )
             .unwrap();

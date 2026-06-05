@@ -69,7 +69,7 @@ impl ValSetUpdater<SecpSignature, BlsSignatureCollection<PubKey>> {
         validators_path: PathBuf,
         epoch_length: SeqNum,
         staking_activation: Epoch,
-        state_backend: SBT,
+        mut state_backend: SBT,
     ) -> Self
     where
         SBT: StateBackend<SecpSignature, BlsSignatureCollection<PubKey>> + Send + 'static,

@@ -99,7 +99,7 @@ where
     metrics: &'a mut Metrics,
     epoch_manager: &'a mut EpochManager,
     block_policy: &'a mut BPT,
-    state_backend: &'a SBT,
+    state_backend: &'a mut SBT,
 
     val_epoch_map: &'a ValidatorsEpochMapping<VTF, SCT>,
     leader_election: &'a LT,
@@ -139,7 +139,7 @@ where
             metrics: &mut monad_state.metrics,
             epoch_manager: &mut monad_state.epoch_manager,
             block_policy: &mut monad_state.block_policy,
-            state_backend: &monad_state.state_backend,
+            state_backend: &mut monad_state.state_backend,
 
             val_epoch_map: &monad_state.val_epoch_map,
             leader_election: &monad_state.leader_election,
