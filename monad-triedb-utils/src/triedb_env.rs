@@ -257,11 +257,11 @@ fn polling_thread(
                 TriedbRequest::AsyncRangeGetRequest(range_request) => {
                     triedb_handle.range_get_triedb_async(
                         &range_request.prefix_key,
-                        range_request.prefix_key_len_nibbles,
+                        u16::from(range_request.prefix_key_len_nibbles),
                         &range_request.min_triedb_key,
-                        range_request.min_key_len_nibbles,
+                        u16::from(range_request.min_key_len_nibbles),
                         &range_request.max_triedb_key,
-                        range_request.max_key_len_nibbles,
+                        u16::from(range_request.max_key_len_nibbles),
                         range_request.block_key.seq_num().0,
                         range_request.request_sender,
                         triedb_async_read_concurrency_tracker.clone(),
@@ -270,7 +270,7 @@ fn polling_thread(
                 TriedbRequest::AsyncTraverseRequest(traverse_request) => {
                     triedb_handle.traverse_triedb_async(
                         &traverse_request.triedb_key,
-                        traverse_request.key_len_nibbles,
+                        u16::from(traverse_request.key_len_nibbles),
                         traverse_request.block_key.seq_num().0,
                         traverse_request.request_sender,
                         triedb_async_traverse_concurrency_tracker.clone(),
@@ -281,7 +281,7 @@ fn polling_thread(
                     // read_async will send back a future to request_receiver of oneshot channel
                     triedb_handle.read_async(
                         &async_request.triedb_key,
-                        async_request.key_len_nibbles,
+                        u16::from(async_request.key_len_nibbles),
                         async_request.block_key.seq_num().0,
                         async_request.completed_counter,
                         async_request.request_sender,
@@ -314,7 +314,7 @@ fn populate_cache(
 
         handle.traverse_triedb_async(
             &triedb_key,
-            key_len_nibbles,
+            u16::from(key_len_nibbles),
             block_key.seq_num().0,
             tx_sender,
             // don't track concurrency
@@ -346,7 +346,7 @@ fn populate_cache(
 
         handle.traverse_triedb_async(
             &triedb_key,
-            key_len_nibbles,
+            u16::from(key_len_nibbles),
             block_key.seq_num().0,
             receipt_sender,
             // don't track concurrency

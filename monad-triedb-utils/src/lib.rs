@@ -115,7 +115,9 @@ impl TriedbReader {
         {
             let (triedb_key, key_len_nibbles) =
                 create_triedb_key(Version::Finalized, KeyInput::BlockHeader);
-            let eth_header_bytes = self.handle.read(&triedb_key, key_len_nibbles, seq_num.0)?;
+            let eth_header_bytes =
+                self.handle
+                    .read(&triedb_key, u16::from(key_len_nibbles), seq_num.0)?;
             let mut rlp_buf = eth_header_bytes.as_slice();
             let block_header = Header::decode(&mut rlp_buf).expect("invalid rlp eth header");
 
@@ -132,7 +134,9 @@ impl TriedbReader {
     ) -> Option<EthHeader> {
         let (triedb_key, key_len_nibbles) =
             create_triedb_key(Version::Proposal(*block_id), KeyInput::BlockHeader);
-        let eth_header_bytes = self.handle.read(&triedb_key, key_len_nibbles, seq_num.0)?;
+        let eth_header_bytes =
+            self.handle
+                .read(&triedb_key, u16::from(key_len_nibbles), seq_num.0)?;
 
         let mut rlp_buf = eth_header_bytes.as_slice();
         let block_header = Header::decode(&mut rlp_buf).expect("invalid rlp eth header");
@@ -150,7 +154,9 @@ impl TriedbReader {
         let (triedb_key, key_len_nibbles) =
             create_triedb_key(version, KeyInput::Address(eth_address));
 
-        let result = self.handle.read(&triedb_key, key_len_nibbles, seq_num.0);
+        let result = self
+            .handle
+            .read(&triedb_key, u16::from(key_len_nibbles), seq_num.0);
 
         let Some(account_rlp) = result else {
             debug!(?seq_num, ?eth_address, "account not found");
@@ -185,7 +191,7 @@ impl TriedbReader {
             let (sender, receiver) = oneshot::channel();
             self.handle.read_async(
                 triedb_key.as_ref(),
-                key_len_nibbles,
+                u16::from(key_len_nibbles),
                 seq_num.0,
                 completed_counter.clone(),
                 sender,
@@ -204,7 +210,11 @@ impl TriedbReader {
                                 // Request code
                                 let (triedb_key, key_len_nibbles) =
                                     create_triedb_key(version, KeyInput::CodeHash(&code_hash));
-                                let res = self.handle.read(&triedb_key, key_len_nibbles, seq_num.0);
+                                let res = self.handle.read(
+                                    &triedb_key,
+                                    u16::from(key_len_nibbles),
+                                    seq_num.0,
+                                );
                                 trace!(?res, block_id = ?seq_num.0, ?eth_account, "account code_data");
                                 match res {
                                     Some(data) => {
