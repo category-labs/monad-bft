@@ -6066,6 +6066,7 @@ dependencies = [
  "serde",
  "serde_cbor",
  "serde_json",
+ "strum",
  "tempfile",
  "test-case",
  "thiserror 1.0.69",

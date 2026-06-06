@@ -316,11 +316,11 @@ pub struct MonadDebugTraceTransactionParams {
 #[derive(Serialize, Debug, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct MonadCallFrameLog {
-    address: EthAddress,
-    topics: Vec<FixedData<32>>,
-    data: UnformattedData,
-    position: Quantity,
-    index: Quantity,
+    pub address: EthAddress,
+    pub topics: Vec<FixedData<32>>,
+    pub data: UnformattedData,
+    pub position: Quantity,
+    pub index: Quantity,
 }
 
 impl MonadCallFrameLog {
@@ -344,28 +344,28 @@ impl MonadCallFrameLog {
 #[serde(rename_all = "camelCase")]
 pub struct MonadCallFrame {
     #[serde(rename = "type")]
-    typ: CallKind,
-    from: EthAddress,
+    pub typ: CallKind,
+    pub from: EthAddress,
     #[serde(skip_serializing_if = "Option::is_none")]
-    to: Option<EthAddress>,
+    pub to: Option<EthAddress>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    value: Option<MonadU256>,
-    gas: Quantity,
-    gas_used: Quantity,
-    input: UnformattedData,
+    pub value: Option<MonadU256>,
+    pub gas: Quantity,
+    pub gas_used: Quantity,
+    pub input: UnformattedData,
     #[serde(skip_serializing_if = "UnformattedData::is_empty")]
-    output: UnformattedData,
+    pub output: UnformattedData,
     #[serde(skip)]
-    depth: usize,
+    pub depth: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
+    pub error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    revert_reason: Option<String>,
+    pub revert_reason: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     #[schemars(skip)] // TODO: handle recursive generation in jsonrpc schema
-    calls: Vec<MonadCallFrame>,
+    pub calls: Vec<MonadCallFrame>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    logs: Vec<MonadCallFrameLog>,
+    pub logs: Vec<MonadCallFrameLog>,
 }
 
 impl From<CallFrame> for MonadCallFrame {
@@ -425,8 +425,9 @@ impl From<CallFrame> for MonadCallFrame {
     }
 }
 
-#[derive(Serialize, Debug, Clone, schemars::JsonSchema)]
+#[derive(Serialize, Debug, Clone, schemars::JsonSchema, strum::AsRefStr, strum::VariantArray)]
 #[serde(rename_all = "UPPERCASE")]
+#[strum(serialize_all = "UPPERCASE")]
 pub enum CallKind {
     Call,
     DelegateCall,
@@ -479,8 +480,8 @@ pub struct MonadDebugTraceBlockByNumberParams {
 #[derive(Serialize, Debug, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct MonadDebugTraceBlockResult {
-    tx_hash: EthHash,
-    result: MonadCallFrame,
+    pub tx_hash: EthHash,
+    pub result: MonadCallFrame,
 }
 
 #[rpc(method = "debug_traceBlockByNumber")]
