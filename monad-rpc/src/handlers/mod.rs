@@ -72,7 +72,7 @@ use crate::{
     },
 };
 
-mod debug;
+pub mod debug;
 mod debug_replay;
 pub mod eth;
 mod meta;
