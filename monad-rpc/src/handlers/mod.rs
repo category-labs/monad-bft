@@ -290,7 +290,7 @@ async fn debug_traceBlockByHash(
             .await
             .map(serialize_result)?;
     }
-    monad_debug_traceBlockByHash(data_provider, params)
+    monad_debug_traceBlockByHash(data_provider, app_state.max_response_size as usize, params)
         .await
         .map(serialize_result)?
 }
@@ -310,7 +310,7 @@ async fn debug_traceBlockByNumber(
             .map(serialize_result)?;
     }
 
-    monad_debug_traceBlockByNumber(data_provider, params)
+    monad_debug_traceBlockByNumber(data_provider, app_state.max_response_size as usize, params)
         .await
         .map(serialize_result)?
 }
@@ -333,6 +333,7 @@ async fn debug_traceCall(
                 eth_call_handler_config,
                 executor,
                 app_state.chain_id,
+                app_state.max_response_size as usize,
                 params,
             )
         })
@@ -355,7 +356,7 @@ async fn debug_traceTransaction(
             .map(serialize_result)?;
     }
 
-    monad_debug_traceTransaction(data_provider, params)
+    monad_debug_traceTransaction(data_provider, app_state.max_response_size as usize, params)
         .await
         .map(serialize_result)?
 }
