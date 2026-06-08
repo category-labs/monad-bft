@@ -16,7 +16,7 @@
 //! reference: https://www.jsonrpc.org/specification
 
 use serde::{Deserialize, Deserializer, Serialize};
-use serde_json::{value::RawValue, Value};
+use serde_json::value::RawValue;
 use tracing::error;
 
 use crate::data::ChainStateError;
@@ -242,12 +242,21 @@ pub fn serialize_with_size_limit<T: Serialize>(
     Ok(raw)
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct JsonRpcError {
     pub code: i32,
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub data: Option<Value>,
+    pub data: Option<Box<RawValue>>,
+}
+
+impl PartialEq for JsonRpcError {
+    fn eq(&self, other: &Self) -> bool {
+        self.code == other.code
+            && self.message == other.message
+            && self.data.as_ref().map(|data| data.get())
+                == other.data.as_ref().map(|data| data.get())
+    }
 }
 
 pub type JsonRpcResult<T> = Result<T, JsonRpcError>;
@@ -441,9 +450,12 @@ impl JsonRpcError {
                 "Transaction receipt not available within {}ms timeout",
                 timeout_ms
             ),
-            data: Some(serde_json::json!({
-                "hash": tx_hash
-            })),
+            data: Some(
+                serde_json::value::to_raw_value(&serde_json::json!({
+                    "hash": tx_hash
+                }))
+                .expect("RawValue can be built from Value"),
+            ),
         }
     }
 
@@ -459,7 +471,9 @@ impl JsonRpcError {
         Self {
             code: -32603,
             message,
-            data: data.map(Value::String),
+            data: data.map(|data| {
+                serde_json::value::to_raw_value(&data).expect("RawValue can be built from String")
+            }),
         }
     }
 
