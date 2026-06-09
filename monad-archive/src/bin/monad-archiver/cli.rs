@@ -22,6 +22,8 @@ use std::{
 use clap::{ArgAction, Parser, Subcommand};
 use eyre::{eyre, Context, Result};
 use monad_archive::cli::{ArchiveArgs, BlockDataReaderArgs};
+#[cfg(feature = "chain-data-ingest")]
+use monad_chain_data::{ChainDataEngineConfig, ChainDataStoreConfig};
 use serde::Deserialize;
 
 /// Runtime configuration for the `monad-archiver` binary.
@@ -72,6 +74,10 @@ pub struct Cli {
     #[serde(default)]
     /// If set, archiver will only archive traces
     pub traces_only: bool,
+
+    #[serde(default)]
+    /// If set, archiver will skip traces entirely
+    pub skip_traces: bool,
 
     #[serde(default)]
     /// If set, archiver will perform an asynchronous backfill of the archive
@@ -140,6 +146,30 @@ pub struct Cli {
 
     #[serde(default)]
     pub skip_connectivity_check: bool,
+
+    #[cfg(feature = "chain-data-ingest")]
+    #[serde(default)]
+    pub chain_data_ingest: Option<ArchiverChainDataIngestConfig>,
+}
+
+#[cfg(feature = "chain-data-ingest")]
+#[derive(Debug, Deserialize)]
+#[serde(default)]
+pub struct ArchiverChainDataIngestConfig {
+    pub enabled: bool,
+    pub store: ChainDataStoreConfig,
+    pub engine: ChainDataEngineConfig,
+}
+
+#[cfg(feature = "chain-data-ingest")]
+impl Default for ArchiverChainDataIngestConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            store: ChainDataStoreConfig::default(),
+            engine: ChainDataEngineConfig::default(),
+        }
+    }
 }
 
 /// Result of parsing CLI arguments - either a subcommand or daemon config
@@ -212,6 +242,7 @@ impl Cli {
             skip_connectivity_check,
             require_traces,
             traces_only,
+            skip_traces,
             async_backfill,
         } = overrides;
 
@@ -253,7 +284,10 @@ impl Cli {
             skip_connectivity_check: skip_connectivity_check.unwrap_or(false),
             require_traces: require_traces.unwrap_or(false),
             traces_only: traces_only.unwrap_or(false),
+            skip_traces: skip_traces.unwrap_or(false),
             async_backfill: async_backfill.unwrap_or(false),
+            #[cfg(feature = "chain-data-ingest")]
+            chain_data_ingest: None,
         })
     }
 
@@ -405,6 +439,10 @@ struct CliArgs {
     #[arg(long, action = ArgAction::SetTrue)]
     traces_only: bool,
 
+    /// If set, archiver will skip traces entirely (no fetch, no write)
+    #[arg(long, action = ArgAction::SetTrue)]
+    skip_traces: bool,
+
     /// If set, archiver will perform an asynchronous backfill of the archive
     #[arg(long, action = ArgAction::SetTrue)]
     async_backfill: bool,
@@ -518,6 +556,7 @@ impl CliArgs {
             unsafe_allow_traces_overwrite,
             require_traces,
             traces_only,
+            skip_traces,
             async_backfill,
         } = self;
 
@@ -549,6 +588,7 @@ impl CliArgs {
             unsafe_allow_traces_overwrite: bool_override(unsafe_allow_traces_overwrite),
             require_traces: bool_override(require_traces),
             traces_only: bool_override(traces_only),
+            skip_traces: bool_override(skip_traces),
             async_backfill: bool_override(async_backfill),
         };
 
@@ -567,6 +607,7 @@ struct CliOverrides {
     unsafe_skip_bad_blocks: Option<bool>,
     require_traces: Option<bool>,
     traces_only: Option<bool>,
+    skip_traces: Option<bool>,
     async_backfill: Option<bool>,
     bft_block_path: Option<PathBuf>,
     bft_block_poll_freq_secs: Option<u64>,
@@ -588,7 +629,7 @@ struct CliOverrides {
     unsafe_allow_traces_overwrite: Option<bool>,
 }
 
-fn load_config(path: &Path) -> Result<Cli> {
+pub(crate) fn load_config(path: &Path) -> Result<Cli> {
     let contents = fs::read_to_string(path)
         .wrap_err_with(|| format!("failed to read config file {}", path.display()))?;
     toml::from_str(&contents)
