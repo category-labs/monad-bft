@@ -1,0 +1,484 @@
+// Copyright (C) 2025 Category Labs, Inc.
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+use std::{
+    collections::HashMap,
+    path::Path,
+    sync::{Arc, Mutex},
+};
+
+use bytes::Bytes;
+use fjall::{Database, Keyspace, KeyspaceCreateOptions, KvSeparationOptions};
+
+use crate::{
+    error::{MonadChainDataError, Result},
+    store::{
+        blob::{BlobStore, BlobTableId, BlobWriteOp},
+        common::Page,
+        meta::{MetaStore, MetaWriteOp, ScannableTableId, TableId},
+    },
+};
+
+// Logical-table namespacing on top of fjall keyspaces. Each logical table
+// gets its own physical fjall keyspace, prefixed by the kind so logical
+// surfaces never share storage even if their logical names collide.
+pub(super) const KV_PREFIX: &str = "kv:";
+pub(super) const SCAN_PREFIX: &str = "scan:";
+pub(super) const BLOB_PREFIX: &str = "blob:";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum MetaBatchKeyspace {
+    Kv(TableId),
+    Scan(ScannableTableId),
+}
+
+/// Tunable knobs passed to fjall at open. `Default::default()` reproduces
+/// fjall's own defaults (512 MiB total journal cap, 64 MiB per-keyspace
+/// memtable). Raise the journal cap to silence rotation log spam under
+/// large batched commits; raise per-keyspace memtable to amortize more
+/// writes per flush. Both trade memory for write throughput.
+#[derive(Debug, Clone, Copy)]
+pub struct FjallTuning {
+    pub max_journaling_size_bytes: u64,
+    pub max_memtable_size_bytes: u64,
+    pub worker_threads: Option<usize>,
+}
+
+impl Default for FjallTuning {
+    fn default() -> Self {
+        Self {
+            max_journaling_size_bytes: 512 * 1024 * 1024,
+            max_memtable_size_bytes: 64 * 1024 * 1024,
+            worker_threads: None,
+        }
+    }
+}
+
+/// Embedded fjall-backed implementation of [`MetaStore`] and [`BlobStore`].
+///
+/// Blob keyspaces are opened with key-value separation enabled, so the
+/// LSM holds only `(key → blob_file_id, offset, length)` pointers and
+/// the actual bytes live in append-only blob files. Chain-data blobs
+/// are written once and never deleted, so blob-file GC effectively never
+/// fires; we just append. Sized for ~280M+ objects in the 10s of KB to
+/// 16 MiB range. Operators that want to colocate the meta store and
+/// blob store on different disks should construct two `FjallStore`s
+/// pointed at different paths and pass them as the meta and blob
+/// arguments.
+pub struct FjallStore {
+    inner: Arc<Inner>,
+}
+
+pub(super) struct Inner {
+    pub(super) db: Database,
+    pub(super) keyspaces: Mutex<HashMap<String, Keyspace>>,
+    // Set once at open and never mutates; threaded into the per-keyspace
+    // create-options closure inside `keyspace()`.
+    pub(super) tuning: FjallTuning,
+}
+
+/// Snapshot of fjall's per-keyspace runtime state. Sampled cheaply via
+/// `Keyspace` accessor methods; used by operators to attribute write-amp,
+/// flush pressure, and disk usage to specific logical tables.
+#[derive(Debug, Clone)]
+pub struct FjallKeyspaceStats {
+    pub name: String,
+    pub sealed_memtable_count: usize,
+    pub l0_table_count: usize,
+    pub table_count: usize,
+    pub blob_file_count: usize,
+    pub disk_space_bytes: u64,
+    pub approximate_len: usize,
+}
+
+impl FjallStore {
+    pub fn open(path: impl AsRef<Path>, tuning: FjallTuning) -> Result<Self> {
+        let mut builder =
+            Database::builder(path.as_ref()).max_journaling_size(tuning.max_journaling_size_bytes);
+        if let Some(threads) = tuning.worker_threads {
+            builder = builder.worker_threads(threads);
+        }
+        let db = builder
+            .open()
+            .map_err(|e| MonadChainDataError::Backend(format!("fjall open: {e}")))?;
+        Ok(Self {
+            inner: Arc::new(Inner {
+                db,
+                keyspaces: Mutex::new(HashMap::new()),
+                tuning,
+            }),
+        })
+    }
+
+    fn meta_batch_keyspace(
+        inner: &Arc<Inner>,
+        cache: &mut HashMap<MetaBatchKeyspace, Keyspace>,
+        name_cache: &mut HashMap<String, Keyspace>,
+        key: MetaBatchKeyspace,
+    ) -> Result<Keyspace> {
+        if let Some(ks) = cache.get(&key) {
+            return Ok(ks.clone());
+        }
+        let name = match key {
+            MetaBatchKeyspace::Kv(table) => format!("{KV_PREFIX}{}", table.as_str()),
+            MetaBatchKeyspace::Scan(table) => format!("{SCAN_PREFIX}{}", table.as_str()),
+        };
+        let ks = ks_cached(inner, name_cache, name)?;
+        cache.insert(key, ks.clone());
+        Ok(ks)
+    }
+
+    /// Snapshots fjall's runtime accounting for every keyspace this store
+    /// has opened so far. Keyspaces are opened lazily on first access, so
+    /// the returned set grows as the ingest pipeline touches more logical
+    /// tables. Cheap: each accessor reads atomics on the underlying
+    /// keyspace handle.
+    pub fn keyspace_stats(&self) -> Result<Vec<FjallKeyspaceStats>> {
+        let guard =
+            self.inner.keyspaces.lock().map_err(|_| {
+                MonadChainDataError::Backend("fjall keyspace cache poisoned".into())
+            })?;
+        let mut out: Vec<FjallKeyspaceStats> = guard
+            .iter()
+            .map(|(name, ks)| FjallKeyspaceStats {
+                name: name.clone(),
+                sealed_memtable_count: ks.sealed_memtable_count(),
+                l0_table_count: ks.l0_table_count(),
+                table_count: ks.table_count(),
+                blob_file_count: ks.blob_file_count(),
+                disk_space_bytes: ks.disk_space(),
+                approximate_len: ks.approximate_len(),
+            })
+            .collect();
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(out)
+    }
+
+    pub(super) fn keyspace(&self, name: &str) -> Result<Keyspace> {
+        let mut guard =
+            self.inner.keyspaces.lock().map_err(|_| {
+                MonadChainDataError::Backend("fjall keyspace cache poisoned".into())
+            })?;
+        if let Some(ks) = guard.get(name) {
+            return Ok(ks.clone());
+        }
+        let is_blob = name.starts_with(BLOB_PREFIX);
+        let memtable_bytes = self.inner.tuning.max_memtable_size_bytes;
+        let ks = self
+            .inner
+            .db
+            .keyspace(name, || {
+                let opts = KeyspaceCreateOptions::default().max_memtable_size(memtable_bytes);
+                if is_blob {
+                    // KV separation: defaults are 1 KiB separation threshold,
+                    // 64 MiB blob files, LZ4. Suits 10s of KB - 16 MiB blobs;
+                    // staleness/age GC thresholds never fire under our
+                    // append-only workload.
+                    opts.with_kv_separation(Some(KvSeparationOptions::default()))
+                } else {
+                    opts
+                }
+            })
+            .map_err(|e| MonadChainDataError::Backend(format!("fjall keyspace {name}: {e}")))?;
+        guard.insert(name.to_string(), ks.clone());
+        Ok(ks)
+    }
+}
+
+impl Clone for FjallStore {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+
+pub(super) async fn blocking<F, R>(f: F) -> Result<R>
+where
+    F: FnOnce() -> Result<R> + Send + 'static,
+    R: Send + 'static,
+{
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|e| MonadChainDataError::Backend(format!("fjall spawn_blocking join: {e}")))?
+}
+
+// `2 BE bytes len(partition) | partition | clustering`. Length-prefixing
+// keeps clustering decoding unambiguous and lets us derive a fjall prefix
+// from `(partition, scan_prefix)` directly.
+pub(super) fn scan_key(partition: &[u8], clustering: &[u8]) -> Vec<u8> {
+    let len = u16::try_from(partition.len()).expect("scan partition length fits in u16");
+    let mut key = Vec::with_capacity(2 + partition.len() + clustering.len());
+    key.extend_from_slice(&len.to_be_bytes());
+    key.extend_from_slice(partition);
+    key.extend_from_slice(clustering);
+    key
+}
+
+pub(super) fn ks_cached(
+    inner: &Arc<Inner>,
+    cache: &mut HashMap<String, Keyspace>,
+    name: String,
+) -> Result<Keyspace> {
+    if let Some(ks) = cache.get(&name) {
+        return Ok(ks.clone());
+    }
+    let mut guard = inner
+        .keyspaces
+        .lock()
+        .map_err(|_| MonadChainDataError::Backend("fjall keyspace cache poisoned".into()))?;
+    if let Some(ks) = guard.get(&name) {
+        let cloned = ks.clone();
+        cache.insert(name, cloned.clone());
+        return Ok(cloned);
+    }
+    let is_blob = name.starts_with(BLOB_PREFIX);
+    let memtable_bytes = inner.tuning.max_memtable_size_bytes;
+    let ks = inner
+        .db
+        .keyspace(&name, || {
+            let opts = fjall::KeyspaceCreateOptions::default().max_memtable_size(memtable_bytes);
+            if is_blob {
+                opts.with_kv_separation(Some(fjall::KvSeparationOptions::default()))
+            } else {
+                opts
+            }
+        })
+        .map_err(|e| MonadChainDataError::Backend(format!("fjall keyspace {name}: {e}")))?;
+    guard.insert(name.clone(), ks.clone());
+    cache.insert(name, ks.clone());
+    Ok(ks)
+}
+
+impl MetaStore for FjallStore {
+    async fn get(&self, table: TableId, key: &[u8]) -> Result<Option<Bytes>> {
+        let store = self.clone();
+        let key = key.to_vec();
+        let name = format!("{KV_PREFIX}{}", table.as_str());
+        blocking(move || {
+            let ks = store.keyspace(&name)?;
+            let value = ks
+                .get(&key)
+                .map_err(|e| MonadChainDataError::Backend(format!("fjall get: {e}")))?;
+            Ok(value.map(|v| Bytes::copy_from_slice(&v)))
+        })
+        .await
+    }
+
+    async fn scan_get(
+        &self,
+        table: ScannableTableId,
+        partition: &[u8],
+        clustering: &[u8],
+    ) -> Result<Option<Bytes>> {
+        let store = self.clone();
+        let composite = scan_key(partition, clustering);
+        let name = format!("{SCAN_PREFIX}{}", table.as_str());
+        blocking(move || {
+            let ks = store.keyspace(&name)?;
+            let value = ks
+                .get(&composite)
+                .map_err(|e| MonadChainDataError::Backend(format!("fjall scan_get: {e}")))?;
+            Ok(value.map(|v| Bytes::copy_from_slice(&v)))
+        })
+        .await
+    }
+
+    async fn put(&self, table: TableId, key: &[u8], value: Bytes) -> Result<()> {
+        let store = self.clone();
+        let key = key.to_vec();
+        let name = format!("{KV_PREFIX}{}", table.as_str());
+        let value = value.to_vec();
+        blocking(move || {
+            let ks = store.keyspace(&name)?;
+            ks.insert(&key, value)
+                .map_err(|e| MonadChainDataError::Backend(format!("fjall put: {e}")))?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn scan_put(
+        &self,
+        table: ScannableTableId,
+        partition: &[u8],
+        clustering: &[u8],
+        value: Bytes,
+    ) -> Result<()> {
+        let store = self.clone();
+        let composite = scan_key(partition, clustering);
+        let name = format!("{SCAN_PREFIX}{}", table.as_str());
+        let value = value.to_vec();
+        blocking(move || {
+            let ks = store.keyspace(&name)?;
+            ks.insert(&composite, value)
+                .map_err(|e| MonadChainDataError::Backend(format!("fjall scan_put: {e}")))?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn apply_writes(&self, writes: Vec<MetaWriteOp>) -> Result<()> {
+        if writes.is_empty() {
+            return Ok(());
+        }
+        let inner = Arc::clone(&self.inner);
+        blocking(move || {
+            let mut cache: HashMap<MetaBatchKeyspace, Keyspace> = HashMap::new();
+            let mut name_cache: HashMap<String, Keyspace> = HashMap::new();
+            let mut batch = inner.db.batch();
+            for op in writes {
+                match op {
+                    MetaWriteOp::Put { table, key, value } => {
+                        let ks = Self::meta_batch_keyspace(
+                            &inner,
+                            &mut cache,
+                            &mut name_cache,
+                            MetaBatchKeyspace::Kv(table),
+                        )?;
+                        batch.insert(&ks, key, value.as_ref());
+                    }
+                    MetaWriteOp::ScanPut {
+                        table,
+                        partition,
+                        clustering,
+                        value,
+                    } => {
+                        let ks = Self::meta_batch_keyspace(
+                            &inner,
+                            &mut cache,
+                            &mut name_cache,
+                            MetaBatchKeyspace::Scan(table),
+                        )?;
+                        let composite = scan_key(&partition, &clustering);
+                        batch.insert(&ks, composite, value.as_ref());
+                    }
+                }
+            }
+            batch
+                .commit()
+                .map_err(|e| MonadChainDataError::Backend(format!("fjall apply_writes: {e}")))?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn scan_list(
+        &self,
+        table: ScannableTableId,
+        partition: &[u8],
+        prefix: &[u8],
+        cursor: Option<Vec<u8>>,
+        limit: usize,
+    ) -> Result<Page> {
+        let store = self.clone();
+        let partition = partition.to_vec();
+        let prefix = prefix.to_vec();
+        let name = format!("{SCAN_PREFIX}{}", table.as_str());
+        blocking(move || {
+            let ks = store.keyspace(&name)?;
+            let search = scan_key(&partition, &prefix);
+            // Skip past `len(2) + partition` to get the clustering portion.
+            let header_len = 2 + partition.len();
+            let mut keys: Vec<Vec<u8>> = Vec::new();
+            let mut next_cursor: Option<Vec<u8>> = None;
+
+            for guard in ks.prefix(&search) {
+                let user_key = guard
+                    .key()
+                    .map_err(|e| MonadChainDataError::Backend(format!("fjall scan_list: {e}")))?;
+                let key_bytes: &[u8] = user_key.as_ref();
+                if key_bytes.len() < header_len {
+                    return Err(MonadChainDataError::Decode(
+                        "scan row missing partition prefix",
+                    ));
+                }
+                let clustering = &key_bytes[header_len..];
+
+                if let Some(ref cursor_bytes) = cursor {
+                    if clustering <= cursor_bytes.as_slice() {
+                        continue;
+                    }
+                }
+                if keys.len() == limit {
+                    next_cursor = keys.last().cloned();
+                    break;
+                }
+                keys.push(clustering.to_vec());
+            }
+
+            Ok(Page { keys, next_cursor })
+        })
+        .await
+    }
+}
+
+impl BlobStore for FjallStore {
+    async fn put_blob(&self, table: BlobTableId, key: &[u8], value: Bytes) -> Result<()> {
+        let store = self.clone();
+        let key = key.to_vec();
+        let name = format!("{BLOB_PREFIX}{}", table.as_str());
+        let value = value.to_vec();
+        blocking(move || {
+            let ks = store.keyspace(&name)?;
+            ks.insert(&key, value)
+                .map_err(|e| MonadChainDataError::Backend(format!("fjall put_blob: {e}")))?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn apply_writes(&self, writes: Vec<BlobWriteOp>) -> Result<()> {
+        if writes.is_empty() {
+            return Ok(());
+        }
+        let inner = Arc::clone(&self.inner);
+        blocking(move || {
+            let mut cache: HashMap<BlobTableId, Keyspace> = HashMap::new();
+            let mut name_cache: HashMap<String, Keyspace> = HashMap::new();
+            let mut batch = inner.db.batch();
+            for BlobWriteOp { table, key, value } in writes {
+                let ks = if let Some(ks) = cache.get(&table) {
+                    ks.clone()
+                } else {
+                    let name = format!("{BLOB_PREFIX}{}", table.as_str());
+                    let ks = ks_cached(&inner, &mut name_cache, name)?;
+                    cache.insert(table, ks.clone());
+                    ks
+                };
+                batch.insert(&ks, key, value.as_ref());
+            }
+            batch.commit().map_err(|e| {
+                MonadChainDataError::Backend(format!("fjall blob apply_writes: {e}"))
+            })?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn get_blob(&self, table: BlobTableId, key: &[u8]) -> Result<Option<Bytes>> {
+        let store = self.clone();
+        let key = key.to_vec();
+        let name = format!("{BLOB_PREFIX}{}", table.as_str());
+        blocking(move || {
+            let ks = store.keyspace(&name)?;
+            let value = ks
+                .get(&key)
+                .map_err(|e| MonadChainDataError::Backend(format!("fjall get_blob: {e}")))?;
+            Ok(value.map(|v| Bytes::copy_from_slice(&v)))
+        })
+        .await
+    }
+}

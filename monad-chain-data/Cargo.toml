@@ -1,0 +1,75 @@
+[package]
+name = "monad-chain-data"
+version = "0.1.0"
+edition = "2021"
+
+# this is necessary for criterion bench options
+# https://bheisler.github.io/criterion.rs/book/faq.html#cargo-bench-gives-unrecognized-option-errors-for-valid-command-line-options
+[lib]
+bench = false
+
+[dependencies]
+alloy-consensus = { workspace = true }
+alloy-eips = { workspace = true }
+alloy-primitives = { workspace = true, features = ["rlp"] }
+alloy-rlp = { workspace = true, features = ["derive"] }
+alloy-rpc-types-eth = { workspace = true, optional = true }
+blake3 = { workspace = true }
+aws-config = { workspace = true, optional = true }
+aws-sdk-dynamodb = { workspace = true, optional = true }
+aws-sdk-s3 = { workspace = true, optional = true }
+bytes = { workspace = true }
+eyre = { workspace = true }
+fjall = { workspace = true, optional = true }
+futures = { workspace = true }
+lru = { workspace = true }
+rayon = { workspace = true }
+roaring = "0.11"
+serde = { workspace = true, features = ["derive"] }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+tracing = { workspace = true }
+zstd = { workspace = true }
+
+[features]
+default = ["fjall", "s3", "dynamo"]
+# Data-track encode strategy. By default (feature OFF) the data track encodes
+# blocks concurrently on spawned blocking tasks, drained in block order. Opt in
+# to `serial-data-track` for the original one-block-at-a-time encode loop (e.g.
+# to A/B the two impls). See the two `run_data_track` defs in `ingest_core.rs`.
+serial-data-track = []
+# Enables `TxEntry::to_rpc_transaction`, converting a stored tx into an
+# `alloy_rpc_types_eth::Transaction`. Off by default so the crate stays
+# narrow; the consensus envelope is always accessible via `TxEntry::envelope`.
+alloy-rpc-types-eth = ["dep:alloy-rpc-types-eth"]
+# Enables the embedded fjall backend (FjallStore). Pulls in tokio because
+# fjall is sync and the trait impls wrap blocking work in spawn_blocking.
+fjall = ["dep:fjall"]
+# Enables the S3-API-compatible blob backend (S3BlobStore): AWS S3, MinIO,
+# Cloudflare R2, Ceph RGW, etc. Pulls in the AWS SDK + tokio. Gated because
+# the AWS SDK is a heavy transitive dependency not needed by the embedded
+# fjall path.
+s3 = ["dep:aws-config", "dep:aws-sdk-s3"]
+# Enables the DynamoDB-API-compatible meta backend (DynamoMetaStore): AWS
+# DynamoDB, DynamoDB Local, and ScyllaDB Alternator. Pulls in the AWS SDK +
+# tokio. Gated for the same reason as `s3`: the AWS SDK is a heavy transitive
+# dependency the embedded fjall path does not need.
+dynamo = ["dep:aws-config", "dep:aws-sdk-dynamodb"]
+
+[dev-dependencies]
+bytes = { workspace = true }
+tempfile = "3"
+tokio = { workspace = true, features = ["macros", "net", "rt", "rt-multi-thread", "time"] }
+# Dev-only: lets the `read_bench` example surface the query-side debug stats
+# (IndexedQueryStats) via RUST_LOG. Not compiled into the library build.
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+# In-process, filesystem-backed S3 server used only by the gated `s3_blobstore`
+# integration test (run with `--features s3`). `s3s` provides a hyper/tower
+# `S3Service`; `s3s-fs` is its filesystem backend. `hyper-util` serves the
+# service over a local TCP listener. These are dev-only and never affect the
+# library build (`cargo check` does not compile dev-dependencies).
+# Pinned to 0.12: s3s 0.13 raised its MSRV to rustc 1.92, above this
+# toolchain. 0.12 has MSRV 1.86 and the same in-process serving API.
+s3s = "=0.12.0"
+s3s-fs = "=0.12.0"
+hyper-util = { version = "0.1", features = ["server-auto", "http1", "http2", "tokio"] }
