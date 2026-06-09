@@ -51,7 +51,7 @@ fn criterion_benchmark(c: &mut Criterion) {
         },
         |BenchController {
              chain_config: _,
-             state_backend,
+             state_read,
              block_policy,
              pool,
              pending_blocks,
@@ -77,7 +77,7 @@ fn criterion_benchmark(c: &mut Criterion) {
                 RoundSignature::new(Round(0), &mock_keypair),
                 pending_blocks.to_owned(),
                 block_policy,
-                state_backend,
+                state_read,
                 &MockChainConfig::DEFAULT,
             )
             .unwrap();

@@ -39,7 +39,7 @@ use monad_eth_block_policy::{
 };
 use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolInternalDropReason, EthTxPoolSnapshot};
 use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ExtractEthAddress, ProposedEthHeader};
-use monad_state_backend::{StateBackend, StateBackendError};
+use monad_execution_state_read::{ExecutionStateRead, ExecutionStateReadError};
 use monad_system_calls::{SystemTransactionGenerator, SYSTEM_SENDER_ETH_ADDRESS};
 use monad_types::{DropTimer, Epoch, NodeId, Round, SeqNum};
 use monad_validator::signature_collection::SignatureCollection;
@@ -73,15 +73,15 @@ where
 }
 
 #[derive(Clone, Debug)]
-pub struct EthTxPool<ST, SCT, SBT, CCT, CRT>
+pub struct EthTxPool<ST, SCT, ESRT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    SBT: StateBackend<ST, SCT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
-    tracked: TrackedTxMap<ST, SCT, SBT, CCT, CRT>,
+    tracked: TrackedTxMap<ST, SCT, ESRT, CCT, CRT>,
 
     last_commit: Option<ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>>,
 
@@ -90,11 +90,11 @@ where
     execution_revision: MonadExecutionRevision,
 }
 
-impl<ST, SCT, SBT, CCT, CRT> EthTxPool<ST, SCT, SBT, CCT, CRT>
+impl<ST, SCT, ESRT, CCT, CRT> EthTxPool<ST, SCT, ESRT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    SBT: StateBackend<ST, SCT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
     CertificateSignaturePubKey<ST>: ExtractEthAddress,
@@ -136,7 +136,7 @@ where
         &mut self,
         event_tracker: &mut EthTxPoolEventTracker<'_>,
         block_policy: &EthBlockPolicy<ST, SCT, CCT, CRT>,
-        state_backend: &mut SBT,
+        state_read: &mut ESRT,
         chain_config: &CCT,
         txs: Vec<(
             Recovered<TxEnvelope>,
@@ -182,7 +182,7 @@ where
 
         let account_balances = match block_policy.compute_account_base_balances(
             block_seq_num,
-            state_backend,
+            state_read,
             chain_config,
             None,
             account_balance_addresses.iter(),
@@ -195,7 +195,9 @@ where
                 );
                 event_tracker.drop_all(
                     txs.into_iter().map(PoolTx::into_raw),
-                    EthTxPoolDropReason::Internal(EthTxPoolInternalDropReason::StateBackendError),
+                    EthTxPoolDropReason::Internal(
+                        EthTxPoolInternalDropReason::ExecutionStateReadError,
+                    ),
                 );
                 return;
             }
@@ -225,7 +227,7 @@ where
 
         let mut account_nonces = match block_policy.get_account_base_nonces(
             block_seq_num,
-            state_backend,
+            state_read,
             &vec![],
             account_nonce_addresses.iter(),
         ) {
@@ -237,7 +239,9 @@ where
                 );
                 event_tracker.drop_all(
                     txs.into_values().flatten().map(PoolTx::into_raw),
-                    EthTxPoolDropReason::Internal(EthTxPoolInternalDropReason::StateBackendError),
+                    EthTxPoolDropReason::Internal(
+                        EthTxPoolInternalDropReason::ExecutionStateReadError,
+                    ),
                 );
                 return;
             }
@@ -247,7 +251,9 @@ where
             let Some(account_nonce) = account_nonces.remove(&address) else {
                 event_tracker.drop_all(
                     txs.into_iter().map(PoolTx::into_raw),
-                    EthTxPoolDropReason::Internal(EthTxPoolInternalDropReason::StateBackendError),
+                    EthTxPoolDropReason::Internal(
+                        EthTxPoolInternalDropReason::ExecutionStateReadError,
+                    ),
                 );
                 continue;
             };
@@ -282,7 +288,7 @@ where
         extending_blocks: Vec<EthValidatedBlock<ST, SCT>>,
 
         block_policy: &EthBlockPolicy<ST, SCT, CCT, CRT>,
-        state_backend: &mut SBT,
+        state_read: &mut ESRT,
         chain_config: &CCT,
     ) -> Result<ProposalWithSenderGas<ST>, BlockPolicyError> {
         info!(
@@ -333,7 +339,7 @@ where
             self_eth_address,
             &extending_blocks.iter().collect(),
             block_policy,
-            state_backend,
+            state_read,
             chain_config,
         )?;
         let system_txs_size: u64 = system_transactions
@@ -350,7 +356,7 @@ where
             proposal_byte_limit - system_txs_size,
             extending_blocks.iter().collect(),
             block_policy,
-            state_backend,
+            state_read,
             chain_config,
         )?;
         let Proposal {
@@ -564,15 +570,15 @@ where
         block_author: Address,
         extending_blocks: &Vec<&EthValidatedBlock<ST, SCT>>,
         block_policy: &EthBlockPolicy<ST, SCT, CCT, CRT>,
-        state_backend: &mut SBT,
+        state_read: &mut ESRT,
         chain_config: &impl ChainConfig<CRT>,
-    ) -> Result<Vec<Recovered<TxEnvelope>>, StateBackendError> {
+    ) -> Result<Vec<Recovered<TxEnvelope>>, ExecutionStateReadError> {
         // TODO this should be inside SystemTransactionGenerator to prevent
         // exposing SYSTEM_SENDER_ETH_ADDRESS outside the crate
         let next_system_txn_nonce = *block_policy
             .get_account_base_nonces(
                 proposed_seq_num,
-                state_backend,
+                state_read,
                 extending_blocks,
                 [SYSTEM_SENDER_ETH_ADDRESS].iter(),
             )?
@@ -619,7 +625,7 @@ where
         proposal_byte_limit: u64,
         extending_blocks: Vec<&EthValidatedBlock<ST, SCT>>,
         block_policy: &EthBlockPolicy<ST, SCT, CCT, CRT>,
-        state_backend: &mut SBT,
+        state_read: &mut ESRT,
         chain_config: &CCT,
     ) -> Result<Proposal<ST>, BlockPolicyError> {
         let _timer = DropTimer::start(Duration::ZERO, |elapsed| {
@@ -660,7 +666,7 @@ where
             return Ok(Proposal::default());
         }
 
-        let (account_balances, state_backend_lookups) = {
+        let (account_balances, state_read_lookups) = {
             let _timer = DropTimer::start(Duration::ZERO, |elapsed| {
                 debug!(
                     ?elapsed,
@@ -668,17 +674,17 @@ where
                 );
             });
 
-            let total_db_lookups_before = state_backend.total_db_lookups();
+            let total_db_lookups_before = state_read.total_db_lookups();
 
             (
                 block_policy.compute_account_base_balances(
                     proposed_seq_num,
-                    state_backend,
+                    state_read,
                     chain_config,
                     Some(&extending_blocks),
                     sequencer.addresses(),
                 )?,
-                state_backend.total_db_lookups() - total_db_lookups_before,
+                state_read.total_db_lookups() - total_db_lookups_before,
             )
         };
 
@@ -687,7 +693,7 @@ where
             num_txs = self.tracked.num_txs(),
             sequencer_len,
             account_balances = account_balances.len(),
-            ?state_backend_lookups,
+            ?state_read_lookups,
             "txpool sequencing transactions"
         );
 
@@ -712,7 +718,7 @@ where
         event_tracker.record_create_proposal(
             self.tracked.num_addresses(),
             sequencer_len,
-            state_backend_lookups,
+            state_read_lookups,
             proposal_num_txs,
         );
 
@@ -727,11 +733,11 @@ where
     }
 }
 
-impl<ST, SCT, SBT> EthTxPool<ST, SCT, SBT, MockChainConfig, MockChainRevision>
+impl<ST, SCT, ESRT> EthTxPool<ST, SCT, ESRT, MockChainConfig, MockChainRevision>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    SBT: StateBackend<ST, SCT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     CertificateSignaturePubKey<ST>: ExtractEthAddress,
 {
     pub fn default_testing() -> Self {

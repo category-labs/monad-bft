@@ -49,7 +49,7 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_state_backend::StateBackend;
+use monad_execution_state_read::ExecutionStateRead;
 use monad_types::{BlockId, Epoch, ExecutionProtocol, NodeId, Round, RouterTarget, SeqNum};
 use monad_validator::{
     epoch_manager::EpochManager,
@@ -75,19 +75,19 @@ const NUM_LEADERS_FORWARD_TXS: usize = 3;
 const NUM_LEADERS_SELF_UPCOMING: usize = 3;
 
 /// core consensus algorithm
-pub struct ConsensusState<ST, SCT, EPT, BPT, SBT, CCT, CRT>
+pub struct ConsensusState<ST, SCT, EPT, BPT, ESRT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
-    SBT: StateBackend<ST, SCT>,
+    BPT: BlockPolicy<ST, SCT, EPT, ESRT, CCT, CRT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
     /// Prospective blocks are stored here while they wait to be
     /// committed
-    pending_block_tree: BlockTree<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
+    pending_block_tree: BlockTree<ST, SCT, EPT, BPT, ESRT, CCT, CRT>,
     /// State machine to track collected votes for proposals
     vote_state: VoteState<SCT>,
     /// State machine to track collected no-endorsements for proposals
@@ -108,14 +108,14 @@ where
     vote_delay_metrics: VoteDelayMetricsWindow,
 }
 
-impl<ST, SCT, EPT, BPT, SBT, CCT, CRT> PartialEq
-    for ConsensusState<ST, SCT, EPT, BPT, SBT, CCT, CRT>
+impl<ST, SCT, EPT, BPT, ESRT, CCT, CRT> PartialEq
+    for ConsensusState<ST, SCT, EPT, BPT, ESRT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
-    SBT: StateBackend<ST, SCT>,
+    BPT: BlockPolicy<ST, SCT, EPT, ESRT, CCT, CRT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     CCT: ChainConfig<CRT> + PartialEq,
     CRT: ChainRevision + PartialEq,
 {
@@ -136,13 +136,13 @@ where
     }
 }
 
-impl<ST, SCT, EPT, BPT, SBT, CCT, CRT> Debug for ConsensusState<ST, SCT, EPT, BPT, SBT, CCT, CRT>
+impl<ST, SCT, EPT, BPT, ESRT, CCT, CRT> Debug for ConsensusState<ST, SCT, EPT, BPT, ESRT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
-    SBT: StateBackend<ST, SCT>,
+    BPT: BlockPolicy<ST, SCT, EPT, ESRT, CCT, CRT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     CCT: ChainConfig<CRT> + Debug,
     CRT: ChainRevision + Debug,
 {
@@ -177,27 +177,27 @@ enum OutgoingVoteStatus {
     VoteReady(Vote),
 }
 
-pub struct ConsensusStateWrapper<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+pub struct ConsensusStateWrapper<'a, ST, SCT, EPT, BPT, ESRT, VTF, LT, BVT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
-    SBT: StateBackend<ST, SCT>,
+    BPT: BlockPolicy<ST, SCT, EPT, ESRT, CCT, CRT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
+    BVT: BlockValidator<ST, SCT, EPT, BPT, ESRT, CCT, CRT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
-    pub consensus: &'a mut ConsensusState<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
+    pub consensus: &'a mut ConsensusState<ST, SCT, EPT, BPT, ESRT, CCT, CRT>,
 
     pub metrics: &'a mut Metrics,
     pub epoch_manager: &'a mut EpochManager,
     /// Policy for validating chain extension
     /// Mutable because consensus tip will be updated
     pub block_policy: &'a mut BPT,
-    pub state_backend: &'a mut SBT,
+    pub state_read: &'a mut ESRT,
 
     pub val_epoch_map: &'a ValidatorsEpochMapping<VTF, SCT>,
     pub election: &'a LT,
@@ -255,13 +255,13 @@ where
     pub _phantom: PhantomData<CRT>,
 }
 
-impl<ST, SCT, EPT, BPT, SBT, CCT, CRT> ConsensusState<ST, SCT, EPT, BPT, SBT, CCT, CRT>
+impl<ST, SCT, EPT, BPT, ESRT, CCT, CRT> ConsensusState<ST, SCT, EPT, BPT, ESRT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
-    SBT: StateBackend<ST, SCT>,
+    BPT: BlockPolicy<ST, SCT, EPT, ESRT, CCT, CRT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -306,7 +306,7 @@ where
         self.vote_delay_metrics.refresh(ns_to_ms(now_ns), metrics);
     }
 
-    pub fn blocktree(&self) -> &BlockTree<ST, SCT, EPT, BPT, SBT, CCT, CRT> {
+    pub fn blocktree(&self) -> &BlockTree<ST, SCT, EPT, BPT, ESRT, CCT, CRT> {
         &self.pending_block_tree
     }
 
@@ -325,7 +325,7 @@ where
     #[must_use]
     pub fn request_blocks_if_missing_ancestor(
         &mut self,
-    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
+    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, ESRT, CCT, CRT>> {
         let high_qc = self.pacemaker.high_certificate().qc();
         let Some(range) = self.pending_block_tree.maybe_fill_path_to_root(high_qc) else {
             return Vec::new();
@@ -354,7 +354,7 @@ where
     #[must_use]
     fn request_tip_if_missing(
         &mut self,
-    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
+    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, ESRT, CCT, CRT>> {
         let RoundCertificate::Tc(tc) = self.pacemaker.high_certificate() else {
             return Vec::new();
         };
@@ -393,17 +393,17 @@ where
     }
 }
 
-impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
-    ConsensusStateWrapper<'_, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+impl<ST, SCT, EPT, BPT, ESRT, VTF, LT, BVT, CCT, CRT>
+    ConsensusStateWrapper<'_, ST, SCT, EPT, BPT, ESRT, VTF, LT, BVT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
-    SBT: StateBackend<ST, SCT>,
+    BPT: BlockPolicy<ST, SCT, EPT, ESRT, CCT, CRT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
+    BVT: BlockValidator<ST, SCT, EPT, BPT, ESRT, CCT, CRT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -411,7 +411,7 @@ where
     pub fn handle_timeout_expiry(
         &mut self,
         timeout_round: Round,
-    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
+    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, ESRT, CCT, CRT>> {
         let mut cmds = Vec::new();
 
         if timeout_round < self.consensus.pacemaker.get_current_round() {
@@ -476,7 +476,7 @@ where
         &mut self,
         author: NodeId<SCT::NodeIdPubKey>,
         p: ProposalMessage<ST, SCT, EPT>,
-    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
+    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, ESRT, CCT, CRT>> {
         let block_id = p.tip.block_header.get_id();
         debug!(?author, proposal = ?p, ?block_id, "proposal message");
         self.metrics.consensus_events.handle_proposal.inc();
@@ -661,7 +661,7 @@ where
         &mut self,
         author: NodeId<SCT::NodeIdPubKey>,
         vote_msg: VoteMessage<SCT>,
-    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
+    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, ESRT, CCT, CRT>> {
         debug!(?author, ?vote_msg, "vote message");
         let vote_round = vote_msg.vote.round;
         if vote_round < self.consensus.pacemaker.get_current_round() {
@@ -736,7 +736,7 @@ where
         &mut self,
         author: NodeId<SCT::NodeIdPubKey>,
         timeout_message: TimeoutMessage<ST, SCT, EPT>,
-    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
+    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, ESRT, CCT, CRT>> {
         let mut cmds = Vec::new();
         let timeout = timeout_message.as_ref();
         if timeout.tminfo.round < self.consensus.pacemaker.get_current_round() {
@@ -860,7 +860,7 @@ where
     pub fn broadcast_advance_round_message(
         &self,
         last_round_certificate: RoundCertificate<ST, SCT, EPT>,
-    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
+    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, ESRT, CCT, CRT>> {
         let certificate_round = last_round_certificate.round();
         let Some(epoch) = self.epoch_manager.get_epoch(certificate_round) else {
             let current_round = self.consensus.pacemaker.get_current_round();
@@ -893,7 +893,7 @@ where
         &mut self,
         author: NodeId<SCT::NodeIdPubKey>,
         round_recovery: RoundRecoveryMessage<ST, SCT, EPT>,
-    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
+    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, ESRT, CCT, CRT>> {
         info!(?author, ?round_recovery, "received round recovery request");
         self.metrics.consensus_events.handle_round_recovery.inc();
 
@@ -992,7 +992,7 @@ where
         &mut self,
         author: NodeId<SCT::NodeIdPubKey>,
         no_endorsement_msg: NoEndorsementMessage<SCT>,
-    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
+    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, ESRT, CCT, CRT>> {
         debug!(?author, ?no_endorsement_msg, "no endorsement message");
         if no_endorsement_msg.msg.round < self.consensus.pacemaker.get_current_round() {
             self.metrics
@@ -1053,7 +1053,7 @@ where
         &mut self,
         author: NodeId<SCT::NodeIdPubKey>,
         advance_round_msg: AdvanceRoundMessage<ST, SCT, EPT>,
-    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
+    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, ESRT, CCT, CRT>> {
         debug!(?author, ?advance_round_msg, "advance round message");
         self.metrics.consensus_events.handle_advance_round.inc();
 
@@ -1112,7 +1112,7 @@ where
         &mut self,
         block_range: BlockRange,
         full_blocks: Vec<ConsensusFullBlock<ST, SCT, EPT>>,
-    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
+    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, ESRT, CCT, CRT>> {
         let mut cmds = vec![];
 
         let record = self
@@ -1159,7 +1159,7 @@ where
     pub fn handle_vote_timer(
         &mut self,
         vote_timer_round: Round,
-    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
+    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, ESRT, CCT, CRT>> {
         let Some(OutgoingVoteStatus::VoteReady(v)) = self.consensus.scheduled_vote else {
             self.consensus.scheduled_vote = Some(OutgoingVoteStatus::TimerFired);
             return vec![];
@@ -1204,7 +1204,7 @@ where
     pub fn send_vote_and_reset_timer(
         &mut self,
         vote: Vote,
-    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
+    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, ESRT, CCT, CRT>> {
         let round = vote.round;
         let mut cmds = Vec::new();
         let vote_msg = VoteMessage::<SCT>::new(vote, self.cert_keypair);
@@ -1275,7 +1275,7 @@ where
     pub fn process_qc(
         &mut self,
         qc: &QuorumCertificate<SCT>,
-    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
+    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, ESRT, CCT, CRT>> {
         if qc.info.round < self.consensus.pacemaker.get_current_round() {
             self.metrics.consensus_events.process_old_qc.inc();
             return Vec::new();
@@ -1364,7 +1364,7 @@ where
     pub fn process_tc(
         &mut self,
         tc: &TimeoutCertificate<ST, SCT, EPT>,
-    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
+    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, ESRT, CCT, CRT>> {
         if tc.round < self.consensus.pacemaker.get_current_round() {
             self.metrics.consensus_events.process_old_tc.inc();
             return Vec::new();
@@ -1433,7 +1433,7 @@ where
     fn try_commit(
         &mut self,
         qc: &QuorumCertificate<SCT>,
-    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
+    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, ESRT, CCT, CRT>> {
         let mut cmds = Vec::new();
         debug!(?qc, "try committing blocks using qc");
 
@@ -1503,7 +1503,7 @@ where
             Option<TimeoutCertificate<ST, SCT, EPT>>,
             ConsensusTip<ST, SCT, EPT>,
         )>,
-    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
+    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, ESRT, CCT, CRT>> {
         trace!(?block, "adding block to blocktree");
 
         let mut cmds = Vec::new();
@@ -1532,14 +1532,14 @@ where
     fn try_update_coherency(
         &mut self,
         updated_block_id: BlockId,
-    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
+    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, ESRT, CCT, CRT>> {
         let mut cmds = Vec::new();
 
         for newly_coherent_block in self.consensus.pending_block_tree.try_update_coherency(
             self.metrics,
             updated_block_id,
             self.block_policy,
-            self.state_backend,
+            self.state_read,
             &self.config.chain_config,
         ) {
             debug!(
@@ -1568,7 +1568,7 @@ where
     #[must_use]
     fn update_proposed_head(
         &mut self,
-    ) -> Option<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
+    ) -> Option<ConsensusCommand<ST, SCT, EPT, BPT, ESRT, CCT, CRT>> {
         let high_cert_qc = self.consensus.pacemaker.high_certificate().qc();
         let canonical_tip_id = self
             .consensus
@@ -1601,7 +1601,7 @@ where
     }
 
     #[must_use]
-    fn maybe_statesync(&mut self) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
+    fn maybe_statesync(&mut self) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, ESRT, CCT, CRT>> {
         let Some(high_qc_seq_num) = self
             .consensus
             .pending_block_tree
@@ -1629,7 +1629,7 @@ where
         &mut self,
         last_round_tc: Option<TimeoutCertificate<ST, SCT, EPT>>,
         tip: ConsensusTip<ST, SCT, EPT>,
-    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
+    ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, ESRT, CCT, CRT>> {
         let mut cmds = Vec::new();
         let proposal_round = self.consensus.pacemaker.get_current_round();
 
@@ -1755,7 +1755,7 @@ where
 
     /// This function is (and must be) idempotent
     #[must_use]
-    fn try_propose(&mut self) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
+    fn try_propose(&mut self) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, ESRT, CCT, CRT>> {
         let mut cmds = Vec::new();
 
         let round = self.consensus.pacemaker.get_current_round();
@@ -1939,7 +1939,7 @@ where
                     self.block_policy.get_expected_execution_results(
                         try_propose_seq_num,
                         pending_blocktree_blocks.clone(),
-                        self.state_backend,
+                        self.state_read,
                     )
                 else {
                     warn!(
@@ -2104,8 +2104,10 @@ mod test {
     use monad_eth_block_policy::EthBlockPolicy;
     use monad_eth_block_validator::EthBlockValidator;
     use monad_eth_types::{EthBlockBody, EthExecutionProtocol, EthHeader, ProposedEthHeader};
+    use monad_execution_state_read::{
+        ExecutionStateRead, InMemoryState, InMemoryStateInner, MockExecution,
+    };
     use monad_multi_sig::MultiSig;
-    use monad_state_backend::{InMemoryState, InMemoryStateInner, MockExecution, StateBackend};
     use monad_testutil::{
         proposal::ProposalGen,
         signing::{create_certificate_keys, create_keys, get_key},
@@ -2152,24 +2154,24 @@ mod test {
     type SignatureCollectionType = MultiSig<SignatureType>;
     type BlockPolicyType =
         EthBlockPolicy<SignatureType, SignatureCollectionType, ChainConfigType, ChainRevisionType>;
-    type StateBackendType = InMemoryState<SignatureType, SignatureCollectionType>;
+    type ExecutionStateReadType = InMemoryState<SignatureType, SignatureCollectionType>;
     type BlockValidatorType = EthBlockValidator<SignatureType, SignatureCollectionType>;
     type ChainConfigType = MockChainConfig;
     type ChainRevisionType = MockChainRevision;
 
-    struct NodeContext<ST, SCT, BPT, SBT, BVT, VTF, LT>
+    struct NodeContext<ST, SCT, BPT, ESRT, BVT, VTF, LT>
     where
         VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-        BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT, MockChainConfig, MockChainRevision>,
-        SBT: StateBackend<ST, SCT> + MockExecution<ST, SCT>,
+        BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, ESRT, MockChainConfig, MockChainRevision>,
+        ESRT: ExecutionStateRead<ST, SCT> + MockExecution<ST, SCT>,
         BVT: BlockValidator<
             ST,
             SCT,
             EthExecutionProtocol,
             BPT,
-            SBT,
+            ESRT,
             MockChainConfig,
             MockChainRevision,
         >,
@@ -2180,7 +2182,7 @@ mod test {
             SCT,
             EthExecutionProtocol,
             BPT,
-            SBT,
+            ESRT,
             MockChainConfig,
             MockChainRevision,
         >,
@@ -2194,7 +2196,7 @@ mod test {
 
         block_validator: BVT,
         block_policy: BPT,
-        state_backend: SBT,
+        state_read: ESRT,
         block_timestamp: BlockTimestamp,
         beneficiary: [u8; 20],
         nodeid: NodeId<CertificateSignaturePubKey<ST>>,
@@ -2204,19 +2206,19 @@ mod test {
         cert_keypair: SignatureCollectionKeyPairType<SCT>,
     }
 
-    impl<ST, SCT, BPT, SBT, BVT, VTF, LT> NodeContext<ST, SCT, BPT, SBT, BVT, VTF, LT>
+    impl<ST, SCT, BPT, ESRT, BVT, VTF, LT> NodeContext<ST, SCT, BPT, ESRT, BVT, VTF, LT>
     where
         VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-        BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT, MockChainConfig, MockChainRevision>,
-        SBT: StateBackend<ST, SCT> + MockExecution<ST, SCT>,
+        BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, ESRT, MockChainConfig, MockChainRevision>,
+        ESRT: ExecutionStateRead<ST, SCT> + MockExecution<ST, SCT>,
         BVT: BlockValidator<
             ST,
             SCT,
             EthExecutionProtocol,
             BPT,
-            SBT,
+            ESRT,
             MockChainConfig,
             MockChainRevision,
         >,
@@ -2230,7 +2232,7 @@ mod test {
             SCT,
             EthExecutionProtocol,
             BPT,
-            SBT,
+            ESRT,
             VTF,
             LT,
             BVT,
@@ -2249,7 +2251,7 @@ mod test {
 
                 block_validator: &self.block_validator,
                 block_policy: &mut self.block_policy,
-                state_backend: &mut self.state_backend,
+                state_read: &mut self.state_read,
                 block_timestamp: &mut self.block_timestamp,
                 beneficiary: &self.beneficiary,
                 nodeid: &self.nodeid,
@@ -2270,7 +2272,7 @@ mod test {
                 SCT,
                 EthExecutionProtocol,
                 BPT,
-                SBT,
+                ESRT,
                 MockChainConfig,
                 MockChainRevision,
             >,
@@ -2288,7 +2290,7 @@ mod test {
                 SCT,
                 EthExecutionProtocol,
                 BPT,
-                SBT,
+                ESRT,
                 MockChainConfig,
                 MockChainRevision,
             >,
@@ -2306,7 +2308,7 @@ mod test {
                 SCT,
                 EthExecutionProtocol,
                 BPT,
-                SBT,
+                ESRT,
                 MockChainConfig,
                 MockChainRevision,
             >,
@@ -2324,7 +2326,7 @@ mod test {
                 SCT,
                 EthExecutionProtocol,
                 BPT,
-                SBT,
+                ESRT,
                 MockChainConfig,
                 MockChainRevision,
             >,
@@ -2343,7 +2345,7 @@ mod test {
                 SCT,
                 EthExecutionProtocol,
                 BPT,
-                SBT,
+                ESRT,
                 MockChainConfig,
                 MockChainRevision,
             >,
@@ -2353,12 +2355,12 @@ mod test {
         }
 
         fn ledger_commit(&mut self, block: &ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>) {
-            self.state_backend
+            self.state_read
                 .ledger_commit(&block.get_id(), &block.seq_num);
         }
 
         fn ledger_propose(&mut self, block: &ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>) {
-            self.state_backend.ledger_propose(
+            self.state_read.ledger_propose(
                 block.get_id(),
                 block.seq_num,
                 block.block_round,
@@ -2509,9 +2511,17 @@ mod test {
     fn setup<
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-        BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT, MockChainConfig, MockChainRevision>,
-        SBT: StateBackend<ST, SCT> + MockExecution<ST, SCT>,
-        BVT: BlockValidator<ST, SCT, EthExecutionProtocol, BPT, SBT, MockChainConfig, MockChainRevision>,
+        BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, ESRT, MockChainConfig, MockChainRevision>,
+        ESRT: ExecutionStateRead<ST, SCT> + MockExecution<ST, SCT>,
+        BVT: BlockValidator<
+            ST,
+            SCT,
+            EthExecutionProtocol,
+            BPT,
+            ESRT,
+            MockChainConfig,
+            MockChainRevision,
+        >,
         VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Clone,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Clone,
     >(
@@ -2519,12 +2529,12 @@ mod test {
         valset_factory: VTF,
         election: LT,
         block_policy: impl Fn() -> BPT,
-        state_backend: impl Fn() -> SBT,
+        state_read: impl Fn() -> ESRT,
         block_validator: impl Fn() -> BVT,
         execution_delay: SeqNum,
     ) -> (
         EnvContext<ST, SCT, VTF, LT>,
-        Vec<NodeContext<ST, SCT, BPT, SBT, BVT, VTF, LT>>,
+        Vec<NodeContext<ST, SCT, BPT, ESRT, BVT, VTF, LT>>,
     ) {
         let (keys, cert_keys, valset, _valmap) =
             create_keys_w_validators::<ST, SCT, _>(num_states, ValidatorSetFactory::default());
@@ -2537,7 +2547,7 @@ mod test {
         let mut dupkeys = create_keys::<ST>(num_states);
         let mut dupcertkeys = create_certificate_keys::<SCT>(num_states);
 
-        let ctxs: Vec<NodeContext<ST, SCT, BPT, SBT, BVT, _, _>> = (0..num_states)
+        let ctxs: Vec<NodeContext<ST, SCT, BPT, ESRT, BVT, _, _>> = (0..num_states)
             .map(|i| {
                 let mut val_epoch_map = ValidatorsEpochMapping::new(valset_factory.clone());
                 val_epoch_map.insert(
@@ -2597,7 +2607,7 @@ mod test {
 
                     block_validator: block_validator(),
                     block_policy: block_policy(),
-                    state_backend: state_backend(),
+                    state_read: state_read(),
                     block_timestamp: BlockTimestamp::new(1000, 1),
                     beneficiary: Default::default(),
                     nodeid: NodeId::new(keys[i as usize].pubkey()),
@@ -2643,14 +2653,14 @@ mod test {
         }
     }
 
-    fn extract_vote_msgs<ST, SCT, BPT, SBT>(
+    fn extract_vote_msgs<ST, SCT, BPT, ESRT>(
         cmds: Vec<
             ConsensusCommand<
                 ST,
                 SCT,
                 EthExecutionProtocol,
                 BPT,
-                SBT,
+                ESRT,
                 MockChainConfig,
                 MockChainRevision,
             >,
@@ -2659,8 +2669,8 @@ mod test {
     where
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-        BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT, MockChainConfig, MockChainRevision>,
-        SBT: StateBackend<ST, SCT>,
+        BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, ESRT, MockChainConfig, MockChainRevision>,
+        ESRT: ExecutionStateRead<ST, SCT>,
     {
         cmds.into_iter()
             .filter_map(|c| match c {
@@ -2676,14 +2686,14 @@ mod test {
             .collect::<Vec<_>>()
     }
 
-    fn extract_timeout_msgs<ST, SCT, BPT, SBT>(
+    fn extract_timeout_msgs<ST, SCT, BPT, ESRT>(
         cmds: Vec<
             ConsensusCommand<
                 ST,
                 SCT,
                 EthExecutionProtocol,
                 BPT,
-                SBT,
+                ESRT,
                 MockChainConfig,
                 MockChainRevision,
             >,
@@ -2692,8 +2702,8 @@ mod test {
     where
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-        BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT, MockChainConfig, MockChainRevision>,
-        SBT: StateBackend<ST, SCT>,
+        BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, ESRT, MockChainConfig, MockChainRevision>,
+        ESRT: ExecutionStateRead<ST, SCT>,
     {
         cmds.into_iter()
             .filter_map(|c| match c {
@@ -2709,14 +2719,14 @@ mod test {
             .collect::<Vec<_>>()
     }
 
-    fn extract_advance_round_msgs<ST, SCT, BPT, SBT>(
+    fn extract_advance_round_msgs<ST, SCT, BPT, ESRT>(
         cmds: Vec<
             ConsensusCommand<
                 ST,
                 SCT,
                 EthExecutionProtocol,
                 BPT,
-                SBT,
+                ESRT,
                 MockChainConfig,
                 MockChainRevision,
             >,
@@ -2725,8 +2735,8 @@ mod test {
     where
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-        BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT, MockChainConfig, MockChainRevision>,
-        SBT: StateBackend<ST, SCT>,
+        BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, ESRT, MockChainConfig, MockChainRevision>,
+        ESRT: ExecutionStateRead<ST, SCT>,
     {
         cmds.into_iter()
             .filter_map(|c| match c {
@@ -2742,14 +2752,14 @@ mod test {
             .collect::<Vec<_>>()
     }
 
-    fn extract_schedule_vote_timer<ST, SCT, BPT, SBT>(
+    fn extract_schedule_vote_timer<ST, SCT, BPT, ESRT>(
         cmds: Vec<
             ConsensusCommand<
                 ST,
                 SCT,
                 EthExecutionProtocol,
                 BPT,
-                SBT,
+                ESRT,
                 MockChainConfig,
                 MockChainRevision,
             >,
@@ -2758,8 +2768,8 @@ mod test {
     where
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-        BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT, MockChainConfig, MockChainRevision>,
-        SBT: StateBackend<ST, SCT>,
+        BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, ESRT, MockChainConfig, MockChainRevision>,
+        ESRT: ExecutionStateRead<ST, SCT>,
     {
         cmds.into_iter()
             .filter_map(|c| match c {
@@ -2769,14 +2779,14 @@ mod test {
             .collect::<Vec<_>>()
     }
 
-    fn extract_create_proposal_command_round<ST, SCT, BPT, SBT>(
+    fn extract_create_proposal_command_round<ST, SCT, BPT, ESRT>(
         cmds: Vec<
             ConsensusCommand<
                 ST,
                 SCT,
                 EthExecutionProtocol,
                 BPT,
-                SBT,
+                ESRT,
                 MockChainConfig,
                 MockChainRevision,
             >,
@@ -2785,9 +2795,9 @@ mod test {
     where
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-        BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT, MockChainConfig, MockChainRevision>
+        BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, ESRT, MockChainConfig, MockChainRevision>
             + std::fmt::Debug,
-        SBT: StateBackend<ST, SCT> + std::fmt::Debug,
+        ESRT: ExecutionStateRead<ST, SCT> + std::fmt::Debug,
     {
         cmds.iter()
             .find_map(|c| match c {
@@ -2797,14 +2807,14 @@ mod test {
             .unwrap_or_else(|| panic!("couldn't extract proposal: {:?}", cmds))
     }
 
-    fn extract_blocksync_requests<ST, SCT, BPT, SBT>(
+    fn extract_blocksync_requests<ST, SCT, BPT, ESRT>(
         cmds: Vec<
             ConsensusCommand<
                 ST,
                 SCT,
                 EthExecutionProtocol,
                 BPT,
-                SBT,
+                ESRT,
                 MockChainConfig,
                 MockChainRevision,
             >,
@@ -2813,8 +2823,8 @@ mod test {
     where
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-        BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, SBT, MockChainConfig, MockChainRevision>,
-        SBT: StateBackend<ST, SCT>,
+        BPT: BlockPolicy<ST, SCT, EthExecutionProtocol, ESRT, MockChainConfig, MockChainRevision>,
+        ESRT: ExecutionStateRead<ST, SCT>,
     {
         cmds.into_iter()
             .filter_map(|c| match c {
@@ -2824,15 +2834,15 @@ mod test {
             .collect()
     }
 
-    fn find_proposal_broadcast<ST, SCT, EPT, BPT, SBT>(
-        cmds: Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, MockChainConfig, MockChainRevision>>,
+    fn find_proposal_broadcast<ST, SCT, EPT, BPT, ESRT>(
+        cmds: Vec<ConsensusCommand<ST, SCT, EPT, BPT, ESRT, MockChainConfig, MockChainRevision>>,
     ) -> Option<ProposalMessage<ST, SCT, EPT>>
     where
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         EPT: ExecutionProtocol,
-        BPT: BlockPolicy<ST, SCT, EPT, SBT, MockChainConfig, MockChainRevision>,
-        SBT: StateBackend<ST, SCT>,
+        BPT: BlockPolicy<ST, SCT, EPT, ESRT, MockChainConfig, MockChainRevision>,
+        ESRT: ExecutionStateRead<ST, SCT>,
     {
         cmds.iter().find_map(|c| match c {
             ConsensusCommand::Publish {
@@ -2846,15 +2856,15 @@ mod test {
         })
     }
 
-    fn find_vote_message<ST, SCT, EPT, BPT, SBT>(
-        cmds: &[ConsensusCommand<ST, SCT, EPT, BPT, SBT, MockChainConfig, MockChainRevision>],
-    ) -> Option<&ConsensusCommand<ST, SCT, EPT, BPT, SBT, MockChainConfig, MockChainRevision>>
+    fn find_vote_message<ST, SCT, EPT, BPT, ESRT>(
+        cmds: &[ConsensusCommand<ST, SCT, EPT, BPT, ESRT, MockChainConfig, MockChainRevision>],
+    ) -> Option<&ConsensusCommand<ST, SCT, EPT, BPT, ESRT, MockChainConfig, MockChainRevision>>
     where
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         EPT: ExecutionProtocol,
-        BPT: BlockPolicy<ST, SCT, EPT, SBT, MockChainConfig, MockChainRevision>,
-        SBT: StateBackend<ST, SCT>,
+        BPT: BlockPolicy<ST, SCT, EPT, ESRT, MockChainConfig, MockChainRevision>,
+        ESRT: ExecutionStateRead<ST, SCT>,
     {
         cmds.iter().find(|c| match c {
             ConsensusCommand::Publish {
@@ -2865,15 +2875,15 @@ mod test {
         })
     }
 
-    fn extract_proposal_commit_rounds<ST, SCT, EPT, BPT, SBT>(
-        cmds: Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, MockChainConfig, MockChainRevision>>,
+    fn extract_proposal_commit_rounds<ST, SCT, EPT, BPT, ESRT>(
+        cmds: Vec<ConsensusCommand<ST, SCT, EPT, BPT, ESRT, MockChainConfig, MockChainRevision>>,
     ) -> Vec<Round>
     where
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         EPT: ExecutionProtocol,
-        BPT: BlockPolicy<ST, SCT, EPT, SBT, MockChainConfig, MockChainRevision>,
-        SBT: StateBackend<ST, SCT>,
+        BPT: BlockPolicy<ST, SCT, EPT, ESRT, MockChainConfig, MockChainRevision>,
+        ESRT: ExecutionStateRead<ST, SCT>,
     {
         cmds.iter()
             .filter_map(|c| match c {
@@ -2885,29 +2895,29 @@ mod test {
             .collect()
     }
 
-    fn find_blocksync_request<ST, SCT, EPT, BPT, SBT>(
-        cmds: &[ConsensusCommand<ST, SCT, EPT, BPT, SBT, MockChainConfig, MockChainRevision>],
-    ) -> Option<&ConsensusCommand<ST, SCT, EPT, BPT, SBT, MockChainConfig, MockChainRevision>>
+    fn find_blocksync_request<ST, SCT, EPT, BPT, ESRT>(
+        cmds: &[ConsensusCommand<ST, SCT, EPT, BPT, ESRT, MockChainConfig, MockChainRevision>],
+    ) -> Option<&ConsensusCommand<ST, SCT, EPT, BPT, ESRT, MockChainConfig, MockChainRevision>>
     where
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         EPT: ExecutionProtocol,
-        BPT: BlockPolicy<ST, SCT, EPT, SBT, MockChainConfig, MockChainRevision>,
-        SBT: StateBackend<ST, SCT>,
+        BPT: BlockPolicy<ST, SCT, EPT, ESRT, MockChainConfig, MockChainRevision>,
+        ESRT: ExecutionStateRead<ST, SCT>,
     {
         cmds.iter()
             .find(|c| matches!(c, ConsensusCommand::RequestSync { .. }))
     }
 
-    fn find_commit_cmds<ST, SCT, EPT, BPT, SBT>(
-        cmds: &[ConsensusCommand<ST, SCT, EPT, BPT, SBT, MockChainConfig, MockChainRevision>],
+    fn find_commit_cmds<ST, SCT, EPT, BPT, ESRT>(
+        cmds: &[ConsensusCommand<ST, SCT, EPT, BPT, ESRT, MockChainConfig, MockChainRevision>],
     ) -> Vec<BPT::ValidatedBlock>
     where
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         EPT: ExecutionProtocol,
-        BPT: BlockPolicy<ST, SCT, EPT, SBT, MockChainConfig, MockChainRevision>,
-        SBT: StateBackend<ST, SCT>,
+        BPT: BlockPolicy<ST, SCT, EPT, ESRT, MockChainConfig, MockChainRevision>,
+        ESRT: ExecutionStateRead<ST, SCT>,
     {
         cmds.iter()
             .filter_map(|c| match c {
@@ -2919,15 +2929,15 @@ mod test {
             .collect()
     }
 
-    fn find_timestamp_update_cmd<ST, SCT, EPT, BPT, SBT>(
-        cmds: &[ConsensusCommand<ST, SCT, EPT, BPT, SBT, MockChainConfig, MockChainRevision>],
-    ) -> Option<&ConsensusCommand<ST, SCT, EPT, BPT, SBT, MockChainConfig, MockChainRevision>>
+    fn find_timestamp_update_cmd<ST, SCT, EPT, BPT, ESRT>(
+        cmds: &[ConsensusCommand<ST, SCT, EPT, BPT, ESRT, MockChainConfig, MockChainRevision>],
+    ) -> Option<&ConsensusCommand<ST, SCT, EPT, BPT, ESRT, MockChainConfig, MockChainRevision>>
     where
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         EPT: ExecutionProtocol,
-        BPT: BlockPolicy<ST, SCT, EPT, SBT, MockChainConfig, MockChainRevision>,
-        SBT: StateBackend<ST, SCT>,
+        BPT: BlockPolicy<ST, SCT, EPT, ESRT, MockChainConfig, MockChainRevision>,
+        ESRT: ExecutionStateRead<ST, SCT>,
     {
         cmds.iter()
             .find(|c| matches!(c, ConsensusCommand::TimestampUpdate(_)))
@@ -2948,7 +2958,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
-            StateBackendType,
+            ExecutionStateReadType,
             BlockValidatorType,
             _,
             _,
@@ -3027,7 +3037,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
-            StateBackendType,
+            ExecutionStateReadType,
             BlockValidatorType,
             _,
             _,
@@ -3089,7 +3099,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
-            StateBackendType,
+            ExecutionStateReadType,
             BlockValidatorType,
             _,
             _,
@@ -3152,7 +3162,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
-            StateBackendType,
+            ExecutionStateReadType,
             BlockValidatorType,
             _,
             _,
@@ -3195,7 +3205,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
-            StateBackendType,
+            ExecutionStateReadType,
             BlockValidatorType,
             _,
             _,
@@ -3255,7 +3265,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
-            StateBackendType,
+            ExecutionStateReadType,
             BlockValidatorType,
             _,
             _,
@@ -3287,7 +3297,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
-            StateBackendType,
+            ExecutionStateReadType,
             BlockValidatorType,
             _,
             _,
@@ -3349,7 +3359,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
-            StateBackendType,
+            ExecutionStateReadType,
             BlockValidatorType,
             _,
             _,
@@ -3439,7 +3449,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
-            StateBackendType,
+            ExecutionStateReadType,
             BlockValidatorType,
             _,
             _,
@@ -3534,7 +3544,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
-            StateBackendType,
+            ExecutionStateReadType,
             BlockValidatorType,
             _,
             _,
@@ -3629,7 +3639,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
-            StateBackendType,
+            ExecutionStateReadType,
             BlockValidatorType,
             _,
             _,
@@ -3704,7 +3714,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
-            StateBackendType,
+            ExecutionStateReadType,
             BlockValidatorType,
             _,
             _,
@@ -3909,7 +3919,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
-            StateBackendType,
+            ExecutionStateReadType,
             BlockValidatorType,
             _,
             _,
@@ -3958,7 +3968,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
-            StateBackendType,
+            ExecutionStateReadType,
             BlockValidatorType,
             _,
             _,
@@ -4044,7 +4054,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
-            StateBackendType,
+            ExecutionStateReadType,
             BlockValidatorType,
             _,
             _,
@@ -4148,7 +4158,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
-            StateBackendType,
+            ExecutionStateReadType,
             BlockValidatorType,
             _,
             _,
@@ -4219,7 +4229,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
-            StateBackendType,
+            ExecutionStateReadType,
             BlockValidatorType,
             _,
             _,
@@ -4265,7 +4275,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
-            StateBackendType,
+            ExecutionStateReadType,
             BlockValidatorType,
             _,
             _,
@@ -4384,7 +4394,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
-            StateBackendType,
+            ExecutionStateReadType,
             BlockValidatorType,
             _,
             _,
@@ -4467,7 +4477,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
-            StateBackendType,
+            ExecutionStateReadType,
             BlockValidatorType,
             _,
             _,
@@ -4534,7 +4544,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
-            StateBackendType,
+            ExecutionStateReadType,
             BlockValidatorType,
             _,
             _,
@@ -4639,7 +4649,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
-            StateBackendType,
+            ExecutionStateReadType,
             BlockValidatorType,
             _,
             _,
@@ -4735,7 +4745,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
-            StateBackendType,
+            ExecutionStateReadType,
             BlockValidatorType,
             _,
             _,
@@ -4847,7 +4857,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
-            StateBackendType,
+            ExecutionStateReadType,
             BlockValidatorType,
             _,
             _,
@@ -5002,7 +5012,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
-            StateBackendType,
+            ExecutionStateReadType,
             BlockValidatorType,
             _,
             _,
@@ -5121,7 +5131,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
-            StateBackendType,
+            ExecutionStateReadType,
             BlockValidatorType,
             _,
             _,
@@ -5166,7 +5176,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
-            StateBackendType,
+            ExecutionStateReadType,
             BlockValidatorType,
             _,
             _,
@@ -5227,7 +5237,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
-            StateBackendType,
+            ExecutionStateReadType,
             BlockValidatorType,
             _,
             _,
@@ -5334,7 +5344,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
-            StateBackendType,
+            ExecutionStateReadType,
             BlockValidatorType,
             _,
             _,
@@ -5459,7 +5469,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
-            StateBackendType,
+            ExecutionStateReadType,
             BlockValidatorType,
             _,
             _,
@@ -5618,7 +5628,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
-            StateBackendType,
+            ExecutionStateReadType,
             BlockValidatorType,
             _,
             _,
@@ -5687,7 +5697,7 @@ mod test {
             .expect("should be in the blocktree");
         assert!(!block_2_blocktree_entry.is_coherent);
 
-        // add blocks to state_backend
+        // add blocks to state_read
         n1.ledger_propose(
             proposed_block_headers
                 .get(&(GENESIS_SEQ_NUM + SeqNum(1)))
@@ -5734,7 +5744,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
-            StateBackendType,
+            ExecutionStateReadType,
             BlockValidatorType,
             _,
             _,
@@ -5835,7 +5845,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
-            StateBackendType,
+            ExecutionStateReadType,
             BlockValidatorType,
             _,
             _,
@@ -5933,7 +5943,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
-            StateBackendType,
+            ExecutionStateReadType,
             BlockValidatorType,
             _,
             _,
@@ -6068,7 +6078,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
-            StateBackendType,
+            ExecutionStateReadType,
             BlockValidatorType,
             _,
             _,

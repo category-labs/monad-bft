@@ -35,20 +35,20 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_state_backend::StateBackend;
+use monad_execution_state_read::ExecutionStateRead;
 use monad_types::{Epoch, ExecutionProtocol, NodeId, Round, RouterTarget, SeqNum};
 use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionKeyPairType};
 
 /// Command type that the consensus state-machine outputs
 /// This is converted to a monad-executor-glue::Command at the top-level monad-state
 #[derive(Debug)]
-pub enum ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>
+pub enum ConsensusCommand<ST, SCT, EPT, BPT, ESRT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
-    SBT: StateBackend<ST, SCT>,
+    BPT: BlockPolicy<ST, SCT, EPT, ESRT, CCT, CRT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -92,7 +92,7 @@ where
         delayed_execution_results: Vec<EPT::FinalizedHeader>,
     },
     /// Commit blocks to ledger
-    CommitBlocks(OptimisticPolicyCommit<ST, SCT, EPT, BPT, SBT, CCT, CRT>),
+    CommitBlocks(OptimisticPolicyCommit<ST, SCT, EPT, BPT, ESRT, CCT, CRT>),
     /// Requests BlockSync
     /// Serviced by block_sync in MonadState
     RequestSync(BlockRange),
@@ -116,13 +116,13 @@ where
     },
 }
 
-impl<ST, SCT, EPT, BPT, SBT, CCT, CRT> ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>
+impl<ST, SCT, EPT, BPT, ESRT, CCT, CRT> ConsensusCommand<ST, SCT, EPT, BPT, ESRT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
-    SBT: StateBackend<ST, SCT>,
+    BPT: BlockPolicy<ST, SCT, EPT, ESRT, CCT, CRT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -179,14 +179,14 @@ where
     }
 }
 
-impl<ST, SCT, EPT, BPT, SBT, CCT, CRT> From<VoteStateCommand>
-    for ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>
+impl<ST, SCT, EPT, BPT, ESRT, CCT, CRT> From<VoteStateCommand>
+    for ConsensusCommand<ST, SCT, EPT, BPT, ESRT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
-    SBT: StateBackend<ST, SCT>,
+    BPT: BlockPolicy<ST, SCT, EPT, ESRT, CCT, CRT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {

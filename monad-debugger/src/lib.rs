@@ -18,12 +18,12 @@ use std::{collections::BTreeSet, time::Duration};
 use monad_chain_config::{revision::ChainParams, MockChainConfig};
 use monad_consensus_types::{block::PassthruBlockPolicy, block_validator::MockValidator};
 use monad_crypto::certificate_signature::CertificateKeyPair;
+use monad_execution_state_read::InMemoryStateInner;
 use monad_mock_swarm::{
     mock::TimestamperConfig, mock_swarm::SwarmBuilder, node::NodeBuilder,
     swarm_relation::NoSerSwarm,
 };
 use monad_router_scheduler::{NoSerRouterConfig, RouterSchedulerBuilder};
-use monad_state_backend::InMemoryStateInner;
 use monad_testutil::swarm::make_state_configs;
 use monad_transformer::{
     DropTransformer, GenericTransformer, LatencyTransformer, PeriodicTransformer,
@@ -79,7 +79,7 @@ pub fn simulation_make() -> *mut Simulation {
                 .into_iter()
                 .enumerate()
                 .map(|(seed, state_builder)| {
-                    let state_backend = state_builder.state_backend.clone();
+                    let state_read = state_builder.state_read.clone();
                     let validators = state_builder.locked_epoch_validators[0].clone();
                     NodeBuilder::<NoSerSwarm>::new(
                         ID::new(NodeId::new(state_builder.key.pubkey())),
@@ -87,8 +87,8 @@ pub fn simulation_make() -> *mut Simulation {
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockValSetUpdaterNop::new(validators.validators, SeqNum(2000)),
                         MockTxPoolExecutor::default().with_chain_params(&CHAIN_PARAMS),
-                        MockLedger::new(state_backend.clone()),
-                        MockStateSyncExecutor::new(state_backend),
+                        MockLedger::new(state_read.clone()),
+                        MockStateSyncExecutor::new(state_read),
                         vec![
                             GenericTransformer::Latency(LatencyTransformer::new(
                                 Duration::from_millis(25),

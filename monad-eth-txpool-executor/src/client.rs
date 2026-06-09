@@ -24,6 +24,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_types::EthExecutionProtocol;
+use monad_execution_state_read::ExecutionStateRead;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
 use monad_fair_queue::{FairQueue, FairQueueBuilder};
@@ -32,7 +33,6 @@ use monad_peer_score::{
     StdClock,
 };
 use monad_secp::ExtractEthAddress;
-use monad_state_backend::StateBackend;
 use monad_types::NodeId;
 use monad_validator::signature_collection::SignatureCollection;
 
@@ -134,12 +134,12 @@ where
     }
 }
 
-pub struct EthTxPoolExecutorClient<ST, SCT, SBT, CCT, CRT>
+pub struct EthTxPoolExecutorClient<ST, SCT, ESRT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     CertificateSignaturePubKey<ST>: ExtractEthAddress,
-    SBT: StateBackend<ST, SCT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -154,7 +154,7 @@ where
                 SCT,
                 EthExecutionProtocol,
                 EthBlockPolicy<ST, SCT, CCT, CRT>,
-                SBT,
+                ESRT,
                 CCT,
                 CRT,
             >,
@@ -167,12 +167,12 @@ where
     event_rx: tokio::sync::mpsc::Receiver<TxPoolExecutorEvent<ST, SCT, EthExecutionProtocol>>,
 }
 
-impl<ST, SCT, SBT, CCT, CRT> EthTxPoolExecutorClient<ST, SCT, SBT, CCT, CRT>
+impl<ST, SCT, ESRT, CCT, CRT> EthTxPoolExecutorClient<ST, SCT, ESRT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     CertificateSignaturePubKey<ST>: ExtractEthAddress,
-    SBT: StateBackend<ST, SCT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -185,7 +185,7 @@ where
                             SCT,
                             EthExecutionProtocol,
                             EthBlockPolicy<ST, SCT, CCT, CRT>,
-                            SBT,
+                            ESRT,
                             CCT,
                             CRT,
                         >,
@@ -225,7 +225,7 @@ where
                             SCT,
                             EthExecutionProtocol,
                             EthBlockPolicy<ST, SCT, CCT, CRT>,
-                            SBT,
+                            ESRT,
                             CCT,
                             CRT,
                         >,
@@ -466,12 +466,12 @@ where
     }
 }
 
-impl<ST, SCT, SBT, CCT, CRT> Executor for EthTxPoolExecutorClient<ST, SCT, SBT, CCT, CRT>
+impl<ST, SCT, ESRT, CCT, CRT> Executor for EthTxPoolExecutorClient<ST, SCT, ESRT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     CertificateSignaturePubKey<ST>: ExtractEthAddress,
-    SBT: StateBackend<ST, SCT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -480,7 +480,7 @@ where
         SCT,
         EthExecutionProtocol,
         EthBlockPolicy<ST, SCT, CCT, CRT>,
-        SBT,
+        ESRT,
         CCT,
         CRT,
     >;
@@ -495,7 +495,7 @@ where
                     SCT,
                     EthExecutionProtocol,
                     EthBlockPolicy<ST, SCT, CCT, CRT>,
-                    SBT,
+                    ESRT,
                     CCT,
                     CRT,
                 >,
@@ -576,12 +576,12 @@ where
     }
 }
 
-impl<ST, SCT, SBT, CCT, CRT> Stream for EthTxPoolExecutorClient<ST, SCT, SBT, CCT, CRT>
+impl<ST, SCT, ESRT, CCT, CRT> Stream for EthTxPoolExecutorClient<ST, SCT, ESRT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     CertificateSignaturePubKey<ST>: ExtractEthAddress,
-    SBT: StateBackend<ST, SCT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {

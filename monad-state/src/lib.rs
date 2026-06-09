@@ -53,6 +53,7 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
+use monad_execution_state_read::ExecutionStateRead;
 use monad_executor_glue::{
     BlockSyncEvent, ClearMetrics, Command, ConfigEvent, ConfigFileCommand, ConfigReloadCommand,
     ConsensusEvent, ControlPanelCommand, ControlPanelEvent, GetFullNodes, GetMetrics, GetPeers,
@@ -60,7 +61,6 @@ use monad_executor_glue::{
     StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage, StateSyncRequest, TxPoolCommand,
     ValSetCommand, ValidatorEvent, WriteCommand,
 };
-use monad_state_backend::StateBackend;
 use monad_types::{
     Epoch, ExecutionProtocol, MonadVersion, NodeId, Round, RouterTarget, SeqNum, Stake,
     GENESIS_BLOCK_ID, GENESIS_ROUND, GENESIS_SEQ_NUM,
@@ -300,13 +300,13 @@ enum DbSyncStatus {
     Done,
 }
 
-enum ConsensusMode<ST, SCT, EPT, BPT, SBT, CCT, CRT>
+enum ConsensusMode<ST, SCT, EPT, BPT, ESRT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
-    SBT: StateBackend<ST, SCT>,
+    BPT: BlockPolicy<ST, SCT, EPT, ESRT, CCT, CRT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -324,16 +324,16 @@ where
 
         locked_epoch_validators: Vec<ValidatorSetDataWithEpoch<SCT>>,
     },
-    Live(ConsensusState<ST, SCT, EPT, BPT, SBT, CCT, CRT>),
+    Live(ConsensusState<ST, SCT, EPT, BPT, ESRT, CCT, CRT>),
 }
 
-impl<ST, SCT, EPT, BPT, SBT, CCT, CRT> ConsensusMode<ST, SCT, EPT, BPT, SBT, CCT, CRT>
+impl<ST, SCT, EPT, BPT, ESRT, CCT, CRT> ConsensusMode<ST, SCT, EPT, BPT, ESRT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
-    SBT: StateBackend<ST, SCT>,
+    BPT: BlockPolicy<ST, SCT, EPT, ESRT, CCT, CRT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -386,14 +386,14 @@ pub enum Role {
     Validator,
 }
 
-pub struct MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+pub struct MonadState<ST, SCT, EPT, BPT, ESRT, VTF, LT, BVT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
-    SBT: StateBackend<ST, SCT>,
-    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
+    BPT: BlockPolicy<ST, SCT, EPT, ESRT, CCT, CRT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
+    BVT: BlockValidator<ST, SCT, EPT, BPT, ESRT, CCT, CRT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
@@ -405,7 +405,7 @@ where
     consensus_config: ConsensusConfig<CCT, CRT>,
 
     /// Core consensus algorithm state machine
-    consensus: ConsensusMode<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
+    consensus: ConsensusMode<ST, SCT, EPT, BPT, ESRT, CCT, CRT>,
     /// Cache used for quorum certificates (QC, TC, NEC)
     certificate_cache: CertificateCache<ST, SCT, EPT>,
     /// Handles blocksync servicing
@@ -424,7 +424,7 @@ where
     block_timestamp: BlockTimestamp,
     block_validator: BVT,
     block_policy: BPT,
-    state_backend: SBT,
+    state_read: ESRT,
     beneficiary: [u8; 20],
 
     /// Metrics counters for events and errors
@@ -441,21 +441,21 @@ where
     statesync_expand_to_group: bool,
 }
 
-impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
-    MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+impl<ST, SCT, EPT, BPT, ESRT, VTF, LT, BVT, CCT, CRT>
+    MonadState<ST, SCT, EPT, BPT, ESRT, VTF, LT, BVT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
-    SBT: StateBackend<ST, SCT>,
+    BPT: BlockPolicy<ST, SCT, EPT, ESRT, CCT, CRT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
+    BVT: BlockValidator<ST, SCT, EPT, BPT, ESRT, CCT, CRT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
-    pub fn consensus(&self) -> Option<&ConsensusState<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
+    pub fn consensus(&self) -> Option<&ConsensusState<ST, SCT, EPT, BPT, ESRT, CCT, CRT>> {
         match &self.consensus {
             ConsensusMode::Sync { .. } => None,
             ConsensusMode::Live(consensus) => Some(consensus),
@@ -466,8 +466,8 @@ where
         self.consensus().is_none()
     }
 
-    pub fn state_backend(&self) -> &SBT {
-        &self.state_backend
+    pub fn state_read(&self) -> &ESRT {
+        &self.state_read
     }
 
     pub fn epoch_manager(&self) -> &EpochManager {
@@ -486,7 +486,7 @@ where
         self.nodeid.pubkey()
     }
 
-    pub fn blocktree(&self) -> Option<&BlockTree<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
+    pub fn blocktree(&self) -> Option<&BlockTree<ST, SCT, EPT, BPT, ESRT, CCT, CRT>> {
         match &self.consensus {
             ConsensusMode::Sync { .. } => None,
             ConsensusMode::Live(consensus) => Some(consensus.blocktree()),
@@ -828,15 +828,15 @@ where
     }
 }
 
-pub struct MonadStateBuilder<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+pub struct MonadStateBuilder<ST, SCT, EPT, BPT, ESRT, VTF, LT, BVT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
-    SBT: StateBackend<ST, SCT>,
+    BPT: BlockPolicy<ST, SCT, EPT, ESRT, CCT, CRT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
+    BVT: BlockValidator<ST, SCT, EPT, BPT, ESRT, CCT, CRT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -844,7 +844,7 @@ where
     pub leader_election: LT,
     pub block_validator: BVT,
     pub block_policy: BPT,
-    pub state_backend: SBT,
+    pub state_read: ESRT,
     pub forkpoint: Forkpoint<ST, SCT, EPT>,
     pub locked_epoch_validators: Vec<ValidatorSetDataWithEpoch<SCT>>,
     pub key: ST::KeyPairType,
@@ -860,24 +860,24 @@ where
     pub _phantom: PhantomData<EPT>,
 }
 
-impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
-    MonadStateBuilder<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+impl<ST, SCT, EPT, BPT, ESRT, VTF, LT, BVT, CCT, CRT>
+    MonadStateBuilder<ST, SCT, EPT, BPT, ESRT, VTF, LT, BVT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
-    SBT: StateBackend<ST, SCT>,
+    BPT: BlockPolicy<ST, SCT, EPT, ESRT, CCT, CRT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
+    BVT: BlockValidator<ST, SCT, EPT, BPT, ESRT, CCT, CRT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
     pub fn build(
         self,
     ) -> (
-        MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>,
+        MonadState<ST, SCT, EPT, BPT, ESRT, VTF, LT, BVT, CCT, CRT>,
         Vec<
             Command<
                 MonadEvent<ST, SCT, EPT>,
@@ -886,7 +886,7 @@ where
                 SCT,
                 EPT,
                 BPT,
-                SBT,
+                ESRT,
                 CCT,
                 CRT,
             >,
@@ -945,7 +945,7 @@ where
             block_timestamp,
             block_validator: self.block_validator,
             block_policy: self.block_policy,
-            state_backend: self.state_backend,
+            state_read: self.state_read,
             beneficiary: self.beneficiary,
 
             metrics: Metrics::default(),
@@ -976,17 +976,17 @@ where
     }
 }
 
-impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
-    MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+impl<ST, SCT, EPT, BPT, ESRT, VTF, LT, BVT, CCT, CRT>
+    MonadState<ST, SCT, EPT, BPT, ESRT, VTF, LT, BVT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
-    SBT: StateBackend<ST, SCT>,
+    BPT: BlockPolicy<ST, SCT, EPT, ESRT, CCT, CRT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
+    BVT: BlockValidator<ST, SCT, EPT, BPT, ESRT, CCT, CRT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -1001,7 +1001,7 @@ where
             SCT,
             EPT,
             BPT,
-            SBT,
+            ESRT,
             CCT,
             CRT,
         >,
@@ -1377,7 +1377,7 @@ where
             SCT,
             EPT,
             BPT,
-            SBT,
+            ESRT,
             CCT,
             CRT,
         >,
@@ -1445,7 +1445,7 @@ where
 
             // We use get_execution_result as a proxy to determine if the delay_block has been executed.
             let delay_executed = self
-                .state_backend
+                .state_read
                 .get_execution_result(&delay_block_id, &delay_seq_num, true)
                 .is_ok();
 
@@ -1465,7 +1465,7 @@ where
                 "always 1 execution result after first k-1 blocks for now"
             );
 
-            let maybe_latest_finalized_block = self.state_backend.raw_read_latest_finalized_block();
+            let maybe_latest_finalized_block = self.state_read.raw_read_latest_finalized_block();
             if let Some(latest_finalized_block) = maybe_latest_finalized_block {
                 if latest_finalized_block.saturating_add(STATESYNC_BLOCK_THRESHOLD) < delay_seq_num
                 {
@@ -1571,7 +1571,7 @@ where
                     NodeId<SCT::NodeIdPubKey>,
                     (Stake, SignatureCollectionPubKeyType<SCT>),
                 > = self
-                    .state_backend
+                    .state_read
                     .read_valset_at_block(delay_seq_num, locked_epoch) // TODO use root_seq_num here
                     .into_iter()
                     .map(|(pubkey, cert_pubkey, stake)| (NodeId::new(pubkey), (stake, cert_pubkey)))

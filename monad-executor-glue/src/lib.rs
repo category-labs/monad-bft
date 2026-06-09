@@ -48,7 +48,7 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
-use monad_state_backend::StateBackend;
+use monad_execution_state_read::ExecutionStateRead;
 use monad_types::{
     deserialize_pubkey, serialize_pubkey, Epoch, ExecutionProtocol, LimitedVec, NodeId, Round,
     RouterTarget, SeqNum, Stake, UdpPriority,
@@ -629,13 +629,13 @@ pub enum ConfigReloadCommand {
     ReloadConfig,
 }
 
-pub enum TxPoolCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>
+pub enum TxPoolCommand<ST, SCT, EPT, BPT, ESRT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
-    SBT: StateBackend<ST, SCT>,
+    BPT: BlockPolicy<ST, SCT, EPT, ESRT, CCT, CRT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -679,13 +679,13 @@ where
     },
 }
 
-impl<ST, SCT, EPT, BPT, SBT, CCT, CRT> Debug for TxPoolCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>
+impl<ST, SCT, EPT, BPT, ESRT, CCT, CRT> Debug for TxPoolCommand<ST, SCT, EPT, BPT, ESRT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
-    SBT: StateBackend<ST, SCT>,
+    BPT: BlockPolicy<ST, SCT, EPT, ESRT, CCT, CRT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -751,13 +751,13 @@ where
     }
 }
 
-pub enum Command<E, OM, ST, SCT, EPT, BPT, SBT, CCT, CRT>
+pub enum Command<E, OM, ST, SCT, EPT, BPT, ESRT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
-    SBT: StateBackend<ST, SCT>,
+    BPT: BlockPolicy<ST, SCT, EPT, ESRT, CCT, CRT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -768,21 +768,21 @@ where
     ValSetCommand(ValSetCommand),
     TimestampCommand(TimestampCommand),
 
-    TxPoolCommand(TxPoolCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>),
+    TxPoolCommand(TxPoolCommand<ST, SCT, EPT, BPT, ESRT, CCT, CRT>),
     ControlPanelCommand(ControlPanelCommand<ST>),
     LoopbackCommand(LoopbackCommand<E>),
     StateSyncCommand(StateSyncCommand<ST, EPT>),
     ConfigReloadCommand(ConfigReloadCommand),
 }
 
-impl<E, OM, ST, SCT, EPT, BPT, SBT, CCT, CRT> Debug
-    for Command<E, OM, ST, SCT, EPT, BPT, SBT, CCT, CRT>
+impl<E, OM, ST, SCT, EPT, BPT, ESRT, CCT, CRT> Debug
+    for Command<E, OM, ST, SCT, EPT, BPT, ESRT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
-    SBT: StateBackend<ST, SCT>,
+    BPT: BlockPolicy<ST, SCT, EPT, ESRT, CCT, CRT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -809,13 +809,13 @@ where
     }
 }
 
-impl<E, OM, ST, SCT, EPT, BPT, SBT, CCT, CRT> Command<E, OM, ST, SCT, EPT, BPT, SBT, CCT, CRT>
+impl<E, OM, ST, SCT, EPT, BPT, ESRT, CCT, CRT> Command<E, OM, ST, SCT, EPT, BPT, ESRT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
-    SBT: StateBackend<ST, SCT>,
+    BPT: BlockPolicy<ST, SCT, EPT, ESRT, CCT, CRT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -828,7 +828,7 @@ where
         Vec<ConfigFileCommand<ST, SCT, EPT>>,
         Vec<ValSetCommand>,
         Vec<TimestampCommand>,
-        Vec<TxPoolCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>>,
+        Vec<TxPoolCommand<ST, SCT, EPT, BPT, ESRT, CCT, CRT>>,
         Vec<ControlPanelCommand<ST>>,
         Vec<LoopbackCommand<E>>,
         Vec<StateSyncCommand<ST, EPT>>,

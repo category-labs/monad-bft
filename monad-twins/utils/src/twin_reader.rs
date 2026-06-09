@@ -40,9 +40,9 @@ use monad_crypto::{
     },
     hasher::{Hasher, HasherType},
 };
+use monad_execution_state_read::{ExecutionStateRead, InMemoryState, InMemoryStateInner};
 use monad_mock_swarm::{swarm_relation::SwarmRelation, terminator::ProgressTerminator};
 use monad_state::{Forkpoint, MonadStateBuilder};
-use monad_state_backend::{InMemoryState, InMemoryStateInner, StateBackend};
 use monad_testutil::validators::complete_keys_w_validators;
 use monad_transformer::ID;
 use monad_types::{ExecutionProtocol, NodeId, Round, SeqNum};
@@ -86,21 +86,21 @@ struct TwinsTestCaseRaw {
     expected_block: Option<BTreeMap<String, usize>>,
 }
 
-pub struct FullTwinsNodeConfig<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+pub struct FullTwinsNodeConfig<ST, SCT, EPT, BPT, ESRT, VTF, LT, BVT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
-    SBT: StateBackend<ST, SCT>,
+    BPT: BlockPolicy<ST, SCT, EPT, ESRT, CCT, CRT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
+    BVT: BlockValidator<ST, SCT, EPT, BPT, ESRT, CCT, CRT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
     id: ID<CertificateSignaturePubKey<ST>>,
-    state_config: MonadStateBuilder<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>,
+    state_config: MonadStateBuilder<ST, SCT, EPT, BPT, ESRT, VTF, LT, BVT, CCT, CRT>,
     partition: BTreeMap<Round, Vec<ID<CertificateSignaturePubKey<ST>>>>,
     default_partition: Vec<ID<CertificateSignaturePubKey<ST>>>,
 
@@ -112,17 +112,17 @@ where
     is_honest: bool,
 }
 
-impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT> Clone
-    for FullTwinsNodeConfig<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+impl<ST, SCT, EPT, BPT, ESRT, VTF, LT, BVT, CCT, CRT> Clone
+    for FullTwinsNodeConfig<ST, SCT, EPT, BPT, ESRT, VTF, LT, BVT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT> + Clone,
-    SBT: StateBackend<ST, SCT> + Clone,
+    BPT: BlockPolicy<ST, SCT, EPT, ESRT, CCT, CRT> + Clone,
+    ESRT: ExecutionStateRead<ST, SCT> + Clone,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Clone,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Clone,
-    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT, CCT, CRT> + Clone,
+    BVT: BlockValidator<ST, SCT, EPT, BPT, ESRT, CCT, CRT> + Clone,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -134,7 +134,7 @@ where
                 leader_election: self.state_config.leader_election.clone(),
                 block_validator: self.state_config.block_validator.clone(),
                 block_policy: self.state_config.block_policy.clone(),
-                state_backend: self.state_config.state_backend.clone(),
+                state_read: self.state_config.state_read.clone(),
 
                 forkpoint: self.state_config.forkpoint.clone(),
                 locked_epoch_validators: self.state_config.locked_epoch_validators.clone(),
@@ -167,17 +167,17 @@ where
     }
 }
 
-impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT> Debug
-    for FullTwinsNodeConfig<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+impl<ST, SCT, EPT, BPT, ESRT, VTF, LT, BVT, CCT, CRT> Debug
+    for FullTwinsNodeConfig<ST, SCT, EPT, BPT, ESRT, VTF, LT, BVT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
-    SBT: StateBackend<ST, SCT>,
+    BPT: BlockPolicy<ST, SCT, EPT, ESRT, CCT, CRT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
+    BVT: BlockValidator<ST, SCT, EPT, BPT, ESRT, CCT, CRT>,
     CCT: ChainConfig<CRT> + Debug,
     CRT: ChainRevision + Debug,
 {
@@ -190,41 +190,41 @@ where
     }
 }
 
-pub struct TwinsNodeConfig<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+pub struct TwinsNodeConfig<ST, SCT, EPT, BPT, ESRT, VTF, LT, BVT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
-    SBT: StateBackend<ST, SCT>,
+    BPT: BlockPolicy<ST, SCT, EPT, ESRT, CCT, CRT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
+    BVT: BlockValidator<ST, SCT, EPT, BPT, ESRT, CCT, CRT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
     pub id: ID<CertificateSignaturePubKey<ST>>,
-    pub state_config: MonadStateBuilder<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>,
+    pub state_config: MonadStateBuilder<ST, SCT, EPT, BPT, ESRT, VTF, LT, BVT, CCT, CRT>,
     pub partition: BTreeMap<Round, Vec<ID<CertificateSignaturePubKey<ST>>>>,
     pub default_partition: Vec<ID<CertificateSignaturePubKey<ST>>>,
 }
 
-impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
-    From<FullTwinsNodeConfig<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>>
-    for TwinsNodeConfig<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+impl<ST, SCT, EPT, BPT, ESRT, VTF, LT, BVT, CCT, CRT>
+    From<FullTwinsNodeConfig<ST, SCT, EPT, BPT, ESRT, VTF, LT, BVT, CCT, CRT>>
+    for TwinsNodeConfig<ST, SCT, EPT, BPT, ESRT, VTF, LT, BVT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
-    SBT: StateBackend<ST, SCT>,
+    BPT: BlockPolicy<ST, SCT, EPT, ESRT, CCT, CRT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
+    BVT: BlockValidator<ST, SCT, EPT, BPT, ESRT, CCT, CRT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
-    fn from(value: FullTwinsNodeConfig<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>) -> Self {
+    fn from(value: FullTwinsNodeConfig<ST, SCT, EPT, BPT, ESRT, VTF, LT, BVT, CCT, CRT>) -> Self {
         let FullTwinsNodeConfig {
             id,
             state_config,
@@ -259,7 +259,7 @@ where
             S::SignatureCollectionType,
             S::ExecutionProtocolType,
             S::BlockPolicyType,
-            S::StateBackendType,
+            S::ExecutionStateReadType,
             S::ValidatorSetTypeFactory,
             S::LeaderElection,
             S::BlockValidator,
@@ -280,7 +280,7 @@ static CHAIN_PARAMS: ChainParams = ChainParams {
 pub fn read_twins_test<S>(path: &str) -> TwinsTestCase<S>
 where
     S: SwarmRelation<
-        StateBackendType = InMemoryState<
+        ExecutionStateReadType = InMemoryState<
             <S as SwarmRelation>::SignatureType,
             <S as SwarmRelation>::SignatureCollectionType,
         >,
@@ -368,7 +368,7 @@ where
             S::SignatureCollectionType,
             S::ExecutionProtocolType,
             S::BlockPolicyType,
-            S::StateBackendType,
+            S::ExecutionStateReadType,
             S::ValidatorSetTypeFactory,
             S::LeaderElection,
             S::BlockValidator,
@@ -379,7 +379,7 @@ where
             leader_election: S::LeaderElection::default(),
             block_validator: S::BlockValidator::default(),
             block_policy: S::BlockPolicyType::default(),
-            state_backend: InMemoryStateInner::genesis(monad_types::SeqNum(TWINS_STATE_ROOT_DELAY)),
+            state_read: InMemoryStateInner::genesis(monad_types::SeqNum(TWINS_STATE_ROOT_DELAY)),
             forkpoint: forkpoint.clone(),
             locked_epoch_validators: locked_epoch_validators.clone(),
 
@@ -451,7 +451,7 @@ where
         let mut twin = original.clone();
         let identifier = TWINS_DUP_IDENTIFIER + idx;
         twin.id = twin.id.as_non_unique(identifier);
-        twin.state_config.state_backend =
+        twin.state_config.state_read =
             InMemoryStateInner::genesis(monad_types::SeqNum(TWINS_STATE_ROOT_DELAY));
         duplicates
             .get_mut(twin.id.get_peer_id())

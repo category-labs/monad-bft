@@ -105,8 +105,8 @@ impl<'a> EthTxPoolEventTracker<'a> {
             EthTxPoolDropReason::PoolNotReady => {
                 self.metrics.drop_pool_not_ready.inc();
             }
-            EthTxPoolDropReason::Internal(EthTxPoolInternalDropReason::StateBackendError) => {
-                self.metrics.drop_internal_state_backend_error.inc();
+            EthTxPoolDropReason::Internal(EthTxPoolInternalDropReason::ExecutionStateReadError) => {
+                self.metrics.drop_internal_state_read_error.inc();
             }
             EthTxPoolDropReason::Internal(EthTxPoolInternalDropReason::NotReady) => {
                 self.metrics.drop_internal_not_ready.inc();

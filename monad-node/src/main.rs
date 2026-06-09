@@ -39,6 +39,8 @@ use monad_dataplane::{DataplaneBuilder, TcpSocketId, UdpSocketId};
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthBlockValidator;
 use monad_eth_txpool_executor::{EthTxPoolExecutor, EthTxPoolIpcConfig};
+use monad_execution_state_read::ExecutionStateReadThreadClient;
+use monad_execution_state_read_cache::ExecutionStateReadCache;
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{LogFriendlyMonadEvent, Message, MonadEvent};
 use monad_ledger::MonadBlockFileLedger;
@@ -58,8 +60,6 @@ use monad_raptorcast::{
 };
 use monad_router_multi::MultiRouter;
 use monad_state::{MonadMessage, MonadStateBuilder, VerifiedMonadMessage};
-use monad_state_backend::StateBackendThreadClient;
-use monad_state_backend_cache::StateBackendCache;
 use monad_statesync_executor::StateSyncExecutor;
 use monad_triedb_utils::TriedbReader;
 use monad_types::{DropTimer, Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
@@ -238,7 +238,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         .map(|p| NodeId::new(p.secp256k1_pubkey))
         .collect();
 
-    // TODO: use PassThruBlockPolicy and NopStateBackend for consensus only mode
+    // TODO: use PassThruBlockPolicy and NopExecutionStateRead for consensus only mode
     let create_block_policy = || {
         EthBlockPolicy::new(
             GENESIS_SEQ_NUM, // FIXME: MonadStateBuilder is responsible for updating this to forkpoint root if necessary
@@ -246,14 +246,14 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         )
     };
 
-    let state_backend = StateBackendThreadClient::new({
+    let state_read = ExecutionStateReadThreadClient::new({
         let triedb_path = node_state.triedb_path.clone();
 
         move || {
             let triedb_handle =
                 TriedbReader::try_new(triedb_path.as_path()).expect("triedb should exist in path");
 
-            StateBackendCache::new(triedb_handle, SeqNum(EXECUTION_DELAY))
+            ExecutionStateReadCache::new(triedb_handle, SeqNum(EXECUTION_DELAY))
         }
     });
 
@@ -271,12 +271,12 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
             node_state.validators_path,
             node_state.chain_config.get_epoch_length(),
             node_state.chain_config.get_staking_activation(),
-            state_backend.clone(),
+            state_read.clone(),
         ),
         timestamp: TokioTimestamp::new(Duration::from_millis(5), 100, 10001),
         txpool: EthTxPoolExecutor::start(
             create_block_policy(),
-            state_backend.clone(),
+            state_read.clone(),
             EthTxPoolIpcConfig {
                 bind_path: node_state.mempool_ipc_path,
                 tx_batch_size: node_state.node_config.ipc_tx_batch_size as usize,
@@ -392,7 +392,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         leader_election,
         block_validator: EthBlockValidator::default(),
         block_policy: create_block_policy(),
-        state_backend,
+        state_read,
         key: node_state.secp256k1_identity,
         certkey: node_state.bls12_381_identity,
         beneficiary: node_state.node_config.beneficiary.into(),

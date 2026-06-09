@@ -52,8 +52,8 @@ use monad_eth_block_policy::{
 use monad_eth_types::{
     EthBlockBody, EthExecutionProtocol, ExtractEthAddress, ProposedEthHeader, ValidatedTx,
 };
+use monad_execution_state_read::ExecutionStateRead;
 use monad_secp::RecoverableAddress;
-use monad_state_backend::StateBackend;
 use monad_system_calls::{validator::SystemTransactionValidator, SYSTEM_SENDER_ETH_ADDRESS};
 use monad_types::Balance;
 use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionPubKeyType};
@@ -83,13 +83,13 @@ where
 }
 
 // FIXME: add specific error returns for the different failures
-impl<ST, SCT, SBT, CCT, CRT>
-    BlockValidator<ST, SCT, EthExecutionProtocol, EthBlockPolicy<ST, SCT, CCT, CRT>, SBT, CCT, CRT>
+impl<ST, SCT, ESRT, CCT, CRT>
+    BlockValidator<ST, SCT, EthExecutionProtocol, EthBlockPolicy<ST, SCT, CCT, CRT>, ESRT, CCT, CRT>
     for EthBlockValidator<ST, SCT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    SBT: StateBackend<ST, SCT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     CertificateSignaturePubKey<ST>: ExtractEthAddress,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
@@ -113,7 +113,7 @@ where
             ST,
             SCT,
             EthExecutionProtocol,
-            SBT,
+            ESRT,
             CCT,
             CRT,
         >>::ValidatedBlock,
@@ -642,7 +642,7 @@ mod test {
         make_legacy_tx, make_signed_authorization, recover_tx, secret_to_eth_address,
         ConsensusTestBlock,
     };
-    use monad_state_backend::InMemoryStateInner;
+    use monad_execution_state_read::InMemoryStateInner;
     use monad_testutil::signing::MockSignatures;
     use monad_types::{Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
     use proptest::prelude::*;
