@@ -63,11 +63,13 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(20);
 const CLIENT_TIMEOUT_SECS: u64 = 60;
 const COMMIT_STATE_FILTER: BlockCommitState = BlockCommitState::Proposed;
 const MAX_TRANSACTION_RECEIPT_HASHES: usize = 200;
+const MAX_UNFILTERED_TRANSACTION_RECEIPT_SUBSCRIPTIONS_PER_CONNECTION: usize = 1;
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy, Deserialize, Serialize)]
 pub struct SubscriptionId(pub FixedData<16>);
 
-type Subscriptions = HashMap<SubscriptionKind, Vec<(SubscriptionId, Option<SubscriptionFilter>)>>;
+type ConnectionSubscriptions =
+    HashMap<SubscriptionKind, Vec<(SubscriptionId, Option<SubscriptionFilter>)>>;
 
 #[derive(Clone, Debug)]
 enum SubscriptionFilter {
@@ -184,7 +186,7 @@ pub async fn ws_handler(
             metrics.record_websocket_connection(1);
         }
 
-        let mut subscriptions: Subscriptions = HashMap::default();
+        let mut subscriptions: ConnectionSubscriptions = HashMap::default();
 
         let close_reason = handler(
             &mut session,
@@ -221,7 +223,7 @@ async fn handler(
     msg_stream: actix_ws::MessageStream,
     hostname: &String,
     peer_addr: &Option<String>,
-    subscriptions: &mut Subscriptions,
+    subscriptions: &mut ConnectionSubscriptions,
     rx: broadcast::Receiver<EventServerEvent>,
     app_state: &web::Data<MonadRpcResources>,
     subscription_limit: u16,
@@ -360,7 +362,7 @@ async fn handler(
 
 async fn handle_notification(
     session: &mut actix_ws::Session,
-    subscriptions: &Subscriptions,
+    subscriptions: &ConnectionSubscriptions,
     msg: EventServerEvent,
     max_response_size: usize,
 ) -> Result<(), CloseReason> {
@@ -456,6 +458,12 @@ async fn handle_notification(
                             continue;
                         }
 
+                        if receipts_json_len(receipts.iter().copied()) > max_response_size {
+                            warn!("ws handle_notification transaction receipts notification exceeds size limit");
+                            send_notification_size_limit_error(session, id).await?;
+                            continue;
+                        }
+
                         let receipts = serialize_transaction_receipts(receipts)?;
                         send_notification(session, id, receipts, max_response_size).await?;
                     } else {
@@ -463,9 +471,19 @@ async fn handle_notification(
                             continue;
                         }
 
-                        let receipts = serialize_transaction_receipts(
-                            transactions.iter().map(|(_, receipt, _)| receipt),
-                        )?;
+                        if receipts_json_len(transactions.iter().map(|(_, receipt, _)| receipt))
+                            > max_response_size
+                        {
+                            warn!("ws handle_notification transaction receipts notification exceeds size limit");
+                            send_notification_size_limit_error(session, id).await?;
+                            continue;
+                        }
+
+                        let receipts = transactions.receipts_json(|txs| {
+                            serialize_transaction_receipts(
+                                txs.iter().map(|(_, receipt, _)| receipt),
+                            )
+                        })?;
                         send_notification(session, id, receipts, max_response_size).await?;
                     }
                 }
@@ -556,9 +574,39 @@ fn serialize_transaction_receipts<'a>(
     })
 }
 
+fn receipts_json_len<'a>(receipts: impl IntoIterator<Item = &'a TransactionReceipt>) -> usize {
+    let (count, total_len) = receipts
+        .into_iter()
+        .fold((0usize, 0usize), |(count, total_len), receipt| {
+            (count + 1, total_len + receipt.serialized().get().len())
+        });
+
+    2 + total_len + count.saturating_sub(1)
+}
+
+fn is_unfiltered_transaction_receipts(filter: &Option<SubscriptionFilter>) -> bool {
+    match filter {
+        None => true,
+        Some(filter) => filter
+            .as_transaction_receipts()
+            .is_some_and(|filter| filter.transaction_hashes.is_none()),
+    }
+}
+
+fn connection_unfiltered_receipt_subs(subscriptions: &ConnectionSubscriptions) -> usize {
+    subscriptions
+        .get(&SubscriptionKind::TransactionReceipts)
+        .map(|subs| {
+            subs.iter()
+                .filter(|(_, filter)| is_unfiltered_transaction_receipts(filter))
+                .count()
+        })
+        .unwrap_or(0)
+}
+
 async fn handle_request(
     ctx: &mut actix_ws::Session,
-    subscriptions: &mut Subscriptions,
+    subscriptions: &mut ConnectionSubscriptions,
     subscription_limit: u16,
     app_state: &MonadRpcResources,
     request: Request<'_>,
@@ -662,6 +710,34 @@ async fn handle_request(
                     warn!(
                         ?err,
                         "ws handle_request eth_subscribe failed to send subscription limit reached error"
+                    );
+                    return Err(CloseReason {
+                        code: ws::CloseCode::Error,
+                        description: None,
+                    });
+                }
+
+                return Ok(());
+            }
+
+            if req.kind == SubscriptionKind::TransactionReceipts
+                && is_unfiltered_transaction_receipts(&filter)
+                && connection_unfiltered_receipt_subs(subscriptions)
+                    >= MAX_UNFILTERED_TRANSACTION_RECEIPT_SUBSCRIPTIONS_PER_CONNECTION
+            {
+                if let Err(err) = ctx
+                    .text(to_response(&crate::types::jsonrpc::Response::new(
+                        None,
+                        Some(JsonRpcError::custom(format!(
+                            "transactionReceipts allows at most {MAX_UNFILTERED_TRANSACTION_RECEIPT_SUBSCRIPTIONS_PER_CONNECTION} unfiltered subscription(s) per connection; specify transactionHashes"
+                        ))),
+                        request.id,
+                    )))
+                    .await
+                {
+                    warn!(
+                        ?err,
+                        "ws handle_request eth_subscribe failed to send unfiltered transactionReceipts limit error"
                     );
                     return Err(CloseReason {
                         code: ws::CloseCode::Error,
@@ -800,7 +876,14 @@ async fn send_notification(
     result: impl AsRef<RawValue>,
     max_response_size: usize,
 ) -> Result<(), CloseReason> {
-    let subscribe_result = EthSubscribeResult::new(id.0, result.as_ref());
+    let result = result.as_ref();
+
+    if result.get().len() > max_response_size {
+        warn!("ws send_notification notification payload exceeds size limit");
+        return send_notification_size_limit_error(session, id).await;
+    }
+
+    let subscribe_result = EthSubscribeResult::new(id.0, result);
     let notification = Notification::new("eth_subscription".to_string(), subscribe_result);
 
     let result = match serialize_with_size_limit(&notification, max_response_size) {
@@ -810,19 +893,38 @@ async fn send_notification(
                 "ws send_notification failed to serialize notification, error: {:?}",
                 err
             );
-            let error_result = serde_json::value::to_raw_value(&JsonRpcError::internal_error(
-                "notification exceeds size limit".to_string(),
-            ))
-            .expect("failed to serialize error");
-            let error_notification = Notification::new(
-                "eth_subscription".to_string(),
-                EthSubscribeResult::new(id.0, &error_result),
-            );
-            session.text(to_response(&error_notification)).await
+            return send_notification_size_limit_error(session, id).await;
         }
     };
 
     if let Err(err) = result {
+        warn!(
+            "ws send_notification failed to send notification, error: {:?}",
+            err
+        );
+        return Err(CloseReason {
+            code: CloseCode::Error,
+            description: Some("ws server failed to send notification".to_string()),
+        });
+    }
+
+    Ok(())
+}
+
+async fn send_notification_size_limit_error(
+    session: &mut actix_ws::Session,
+    id: &SubscriptionId,
+) -> Result<(), CloseReason> {
+    let error_result = serde_json::value::to_raw_value(&JsonRpcError::internal_error(
+        "notification exceeds size limit".to_string(),
+    ))
+    .expect("failed to serialize error");
+    let error_notification = Notification::new(
+        "eth_subscription".to_string(),
+        EthSubscribeResult::new(id.0, &error_result),
+    );
+
+    if let Err(err) = session.text(to_response(&error_notification)).await {
         warn!(
             "ws send_notification failed to send notification, error: {:?}",
             err
@@ -882,15 +984,16 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        apply_receipts_filter, ws_handler, ReceiptsFilter, ReceiptsFilterError,
-        MAX_TRANSACTION_RECEIPT_HASHES,
+        apply_receipts_filter, connection_unfiltered_receipt_subs, ws_handler,
+        ConnectionSubscriptions, ReceiptsFilter, ReceiptsFilterError, SubscriptionFilter,
+        SubscriptionId, MAX_TRANSACTION_RECEIPT_HASHES,
     };
     use crate::{
         event::{events::TransactionReceipt, EventServer},
         handlers::resources::MonadRpcResources,
         txpool::EthTxPoolBridgeClient,
         types::{
-            eth_json::{EthSubscribeResult, FixedData},
+            eth_json::{EthSubscribeResult, FixedData, SubscriptionKind},
             ethhex,
             serialize::JsonSerialized,
         },
@@ -1005,6 +1108,38 @@ mod tests {
                 limit: MAX_TRANSACTION_RECEIPT_HASHES,
             }
         );
+    }
+
+    #[test]
+    fn counts_only_unfiltered_receipt_subs_on_connection() {
+        use std::collections::HashMap;
+
+        let sub_id = |n: u8| SubscriptionId(FixedData([n; 16]));
+        let mut subscriptions: ConnectionSubscriptions = HashMap::default();
+
+        let receipts = subscriptions
+            .entry(SubscriptionKind::TransactionReceipts)
+            .or_default();
+        receipts.push((sub_id(1), None));
+        receipts.push((
+            sub_id(2),
+            Some(SubscriptionFilter::TransactionReceipts(ReceiptsFilter {
+                transaction_hashes: Some([B256::from([1; 32])].into_iter().collect()),
+            })),
+        ));
+        receipts.push((
+            sub_id(3),
+            Some(SubscriptionFilter::TransactionReceipts(
+                ReceiptsFilter::default(),
+            )),
+        ));
+
+        subscriptions
+            .entry(SubscriptionKind::Logs)
+            .or_default()
+            .push((sub_id(4), None));
+
+        assert_eq!(connection_unfiltered_receipt_subs(&subscriptions), 2);
     }
 
     fn create_test_server() -> actix_test::TestServer {

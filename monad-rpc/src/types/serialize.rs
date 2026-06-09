@@ -64,6 +64,10 @@ where
     pub fn value(&self) -> &T {
         &self.value
     }
+
+    pub fn serialized(&self) -> &RawValue {
+        &self.serialized
+    }
 }
 
 impl<T> AsRef<RawValue> for JsonSerialized<T>

@@ -429,7 +429,10 @@ mod tests {
     use monad_types::BlockId;
 
     use super::*;
-    use crate::types::{eth_json::MonadNotification, serialize::JsonSerialized};
+    use crate::{
+        event::events::BlockTransactionList,
+        types::{eth_json::MonadNotification, serialize::JsonSerialized},
+    };
 
     #[tokio::test]
     async fn test_many_proposed_blocks() {
@@ -804,7 +807,7 @@ mod tests {
         EventServerEvent::Block {
             commit_state: BlockCommitState::Proposed,
             header: serialized_monad_header,
-            transactions: Arc::new(txs.into_boxed_slice()),
+            transactions: Arc::new(BlockTransactionList::new(txs.into_boxed_slice())),
         }
     }
 }

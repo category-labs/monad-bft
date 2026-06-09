@@ -25,7 +25,9 @@ use monad_types::BlockId;
 use tokio::sync::broadcast;
 use tracing::{debug, warn};
 
-use super::{EventServerClient, EventServerEvent, BROADCAST_CHANNEL_SIZE};
+use super::{
+    events::BlockTransactionList, EventServerClient, EventServerEvent, BROADCAST_CHANNEL_SIZE,
+};
 use crate::types::{eth_json::MonadNotification, serialize::JsonSerialized};
 
 pub struct EventServer<R>
@@ -181,7 +183,7 @@ fn broadcast_block_updates(
         EventServerEvent::Block {
             commit_state,
             header: serialized_monad_header,
-            transactions: Arc::new(transactions.into_boxed_slice()),
+            transactions: Arc::new(BlockTransactionList::new(transactions.into_boxed_slice())),
         },
     );
 }
