@@ -38,7 +38,7 @@ pub fn make_state_configs<S: SwarmRelation>(
     leader_election: impl Fn() -> S::LeaderElection,
     block_validator: impl Fn() -> S::BlockValidator,
     block_policy: impl Fn() -> S::BlockPolicyType,
-    state_backend: impl Fn() -> S::StateBackendType,
+    state_read: impl Fn() -> S::ExecutionStateReadType,
 
     execution_delay: SeqNum,
     delta: Duration,
@@ -50,7 +50,7 @@ pub fn make_state_configs<S: SwarmRelation>(
         S::SignatureCollectionType,
         S::ExecutionProtocolType,
         S::BlockPolicyType,
-        S::StateBackendType,
+        S::ExecutionStateReadType,
         S::ValidatorSetTypeFactory,
         S::LeaderElection,
         S::BlockValidator,
@@ -95,7 +95,7 @@ pub fn make_state_configs<S: SwarmRelation>(
             leader_election: leader_election(),
             block_validator: block_validator(),
             block_policy: block_policy(),
-            state_backend: state_backend(),
+            state_read: state_read(),
             forkpoint: forkpoint.clone(),
             locked_epoch_validators: locked_epoch_validators.clone(),
 

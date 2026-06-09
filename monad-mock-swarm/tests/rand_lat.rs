@@ -25,6 +25,7 @@ use monad_consensus_types::{
     block::PassthruBlockPolicy, block_validator::MockValidator, metrics::Metrics,
 };
 use monad_crypto::certificate_signature::CertificateKeyPair;
+use monad_execution_state_read::InMemoryStateInner;
 use monad_mock_swarm::{
     fetch_metric,
     mock::TimestamperConfig,
@@ -35,7 +36,6 @@ use monad_mock_swarm::{
     verifier::{happy_path_tick_by_block, MockSwarmVerifier},
 };
 use monad_router_scheduler::{NoSerRouterConfig, RouterSchedulerBuilder};
-use monad_state_backend::InMemoryStateInner;
 use monad_testutil::swarm::{make_state_configs, swarm_ledger_verification};
 use monad_transformer::{GenericTransformer, ID};
 use monad_types::{NodeId, SeqNum};
@@ -136,7 +136,7 @@ fn nodes_with_random_latency(latency_seed: u64) -> Result<(), String> {
             .into_iter()
             .enumerate()
             .map(|(seed, state_builder)| {
-                let state_backend = state_builder.state_backend.clone();
+                let state_read = state_builder.state_read.clone();
                 let validators = state_builder.locked_epoch_validators[0].clone();
                 NodeBuilder::<NoSerSwarm>::new(
                     ID::new(NodeId::new(state_builder.key.pubkey())),
@@ -144,8 +144,8 @@ fn nodes_with_random_latency(latency_seed: u64) -> Result<(), String> {
                     NoSerRouterConfig::new(all_peers.clone()).build(),
                     MockValSetUpdaterNop::new(validators.validators, SeqNum(3000)),
                     MockTxPoolExecutor::default().with_chain_params(&CHAIN_PARAMS),
-                    MockLedger::new(state_backend.clone()),
-                    MockStateSyncExecutor::new(state_backend),
+                    MockLedger::new(state_read.clone()),
+                    MockStateSyncExecutor::new(state_read),
                     vec![GenericTransformer::RandLatency(
                         RandLatencyTransformer::new(latency_seed, delta),
                     )],

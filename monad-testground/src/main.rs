@@ -34,11 +34,11 @@ use monad_crypto::certificate_signature::{
     CertificateSignatureRecoverable,
 };
 use monad_dataplane::udp::DEFAULT_MTU;
+use monad_execution_state_read::InMemoryStateInner;
 use monad_executor::Executor;
 use monad_node_config::{FullNodeConfig, FullNodeRaptorCastConfig};
 use monad_raptorcast::config::RaptorCastConfig;
 use monad_secp::SecpSignature;
-use monad_state_backend::InMemoryStateInner;
 use monad_types::{NodeId, Round, SeqNum, Stake};
 use monad_updaters::{ledger::MockableLedger, local_router::LocalRouterConfig};
 use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionKeyPairType};
@@ -406,13 +406,13 @@ async fn run<ST, SCT>(
     <ST as CertificateSignature>::KeyPairType: Unpin,
     <SCT as SignatureCollection>::SignatureType: Unpin,
 {
-    let state_backend = InMemoryStateInner::genesis(SeqNum(4));
+    let state_read = InMemoryStateInner::genesis(SeqNum(4));
     let nodeid = config.executor_config.nodeid;
     // Instantiates MonadState -> ConsensusChildState
-    let (mut state, init_commands) = make_monad_state(state_backend.clone(), config.state_config);
+    let (mut state, init_commands) = make_monad_state(state_read.clone(), config.state_config);
 
     // The (ParentExecutor) executor instantiates embedded RaptorCast router and all other executors
-    let mut executor = make_monad_executor(index, state_backend, config.executor_config);
+    let mut executor = make_monad_executor(index, state_read, config.executor_config);
 
     executor.exec(init_commands);
 

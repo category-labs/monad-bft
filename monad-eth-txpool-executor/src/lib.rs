@@ -48,10 +48,10 @@ use monad_eth_txpool_types::{
     EthTxPoolDropReason, EthTxPoolEventType, EthTxPoolIpcTx, EthTxPoolTxInputStream,
 };
 use monad_eth_types::{EthExecutionProtocol, ExtractEthAddress};
+use monad_execution_state_read::ExecutionStateRead;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_peer_score::{ema, StdClock};
 use monad_secp::RecoverableAddress;
-use monad_state_backend::StateBackend;
 use monad_types::{DropTimer, Epoch, ExecutionProtocol, NodeId, Round, SeqNum};
 use monad_validator::signature_collection::SignatureCollection;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
@@ -76,13 +76,13 @@ mod metrics;
 mod preload;
 mod reset;
 
-pub enum TxPoolExecutorCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>
+pub enum TxPoolExecutorCommand<ST, SCT, EPT, BPT, ESRT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
-    SBT: StateBackend<ST, SCT>,
+    BPT: BlockPolicy<ST, SCT, EPT, ESRT, CCT, CRT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -150,21 +150,21 @@ where
     ForwardTxs(Vec<Bytes>),
 }
 
-pub struct EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT, TIS>
+pub struct EthTxPoolExecutor<ST, SCT, ESRT, CCT, CRT, TIS>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    SBT: StateBackend<ST, SCT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
     TIS: EthTxPoolTxInputStream,
 {
-    pool: EthTxPool<ST, SCT, SBT, CCT, CRT>,
+    pool: EthTxPool<ST, SCT, ESRT, CCT, CRT>,
     tx_input_stream: Pin<Box<TIS>>,
 
     reset: EthTxPoolResetTrigger,
     block_policy: EthBlockPolicy<ST, SCT, CCT, CRT>,
-    state_backend: SBT,
+    state_read: ESRT,
     chain_config: CCT,
 
     events_tx: mpsc::UnboundedSender<TxPoolExecutorEvent<ST, SCT, EthExecutionProtocol>>,
@@ -179,19 +179,19 @@ where
     _phantom: PhantomData<CRT>,
 }
 
-impl<ST, SCT, SBT, CCT, CRT> EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT, EthTxPoolIpcServer>
+impl<ST, SCT, ESRT, CCT, CRT> EthTxPoolExecutor<ST, SCT, ESRT, CCT, CRT, EthTxPoolIpcServer>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     CertificateSignaturePubKey<ST>: ExtractEthAddress,
-    SBT: StateBackend<ST, SCT> + Send + 'static,
+    ESRT: ExecutionStateRead<ST, SCT> + Send + 'static,
     CCT: ChainConfig<CRT> + Send + 'static,
     CRT: ChainRevision + Send + 'static,
     Self: Unpin,
 {
     pub fn start(
         block_policy: EthBlockPolicy<ST, SCT, CCT, CRT>,
-        state_backend: SBT,
+        state_read: ESRT,
         ipc_config: EthTxPoolIpcConfig,
         soft_tx_expiry: Duration,
         hard_tx_expiry: Duration,
@@ -200,7 +200,7 @@ where
         execution_timestamp_s: u64,
         score_provider: ema::ScoreProvider<NodeId<CertificateSignaturePubKey<ST>>, StdClock>,
         score_reader: ema::ScoreReader<NodeId<CertificateSignaturePubKey<ST>>, StdClock>,
-    ) -> io::Result<EthTxPoolExecutorClient<ST, SCT, SBT, CCT, CRT>> {
+    ) -> io::Result<EthTxPoolExecutorClient<ST, SCT, ESRT, CCT, CRT>> {
         let ipc = Box::pin(EthTxPoolIpcServer::new(ipc_config)?);
 
         let (events_tx, events) = mpsc::unbounded_channel();
@@ -235,7 +235,7 @@ where
                         tx_input_stream: ipc,
                         block_policy,
                         reset: EthTxPoolResetTrigger::default(),
-                        state_backend,
+                        state_read,
                         chain_config,
 
                         events_tx,
@@ -259,11 +259,11 @@ where
     }
 }
 
-impl<ST, SCT, SBT, CCT, CRT, TIS> EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT, TIS>
+impl<ST, SCT, ESRT, CCT, CRT, TIS> EthTxPoolExecutor<ST, SCT, ESRT, CCT, CRT, TIS>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    SBT: StateBackend<ST, SCT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     CertificateSignaturePubKey<ST>: ExtractEthAddress,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
@@ -279,7 +279,7 @@ where
                     SCT,
                     EthExecutionProtocol,
                     EthBlockPolicy<ST, SCT, CCT, CRT>,
-                    SBT,
+                    ESRT,
                     CCT,
                     CRT,
                 >,
@@ -387,11 +387,11 @@ where
     }
 }
 
-impl<ST, SCT, SBT, CCT, CRT, TIS> Executor for EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT, TIS>
+impl<ST, SCT, ESRT, CCT, CRT, TIS> Executor for EthTxPoolExecutor<ST, SCT, ESRT, CCT, CRT, TIS>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    SBT: StateBackend<ST, SCT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     CertificateSignaturePubKey<ST>: ExtractEthAddress,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
@@ -402,7 +402,7 @@ where
         SCT,
         EthExecutionProtocol,
         EthBlockPolicy<ST, SCT, CCT, CRT>,
-        SBT,
+        ESRT,
         CCT,
         CRT,
     >;
@@ -418,7 +418,7 @@ where
                 TxPoolExecutorCommand::BlockCommit(committed_blocks) => {
                     let _span = debug_span!("block commit").entered();
                     for committed_block in committed_blocks {
-                        BlockPolicy::<ST, SCT, EthExecutionProtocol, SBT, CCT, CRT>::update_committed_block(
+                        BlockPolicy::<ST, SCT, EthExecutionProtocol, ESRT, CCT, CRT>::update_committed_block(
                             &mut self.block_policy,
                             &committed_block,
                         );
@@ -482,7 +482,7 @@ where
                         round_signature.clone(),
                         extending_blocks,
                         &self.block_policy,
-                        &mut self.state_backend,
+                        &mut self.state_read,
                         &self.chain_config,
                     ) {
                         Ok(ProposalWithSenderGas {
@@ -546,7 +546,7 @@ where
                 TxPoolExecutorCommand::Reset {
                     last_delay_committed_blocks,
                 } => {
-                    BlockPolicy::<ST, SCT, EthExecutionProtocol, SBT, CCT, CRT>::reset(
+                    BlockPolicy::<ST, SCT, EthExecutionProtocol, ESRT, CCT, CRT>::reset(
                         &mut self.block_policy,
                         last_delay_committed_blocks.iter().collect(),
                     );
@@ -572,11 +572,11 @@ where
     }
 }
 
-impl<ST, SCT, SBT, CCT, CRT, TIS> Stream for EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT, TIS>
+impl<ST, SCT, ESRT, CCT, CRT, TIS> Stream for EthTxPoolExecutor<ST, SCT, ESRT, CCT, CRT, TIS>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    SBT: StateBackend<ST, SCT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     CertificateSignaturePubKey<ST>: ExtractEthAddress,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
@@ -601,7 +601,7 @@ where
 
             reset,
             block_policy,
-            state_backend,
+            state_read,
             chain_config,
 
             events_tx: _,
@@ -669,7 +669,7 @@ where
             pool.insert_txs(
                 &mut EthTxPoolEventTracker::new(&metrics.pool, &mut ipc_events),
                 block_policy,
-                state_backend,
+                state_read,
                 chain_config,
                 recovered_txs,
                 |tx| {
@@ -731,7 +731,7 @@ where
             pool.insert_txs(
                 &mut EthTxPoolEventTracker::new(&metrics.pool, &mut ipc_events),
                 block_policy,
-                state_backend,
+                state_read,
                 chain_config,
                 recovered_txs,
                 |tx| {
@@ -750,24 +750,24 @@ where
                 "txpool executor preloading account balances"
             );
 
-            let total_db_lookups_before = state_backend.total_db_lookups();
+            let total_db_lookups_before = state_read.total_db_lookups();
 
-            if let Err(state_backend_error) = block_policy.compute_account_base_balances(
+            if let Err(state_read_error) = block_policy.compute_account_base_balances(
                 predicted_proposal_seqnum,
-                state_backend,
+                state_read,
                 chain_config,
                 None,
                 addresses.iter(),
             ) {
                 warn!(
-                    ?state_backend_error,
+                    ?state_read_error,
                     "txpool executor failed to preload account balances"
                 )
             }
 
             metrics
                 .preload_backend_lookups
-                .add(state_backend.total_db_lookups() - total_db_lookups_before);
+                .add(state_read.total_db_lookups() - total_db_lookups_before);
             metrics.preload_backend_requests.add(addresses.len() as u64);
 
             preload_manager
@@ -809,12 +809,12 @@ mod test {
         EthTxPoolEventType, EthTxPoolIpcTx, EthTxPoolSnapshot, EthTxPoolTxInputStream,
     };
     use monad_eth_types::EthExecutionProtocol;
+    use monad_execution_state_read::{
+        AccountState, InMemoryBlockState, InMemoryState, InMemoryStateInner,
+    };
     use monad_executor::Executor;
     use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
     use monad_peer_score::{ema, StdClock};
-    use monad_state_backend::{
-        AccountState, InMemoryBlockState, InMemoryState, InMemoryStateInner,
-    };
     use monad_testutil::signing::{node_id, MockSignatures};
     use monad_tfm::base_fee::MIN_BASE_FEE;
     use monad_types::{Epoch, NodeId, Round, SeqNum, GENESIS_ROUND, GENESIS_SEQ_NUM};
@@ -830,11 +830,11 @@ mod test {
 
     type SignatureType = NopSignature;
     type SignatureCollectionType = MockSignatures<SignatureType>;
-    type StateBackendType = InMemoryState<SignatureType, SignatureCollectionType>;
+    type ExecutionStateReadType = InMemoryState<SignatureType, SignatureCollectionType>;
     type ExecutorType = EthTxPoolExecutor<
         SignatureType,
         SignatureCollectionType,
-        StateBackendType,
+        ExecutionStateReadType,
         MockChainConfig,
         MockChainRevision,
         NoopTxInputStream,
@@ -844,7 +844,7 @@ mod test {
         SignatureCollectionType,
         EthExecutionProtocol,
         EthBlockPolicy<SignatureType, SignatureCollectionType, MockChainConfig, MockChainRevision>,
-        StateBackendType,
+        ExecutionStateReadType,
         MockChainConfig,
         MockChainRevision,
     >;
@@ -977,14 +977,14 @@ mod test {
     ) -> EthTxPoolExecutorClient<
         SignatureType,
         SignatureCollectionType,
-        StateBackendType,
+        ExecutionStateReadType,
         MockChainConfig,
         MockChainRevision,
     > {
         const TEST_TX_EXPIRY: Duration = Duration::from_secs(24 * 60 * 60);
 
         let block_policy = EthBlockPolicy::new(GENESIS_SEQ_NUM, u64::MAX);
-        let state_backend: StateBackendType = InMemoryStateInner::new(
+        let state_read: ExecutionStateReadType = InMemoryStateInner::new(
             SeqNum::MAX,
             InMemoryBlockState::genesis(BTreeMap::from_iter([(
                 secret_to_eth_address(S1),
@@ -1032,7 +1032,7 @@ mod test {
                         tx_input_stream: Box::pin(NoopTxInputStream),
                         reset: EthTxPoolResetTrigger::default(),
                         block_policy,
-                        state_backend,
+                        state_read,
                         chain_config,
                         events_tx,
                         events,
@@ -1055,7 +1055,7 @@ mod test {
     fn start_test_client() -> EthTxPoolExecutorClient<
         SignatureType,
         SignatureCollectionType,
-        StateBackendType,
+        ExecutionStateReadType,
         MockChainConfig,
         MockChainRevision,
     > {

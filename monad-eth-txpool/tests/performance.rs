@@ -28,8 +28,8 @@ use monad_eth_testutil::{
     recover_tx, secret_to_eth_address, S1, S2,
 };
 use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics, PoolTxKind};
-use monad_state_backend::{
-    AccountState, InMemoryBlockState, InMemoryState, InMemoryStateInner, StateBackend,
+use monad_execution_state_read::{
+    AccountState, ExecutionStateRead, InMemoryBlockState, InMemoryState, InMemoryStateInner,
 };
 use monad_testutil::signing::MockSignatures;
 use monad_tfm::base_fee::MIN_BASE_FEE;
@@ -37,7 +37,7 @@ use monad_types::{Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
 
 type SignatureType = NopSignature;
 type SignatureCollectionType = MockSignatures<SignatureType>;
-type StateBackendType = InMemoryState<SignatureType, SignatureCollectionType>;
+type ExecutionStateReadType = InMemoryState<SignatureType, SignatureCollectionType>;
 
 #[test]
 fn txpool_create_proposal_lookups_bound_by_tx_limit() {
@@ -62,7 +62,7 @@ fn txpool_create_proposal_lookups_bound_by_tx_limit() {
 
         let eth_block_policy = EthBlockPolicy::new(GENESIS_SEQ_NUM, u64::MAX);
 
-        let mut state_backend: StateBackendType = InMemoryStateInner::new(
+        let mut state_read: ExecutionStateReadType = InMemoryStateInner::new(
             SeqNum::MAX,
             InMemoryBlockState::genesis(BTreeMap::from_iter([
                 (secret_to_eth_address(S1), AccountState::max_balance()),
@@ -73,7 +73,7 @@ fn txpool_create_proposal_lookups_bound_by_tx_limit() {
         pool.insert_txs(
             &mut event_tracker,
             &eth_block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
             vec![
                 recover_tx(make_legacy_tx(S1, MIN_BASE_FEE.into(), 100_000, 0, 0)),
@@ -86,7 +86,7 @@ fn txpool_create_proposal_lookups_bound_by_tx_limit() {
         );
 
         assert_eq!(pool.num_txs(), 2);
-        assert_eq!(4, state_backend.total_db_lookups());
+        assert_eq!(4, state_read.total_db_lookups());
 
         let mock_keypair = NopKeyPair::from_bytes(&mut [5_u8; 32]).unwrap();
 
@@ -106,12 +106,12 @@ fn txpool_create_proposal_lookups_bound_by_tx_limit() {
                 RoundSignature::new(Round(0), &mock_keypair),
                 vec![],
                 &eth_block_policy,
-                &mut state_backend,
+                &mut state_read,
                 &MockChainConfig::DEFAULT,
             )
             .unwrap();
 
-        assert_eq!(expected_lookups, state_backend.total_db_lookups());
+        assert_eq!(expected_lookups, state_read.total_db_lookups());
     }
 }
 
@@ -142,7 +142,7 @@ fn txpool_create_proposal_no_lookup_for_unknown_authorizations() {
 
         let eth_block_policy = EthBlockPolicy::new(GENESIS_SEQ_NUM, u64::MAX);
 
-        let mut state_backend: StateBackendType = InMemoryStateInner::new(
+        let mut state_read: ExecutionStateReadType = InMemoryStateInner::new(
             SeqNum::MAX,
             InMemoryBlockState::genesis(BTreeMap::from_iter([
                 (secret_to_eth_address(S1), AccountState::max_balance()),
@@ -153,7 +153,7 @@ fn txpool_create_proposal_no_lookup_for_unknown_authorizations() {
         pool.insert_txs(
             &mut event_tracker,
             &eth_block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
             vec![recover_tx(make_eip7702_tx(
                 S1,
@@ -171,7 +171,7 @@ fn txpool_create_proposal_no_lookup_for_unknown_authorizations() {
         );
 
         assert_eq!(pool.num_txs(), 1);
-        assert_eq!(2, state_backend.total_db_lookups());
+        assert_eq!(2, state_read.total_db_lookups());
 
         let mock_keypair = NopKeyPair::from_bytes(&mut [5_u8; 32]).unwrap();
 
@@ -191,11 +191,11 @@ fn txpool_create_proposal_no_lookup_for_unknown_authorizations() {
                 RoundSignature::new(Round(0), &mock_keypair),
                 vec![],
                 &eth_block_policy,
-                &mut state_backend,
+                &mut state_read,
                 &MockChainConfig::DEFAULT,
             )
             .unwrap();
 
-        assert_eq!(4, state_backend.total_db_lookups());
+        assert_eq!(4, state_read.total_db_lookups());
     }
 }

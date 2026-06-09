@@ -48,7 +48,9 @@ use monad_eth_txpool::{
     EthTxPoolMetrics, PoolTxKind, TrackedTxLimitsConfig,
 };
 use monad_eth_txpool_types::EthTxPoolSnapshot;
-use monad_state_backend::{AccountState, InMemoryBlockState, InMemoryState, InMemoryStateInner};
+use monad_execution_state_read::{
+    AccountState, InMemoryBlockState, InMemoryState, InMemoryStateInner,
+};
 use monad_testutil::signing::MockSignatures;
 use monad_types::{Balance, Epoch, NodeId, Round, SeqNum, GENESIS_ROUND, GENESIS_SEQ_NUM};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
@@ -68,13 +70,13 @@ const PROPOSAL_SIZE_LIMIT: u64 = 4_000_000;
 
 type SignatureType = NopSignature;
 type SignatureCollectionType = MockSignatures<SignatureType>;
-type StateBackendType = InMemoryState<SignatureType, SignatureCollectionType>;
+type ExecutionStateReadType = InMemoryState<SignatureType, SignatureCollectionType>;
 type BlockPolicyType =
     EthBlockPolicy<SignatureType, SignatureCollectionType, MockChainConfig, MockChainRevision>;
 type TxPoolType = EthTxPool<
     SignatureType,
     SignatureCollectionType,
-    StateBackendType,
+    ExecutionStateReadType,
     MockChainConfig,
     MockChainRevision,
 >;
@@ -120,7 +122,7 @@ enum TxPoolTestEvent<'a> {
                 &mut EthTxPool<
                     SignatureType,
                     SignatureCollectionType,
-                    StateBackendType,
+                    ExecutionStateReadType,
                     MockChainConfig,
                     MockChainRevision,
                 >,
@@ -136,7 +138,7 @@ fn run_custom_iter<const N: usize>(
     events: [TxPoolTestEvent<'_>; N],
     owned: bool,
 ) {
-    let mut state_backend = {
+    let mut state_read = {
         let nonces = if let Some(nonces) = nonces_override {
             nonces
         } else {
@@ -209,7 +211,7 @@ fn run_custom_iter<const N: usize>(
                     pool.insert_txs(
                         &mut event_tracker,
                         &eth_block_policy,
-                        &mut state_backend,
+                        &mut state_read,
                         &MockChainConfig::DEFAULT,
                         vec![(
                             tx.clone(),
@@ -264,7 +266,7 @@ fn run_custom_iter<const N: usize>(
                 pool.insert_txs(
                     &mut event_tracker,
                     &eth_block_policy,
-                    &mut state_backend,
+                    &mut state_read,
                     &MockChainConfig::DEFAULT,
                     txs.into_iter()
                         .map(ToOwned::to_owned)
@@ -308,7 +310,7 @@ fn run_custom_iter<const N: usize>(
                 pool.insert_txs(
                     &mut event_tracker,
                     &eth_block_policy,
-                    &mut state_backend,
+                    &mut state_read,
                     &MockChainConfig::DEFAULT,
                     txs.into_iter()
                         .map(|(tx, kind)| (recover_tx(tx.to_owned()), kind))
@@ -344,7 +346,7 @@ fn run_custom_iter<const N: usize>(
                         RoundSignature::new(Round(0), &mock_keypair),
                         pending_blocks.iter().cloned().collect_vec(),
                         &eth_block_policy,
-                        &mut state_backend,
+                        &mut state_read,
                         &MockChainConfig::DEFAULT,
                     )
                     .expect("create proposal succeeds");
@@ -394,7 +396,7 @@ fn run_custom_iter<const N: usize>(
                         MockChainConfig,
                         MockChainRevision,
                     >,
-                    StateBackendType,
+                    ExecutionStateReadType,
                     MockChainConfig,
                     MockChainRevision,
                 >::validate(
@@ -426,7 +428,7 @@ fn run_custom_iter<const N: usize>(
                         .pop_front()
                         .expect("missing block in blocktree");
 
-                    BlockPolicy::<_, _, _, StateBackendType, _, _>::update_committed_block(
+                    BlockPolicy::<_, _, _, ExecutionStateReadType, _, _>::update_committed_block(
                         &mut eth_block_policy,
                         &block,
                     );
@@ -450,7 +452,7 @@ fn run_custom_iter<const N: usize>(
                 let mut nonces = eth_block_policy
                     .get_account_base_nonces(
                         SeqNum(current_seq_num),
-                        &mut state_backend,
+                        &mut state_read,
                         &pending_blocks.iter().collect_vec(),
                         [&address].into_iter(),
                     )
@@ -477,7 +479,7 @@ fn run_custom<const N: usize>(
     pool_generator: impl Fn() -> EthTxPool<
         SignatureType,
         SignatureCollectionType,
-        StateBackendType,
+        ExecutionStateReadType,
         MockChainConfig,
         MockChainRevision,
     >,

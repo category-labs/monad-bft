@@ -29,7 +29,7 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_state_backend::{StateBackend, StateBackendError};
+use monad_execution_state_read::{ExecutionStateRead, ExecutionStateReadError};
 use monad_types::{BlockId, ExecutionProtocol, Round, SeqNum};
 use monad_validator::signature_collection::SignatureCollection;
 
@@ -41,13 +41,13 @@ struct Root {
     children_blocks: Vec<BlockId>,
 }
 
-pub struct BlockTree<ST, SCT, EPT, BPT, SBT, CCT, CRT>
+pub struct BlockTree<ST, SCT, EPT, BPT, ESRT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
-    SBT: StateBackend<ST, SCT>,
+    BPT: BlockPolicy<ST, SCT, EPT, ESRT, CCT, CRT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -55,16 +55,16 @@ where
     root: Root,
     /// Uncommitted blocks
     /// First level of blocks in the tree have block.get_parent_id() == root.block_id
-    tree: Tree<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
+    tree: Tree<ST, SCT, EPT, BPT, ESRT, CCT, CRT>,
 }
 
-impl<ST, SCT, EPT, BPT, SBT, CCT, CRT> Debug for BlockTree<ST, SCT, EPT, BPT, SBT, CCT, CRT>
+impl<ST, SCT, EPT, BPT, ESRT, CCT, CRT> Debug for BlockTree<ST, SCT, EPT, BPT, ESRT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
-    SBT: StateBackend<ST, SCT>,
+    BPT: BlockPolicy<ST, SCT, EPT, ESRT, CCT, CRT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -76,14 +76,14 @@ where
     }
 }
 
-impl<ST, SCT, EPT, BPT, SBT, CCT, CRT> PartialEq<Self>
-    for BlockTree<ST, SCT, EPT, BPT, SBT, CCT, CRT>
+impl<ST, SCT, EPT, BPT, ESRT, CCT, CRT> PartialEq<Self>
+    for BlockTree<ST, SCT, EPT, BPT, ESRT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
-    SBT: StateBackend<ST, SCT>,
+    BPT: BlockPolicy<ST, SCT, EPT, ESRT, CCT, CRT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -92,25 +92,25 @@ where
     }
 }
 
-impl<ST, SCT, EPT, BPT, SBT, CCT, CRT> Eq for BlockTree<ST, SCT, EPT, BPT, SBT, CCT, CRT>
+impl<ST, SCT, EPT, BPT, ESRT, CCT, CRT> Eq for BlockTree<ST, SCT, EPT, BPT, ESRT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
-    SBT: StateBackend<ST, SCT>,
+    BPT: BlockPolicy<ST, SCT, EPT, ESRT, CCT, CRT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
 }
 
-impl<ST, SCT, EPT, BPT, SBT, CCT, CRT> BlockTree<ST, SCT, EPT, BPT, SBT, CCT, CRT>
+impl<ST, SCT, EPT, BPT, ESRT, CCT, CRT> BlockTree<ST, SCT, EPT, BPT, ESRT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
-    SBT: StateBackend<ST, SCT>,
+    BPT: BlockPolicy<ST, SCT, EPT, ESRT, CCT, CRT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -239,7 +239,7 @@ where
         metrics: &mut Metrics,
         block_id: BlockId,
         block_policy: &mut BPT,
-        state_backend: &mut SBT,
+        state_read: &mut ESRT,
         chain_config: &CCT,
     ) -> Vec<BPT::ValidatedBlock> {
         let Some(path_from_root) = self.get_blocks_on_path_from_root(&block_id) else {
@@ -277,7 +277,7 @@ where
                 next_block,
                 extending_blocks,
                 self.root.info,
-                state_backend,
+                state_read,
                 chain_config,
             ) {
                 Ok(()) => {
@@ -298,7 +298,9 @@ where
                             .cloned(),
                     );
                 }
-                Err(BlockPolicyError::StateBackendError(StateBackendError::NotAvailableYet)) => {
+                Err(BlockPolicyError::ExecutionStateReadError(
+                    ExecutionStateReadError::NotAvailableYet,
+                )) => {
                     metrics.consensus_events.rx_execution_lagging.inc();
                 }
                 Err(BlockPolicyError::ExecutionResultMismatch) => {
@@ -312,7 +314,9 @@ where
                     | BlockPolicyError::BlockNotCoherent
                     | BlockPolicyError::Eip7702Error
                     | BlockPolicyError::TimestampError
-                    | BlockPolicyError::StateBackendError(StateBackendError::NeverAvailable)
+                    | BlockPolicyError::ExecutionStateReadError(
+                        ExecutionStateReadError::NeverAvailable,
+                    )
                     | BlockPolicyError::SystemTransactionError,
                 ) => {
                     // TODO add metrics
@@ -489,7 +493,7 @@ where
         !self.tree.contains_key(&b.get_id()) && b.block_round > self.root.info.round
     }
 
-    pub fn tree(&self) -> &Tree<ST, SCT, EPT, BPT, SBT, CCT, CRT> {
+    pub fn tree(&self) -> &Tree<ST, SCT, EPT, BPT, ESRT, CCT, CRT> {
         &self.tree
     }
 
@@ -520,7 +524,7 @@ where
     pub fn get_entry(
         &self,
         block_id: &BlockId,
-    ) -> Option<&BlockTreeEntry<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
+    ) -> Option<&BlockTreeEntry<ST, SCT, EPT, BPT, ESRT, CCT, CRT>> {
         self.tree.get(block_id)
     }
 
@@ -635,7 +639,7 @@ mod test {
         NopKeyPair, NopSignature,
     };
     use monad_eth_types::EMPTY_RLP_TX_LIST;
-    use monad_state_backend::{InMemoryState, InMemoryStateInner};
+    use monad_execution_state_read::{InMemoryState, InMemoryStateInner};
     use monad_testutil::signing::MockSignatures;
     use monad_types::{Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
 
@@ -649,7 +653,7 @@ mod test {
     type SignatureType = NopSignature;
     type SignatureCollectionType = MockSignatures<SignatureType>;
     type ExecutionProtocolType = MockExecutionProtocol;
-    type StateBackendType = InMemoryState<SignatureType, SignatureCollectionType>;
+    type ExecutionStateReadType = InMemoryState<SignatureType, SignatureCollectionType>;
     type BlockPolicyType = PassthruBlockPolicy;
     type ChainConfigType = MockChainConfig;
     type ChainRevisionType = MockChainRevision;
@@ -658,7 +662,7 @@ mod test {
         SignatureCollectionType,
         ExecutionProtocolType,
         BlockPolicyType,
-        StateBackendType,
+        ExecutionStateReadType,
         ChainConfigType,
         ChainRevisionType,
     >;
@@ -774,7 +778,7 @@ mod test {
             block_id: genesis_qc.get_block_id(),
             timestamp_ns: GENESIS_TIMESTAMP,
         });
-        let mut state_backend = InMemoryStateInner::genesis(SeqNum(4));
+        let mut state_read = InMemoryStateInner::genesis(SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
         blocktree.add(g.clone().into());
 
@@ -790,7 +794,7 @@ mod test {
             &mut metrics,
             b1.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(blocktree.is_coherent(&b1.get_id()));
@@ -798,7 +802,7 @@ mod test {
             &mut metrics,
             b2.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(blocktree.is_coherent(&b2.get_id()));
@@ -806,7 +810,7 @@ mod test {
             &mut metrics,
             b3.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(blocktree.is_coherent(&b3.get_id()));
@@ -814,7 +818,7 @@ mod test {
             &mut metrics,
             b4.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(blocktree.is_coherent(&b4.get_id()));
@@ -822,7 +826,7 @@ mod test {
             &mut metrics,
             b5.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(blocktree.is_coherent(&b5.get_id()));
@@ -830,7 +834,7 @@ mod test {
             &mut metrics,
             b6.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(blocktree.is_coherent(&b6.get_id()));
@@ -890,7 +894,7 @@ mod test {
             block_id: genesis_qc.get_block_id(),
             timestamp_ns: GENESIS_TIMESTAMP,
         });
-        let mut state_backend = InMemoryStateInner::genesis(SeqNum(4));
+        let mut state_read = InMemoryStateInner::genesis(SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
         blocktree.add(g.into());
 
@@ -908,7 +912,7 @@ mod test {
             &mut metrics,
             b1.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(blocktree.is_coherent(&b1.get_id()));
@@ -916,7 +920,7 @@ mod test {
             &mut metrics,
             b2.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(blocktree.is_coherent(&b2.get_id()));
@@ -952,7 +956,7 @@ mod test {
             block_id: genesis_qc.get_block_id(),
             timestamp_ns: GENESIS_TIMESTAMP,
         });
-        let mut state_backend = InMemoryStateInner::genesis(SeqNum(4));
+        let mut state_read = InMemoryStateInner::genesis(SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
         blocktree.add(g.clone().into());
         blocktree.add(b1.clone().into());
@@ -970,7 +974,7 @@ mod test {
             &mut metrics,
             g.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(blocktree.is_coherent(&g.get_id()));
@@ -978,7 +982,7 @@ mod test {
             &mut metrics,
             b1.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(blocktree.is_coherent(&b1.get_id()));
@@ -1004,7 +1008,7 @@ mod test {
             block_id: genesis_qc.get_block_id(),
             timestamp_ns: GENESIS_TIMESTAMP,
         });
-        let mut state_backend =
+        let mut state_read =
             InMemoryStateInner::<NopSignature, MockSignatures<NopSignature>>::genesis(SeqNum(4));
         let block_policy = PassthruBlockPolicy;
         blocktree.add(g.into());
@@ -1032,14 +1036,14 @@ mod test {
             block_id: genesis_qc.get_block_id(),
             timestamp_ns: GENESIS_TIMESTAMP,
         });
-        let mut state_backend = InMemoryStateInner::genesis(SeqNum(4));
+        let mut state_read = InMemoryStateInner::genesis(SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
         blocktree.add(g.clone().into());
         blocktree.try_update_coherency(
             &mut metrics,
             g.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(blocktree.is_coherent(&g.get_id()));
@@ -1059,7 +1063,7 @@ mod test {
             &mut metrics,
             b1.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(blocktree.is_coherent(&b1.get_id()));
@@ -1067,7 +1071,7 @@ mod test {
             &mut metrics,
             b2.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(blocktree.is_coherent(&b2.get_id()));
@@ -1075,7 +1079,7 @@ mod test {
             &mut metrics,
             b3.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(blocktree.is_coherent(&b3.get_id()));
@@ -1083,7 +1087,7 @@ mod test {
             &mut metrics,
             b4.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(blocktree.is_coherent(&b4.get_id()));
@@ -1119,14 +1123,14 @@ mod test {
             block_id: genesis_qc.get_block_id(),
             timestamp_ns: GENESIS_TIMESTAMP,
         });
-        let mut state_backend = InMemoryStateInner::genesis(SeqNum(4));
+        let mut state_read = InMemoryStateInner::genesis(SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
         blocktree.add(g.clone().into());
         blocktree.try_update_coherency(
             &mut metrics,
             g.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(blocktree.maybe_fill_path_to_root(&g.header().qc).is_none()); // root naturally don't have missing ancestor
@@ -1136,7 +1140,7 @@ mod test {
             &mut metrics,
             b2.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(
@@ -1152,7 +1156,7 @@ mod test {
             &mut metrics,
             b3.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(
@@ -1168,7 +1172,7 @@ mod test {
             &mut metrics,
             b4.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(
@@ -1184,7 +1188,7 @@ mod test {
             &mut metrics,
             b1.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
 
@@ -1228,7 +1232,7 @@ mod test {
             block_id: genesis_qc.get_block_id(),
             timestamp_ns: GENESIS_TIMESTAMP,
         });
-        let mut state_backend = InMemoryStateInner::genesis(SeqNum(4));
+        let mut state_read = InMemoryStateInner::genesis(SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
         blocktree.add(g.clone().into());
         blocktree.add(b1.clone().into());
@@ -1236,7 +1240,7 @@ mod test {
             &mut metrics,
             b1.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
 
@@ -1254,7 +1258,7 @@ mod test {
             &mut metrics,
             g.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(blocktree.is_coherent(&g.get_id()));
@@ -1262,7 +1266,7 @@ mod test {
             &mut metrics,
             b1.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(blocktree.is_coherent(&b1.get_id()));
@@ -1270,7 +1274,7 @@ mod test {
             &mut metrics,
             b2.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(blocktree.is_coherent(&b2.get_id()));
@@ -1300,7 +1304,7 @@ mod test {
             block_id: genesis_qc.get_block_id(),
             timestamp_ns: GENESIS_TIMESTAMP,
         });
-        let mut state_backend = InMemoryStateInner::genesis(SeqNum(4));
+        let mut state_read = InMemoryStateInner::genesis(SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
         blocktree.add(g.clone().into());
         assert!(blocktree.maybe_fill_path_to_root(&g.header().qc).is_none()); // root naturally don't have missing ancestor
@@ -1319,7 +1323,7 @@ mod test {
             &mut metrics,
             g.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(blocktree.is_coherent(&g.get_id()));
@@ -1333,7 +1337,7 @@ mod test {
             &mut metrics,
             g.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(blocktree.is_coherent(&g.get_id()));
@@ -1341,7 +1345,7 @@ mod test {
             &mut metrics,
             b1.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(blocktree.is_coherent(&b1.get_id()));
@@ -1349,7 +1353,7 @@ mod test {
             &mut metrics,
             b2.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(blocktree.is_coherent(&b2.get_id()));
@@ -1380,7 +1384,7 @@ mod test {
             block_id: genesis_qc.get_block_id(),
             timestamp_ns: GENESIS_TIMESTAMP,
         });
-        let mut state_backend = InMemoryStateInner::genesis(SeqNum(4));
+        let mut state_read = InMemoryStateInner::genesis(SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
         blocktree.add(g.clone().into());
         assert!(blocktree.maybe_fill_path_to_root(&g.header().qc).is_none()); // root naturally don't have missing ancestor
@@ -1399,7 +1403,7 @@ mod test {
             &mut metrics,
             g.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(blocktree.is_coherent(&g.get_id()));
@@ -1427,7 +1431,7 @@ mod test {
             &mut metrics,
             g.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(blocktree.is_coherent(&g.get_id()));
@@ -1444,7 +1448,7 @@ mod test {
             &mut metrics,
             g.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(blocktree.is_coherent(&g.get_id()));
@@ -1452,7 +1456,7 @@ mod test {
             &mut metrics,
             b1.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(blocktree.is_coherent(&b1.get_id()));
@@ -1460,7 +1464,7 @@ mod test {
             &mut metrics,
             b2.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(blocktree.is_coherent(&b2.get_id()));
@@ -1468,7 +1472,7 @@ mod test {
             &mut metrics,
             b3.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(blocktree.is_coherent(&b3.get_id()));
@@ -1499,7 +1503,7 @@ mod test {
             block_id: genesis_qc.get_block_id(),
             timestamp_ns: GENESIS_TIMESTAMP,
         });
-        let mut state_backend = InMemoryStateInner::genesis(SeqNum(4));
+        let mut state_read = InMemoryStateInner::genesis(SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
         blocktree.add(g.clone().into());
         assert!(blocktree.maybe_fill_path_to_root(&g.header().qc).is_none()); // root naturally don't have missing ancestor
@@ -1518,7 +1522,7 @@ mod test {
             &mut metrics,
             g.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(blocktree.is_coherent(&g.get_id()));
@@ -1539,7 +1543,7 @@ mod test {
             &mut metrics,
             g.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(blocktree.is_coherent(&g.get_id()));
@@ -1547,7 +1551,7 @@ mod test {
             &mut metrics,
             b1.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(blocktree.is_coherent(&b1.get_id()));
@@ -1563,7 +1567,7 @@ mod test {
             &mut metrics,
             g.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(blocktree.is_coherent(&g.get_id()));
@@ -1571,7 +1575,7 @@ mod test {
             &mut metrics,
             b1.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(blocktree.is_coherent(&b1.get_id()));
@@ -1579,7 +1583,7 @@ mod test {
             &mut metrics,
             b2.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(blocktree.is_coherent(&b2.get_id()));
@@ -1587,7 +1591,7 @@ mod test {
             &mut metrics,
             b3.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(blocktree.is_coherent(&b3.get_id()));
@@ -1618,7 +1622,7 @@ mod test {
             block_id: genesis_qc.get_block_id(),
             timestamp_ns: GENESIS_TIMESTAMP,
         });
-        let mut state_backend = InMemoryStateInner::genesis(SeqNum(4));
+        let mut state_read = InMemoryStateInner::genesis(SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
         blocktree.add(g.clone().into());
         assert!(blocktree.maybe_fill_path_to_root(&g.header().qc).is_none()); // root naturally don't have missing ancestor
@@ -1646,7 +1650,7 @@ mod test {
             &mut metrics,
             g.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(blocktree.is_coherent(&g.get_id()));
@@ -1662,7 +1666,7 @@ mod test {
             &mut metrics,
             g.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(blocktree.is_coherent(&g.get_id()));
@@ -1670,7 +1674,7 @@ mod test {
             &mut metrics,
             b1.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(blocktree.is_coherent(&b1.get_id()));
@@ -1678,7 +1682,7 @@ mod test {
             &mut metrics,
             b2.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(blocktree.is_coherent(&b2.get_id()));
@@ -1686,7 +1690,7 @@ mod test {
             &mut metrics,
             b3.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(blocktree.is_coherent(&b3.get_id()));
@@ -1722,7 +1726,7 @@ mod test {
             block_id: genesis_qc.get_block_id(),
             timestamp_ns: GENESIS_TIMESTAMP,
         });
-        let mut state_backend = InMemoryStateInner::genesis(SeqNum(4));
+        let mut state_read = InMemoryStateInner::genesis(SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
         blocktree.add(g.clone().into());
         assert!(blocktree.maybe_fill_path_to_root(&g.header().qc).is_none()); // root naturally don't have missing ancestor
@@ -1777,7 +1781,7 @@ mod test {
             &mut metrics,
             g.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(blocktree.is_coherent(&g.get_id()));
@@ -1799,7 +1803,7 @@ mod test {
             &mut metrics,
             g.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(blocktree.is_coherent(&g.get_id()));
@@ -1807,7 +1811,7 @@ mod test {
             &mut metrics,
             b1.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(blocktree.is_coherent(&b1.get_id()));
@@ -1815,7 +1819,7 @@ mod test {
             &mut metrics,
             b2.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(blocktree.is_coherent(&b2.get_id()));
@@ -1823,7 +1827,7 @@ mod test {
             &mut metrics,
             b3.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(blocktree.is_coherent(&b3.get_id()));
@@ -1831,7 +1835,7 @@ mod test {
             &mut metrics,
             b4.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(blocktree.is_coherent(&b4.get_id()));
@@ -1839,7 +1843,7 @@ mod test {
             &mut metrics,
             b5.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(blocktree.is_coherent(&b5.get_id()));
@@ -1847,7 +1851,7 @@ mod test {
             &mut metrics,
             b6.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(blocktree.is_coherent(&b6.get_id()));
@@ -1874,7 +1878,7 @@ mod test {
             block_id: genesis_qc.get_block_id(),
             timestamp_ns: GENESIS_TIMESTAMP,
         });
-        let mut state_backend =
+        let mut state_read =
             InMemoryStateInner::<NopSignature, MockSignatures<NopSignature>>::genesis(SeqNum(4));
         let block_policy = PassthruBlockPolicy;
         blocktree.add(b2.clone().into());
@@ -1926,7 +1930,7 @@ mod test {
             block_id: genesis_qc.get_block_id(),
             timestamp_ns: GENESIS_TIMESTAMP,
         });
-        let mut state_backend = InMemoryStateInner::genesis(SeqNum(4));
+        let mut state_read = InMemoryStateInner::genesis(SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
 
         // insertion order: insert all blocks except b3, then b3
@@ -1945,7 +1949,7 @@ mod test {
             &mut metrics,
             g.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         let high_commit_qc = blocktree.get_high_committable_qc();
@@ -1967,7 +1971,7 @@ mod test {
             block_id: genesis_qc.get_block_id(),
             timestamp_ns: GENESIS_TIMESTAMP,
         });
-        let mut state_backend = InMemoryStateInner::genesis(SeqNum(4));
+        let mut state_read = InMemoryStateInner::genesis(SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
 
         blocktree.add(g.clone().into());
@@ -1979,21 +1983,21 @@ mod test {
             &mut metrics,
             g.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         blocktree.try_update_coherency(
             &mut metrics,
             b1.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         blocktree.try_update_coherency(
             &mut metrics,
             b2.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
 
@@ -2041,7 +2045,7 @@ mod test {
             block_id: genesis_qc.get_block_id(),
             timestamp_ns: GENESIS_TIMESTAMP,
         });
-        let mut state_backend = InMemoryStateInner::genesis(SeqNum(10));
+        let mut state_read = InMemoryStateInner::genesis(SeqNum(10));
         let mut block_policy = PassthruBlockPolicy;
 
         // Add and make blocks on canonical chain coherent
@@ -2054,7 +2058,7 @@ mod test {
             &mut metrics,
             d.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(blocktree.is_coherent(&d.get_id()));
@@ -2069,7 +2073,7 @@ mod test {
             &mut metrics,
             b_prime.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(blocktree.is_coherent(&b_prime.get_id()));
@@ -2100,7 +2104,7 @@ mod test {
             block_id: genesis_qc.get_block_id(),
             timestamp_ns: GENESIS_TIMESTAMP,
         });
-        let mut state_backend = InMemoryStateInner::genesis(SeqNum(10));
+        let mut state_read = InMemoryStateInner::genesis(SeqNum(10));
         let mut block_policy = PassthruBlockPolicy;
 
         // Add all blocks
@@ -2116,14 +2120,14 @@ mod test {
             &mut metrics,
             c.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         blocktree.try_update_coherency(
             &mut metrics,
             c_prime.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
 
@@ -2158,7 +2162,7 @@ mod test {
             block_id: genesis_qc.get_block_id(),
             timestamp_ns: GENESIS_TIMESTAMP,
         });
-        let mut state_backend = InMemoryStateInner::genesis(SeqNum(10));
+        let mut state_read = InMemoryStateInner::genesis(SeqNum(10));
         let mut block_policy = PassthruBlockPolicy;
 
         blocktree.add(g.into());
@@ -2171,7 +2175,7 @@ mod test {
             &mut metrics,
             d.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(blocktree.is_coherent(&c.get_id()));
@@ -2195,7 +2199,7 @@ mod test {
             &mut metrics,
             e_prime.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(blocktree.is_coherent(&c_prime.get_id()));
@@ -2220,7 +2224,7 @@ mod test {
             &mut metrics,
             f.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(blocktree.is_coherent(&f.get_id()));
@@ -2239,7 +2243,7 @@ mod test {
             &mut metrics,
             g2.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(blocktree.is_coherent(&g2.get_id()));
@@ -2265,14 +2269,14 @@ mod test {
             &mut metrics,
             b_high.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         blocktree.try_update_coherency(
             &mut metrics,
             d2.get_id(),
             &mut block_policy,
-            &mut state_backend,
+            &mut state_read,
             &MockChainConfig::DEFAULT,
         );
         assert!(blocktree.is_coherent(&b_high.get_id()));

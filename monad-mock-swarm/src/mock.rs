@@ -317,7 +317,7 @@ impl<S: SwarmRelation> Executor for MockExecutor<S> {
         S::SignatureCollectionType,
         S::ExecutionProtocolType,
         S::BlockPolicyType,
-        S::StateBackendType,
+        S::ExecutionStateReadType,
         S::ChainConfigType,
         S::ChainRevisionType,
     >;

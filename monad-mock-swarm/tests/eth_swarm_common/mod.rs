@@ -32,6 +32,9 @@ use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthBlockValidator;
 use monad_eth_ledger::MockEthLedger;
 use monad_eth_types::EthExecutionProtocol;
+use monad_execution_state_read::{
+    AccountState, InMemoryBlockState, InMemoryState, InMemoryStateInner,
+};
 use monad_mock_swarm::{
     mock::TimestamperConfig,
     mock_swarm::{Nodes, SwarmBuilder},
@@ -41,7 +44,6 @@ use monad_mock_swarm::{
 use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler, RouterSchedulerBuilder};
 use monad_secp::{PubKey, SecpSignature};
 use monad_state::{MonadMessage, VerifiedMonadMessage};
-use monad_state_backend::{AccountState, InMemoryBlockState, InMemoryState, InMemoryStateInner};
 use monad_testutil::swarm::make_state_configs;
 use monad_transformer::{GenericTransformer, GenericTransformerPipeline, LatencyTransformer, ID};
 use monad_types::{NodeId, SeqNum, GENESIS_SEQ_NUM};
@@ -58,7 +60,7 @@ impl SwarmRelation for EthSwarm {
     type SignatureType = SecpSignature;
     type SignatureCollectionType = BlsSignatureCollection<PubKey>;
     type ExecutionProtocolType = EthExecutionProtocol;
-    type StateBackendType = InMemoryState<Self::SignatureType, Self::SignatureCollectionType>;
+    type ExecutionStateReadType = InMemoryState<Self::SignatureType, Self::SignatureCollectionType>;
     type BlockPolicyType = EthBlockPolicy<
         Self::SignatureType,
         Self::SignatureCollectionType,
@@ -109,7 +111,7 @@ impl SwarmRelation for EthSwarm {
         Self::SignatureCollectionType,
         Self::ExecutionProtocolType,
         Self::BlockPolicyType,
-        Self::StateBackendType,
+        Self::ExecutionStateReadType,
         Self::ChainConfigType,
         Self::ChainRevisionType,
     >;
@@ -176,17 +178,17 @@ pub fn generate_eth_swarm_with_accounts(
             .enumerate()
             .map(|(idx, state_builder)| {
                 let validators = state_builder.locked_epoch_validators[0].clone();
-                let state_backend = state_builder.state_backend.clone();
+                let state_read = state_builder.state_read.clone();
                 NodeBuilder::<EthSwarm>::new(
                     ID::new(NodeId::new(state_builder.key.pubkey())),
                     state_builder,
                     NoSerRouterConfig::new(all_peers.clone()).build(),
                     MockValSetUpdaterNop::new(validators.validators, epoch_length),
-                    MockTxPoolExecutor::new(create_block_policy(), state_backend.clone())
+                    MockTxPoolExecutor::new(create_block_policy(), state_read.clone())
                         .with_chain_params(&CHAIN_PARAMS)
                         .with_byzantine_config(txpool_byzantine_config(idx)),
-                    MockEthLedger::new(state_backend.clone()),
-                    MockStateSyncExecutor::new(state_backend),
+                    MockEthLedger::new(state_read.clone()),
+                    MockStateSyncExecutor::new(state_read),
                     vec![GenericTransformer::Latency(LatencyTransformer::new(
                         CONSENSUS_DELTA,
                     ))],

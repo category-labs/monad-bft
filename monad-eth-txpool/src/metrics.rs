@@ -61,8 +61,8 @@ monad_executor::metric_consts! {
         name: "monad.bft.txpool.pool.drop_pool_not_ready",
         help: "Transactions dropped because pool is not ready",
     }
-    POOL_DROP_INTERNAL_STATE_BACKEND_ERROR {
-        name: "monad.bft.txpool.pool.drop_internal_state_backend_error",
+    POOL_DROP_INTERNAL_EXECUTION_STATE_READ_ERROR {
+        name: "monad.bft.txpool.pool.drop_internal_state_read_error",
         help: "Transactions dropped due to backend error",
     }
     POOL_DROP_INTERNAL_NOT_READY {
@@ -127,7 +127,7 @@ pub const TXPOOL_EXECUTOR_METRIC_DEFS: &[&MetricDef] = &[
     POOL_DROP_REPLACED_BY_HIGHER_PRIORITY,
     POOL_DROP_POOL_FULL,
     POOL_DROP_POOL_NOT_READY,
-    POOL_DROP_INTERNAL_STATE_BACKEND_ERROR,
+    POOL_DROP_INTERNAL_EXECUTION_STATE_READ_ERROR,
     POOL_DROP_INTERNAL_NOT_READY,
     POOL_CREATE_PROPOSAL,
     POOL_CREATE_PROPOSAL_TXS,
@@ -156,7 +156,7 @@ pub struct EthTxPoolMetrics {
     pub drop_replaced_by_higher_priority: Gauge,
     pub drop_pool_full: Gauge,
     pub drop_pool_not_ready: Gauge,
-    pub drop_internal_state_backend_error: Gauge,
+    pub drop_internal_state_read_error: Gauge,
     pub drop_internal_not_ready: Gauge,
 
     pub create_proposal: Gauge,
@@ -189,8 +189,8 @@ impl EthTxPoolMetrics {
                 .clone(),
             drop_pool_full: executor_metrics.gauge(POOL_DROP_POOL_FULL).clone(),
             drop_pool_not_ready: executor_metrics.gauge(POOL_DROP_POOL_NOT_READY).clone(),
-            drop_internal_state_backend_error: executor_metrics
-                .gauge(POOL_DROP_INTERNAL_STATE_BACKEND_ERROR)
+            drop_internal_state_read_error: executor_metrics
+                .gauge(POOL_DROP_INTERNAL_EXECUTION_STATE_READ_ERROR)
                 .clone(),
             drop_internal_not_ready: executor_metrics.gauge(POOL_DROP_INTERNAL_NOT_READY).clone(),
 
@@ -266,7 +266,7 @@ struct EthTxPoolMetricsSnapshot {
     drop_replaced_by_higher_priority: u64,
     drop_pool_full: u64,
     drop_pool_not_ready: u64,
-    drop_internal_state_backend_error: u64,
+    drop_internal_state_read_error: u64,
     drop_internal_not_ready: u64,
 
     create_proposal: u64,
@@ -293,7 +293,7 @@ impl From<&EthTxPoolMetrics> for EthTxPoolMetricsSnapshot {
             drop_replaced_by_higher_priority: metrics.drop_replaced_by_higher_priority.get(),
             drop_pool_full: metrics.drop_pool_full.get(),
             drop_pool_not_ready: metrics.drop_pool_not_ready.get(),
-            drop_internal_state_backend_error: metrics.drop_internal_state_backend_error.get(),
+            drop_internal_state_read_error: metrics.drop_internal_state_read_error.get(),
             drop_internal_not_ready: metrics.drop_internal_not_ready.get(),
 
             create_proposal: metrics.create_proposal.get(),
@@ -351,8 +351,8 @@ impl<'de> Deserialize<'de> for EthTxPoolMetrics {
             .drop_pool_not_ready
             .set(snapshot.drop_pool_not_ready);
         metrics
-            .drop_internal_state_backend_error
-            .set(snapshot.drop_internal_state_backend_error);
+            .drop_internal_state_read_error
+            .set(snapshot.drop_internal_state_read_error);
         metrics
             .drop_internal_not_ready
             .set(snapshot.drop_internal_not_ready);

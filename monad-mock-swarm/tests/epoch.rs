@@ -33,6 +33,7 @@ mod test {
         certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
         NopPubKey, NopSignature,
     };
+    use monad_execution_state_read::{InMemoryState, InMemoryStateInner};
     use monad_mock_swarm::{
         fetch_metric,
         mock::TimestamperConfig,
@@ -45,7 +46,6 @@ mod test {
     use monad_multi_sig::MultiSig;
     use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler, RouterSchedulerBuilder};
     use monad_state::{MonadMessage, Role, VerifiedMonadMessage};
-    use monad_state_backend::{InMemoryState, InMemoryStateInner};
     use monad_testutil::swarm::{make_state_configs, swarm_ledger_verification};
     use monad_transformer::{
         DropTransformer, GenericTransformer, GenericTransformerPipeline, LatencyTransformer,
@@ -67,7 +67,8 @@ mod test {
         type SignatureType = NopSignature;
         type SignatureCollectionType = MultiSig<Self::SignatureType>;
         type ExecutionProtocolType = MockExecutionProtocol;
-        type StateBackendType = InMemoryState<Self::SignatureType, Self::SignatureCollectionType>;
+        type ExecutionStateReadType =
+            InMemoryState<Self::SignatureType, Self::SignatureCollectionType>;
         type BlockPolicyType = PassthruBlockPolicy;
         type ChainConfigType = MockChainConfig;
         type ChainRevisionType = MockChainRevision;
@@ -116,7 +117,7 @@ mod test {
             Self::SignatureCollectionType,
             Self::ExecutionProtocolType,
             Self::BlockPolicyType,
-            Self::StateBackendType,
+            Self::ExecutionStateReadType,
             Self::ChainConfigType,
             Self::ChainRevisionType,
         >;
@@ -238,7 +239,7 @@ mod test {
                 .into_iter()
                 .enumerate()
                 .map(|(seed, state_builder)| {
-                    let state_backend = state_builder.state_backend.clone();
+                    let state_read = state_builder.state_read.clone();
                     let validators = state_builder.locked_epoch_validators[0].clone();
                     NodeBuilder::<NoSerSwarm>::new(
                         ID::new(NodeId::new(state_builder.key.pubkey())),
@@ -246,8 +247,8 @@ mod test {
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockValSetUpdaterNop::new(validators.validators, epoch_length),
                         MockTxPoolExecutor::default().with_chain_params(&CHAIN_PARAMS),
-                        MockLedger::new(state_backend.clone()),
-                        MockStateSyncExecutor::new(state_backend),
+                        MockLedger::new(state_read.clone()),
+                        MockStateSyncExecutor::new(state_read),
                         vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],
                         vec![],
                         TimestamperConfig::default(),
@@ -330,7 +331,7 @@ mod test {
                 .into_iter()
                 .enumerate()
                 .map(|(seed, state_builder)| {
-                    let state_backend = state_builder.state_backend.clone();
+                    let state_read = state_builder.state_read.clone();
                     let validators = state_builder.locked_epoch_validators[0].clone();
                     NodeBuilder::<NoSerSwarm>::new(
                         ID::new(NodeId::new(state_builder.key.pubkey())),
@@ -338,8 +339,8 @@ mod test {
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockValSetUpdaterNop::new(validators.validators, epoch_length),
                         MockTxPoolExecutor::default().with_chain_params(&CHAIN_PARAMS),
-                        MockLedger::new(state_backend.clone()),
-                        MockStateSyncExecutor::new(state_backend),
+                        MockLedger::new(state_read.clone()),
+                        MockStateSyncExecutor::new(state_read),
                         regular_pipeline.clone(),
                         vec![],
                         TimestamperConfig::default(),
@@ -508,7 +509,7 @@ mod test {
                 .into_iter()
                 .enumerate()
                 .map(|(seed, state_builder)| {
-                    let state_backend = state_builder.state_backend.clone();
+                    let state_read = state_builder.state_read.clone();
                     let validators = state_builder.locked_epoch_validators[0].clone();
                     NodeBuilder::<ValidatorSwapSwarm>::new(
                         ID::new(NodeId::new(state_builder.key.pubkey())),
@@ -516,8 +517,8 @@ mod test {
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockValSetUpdaterSwap::new(validators.validators, epoch_length),
                         MockTxPoolExecutor::default().with_chain_params(&CHAIN_PARAMS),
-                        MockLedger::new(state_backend.clone()),
-                        MockStateSyncExecutor::new(state_backend),
+                        MockLedger::new(state_read.clone()),
+                        MockStateSyncExecutor::new(state_read),
                         regular_pipeline.clone(),
                         vec![],
                         TimestamperConfig::default(),
@@ -698,7 +699,7 @@ mod test {
                 .into_iter()
                 .enumerate()
                 .map(|(seed, state_builder)| {
-                    let state_backend = state_builder.state_backend.clone();
+                    let state_read = state_builder.state_read.clone();
                     let validators = state_builder.locked_epoch_validators[0].clone();
                     NodeBuilder::<ValidatorSwapSwarm>::new(
                         ID::new(NodeId::new(state_builder.key.pubkey())),
@@ -706,8 +707,8 @@ mod test {
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockValSetUpdaterSwap::new(validators.validators, epoch_length),
                         MockTxPoolExecutor::default().with_chain_params(&CHAIN_PARAMS),
-                        MockLedger::new(state_backend.clone()),
-                        MockStateSyncExecutor::new(state_backend),
+                        MockLedger::new(state_read.clone()),
+                        MockStateSyncExecutor::new(state_read),
                         vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],
                         vec![],
                         TimestamperConfig::default(),

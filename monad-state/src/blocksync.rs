@@ -25,11 +25,11 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
+use monad_execution_state_read::ExecutionStateRead;
 use monad_executor_glue::{
     BlockSyncEvent, Command, ConsensusEvent, LedgerCommand, LoopbackCommand, MonadEvent,
     RouterCommand, StateSyncEvent, TimeoutVariant, TimerCommand,
 };
-use monad_state_backend::StateBackend;
 use monad_types::{ExecutionProtocol, NodeId, Round, RouterTarget};
 use monad_validator::{
     epoch_manager::EpochManager, signature_collection::SignatureCollection,
@@ -38,22 +38,22 @@ use monad_validator::{
 
 use crate::{ConsensusMode, MonadState, VerifiedMonadMessage};
 
-pub(super) struct BlockSyncChildState<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+pub(super) struct BlockSyncChildState<'a, ST, SCT, EPT, BPT, ESRT, VTF, LT, BVT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
-    SBT: StateBackend<ST, SCT>,
+    BPT: BlockPolicy<ST, SCT, EPT, ESRT, CCT, CRT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
+    BVT: BlockValidator<ST, SCT, EPT, BPT, ESRT, CCT, CRT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
     block_sync: &'a mut BlockSync<ST, SCT, EPT>,
 
     /// BlockSync queries consensus first when receiving BlockSyncRequest
-    consensus: &'a ConsensusMode<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
+    consensus: &'a ConsensusMode<ST, SCT, EPT, BPT, ESRT, CCT, CRT>,
     epoch_manager: &'a EpochManager,
     val_epoch_map: &'a ValidatorsEpochMapping<VTF, SCT>,
     secondary_raptorcast_peers: &'a BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, Round>,
@@ -62,24 +62,24 @@ where
 
     metrics: &'a mut Metrics,
 
-    _phantom: PhantomData<(ST, SCT, EPT, BPT, SBT, VTF, LT, BVT)>,
+    _phantom: PhantomData<(ST, SCT, EPT, BPT, ESRT, VTF, LT, BVT)>,
 }
 
-impl<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
-    BlockSyncChildState<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+impl<'a, ST, SCT, EPT, BPT, ESRT, VTF, LT, BVT, CCT, CRT>
+    BlockSyncChildState<'a, ST, SCT, EPT, BPT, ESRT, VTF, LT, BVT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
-    SBT: StateBackend<ST, SCT>,
+    BPT: BlockPolicy<ST, SCT, EPT, ESRT, CCT, CRT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
+    BVT: BlockValidator<ST, SCT, EPT, BPT, ESRT, CCT, CRT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
     pub(super) fn new(
-        monad_state: &'a mut MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>,
+        monad_state: &'a mut MonadState<ST, SCT, EPT, BPT, ESRT, VTF, LT, BVT, CCT, CRT>,
     ) -> Self {
         Self {
             block_sync: &mut monad_state.block_sync,
@@ -159,7 +159,7 @@ where
     command: BlockSyncCommand<ST, SCT, EPT>,
 }
 
-impl<ST, SCT, EPT, BPT, SBT, CCT, CRT> From<WrappedBlockSyncCommand<ST, SCT, EPT>>
+impl<ST, SCT, EPT, BPT, ESRT, CCT, CRT> From<WrappedBlockSyncCommand<ST, SCT, EPT>>
     for Vec<
         Command<
             MonadEvent<ST, SCT, EPT>,
@@ -168,7 +168,7 @@ impl<ST, SCT, EPT, BPT, SBT, CCT, CRT> From<WrappedBlockSyncCommand<ST, SCT, EPT
             SCT,
             EPT,
             BPT,
-            SBT,
+            ESRT,
             CCT,
             CRT,
         >,
@@ -177,8 +177,8 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
-    SBT: StateBackend<ST, SCT>,
+    BPT: BlockPolicy<ST, SCT, EPT, ESRT, CCT, CRT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {

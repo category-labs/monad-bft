@@ -23,7 +23,7 @@ use monad_chain_config::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_state_backend::{InMemoryState, StateBackend};
+use monad_execution_state_read::{ExecutionStateRead, InMemoryState};
 use monad_types::ExecutionProtocol;
 use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionPubKeyType};
 
@@ -37,13 +37,13 @@ use crate::{
 };
 
 #[auto_impl(Box)]
-pub trait BlockValidator<ST, SCT, EPT, BPT, SBT, CCT, CRT>
+pub trait BlockValidator<ST, SCT, EPT, BPT, ESRT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
-    SBT: StateBackend<ST, SCT>,
+    BPT: BlockPolicy<ST, SCT, EPT, ESRT, CCT, CRT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {

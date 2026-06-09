@@ -23,6 +23,8 @@ monad-dataplane = { workspace = true }
 monad-eth-block-policy = { workspace = true }
 monad-eth-block-validator = { workspace = true }
 monad-eth-txpool-executor = { workspace = true }
+monad-execution-state-read = { workspace = true }
+monad-execution-state-read-cache = { workspace = true }
 monad-executor = { workspace = true }
 monad-executor-glue = { workspace = true }
 monad-keystore = { workspace = true }
@@ -35,8 +37,6 @@ monad-raptorcast = { workspace = true }
 monad-router-multi = { workspace = true }
 monad-secp = { workspace = true }
 monad-state = { workspace = true }
-monad-state-backend = { workspace = true }
-monad-state-backend-cache = { workspace = true }
 monad-statesync-executor = { workspace = true }
 monad-triedb-utils = { workspace = true }
 monad-types = { workspace = true }

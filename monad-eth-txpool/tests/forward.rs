@@ -20,7 +20,9 @@ use monad_crypto::NopSignature;
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_testutil::{generate_block_with_txs, make_legacy_tx, recover_tx, S1};
 use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics, PoolTxKind};
-use monad_state_backend::{AccountState, InMemoryBlockState, InMemoryState, InMemoryStateInner};
+use monad_execution_state_read::{
+    AccountState, InMemoryBlockState, InMemoryState, InMemoryStateInner,
+};
 use monad_testutil::signing::MockSignatures;
 use monad_types::{Round, SeqNum, GENESIS_SEQ_NUM};
 
@@ -55,7 +57,7 @@ fn with_txpool(
         MockChainConfig,
         MockChainRevision,
     >::new(GENESIS_SEQ_NUM, 4);
-    let mut state_backend = InMemoryStateInner::new(
+    let mut state_read = InMemoryStateInner::new(
         SeqNum(4),
         InMemoryBlockState::genesis(BTreeMap::from_iter(vec![(
             tx.signer(),
@@ -98,7 +100,7 @@ fn with_txpool(
     pool.insert_txs(
         &mut event_tracker,
         &eth_block_policy,
-        &mut state_backend,
+        &mut state_read,
         &MockChainConfig::DEFAULT,
         vec![(
             tx,

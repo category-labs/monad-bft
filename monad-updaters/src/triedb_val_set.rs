@@ -32,10 +32,10 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_types::EthExecutionProtocol;
+use monad_execution_state_read::ExecutionStateRead;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MonadEvent, ValSetCommand};
 use monad_secp::{PubKey, SecpSignature};
-use monad_state_backend::StateBackend;
 use monad_types::{Epoch, SeqNum};
 use monad_validator::signature_collection::SignatureCollection;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
@@ -52,11 +52,11 @@ where
     epoch_length: SeqNum,
     staking_activation: Epoch,
 
-    // sends a request to state backend thread to initiate a valset read
+    // sends a request to execution state read thread to initiate a valset read
     valset_request_sender: Sender<(SeqNum, Epoch)>,
 
     // used by executor until staking activation epoch
-    // used by state backend thread after staking activation epoch
+    // used by execution state read thread after staking activation epoch
     valset_sender: UnboundedSender<(ValidatorSetData<SCT>, SeqNum, Epoch)>,
     valset_recv: UnboundedReceiver<(ValidatorSetData<SCT>, SeqNum, Epoch)>,
 
@@ -65,14 +65,14 @@ where
 }
 
 impl ValSetUpdater<SecpSignature, BlsSignatureCollection<PubKey>> {
-    pub fn new<SBT>(
+    pub fn new<ESRT>(
         validators_path: PathBuf,
         epoch_length: SeqNum,
         staking_activation: Epoch,
-        mut state_backend: SBT,
+        mut state_read: ESRT,
     ) -> Self
     where
-        SBT: StateBackend<SecpSignature, BlsSignatureCollection<PubKey>> + Send + 'static,
+        ESRT: ExecutionStateRead<SecpSignature, BlsSignatureCollection<PubKey>> + Send + 'static,
     {
         let (valset_sender, valset_recv) = tokio::sync::mpsc::unbounded_channel();
         let (valset_request_sender, valset_request_recv) = std::sync::mpsc::channel();
@@ -85,7 +85,7 @@ impl ValSetUpdater<SecpSignature, BlsSignatureCollection<PubKey>> {
 
             // wait until the block is finalized in DB before trying to
             // read the validator set
-            while state_backend
+            while state_read
                 .raw_read_latest_finalized_block()
                 .is_none_or(|latest_finalized| latest_finalized < seq_num_to_read)
             {
@@ -93,7 +93,7 @@ impl ValSetUpdater<SecpSignature, BlsSignatureCollection<PubKey>> {
                 std::thread::sleep(Duration::from_millis(500));
             }
 
-            let next_valset = state_backend.read_valset_at_block(seq_num_to_read, requested_epoch);
+            let next_valset = state_read.read_valset_at_block(seq_num_to_read, requested_epoch);
 
             // validator set data expects (SecpKey, Stake, BlsKey) instead of (SecpKey, BlsKey, Stake)
             let validators = next_valset

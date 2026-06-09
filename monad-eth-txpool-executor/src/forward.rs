@@ -30,7 +30,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_eth_txpool::{max_eip2718_encoded_length, EthTxPool};
 use monad_eth_types::ExtractEthAddress;
-use monad_state_backend::StateBackend;
+use monad_execution_state_read::ExecutionStateRead;
 use monad_validator::signature_collection::SignatureCollection;
 use pin_project::pin_project;
 use tracing::error;
@@ -193,13 +193,13 @@ impl<S> EthTxPoolForwardingManagerProjected<'_, S> {
         }
     }
 
-    pub fn schedule_egress_txs<ST, SCT, SBT, CCT, CRT>(
+    pub fn schedule_egress_txs<ST, SCT, ESRT, CCT, CRT>(
         &mut self,
-        pool: &mut EthTxPool<ST, SCT, SBT, CCT, CRT>,
+        pool: &mut EthTxPool<ST, SCT, ESRT, CCT, CRT>,
     ) where
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-        SBT: StateBackend<ST, SCT>,
+        ESRT: ExecutionStateRead<ST, SCT>,
         CertificateSignaturePubKey<ST>: ExtractEthAddress,
         CCT: ChainConfig<CRT>,
         CRT: ChainRevision,

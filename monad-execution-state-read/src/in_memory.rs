@@ -36,7 +36,7 @@ use monad_validator::signature_collection::{SignatureCollection, SignatureCollec
 use serde::{Deserialize, Serialize};
 use tracing::trace;
 
-use crate::{MockExecution, StateBackend, StateBackendError};
+use crate::{ExecutionStateRead, ExecutionStateReadError, MockExecution};
 
 pub type InMemoryState<ST, SCT> = Arc<Mutex<InMemoryStateInner<ST, SCT>>>;
 
@@ -290,7 +290,7 @@ where
             // validate the nonce
             if account_entry.nonce != tx.nonce() {
                 panic!(
-                    "tfm state backend executed invalid nonce: account={}, expected={}, got={}",
+                    "tfm execution state read executed invalid nonce: account={}, expected={}, got={}",
                     addr,
                     account_entry.nonce,
                     tx.nonce()
@@ -453,7 +453,7 @@ where
     }
 }
 
-impl<ST, SCT> StateBackend<ST, SCT> for InMemoryStateInner<ST, SCT>
+impl<ST, SCT> ExecutionStateRead<ST, SCT> for InMemoryStateInner<ST, SCT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -464,7 +464,7 @@ where
         seq_num: &SeqNum,
         is_finalized: bool,
         addresses: impl Iterator<Item = &'a Address>,
-    ) -> Result<Vec<Option<EthAccount>>, StateBackendError> {
+    ) -> Result<Vec<Option<EthAccount>>, ExecutionStateReadError> {
         let state = if is_finalized
             && self
                 .raw_read_latest_finalized_block()
@@ -474,7 +474,7 @@ where
                 .raw_read_earliest_finalized_block()
                 .is_some_and(|earliest_finalized| &earliest_finalized > seq_num)
             {
-                return Err(StateBackendError::NeverAvailable);
+                return Err(ExecutionStateReadError::NeverAvailable);
             }
             let state = self
                 .commits
@@ -485,7 +485,7 @@ where
         } else {
             let Some(proposal) = self.proposals.get(block_id) else {
                 trace!(?seq_num, ?block_id, ?is_finalized, "NotAvailableYet");
-                return Err(StateBackendError::NotAvailableYet);
+                return Err(ExecutionStateReadError::NotAvailableYet);
             };
             proposal
         };
@@ -509,7 +509,7 @@ where
         block_id: &BlockId,
         seq_num: &SeqNum,
         is_finalized: bool,
-    ) -> Result<EthHeader, StateBackendError> {
+    ) -> Result<EthHeader, ExecutionStateReadError> {
         let block = if is_finalized
             && self
                 .raw_read_latest_finalized_block()
@@ -519,13 +519,13 @@ where
                 .raw_read_earliest_finalized_block()
                 .is_some_and(|earliest_finalized| &earliest_finalized > seq_num)
             {
-                return Err(StateBackendError::NeverAvailable);
+                return Err(ExecutionStateReadError::NeverAvailable);
             }
             self.commits.get(seq_num).unwrap()
         } else {
             self.proposals
                 .get(block_id)
-                .ok_or(StateBackendError::NotAvailableYet)?
+                .ok_or(ExecutionStateReadError::NotAvailableYet)?
         };
 
         assert_eq!(&block.block_id, block_id);

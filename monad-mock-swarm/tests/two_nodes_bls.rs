@@ -26,6 +26,7 @@ use monad_consensus_types::{
     block_validator::MockValidator,
 };
 use monad_crypto::certificate_signature::CertificateSignaturePubKey;
+use monad_execution_state_read::{InMemoryState, InMemoryStateInner};
 use monad_executor_glue::MonadEvent;
 use monad_mock_swarm::{
     mock::TimestamperConfig,
@@ -38,7 +39,6 @@ use monad_mock_swarm::{
 use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler, RouterSchedulerBuilder};
 use monad_secp::SecpSignature;
 use monad_state::{MonadMessage, VerifiedMonadMessage};
-use monad_state_backend::{InMemoryState, InMemoryStateInner};
 use monad_testutil::swarm::{make_state_configs, swarm_ledger_verification};
 use monad_transformer::{GenericTransformer, GenericTransformerPipeline, LatencyTransformer, ID};
 use monad_types::{NodeId, SeqNum};
@@ -53,7 +53,7 @@ impl SwarmRelation for BLSSwarm {
     type SignatureCollectionType =
         BlsSignatureCollection<CertificateSignaturePubKey<Self::SignatureType>>;
     type ExecutionProtocolType = MockExecutionProtocol;
-    type StateBackendType = InMemoryState<Self::SignatureType, Self::SignatureCollectionType>;
+    type ExecutionStateReadType = InMemoryState<Self::SignatureType, Self::SignatureCollectionType>;
     type BlockPolicyType = PassthruBlockPolicy;
     type ChainConfigType = MockChainConfig;
     type ChainRevisionType = MockChainRevision;
@@ -100,7 +100,7 @@ impl SwarmRelation for BLSSwarm {
         Self::SignatureCollectionType,
         Self::ExecutionProtocolType,
         Self::BlockPolicyType,
-        Self::StateBackendType,
+        Self::ExecutionStateReadType,
         Self::ChainConfigType,
         Self::ChainRevisionType,
     >;
@@ -146,7 +146,7 @@ fn two_nodes_bls() {
             .into_iter()
             .enumerate()
             .map(|(seed, state_builder)| {
-                let state_backend = state_builder.state_backend.clone();
+                let state_read = state_builder.state_read.clone();
                 let validators = state_builder.locked_epoch_validators[0].clone();
                 NodeBuilder::<BLSSwarm>::new(
                     ID::new(NodeId::new(state_builder.key.pubkey())),
@@ -154,8 +154,8 @@ fn two_nodes_bls() {
                     NoSerRouterConfig::new(all_peers.clone()).build(),
                     MockValSetUpdaterNop::new(validators.validators, SeqNum(2000)),
                     MockTxPoolExecutor::default().with_chain_params(&CHAIN_PARAMS),
-                    MockLedger::new(state_backend.clone()),
-                    MockStateSyncExecutor::new(state_backend),
+                    MockLedger::new(state_read.clone()),
+                    MockStateSyncExecutor::new(state_read),
                     vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],
                     vec![],
                     TimestamperConfig::default(),

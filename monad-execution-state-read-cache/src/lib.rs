@@ -26,7 +26,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_types::{EthAccount, EthHeader};
-use monad_state_backend::{StateBackend, StateBackendError};
+use monad_execution_state_read::{ExecutionStateRead, ExecutionStateReadError};
 use monad_types::{BlockId, DropTimer, Epoch, SeqNum, Stake};
 use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionPubKeyType};
 use tracing::warn;
@@ -39,41 +39,41 @@ struct BlockCache {
 }
 
 #[derive(Debug)]
-pub struct StateBackendCache<ST, SCT, SBT>
+pub struct ExecutionStateReadCache<ST, SCT, ESRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    SBT: StateBackend<ST, SCT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
 {
-    // used so that StateBackendCache can maintain a logically immutable interface
+    // used so that ExecutionStateReadCache can maintain a logically immutable interface
     cache: Arc<Mutex<HashMap<BlockId, BlockCache>>>,
-    state_backend: SBT,
+    state_read: ESRT,
     execution_delay: SeqNum,
 
     _phantom: PhantomData<(ST, SCT)>,
 }
 
-impl<ST, SCT, SBT> StateBackendCache<ST, SCT, SBT>
+impl<ST, SCT, ESRT> ExecutionStateReadCache<ST, SCT, ESRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    SBT: StateBackend<ST, SCT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
 {
-    pub fn new(state_backend: SBT, execution_delay: SeqNum) -> Self {
+    pub fn new(state_read: ESRT, execution_delay: SeqNum) -> Self {
         Self {
             cache: Default::default(),
-            state_backend,
+            state_read,
             execution_delay,
             _phantom: PhantomData,
         }
     }
 }
 
-impl<ST, SCT, SBT> StateBackend<ST, SCT> for StateBackendCache<ST, SCT, SBT>
+impl<ST, SCT, ESRT> ExecutionStateRead<ST, SCT> for ExecutionStateReadCache<ST, SCT, ESRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    SBT: StateBackend<ST, SCT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
 {
     fn get_account_statuses<'a>(
         &mut self,
@@ -81,7 +81,7 @@ where
         seq_num: &SeqNum,
         is_finalized: bool,
         addresses: impl Iterator<Item = &'a Address>,
-    ) -> Result<Vec<Option<EthAccount>>, StateBackendError> {
+    ) -> Result<Vec<Option<EthAccount>>, ExecutionStateReadError> {
         let addresses = addresses.collect_vec();
         if addresses.is_empty() {
             return Ok(Vec::new());
@@ -110,7 +110,7 @@ where
                         "long get_account_statuses"
                     )
                 });
-                self.state_backend.get_account_statuses(
+                self.state_read.get_account_statuses(
                     block_id,
                     seq_num,
                     is_finalized,
@@ -162,7 +162,7 @@ where
         block_id: &BlockId,
         seq_num: &SeqNum,
         is_finalized: bool,
-    ) -> Result<EthHeader, StateBackendError> {
+    ) -> Result<EthHeader, ExecutionStateReadError> {
         let mut cache = self.cache.lock().unwrap();
 
         if let Some(block_cache) = cache.get(block_id) {
@@ -172,7 +172,7 @@ where
         }
 
         let execution_result =
-            self.state_backend
+            self.state_read
                 .get_execution_result(block_id, seq_num, is_finalized)?;
 
         cache
@@ -188,11 +188,11 @@ where
     }
 
     fn raw_read_earliest_finalized_block(&self) -> Option<SeqNum> {
-        self.state_backend.raw_read_earliest_finalized_block()
+        self.state_read.raw_read_earliest_finalized_block()
     }
 
     fn raw_read_latest_finalized_block(&self) -> Option<SeqNum> {
-        self.state_backend.raw_read_latest_finalized_block()
+        self.state_read.raw_read_latest_finalized_block()
     }
 
     fn read_valset_at_block(
@@ -200,11 +200,11 @@ where
         block_num: SeqNum,
         requested_epoch: Epoch,
     ) -> Vec<(SCT::NodeIdPubKey, SignatureCollectionPubKeyType<SCT>, Stake)> {
-        self.state_backend
+        self.state_read
             .read_valset_at_block(block_num, requested_epoch)
     }
 
     fn total_db_lookups(&self) -> u64 {
-        self.state_backend.total_db_lookups()
+        self.state_read.total_db_lookups()
     }
 }

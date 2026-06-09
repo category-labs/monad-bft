@@ -27,7 +27,7 @@ use monad_crypto::{
     certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable},
     hasher::{Hasher, HasherType},
 };
-use monad_state_backend::{InMemoryState, StateBackend, StateBackendError};
+use monad_execution_state_read::{ExecutionStateRead, ExecutionStateReadError, InMemoryState};
 use monad_types::{
     Balance, BlockId, Epoch, ExecutionProtocol, FinalizedHeader, LimitedVec, NodeId, Round, SeqNum,
     GENESIS_SEQ_NUM,
@@ -280,7 +280,7 @@ where
 #[derive(Debug, PartialEq)]
 pub enum BlockPolicyError {
     BlockNotCoherent,
-    StateBackendError(StateBackendError),
+    ExecutionStateReadError(ExecutionStateReadError),
     TimestampError,
     ExecutionResultMismatch,
     BaseFeeError,
@@ -289,9 +289,9 @@ pub enum BlockPolicyError {
     SystemTransactionError,
 }
 
-impl From<StateBackendError> for BlockPolicyError {
-    fn from(err: StateBackendError) -> Self {
-        Self::StateBackendError(err)
+impl From<ExecutionStateReadError> for BlockPolicyError {
+    fn from(err: ExecutionStateReadError) -> Self {
+        Self::ExecutionStateReadError(err)
     }
 }
 
@@ -338,12 +338,12 @@ pub type TxnFees = BTreeMap<Address, TxnFee>;
 
 /// Trait that represents how inner contents of a block should be validated
 #[auto_impl(Box)]
-pub trait BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>
+pub trait BlockPolicy<ST, SCT, EPT, ESRT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    SBT: StateBackend<ST, SCT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -360,7 +360,7 @@ where
         block: &Self::ValidatedBlock,
         extending_blocks: Vec<&Self::ValidatedBlock>,
         blocktree_root: RootInfo,
-        state_backend: &mut SBT,
+        state_read: &mut ESRT,
         chain_config: &CCT,
     ) -> Result<(), BlockPolicyError>;
 
@@ -368,8 +368,8 @@ where
         &self,
         block_seq_num: SeqNum,
         extending_blocks: Vec<&Self::ValidatedBlock>,
-        state_backend: &mut SBT,
-    ) -> Result<Vec<EPT::FinalizedHeader>, StateBackendError>;
+        state_read: &mut ESRT,
+    ) -> Result<Vec<EPT::FinalizedHeader>, ExecutionStateReadError>;
 
     // TODO delete this function, pass recently committed blocks to check_coherency instead
     // This way, BlockPolicy doesn't need to be mutated
@@ -429,7 +429,7 @@ where
         block: &Self::ValidatedBlock,
         extending_blocks: Vec<&Self::ValidatedBlock>,
         blocktree_root: RootInfo,
-        state_backend: &mut InMemoryState<ST, SCT>,
+        state_read: &mut InMemoryState<ST, SCT>,
         _chain_config: &MockChainConfig,
     ) -> Result<(), BlockPolicyError> {
         // check coherency against the block being extended or against the root of the blocktree if
@@ -450,11 +450,8 @@ where
             return Err(BlockPolicyError::TimestampError);
         }
 
-        let expected_execution_results = self.get_expected_execution_results(
-            block.get_seq_num(),
-            extending_blocks,
-            state_backend,
-        )?;
+        let expected_execution_results =
+            self.get_expected_execution_results(block.get_seq_num(), extending_blocks, state_read)?;
         if block.get_execution_results() != &expected_execution_results {
             return Err(BlockPolicyError::ExecutionResultMismatch);
         }
@@ -466,8 +463,8 @@ where
         &self,
         _block_seq_num: SeqNum,
         _extending_blocks: Vec<&Self::ValidatedBlock>,
-        _state_backend: &mut InMemoryState<ST, SCT>,
-    ) -> Result<Vec<EPT::FinalizedHeader>, StateBackendError> {
+        _state_read: &mut InMemoryState<ST, SCT>,
+    ) -> Result<Vec<EPT::FinalizedHeader>, ExecutionStateReadError> {
         Ok(Vec::new())
     }
 
@@ -627,13 +624,13 @@ impl FinalizedHeader for MockExecutionFinalizedHeader {
 // which uses the "Encodable" trait to simply write the bytes to a file without needing to inspect
 // the body itself.
 #[derive(Debug)]
-pub enum OptimisticPolicyCommit<ST, SCT, EPT, BPT, SBT, CCT, CRT>
+pub enum OptimisticPolicyCommit<ST, SCT, EPT, BPT, ESRT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
-    SBT: StateBackend<ST, SCT>,
+    BPT: BlockPolicy<ST, SCT, EPT, ESRT, CCT, CRT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -659,19 +656,19 @@ where
     Voted(ConsensusFullBlock<ST, SCT, EPT>),
     Finalized(ConsensusFullBlock<ST, SCT, EPT>),
 }
-impl<ST, SCT, EPT, BPT, SBT, CCT, CRT>
-    From<&OptimisticPolicyCommit<ST, SCT, EPT, BPT, SBT, CCT, CRT>>
+impl<ST, SCT, EPT, BPT, ESRT, CCT, CRT>
+    From<&OptimisticPolicyCommit<ST, SCT, EPT, BPT, ESRT, CCT, CRT>>
     for OptimisticCommit<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
-    SBT: StateBackend<ST, SCT>,
+    BPT: BlockPolicy<ST, SCT, EPT, ESRT, CCT, CRT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
-    fn from(value: &OptimisticPolicyCommit<ST, SCT, EPT, BPT, SBT, CCT, CRT>) -> Self {
+    fn from(value: &OptimisticPolicyCommit<ST, SCT, EPT, BPT, ESRT, CCT, CRT>) -> Self {
         match value {
             OptimisticPolicyCommit::Proposed {
                 block,

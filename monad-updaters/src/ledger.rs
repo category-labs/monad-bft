@@ -32,9 +32,9 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
+use monad_execution_state_read::{InMemoryState, MockExecution};
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{BlockSyncEvent, LedgerCommand, MonadEvent};
-use monad_state_backend::{InMemoryState, MockExecution};
 use monad_types::{BlockId, ExecutionProtocol, SeqNum};
 use monad_validator::signature_collection::SignatureCollection;
 
@@ -98,7 +98,7 @@ where
     events: VecDeque<BlockSyncEvent<ST, SCT, EPT>>,
 
     finalization_delay: SeqNum,
-    state_backend: InMemoryState<ST, SCT>,
+    state_read: InMemoryState<ST, SCT>,
 
     waker: Option<Waker>,
     _phantom: PhantomData<ST>,
@@ -110,14 +110,14 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-    pub fn new(state_backend: InMemoryState<ST, SCT>) -> Self {
+    pub fn new(state_read: InMemoryState<ST, SCT>) -> Self {
         Self {
             blocks: Default::default(),
             committed_blocks: Default::default(),
             events: Default::default(),
 
             finalization_delay: SeqNum(0),
-            state_backend,
+            state_read,
 
             waker: Default::default(),
             _phantom: Default::default(),
@@ -182,7 +182,7 @@ where
                     block,
                     is_canonical: _,
                 }) => {
-                    self.state_backend.lock().unwrap().ledger_propose(
+                    self.state_read.lock().unwrap().ledger_propose(
                         block.get_id(),
                         block.get_seq_num(),
                         block.get_block_round(),
@@ -204,7 +204,7 @@ where
                         if block.get_seq_num() == finalize_seq_num {
                             self.committed_blocks
                                 .insert(block.get_seq_num(), block.clone());
-                            let mut state = self.state_backend.lock().unwrap();
+                            let mut state = self.state_read.lock().unwrap();
                             state.ledger_commit(&block.get_id(), &block.get_seq_num());
                             break;
                         }

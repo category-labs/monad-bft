@@ -21,12 +21,12 @@ use std::{
 use monad_chain_config::{revision::ChainParams, MockChainConfig};
 use monad_consensus_types::{block::PassthruBlockPolicy, block_validator::MockValidator};
 use monad_crypto::certificate_signature::CertificateKeyPair;
+use monad_execution_state_read::InMemoryStateInner;
 use monad_mock_swarm::{
     mock::TimestamperConfig, mock_swarm::SwarmBuilder, node::NodeBuilder,
     swarm_relation::NoSerSwarm, terminator::UntilTerminator,
 };
 use monad_router_scheduler::{NoSerRouterConfig, RouterSchedulerBuilder};
-use monad_state_backend::InMemoryStateInner;
 use monad_testutil::swarm::{make_state_configs, swarm_ledger_verification};
 use monad_transformer::{
     GenericTransformer, LatencyTransformer, PartitionTransformer, RandLatencyTransformer,
@@ -71,7 +71,7 @@ fn random_latency_test(latency_seed: u64) {
             .into_iter()
             .enumerate()
             .map(|(seed, state_builder)| {
-                let state_backend = state_builder.state_backend.clone();
+                let state_read = state_builder.state_read.clone();
                 let validators = state_builder.locked_epoch_validators[0].clone();
                 NodeBuilder::<NoSerSwarm>::new(
                     ID::new(NodeId::new(state_builder.key.pubkey())),
@@ -79,8 +79,8 @@ fn random_latency_test(latency_seed: u64) {
                     NoSerRouterConfig::new(all_peers.clone()).build(),
                     MockValSetUpdaterNop::new(validators.validators, SeqNum(2000)),
                     MockTxPoolExecutor::default().with_chain_params(&CHAIN_PARAMS),
-                    MockLedger::new(state_backend.clone()),
-                    MockStateSyncExecutor::new(state_backend),
+                    MockLedger::new(state_read.clone()),
+                    MockStateSyncExecutor::new(state_read),
                     vec![GenericTransformer::RandLatency(
                         RandLatencyTransformer::new(latency_seed, Duration::from_millis(330)),
                     )],
@@ -135,7 +135,7 @@ fn delayed_message_test(latency_seed: u64) {
             .into_iter()
             .enumerate()
             .map(|(seed, state_builder)| {
-                let state_backend = state_builder.state_backend.clone();
+                let state_read = state_builder.state_read.clone();
                 let validators = state_builder.locked_epoch_validators[0].clone();
                 NodeBuilder::<NoSerSwarm>::new(
                     ID::new(NodeId::new(state_builder.key.pubkey())),
@@ -143,8 +143,8 @@ fn delayed_message_test(latency_seed: u64) {
                     NoSerRouterConfig::new(all_peers.clone()).build(),
                     MockValSetUpdaterNop::new(validators.validators, SeqNum(2000)),
                     MockTxPoolExecutor::default().with_chain_params(&CHAIN_PARAMS),
-                    MockLedger::new(state_backend.clone()),
-                    MockStateSyncExecutor::new(state_backend),
+                    MockLedger::new(state_read.clone()),
+                    MockStateSyncExecutor::new(state_read),
                     vec![
                         GenericTransformer::Latency(LatencyTransformer::new(
                             Duration::from_millis(1),

@@ -29,6 +29,8 @@ monad-eth-txpool-executor = { path = "./monad-eth-txpool-executor" }
 monad-eth-txpool-ipc = { path = "./monad-eth-txpool-ipc" }
 monad-eth-txpool-types = { path = "./monad-eth-txpool-types" }
 monad-eth-types = { path = "./monad-eth-types" }
+monad-execution-state-read = { path = "./monad-execution-state-read" }
+monad-execution-state-read-cache = { path = "./monad-execution-state-read-cache" }
 monad-executor = { path = "./monad-executor" }
 monad-executor-glue = { path = "./monad-executor-glue" }
 monad-fair-queue = { path = "./monad-fair-queue" }
@@ -52,8 +54,6 @@ monad-rpc-docs = { path = "./monad-rpc/monad-rpc-docs" }
 monad-rpc-docs-derive = { path = "./monad-rpc/monad-rpc-docs/monad-rpc-docs-derive" }
 monad-secp = { path = "./monad-secp" }
 monad-state = { path = "./monad-state" }
-monad-state-backend = { path = "./monad-state-backend" }
-monad-state-backend-cache = { path = "./monad-state-backend-cache" }
 monad-statesync-executor = { path = "./monad-statesync-executor" }
 monad-system-calls = { path = "./monad-system-calls" }
 monad-testutil = { path = "./monad-testutil" }

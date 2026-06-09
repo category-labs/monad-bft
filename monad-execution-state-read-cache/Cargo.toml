@@ -1,5 +1,5 @@
 [package]
-name = "monad-state-backend"
+name = "monad-execution-state-read-cache"
 version = "0.1.0"
 edition = "2021"
 
@@ -11,14 +11,10 @@ bench = false
 [dependencies]
 monad-crypto = { workspace = true }
 monad-eth-types = { workspace = true }
-monad-tfm = { workspace = true }
+monad-execution-state-read = { workspace = true }
 monad-types = { workspace = true }
 monad-validator = { workspace = true }
 
-alloy-consensus = { workspace = true, features = ["k256"] }
 alloy-primitives = { workspace = true }
-serde = { workspace = true, features = ["derive"] }
+itertools = { workspace = true }
 tracing = { workspace = true }
-
-[dev-dependencies]
-monad-multi-sig = { workspace = true }
