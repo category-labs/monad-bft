@@ -5,12 +5,11 @@
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-use std::{
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::sync::Arc;
 
-use eyre::{bail, Context, Result};
+#[cfg(any(feature = "dynamo", feature = "s3"))]
+use eyre::Context;
+use eyre::{bail, Result};
 use tracing::{info, warn};
 
 use crate::{
@@ -26,11 +25,11 @@ use crate::{
     ingest_source::ChainDataIngestSource,
     logs::{QueryLogsRequest, QueryLogsResponse},
     primitives::state::BlockRecord,
-    store::{BlobStore, CacheConfig, CacheField, FjallStore, FjallTuning, MetaStore},
+    store::{BlobStore, CacheConfig, CacheField, MetaStore},
     traces::{QueryTracesRequest, QueryTracesResponse},
     transfers::{QueryTransfersRequest, QueryTransfersResponse},
     txs::{QueryTransactionsRequest, QueryTransactionsResponse},
-    Hash32, MonadChainDataService, QueryLimits,
+    Hash32, QueryLimits,
 };
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -148,46 +147,39 @@ impl ChainDataStoreConfig {
 
 #[derive(Clone)]
 pub enum ConfiguredChainDataReader {
-    #[cfg(feature = "fjall")]
-    FjallFjall(Arc<MonadChainDataService<FjallStore, FjallStore>>),
-    #[cfg(all(feature = "fjall", feature = "s3"))]
-    FjallS3(Arc<MonadChainDataService<FjallStore, crate::store::S3BlobStore>>),
-    #[cfg(all(feature = "fjall", feature = "dynamo"))]
-    FjallDynamo(Arc<MonadChainDataService<FjallStore, crate::store::DynamoBlobStore>>),
-    #[cfg(all(feature = "dynamo", feature = "fjall"))]
-    DynamoFjall(Arc<MonadChainDataService<crate::store::DynamoMetaStore, FjallStore>>),
+    #[cfg(not(feature = "dynamo"))]
+    Unavailable,
     #[cfg(all(feature = "dynamo", feature = "s3"))]
-    DynamoS3(Arc<MonadChainDataService<crate::store::DynamoMetaStore, crate::store::S3BlobStore>>),
+    DynamoS3(
+        Arc<crate::MonadChainDataService<crate::store::DynamoMetaStore, crate::store::S3BlobStore>>,
+    ),
     #[cfg(feature = "dynamo")]
     DynamoDynamo(
-        Arc<MonadChainDataService<crate::store::DynamoMetaStore, crate::store::DynamoBlobStore>>,
+        Arc<
+            crate::MonadChainDataService<
+                crate::store::DynamoMetaStore,
+                crate::store::DynamoBlobStore,
+            >,
+        >,
     ),
 }
 
 macro_rules! with_reader {
     ($self:expr, $service:ident => $body:expr) => {
         match $self {
-            #[cfg(feature = "fjall")]
-            Self::FjallFjall($service) => $body,
-            #[cfg(all(feature = "fjall", feature = "s3"))]
-            Self::FjallS3($service) => $body,
-            #[cfg(all(feature = "fjall", feature = "dynamo"))]
-            Self::FjallDynamo($service) => $body,
-            #[cfg(all(feature = "dynamo", feature = "fjall"))]
-            Self::DynamoFjall($service) => $body,
             #[cfg(all(feature = "dynamo", feature = "s3"))]
             Self::DynamoS3($service) => $body,
             #[cfg(feature = "dynamo")]
             Self::DynamoDynamo($service) => $body,
+            #[cfg(not(feature = "dynamo"))]
+            Self::Unavailable => {
+                unreachable!("configured chain-data reader has no enabled backend")
+            }
         }
     };
 }
 
 impl ConfiguredChainDataReader {
-    pub fn fjall(service: MonadChainDataService<FjallStore, FjallStore>) -> Self {
-        Self::FjallFjall(Arc::new(service))
-    }
-
     pub fn limits(&self) -> &QueryLimits {
         with_reader!(self, service => service.limits())
     }
@@ -252,14 +244,6 @@ impl ConfiguredChainDataReader {
     #[cfg(feature = "dynamo")]
     pub fn take_dynamo_meta_read_stats(&self) -> Option<crate::store::DynamoMetaReadStatsSnapshot> {
         match self {
-            #[cfg(feature = "fjall")]
-            Self::FjallFjall(_) => None,
-            #[cfg(all(feature = "fjall", feature = "s3"))]
-            Self::FjallS3(_) => None,
-            #[cfg(all(feature = "fjall", feature = "dynamo"))]
-            Self::FjallDynamo(_) => None,
-            #[cfg(all(feature = "dynamo", feature = "fjall"))]
-            Self::DynamoFjall(service) => Some(service.tables().meta_store().take_read_stats()),
             #[cfg(all(feature = "dynamo", feature = "s3"))]
             Self::DynamoS3(service) => Some(service.tables().meta_store().take_read_stats()),
             #[cfg(feature = "dynamo")]
@@ -270,14 +254,8 @@ impl ConfiguredChainDataReader {
     #[cfg(feature = "s3")]
     pub fn take_s3_read_stats(&self) -> Option<crate::store::S3ReadStatsSnapshot> {
         match self {
-            #[cfg(feature = "fjall")]
-            Self::FjallFjall(_) => None,
-            #[cfg(all(feature = "fjall", feature = "s3"))]
-            Self::FjallS3(service) => Some(service.tables().blob_store().take_read_stats()),
-            #[cfg(all(feature = "fjall", feature = "dynamo"))]
-            Self::FjallDynamo(_) => None,
-            #[cfg(all(feature = "dynamo", feature = "fjall"))]
-            Self::DynamoFjall(_) => None,
+            #[cfg(not(feature = "dynamo"))]
+            Self::Unavailable => None,
             #[cfg(all(feature = "dynamo", feature = "s3"))]
             Self::DynamoS3(service) => Some(service.tables().blob_store().take_read_stats()),
             #[cfg(feature = "dynamo")]
@@ -289,23 +267,32 @@ impl ConfiguredChainDataReader {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum ChainDataMetaBackendConfig {
-    Fjall(ChainDataFjallMetaConfig),
     #[cfg(feature = "dynamo")]
     Dynamo(ChainDataDynamoMetaConfig),
+    #[cfg(not(feature = "dynamo"))]
+    Unavailable,
 }
 
 impl Default for ChainDataMetaBackendConfig {
     fn default() -> Self {
-        Self::Fjall(ChainDataFjallMetaConfig::default())
+        #[cfg(feature = "dynamo")]
+        {
+            Self::Dynamo(ChainDataDynamoMetaConfig::default())
+        }
+        #[cfg(not(feature = "dynamo"))]
+        {
+            Self::Unavailable
+        }
     }
 }
 
 impl ChainDataMetaBackendConfig {
     fn validate(&self) -> Result<()> {
         match self {
-            Self::Fjall(config) => config.validate(),
             #[cfg(feature = "dynamo")]
             Self::Dynamo(config) => config.validate(),
+            #[cfg(not(feature = "dynamo"))]
+            Self::Unavailable => bail!("chain-data configured storage requires the dynamo feature"),
         }
     }
 }
@@ -313,93 +300,41 @@ impl ChainDataMetaBackendConfig {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum ChainDataBlobBackendConfig {
-    Fjall(ChainDataFjallBlobConfig),
     #[cfg(feature = "s3")]
     S3(ChainDataS3BlobConfig),
     #[cfg(feature = "dynamo")]
     Dynamo(ChainDataDynamoBlobConfig),
+    #[cfg(not(any(feature = "s3", feature = "dynamo")))]
+    Unavailable,
 }
 
 impl Default for ChainDataBlobBackendConfig {
     fn default() -> Self {
-        Self::Fjall(ChainDataFjallBlobConfig::default())
+        #[cfg(feature = "s3")]
+        {
+            Self::S3(ChainDataS3BlobConfig::default())
+        }
+        #[cfg(all(not(feature = "s3"), feature = "dynamo"))]
+        {
+            Self::Dynamo(ChainDataDynamoBlobConfig::default())
+        }
+        #[cfg(not(any(feature = "s3", feature = "dynamo")))]
+        {
+            Self::Unavailable
+        }
     }
 }
 
 impl ChainDataBlobBackendConfig {
     fn validate(&self) -> Result<()> {
         match self {
-            Self::Fjall(config) => config.validate(),
             #[cfg(feature = "s3")]
             Self::S3(config) => config.validate(),
             #[cfg(feature = "dynamo")]
             Self::Dynamo(config) => config.validate(),
+            #[cfg(not(any(feature = "s3", feature = "dynamo")))]
+            Self::Unavailable => bail!("chain-data configured blob storage requires s3 or dynamo"),
         }
-    }
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(default)]
-pub struct ChainDataFjallTuningConfig {
-    pub journal_mib: u64,
-    pub memtable_mib: u64,
-    pub workers: Option<usize>,
-}
-
-impl Default for ChainDataFjallTuningConfig {
-    fn default() -> Self {
-        Self {
-            journal_mib: 512,
-            memtable_mib: 64,
-            workers: None,
-        }
-    }
-}
-
-impl ChainDataFjallTuningConfig {
-    fn to_tuning(&self) -> Result<FjallTuning> {
-        if self.journal_mib < 64 {
-            bail!("chain-data fjall journal_mib must be >= 64");
-        }
-        Ok(FjallTuning {
-            max_journaling_size_bytes: self.journal_mib * 1024 * 1024,
-            max_memtable_size_bytes: self.memtable_mib * 1024 * 1024,
-            worker_threads: self.workers,
-        })
-    }
-}
-
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
-#[serde(default)]
-pub struct ChainDataFjallMetaConfig {
-    pub data_dir: Option<PathBuf>,
-    pub tuning: ChainDataFjallTuningConfig,
-}
-
-impl ChainDataFjallMetaConfig {
-    fn validate(&self) -> Result<()> {
-        if self.data_dir.is_none() {
-            bail!("chain-data fjall meta requires data_dir");
-        }
-        self.tuning.to_tuning()?;
-        Ok(())
-    }
-}
-
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
-#[serde(default)]
-pub struct ChainDataFjallBlobConfig {
-    pub data_dir: Option<PathBuf>,
-    pub tuning: ChainDataFjallTuningConfig,
-}
-
-impl ChainDataFjallBlobConfig {
-    fn validate(&self) -> Result<()> {
-        if self.data_dir.is_none() {
-            bail!("chain-data fjall blob requires data_dir");
-        }
-        self.tuning.to_tuning()?;
-        Ok(())
     }
 }
 
@@ -807,22 +742,15 @@ where
     engine_config.validate()?;
 
     match store_config.meta.clone() {
-        ChainDataMetaBackendConfig::Fjall(meta_config) => {
-            let meta_store = open_fjall(
-                meta_config
-                    .data_dir
-                    .as_ref()
-                    .expect("validated fjall meta data_dir"),
-                meta_config.tuning.to_tuning()?,
-                "meta",
-            )?;
-            dispatch_blob_engine(&store_config, &engine_config, source, meta_store, None).await
-        }
         #[cfg(feature = "dynamo")]
         ChainDataMetaBackendConfig::Dynamo(meta_config) => {
             let meta_store = build_dynamo_meta_store(&meta_config).await?;
             let client = Some(meta_store.client());
             dispatch_blob_engine(&store_config, &engine_config, source, meta_store, client).await
+        }
+        #[cfg(not(feature = "dynamo"))]
+        ChainDataMetaBackendConfig::Unavailable => {
+            bail!("chain-data configured ingest requires the dynamo feature")
         }
     }
 }
@@ -839,17 +767,6 @@ where
     S: ChainDataIngestSource,
 {
     match store_config.blob.clone() {
-        ChainDataBlobBackendConfig::Fjall(blob_config) => {
-            let blob_store = open_fjall(
-                blob_config
-                    .data_dir
-                    .as_ref()
-                    .expect("validated fjall blob data_dir"),
-                blob_config.tuning.to_tuning()?,
-                "blob",
-            )?;
-            run_engine_with_store(store_config, engine_config, source, meta_store, blob_store).await
-        }
         #[cfg(feature = "s3")]
         ChainDataBlobBackendConfig::S3(blob_config) => {
             let blob_store = build_s3_blob_store(&blob_config).await?;
@@ -859,6 +776,10 @@ where
         ChainDataBlobBackendConfig::Dynamo(blob_config) => {
             let blob_store = build_dynamo_blob_store(&blob_config, dynamo_client).await?;
             run_engine_with_store(store_config, engine_config, source, meta_store, blob_store).await
+        }
+        #[cfg(not(any(feature = "s3", feature = "dynamo")))]
+        ChainDataBlobBackendConfig::Unavailable => {
+            bail!("chain-data configured ingest requires s3 or dynamo blob storage")
         }
     }
 }
@@ -955,79 +876,15 @@ pub async fn open_configured_chain_data_reader(
 ) -> Result<ConfiguredChainDataReader> {
     store_config.validate_reader()?;
     match store_config.meta.clone() {
-        ChainDataMetaBackendConfig::Fjall(meta_config) => {
-            let meta_store = open_fjall(
-                meta_config
-                    .data_dir
-                    .as_ref()
-                    .expect("validated fjall meta data_dir"),
-                meta_config.tuning.to_tuning()?,
-                "meta",
-            )?;
-            dispatch_fjall_reader_blob(&store_config, limits, meta_store, None).await
-        }
         #[cfg(feature = "dynamo")]
         ChainDataMetaBackendConfig::Dynamo(meta_config) => {
             let meta_store = build_dynamo_meta_store(&meta_config).await?;
             let client = Some(meta_store.client());
             dispatch_dynamo_reader_blob(&store_config, limits, meta_store, client).await
         }
-    }
-}
-
-async fn dispatch_fjall_reader_blob(
-    store_config: &ChainDataStoreConfig,
-    limits: QueryLimits,
-    meta_store: FjallStore,
-    #[allow(unused_variables)] dynamo_client: Option<SharedDynamoClient>,
-) -> Result<ConfiguredChainDataReader> {
-    let cache_config = resolve_cache_config(store_config, ChainDataCacheMode::Reader);
-    let query_config = store_config.query.to_runtime();
-    match store_config.blob.clone() {
-        ChainDataBlobBackendConfig::Fjall(blob_config) => {
-            let blob_store = open_fjall(
-                blob_config
-                    .data_dir
-                    .as_ref()
-                    .expect("validated fjall blob data_dir"),
-                blob_config.tuning.to_tuning()?,
-                "blob",
-            )?;
-            Ok(ConfiguredChainDataReader::FjallFjall(Arc::new(
-                MonadChainDataService::new_reader_with_query_config(
-                    meta_store,
-                    blob_store,
-                    limits,
-                    cache_config,
-                    query_config,
-                ),
-            )))
-        }
-        #[cfg(feature = "s3")]
-        ChainDataBlobBackendConfig::S3(blob_config) => {
-            let blob_store = build_s3_blob_store(&blob_config).await?;
-            Ok(ConfiguredChainDataReader::FjallS3(Arc::new(
-                MonadChainDataService::new_reader_with_query_config(
-                    meta_store,
-                    blob_store,
-                    limits,
-                    cache_config,
-                    query_config,
-                ),
-            )))
-        }
-        #[cfg(feature = "dynamo")]
-        ChainDataBlobBackendConfig::Dynamo(blob_config) => {
-            let blob_store = build_dynamo_blob_store(&blob_config, dynamo_client).await?;
-            Ok(ConfiguredChainDataReader::FjallDynamo(Arc::new(
-                MonadChainDataService::new_reader_with_query_config(
-                    meta_store,
-                    blob_store,
-                    limits,
-                    cache_config,
-                    query_config,
-                ),
-            )))
+        #[cfg(not(feature = "dynamo"))]
+        ChainDataMetaBackendConfig::Unavailable => {
+            bail!("chain-data configured reader requires the dynamo feature")
         }
     }
 }
@@ -1042,30 +899,11 @@ async fn dispatch_dynamo_reader_blob(
     let cache_config = resolve_cache_config(store_config, ChainDataCacheMode::Reader);
     let query_config = store_config.query.to_runtime();
     match store_config.blob.clone() {
-        ChainDataBlobBackendConfig::Fjall(blob_config) => {
-            let blob_store = open_fjall(
-                blob_config
-                    .data_dir
-                    .as_ref()
-                    .expect("validated fjall blob data_dir"),
-                blob_config.tuning.to_tuning()?,
-                "blob",
-            )?;
-            Ok(ConfiguredChainDataReader::DynamoFjall(Arc::new(
-                MonadChainDataService::new_reader_with_query_config(
-                    meta_store,
-                    blob_store,
-                    limits,
-                    cache_config,
-                    query_config,
-                ),
-            )))
-        }
         #[cfg(feature = "s3")]
         ChainDataBlobBackendConfig::S3(blob_config) => {
             let blob_store = build_s3_blob_store(&blob_config).await?;
             Ok(ConfiguredChainDataReader::DynamoS3(Arc::new(
-                MonadChainDataService::new_reader_with_query_config(
+                crate::MonadChainDataService::new_reader_with_query_config(
                     meta_store,
                     blob_store,
                     limits,
@@ -1077,7 +915,7 @@ async fn dispatch_dynamo_reader_blob(
         ChainDataBlobBackendConfig::Dynamo(blob_config) => {
             let blob_store = build_dynamo_blob_store(&blob_config, dynamo_client).await?;
             Ok(ConfiguredChainDataReader::DynamoDynamo(Arc::new(
-                MonadChainDataService::new_reader_with_query_config(
+                crate::MonadChainDataService::new_reader_with_query_config(
                     meta_store,
                     blob_store,
                     limits,
@@ -1169,30 +1007,6 @@ fn apply_cache_table_overrides(config: &mut CacheConfig, overrides: &ChainDataCa
     if let Some(mib) = overrides.block_region_mib {
         config.block_region_cache_bytes = CacheConfig::budget_mib_to_bytes(mib);
     }
-}
-
-fn open_fjall(path: &Path, tuning: FjallTuning, label: &'static str) -> Result<FjallStore> {
-    let fresh = data_dir_fresh(path);
-    info!(
-        path = %path.display(),
-        fresh,
-        ?tuning,
-        "opening chain-data fjall {label} store"
-    );
-    FjallStore::open(path, tuning).with_context(|| {
-        format!(
-            "opening chain-data fjall {label} store at {}",
-            path.display()
-        )
-    })
-}
-
-fn data_dir_fresh(path: &Path) -> bool {
-    !path.exists()
-        || path
-            .read_dir()
-            .map(|mut d| d.next().is_none())
-            .unwrap_or(true)
 }
 
 #[cfg(feature = "s3")]

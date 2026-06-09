@@ -18,7 +18,7 @@
 //! Talks to any S3-compatible object store -- AWS S3, MinIO, Cloudflare R2,
 //! Ceph RGW, the GCS XML API -- so chain-data blobs (block bodies, receipts,
 //! compacted bitmap artifacts; write-once, never deleted, 10s of KB up to
-//! ~16 MiB) can live in object storage instead of the embedded fjall LSM.
+//! ~16 MiB) can live in object storage.
 //!
 //! ## Object-key layout (a wire contract once data exists)
 //!

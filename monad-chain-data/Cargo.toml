@@ -20,7 +20,6 @@ aws-sdk-dynamodb = { workspace = true, optional = true }
 aws-sdk-s3 = { workspace = true, optional = true }
 bytes = { workspace = true }
 eyre = { workspace = true }
-fjall = { workspace = true, optional = true }
 futures = { workspace = true }
 lru = { workspace = true }
 rayon = { workspace = true }
@@ -32,7 +31,7 @@ tracing = { workspace = true }
 zstd = { workspace = true }
 
 [features]
-default = ["fjall", "s3", "dynamo"]
+default = ["s3", "dynamo"]
 # Data-track encode strategy. By default (feature OFF) the data track encodes
 # blocks concurrently on spawned blocking tasks, drained in block order. Opt in
 # to `serial-data-track` for the original one-block-at-a-time encode loop (e.g.
@@ -42,18 +41,12 @@ serial-data-track = []
 # `alloy_rpc_types_eth::Transaction`. Off by default so the crate stays
 # narrow; the consensus envelope is always accessible via `TxEntry::envelope`.
 alloy-rpc-types-eth = ["dep:alloy-rpc-types-eth"]
-# Enables the embedded fjall backend (FjallStore). Pulls in tokio because
-# fjall is sync and the trait impls wrap blocking work in spawn_blocking.
-fjall = ["dep:fjall"]
 # Enables the S3-API-compatible blob backend (S3BlobStore): AWS S3, MinIO,
-# Cloudflare R2, Ceph RGW, etc. Pulls in the AWS SDK + tokio. Gated because
-# the AWS SDK is a heavy transitive dependency not needed by the embedded
-# fjall path.
+# Cloudflare R2, Ceph RGW, etc. Pulls in the AWS SDK + tokio.
 s3 = ["dep:aws-config", "dep:aws-sdk-s3"]
 # Enables the DynamoDB-API-compatible meta backend (DynamoMetaStore): AWS
 # DynamoDB, DynamoDB Local, and ScyllaDB Alternator. Pulls in the AWS SDK +
-# tokio. Gated for the same reason as `s3`: the AWS SDK is a heavy transitive
-# dependency the embedded fjall path does not need.
+# tokio.
 dynamo = ["dep:aws-config", "dep:aws-sdk-dynamodb"]
 
 [dev-dependencies]

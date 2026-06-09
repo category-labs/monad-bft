@@ -19,7 +19,7 @@
 //! main portability target -- **ScyllaDB Alternator** (point `endpoint_url` at
 //! the Alternator port). Chain-data metadata (kv rows, scannable
 //! directory/index rows, and the publication head) can then live in a
-//! DynamoDB-shaped store instead of the embedded fjall LSM.
+//! DynamoDB-shaped store.
 //!
 //! ## Single-table design (a wire contract once data exists)
 //!
@@ -1125,14 +1125,14 @@ impl MetaStore for DynamoMetaStore {
         let physical_table = self.table_name_for_scan(table);
         // A DynamoDB `Query` returns at most 1 MB per response (and at most
         // `Limit` items), signalling more via `LastEvaluatedKey`. The trait
-        // contract -- matching fjall/in-memory -- is to return the whole
+        // contract -- matching in-memory -- is to return the whole
         // matching range up to `limit` in one call, so we drain pages here.
         //
         // We over-read by one row past `limit` (`want = limit + 1`) so we can
         // tell whether a *further matching* row exists: that distinguishes "the
         // page happened to end exactly on `limit`" (no more rows -> next_cursor
-        // None) from "there is genuinely more" (next_cursor Some), exactly like
-        // fjall, with no spurious trailing empty page. `usize::MAX` (the
+        // None) from "there is genuinely more" (next_cursor Some), with no
+        // spurious trailing empty page. `usize::MAX` (the
         // unbounded callers) saturates, so no per-page `Limit` is set and we
         // drain until the partition is exhausted.
         let want = limit.saturating_add(1);
@@ -1161,7 +1161,7 @@ impl MetaStore for DynamoMetaStore {
                 .consistent_read(true)
                 .scan_index_forward(true);
             // An empty prefix means "every clustering in the partition" (matching
-            // fjall/in-memory). DynamoDB/Alternator rejects `begins_with(sk, "")`
+            // in-memory). DynamoDB/Alternator rejects `begins_with(sk, "")`
             // -- an empty value on a key attribute -- so drop the term entirely
             // and let `pk = :p` select the whole partition. A non-empty prefix
             // keeps the `begins_with` filter (and only then binds `:prefix`, so

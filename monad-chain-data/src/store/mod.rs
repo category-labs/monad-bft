@@ -16,8 +16,6 @@
 pub mod blob;
 pub mod cache;
 pub mod common;
-#[cfg(feature = "fjall")]
-pub mod fjall;
 pub mod meta;
 pub mod session;
 
@@ -31,8 +29,6 @@ pub use cache::{
     CachedScannableTable, REGION_CACHE_FAMILIES,
 };
 pub use common::Page;
-#[cfg(feature = "fjall")]
-pub use fjall::{FjallKeyspaceStats, FjallStore, FjallTuning};
 #[cfg(feature = "dynamo")]
 pub use meta::{
     DynamoCredentials, DynamoMetaReadStatsSnapshot, DynamoMetaStore, DynamoMetaStoreConfig,

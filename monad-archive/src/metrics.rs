@@ -99,11 +99,6 @@ pub enum MetricNames {
     CHAIN_DATA_INGEST_BATCH_TOTAL_DURATION_MS,
     CHAIN_DATA_INGEST_BATCH_SIZE,
 
-    // Chain-data fjall keyspace state gauges
-    CHAIN_DATA_FJALL_KEYSPACE_DISK_SPACE_BYTES,
-    CHAIN_DATA_FJALL_KEYSPACE_L0_TABLES,
-    CHAIN_DATA_FJALL_KEYSPACE_SEALED_MEMTABLES,
-
     // Chain-data per-table cache hit ratio (0..=1, attribute-tagged by table name)
     CHAIN_DATA_CACHE_HIT_RATIO,
 }
@@ -188,15 +183,6 @@ impl MetricNames {
                 "chain_data_ingest_batch_total_duration_ms"
             }
             MetricNames::CHAIN_DATA_INGEST_BATCH_SIZE => "chain_data_ingest_batch_size",
-            MetricNames::CHAIN_DATA_FJALL_KEYSPACE_DISK_SPACE_BYTES => {
-                "chain_data_fjall_keyspace_disk_space_bytes"
-            }
-            MetricNames::CHAIN_DATA_FJALL_KEYSPACE_L0_TABLES => {
-                "chain_data_fjall_keyspace_l0_tables"
-            }
-            MetricNames::CHAIN_DATA_FJALL_KEYSPACE_SEALED_MEMTABLES => {
-                "chain_data_fjall_keyspace_sealed_memtables"
-            }
             MetricNames::CHAIN_DATA_CACHE_HIT_RATIO => "chain_data_cache_hit_ratio",
         }
     }
@@ -294,15 +280,6 @@ impl MetricNames {
                 "chain-data ingest total batch duration in ms"
             }
             MetricNames::CHAIN_DATA_INGEST_BATCH_SIZE => "chain-data ingest blocks per batch",
-            MetricNames::CHAIN_DATA_FJALL_KEYSPACE_DISK_SPACE_BYTES => {
-                "fjall keyspace disk-space bytes (per-keyspace gauge)"
-            }
-            MetricNames::CHAIN_DATA_FJALL_KEYSPACE_L0_TABLES => {
-                "fjall keyspace L0 table count (per-keyspace gauge)"
-            }
-            MetricNames::CHAIN_DATA_FJALL_KEYSPACE_SEALED_MEMTABLES => {
-                "fjall keyspace sealed-memtable count (per-keyspace gauge)"
-            }
             MetricNames::CHAIN_DATA_CACHE_HIT_RATIO => {
                 "chain-data per-table cache hit ratio (0..=1) over the last progress window"
             }

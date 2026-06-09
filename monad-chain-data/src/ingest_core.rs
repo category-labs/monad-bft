@@ -343,8 +343,8 @@ const TIMING_TARGET: &str = "ingest::timing";
 /// channel -> track pipeline is backpressure, not raw per-op time:
 /// `producer_send_blocked` high => a downstream track is the limiter;
 /// `*_recv_blocked` high for a track => that track is *starved* (not the
-/// bottleneck). Within the data track, `encode` vs `flush` splits CPU from the
-/// fjall write.
+/// bottleneck). Within the data track, `encode` vs `flush` splits CPU from
+/// blob-store writes.
 ///
 /// Measurement is gated on the target being enabled at TRACE, so it is zero-cost
 /// in normal runs (a single predictable branch per measurement when off).
@@ -360,7 +360,7 @@ pub(crate) struct IngestProbe {
     data_recv_blocked_ns: AtomicU64,
     /// Data track row encode (`encode_pack_entry`, CPU).
     data_encode_ns: AtomicU64,
-    /// Data track pack flush (`flush_pack`, the fjall blob write).
+    /// Data track pack flush (`flush_pack`, the blob-store write).
     data_flush_ns: AtomicU64,
     /// Index track blocked on `rx.recv().await` (starved => not the bottleneck).
     index_recv_blocked_ns: AtomicU64,
@@ -1090,7 +1090,7 @@ where
         let msg = rx.recv().await;
         probe.record(&probe.index_recv_blocked_ns, recv_start);
         let Some(msg) = msg else { break };
-        // Time here = the index track's own work (accumulate + seal + fjall put).
+        // Time here = the index track's own work (accumulate + seal + meta-store put).
         let work_start = probe.start();
         match msg {
             IngestMsg::Block(b) => {
