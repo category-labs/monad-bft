@@ -35,6 +35,27 @@ pub const ETHEREUM_MAINNET_CHAIN_ID: u64 = 1;
 pub const MONAD_MAINNET_CHAIN_ID: u64 = 143;
 pub const MONAD_TESTNET_CHAIN_ID: u64 = 10143;
 pub const MONAD_DEVNET_CHAIN_ID: u64 = 20143;
+// Test-only forking devnet: same consensus config as devnet (so override is
+// honored), but a distinct chain_id so a test cluster can't be confused with a
+// regular devnet pool. Pairs with the C++ MonadDevnetFork class, which
+// crosses MONAD_NEXT at MONAD_DEVNETFORK_NEXT_AT.
+pub const MONAD_DEVNET_FORK_CHAIN_ID: u64 = 20144;
+
+/// Mirror of the C `enum monad_chain_config` defined in
+/// `category/execution/ethereum/chain/chain_config.h` (monad-execution). Used
+/// by the statesync FFI to identify which chain it is syncing. Mirrored
+/// manually here rather than re-exported through the bindgen-generated
+/// `monad-statesync` crate so monad-chain-config stays above the FFI layer.
+/// Keep in sync with the C enum: a divergence panics at runtime via
+/// `MonadChainConfig::ffi_chain_config`.
+pub mod ffi_chain_config {
+    pub const ETHEREUM_MAINNET: u32 = 0;
+    pub const MONAD_DEVNET: u32 = 1;
+    pub const MONAD_TESTNET: u32 = 2;
+    pub const MONAD_MAINNET: u32 = 3;
+    pub const HIVE_NET: u32 = 4;
+    pub const MONAD_DEVNET_FORK: u32 = 5;
+}
 
 pub trait ChainConfig<CR: ChainRevision>: Copy + Clone {
     fn chain_id(&self) -> u64;
@@ -78,6 +99,24 @@ impl std::fmt::Display for ChainConfigError {
 }
 
 impl MonadChainConfig {
+    /// Return the `enum monad_chain_config` integer value (see
+    /// `category/execution/ethereum/chain/chain_config.h` in monad-execution)
+    /// corresponding to this chain. Used to identify the chain to the
+    /// statesync FFI client. Panics on a chain_id this build was not told
+    /// how to map — `MonadChainConfig::new` already rejects unknown
+    /// chain_ids upstream, so this is a contract-violation tripwire, not a
+    /// reachable branch.
+    pub fn ffi_chain_config(&self) -> u32 {
+        match self.chain_id {
+            ETHEREUM_MAINNET_CHAIN_ID => ffi_chain_config::ETHEREUM_MAINNET,
+            MONAD_DEVNET_CHAIN_ID => ffi_chain_config::MONAD_DEVNET,
+            MONAD_TESTNET_CHAIN_ID => ffi_chain_config::MONAD_TESTNET,
+            MONAD_MAINNET_CHAIN_ID => ffi_chain_config::MONAD_MAINNET,
+            MONAD_DEVNET_FORK_CHAIN_ID => ffi_chain_config::MONAD_DEVNET_FORK,
+            other => panic!("no ffi_chain_config mapping for chain_id {other}"),
+        }
+    }
+
     pub fn new(
         chain_id: u64,
         devnet_override: Option<MonadChainConfig>,
@@ -106,6 +145,11 @@ impl MonadChainConfig {
 
             info!("Using override devnet chain config");
             Ok(override_config)
+        } else if chain_id == MONAD_DEVNET_FORK_CHAIN_ID {
+            if devnet_override.is_some() {
+                warn!("Ignoring chain config from file for monad_devnet_fork");
+            }
+            Ok(MONAD_DEVNET_FORK_CHAIN_CONFIG)
         } else {
             Err(ChainConfigError::UnsupportedChainId(chain_id))
         }
@@ -176,6 +220,11 @@ const MONAD_DEVNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
     execution_v_one_activation: 0,
     execution_v_two_activation: 0,
     execution_v_four_activation: 0,
+};
+
+const MONAD_DEVNET_FORK_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
+    chain_id: MONAD_DEVNET_FORK_CHAIN_ID,
+    ..MONAD_DEVNET_CHAIN_CONFIG
 };
 
 const MONAD_TESTNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {

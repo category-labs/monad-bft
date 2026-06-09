@@ -307,15 +307,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         .expect("uds bind failed"),
         loopback: LoopbackExecutor::default(),
         state_sync: StateSyncExecutor::<SignatureType, SignatureCollectionType>::new(
-            // C `enum monad_chain_config` (category/execution/ethereum/chain/
-            // chain_config.h); the statesync client builds its chain from this.
-            match node_state.chain_config.chain_id() {
-                monad_chain_config::ETHEREUM_MAINNET_CHAIN_ID => 0,
-                monad_chain_config::MONAD_DEVNET_CHAIN_ID => 1,
-                monad_chain_config::MONAD_TESTNET_CHAIN_ID => 2,
-                monad_chain_config::MONAD_MAINNET_CHAIN_ID => 3,
-                other => panic!("unsupported chain_id {other} for statesync"),
-            },
+            node_state.chain_config.ffi_chain_config(),
             vec![statesync_triedb_path.to_string_lossy().to_string()],
             node_state.statesync_sq_thread_cpu,
             state_sync_init_peers,
