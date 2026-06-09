@@ -51,8 +51,7 @@ pub use family::{CallKind, FinalizedBlock, Hash32, IngestTrace, IngestTx};
 pub use ingest_config::ChainDataS3BlobConfig;
 pub use ingest_config::{
     open_configured_chain_data_reader, run_configured_chain_data_engine_ingest,
-    ChainDataBlobBackendConfig, ChainDataEngineConfig, ChainDataFjallBlobConfig,
-    ChainDataFjallMetaConfig, ChainDataFjallTuningConfig, ChainDataMetaBackendConfig,
+    ChainDataBlobBackendConfig, ChainDataEngineConfig, ChainDataMetaBackendConfig,
     ChainDataStoreConfig, ConfiguredChainDataReader,
 };
 #[cfg(feature = "dynamo")]

@@ -36,7 +36,7 @@ chain-data-serial-encode = ["chain-data-ingest", "monad-chain-data/serial-data-t
 
 [dependencies]
 monad-compress = { workspace = true }
-monad-chain-data = { workspace = true, features = ["fjall", "s3", "dynamo"], optional = true }
+monad-chain-data = { workspace = true, features = ["s3", "dynamo"], optional = true }
 monad-eth-types = { workspace = true }
 monad-triedb-utils = { workspace = true }
 monad-types = { workspace = true }
@@ -58,7 +58,6 @@ clap = { workspace = true, features = ["derive"] }
 dashmap = { workspace = true }
 enum_dispatch = { workspace = true }
 eyre = { workspace = true }
-fjall = { workspace = true }
 futures = { workspace = true }
 hex = { workspace = true }
 mongodb = { workspace = true }

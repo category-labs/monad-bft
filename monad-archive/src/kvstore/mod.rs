@@ -15,7 +15,6 @@
 
 pub mod cloud_proxy;
 pub mod dynamodb;
-pub mod fjall;
 pub mod fs;
 pub mod memory;
 pub mod mongo;
@@ -34,8 +33,7 @@ use tokio_retry::{
 };
 
 use self::{
-    cloud_proxy::CloudProxyReader, fjall::FjallKvStore, fs::FsStorage, memory::MemoryStorage,
-    mongo::MongoDbStorage,
+    cloud_proxy::CloudProxyReader, fs::FsStorage, memory::MemoryStorage, mongo::MongoDbStorage,
 };
 use crate::prelude::*;
 
@@ -48,7 +46,6 @@ pub enum KVStoreType {
     CloudProxy,
     TrieDb,
     FileSystem,
-    Fjall,
 }
 
 /// Policy controlling whether `put` can overwrite existing keys.
@@ -80,7 +77,6 @@ impl KVStoreType {
             KVStoreType::CloudProxy => "cloud_proxy",
             KVStoreType::TrieDb => "triedb",
             KVStoreType::FileSystem => "fs",
-            KVStoreType::Fjall => "fjall",
         }
     }
 }
@@ -93,7 +89,6 @@ pub enum KVStoreErased {
     MemoryStorage,
     MongoDbStorage,
     FsStorage,
-    FjallKvStore,
 }
 
 #[enum_dispatch(KVReader)]
@@ -105,7 +100,6 @@ pub enum KVReaderErased {
     CloudProxyReader,
     MongoDbStorage,
     FsStorage,
-    FjallKvStore,
 }
 
 impl From<KVStoreErased> for KVReaderErased {
@@ -116,7 +110,6 @@ impl From<KVStoreErased> for KVReaderErased {
             KVStoreErased::DynamoDBArchive(x) => KVReaderErased::DynamoDBArchive(x),
             KVStoreErased::MongoDbStorage(x) => KVReaderErased::MongoDbStorage(x),
             KVStoreErased::FsStorage(x) => KVReaderErased::FsStorage(x),
-            KVStoreErased::FjallKvStore(x) => KVReaderErased::FjallKvStore(x),
         }
     }
 }

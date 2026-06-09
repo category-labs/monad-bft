@@ -202,8 +202,7 @@ async fn run_engine(
     Ok(PopulatedStore { meta, blob, tables })
 }
 
-/// Populate caller-owned stores (e.g. a `FjallStore` used for both meta and
-/// blob) via the branchless engine, publishing head = last block. The caller
+/// Populate caller-owned stores via the branchless engine, publishing head = last block. The caller
 /// keeps the store handles and builds its own read service over them — used by
 /// backend-specific tests (durability across reopen, etc.).
 pub async fn populate_stores<M, B>(
