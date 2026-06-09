@@ -108,6 +108,7 @@ where
     ST: CertificateSignatureRecoverable,
 {
     pub fn new(
+        chain_config: u32,
         db_paths: Vec<String>,
         sq_thread_cpu: Option<u32>,
         state_sync_init_peers: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
@@ -123,6 +124,7 @@ where
             uds_path,
 
             mode: StateSyncMode::Sync(StateSyncClient::start(
+                chain_config,
                 &db_paths,
                 sq_thread_cpu,
                 &state_sync_init_peers,
