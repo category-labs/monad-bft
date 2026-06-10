@@ -61,7 +61,6 @@ opentelemetry-semantic-conventions = { workspace = true }
 opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }
 rayon = { workspace = true }
 regex = { workspace = true }
-reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
@@ -70,9 +69,9 @@ tokio-retry = { workspace = true }
 toml = { workspace = true }
 tracing = { workspace = true, features = ["log"] }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
-url = { workspace = true }
 
 [dev-dependencies]
 monad-eth-testutil = { workspace = true }
 
 rand = { workspace = true }
+reqwest = { workspace = true }

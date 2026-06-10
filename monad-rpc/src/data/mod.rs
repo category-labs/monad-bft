@@ -1724,12 +1724,12 @@ mod tests {
 
         let reader = ArchiveReader::new(primary_bdr.clone(), primary.reader, None, None)
             .with_fallback(
-                Some(ArchiveReader::new(
+                ArchiveReader::new(
                     fallback_bdr.clone(),
                     IndexReaderImpl::new(fallback.clone(), fallback_bdr),
                     None,
                     None,
-                )),
+                ),
                 None,
                 None,
             );
