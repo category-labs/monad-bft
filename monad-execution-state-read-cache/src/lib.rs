@@ -16,7 +16,6 @@
 use std::{
     collections::{BTreeMap, HashMap},
     marker::PhantomData,
-    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -45,8 +44,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     ESRT: ExecutionStateRead<ST, SCT>,
 {
-    // used so that ExecutionStateReadCache can maintain a logically immutable interface
-    cache: Arc<Mutex<HashMap<BlockId, BlockCache>>>,
+    cache: HashMap<BlockId, BlockCache>,
     state_read: ESRT,
     execution_delay: SeqNum,
 
@@ -64,6 +62,7 @@ where
             cache: Default::default(),
             state_read,
             execution_delay,
+
             _phantom: PhantomData,
         }
     }
@@ -87,13 +86,11 @@ where
             return Ok(Vec::new());
         }
 
-        let mut cache = self.cache.lock().unwrap();
-
         // TODO consider removing this uniqueness filter... the callers we have so far already only
         // pass in a unique set of accounts
         let unique_addresses = addresses.iter().unique().copied();
         // find accounts that are missing from cache
-        let cache_misses: Vec<_> = match cache.get(block_id) {
+        let cache_misses: Vec<_> = match self.cache.get(block_id) {
             None => unique_addresses.collect(),
             Some(block_cache) => unique_addresses
                 .filter(|&address| !block_cache.accounts.contains_key(address))
@@ -117,7 +114,7 @@ where
                     cache_misses.iter().copied(),
                 )?
             };
-            cache
+            self.cache
                 .entry(*block_id)
                 .or_insert_with(|| BlockCache {
                     seq_num: *seq_num,
@@ -133,7 +130,8 @@ where
                 )
         }
 
-        let block_cache = cache
+        let block_cache = self
+            .cache
             .get(block_id)
             .expect("cache must be populated... we asserted nonzero addresses at the start");
 
@@ -152,7 +150,8 @@ where
             .raw_read_latest_finalized_block()
             .unwrap_or(SeqNum::MAX);
 
-        cache.retain(|_, block| block.seq_num + self.execution_delay >= last_finalized_block);
+        self.cache
+            .retain(|_, block| block.seq_num + self.execution_delay >= last_finalized_block);
 
         Ok(accounts_data)
     }
@@ -163,9 +162,7 @@ where
         seq_num: &SeqNum,
         is_finalized: bool,
     ) -> Result<EthHeader, ExecutionStateReadError> {
-        let mut cache = self.cache.lock().unwrap();
-
-        if let Some(block_cache) = cache.get(block_id) {
+        if let Some(block_cache) = self.cache.get(block_id) {
             if let Some(execution_result) = &block_cache.execution_result {
                 return Ok(execution_result.clone());
             }
@@ -175,7 +172,7 @@ where
             self.state_read
                 .get_execution_result(block_id, seq_num, is_finalized)?;
 
-        cache
+        self.cache
             .entry(*block_id)
             .or_insert_with(|| BlockCache {
                 seq_num: *seq_num,
