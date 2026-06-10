@@ -246,12 +246,15 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
             return None;
         }
 
-        let Some(round_info) = self.round_info_cache.get_or_insert_primary(round) else {
+        let Some(round_info) = self
+            .round_info_cache
+            .get_or_insert_primary(round, &chunk.author)
+        else {
             tracing::debug!(
                 ?chunk.group_id,
                 ?chunk.chunk_id,
                 author =? chunk.author,
-                "dropping primary chunk for round that is too far in the past or future"
+                "dropping primary chunk due to round info cache rejection"
             );
             return None;
         };
