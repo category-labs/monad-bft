@@ -155,37 +155,6 @@ fn resolve_block_height_from_buffer(view: &BlockBufferView, block: &BlockTagOrHa
     }
 }
 
-async fn resolve_block_tag_or_hash(
-    data_source: &impl HistoricalDataSource,
-    block_tag_or_hash: BlockTagOrHash,
-) -> DataSourceResult<Option<BlockPointer>> {
-    match block_tag_or_hash {
-        BlockTagOrHash::BlockTags(BlockTags::Number(Quantity(block_num))) => {
-            data_source.try_resolve_block_number(block_num).await
-        }
-        BlockTagOrHash::BlockTags(BlockTags::Latest) => {
-            data_source
-                .try_resolve_block_commit_state(BlockCommitState::Proposed)
-                .await
-        }
-        BlockTagOrHash::BlockTags(BlockTags::Safe) => {
-            data_source
-                .try_resolve_block_commit_state(BlockCommitState::Voted)
-                .await
-        }
-        BlockTagOrHash::BlockTags(BlockTags::Finalized) => {
-            data_source
-                .try_resolve_block_commit_state(BlockCommitState::Finalized)
-                .await
-        }
-        BlockTagOrHash::Hash(block_hash) => {
-            data_source
-                .try_resolve_block_hash(BlockHash::from(block_hash.0))
-                .await
-        }
-    }
-}
-
 impl<T> DataProvider<T>
 where
     T: Triedb + Send + Sync + 'static,
@@ -421,7 +390,9 @@ where
             }
         }
 
-        if let Some(block_pointer) = resolve_block_tag_or_hash(&self.historical, block)
+        if let Some(block_pointer) = self
+            .historical
+            .try_resolve(block)
             .await
             .map_err(ChainStateError::DataSource)?
         {
@@ -454,7 +425,9 @@ where
             }
         }
 
-        if let Some(block_pointer) = resolve_block_tag_or_hash(&self.historical, block)
+        if let Some(block_pointer) = self
+            .historical
+            .try_resolve(block)
             .await
             .map_err(ChainStateError::DataSource)?
         {
