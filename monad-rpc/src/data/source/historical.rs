@@ -21,11 +21,40 @@ use dyn_clone::{clone_trait_object, DynClone};
 use monad_eth_types::TxEnvelopeWithSender;
 
 use super::{BlockCommitState, BlockPointer, DataSourceResult, DataSourceStack};
+use crate::types::eth_json::{BlockTagOrHash, BlockTags};
 
 /// Trait for read-only queries against historical chain data.
 #[async_trait]
 #[auto_impl(Box)]
 pub trait HistoricalDataSource: DynClone + Send + Sync {
+    async fn try_resolve(
+        &self,
+        block_tag_or_hash: BlockTagOrHash,
+    ) -> DataSourceResult<Option<BlockPointer>> {
+        match block_tag_or_hash {
+            BlockTagOrHash::BlockTags(block_tags) => match block_tags {
+                BlockTags::Number(block_number) => {
+                    self.try_resolve_block_number(block_number.0).await
+                }
+                BlockTags::Latest => {
+                    self.try_resolve_block_commit_state(BlockCommitState::Proposed)
+                        .await
+                }
+                BlockTags::Safe => {
+                    self.try_resolve_block_commit_state(BlockCommitState::Voted)
+                        .await
+                }
+                BlockTags::Finalized => {
+                    self.try_resolve_block_commit_state(BlockCommitState::Finalized)
+                        .await
+                }
+            },
+            BlockTagOrHash::Hash(hash) => {
+                self.try_resolve_block_hash(BlockHash::from(hash.0)).await
+            }
+        }
+    }
+
     async fn try_resolve_block_commit_state(
         &self,
         commit_state: BlockCommitState,
