@@ -50,10 +50,7 @@ impl<T: Send + Sync + 'static> RowCache<T> {
     /// Cache-only probe; promotes the row's LRU position on a hit.
     pub fn probe(&self, block_number: u64, idx_in_block: usize) -> Option<Arc<T>> {
         let idx = u32::try_from(idx_in_block).ok()?;
-        self.inner
-            .probe(&(block_number, idx))
-            .flatten()
-            .map(|w| w.value)
+        self.inner.probe(&(block_number, idx)).map(|w| w.value)
     }
 
     /// Seeds a row the caller decoded itself. `weight` is the decompressed

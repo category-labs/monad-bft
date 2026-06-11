@@ -128,7 +128,7 @@ Draft MIP introducing five JSON-RPC methods: `eth_queryBlocks`, `eth_queryTransa
 - **Publication gating on point lookups**: with tx artifacts present but the publication row removed, a hash-index hit must NOT resolve (`get_transaction_ignores_index_hits_without_published_head`).
 
 ### Write session (`tests/session.rs`)
-- `with_writes` closure: error ⇒ nothing flushed; staged writes **invisible mid-session** (no read-your-own-writes); error/panic evicts any cache entries the closure populated (incl. negative caching of the in-closure miss); partial `apply_writes` failure evicts cache; retry after failure is idempotent; meta and blob `apply_writes` fire **in parallel** (timed-overlap assertion).
+- `with_writes` closure: error ⇒ nothing flushed; staged writes **invisible mid-session** (no read-your-own-writes) but visible to the very next read after commit (absence is never cached); error/panic evicts any cache entries the closure populated; partial `apply_writes` failure evicts cache; retry after failure is idempotent; meta and blob `apply_writes` fire **in parallel** (timed-overlap assertion).
 
 ### Caching (`tests/cache.rs`, `tests/row_cache.rs`)
 - Caches are **read-populated only** — writes never seed them (production parity: ingest runs caches-off).

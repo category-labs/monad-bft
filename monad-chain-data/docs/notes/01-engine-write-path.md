@@ -211,7 +211,7 @@ Pipeline shape (`ingest/mod.rs:16-34`): one **producer** fans the same block str
 - **Open-streams partitions hold two row flavors with one union semantics** (flush first-seen + seal full inventory, `bitmap.rs:230-240`), and reads are deliberately *not* head-filtered — ahead-of-head rows are "wasteful, never wrong" (`bitmap.rs:239-240`).
 - **Dir fragments are duplicated** into every bucket they overlap (straddlers appear in 2+ partitions) so each bucket partition is self-sufficient for compaction (`primary_dir.rs:189-193`).
 - **Buckets omit empty blocks** — encoded size is bounded by id-producing blocks, keeping sparse buckets under backend write limits (`primary_dir.rs:29-32`); the next entry (or sentinel) closes ranges across them.
-- **`dict_by_version` is uncached on purpose** — caching it would strand a negative-cached miss in the check-then-write mint path because writes never seed caches (`tables.rs:1199-1202`).
+- **`dict_by_version` is uncached on purpose** — `DictManager` memoizes decoders, so the table is read at most once per (family, version); a cache here could never see a second lookup to hit (`tables.rs:1198-1201`).
 - **Row digests are zstd-independent**: hashed pre-compression with offsets excluded, so changing zstd level/dict/version never perturbs verification (`digest.rs:46-49`).
 - **Head 0 sentinel**: `published_head() == 0` means "claimed but nothing finalized"; real heads start at 1 (`tables.rs:947-949`). Cold-start `resume` is `start - 1`.
 - **Warm-resume genesis subtlety**: the chain seed is keyed on the recovery *regime*, not `resume == 0` — a warm resume at block 0 must fold block 0's record (`ingest/mod.rs:251-263`).

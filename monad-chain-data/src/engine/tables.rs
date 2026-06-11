@@ -1202,9 +1202,8 @@ impl<M: MetaStore> FamilyTables<M> {
                 header_decoder,
             ),
             // Uncached: `DictManager` memoizes decoders, so this table is read
-            // at most once per (family, version); caching it on the writer
-            // would also strand a negative-cached miss in the mint path's
-            // check-then-write, since writes never seed caches.
+            // at most once per (family, version) — a cache here could never
+            // see a second lookup to hit.
             dict_by_version: CachedKvTable::new(meta_store.table(ids.dict_by_version), 0, Ok),
             dir: PrimaryDirTables::new(
                 CachedScannableKvTable::new(

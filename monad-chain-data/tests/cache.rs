@@ -142,7 +142,14 @@ async fn staged_write_not_visible_until_committed() {
         })
         .await
         .expect("with_writes");
-    // Post-commit visibility not re-checked: the in-closure miss negatively cached the key.
+
+    // The in-closure miss must not be cached (absence never is), so the
+    // committed value is visible to the very next read.
+    let read = tables.blocks().load_header(1).await.expect("load_header");
+    assert!(
+        read.is_some(),
+        "committed write must be visible despite the pre-commit miss"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]

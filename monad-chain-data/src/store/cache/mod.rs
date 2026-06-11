@@ -49,12 +49,9 @@ pub struct Weighted<T> {
     pub weight: usize,
 }
 
-/// Stamped payload weight plus per-entry overhead. Negatively cached misses
-/// pay only the overhead, keeping absent-key floods bounded by the budget.
-pub(crate) fn weigh_weighted<T>(value: &Option<Weighted<T>>) -> usize {
-    value.as_ref().map_or(CACHE_ENTRY_OVERHEAD, |w| {
-        w.weight.saturating_add(CACHE_ENTRY_OVERHEAD)
-    })
+/// Stamped payload weight plus per-entry overhead.
+pub(crate) fn weigh_weighted<T>(value: &Weighted<T>) -> usize {
+    value.weight.saturating_add(CACHE_ENTRY_OVERHEAD)
 }
 
 /// Decodes a fetched payload into a [`Weighted`] value, stamping the weight
@@ -184,7 +181,7 @@ struct WeightedLru<K, V>
 where
     K: Hash + Eq,
 {
-    lru: LruCache<K, Option<V>>,
+    lru: LruCache<K, V>,
     /// Sum of `weigher(value)` over resident entries, kept in lockstep with
     /// `lru` on insert/replace/evict.
     size: usize,
@@ -200,9 +197,9 @@ where
     K: Hash + Eq,
 {
     cache: Option<Mutex<WeightedLru<K, V>>>,
-    /// Per-value weight in bytes; `None` (a negatively cached miss) still pays
-    /// [`CACHE_ENTRY_OVERHEAD`] via [`weigh_weighted`].
-    weigher: fn(&Option<V>) -> usize,
+    /// Per-value weight in bytes; [`weigh_weighted`] adds
+    /// [`CACHE_ENTRY_OVERHEAD`] to the stamped payload weight.
+    weigher: fn(&V) -> usize,
     /// Single-flight map: concurrent misses on a key share one in-flight
     /// fetch. Separate from the LRU mutex; neither is held across an `.await`.
     in_flight: Mutex<HashMap<K, SharedFetch<V>>>,
@@ -217,7 +214,7 @@ where
 {
     /// Byte-budgeted cache: evicts LRU entries until the summed `weigher`
     /// weight is `<= budget` bytes. `budget == 0` disables the cache.
-    pub(crate) fn with_weigher(budget: usize, weigher: fn(&Option<V>) -> usize) -> Arc<Self> {
+    pub(crate) fn with_weigher(budget: usize, weigher: fn(&V) -> usize) -> Arc<Self> {
         // Unbounded: eviction is driven by the byte budget, not entry count;
         // a count cap too would evict early.
         let cache = (budget > 0).then(|| {
@@ -240,7 +237,7 @@ where
     /// hit/miss (unlike the non-promoting `peek` of the underlying lru crate);
     /// never fetches. Batch readers probe with this, fetch misses themselves,
     /// then [`Self::insert`] the results.
-    pub(crate) fn probe(&self, key: &K) -> Option<Option<V>> {
+    pub(crate) fn probe(&self, key: &K) -> Option<V> {
         let c = self.cache.as_ref()?;
         let hit = c
             .lock()
@@ -256,7 +253,8 @@ where
         hit
     }
 
-    fn store(&self, key: K, value: Option<V>) {
+    /// Seeds the cache with a caller-fetched value; no-op when disabled.
+    pub(crate) fn insert(&self, key: K, value: V) {
         let Some(c) = &self.cache else {
             return;
         };
@@ -277,11 +275,6 @@ where
             let freed = (self.weigher)(&evicted);
             guard.size = guard.size.saturating_sub(freed);
         }
-    }
-
-    /// Seeds the cache with a caller-fetched value; no-op when disabled.
-    pub(crate) fn insert(&self, key: K, value: V) {
-        self.store(key, Some(value));
     }
 }
 
@@ -315,19 +308,19 @@ where
     /// `make_fetch` builds the owned `'static` fetch future and runs only on
     /// the MISS path, so a hit pays no fetch-capture allocations.
     ///
-    /// EVERY awaiter populates the cache on `Ok`: the leader can be cancelled
-    /// mid-await, leaving a follower to drive the `Shared` to completion — if
-    /// only the leader populated, that value would be silently uncached.
-    /// Redundant populates are idempotent. No mutex is held across an `.await`.
-    /// Coalesced followers still count as misses, so single-flight wins show
-    /// up as fewer backend reads, not in the hit ratio.
+    /// EVERY awaiter populates the cache on a present value: the leader can be
+    /// cancelled mid-await, leaving a follower to drive the `Shared` to
+    /// completion — if only the leader populated, that value would be silently
+    /// uncached. Redundant populates are idempotent. No mutex is held across
+    /// an `.await`. Coalesced followers still count as misses, so
+    /// single-flight wins show up as fewer backend reads, not in the hit ratio.
     pub(crate) async fn get_or_fetch<F, Fut>(&self, key: K, make_fetch: F) -> Result<Option<V>>
     where
         F: FnOnce(&K) -> Fut,
         Fut: Future<Output = Result<Option<V>>> + Send + 'static,
     {
         if let Some(v) = self.probe(&key) {
-            return Ok(v);
+            return Ok(Some(v));
         }
 
         // Join an existing flight (follower) or start one (leader).
@@ -355,10 +348,13 @@ where
 
         let result = fut.await;
 
-        if let Ok(value) = &result {
-            // Negative caching: `None` is stored so repeat lookups for an
-            // absent key skip the backend. Errors are never cached.
-            self.store(key.clone(), value.clone());
+        if let Ok(Some(value)) = &result {
+            // Only present values are cached. Absence is never cacheable:
+            // writes never seed or invalidate read caches, and a key absent
+            // now (an unmined tx hash, an open page's artifact) can become
+            // present later — a stored `None` would mask it until eviction.
+            // Errors are never cached either.
+            self.insert(key.clone(), value.clone());
         }
         unshare(result)
     }
@@ -392,7 +388,9 @@ where
 /// `decode` runs once per miss inside the single-flight fetch; the value is
 /// cached as [`Weighted`] (stamped with the payload's byte length), so hits
 /// skip both the backend read and the decode. Read-populated only — writes
-/// never seed it, so nothing needs invalidation on a failed commit.
+/// never seed it, so nothing needs invalidation on a failed commit. Only
+/// present values are cached: misses always re-probe the backend, so a key
+/// written later is visible immediately.
 #[derive(Clone)]
 pub struct CachedKvTable<M: MetaStore, V = Bytes> {
     inner: KvTable<M>,
@@ -600,7 +598,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn kv_get_coalesces_absent_key() {
+    async fn kv_get_coalesces_absent_key_without_caching_the_miss() {
         let store = CountingStore::default();
         let table = KvTable::new(store.clone(), TableId::new("t"));
         let cached = Arc::new(CachedKvTable::new(table, 4096, Ok));
@@ -613,9 +611,30 @@ mod tests {
         for h in handles {
             assert_eq!(h.await.unwrap().unwrap(), None);
         }
-        assert_eq!(store.get_calls(), 1);
+        assert_eq!(store.get_calls(), 1, "concurrent misses share one fetch");
+
+        // Absence is never cached: writes never seed read caches, so a cached
+        // miss would mask a later-written key. Every repeat lookup re-probes.
         assert_eq!(cached.get(b"missing").await.unwrap(), None);
-        assert_eq!(store.get_calls(), 1);
+        assert_eq!(store.get_calls(), 2, "a miss must not be served from cache");
+
+        // A value written after the misses is visible on the next read...
+        store
+            .data
+            .lock()
+            .unwrap()
+            .insert(b"missing".to_vec(), Bytes::from_static(b"v"));
+        assert_eq!(
+            cached.get(b"missing").await.unwrap(),
+            Some(Bytes::from_static(b"v"))
+        );
+        assert_eq!(store.get_calls(), 3);
+        // ...and is cached from then on.
+        assert_eq!(
+            cached.get(b"missing").await.unwrap(),
+            Some(Bytes::from_static(b"v"))
+        );
+        assert_eq!(store.get_calls(), 3);
     }
 
     #[tokio::test]
@@ -719,9 +738,9 @@ mod tests {
         );
     }
 
-    /// Exact byte weigher for region-cache values: `None` weighs 0.
-    fn byte_weigher(v: &Option<Bytes>) -> usize {
-        v.as_ref().map_or(0, Bytes::len)
+    /// Exact byte weigher for region-cache values.
+    fn byte_weigher(v: &Bytes) -> usize {
+        v.len()
     }
 
     #[test]
@@ -730,11 +749,11 @@ mod tests {
         cache.insert(1, Bytes::from_static(b"aaaa")); // size 4
         cache.insert(2, Bytes::from_static(b"bbbb")); // size 8
                                                       // Touch key 1 so key 2 becomes the LRU victim.
-        assert_eq!(cache.probe(&1), Some(Some(Bytes::from_static(b"aaaa"))));
+        assert_eq!(cache.probe(&1), Some(Bytes::from_static(b"aaaa")));
         cache.insert(3, Bytes::from_static(b"cccc")); // size 12 -> evict LRU (key 2) -> size 8
 
-        assert_eq!(cache.probe(&1), Some(Some(Bytes::from_static(b"aaaa"))));
-        assert_eq!(cache.probe(&3), Some(Some(Bytes::from_static(b"cccc"))));
+        assert_eq!(cache.probe(&1), Some(Bytes::from_static(b"aaaa")));
+        assert_eq!(cache.probe(&3), Some(Bytes::from_static(b"cccc")));
         assert_eq!(cache.probe(&2), None, "LRU entry evicted to honor budget");
     }
 
@@ -745,18 +764,18 @@ mod tests {
         cache.insert(2, Bytes::from_static(b"bbbb")); // size 8
                                                       // Overwrite key 1 with an equal-size value: size stays 8, no eviction.
         cache.insert(1, Bytes::from_static(b"AAAA"));
-        assert_eq!(cache.probe(&1), Some(Some(Bytes::from_static(b"AAAA"))));
-        assert_eq!(cache.probe(&2), Some(Some(Bytes::from_static(b"bbbb"))));
+        assert_eq!(cache.probe(&1), Some(Bytes::from_static(b"AAAA")));
+        assert_eq!(cache.probe(&2), Some(Bytes::from_static(b"bbbb")));
     }
 
     #[test]
     fn byte_budget_handles_empty_value() {
         let cache = CachedInner::<u64, Bytes>::with_weigher(8, byte_weigher);
         cache.insert(1, Bytes::new()); // weighs 0
-        assert_eq!(cache.probe(&1), Some(Some(Bytes::new())));
+        assert_eq!(cache.probe(&1), Some(Bytes::new()));
         cache.insert(2, Bytes::from_static(b"bbbbbbbb"));
-        assert_eq!(cache.probe(&1), Some(Some(Bytes::new())));
-        assert_eq!(cache.probe(&2), Some(Some(Bytes::from_static(b"bbbbbbbb"))));
+        assert_eq!(cache.probe(&1), Some(Bytes::new()));
+        assert_eq!(cache.probe(&2), Some(Bytes::from_static(b"bbbbbbbb")));
     }
 
     #[test]
@@ -786,7 +805,7 @@ mod tests {
                 weight: 100,
             },
         );
-        assert_eq!(cache.probe(&1).flatten().map(|w| w.value), Some("a"));
+        assert_eq!(cache.probe(&1).map(|w| w.value), Some("a"));
         // Key 1 was just touched, so inserting a third evicts key 2 (LRU).
         cache.insert(
             3,
@@ -795,8 +814,8 @@ mod tests {
                 weight: 100,
             },
         );
-        assert_eq!(cache.probe(&1).flatten().map(|w| w.value), Some("a"));
+        assert_eq!(cache.probe(&1).map(|w| w.value), Some("a"));
         assert!(cache.probe(&2).is_none());
-        assert_eq!(cache.probe(&3).flatten().map(|w| w.value), Some("c"));
+        assert_eq!(cache.probe(&3).map(|w| w.value), Some("c"));
     }
 }

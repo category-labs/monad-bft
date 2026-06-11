@@ -110,7 +110,7 @@ Using `query_logs` as the example; txs/traces/transfers are identical modulo the
 
 All read-side caches are **read-populated only; writes never seed them** — published data is write-once, so nothing needs invalidation (store/cache/mod.rs:391–396).
 
-**Generic core** (`CachedInner`, store/cache/mod.rs:198–365): byte-budgeted weighted LRU (unbounded entry count; eviction purely by summed weight; `budget == 0` disables) + **single-flight** (concurrent misses share one fetch future; leader cleans up via drop guard; *every* awaiter populates on `Ok` so a cancelled leader can't strand an uncached value; errors never cached) + **negative caching** (`None` stored, weighed at `CACHE_ENTRY_OVERHEAD = 64` bytes). Values are decoded once on miss and weighed by their *pre-decode* byte length + overhead (`Weighted`/`weigh_weighted`, :44–58). No mutex held across `.await` (crate-wide invariant). Hit/miss counters drained per window (`take_window_stats`).
+**Generic core** (`CachedInner`, store/cache/mod.rs:195–366): byte-budgeted weighted LRU (unbounded entry count; eviction purely by summed weight; `budget == 0` disables) + **single-flight** (concurrent misses share one fetch future; leader cleans up via drop guard; *every* awaiter populates on `Ok(Some)` so a cancelled leader can't strand an uncached value; errors never cached). **Absence is never cached**: a backend miss always re-probes, so a key written after a miss (an unmined tx hash, a pre-publication block) is visible to the very next read (store/cache/mod.rs:351–358). Values are decoded once on miss and weighed by their *pre-decode* byte length + `CACHE_ENTRY_OVERHEAD = 64` bytes overhead (`Weighted`/`weigh_weighted`, :44–58). No mutex held across `.await` (crate-wide invariant). Hit/miss counters drained per window (`take_window_stats`).
 
 **Cache inventory** (`CacheConfig`, store/cache/mod.rs:98–177; default 2 GiB total split by ratios /1024 — row 512, bitmap_by_block 256, bitmap_page_blob 128, dir_by_block 32, page_counts 24, dir_bucket / open_streams / block_header / hash→number 16 each, tx_hash_index 8):
 
@@ -127,7 +127,7 @@ All read-side caches are **read-populated only; writes never seed them** — pub
 | bitmap page blobs | `"{stream}/"+page BE8` | `Arc<DecodedBitmapPage>` (decoded roaring — hit skips deserialize) | tables.rs:1221 |
 | bitmap page counts | `"{stream}/"+group BE8` | `BitmapPageCounts` | tables.rs:1226 |
 | open_bitmap_stream (scannable) | (page BE8, marker+chunk) | `Arc<Vec<String>>` | tables.rs:1231 |
-| dict_by_version | version BE4 | bytes — **budget 0, uncached** (DictManager memoizes decoders; caching here would strand a negative miss in the mint path) | tables.rs:1199–1202 |
+| dict_by_version | version BE4 | bytes — **budget 0, uncached** (DictManager memoizes decoders, so the table is read at most once per (family, version) — a cache could never see a second lookup to hit) | tables.rs:1198–1201 |
 | seal_chain | span BE8 | `Hash32` — budget 0, recovery/verification only | tables.rs:1237 |
 
 **Row caches** (`RowCaches`, row_cache.rs:76–108): three weighted LRUs over `Arc<StoredLog>` / `Arc<StoredTxEnvelope>` / `Arc<StoredTrace>`, key `(block_number, idx_in_block as u32)` (wider indices silently bypass, :52–67), weight = decompressed frame length (stamped at insert — unrecoverable later), total budget split evenly /3 so a hot family can't starve the others. Only rows a query *actually materialized* are inserted — never whole blobs. Probe-then-insert pattern (no single-flight here; the batch path probes, fetches misses itself, then seeds, family_runner.rs:185–311). Transfers and traces share one instance.
@@ -136,7 +136,7 @@ All read-side caches are **read-populated only; writes never seed them** — pub
 
 **Never cached**: raw block-blob bytes ("the decoded-row caches above the decode layer absorb repeat reads", tables.rs:255–257); scan results (`scan_keys` always bypasses — unbounded sets would need invalidation, store/cache/mod.rs:494). All blob reads share one process-global IO semaphore (`blob_io_concurrency`=1024, tables.rs:372–379).
 
-**Why caching is safe**: everything below the published head is immutable; reads only occur at/below the head (range resolution clamps); negative entries can only form for keys that are permanently absent or above-head probes (see gotchas).
+**Why caching is safe**: everything below the published head is immutable; reads only occur at/below the head (range resolution clamps); absence is never cached, so a pre-publication probe can't mask the key's later write.
 
 ---
 
@@ -222,7 +222,7 @@ All read-side caches are **read-populated only; writes never seed them** — pub
 3. **Transfers must never block-scan**: `TransferFilter` always emits `has_transfer`, and `decode_scan_record` hard-errors — the scan path would emit reverted-but-value-carrying frames because `TransferFilter::matches` deliberately omits the `status`/`tx_status` re-check that the bitmap pre-filters (transfers/materialize.rs:181–195). Any future change to clause emission must preserve "always ≥ 1 clause".
 4. **`is_top_level: Some(false)` (traces & transfers) is the only true post-filter** — inexpressible as a positive bitmap clause, so it drops materialized candidates and is the sole reason the stage-2 batch loop can refill (traces/materialize.rs:75–78, family_runner.rs:760–763). A filter constrained *only* by it routes to the block-scan path.
 5. **`matches` is otherwise an invariant check, not a filter** (clause.rs:70–71): a release-mode mismatch means index corruption silently shrinks results rather than erroring (it does bump `post_filter_dropped` stats).
-6. **Negative caching + above-head probes**: caches store `None` and writes never seed caches. Read paths are safe because they never probe above the published head — but `standby_digests`/`block_number_by_hash` style probes for not-yet-published keys can strand a stale negative entry in a reader process until LRU eviction (no TTL). (`block_number_by_hash`'s publish-lag caveat is documented at tables.rs:1099–1101.)
+6. **Above-head probes are miss-safe**: writes never seed read caches, but absence is never cached either — `standby_digests`/`block_number_by_hash` style probes for not-yet-published keys simply re-hit the backend on the next read; nothing is stranded. (`block_number_by_hash`'s publish-lag caveat is documented at tables.rs:1099–1101.)
 7. **Missing-summary is fatal by design**: a sealed bucket without a summary or a bitmap candidate missing from the directory throws commit-contract errors instead of degrading (error.rs:34–61) — operators should know these errors mean store corruption, not transient failure.
 8. **Block 0 clamp**: `[0, N]` silently becomes `[1, N]` (eth_getLogs-style genesis clamp) but `[0, 0]` errors (range.rs:135–144).
 9. **`load_intersection_ids` is dead on the production path** — retained only as the serial equivalence reference for the concurrent pipeline (bitmap.rs:136–139); don't document it as an API.
@@ -247,7 +247,7 @@ All read-side caches are **read-populated only; writes never seed them** — pub
 
 1. **Tip stitching ownership**: `mem_scan` helpers are exported but nothing consumes them (monad-rpc included). Is the live/tip merge transport still pending, and will it pin a single observed head to avoid double-covering the seam block? Also: are tip traces/transfers/blocks intentionally out of scope for live queries, or future work?
 2. **`safe`/`finalized` tag semantics** at the wire layer — both presumably resolve to the published head since the store is finalized-only; not verified (wire.rs out of scope).
-3. **Stale negative-cache entries** for above-head probes (gotcha 6): accepted-by-design (LRU eventually evicts) or worth a head-keyed guard? Affects only verification tooling, not query paths, as far as traceable.
+3. **Resolved — stale negative-cache entries**: negative caching was removed from the read-cache layer (the LRU stores `V`, not `Option<V>`); above-head probes re-hit the backend on the next read, so no guard is needed (gotcha 6).
 4. **`resolve_primary_id_window` cost on sparse families**: the low/high walks scan block records serially from each end until a non-zero window (window.rs:99–135); over a `max_block_range`-sized range of family-empty blocks this is O(range) cached point reads. Presumably bounded acceptable by `max_block_range`; no skip structure exists.
 5. **Fetch-retry** is listed as open in project memory for the engine generally; the read path has no retry layer either — backend errors surface directly (single-flight even re-wraps a shared error for followers, store/cache/mod.rs:88–93). Is retry the transport's job?
 6. **`QueryLimits.max_limit` vs block-completion**: a single block with more matches than `max_limit` will return them all; is the transport expected to impose a response-size guard for pathological blocks?
