@@ -387,6 +387,21 @@ pub enum Commands {
         #[arg(long, action = ArgAction::SetTrue)]
         async_backfill: bool,
     },
+
+    /// Print the chain-data published head from the meta store and exit.
+    /// The published head is the reader-visible watermark; it advancing is the
+    /// ingest health signal.
+    #[cfg(feature = "chain-data-ingest")]
+    ChainDataHead {
+        /// The daemon's TOML config file; only [chain_data_ingest.store] is
+        /// read. Defaults match the deb's systemd unit.
+        #[arg(
+            long,
+            env = "CHAIN_DATA_ARCHIVER_CONFIG",
+            default_value = "/home/monad/chain-data-archiver.toml"
+        )]
+        config: PathBuf,
+    },
 }
 
 #[derive(Debug, Parser)]

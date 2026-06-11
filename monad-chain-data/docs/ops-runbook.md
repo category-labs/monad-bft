@@ -29,7 +29,9 @@ Never start a second writer against the same store.
   shared libraries are in `/usr/local/lib` (the package `postinst` runs
   `ldconfig`; no `LD_LIBRARY_PATH` is needed).
 - The `monad` user and `/home/monad` exist (host provisioning creates them —
-  the deb does not).
+  the deb does not). Fleet provisioning is an implicit prerequisite throughout:
+  it also supplies the deb's `libhugetlbfs-bin` dependency (absent from stock
+  noble repos) and `monadctl` (not shipped in the deb).
 - Network reachability to: the Scylla Alternator endpoint(s) (port 8000), the
   RustFS endpoint(s) (port 9000) or AWS S3, and the source block-archive S3
   bucket.
@@ -195,8 +197,16 @@ journalctl -u monad-chain-data-archiver -f
   logs the ingest start and resume point.
 - A throughput line logs every 5s under the `ingest::timing` target
   (`blocks_per_s`, `txs_per_s`, per-stage busy/blocked percentages).
-- Health = process up + the published head advancing in the meta store. There
-  is no HTTP health endpoint or metrics exporter.
+- Health = process up + the published head advancing in the meta store:
+
+  ```sh
+  sudo -u monad monad-archiver chain-data-head
+  ```
+
+  (`--config` defaults to `/home/monad/chain-data-archiver.toml`, the unit's
+  config path.) Run it twice; the printed block number should advance (during deep backfill
+  publishes land in large strides — see Operations). There is no HTTP health
+  endpoint or metrics exporter.
 - `monadctl status` includes the service.
 
 ### Operations
