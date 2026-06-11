@@ -50,34 +50,34 @@ the record type, what fields are indexed, and how to encode/decode a row.
 
 ### Primary IDs — the spine
 
-Every record in a family has a `PrimaryId` (`src/primitives/state.rs`): a `u64`
+Every record in a family has a `PrimaryId` (`src/primitives/records.rs`): a `u64`
 that counts up, gaplessly, across the whole family's history. Log #0, log #1,
 … log #N regardless of which block they're in. Same for txs, same for traces.
 (They're wrapped in `LogId` / `TxId` / `TraceId` newtypes so you can't cross the
 streams by accident, but underneath it's one `PrimaryId`.)
 
-The id is split into two parts:
+Two aligned windows of the id space matter (`src/engine/bitmap.rs` has the
+helpers):
 
-```
-   63                    24 23            0
-  +------------------------+--------------+
-  |        shard           |    local     |
-  +------------------------+--------------+
-            (40 bits)         (24 bits)
-```
+- A **page** is 64K ids (`STREAM_PAGE_ID_SPAN`), starting at an id with its
+  low 16 bits cleared (`page_start`). The page is the engine's real unit: the
+  seal granule, the bitmap-artifact scope, and the directory bucket span all
+  coincide with it. Bitmap bits are stored **page-relative**: bit `v` in page
+  `P` is id `P + v` (`page_offset`), so ids reconstruct by addition.
+- A **page group** is 256 pages = 2^24 ids (`PAGE_GROUP_ID_SPAN`), starting at
+  an id with its low 24 bits cleared (`page_group_start`). It is purely the
+  page-count *manifest's* keying and completeness window — nothing else is
+  group-scoped.
 
-- **local** (low 24 bits) → up to ~16.7M records per shard.
-- **shard** (the rest) → which 16.7M-record band you're in.
-
-It is split because the bitmap index works in *local* space within a shard,
-and the shard is the unit at which the index seals and becomes immutable. More on
-that below. Just remember: **a `PrimaryId` is a `(shard, local)` pair**, and
-`from_parts` / `.shard()` / `.local()` convert back and forth.
+> **Format note**: the id space is not sharded — stream ids carry no shard
+> segment and bitmaps store global page-relative bits. Bitmap blob/artifact
+> bytes carry a version byte; a mismatch is a loud decode error, never a
+> tolerated legacy path.
 
 ### Blocks tie ids back to chain position
 
 The id-space is continuous and ignores block boundaries. The thing that records
-where the boundaries are is the **`BlockRecord`** (`src/primitives/state.rs`). One per block:
+where the boundaries are is the **`BlockRecord`** (`src/primitives/records.rs`). One per block:
 
 ```rust
 struct BlockRecord {
@@ -143,36 +143,39 @@ scan. (A sealed bucket missing its summary is a hard error, not a silent fallbac
 (`src/engine/bitmap.rs`, `src/engine/query/bitmap.rs`)
 
 This is the inverted index that makes filtered queries fast. The core unit is a
-**stream**: `sharded_stream_id(kind, value, shard)`. For a log, ingest emits one
+**stream**: `render_stream_id(kind, value)` — one logical stream per indexed
+`(kind, value)` pair across the whole id space. For a log, ingest emits one
 entry per indexed field into the matching stream
 (`src/logs/ingest.rs::stream_entries_for_log`):
 
 ```
-addr=0xABC   shard 3   ->  set local-bit for this log
-topic0=0x12  shard 3   ->  set local-bit
-topic1=...   shard 3   ->  set local-bit
+addr=0xABC    ->  set this log's page-relative bit
+topic0=0x12   ->  set bit
+topic1=...    ->  set bit
 ```
 
-Each stream is a roaring bitmap of *local* ids within its shard. Streams are
-chopped into **pages** spanning 64K local ids each. A sealed shard also carries a
-**page-count manifest** (how many bits each stream has in each page) so the query
-side can skip provably-empty pages without fetching them.
+Physically a stream is chopped into **pages** of 64K ids; each page is a
+roaring bitmap of page-relative offsets (`id = page_start + bit`). Once the
+frontier leaves a **page group** (256 pages), each stream gets an immutable
+**page-count manifest** row for that group — how many bits it has in each of
+the group's pages — so the query side can skip provably-empty pages without
+fetching them. The frontier's own group has no manifest yet (absent ⇒
+unknown, never a skip).
 
 The names `addr` / `topic0..3` (logs), `from` / `to` / `selector` (txs),
 `has_transfer` etc. (traces) are the indexed **kinds**. The exact same
-`sharded_stream_id(kind, value, shard)` call builds the stream id at ingest and
-looks it up at query — that symmetry is the whole trick, so when you read one
-side, read the other.
+`render_stream_id(kind, value)` call builds the stream id at ingest and looks
+it up at query — that symmetry is the whole trick, so when you read one side,
+read the other.
 
 ### The published head
 
-One row, `PublicationState` (`src/primitives/state.rs`), guarded by
+One row, `PublicationState` (`src/primitives/records.rs`), guarded by
 compare-and-swap. Its `indexed_finalized_head` is **the reader-visible
 watermark**: queries only ever see blocks at or below it. Advancing it is the
 atomic act of publication — all the artifacts for a block are written *first*,
-then the head moves in one CAS. The other fields (`owner_id`, `session_id`,
-`lease_valid_through_block`) are write-coordination state the query path never
-looks at, plus `head_artifact_checksum` for standby verification.
+then the head moves in one CAS. The only other field, `head_row_chain`, mirrors
+the head block's `BlockRecord.row_chain` for standby verification.
 
 ---
 
@@ -226,10 +229,10 @@ field; its `values` are OR'd together; clauses are AND'd with each other. E.g.
 The runner does, conceptually:
 
 ```
-for each shard in the id window:
-    build a per-shard plan: the clause streams + the page-count manifest
-    for each candidate page in this shard's local range:
-        intersect the clauses on this page  ->  surviving local ids
+for each page group in the id window:
+    build a per-group plan: the clause streams + the group's page-count manifest
+    for each candidate page of the group in the window:
+        intersect the clauses on this page  ->  surviving page offsets (+ page start = ids)
         resolve each survivor via the directory  ->  (block, idx)
         materialize  ->  the actual record
 stop once `limit` records are collected (block-aligned), record a cursor
@@ -241,12 +244,12 @@ The key insight that makes per-page work correct is the **distributive law**:
 ⋂_clauses ( ⋃_pages bits )  ==  ⋃_pages ( ⋂_clauses bits_on_that_page )
 ```
 
-Because pages partition the local-id space, you can intersect clause bitmaps
+Because pages partition the id space, you can intersect clause bitmaps
 *one page at a time* and union the results. That's a big win over building each
 clause's full bitmap and then ANDing: per page you fetch the most-selective
 clause first, AND down, and the **moment the running intersection goes empty you
-stop fetching the rest of that page's clauses** (`intersect_shard_page` in
-`src/engine/query/bitmap.rs`). On sealed shards the manifest lets you skip pages
+stop fetching the rest of that page's clauses** (`intersect_group_page` in
+`src/engine/query/bitmap.rs`). In sealed groups the manifest lets you skip pages
 that any clause proves empty with *zero* fetches.
 
 The pipeline is staged and concurrent (`family_runner.rs`): page intersections
@@ -263,8 +266,8 @@ the location; materialize turns the location into the object.
 So the full indexed flow for one record:
 
 ```
-filter clause  --(sharded_stream_id)-->  bitmap streams  --intersect-->
-local ids  --(+shard)-->  PrimaryId  --directory-->  (block, idx)
+filter clause  --(render_stream_id)-->  bitmap streams  --intersect-->
+page offsets  --(+page start)-->  PrimaryId  --directory-->  (block, idx)
   --blob slice + decode-->  LogEntry/TxEntry/TraceEntry
 ```
 
@@ -332,7 +335,7 @@ Three operations, identical in backfill and live:
   id frontier, write `OpenState ∪ OpenTail` for it as a compacted page/bucket
   artifact and drop it from both.
 * **batch_flush** → write each OpenTail entry as a reader-visible *fragment*
-  (keyed by the same sharded stream id the query reads), carry it into OpenState,
+  (keyed by the same stream id the query reads), carry it into OpenState,
   and advance `index_visible` to the tip.
 
 The only difference between backfill and live is the signal cadence
@@ -375,18 +378,19 @@ lease acquire, so the rebuild keys off the authoritative head and never
 re-ingests already-published blocks. The two regimes are the subject of the
 recovery deep-dive.
 
-### Standby verification (not yet implemented)
+### Standby verification
 
 The standby-equality mechanism is a per-block **content digest** over the
 *logical* (pre-compression) artifacts, folded into a hash chain whose running
-value is stored in every `BlockRecord.artifact_checksum`. A standby ingesting the
+value is stored in every `BlockRecord.row_chain`. A standby ingesting the
 same finalized blocks re-derives the chain and compares one 32-byte value —
 proving it would have written byte-equivalent artifacts without re-reading
 storage or taking the lease, and agreeing even if their zstd versions emit
 different bytes (the fold is over uncompressed rows). The digest primitives live
-in `src/engine/digest.rs`. The engine publishes `EMPTY_CHECKSUM`; computing the
-real chain (a cross-track fold of the data `rows_digest` and the index
-`bitmap_fragments`) and the standby verify path are not yet built.
+in `src/engine/digest.rs`. The engine maintains the row chain on the data track
+and per-family seal chains on the index track, the publisher mirrors the head
+block's row chain into `PublicationState.head_row_chain`, and
+`MonadChainDataService::standby_digests` is the comparison accessor.
 
 ---
 
@@ -395,7 +399,7 @@ real chain (a cross-track fold of the data `rows_digest` and the index
 | Area | Where | What |
 |---|---|---|
 | Public service API | `src/api.rs` | `MonadChainDataService`: read-only query entry points |
-| Core types | `src/primitives/state.rs` | `PrimaryId`, `FamilyWindowRecord`, `BlockRecord`, `PublicationState` |
+| Core types | `src/primitives/records.rs` | `PrimaryId`, `FamilyWindowRecord`, `BlockRecord`, `PublicationState` |
 | Family abstraction | `src/engine/family.rs` | the `Family` enum + its tables |
 | Indexed query runner | `src/engine/query/family_runner.rs` | the staged indexed pipeline + block-scan |
 | Bitmap intersection | `src/engine/query/bitmap.rs`, `src/engine/bitmap.rs` | streams, pages, per-page AND |
@@ -406,7 +410,7 @@ real chain (a cross-track fold of the data `rows_digest` and the index
 | Ingest engine | `src/ingest_core.rs`, `src/ingest_helpers.rs` | branchless two-track write path |
 | Ingest controllers | `src/backfill.rs`, `src/live.rs`, `src/ingest_config.rs` | backfill/live cadence + store wiring |
 | Crash recovery | `src/ingest_recover.rs` | max(checkpoint, head): snapshot restore or fragment rebuild |
-| Checksums | `src/engine/digest.rs` | content digest + chain (standby verify; not yet built) |
+| Checksums | `src/engine/digest.rs` | content digest + chains (standby verify) |
 | Write authority | `src/engine/authority.rs` | lease, takeover, fencing |
 | Unfinalized tip | `src/mem_scan.rs` | in-memory scan matching indexed semantics |
 | Storage backends | `src/store` | meta store (CAS), blob store, cache, write session |
@@ -422,7 +426,7 @@ gracefully):
   the others lean on it.
 - [`deep-dive-primary-standby.md`](deep-dive-primary-standby.md) — multi-node write
   coordination: the lease lifecycle, fencing, and the checksum chain that lets a
-  standby verify agreement (not yet built).
+  standby verify agreement.
 - [`deep-dive-ingest-batching.md`](deep-dive-ingest-batching.md) — the branchless
   ingest engine: the four tasks, open accumulators (seal vs flush), the three
   frontiers, backfill vs live, and why the ordering is crash-safe.

@@ -15,14 +15,11 @@
 
 use std::collections::HashSet;
 
-use monad_chain_data::{
-    Address, FinalizedBlock, QueryEnvelope, QueryOrder, QueryTransactionsRequest, TxFilter,
-    TxsRelations, B256,
-};
+use monad_chain_data::{Address, QueryTransactionsRequest, TxFilter, TxsRelations, B256};
 
 mod common;
 
-use common::{chain_header, ingest_tx, test_header};
+use common::{ascending_envelope, block_with_txs, chain_header, ingest_tx, test_header};
 
 #[tokio::test(flavor = "current_thread")]
 async fn indexed_query_transactions_filters_by_from_across_blocks() {
@@ -33,33 +30,21 @@ async fn indexed_query_transactions_filters_by_from_across_blocks() {
     let h1 = test_header(1, B256::ZERO);
     let h2 = chain_header(2, &h1);
     let blocks = vec![
-        FinalizedBlock {
-            header: h1.clone(),
-            logs_by_tx: vec![vec![], vec![]],
-            txs: vec![
+        block_with_txs(
+            h1.clone(),
+            vec![
                 ingest_tx(alice, Some(recipient), Vec::new()),
                 ingest_tx(bob, Some(recipient), Vec::new()),
             ],
-            traces: vec![],
-        },
-        FinalizedBlock {
-            header: h2,
-            logs_by_tx: vec![vec![]],
-            txs: vec![ingest_tx(alice, Some(recipient), Vec::new())],
-            traces: vec![],
-        },
+        ),
+        block_with_txs(h2, vec![ingest_tx(alice, Some(recipient), Vec::new())]),
     ];
     let store = common::populate::populate_via_engine(blocks).await;
     let service = store.reader();
 
     let response = service
         .query_transactions(QueryTransactionsRequest {
-            envelope: QueryEnvelope {
-                from_block: Some(1),
-                to_block: Some(2),
-                order: QueryOrder::Ascending,
-                limit: 10,
-            },
+            envelope: ascending_envelope(1, 2, 10),
             filter: TxFilter {
                 from: Some(HashSet::from([alice])),
                 ..Default::default()
@@ -80,26 +65,19 @@ async fn indexed_query_transactions_rejects_contract_creation_under_to_filter() 
     let sender = Address::repeat_byte(0x01);
     let target = Address::repeat_byte(0x22);
 
-    let blocks = vec![FinalizedBlock {
-        header: test_header(1, B256::ZERO),
-        logs_by_tx: vec![vec![], vec![]],
-        txs: vec![
+    let blocks = vec![block_with_txs(
+        test_header(1, B256::ZERO),
+        vec![
             ingest_tx(sender, None, Vec::new()),
             ingest_tx(sender, Some(target), Vec::new()),
         ],
-        traces: vec![],
-    }];
+    )];
     let store = common::populate::populate_via_engine(blocks).await;
     let service = store.reader();
 
     let response = service
         .query_transactions(QueryTransactionsRequest {
-            envelope: QueryEnvelope {
-                from_block: Some(1),
-                to_block: Some(1),
-                order: QueryOrder::Ascending,
-                limit: 10,
-            },
+            envelope: ascending_envelope(1, 1, 10),
             filter: TxFilter {
                 to: Some(HashSet::from([target])),
                 ..Default::default()
@@ -110,7 +88,7 @@ async fn indexed_query_transactions_rejects_contract_creation_under_to_filter() 
         .expect("query");
 
     assert_eq!(response.txs.len(), 1);
-    assert_eq!(response.txs[0].tx_idx, 1);
+    assert_eq!(response.txs[0].tx_index, 1);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -119,26 +97,19 @@ async fn indexed_query_transactions_filters_by_selector() {
     let target = Address::repeat_byte(0x22);
     let selector = [0xde, 0xad, 0xbe, 0xef];
 
-    let blocks = vec![FinalizedBlock {
-        header: test_header(1, B256::ZERO),
-        logs_by_tx: vec![vec![], vec![]],
-        txs: vec![
+    let blocks = vec![block_with_txs(
+        test_header(1, B256::ZERO),
+        vec![
             ingest_tx(sender, Some(target), vec![0xaa, 0xbb, 0xcc, 0xdd, 0x01]),
             ingest_tx(sender, Some(target), vec![0xde, 0xad, 0xbe, 0xef, 0x02]),
         ],
-        traces: vec![],
-    }];
+    )];
     let store = common::populate::populate_via_engine(blocks).await;
     let service = store.reader();
 
     let response = service
         .query_transactions(QueryTransactionsRequest {
-            envelope: QueryEnvelope {
-                from_block: Some(1),
-                to_block: Some(1),
-                order: QueryOrder::Ascending,
-                limit: 10,
-            },
+            envelope: ascending_envelope(1, 1, 10),
             filter: TxFilter {
                 selector: Some(HashSet::from([selector])),
                 ..Default::default()
@@ -149,7 +120,7 @@ async fn indexed_query_transactions_filters_by_selector() {
         .expect("query");
 
     assert_eq!(response.txs.len(), 1);
-    assert_eq!(response.txs[0].tx_idx, 1);
+    assert_eq!(response.txs[0].tx_index, 1);
     assert_eq!(
         response.txs[0].selector().expect("selector"),
         Some(selector)
@@ -162,23 +133,16 @@ async fn indexed_query_transactions_selector_filter_skips_short_input() {
     let target = Address::repeat_byte(0x22);
     let selector = [0xde, 0xad, 0xbe, 0xef];
 
-    let blocks = vec![FinalizedBlock {
-        header: test_header(1, B256::ZERO),
-        logs_by_tx: vec![vec![]],
-        txs: vec![ingest_tx(sender, Some(target), vec![0xde, 0xad, 0xbe])],
-        traces: vec![],
-    }];
+    let blocks = vec![block_with_txs(
+        test_header(1, B256::ZERO),
+        vec![ingest_tx(sender, Some(target), vec![0xde, 0xad, 0xbe])],
+    )];
     let store = common::populate::populate_via_engine(blocks).await;
     let service = store.reader();
 
     let response = service
         .query_transactions(QueryTransactionsRequest {
-            envelope: QueryEnvelope {
-                from_block: Some(1),
-                to_block: Some(1),
-                order: QueryOrder::Ascending,
-                limit: 10,
-            },
+            envelope: ascending_envelope(1, 1, 10),
             filter: TxFilter {
                 selector: Some(HashSet::from([selector])),
                 ..Default::default()
@@ -200,33 +164,21 @@ async fn block_scan_query_transactions_returns_all_txs_in_block_order() {
     let h1 = test_header(1, B256::ZERO);
     let h2 = chain_header(2, &h1);
     let blocks = vec![
-        FinalizedBlock {
-            header: h1.clone(),
-            logs_by_tx: vec![vec![], vec![]],
-            txs: vec![
+        block_with_txs(
+            h1.clone(),
+            vec![
                 ingest_tx(a, None, Vec::new()),
                 ingest_tx(b, None, Vec::new()),
             ],
-            traces: vec![],
-        },
-        FinalizedBlock {
-            header: h2,
-            logs_by_tx: vec![vec![]],
-            txs: vec![ingest_tx(c, None, Vec::new())],
-            traces: vec![],
-        },
+        ),
+        block_with_txs(h2, vec![ingest_tx(c, None, Vec::new())]),
     ];
     let store = common::populate::populate_via_engine(blocks).await;
     let service = store.reader();
 
     let response = service
         .query_transactions(QueryTransactionsRequest {
-            envelope: QueryEnvelope {
-                from_block: Some(1),
-                to_block: Some(2),
-                order: QueryOrder::Ascending,
-                limit: 10,
-            },
+            envelope: ascending_envelope(1, 2, 10),
             filter: TxFilter::default(),
             relations: TxsRelations::default(),
         })

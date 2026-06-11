@@ -13,19 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! Integration tests for the chunked [`DynamoBlobStore`] against a real
-//! DynamoDB-API wire.
-//!
-//! Gated identically to the `dynamo_metastore` test (see its module docs):
-//!   1. The whole file is `#![cfg(feature = "dynamo")]`.
-//!   2. Each test is `#[ignore]`d.
-//!   3. Each test no-ops unless `CHAIN_DATA_DYNAMO_TEST_ENDPOINT` names a
-//!      reachable DynamoDB Local / ScyllaDB Alternator endpoint.
-//!
-//! ```text
-//! CHAIN_DATA_DYNAMO_TEST_ENDPOINT=http://localhost:8000 \
-//!   cargo test -p monad-chain-data --features dynamo --test dynamo_blobstore -- --ignored
-//! ```
+//! Requires `CHAIN_DATA_DYNAMO_TEST_ENDPOINT` pointing at DynamoDB Local / Alternator; run with
+//! `cargo test -p monad-chain-data --features dynamo --test dynamo_blobstore -- --ignored`.
 #![cfg(feature = "dynamo")]
 
 use bytes::Bytes;
@@ -35,15 +24,9 @@ use monad_chain_data::store::{
 
 const TABLE: BlobTableId = BlobTableId::new("block_blob");
 
-/// Reads the endpoint from the env; `None` means "skip" (offline).
-fn endpoint() -> Option<String> {
-    std::env::var("CHAIN_DATA_DYNAMO_TEST_ENDPOINT").ok()
-}
-
-/// Builds a store against a freshly-created, uniquely-named table with the given
-/// chunk size. DynamoDB Local / Alternator accept any non-empty credentials.
-async fn fresh_store(test: &str, chunk_size: usize) -> DynamoBlobStore {
-    let endpoint = endpoint().expect("endpoint checked by caller");
+/// `None` (silent skip) when `CHAIN_DATA_DYNAMO_TEST_ENDPOINT` is unset.
+async fn fresh_store(test: &str, chunk_size: usize) -> Option<DynamoBlobStore> {
+    let endpoint = std::env::var("CHAIN_DATA_DYNAMO_TEST_ENDPOINT").ok()?;
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -64,16 +47,15 @@ async fn fresh_store(test: &str, chunk_size: usize) -> DynamoBlobStore {
     };
     let store = DynamoBlobStore::new(config).await.expect("build store");
     store.create_table().await.expect("create table");
-    store
+    Some(store)
 }
 
 #[tokio::test]
 #[ignore = "requires CHAIN_DATA_DYNAMO_TEST_ENDPOINT (DynamoDB Local / Alternator)"]
 async fn put_get_round_trip_single_chunk() {
-    if endpoint().is_none() {
+    let Some(store) = fresh_store("getput", 64 * 1024).await else {
         return;
-    }
-    let store = fresh_store("getput", 64 * 1024).await;
+    };
 
     assert_eq!(store.get_blob(TABLE, b"missing").await.unwrap(), None);
     store
@@ -84,8 +66,7 @@ async fn put_get_round_trip_single_chunk() {
         store.get_blob(TABLE, b"k").await.unwrap(),
         Some(Bytes::from_static(b"hello"))
     );
-    // Overwrite with a shorter value: the stale tail must not survive (same
-    // chunk index range is rewritten; here both fit in chunk 0).
+    // Overwriting with a shorter value must not leave a stale tail.
     store
         .put_blob(TABLE, b"k", Bytes::from_static(b"hi"))
         .await
@@ -99,12 +80,10 @@ async fn put_get_round_trip_single_chunk() {
 #[tokio::test]
 #[ignore = "requires CHAIN_DATA_DYNAMO_TEST_ENDPOINT (DynamoDB Local / Alternator)"]
 async fn put_get_round_trip_many_chunks() {
-    if endpoint().is_none() {
+    // Tiny chunk size forces >25 chunks => multiple BatchWriteItem calls.
+    let Some(store) = fresh_store("manychunks", 16).await else {
         return;
-    }
-    // Tiny chunk size forces many chunks (and >25 chunks => multiple
-    // BatchWriteItem calls) for a modest value.
-    let store = fresh_store("manychunks", 16).await;
+    };
     let value: Vec<u8> = (0..1000u32).map(|i| i as u8).collect();
     store
         .put_blob(TABLE, b"big", Bytes::from(value.clone()))
@@ -118,12 +97,55 @@ async fn put_get_round_trip_many_chunks() {
 
 #[tokio::test]
 #[ignore = "requires CHAIN_DATA_DYNAMO_TEST_ENDPOINT (DynamoDB Local / Alternator)"]
-async fn read_range_spans_chunks_and_matches_trait_contract() {
-    if endpoint().is_none() {
+async fn overwrite_with_shorter_multi_chunk_payload_has_no_stale_tail() {
+    // Tiny chunks so each payload spans several items. `put_blob` only writes
+    // the new payload's chunks, and `get_blob` concatenates EVERY item under
+    // the pk, so a shorter overwrite that drops to fewer chunks would otherwise
+    // read back `new ++ stale_tail`. This is the hazard `SnapshotStore::store`
+    // guards with delete-before-put; assert the blob layer alone (no delete)
+    // would leak a tail, then that delete_blob + put yields exactly the new
+    // payload.
+    let Some(store) = fresh_store("shorteroverwrite", 16).await else {
         return;
-    }
+    };
+    let long: Vec<u8> = (0..200u8).collect();
+    // Offset by one so the short payload's bytes differ from the long prefix.
+    let short: Vec<u8> = (1..=40u8).collect();
+
+    store
+        .put_blob(TABLE, b"k", Bytes::from(long.clone()))
+        .await
+        .unwrap();
+    // Bare overwrite leaves stale tail chunks (documents the hazard).
+    store
+        .put_blob(TABLE, b"k", Bytes::from(short.clone()))
+        .await
+        .unwrap();
+    assert_ne!(
+        store.get_blob(TABLE, b"k").await.unwrap(),
+        Some(Bytes::from(short.clone())),
+        "bare overwrite is expected to leave a stale tail without an explicit delete"
+    );
+
+    // delete-before-put is the fix: exactly the short payload, no tail.
+    store.delete_blob(TABLE, b"k").await.unwrap();
+    store
+        .put_blob(TABLE, b"k", Bytes::from(short.clone()))
+        .await
+        .unwrap();
+    assert_eq!(
+        store.get_blob(TABLE, b"k").await.unwrap(),
+        Some(Bytes::from(short))
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires CHAIN_DATA_DYNAMO_TEST_ENDPOINT (DynamoDB Local / Alternator)"]
+async fn read_range_spans_chunks_and_matches_trait_contract() {
     // chunk_size 4 over "abcdefghij" (len 10): chunks "abcd","efgh","ij".
-    let store = fresh_store("readrange", 4).await;
+    let Some(store) = fresh_store("readrange", 4).await else {
+        return;
+    };
     store
         .put_blob(TABLE, b"k", Bytes::from_static(b"abcdefghij"))
         .await
@@ -134,17 +156,14 @@ async fn read_range_spans_chunks_and_matches_trait_contract() {
         store.read_range(TABLE, b"k", 2, 6).await.unwrap(),
         Some(Bytes::from_static(b"cdef"))
     );
-    // End past EOF clamps to the blob length.
     assert_eq!(
         store.read_range(TABLE, b"k", 2, 99).await.unwrap(),
         Some(Bytes::from_static(b"cdefghij"))
     );
-    // start == len is the empty tail, not an error.
     assert_eq!(
         store.read_range(TABLE, b"k", 10, 99).await.unwrap(),
         Some(Bytes::new())
     );
-    // start > len errors.
     assert_eq!(
         store
             .read_range(TABLE, b"k", 11, 99)
@@ -153,7 +172,6 @@ async fn read_range_spans_chunks_and_matches_trait_contract() {
             .to_string(),
         "decode error: invalid blob range"
     );
-    // Reversed range errors.
     assert_eq!(
         store
             .read_range(TABLE, b"k", 4, 3)
@@ -162,7 +180,6 @@ async fn read_range_spans_chunks_and_matches_trait_contract() {
             .to_string(),
         "decode error: invalid blob range"
     );
-    // Missing object is None, not an error.
     assert_eq!(
         store.read_range(TABLE, b"absent", 0, 1).await.unwrap(),
         None
@@ -172,30 +189,50 @@ async fn read_range_spans_chunks_and_matches_trait_contract() {
 #[tokio::test]
 #[ignore = "requires CHAIN_DATA_DYNAMO_TEST_ENDPOINT (DynamoDB Local / Alternator)"]
 async fn apply_writes_multiple_blobs() {
-    if endpoint().is_none() {
-        return;
+    fn blob_value(i: u32) -> Vec<u8> {
+        (0..40u32).map(|b| (b + i) as u8).collect()
     }
-    // Small chunks so each blob is itself multi-chunk, and many blobs so the
-    // flattened put set crosses the 25-item BatchWriteItem boundary.
-    let store = fresh_store("applywrites", 8).await;
-    let mut ops = Vec::new();
-    let mut expected = Vec::new();
-    for i in 0u32..20 {
-        let value: Vec<u8> = (0..40u32).map(|b| (b + i) as u8).collect();
-        ops.push(BlobWriteOp {
+
+    // Small chunks + 20 blobs push the flattened put set past the 25-item BatchWriteItem limit.
+    let Some(store) = fresh_store("applywrites", 8).await else {
+        return;
+    };
+    let ops: Vec<BlobWriteOp> = (0u32..20)
+        .map(|i| BlobWriteOp {
             table: TABLE,
             key: i.to_be_bytes().to_vec(),
-            value: Bytes::from(value.clone()),
-        });
-        expected.push((i, value));
-    }
+            value: Bytes::from(blob_value(i)),
+        })
+        .collect();
     store.apply_writes(ops).await.unwrap();
 
-    for (i, value) in expected {
+    for i in 0u32..20 {
         assert_eq!(
             store.get_blob(TABLE, &i.to_be_bytes()).await.unwrap(),
-            Some(Bytes::from(value)),
+            Some(Bytes::from(blob_value(i))),
             "blob {i} round-trips"
         );
     }
+}
+
+#[tokio::test]
+#[ignore = "requires CHAIN_DATA_DYNAMO_TEST_ENDPOINT (DynamoDB Local / Alternator)"]
+async fn delete_blob_removes_every_chunk_and_is_idempotent() {
+    // Tiny chunk size forces a multi-chunk blob, so the delete must enumerate
+    // and remove every chunk item, not just chunk 0.
+    let Some(store) = fresh_store("delete", 16).await else {
+        return;
+    };
+    let value: Vec<u8> = (0..200u8).collect();
+    store
+        .put_blob(TABLE, b"k", Bytes::from(value))
+        .await
+        .unwrap();
+
+    store.delete_blob(TABLE, b"k").await.unwrap();
+    assert_eq!(store.get_blob(TABLE, b"k").await.unwrap(), None);
+    assert_eq!(store.read_range(TABLE, b"k", 0, 4).await.unwrap(), None);
+
+    // Deleting a missing key is an idempotent no-op.
+    store.delete_blob(TABLE, b"k").await.unwrap();
 }

@@ -13,37 +13,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! Integration tests for [`DynamoMetaStore`] against a real DynamoDB-API wire.
-//!
-//! Unlike the S3 blob test (which embeds an in-process `s3s` server), there is
-//! no mature pure-Rust in-process DynamoDB server, so these tests target an
-//! **external** DynamoDB-API endpoint: either Amazon's DynamoDB Local (the Java
-//! jar / `amazon/dynamodb-local` container) or ScyllaDB's Alternator adapter.
-//! We deliberately add no heavy/network crates; the tests are gated three ways
-//! so the default and CI builds are unaffected:
-//!   1. The whole file is `#![cfg(feature = "dynamo")]` -- without the `dynamo`
-//!      feature it compiles to an empty test binary.
-//!   2. Each test is `#[ignore]`d so it is skipped unless explicitly requested.
-//!   3. Each test no-ops (returns early) unless `CHAIN_DATA_DYNAMO_TEST_ENDPOINT`
-//!      names a reachable endpoint, so even `--ignored` runs are safe offline.
-//!
-//! Bring up a local endpoint, e.g.:
-//!
-//! ```text
-//! docker run -p 8000:8000 amazon/dynamodb-local
-//! # or a Scylla container with Alternator on :8000
-//! ```
-//!
-//! then run:
-//!
-//! ```text
-//! CHAIN_DATA_DYNAMO_TEST_ENDPOINT=http://localhost:8000 \
-//!   cargo test -p monad-chain-data --features dynamo --test dynamo_metastore -- --ignored
-//! ```
-//!
-//! Each test provisions its own uniquely-named table via the opt-in
-//! `create_table` helper, so repeated runs against the same endpoint do not
-//! interfere.
+//! Run: `docker run -p 8000:8000 amazon/dynamodb-local`, then
+//! `CHAIN_DATA_DYNAMO_TEST_ENDPOINT=http://localhost:8000 \
+//!   cargo test -p monad-chain-data --features dynamo --test dynamo_metastore -- --ignored`
 #![cfg(feature = "dynamo")]
 
 use bytes::Bytes;
@@ -55,15 +27,9 @@ use monad_chain_data::store::{
 const KV: TableId = TableId::new("it_kv");
 const SCAN: ScannableTableId = ScannableTableId::new("it_scan");
 
-/// Reads the endpoint from the env; `None` means "skip" (offline).
-fn endpoint() -> Option<String> {
-    std::env::var("CHAIN_DATA_DYNAMO_TEST_ENDPOINT").ok()
-}
-
-/// Builds a store against a freshly-created, uniquely-named table. DynamoDB
-/// Local / Alternator accept any non-empty static credentials.
-async fn fresh_store(test: &str) -> DynamoMetaStore {
-    let endpoint = endpoint().expect("endpoint checked by caller");
+/// `None` (silent skip) when `CHAIN_DATA_DYNAMO_TEST_ENDPOINT` is unset.
+async fn fresh_store(test: &str) -> Option<DynamoMetaStore> {
+    let endpoint = std::env::var("CHAIN_DATA_DYNAMO_TEST_ENDPOINT").ok()?;
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -85,16 +51,15 @@ async fn fresh_store(test: &str) -> DynamoMetaStore {
     };
     let store = DynamoMetaStore::new(config).await.expect("build store");
     store.create_table().await.expect("create table");
-    store
+    Some(store)
 }
 
 #[tokio::test]
 #[ignore = "requires CHAIN_DATA_DYNAMO_TEST_ENDPOINT (DynamoDB Local / Alternator)"]
 async fn get_put_round_trip() {
-    if endpoint().is_none() {
+    let Some(store) = fresh_store("getput").await else {
         return;
-    }
-    let store = fresh_store("getput").await;
+    };
 
     assert_eq!(store.get(KV, b"missing").await.unwrap(), None);
     store.put(KV, b"k", Bytes::from_static(b"v")).await.unwrap();
@@ -102,7 +67,6 @@ async fn get_put_round_trip() {
         store.get(KV, b"k").await.unwrap(),
         Some(Bytes::from_static(b"v"))
     );
-    // Overwrite is a plain idempotent put.
     store
         .put(KV, b"k", Bytes::from_static(b"v2"))
         .await
@@ -112,7 +76,6 @@ async fn get_put_round_trip() {
         Some(Bytes::from_static(b"v2"))
     );
 
-    // Scannable point get/put.
     assert_eq!(store.scan_get(SCAN, b"p", b"c").await.unwrap(), None);
     store
         .scan_put(SCAN, b"p", b"c", Bytes::from_static(b"sv"))
@@ -126,66 +89,52 @@ async fn get_put_round_trip() {
 
 #[tokio::test]
 #[ignore = "requires CHAIN_DATA_DYNAMO_TEST_ENDPOINT (DynamoDB Local / Alternator)"]
-async fn scan_list_paginates_with_cursor() {
-    if endpoint().is_none() {
+async fn scan_keys_drains_whole_partition() {
+    let Some(store) = fresh_store("scankeys").await else {
         return;
-    }
-    let store = fresh_store("scanlist").await;
+    };
 
-    // 5 clusterings under one partition, plus a decoy under a sibling prefix
-    // and a decoy under a different partition that must never appear.
     let part = b"part";
-    for i in 0u8..5 {
-        store
-            .scan_put(SCAN, part, &[b'a', i], Bytes::from_static(b"x"))
-            .await
-            .unwrap();
-    }
-    store
-        .scan_put(SCAN, part, b"zz", Bytes::from_static(b"x"))
-        .await
-        .unwrap();
-    store
-        .scan_put(SCAN, b"other", &[b'a', 0], Bytes::from_static(b"x"))
-        .await
-        .unwrap();
+    let value = Bytes::from(vec![0u8; 4096]);
+    let mut ops: Vec<MetaWriteOp> = (0u16..400)
+        .map(|i| MetaWriteOp::ScanPut {
+            table: SCAN,
+            partition: part.to_vec(),
+            clustering: i.to_be_bytes().to_vec(),
+            value: value.clone(),
+        })
+        .collect();
+    ops.push(MetaWriteOp::ScanPut {
+        table: SCAN,
+        partition: b"other".to_vec(),
+        clustering: vec![0, 0],
+        value: Bytes::from_static(b"x"),
+    });
+    store.apply_writes(ops).await.unwrap();
 
-    // Page through the `a*` prefix two at a time, following next_cursor.
-    let mut seen: Vec<Vec<u8>> = Vec::new();
-    let mut cursor: Option<Vec<u8>> = None;
-    loop {
-        let page = store
-            .scan_list(SCAN, part, b"a", cursor.clone(), 2)
-            .await
-            .unwrap();
-        seen.extend(page.keys.iter().cloned());
-        match page.next_cursor {
-            Some(c) => cursor = Some(c),
-            None => break,
-        }
-    }
-
-    let expected: Vec<Vec<u8>> = (0u8..5).map(|i| vec![b'a', i]).collect();
-    assert_eq!(seen, expected, "prefix scan returns all `a*` keys in order");
+    let keys = store.scan_keys(SCAN, part).await.unwrap();
+    let expected: Vec<Vec<u8>> = (0u16..400).map(|i| i.to_be_bytes().to_vec()).collect();
+    assert_eq!(
+        keys, expected,
+        "whole partition drained in clustering order"
+    );
 }
 
 #[tokio::test]
 #[ignore = "requires CHAIN_DATA_DYNAMO_TEST_ENDPOINT (DynamoDB Local / Alternator)"]
 async fn apply_writes_crosses_batch_boundary() {
-    if endpoint().is_none() {
+    let Some(store) = fresh_store("applywrites").await else {
         return;
-    }
-    let store = fresh_store("applywrites").await;
+    };
 
-    // 60 ops > 25 forces multiple BatchWriteItem chunks.
-    let mut ops = Vec::new();
-    for i in 0u32..60 {
-        ops.push(MetaWriteOp::Put {
+    // 60 ops > 25-item limit forces multiple BatchWriteItem chunks.
+    let ops: Vec<MetaWriteOp> = (0u32..60)
+        .map(|i| MetaWriteOp::Put {
             table: KV,
             key: i.to_be_bytes().to_vec(),
             value: Bytes::from(vec![i as u8]),
-        });
-    }
+        })
+        .collect();
     store.apply_writes(ops).await.unwrap();
 
     for i in 0u32..60 {
@@ -196,6 +145,5 @@ async fn apply_writes_crosses_batch_boundary() {
         );
     }
 
-    // Empty batch is a no-op fast path.
     store.apply_writes(vec![]).await.unwrap();
 }

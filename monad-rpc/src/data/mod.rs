@@ -34,6 +34,7 @@ use monad_archive::{
     model::{BlockDataReader, TxIndexedData},
     prelude::{ArchiveReader, Context, ContextCompat, IndexReader},
 };
+use monad_chain_data::ConfiguredChainDataReader;
 use monad_eth_types::{
     BlockHeader, ReceiptWithLogIndex, TransactionLocation, TxEnvelopeWithSender,
 };
@@ -67,6 +68,11 @@ pub struct DataProvider<T> {
     buffer: Option<BlockBufferView>,
     pub triedb_env: Arc<T>,
     archive_reader: Option<ArchiveReader>,
+    /// Optional finalized-tx fallback for `get_transaction`: the chain-data
+    /// index resolves hashes the buffer/triedb/archive sources missed. The
+    /// chain-data reader serves only tx-by-hash here (no block fetches), so it
+    /// is a targeted fallback rather than a [`HistoricalDataSource`].
+    chain_data_reader: Option<ConfiguredChainDataReader>,
 
     historical: HistoricalDataSourceStack,
 }
@@ -75,6 +81,7 @@ pub struct DataProvider<T> {
 pub enum ChainStateError {
     Triedb(String),
     Archive(String),
+    ChainData(String),
     DataSource(DataSourceError),
     ResourceNotFound,
 }
@@ -194,11 +201,13 @@ where
         buffer: Option<BlockBufferView>,
         triedb_env: Arc<T>,
         archive_reader: Option<ArchiveReader>,
+        chain_data_reader: Option<ConfiguredChainDataReader>,
     ) -> Self {
         DataProvider {
             buffer,
             triedb_env: triedb_env.clone(),
             archive_reader: archive_reader.clone(),
+            chain_data_reader,
 
             historical: DataSourceStack::new(
                 std::iter::once(Box::new(TriedbDataSource::new(triedb_env)) as Box<_>)
@@ -402,6 +411,30 @@ where
                     header_subset.base_fee_per_gas,
                     tx,
                     header_subset.tx_index,
+                ));
+            }
+        }
+
+        // try the chain-data index last (finalized, published blocks only)
+        if let Some(chain_data_reader) = &self.chain_data_reader {
+            if let Some((entry, header)) = chain_data_reader
+                .get_transaction(*tx_hash)
+                .await
+                .map_err(|e| ChainStateError::ChainData(e.to_string()))?
+            {
+                let tx = entry
+                    .envelope()
+                    .map_err(|e| ChainStateError::ChainData(e.to_string()))?;
+                return Ok(parse_tx_content(
+                    entry.block_hash,
+                    entry.block_number,
+                    header.timestamp,
+                    header.base_fee_per_gas,
+                    TxEnvelopeWithSender {
+                        tx,
+                        sender: entry.sender,
+                    },
+                    u64::from(entry.tx_index),
                 ));
             }
         }
@@ -1715,6 +1748,78 @@ mod tests {
         );
     }
 
+    /// A tx absent from the buffer/triedb/archive sources still resolves via
+    /// the chain-data reader, with the full block context (hash, number,
+    /// index, timestamp, gas price) the primary paths would have produced.
+    #[tokio::test]
+    async fn test_chain_data_fallback_resolves_transaction() {
+        use alloy_consensus::{SignableTransaction, TxLegacy};
+        use alloy_eips::eip2718::Encodable2718;
+        use alloy_primitives::{Address, Signature, TxKind, B256, U256};
+        use monad_chain_data::{
+            ConfiguredChainDataReader, EvmBlockHeader, FinalizedBlock, IngestTx,
+        };
+
+        use crate::data::ChainStateError;
+
+        let sender = Address::repeat_byte(0xaa);
+        let signed = TxLegacy {
+            chain_id: Some(1),
+            nonce: 0,
+            gas_price: 7,
+            gas_limit: 21_000,
+            to: TxKind::Call(Address::repeat_byte(0xbb)),
+            value: U256::ZERO,
+            input: Default::default(),
+        }
+        .into_signed(Signature::test_signature());
+        let envelope = TxEnvelope::Legacy(signed);
+        let tx_hash = *envelope.tx_hash();
+        let mut signed_tx_bytes = Vec::new();
+        envelope.encode_2718(&mut signed_tx_bytes);
+
+        let block = FinalizedBlock {
+            header: EvmBlockHeader {
+                number: 1,
+                timestamp: 1_234,
+                base_fee_per_gas: Some(1_000),
+                ..EvmBlockHeader::default()
+            },
+            logs_by_tx: vec![vec![]],
+            txs: vec![IngestTx {
+                tx_hash,
+                sender,
+                signed_tx_bytes: signed_tx_bytes.into(),
+            }],
+            traces: Vec::new(),
+        };
+        let block_hash = block.block_hash();
+        let store = monad_chain_data::testkit::populate_via_engine(vec![block]).await;
+        let reader = ConfiguredChainDataReader::in_memory(store.reader());
+
+        let mut mock_triedb = MockTriedb::default();
+        mock_triedb.set_latest_block(1000);
+        let data_provider = DataProvider::new(None, Arc::new(mock_triedb), None, Some(reader));
+
+        let tx = data_provider
+            .get_transaction(&tx_hash)
+            .await
+            .expect("chain-data fallback resolves the hash");
+        assert_eq!(tx.block_hash, Some(block_hash));
+        assert_eq!(tx.block_number, Some(1));
+        assert_eq!(tx.transaction_index, Some(0));
+        assert_eq!(tx.block_timestamp, Some(1_234));
+        // A legacy tx's effective gas price is its own gas price.
+        assert_eq!(tx.effective_gas_price, Some(7));
+        assert_eq!(*tx.inner.tx_hash(), tx_hash);
+
+        // Unknown hashes still come back not-found, not an error.
+        let missing = data_provider
+            .get_transaction(&B256::repeat_byte(0xff))
+            .await;
+        assert!(matches!(missing, Err(ChainStateError::ResourceNotFound)));
+    }
+
     #[tokio::test]
     async fn test_archive_fallback() {
         let mut mock_triedb = MockTriedb::default();
@@ -1761,7 +1866,7 @@ mod tests {
                 None,
             );
 
-        let data_provider = DataProvider::new(None, Arc::new(mock_triedb), Some(reader));
+        let data_provider = DataProvider::new(None, Arc::new(mock_triedb), Some(reader), None);
 
         let block_hash = block.header.hash_slow().0;
 

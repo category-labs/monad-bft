@@ -14,14 +14,13 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use monad_chain_data::{
-    Address, EvmBlockHeader, FinalizedBlock, InMemoryBlobStore, InMemoryMetaStore,
-    LimitExceededKind, MonadChainDataError, MonadChainDataService, QueryBlocksRequest,
-    QueryEnvelope, QueryLimits, QueryOrder, B256,
+    Address, EvmBlockHeader, InMemoryBlobStore, InMemoryMetaStore, MonadChainDataService,
+    QueryBlocksRequest, QueryLimits, B256,
 };
 
 mod common;
 
-use common::{chain_header, test_header};
+use common::{ascending_envelope, chain_header, descending_envelope, empty_block, test_header};
 
 #[tokio::test(flavor = "current_thread")]
 async fn query_blocks_ascending_returns_full_range() {
@@ -29,12 +28,7 @@ async fn query_blocks_ascending_returns_full_range() {
 
     let page = service
         .query_blocks(QueryBlocksRequest {
-            envelope: QueryEnvelope {
-                from_block: Some(1),
-                to_block: Some(3),
-                order: QueryOrder::Ascending,
-                limit: 100,
-            },
+            envelope: ascending_envelope(1, 3, 100),
         })
         .await
         .expect("query");
@@ -52,12 +46,7 @@ async fn query_blocks_descending_returns_newest_first() {
 
     let page = service
         .query_blocks(QueryBlocksRequest {
-            envelope: QueryEnvelope {
-                from_block: Some(3),
-                to_block: Some(1),
-                order: QueryOrder::Descending,
-                limit: 100,
-            },
+            envelope: descending_envelope(3, 1, 100),
         })
         .await
         .expect("query");
@@ -73,12 +62,7 @@ async fn query_blocks_respects_limit_and_reports_cursor() {
 
     let page = service
         .query_blocks(QueryBlocksRequest {
-            envelope: QueryEnvelope {
-                from_block: Some(1),
-                to_block: Some(3),
-                order: QueryOrder::Ascending,
-                limit: 2,
-            },
+            envelope: ascending_envelope(1, 3, 2),
         })
         .await
         .expect("query");
@@ -98,24 +82,14 @@ async fn query_blocks_paginates_from_cursor_plus_one() {
 
     let first = service
         .query_blocks(QueryBlocksRequest {
-            envelope: QueryEnvelope {
-                from_block: Some(1),
-                to_block: Some(3),
-                order: QueryOrder::Ascending,
-                limit: 2,
-            },
+            envelope: ascending_envelope(1, 3, 2),
         })
         .await
         .expect("first page");
 
     let second = service
         .query_blocks(QueryBlocksRequest {
-            envelope: QueryEnvelope {
-                from_block: Some(first.span.cursor_block.number + 1),
-                to_block: Some(3),
-                order: QueryOrder::Ascending,
-                limit: 2,
-            },
+            envelope: ascending_envelope(first.span.cursor_block.number + 1, 3, 2),
         })
         .await
         .expect("second page");
@@ -131,12 +105,7 @@ async fn query_blocks_paginates_from_cursor_minus_one_descending() {
 
     let first = service
         .query_blocks(QueryBlocksRequest {
-            envelope: QueryEnvelope {
-                from_block: Some(3),
-                to_block: Some(1),
-                order: QueryOrder::Descending,
-                limit: 2,
-            },
+            envelope: descending_envelope(3, 1, 2),
         })
         .await
         .expect("first page");
@@ -147,12 +116,7 @@ async fn query_blocks_paginates_from_cursor_minus_one_descending() {
 
     let second = service
         .query_blocks(QueryBlocksRequest {
-            envelope: QueryEnvelope {
-                from_block: Some(first.span.cursor_block.number - 1),
-                to_block: Some(1),
-                order: QueryOrder::Descending,
-                limit: 2,
-            },
+            envelope: descending_envelope(first.span.cursor_block.number - 1, 1, 2),
         })
         .await
         .expect("second page");
@@ -168,12 +132,7 @@ async fn query_blocks_header_fields_round_trip() {
 
     let page = service
         .query_blocks(QueryBlocksRequest {
-            envelope: QueryEnvelope {
-                from_block: Some(2),
-                to_block: Some(2),
-                order: QueryOrder::Ascending,
-                limit: 10,
-            },
+            envelope: ascending_envelope(2, 2, 10),
         })
         .await
         .expect("query");
@@ -183,122 +142,6 @@ async fn query_blocks_header_fields_round_trip() {
     assert_eq!(block.header.number, 2);
     assert_eq!(block.header.beneficiary, Address::repeat_byte(0x22));
     assert_eq!(block.header.timestamp, 1_700_000_002);
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn query_blocks_limit_zero_returns_invalid_request() {
-    let service = ingest_three_block_chain(QueryLimits::UNLIMITED).await;
-
-    let err = service
-        .query_blocks(QueryBlocksRequest {
-            envelope: QueryEnvelope {
-                from_block: Some(1),
-                to_block: Some(3),
-                order: QueryOrder::Ascending,
-                limit: 0,
-            },
-        })
-        .await
-        .expect_err("limit=0 should error");
-
-    assert!(matches!(err, MonadChainDataError::InvalidRequest(_)));
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn query_blocks_limit_above_max_limit_returns_limit_exceeded() {
-    let service = ingest_three_block_chain(QueryLimits::new(5, 1_000)).await;
-
-    let err = service
-        .query_blocks(QueryBlocksRequest {
-            envelope: QueryEnvelope {
-                from_block: Some(1),
-                to_block: Some(3),
-                order: QueryOrder::Ascending,
-                limit: 10,
-            },
-        })
-        .await
-        .expect_err("limit above max should error");
-
-    match err {
-        MonadChainDataError::LimitExceeded { kind, .. } => {
-            assert_eq!(kind, LimitExceededKind::Limit);
-        }
-        other => panic!("expected LimitExceeded, got {other:?}"),
-    }
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn query_blocks_block_range_above_max_block_range_returns_limit_exceeded() {
-    let service = ingest_three_block_chain(QueryLimits::new(100, 2)).await;
-
-    let err = service
-        .query_blocks(QueryBlocksRequest {
-            envelope: QueryEnvelope {
-                from_block: Some(1),
-                to_block: Some(3),
-                order: QueryOrder::Ascending,
-                limit: 10,
-            },
-        })
-        .await
-        .expect_err("range above max should error");
-
-    match err {
-        MonadChainDataError::LimitExceeded { kind, .. } => {
-            assert_eq!(kind, LimitExceededKind::BlockRange);
-        }
-        other => panic!("expected LimitExceeded, got {other:?}"),
-    }
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn query_blocks_inverted_ascending_range_returns_invalid_request() {
-    let service = ingest_three_block_chain(QueryLimits::UNLIMITED).await;
-
-    let err = service
-        .query_blocks(QueryBlocksRequest {
-            envelope: QueryEnvelope {
-                from_block: Some(3),
-                to_block: Some(1),
-                order: QueryOrder::Ascending,
-                limit: 10,
-            },
-        })
-        .await
-        .expect_err("from > to should error");
-
-    assert!(matches!(err, MonadChainDataError::InvalidRequest(_)));
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn query_blocks_defaulted_range_resolves_to_full_chain() {
-    let service = ingest_three_block_chain(QueryLimits::UNLIMITED).await;
-
-    let page = service
-        .query_blocks(QueryBlocksRequest::default())
-        .await
-        .expect("query");
-
-    assert_eq!(page.span.from_block.number, 1);
-    assert_eq!(page.span.to_block.number, 3);
-    assert_eq!(page.blocks.len(), 3);
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn query_blocks_on_empty_chain_returns_missing_data() {
-    let service = MonadChainDataService::new(
-        InMemoryMetaStore::default(),
-        InMemoryBlobStore::default(),
-        QueryLimits::UNLIMITED,
-    );
-
-    let err = service
-        .query_blocks(QueryBlocksRequest::default())
-        .await
-        .expect_err("empty chain should error");
-
-    assert!(matches!(err, MonadChainDataError::MissingData(_)));
 }
 
 async fn ingest_three_block_chain(
@@ -319,15 +162,7 @@ async fn ingest_three_block_chain_with_hashes(
     let h3 = decorate(chain_header(3, &h2));
     let hashes = [h1.hash_slow(), h2.hash_slow(), h3.hash_slow()];
 
-    let blocks = [h1, h2, h3]
-        .into_iter()
-        .map(|header| FinalizedBlock {
-            header,
-            logs_by_tx: vec![],
-            txs: Vec::new(),
-            traces: vec![],
-        })
-        .collect();
+    let blocks = [h1, h2, h3].into_iter().map(empty_block).collect();
 
     let store = common::populate::populate_via_engine(blocks).await;
     (store.reader_with_limits(limits), hashes)

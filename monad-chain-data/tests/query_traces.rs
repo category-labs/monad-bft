@@ -17,16 +17,26 @@ use std::collections::HashSet;
 
 use alloy_primitives::U256;
 use monad_chain_data::{
-    Address, FinalizedBlock, QueryEnvelope, QueryOrder, QueryTracesRequest, TraceFilter,
-    TracesRelations, B256,
+    Address, FinalizedBlock, InMemoryBlobStore, InMemoryMetaStore, MonadChainDataService,
+    QueryTracesRequest, TraceFilter, TracesRelations, B256,
 };
 
 mod common;
 
-use common::{chain_header, nested_call, test_header, top_level_call};
+use common::{
+    ascending_envelope, block_with_traces, chain_header, nested_call, test_header, top_level_call,
+    traces_request,
+};
 
 fn addr(byte: u8) -> Address {
     Address::repeat_byte(byte)
+}
+
+/// Populates `blocks` via the engine and hands back a query service.
+async fn service_for(
+    blocks: Vec<FinalizedBlock>,
+) -> MonadChainDataService<InMemoryMetaStore, InMemoryBlobStore> {
+    common::populate::populate_via_engine(blocks).await.reader()
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -38,45 +48,34 @@ async fn indexed_query_filters_by_from_across_blocks() {
     let h1 = test_header(1, B256::ZERO);
     let h2 = chain_header(2, &h1);
     let blocks = vec![
-        FinalizedBlock {
-            header: h1.clone(),
-            logs_by_tx: vec![],
-            txs: vec![],
-            traces: vec![
+        block_with_traces(
+            h1.clone(),
+            vec![
                 top_level_call(0, alice, recipient, U256::from(10u64), vec![]),
                 top_level_call(1, bob, recipient, U256::from(10u64), vec![]),
             ],
-        },
-        FinalizedBlock {
-            header: h2,
-            logs_by_tx: vec![],
-            txs: vec![],
-            traces: vec![top_level_call(
+        ),
+        block_with_traces(
+            h2,
+            vec![top_level_call(
                 0,
                 alice,
                 recipient,
                 U256::from(20u64),
                 vec![],
             )],
-        },
+        ),
     ];
-    let store = common::populate::populate_via_engine(blocks).await;
-    let service = store.reader();
+    let service = service_for(blocks).await;
 
     let resp = service
-        .query_traces(QueryTracesRequest {
-            envelope: QueryEnvelope {
-                from_block: Some(1),
-                to_block: Some(2),
-                order: QueryOrder::Ascending,
-                limit: 10,
-            },
-            filter: TraceFilter {
+        .query_traces(traces_request(
+            ascending_envelope(1, 2, 10),
+            TraceFilter {
                 from: Some(HashSet::from([alice])),
                 ..Default::default()
             },
-            relations: TracesRelations::default(),
-        })
+        ))
         .await
         .expect("query");
 
@@ -88,36 +87,27 @@ async fn indexed_query_filters_by_from_across_blocks() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn indexed_query_filters_by_selector() {
-    let from_ = addr(1);
-    let to_ = addr(2);
+    let caller = addr(1);
+    let callee = addr(2);
     let sel = vec![0xde, 0xad, 0xbe, 0xef];
 
-    let blocks = vec![FinalizedBlock {
-        header: test_header(1, B256::ZERO),
-        logs_by_tx: vec![],
-        txs: vec![],
-        traces: vec![
-            top_level_call(0, from_, to_, U256::ZERO, sel.clone()),
-            top_level_call(1, from_, to_, U256::ZERO, vec![0x00, 0x11, 0x22, 0x33]),
+    let blocks = vec![block_with_traces(
+        test_header(1, B256::ZERO),
+        vec![
+            top_level_call(0, caller, callee, U256::ZERO, sel.clone()),
+            top_level_call(1, caller, callee, U256::ZERO, vec![0x00, 0x11, 0x22, 0x33]),
         ],
-    }];
-    let store = common::populate::populate_via_engine(blocks).await;
-    let service = store.reader();
+    )];
+    let service = service_for(blocks).await;
 
     let resp = service
-        .query_traces(QueryTracesRequest {
-            envelope: QueryEnvelope {
-                from_block: Some(1),
-                to_block: Some(1),
-                order: QueryOrder::Ascending,
-                limit: 10,
-            },
-            filter: TraceFilter {
+        .query_traces(traces_request(
+            ascending_envelope(1, 1, 10),
+            TraceFilter {
                 selector: Some(HashSet::from([[0xde, 0xad, 0xbe, 0xef]])),
                 ..Default::default()
             },
-            relations: TracesRelations::default(),
-        })
+        ))
         .await
         .expect("query");
 
@@ -127,36 +117,27 @@ async fn indexed_query_filters_by_selector() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn indexed_query_is_top_level_true_keeps_roots_only() {
-    let from_ = addr(1);
-    let to_ = addr(2);
+    let caller = addr(1);
+    let callee = addr(2);
 
-    let blocks = vec![FinalizedBlock {
-        header: test_header(1, B256::ZERO),
-        logs_by_tx: vec![],
-        txs: vec![],
-        traces: vec![
-            top_level_call(0, from_, to_, U256::from(10u64), vec![]),
-            nested_call(0, from_, to_, U256::from(5u64), vec![]),
-            top_level_call(1, from_, to_, U256::ZERO, vec![]),
+    let blocks = vec![block_with_traces(
+        test_header(1, B256::ZERO),
+        vec![
+            top_level_call(0, caller, callee, U256::from(10u64), vec![]),
+            nested_call(0, caller, callee, U256::from(5u64), vec![]),
+            top_level_call(1, caller, callee, U256::ZERO, vec![]),
         ],
-    }];
-    let store = common::populate::populate_via_engine(blocks).await;
-    let service = store.reader();
+    )];
+    let service = service_for(blocks).await;
 
     let resp = service
-        .query_traces(QueryTracesRequest {
-            envelope: QueryEnvelope {
-                from_block: Some(1),
-                to_block: Some(1),
-                order: QueryOrder::Ascending,
-                limit: 10,
-            },
-            filter: TraceFilter {
+        .query_traces(traces_request(
+            ascending_envelope(1, 1, 10),
+            TraceFilter {
                 is_top_level: Some(true),
                 ..Default::default()
             },
-            relations: TracesRelations::default(),
-        })
+        ))
         .await
         .expect("query");
 
@@ -166,36 +147,27 @@ async fn indexed_query_is_top_level_true_keeps_roots_only() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn scan_query_is_top_level_false_keeps_non_roots() {
-    let from_ = addr(1);
-    let to_ = addr(2);
+    let caller = addr(1);
+    let callee = addr(2);
 
-    let blocks = vec![FinalizedBlock {
-        header: test_header(1, B256::ZERO),
-        logs_by_tx: vec![],
-        txs: vec![],
-        traces: vec![
-            top_level_call(0, from_, to_, U256::from(1u64), vec![]),
-            nested_call(0, from_, to_, U256::from(1u64), vec![]),
-            top_level_call(1, from_, to_, U256::ZERO, vec![]),
+    let blocks = vec![block_with_traces(
+        test_header(1, B256::ZERO),
+        vec![
+            top_level_call(0, caller, callee, U256::from(1u64), vec![]),
+            nested_call(0, caller, callee, U256::from(1u64), vec![]),
+            top_level_call(1, caller, callee, U256::ZERO, vec![]),
         ],
-    }];
-    let store = common::populate::populate_via_engine(blocks).await;
-    let service = store.reader();
+    )];
+    let service = service_for(blocks).await;
 
     let resp = service
-        .query_traces(QueryTracesRequest {
-            envelope: QueryEnvelope {
-                from_block: Some(1),
-                to_block: Some(1),
-                order: QueryOrder::Ascending,
-                limit: 10,
-            },
-            filter: TraceFilter {
+        .query_traces(traces_request(
+            ascending_envelope(1, 1, 10),
+            TraceFilter {
                 is_top_level: Some(false),
                 ..Default::default()
             },
-            relations: TracesRelations::default(),
-        })
+        ))
         .await
         .expect("query");
 
@@ -205,39 +177,28 @@ async fn scan_query_is_top_level_false_keeps_non_roots() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn indexed_query_combines_from_and_is_top_level_false() {
-    // Verify the indexed runner's post-filter actually drops top-level
-    // frames when `is_top_level: Some(false)` is combined with another
-    // indexed clause.
-    let from_ = addr(1);
-    let to_ = addr(2);
+    // is_top_level=false is applied as a post-filter on the indexed candidates.
+    let caller = addr(1);
+    let callee = addr(2);
 
-    let blocks = vec![FinalizedBlock {
-        header: test_header(1, B256::ZERO),
-        logs_by_tx: vec![],
-        txs: vec![],
-        traces: vec![
-            top_level_call(0, from_, to_, U256::from(1u64), vec![]),
-            nested_call(0, from_, to_, U256::from(1u64), vec![]),
+    let blocks = vec![block_with_traces(
+        test_header(1, B256::ZERO),
+        vec![
+            top_level_call(0, caller, callee, U256::from(1u64), vec![]),
+            nested_call(0, caller, callee, U256::from(1u64), vec![]),
         ],
-    }];
-    let store = common::populate::populate_via_engine(blocks).await;
-    let service = store.reader();
+    )];
+    let service = service_for(blocks).await;
 
     let resp = service
-        .query_traces(QueryTracesRequest {
-            envelope: QueryEnvelope {
-                from_block: Some(1),
-                to_block: Some(1),
-                order: QueryOrder::Ascending,
-                limit: 10,
-            },
-            filter: TraceFilter {
-                from: Some(HashSet::from([from_])),
+        .query_traces(traces_request(
+            ascending_envelope(1, 1, 10),
+            TraceFilter {
+                from: Some(HashSet::from([caller])),
                 is_top_level: Some(false),
                 ..Default::default()
             },
-            relations: TracesRelations::default(),
-        })
+        ))
         .await
         .expect("query");
 
@@ -247,33 +208,24 @@ async fn indexed_query_combines_from_and_is_top_level_false() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn scan_query_no_filter_returns_all_traces_in_block_order() {
-    let from_ = addr(1);
-    let to_ = addr(2);
+    let caller = addr(1);
+    let callee = addr(2);
 
-    let blocks = vec![FinalizedBlock {
-        header: test_header(1, B256::ZERO),
-        logs_by_tx: vec![],
-        txs: vec![],
-        traces: vec![
-            top_level_call(0, from_, to_, U256::from(1u64), vec![]),
-            nested_call(0, from_, to_, U256::from(1u64), vec![]),
-            top_level_call(1, from_, to_, U256::ZERO, vec![]),
+    let blocks = vec![block_with_traces(
+        test_header(1, B256::ZERO),
+        vec![
+            top_level_call(0, caller, callee, U256::from(1u64), vec![]),
+            nested_call(0, caller, callee, U256::from(1u64), vec![]),
+            top_level_call(1, caller, callee, U256::ZERO, vec![]),
         ],
-    }];
-    let store = common::populate::populate_via_engine(blocks).await;
-    let service = store.reader();
+    )];
+    let service = service_for(blocks).await;
 
     let resp = service
-        .query_traces(QueryTracesRequest {
-            envelope: QueryEnvelope {
-                from_block: Some(1),
-                to_block: Some(1),
-                order: QueryOrder::Ascending,
-                limit: 10,
-            },
-            filter: TraceFilter::default(),
-            relations: TracesRelations::default(),
-        })
+        .query_traces(traces_request(
+            ascending_envelope(1, 1, 10),
+            TraceFilter::default(),
+        ))
         .await
         .expect("query");
 
@@ -284,26 +236,20 @@ async fn scan_query_no_filter_returns_all_traces_in_block_order() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn relations_attach_blocks_and_transactions() {
-    let from_ = addr(1);
-    let to_ = addr(2);
+    let caller = addr(1);
+    let callee = addr(2);
 
     let blocks = vec![FinalizedBlock {
         header: test_header(1, B256::ZERO),
         logs_by_tx: vec![vec![]],
-        txs: vec![common::ingest_tx(from_, Some(to_), Vec::new())],
-        traces: vec![top_level_call(0, from_, to_, U256::from(1u64), vec![])],
+        txs: vec![common::ingest_tx(caller, Some(callee), Vec::new())],
+        traces: vec![top_level_call(0, caller, callee, U256::from(1u64), vec![])],
     }];
-    let store = common::populate::populate_via_engine(blocks).await;
-    let service = store.reader();
+    let service = service_for(blocks).await;
 
     let resp = service
         .query_traces(QueryTracesRequest {
-            envelope: QueryEnvelope {
-                from_block: Some(1),
-                to_block: Some(1),
-                order: QueryOrder::Ascending,
-                limit: 10,
-            },
+            envelope: ascending_envelope(1, 1, 10),
             filter: TraceFilter::default(),
             relations: TracesRelations {
                 blocks: true,
@@ -314,6 +260,10 @@ async fn relations_attach_blocks_and_transactions() {
         .expect("query");
 
     assert_eq!(resp.traces.len(), 1);
-    assert_eq!(resp.blocks.as_ref().expect("blocks").len(), 1);
-    assert_eq!(resp.transactions.as_ref().expect("txs").len(), 1);
+    let blocks = resp.blocks.as_ref().expect("blocks");
+    assert_eq!(blocks.len(), 1);
+    assert_eq!(blocks[0].header.number, 1);
+    let txs = resp.transactions.as_ref().expect("txs");
+    assert_eq!(txs.len(), 1);
+    assert_eq!((txs[0].block_number, txs[0].tx_index), (1, 0));
 }

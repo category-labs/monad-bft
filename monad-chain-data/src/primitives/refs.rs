@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use crate::{family::Hash32, primitives::state::BlockRecord};
+use crate::{ingest_types::Hash32, primitives::records::BlockRecord};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BlockRef {

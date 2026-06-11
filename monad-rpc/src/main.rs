@@ -261,6 +261,38 @@ async fn main() -> std::io::Result<()> {
         }
     };
 
+    // Initialize the chain-data (queryX) reader if configured. If not, the
+    // eth_query* methods answer "method not supported".
+    let chain_data_reader = match &args.chain_data_config {
+        Some(path) => {
+            let init = async {
+                let config: cli::ChainDataReaderConfig =
+                    toml::from_str(&std::fs::read_to_string(path)?)
+                        .map_err(|e| std::io::Error::other(e.to_string()))?;
+                monad_chain_data::open_configured_chain_data_reader(
+                    config.store,
+                    monad_chain_data::QueryLimits::new(config.max_limit, config.max_block_range),
+                )
+                .await
+                .map_err(std::io::Error::other)
+            };
+            match init.await {
+                Ok(reader) => {
+                    info!("Chain-data reader initialized successfully");
+                    Some(reader)
+                }
+                Err(e) => {
+                    warn!(error = %e, "Unable to initialize chain-data reader");
+                    None
+                }
+            }
+        }
+        None => {
+            debug!("Chain-data reader configuration not provided, skipping initialization");
+            None
+        }
+    };
+
     let eth_call_handler = args.triedb_path.clone().as_deref().map(|triedb_path| {
         EthCallHandler::new(
             EthCallHandlerConfig {
@@ -352,8 +384,14 @@ async fn main() -> std::io::Result<()> {
         None
     };
 
-    let data_provider =
-        triedb_env.map(|t| DataProvider::new(block_buffer_view, Arc::new(t), archive_reader));
+    let data_provider = triedb_env.map(|t| {
+        DataProvider::new(
+            block_buffer_view,
+            Arc::new(t),
+            archive_reader,
+            chain_data_reader.clone(),
+        )
+    });
 
     let rpc_comparator: Option<RpcComparator> = args
         .rpc_comparison_endpoint
@@ -367,6 +405,7 @@ async fn main() -> std::io::Result<()> {
         eth_call_handler,
         node_config.chain_id,
         data_provider,
+        chain_data_reader,
         event_server_client.clone(),
         args.batch_request_limit,
         args.max_response_size,

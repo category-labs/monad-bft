@@ -14,13 +14,12 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use monad_chain_data::{
-    engine::tables::PublicationTables, Address, Family, FinalizedBlock, InMemoryMetaStore,
-    IngestTx, B256,
+    engine::tables::PublicationTables, Address, Family, InMemoryMetaStore, IngestTx, B256,
 };
 
 mod common;
 
-use common::{chain_header, ingest_tx, test_header};
+use common::{block_with_txs, chain_header, ingest_tx, test_header, with_hash};
 
 #[tokio::test(flavor = "current_thread")]
 async fn get_transaction_returns_entry_for_ingested_hash() {
@@ -30,27 +29,26 @@ async fn get_transaction_returns_entry_for_ingested_hash() {
     let hash_alice = B256::repeat_byte(0x01);
     let hash_bob = B256::repeat_byte(0x02);
 
-    let store = common::populate::populate_via_engine(vec![FinalizedBlock {
-        header: test_header(1, B256::ZERO),
-        logs_by_tx: vec![vec![], vec![]],
-        txs: vec![
+    let store = common::populate::populate_via_engine(vec![block_with_txs(
+        test_header(1, B256::ZERO),
+        vec![
             with_hash(ingest_tx(alice, Some(recipient), Vec::new()), hash_alice),
             with_hash(ingest_tx(bob, Some(recipient), Vec::new()), hash_bob),
         ],
-        traces: vec![],
-    }])
+    )])
     .await;
     let service = store.reader();
 
-    let entry = service
+    let (entry, header) = service
         .get_transaction(hash_bob)
         .await
         .expect("lookup")
         .expect("hit");
     assert_eq!(entry.block_number, 1);
-    assert_eq!(entry.tx_idx, 1);
+    assert_eq!(entry.tx_index, 1);
     assert_eq!(entry.tx_hash, hash_bob);
     assert_eq!(entry.sender, bob);
+    assert_eq!(header.number, 1, "entry pairs with its block's header");
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -60,15 +58,13 @@ async fn get_transaction_returns_none_for_unknown_hash() {
     let known = B256::repeat_byte(0x01);
     let unknown = B256::repeat_byte(0xff);
 
-    let store = common::populate::populate_via_engine(vec![FinalizedBlock {
-        header: test_header(1, B256::ZERO),
-        logs_by_tx: vec![vec![]],
-        txs: vec![with_hash(
+    let store = common::populate::populate_via_engine(vec![block_with_txs(
+        test_header(1, B256::ZERO),
+        vec![with_hash(
             ingest_tx(sender, Some(recipient), Vec::new()),
             known,
         )],
-        traces: vec![],
-    }])
+    )])
     .await;
     let service = store.reader();
 
@@ -84,16 +80,14 @@ async fn get_transaction_resolves_contract_creation_tx() {
     let sender = Address::repeat_byte(0xaa);
     let hash = B256::repeat_byte(0x07);
 
-    let store = common::populate::populate_via_engine(vec![FinalizedBlock {
-        header: test_header(1, B256::ZERO),
-        logs_by_tx: vec![vec![]],
-        txs: vec![with_hash(ingest_tx(sender, None, Vec::new()), hash)],
-        traces: vec![],
-    }])
+    let store = common::populate::populate_via_engine(vec![block_with_txs(
+        test_header(1, B256::ZERO),
+        vec![with_hash(ingest_tx(sender, None, Vec::new()), hash)],
+    )])
     .await;
     let service = store.reader();
 
-    let entry = service
+    let (entry, _) = service
         .get_transaction(hash)
         .await
         .expect("lookup")
@@ -112,60 +106,52 @@ async fn get_transaction_resolves_across_multiple_blocks() {
     let h1 = test_header(1, B256::ZERO);
     let h2 = chain_header(2, &h1);
     let store = common::populate::populate_via_engine(vec![
-        FinalizedBlock {
-            header: h1,
-            logs_by_tx: vec![vec![]],
-            txs: vec![with_hash(
+        block_with_txs(
+            h1,
+            vec![with_hash(
                 ingest_tx(sender, Some(recipient), Vec::new()),
                 hash_b1,
             )],
-            traces: vec![],
-        },
-        FinalizedBlock {
-            header: h2,
-            logs_by_tx: vec![vec![]],
-            txs: vec![with_hash(
+        ),
+        block_with_txs(
+            h2,
+            vec![with_hash(
                 ingest_tx(sender, Some(recipient), Vec::new()),
                 hash_b2,
             )],
-            traces: vec![],
-        },
+        ),
     ])
     .await;
     let service = store.reader();
 
-    let e1 = service
+    let (e1, header1) = service
         .get_transaction(hash_b1)
         .await
         .expect("lookup 1")
         .expect("hit 1");
-    let e2 = service
+    let (e2, header2) = service
         .get_transaction(hash_b2)
         .await
         .expect("lookup 2")
         .expect("hit 2");
-    assert_eq!(e1.block_number, 1);
-    assert_eq!(e1.tx_idx, 0);
-    assert_eq!(e2.block_number, 2);
-    assert_eq!(e2.tx_idx, 0);
+    assert_eq!((e1.block_number, header1.number), (1, 1));
+    assert_eq!(e1.tx_index, 0);
+    assert_eq!((e2.block_number, header2.number), (2, 2));
+    assert_eq!(e2.tx_index, 0);
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn failed_tx_ingest_aborts_the_block() {
-    // A tx with an undecodable envelope aborts the whole block's ingest, so its
-    // hash is never indexed (nothing is published).
     let tx_hash = B256::repeat_byte(0x44);
 
-    let result = common::populate::try_populate_via_engine(vec![FinalizedBlock {
-        header: test_header(1, B256::ZERO),
-        logs_by_tx: vec![vec![]],
-        txs: vec![IngestTx {
+    let result = common::populate::try_populate_via_engine(vec![block_with_txs(
+        test_header(1, B256::ZERO),
+        vec![IngestTx {
             tx_hash,
             signed_tx_bytes: vec![0x01].into(),
             ..Default::default()
         }],
-        traces: vec![],
-    }])
+    )])
     .await;
     assert!(result.is_err(), "invalid signed tx should fail ingest");
 }
@@ -176,19 +162,16 @@ async fn get_transaction_ignores_index_hits_without_published_head() {
     let recipient = Address::repeat_byte(0x11);
     let tx_hash = B256::repeat_byte(0x55);
 
-    let store = common::populate::populate_via_engine(vec![FinalizedBlock {
-        header: test_header(1, B256::ZERO),
-        logs_by_tx: vec![vec![]],
-        txs: vec![with_hash(
+    let store = common::populate::populate_via_engine(vec![block_with_txs(
+        test_header(1, B256::ZERO),
+        vec![with_hash(
             ingest_tx(sender, Some(recipient), Vec::new()),
             tx_hash,
         )],
-        traces: vec![],
-    }])
+    )])
     .await;
 
-    // Drop the published head, leaving the indexed tx artifacts in place: a hash
-    // hit above (here, without) a published head must not resolve.
+    // Drop the published head but keep tx artifacts; a hash hit above head must not resolve.
     store.meta.clear_key(
         PublicationTables::<InMemoryMetaStore>::PUBLICATION_STATE_TABLE,
         PublicationTables::<InMemoryMetaStore>::PUBLICATION_STATE_KEY,
@@ -203,13 +186,8 @@ async fn get_transaction_ignores_index_hits_without_published_head() {
     assert!(service
         .tables()
         .family(Family::Tx)
-        .load_block_header(1)
+        .load_blob_header(1)
         .await
         .expect("load tx header")
         .is_some());
-}
-
-fn with_hash(mut tx: IngestTx, tx_hash: B256) -> IngestTx {
-    tx.tx_hash = tx_hash;
-    tx
 }

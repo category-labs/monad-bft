@@ -18,7 +18,7 @@ use alloy_rlp::{RlpDecodable, RlpEncodable};
 
 use crate::{
     error::{MonadChainDataError, Result},
-    family::Hash32,
+    ingest_types::Hash32,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,7 +35,7 @@ pub struct LogEntry {
 /// Per-log fields stored in the block blob. Block-level fields (block_number,
 /// block_hash) are reconstructed from the BlockRecord at read time.
 #[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
-pub struct RawLogEntry {
+pub struct StoredLog {
     pub tx_index: u32,
     pub log_index: u32,
     pub address: Address,
@@ -43,7 +43,7 @@ pub struct RawLogEntry {
     pub data: Bytes,
 }
 
-impl RawLogEntry {
+impl StoredLog {
     pub fn encode(&self) -> Vec<u8> {
         alloy_rlp::encode(self)
     }

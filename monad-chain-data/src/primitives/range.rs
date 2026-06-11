@@ -18,7 +18,7 @@ use crate::{
     error::{MonadChainDataError, Result},
     primitives::{
         limits::{LimitExceededKind, QueryEnvelope, QueryLimits},
-        page::QueryOrder,
+        order::QueryOrder,
         refs::BlockRef,
     },
     store::MetaStore,
@@ -62,20 +62,14 @@ impl ResolvedBlockWindow {
             });
         }
 
-        let low_record =
+        let load = |number, msg| async move {
             blocks
-                .load_record(low_number)
+                .load_record(number)
                 .await?
-                .ok_or(MonadChainDataError::MissingData(
-                    "missing block record at range low bound",
-                ))?;
-        let high_record =
-            blocks
-                .load_record(high_number)
-                .await?
-                .ok_or(MonadChainDataError::MissingData(
-                    "missing block record at range high bound",
-                ))?;
+                .ok_or(MonadChainDataError::MissingData(msg))
+        };
+        let low_record = load(low_number, "missing block record at range low bound").await?;
+        let high_record = load(high_number, "missing block record at range high bound").await?;
 
         Ok(Self {
             low: BlockRef::from(&low_record),
@@ -93,12 +87,7 @@ impl ResolvedBlockWindow {
 
     /// Iterates `low..=high` in the requested traversal direction.
     pub fn iter(&self, order: QueryOrder) -> impl Iterator<Item = u64> {
-        let range = self.low.number..=self.high.number;
-        let (fwd, rev) = match order {
-            QueryOrder::Ascending => (Some(range), None),
-            QueryOrder::Descending => (None, Some(range.rev())),
-        };
-        fwd.into_iter().flatten().chain(rev.into_iter().flatten())
+        order.iterate(self.low.number..=self.high.number)
     }
 
     /// Maps the spec's order-dependent `(from_block, to_block)` to internal
@@ -110,9 +99,8 @@ impl ResolvedBlockWindow {
         order: QueryOrder,
         published_head: u64,
     ) -> Result<(u64, u64)> {
-        // User-space inversion is checked before defaults so an unspecified
-        // bound (e.g. `from=None, to=N` with `N` above head) reports the
-        // genuine cause (above-head) rather than a defaulted-inversion artifact.
+        // Check user-supplied inversion before defaulting so the error reports
+        // the genuine cause rather than a defaulted-inversion artifact.
         if let (Some(from), Some(to)) = (from_block, to_block) {
             let inverted = match order {
                 QueryOrder::Ascending => from > to,
@@ -136,22 +124,17 @@ impl ResolvedBlockWindow {
             ),
         };
 
-        // The lower bound must be an ingested block — silently collapsing
-        // `low > head` to `[head, head]` would mask caller bugs and return
-        // empty pages. The upper bound is treated as "up to head" and clipped.
+        // A lower bound above head is a caller bug and errors; the upper bound
+        // means "up to head" and is clipped.
         if low > published_head {
             return Err(MonadChainDataError::InvalidRequest(
                 "block range starts above the published head",
             ));
         }
         let high = high.min(published_head);
-        // Clamp an explicit lower bound of 0 up to the earliest queryable block.
-        // Block 0 has no record in this slice (ingest starts at block 1), so a
-        // request like `[0, N]` resolves to `[1, N]` — the same genesis-clamp
-        // behavior as `eth_getLogs`. Unlike the above-head case this clamp is
-        // intentionally silent: 0 expresses "from the start", not a typo. A
-        // request for block 0 *alone* (`[0, 0]`) still fails the `low > high`
-        // check below rather than silently returning block 1's data.
+        // Block 0 has no record (ingest starts at 1), so `[0, N]` silently
+        // clamps to `[1, N]` like eth_getLogs' genesis clamp — 0 means "from
+        // the start". `[0, 0]` alone still fails the low > high check below.
         let low = low.max(EARLIEST_QUERYABLE_BLOCK);
 
         if low > high {
@@ -166,7 +149,7 @@ impl ResolvedBlockWindow {
 #[cfg(test)]
 mod tests {
     use super::{ResolvedBlockWindow, EARLIEST_QUERYABLE_BLOCK};
-    use crate::{error::MonadChainDataError, primitives::page::QueryOrder};
+    use crate::{error::MonadChainDataError, primitives::order::QueryOrder};
 
     const HEAD: u64 = 100;
 
@@ -188,8 +171,6 @@ mod tests {
 
     #[test]
     fn descending_defaults_span_earliest_to_head() {
-        // Internal `(low, high)` is order-independent; direction is applied at
-        // iteration time. Defaults resolve to the full ingested range either way.
         assert_eq!(
             resolve(None, None, QueryOrder::Descending).unwrap(),
             (EARLIEST_QUERYABLE_BLOCK, HEAD)
@@ -198,8 +179,6 @@ mod tests {
 
     #[test]
     fn explicit_block_zero_lower_bound_clamps_to_earliest() {
-        // `[0, 5]` is the genesis-clamp case: block 0 has no record, so the
-        // window resolves to `[1, 5]` rather than erroring.
         assert_eq!(
             resolve(Some(0), Some(5), QueryOrder::Ascending).unwrap(),
             (1, 5)
@@ -208,8 +187,7 @@ mod tests {
 
     #[test]
     fn block_zero_alone_is_rejected_not_clamped() {
-        // The clamp must not silently turn a request for block 0 into block 1's
-        // data: `[0, 0]` resolves to `low = 1 > high = 0` and is rejected.
+        // The clamp must not silently serve block 1's data for a block-0 request.
         assert!(matches!(
             resolve(Some(0), Some(0), QueryOrder::Ascending),
             Err(MonadChainDataError::InvalidRequest(_))
@@ -242,7 +220,6 @@ mod tests {
 
     #[test]
     fn descending_valid_range_resolves_low_to_high() {
-        // In descending order `from` is the upper bound and `to` the lower.
         assert_eq!(
             resolve(Some(5), Some(2), QueryOrder::Descending).unwrap(),
             (2, 5)

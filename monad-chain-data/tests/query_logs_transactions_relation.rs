@@ -13,32 +13,26 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::HashSet;
-
 use monad_chain_data::{
-    Address, Bytes, FinalizedBlock, InMemoryBlobStore, InMemoryMetaStore, Log, LogData, LogFilter,
-    LogsRelations, MonadChainDataService, QueryEnvelope, QueryLogsRequest, QueryOrder, B256,
+    Address, FinalizedBlock, InMemoryBlobStore, InMemoryMetaStore, Log, LogFilter, LogsRelations,
+    MonadChainDataService, QueryLogsRequest, B256,
 };
 
 mod common;
 
-use common::{chain_header, ingest_tx, test_header};
+use common::{
+    address_filter, ascending_envelope, chain_header, ingest_tx, logs_request, test_header,
+};
 
 #[tokio::test(flavor = "current_thread")]
 async fn include_transactions_false_omits_transactions() {
     let service = build_service().await;
 
     let page = service
-        .query_logs(QueryLogsRequest {
-            envelope: QueryEnvelope {
-                from_block: Some(1),
-                to_block: Some(2),
-                order: QueryOrder::Ascending,
-                limit: 100,
-            },
-            filter: LogFilter::default(),
-            relations: LogsRelations::default(),
-        })
+        .query_logs(logs_request(
+            ascending_envelope(1, 2, 100),
+            LogFilter::default(),
+        ))
         .await
         .expect("query");
 
@@ -52,12 +46,7 @@ async fn include_transactions_true_returns_deduped_txs_sorted() {
 
     let page = service
         .query_logs(QueryLogsRequest {
-            envelope: QueryEnvelope {
-                from_block: Some(1),
-                to_block: Some(2),
-                order: QueryOrder::Ascending,
-                limit: 100,
-            },
+            envelope: ascending_envelope(1, 2, 100),
             filter: LogFilter::default(),
             relations: LogsRelations {
                 blocks: false,
@@ -67,13 +56,12 @@ async fn include_transactions_true_returns_deduped_txs_sorted() {
         .await
         .expect("query");
 
-    // Block 1 has two txs each emitting logs; block 2 has one tx with a log.
-    // Block 1's first tx emits two logs, so dedup must collapse them.
+    // Block 1 tx0 emits two logs that dedup to one tx; 3 distinct txs total.
     let transactions = page.transactions.expect("transactions relation");
     assert_eq!(transactions.len(), 3);
     let keys: Vec<(u64, u32)> = transactions
         .iter()
-        .map(|t| (t.block_number, t.tx_idx))
+        .map(|t| (t.block_number, t.tx_index))
         .collect();
     assert_eq!(keys, vec![(1, 0), (1, 1), (2, 0)]);
 }
@@ -85,16 +73,8 @@ async fn include_transactions_true_filtered_logs_returns_only_referenced_txs() {
 
     let page = service
         .query_logs(QueryLogsRequest {
-            envelope: QueryEnvelope {
-                from_block: Some(1),
-                to_block: Some(2),
-                order: QueryOrder::Ascending,
-                limit: 100,
-            },
-            filter: LogFilter {
-                address: Some(HashSet::from([target])),
-                topics: [None, None, None, None],
-            },
+            envelope: ascending_envelope(1, 2, 100),
+            filter: address_filter(target),
             relations: LogsRelations {
                 blocks: false,
                 transactions: true,
@@ -103,12 +83,11 @@ async fn include_transactions_true_filtered_logs_returns_only_referenced_txs() {
         .await
         .expect("query");
 
-    // Only the log on block 1 tx 1 matches `target`.
     assert_eq!(page.logs.len(), 1);
     let transactions = page.transactions.expect("transactions relation");
     assert_eq!(transactions.len(), 1);
     assert_eq!(transactions[0].block_number, 1);
-    assert_eq!(transactions[0].tx_idx, 1);
+    assert_eq!(transactions[0].tx_index, 1);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -117,16 +96,8 @@ async fn include_transactions_true_empty_logs_returns_empty_transactions() {
 
     let page = service
         .query_logs(QueryLogsRequest {
-            envelope: QueryEnvelope {
-                from_block: Some(1),
-                to_block: Some(2),
-                order: QueryOrder::Ascending,
-                limit: 100,
-            },
-            filter: LogFilter {
-                address: Some(HashSet::from([Address::repeat_byte(0xEE)])),
-                topics: [None, None, None, None],
-            },
+            envelope: ascending_envelope(1, 2, 100),
+            filter: address_filter(Address::repeat_byte(0xEE)),
             relations: LogsRelations {
                 blocks: false,
                 transactions: true,
@@ -177,8 +148,5 @@ async fn build_service() -> MonadChainDataService<InMemoryMetaStore, InMemoryBlo
 }
 
 fn log(address: Address) -> Log {
-    Log {
-        address,
-        data: LogData::new_unchecked(vec![B256::repeat_byte(0xAA)], Bytes::from(vec![1, 2, 3])),
-    }
+    common::log(address, vec![B256::repeat_byte(0xAA)])
 }

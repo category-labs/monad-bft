@@ -22,13 +22,13 @@ use crate::{
     error::Result,
     store::{
         blob::{BlobStore, BlobTable, BlobWriteOp},
-        cache::{CachedKvTable, CachedScannableTable},
+        cache::{CachedKvTable, CachedScannableKvTable},
         meta::{MetaStore, MetaWriteOp},
     },
 };
 
-/// Convenience for the `for<'s>` HRTB closure shape every `with_writes*`
-/// entry-point declares. Halves the line-length of those signatures.
+/// Boxed future for the `for<'s>` HRTB closures the `with_writes*` entry
+/// points take.
 pub type SessionFuture<'s> = Pin<Box<dyn Future<Output = Result<()>> + Send + 's>>;
 
 pub struct WriteSession<'a, M: MetaStore, B: BlobStore> {
@@ -50,15 +50,10 @@ impl<'a, M: MetaStore, B: BlobStore> WriteSession<'a, M, B> {
         }
     }
 
-    /// Stages a durable metadata write. The read caches are read-populated
-    /// only (like the blob region cache), so staging never touches them: a
-    /// staged-then-abandoned or failed-to-commit write can therefore never
-    /// leave a phantom value resident, and there is nothing to evict on the
-    /// error/abort paths.
-    pub fn put<V>(&mut self, table: &CachedKvTable<M, V>, key: &[u8], value: Bytes)
-    where
-        V: Clone + Send + Sync + 'static,
-    {
+    /// Stages a durable metadata write. Read caches are read-populated only, so
+    /// staging never touches them: an abandoned or failed session can never
+    /// leave a phantom value resident, and there is nothing to evict on abort.
+    pub fn put<V>(&mut self, table: &CachedKvTable<M, V>, key: &[u8], value: Bytes) {
         self.meta_pending.push(MetaWriteOp::Put {
             table: table.table_id(),
             key: key.to_vec(),
@@ -68,13 +63,11 @@ impl<'a, M: MetaStore, B: BlobStore> WriteSession<'a, M, B> {
 
     pub fn scan_put<V>(
         &mut self,
-        table: &CachedScannableTable<M, V>,
+        table: &CachedScannableKvTable<M, V>,
         partition: &[u8],
         clustering: &[u8],
         value: Bytes,
-    ) where
-        V: Clone + Send + Sync + 'static,
-    {
+    ) {
         self.meta_pending.push(MetaWriteOp::ScanPut {
             table: table.table_id(),
             partition: partition.to_vec(),
@@ -83,14 +76,8 @@ impl<'a, M: MetaStore, B: BlobStore> WriteSession<'a, M, B> {
         });
     }
 
-    pub fn extend_meta_uncached(&mut self, ops: Vec<MetaWriteOp>) {
-        self.meta_pending.extend(ops);
-    }
-
-    /// Stages a blob write. Unlike [`Self::put`], this populates no read cache:
-    /// the compressed per-(family, block) region cache that serves blob reads
-    /// is read-populated only (regions are immutable once written), so the
-    /// ingest write path leaves it untouched.
+    /// Stages a blob write. Blob bytes are never cached (the decoded-row
+    /// caches sit above the store), so there is no cache to update here.
     pub fn put_blob(&mut self, table: &BlobTable<B>, key: &[u8], value: Bytes) {
         self.blob_pending.push(BlobWriteOp {
             table: table.table,

@@ -65,3 +65,21 @@ async fn read_range_rejects_invalid_start_bounds() {
         .expect_err("start past blob end should error");
     assert_eq!(past_end.to_string(), "decode error: invalid blob range");
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn delete_blob_removes_and_is_idempotent() {
+    let store = InMemoryBlobStore::default();
+    store
+        .put_blob(TABLE, KEY, Bytes::from_static(b"abcdef"))
+        .await
+        .expect("put blob");
+
+    store.delete_blob(TABLE, KEY).await.expect("delete blob");
+    assert_eq!(store.get_blob(TABLE, KEY).await.expect("get blob"), None);
+
+    // Deleting a missing key is an idempotent no-op.
+    store
+        .delete_blob(TABLE, KEY)
+        .await
+        .expect("delete missing blob");
+}

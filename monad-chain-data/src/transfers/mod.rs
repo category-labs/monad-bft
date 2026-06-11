@@ -13,15 +13,14 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! View over the trace family that exposes value-bearing transfers. No
+//! View over the trace family exposing value-bearing transfers. No
 //! separate persistence: the materializer ANDs a `has_transfer` clause
-//! into trace queries and projects the matched `TraceEntry`s into
-//! `TransferEntry`s.
+//! into trace queries and projects matches into `TransferEntry`s.
 
 mod materialize;
 mod types;
 
-pub(crate) use materialize::{execute_block_scan_transfer_query, execute_indexed_transfer_query};
+pub(crate) use materialize::TransferMaterializer;
 pub use materialize::{
     QueryTransfersRequest, QueryTransfersResponse, TransferFilter, TransfersRelations,
 };

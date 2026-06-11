@@ -22,10 +22,7 @@ use bytes::Bytes;
 
 use crate::{
     error::Result,
-    store::{
-        common::Page,
-        meta::{MetaStore, MetaWriteOp, ScannableTableId, TableId},
-    },
+    store::meta::{MetaStore, MetaWriteOp, ScannableTableId, TableId},
 };
 
 /// Test-only meta-store fixture. Holds records in memory behind sync
@@ -61,8 +58,8 @@ impl InMemoryMetaStore {
         }
     }
 
-    /// Test-only: clones the entire kv map. Enables byte-equality assertions
-    /// across two fixture instances without exposing the internal `RwLock`.
+    /// Test-only: clones the entire kv map for byte-equality assertions
+    /// across fixture instances.
     pub fn kv_snapshot(&self) -> BTreeMap<(TableId, Vec<u8>), Bytes> {
         self.kv_records
             .read()
@@ -154,41 +151,19 @@ impl MetaStore for InMemoryMetaStore {
         Ok(())
     }
 
-    async fn scan_list(
-        &self,
-        table: ScannableTableId,
-        partition: &[u8],
-        prefix: &[u8],
-        cursor: Option<Vec<u8>>,
-        limit: usize,
-    ) -> Result<Page> {
+    async fn scan_keys(&self, table: ScannableTableId, partition: &[u8]) -> Result<Vec<Vec<u8>>> {
         let guard = self
             .scan_records
             .read()
             .map_err(|_| crate::error::MonadChainDataError::Backend("poisoned lock".to_string()))?;
-        let mut keys = Vec::new();
-        let mut next_cursor = None;
-        let cursor = cursor.as_deref();
-
-        for ((record_table, record_partition, clustering), _) in guard.iter() {
-            if *record_table != table || record_partition.as_slice() != partition {
-                continue;
-            }
-            if !clustering.starts_with(prefix) {
-                continue;
-            }
-            if let Some(cursor) = cursor {
-                if clustering.as_slice() <= cursor {
-                    continue;
-                }
-            }
-            if keys.len() == limit {
-                next_cursor = keys.last().cloned();
-                break;
-            }
-            keys.push(clustering.clone());
-        }
-
-        Ok(Page { keys, next_cursor })
+        // Seek straight to the partition's first possible key and stop once
+        // past it, instead of walking the whole multi-table map.
+        Ok(guard
+            .range((table, partition.to_vec(), Vec::new())..)
+            .take_while(|((record_table, record_partition, _), _)| {
+                *record_table == table && record_partition.as_slice() == partition
+            })
+            .map(|((_, _, clustering), _)| clustering.clone())
+            .collect())
     }
 }

@@ -13,15 +13,16 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use super::bitmap::max_local_id;
 use crate::{
-    engine::{family::Family, tables::BlockTables},
-    error::Result,
-    primitives::{
-        page::QueryOrder,
-        range::ResolvedBlockWindow,
-        state::{FamilyWindowRecord, PrimaryId},
+    engine::{
+        bitmap::{
+            page_group_start, page_offset, page_start, PAGE_GROUP_ID_SPAN, STREAM_PAGE_ID_SPAN,
+        },
+        family::Family,
+        tables::BlockTables,
     },
+    error::Result,
+    primitives::{order::QueryOrder, range::ResolvedBlockWindow, records::PrimaryId},
     store::MetaStore,
 };
 
@@ -32,29 +33,41 @@ pub(crate) struct ResolvedPrimaryIdWindow {
 }
 
 impl ResolvedPrimaryIdWindow {
-    /// Returns the local-ID range within the given shard, clipped to this
-    /// window's boundaries.
-    pub fn local_range_for_shard(&self, shard: u64) -> (u32, u32) {
-        let local_from = if shard == self.start.shard() {
-            self.start.local()
+    /// The page groups this window touches, as group starts in query order.
+    pub fn group_iter(&self, order: QueryOrder) -> impl Iterator<Item = u64> {
+        let first = page_group_start(self.start.as_u64()) / PAGE_GROUP_ID_SPAN;
+        let last = page_group_start(self.end_inclusive.as_u64()) / PAGE_GROUP_ID_SPAN;
+        order
+            .iterate(first..=last)
+            .map(|group_idx| group_idx * PAGE_GROUP_ID_SPAN)
+    }
+
+    /// First and last page starts the window covers within `group_start`'s
+    /// group (inclusive). The caller only passes groups from
+    /// [`Self::group_iter`], so the clamped range is never empty.
+    pub fn page_bounds_in_group(&self, group_start: u64) -> (u64, u64) {
+        let low = self.start.as_u64().max(group_start);
+        let high = self
+            .end_inclusive
+            .as_u64()
+            .min(group_start + (PAGE_GROUP_ID_SPAN - 1));
+        (page_start(low), page_start(high))
+    }
+
+    /// Page-relative offset range of this window within one page: full-page
+    /// `(0, span - 1)` except on the window's boundary pages.
+    pub fn offsets_in_page(&self, page: u64) -> (u32, u32) {
+        let from = if page_start(self.start.as_u64()) == page {
+            page_offset(self.start.as_u64())
         } else {
             0
         };
-        let local_to = if shard == self.end_inclusive.shard() {
-            self.end_inclusive.local()
+        let to = if page_start(self.end_inclusive.as_u64()) == page {
+            page_offset(self.end_inclusive.as_u64())
         } else {
-            max_local_id()
+            STREAM_PAGE_ID_SPAN - 1
         };
-        (local_from, local_to)
-    }
-
-    /// Returns the shards covered by this window in the given query order.
-    pub fn shard_iter(&self, order: QueryOrder) -> Vec<u64> {
-        let mut shards: Vec<u64> = (self.start.shard()..=self.end_inclusive.shard()).collect();
-        if order == QueryOrder::Descending {
-            shards.reverse();
-        }
-        shards
+        (from, to)
     }
 }
 
@@ -66,15 +79,13 @@ pub(crate) async fn resolve_primary_id_window<M: MetaStore>(
     let start_block = block_window.low.number;
     let end_block = block_window.high.number;
 
-    // The low walk (up from `start_block`) and the high walk (down from
-    // `end_block`) are independent reads over the shared `&BlockTables`, so run
-    // them concurrently to overlap their per-block fetches. `load_record` is
-    // `&self` + concurrency-safe. `try_join!` propagates either walk's error.
+    // The low and high walks are independent reads; run them concurrently to
+    // overlap their per-block fetches.
     let (start, end_exclusive) = futures::try_join!(
         first_primary_id_in_range(blocks, family, start_block, end_block),
         end_primary_id_exclusive_in_range(blocks, family, start_block, end_block),
     )?;
-    // If EITHER walk found no in-range id the window is empty.
+    // If either walk found no in-range id the window is empty.
     let (Some(start), Some(end_exclusive)) = (start, end_exclusive) else {
         return Ok(None);
     };
@@ -91,15 +102,14 @@ async fn first_primary_id_in_range<M: MetaStore>(
     start_block: u64,
     end_block: u64,
 ) -> Result<Option<PrimaryId>> {
-    let mut block_number = start_block;
-    while block_number <= end_block {
+    for block_number in start_block..=end_block {
         let Some(record) = blocks.load_record(block_number).await? else {
             return Ok(None);
         };
-        if let Some(first) = family.window_in(&record).and_then(non_empty_window_start) {
-            return Ok(Some(first));
+        let window = family.window_in(&record);
+        if window.count > 0 {
+            return Ok(Some(window.first_primary_id));
         }
-        block_number = block_number.saturating_add(1);
     }
 
     Ok(None)
@@ -111,33 +121,15 @@ async fn end_primary_id_exclusive_in_range<M: MetaStore>(
     start_block: u64,
     end_block: u64,
 ) -> Result<Option<PrimaryId>> {
-    let mut block_number = end_block;
-    loop {
+    for block_number in (start_block..=end_block).rev() {
         let Some(record) = blocks.load_record(block_number).await? else {
             return Ok(None);
         };
-        if let Some(window) = family.window_in(&record) {
-            if let Some(end_exclusive) = non_empty_window_end(window)? {
-                return Ok(Some(end_exclusive));
-            }
+        let window = family.window_in(&record);
+        if window.count > 0 {
+            return Ok(Some(window.next_primary_id_exclusive()?));
         }
-        if block_number == start_block {
-            break;
-        }
-        block_number = block_number.saturating_sub(1);
     }
 
     Ok(None)
-}
-
-fn non_empty_window_start(window: FamilyWindowRecord) -> Option<PrimaryId> {
-    (window.count > 0).then_some(window.first_primary_id)
-}
-
-fn non_empty_window_end(window: FamilyWindowRecord) -> Result<Option<PrimaryId>> {
-    if window.count == 0 {
-        return Ok(None);
-    }
-
-    window.next_primary_id_exclusive().map(Some)
 }

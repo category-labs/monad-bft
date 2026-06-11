@@ -13,8 +13,25 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-#[derive(Debug, Clone)]
-pub struct Page {
-    pub keys: Vec<Vec<u8>>,
-    pub next_cursor: Option<Vec<u8>>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum QueryOrder {
+    #[default]
+    Ascending,
+    Descending,
+}
+
+impl QueryOrder {
+    /// Walks `items` in this query order: forward when ascending, reversed
+    /// when descending.
+    pub fn iterate<I>(self, items: I) -> impl Iterator<Item = I::Item>
+    where
+        I: IntoIterator,
+        I::IntoIter: DoubleEndedIterator,
+    {
+        let mut iter = items.into_iter();
+        std::iter::from_fn(move || match self {
+            Self::Ascending => iter.next(),
+            Self::Descending => iter.next_back(),
+        })
+    }
 }

@@ -15,17 +15,13 @@
 
 //! Row-level zstd codec for per-block blobs.
 //!
-//! Each row in a block blob is its own self-delimiting zstd frame so a
-//! single-row point read only has to decompress that one frame. All rows in a
-//! family share a versioned dictionary; `dict_version == 0` is the bootstrap
-//! sentinel meaning "plain zstd frames, no dictionary". The block header's
-//! `offsets[]` delimit the compressed frames.
+//! Each row is its own self-delimiting zstd frame (delimited by the block
+//! header's `offsets[]`) so a point read decompresses one frame. Rows share a
+//! versioned per-family dictionary; `dict_version == 0` means plain frames.
 //!
-//! [`RowCodec`] is an immutable per-batch snapshot of the write-side state
-//! (dictionary version + prepared encoder dictionary + level). Ingest workers
-//! share one snapshot via `Arc` across the rayon `par_iter` so a mid-batch
-//! dictionary hot-swap can never tear a single batch. The matching read-side
-//! decode helper lives on [`crate::engine::tables::Tables`].
+//! [`RowCodec`] is an immutable per-batch snapshot of the write-side state,
+//! `Arc`-shared across ingest workers so a mid-batch dictionary hot-swap can
+//! never tear a batch. Read-side decode lives on [`crate::engine::tables::Tables`].
 
 use std::{io::Cursor, sync::Arc};
 
@@ -35,30 +31,29 @@ use zstd::{
     dict::{DecoderDictionary, EncoderDictionary},
 };
 
-use crate::error::{MonadChainDataError, Result};
+use crate::{
+    engine::digest::{ChainDigest, RowDigest},
+    error::{MonadChainDataError, Result},
+    primitives::records::BlockBlobHeader,
+};
 
-/// Bootstrap dictionary version: plain zstd frames with no shared dictionary.
-/// Fully functional from the first block; blocks written under it never depend
-/// on any dictionary bytes existing in the dict table.
+/// Bootstrap dictionary version: plain zstd frames, no dependency on any
+/// dictionary bytes existing in the dict table.
 pub const DICT_VERSION_NONE: u32 = 0;
 
 /// Default zstd level used for row frames.
 pub const ROW_ZSTD_LEVEL: i32 = 3;
 
-/// Fallback decompressed-size bound, used only when a frame's content size is
-/// somehow unavailable. Frames written by [`BlockRowCompressor`] always record
-/// their content size, so the exact size is normally used instead (see
-/// [`RowDecompressor`]).
+/// Fallback decompressed-size bound, used only when a frame lacks a content
+/// size; frames written by [`BlockRowCompressor`] always record it.
 pub const ROW_DECODE_CAP: usize = 16 * 1024 * 1024;
 
-/// Cap on raw rows sampled from a single block for the dict-training corpus, so
-/// a pathologically large block cannot dominate it. Rows beyond this many are
-/// uniformly strided.
+/// Cap on rows sampled per block for the dict-training corpus, so one huge
+/// block cannot dominate it.
 pub const PER_BLOCK_SAMPLE_CAP: usize = 64;
 
-/// Picks up to [`PER_BLOCK_SAMPLE_CAP`] indices uniformly across `count` rows.
-/// Returns `true` for indices that should be pulled into the dict-training
-/// corpus when reading a block back during training.
+/// Picks up to [`PER_BLOCK_SAMPLE_CAP`] indices uniformly across `count` rows
+/// for the dict-training corpus.
 pub fn should_sample_row(idx: usize, count: usize) -> bool {
     if count <= PER_BLOCK_SAMPLE_CAP {
         return true;
@@ -129,16 +124,54 @@ impl RowCodec {
     }
 
     /// Builds one compressor for an entire block; reuse it across that block's
-    /// rows via [`BlockRowCompressor::compress_row`].
+    /// rows via [`BlockRowCompressor::compress_row_into`].
     pub fn block_compressor(&self) -> Result<BlockRowCompressor<'_>> {
         let compressor = match &self.state.encoder {
-            Some(enc) => Compressor::with_prepared_dictionary(enc)
-                .map_err(|e| MonadChainDataError::Backend(format!("zstd compressor: {e}")))?,
-            None => Compressor::new(self.state.level)
-                .map_err(|e| MonadChainDataError::Backend(format!("zstd compressor: {e}")))?,
-        };
+            Some(enc) => Compressor::with_prepared_dictionary(enc),
+            None => Compressor::new(self.state.level),
+        }
+        .map_err(|e| MonadChainDataError::Backend(format!("zstd compressor: {e}")))?;
         Ok(BlockRowCompressor { compressor })
     }
+}
+
+/// Frames one block's rows into the per-family blob: per-row `offsets`, zstd
+/// frames, and the digest over the *uncompressed* payloads (so the checksum is
+/// zstd-independent). `too_large` is the family-specific error for a blob
+/// exceeding the `u32` offset space.
+pub(crate) fn encode_block_rows<T>(
+    rows: &[T],
+    codec: &RowCodec,
+    too_large: &'static str,
+    mut encode_row: impl FnMut(&T) -> Vec<u8>,
+) -> Result<(BlockBlobHeader, Vec<u8>, ChainDigest)> {
+    let mut offsets = Vec::with_capacity(rows.len() + 1);
+    let mut blob = Vec::new();
+    let mut rows_digest = RowDigest::new();
+    let mut compressor = codec.block_compressor()?;
+    let offset =
+        |len: usize| u32::try_from(len).map_err(|_| MonadChainDataError::Decode(too_large));
+
+    for row in rows {
+        offsets.push(offset(blob.len())?);
+        let raw = encode_row(row);
+        rows_digest.row(&raw);
+        compressor.compress_row_into(&raw, &mut blob)?;
+    }
+
+    offsets.push(offset(blob.len())?);
+
+    Ok((
+        BlockBlobHeader {
+            offsets,
+            dict_version: codec.version(),
+            base_offset: 0,
+            physical_key: Vec::new(),
+            physical_base_offset: 0,
+        },
+        blob,
+        rows_digest.finish(),
+    ))
 }
 
 /// A zstd compressor bound to one block's dictionary, reused across its rows.
@@ -148,13 +181,6 @@ pub struct BlockRowCompressor<'a> {
 }
 
 impl BlockRowCompressor<'_> {
-    /// Compresses one already-RLP-encoded row into its own zstd frame.
-    pub fn compress_row(&mut self, row: &[u8]) -> Result<Vec<u8>> {
-        self.compressor
-            .compress(row)
-            .map_err(|e| MonadChainDataError::Backend(format!("zstd compress row: {e}")))
-    }
-
     /// Compresses one already-RLP-encoded row into its own zstd frame, appending
     /// the frame directly to `out`.
     pub fn compress_row_into(&mut self, row: &[u8], out: &mut Vec<u8>) -> Result<()> {
@@ -169,14 +195,10 @@ impl BlockRowCompressor<'_> {
     }
 }
 
-/// A zstd decompressor for row frames, built once and reused across one
-/// block's rows on the full-scan path (so the underlying `DCtx` is allocated
-/// once rather than per row). The supplied decoder is authoritative: `Some`
-/// means the frames were written under a non-empty dictionary, `None` means
-/// plain (dict-less) frames — version 0, or a version `V >= 1` whose epoch
-/// published the empty-dict sentinel. Mapping `(family, version)` to the right
-/// decoder, and treating an *absent* published dictionary as a hard error, is
-/// the read-side resolver's job before reaching here.
+/// A zstd decompressor reused across one block's rows (allocates the `DCtx`
+/// once). The supplied decoder is authoritative: `Some` means dictionary
+/// frames, `None` means plain frames; mapping `(family, version)` to the right
+/// decoder is the read-side resolver's job before reaching here.
 pub struct RowDecompressor<'a> {
     inner: Decompressor<'a>,
 }
@@ -184,17 +206,15 @@ pub struct RowDecompressor<'a> {
 impl<'a> RowDecompressor<'a> {
     pub fn new(decoder: Option<&'a Arc<DecoderDictionary<'static>>>) -> Result<Self> {
         let inner = match decoder {
-            Some(dec) => Decompressor::with_prepared_dictionary(dec)
-                .map_err(|e| MonadChainDataError::Backend(format!("zstd decompressor: {e}")))?,
-            None => Decompressor::new()
-                .map_err(|e| MonadChainDataError::Backend(format!("zstd decompressor: {e}")))?,
-        };
+            Some(dec) => Decompressor::with_prepared_dictionary(dec),
+            None => Decompressor::new(),
+        }
+        .map_err(|e| MonadChainDataError::Backend(format!("zstd decompressor: {e}")))?;
         Ok(Self { inner })
     }
 
-    /// Decompresses one row frame into an exactly-sized buffer. The output
-    /// length is read from the frame header (our bulk frames always carry it),
-    /// so this allocates the row's true size rather than a worst-case bound.
+    /// Decompresses one row frame, sizing the buffer from the frame header's
+    /// content size rather than a worst-case bound.
     pub fn decompress(&mut self, frame: &[u8]) -> Result<Vec<u8>> {
         let mut out = Vec::with_capacity(frame_decompressed_capacity(frame));
         self.inner
@@ -204,9 +224,8 @@ impl<'a> RowDecompressor<'a> {
     }
 }
 
-/// Exact decompressed length of a row frame, read from its header. Falls back
-/// to [`ROW_DECODE_CAP`] only if the size is absent — never the case for frames
-/// written by [`BlockRowCompressor`], which records the content size.
+/// Exact decompressed length from the frame header, falling back to
+/// [`ROW_DECODE_CAP`] only if the size is absent.
 fn frame_decompressed_capacity(frame: &[u8]) -> usize {
     match zstd::zstd_safe::get_frame_content_size(frame) {
         Ok(Some(size)) => usize::try_from(size).unwrap_or(ROW_DECODE_CAP),
@@ -233,6 +252,14 @@ mod tests {
         zstd::dict::from_samples(samples, 16 * 1024).expect("train dict")
     }
 
+    /// Test helper: compress one row into a fresh frame via the production
+    /// `compress_row_into` entry point.
+    fn compress_row(block: &mut BlockRowCompressor<'_>, row: &[u8]) -> Result<Vec<u8>> {
+        let mut frame = Vec::new();
+        block.compress_row_into(row, &mut frame)?;
+        Ok(frame)
+    }
+
     #[test]
     fn version_zero_round_trip() {
         let state = Arc::new(RowCodecState::bootstrap());
@@ -241,28 +268,25 @@ mod tests {
         let mut block = codec.block_compressor().expect("compressor");
 
         let row = b"hello row payload that is reasonably sized for zstd".to_vec();
-        let frame = block.compress_row(&row).expect("compress");
+        let frame = compress_row(&mut block, &row).expect("compress");
         let decoded = decode_row_frame(None, &frame).expect("decode");
         assert_eq!(decoded.as_ref(), row.as_slice());
     }
 
     #[test]
     fn plain_version_stamps_version_but_uses_plain_frames() {
-        // The empty-dict sentinel: version > 0 but dict-less plain frames.
         let state = Arc::new(RowCodecState::plain(3));
         let codec = state.snapshot();
         assert_eq!(codec.version(), 3);
         let mut block = codec.block_compressor().expect("compressor");
         let row = b"sentinel plain frame payload padding padding".to_vec();
-        let frame = block.compress_row(&row).expect("compress");
-        // Decoded with no dictionary because the sentinel means "plain".
+        let frame = compress_row(&mut block, &row).expect("compress");
         let decoded = decode_row_frame(None, &frame).expect("decode");
         assert_eq!(decoded.as_ref(), row.as_slice());
     }
 
     #[test]
     fn dictionary_round_trip() {
-        // Build a corpus with shared structure so a dictionary is trainable.
         let samples: Vec<Vec<u8>> = (0..256u32)
             .map(|i| {
                 let mut v = b"common-prefix-addr-0xabcdef-topic0-".to_vec();
@@ -281,7 +305,7 @@ mod tests {
 
         let decoder = Arc::new(DecoderDictionary::copy(&dict));
         for row in &samples {
-            let frame = block.compress_row(row).expect("compress");
+            let frame = compress_row(&mut block, row).expect("compress");
             let decoded = decode_row_frame(Some(&decoder), &frame).expect("decode");
             assert_eq!(decoded.as_ref(), row.as_slice());
         }
@@ -292,7 +316,7 @@ mod tests {
         let state = Arc::new(RowCodecState::bootstrap());
         let codec = state.snapshot();
         let mut block = codec.block_compressor().expect("compressor");
-        let frame = block.compress_row(&[]).expect("compress empty");
+        let frame = compress_row(&mut block, &[]).expect("compress empty");
         let decoded = decode_row_frame(None, &frame).expect("decode empty");
         assert!(decoded.is_empty());
     }

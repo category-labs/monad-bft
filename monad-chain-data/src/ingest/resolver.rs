@@ -13,31 +13,22 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! Production [`CodecResolver`] backed by [`Tables`].
-//!
-//! Resolving a codec ensures (training if necessary) the epoch's dictionaries,
-//! which can read back the prior epoch's blocks. That logic lives on
-//! [`Tables::ensure_epoch_dict`], so the resolver wraps the *same*
-//! `Arc<Tables>` the ingest engine writes through — no separate service, no
-//! second `Tables`/cache, no `Arc<Tables>` vs service-owned ownership mismatch.
+//! Production [`CodecResolver`] backed by [`Tables`] — the *same* `Arc<Tables>`
+//! the ingest engine writes through, so dict training (which reads back the
+//! prior epoch's blocks) needs no separate service or second cache.
 
 use std::{future::Future, sync::Arc};
 
 use crate::{
     engine::{family::Family, tables::Tables},
     error::{MonadChainDataError, Result},
-    ingest_core::{CodecResolver, Codecs},
+    ingest::{CodecResolver, Codecs},
     store::{BlobStore, MetaStore},
 };
 
-/// A [`CodecResolver`] that resolves per-epoch codecs through [`Tables`]:
-///
-/// * `resolve` ensures the epoch's dictionaries are durably published (training
-///   from the prior epoch's blocks on a miss) and then snapshots the write-side
-///   codecs. Because `ensure_epoch_dict` is single-flight, a `resolve` that
-///   races a [`Self::prewarm`] already in flight coalesces onto it.
-/// * `prewarm` spawns that same ensure in the background so the boundary
-///   `resolve` becomes a fast path instead of a hot-path training stall.
+/// Resolves per-epoch codecs through [`Tables::ensure_epoch_dicts`], which is
+/// single-flight: a `resolve` racing an in-flight `prewarm` coalesces onto it,
+/// so pre-training turns the epoch-boundary resolve into a fast path.
 #[derive(Clone)]
 pub struct TablesCodecResolver<M: MetaStore, B: BlobStore> {
     tables: Arc<Tables<M, B>>,
@@ -59,16 +50,16 @@ impl<M: MetaStore, B: BlobStore> TablesCodecResolver<M, B> {
                     "epoch codec not installed after ensure_epoch_dicts",
                 ))
         };
-        Ok(Codecs::new(
-            codec(Family::Log)?,
-            codec(Family::Tx)?,
-            codec(Family::Trace)?,
-        ))
+        Ok(Codecs {
+            log: codec(Family::Log)?,
+            tx: codec(Family::Tx)?,
+            trace: codec(Family::Trace)?,
+        })
     }
 }
 
 impl<M: MetaStore, B: BlobStore> CodecResolver for TablesCodecResolver<M, B> {
-    fn resolve(&self, version: u32) -> impl Future<Output = Result<Codecs>> + Send {
+    fn ensure(&self, version: u32) -> impl Future<Output = Result<Codecs>> + Send {
         let this = self.clone();
         async move {
             this.tables.ensure_epoch_dicts(version).await?;

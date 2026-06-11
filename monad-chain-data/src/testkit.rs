@@ -4,41 +4,50 @@
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! Test utilities for downstream crates: populate a store by running the real
-//! branchless ingest engine, then read it back through [`MonadChainDataService`].
-//!
-//! The production write path is the branchless engine (`ingest_core` driven by
-//! `ingest_controller`), so tests should populate fixtures through it rather than
-//! the removed `MonadChainDataService::ingest_block` path. The in-memory stores are
-//! `Arc<RwLock>`-backed and clone-share their backing, so a reader built from
-//! clones of the same stores observes the engine's writes (data, index
-//! artifacts, and the published head) with no extra plumbing.
+//! Test utilities: populate a store through the real branchless ingest engine,
+//! then read it back via [`MonadChainDataService`]. The in-memory stores
+//! clone-share their `Arc<RwLock>` backing, so readers built from clones
+//! observe the engine's writes with no extra plumbing.
 
 use std::{future::Future, sync::Arc};
 
 use crate::{
     api::MonadChainDataService,
-    engine::{
-        authority::HeadPublisher,
-        tables::{DictConfig, PublicationTables, Tables},
-    },
+    engine::tables::{DictConfig, PublicationTables, QueryRuntimeConfig, Tables},
     error::MonadChainDataError,
-    family::FinalizedBlock,
-    ingest_controller::{run_ingest_controller, IngestRunConfig},
-    ingest_core::{Prefetch, SnapshotStore},
-    ingest_resolver::TablesCodecResolver,
-    ingest_source::ChainDataIngestSource,
+    ingest::{
+        resolver::TablesCodecResolver, run_ingest, source::ChainDataIngestSource, IngestRunConfig,
+        PackConfig, Prefetch, SignalPolicy, SnapshotStore,
+    },
+    ingest_types::FinalizedBlock,
     primitives::limits::QueryLimits,
-    store::{BlobStore, CacheConfig, InMemoryBlobStore, InMemoryMetaStore, MetaStore},
+    store::{CacheConfig, InMemoryBlobStore, InMemoryMetaStore},
 };
 
 /// A `Vec`-backed [`ChainDataIngestSource`] over blocks `[start, start + len)`.
 /// `get_latest_uploaded` reports the last block for tip-following cadence.
 #[derive(Clone)]
-struct VecSource {
+pub struct VecSource {
     blocks: Arc<Vec<FinalizedBlock>>,
     start: u64,
+}
+
+impl VecSource {
+    pub fn new(blocks: Vec<FinalizedBlock>, start: u64) -> Self {
+        Self {
+            blocks: Arc::new(blocks),
+            start,
+        }
+    }
 }
 
 impl ChainDataIngestSource for VecSource {
@@ -63,7 +72,6 @@ impl ChainDataIngestSource for VecSource {
 pub struct PopulatedStore {
     pub meta: InMemoryMetaStore,
     pub blob: InMemoryBlobStore,
-    pub tables: Arc<Tables<InMemoryMetaStore, InMemoryBlobStore>>,
 }
 
 impl PopulatedStore {
@@ -77,77 +85,64 @@ impl PopulatedStore {
         &self,
         limits: QueryLimits,
     ) -> MonadChainDataService<InMemoryMetaStore, InMemoryBlobStore> {
-        MonadChainDataService::new_reader_only(
-            self.meta.clone(),
-            self.blob.clone(),
-            limits,
-            CacheConfig::default(),
-        )
+        MonadChainDataService::new(self.meta.clone(), self.blob.clone(), limits)
     }
 }
 
-/// Backfill-cadence knobs for population. The defaults run the blocks through in
-/// a single terminal flush, publishing `head == last_block`; tests that care
-/// about intermediate flush/checkpoint cadence can override them.
-/// Fetch parallelism for tests: >1 so fixtures exercise the ordered-prefetch path
-/// (delivery order is preserved regardless).
+/// Fetch parallelism for tests: >1 so fixtures exercise the ordered-prefetch
+/// path (delivery order is preserved regardless).
 pub const TEST_PREFETCH: Prefetch = Prefetch {
     concurrency: 4,
     buffer: 8,
 };
 
-pub fn populate_config(start: u64, end: u64) -> IngestRunConfig {
+/// Backfill-cadence knobs for population; the defaults run the blocks through
+/// few flushes, publishing `head == last_block`.
+fn populate_config(start: u64, end: u64) -> IngestRunConfig {
     IngestRunConfig {
         start,
-        stop_at: Some(end),
+        end: Some(end),
         count: None,
-        pack_target_bytes: 8 << 20,
-        pack_max_blocks: 4096,
-        // interval == distance to tip: few flushes over a small fixture, with the
-        // terminal flush guaranteeing head == last_block.
-        tip_lag_divisor: 1,
-        checkpoint_every_blocks: 4096,
+        pack: PackConfig {
+            target_bytes: 8 << 20,
+            max_blocks: 4096,
+        },
+        // interval == distance to tip: few flushes over a small fixture; the
+        // terminal flush guarantees head == last_block.
+        policy: SignalPolicy {
+            tip_lag_divisor: 1,
+            checkpoint_every_blocks: 4096,
+        },
         track_buffer: 16,
         poll_ms: 1,
     }
 }
 
-/// Ingest `blocks` via the branchless backfill engine into fresh in-memory
-/// stores and publish the head to the last block. `blocks` must be parent-linked
-/// and contiguously numbered (the engine assigns ids sequentially and derives
-/// the epoch from the block number).
-///
-/// Panics on an empty input or an ingest error — tests want a hard failure.
+/// First/last block numbers of a fixture; panics on empty input — populate
+/// helpers want a hard failure rather than a silently empty store.
+fn block_bounds(blocks: &[FinalizedBlock]) -> (u64, u64) {
+    assert!(!blocks.is_empty(), "populate needs at least one block");
+    (
+        blocks.first().unwrap().header.number,
+        blocks.last().unwrap().header.number,
+    )
+}
+
+/// Ingests `blocks` (which must be parent-linked and contiguously numbered)
+/// into fresh in-memory stores, publishing head = last block.
+/// Panics on empty input or ingest error — tests want a hard failure.
 pub async fn populate_via_engine(blocks: Vec<FinalizedBlock>) -> PopulatedStore {
     try_populate_via_engine(blocks)
         .await
         .expect("backfill ingest")
 }
 
-/// Like [`populate_via_engine`] but with an explicit [`IngestRunConfig`] (e.g. to
-/// exercise a specific flush/checkpoint cadence). `config.start` must match the
-/// first block's number.
-pub async fn populate_via_engine_with(
-    blocks: Vec<FinalizedBlock>,
-    config: IngestRunConfig,
-) -> PopulatedStore {
-    run_engine(blocks, config, DictConfig::default())
-        .await
-        .expect("backfill ingest")
-}
-
-/// Fallible variant of [`populate_via_engine`]: returns the engine's error
-/// instead of panicking, for negative tests (e.g. an invalid block must abort
-/// ingest rather than be silently accepted).
+/// Fallible variant of [`populate_via_engine`] for negative tests: returns the
+/// engine's error instead of panicking.
 pub async fn try_populate_via_engine(
     blocks: Vec<FinalizedBlock>,
 ) -> Result<PopulatedStore, MonadChainDataError> {
-    assert!(
-        !blocks.is_empty(),
-        "try_populate_via_engine needs at least one block"
-    );
-    let start = blocks.first().unwrap().header.number;
-    let end = blocks.last().unwrap().header.number;
+    let (start, end) = block_bounds(&blocks);
     run_engine(blocks, populate_config(start, end), DictConfig::default()).await
 }
 
@@ -157,14 +152,14 @@ pub async fn populate_via_engine_with_dict(
     blocks: Vec<FinalizedBlock>,
     dict: DictConfig,
 ) -> PopulatedStore {
-    assert!(!blocks.is_empty(), "populate needs at least one block");
-    let start = blocks.first().unwrap().header.number;
-    let end = blocks.last().unwrap().header.number;
+    let (start, end) = block_bounds(&blocks);
     run_engine(blocks, populate_config(start, end), dict)
         .await
         .expect("backfill ingest")
 }
 
+/// Wires tables/snapshots/resolver/publisher over fresh in-memory stores and
+/// drives the engine to completion, publishing head = last block.
 async fn run_engine(
     blocks: Vec<FinalizedBlock>,
     config: IngestRunConfig,
@@ -172,25 +167,21 @@ async fn run_engine(
 ) -> Result<PopulatedStore, MonadChainDataError> {
     let meta = InMemoryMetaStore::default();
     let blob = InMemoryBlobStore::default();
-    let tables = Arc::new(Tables::with_configs(
+    let snapshots = SnapshotStore::new(meta.clone(), blob.clone());
+    let tables = Arc::new(Tables::with_all_configs(
         meta.clone(),
         blob.clone(),
         CacheConfig::default(),
         dict,
+        QueryRuntimeConfig::default(),
     ));
-    let snapshots = SnapshotStore::new(meta.clone());
     let resolver = TablesCodecResolver::new(tables.clone());
+    let publisher = Arc::new(PublicationTables::new(meta.clone()));
+    let source = VecSource::new(blocks, config.start);
 
-    let publisher = Arc::new(HeadPublisher::new(PublicationTables::new(meta.clone())));
-
-    let source = VecSource {
-        blocks: Arc::new(blocks),
-        start: config.start,
-    };
-
-    run_ingest_controller(
+    run_ingest(
         source,
-        tables.clone(),
+        tables,
         publisher,
         snapshots,
         resolver,
@@ -199,45 +190,5 @@ async fn run_engine(
     )
     .await?;
 
-    Ok(PopulatedStore { meta, blob, tables })
-}
-
-/// Populate caller-owned stores via the branchless engine, publishing head = last block. The caller
-/// keeps the store handles and builds its own read service over them — used by
-/// backend-specific tests (durability across reopen, etc.).
-pub async fn populate_stores<M, B>(
-    meta: M,
-    blob: B,
-    blocks: Vec<FinalizedBlock>,
-) -> Result<(), MonadChainDataError>
-where
-    M: MetaStore,
-    B: BlobStore,
-{
-    assert!(
-        !blocks.is_empty(),
-        "populate_stores needs at least one block"
-    );
-    let start = blocks.first().unwrap().header.number;
-    let end = blocks.last().unwrap().header.number;
-
-    let tables = Arc::new(Tables::new(meta.clone(), blob.clone()));
-    let snapshots = SnapshotStore::new(meta.clone());
-    let resolver = TablesCodecResolver::new(tables.clone());
-    let publisher = Arc::new(HeadPublisher::new(PublicationTables::new(meta.clone())));
-    let source = VecSource {
-        blocks: Arc::new(blocks),
-        start,
-    };
-
-    run_ingest_controller(
-        source,
-        tables,
-        publisher,
-        snapshots,
-        resolver,
-        populate_config(start, end),
-        TEST_PREFETCH,
-    )
-    .await
+    Ok(PopulatedStore { meta, blob })
 }

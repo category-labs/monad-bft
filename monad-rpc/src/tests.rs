@@ -33,13 +33,13 @@ use crate::{
     types::jsonrpc::{JsonRpcError, RequestId, Response, ResponseWrapper},
 };
 
-pub async fn init_server(
-) -> impl Service<Request, Response = ServiceResponse<impl MessageBody>, Error = Error> {
-    let app_state = MonadRpcResources {
+fn test_resources() -> MonadRpcResources {
+    MonadRpcResources {
         txpool_bridge_client: Some(EthTxPoolBridgeClient::for_testing()),
         eth_call_handler: None,
         chain_id: 1337,
         data_provider: None,
+        chain_data_reader: None,
         event_server_client: None,
         batch_request_limit: 5,
         max_response_size: 25_000_000,
@@ -52,8 +52,17 @@ pub async fn init_server(
         max_finalized_block_cache_len: 200,
         metrics: None,
         rpc_comparator: None,
-    };
+    }
+}
 
+pub async fn init_server(
+) -> impl Service<Request, Response = ServiceResponse<impl MessageBody>, Error = Error> {
+    init_server_with_resources(test_resources()).await
+}
+
+async fn init_server_with_resources(
+    app_state: MonadRpcResources,
+) -> impl Service<Request, Response = ServiceResponse<impl MessageBody>, Error = Error> {
     test::init_service(
         App::new()
             .wrap(DecompressionGuard::default())
@@ -262,4 +271,108 @@ async fn test_monad_eth_call() {
 
     let resp: Response = actix_test::call_and_read_body_json(&app, req).await;
     assert!(resp.result.is_none());
+}
+
+/// Two parent-linked blocks of logs (block 1: addr 0xaa, block 2: addr 0xbb),
+/// ingested through the real chain-data engine into in-memory stores.
+async fn chain_data_test_reader() -> monad_chain_data::ConfiguredChainDataReader {
+    use monad_chain_data::{
+        Address, ConfiguredChainDataReader, EvmBlockHeader, FinalizedBlock, Log, LogData, B256,
+    };
+
+    let mut blocks = Vec::new();
+    let mut parent = monad_chain_data::Hash32::ZERO;
+    for (number, address_byte) in [(1u64, 0xaa_u8), (2, 0xbb)] {
+        let block = FinalizedBlock {
+            header: EvmBlockHeader {
+                number,
+                parent_hash: parent,
+                ..EvmBlockHeader::default()
+            },
+            logs_by_tx: vec![vec![Log {
+                address: Address::repeat_byte(address_byte),
+                data: LogData::new_unchecked(
+                    vec![B256::repeat_byte(0x10)],
+                    monad_chain_data::Bytes::new(),
+                ),
+            }]],
+            txs: Vec::new(),
+            traces: Vec::new(),
+        };
+        parent = block.block_hash();
+        blocks.push(block);
+    }
+    let store = monad_chain_data::testkit::populate_via_engine(blocks).await;
+    ConfiguredChainDataReader::in_memory(store.reader())
+}
+
+#[actix_web::test]
+async fn test_eth_query_logs_round_trip() {
+    let mut resources = test_resources();
+    resources.chain_data_reader = Some(chain_data_test_reader().await);
+    let app = init_server_with_resources(resources).await;
+
+    // Spec wire shape (monad-chain-data/queryX): flat camelCase request with
+    // QUANTITY bounds; `fields` both projects and opts into relations.
+    let payload = json!({
+        "jsonrpc": "2.0",
+        "method": "eth_queryLogs",
+        "params": [{
+            "fromBlock": "0x1",
+            "toBlock": "0x2",
+            "filter": {"address": format!("0x{}", "aa".repeat(20))},
+            "fields": {"logs": ["address", "blockNumber"], "blocks": true}
+        }],
+        "id": 1
+    });
+    let req = test::TestRequest::post()
+        .uri("/")
+        .set_payload(payload.to_string())
+        .to_request();
+    let resp: Response = actix_test::call_and_read_body_json(&app, req).await;
+
+    assert!(resp.error.is_none(), "unexpected error: {:?}", resp.error);
+    let result: Value = serde_json::from_str(resp.result.unwrap().get()).unwrap();
+    let logs = result["data"]["logs"].as_array().unwrap();
+    assert_eq!(logs.len(), 1);
+    assert_eq!(logs[0]["blockNumber"], "0x1");
+    assert!(logs[0]["address"]
+        .as_str()
+        .unwrap()
+        .eq_ignore_ascii_case(&format!("0x{}", "aa".repeat(20))));
+    assert!(
+        logs[0].get("topics").is_none(),
+        "fields projection drops unselected fields: {logs:?}"
+    );
+    // `fields.blocks` joins the blocks that contributed logs (block 1 only).
+    let blocks = result["data"]["blocks"].as_array().unwrap();
+    assert_eq!(blocks.len(), 1);
+    assert_eq!(blocks[0]["number"], "0x1");
+    assert!(blocks[0]["hash"].is_string());
+    assert!(blocks[0]["timestamp"].is_string());
+    // The resolved block references: camelCase QUANTITY/DATA at top level.
+    assert_eq!(result["fromBlock"]["number"], "0x1");
+    assert_eq!(result["toBlock"]["number"], "0x2");
+    assert_eq!(result["cursorBlock"]["number"], "0x2");
+    assert!(result["cursorBlock"]["hash"].is_string());
+    assert!(result["cursorBlock"]["parentHash"].is_string());
+}
+
+#[actix_web::test]
+async fn test_eth_query_methods_unsupported_without_reader() {
+    let app = init_server().await;
+
+    let payload = json!({
+        "jsonrpc": "2.0",
+        "method": "eth_queryLogs",
+        "params": [{}],
+        "id": 1
+    });
+    let req = test::TestRequest::post()
+        .uri("/")
+        .set_payload(payload.to_string())
+        .to_request();
+    let resp: Response = actix_test::call_and_read_body_json(&app, req).await;
+
+    assert_eq!(resp.error.unwrap(), JsonRpcError::method_not_supported());
 }

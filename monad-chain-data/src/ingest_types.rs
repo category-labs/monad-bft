@@ -24,15 +24,13 @@ pub struct FinalizedBlock {
     pub header: EvmBlockHeader,
     pub logs_by_tx: Vec<Vec<Log>>,
     pub txs: Vec<IngestTx>,
-    /// DFS-flattened call frames across all txs in the block. The producer
-    /// is responsible for flattening the per-tx `Vec<Vec<CallFrame>>` and
-    /// assigning each frame a `tx_index` and `trace_address` before ingest.
+    /// DFS-flattened call frames across all txs in the block; the producer
+    /// assigns each frame its `tx_index` and `trace_address` before ingest.
     pub traces: Vec<IngestTrace>,
 }
 
-/// Per-transaction envelope carried by a finalized block. `sender` is
-/// caller-authoritative and is not recovered from `signed_tx_bytes`;
-/// indexed `from` queries read `sender` directly. Ingest validates
+/// Per-tx envelope in a finalized block. `sender` is caller-authoritative
+/// (never recovered from `signed_tx_bytes`); ingest validates
 /// `txs.len() == logs_by_tx.len()` when `txs` is non-empty.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct IngestTx {
@@ -41,9 +39,8 @@ pub struct IngestTx {
     pub signed_tx_bytes: Bytes,
 }
 
-/// Local mirror of the archive's `CallKind` so the library crate does not
-/// take a dependency on `monad-archive`. The ingest binary converts
-/// archive `CallKind` values into this type at the boundary.
+/// Local mirror of the archive's `CallKind` so this crate avoids a
+/// `monad-archive` dependency; the ingest binary converts at the boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CallKind {
     Call,
@@ -82,10 +79,7 @@ impl CallKind {
     }
 }
 
-/// A single DFS-flattened call frame from a tx's execution trace. The
-/// producer is responsible for flattening `Vec<Vec<CallFrame>>` per tx and
-/// computing `trace_address` (the OpenEthereum-style path-from-root index
-/// into the tx's call tree).
+/// A single DFS-flattened call frame from a tx's execution trace.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IngestTrace {
     pub typ: CallKind,
@@ -101,13 +95,12 @@ pub struct IngestTrace {
     pub status: u8,
     pub depth: u32,
     pub tx_index: u32,
-    /// Path-from-root for this frame within its tx's call tree. The
-    /// top-level frame has an empty `trace_address`.
+    /// OpenEthereum-style path-from-root within the tx's call tree;
+    /// empty for the top-level frame.
     pub trace_address: Vec<u32>,
-    /// Status of the top-level tx that contains this frame, threaded in
-    /// from receipts at ingest. `true == receipt succeeded`. The
-    /// `has_transfer` predicate AND-s this with `frame.status == 0` so a
-    /// successful sub-call inside a reverted parent tx is excluded.
+    /// Status of the containing top-level tx, from receipts at ingest
+    /// (`true == receipt succeeded`). `has_transfer` ANDs this with
+    /// `status == 0` to exclude successful sub-calls of reverted txs.
     pub tx_status: bool,
 }
 

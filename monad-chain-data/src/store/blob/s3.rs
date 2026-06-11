@@ -13,54 +13,27 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! S3-API-compatible [`BlobStore`] backend.
+//! S3-API-compatible [`BlobStore`] backend (AWS S3, MinIO, R2, Ceph RGW, ...).
 //!
-//! Talks to any S3-compatible object store -- AWS S3, MinIO, Cloudflare R2,
-//! Ceph RGW, the GCS XML API -- so chain-data blobs (block bodies, receipts,
-//! compacted bitmap artifacts; write-once, never deleted, 10s of KB up to
-//! ~16 MiB) can live in object storage.
-//!
-//! ## Object-key layout (a wire contract once data exists)
-//!
-//! [`BlobTableId`] is opaque and the backend owns all namespacing. We map a
-//! logical `(table, key)` onto a single bucket as:
+//! Object-key layout (a wire contract once data exists):
 //!
 //! ```text
 //! {root_prefix}/{table.as_str()}/{lowercase-hex(key)}
 //! ```
 //!
-//! `table.as_str()` is already a safe ASCII identifier. Blob keys are arbitrary
-//! binary, so they are lowercase-hex encoded -- a total, collision-free mapping
-//! into the UTF-8 object-key space. Blob keys here are short composite ids, so
-//! the 2x size of hex is irrelevant and keeps keys greppable in bucket tooling.
-//!
-//! ## apply_writes is not atomic
-//!
-//! S3 has no multi-object batch/transaction. [`S3BlobStore::apply_writes`] fans
-//! the PUTs out concurrently and fails on the first error. This is acceptable
-//! here: chain-data blobs are write-once and idempotent, and the publication
-//! CAS that gates *visibility* lives in the `MetaStore`, not the blob store. A
-//! partially-applied blob batch followed by a failed/retried meta CAS leaves
-//! only unreferenced orphan objects, never torn reads.
-//!
-//! ## read_range pushes the byte range to the server
-//!
-//! [`S3BlobStore::read_range`] issues an HTTP `Range` request rather than
-//! inheriting the trait default (which fetches the whole blob then slices),
-//! turning a multi-MiB transfer into the requested few bytes. Note that when a
-//! `BlobCompressionStore` wraps this backend it re-overrides `read_range` to
-//! fetch-full-then-slice (it must -- the stored bytes are a zstd envelope), so
-//! server-side range pushdown only pays off on the raw/uncompressed path.
+//! `apply_writes` is not atomic (concurrent PUTs, fail-fast), but blobs are
+//! write-once and the `MetaStore` head publication gates visibility, so a
+//! partial batch leaves only orphan objects, never torn reads. `read_range`
+//! pushes the byte range to the server via an HTTP `Range` request instead of
+//! the trait default's fetch-full-then-slice.
 
 use std::{
     collections::hash_map::DefaultHasher,
     hash::{Hash, Hasher},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::Arc,
 };
 
-use aws_config::BehaviorVersion;
 use aws_sdk_s3::{
-    config::{Credentials, Region},
     error::{ProvideErrorMetadata, SdkError},
     operation::get_object::GetObjectError,
     primitives::ByteStream,
@@ -73,32 +46,15 @@ use tracing::{debug, info, warn};
 
 use crate::{
     error::{MonadChainDataError, Result},
-    store::blob::{BlobStore, BlobTableId, BlobWriteOp},
+    store::{
+        blob::{BlobStore, BlobTableId, BlobWriteOp},
+        sdk::{load_sdk_config, ReadGuard, ReadStats},
+    },
 };
 
-/// Static credentials supplied explicitly rather than via the ambient AWS
-/// credential chain. Required for most non-AWS compatibles (MinIO, Ceph) where
-/// no instance/profile credentials exist.
-#[derive(Clone)]
-pub struct S3Credentials {
-    pub access_key_id: String,
-    pub secret_access_key: String,
-    pub session_token: Option<String>,
-}
-
-impl std::fmt::Debug for S3Credentials {
-    // Never print secret material.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("S3Credentials")
-            .field("access_key_id", &self.access_key_id)
-            .field("secret_access_key", &"<redacted>")
-            .field(
-                "session_token",
-                &self.session_token.as_ref().map(|_| "<redacted>"),
-            )
-            .finish()
-    }
-}
+/// Explicit static credentials, required for most non-AWS compatibles
+/// (MinIO, Ceph) where no ambient credential chain exists.
+pub type S3Credentials = crate::store::sdk::StaticCredentials;
 
 /// Construction parameters for [`S3BlobStore`].
 #[derive(Debug, Clone)]
@@ -110,7 +66,7 @@ pub struct S3BlobStoreConfig {
     pub root_prefix: String,
     /// Override S3 endpoints for a compatible service (MinIO/R2/Ceph). Leave
     /// empty to target real AWS S3 via the default endpoint resolver. Multiple
-    /// endpoints are client-sharded by object key.
+    /// endpoints are client-partitioned by object key.
     pub endpoint_urls: Vec<String>,
     /// AWS region. `None` falls through to the default region provider chain.
     /// Most S3 compatibles accept any value (commonly `"us-east-1"`).
@@ -133,7 +89,7 @@ pub struct S3BlobStoreConfig {
 
 impl S3BlobStoreConfig {
     /// Minimal config targeting real AWS S3 with ambient credentials and the
-    /// default region chain. Callers tweak the remaining fields as needed.
+    /// default region chain.
     pub fn new(bucket: impl Into<String>) -> Self {
         Self {
             bucket: bucket.into(),
@@ -156,20 +112,14 @@ struct Inner {
     root_prefix: String,
     max_concurrency: usize,
     endpoint_urls: Vec<String>,
-    read_stats: S3ReadStats,
+    read_stats: Arc<ReadStats>,
 }
 
-#[derive(Debug, Default)]
-struct S3ReadStats {
-    started: AtomicU64,
-    completed: AtomicU64,
-    errors: AtomicU64,
-    canceled: AtomicU64,
-    range_gets: AtomicU64,
-    full_gets: AtomicU64,
-    bytes: AtomicU64,
-    in_flight: AtomicU64,
-    max_in_flight: AtomicU64,
+/// `kinds` slot assignment for the shared [`ReadStats`].
+#[derive(Debug, Clone, Copy)]
+enum S3ReadKind {
+    RangeGet = 0,
+    FullGet = 1,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -189,7 +139,7 @@ pub struct S3ReadStatsSnapshot {
 /// an `Arc`, and the underlying SDK `Client` is itself `Arc`-backed.
 #[derive(Clone)]
 pub struct S3BlobStore {
-    inner: std::sync::Arc<Inner>,
+    inner: Arc<Inner>,
 }
 
 impl std::fmt::Debug for S3BlobStore {
@@ -204,8 +154,8 @@ impl std::fmt::Debug for S3BlobStore {
 }
 
 impl S3BlobStore {
-    /// Builds the SDK client from `config` and returns a ready store. Async
-    /// because resolving the AWS credential/region chain performs I/O.
+    /// Builds the SDK client from `config`; async because resolving the AWS
+    /// credential/region chain performs I/O.
     pub async fn new(config: S3BlobStoreConfig) -> Result<Self> {
         let S3BlobStoreConfig {
             bucket,
@@ -220,23 +170,7 @@ impl S3BlobStore {
         } = config;
         let endpoint_is_aws = endpoint_urls.is_empty();
 
-        let mut loader = aws_config::defaults(BehaviorVersion::latest());
-        if let Some(region) = region {
-            loader = loader.region(Region::new(region));
-        }
-        if let Some(profile) = profile {
-            loader = loader.profile_name(profile);
-        }
-        if let Some(creds) = credentials {
-            loader = loader.credentials_provider(Credentials::new(
-                creds.access_key_id,
-                creds.secret_access_key,
-                creds.session_token,
-                None,
-                "S3BlobStoreConfig",
-            ));
-        }
-        let sdk_config = loader.load().await;
+        let sdk_config = load_sdk_config(region, profile, credentials, "S3BlobStoreConfig").await;
         let region_for_create = sdk_config.region().map(|r| r.as_ref().to_string());
 
         let clients = if endpoint_urls.is_empty() {
@@ -264,18 +198,18 @@ impl S3BlobStore {
                 let bucket = bucket.clone();
                 async move { validate_bucket_access(&client, &bucket).await }
             })
-            .buffer_unordered(clients.len().max(1))
-            .try_collect::<Vec<_>>()
+            .buffer_unordered(clients.len())
+            .try_collect::<()>()
             .await?;
 
         Ok(Self {
-            inner: std::sync::Arc::new(Inner {
+            inner: Arc::new(Inner {
                 clients,
                 bucket,
                 root_prefix: normalize_prefix(&root_prefix),
                 max_concurrency: max_concurrency.max(1),
                 endpoint_urls,
-                read_stats: S3ReadStats::default(),
+                read_stats: Arc::new(ReadStats::default()),
             }),
         })
     }
@@ -321,15 +255,15 @@ impl S3BlobStore {
         let resp = match req.send().await {
             Ok(resp) => resp,
             Err(e) if is_no_such_key(&e) => {
-                read_guard.finish(false, 0);
+                read_guard.finish(false, 0, 0);
                 return Ok(None);
             }
             Err(e) if is_invalid_range(&e) => {
-                read_guard.finish(true, 0);
+                read_guard.finish(true, 0, 0);
                 return Err(MonadChainDataError::Decode("invalid blob range"));
             }
             Err(e) => {
-                read_guard.finish(true, 0);
+                read_guard.finish(true, 0, 0);
                 return Err(backend_err("get_object", &object_key, e));
             }
         };
@@ -337,87 +271,39 @@ impl S3BlobStore {
         let collected = match resp.body.collect().await {
             Ok(collected) => collected,
             Err(e) => {
-                read_guard.finish(true, 0);
+                read_guard.finish(true, 0, 0);
                 return Err(MonadChainDataError::Backend(format!(
                     "s3 get_object body {object_key}: {e}"
                 )));
             }
         };
         let bytes = collected.into_bytes();
-        read_guard.finish(false, bytes.len() as u64);
+        read_guard.finish(false, 0, bytes.len() as u64);
         Ok(Some(bytes))
     }
 
-    fn read_started(&self, is_range: bool) -> S3ReadGuard {
-        let stats = &self.inner.read_stats;
-        stats.started.fetch_add(1, Ordering::Relaxed);
-        if is_range {
-            stats.range_gets.fetch_add(1, Ordering::Relaxed);
+    fn read_started(&self, is_range: bool) -> ReadGuard {
+        let kind = if is_range {
+            S3ReadKind::RangeGet
         } else {
-            stats.full_gets.fetch_add(1, Ordering::Relaxed);
-        }
-        let in_flight = stats.in_flight.fetch_add(1, Ordering::Relaxed) + 1;
-        let mut prev = stats.max_in_flight.load(Ordering::Relaxed);
-        while in_flight > prev {
-            match stats.max_in_flight.compare_exchange_weak(
-                prev,
-                in_flight,
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => break,
-                Err(next) => prev = next,
-            }
-        }
-        S3ReadGuard {
-            inner: self.inner.clone(),
-            finished: false,
-        }
+            S3ReadKind::FullGet
+        };
+        self.inner.read_stats.start(kind as usize)
     }
 
     pub fn take_read_stats(&self) -> S3ReadStatsSnapshot {
-        let stats = &self.inner.read_stats;
+        let window = self.inner.read_stats.take();
         S3ReadStatsSnapshot {
-            started: stats.started.swap(0, Ordering::Relaxed),
-            completed: stats.completed.swap(0, Ordering::Relaxed),
-            errors: stats.errors.swap(0, Ordering::Relaxed),
-            canceled: stats.canceled.swap(0, Ordering::Relaxed),
-            range_gets: stats.range_gets.swap(0, Ordering::Relaxed),
-            full_gets: stats.full_gets.swap(0, Ordering::Relaxed),
-            bytes: stats.bytes.swap(0, Ordering::Relaxed),
-            in_flight: stats.in_flight.load(Ordering::Relaxed),
-            max_in_flight: stats.max_in_flight.swap(0, Ordering::Relaxed),
+            started: window.started,
+            completed: window.completed,
+            errors: window.errors,
+            canceled: window.canceled,
+            range_gets: window.kinds[S3ReadKind::RangeGet as usize],
+            full_gets: window.kinds[S3ReadKind::FullGet as usize],
+            bytes: window.bytes,
+            in_flight: window.in_flight,
+            max_in_flight: window.max_in_flight,
         }
-    }
-}
-
-struct S3ReadGuard {
-    inner: std::sync::Arc<Inner>,
-    finished: bool,
-}
-
-impl S3ReadGuard {
-    fn finish(mut self, error: bool, bytes: u64) {
-        self.finished = true;
-        let stats = &self.inner.read_stats;
-        if error {
-            stats.errors.fetch_add(1, Ordering::Relaxed);
-        } else {
-            stats.completed.fetch_add(1, Ordering::Relaxed);
-            stats.bytes.fetch_add(bytes, Ordering::Relaxed);
-        }
-        stats.in_flight.fetch_sub(1, Ordering::Relaxed);
-    }
-}
-
-impl Drop for S3ReadGuard {
-    fn drop(&mut self) {
-        if self.finished {
-            return;
-        }
-        let stats = &self.inner.read_stats;
-        stats.canceled.fetch_add(1, Ordering::Relaxed);
-        stats.in_flight.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
@@ -437,9 +323,9 @@ fn build_client(
     Client::from_conf(s3_builder.build())
 }
 
-/// Idempotent-ish bucket provisioning for startup bootstrap. AWS S3 requires a
-/// location constraint outside us-east-1; most compatible endpoints either
-/// ignore it or reject it, so only set it when targeting real AWS.
+/// Bucket provisioning for startup bootstrap. AWS S3 requires a location
+/// constraint outside us-east-1, but compatible endpoints may reject it, so
+/// it is only set when targeting real AWS.
 async fn create_bucket_if_needed(
     client: &Client,
     bucket: &str,
@@ -525,6 +411,21 @@ impl BlobStore for S3BlobStore {
         self.get_object(table, key, None).await
     }
 
+    async fn delete_blob(&self, table: BlobTableId, key: &[u8]) -> Result<()> {
+        let object_key = self.object_key(table, key);
+        let (client, _) = self.client_for_object_key(&object_key);
+        // S3 DeleteObject succeeds for missing keys, matching the trait's
+        // idempotent-no-op contract.
+        client
+            .delete_object()
+            .bucket(&self.inner.bucket)
+            .key(&object_key)
+            .send()
+            .await
+            .map_err(|e| backend_err("delete_object", &object_key, e))?;
+        Ok(())
+    }
+
     async fn apply_writes(&self, writes: Vec<BlobWriteOp>) -> Result<()> {
         if writes.is_empty() {
             return Ok(());
@@ -542,7 +443,7 @@ impl BlobStore for S3BlobStore {
             async move { store.put_blob(op.table, &op.key, op.value).await }
         }))
         .buffer_unordered(concurrency)
-        .try_collect::<Vec<()>>()
+        .try_collect::<()>()
         .await?;
         info!(
             write_count,
@@ -563,27 +464,24 @@ impl BlobStore for S3BlobStore {
         if start > end_exclusive {
             return Err(MonadChainDataError::Decode("invalid blob range"));
         }
-        // Empty range: we still must distinguish a missing object (None) from a
-        // present one (Some(empty)), and S3 cannot express a zero-length range,
-        // so fall back to an existence-revealing point read.
+        // S3 cannot express a zero-length range, but we must still distinguish
+        // missing (None) from present-and-empty, so do a point read.
         if start == end_exclusive {
             return Ok(self.get_blob(table, key).await?.map(|_| Bytes::new()));
         }
-        // HTTP byte ranges are inclusive on both ends; our end is exclusive.
-        // S3 clamps an end past EOF to the last byte, matching the trait
-        // default's `end_exclusive.min(blob.len())`. A start at/after EOF yields
-        // 416, which `get_object` maps to the same `Decode` the default returns.
+        // HTTP byte ranges are inclusive; ours is end-exclusive. S3 clamps an
+        // end past EOF (matching the trait default) and returns 416 for a start
+        // at/after EOF, which `get_object` maps to the same `Decode` error.
         let range = format!("bytes={}-{}", start, end_exclusive - 1);
         self.get_object(table, key, Some(range)).await
     }
 }
 
-/// Normalizes a configured root prefix to have no leading/trailing slashes.
 fn normalize_prefix(prefix: &str) -> String {
     prefix.trim_matches('/').to_string()
 }
 
-/// Builds the S3 object key for a logical `(table, key)`. See the module docs
+/// Builds the S3 object key for a logical `(table, key)`; see the module docs
 /// for the layout contract.
 fn object_key(root_prefix: &str, table: BlobTableId, key: &[u8]) -> String {
     let table = table.as_str();
@@ -653,7 +551,6 @@ mod tests {
         assert_eq!(normalize_prefix("/a/b/"), "a/b");
         assert_eq!(normalize_prefix(""), "");
         assert_eq!(normalize_prefix("///"), "");
-        // A normalized prefix produces no double slashes in the key.
         assert_eq!(
             object_key(&normalize_prefix("/p/"), TABLE, &[0x01]),
             "p/blocks/01"
