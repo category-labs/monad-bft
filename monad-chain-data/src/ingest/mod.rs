@@ -33,7 +33,12 @@
 //! is just the catch-up phase); the [`SignalPolicy`] cadences are the only knobs,
 //! and `end` is a run bound, not a mode.
 
-use std::sync::Arc;
+use std::{
+    future::Future,
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
+};
 
 use tokio::{
     sync::{mpsc, oneshot},
@@ -149,13 +154,22 @@ pub(crate) fn task_join_err(e: tokio::task::JoinError) -> MonadChainDataError {
     MonadChainDataError::Backend(format!("ingest spawned task: {e}"))
 }
 
-/// Aborts a background task when dropped, so it can't outlive `run_ingest` on any
-/// return path.
-struct AbortOnDrop(tokio::task::JoinHandle<()>);
+/// Aborts a spawned task when dropped, so it can't outlive its owner on any
+/// return path. Awaiting yields the join result, so it stands in for the bare
+/// `JoinHandle` inside an ordered stream (the producer's fetch window).
+struct AbortOnDrop<T>(tokio::task::JoinHandle<T>);
 
-impl Drop for AbortOnDrop {
+impl<T> Drop for AbortOnDrop<T> {
     fn drop(&mut self) {
         self.0.abort();
+    }
+}
+
+impl<T> Future for AbortOnDrop<T> {
+    type Output = std::result::Result<T, tokio::task::JoinError>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        Pin::new(&mut self.get_mut().0).poll(cx)
     }
 }
 

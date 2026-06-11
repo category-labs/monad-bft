@@ -26,7 +26,7 @@ use tracing::Instrument;
 use super::{
     probe::{IngestProbe, TIMING_TARGET},
     source::ChainDataIngestSource,
-    task_join_err, AssignedBlock, DataMsg, FamilyFrontier, IndexMsg, IngestMsg,
+    task_join_err, AbortOnDrop, AssignedBlock, DataMsg, FamilyFrontier, IndexMsg, IngestMsg,
 };
 use crate::{
     error::{MonadChainDataError, Result},
@@ -244,6 +244,11 @@ where
 /// tasks at `concurrency`; `buffered` keeps a wider look-ahead window so the
 /// engine never starves during a flush/checkpoint stall, and (unlike
 /// `buffer_unordered`) yields in range order so id-assignment stays sequential.
+///
+/// Each spawned fetch is held in an [`AbortOnDrop`], so every early exit that
+/// drops the stream — a fetch error, a closed downstream track, or the
+/// pipeline `JoinSet` aborting this task — aborts the in-flight window instead
+/// of detaching up to `window` orphaned fetches.
 async fn fetch_range<S>(
     source: &S,
     sig: &mut Signaller,
@@ -262,7 +267,7 @@ where
             let source = source.clone();
             let permits = permits.clone();
             let probe = probe.clone();
-            tokio::spawn(
+            AbortOnDrop(tokio::spawn(
                 async move {
                     let _permit = permits
                         .acquire_owned()
@@ -282,7 +287,7 @@ where
                     "fetch_block",
                     block = number
                 )),
-            )
+            ))
         })
         .buffered(window);
     while let Some(joined) = fetched.next().await {
@@ -293,4 +298,96 @@ where
         }
     }
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        future::Future,
+        sync::atomic::{AtomicUsize, Ordering},
+        time::Duration,
+    };
+
+    use super::*;
+
+    /// Fetches that never resolve; `live` counts fetch futures currently alive
+    /// inside spawned tasks (decremented on drop, i.e. when the task aborts).
+    #[derive(Clone)]
+    struct StallSource {
+        live: Arc<AtomicUsize>,
+    }
+
+    struct LiveGuard(Arc<AtomicUsize>);
+    impl Drop for LiveGuard {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
+    impl ChainDataIngestSource for StallSource {
+        fn get_latest_uploaded(&self) -> impl Future<Output = eyre::Result<Option<u64>>> + Send {
+            std::future::ready(Ok(None))
+        }
+
+        fn fetch_finalized_block(
+            &self,
+            _block_number: u64,
+        ) -> impl Future<Output = eyre::Result<FinalizedBlock>> + Send {
+            self.live.fetch_add(1, Ordering::SeqCst);
+            let guard = LiveGuard(self.live.clone());
+            async move {
+                let _guard = guard;
+                futures::future::pending().await
+            }
+        }
+    }
+
+    /// Dropping `fetch_range` mid-flight (what `pipeline.abort_all()` does to
+    /// `run_producer`) must abort the spawned fetch tasks, not detach them.
+    #[tokio::test]
+    async fn dropping_fetch_range_aborts_inflight_fetch_tasks() {
+        let live = Arc::new(AtomicUsize::new(0));
+        let source = StallSource { live: live.clone() };
+        let (tx_data, _rx_data) = mpsc::channel(8);
+        let (tx_index, _rx_index) = mpsc::channel(8);
+        let mut sig = Signaller::new(
+            tx_data,
+            tx_index,
+            FamilyFrontier::default(),
+            SignalPolicy {
+                tip_lag_divisor: 1,
+                checkpoint_every_blocks: u64::MAX,
+            },
+            0,
+            IngestProbe::new(),
+        );
+        let prefetch = Prefetch {
+            concurrency: 4,
+            buffer: 8,
+        };
+        let range =
+            tokio::spawn(async move { fetch_range(&source, &mut sig, 0, 99, prefetch).await });
+
+        // Wait until the active fetch window is full (no fetch ever resolves).
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while live.load(Ordering::SeqCst) < prefetch.concurrency {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("fetch window must fill");
+
+        range.abort();
+        let _ = range.await;
+
+        // Every in-flight fetch future must be dropped (task aborted) shortly
+        // after the buffered stream is dropped.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while live.load(Ordering::SeqCst) > 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("in-flight fetch tasks must die with fetch_range");
+    }
 }
