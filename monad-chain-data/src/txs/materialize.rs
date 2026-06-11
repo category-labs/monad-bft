@@ -157,10 +157,6 @@ impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery for TxMaterializer<'a, M
     }
 }
 
-/// Per-block fan-out when materializing the `transactions` relation;
-/// each block is one coalesced batched read.
-const RELATION_TX_CONCURRENCY: usize = 8;
-
 /// Loads txs for the given `(block_number, tx_index)` pairs in ascending
 /// order, deduped. Used to fulfill the `transactions` relation on logs
 /// queries.
@@ -193,7 +189,7 @@ where
                     .await
             }
         })
-        .buffered(RELATION_TX_CONCURRENCY)
+        .buffered(tables.query_config().materialize_concurrency)
         .try_collect()
         .await?;
     Ok(per_block.into_iter().flatten().collect())

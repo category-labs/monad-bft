@@ -118,14 +118,18 @@ impl Default for CacheConfig {
 
 impl CacheConfig {
     const RATIO_DENOMINATOR: usize = 1024;
-    const RATIO_ROW_CACHE: usize = 512;
+    const RATIO_ROW_CACHE: usize = 464;
     const RATIO_BITMAP_BY_BLOCK: usize = 256;
     const RATIO_BITMAP_PAGE_BLOB: usize = 128;
     const RATIO_DIR_BY_BLOCK: usize = 32;
     const RATIO_DIR_BUCKET: usize = 16;
     const RATIO_BITMAP_PAGE_COUNTS: usize = 24;
     const RATIO_OPEN_BITMAP_STREAM: usize = 16;
-    const RATIO_BLOCK_HEADER: usize = 16;
+    // Block metadata is on every materialization path (one row per touched
+    // block), so it gets the share the row cache gives up: starving it to
+    // 16/1024 made warm analytic queries re-fetch a block record per block
+    // (mainnet-1 bench).
+    const RATIO_BLOCK_HEADER: usize = 64;
     const RATIO_BLOCK_HASH_TO_NUMBER: usize = 16;
     const RATIO_TX_HASH_INDEX: usize = 8;
 

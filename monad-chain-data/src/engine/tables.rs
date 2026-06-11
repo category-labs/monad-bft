@@ -310,9 +310,11 @@ pub struct QueryRuntimeConfig {
 impl Default for QueryRuntimeConfig {
     fn default() -> Self {
         Self {
-            // Primary knob; default low for fast local backends, raise toward
-            // the hundreds for high-latency backends.
-            materialize_concurrency: 8,
+            // Primary knob. Materialization is point-gets + small range
+            // reads, so a wide fan-out is cheap on fast local backends and
+            // necessary on high-latency ones (mainnet-1 bench: 64 cut warm
+            // analytic pages ~8x vs 8).
+            materialize_concurrency: 64,
             page_intersect_concurrency: 32,
             // Aggregate ceilings that only bind once the fan-out is raised.
             blob_io_concurrency: 1024,

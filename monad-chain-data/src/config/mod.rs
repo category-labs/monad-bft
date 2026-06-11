@@ -858,9 +858,13 @@ mod tests {
     fn reader_cache_default_is_two_gib_ratio_based() {
         let config =
             resolve_cache_config(&ChainDataStoreConfig::default(), ChainDataCacheMode::Reader);
-        assert_eq!(config.row_cache_bytes, 1024 * 1024 * 1024);
-        // 256/1024 of 2048 MiB, as a byte budget.
+        // 464/1024 of 2048 MiB, as a byte budget.
+        assert_eq!(config.row_cache_bytes, 928 * 1024 * 1024);
+        // 256/1024 of 2048 MiB.
         assert_eq!(config.bitmap_by_block_cache_bytes, 512 * 1024 * 1024);
+        // 64/1024 of 2048 MiB: block metadata sits on every materialization
+        // path, so it must not be starved (see `CacheConfig` ratios).
+        assert_eq!(config.block_header_cache_bytes, 128 * 1024 * 1024);
     }
 
     #[test]

@@ -14,14 +14,16 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
+    future::Future,
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc,
     },
+    task::Poll,
     time::Instant,
 };
 
-use futures::{stream, stream::FuturesOrdered, StreamExt, TryStreamExt};
+use futures::{stream, stream::FuturesOrdered, Stream, StreamExt, TryStreamExt};
 use tracing::debug;
 
 use crate::{
@@ -67,6 +69,58 @@ const BLOCK_SCAN_CONCURRENCY: usize = 16;
 /// [`BLOCK_SCAN_CONCURRENCY`]. In-flight blocks are wasted whole-region reads
 /// if the limit fills first (e.g. `limit=1`), so read-ahead starts small.
 const BLOCK_SCAN_INITIAL_CONCURRENCY: usize = 2;
+
+/// Initial stage-1 page-intersection fan-out, doubled per consumed page up to
+/// `page_intersect_concurrency`. A hot-stream query with a small limit fills
+/// from its first page, so eagerly intersecting (and resolving) a full
+/// fan-out of pages is pure waste; wide scans consume pages continuously and
+/// reach the cap within a few completions.
+const PAGE_INTERSECT_INITIAL_CONCURRENCY: usize = 2;
+
+/// `buffered` with ramping fan-out: at most `target` futures run at once,
+/// where `target` starts at `initial` and doubles per consumed output, capped
+/// at `max`. Output order matches input order, like `buffered`.
+fn ramping_buffered<S>(
+    inner: S,
+    initial: usize,
+    max: usize,
+) -> impl Stream<Item = <S::Item as Future>::Output>
+where
+    S: Stream,
+    S::Item: Future,
+{
+    let mut inner = Box::pin(inner.fuse());
+    let mut in_flight = FuturesOrdered::new();
+    let mut target = initial.max(1);
+    let max = max.max(1);
+    stream::poll_fn(move |cx| loop {
+        let mut inner_pending = false;
+        while in_flight.len() < target && !inner.is_done() {
+            match inner.as_mut().poll_next(cx) {
+                Poll::Ready(Some(fut)) => in_flight.push_back(fut),
+                Poll::Ready(None) => break,
+                Poll::Pending => {
+                    inner_pending = true;
+                    break;
+                }
+            }
+        }
+        match in_flight.poll_next_unpin(cx) {
+            Poll::Ready(Some(output)) => {
+                target = (target * 2).min(max);
+                return Poll::Ready(Some(output));
+            }
+            Poll::Ready(None) if inner.is_done() => return Poll::Ready(None),
+            // Nothing in flight and the input stream has no future ready:
+            // its poll registered the waker.
+            Poll::Ready(None) if inner_pending => return Poll::Pending,
+            // Unreachable in practice (an empty set implies the fill loop hit
+            // done or pending), but looping to refill is always sound.
+            Poll::Ready(None) => {}
+            Poll::Pending => return Poll::Pending,
+        }
+    })
+}
 
 /// Outcome returned by the shared family query runners. Families wrap this
 /// into their own response types.
@@ -652,63 +706,67 @@ where
         .map_ok(|items| stream::iter(items.into_iter().map(Ok)))
         .try_flatten();
 
-    // Stage 1 — page intersection + resolve. `buffered` runs page futures
-    // concurrently while preserving input order, so the flattened location
-    // stream stays globally query-ordered.
-    let location_stream = work_item_stream
-        .map(|item| {
-            let resolver = &resolver;
-            let stats = Arc::clone(&stats);
-            async move {
-                let item = item?;
-                let intersect_started = Instant::now();
-                let Some(page_bitmap) = family_tables
-                    .intersect_group_page(
-                        &item.plan,
-                        item.page_start,
-                        item.from_offset,
-                        item.to_offset,
-                    )
-                    .await?
-                else {
-                    return Ok::<_, MonadChainDataError>(Vec::new());
-                };
-                let intersect_us = intersect_started.elapsed().as_micros() as u64;
-                IndexedQueryStats::add_count(&stats.page_intersect_us, intersect_us);
-                IndexedQueryStats::add_count(&stats.pages, 1);
+    // Stage 1 — page intersection + resolve, ramping fan-out (order-preserving
+    // like `buffered`), so the flattened location stream stays globally
+    // query-ordered while a limit-bounded query that fills from its first
+    // page never intersects a full fan-out of speculative pages.
+    let page_futures = work_item_stream.map(|item| {
+        let resolver = &resolver;
+        let stats = Arc::clone(&stats);
+        async move {
+            let item = item?;
+            let intersect_started = Instant::now();
+            let Some(page_bitmap) = family_tables
+                .intersect_group_page(
+                    &item.plan,
+                    item.page_start,
+                    item.from_offset,
+                    item.to_offset,
+                )
+                .await?
+            else {
+                return Ok::<_, MonadChainDataError>(Vec::new());
+            };
+            let intersect_us = intersect_started.elapsed().as_micros() as u64;
+            IndexedQueryStats::add_count(&stats.page_intersect_us, intersect_us);
+            IndexedQueryStats::add_count(&stats.pages, 1);
 
-                let mut locations = Vec::new();
-                let mut candidates = 0u64;
-                let resolve_started = Instant::now();
-                // Roaring's iterator is double-ended, so descending order
-                // reverses in place with no intermediate collect.
-                for offset in order.iterate(page_bitmap.as_bitmap().iter()) {
-                    candidates += 1;
-                    let id = PrimaryId::new(item.page_start + u64::from(offset));
-                    locations.push(resolver.resolve(id).await?);
-                }
-                let resolve_us = resolve_started.elapsed().as_micros() as u64;
-                IndexedQueryStats::add_count(&stats.page_resolve_us, resolve_us);
-                IndexedQueryStats::add_count(&stats.bitmap_candidates, candidates);
-                IndexedQueryStats::add_count(&stats.resolved_locations, locations.len() as u64);
-                debug!(
-                    family = ?family,
-                    page_start = item.page_start,
-                    from_offset = item.from_offset,
-                    to_offset = item.to_offset,
-                    candidates,
-                    resolved_locations = locations.len() as u64,
-                    intersect_us,
-                    resolve_us,
-                    "chain-data indexed page future stats"
-                );
-                Ok(locations)
+            let mut locations = Vec::new();
+            let mut candidates = 0u64;
+            let resolve_started = Instant::now();
+            // Roaring's iterator is double-ended, so descending order
+            // reverses in place with no intermediate collect.
+            for offset in order.iterate(page_bitmap.as_bitmap().iter()) {
+                candidates += 1;
+                let id = PrimaryId::new(item.page_start + u64::from(offset));
+                locations.push(resolver.resolve(id).await?);
             }
-        })
-        .buffered(tables.query_config().page_intersect_concurrency)
-        // Flatten each page's ordered location vec into one ordered stream.
-        .map_ok(|locations| stream::iter(locations.into_iter().map(Ok)))
-        .try_flatten();
+            let resolve_us = resolve_started.elapsed().as_micros() as u64;
+            IndexedQueryStats::add_count(&stats.page_resolve_us, resolve_us);
+            IndexedQueryStats::add_count(&stats.bitmap_candidates, candidates);
+            IndexedQueryStats::add_count(&stats.resolved_locations, locations.len() as u64);
+            debug!(
+                family = ?family,
+                page_start = item.page_start,
+                from_offset = item.from_offset,
+                to_offset = item.to_offset,
+                candidates,
+                resolved_locations = locations.len() as u64,
+                intersect_us,
+                resolve_us,
+                "chain-data indexed page future stats"
+            );
+            Ok(locations)
+        }
+    });
+    let location_stream = ramping_buffered(
+        page_futures,
+        PAGE_INTERSECT_INITIAL_CONCURRENCY,
+        tables.query_config().page_intersect_concurrency,
+    )
+    // Flatten each page's ordered location vec into one ordered stream.
+    .map_ok(|locations| stream::iter(locations.into_iter().map(Ok)))
+    .try_flatten();
 
     // Stage 2 — count-gated, byte-budgeted block materialization: pull the
     // ordered location stream into per-block groups until the candidate count

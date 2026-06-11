@@ -55,10 +55,6 @@ pub struct QueryBlocksResponse {
     pub span: BlockSpan,
 }
 
-/// Fan-out for concurrent block loads (one record+header pair per block);
-/// mirrors the relation join bound (`RELATION_TX_CONCURRENCY`).
-const BLOCK_LOAD_CONCURRENCY: usize = 8;
-
 pub(crate) async fn execute_query_blocks<M: MetaStore, B: BlobStore>(
     tables: &Tables<M, B>,
     request: &QueryBlocksRequest,
@@ -79,7 +75,7 @@ pub(crate) async fn execute_query_blocks<M: MetaStore, B: BlobStore>(
             .take(request.envelope.limit)
             .map(|block_number| load_block_with_record(blocks_table, block_number)),
     )
-    .buffered(BLOCK_LOAD_CONCURRENCY);
+    .buffered(tables.query_config().materialize_concurrency);
     while let Some((block, record)) = loaded.try_next().await? {
         cursor_block = BlockRef::from(&record);
         blocks.push(block);
@@ -100,6 +96,7 @@ pub(crate) async fn execute_query_blocks<M: MetaStore, B: BlobStore>(
 pub(crate) async fn load_blocks_by_numbers<M: MetaStore, I: IntoIterator<Item = u64>>(
     blocks: &BlockTables<M>,
     numbers: I,
+    concurrency: usize,
 ) -> Result<Vec<Block>> {
     let distinct: BTreeSet<u64> = numbers.into_iter().collect();
     stream::iter(
@@ -107,7 +104,7 @@ pub(crate) async fn load_blocks_by_numbers<M: MetaStore, I: IntoIterator<Item = 
             .into_iter()
             .map(|number| load_block(blocks, number)),
     )
-    .buffered(BLOCK_LOAD_CONCURRENCY)
+    .buffered(concurrency)
     .try_collect()
     .await
 }

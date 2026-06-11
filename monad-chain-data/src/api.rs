@@ -157,23 +157,28 @@ impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
     where
         I: Iterator<Item = (u64, u32)> + Clone,
     {
-        let blocks = if want_blocks {
-            Some(
-                load_blocks_by_numbers(
+        let concurrency = self.tables.query_config().materialize_concurrency;
+        let load_blocks = async {
+            match want_blocks {
+                true => load_blocks_by_numbers(
                     self.tables.blocks(),
                     positions.clone().map(|(block_number, _)| block_number),
+                    concurrency,
                 )
-                .await?,
-            )
-        } else {
-            None
+                .await
+                .map(Some),
+                false => Ok(None),
+            }
         };
-        let transactions = if want_transactions {
-            Some(load_txs_by_positions(&self.tables, positions).await?)
-        } else {
-            None
+        let load_txs = async {
+            match want_transactions {
+                true => load_txs_by_positions(&self.tables, positions.clone())
+                    .await
+                    .map(Some),
+                false => Ok(None),
+            }
         };
-        Ok((blocks, transactions))
+        futures::try_join!(load_blocks, load_txs)
     }
 
     /// Executes a finalized logs query over the current published head,
@@ -223,6 +228,7 @@ impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
                 load_blocks_by_numbers(
                     self.tables.blocks(),
                     outcome.records.iter().map(|t| t.block_number),
+                    self.tables.query_config().materialize_concurrency,
                 )
                 .await?,
             )

@@ -34,7 +34,10 @@ use monad_chain_data::{
     TxEntry, TxFilter, B256,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::{
+    value::{to_raw_value, RawValue},
+    Value,
+};
 
 use crate::types::jsonrpc::{JsonRpcError, JsonRpcResult};
 
@@ -308,39 +311,47 @@ impl FieldsPlan {
     }
 
     /// Inserts one `data` entry, projected to the requested field names.
-    pub fn insert(&self, data: &mut Map<String, Value>, key: &str, mut objects: Vec<Value>) {
-        if let Some(FieldSelection::Fields(fields)) = self.0.get(key) {
-            for object in &mut objects {
-                if let Value::Object(map) = object {
-                    map.retain(|name, _| fields.iter().any(|field| field == name));
+    /// Without a projection the objects serialize straight to raw JSON in one
+    /// pass — the dominant path for dense pages — instead of detouring
+    /// through a `Value` tree that the response serializer walks again.
+    pub fn insert<T: Serialize>(
+        &self,
+        data: &mut BTreeMap<String, Box<RawValue>>,
+        key: &str,
+        objects: &[T],
+    ) -> JsonRpcResult<()> {
+        let serialize_err =
+            |e: serde_json::Error| JsonRpcError::internal_error(format!("serialize response: {e}"));
+        let raw = match self.0.get(key) {
+            Some(FieldSelection::Fields(fields)) => {
+                let mut values = objects
+                    .iter()
+                    .map(serde_json::to_value)
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(serialize_err)?;
+                for value in &mut values {
+                    if let Value::Object(map) = value {
+                        map.retain(|name, _| fields.iter().any(|field| field == name));
+                    }
                 }
+                to_raw_value(&values)
             }
+            _ => to_raw_value(&objects),
         }
-        data.insert(key.to_owned(), Value::Array(objects));
+        .map_err(serialize_err)?;
+        data.insert(key.to_owned(), raw);
+        Ok(())
     }
 }
 
-/// Serializes wire objects into the `Value`s a `data` entry holds.
-pub fn values<T: Serialize>(items: impl IntoIterator<Item = T>) -> JsonRpcResult<Vec<Value>> {
-    items
-        .into_iter()
-        .map(|item| {
-            serde_json::to_value(item)
-                .map_err(|e| JsonRpcError::internal_error(format!("serialize response: {e}")))
-        })
-        .collect()
-}
-
-/// Serializes `transactions` objects: the standard RPC transaction shape via
+/// Decodes `transactions` objects into the standard RPC transaction shape via
 /// [`TxEntry::to_rpc_transaction`] (`gasPrice` for dynamic-fee transactions is
 /// omitted — it needs the block base fee, which this path does not join).
-pub fn tx_values(txs: Vec<TxEntry>) -> JsonRpcResult<Vec<Value>> {
-    values(
-        txs.iter()
-            .map(TxEntry::to_rpc_transaction)
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| JsonRpcError::internal_error(format!("decode stored tx: {e}")))?,
-    )
+pub fn rpc_transactions(txs: Vec<TxEntry>) -> JsonRpcResult<Vec<alloy_rpc_types::Transaction>> {
+    txs.iter()
+        .map(TxEntry::to_rpc_transaction)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| JsonRpcError::internal_error(format!("decode stored tx: {e}")))
 }
 
 /// One resolved block reference: `{ number, hash, parentHash }`.
@@ -367,7 +378,7 @@ impl From<BlockRef> for BlockRefWire {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QueryResponseWire {
-    pub data: Map<String, Value>,
+    pub data: BTreeMap<String, Box<RawValue>>,
     pub from_block: BlockRefWire,
     pub to_block: BlockRefWire,
     pub cursor_block: BlockRefWire,
@@ -376,7 +387,7 @@ pub struct QueryResponseWire {
 impl QueryResponseWire {
     pub fn new(span: BlockSpan) -> Self {
         Self {
-            data: Map::new(),
+            data: BTreeMap::new(),
             from_block: span.from_block.into(),
             to_block: span.to_block.into(),
             cursor_block: span.cursor_block.into(),

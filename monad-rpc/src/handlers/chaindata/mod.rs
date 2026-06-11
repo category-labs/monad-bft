@@ -116,20 +116,14 @@ pub async fn monad_eth_queryLogs(
     };
     let response = reader.query_logs(request).await.map_err(chain_data_error)?;
     let mut out = QueryResponseWire::new(response.span);
-    fields.insert(
-        &mut out.data,
-        "logs",
-        wire::values(response.logs.into_iter().map(LogWire::from))?,
-    );
+    let logs: Vec<LogWire> = response.logs.into_iter().map(LogWire::from).collect();
+    fields.insert(&mut out.data, "logs", &logs)?;
     if let Some(txs) = response.transactions {
-        fields.insert(&mut out.data, "transactions", wire::tx_values(txs)?);
+        fields.insert(&mut out.data, "transactions", &wire::rpc_transactions(txs)?)?;
     }
     if let Some(blocks) = response.blocks {
-        fields.insert(
-            &mut out.data,
-            "blocks",
-            wire::values(blocks.into_iter().map(BlockWire::from))?,
-        );
+        let blocks: Vec<BlockWire> = blocks.into_iter().map(BlockWire::from).collect();
+        fields.insert(&mut out.data, "blocks", &blocks)?;
     }
     Ok(out)
 }
@@ -158,14 +152,11 @@ pub async fn monad_eth_queryTransactions(
     fields.insert(
         &mut out.data,
         "transactions",
-        wire::tx_values(response.txs)?,
-    );
+        &wire::rpc_transactions(response.txs)?,
+    )?;
     if let Some(blocks) = response.blocks {
-        fields.insert(
-            &mut out.data,
-            "blocks",
-            wire::values(blocks.into_iter().map(BlockWire::from))?,
-        );
+        let blocks: Vec<BlockWire> = blocks.into_iter().map(BlockWire::from).collect();
+        fields.insert(&mut out.data, "blocks", &blocks)?;
     }
     Ok(out)
 }
@@ -192,20 +183,14 @@ pub async fn monad_eth_queryTraces(
         .await
         .map_err(chain_data_error)?;
     let mut out = QueryResponseWire::new(response.span);
-    fields.insert(
-        &mut out.data,
-        "traces",
-        wire::values(response.traces.into_iter().map(TraceWire::from))?,
-    );
+    let traces: Vec<TraceWire> = response.traces.into_iter().map(TraceWire::from).collect();
+    fields.insert(&mut out.data, "traces", &traces)?;
     if let Some(txs) = response.transactions {
-        fields.insert(&mut out.data, "transactions", wire::tx_values(txs)?);
+        fields.insert(&mut out.data, "transactions", &wire::rpc_transactions(txs)?)?;
     }
     if let Some(blocks) = response.blocks {
-        fields.insert(
-            &mut out.data,
-            "blocks",
-            wire::values(blocks.into_iter().map(BlockWire::from))?,
-        );
+        let blocks: Vec<BlockWire> = blocks.into_iter().map(BlockWire::from).collect();
+        fields.insert(&mut out.data, "blocks", &blocks)?;
     }
     Ok(out)
 }
@@ -235,20 +220,18 @@ pub async fn monad_eth_queryTransfers(
         .await
         .map_err(chain_data_error)?;
     let mut out = QueryResponseWire::new(response.span);
-    fields.insert(
-        &mut out.data,
-        "transfers",
-        wire::values(response.transfers.into_iter().map(TransferWire::from))?,
-    );
+    let transfers: Vec<TransferWire> = response
+        .transfers
+        .into_iter()
+        .map(TransferWire::from)
+        .collect();
+    fields.insert(&mut out.data, "transfers", &transfers)?;
     if let Some(txs) = response.transactions {
-        fields.insert(&mut out.data, "transactions", wire::tx_values(txs)?);
+        fields.insert(&mut out.data, "transactions", &wire::rpc_transactions(txs)?)?;
     }
     if let Some(blocks) = response.blocks {
-        fields.insert(
-            &mut out.data,
-            "blocks",
-            wire::values(blocks.into_iter().map(BlockWire::from))?,
-        );
+        let blocks: Vec<BlockWire> = blocks.into_iter().map(BlockWire::from).collect();
+        fields.insert(&mut out.data, "blocks", &blocks)?;
     }
     Ok(out)
 }
@@ -270,11 +253,8 @@ pub async fn monad_eth_queryBlocks(
         .await
         .map_err(chain_data_error)?;
     let mut out = QueryResponseWire::new(response.span);
-    fields.insert(
-        &mut out.data,
-        "blocks",
-        wire::values(response.blocks.into_iter().map(BlockWire::from))?,
-    );
+    let blocks: Vec<BlockWire> = response.blocks.into_iter().map(BlockWire::from).collect();
+    fields.insert(&mut out.data, "blocks", &blocks)?;
     Ok(out)
 }
 
@@ -447,15 +427,18 @@ mod tests {
         )
         .expect("plan");
         assert!(plan.wants("blocks") && !plan.wants("transactions"));
-        let mut data = serde_json::Map::new();
+        let mut data = std::collections::BTreeMap::new();
         plan.insert(
             &mut data,
             "logs",
-            vec![json!({"address": "0xaa", "data": "0x"})],
-        );
-        plan.insert(&mut data, "blocks", vec![json!({"number": "0x1"})]);
-        assert_eq!(data["logs"], json!([{"address": "0xaa"}]));
-        assert_eq!(data["blocks"], json!([{"number": "0x1"}]));
+            &[json!({"address": "0xaa", "data": "0x"})],
+        )
+        .expect("insert logs");
+        plan.insert(&mut data, "blocks", &[json!({"number": "0x1"})])
+            .expect("insert blocks");
+        let parse = |key: &str| -> Value { serde_json::from_str(data[key].get()).unwrap() };
+        assert_eq!(parse("logs"), json!([{"address": "0xaa"}]));
+        assert_eq!(parse("blocks"), json!([{"number": "0x1"}]));
     }
 
     #[test]
