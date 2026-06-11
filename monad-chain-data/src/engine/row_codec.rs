@@ -58,8 +58,10 @@ pub fn should_sample_row(idx: usize, count: usize) -> bool {
     if count <= PER_BLOCK_SAMPLE_CAP {
         return true;
     }
-    // Uniform stride; guaranteed >= 1 because count > PER_BLOCK_SAMPLE_CAP.
-    let stride = count / PER_BLOCK_SAMPLE_CAP;
+    // Uniform stride, rounded UP so at most PER_BLOCK_SAMPLE_CAP indices are
+    // multiples of it (floor division would select every row for counts in
+    // 65..=127). Index 0 is always sampled.
+    let stride = count.div_ceil(PER_BLOCK_SAMPLE_CAP);
     idx.is_multiple_of(stride)
 }
 
@@ -258,6 +260,28 @@ mod tests {
         let mut frame = Vec::new();
         block.compress_row_into(row, &mut frame)?;
         Ok(frame)
+    }
+
+    #[test]
+    fn should_sample_row_respects_per_block_cap() {
+        // Boundary counts around the cap plus a large block; the cap must hold
+        // for every count and index 0 must always be sampled.
+        for count in [1, 64, 65, 127, 128, 129, 10_000] {
+            let sampled = (0..count)
+                .filter(|&idx| should_sample_row(idx, count))
+                .count();
+            assert!(sampled > 0, "count {count}: nothing sampled");
+            assert!(
+                sampled <= PER_BLOCK_SAMPLE_CAP,
+                "count {count}: sampled {sampled} rows, cap is {PER_BLOCK_SAMPLE_CAP}"
+            );
+            assert!(should_sample_row(0, count), "count {count}: idx 0 skipped");
+        }
+        // At or below the cap every row is sampled.
+        assert_eq!(
+            (0..64).filter(|&idx| should_sample_row(idx, 64)).count(),
+            64
+        );
     }
 
     #[test]
