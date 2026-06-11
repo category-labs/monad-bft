@@ -21,7 +21,9 @@ Building and packaging are covered by the
 [release runbook](./release-runbook.md).
 
 **Rule: exactly one ingest writer per store pair (meta table + blob bucket).**
-Never start a second writer against the same store.
+Never start a second writer against the same store. (Readers are unrestricted —
+serve the store via
+[the queryX rpc runbook](./chain-data-queryx-rpc-runbook.md).)
 
 ### Prerequisites
 
