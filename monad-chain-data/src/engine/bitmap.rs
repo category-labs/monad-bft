@@ -698,8 +698,16 @@ pub fn decode_open_streams_delta(bytes: &[u8]) -> Result<Vec<String>> {
         return Err(MonadChainDataError::Decode("open_streams delta version"));
     }
     cur = &cur[1..];
-    let count = take_u32(&mut cur)?;
-    let mut out = Vec::with_capacity(count as usize);
+    let count = take_u32(&mut cur)? as usize;
+    // `count` is untrusted; each entry takes at least its 4-byte length
+    // prefix, so a count the remaining bytes cannot hold is corruption —
+    // reject it before allocating instead of aborting on a huge reservation.
+    if count > cur.len() / 4 {
+        return Err(MonadChainDataError::Decode(
+            "open_streams delta count exceeds body",
+        ));
+    }
+    let mut out = Vec::with_capacity(count);
     for _ in 0..count {
         let len = take_u32(&mut cur)? as usize;
         let raw = cur
@@ -828,6 +836,29 @@ mod tests {
         let mut bad = encoded.to_vec();
         bad[0] = 0xff;
         assert!(decode_open_streams_delta(&bad).is_err());
+    }
+
+    #[test]
+    fn open_streams_delta_rejects_count_exceeding_body() {
+        // A tiny row claiming u32::MAX entries must yield a Decode error, not
+        // attempt a ~96 GiB `Vec` reservation (which aborts the process).
+        let mut bad = vec![OPEN_STREAMS_DELTA_VERSION];
+        bad.extend_from_slice(&u32::MAX.to_be_bytes());
+        assert!(matches!(
+            decode_open_streams_delta(&bad),
+            Err(MonadChainDataError::Decode(
+                "open_streams delta count exceeds body"
+            ))
+        ));
+
+        // Same with a few body bytes that cannot hold the claimed count.
+        bad.extend_from_slice(&[0u8; 8]);
+        assert!(matches!(
+            decode_open_streams_delta(&bad),
+            Err(MonadChainDataError::Decode(
+                "open_streams delta count exceeds body"
+            ))
+        ));
     }
 
     #[test]
