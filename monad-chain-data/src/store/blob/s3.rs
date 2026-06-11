@@ -35,7 +35,7 @@ use std::{
 
 use aws_sdk_s3::{
     error::{ProvideErrorMetadata, SdkError},
-    operation::get_object::GetObjectError,
+    operation::{get_object::GetObjectError, head_object::HeadObjectError},
     primitives::ByteStream,
     types::{BucketLocationConstraint, CreateBucketConfiguration},
     Client,
@@ -120,6 +120,16 @@ struct Inner {
 enum S3ReadKind {
     RangeGet = 0,
     FullGet = 1,
+}
+
+/// One GET's outcome. `Unsatisfiable` (HTTP 416) carries the still-open stats
+/// guard: a 416 alone does not decide the read's success — the caller resolves
+/// the EOF boundary against the object length and finishes the guard with the
+/// real outcome.
+enum GetObjectOutcome {
+    Found(Bytes),
+    Missing,
+    Unsatisfiable(ReadGuard),
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -232,14 +242,13 @@ impl S3BlobStore {
         )
     }
 
-    /// Single GET, optionally with a `Range` header. Returns `Ok(None)` when the
-    /// object does not exist.
+    /// Single GET, optionally with a `Range` header.
     async fn get_object(
         &self,
         table: BlobTableId,
         key: &[u8],
         range: Option<String>,
-    ) -> Result<Option<Bytes>> {
+    ) -> Result<GetObjectOutcome> {
         let object_key = self.object_key(table, key);
         let (client, _) = self.client_for_object_key(&object_key);
         let is_range = range.is_some();
@@ -256,11 +265,10 @@ impl S3BlobStore {
             Ok(resp) => resp,
             Err(e) if is_no_such_key(&e) => {
                 read_guard.finish(false, 0, 0);
-                return Ok(None);
+                return Ok(GetObjectOutcome::Missing);
             }
             Err(e) if is_invalid_range(&e) => {
-                read_guard.finish(true, 0, 0);
-                return Err(MonadChainDataError::Decode("invalid blob range"));
+                return Ok(GetObjectOutcome::Unsatisfiable(read_guard));
             }
             Err(e) => {
                 read_guard.finish(true, 0, 0);
@@ -279,7 +287,51 @@ impl S3BlobStore {
         };
         let bytes = collected.into_bytes();
         read_guard.finish(false, 0, bytes.len() as u64);
-        Ok(Some(bytes))
+        Ok(GetObjectOutcome::Found(bytes))
+    }
+
+    /// `HeadObject` for the object's byte length; `Ok(None)` when absent. Only
+    /// used by [`read_range`](BlobStore::read_range) boundary cases that an
+    /// HTTP `Range` request cannot express or disambiguate.
+    async fn object_len(&self, table: BlobTableId, key: &[u8]) -> Result<Option<usize>> {
+        let object_key = self.object_key(table, key);
+        let (client, _) = self.client_for_object_key(&object_key);
+        let resp = match client
+            .head_object()
+            .bucket(&self.inner.bucket)
+            .key(&object_key)
+            .send()
+            .await
+        {
+            Ok(resp) => resp,
+            Err(e) if is_head_not_found(&e) => return Ok(None),
+            Err(e) => return Err(backend_err("head_object", &object_key, e)),
+        };
+        let len = resp.content_length.unwrap_or(0);
+        usize::try_from(len).map(Some).map_err(|_| {
+            MonadChainDataError::Backend(format!(
+                "s3 head_object {object_key}: content length {len} out of range"
+            ))
+        })
+    }
+
+    /// Trait-contract result for a `read_range` window at `start` known to
+    /// carry no bytes (zero-length, or 416'd because `start` is at/after EOF):
+    /// missing object -> `None`, `start` within `0..=len` -> empty bytes,
+    /// `start` strictly past EOF -> error. Costs one extra HEAD, on these
+    /// boundary cases only; the HEAD is not a tracked read — callers account
+    /// the resolution under the originating range read's guard.
+    async fn empty_range_at(
+        &self,
+        table: BlobTableId,
+        key: &[u8],
+        start: usize,
+    ) -> Result<Option<Bytes>> {
+        match self.object_len(table, key).await? {
+            None => Ok(None),
+            Some(len) if start > len => Err(MonadChainDataError::Decode("invalid blob range")),
+            Some(_) => Ok(Some(Bytes::new())),
+        }
     }
 
     fn read_started(&self, is_range: bool) -> ReadGuard {
@@ -410,7 +462,15 @@ impl BlobStore for S3BlobStore {
     }
 
     async fn get_blob(&self, table: BlobTableId, key: &[u8]) -> Result<Option<Bytes>> {
-        self.get_object(table, key, None).await
+        match self.get_object(table, key, None).await? {
+            GetObjectOutcome::Found(bytes) => Ok(Some(bytes)),
+            GetObjectOutcome::Missing => Ok(None),
+            // A GET without a `Range` header cannot 416.
+            GetObjectOutcome::Unsatisfiable(read_guard) => {
+                read_guard.finish(true, 0, 0);
+                Err(MonadChainDataError::Decode("invalid blob range"))
+            }
+        }
     }
 
     async fn delete_blob(&self, table: BlobTableId, key: &[u8]) -> Result<()> {
@@ -466,16 +526,30 @@ impl BlobStore for S3BlobStore {
         if start > end_exclusive {
             return Err(MonadChainDataError::Decode("invalid blob range"));
         }
-        // S3 cannot express a zero-length range, but we must still distinguish
-        // missing (None) from present-and-empty, so do a point read.
+        // S3 cannot express a zero-length range: resolve it from the object
+        // length alone, tracked as one range read.
         if start == end_exclusive {
-            return Ok(self.get_blob(table, key).await?.map(|_| Bytes::new()));
+            let read_guard = self.read_started(true);
+            let result = self.empty_range_at(table, key, start).await;
+            read_guard.finish(result.is_err(), 0, 0);
+            return result;
         }
         // HTTP byte ranges are inclusive; ours is end-exclusive. S3 clamps an
-        // end past EOF (matching the trait default) and returns 416 for a start
-        // at/after EOF, which `get_object` maps to the same `Decode` error.
+        // end past EOF (matching the trait default) but answers 416 whenever
+        // `start` is at or after EOF (including any window on an empty
+        // object), while the trait errors only for `start` strictly past EOF
+        // and clamps `start == len` to an empty read. Resolve a 416 from the
+        // object length, finishing the read's stats with the real outcome.
         let range = format!("bytes={}-{}", start, end_exclusive - 1);
-        self.get_object(table, key, Some(range)).await
+        match self.get_object(table, key, Some(range)).await? {
+            GetObjectOutcome::Found(bytes) => Ok(Some(bytes)),
+            GetObjectOutcome::Missing => Ok(None),
+            GetObjectOutcome::Unsatisfiable(read_guard) => {
+                let result = self.empty_range_at(table, key, start).await;
+                read_guard.finish(result.is_err(), 0, 0);
+                result
+            }
+        }
     }
 }
 
@@ -527,6 +601,11 @@ fn is_no_such_key<R>(e: &SdkError<GetObjectError, R>) -> bool {
 
 fn is_invalid_range<R>(e: &SdkError<GetObjectError, R>) -> bool {
     e.code() == Some("InvalidRange")
+}
+
+fn is_head_not_found<R>(e: &SdkError<HeadObjectError, R>) -> bool {
+    matches!(e, SdkError::ServiceError(se) if matches!(se.err(), HeadObjectError::NotFound(_)))
+        || e.code() == Some("NotFound")
 }
 
 #[cfg(test)]

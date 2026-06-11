@@ -208,6 +208,98 @@ async fn read_range_server_side_slice_and_edges() {
     assert!(oob.is_err(), "start past EOF must error, got {oob:?}");
 }
 
+/// EOF boundary matrix, mirroring the dynamo backend's
+/// `read_range_spans_chunks_and_matches_trait_contract`: the trait errors only
+/// for `start` strictly past EOF and clamps everything else to an empty read,
+/// while raw S3 answers 416 for any window starting at/after EOF (including
+/// every window on an empty object) and cannot express a zero-length range.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the in-process s3s server; run with --features s3 -- --ignored"]
+async fn read_range_eof_boundaries_match_trait_contract() {
+    let (store, _server) = setup().await;
+
+    let key = b"eof-blob";
+    let value = Bytes::from_static(b"abcdef");
+    store
+        .put_blob(BLOCKS, key, value.clone())
+        .await
+        .expect("put_blob");
+
+    // A window starting exactly at EOF clamps to an empty read.
+    assert_eq!(
+        store.read_range(BLOCKS, key, 6, 10).await.unwrap(),
+        Some(Bytes::new())
+    );
+    // Zero-length windows succeed up to and including EOF, error past it.
+    assert_eq!(
+        store.read_range(BLOCKS, key, 6, 6).await.unwrap(),
+        Some(Bytes::new())
+    );
+    assert_eq!(
+        store
+            .read_range(BLOCKS, key, 12, 12)
+            .await
+            .unwrap_err()
+            .to_string(),
+        "decode error: invalid blob range"
+    );
+    // A non-empty window starting strictly past EOF errors.
+    assert_eq!(
+        store
+            .read_range(BLOCKS, key, 7, 10)
+            .await
+            .unwrap_err()
+            .to_string(),
+        "decode error: invalid blob range"
+    );
+
+    // Present zero-length blob: every window starting at 0 is an empty read;
+    // anything starting past 0 is out of bounds.
+    let empty_key = b"empty-blob";
+    store
+        .put_blob(BLOCKS, empty_key, Bytes::new())
+        .await
+        .expect("put_blob empty");
+    assert_eq!(
+        store.read_range(BLOCKS, empty_key, 0, 10).await.unwrap(),
+        Some(Bytes::new())
+    );
+    assert_eq!(
+        store.read_range(BLOCKS, empty_key, 0, 0).await.unwrap(),
+        Some(Bytes::new())
+    );
+    assert_eq!(
+        store
+            .read_range(BLOCKS, empty_key, 1, 1)
+            .await
+            .unwrap_err()
+            .to_string(),
+        "decode error: invalid blob range"
+    );
+    assert_eq!(
+        store
+            .read_range(BLOCKS, empty_key, 1, 5)
+            .await
+            .unwrap_err()
+            .to_string(),
+        "decode error: invalid blob range"
+    );
+
+    // Missing blobs stay `None` for zero-length windows at any offset.
+    assert_eq!(store.read_range(BLOCKS, b"nope", 3, 3).await.unwrap(), None);
+
+    // Every boundary read above is tracked as one range read; only the four
+    // contract violations count as errors — HEAD-resolved successes complete
+    // normally instead of inheriting the 416's error verdict.
+    let stats = store.take_read_stats();
+    assert_eq!(stats.started, 9);
+    assert_eq!(stats.completed, 5);
+    assert_eq!(stats.errors, 4);
+    assert_eq!(stats.canceled, 0);
+    assert_eq!(stats.range_gets, 9);
+    assert_eq!(stats.full_gets, 0);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires the in-process s3s server; run with --features s3 -- --ignored"]
 async fn apply_writes_across_tables() {
