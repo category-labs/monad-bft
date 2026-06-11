@@ -172,8 +172,17 @@ async fn frontier_group_never_skips_a_non_empty_page() {
 
     counting.start_counting();
     // Frontier still inside group 0 => frontier group, no skipping allowed.
+    // It sits above the three seeded pages, so each page is sealed and reads
+    // its artifact rather than fragments.
+    let frontier_id = 3 * PAGE_SPAN;
     let result = family
-        .load_intersection_ids(&clauses, 0, 0, 3 * PAGE_SPAN - 1, QueryOrder::Ascending)
+        .load_intersection_ids(
+            &clauses,
+            frontier_id,
+            0,
+            3 * PAGE_SPAN - 1,
+            QueryOrder::Ascending,
+        )
         .await
         .expect("load intersection");
     let fetches = counting.get_calls(page_blob_table);
@@ -189,7 +198,8 @@ async fn frontier_group_never_skips_a_non_empty_page() {
 /// (artifact + manifest), the first page of frontier group 1 (open-page
 /// fragment, no manifest), plus a manifest-proven-empty group-0 page in
 /// range. Both orders return exactly the right ids; the empty sealed page is
-/// skipped with zero fetches while the frontier page is always fetched.
+/// skipped with zero fetches while the open frontier page reads its
+/// fragments without probing the artifact table.
 #[tokio::test(flavor = "current_thread")]
 async fn query_crossing_group_boundary_returns_exact_ids_in_both_orders() {
     let counting = ObservedMetaStore::new();
@@ -259,12 +269,13 @@ async fn query_crossing_group_boundary_returns_exact_ids_in_both_orders() {
             .expect("load intersection")
             .expect("non-empty intersection");
         assert_eq!(ids, expected, "{order:?}");
-        // The empty sealed page is manifest-skipped: one artifact get for the
-        // sealed page, one (miss) for the frontier page's fragment fallback.
+        // The empty sealed page is manifest-skipped and the open frontier
+        // page never probes its artifact: one artifact get, for the sealed
+        // non-empty page only.
         assert_eq!(
             counting.get_calls(page_blob_table),
-            2,
-            "{order:?}: empty sealed page must be skipped without a fetch"
+            1,
+            "{order:?}: only the sealed non-empty page may fetch its artifact"
         );
     }
 }

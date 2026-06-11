@@ -26,7 +26,6 @@ use tracing::debug;
 
 use crate::{
     engine::{
-        bitmap::page_group_start,
         clause::IndexedFilter,
         family::Family,
         primary_dir::bucket_start,
@@ -605,11 +604,6 @@ where
     // misclassify a sealed bucket above the range as open.
     let frontier_id = family_frontier_id(tables.blocks(), family, published_head).await?;
     let sealed_below = bucket_start(frontier_id.as_u64());
-    // Page groups below the frontier's group are sealed and carry an
-    // authoritative page-count manifest; the frontier group has no manifest at
-    // all (rows are written only when a group completes; absent ⇒ unknown,
-    // never a skip).
-    let frontier_group = page_group_start(frontier_id.as_u64());
 
     let family_tables = tables.family(family);
     let resolver = PrimaryIdResolver::new(family_tables, sealed_below);
@@ -631,7 +625,7 @@ where
                 let plan_started = Instant::now();
                 let (first_page, last_page) = window.page_bounds_in_group(group_start);
                 let Some(plan) = family_tables
-                    .build_page_group_plan(clauses, group_start, frontier_group)
+                    .build_page_group_plan(clauses, group_start, frontier_id.as_u64())
                     .await?
                 else {
                     return Ok::<_, MonadChainDataError>(Vec::new());

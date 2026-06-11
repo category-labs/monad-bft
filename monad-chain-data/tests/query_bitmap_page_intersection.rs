@@ -19,12 +19,15 @@
 use bytes::Bytes as RawBytes;
 use monad_chain_data::{
     engine::{
-        bitmap::{IndexKind, STREAM_PAGE_ID_SPAN},
+        bitmap::{
+            encode_bitmap_blob, render_stream_id, BitmapPageArtifact, BitmapPageMeta,
+            DecodedBitmapFragment, IndexKind, STREAM_PAGE_ID_SPAN,
+        },
         clause::IndexedClause,
         family::Family,
         tables::{DictConfig, QueryRuntimeConfig},
     },
-    store::CacheConfig,
+    store::{CacheConfig, InMemoryBlobStore},
     Address, MonadChainDataService, QueryLimits, QueryOrder, Topic, B256,
 };
 
@@ -195,5 +198,96 @@ async fn per_page_short_circuit_skips_later_clause_fetches() {
     assert_eq!(
         rev_fetches, 5,
         "dense-first ordering skips the driver only on page 1, got {rev_fetches}"
+    );
+}
+
+/// Encodes page-relative offsets into a bitmap blob + its meta.
+fn page_bitmap_blob(offsets: &[u32]) -> (BitmapPageMeta, RawBytes) {
+    let bitmap: roaring::RoaringBitmap = offsets.iter().copied().collect();
+    let meta = BitmapPageMeta {
+        min_offset: bitmap.min().expect("non-empty page"),
+        max_offset: bitmap.max().expect("non-empty page"),
+        count: bitmap.len() as u32,
+    };
+    let blob = DecodedBitmapFragment {
+        min_offset: meta.min_offset,
+        max_offset: meta.max_offset,
+        count: meta.count,
+        bitmap,
+    };
+    (meta, encode_bitmap_blob(&blob).expect("encode bitmap blob"))
+}
+
+/// A query on the OPEN page must not probe the page's (absent) artifact, and
+/// the seal-tail bits — minted between the page's last flush and its seal,
+/// so present ONLY in the sealed artifact, never in any fragment — must be
+/// returned by a post-seal query through the SAME tables instance. A stale
+/// cached artifact miss planted by the pre-seal query used to route post-seal
+/// queries to the incomplete fragment union forever.
+#[tokio::test(flavor = "current_thread")]
+async fn open_page_query_then_seal_returns_seal_tail_ids() {
+    let addr = Address::repeat_byte(0xAA);
+    let stream = render_stream_id("addr", addr.as_slice());
+
+    let counting = ObservedMetaStore::new();
+    // Default cache config: page-blob cache ON, as in production readers.
+    let service = MonadChainDataService::with_all_configs(
+        counting.clone(),
+        InMemoryBlobStore::default(),
+        QueryLimits::UNLIMITED,
+        CacheConfig::default(),
+        DictConfig::default(),
+        QueryRuntimeConfig::default(),
+    );
+    let t = service.tables();
+    let family = t.family(Family::Log);
+    let page_blob_table = Family::Log.table_ids().bitmap_page_blob;
+    let clauses = vec![addr_clause(addr)];
+    let page_span = u64::from(STREAM_PAGE_ID_SPAN);
+
+    // Open page 0: one flushed fragment with offsets 0..10; frontier mid-page.
+    let flushed: Vec<u32> = (0..10).collect();
+    let (_, fragment_blob) = page_bitmap_blob(&flushed);
+    common::seed_bitmap_page_fragment(t, Family::Log, &stream, 0, 1, fragment_blob).await;
+
+    // Pre-seal query: an open page's bits all live in fragments, so the
+    // artifact is never probed (nothing to plant a stale miss with).
+    counting.start_counting();
+    let ids = family
+        .load_intersection_ids(&clauses, 10, 0, page_span - 1, QueryOrder::Ascending)
+        .await
+        .expect("pre-seal intersection")
+        .expect("pre-seal ids");
+    assert_eq!(ids, (0..10).collect::<Vec<u64>>());
+    assert_eq!(
+        counting.get_calls(page_blob_table),
+        0,
+        "an open page must never probe its artifact"
+    );
+
+    // Seal page 0: the artifact folds the flushed bits together with the
+    // seal-tail bits 10..20, which never got a fragment.
+    let sealed: Vec<u32> = (0..20).collect();
+    let (meta, bitmap_blob) = page_bitmap_blob(&sealed);
+    common::seed_bitmap_page_artifact(
+        t,
+        Family::Log,
+        &stream,
+        0,
+        &BitmapPageArtifact { meta, bitmap_blob },
+    )
+    .await;
+
+    // Post-seal query through the SAME tables: the sealed page reads its
+    // artifact and the seal-tail ids appear.
+    let ids = family
+        .load_intersection_ids(&clauses, page_span, 0, page_span - 1, QueryOrder::Ascending)
+        .await
+        .expect("post-seal intersection")
+        .expect("post-seal ids");
+    assert_eq!(
+        ids,
+        (0..20).collect::<Vec<u64>>(),
+        "post-seal query must return the seal-tail ids, which exist only in the artifact"
     );
 }

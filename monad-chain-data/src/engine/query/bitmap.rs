@@ -70,6 +70,9 @@ pub(crate) struct PageGroupPlan {
     /// zero-fetch page skips. On the frontier group the manifest only orders
     /// fetches and never drives a skip.
     group_sealed: bool,
+    /// The family's id frontier at the publication head; drives the per-PAGE
+    /// sealed test ([`Self::page_sealed`]) for artifact-vs-fragment routing.
+    frontier_id: u64,
 }
 
 impl<M: MetaStore> FamilyTables<M> {
@@ -78,16 +81,16 @@ impl<M: MetaStore> FamilyTables<M> {
     /// empty bitmap makes the whole intersection empty, so no page need be
     /// fetched).
     ///
-    /// `frontier_group_start` is the group holding the family's id frontier at
-    /// the publication head. Groups below it are sealed and carry an immutable
+    /// `frontier_id` is the family's id frontier at the publication head.
+    /// Groups below the frontier's group are sealed and carry an immutable
     /// page-count manifest (authoritative for skips); on the frontier group
-    /// the previous group's manifest serves as an ordering hint only and never
-    /// skips a page.
+    /// the previous group's manifest serves as an ordering hint only and
+    /// never skips a page.
     pub(crate) async fn build_page_group_plan(
         &self,
         clauses: &[IndexedClause],
         group_start: u64,
-        frontier_group_start: u64,
+        frontier_id: u64,
     ) -> Result<Option<PageGroupPlan>> {
         let clause_streams: Vec<Vec<String>> =
             clauses.iter().map(IndexedClause::stream_ids).collect();
@@ -95,6 +98,7 @@ impl<M: MetaStore> FamilyTables<M> {
             return Ok(None);
         }
 
+        let frontier_group_start = page_group_start(frontier_id);
         let group_sealed = group_start < frontier_group_start;
         let manifest_group = if group_sealed {
             Some(group_start)
@@ -121,6 +125,7 @@ impl<M: MetaStore> FamilyTables<M> {
             clause_streams,
             clause_counts,
             group_sealed,
+            frontier_id,
         }))
     }
 
@@ -144,7 +149,6 @@ impl<M: MetaStore> FamilyTables<M> {
         id_to: u64,
         order: QueryOrder,
     ) -> Result<Option<Vec<u64>>> {
-        let frontier_group_start = page_group_start(frontier_id);
         let first_group = page_group_start(id_from) / PAGE_GROUP_ID_SPAN;
         let last_group = page_group_start(id_to) / PAGE_GROUP_ID_SPAN;
 
@@ -152,7 +156,7 @@ impl<M: MetaStore> FamilyTables<M> {
         for group_idx in order.iterate(first_group..=last_group) {
             let group_start = group_idx * PAGE_GROUP_ID_SPAN;
             let Some(plan) = self
-                .build_page_group_plan(clauses, group_start, frontier_group_start)
+                .build_page_group_plan(clauses, group_start, frontier_id)
                 .await?
             else {
                 return Ok(None);
@@ -225,6 +229,7 @@ impl<M: MetaStore> FamilyTables<M> {
                     page,
                     from_offset,
                     to_offset,
+                    plan.page_sealed(page),
                 )
                 .await?;
             page_intersection = Some(match page_intersection {
@@ -311,12 +316,11 @@ impl<M: MetaStore> FamilyTables<M> {
         page: u64,
         from_offset: u32,
         to_offset: u32,
+        page_sealed: bool,
     ) -> Result<PageBitmap> {
-        let mut pages = try_join_all(
-            stream_ids
-                .iter()
-                .map(|stream_id| self.load_bitmap_page(stream_id, page, from_offset, to_offset)),
-        )
+        let mut pages = try_join_all(stream_ids.iter().map(|stream_id| {
+            self.load_bitmap_page(stream_id, page, from_offset, to_offset, page_sealed)
+        }))
         .await?
         .into_iter();
         let Some(first) = pages.next() else {
@@ -334,29 +338,42 @@ impl<M: MetaStore> FamilyTables<M> {
         Ok(PageBitmap::Owned(owned))
     }
 
+    /// One stream's bitmap for a single page. Only a SEALED page may probe
+    /// its compacted artifact: once a page seals, the bits that arrived
+    /// between its last flush and the seal exist ONLY in the artifact, so
+    /// "artifact absent ⇒ fragment union is complete" holds for open pages
+    /// alone. An open page routes straight to fragments (where all its bits
+    /// live). A sealed page without an artifact is the sparse-stream norm
+    /// (`seal_family` writes artifacts only for pages that accumulated bits),
+    /// so the empty fragment union is the correct answer; a bits-bearing
+    /// sealed page missing its artifact is store corruption, which recovery's
+    /// rebuild detects (`SealedPageMissingArtifact`), not the query path.
     async fn load_bitmap_page(
         &self,
         stream_id: &str,
         page_start: u64,
         from_offset: u32,
         to_offset: u32,
+        page_sealed: bool,
     ) -> Result<PageBitmap> {
-        if let Some(page) = self
-            .load_bitmap_page_artifact(stream_id, page_start)
-            .await?
-        {
-            if !overlaps(
-                page.meta.min_offset,
-                page.meta.max_offset,
-                from_offset,
-                to_offset,
-            ) {
-                return Ok(PageBitmap::Owned(RoaringBitmap::new()));
-            }
+        if page_sealed {
+            if let Some(page) = self
+                .load_bitmap_page_artifact(stream_id, page_start)
+                .await?
+            {
+                if !overlaps(
+                    page.meta.min_offset,
+                    page.meta.max_offset,
+                    from_offset,
+                    to_offset,
+                ) {
+                    return Ok(PageBitmap::Owned(RoaringBitmap::new()));
+                }
 
-            // May include out-of-range bits; the caller clips the final
-            // intersection once per page. Share the cached page, don't clone.
-            return Ok(PageBitmap::Shared(page));
+                // May include out-of-range bits; the caller clips the final
+                // intersection once per page. Share the cached page, don't clone.
+                return Ok(PageBitmap::Shared(page));
+            }
         }
 
         let mut page_bitmap = RoaringBitmap::new();
@@ -376,6 +393,15 @@ impl<M: MetaStore> FamilyTables<M> {
 }
 
 impl PageGroupPlan {
+    /// Whether the page starting at `page` is sealed at this plan's frontier:
+    /// sealed iff the page lies fully below it, mirroring `seal_family`'s
+    /// ready filter (`SEAL_SPAN == PAGE_SPAN`). Per-PAGE, never per-group:
+    /// the frontier group still contains sealed pages whose seal-consumed
+    /// bits exist only in their artifacts.
+    fn page_sealed(&self, page: u64) -> bool {
+        page + u64::from(STREAM_PAGE_ID_SPAN) <= self.frontier_id
+    }
+
     /// Page starts in `[first_page, last_page]` (inclusive, page-aligned,
     /// within this plan's group) that may contribute candidates, ascending.
     /// In a sealed group, pages the manifest proves empty for any clause are
