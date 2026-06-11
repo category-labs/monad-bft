@@ -328,7 +328,9 @@ pub struct ChainDataDynamoMetaConfig {
     /// Desired max items per `BatchWriteItem`. Verified by a startup probe before
     /// use; if the backend rejects it the store falls back to 25. Unset →
     /// `ALTERNATOR_DEFAULT_BATCH_WRITE_ITEMS` (100) under `scylla_profile`, else
-    /// 25. DynamoDB caps at 25; Alternator defaults to 100.
+    /// 25. DynamoDB caps at 25; Alternator defaults to 100. Must be within
+    /// 1..=1000: the probe materializes this many requests up front, so the
+    /// bound keeps a typo from ballooning into a giant allocation.
     pub batch_write_max_items: Option<usize>,
 }
 
@@ -363,12 +365,27 @@ const ALTERNATOR_DEFAULT_BATCH_WRITE_ITEMS: usize = 100;
 /// DynamoDB's fixed `BatchWriteItem` item cap (and the safe fallback).
 #[cfg(feature = "dynamo")]
 const DYNAMO_BATCH_WRITE_ITEMS: usize = 25;
+/// Upper bound on configured `batch_write_max_items`. The startup probe
+/// materializes candidate-many `WriteRequest`s before the backend can reject
+/// them, so an absurd value (an items/bytes mix-up, say) must fail validation
+/// instead of allocating at startup. 10x Alternator's default leaves ample
+/// headroom for raised `alternator_max_items_in_batch_write` deployments.
+#[cfg(feature = "dynamo")]
+const MAX_BATCH_WRITE_ITEMS: usize = 1000;
 
 #[cfg(feature = "dynamo")]
 impl ChainDataDynamoMetaConfig {
     fn validate(&self) -> Result<()> {
         if self.effective_max_concurrency() == 0 || self.effective_table_max_concurrency() == 0 {
             bail!("chain-data dynamo concurrency must be >= 1");
+        }
+        if let Some(items) = self.batch_write_max_items {
+            if items == 0 || items > MAX_BATCH_WRITE_ITEMS {
+                bail!(
+                    "chain-data dynamo batch_write_max_items must be within \
+                     1..={MAX_BATCH_WRITE_ITEMS} (items per BatchWriteItem, not bytes)"
+                );
+            }
         }
         validate_pair(
             &self.access_key_id.0,
@@ -809,6 +826,24 @@ mod tests {
         assert!(with_chunk_size(Some(MAX_CHUNK_SIZE + 1))
             .validate()
             .is_err());
+    }
+
+    /// The startup probe materializes batch_write_max_items-many WriteRequests
+    /// before the backend can reject them, so an absurd configured value must
+    /// fail validation instead of allocating (or OOMing) at startup.
+    #[cfg(feature = "dynamo")]
+    #[test]
+    fn dynamo_meta_batch_write_max_items_is_bounded() {
+        let with_items = |items| ChainDataDynamoMetaConfig {
+            table: Some("t".to_string()),
+            batch_write_max_items: items,
+            ..ChainDataDynamoMetaConfig::default()
+        };
+        assert!(with_items(None).validate().is_ok());
+        assert!(with_items(Some(25)).validate().is_ok());
+        assert!(with_items(Some(MAX_BATCH_WRITE_ITEMS)).validate().is_ok());
+        assert!(with_items(Some(0)).validate().is_err());
+        assert!(with_items(Some(100_000_000)).validate().is_err());
     }
 
     #[test]
