@@ -26,7 +26,9 @@ pub(crate) use dynamo::MAX_CHUNK_SIZE;
 pub use dynamo::{DynamoBlobStore, DynamoBlobStoreConfig};
 pub use in_memory::InMemoryBlobStore;
 #[cfg(feature = "s3")]
-pub use s3::{S3BlobStore, S3BlobStoreConfig, S3Credentials, S3ReadStatsSnapshot};
+pub use s3::{
+    S3BlobStore, S3BlobStoreConfig, S3Credentials, S3ExternalBlobReader, S3ReadStatsSnapshot,
+};
 
 use crate::error::{MonadChainDataError, Result};
 

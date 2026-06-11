@@ -71,7 +71,7 @@ pub mod snapshot;
 pub mod source;
 
 use data_track::run_data_track;
-pub use data_track::{CodecResolver, Codecs, PackConfig};
+pub use data_track::{CodecResolver, Codecs, PackConfig, PayloadMode};
 use index::{run_index_track, IndexEngine, OpenState, OpenTail};
 use probe::{run_timing_reporter, IngestProbe};
 use producer::{run_producer, Signaller};
@@ -192,6 +192,10 @@ pub struct IngestRunConfig {
     pub policy: SignalPolicy,
     /// Data-track pack sizing (see [`PackConfig`]).
     pub pack: PackConfig,
+    /// Where row payloads live (see [`PayloadMode`]). A store must be
+    /// ingested under ONE mode for its whole life; the headers are
+    /// per-block, but mixing modes has no supported migration story.
+    pub payload: PayloadMode,
     pub track_buffer: usize,
     /// Tip poll interval (ms) once caught up to the uploaded tip.
     pub poll_ms: u64,
@@ -368,7 +372,10 @@ where
         tables.clone(),
         resolver,
         progress.clone(),
-        config.pack,
+        data_track::DataTrackConfig {
+            pack: config.pack,
+            payload: config.payload,
+        },
         probe,
         chain_seed,
     ));

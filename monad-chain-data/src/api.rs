@@ -107,6 +107,17 @@ impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
         }
     }
 
+    /// Attaches the external archive reader serving `ENCODING_EXTERNAL_V1`
+    /// payload reads (see [`crate::external`]); required to query a store
+    /// ingested in external payload mode.
+    pub fn with_external_payload_reader(
+        mut self,
+        reader: std::sync::Arc<dyn crate::external::ExternalBlobReader>,
+    ) -> Self {
+        self.tables = self.tables.with_external_payload_reader(reader);
+        self
+    }
+
     pub fn tables(&self) -> &Tables<M, B> {
         &self.tables
     }

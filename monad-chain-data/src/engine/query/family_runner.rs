@@ -14,6 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
+    collections::BTreeMap,
     future::Future,
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -44,7 +45,7 @@ use crate::{
     primitives::{
         order::QueryOrder,
         range::ResolvedBlockWindow,
-        records::{BlockRecord, PrimaryId},
+        records::{BlockBlobHeader, BlockRecord, PrimaryId},
         refs::{BlockRef, BlockSpan},
     },
     store::{BlobStore, MetaStore},
@@ -160,6 +161,18 @@ pub(crate) trait IndexedFamilyQuery {
     /// stored form.
     fn decode_stored(bytes: &[u8]) -> Result<Self::StoredRow>;
 
+    /// Decodes one external archive container (`ENCODING_EXTERNAL_V1`) into
+    /// its stored rows, in row order. `container_idx` is the container's
+    /// position (the tx index), `row_base` the global row index of its first
+    /// row, `tx_status` its status bit. See [`crate::external`] for the
+    /// container formats.
+    fn decode_external_container(
+        container_idx: usize,
+        row_base: usize,
+        tx_status: bool,
+        bytes: &[u8],
+    ) -> Result<Vec<Self::StoredRow>>;
+
     /// Stamps per-query context (block number/hash, idx) onto a stored row,
     /// producing the public record. Borrows so a cached row can be stamped
     /// without giving up the cached copy; the default clones into
@@ -180,24 +193,26 @@ pub(crate) trait IndexedFamilyQuery {
         idx_in_block: usize,
     ) -> Result<Self::Record>;
 
-    /// One decompressed frame straight to a record: decode then stamp.
-    fn decode_record(
-        bytes: &[u8],
+    /// Stamps one already-decoded stored row for the block-scan path.
+    /// `Ok(None)` skips the row: projected families (transfers) store rows
+    /// that yield no record. The default suits rows that map one-to-one onto
+    /// records.
+    fn scan_record_from_stored(
+        stored: Self::StoredRow,
         block_record: &BlockRecord,
         idx_in_block: usize,
-    ) -> Result<Self::Record> {
-        Self::into_record_owned(Self::decode_stored(bytes)?, block_record, idx_in_block)
+    ) -> Result<Option<Self::Record>> {
+        Self::into_record_owned(stored, block_record, idx_in_block).map(Some)
     }
 
-    /// Decodes one decompressed row frame for the block-scan path. `Ok(None)`
-    /// skips the frame: projected families (transfers) store frames that yield
-    /// no record. The default suits frames that map one-to-one onto records.
+    /// Decodes one decompressed row frame for the block-scan path; see
+    /// [`Self::scan_record_from_stored`] for the skip semantics.
     fn decode_scan_record(
         bytes: &[u8],
         block_record: &BlockRecord,
         idx_in_block: usize,
     ) -> Result<Option<Self::Record>> {
-        Self::decode_record(bytes, block_record, idx_in_block).map(Some)
+        Self::scan_record_from_stored(Self::decode_stored(bytes)?, block_record, idx_in_block)
     }
 
     async fn load_block_ref(&self, block_number: u64) -> Result<BlockRef> {
@@ -259,103 +274,12 @@ pub(crate) trait IndexedFamilyQuery {
                 .ok_or(MonadChainDataError::MissingData(ERR_MISSING_HEADER))?;
             IndexedQueryStats::add_us(&stats.materialize_header_us, started);
 
-            // Coalesce only the missed rows; a frame's `output_pos` is the
-            // caller's position, so fetched rows slot straight into `rows`.
-            let mut spans = coalesce_frame_ranges(
-                misses.iter().copied(),
-                self.tables().query_config().materialize_span_max_gap_bytes,
-                self.tables().query_config().materialize_span_max_bytes,
-                |idx_in_block| {
-                    if idx_in_block + 1 >= header.offsets.len() {
-                        return Err(MonadChainDataError::Decode(ERR_INDEX_OUT_OF_RANGE));
-                    }
-                    Ok(header.abs_range(idx_in_block))
-                },
-            )?;
-            let selected_bytes: usize = spans
-                .iter()
-                .flat_map(|span| &span.frames)
-                .map(|frame| frame.abs_end.saturating_sub(frame.abs_start))
-                .sum();
-            let decoder = self
-                .tables()
-                .block_decoder(family, header.dict_version)
-                .await?;
-            let mut decompressor = RowDecompressor::new(decoder.as_ref())?;
-
-            // A dense selection collapses to one merged span covering the
-            // whole family region: same fetch+decode loop, one range read.
-            let budget_bytes = merge_dense_selection_spans(
-                &mut spans,
-                selected_bytes,
-                header.region_range(),
-                self.tables().query_config(),
-            );
-
-            // Byte-weighted decode budget: acquired only on a cache miss
-            // (fully-cached blocks never touch the semaphore) and held across
-            // the reads+decodes below.
-            let permits = materialize_permits_for_bytes(self.tables(), budget_bytes);
-            let _permit = self
-                .tables()
-                .materialize_budget()
-                .acquire_many(permits)
-                .await
-                .expect("materialization budget semaphore is never closed");
-
-            for span in spans {
-                let span_selected_bytes: usize = span
-                    .frames
-                    .iter()
-                    .map(|frame| frame.abs_end.saturating_sub(frame.abs_start))
-                    .sum();
-                let span_read_bytes = span.abs_end.saturating_sub(span.abs_start);
-                IndexedQueryStats::add_count(&stats.materialize_spans, 1);
-                IndexedQueryStats::add_count(
-                    &stats.materialize_coalesced_read_bytes,
-                    span_read_bytes as u64,
-                );
-                IndexedQueryStats::add_count(
-                    &stats.materialize_selected_frame_bytes,
-                    span_selected_bytes as u64,
-                );
-                IndexedQueryStats::add_count(
-                    &stats.materialize_coalesced_overread_bytes,
-                    span_read_bytes.saturating_sub(span_selected_bytes) as u64,
-                );
-                let started = Instant::now();
-                let span_bytes = self
-                    .tables()
-                    .read_block_blob_header_range(
-                        block_number,
-                        &header,
-                        span.abs_start,
-                        span.abs_end,
-                    )
-                    .await?
-                    .ok_or(MonadChainDataError::MissingData(ERR_MISSING_BLOB))?;
-                IndexedQueryStats::add_us(&stats.materialize_blob_frame_us, started);
-
-                for frame in span.frames {
-                    let start = frame.abs_start.saturating_sub(span.abs_start);
-                    let end = frame.abs_end.saturating_sub(span.abs_start);
-                    if start > end || end > span_bytes.len() {
-                        return Err(MonadChainDataError::Decode(ERR_INVALID_RANGE));
-                    }
-                    let started = Instant::now();
-                    let bytes = decompressor.decompress(&span_bytes[start..end])?;
-                    IndexedQueryStats::add_us(&stats.materialize_decode_row_us, started);
-                    let started = Instant::now();
-                    let stored = Arc::new(Self::decode_stored(&bytes)?);
-                    cache.insert(
-                        block_number,
-                        frame.idx_in_block,
-                        Arc::clone(&stored),
-                        bytes.len(),
-                    );
-                    rows[frame.output_pos] = Some(stored);
-                    IndexedQueryStats::add_us(&stats.materialize_entry_decode_us, started);
-                }
+            if header.is_external() {
+                self.fetch_external_rows(block_number, &header, &misses, &mut rows, stats)
+                    .await?;
+            } else {
+                self.fetch_native_rows(block_number, &header, &misses, &mut rows, stats)
+                    .await?;
             }
         }
 
@@ -366,6 +290,211 @@ pub(crate) trait IndexedFamilyQuery {
                 Self::into_record(&stored, &block_record, idx)
             })
             .collect()
+    }
+
+    /// Native-encoding miss path: coalesce the missed row frames into range
+    /// reads, decompress and decode each, slotting rows by `output_pos`.
+    async fn fetch_native_rows(
+        &self,
+        block_number: u64,
+        header: &BlockBlobHeader,
+        misses: &[(usize, usize)],
+        rows: &mut [Option<Arc<Self::StoredRow>>],
+        stats: &IndexedQueryStats,
+    ) -> Result<()> {
+        let family = Self::family();
+        let cache = self.row_cache();
+
+        // Coalesce only the missed rows; a frame's `output_pos` is the
+        // caller's position, so fetched rows slot straight into `rows`.
+        let mut spans = coalesce_frame_ranges(
+            misses.iter().copied(),
+            self.tables().query_config().materialize_span_max_gap_bytes,
+            self.tables().query_config().materialize_span_max_bytes,
+            |idx_in_block| {
+                if idx_in_block + 1 >= header.offsets.len() {
+                    return Err(MonadChainDataError::Decode(ERR_INDEX_OUT_OF_RANGE));
+                }
+                Ok(header.abs_range(idx_in_block))
+            },
+        )?;
+        let selected_bytes = spans_selected_bytes(&spans);
+        let decoder = self
+            .tables()
+            .block_decoder(family, header.dict_version)
+            .await?;
+        let mut decompressor = RowDecompressor::new(decoder.as_ref())?;
+
+        // A dense selection collapses to one merged span covering the
+        // whole family region: same fetch+decode loop, one range read.
+        let budget_bytes = merge_dense_selection_spans(
+            &mut spans,
+            selected_bytes,
+            header.region_range(),
+            self.tables().query_config(),
+        );
+
+        // Byte-weighted decode budget: acquired only on a cache miss
+        // (fully-cached blocks never touch the semaphore) and held across
+        // the reads+decodes below.
+        let permits = materialize_permits_for_bytes(self.tables(), budget_bytes);
+        let _permit = self
+            .tables()
+            .materialize_budget()
+            .acquire_many(permits)
+            .await
+            .expect("materialization budget semaphore is never closed");
+
+        for span in spans {
+            let span_bytes = self.read_span(block_number, header, &span, stats).await?;
+            for frame in span.frames {
+                let start = frame.abs_start.saturating_sub(span.abs_start);
+                let end = frame.abs_end.saturating_sub(span.abs_start);
+                if start > end || end > span_bytes.len() {
+                    return Err(MonadChainDataError::Decode(ERR_INVALID_RANGE));
+                }
+                let started = Instant::now();
+                let bytes = decompressor.decompress(&span_bytes[start..end])?;
+                IndexedQueryStats::add_us(&stats.materialize_decode_row_us, started);
+                let started = Instant::now();
+                let stored = Arc::new(Self::decode_stored(&bytes)?);
+                cache.insert(
+                    block_number,
+                    frame.idx_in_block,
+                    Arc::clone(&stored),
+                    bytes.len(),
+                );
+                rows[frame.output_pos] = Some(stored);
+                IndexedQueryStats::add_us(&stats.materialize_entry_decode_us, started);
+            }
+        }
+        Ok(())
+    }
+
+    /// External-encoding miss path: resolve missed rows to their containers,
+    /// coalesce CONTAINER ranges (a container shared by several rows is read
+    /// and decoded once), and pick each row by its ordinal. No zstd — archive
+    /// containers are uncompressed RLP. Only requested rows populate the
+    /// cache; sibling rows of a decoded container are discarded (a possible
+    /// future optimization).
+    async fn fetch_external_rows(
+        &self,
+        block_number: u64,
+        header: &BlockBlobHeader,
+        misses: &[(usize, usize)],
+        rows: &mut [Option<Arc<Self::StoredRow>>],
+        stats: &IndexedQueryStats,
+    ) -> Result<()> {
+        let cache = self.row_cache();
+
+        let row_count = header.row_count();
+        let mut by_container: BTreeMap<usize, Vec<(usize, usize)>> = BTreeMap::new();
+        for &(output_pos, idx_in_block) in misses {
+            if idx_in_block >= row_count {
+                return Err(MonadChainDataError::Decode(ERR_INDEX_OUT_OF_RANGE));
+            }
+            let (container, _) = header.container_of_row(idx_in_block);
+            by_container
+                .entry(container)
+                .or_default()
+                .push((output_pos, idx_in_block));
+        }
+
+        let mut spans = coalesce_frame_ranges(
+            by_container.keys().map(|&container| (container, container)),
+            self.tables().query_config().materialize_span_max_gap_bytes,
+            self.tables().query_config().materialize_span_max_bytes,
+            |container| {
+                if container + 1 >= header.offsets.len() {
+                    return Err(MonadChainDataError::Decode(ERR_INDEX_OUT_OF_RANGE));
+                }
+                Ok(header.abs_range(container))
+            },
+        )?;
+        let selected_bytes = spans_selected_bytes(&spans);
+        let budget_bytes = merge_dense_selection_spans(
+            &mut spans,
+            selected_bytes,
+            header.region_range(),
+            self.tables().query_config(),
+        );
+        let permits = materialize_permits_for_bytes(self.tables(), budget_bytes);
+        let _permit = self
+            .tables()
+            .materialize_budget()
+            .acquire_many(permits)
+            .await
+            .expect("materialization budget semaphore is never closed");
+
+        for span in spans {
+            let span_bytes = self.read_span(block_number, header, &span, stats).await?;
+            // `output_pos` of a container frame is unused (the per-row
+            // positions live in `by_container`).
+            for frame in span.frames {
+                let start = frame.abs_start.saturating_sub(span.abs_start);
+                let end = frame.abs_end.saturating_sub(span.abs_start);
+                if start > end || end > span_bytes.len() {
+                    return Err(MonadChainDataError::Decode(ERR_INVALID_RANGE));
+                }
+                let container = frame.idx_in_block;
+                let started = Instant::now();
+                let decoded: Vec<Arc<Self::StoredRow>> =
+                    decode_container_rows::<Self>(header, container, &span_bytes[start..end])?
+                        .into_iter()
+                        .map(Arc::new)
+                        .collect();
+                // Charge each cached row its share of the container bytes.
+                let row_weight = (end - start) / decoded.len().max(1);
+                let row_base = header.container_row_base(container);
+                for &(output_pos, idx_in_block) in &by_container[&container] {
+                    let stored = decoded
+                        .get(idx_in_block - row_base)
+                        .cloned()
+                        .ok_or(MonadChainDataError::Decode(ERR_INDEX_OUT_OF_RANGE))?;
+                    cache.insert(block_number, idx_in_block, Arc::clone(&stored), row_weight);
+                    rows[output_pos] = Some(stored);
+                }
+                IndexedQueryStats::add_us(&stats.materialize_entry_decode_us, started);
+            }
+        }
+        Ok(())
+    }
+
+    /// One coalesced span's range read, with the read-shape stats counters.
+    async fn read_span(
+        &self,
+        block_number: u64,
+        header: &BlockBlobHeader,
+        span: &ReadSpan,
+        stats: &IndexedQueryStats,
+    ) -> Result<bytes::Bytes> {
+        let span_selected_bytes: usize = span
+            .frames
+            .iter()
+            .map(|frame| frame.abs_end.saturating_sub(frame.abs_start))
+            .sum();
+        let span_read_bytes = span.abs_end.saturating_sub(span.abs_start);
+        IndexedQueryStats::add_count(&stats.materialize_spans, 1);
+        IndexedQueryStats::add_count(
+            &stats.materialize_coalesced_read_bytes,
+            span_read_bytes as u64,
+        );
+        IndexedQueryStats::add_count(
+            &stats.materialize_selected_frame_bytes,
+            span_selected_bytes as u64,
+        );
+        IndexedQueryStats::add_count(
+            &stats.materialize_coalesced_overread_bytes,
+            span_read_bytes.saturating_sub(span_selected_bytes) as u64,
+        );
+        let started = Instant::now();
+        let span_bytes = self
+            .tables()
+            .read_block_blob_header_range(block_number, header, span.abs_start, span.abs_end)
+            .await?
+            .ok_or(MonadChainDataError::MissingData(ERR_MISSING_BLOB))?;
+        IndexedQueryStats::add_us(&stats.materialize_blob_frame_us, started);
+        Ok(span_bytes)
     }
 
     /// Block-scan materialization: reads the block's whole family region and
@@ -409,6 +538,34 @@ pub(crate) trait IndexedFamilyQuery {
             .read_block_blob_region(block_number, &header)
             .await?
             .ok_or(MonadChainDataError::MissingData(ERR_MISSING_BLOB))?;
+
+        if header.is_external() {
+            // Decode every container once (ascending), then emit rows in
+            // query order through the same scan-stamping hook as native.
+            let mut stored_rows: Vec<Option<Self::StoredRow>> =
+                Vec::with_capacity(header.row_count());
+            for container in 0..header.container_count() {
+                let start = header.offsets[container] as usize;
+                let end = header.offsets[container + 1] as usize;
+                if start > end || end > blob.len() {
+                    return Err(MonadChainDataError::Decode(ERR_INVALID_RANGE));
+                }
+                let decoded = decode_container_rows::<Self>(&header, container, &blob[start..end])?;
+                stored_rows.extend(decoded.into_iter().map(Some));
+            }
+            let mut records = Vec::new();
+            for idx in order.iterate(0..stored_rows.len()) {
+                let stored = stored_rows[idx].take().expect("each row visited once");
+                let Some(record) = Self::scan_record_from_stored(stored, &block_record, idx)?
+                else {
+                    continue;
+                };
+                if filter.matches(&record) {
+                    records.push(record);
+                }
+            }
+            return Ok((block_ref, records));
+        }
 
         let decoder = self
             .tables()
@@ -497,10 +654,46 @@ struct CoalescedFrame {
 }
 
 #[derive(Clone, Debug)]
-struct ReadSpan {
+pub(crate) struct ReadSpan {
     abs_start: usize,
     abs_end: usize,
     frames: Vec<CoalescedFrame>,
+}
+
+/// Total selected (frame) bytes across spans — the pre-merge decode-budget cost.
+fn spans_selected_bytes(spans: &[ReadSpan]) -> usize {
+    spans
+        .iter()
+        .flat_map(|span| &span.frames)
+        .map(|frame| frame.abs_end.saturating_sub(frame.abs_start))
+        .sum()
+}
+
+/// Decodes one external container through the family's decoder and checks the
+/// row count against the header's manifest — a mismatch means the archive
+/// object and the indexed metadata disagree, which must fail loudly rather
+/// than mis-assign ordinals.
+fn decode_container_rows<R>(
+    header: &BlockBlobHeader,
+    container: usize,
+    bytes: &[u8],
+) -> Result<Vec<R::StoredRow>>
+where
+    R: IndexedFamilyQuery + ?Sized,
+{
+    let row_base = header.container_row_base(container);
+    let decoded = R::decode_external_container(
+        container,
+        row_base,
+        header.container_status_bit(container),
+        bytes,
+    )?;
+    if decoded.len() != header.container_row_len(container) {
+        return Err(MonadChainDataError::Decode(
+            "external container row count disagrees with the block header",
+        ));
+    }
+    Ok(decoded)
 }
 
 /// Sorts the requested `(output_pos, idx_in_block)` frames by byte offset and

@@ -27,7 +27,7 @@ use crate::{
         query::{family_runner::IndexedFamilyQuery, row_cache::RowCache},
         tables::Tables,
     },
-    error::Result,
+    error::{MonadChainDataError, Result},
     primitives::{limits::QueryEnvelope, records::BlockRecord, refs::BlockSpan},
     store::{BlobStore, MetaStore},
     txs::TxEntry,
@@ -137,6 +137,20 @@ impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery for LogMaterializer<'a, 
 
     fn decode_stored(bytes: &[u8]) -> Result<StoredLog> {
         StoredLog::decode(bytes)
+    }
+
+    fn decode_external_container(
+        container_idx: usize,
+        row_base: usize,
+        _tx_status: bool,
+        bytes: &[u8],
+    ) -> Result<Vec<StoredLog>> {
+        // One `ReceiptWithLogIndex` item per container (= per tx).
+        let tx_index = u32::try_from(container_idx)
+            .map_err(|_| MonadChainDataError::Decode("tx index overflow"))?;
+        let first_log_index = u32::try_from(row_base)
+            .map_err(|_| MonadChainDataError::Decode("log index overflow"))?;
+        crate::external::decode_external_receipt_logs(bytes, tx_index, first_log_index)
     }
 
     fn into_record_owned(

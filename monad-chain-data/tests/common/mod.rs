@@ -135,6 +135,7 @@ pub fn block_with_logs(header: EvmBlockHeader, logs_by_tx: Vec<Vec<Log>>) -> Fin
         logs_by_tx,
         txs: Vec::new(),
         traces: Vec::new(),
+        external: None,
     }
 }
 
@@ -166,6 +167,7 @@ pub fn block_with_txs(header: EvmBlockHeader, txs: Vec<IngestTx>) -> FinalizedBl
         logs_by_tx: vec![Vec::new(); txs.len()],
         txs,
         traces: Vec::new(),
+        external: None,
     }
 }
 
@@ -176,6 +178,7 @@ pub fn block_with_traces(header: EvmBlockHeader, traces: Vec<IngestTrace>) -> Fi
         logs_by_tx: Vec::new(),
         txs: Vec::new(),
         traces,
+        external: None,
     }
 }
 

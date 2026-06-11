@@ -138,6 +138,16 @@ impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery for TxMaterializer<'a, M
         StoredTxEnvelope::decode(bytes)
     }
 
+    fn decode_external_container(
+        _container_idx: usize,
+        _row_base: usize,
+        _tx_status: bool,
+        bytes: &[u8],
+    ) -> Result<Vec<StoredTxEnvelope>> {
+        // Identity family: one `TxEnvelopeWithSender` item per container.
+        Ok(vec![crate::external::decode_external_tx(bytes)?])
+    }
+
     fn into_record_owned(
         stored: StoredTxEnvelope,
         block_record: &BlockRecord,

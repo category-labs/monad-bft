@@ -244,6 +244,7 @@ async fn relations_attach_blocks_and_transactions() {
         logs_by_tx: vec![vec![]],
         txs: vec![common::ingest_tx(caller, Some(callee), Vec::new())],
         traces: vec![top_level_call(0, caller, callee, U256::from(1u64), vec![])],
+        external: None,
     }];
     let service = service_for(blocks).await;
 

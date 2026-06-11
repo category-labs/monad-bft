@@ -18,6 +18,7 @@ pub mod blocks;
 pub mod config;
 pub mod engine;
 pub mod error;
+pub mod external;
 pub mod ingest;
 pub mod ingest_types;
 pub mod logs;
@@ -37,13 +38,14 @@ pub mod txs;
 pub use alloy_primitives::{Address, Bytes, Log, LogData, B256};
 pub use api::MonadChainDataService;
 pub use blocks::{Block, QueryBlocksRequest, QueryBlocksResponse};
-#[cfg(feature = "s3")]
-pub use config::ChainDataS3BlobConfig;
 pub use config::{
     open_configured_chain_data_reader, run_configured_chain_data_engine_ingest,
-    ChainDataBlobBackendConfig, ChainDataEngineConfig, ChainDataMetaBackendConfig,
-    ChainDataStoreConfig, ConfiguredChainDataReader,
+    ChainDataArchiveBackendConfig, ChainDataBlobBackendConfig, ChainDataEngineConfig,
+    ChainDataMetaBackendConfig, ChainDataPayloadConfig, ChainDataStoreConfig,
+    ConfiguredChainDataReader,
 };
+#[cfg(feature = "s3")]
+pub use config::{ChainDataArchiveS3Config, ChainDataS3BlobConfig};
 #[cfg(feature = "dynamo")]
 pub use config::{
     ChainDataDynamoBlobConfig, ChainDataDynamoMetaConfig, ChainDataDynamoTableLayoutConfig,
@@ -53,7 +55,10 @@ pub use engine::{
     tables::{DictConfig, PublicationTables, QueryRuntimeConfig, Tables},
 };
 pub use error::MonadChainDataError;
-pub use ingest::source::ChainDataIngestSource;
+pub use external::{
+    ExternalBlobReader, ExternalFamilyRegion, ExternalPayloadSpec, InMemoryExternalBlobReader,
+};
+pub use ingest::{source::ChainDataIngestSource, PayloadMode};
 pub use ingest_types::{CallKind, FinalizedBlock, Hash32, IngestTrace, IngestTx};
 pub use logs::{LogEntry, LogFilter, LogsRelations, QueryLogsRequest, QueryLogsResponse};
 pub use mem_scan::{scan_block_logs, scan_block_txs, MemLogsBlock, MemTx};

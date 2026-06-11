@@ -38,7 +38,7 @@ use crate::{
         resolver::TablesCodecResolver,
         run_ingest,
         snapshot::recover_checkpoint,
-        IngestRunConfig, PackConfig, SignalPolicy, SnapshotStore,
+        IngestRunConfig, PackConfig, PayloadMode, SignalPolicy, SnapshotStore,
     },
     ingest_types::{FinalizedBlock, Hash32},
     logs::{LogFilter, QueryLogsRequest},
@@ -77,6 +77,7 @@ fn block_with_logs(number: u64, parent: Hash32, logs: &[(u8, u8)]) -> FinalizedB
         logs_by_tx: vec![block_logs],
         txs: Vec::new(),
         traces: Vec::new(),
+        external: None,
     }
 }
 
@@ -192,6 +193,7 @@ fn backfill_config(start: u64, end: u64) -> IngestRunConfig {
             tip_lag_divisor: 1,
             checkpoint_every_blocks: 3,
         },
+        payload: PayloadMode::Native,
         track_buffer: 16,
         poll_ms: 1,
     }

@@ -51,6 +51,12 @@ use crate::{
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct ChainDataEngineConfig {
+    /// Where row payloads live: `"native"` re-encodes rows into chain-data
+    /// pack blobs; `"external-archive"` indexes the source's existing
+    /// monad-archive objects (every fetched block must carry an external
+    /// payload spec, and readers need `[store.archive]` access). A store must
+    /// keep one mode for its whole life.
+    pub payload: ChainDataPayloadConfig,
     /// Inclusive absolute end block for a bounded backfill: the engine catches
     /// the resume point up to here, then stops. Absent → follow the tip (live).
     /// Restart-safe: re-running with the same `end` resumes and finishes the gap.
@@ -91,9 +97,28 @@ pub struct ChainDataEngineConfig {
     pub fetch_buffer: usize,
 }
 
+/// Serde face of [`crate::ingest::PayloadMode`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ChainDataPayloadConfig {
+    #[default]
+    Native,
+    ExternalArchive,
+}
+
+impl From<ChainDataPayloadConfig> for crate::ingest::PayloadMode {
+    fn from(config: ChainDataPayloadConfig) -> Self {
+        match config {
+            ChainDataPayloadConfig::Native => Self::Native,
+            ChainDataPayloadConfig::ExternalArchive => Self::ExternalArchive,
+        }
+    }
+}
+
 impl Default for ChainDataEngineConfig {
     fn default() -> Self {
         Self {
+            payload: ChainDataPayloadConfig::default(),
             end: None,
             count: None,
             unsafe_seed_begin: None,
@@ -227,13 +252,20 @@ where
     let snapshots = SnapshotStore::new(meta_store.clone(), blob_store.clone());
     // One Arc<Tables> is shared by the engine (writes) and the resolver (dict
     // training reads back through the same caches).
-    let tables = Arc::new(Tables::with_all_configs(
+    let mut tables = Tables::with_all_configs(
         meta_store.clone(),
         blob_store,
         cache_config,
         DictConfig::default(),
         QueryRuntimeConfig::default(),
-    ));
+    );
+    // Ingest never reads external payloads itself (dict training is disabled
+    // in external mode), but attaching configured archive access keeps the
+    // shared `Tables` fully wired for any read path it serves.
+    if let Some(reader) = super::build_external_payload_reader(&store_config.archive).await? {
+        tables = tables.with_external_payload_reader(reader);
+    }
+    let tables = Arc::new(tables);
     let publisher = Arc::new(PublicationTables::new(meta_store));
     let resolver = TablesCodecResolver::new(tables.clone());
 
@@ -264,6 +296,7 @@ where
     info!(
         end = engine_config.end,
         count = engine_config.count,
+        payload = ?engine_config.payload,
         "starting chain-data ingest (branchless engine)"
     );
     run_ingest(
@@ -284,6 +317,7 @@ where
                 target_bytes: engine_config.pack_target_bytes,
                 max_blocks: engine_config.pack_max_blocks,
             },
+            payload: engine_config.payload.into(),
             track_buffer: engine_config.track_buffer,
             poll_ms: engine_config.poll_ms,
         },

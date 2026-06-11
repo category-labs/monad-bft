@@ -29,7 +29,9 @@ use crate::{engine::tables::QueryRuntimeConfig, store::CacheConfig};
 pub mod ingest;
 pub mod reader;
 
-pub use ingest::{run_configured_chain_data_engine_ingest, ChainDataEngineConfig};
+pub use ingest::{
+    run_configured_chain_data_engine_ingest, ChainDataEngineConfig, ChainDataPayloadConfig,
+};
 pub use reader::{open_configured_chain_data_reader, ConfiguredChainDataReader};
 
 /// An optional secret (credential) that never renders its value via `Debug`, so
@@ -57,6 +59,10 @@ pub struct ChainDataStoreConfig {
     /// Reader-side query-runtime limits (fan-out + decode budget).
     pub query: ChainDataQueryConfig,
     pub reader_only: bool,
+    /// Read-only access to the monad-archive object store holding external
+    /// payloads (`payload = "external-archive"` ingest). Required on readers
+    /// of an externally-ingested store; ignored for fully native stores.
+    pub archive: Option<ChainDataArchiveBackendConfig>,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -162,7 +168,128 @@ impl ChainDataStoreConfig {
     pub fn validate_reader(&self) -> Result<()> {
         self.meta.validate()?;
         self.blob.validate()?;
+        if let Some(archive) = &self.archive {
+            archive.validate()?;
+        }
         Ok(())
+    }
+}
+
+/// Backend selection for the external archive's object store. Keys are RAW
+/// archive object keys (e.g. `block/000000000123`) — no chain-data
+/// prefix/table/hex layout applies.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "kebab-case")]
+pub enum ChainDataArchiveBackendConfig {
+    #[cfg(feature = "s3")]
+    S3(ChainDataArchiveS3Config),
+    #[cfg(not(feature = "s3"))]
+    Unavailable,
+}
+
+impl ChainDataArchiveBackendConfig {
+    fn validate(&self) -> Result<()> {
+        match self {
+            #[cfg(feature = "s3")]
+            Self::S3(config) => config.validate(),
+            #[cfg(not(feature = "s3"))]
+            Self::Unavailable => bail!("chain-data archive access requires the s3 feature"),
+        }
+    }
+}
+
+/// Read-only S3 access to a monad-archive bucket.
+#[cfg(feature = "s3")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct ChainDataArchiveS3Config {
+    pub bucket: Option<String>,
+    pub region: Option<String>,
+    pub profile: Option<String>,
+    pub endpoint_urls: Vec<String>,
+    pub force_path_style: bool,
+    pub max_concurrency: usize,
+    pub access_key_id: Redacted,
+    pub secret_access_key: Redacted,
+}
+
+#[cfg(feature = "s3")]
+impl Default for ChainDataArchiveS3Config {
+    fn default() -> Self {
+        Self {
+            bucket: None,
+            region: None,
+            profile: None,
+            endpoint_urls: Vec::new(),
+            force_path_style: false,
+            max_concurrency: 64,
+            access_key_id: Redacted(None),
+            secret_access_key: Redacted(None),
+        }
+    }
+}
+
+#[cfg(feature = "s3")]
+impl ChainDataArchiveS3Config {
+    fn validate(&self) -> Result<()> {
+        if self.bucket.is_none() {
+            bail!("chain-data archive s3 requires bucket");
+        }
+        if self.max_concurrency == 0 {
+            bail!("chain-data archive s3 max_concurrency must be >= 1");
+        }
+        validate_pair(
+            &self.access_key_id.0,
+            &self.secret_access_key.0,
+            "archive s3 access_key_id",
+            "archive s3 secret_access_key",
+        )
+    }
+}
+
+/// Builds the configured external archive reader, or `None` when no archive
+/// access is configured. Shared by the ingest assembly and the reader.
+///
+/// Gated on `dynamo` because only the dynamo assembly paths construct readers
+/// today, not because the reader needs that backend (it is S3-only).
+#[cfg(feature = "dynamo")]
+pub(crate) async fn build_external_payload_reader(
+    config: &Option<ChainDataArchiveBackendConfig>,
+) -> Result<Option<std::sync::Arc<dyn crate::external::ExternalBlobReader>>> {
+    match config {
+        None => Ok(None),
+        #[cfg(feature = "s3")]
+        Some(ChainDataArchiveBackendConfig::S3(s3)) => {
+            use crate::store::{S3BlobStoreConfig, S3Credentials, S3ExternalBlobReader};
+
+            let credentials = match (&s3.access_key_id.0, &s3.secret_access_key.0) {
+                (Some(access_key_id), Some(secret_access_key)) => Some(S3Credentials {
+                    access_key_id: access_key_id.clone(),
+                    secret_access_key: secret_access_key.clone(),
+                    session_token: None,
+                }),
+                _ => None,
+            };
+            let store_config = S3BlobStoreConfig {
+                bucket: s3.bucket.clone().expect("validated archive s3 bucket"),
+                root_prefix: String::new(),
+                endpoint_urls: s3.endpoint_urls.clone(),
+                region: s3.region.clone(),
+                profile: s3.profile.clone(),
+                force_path_style: s3.force_path_style,
+                max_concurrency: s3.max_concurrency,
+                create_bucket: false,
+                credentials,
+            };
+            let reader = S3ExternalBlobReader::new(store_config)
+                .await
+                .context("building chain-data archive S3 reader")?;
+            Ok(Some(std::sync::Arc::new(reader)))
+        }
+        #[cfg(not(feature = "s3"))]
+        Some(ChainDataArchiveBackendConfig::Unavailable) => {
+            bail!("chain-data archive access requires the s3 feature")
+        }
     }
 }
 

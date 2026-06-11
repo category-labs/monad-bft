@@ -27,7 +27,7 @@ use crate::{
         query::{family_runner::IndexedFamilyQuery, row_cache::RowCache},
         tables::Tables,
     },
-    error::Result,
+    error::{MonadChainDataError, Result},
     primitives::{limits::QueryEnvelope, records::BlockRecord, refs::BlockSpan},
     store::{BlobStore, MetaStore},
     txs::TxEntry,
@@ -147,6 +147,19 @@ impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery for TraceMaterializer<'a
 
     fn decode_stored(bytes: &[u8]) -> Result<StoredTrace> {
         StoredTrace::decode(bytes)
+    }
+
+    fn decode_external_container(
+        container_idx: usize,
+        _row_base: usize,
+        tx_status: bool,
+        bytes: &[u8],
+    ) -> Result<Vec<StoredTrace>> {
+        // One trace blob item per container (= per tx); rows are its
+        // DFS-flattened frames.
+        let tx_index = u32::try_from(container_idx)
+            .map_err(|_| MonadChainDataError::Decode("tx index overflow"))?;
+        crate::external::decode_external_trace_container(bytes, tx_index, tx_status)
     }
 
     fn into_record_owned(

@@ -169,6 +169,18 @@ impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery for TransferMaterializer
         StoredTrace::decode(bytes)
     }
 
+    fn decode_external_container(
+        container_idx: usize,
+        _row_base: usize,
+        tx_status: bool,
+        bytes: &[u8],
+    ) -> Result<Vec<StoredTrace>> {
+        // Shares the trace family's container format (and row cache).
+        let tx_index = u32::try_from(container_idx)
+            .map_err(|_| MonadChainDataError::Decode("tx index overflow"))?;
+        crate::external::decode_external_trace_container(bytes, tx_index, tx_status)
+    }
+
     fn into_record_owned(
         stored: StoredTrace,
         block_record: &BlockRecord,
@@ -183,9 +195,10 @@ impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery for TransferMaterializer
     /// block-scan path: `TransferFilter::matches` omits the `status` /
     /// `tx_status` re-check the bitmap pre-filters, so a scan would emit
     /// reverted-but-value-carrying frames. Hard-fail rather than silently
-    /// mis-route.
-    fn decode_scan_record(
-        _bytes: &[u8],
+    /// mis-route. (Both the native and external scan paths funnel through
+    /// this hook.)
+    fn scan_record_from_stored(
+        _stored: StoredTrace,
         _block_record: &BlockRecord,
         _idx_in_block: usize,
     ) -> Result<Option<TransferEntry>> {

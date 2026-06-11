@@ -193,6 +193,7 @@ async fn transfer_query_hits_rows_cached_by_trace_query() {
             U256::from(7u64),
             vec![],
         )],
+        external: None,
     }])
     .await;
     let service = reader_with_row_cache(&store);

@@ -298,6 +298,7 @@ async fn chain_data_test_reader() -> monad_chain_data::ConfiguredChainDataReader
             }]],
             txs: Vec::new(),
             traces: Vec::new(),
+            external: None,
         };
         parent = block.block_hash();
         blocks.push(block);

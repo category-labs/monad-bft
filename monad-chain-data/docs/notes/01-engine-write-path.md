@@ -82,7 +82,7 @@ All paths relative to `/home/jhow/monad-bft/monad-chain-data/`. The engine modul
 
 ### Caller-side types the engine contract depends on (src/primitives/records.rs)
 - **`PrimaryId`** (`records.rs:23-52`) + per-family newtypes `LogId/TxId/TraceId` (`:81-83`) — global, dense, monotonically minted per family.
-- **`BlockBlobHeader`** (`records.rs:89-144`) — `{offsets: Vec<u32> (row_count+1, last = blob len), dict_version, base_offset (family region start within combined blob), physical_key (empty ⇒ own object under BE block-number key), physical_base_offset}`. RLP. `abs_range(idx)` / `region_range()` compute absolute byte ranges in the physical object.
+- **`BlockBlobHeader`** (`records.rs:89-144`) — `{offsets: Vec<u32> (row_count+1, last = blob len), dict_version, base_offset (family region start within combined blob), physical_key (empty ⇒ own object under BE block-number key), physical_base_offset}`. RLP. `abs_range(idx)` / `region_range()` compute absolute byte ranges in the physical object. *Superseded by the external-payload change*: the struct gained `encoding`/`container_rows`/`container_status`, `offsets` delimits *units* (rows in native encoding, archive containers in external), and `row_count()` is no longer always `offsets.len()-1` — see `src/external.rs` and the `ENCODING_EXTERNAL_V1` docs in `records.rs`.
 - **`FamilyWindowRecord`** (`:152-162`) — `{first_primary_id, count}`.
 - **`BlockRecord`** (`:164-188`) — `{block_number, block_hash, parent_hash, logs, txs, traces, row_chain}`. RLP; `traces` and `row_chain` additions were hard format breaks (doc comments `:171-177`).
 - **`PublicationState`** (`:193-209`) — `{indexed_finalized_head, head_row_chain}` RLP.

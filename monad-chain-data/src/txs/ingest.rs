@@ -20,7 +20,7 @@ use crate::{
     engine::{
         bitmap::{IndexKind, StreamKey},
         digest::ChainDigest,
-        row_codec::{encode_block_rows, RowCodec},
+        row_codec::{digest_block_rows, encode_block_rows, RowCodec},
     },
     error::{MonadChainDataError, Result},
     ingest_types::{FinalizedBlock, Hash32, IngestTx},
@@ -54,14 +54,21 @@ pub(crate) fn encode_block_txs(
     txs: &[IngestTx],
     codec: &RowCodec,
 ) -> Result<(BlockBlobHeader, Vec<u8>, ChainDigest)> {
-    encode_block_rows(txs, codec, "block tx blob too large", |tx| {
-        StoredTxEnvelope {
-            tx_hash: tx.tx_hash,
-            sender: tx.sender,
-            signed_tx_bytes: tx.signed_tx_bytes.clone(),
-        }
-        .encode()
-    })
+    encode_block_rows(txs, codec, "block tx blob too large", encode_tx_row)
+}
+
+/// The [`encode_block_txs`] row digest alone (external-payload ingest).
+pub(crate) fn digest_block_txs(txs: &[IngestTx]) -> ChainDigest {
+    digest_block_rows(txs, encode_tx_row)
+}
+
+fn encode_tx_row(tx: &IngestTx) -> Vec<u8> {
+    StoredTxEnvelope {
+        tx_hash: tx.tx_hash,
+        sender: tx.sender,
+        signed_tx_bytes: tx.signed_tx_bytes.clone(),
+    }
+    .encode()
 }
 
 /// Expands one tx into the indexed streams written at ingest;

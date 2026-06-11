@@ -34,7 +34,7 @@ use zstd::{
 use crate::{
     engine::digest::{ChainDigest, RowDigest},
     error::{MonadChainDataError, Result},
-    primitives::records::BlockBlobHeader,
+    primitives::records::{BlockBlobHeader, ENCODING_NATIVE},
 };
 
 /// Bootstrap dictionary version: plain zstd frames, no dependency on any
@@ -170,10 +170,28 @@ pub(crate) fn encode_block_rows<T>(
             base_offset: 0,
             physical_key: Vec::new(),
             physical_base_offset: 0,
+            encoding: ENCODING_NATIVE,
+            container_rows: Vec::new(),
+            container_status: Bytes::new(),
         },
         blob,
         rows_digest.finish(),
     ))
+}
+
+/// The digest half of [`encode_block_rows`] alone: folds the uncompressed row
+/// RLP without compressing or retaining anything. External-payload ingest uses
+/// this so its `row_chain` stays byte-identical to a native ingest of the same
+/// blocks.
+pub(crate) fn digest_block_rows<T>(
+    rows: &[T],
+    mut encode_row: impl FnMut(&T) -> Vec<u8>,
+) -> ChainDigest {
+    let mut rows_digest = RowDigest::new();
+    for row in rows {
+        rows_digest.row(&encode_row(row));
+    }
+    rows_digest.finish()
 }
 
 /// A zstd compressor bound to one block's dictionary, reused across its rows.

@@ -215,6 +215,7 @@ async fn dispatch_dynamo_reader_blob(
 
     let cache_config = resolve_cache_config(store_config, ChainDataCacheMode::Reader);
     let query_config = store_config.query.to_runtime();
+    let external_reader = super::build_external_payload_reader(&store_config.archive).await?;
 
     fn service<B: BlobStore>(
         meta_store: crate::store::DynamoMetaStore,
@@ -222,15 +223,20 @@ async fn dispatch_dynamo_reader_blob(
         limits: QueryLimits,
         cache_config: CacheConfig,
         query_config: QueryRuntimeConfig,
+        external_reader: Option<Arc<dyn crate::external::ExternalBlobReader>>,
     ) -> Arc<crate::MonadChainDataService<crate::store::DynamoMetaStore, B>> {
-        Arc::new(crate::MonadChainDataService::with_all_configs(
+        let mut service = crate::MonadChainDataService::with_all_configs(
             meta_store,
             blob_store,
             limits,
             cache_config,
             DictConfig::default(),
             query_config,
-        ))
+        );
+        if let Some(reader) = external_reader {
+            service = service.with_external_payload_reader(reader);
+        }
+        Arc::new(service)
     }
 
     match &store_config.blob {
@@ -243,6 +249,7 @@ async fn dispatch_dynamo_reader_blob(
                 limits,
                 cache_config,
                 query_config,
+                external_reader,
             )))
         }
         ChainDataBlobBackendConfig::Dynamo(blob_config) => {
@@ -253,6 +260,7 @@ async fn dispatch_dynamo_reader_blob(
                 limits,
                 cache_config,
                 query_config,
+                external_reader,
             )))
         }
     }

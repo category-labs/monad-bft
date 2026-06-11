@@ -24,9 +24,10 @@ use crate::{
     api::MonadChainDataService,
     engine::tables::{DictConfig, PublicationTables, QueryRuntimeConfig, Tables},
     error::MonadChainDataError,
+    external::ExternalBlobReader,
     ingest::{
         resolver::TablesCodecResolver, run_ingest, source::ChainDataIngestSource, IngestRunConfig,
-        PackConfig, Prefetch, SignalPolicy, SnapshotStore,
+        PackConfig, PayloadMode, Prefetch, SignalPolicy, SnapshotStore,
     },
     ingest_types::FinalizedBlock,
     primitives::limits::QueryLimits,
@@ -72,6 +73,9 @@ impl ChainDataIngestSource for VecSource {
 pub struct PopulatedStore {
     pub meta: InMemoryMetaStore,
     pub blob: InMemoryBlobStore,
+    /// External archive reader attached to every built service (population
+    /// through [`populate_via_engine_external`]); `None` for native stores.
+    pub external: Option<Arc<dyn ExternalBlobReader>>,
 }
 
 impl PopulatedStore {
@@ -85,7 +89,11 @@ impl PopulatedStore {
         &self,
         limits: QueryLimits,
     ) -> MonadChainDataService<InMemoryMetaStore, InMemoryBlobStore> {
-        MonadChainDataService::new(self.meta.clone(), self.blob.clone(), limits)
+        let service = MonadChainDataService::new(self.meta.clone(), self.blob.clone(), limits);
+        match &self.external {
+            Some(reader) => service.with_external_payload_reader(Arc::clone(reader)),
+            None => service,
+        }
     }
 }
 
@@ -98,7 +106,7 @@ pub const TEST_PREFETCH: Prefetch = Prefetch {
 
 /// Backfill-cadence knobs for population; the defaults run the blocks through
 /// few flushes, publishing `head == last_block`.
-fn populate_config(start: u64, end: u64) -> IngestRunConfig {
+fn populate_config(start: u64, end: u64, payload: PayloadMode) -> IngestRunConfig {
     IngestRunConfig {
         start,
         end: Some(end),
@@ -113,6 +121,7 @@ fn populate_config(start: u64, end: u64) -> IngestRunConfig {
             tip_lag_divisor: 1,
             checkpoint_every_blocks: 4096,
         },
+        payload,
         track_buffer: 16,
         poll_ms: 1,
     }
@@ -143,7 +152,13 @@ pub async fn try_populate_via_engine(
     blocks: Vec<FinalizedBlock>,
 ) -> Result<PopulatedStore, MonadChainDataError> {
     let (start, end) = block_bounds(&blocks);
-    run_engine(blocks, populate_config(start, end), DictConfig::default()).await
+    run_engine(
+        blocks,
+        populate_config(start, end, PayloadMode::Native),
+        DictConfig::default(),
+        None,
+    )
+    .await
 }
 
 /// Like [`populate_via_engine`] but with a custom [`DictConfig`] so the
@@ -153,9 +168,42 @@ pub async fn populate_via_engine_with_dict(
     dict: DictConfig,
 ) -> PopulatedStore {
     let (start, end) = block_bounds(&blocks);
-    run_engine(blocks, populate_config(start, end), dict)
+    run_engine(
+        blocks,
+        populate_config(start, end, PayloadMode::Native),
+        dict,
+        None,
+    )
+    .await
+    .expect("backfill ingest")
+}
+
+/// External-payload variant of [`populate_via_engine`]: every block must
+/// carry an [`crate::external::ExternalPayloadSpec`], and `external` must
+/// serve the archive objects the specs point into. The reader is attached to
+/// every service built from the returned store.
+pub async fn try_populate_via_engine_external(
+    blocks: Vec<FinalizedBlock>,
+    external: Arc<dyn ExternalBlobReader>,
+) -> Result<PopulatedStore, MonadChainDataError> {
+    let (start, end) = block_bounds(&blocks);
+    run_engine(
+        blocks,
+        populate_config(start, end, PayloadMode::ExternalArchive),
+        DictConfig::default(),
+        Some(external),
+    )
+    .await
+}
+
+/// Panicking variant of [`try_populate_via_engine_external`].
+pub async fn populate_via_engine_external(
+    blocks: Vec<FinalizedBlock>,
+    external: Arc<dyn ExternalBlobReader>,
+) -> PopulatedStore {
+    try_populate_via_engine_external(blocks, external)
         .await
-        .expect("backfill ingest")
+        .expect("external backfill ingest")
 }
 
 /// Ingests `blocks` (parent-linked continuations of what `store` holds) into
@@ -184,7 +232,7 @@ pub async fn populate_more_via_engine(store: &PopulatedStore, blocks: Vec<Finali
         publisher,
         snapshots,
         resolver,
-        populate_config(start, end),
+        populate_config(start, end, PayloadMode::Native),
         TEST_PREFETCH,
     )
     .await
@@ -197,17 +245,22 @@ async fn run_engine(
     blocks: Vec<FinalizedBlock>,
     config: IngestRunConfig,
     dict: DictConfig,
+    external: Option<Arc<dyn ExternalBlobReader>>,
 ) -> Result<PopulatedStore, MonadChainDataError> {
     let meta = InMemoryMetaStore::default();
     let blob = InMemoryBlobStore::default();
     let snapshots = SnapshotStore::new(meta.clone(), blob.clone());
-    let tables = Arc::new(Tables::with_all_configs(
+    let mut tables = Tables::with_all_configs(
         meta.clone(),
         blob.clone(),
         CacheConfig::default(),
         dict,
         QueryRuntimeConfig::default(),
-    ));
+    );
+    if let Some(reader) = &external {
+        tables = tables.with_external_payload_reader(Arc::clone(reader));
+    }
+    let tables = Arc::new(tables);
     let resolver = TablesCodecResolver::new(tables.clone());
     let publisher = Arc::new(PublicationTables::new(meta.clone()));
     let source = VecSource::new(blocks, config.start);
@@ -223,5 +276,9 @@ async fn run_engine(
     )
     .await?;
 
-    Ok(PopulatedStore { meta, blob })
+    Ok(PopulatedStore {
+        meta,
+        blob,
+        external,
+    })
 }

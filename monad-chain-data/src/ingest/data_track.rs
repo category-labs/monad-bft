@@ -33,25 +33,54 @@ use crate::{
     engine::{
         digest::{block_content_digest, chain, family_content_digest, ChainDigest},
         family::PerFamily,
-        row_codec::RowCodec,
+        row_codec::{RowCodec, DICT_VERSION_NONE},
         tables::{DictConfig, Tables},
     },
     error::{MonadChainDataError, Result},
+    external::ExternalFamilyRegion,
     ingest_types::Hash32,
-    logs::{encode_block_logs, flatten_logs},
+    logs::{digest_block_logs, encode_block_logs, flatten_logs},
     primitives::{
-        records::{BlockBlobHeader, BlockRecord, FamilyWindowRecord, PrimaryId},
+        records::{
+            BlockBlobHeader, BlockRecord, FamilyWindowRecord, PrimaryId, ENCODING_EXTERNAL_V1,
+        },
         EvmBlockHeader,
     },
     store::{BlobStore, MetaStore},
-    traces::encode_block_traces,
-    txs::{collect_hash_locations, encode_block_txs, TxLocation},
+    traces::{digest_block_traces, encode_block_traces},
+    txs::{collect_hash_locations, digest_block_txs, encode_block_txs, TxLocation},
 };
 
 #[derive(Debug, Clone, Copy)]
 pub struct PackConfig {
     pub target_bytes: usize,
     pub max_blocks: usize,
+}
+
+/// The data track's write shape: pack sizing plus where payloads live.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DataTrackConfig {
+    pub pack: PackConfig,
+    pub payload: PayloadMode,
+}
+
+/// Where a block's row payloads live.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PayloadMode {
+    /// Rows are re-encoded into chain-data-owned pack blobs (everything
+    /// before external indexing existed).
+    #[default]
+    Native,
+    /// Rows stay in the monad-archive objects the source ingests FROM; ingest
+    /// writes only metadata + indexes whose locators point into those objects
+    /// (`ENCODING_EXTERNAL_V1` headers). Every fetched block must carry an
+    /// [`crate::external::ExternalPayloadSpec`]. Dictionaries are never
+    /// trained (containers are uncompressed), and `row_chain` digests stay
+    /// byte-identical to a native ingest of the same blocks. Unlike native
+    /// ingest (which tolerates absent trace objects as zero trace rows), a
+    /// missing locator cannot be represented, so every block in the ingested
+    /// range must have all three archive objects present in V1+ framing.
+    ExternalArchive,
 }
 
 /// The per-epoch row codecs the data track needs to frame a block's rows.
@@ -90,6 +119,13 @@ pub(crate) struct PackEntry {
     pub content_digest: ChainDigest,
 }
 
+/// Floor on one entry's contribution toward `PackConfig::target_bytes`
+/// (roughly a block's metadata-row footprint): external-payload entries carry
+/// no blob at all, so a pure blob-size accounting would batch only on
+/// `max_blocks`. Native blobs are effectively always larger than this, so the
+/// floor leaves native batching unchanged.
+const PACK_ENTRY_MIN_ACCOUNTED_BYTES: usize = 1024;
+
 struct BlobPacker {
     cfg: PackConfig,
     entries: Vec<PackEntry>,
@@ -107,7 +143,10 @@ impl BlobPacker {
         }
     }
     fn push(&mut self, number: u64, entry: PackEntry) {
-        self.bytes += entry.combined_blob.len();
+        self.bytes += entry
+            .combined_blob
+            .len()
+            .max(PACK_ENTRY_MIN_ACCOUNTED_BYTES);
         self.last_block = number;
         self.entries.push(entry);
     }
@@ -149,7 +188,7 @@ pub(crate) async fn run_data_track<M, B, R>(
     tables: Arc<Tables<M, B>>,
     resolver: R,
     progress: Arc<Progress>,
-    cfg: PackConfig,
+    cfg: DataTrackConfig,
     probe: Arc<IngestProbe>,
     chain_seed: ChainDigest,
 ) -> Result<()>
@@ -161,6 +200,8 @@ where
     let dict_config = *tables.dicts().config();
     let epoch_blocks = dict_config.epoch_blocks;
     debug_assert!(epoch_blocks > 0, "epoch_blocks must be positive");
+    let DataTrackConfig { pack, payload } = cfg;
+    let external = payload == PayloadMode::ExternalArchive;
     // Encode is pure CPU; cap parallelism at core count.
     let encode_concurrency = std::thread::available_parallelism()
         .map(|n| n.get())
@@ -170,7 +211,7 @@ where
     let mut last_prewarmed = 0u32;
     let mut pipeline = DataPipeline {
         inflight: EncodePipeline::new(),
-        packer: BlobPacker::new(cfg),
+        packer: BlobPacker::new(pack),
         chain_head: chain_seed,
         flushes: FlushPipeline::new(),
         tables,
@@ -187,8 +228,15 @@ where
         let Some(msg) = msg else { break };
         match msg {
             IngestMsg::Block(b) => {
-                let version = u32::try_from(b.number / epoch_blocks)
-                    .map_err(|_| MonadChainDataError::Decode("dict epoch/version overflow"))?;
+                // External payloads are never dict-compressed: every block
+                // pins version 0 (plain), so the epoch barrier and training
+                // below never fire.
+                let version = if external {
+                    DICT_VERSION_NONE
+                } else {
+                    u32::try_from(b.number / epoch_blocks)
+                        .map_err(|_| MonadChainDataError::Decode("dict epoch/version overflow"))?
+                };
                 let block_codecs = match &codecs {
                     Some((v, c)) if *v == version => c.clone(),
                     _ => {
@@ -217,7 +265,10 @@ where
                     .inflight
                     .push_back(tokio::task::spawn_blocking(move || {
                         let encode_start = task_probe.start();
-                        let entry = encode_pack_entry(&block, &block_codecs);
+                        let entry = match payload {
+                            PayloadMode::Native => encode_pack_entry(&block, &block_codecs),
+                            PayloadMode::ExternalArchive => encode_external_pack_entry(&block),
+                        };
                         task_probe.record(&task_probe.data_encode_ns, encode_start);
                         entry
                     }));
@@ -240,12 +291,17 @@ where
                 let _ = done.send(());
             }
         }
-        maybe_prewarm(
-            &resolver,
-            pipeline.progress.data_durable(),
-            &dict_config,
-            &mut last_prewarmed,
-        );
+        // External mode never trains: a prewarm would background-train a
+        // dictionary from external blocks (and read their archive containers
+        // back as if they were zstd frames).
+        if !external {
+            maybe_prewarm(
+                &resolver,
+                pipeline.progress.data_durable(),
+                &dict_config,
+                &mut last_prewarmed,
+            );
+        }
     }
     pipeline.flush_barrier().await
 }
@@ -417,6 +473,80 @@ pub(crate) fn encode_pack_entry(b: &AssignedBlock, codecs: &Codecs) -> Result<Pa
     combined_blob.extend_from_slice(&tx_blob);
     combined_blob.extend_from_slice(&trace_blob);
 
+    let (record, content_digest) =
+        block_record_and_digest(b, log_rows_digest, tx_rows_digest, trace_rows_digest);
+
+    Ok(PackEntry {
+        combined_blob,
+        log_header,
+        tx_header,
+        trace_header,
+        record,
+        evm_header: b.block.header.clone(),
+        hash_locations: collect_hash_locations(&b.block)?,
+        content_digest,
+    })
+}
+
+/// External-payload variant of [`encode_pack_entry`]: no blob is produced —
+/// the three headers point into the source's archive objects
+/// (`ENCODING_EXTERNAL_V1`, dict version 0) after the spec is validated
+/// against the decoded block. The per-family row digests still run the native
+/// row encoders over the decoded rows (encode, digest, discard), so
+/// `row_chain` is mode-independent.
+pub(crate) fn encode_external_pack_entry(b: &AssignedBlock) -> Result<PackEntry> {
+    let spec = b
+        .block
+        .external
+        .as_ref()
+        .ok_or(MonadChainDataError::InvalidBlock(
+            "external payload mode requires an external payload spec on every block",
+        ))?;
+    spec.validate(b.number, &b.block)?;
+
+    let logs = flatten_logs(&b.block)?;
+    let (record, content_digest) = block_record_and_digest(
+        b,
+        digest_block_logs(&logs),
+        digest_block_txs(&b.block.txs),
+        digest_block_traces(&b.block.traces),
+    );
+
+    Ok(PackEntry {
+        combined_blob: Vec::new(),
+        log_header: external_header(&spec.logs),
+        tx_header: external_header(&spec.txs),
+        trace_header: external_header(&spec.traces),
+        record,
+        evm_header: b.block.header.clone(),
+        hash_locations: collect_hash_locations(&b.block)?,
+        content_digest,
+    })
+}
+
+/// Stamps one validated [`ExternalFamilyRegion`] into its block-blob header.
+fn external_header(region: &ExternalFamilyRegion) -> BlockBlobHeader {
+    BlockBlobHeader {
+        offsets: region.container_offsets.clone(),
+        dict_version: DICT_VERSION_NONE,
+        base_offset: region.base_offset,
+        physical_key: region.key.clone(),
+        physical_base_offset: 0,
+        encoding: ENCODING_EXTERNAL_V1,
+        container_rows: region.container_rows.clone(),
+        container_status: Bytes::from(region.container_status.clone()),
+    }
+}
+
+/// The block's record (with the `row_chain` placeholder) and standalone
+/// content digest, shared by both payload modes so their `row_chain` values
+/// are byte-identical for the same logical block.
+fn block_record_and_digest(
+    b: &AssignedBlock,
+    log_rows_digest: ChainDigest,
+    tx_rows_digest: ChainDigest,
+    trace_rows_digest: ChainDigest,
+) -> (BlockRecord, ChainDigest) {
     let record = BlockRecord {
         block_number: b.number,
         block_hash: b.block.block_hash(),
@@ -446,17 +576,7 @@ pub(crate) fn encode_pack_entry(b: &AssignedBlock, codecs: &Codecs) -> Result<Pa
         family_content_digest(record.txs, tx_rows_digest),
         family_content_digest(record.traces, trace_rows_digest),
     );
-
-    Ok(PackEntry {
-        combined_blob,
-        log_header,
-        tx_header,
-        trace_header,
-        record,
-        evm_header: b.block.header.clone(),
-        hash_locations: collect_hash_locations(&b.block)?,
-        content_digest,
-    })
+    (record, content_digest)
 }
 
 /// Stage a flushed pack's per-block artifacts (row blob, block metadata, hash

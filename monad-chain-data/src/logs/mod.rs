@@ -17,7 +17,9 @@ mod ingest;
 mod materialize;
 mod types;
 
-pub(crate) use ingest::{encode_block_logs, flatten_logs, stream_entries_for_log};
+pub(crate) use ingest::{
+    digest_block_logs, encode_block_logs, flatten_logs, stream_entries_for_log,
+};
 pub(crate) use materialize::LogMaterializer;
 pub use materialize::{LogFilter, LogsRelations, QueryLogsRequest, QueryLogsResponse};
 pub use types::{LogEntry, StoredLog};

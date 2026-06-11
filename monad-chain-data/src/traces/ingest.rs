@@ -20,7 +20,7 @@ use crate::{
     engine::{
         bitmap::{IndexKind, StreamKey},
         digest::ChainDigest,
-        row_codec::{encode_block_rows, RowCodec},
+        row_codec::{digest_block_rows, encode_block_rows, RowCodec},
     },
     error::{MonadChainDataError, Result},
     ingest_types::{CallKind, IngestTrace},
@@ -36,6 +36,11 @@ pub(crate) fn encode_block_traces(
     encode_block_rows(traces, codec, "block trace blob too large", |trace| {
         StoredTrace::from(trace).encode()
     })
+}
+
+/// The [`encode_block_traces`] row digest alone (external-payload ingest).
+pub(crate) fn digest_block_traces(traces: &[IngestTrace]) -> ChainDigest {
+    digest_block_rows(traces, |trace| StoredTrace::from(trace).encode())
 }
 
 /// Expands one frame into the indexed streams written at ingest:

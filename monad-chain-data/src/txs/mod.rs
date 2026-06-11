@@ -19,7 +19,9 @@ mod materialize;
 mod types;
 
 pub use hash_index::TxHashIndexTable;
-pub(crate) use ingest::{collect_hash_locations, encode_block_txs, stream_entries_for_tx};
+pub(crate) use ingest::{
+    collect_hash_locations, digest_block_txs, encode_block_txs, stream_entries_for_tx,
+};
 pub(crate) use materialize::{load_txs_by_positions, TxMaterializer};
 pub use materialize::{
     QueryTransactionsRequest, QueryTransactionsResponse, TxFilter, TxsRelations,

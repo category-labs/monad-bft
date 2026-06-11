@@ -26,7 +26,9 @@ pub use blob::{BlobStore, BlobTable, BlobTableId, BlobWriteOp, InMemoryBlobStore
 #[cfg(feature = "dynamo")]
 pub use blob::{DynamoBlobStore, DynamoBlobStoreConfig};
 #[cfg(feature = "s3")]
-pub use blob::{S3BlobStore, S3BlobStoreConfig, S3Credentials, S3ReadStatsSnapshot};
+pub use blob::{
+    S3BlobStore, S3BlobStoreConfig, S3Credentials, S3ExternalBlobReader, S3ReadStatsSnapshot,
+};
 pub use cache::{CacheConfig, CachedKvTable, CachedScannableKvTable};
 #[cfg(feature = "dynamo")]
 pub use meta::{

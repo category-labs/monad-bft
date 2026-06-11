@@ -1789,6 +1789,7 @@ mod tests {
                 signed_tx_bytes: signed_tx_bytes.into(),
             }],
             traces: Vec::new(),
+            external: None,
         };
         let block_hash = block.block_hash();
         let store = monad_chain_data::testkit::populate_via_engine(vec![block]).await;

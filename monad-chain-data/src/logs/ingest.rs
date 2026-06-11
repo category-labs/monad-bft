@@ -20,7 +20,7 @@ use crate::{
     engine::{
         bitmap::{IndexKind, StreamKey},
         digest::ChainDigest,
-        row_codec::{encode_block_rows, RowCodec},
+        row_codec::{digest_block_rows, encode_block_rows, RowCodec},
     },
     error::{MonadChainDataError, Result},
     ingest_types::FinalizedBlock,
@@ -58,6 +58,11 @@ pub(crate) fn encode_block_logs(
     codec: &RowCodec,
 ) -> Result<(BlockBlobHeader, Vec<u8>, ChainDigest)> {
     encode_block_rows(logs, codec, "block log blob too large", |log| log.encode())
+}
+
+/// The [`encode_block_logs`] row digest alone (external-payload ingest).
+pub(crate) fn digest_block_logs(logs: &[StoredLog]) -> ChainDigest {
+    digest_block_rows(logs, |log| log.encode())
 }
 
 /// Expands one log into the indexed streams written at ingest time

@@ -153,23 +153,16 @@ pub struct Cli {
 }
 
 #[cfg(feature = "chain-data-ingest")]
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct ArchiverChainDataIngestConfig {
     pub enabled: bool,
+    /// Index the archive's existing objects instead of writing payload blobs
+    /// (requires an archive-backed `block_data_source`). Must agree with
+    /// `engine.payload = "external-archive"` — validated at startup.
+    pub index_archive_payload: bool,
     pub store: ChainDataStoreConfig,
     pub engine: ChainDataEngineConfig,
-}
-
-#[cfg(feature = "chain-data-ingest")]
-impl Default for ArchiverChainDataIngestConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            store: ChainDataStoreConfig::default(),
-            engine: ChainDataEngineConfig::default(),
-        }
-    }
 }
 
 /// Result of parsing CLI arguments - either a subcommand or daemon config

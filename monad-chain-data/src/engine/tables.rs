@@ -45,6 +45,7 @@ use crate::{
         },
     },
     error::{MonadChainDataError, Result},
+    external::ExternalBlobReader,
     ingest_types::{FinalizedBlock, Hash32},
     primitives::{
         records::{BlockBlobHeader, BlockRecord, PublicationState},
@@ -261,6 +262,14 @@ pub struct Tables<M: MetaStore, B: BlobStore> {
     /// Raw shared-per-block blob table. Bytes are never cached; the
     /// decoded-row caches above the decode layer absorb repeat reads.
     block_blobs: BlobTable<B>,
+    /// Read-only access to the external archive's objects, for blocks whose
+    /// headers carry `ENCODING_EXTERNAL_V1`. `None` on stores that never
+    /// ingested external payloads; reading an external block without it is a
+    /// hard error.
+    external_payload: Option<Arc<dyn ExternalBlobReader>>,
+    /// The shared blob-read limiter (also installed on `block_blobs`), held
+    /// here so external archive reads obey the same process-global cap.
+    blob_io: Arc<Semaphore>,
     families: BTreeMap<Family, FamilyTables<M>>,
     /// Per-family decoded-row caches; see [`crate::engine::query::row_cache`].
     row_caches: RowCaches,
@@ -385,6 +394,8 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
             block_blobs: blob_store
                 .table(BLOCK_BLOB_TABLE)
                 .with_io_limit(Arc::clone(&blob_io)),
+            external_payload: None,
+            blob_io,
             meta_store,
             blob_store,
             families,
@@ -393,6 +404,13 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
             materialize_budget: Arc::new(Semaphore::new(query.materialize_budget_permits)),
             query,
         }
+    }
+
+    /// Attaches the external archive reader serving `ENCODING_EXTERNAL_V1`
+    /// payload reads (see [`crate::external`]).
+    pub fn with_external_payload_reader(mut self, reader: Arc<dyn ExternalBlobReader>) -> Self {
+        self.external_payload = Some(reader);
+        self
     }
 
     /// Process-global stage-2 decode budget (see field docs).
@@ -426,9 +444,11 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
         &self.tx_hash_index
     }
 
-    /// Raw byte-range read of the shared per-block blob object over an absolute
-    /// `[start, end_exclusive)` span, resolved through the header's physical
-    /// key (coalesced blocks share an object).
+    /// Raw byte-range read of one family's payload object over an absolute
+    /// `[start, end_exclusive)` span. Native headers resolve through the
+    /// physical key into the chain-data blob store (coalesced blocks share an
+    /// object); external headers range-read the archive object named by their
+    /// key through the attached [`ExternalBlobReader`].
     pub async fn read_block_blob_header_range(
         &self,
         block_number: u64,
@@ -436,6 +456,27 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
         start: usize,
         end_exclusive: usize,
     ) -> Result<Option<Bytes>> {
+        if header.is_external() {
+            let reader =
+                self.external_payload
+                    .as_deref()
+                    .ok_or(MonadChainDataError::MissingData(
+                        "external payload block but no archive reader configured",
+                    ))?;
+            if header.physical_key.is_empty() {
+                return Err(MonadChainDataError::Decode(
+                    "external payload header missing its archive key",
+                ));
+            }
+            let _permit = self
+                .blob_io
+                .acquire()
+                .await
+                .expect("blob io-limit semaphore is never closed");
+            return reader
+                .read_range(&header.physical_key, start, end_exclusive)
+                .await;
+        }
         let default_key = block_number_key(block_number);
         self.block_blobs
             .read_range(header.physical_key_or(&default_key), start, end_exclusive)
@@ -620,7 +661,10 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
             let Some(header) = family_tables.load_blob_header(block_number).await? else {
                 continue;
             };
-            if header.offsets.len() < 2 {
+            // External blocks hold uncompressed archive containers, never
+            // zstd frames — they contribute nothing to a dict corpus (and the
+            // external engine never trains; this guards mixed stores).
+            if header.is_external() || header.offsets.len() < 2 {
                 continue;
             }
             let Some(region) = self.read_block_blob_region(block_number, &header).await? else {
@@ -858,6 +902,14 @@ fn rewrite_block_blob_header(
     physical_base_offset: u64,
 ) -> Result<()> {
     let mut header = BlockBlobHeader::decode(header_bytes.as_ref())?;
+    // External blocks stage no block-blob write, so the coalescer never maps
+    // their metadata key to a locator; reaching here would clobber the
+    // archive key with a chain-data physical key.
+    if header.is_external() {
+        return Err(MonadChainDataError::Decode(
+            "external payload header cannot be repointed by the blob coalescer",
+        ));
+    }
     header.physical_key = physical_key;
     header.physical_base_offset = physical_base_offset;
     *header_bytes = Bytes::from(header.encode());

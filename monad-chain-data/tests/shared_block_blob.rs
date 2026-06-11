@@ -77,6 +77,7 @@ fn fixture_block() -> FinalizedBlock {
             top_level_call(0, TRACE_FROM_A, TRACE_FROM_B, U256::from(7u64), vec![1; 4]),
             nested_call(1, TRACE_FROM_B, TRACE_FROM_A, U256::from(9u64), vec![2; 4]),
         ],
+        external: None,
     }
 }
 

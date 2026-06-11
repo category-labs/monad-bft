@@ -134,12 +134,14 @@ async fn build_service() -> MonadChainDataService<InMemoryMetaStore, InMemoryBlo
                 ingest_tx(bob, Some(target), Vec::new()),
             ],
             traces: vec![],
+            external: None,
         },
         FinalizedBlock {
             header: h2,
             logs_by_tx: vec![vec![log(addr_default)]],
             txs: vec![ingest_tx(carol, Some(addr_default), Vec::new())],
             traces: vec![],
+            external: None,
         },
     ];
 

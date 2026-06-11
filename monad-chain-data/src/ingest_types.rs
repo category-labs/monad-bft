@@ -15,7 +15,7 @@
 
 use alloy_primitives::{Address, Bytes, Log, B256, U256};
 
-use crate::primitives::EvmBlockHeader;
+use crate::{external::ExternalPayloadSpec, primitives::EvmBlockHeader};
 
 pub type Hash32 = B256;
 
@@ -27,6 +27,10 @@ pub struct FinalizedBlock {
     /// DFS-flattened call frames across all txs in the block; the producer
     /// assigns each frame its `tx_index` and `trace_address` before ingest.
     pub traces: Vec<IngestTrace>,
+    /// Archive payload locators for external-payload ingest; `None` for
+    /// native ingest. Required (hard error) on every block when the engine
+    /// runs in external payload mode.
+    pub external: Option<ExternalPayloadSpec>,
 }
 
 /// Per-tx envelope in a finalized block. `sender` is caller-authoritative

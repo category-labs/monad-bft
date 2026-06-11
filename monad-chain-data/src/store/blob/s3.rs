@@ -46,6 +46,7 @@ use tracing::{debug, info, warn};
 
 use crate::{
     error::{MonadChainDataError, Result},
+    external::ExternalBlobReader,
     store::{
         blob::{BlobStore, BlobTableId, BlobWriteOp},
         sdk::{load_sdk_config, ReadGuard, ReadStats},
@@ -242,20 +243,19 @@ impl S3BlobStore {
         )
     }
 
-    /// Single GET, optionally with a `Range` header.
-    async fn get_object(
+    /// Single GET of a fully-resolved object key, optionally with a `Range`
+    /// header.
+    async fn get_object_at(
         &self,
-        table: BlobTableId,
-        key: &[u8],
+        object_key: &str,
         range: Option<String>,
     ) -> Result<GetObjectOutcome> {
-        let object_key = self.object_key(table, key);
-        let (client, _) = self.client_for_object_key(&object_key);
+        let (client, _) = self.client_for_object_key(object_key);
         let is_range = range.is_some();
         let mut req = client
             .get_object()
             .bucket(&self.inner.bucket)
-            .key(&object_key);
+            .key(object_key);
         if let Some(range) = range {
             req = req.range(range);
         }
@@ -272,7 +272,7 @@ impl S3BlobStore {
             }
             Err(e) => {
                 read_guard.finish(true, 0, 0);
-                return Err(backend_err("get_object", &object_key, e));
+                return Err(backend_err("get_object", object_key, e));
             }
         };
 
@@ -293,19 +293,18 @@ impl S3BlobStore {
     /// `HeadObject` for the object's byte length; `Ok(None)` when absent. Only
     /// used by [`read_range`](BlobStore::read_range) boundary cases that an
     /// HTTP `Range` request cannot express or disambiguate.
-    async fn object_len(&self, table: BlobTableId, key: &[u8]) -> Result<Option<usize>> {
-        let object_key = self.object_key(table, key);
-        let (client, _) = self.client_for_object_key(&object_key);
+    async fn object_len_at(&self, object_key: &str) -> Result<Option<usize>> {
+        let (client, _) = self.client_for_object_key(object_key);
         let resp = match client
             .head_object()
             .bucket(&self.inner.bucket)
-            .key(&object_key)
+            .key(object_key)
             .send()
             .await
         {
             Ok(resp) => resp,
             Err(e) if is_head_not_found(&e) => return Ok(None),
-            Err(e) => return Err(backend_err("head_object", &object_key, e)),
+            Err(e) => return Err(backend_err("head_object", object_key, e)),
         };
         let len = resp.content_length.unwrap_or(0);
         usize::try_from(len).map(Some).map_err(|_| {
@@ -321,16 +320,48 @@ impl S3BlobStore {
     /// `start` strictly past EOF -> error. Costs one extra HEAD, on these
     /// boundary cases only; the HEAD is not a tracked read — callers account
     /// the resolution under the originating range read's guard.
-    async fn empty_range_at(
-        &self,
-        table: BlobTableId,
-        key: &[u8],
-        start: usize,
-    ) -> Result<Option<Bytes>> {
-        match self.object_len(table, key).await? {
+    async fn empty_range_at(&self, object_key: &str, start: usize) -> Result<Option<Bytes>> {
+        match self.object_len_at(object_key).await? {
             None => Ok(None),
             Some(len) if start > len => Err(MonadChainDataError::Decode("invalid blob range")),
             Some(_) => Ok(Some(Bytes::new())),
+        }
+    }
+
+    /// Server-side ranged read of a fully-resolved object key; the shared
+    /// core of [`BlobStore::read_range`] and [`S3ExternalBlobReader`].
+    async fn read_range_at(
+        &self,
+        object_key: &str,
+        start: usize,
+        end_exclusive: usize,
+    ) -> Result<Option<Bytes>> {
+        if start > end_exclusive {
+            return Err(MonadChainDataError::Decode("invalid blob range"));
+        }
+        // S3 cannot express a zero-length range: resolve it from the object
+        // length alone, tracked as one range read.
+        if start == end_exclusive {
+            let read_guard = self.read_started(true);
+            let result = self.empty_range_at(object_key, start).await;
+            read_guard.finish(result.is_err(), 0, 0);
+            return result;
+        }
+        // HTTP byte ranges are inclusive; ours is end-exclusive. S3 clamps an
+        // end past EOF (matching the trait default) but answers 416 whenever
+        // `start` is at or after EOF (including any window on an empty
+        // object), while the trait errors only for `start` strictly past EOF
+        // and clamps `start == len` to an empty read. Resolve a 416 from the
+        // object length, finishing the read's stats with the real outcome.
+        let range = format!("bytes={}-{}", start, end_exclusive - 1);
+        match self.get_object_at(object_key, Some(range)).await? {
+            GetObjectOutcome::Found(bytes) => Ok(Some(bytes)),
+            GetObjectOutcome::Missing => Ok(None),
+            GetObjectOutcome::Unsatisfiable(read_guard) => {
+                let result = self.empty_range_at(object_key, start).await;
+                read_guard.finish(result.is_err(), 0, 0);
+                result
+            }
         }
     }
 
@@ -462,7 +493,10 @@ impl BlobStore for S3BlobStore {
     }
 
     async fn get_blob(&self, table: BlobTableId, key: &[u8]) -> Result<Option<Bytes>> {
-        match self.get_object(table, key, None).await? {
+        match self
+            .get_object_at(&self.object_key(table, key), None)
+            .await?
+        {
             GetObjectOutcome::Found(bytes) => Ok(Some(bytes)),
             GetObjectOutcome::Missing => Ok(None),
             // A GET without a `Range` header cannot 416.
@@ -523,33 +557,51 @@ impl BlobStore for S3BlobStore {
         start: usize,
         end_exclusive: usize,
     ) -> Result<Option<Bytes>> {
-        if start > end_exclusive {
-            return Err(MonadChainDataError::Decode("invalid blob range"));
+        self.read_range_at(&self.object_key(table, key), start, end_exclusive)
+            .await
+    }
+}
+
+/// Raw-key, read-only access to a foreign (monad-archive) S3 bucket over the
+/// same client/timeout/416 machinery as [`S3BlobStore`]. Keys are the
+/// archive's own object keys (`block/000000000123`); the chain-data
+/// `{prefix}/{table}/{hex}` layout does not apply.
+pub struct S3ExternalBlobReader {
+    store: S3BlobStore,
+}
+
+impl S3ExternalBlobReader {
+    /// Builds the reader; `config.root_prefix` must be empty and
+    /// `create_bucket` false (the archive bucket is never provisioned here).
+    /// A prefixed config would silently read wrong keys, so it is a hard
+    /// error, not a debug assert.
+    pub async fn new(config: S3BlobStoreConfig) -> Result<Self> {
+        if !config.root_prefix.is_empty() || config.create_bucket {
+            return Err(MonadChainDataError::Backend(
+                "external archive reader requires an empty prefix and no bucket provisioning"
+                    .to_string(),
+            ));
         }
-        // S3 cannot express a zero-length range: resolve it from the object
-        // length alone, tracked as one range read.
-        if start == end_exclusive {
-            let read_guard = self.read_started(true);
-            let result = self.empty_range_at(table, key, start).await;
-            read_guard.finish(result.is_err(), 0, 0);
-            return result;
-        }
-        // HTTP byte ranges are inclusive; ours is end-exclusive. S3 clamps an
-        // end past EOF (matching the trait default) but answers 416 whenever
-        // `start` is at or after EOF (including any window on an empty
-        // object), while the trait errors only for `start` strictly past EOF
-        // and clamps `start == len` to an empty read. Resolve a 416 from the
-        // object length, finishing the read's stats with the real outcome.
-        let range = format!("bytes={}-{}", start, end_exclusive - 1);
-        match self.get_object(table, key, Some(range)).await? {
-            GetObjectOutcome::Found(bytes) => Ok(Some(bytes)),
-            GetObjectOutcome::Missing => Ok(None),
-            GetObjectOutcome::Unsatisfiable(read_guard) => {
-                let result = self.empty_range_at(table, key, start).await;
-                read_guard.finish(result.is_err(), 0, 0);
-                result
-            }
-        }
+        Ok(Self {
+            store: S3BlobStore::new(config).await?,
+        })
+    }
+}
+
+impl ExternalBlobReader for S3ExternalBlobReader {
+    fn read_range(
+        &self,
+        key: &[u8],
+        start: usize,
+        end_exclusive: usize,
+    ) -> futures::future::BoxFuture<'_, Result<Option<Bytes>>> {
+        let key = std::str::from_utf8(key).map(str::to_owned);
+        Box::pin(async move {
+            let key = key.map_err(|_| {
+                MonadChainDataError::Decode("external archive key is not valid utf-8")
+            })?;
+            self.store.read_range_at(&key, start, end_exclusive).await
+        })
     }
 }
 
