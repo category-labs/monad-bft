@@ -294,6 +294,14 @@ where
         (None, None) => None,
     };
 
+    tracing::info!(
+        resume,
+        begin,
+        end = ?end,
+        published = ?published,
+        "chain-data ingest resume point (begin = first block to fetch)"
+    );
+
     let (tx_data, rx_data) = mpsc::channel(config.track_buffer);
     let (tx_index, rx_index) = mpsc::channel(config.track_buffer);
     let (shutdown_tx, shutdown_rx) = mpsc::channel(1);

@@ -263,5 +263,27 @@ async fn handle_command(cmd: Commands) -> Result<()> {
             println!("Set latest marker: key=\"{key_name}\", block={block}");
             Ok(())
         }
+
+        #[cfg(feature = "chain-data-ingest")]
+        Commands::ChainDataHead { config } => {
+            #[derive(serde::Deserialize)]
+            struct HeadToml {
+                chain_data_ingest: cli::ArchiverChainDataIngestConfig,
+            }
+            let contents = std::fs::read_to_string(&config)
+                .map_err(|e| eyre::eyre!("failed to read config {}: {e}", config.display()))?;
+            let parsed: HeadToml = toml::from_str(&contents)?;
+
+            let reader = monad_chain_data::open_configured_chain_data_reader(
+                parsed.chain_data_ingest.store,
+                monad_chain_data::QueryLimits::UNLIMITED,
+            )
+            .await?;
+            match reader.load_published_head().await? {
+                Some(head) => println!("published head: {head}"),
+                None => println!("published head: none (nothing published yet)"),
+            }
+            Ok(())
+        }
     }
 }
