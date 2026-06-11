@@ -25,15 +25,10 @@ use monad_chain_data::store::{
 const TABLE: BlobTableId = BlobTableId::new("block_blob");
 
 /// `None` (silent skip) when `CHAIN_DATA_DYNAMO_TEST_ENDPOINT` is unset.
-async fn fresh_store(test: &str, chunk_size: usize) -> Option<DynamoBlobStore> {
+async fn connect_store(table_name: &str, chunk_size: usize) -> Option<DynamoBlobStore> {
     let endpoint = std::env::var("CHAIN_DATA_DYNAMO_TEST_ENDPOINT").ok()?;
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let table_name = format!("chain-data-blob-it-{test}-{nanos}");
     let config = DynamoBlobStoreConfig {
-        table_name,
+        table_name: table_name.to_string(),
         endpoint_url: Some(endpoint),
         region: Some("us-east-1".to_string()),
         profile: None,
@@ -45,7 +40,20 @@ async fn fresh_store(test: &str, chunk_size: usize) -> Option<DynamoBlobStore> {
             session_token: None,
         }),
     };
-    let store = DynamoBlobStore::new(config).await.expect("build store");
+    Some(DynamoBlobStore::new(config).await.expect("build store"))
+}
+
+fn unique_table_name(test: &str) -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    format!("chain-data-blob-it-{test}-{nanos}")
+}
+
+/// `None` (silent skip) when `CHAIN_DATA_DYNAMO_TEST_ENDPOINT` is unset.
+async fn fresh_store(test: &str, chunk_size: usize) -> Option<DynamoBlobStore> {
+    let store = connect_store(&unique_table_name(test), chunk_size).await?;
     store.create_table().await.expect("create table");
     Some(store)
 }
@@ -184,6 +192,43 @@ async fn read_range_spans_chunks_and_matches_trait_contract() {
         store.read_range(TABLE, b"absent", 0, 1).await.unwrap(),
         None
     );
+}
+
+#[tokio::test]
+#[ignore = "requires CHAIN_DATA_DYNAMO_TEST_ENDPOINT (DynamoDB Local / Alternator)"]
+async fn chunk_size_marker_rejects_mismatched_store() {
+    // chunk_size sets the byte->chunk-index mapping, so a store opened with a
+    // different size than the table's data silently mis-slices range reads.
+    // create_table records the size in a marker item; validate_table (the
+    // startup check) must reject a mismatched store, and an idempotent
+    // re-provision must surface the mismatch rather than overwrite the marker.
+    let table_name = unique_table_name("chunkmarker");
+    let Some(writer) = connect_store(&table_name, 64 * 1024).await else {
+        return;
+    };
+    writer.create_table().await.expect("create table");
+    writer
+        .validate_table()
+        .await
+        .expect("matching chunk size validates");
+    // Re-provisioning with the same size stays idempotent.
+    writer.create_table().await.expect("idempotent re-create");
+
+    let mismatched = connect_store(&table_name, 32 * 1024)
+        .await
+        .expect("endpoint already known to be set");
+    let err = mismatched
+        .validate_table()
+        .await
+        .expect_err("mismatched chunk size must fail validation")
+        .to_string();
+    assert!(err.contains("chunk_size mismatch"), "{err}");
+    let err = mismatched
+        .create_table()
+        .await
+        .expect_err("re-provision must not mask the mismatch")
+        .to_string();
+    assert!(err.contains("chunk_size mismatch"), "{err}");
 }
 
 #[tokio::test]

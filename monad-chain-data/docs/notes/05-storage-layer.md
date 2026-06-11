@@ -38,7 +38,7 @@ Scope: `/home/jhow/monad-bft/monad-chain-data/src/store/**` plus the contract su
 "Unversioned object storage with range-read support." Bound: `Clone + Send + Sync + 'static`; impls must be cheaply cloneable (internal `Arc`). All methods return `Send` futures (explicit `impl Future + Send`) because callers drive them from spawned tasks and the cache layer stores `get_blob` in a cross-thread single-flight `Shared` (blob/mod.rs:133–135).
 
 - `table(BlobTableId) -> BlobTable<Self>` — default helper (blob/mod.rs:126).
-- `put_blob(table, key, value: Bytes) -> Result<()>` — unconditional overwrite-put. No CAS / conditional semantics anywhere.
+- `put_blob(table, key, value: Bytes) -> Result<()>` — unconditional overwrite-put. No CAS / conditional semantics in the trait surface.
 - `get_blob(table, key) -> Result<Option<Bytes>>` — `Ok(None)` = missing.
 - `delete_blob(table, key) -> Result<()>` — **idempotent no-op on missing key** (blob/mod.rs:147).
 - `apply_writes(Vec<BlobWriteOp>) -> Result<()>` — batch put. **Not atomic** in any real backend; correctness relies on head publication gating visibility (see §8).
@@ -83,7 +83,7 @@ DynamoDB caps items at 400 KiB and has no server-side byte-range read, so each b
   - `pk = u16-be(len("blob")) ∥ "blob" ∥ u16-be(len(table)) ∥ table ∥ blob-key` (the metastore's `encode_pk` with kind `"blob"` — kinds are disjoint from `kv`/`scan`, so meta and blob can share one physical table).
   - `sk = u32-be(chunk_index)` fixed-width so byte sort = chunk order (dynamo.rs:498–500).
   - `val` = chunk bytes; `len` (Number) = total blob length, **on chunk 0 only** (dynamo.rs:71).
-- **Chunk size**: default 64 KiB (`DEFAULT_CHUNK_SIZE`, dynamo.rs:75). Clamped to `1..=MAX_CHUNK_SIZE` = 350 KiB (dynamo.rs:79). **`chunk_size` is a wire contract** — it sets the byte→chunk-index mapping and must never change on a table holding data (dynamo.rs:95–97).
+- **Chunk size**: default 64 KiB (`DEFAULT_CHUNK_SIZE`, dynamo.rs:75). Bounded to `1..=MAX_CHUNK_SIZE` = 350 KiB (config validation rejects out-of-range values; the store-internal clamp remains as a backstop). **`chunk_size` is a wire contract** — it sets the byte→chunk-index mapping and must never change on a table holding data (dynamo.rs:95–97). `create_table` records it in a per-table marker item that `validate_table` checks at startup (absent marker = pre-marker table, tolerated).
 - **Writes**: `put_blob`/`apply_writes` build one PutRequest per chunk (empty value still writes an empty chunk 0 so the blob reads back present, dynamo.rs:291–294), split into `BatchWriteItem` chunks via shared `split_batch_write_chunks`, run via the shared retry executor. Multi-chunk blobs are independent PutItems → **not atomic; partial write leaves orphan chunks; head publication keeps torn blobs invisible** (dynamo.rs:33–34).
 - **get_blob**: strongly-consistent ascending-sk `Query` of the whole partition with `LastEvaluatedKey` pagination, then concatenated (dynamo.rs:393–405).
 - **read_range** (dynamo.rs:444–477): strongly-consistent point-read of chunk 0's `len` (projection only) → clamp end → `Query` of inclusive chunk span `[first,last]` → slice. If `len` claims more bytes than the chunks hold ⇒ `Decode("blob range exceeds stored chunks")` — "a torn write that head publication should have kept invisible" (dynamo.rs:469–475).
@@ -186,7 +186,7 @@ All numeric keys are fixed-width big-endian so byte order = numeric order — re
 
 ## 8. Operational characteristics
 
-- **No conditional writes anywhere.** No `ConditionExpression`, no CAS, no versioning. Correctness rests on (a) idempotent, content-deterministic writes, and (b) the **head-publication visibility gate**: readers only chase references at or below `publication_state.indexed_finalized_head`, published strictly after the covered data is durable. Partial `apply_writes` failures leave **orphan, unreferenced data**, never torn reads. Re-running ingest overwrites orphans idempotently. (Single-writer discipline is assumed; the lease layer was removed — nothing in the store prevents two writers, see §10.)
+- **No conditional writes on the data path.** No `ConditionExpression`, no CAS, no versioning (sole exception, at provisioning time: the blob chunk-size marker put is conditional on absence, so racing provisioners cannot mask a mismatch). Correctness rests on (a) idempotent, content-deterministic writes, and (b) the **head-publication visibility gate**: readers only chase references at or below `publication_state.indexed_finalized_head`, published strictly after the covered data is durable. Partial `apply_writes` failures leave **orphan, unreferenced data**, never torn reads. Re-running ingest overwrites orphans idempotently. (Single-writer discipline is assumed; the lease layer was removed — nothing in the store prevents two writers, see §10.)
 - **Read-after-write / consistency**: the dynamo meta backend forces `consistent_read(true)` on every GetItem/Query — recovery (rebuilding `OpenState` from fragments) and the publish→read handoff depend on read-your-writes. On real DynamoDB this doubles read cost; on Scylla Alternator it's a LOCAL_QUORUM read. S3 (RustFS/MinIO) provide strong read-after-write natively; nothing relies on S3 list consistency (no ListObjects anywhere — all access by computed key).
 - **Cost/access patterns**:
   - Hot reader path: meta GetItems absorbed by byte-budgeted caches; blob GETs are server-side range reads coalesced by the engine, bounded by the global `blob_io_concurrency` semaphore.
@@ -227,7 +227,7 @@ All numeric keys are fixed-width big-endian so byte order = numeric order — re
 2. **Bitmap page artifacts live in the meta store** (`f_bitmap_page_blob` is a `TableId`), not the blob store — sized for dynamo items, hot-cached, point-read.
 3. **Two different multi-endpoint strategies**: dynamo round-robins per request; S3 hash-partitions by object key. Easy to conflate.
 4. **DynamoDynamo co-deploy silently ignores blob-store endpoint/region/profile/credentials** (uses meta's clients); only a warn when they diverge (config/mod.rs:660–686).
-5. **`chunk_size` is a frozen wire contract** per dynamo blob table; changing it on existing data silently corrupts range reads.
+5. **`chunk_size` is a frozen wire contract** per dynamo blob table; changing it on existing data silently corrupts range reads. Config validation bounds it, and a marker item written at provisioning makes startup validation reject a mismatched store (pre-marker tables have no marker and stay unchecked).
 6. **`BlobTableId`/`TableId` names are wire contracts too** — baked into S3 object keys and dynamo pks; renaming a logical table orphans all existing data.
 7. **Trait-default `read_range` end-clamping vs strict start**: end past EOF is clamped, start past EOF is an error — and the dynamo backend distinguishes a *torn* blob (`len` > stored chunks) as a distinct `Decode` error.
 8. **Zero-length range read = HeadObject** on S3 (can't express `bytes=x-(x-1)`; must distinguish missing vs empty vs start past EOF) — also used to disambiguate a 416 (start == len clamps to empty; start > len errors).

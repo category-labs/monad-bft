@@ -29,6 +29,12 @@
 //! len = total blob length (Number)    -- on chunk 0 only
 //! ```
 //!
+//! One marker item per physical table (`pk` kind `"blob_chunk_size"`, `sk` =
+//! u32-be(0), `val`: Number) records the chunk size the data is cut with;
+//! [`DynamoBlobStore::create_table`] writes it and
+//! [`DynamoBlobStore::validate_table`] rejects a store configured with a
+//! different size (absent marker = pre-marker table, tolerated).
+//!
 //! `apply_writes` is not atomic: a multi-chunk blob is independent PutItems and
 //! a partial write leaves orphan chunks, but the `MetaStore` head publication
 //! gates visibility, so readers never observe a torn blob.
@@ -42,7 +48,8 @@ use std::{
 };
 
 use aws_sdk_dynamodb::{
-    operation::query::builders::QueryFluentBuilder,
+    error::{ProvideErrorMetadata, SdkError},
+    operation::{put_item::PutItemError, query::builders::QueryFluentBuilder},
     primitives::Blob,
     types::{AttributeValue, DeleteRequest, PutRequest, WriteRequest},
     Client,
@@ -67,6 +74,11 @@ use crate::{
 /// Key-kind discriminator folded into `pk`, disjoint from the metastore kinds.
 const KIND_BLOB: &[u8] = b"blob";
 
+/// Key-kind discriminator of the per-table chunk-size marker item, disjoint
+/// from `KIND_BLOB` (and the metastore kinds) via the length-prefixed pk
+/// encoding.
+const KIND_CHUNK_SIZE: &[u8] = b"blob_chunk_size";
+
 /// Number attribute on chunk 0 carrying the total blob length.
 const ATTR_LEN: &str = "len";
 
@@ -76,7 +88,7 @@ pub const DEFAULT_CHUNK_SIZE: usize = 64 * 1024;
 
 /// Hard ceiling: DynamoDB rejects items larger than 400 KiB. Stay under it with
 /// margin for `pk`/`sk`/`len`/framing overhead.
-const MAX_CHUNK_SIZE: usize = 350 * 1024;
+pub(crate) const MAX_CHUNK_SIZE: usize = 350 * 1024;
 
 /// Construction parameters for [`DynamoBlobStore`].
 #[derive(Debug, Clone)]
@@ -94,7 +106,9 @@ pub struct DynamoBlobStoreConfig {
     pub batch_max_concurrency: usize,
     /// Bytes per chunk. Clamped to `1..=MAX_CHUNK_SIZE`. This is a wire contract:
     /// it sets the byte->chunk-index mapping, so it must not change for a table
-    /// that already holds data.
+    /// that already holds data (a mismatched reader silently returns wrong
+    /// bytes). [`DynamoBlobStore::create_table`] persists the size as a marker
+    /// item that [`DynamoBlobStore::validate_table`] checks at startup.
     pub chunk_size: usize,
     /// Explicit static credentials. `None` uses the ambient AWS credential chain.
     pub credentials: Option<DynamoCredentials>,
@@ -361,15 +375,111 @@ impl DynamoBlobStore {
 
     /// Idempotent table provisioning for tests/dev ONLY -- never called by
     /// [`DynamoBlobStore::new`]. Treats `ResourceInUseException` as success,
-    /// then polls until `ACTIVE`.
+    /// then polls until `ACTIVE` and records the chunk size the table's data
+    /// will be cut with. Never overwrites an existing marker: re-provisioning
+    /// with a different chunk size must surface the mismatch, not mask it
+    /// (the put is conditional on absence, so a racing provisioner cannot
+    /// mask one either). Adopting a pre-marker table that already holds data
+    /// stamps the configured size as authoritative — it cannot be verified
+    /// against the data itself.
     pub async fn create_table(&self) -> Result<()> {
-        create_pk_sk_table(&self.inner.ring, self.table()).await
+        create_pk_sk_table(&self.inner.ring, self.table()).await?;
+        match self.stored_chunk_size().await? {
+            Some(stored) => self.check_chunk_size(stored),
+            None => self.write_chunk_size_marker().await,
+        }
     }
 
     /// Startup connectivity/schema check: the configured table exists, is
-    /// `ACTIVE`, and has the expected binary `pk` HASH + binary `sk` RANGE keys.
+    /// `ACTIVE`, has the expected binary `pk` HASH + binary `sk` RANGE keys,
+    /// and (when the marker exists) was provisioned with this store's chunk
+    /// size. An absent marker (pre-marker table) is tolerated, and read-only
+    /// stores never write one.
     pub async fn validate_table(&self) -> Result<()> {
-        validate_pk_sk_table(&self.inner.ring, self.table()).await
+        validate_pk_sk_table(&self.inner.ring, self.table()).await?;
+        match self.stored_chunk_size().await? {
+            Some(stored) => self.check_chunk_size(stored),
+            None => Ok(()),
+        }
+    }
+
+    /// Reads the table's chunk-size marker; `Ok(None)` for tables provisioned
+    /// before the marker existed.
+    async fn stored_chunk_size(&self) -> Result<Option<usize>> {
+        let resp = self
+            .rr_client()
+            .get_item()
+            .table_name(self.table())
+            .key(
+                ATTR_PK,
+                AttributeValue::B(Blob::new(chunk_size_marker_pk())),
+            )
+            .key(ATTR_SK, AttributeValue::B(Blob::new(chunk_sk(0))))
+            .consistent_read(true)
+            .send()
+            .await
+            .map_err(|e| backend_err("get_item", e))?;
+        let Some(item) = resp.item else {
+            return Ok(None);
+        };
+        match item.get(ATTR_VAL) {
+            Some(AttributeValue::N(n)) => n.parse::<usize>().map(Some).map_err(|_| {
+                MonadChainDataError::Backend(format!(
+                    "dynamo blob chunk-size marker not a usize: {n}"
+                ))
+            }),
+            _ => Err(MonadChainDataError::Backend(
+                "dynamo blob chunk-size marker missing numeric `val` attribute".to_string(),
+            )),
+        }
+    }
+
+    /// Stamps the marker, conditional on absence so racing provisioners
+    /// cannot overwrite each other: the loser re-reads and validates against
+    /// the value that won.
+    async fn write_chunk_size_marker(&self) -> Result<()> {
+        let result = self
+            .rr_client()
+            .put_item()
+            .table_name(self.table())
+            .item(
+                ATTR_PK,
+                AttributeValue::B(Blob::new(chunk_size_marker_pk())),
+            )
+            .item(ATTR_SK, AttributeValue::B(Blob::new(chunk_sk(0))))
+            .item(
+                ATTR_VAL,
+                AttributeValue::N(self.inner.chunk_size.to_string()),
+            )
+            .condition_expression("attribute_not_exists(pk)")
+            .send()
+            .await;
+        match result {
+            Ok(_) => Ok(()),
+            // Lost a provisioning race (or the SDK retried a put whose first
+            // response was lost): validate against whatever got stored.
+            Err(e) if is_conditional_check_failed(&e) => match self.stored_chunk_size().await? {
+                Some(stored) => self.check_chunk_size(stored),
+                None => Err(MonadChainDataError::Backend(
+                    "dynamo blob chunk-size marker absent after conditional-put conflict"
+                        .to_string(),
+                )),
+            },
+            Err(e) => Err(backend_err("put_item", e)),
+        }
+    }
+
+    fn check_chunk_size(&self, stored: usize) -> Result<()> {
+        if stored == self.inner.chunk_size {
+            return Ok(());
+        }
+        Err(MonadChainDataError::Backend(format!(
+            "dynamo blob table {} chunk_size mismatch: configured {}, data written with {stored} \
+             (the byte->chunk-index mapping is a wire contract; a mismatched size mis-slices \
+             range reads)",
+            self.table(),
+            self.inner.chunk_size
+        )))
     }
 }
 
@@ -493,10 +603,26 @@ fn blob_pk(table: BlobTableId, key: &[u8]) -> Vec<u8> {
     encode_pk(KIND_BLOB, table.as_str(), key)
 }
 
+/// `pk` of the physical table's single chunk-size marker item (the logical
+/// table and tail are empty: the chunk size is a per-physical-table property).
+fn chunk_size_marker_pk() -> Vec<u8> {
+    encode_pk(KIND_CHUNK_SIZE, "", &[])
+}
+
 /// Sort key for a chunk: the index as fixed-width big-endian so DynamoDB's
 /// unsigned-byte sort on `sk` equals chunk order.
 fn chunk_sk(idx: u32) -> [u8; 4] {
     idx.to_be_bytes()
+}
+
+/// Matches both the modeled variant and a bare error code (a compatible
+/// backend may not model the exception).
+fn is_conditional_check_failed<R>(e: &SdkError<PutItemError, R>) -> bool {
+    matches!(
+        e,
+        SdkError::ServiceError(se)
+            if matches!(se.err(), PutItemError::ConditionalCheckFailedException(_))
+    ) || e.code() == Some("ConditionalCheckFailedException")
 }
 
 /// For a byte range `[start, end)` (`end > start`) returns the inclusive chunk

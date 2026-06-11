@@ -21,6 +21,8 @@ mod s3;
 
 use bytes::Bytes;
 #[cfg(feature = "dynamo")]
+pub(crate) use dynamo::MAX_CHUNK_SIZE;
+#[cfg(feature = "dynamo")]
 pub use dynamo::{DynamoBlobStore, DynamoBlobStoreConfig};
 pub use in_memory::InMemoryBlobStore;
 #[cfg(feature = "s3")]

@@ -445,6 +445,12 @@ pub struct ChainDataDynamoBlobConfig {
     pub session_token: Redacted,
     pub create_table: bool,
     pub max_concurrency: usize,
+    /// Bytes per blob chunk. A wire contract: it sets the byte->chunk-index
+    /// mapping, so it must match the size the table's existing data was
+    /// written with -- a mismatched reader silently returns wrong bytes.
+    /// Unset uses the store default (64 KiB). Must be within 1..=350 KiB
+    /// (DynamoDB's item ceiling with framing margin). Provisioning persists
+    /// the size as a table marker that startup validation checks.
     pub chunk_size: Option<usize>,
 }
 
@@ -474,6 +480,17 @@ impl ChainDataDynamoBlobConfig {
         }
         if self.max_concurrency == 0 {
             bail!("chain-data dynamo blob max_concurrency must be >= 1");
+        }
+        // Reject loudly rather than clamp: the configured number must be the
+        // number used, or the byte->chunk-index wire contract drifts.
+        if let Some(chunk_size) = self.chunk_size {
+            if chunk_size == 0 || chunk_size > crate::store::blob::MAX_CHUNK_SIZE {
+                bail!(
+                    "chain-data dynamo blob chunk_size must be within 1..={} bytes \
+                     (and must match the size existing table data was written with)",
+                    crate::store::blob::MAX_CHUNK_SIZE
+                );
+            }
         }
         validate_pair(
             &self.access_key_id.0,
@@ -660,6 +677,7 @@ pub(crate) async fn build_dynamo_blob_store(
         chunk_size: config.chunk_size.unwrap_or(defaults.chunk_size),
         ..defaults
     };
+    let chunk_size = store_config.chunk_size;
     let store = match shared {
         Some(shared) => {
             // The blob store reuses the meta store's client ring, so any of these
@@ -701,6 +719,7 @@ pub(crate) async fn build_dynamo_blob_store(
         .validate_table()
         .await
         .context("validating chain-data Dynamo blob table")?;
+    info!(chunk_size, "resolved dynamo blob chunk size");
     Ok(store)
 }
 
@@ -768,6 +787,28 @@ mod tests {
         let absent: ChainDataS3BlobConfig = toml::from_str("bucket = \"b\"\n").unwrap();
         assert!(absent.access_key_id.0.is_none());
         assert!(absent.secret_access_key.0.is_none());
+    }
+
+    /// chunk_size is a wire contract (byte->chunk-index mapping); out-of-range
+    /// values must fail validation loudly rather than be silently clamped into
+    /// a different mapping than the operator configured.
+    #[cfg(feature = "dynamo")]
+    #[test]
+    fn dynamo_blob_chunk_size_must_be_within_wire_bounds() {
+        use crate::store::blob::MAX_CHUNK_SIZE;
+
+        let with_chunk_size = |chunk_size| ChainDataDynamoBlobConfig {
+            table: Some("t".to_string()),
+            chunk_size,
+            ..ChainDataDynamoBlobConfig::default()
+        };
+        assert!(with_chunk_size(None).validate().is_ok());
+        assert!(with_chunk_size(Some(64 * 1024)).validate().is_ok());
+        assert!(with_chunk_size(Some(MAX_CHUNK_SIZE)).validate().is_ok());
+        assert!(with_chunk_size(Some(0)).validate().is_err());
+        assert!(with_chunk_size(Some(MAX_CHUNK_SIZE + 1))
+            .validate()
+            .is_err());
     }
 
     #[test]
