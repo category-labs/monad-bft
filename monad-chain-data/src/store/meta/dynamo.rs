@@ -386,15 +386,18 @@ impl DynamoMetaStore {
 
     /// Probe and set the effective `BatchWriteItem` item limit by sending
     /// `candidate` deletes of non-existent keys (idempotent no-ops). If the
-    /// backend rejects the batch, falls back to [`BATCH_WRITE_LIMIT`]. Call
-    /// once at startup after the table is ACTIVE.
-    pub async fn discover_batch_write_limit(&self, candidate: usize) -> usize {
+    /// backend rejects the batch, falls back to [`BATCH_WRITE_LIMIT`]; a
+    /// transport-class failure (timeout, dispatch) is an error — pinning the
+    /// fallback for the process lifetime would silently shrink every batch
+    /// over a transient outage. Call once at startup after the table is
+    /// ACTIVE.
+    pub async fn discover_batch_write_limit(&self, candidate: usize) -> Result<usize> {
         let candidate = candidate.max(1);
         if candidate <= BATCH_WRITE_LIMIT {
             self.inner
                 .batch_write_max_items
                 .store(candidate, Ordering::Relaxed);
-            return candidate;
+            return Ok(candidate);
         }
         let table = self
             .physical_table_names()
@@ -426,7 +429,10 @@ impl DynamoMetaStore {
                 );
                 candidate
             }
-            Err(e) => {
+            // Only a service-level rejection means "the backend caps batches
+            // below the candidate". Timeouts and dispatch failures say nothing
+            // about the limit, so they surface as startup errors instead.
+            Err(e) if e.as_service_error().is_some() => {
                 warn!(
                     candidate,
                     fallback = BATCH_WRITE_LIMIT,
@@ -435,11 +441,12 @@ impl DynamoMetaStore {
                 );
                 BATCH_WRITE_LIMIT
             }
+            Err(e) => return Err(backend_err("batch_write_item limit probe", e)),
         };
         self.inner
             .batch_write_max_items
             .store(effective, Ordering::Relaxed);
-        effective
+        Ok(effective)
     }
 }
 

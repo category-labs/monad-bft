@@ -409,7 +409,10 @@ pub(crate) async fn run_batch_write_chunks(
 /// One `BatchWriteItem` call (single physical table), retrying send errors and
 /// `UnprocessedItems` leftovers with bounded jittered backoff until they drain
 /// or [`BATCH_WRITE_CHUNK_MAX_RETRIES`] is exhausted. A slow-send watchdog
-/// warns while a send stays in flight.
+/// warns while a send stays in flight; the SDK-level operation timeouts
+/// (`store::sdk`) bound the send itself, so a wedged connection resolves to an
+/// `Err` here and re-enters the retry loop (each retry takes a fresh
+/// round-robin client, rotating endpoints).
 async fn write_batch_chunk(
     ring: &ClientRing,
     chunk_idx: usize,

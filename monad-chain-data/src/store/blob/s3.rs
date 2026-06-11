@@ -375,6 +375,8 @@ impl BlobStore for S3BlobStore {
             .send();
         tokio::pin!(put);
 
+        // Log-only tiers (30s, then 90s elapsed), both below the SDK
+        // operation timeout (store/sdk.rs) that fails the send by 120s.
         let mut next_warn = std::time::Duration::from_secs(30);
         let resp = loop {
             tokio::select! {
@@ -388,7 +390,7 @@ impl BlobStore for S3BlobStore {
                         elapsed_ms = started.elapsed().as_millis() as u64,
                         "s3 put_object still in flight"
                     );
-                    next_warn = std::time::Duration::from_secs(120);
+                    next_warn = std::time::Duration::from_secs(60);
                 }
             }
         };

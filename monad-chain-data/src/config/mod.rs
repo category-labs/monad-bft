@@ -623,7 +623,10 @@ pub(crate) async fn build_dynamo_meta_store(
         } else {
             DYNAMO_BATCH_WRITE_ITEMS
         });
-    let effective = store.discover_batch_write_limit(batch_candidate).await;
+    let effective = store
+        .discover_batch_write_limit(batch_candidate)
+        .await
+        .context("probing dynamo BatchWriteItem item limit")?;
     info!(
         candidate = batch_candidate,
         effective, "resolved dynamo BatchWriteItem item limit"
